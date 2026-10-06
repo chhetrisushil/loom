@@ -1,5 +1,11 @@
 import { StorageWriteError, SuspendError, flowContentHash } from "@loom/core";
-import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
+import type {
+  EventEnvelope,
+  ExecutionState,
+  FlowDefinition,
+  SuspendCondition,
+  SuspendWait,
+} from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type {
   Effect,
@@ -31,7 +37,7 @@ import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { highestMissing } from "./LogLifecycle";
 import { WorkflowContextImpl } from "./WorkflowContext";
-import type { SurfaceFactory } from "./WorkflowContext";
+import type { InboxBinding, SurfaceFactory } from "./WorkflowContext";
 import {
   armDeadline,
   assertFlowBudgets,
@@ -39,7 +45,24 @@ import {
   remainingBudget,
 } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
-import { isKernelHumanPark } from "./kernelPark";
+import {
+  DEFAULT_INBOX_MAX_BACKLOG,
+  DEFAULT_INBOX_MAX_PAYLOAD_BYTES,
+  INBOX_DEDUPE_CAP,
+  INBOX_WAKE_AT,
+  WAITS_PARK_ON,
+  appendInboxMessage,
+  chainIdOf,
+  chainIdOfFirst,
+  createInboxSource,
+  cursorFor,
+  cursorsOf,
+  inboxBacklog,
+  inboxStreamId,
+  topicProblem,
+  trimInbox,
+} from "./inbox";
+import { WaitsPark, isKernelHumanPark } from "./kernelPark";
 import { COMPUTE_TARGET_KEY } from "./placement";
 import {
   type PrincipalCodec,
@@ -67,6 +90,9 @@ import {
   ExecutionDeniedError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
+  InboxClosedError,
+  InboxFullError,
+  InboxMessageRefusedError,
   InputValidationError,
   ResumeContendedError,
   ResumePayloadValidationError,
@@ -84,11 +110,15 @@ import type {
   FlowRunner,
   ForkOptions,
   ForkResult,
+  InboxSource,
   LineageGrant,
   RegisteredFlow,
   ResumeAuthenticator,
   ResumeEvent,
   RunOptions,
+  SendMessage,
+  SendOptions,
+  SendResult,
   SystemGrant,
 } from "./types";
 import { isStaleFence, isWriteConflict } from "./writeConflict";
@@ -117,6 +147,11 @@ interface BootstrapEvent {
    * caller-chosen id); `execute` adopts the stored envelope instead of committing it again.
    */
   durable?: EventEnvelope;
+  /**
+   * ADR 0110 D5 — consecutive `atomic` bootstrap events are committed through ONE durable write
+   * (`ExecutionJournal.commitAtomic`): all land or none do.
+   */
+  atomic?: true;
 }
 
 export interface WorkflowRuntimeDeps {
@@ -180,6 +215,30 @@ export interface WorkflowRuntimeDeps {
    * `defineConfig({ kernel: { features: { scopes: true } } })`.
    */
   scopes?: boolean;
+  /**
+   * ADR 0110 — the durable inbox: `ctx.receive` / `ctx.select` (registering, multi-wait parks,
+   * wait-addressed resumes) and the authorized `runtime.send`. **Default `false`** (the
+   * rolling-upgrade rule, `kernel.features.inbox`): an execution that has ever parked with
+   * `waits` cannot be driven by a pre-1.23.0 node, so turn it on only once every node folds
+   * `MESSAGE_CONSUMED` and `condition.waits`. Off, `ctx.receive` / `ctx.select` and `send` throw
+   * a message naming the flag. Set by `defineConfig({ kernel: { features: { inbox: true } } })`.
+   */
+  inboxEnabled?: boolean;
+  /**
+   * ADR 0110 D1 — the reader seam over the inbox stream. The default reads this runtime's own
+   * `EventStore`. A function type, not a versioned SPI, until a second implementation exists.
+   */
+  inbox?: InboxSource;
+  /** ADR 0110 D1 — `send` refuses past this many unconsumed messages per chain. Default 10 000. */
+  inboxMaxBacklog?: number;
+  /**
+   * ADR 0110 D6 — consumed message ids remembered per execution for dedupe (at-least-once send,
+   * exactly-once consume within the window). Default and CAP 1 024: the fold's window is fixed
+   * there, so a larger value is not representable; a smaller one narrows it.
+   */
+  inboxDedupeWindow?: number;
+  /** ADR 0110 D1 — the largest JSON payload `send` accepts, in bytes. Default 65 536. */
+  inboxMaxPayloadBytes?: number;
   /**
    * ADR 0112 D2 — error classes a fail-fast scope may REHYDRATE by name (composition-time,
    * deterministic): the scope journals the failing error's `name` and message, and the first run
@@ -523,6 +582,42 @@ interface AuthzOwners {
   parentOwner?: NonNullable<ExecutionAuthzRequest["owner"]>;
 }
 
+/**
+ * ADR 0110 D4 — the legacy single-gate fields of a quiescent park. A single GATE wait writes them
+ * byte-identically to a `ctx.suspend` park (`locatePark` and an older reader are unaffected);
+ * any other combination carries the reserved `on`.
+ */
+function legacyConditionOf(waits: readonly SuspendWait[]): {
+  on: string;
+  correlationKey?: string;
+  viewDigest?: string;
+} {
+  const only = waits.length === 1 ? waits[0] : undefined;
+  if (only?.kind === "gate" && only.on !== undefined) {
+    return {
+      on: only.on,
+      ...(only.correlationKey !== undefined && { correlationKey: only.correlationKey }),
+      ...(only.viewDigest !== undefined && { viewDigest: only.viewDigest }),
+    };
+  }
+  return { on: WAITS_PARK_ON };
+}
+
+/** How many chains' inbox bookkeeping a runtime remembers (FIFO eviction; both maps are only hints). */
+const INBOX_HINT_MEMORY = 4096;
+
+function rememberBounded(map: Map<string, number>, key: string, value: number): void {
+  map.delete(key); // re-insert at the end: eviction order = recency
+  if (map.size >= INBOX_HINT_MEMORY) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+  map.set(key, value);
+}
+
+/** The `eventType` of the kernel's own inbox-delivery resume (ADR 0110 D5): never a caller's. */
+const INBOX_DELIVERY = "InboxDelivery";
+
 export class WorkflowRuntime {
   private readonly eventStore: EventStore;
   private readonly snapshotStore: SnapshotStore;
@@ -549,6 +644,17 @@ export class WorkflowRuntime {
   private readonly snapshotEvery: number | undefined;
   private readonly parkDrainMs: number | undefined;
   private readonly scopes: boolean;
+  // ADR 0110 — the durable inbox.
+  private readonly inboxEnabled: boolean;
+  private readonly inboxSource: InboxSource;
+  private readonly inboxMaxBacklog: number;
+  private readonly inboxDedupeWindow: number;
+  private readonly inboxMaxPayloadBytes: number;
+  /** Per chain, the stream sequence this process last trimmed through (a cheap "nothing new" test). */
+  private readonly inboxTrimmed = new Map<string, number>();
+  /** Per chain, the highest sequence known consumed-and-trimmed: the cheap backlog floor. */
+  private readonly inboxFloors = new Map<string, number>();
+  private warnedNoInboxTimers = false;
   private readonly errorClasses: Record<string, ErrorClassCtor> | undefined;
   private readonly surface: SurfaceFactory | undefined;
   private readonly timerStore: TimerStore | undefined;
@@ -593,6 +699,17 @@ export class WorkflowRuntime {
     this.snapshotEvery = deps.snapshotEvery;
     this.parkDrainMs = deps.parkDrainMs;
     this.scopes = deps.scopes === true;
+    this.inboxEnabled = deps.inboxEnabled === true;
+    this.inboxSource = deps.inbox ?? createInboxSource(deps.eventStore);
+    this.inboxMaxBacklog = Math.max(1, deps.inboxMaxBacklog ?? DEFAULT_INBOX_MAX_BACKLOG);
+    this.inboxDedupeWindow = Math.max(
+      1,
+      Math.min(deps.inboxDedupeWindow ?? INBOX_DEDUPE_CAP, INBOX_DEDUPE_CAP)
+    );
+    this.inboxMaxPayloadBytes = Math.max(
+      1,
+      deps.inboxMaxPayloadBytes ?? DEFAULT_INBOX_MAX_PAYLOAD_BYTES
+    );
     this.errorClasses = deps.errorClasses;
     this.surface = deps.surface;
     this.resumeAuthenticator = deps.resumeAuthenticator;
@@ -1234,8 +1351,10 @@ export class WorkflowRuntime {
      * that gate's declared shape, or any event name would answer it unchecked.
      */
     checks: "all" | "kernel-namespace-only" = "all",
-    system?: SystemGrant
-  ): void {
+    system?: SystemGrant,
+    /** ADR 0110 — the kernel's own inbox delivery may address an inbox wait; no caller may. */
+    allowInbox = false
+  ): { wait?: SuspendWait } {
     const { eventType } = event;
 
     if (eventType === EXECUTION_RECOVERED && checks === "all") {
@@ -1249,7 +1368,7 @@ export class WorkflowRuntime {
           `recovery re-drive addresses a crashed (running/pending) execution; this one is "${state.status}"`
         );
       }
-      return;
+      return {};
     }
 
     // Checked BEFORE state, because it holds regardless of state: no reachable
@@ -1265,7 +1384,7 @@ export class WorkflowRuntime {
       );
     }
 
-    if (checks === "kernel-namespace-only") return;
+    if (checks === "kernel-namespace-only") return {};
 
     if (state.status !== "suspended") {
       throw new ResumeRefusedError(
@@ -1277,6 +1396,22 @@ export class WorkflowRuntime {
     }
 
     const condition = state.suspendedOn;
+    // ADR 0110 D4 — a park that lists registered waits (`ctx.select` / `ctx.receive`). The fold keeps
+    // `waits` only from a kernel-stamped park, so this table is the kernel's own.
+    const waits = Array.isArray(condition?.waits) ? (condition.waits as SuspendWait[]) : undefined;
+    if (event.waitId !== undefined || (waits !== undefined && waits.length > 0)) {
+      const addressed = this.assertWaitResumable(
+        executionId,
+        state,
+        event,
+        waits ?? [],
+        system,
+        allowInbox
+      );
+      if (addressed !== undefined) return addressed;
+      // `undefined`: the event answers the park's POSITIONAL (ctx.suspend / ctx.sleep) gate, which a
+      // mixed flow keeps beside its registered waits — the legacy checks below apply.
+    }
     // A TIMED suspend has TWO legitimate wakes, and `on` names only one of them:
     // `suspend({ on: "Approval", timeout })` is answered either by the approval or by
     // the timer, which fires as TIMER_FIRED whatever the gate is called (the runtime
@@ -1329,6 +1464,141 @@ export class WorkflowRuntime {
         );
       }
     }
+    return {};
+  }
+
+  /**
+   * ADR 0110 D4 — `assertResumable` for a park that lists registered waits. Returns the wait the
+   * resume answers. `waitId` names it; without one the event name must match exactly one gate wait
+   * (a derived single-gate park, or one unambiguous arm), else `ambiguous-wait`. A wait that is not
+   * in the park — a losing arm of a settled `select`, a stale `waitId` — is `wait-settled`.
+   */
+  private assertWaitResumable(
+    executionId: string,
+    state: ExecutionState,
+    event: ResumeEvent,
+    waits: readonly SuspendWait[],
+    system: SystemGrant | undefined,
+    allowInbox: boolean
+  ): { wait?: SuspendWait } | undefined {
+    const { eventType } = event;
+    const condition = state.suspendedOn;
+    const answered = state.variables._waitAnswers as Record<string, unknown> | undefined;
+    const isAnswered = (w: SuspendWait): boolean =>
+      answered !== undefined && Object.hasOwn(answered, w.waitId);
+    const refuse = (reason: ResumeRefusedError["reason"], detail: string): never => {
+      throw new ResumeRefusedError(
+        executionId,
+        eventType,
+        reason,
+        `${detail} Nothing was appended.`
+      );
+    };
+    const timerWake = (w: SuspendWait): void => {
+      if (eventType !== TIMER_FIRED) {
+        refuse(
+          "gate-mismatch",
+          `wait "${w.waitId}" is a timer arm; only the kernel's ${TIMER_FIRED} answers it.`
+        );
+      }
+      if (this.systemGrantToken !== undefined && system !== this.systemGrantToken) {
+        refuse(
+          "timer-wake-not-system",
+          `"${TIMER_FIRED}" is raised by the kernel's TimerService, not by a caller; this runtime fails closed, so a resume that does not carry the system grant is refused.`
+        );
+      }
+    };
+    let wait: SuspendWait | undefined;
+    if (event.waitId !== undefined) {
+      wait = waits.find((w) => w.waitId === event.waitId);
+      if (wait === undefined || (isAnswered(wait) && !allowInbox)) {
+        // Existence-hiding: a caller that names a wait the park does not list learns only this.
+        refuse(
+          "wait-settled",
+          `the park does not list an unanswered wait "${event.waitId}" (its select was settled by another arm, or it is not a wait of this park).`
+        );
+      }
+    } else if (eventType === TIMER_FIRED) {
+      const timers = waits.filter((w) => w.kind === "timer" && !isAnswered(w));
+      // A mixed park's positional ctx.sleep: the legacy timed-suspend path.
+      if (timers.length === 0 && condition?.wakeAt !== undefined) return undefined;
+      if (timers.length === 0) {
+        refuse("gate-mismatch", "the park has no timer arm to wake.");
+      }
+      if (timers.length > 1) {
+        refuse(
+          "ambiguous-wait",
+          `the park lists ${timers.length} timer arms; name one with waitId.`
+        );
+      }
+      wait = timers[0];
+    } else {
+      if (eventType === WAITS_PARK_ON) {
+        refuse("gate-mismatch", `"${WAITS_PARK_ON}" is reserved.`);
+      }
+      const matches = waits.filter(
+        (w) => w.kind === "gate" && w.on === eventType && !isAnswered(w)
+      );
+      const legacyMatch = condition?.on === eventType;
+      if (matches.length === 0) {
+        if (legacyMatch) return undefined; // a positional ctx.suspend gate of a mixed park
+        refuse(
+          "gate-mismatch",
+          `the execution is parked on ${waits.length} wait(s) (${waits
+            .map((w) => `${w.kind}:${w.on ?? w.topic ?? w.waitId}`)
+            .join(", ")}); none is the gate "${eventType}".`
+        );
+      }
+      if (matches.length > 1 || (legacyMatch && waits.length > 1)) {
+        refuse(
+          "ambiguous-wait",
+          `${matches.length} gate waits answer "${eventType}"; name one with waitId.`
+        );
+      }
+      wait = matches[0];
+    }
+    const w = wait as SuspendWait;
+    if (w.kind === "inbox") {
+      if (!allowInbox) {
+        refuse(
+          "inbox-wait",
+          `wait "${w.waitId}" is an inbox wait on "${w.topic}": it is answered by runtime.send, never by a resume.`
+        );
+      }
+      return { wait: w };
+    }
+    if (w.kind === "timer") {
+      timerWake(w);
+      return { wait: w };
+    }
+    // A gate arm: the name must match, and ADR 0117's digest binds PER WAIT.
+    if (w.on !== eventType) {
+      refuse("gate-mismatch", `wait "${w.waitId}" is the gate "${w.on}", not "${eventType}".`);
+    }
+    if (w.viewDigest !== undefined) {
+      const echoed = (event.payload as { viewDigest?: unknown } | null | undefined)?.viewDigest;
+      if (echoed !== w.viewDigest) {
+        refuse(
+          "view-digest-mismatch",
+          `the gate "${eventType}" was parked on a specific proposal and the resume does not carry its digest (${
+            typeof echoed === "string" ? "a stale view" : "none supplied"
+          }). Re-read the parked state and resume with payload.viewDigest set to that wait's viewDigest.`
+        );
+      }
+    }
+    return { wait: w };
+  }
+
+  /** What a wait-addressed resume RECORDS as the wait's answer (ADR 0110 D3). */
+  private waitAnswerPayload(
+    executionId: string,
+    definition: FlowDefinition<unknown, unknown>,
+    event: ResumeEvent,
+    wait: SuspendWait
+  ): unknown {
+    if (wait.kind === "timer") return { wakeAt: wait.wakeAt }; // the kernel's fact, never the caller's
+    if (wait.kind === "inbox") return null; // the answer is the MESSAGE_CONSUMED journaled beside it
+    return this.parseResumePayload(executionId, definition, event);
   }
 
   /**
@@ -1538,6 +1808,9 @@ export class WorkflowRuntime {
       principal: PrincipalChain | undefined;
       /** The execution is parked but its park could not be located (compacted away). */
       parkNotLocated?: boolean;
+      /** ADR 0110 D4 — a wait-addressed resume: the wait and the park that lists it. */
+      waitId?: string;
+      waitRegisteredAtSequence?: number | undefined;
     }
   ): { eventType: string; payload: unknown } | undefined {
     if (this.resumeAuthenticator === undefined) return undefined;
@@ -1545,6 +1818,12 @@ export class WorkflowRuntime {
       executionId,
       parkedAtSequence: park.parkedAtSequence,
       principal: park.principal,
+      ...(park.waitId !== undefined && {
+        waitId: park.waitId,
+        ...(park.waitRegisteredAtSequence !== undefined && {
+          waitRegisteredAtSequence: park.waitRegisteredAtSequence,
+        }),
+      }),
     });
     if (verdict.status === "not-applicable") return undefined;
     if (verdict.status === "rejected") {
@@ -1700,7 +1979,8 @@ export class WorkflowRuntime {
     parkSeq: number,
     system: SystemGrant | undefined,
     /** What the caller already folded and read: spares a read of the park and a re-fold. */
-    held: { vm: ReplayVM; events: readonly EventEnvelope[] | undefined }
+    held: { vm: ReplayVM; events: readonly EventEnvelope[] | undefined },
+    allowInbox = false
   ): Promise<{ fence: number | undefined; vm: ReplayVM }> {
     const store = this.eventStore;
     // A store without the conditional keeps today's behaviour (the unconditional acquire and its
@@ -1733,7 +2013,7 @@ export class WorkflowRuntime {
         const heldState = held.vm.getState();
         const tail = await store.readFrom(executionId, heldState.sequence + 1);
         const vm = tail.length === 0 ? held.vm : new ReplayVM(tail, heldState);
-        this.assertResumable(executionId, vm.getState(), resumeEvent, "all", system);
+        this.assertResumable(executionId, vm.getState(), resumeEvent, "all", system, allowInbox);
         return { fence: got.fence, vm };
       }
       // Stale: the token moved, or an answering event is past the park. Re-read the park. If it is
@@ -2209,6 +2489,20 @@ export class WorkflowRuntime {
     resumeEvent: ResumeEvent,
     options?: RunOptions
   ): Promise<ExecutionHandle> {
+    return this.resumeCore(executionId, resumeEvent, options);
+  }
+
+  /**
+   * `resume`, plus the kernel's own inbox delivery (ADR 0110 D5): `inboxWake` carries the
+   * `MESSAGE_CONSUMED` facts to journal ahead of the wait-addressed `EXECUTION_RESUMED`. Private:
+   * a public `resume` can never reach an inbox wait or write a consumption.
+   */
+  private async resumeCore(
+    executionId: string,
+    resumeEvent: ResumeEvent,
+    options?: RunOptions,
+    inboxWake?: { pre: Array<{ eventType: string; payload: unknown }> }
+  ): Promise<ExecutionHandle> {
     // Before any read or append (see `start`): an invalid budget must leave the log untouched.
     assertValidBudget("deadlineMs", options?.deadlineMs, "resume options");
     // Guarded as well as `start`: a control stream is non-empty by construction, so without
@@ -2357,30 +2651,51 @@ export class WorkflowRuntime {
         ...(snapshot !== null && { searchFrom: snapshot.sequence }),
       });
     }
-    const approval = this.verifyApproval(executionId, resumeEvent, {
-      parkedAtSequence: parkedAt,
-      principal: options?.principal,
-      parkNotLocated: parkedAt === undefined && vm.getState().status === "suspended",
-    });
+    const approval =
+      inboxWake !== undefined
+        ? undefined // the kernel's own delivery: no approver
+        : this.verifyApproval(executionId, resumeEvent, {
+            parkedAtSequence: parkedAt,
+            principal: options?.principal,
+            parkNotLocated: parkedAt === undefined && vm.getState().status === "suspended",
+            ...(resumeEvent.waitId !== undefined && {
+              waitId: resumeEvent.waitId,
+              // The park that LISTS the wait (conservative: a later re-park of the same wait needs
+              // a fresh signature — see ADR 0110 acceptance notes).
+              waitRegisteredAtSequence: parkedAt,
+            }),
+          });
     assertAuthorizedOverride(executionId, resumeEvent, approval);
 
     // #304/#305 — the ingress gate: WHICH event, to an execution in WHICH state. Placed
     // after the authenticator for the same reason the shape check is (below): the
     // gate-mismatch message names the gate the execution is parked on, which an
     // unauthenticated caller has no business learning.
-    this.assertResumable(executionId, vm.getState(), resumeEvent, "all", options?.system);
+    const resolvedWait = this.assertResumable(
+      executionId,
+      vm.getState(),
+      resumeEvent,
+      "all",
+      options?.system,
+      inboxWake !== undefined
+    ).wait;
 
     // TR (ADR 0077) — shape AFTER identity: the authenticator must see the exact event the
     // caller signed (a Zod transform could reshape it out from under a signature), and an
     // unauthenticated caller learns nothing about the gate's contract. Both refuse before
     // `execute`, so neither appends.
-    const resumePayload = this.recordedPayload(
-      resumeEvent,
-      vm.getState(),
-      this.parseResumePayload(executionId, resolved.definition, resumeEvent)
-    );
-    assertInDoubtVerdict(executionId, vm.getState(), resumePayload);
-    assertNullAnswerTakes(executionId, resumeEvent.eventType, vm.getState(), resumePayload);
+    const resumePayload =
+      resolvedWait !== undefined
+        ? this.waitAnswerPayload(executionId, resolved.definition, resumeEvent, resolvedWait)
+        : this.recordedPayload(
+            resumeEvent,
+            vm.getState(),
+            this.parseResumePayload(executionId, resolved.definition, resumeEvent)
+          );
+    if (resolvedWait === undefined) {
+      assertInDoubtVerdict(executionId, vm.getState(), resumePayload);
+      assertNullAnswerTakes(executionId, resumeEvent.eventType, vm.getState(), resumePayload);
+    }
 
     let report: StrayPassthroughReport | undefined;
     if (scanTail !== undefined && carried !== undefined) {
@@ -2427,7 +2742,8 @@ export class WorkflowRuntime {
         resumeEvent,
         options.fenceIfParkedAt,
         options.system,
-        { vm, events: allEvents ?? tailEvents }
+        { vm, events: allEvents ?? tailEvents },
+        inboxWake !== undefined
       );
       fence = got.fence;
       runVm = got.vm;
@@ -2442,13 +2758,399 @@ export class WorkflowRuntime {
       [
         ...(approval !== undefined ? [approval] : []),
         ...discardEvents,
-        { eventType: resumeEvent.eventType, payload: resumePayload },
-        ...answerEvents(runVm.getState(), resumePayload),
+        ...(resolvedWait !== undefined
+          ? [
+              ...(inboxWake !== undefined
+                ? inboxWake.pre.map((e) => ({ ...e, atomic: true as const }))
+                : [{ eventType: resumeEvent.eventType, payload: resumePayload }]),
+              // ADR 0110 D3 — a wait-addressed resume: kernel-stamped, `{ waitId, payload }`.
+              {
+                eventType: "EXECUTION_RESUMED",
+                payload: { waitId: resolvedWait.waitId, payload: resumePayload },
+                metadata: { kernel: true },
+                ...(inboxWake !== undefined && { atomic: true as const }),
+              },
+            ]
+          : [
+              { eventType: resumeEvent.eventType, payload: resumePayload },
+              ...answerEvents(runVm.getState(), resumePayload),
+            ]),
       ],
       fence,
       options?.deadlineMs ?? resolved.definition.deadlineMs,
       acting
     );
+  }
+
+  // ── ADR 0110 — the durable inbox: send, notify, trim ─────────────────────────────────────────
+
+  private assertInboxEnabled(what: string): void {
+    if (!this.inboxEnabled) {
+      throw new Error(
+        `${what} needs the durable inbox: turn on \`kernel.features.inbox\` (WorkflowRuntimeDeps.inboxEnabled) once every node folds MESSAGE_CONSUMED and multi-wait parks (ADR 0110)`
+      );
+    }
+  }
+
+  private warnNoTimerStore(workflowId: string, what: string): void {
+    if (this.warnedNoInboxTimers) return;
+    this.warnedNoInboxTimers = true;
+    this.onWarn(
+      `flow "${workflowId}" parked on ${what}, but no TimerStore is wired — nothing can fire it or wake it from another process. Wire \`timers: { store }\` on every runtime that can park (ADR 0110).`
+    );
+  }
+
+  /**
+   * What `send` needs to know about the chain head, read WITHOUT folding the owner's log: sequence 0
+   * (identity, chain, workflow), the tip (`head()` + one point read) and — only when the tip could
+   * mean "parked" — the folded state. A RUNNING owner in a message loop appends thousands of events
+   * and may hold no recent snapshot, so a fold per `send` would be O(its log) per message; the tip
+   * is O(1). Follows a continuation (`EXECUTION_CONTINUED`, kernel-stamped, names its successor) to
+   * the head, bounded.
+   */
+  private async sendTarget(executionId: string): Promise<{
+    id: string;
+    first: EventEnvelope;
+    workflowId: string;
+    chainId: string;
+    /** `terminal` names the status; `parkedCandidate` carries the fold; otherwise it is running. */
+    status: "running" | "parkedCandidate" | string;
+    state?: ExecutionState;
+  } | null> {
+    let id = executionId;
+    for (let hop = 0; hop <= MAX_LINEAGE_HOPS; hop++) {
+      const first = (await readRangeOf(this.eventStore, id, 0, 0))[0];
+      if (first === undefined) return null; // hop 0: not found; later: the successor is not durable yet
+      const tipSeq = await headOf(this.eventStore, id);
+      const tip =
+        tipSeq === null ? undefined : (await readRangeOf(this.eventStore, id, tipSeq, tipSeq))[0];
+      const kind = tip?.eventType;
+      if (kind === "EXECUTION_CONTINUED" && tip?.metadata?.kernel === true) {
+        const next = (tip.payload as { successorId?: unknown } | null)?.successorId;
+        if (typeof next === "string" && next.length > 0 && hop < MAX_LINEAGE_HOPS) {
+          const successor = (await readRangeOf(this.eventStore, next, 0, 0))[0];
+          if (successor !== undefined) {
+            id = next;
+            continue;
+          }
+        }
+        return {
+          id,
+          first,
+          workflowId: first.workflowId,
+          chainId: chainIdOfFirst(first, id),
+          status: "continued",
+        };
+      }
+      const base = { id, first, workflowId: first.workflowId, chainId: chainIdOfFirst(first, id) };
+      if (kind === "EXECUTION_COMPLETED") return { ...base, status: "completed" };
+      if (kind === "EXECUTION_FAILED") return { ...base, status: "failed" };
+      if (kind === "EXECUTION_CANCELLED") return { ...base, status: "cancelled" };
+      // A tip that can only be written by a RUNNING owner (a step, a decision, a consumption, a flow
+      // emit...) needs no fold. A park, or an audit appended after one, might mean "parked": fold
+      // (a parked owner took a snapshot at its park, so the fold is a short tail).
+      if (
+        kind === "EXECUTION_SUSPENDED" ||
+        kind === "EXECUTION_DENIED" ||
+        kind === "OUTCOME_RECORDED" ||
+        kind === "APPROVAL_GRANTED"
+      ) {
+        const state = await this.foldState(id);
+        return { ...base, status: "parkedCandidate", ...(state !== null && { state }) };
+      }
+      return { ...base, status: "running" };
+    }
+    return null;
+  }
+
+  /**
+   * ADR 0110 D1 — send a message to an execution's durable inbox: the ONLY writer of the inbox
+   * stream. Authorized as `ExecutionOp` `"send"` against the OWNER of the chain's head (read from
+   * the log, ADR 0111 D5) before "not found" is revealed; under `security.strict` a call with no
+   * principal is refused and nothing is appended. A message to an execution that can never consume
+   * it (completed, failed, cancelled) is refused with {@link InboxClosedError}; one beyond
+   * `inboxMaxBacklog` unconsumed messages with {@link InboxFullError}. Stored at `head + 1`
+   * (an O(1) allocation), recorded with the sender's identity subset, and followed by a coalesced
+   * durable wake (one due-now `TimerStore` row per head) when the owner is parked on an inbox
+   * wait. At-least-once: a retry with the same `messageId` is consumed once (D6).
+   */
+  async send(
+    executionId: string,
+    message: SendMessage,
+    options?: SendOptions
+  ): Promise<SendResult> {
+    this.assertInboxEnabled("runtime.send");
+    assertNotReserved(executionId);
+    const head = await this.sendTarget(executionId);
+    if (head === null) {
+      await this.denyMissing("send", executionId, options?.principal, options?.system);
+      throw new Error(`No execution found for id: ${executionId}`);
+    }
+    const denial = this.authzDenial(
+      "send",
+      head.id,
+      head.workflowId,
+      options?.principal,
+      options?.system,
+      await this.ownerForAuthz(head.id, options?.principal, options?.system, { first: head.first })
+    );
+    if (denial !== undefined) {
+      // No durable EXECUTION_DENIED: a sender must never write into the owner's log (that is the
+      // very race the separate stream avoids). The audit callback still fires.
+      await this.denyOp(
+        "send",
+        head.id,
+        head.workflowId,
+        options?.principal,
+        denial.reason,
+        undefined
+      );
+    }
+    const status =
+      head.state !== undefined && head.status === "parkedCandidate"
+        ? head.state.status
+        : head.status;
+    if (status === "completed" || status === "failed" || status === "cancelled") {
+      throw new InboxClosedError(head.id, status);
+    }
+    if (status === "continued") {
+      throw new InboxClosedError(head.id, "continued with no successor yet");
+    }
+    const problem = topicProblem(message.topic);
+    if (problem !== undefined) throw new InboxMessageRefusedError(head.id, problem);
+    let size: number;
+    try {
+      size = JSON.stringify(message.payload ?? null)?.length ?? 0;
+    } catch {
+      throw new InboxMessageRefusedError(head.id, "the payload has no JSON form");
+    }
+    if (size > this.inboxMaxPayloadBytes) {
+      throw new InboxMessageRefusedError(
+        head.id,
+        `the payload is ${size} bytes, over inboxMaxPayloadBytes (${this.inboxMaxPayloadBytes})`
+      );
+    }
+    const messageId =
+      typeof message.messageId === "string" && message.messageId.length > 0
+        ? message.messageId
+        : ulid();
+    const chainId = head.chainId;
+    await this.assertInboxHasRoom(head.id, chainId);
+    const inboxSeq = await appendInboxMessage(
+      this.eventStore,
+      chainId,
+      {
+        topic: message.topic,
+        messageId,
+        payload: message.payload ?? null,
+        sender: ownerOfChain(options?.principal) ?? {},
+      },
+      this.now
+    );
+    // The wake. A running owner needs none (its quiescence commit reads the stream, closure 1); a
+    // parked one gets a coalesced durable row (cross-process) and a same-process fast path.
+    if (head.state !== undefined && this.parkedOnInbox(head.state, message.topic)) {
+      if (this.timerStore !== undefined) {
+        try {
+          await this.timerStore.schedule({ executionId: head.id, wakeAt: INBOX_WAKE_AT });
+        } catch (err) {
+          this.onStorageError?.(head.id, err);
+        }
+      } else {
+        this.warnNoTimerStore(head.workflowId, "an inbox wait");
+      }
+      void this.notifyInbox(head.id).catch((err: unknown) => this.onStorageError?.(head.id, err));
+    }
+    return { messageId, inboxSeq, executionId: head.id };
+  }
+
+  /**
+   * Does a parked execution have inbox work a notify pass could do: an unanswered inbox wait (a
+   * message may be waiting) or an ANSWERED one still parked (a consumption whose resume was lost)?
+   * Used by the `TimerService` to decide whether to keep an inbox wake row.
+   */
+  hasInboxWake(state: ExecutionState): boolean {
+    if (state.status !== "suspended") return false;
+    const waits = state.suspendedOn?.waits;
+    return Array.isArray(waits) && waits.some((w) => w.kind === "inbox");
+  }
+
+  /** Is the execution parked on an UNANSWERED inbox wait for `topic` (a message elsewhere wakes nothing)? */
+  private parkedOnInbox(state: ExecutionState, topic: string): boolean {
+    if (state.status !== "suspended") return false;
+    const waits = state.suspendedOn?.waits;
+    if (!Array.isArray(waits)) return false;
+    const answers = state.variables._waitAnswers as Record<string, unknown> | undefined;
+    return waits.some(
+      (w) =>
+        w.kind === "inbox" &&
+        w.topic === topic &&
+        !(answers !== undefined && Object.hasOwn(answers, w.waitId))
+    );
+  }
+
+  /** ADR 0110 D1 — backpressure. The cheap bound first; the exact count only when it MIGHT be over. */
+  private async assertInboxHasRoom(executionId: string, chainId: string): Promise<void> {
+    const head = await headOf(this.eventStore, inboxStreamId(chainId));
+    if (head === null) return;
+    const floor = this.inboxFloors.get(chainId) ?? -1;
+    if (head - floor < this.inboxMaxBacklog) return;
+    const state = await this.foldState(executionId);
+    const exact = await inboxBacklog(this.eventStore, chainId, cursorsOf(state?.variables ?? {}));
+    if (exact.unconsumed >= this.inboxMaxBacklog) {
+      throw new InboxFullError(executionId, exact.unconsumed);
+    }
+    rememberBounded(this.inboxFloors, chainId, (exact.oldest ?? head + 1) - 1);
+  }
+
+  /**
+   * ADR 0110 D1 — delete the consumed prefix of the stream, below the oldest UNCONSUMED message
+   * (never the head). Best effort and cheap when there is nothing to do: skipped unless a cursor
+   * moved past what this process last trimmed. Conservative across a continuation: it uses the
+   * cursors of the execution in hand, which can only be lower than a successor's carried ones.
+   */
+  private async maybeTrimInbox(chainId: string, state: ExecutionState): Promise<void> {
+    if (!this.inboxEnabled || state.variables._inbox === undefined) return;
+    const cursors = cursorsOf(state.variables);
+    let max = -1;
+    for (const v of Object.values(cursors)) if (typeof v === "number" && v > max) max = v;
+    if (max <= (this.inboxTrimmed.get(chainId) ?? -1) + 1) return;
+    try {
+      const through = await trimInbox(this.eventStore, chainId, cursors);
+      rememberBounded(this.inboxTrimmed, chainId, through ?? max);
+      if (through !== undefined) rememberBounded(this.inboxFloors, chainId, through);
+    } catch (err) {
+      this.onStorageError?.(chainId, err);
+    }
+  }
+
+  /** Closure 2 (ADR 0110 D5): the park is durable; read once more and self-resume on a gap arrival. */
+  private async afterInboxPark(executionId: string, state: ExecutionState): Promise<void> {
+    try {
+      const handle = await this.notifyInbox(executionId, { parked: state });
+      void handle;
+    } catch (err) {
+      this.onStorageError?.(executionId, err);
+    }
+  }
+
+  private readonly notifying = new Map<
+    string,
+    Promise<{ handle?: ExecutionHandle; contended: boolean }>
+  >();
+
+  /**
+   * ADR 0110 D5 — the notify path: if `executionId` is parked on an inbox wait and a message is
+   * waiting past its cursor, journal its consumption and resume it, as ONE fenced answer under
+   * `acquireFenceIf` on that park (ADR 0118): a rival notifier cannot also resume it, and a crash
+   * between `MESSAGE_CONSUMED` and the resume is healed by the next notify (a park with an
+   * already-ANSWERED wait is resumed without a second consumption). Delivers at most ONE message
+   * per resume — the resumed run's quiescence commit drains the rest live and knows which waits
+   * belong to one `select`. Returns the resumed handle, or `undefined` when there was nothing to
+   * do, the park was answered meanwhile, or the fence was contended (the due-now row stays, and
+   * `TimerService` retries with backoff). Concurrent calls for one execution in this process
+   * share a single pass.
+   */
+  async notifyInbox(
+    executionId: string,
+    hint?: { parked?: ExecutionState }
+  ): Promise<ExecutionHandle | undefined> {
+    return (await this.notifyInboxDetailed(executionId, hint)).handle;
+  }
+
+  /** {@link WorkflowRuntime.notifyInbox}, telling "nothing to do" from "contended" (the `TimerService`'s need). */
+  async notifyInboxDetailed(
+    executionId: string,
+    hint?: { parked?: ExecutionState }
+  ): Promise<{ handle?: ExecutionHandle; contended: boolean }> {
+    if (!this.inboxEnabled) return { contended: false };
+    const running = this.notifying.get(executionId);
+    if (running !== undefined) return running;
+    const pass = this.notifyPass(executionId, hint).finally(() => {
+      this.notifying.delete(executionId);
+    });
+    this.notifying.set(executionId, pass);
+    return pass;
+  }
+
+  private async notifyPass(
+    executionId: string,
+    hint?: { parked?: ExecutionState }
+  ): Promise<{ handle?: ExecutionHandle; contended: boolean }> {
+    const none = { contended: false } as const;
+    const state = hint?.parked ?? (await this.foldState(executionId));
+    if (state === null || state.status !== "suspended") return none;
+    const waits = state.suspendedOn?.waits;
+    if (!Array.isArray(waits) || waits.length === 0) return none;
+    const answers = state.variables._waitAnswers as Record<string, unknown> | undefined;
+    const answered = (w: SuspendWait): boolean =>
+      answers !== undefined && Object.hasOwn(answers, w.waitId);
+    const parkSeq = await this.locatePark(executionId, state, {
+      events: undefined,
+      complete: false,
+    });
+    if (parkSeq === undefined) return none;
+
+    let target: SuspendWait | undefined;
+    const pre: Array<{ eventType: string; payload: unknown }> = [];
+    // Heal: a wait of THIS park is already answered (the owner or a notifier journaled the
+    // consumption and died before the resume): resume it, consuming nothing again.
+    target = waits.find((w) => w.kind === "inbox" && answered(w));
+    if (target === undefined) {
+      const chainId = chainIdOf(state, executionId);
+      const cursors = cursorsOf(state.variables);
+      const dedupe = (state.variables._inbox as { dedupe?: string[] } | undefined)?.dedupe ?? [];
+      const window = Math.min(this.inboxDedupeWindow, dedupe.length);
+      const recent = new Set(window === 0 ? [] : dedupe.slice(-window));
+      for (const w of waits) {
+        if (w.kind !== "inbox" || w.topic === undefined || answered(w)) continue;
+        const msgs = await this.inboxSource(chainId, w.topic, cursorFor(cursors, w.topic), 1 + 16);
+        for (const m of msgs) {
+          const consumed = {
+            eventType: "MESSAGE_CONSUMED",
+            payload: {
+              waitId: w.waitId,
+              topic: w.topic,
+              messageId: m.messageId,
+              inboxSeq: m.inboxSeq,
+              sender: m.sender,
+              payload: m.payload,
+            },
+          };
+          pre.push(consumed);
+          if (recent.has(m.messageId)) continue; // a duplicate: advance the cursor, deliver nothing
+          recent.add(m.messageId);
+          target = w;
+          break;
+        }
+        if (target !== undefined) break;
+        pre.length = 0; // duplicates alone do not wake the execution
+      }
+    }
+    if (target === undefined) return none;
+
+    try {
+      const handle = await this.resumeCore(
+        executionId,
+        { eventType: INBOX_DELIVERY, waitId: target.waitId, payload: null },
+        { fenceIfParkedAt: parkSeq, ...this.systemOptions() },
+        { pre }
+      );
+      return { handle, contended: false };
+    } catch (err) {
+      if (err instanceof ResumeRefusedError) return none; // answered meanwhile / settled
+      if (err instanceof ResumeContendedError) {
+        // The park is still unanswered but the fence is contended: leave the durable row so the
+        // TimerService retries with backoff (writing one if this notify had none).
+        if (this.timerStore !== undefined) {
+          await this.timerStore
+            .schedule({ executionId, wakeAt: INBOX_WAKE_AT })
+            .catch((e: unknown) => this.onStorageError?.(executionId, e));
+        }
+        return { contended: true };
+      }
+      throw err;
+    }
   }
 
   /**
@@ -3378,7 +4080,18 @@ export class WorkflowRuntime {
 
     // Commit bootstrap events (EXECUTION_STARTED / resume+RESUMED / restore) so
     // they flow through the same sequencer + writer as everything else.
+    let atomicRun: BootstrapEvent[] = [];
+    const flushAtomic = (): void => {
+      if (atomicRun.length === 0) return;
+      journal.commitAtomic(atomicRun);
+      atomicRun = [];
+    };
     for (const b of bootstrapEvents) {
+      if (b.atomic === true) {
+        atomicRun.push(b);
+        continue;
+      }
+      flushAtomic();
       if (b.durable !== undefined) {
         journal.adopt(b.durable); // ADR 0103 — already stored by start()'s barrier
         continue;
@@ -3389,6 +4102,7 @@ export class WorkflowRuntime {
         b.metadata !== undefined ? { metadata: b.metadata } : undefined
       );
     }
+    flushAtomic();
 
     const ctx = new WorkflowContextImpl(
       executionId,
@@ -3405,6 +4119,12 @@ export class WorkflowRuntime {
         scopes: this.scopes,
         ...(this.errorClasses !== undefined && { errorClasses: this.errorClasses }),
         ...(this.surface !== undefined && { surface: this.surface }),
+        inbox: {
+          enabled: this.inboxEnabled,
+          chainId: chainIdOf(vm.peekState(), executionId),
+          read: this.inboxSource,
+          dedupeWindow: this.inboxDedupeWindow,
+        },
       }
     );
 
@@ -3453,12 +4173,15 @@ export class WorkflowRuntime {
 
     const run = async () => {
       try {
-        const output = await runner(ctx, input);
+        // ADR 0110 D2 — a quiescent flow with registered waits parks: the context rejects
+        // `parkSignal` with a `WaitsPark`, which is handled exactly like a thrown `SuspendError`.
+        const output = await Promise.race([runner(ctx, input), ctx.parkSignal]);
 
         journal.commit("EXECUTION_COMPLETED", { output });
         // ADR 0112 D3 — nothing from this execution's own (abandoned) work follows its terminal.
         ctx.seal();
         await journal.drain(); // durability barrier
+        void this.maybeTrimInbox(chainIdOf(vm.peekState(), executionId), vm.peekState());
         await checkpointOnSettle(); // bound reads of the settled execution
         resolveCompletion(vm.getState());
       } catch (err) {
@@ -3485,10 +4208,17 @@ export class WorkflowRuntime {
             waits?: unknown;
             stepId?: unknown;
           };
-          const condition: typeof stripped & { stepId?: unknown } =
+          const legacy: typeof stripped & { stepId?: unknown } =
             isKernelHumanPark(err) && claimedStep !== undefined
               ? { ...stripped, stepId: claimedStep }
               : stripped;
+          // ADR 0110 D4 — the registered waits of this park. A quiescent park (`WaitsPark`) is
+          // described by them alone: a single gate wait keeps the legacy single-gate fields
+          // byte-identically, anything else carries the reserved `on`. A legacy `ctx.suspend` park
+          // that coexists with registered waits (a mixed flow) keeps ITS fields and adds `waits`.
+          const registered = ctx.pendingWaits();
+          const condition: typeof stripped & { stepId?: unknown } =
+            err instanceof WaitsPark ? legacyConditionOf(registered) : legacy;
           const wakeAt =
             this.timerStore !== undefined
               ? (condition.wakeAt ??
@@ -3513,7 +4243,7 @@ export class WorkflowRuntime {
               );
             }
           }
-          const committedCondition =
+          const committedBase =
             wakeAt !== undefined && condition.wakeAt === undefined
               ? { ...condition, wakeAt }
               : condition;
@@ -3527,7 +4257,25 @@ export class WorkflowRuntime {
             await journal.drain().catch(() => {});
             return;
           }
-          journal.commit("EXECUTION_SUSPENDED", { condition: committedCondition });
+          // `waits` is added AFTER the commit-site strip above and the event is stamped
+          // `metadata.kernel`: the fold honours a park's `waits` only on a stamped envelope.
+          const waits = ctx.pendingWaits();
+          if (err instanceof WaitsPark && waits.length === 0) {
+            // Unreachable by construction (a quiescent park has no work to drain, so no wait can
+            // settle between the decision and here); fail loudly rather than commit an unresumable park.
+            const lost = new Error(
+              `execution "${executionId}": a quiescent park lost every wait before it was committed`
+            );
+            rejectSuspend(lost);
+            rejectCompletion(lost);
+            return;
+          }
+          const committedCondition = waits.length > 0 ? { ...committedBase, waits } : committedBase;
+          journal.commit(
+            "EXECUTION_SUSPENDED",
+            { condition: committedCondition },
+            waits.length > 0 ? { metadata: { kernel: true } } : undefined
+          );
           // Sealed the instant the park is enqueued — not only when the drain gave up: a branch
           // that settled cleanly may still run user code, and none of it may append after the park.
           ctx.seal();
@@ -3575,7 +4323,26 @@ export class WorkflowRuntime {
               this.onStorageError?.(executionId, timerErr);
             }
           }
+          // One row per TIMER arm (ADR 0110 D4): the wake time was recorded at first registration.
+          for (const w of waits) {
+            if (w.kind !== "timer" || w.wakeAt === undefined) continue;
+            if (this.timerStore === undefined) {
+              this.warnNoTimerStore(workflowId, "a ctx.select timer arm");
+              continue;
+            }
+            try {
+              await this.timerStore.schedule({ executionId, wakeAt: w.wakeAt });
+            } catch (timerErr) {
+              this.onStorageError?.(executionId, timerErr);
+            }
+          }
           resolveSuspend(state);
+          // ADR 0110 D5 closure 2 — the park is durable: look once more for a message that arrived
+          // in the gap between the quiescence read and the park, and self-resume (acquire-if-parked).
+          if (waits.some((w) => w.kind === "inbox")) {
+            void this.afterInboxPark(executionId, vm.getState());
+          }
+          void this.maybeTrimInbox(chainIdOf(state, executionId), state);
           return;
         }
 

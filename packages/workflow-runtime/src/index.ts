@@ -12,7 +12,11 @@ export {
   SnapshotIdentityMismatchError,
   ExecutionDeniedError,
   FlowCodeMismatchError,
+  FlowDivergenceError,
   FlowMigrationCheckError,
+  InboxClosedError,
+  InboxFullError,
+  InboxMessageRefusedError,
   InputValidationError,
   ParallelScopeFailedError,
   ResumePayloadValidationError,
@@ -55,6 +59,15 @@ export {
   type RetireAbandonedBranchesSummary,
 } from "./retireAbandonedBranches";
 export { placementOf, COMPUTE_TARGET_KEY } from "./placement";
+export {
+  DEFAULT_INBOX_MAX_BACKLOG,
+  DEFAULT_INBOX_MAX_PAYLOAD_BYTES,
+  INBOX_DEDUPE_CAP,
+  INBOX_STREAM_PREFIX,
+  INBOX_WAKE_AT,
+  createInboxSource,
+  inboxStreamId,
+} from "./inbox";
 export {
   orphanCensus,
   type CensusStateReader,
@@ -134,7 +147,14 @@ export type {
   SuspendConfig,
   BranchContext,
   ErrorClassCtor,
+  InboxMessage,
+  InboxSource,
   ParallelOptions,
+  SelectArm,
+  SelectResult,
+  SendMessage,
+  SendOptions,
+  SendResult,
   WorkflowContext,
   ExecutionContextExtensions,
 } from "./types";

@@ -569,6 +569,8 @@ the contract**.
 | `suspend` | call | 1.0.0 | pause durably until an external signal, then resume from here |
 | `sleep` | call | 1.1.0 | suspend durably for a duration; the wake is a logged `TIMER_FIRED` fact (T1) |
 | `sleepUntil` | call | 1.1.0 | suspend durably until an absolute time recorded in the log (T1) |
+| `receive` | call | 1.3.0 | wait for the next message on an inbox topic; consumption is a journaled fact (ADR 0110) |
+| `select` | call | 1.3.0 | wait for the first of several gates, inbox topics and timers; deterministic, replay-served (ADR 0110) |
 | `emit` | call | 1.0.0 | append a durable domain event |
 | `stream` | call | 1.0.0 | emit an incremental delta event |
 | `ui` | accessor | 1.0.0 | **deprecated** (ADR 0114): drive durable, replayable UI surfaces (agent-surface; injected, new code uses `surface(ctx)`) |

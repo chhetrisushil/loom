@@ -3,6 +3,7 @@ import {
   type ExecutionEnumerable,
   type Lease,
   type LeaseStore,
+  isReservedStream,
   iterateExecutionIds,
 } from "@loom/event-runtime";
 
@@ -120,6 +121,9 @@ export async function orphanCensus(
   };
 
   for await (const executionId of iterateExecutionIds(options.source, options.pageSize)) {
+    // A reserved control stream (the retention trail, an inbox stream) is no execution: folded, it
+    // reads `pending` forever and would be reported as an orphan.
+    if (isReservedStream(executionId)) continue;
     census.scanned++;
     const state = await reader.loadState(executionId);
     if (state === null) continue;

@@ -20,6 +20,8 @@ Everything else is built from these.
 | `ctx.suspend` | pause until an external signal, then resume *here* |
 | `ctx.sleep` | pause for a duration; the wake is a logged `TIMER_FIRED` |
 | `ctx.sleepUntil` | pause until an absolute time recorded in the log |
+| `ctx.receive` | wait for the next message on this execution's durable inbox (`runtime.send`, ADR 0110); consumption is recorded, delivered tainted; needs `kernel.features.inbox` |
+| `ctx.select` | wait for the first of several gates, inbox topics and timers (ADR 0110); the first answered arm settles it; needs `kernel.features.inbox` |
 | `ctx.emit` | append a durable domain event — once per execution; a re-run serves it from the log |
 | `ctx.stream` | emit an incremental delta event (once per execution, like `emit`) |
 | `ctx.ui` | **deprecated** (ADR 0114): drive durable, replayable UI surfaces — injected accessor; new code uses `surface(ctx)` from `@loom/agent-surface` |

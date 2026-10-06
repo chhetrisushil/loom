@@ -2,6 +2,7 @@ import type { ScheduleDefinition } from "@loom/core";
 import type { EventStore, LeaseStore, TimerRecord, TimerStore } from "@loom/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
+import { INBOX_WAKE_AT } from "./inbox";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
 import {
@@ -224,7 +225,7 @@ export interface TimerDispatcher {
       executionId: string;
       workflowId: string;
       flowId: string;
-      resumeEvent: { eventType: string; payload: unknown };
+      resumeEvent: { eventType: string; payload: unknown; waitId?: string };
       metadata?: Record<string, unknown>;
     },
     meta?: { target?: string }
@@ -467,6 +468,55 @@ export class TimerService {
     await this.store.complete(executionId, wakeAt);
   }
 
+  /**
+   * ADR 0110 D5 — fire an inbox wake row. The row is retired only AFTER the notify path ran, and the
+   * park is looked at once more afterwards: a send that found the row already present skipped
+   * writing another, so a message that landed between the notify read and the retire would be
+   * stranded; the re-check closes it (a later send finds no row and writes one).
+   */
+  private async fireInbox(executionId: string, wakeAt: number): Promise<void> {
+    const settle = async (h: {
+      waitForSuspend(): Promise<unknown>;
+      waitForCompletion(): Promise<unknown>;
+    }) => {
+      await Promise.race([
+        h.waitForSuspend().catch(() => undefined),
+        h.waitForCompletion().catch(() => undefined),
+      ]);
+    };
+    const contended = async (): Promise<void> => {
+      // The park is still unanswered but the fence stayed contended: keep the row, back off
+      // in-process (same schedule and attempt cap as a contended timed wake).
+      const attempt = (this.wakeBackoff.get(executionId)?.attempt ?? 0) + 1;
+      if (attempt >= this.maxRedriveAttempts) {
+        this.wakeBackoff.delete(executionId);
+        this.onError?.(executionId, new RedriveExhaustedError(executionId, attempt));
+        await this.store.complete(executionId, wakeAt);
+        return;
+      }
+      this.wakeBackoff.set(executionId, {
+        attempt,
+        nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
+      });
+    };
+    for (let round = 0; round < 8; round++) {
+      const r = await this.runtime.notifyInboxDetailed(executionId);
+      if (r.contended) return contended();
+      if (r.handle === undefined) break;
+      await settle(r.handle);
+    }
+    this.wakeBackoff.delete(executionId);
+    await this.store.complete(executionId, wakeAt);
+    // After retiring the row, look once more: a send that found the row present skipped writing
+    // another, so a message that landed between the last read and the retire is delivered here.
+    const last = await this.runtime.notifyInboxDetailed(executionId);
+    if (last.contended) {
+      await this.store.schedule({ executionId, wakeAt });
+      return;
+    }
+    if (last.handle !== undefined) await settle(last.handle);
+  }
+
   private async fire(
     executionId: string,
     wakeAt: number,
@@ -501,10 +551,29 @@ export class TimerService {
       const backoff = this.wakeBackoff.get(executionId);
       if (backoff !== undefined && backoff.nextTryAt > this.now()) return; // backing off: no acquire
       const state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
+      // ADR 0110 D5 — the inbox wake row: run the notify path (read past the cursors, consume,
+      // resume), then re-check after retiring the row so a send that coalesced into it just before
+      // is never stranded.
+      // (A positional `ctx.sleepUntil(0)` parked on that very instant is a plain timed wake.)
+      if (wakeAt === INBOX_WAKE_AT && state?.suspendedOn?.wakeAt !== INBOX_WAKE_AT) {
+        await this.fireInbox(executionId, wakeAt);
+        return;
+      }
+      // ADR 0110 D4 — a TIMER ARM of a multi-wait park: addressed to its wait, still pending only
+      // while that wait is listed and unanswered (a stale fire for a settled arm is obsolete).
+      const armWaitId =
+        state !== null && state.status === "suspended"
+          ? pendingTimerWait(state, wakeAt)
+          : undefined;
       const stillWaiting =
-        state !== null && state.status === "suspended" && state.suspendedOn?.wakeAt === wakeAt;
-      if (stillWaiting) {
-        const resumeEvent = { eventType: TIMER_FIRED, payload: { wakeAt } };
+        armWaitId !== undefined ||
+        (state !== null && state.status === "suspended" && state.suspendedOn?.wakeAt === wakeAt);
+      if (stillWaiting && state !== null) {
+        const resumeEvent: { eventType: string; payload: unknown; waitId?: string } = {
+          eventType: TIMER_FIRED,
+          payload: { wakeAt },
+          ...(armWaitId !== undefined && { waitId: armWaitId }),
+        };
 
         if (this.dispatcher !== undefined) {
           // K9.4 — in fenced deployments, acquire a newer token first so a
@@ -609,4 +678,24 @@ export class TimerService {
       }
     }
   }
+}
+
+/**
+ * The waitId of the UNANSWERED timer arm of `state`'s park whose recorded wake is `wakeAt`
+ * (ADR 0110 D4). Total: a malformed entry is skipped.
+ */
+function pendingTimerWait(
+  state: { suspendedOn?: { waits?: unknown }; variables: Record<string, unknown> },
+  wakeAt: number
+): string | undefined {
+  const waits = state.suspendedOn?.waits;
+  if (!Array.isArray(waits)) return undefined;
+  const answers = state.variables._waitAnswers as Record<string, unknown> | undefined;
+  for (const w of waits as Array<{ waitId?: unknown; kind?: unknown; wakeAt?: unknown }>) {
+    if (w === null || typeof w !== "object") continue;
+    if (w.kind !== "timer" || w.wakeAt !== wakeAt || typeof w.waitId !== "string") continue;
+    if (answers !== undefined && Object.hasOwn(answers, w.waitId)) continue;
+    return w.waitId;
+  }
+  return undefined;
 }

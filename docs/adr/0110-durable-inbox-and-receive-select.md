@@ -1,6 +1,6 @@
 # ADR 0110 — A durable inbox, `ctx.receive` and `ctx.select`, and concurrent waits
 
-- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
+- Status: **Accepted** (2026-10-07) — design approved after 4 review rounds (Proposed 2026-10-05); implemented by R2 (this PR). See "Implementation notes" at the end for what was built, the deviations and the measurements.
 - Date: 2026-10-05
 - Closes: R2 (agentic-readiness audit, kernel appendix §2d/§2e, gap 2)
 - Builds on: [ADR 0057](0057-multi-gate-suspend-passthrough.md) (gate *i* receives the *i*-th
@@ -317,3 +317,113 @@ refused; payload over the inline cap refused at `send`.
 - `runtime.send` is a kernel entry point (authz op `"send"`), so the inbox's security boundary is the
   kernel's; `@loom/inbox` is convenience, not trust.
 - Order: this PR requires R8k (ADR 0118: `acquireFenceIf`), R6 (scope paths, barrier) and R3k (owner).
+
+## Implementation notes (R2, accepted 2026-10-07)
+
+What landed: `ctx.receive` / `ctx.select` (KERNEL_ABI 1.3.0 table entries; the shapes frozen at W2-0 were
+sufficient, nothing in them changed), `runtime.send` and `runtime.notifyInbox`, the multi-wait park, the
+wait-addressed resume (`ResumeEvent.waitId`), per-wait `viewDigest` and signature binding, the due-now
+wake row, the owner-side trim and the stream's deletion with its chain, behind `kernel.features.inbox`
+(`WorkflowRuntimeDeps.inboxEnabled`). Not in this PR: the 1P `@loom/inbox` package (routing by name,
+pub/sub, dead-lettering, retry helpers). The design plan split it into its own PR; it calls only
+`runtime.send`, so nothing here waits on it.
+
+**Deviations from the text above, and why.**
+
+1. **The notify path delivers ONE message per resume (D5.3).** The ADR said it "drains every message past
+   the cursors". The park lists waits but not which of them belong to one `select`, and a `select`'s first
+   answered arm settles it: consuming two messages for two arms of one `select` would lose one. The resumed
+   run's quiescence commit (closure 1) knows the groups and drains the rest live without parking, so a
+   backlog costs one wake, not one per message.
+2. **`[MESSAGE_CONSUMED…, EXECUTION_RESUMED]` is ONE `appendBatch` where the store has it** (new
+   `ExecutionJournal.commitAtomic`; memory, SQLite and Postgres all do). A store without `appendBatch`
+   falls back to sequential appends; a crash between the two then leaves a park whose wait is already
+   ANSWERED, and the next notify resumes it consuming nothing again (tested, both shapes).
+3. **A contended post-park self-resume writes (or keeps) the due-now row, not a `redrive` row (D5.2).** A
+   registered re-driver re-derives ITS resume and answers `noop` for an inbox wake, which would retire the
+   row. The plain row is judged by the notify path, and `TimerService` backs off in process (the same
+   schedule and attempt cap as a contended timed wake).
+4. **The due-now row has a fixed `wakeAt` (`INBOX_WAKE_AT = 0`).** The store's upsert per
+   `(executionId, wakeAt)` then coalesces a burst without a query (the ADR's "a due-now row already
+   exists" test, made free), and the skip-when-not-parked rule is sharpened: `send` writes the row only when
+   the owner is parked on an UNANSWERED inbox wait for THAT topic. The row is retired only after the notify
+   pass, and the park is looked at once more after retiring it, so a send that coalesced into the row just
+   before is never stranded (the race the ADR called "benign").
+5. **`send` classifies its target from the log's tip, not from a fold.** A running owner in a message loop
+   holds thousands of events and possibly no recent snapshot; a fold per send is O(its log) (measured: the
+   first build was quadratic). `send` reads sequence 0, `head()` and the tip event, and folds only when the
+   tip is a park or an audit appended after one (a parked owner took a snapshot at its park, so that fold
+   is a short tail). Consequence: a half-written NON-atomic pair (tip `MESSAGE_CONSUMED`) reads "running";
+   the row the earlier send wrote heals it.
+6. **`waitRegisteredAtSequence` is the sequence of the park that LISTS the wait, not the first park that
+   registered it.** The frozen fold keeps only timer waits in `_waits`, so "first registration" is not
+   recoverable for a gate wait. The binding is therefore stricter than the ADR's (a later re-park of the
+   same wait needs a fresh signature), never weaker.
+7. **`FlowDivergenceError` is defined here** (ADR 0113's detector is not merged); the check is intrinsic
+   to a recorded answer's kind and name, so it needs no detector. R7 may extend the class.
+8. **A message for a finished, failed or cancelled execution is refused** with `InboxClosedError`, nothing
+   appended (the ADR was silent). `InboxMessageRefusedError` covers a bad topic or an oversize payload
+   (`inboxMaxPayloadBytes`, default 64 KiB).
+9. **`ctx.receive` / `ctx.select` inside `ctx.parallel` need `kernel.features.scopes`.** Without it every
+   branch shares the root scope and waits would be numbered by timing; the branch context refuses the call.
+   A root-scope `Promise.all([ctx.receive(a), ctx.receive(b)])` registers synchronously and is fine.
+10. **The default `InboxSource` reads bounded range chunks**, not the whole tail, so a hot topic costs one
+    `head()` and one small range read however long the stream has been.
+11. **Latent bug fixed on the way:** `recoverAbandoned`, `orphanCensus` and `reconcileTimers` did not skip
+    reserved control streams (`isReservedStream`), so an inbox stream (it folds to `pending`) was reported
+    as an orphan and re-driven. `recoverAbandoned` also runs the notify path for a parked execution with an
+    inbox wait (`inboxWoken`), and `reconcileTimers` re-asserts a multi-wait park's timer rows and the
+    inbox row.
+
+**Mixed flows.** A `ctx.suspend` / `ctx.sleep` park beside registered waits (a mixed park) keeps its legacy
+fields and adds `waits`; a bare resume of the positional gate answers it as ever (the fold's
+`_resumePayloads`), a bare `TIMER_FIRED` for a positional sleep is the legacy timed wake.
+
+**Residuals (documented, not closed).**
+- A message consumed for a branch that is then aborted by a sibling's failure is consumed: it is recorded
+  in the log and the flow never sees it (the same as a gate answer in an aborted scope).
+- The inbox stream holds payloads until they are consumed and trimmed or the chain is deleted. Erasure
+  reaches `MESSAGE_CONSUMED` in the owner's log (`PAYLOAD_SHREDDED`), not the stream.
+- A message whose owner never waits on its topic pins the stream up to `inboxMaxBacklog`; `send` then
+  refuses (`InboxFullError`).
+- Each wake of a long-lived message loop re-runs the flow from the top and the park serializes a state
+  that holds one answer per consumed message: turn n is O(n) until continue-as-new (R1b, ADR 0109)
+  bounds the history. Measured below.
+- A flow that awaits a non-`ctx` promise is invisible to quiescence (the existing determinism rule).
+- A cross-process wake needs a `TimerStore` on the sender's runtime; without one only the same-process fast
+  path and `recoverAbandoned`'s sweep wake a parked owner (a warning says so).
+
+**Measurements** (`tools/bench-throughput`, `pnpm --filter @loom/bench-throughput bench:inbox`; Apple
+silicon, local Postgres 17 over TCP; medians):
+
+| | memory | Postgres |
+|---|---|---|
+| A. `send` vs stream length 0 / 1k / 5k / 10k / 20k | 26 / 18 / 17 / 17 / 17 us | 601 / 534 / 517 / 524 / 532 us |
+| B. fold per `MESSAGE_CONSUMED`, 1k -> 64k events | 1.7 -> 2.75 us/event | (same code) |
+| C. send + live consume, 500 -> 4 000 messages | 0.058 -> 0.057 ms/message | grows with the park's snapshot (see below) |
+| D. wake per message, turn 50 / 200 / 400 | 0.12 / 0.82 / 1.73 ms | 2.7 / 3.2 / 3.75 ms |
+
+A and B are flat: the send is `head()` plus one append and the fold keeps its cursor, dedupe window and
+answer map in place. C is flat in memory (the live consume path is O(1) per message). Where the sender is
+slower than the consumer the owner re-parks between messages, and each park snapshots a state that holds
+every answer so far; on Postgres that snapshot (2-3 ms at 3 000 answers) is the whole growth in C, and it
+is D's growth too. That is the O(n) turn R1b removes; it is not a property of the inbox.
+
+**The load test** (`r2-load.test.ts`, the one D5.3 asks for): 10 000 sends to ONE parked chain from another
+process wrote **one** timer row (a burst coalesces into the fixed-instant upsert); one `TimerService` tick
+woke the owner, which then drained all 10 000 in order in about 0.8 s in memory (the sends themselves took
+0.25-0.3 s, about 35 000/s); the consumed prefix was trimmed to 2 retained rows.
+
+**Verification** (all in `packages/workflow-runtime/src/r2-*.test.ts`): send-before-receive and
+receive-before-send each deliver once; a crash-point SWEEP kills the owner at every append of a
+two-message conversation (with an atomic and a non-atomic batch store), reboots a fresh runtime, drives
+`TimerService` + `recoverAbandoned`, and requires both messages, once each, in order; explicit
+interleavings for a send between the quiescence read and the park commit, between the park commit and the
+second read, and from another process with an idle owner; two notifiers racing one park; a contended fence;
+per-topic FIFO under concurrent senders (two runtimes racing the store's sequence uniqueness); `select`
+with each arm winning and a stale arm refused; timer pinning under sibling traffic; ordinal shift ->
+`FlowDivergenceError`; per-wait `viewDigest` and a signature for arm A refused at arm B; an unauthorized
+send refused (strict) with the stream, the owner's log and the timer store untouched; tainted delivery;
+bounds (send cost, trim below the oldest unconsumed message never touching the head, `InboxFullError`,
+the stream deleted with its chain); a fork leaves the chain. The protocol tests run on memory and SQLite
+and, with `LOOM_TEST_POSTGRES_URL`, on Postgres.

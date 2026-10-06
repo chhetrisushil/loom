@@ -18,6 +18,7 @@ import {
   planBlankStreamRepair,
   rehomedEnvelope,
 } from "./blankStream";
+import { chainIdOf, inboxStreamId } from "./inbox";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 import { isWriteConflict } from "./writeConflict";
 
@@ -391,6 +392,7 @@ export class LogLifecycle {
     const deleteExecution = this.eventStore.deleteExecution;
     if (deleteExecution === undefined) return "unsupported";
     const events = await this.eventStore.read(executionId);
+    const headState = await this.foldForRetention(executionId, events);
 
     if (this.options.archive !== undefined) {
       const archive = this.options.archive;
@@ -416,6 +418,12 @@ export class LogLifecycle {
     // Journal the deletion fact BEFORE deleting — the values go, the fact survives (P9).
     await this.emitLifecycleFact("EXECUTION_DELETED", executionId, now);
     await deleteExecution.call(this.eventStore, executionId);
+    // ADR 0110 D1 — the inbox stream is deleted WITH its chain: this execution is the chain's
+    // head (a continued predecessor is never retained past its successor), so nothing can read
+    // `__loom_inbox__:<chainId>` any more. Idempotent; a store without the stream is a no-op.
+    if (headState.status !== "continued") {
+      await deleteExecution.call(this.eventStore, inboxStreamId(chainIdOf(headState, executionId)));
+    }
     await this.snapshotStore.deleteExecution?.(executionId);
     // The fork edge described data that no longer exists. Dropping it here is the only
     // point where the id is known AND the data is provably gone — and leaving it would

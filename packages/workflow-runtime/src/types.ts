@@ -135,6 +135,24 @@ export interface ParallelOptions {
   onPark?: "drain" | "abort";
 }
 
+/** One arm of {@link ExecutionContext.select} (ADR 0110 D2). */
+export type SelectArm =
+  /** A resume answers it: `runtime.resume(id, { eventType: gate, waitId?, payload })`. */
+  | { gate: string; viewDigest?: string; correlationKey?: string }
+  /** The next message on this inbox topic. */
+  | { inbox: string }
+  /** A durable timer: `afterMs` (relative to first registration) or `at` (epoch ms). */
+  | { timer: { afterMs: number } | { at: number } };
+
+/** What a settled `select` resolves with. */
+export interface SelectResult<T = unknown> {
+  /** Index of the arm that won. */
+  arm: number;
+  kind: "gate" | "inbox" | "timer";
+  /** The gate's resume payload; the (tainted) message payload; or `{ wakeAt }` for a timer. */
+  value: T;
+}
+
 /**
  * The context a `parallel` branch function receives (ADR 0112): the same execution context, whose
  * steps belong to the branch's cancellation scope, plus the scope's deterministic identity
@@ -233,6 +251,28 @@ export interface ExecutionContext extends ExecutionContextExtensions {
    * before appending it; then the static type and the enforced contract share one declaration.
    */
   suspend<T = never>(config: SuspendConfig): Promise<T>;
+
+  /**
+   * ADR 0110 — wait for the next message on `topic` of this execution's durable inbox (written by
+   * `runtime.send`). A REGISTERING wait: it returns a pending promise and records the wait with
+   * the current scope; the runtime parks the execution when the flow is quiescent (every live
+   * branch blocked on a registered wait, nothing in flight) and a message wakes it. The payload is
+   * delivered TAINTED (`inbox:<topic>`, ADR 0085): refused in a prompt instruction position
+   * unless a step explicitly unwraps it. Delivery is FIFO per topic and exactly once (the
+   * consumption is a journaled `MESSAGE_CONSUMED`); replay returns the recorded message and never
+   * reads the inbox. Needs `kernel.features.inbox`. `ctx.suspend` is unchanged.
+   */
+  receive<T = unknown>(topic: string): Promise<T>;
+
+  /**
+   * ADR 0110 — wait for the FIRST of several sources: a gate (answered by `resume`, ADR 0117's
+   * `viewDigest` binding preserved), an inbox topic, a timer. Resolves `{ arm, kind, value }`
+   * (`arm` = the index in `arms`). The first answered arm settles the select; a later answer to a
+   * sibling arm is refused (`wait-settled`). Timer wakes are recorded once, at first
+   * registration. Arms are numbered deterministically (`<scopePath>#<ordinal>` per arm); a body
+   * edit that shifts an ordinal raises `FlowDivergenceError` instead of mis-delivering.
+   */
+  select<T = unknown>(arms: readonly SelectArm[]): Promise<SelectResult<T>>;
 
   // T1 — durable sleep (ABI 1.1.0). The execution suspends with the absolute
   // wake time recorded in the log; a wired TimerService fires the wake as a
@@ -405,9 +445,10 @@ export interface SystemGrant {
 // start/query has no execution to append to and only throws.
 
 /** The execution-lifecycle operations an {@link ExecutionAuthorizer} can gate. */
-export type ExecutionOp = "start" | "resume" | "cancel" | "query" | "actAsOwner";
+export type ExecutionOp = "start" | "resume" | "cancel" | "query" | "actAsOwner" | "send";
 // `"actAsOwner"` (ADR 0111 D7) authorizes `fork(…, { actAs: "owner" })` on the PARENT: the fork
 // then runs the owner's remaining effects under the owner's grants instead of the forker's.
+// `"send"` (ADR 0110 D1) authorizes `runtime.send`, the only writer of an execution's inbox.
 
 export interface ExecutionAuthzRequest {
   op: ExecutionOp;
@@ -557,6 +598,13 @@ export interface ResumeVerificationContext {
   readonly parkedAtSequence: number | undefined;
   /** The principal the resume call carried (`RunOptions.principal`), if any. */
   readonly principal: PrincipalChain | undefined;
+  /**
+   * ADR 0110 D4 — the wait a wait-addressed resume answers (`ResumeEvent.waitId`), and the
+   * sequence of the park that LISTS it. A signature for one arm of a multi-wait park must bind
+   * both, or a stale signature for arm A could answer arm B. Absent for a bare resume.
+   */
+  readonly waitId?: string;
+  readonly waitRegisteredAtSequence?: number;
 }
 
 export type ResumeVerdict =
@@ -786,7 +834,19 @@ export type ResumeRefusalReason =
    * that grant is refused: a caller-supplied `TIMER_FIRED` would otherwise answer ANY timed
    * gate, approval gates included, past the digest check and the authenticator.
    */
-  | "timer-wake-not-system";
+  | "timer-wake-not-system"
+  /**
+   * ADR 0110 D4 — the park lists SEVERAL gate waits that this event name answers and the resume
+   * did not say which (`ResumeEvent.waitId`). Nothing was appended; name the wait.
+   */
+  | "ambiguous-wait"
+  /**
+   * ADR 0110 D4 — the wait this resume addresses is not (or no longer) one of the park's: its
+   * `select` was settled by another arm, or the wait never existed. A late answer to a losing arm.
+   */
+  | "wait-settled"
+  /** ADR 0110 D1 — an inbox wait is answered by `runtime.send`, never by a resume. */
+  | "inbox-wait";
 
 /**
  * The resume ingress gate refused. Nothing was appended: the execution is
@@ -954,6 +1014,14 @@ export interface ResumeEvent {
    * replay discards the same entries. Refused when the log holds no such ambiguity for `stepId`.
    */
   discardLegacyAnswers?: { stepId: string; count: number };
+  /**
+   * ADR 0110 D3 — answer ONE wait of a multi-wait park (`ctx.select` / `ctx.receive`), by the
+   * `waitId` the park lists (`state.suspendedOn.waits`). The kernel records it as a wait-addressed
+   * `EXECUTION_RESUMED` (`{ waitId, payload }`, kernel-stamped), so the answer reaches the wait it
+   * names however many siblings are parked. Omitted: the event name must match exactly one gate
+   * wait (else `ambiguous-wait`). Covered by a `ResumeAuthenticator` signature.
+   */
+  waitId?: string;
 }
 
 // ── K9 — effect delivery: in-doubt parking & operator resolution ─────────────
@@ -1025,4 +1093,114 @@ export interface ForkResult {
    * down an alternate path, or call `resume(child.executionId, …)`.
    */
   state: ExecutionState;
+}
+
+// ── ADR 0110 — the durable inbox ─────────────────────────────────────────────
+
+/** One message of an execution's inbox stream, as `InboxSource.read` returns it. */
+export interface InboxMessage {
+  /** The stream sequence: the cursor `MESSAGE_CONSUMED` advances. */
+  inboxSeq: number;
+  topic: string;
+  /** The sender's idempotency key (`send`'s `messageId`); consumption is exactly-once per id within the dedupe window. */
+  messageId: string;
+  payload: unknown;
+  sender: { tenant?: string; actor?: string; onBehalfOf?: string };
+}
+
+/**
+ * The reader seam (ADR 0110 D1): messages of `topic` with `inboxSeq > afterSeq`, oldest first, at
+ * most `limit`. A function type, not a versioned SPI, until a second implementation exists; the
+ * default reads the runtime's own `EventStore`.
+ */
+export type InboxSource = (
+  chainId: string,
+  topic: string,
+  afterSeq: number,
+  limit: number
+) => Promise<InboxMessage[]>;
+
+/** What `runtime.send` takes (ADR 0110 D1). */
+export interface SendMessage {
+  topic: string;
+  payload: unknown;
+  /** The idempotency key; minted when omitted. A retry with the same id is consumed once. */
+  messageId?: string;
+}
+
+export interface SendOptions {
+  /** The authenticated sender, judged as `ExecutionOp` `"send"` against the chain head's owner. */
+  principal?: PrincipalChain;
+  /** The kernel-internal grant (see `WorkflowRuntime.systemOptions`). */
+  system?: SystemGrant;
+}
+
+export interface SendResult {
+  messageId: string;
+  /** The stream sequence the message was stored at. */
+  inboxSeq: number;
+  /** The execution the message was addressed to after following a continuation to the head. */
+  executionId: string;
+}
+
+/** `send` beyond `inboxMaxBacklog` unconsumed messages: backpressure, the owner's log is untouched. */
+export class InboxFullError extends Error {
+  readonly retryable = true as const;
+  constructor(
+    readonly executionId: string,
+    readonly backlog: number
+  ) {
+    super(
+      `inbox of execution "${executionId}" holds ${backlog} unconsumed messages (inboxMaxBacklog); nothing was appended. Retry after the owner consumes.`
+    );
+    this.name = "InboxFullError";
+    Object.setPrototypeOf(this, InboxFullError.prototype);
+  }
+}
+
+/** `send` to an execution that can never consume it (finished, failed, cancelled): refused, nothing appended. */
+export class InboxClosedError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly status: string
+  ) {
+    super(
+      `execution "${executionId}" is ${status}: it will never consume a message. Nothing was appended.`
+    );
+    this.name = "InboxClosedError";
+    Object.setPrototypeOf(this, InboxClosedError.prototype);
+  }
+}
+
+/** `send` refused for a malformed message (topic, payload size). Nothing was appended. */
+export class InboxMessageRefusedError extends Error {
+  constructor(
+    readonly executionId: string,
+    detail: string
+  ) {
+    super(`send to execution "${executionId}" refused: ${detail}. Nothing was appended.`);
+    this.name = "InboxMessageRefusedError";
+    Object.setPrototypeOf(this, InboxMessageRefusedError.prototype);
+  }
+}
+
+/**
+ * ADR 0110 D3 — a re-run registered a wait whose `waitId` the log already ANSWERED as a different
+ * kind or name: the flow body changed under a recorded answer (an inserted `receive` shifts every
+ * later ordinal). Raised instead of handing the answer to the wrong wait. (ADR 0113's detector
+ * is not required: this check is intrinsic to the answer's recorded identity.)
+ */
+export class FlowDivergenceError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly waitId: string,
+    readonly recorded: { kind: string; name: string },
+    readonly registered: { kind: string; name: string }
+  ) {
+    super(
+      `execution "${executionId}": wait "${waitId}" was answered as ${recorded.kind} "${recorded.name}" but the flow now registers ${registered.kind} "${registered.name}" at that position — the flow body changed under a recorded answer.`
+    );
+    this.name = "FlowDivergenceError";
+    Object.setPrototypeOf(this, FlowDivergenceError.prototype);
+  }
 }

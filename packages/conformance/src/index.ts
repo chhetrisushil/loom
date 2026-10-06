@@ -40,7 +40,7 @@ export {
  * `@loom/worker-runtime-local` sees both packages and holds a compile-time proof that the
  * real interfaces still satisfy these. If an SPI gains a method, that build fails.
  */
-export type ExecutionOpLike = "start" | "resume" | "cancel" | "query" | "actAsOwner";
+export type ExecutionOpLike = "start" | "resume" | "cancel" | "query" | "actAsOwner" | "send";
 
 export interface ExecutionAuthzRequestLike {
   op: ExecutionOpLike;
@@ -1701,7 +1701,7 @@ export function runExecutionAuthorizerConformance(
   factory: () => ExecutionAuthorizerLike,
   label = "ExecutionAuthorizer"
 ): void {
-  const OPS: ExecutionOpLike[] = ["start", "resume", "cancel", "query", "actAsOwner"];
+  const OPS: ExecutionOpLike[] = ["start", "resume", "cancel", "query", "actAsOwner", "send"];
   const req = (op: ExecutionOpLike): ExecutionAuthzRequestLike => ({
     op,
     executionId: "e",

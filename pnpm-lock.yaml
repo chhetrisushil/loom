@@ -1320,6 +1320,9 @@ importers:
 
   packages/workflow-runtime:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
       '@loom/core':
         specifier: workspace:*
         version: link:../core
@@ -2095,6 +2098,9 @@ importers:
       '@loom/plugin-postgres':
         specifier: workspace:*
         version: link:../../plugins/postgres
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../../packages/replay-vm
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime

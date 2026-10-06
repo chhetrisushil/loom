@@ -77,7 +77,8 @@ function message(
   actor: string,
   exp: number,
   executionId: string,
-  parkedAtSequence: number
+  parkedAtSequence: number,
+  wait?: { waitId: string; waitRegisteredAtSequence: number }
 ) {
   return canonicalJson({
     eventType: event.eventType,
@@ -87,6 +88,13 @@ function message(
     exp,
     executionId,
     parkedAtSequence,
+    // ADR 0110 D4 — in a multi-wait park the (execution, park) binding no longer says WHICH wait
+    // is approved: a stale signature for arm A must not answer arm B. Present only for a
+    // wait-addressed resume, so every other signature stays byte-identical.
+    ...(wait !== undefined && {
+      waitId: wait.waitId,
+      waitRegisteredAtSequence: wait.waitRegisteredAtSequence,
+    }),
   });
 }
 
@@ -113,6 +121,8 @@ export function signResume(
     exp: number;
     executionId: string;
     parkedAtSequence: number;
+    /** A wait-addressed resume (`event.waitId`): the park that LISTS the wait (ADR 0110 D4). */
+    waitRegisteredAtSequence?: number;
   }
 ): ResumeEvent {
   if (!isStrong(signer.secret)) {
@@ -122,9 +132,29 @@ export function signResume(
     event.payload !== null && typeof event.payload === "object" && !Array.isArray(event.payload)
       ? (event.payload as Record<string, unknown>)
       : ({} as Record<string, unknown>);
+  if (event.waitId !== undefined && signer.waitRegisteredAtSequence === undefined) {
+    throw new Error(
+      "signResume: a wait-addressed event (waitId) must be signed with waitRegisteredAtSequence"
+    );
+  }
+  const wait =
+    event.waitId !== undefined
+      ? {
+          waitId: event.waitId,
+          waitRegisteredAtSequence: signer.waitRegisteredAtSequence as number,
+        }
+      : undefined;
   const sig = hmac(
     signer.secret,
-    message(event, payload, signer.actor, signer.exp, signer.executionId, signer.parkedAtSequence)
+    message(
+      event,
+      payload,
+      signer.actor,
+      signer.exp,
+      signer.executionId,
+      signer.parkedAtSequence,
+      wait
+    )
   ).toString("hex");
   return {
     ...event,
@@ -181,7 +211,27 @@ export function signedResumeAuthenticator(options: SignedResumeOptions): ResumeA
       const secrets = secretsFor(actor);
       if (secrets.length === 0) return reject(`"${actor}" is not a known approver`);
       const given = Buffer.from(sig, "hex");
-      const msg = message(event, rest, actor, exp, context.executionId, context.parkedAtSequence);
+      if ((event.waitId === undefined) !== (context.waitId === undefined)) {
+        return reject("approval is not bound to the wait it addresses");
+      }
+      const wait =
+        event.waitId !== undefined &&
+        context.waitId === event.waitId &&
+        context.waitRegisteredAtSequence !== undefined
+          ? { waitId: event.waitId, waitRegisteredAtSequence: context.waitRegisteredAtSequence }
+          : undefined;
+      if (event.waitId !== undefined && wait === undefined) {
+        return reject("approval cannot be bound to the wait it addresses (park not located)");
+      }
+      const msg = message(
+        event,
+        rest,
+        actor,
+        exp,
+        context.executionId,
+        context.parkedAtSequence,
+        wait
+      );
       let matched = false;
       for (const secret of secrets) {
         if (!isStrong(secret)) continue;

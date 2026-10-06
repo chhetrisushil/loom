@@ -91,6 +91,8 @@ Inside a runner you have the full `ExecutionContext` (`WorkflowContext` is an al
 | `ctx.decide(id, decider, opts?)` | **Recorded** advisory choice (`DECISION_RECORDED`) — on replay the recorded choice is returned and `decider` is never called, so routing can change run-to-run while any single run stays pure (P9) |
 | `ctx.negotiateBudget(dim, request, opts?)` | **Recorded** budget grant through the decision seam — advisory and replay-safe; enforcement stays with metering middleware (`QUOTA_EXCEEDED`) |
 | `ctx.suspend({ on, correlationKey, timeout })` | **Durable** pause for a human/signal. `resume()` routes by **executionId**; `correlationKey` is metadata for an external dispatcher that knows a business key instead |
+| `ctx.receive(topic)` | **Durable** wait for the next message on this execution's inbox (`runtime.send`, ADR 0110). Registers a wait and parks when the flow is quiescent; consumption is a recorded `MESSAGE_CONSUMED`, so replay returns the recorded message and never reads the inbox. FIFO per topic, exactly once within the dedupe window. The payload arrives **tainted** (`inbox:<topic>`). Needs `kernel.features.inbox` |
+| `ctx.select([{ gate }, { inbox }, { timer }])` | **Durable** race of several waits; the first answered arm settles it and a later answer to a sibling is refused. Resolves `{ arm, kind, value }`; a timer arm's wake is **recorded** once at first registration. Arms are numbered `<scopePath>#<ordinal>`, so a body edit that shifts an ordinal raises `FlowDivergenceError`. Needs `kernel.features.inbox` |
 | `ctx.sleep(ms)` / `ctx.sleepUntil(wakeAt)` | **Durable** timer suspension — the absolute wake time is in the log, so restarts survive it and wall-clock drift never enters the fold |
 | `ctx.emit(type, payload)` | Append a domain event — **durable**, appended **once per execution**: a resume or recovery re-runs the flow from the top, and each emit the log already holds is served from it rather than appended again (ADR 0102). Load-bearing forever |
 | `ctx.stream(type, delta, done?)` | Stream incremental output (e.g. LLM output). **Each call appends a durable event**, once per execution like `ctx.emit` — chunk at a semantic granularity (sentence / tool call), not per token; for per-token feedback use `@loom/live-query` `subscribe` or `progressHub` instead |
@@ -137,7 +139,7 @@ const app = defineConfig({
 | `projections` / `projectionModules` | `projection$` definitions (explicit, or discovered by `loom gen`) folded into surfaces |
 | `catalog` | the widget catalogue a model-composed blueprint is validated against (`validateBlueprint`, [ADR 0088](adr/0088-blueprint-conformance.md)) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
-| `kernel.features` | rolling-upgrade flags for writers an older node cannot read (default off): `redrive` (ADR 0118) turns a contended supervisor resume into a backed-off `TimerStore` row fired by the app's `TimerService`, so it completes without `recover()`; needs `timers`, hands out `app.redrive` for `superviseChildren({ redrive: app.redrive })`; `scopes` (ADR 0112) turns `ctx.parallel` into a cancellation scope (fail-fast abort, `STEP_CANCELLED`, a journaled `PARALLEL_COMPLETED` that a re-run serves) — off, `parallel` is the pre-R6 bounded `Promise.all` |
+| `kernel.features` | rolling-upgrade flags for writers an older node cannot read (default off): `redrive` (ADR 0118) turns a contended supervisor resume into a backed-off `TimerStore` row fired by the app's `TimerService`, so it completes without `recover()`; needs `timers`, hands out `app.redrive` for `superviseChildren({ redrive: app.redrive })`; `scopes` (ADR 0112) turns `ctx.parallel` into a cancellation scope (fail-fast abort, `STEP_CANCELLED`, a journaled `PARALLEL_COMPLETED` that a re-run serves) — off, `parallel` is the pre-R6 bounded `Promise.all`; `inbox` (ADR 0110) turns on `ctx.receive` / `ctx.select` and `runtime.send` (a durable inbox, multi-wait parks, wait-addressed resumes) — off, they throw; needs `timers` for the cross-process wake and `scopes` for a wait inside `ctx.parallel`; bounds in `kernel.inbox` (`maxBacklog`, `dedupeWindow`, `maxPayloadBytes`) |
 | `agents` / `capabilityAgents` | A2A agent cards (or `agent$` definitions — see `a2a`/`agentSurface`) + capability→agent routing |
 | `a2a` | opt-in: auto-derive + register an `AgentCard` for each `agent$` definition in `agents` (no hand-built cards). Off ⇒ wire cards manually as before |
 | `agentSurface` | opt-in: auto-register an agent surface per agent (`surfaceId = agent.id`). Off ⇒ register `surfaces` manually |
@@ -425,6 +427,31 @@ approves for you: without `onApproval` the gate stays parked (`resolveApproval` 
 `onApproval: unsafeAutoApprove` is the demo-only opt-in.
 
 ---
+
+### Address a running agent: the durable inbox (ADR 0110)
+
+`ctx.suspend` waits for ONE answer to ONE gate. An agent that must be addressable while it works, or wait
+on a message, an approval and a deadline at once, uses the inbox (`defineConfig({ kernel: { features: { inbox: true } } })`,
+plus `timers` for the cross-process wake):
+
+```ts
+// inside a runner body
+const turn = await ctx.select([
+  { gate: "Approval", viewDigest },        // answered by runtime.resume(id, { eventType: "Approval", waitId?, payload })
+  { inbox: "user-message" },               // answered by runtime.send(id, { topic: "user-message", payload })
+  { timer: { afterMs: 3_600_000 } },       // the wake time is recorded once, at first registration
+]);
+if (turn.kind === "inbox") handle(unwrapTainted(turn.value)); // delivered TAINTED (ADR 0085)
+```
+
+`ctx.receive(topic)` is `select([{ inbox: topic }])` returning the payload. Both register a wait and the
+runtime parks when the flow is quiescent. `runtime.send(executionId, { topic, payload, messageId? }, { principal })`
+is the only writer of the inbox: it is authorized as op `send` against the execution's OWNER, appends to a
+separate stream (never to the owner's log), and wakes a parked owner. Delivery is FIFO per topic and
+exactly-once within the dedupe window (`messageId` is the idempotency key: at-least-once send). A message to
+a finished execution is refused (`InboxClosedError`); past `maxBacklog` unconsumed messages the sender gets
+`InboxFullError`. A park lists every wait in `state.suspendedOn.waits`; answer one gate wait by passing its
+`waitId` to `resume`. Waits inside `ctx.parallel` need `kernel.features.scopes`.
 
 ## Step 10 — Branch: fork / simulate / promote
 
