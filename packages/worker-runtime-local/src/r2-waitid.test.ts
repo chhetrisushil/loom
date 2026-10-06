@@ -21,7 +21,7 @@ describe("a resume package carries its waitId to the runtime", () => {
     runtime.registerFlow(
       { _tag: "FlowDefinition", id: "f", name: "f", version: "1.0.0", ...io, steps: [] } as never,
       async (ctx) => {
-        const r = await ctx.select([{ gate: "A" }, { gate: "B" }]);
+        const r = await ctx.select([{ gate: "G" }, { gate: "G" }]);
         return { arm: r.arm };
       }
     );
@@ -33,7 +33,7 @@ describe("a resume package carries its waitId to the runtime", () => {
       executionId: "a1",
       workflowId: "f",
       flowId: "f",
-      resumeEvent: { eventType: "B", waitId: "#1", payload: { ok: 1 } },
+      resumeEvent: { eventType: "G", waitId: "#1", payload: { ok: 1 } },
     } as never);
     const s = await runtime.loadState("a1", runtime.systemOptions());
     expect(s?.status).toBe("completed");

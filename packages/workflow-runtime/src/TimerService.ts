@@ -347,11 +347,11 @@ export class TimerService {
     try {
       // A node with no re-driver cannot judge a re-drive row: ask the store to leave them out BEFORE
       // the batch limit, or a batch of them starves every plain wake behind it.
-      const due = await this.store.due(
-        now,
-        this.batch,
-        this.redrivers.length === 0 ? { redrive: false } : undefined
-      );
+      const due = await this.store.due(now, this.batch, {
+        ...(this.redrivers.length === 0 && { redrive: false }),
+        // Likewise a flag-off node: inbox rows sort first (instant 0) and it cannot judge them.
+        ...(!this.runtime.inboxOn && { inbox: false }),
+      });
       for (const timer of due) {
         await this.fire(timer.executionId, timer.wakeAt, timer.redrive);
       }

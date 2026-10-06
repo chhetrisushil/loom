@@ -68,12 +68,16 @@ export class SqliteTimerStore implements TimerStore {
       );
   }
 
-  async due(now: number, limit = 100, options?: { redrive?: boolean }): Promise<TimerRecord[]> {
+  async due(
+    now: number,
+    limit = 100,
+    options?: { redrive?: boolean; inbox?: boolean }
+  ): Promise<TimerRecord[]> {
     const rows = this.db
       .prepare<[number, number]>(
         `SELECT execution_id, wake_at, redrive FROM timers WHERE wake_at <= ?${
           options?.redrive === false ? " AND redrive IS NULL" : ""
-        } ORDER BY wake_at ASC LIMIT ?`
+        }${options?.inbox === false ? " AND (wake_at <> 0 OR redrive IS NOT NULL)" : ""} ORDER BY wake_at ASC LIMIT ?`
       )
       .all(now, limit) as TimerRow[];
     return rows.map((r) => ({

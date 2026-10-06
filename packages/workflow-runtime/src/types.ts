@@ -1143,29 +1143,43 @@ export interface SendResult {
   executionId: string;
 }
 
-/** `send` beyond `inboxMaxBacklog` unconsumed messages: backpressure, the owner's log is untouched. */
+/**
+ * `send` beyond `inboxMaxBacklog` unconsumed messages, or with the stream retaining `inboxMaxRetained`
+ * entries behind one unconsumed message: backpressure, the owner's log is untouched.
+ */
 export class InboxFullError extends Error {
   readonly retryable = true as const;
   constructor(
     readonly executionId: string,
-    readonly backlog: number
+    readonly backlog: number,
+    detail?: string
   ) {
     super(
-      `inbox of execution "${executionId}" holds ${backlog} unconsumed messages (inboxMaxBacklog); nothing was appended. Retry after the owner consumes.`
+      detail !== undefined
+        ? `inbox of execution "${executionId}": ${detail}`
+        : `inbox of execution "${executionId}" holds ${backlog} unconsumed messages (inboxMaxBacklog); nothing was appended. Retry after the owner consumes.`
     );
     this.name = "InboxFullError";
     Object.setPrototypeOf(this, InboxFullError.prototype);
   }
 }
 
-/** `send` to an execution that can never consume it (finished, failed, cancelled): refused, nothing appended. */
+/**
+ * `send` to an execution that can never consume it (finished, failed, cancelled): refused. Normally
+ * nothing was appended. `discarded` is the narrow race where the owner turned terminal AFTER the
+ * message was appended and BEFORE consuming it: the message was appended, never consumed, and
+ * deleted with the inbox.
+ */
 export class InboxClosedError extends Error {
   constructor(
     readonly executionId: string,
-    readonly status: string
+    readonly status: string,
+    readonly discarded = false
   ) {
     super(
-      `execution "${executionId}" is ${status}: it will never consume a message. Nothing was appended.`
+      discarded
+        ? `execution "${executionId}" is ${status}: it finished before consuming this message, which was appended and then discarded unconsumed.`
+        : `execution "${executionId}" is ${status}: it will never consume a message. Nothing was appended.`
     );
     this.name = "InboxClosedError";
     Object.setPrototypeOf(this, InboxClosedError.prototype);

@@ -248,8 +248,13 @@ read a runtime setting, so a smaller runtime window made the live run deliver a 
 a duplicate (the log then replayed differently from the run that wrote it). The runtime's duplicate test
 is exactly the fold's, "the key is in the folded window". **The key is `(sender, messageId)`**, not the bare
 id: two senders that both number their messages `1, 2, 3` do not swallow each other's. It is journaled in
-`MESSAGE_CONSUMED.messageId` as an opaque composite string (`dedupeKeyOf`), so the frozen fold and event
-shape are unchanged. `messageId` is at most 256 characters (a longer one is refused: it lands in folded
+`MESSAGE_CONSUMED.messageId` as an opaque string (`dedupeKeyOf`: the lowercase hex SHA-256 of the JSON
+array `[tenant, actor, onBehalfOf, messageId]`, a FIXED 64 characters however long the principal's fields
+are), so the frozen fold and event shape are unchanged. **What an external projection of the log sees:**
+`MESSAGE_CONSUMED.messageId` holds that per-sender dedupe KEY, not the sender's raw `messageId` (the raw id
+is in the inbox stream entry only, and is gone once trimmed), and a DUPLICATE's event carries
+`payload: null` (it advances the cursor and delivers nothing). A projection that needs the raw id or the
+payload of a duplicate cannot read either from the owner's log. `messageId` is at most 256 characters (a longer one is refused: it lands in folded
 state and every snapshot). **`sender` is only as trustworthy as the principal that sent it**: with no
 `executionAuthorizer` wired it is whatever the caller claimed, and the keying inherits that. The contract:
 *at-least-once send, exactly-once consumption within the window, per sender*. The window **travels across a continuation**
@@ -362,7 +367,11 @@ pub/sub, dead-lettering, retry helpers). The design plan split it into its own P
    `EVENT_KIND_CLASS` calls ignorable (a `TIMER_FIRED` or discard `DECISION_RECORDED` whose resume never
    landed, an `APPROVAL_GRANTED` / `OUTCOME_RECORDED` / `EXECUTION_DENIED` audit row) to the newest ANSWERING
    kind, and folds only when that is a park (a parked owner took a snapshot at its park, so the fold is a
-   short tail). A resume, or no answering kind inside the window, reads "running". **The wake decision is
+   short tail). A resume reads "running". **A window with NO answering kind at all (eight app emits,
+   parallel `STEP_*`, timer fires, duplicate-only `MESSAGE_CONSUMED`) is AMBIGUOUS, never "running"**
+   (unless the window reaches sequence 0, where the whole log was read): the park may lie further back,
+   so `send` treats it as "maybe parked", writes the coalesced due-now row and runs the notify path,
+   which judges the real state and no-ops for a running owner. **The wake decision is
    taken from a SECOND read after the append** (lost-wakeup protocol: the owner parks durably and then
    re-reads the stream, the sender appends and then reads the owner, so one always sees the other); the
    first read serves authorization and the closed-owner refusal only.
@@ -410,6 +419,39 @@ fields and adds `waits`; a bare resume of the positional gate answers it as ever
     arm), so a loop of `select([inbox, timer])` does not grow folded state. (h) `inboxMaxPayloadBytes`
     measures UTF-8 bytes.
 
+13. **Review round 2.** (a) `send` that finds the owner terminal on its post-append re-read first checks
+    whether the message was DELIVERED (the owner's folded cursor for the topic is at or past its inbox
+    sequence, or its dedupe key is in the window): then it returns the normal `SendResult`. Only an
+    undelivered message is deleted with the stream and reported as `InboxClosedError` with `discarded:
+    true` and text saying so (the pre-append refusal still says "Nothing was appended"). (b) **Backlog
+    accounting is amortized O(1)**: the last exact count bounds every later one from above (+1 per send),
+    so a chain far below the cap rescans once per (cap - backlog) sends. Measured on 1 cold message + 20,000
+    hot sends (in-memory, sends only): 35.9 s (1,795 us/send, 3-4 ms past the 10k bound) before,
+    0.98 s (49 us/send) after. (c) **One unconsumed message pins every entry above it**: the `EventStore`
+    SPI deletes by PREFIX only (`truncatePrefix` / `truncatePrefixKeeping`), so a consumed hot-topic entry
+    above an unconsumed cold one cannot be reclaimed. Storage is therefore bounded by refusal:
+    `inboxMaxRetained` (default 4 x `inboxMaxBacklog`) is the most entries the stream keeps above its trim
+    floor; past it `send` refuses with `InboxFullError` naming the pinning message, and consuming that
+    message (or the chain's retirement) releases the stream. A per-topic stream would remove the pin and is
+    the follow-up if a workload needs a cold topic beside a hot one. (d) A flag-off `TimerService` passes
+    `due(..., { inbox: false })` (new, mirrors `redrive: false`; all three stores and the conformance kit),
+    so inbox rows (instant 0, sorted first) cannot fill its batch and starve real timers. A timed park at
+    exactly instant 0 is not fired by a flag-off node. (e) **A terminal execution stays terminal for
+    senders, but `resume` / `resumeAs` CAN re-open a failed or completed one (ADR 0104).** Its stream was
+    deleted when it finished, so a message not consumed by then is gone, and a re-opened execution would
+    restart allocation at sequence 0 under the cursors its log still holds (every new message skipped).
+    Re-open therefore seeds the allocation floor at the highest cursor (as for a fork) before the run
+    starts. Unconsumed messages at the moment of the terminal are discarded, by design. (f) An inbox stream
+    whose owner is terminal and whose id maps to an execution (`recoverAbandoned` enumerates reserved
+    streams) is reclaimed by the sweep (`inboxReclaimed`): the orphan a crash between a sender's append and
+    its re-read leaves. A fork's chain id is not an execution id, so a crash orphan of a fork chain is not
+    swept (the normal terminal path still deletes it). (g) **The notify path answers under a conditional
+    fence only when the park was written under a token.** A fencing store refuses an append with NO token
+    once any token exists, so acquiring one on the first inbox delivery of a never-fenced deployment made
+    every later plain `resume` / `resumeAs` / recovery of that execution fail as a stale fence (found by
+    the re-open test). Unfenced, a rival notifier loses at the `(executionId, sequence)` uniqueness of the
+    atomic batch. The dedupe key is a fixed-size hash (see D6).
+
 **Residuals (documented, not closed).**
 - A message consumed for a branch that is then aborted by a sibling's failure is consumed: it is recorded
   in the log and the flow never sees it (the same as a gate answer in an aborted scope).
@@ -423,8 +465,9 @@ fields and adds `waits`; a bare resume of the positional gate answers it as ever
   ADR 0109) is what bounds the history.
 - A refused send may keep being refused for up to 250 ms after the owner drains the backlog (the full
   verdict is cached per chain and head).
-- A message whose owner never waits on its topic pins the stream up to `inboxMaxBacklog`; `send` then
-  refuses (`InboxFullError`).
+- A message whose owner never waits on its topic pins the stream: `send` refuses (`InboxFullError`) at
+  `inboxMaxBacklog` unconsumed messages, or at `inboxMaxRetained` retained entries above the pin (see
+  round 2, c).
 - Each wake of a long-lived message loop re-runs the flow from the top and the park serializes a state
   that holds one answer per consumed message: turn n is O(n) until continue-as-new (R1b, ADR 0109)
   bounds the history. Measured below.

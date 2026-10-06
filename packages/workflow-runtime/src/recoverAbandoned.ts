@@ -161,6 +161,8 @@ export interface RecoverAbandonedSummary {
    * sender or owner never completed). Present only when at least one was woken.
    */
   inboxWoken?: number;
+  /** ADR 0110 D1 — inbox streams of a terminal owner that this pass deleted (crash orphans). */
+  inboxReclaimed?: number;
 }
 
 /**
@@ -219,7 +221,14 @@ export async function recoverAbandoned(
     if ((options.dryRun === true ? summary.candidates : summary.recovered) >= limit) break;
     // A reserved control stream (retention trail, an inbox stream) is no execution: folded it
     // reads `pending`, and re-driving it would be refused (ADR 0110: inbox streams are common).
-    if (isReservedStream(executionId)) continue;
+    if (isReservedStream(executionId)) {
+      // ADR 0110 D1 — an inbox stream whose owner is terminal is an orphan (a crash between a
+      // sender's append and its re-read): reclaim it.
+      if (options.dryRun !== true && (await runtime.reclaimInbox(executionId))) {
+        summary.inboxReclaimed = (summary.inboxReclaimed ?? 0) + 1;
+      }
+      continue;
+    }
     summary.scanned++;
 
     const state = await runtime.loadState(executionId, runtime.systemOptions());
