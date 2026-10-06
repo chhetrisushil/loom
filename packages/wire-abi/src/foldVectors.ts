@@ -212,6 +212,242 @@ export const FOLD_VECTORS: FoldVector[] = [
       frames: { slow: { status: "failed", attempts: 1 } },
     },
   },
+  // ── 1.23.0 (Wave 2, W2-0) — the reserved shapes. No kernel writer exists yet; these pin what
+  // a foreign fold must do with them, and (the last two) what it must NOT do without the stamp.
+  {
+    // ADR 0109: a continuation. The predecessor ends `continued` (NOT completed, no `_output`)
+    // naming its successor; the stamp `metadata.kernel` is what makes the event count.
+    name: "a stamped EXECUTION_CONTINUED ends the execution as `continued`",
+    events: [
+      ev("v7", 0, "EXECUTION_STARTED", {
+        input: { n: 1 },
+        principal: { v: 1 },
+        chainId: "v7",
+        generation: 0,
+      }),
+      ev(
+        "v7",
+        1,
+        "EXECUTION_CONTINUED",
+        { successorId: "v7~1", chainId: "v7", generation: 1 },
+        { kernel: true }
+      ),
+    ],
+    expected: {
+      status: "continued",
+      sequence: 1,
+      variables: {
+        _input: { n: 1 },
+        _principal: { v: 1 },
+        _chain: { chainId: "v7", generation: 0 },
+        _continuedTo: "v7~1",
+      },
+      frames: {},
+    },
+  },
+  {
+    // ADR 0109 D3: the successor's start carries budget and inbox; the fold applies them.
+    name: "a successor start seeds _resources and _inbox from its validated carry",
+    events: [
+      ev("v8", 0, "EXECUTION_STARTED", {
+        input: { turn: 0 },
+        principal: { v: 1, ref: "r" },
+        parent: "p",
+        chainId: "v7",
+        generation: 1,
+        codeHash: "sha256:00",
+        continuedFrom: {
+          executionId: "v7",
+          carried: {
+            resources: { tokens: 10, costUsd: 0, ms: 4, count: 2, custom: { credits: 3 } },
+            inbox: { cursors: { chat: 4 }, dedupe: ["m1"] },
+            chainDeadline: 5000,
+          },
+        },
+      }),
+      ev("v8", 1, "RESOURCE_METERED", { tokens: 5, custom: { credits: 1, gpu_seconds: 2 } }),
+    ],
+    expected: {
+      status: "running",
+      sequence: 1,
+      variables: {
+        _input: { turn: 0 },
+        _principal: { v: 1, ref: "r" },
+        _parent: "p",
+        _chain: {
+          chainId: "v7",
+          generation: 1,
+          continuedFrom: {
+            executionId: "v7",
+            carried: {
+              resources: { tokens: 10, costUsd: 0, ms: 4, count: 2, custom: { credits: 3 } },
+              inbox: { cursors: { chat: 4 }, dedupe: ["m1"] },
+              chainDeadline: 5000,
+            },
+          },
+        },
+        _codeHash: "sha256:00",
+        _resources: {
+          tokens: 15,
+          costUsd: 0,
+          ms: 4,
+          count: 3,
+          custom: { credits: 4, gpu_seconds: 2 },
+        },
+        _inbox: { cursors: { chat: 4 }, dedupe: ["m1"] },
+      },
+      frames: {},
+    },
+  },
+  {
+    // ADR 0110: a two-arm park; the inbox arm is answered by a stamped MESSAGE_CONSUMED, then the
+    // gate arm by a stamped wait-addressed resume (unwrapped into `_waitAnswers`, never into
+    // `_resumePayloads`). The timer arm's `wakeAt` is pinned at its first registration.
+    name: "a multi-wait park answered per wait (MESSAGE_CONSUMED, then a wait-addressed resume)",
+    events: [
+      ev("v9", 0, "EXECUTION_STARTED", { input: {} }),
+      ev("v9", 1, "EXECUTION_SUSPENDED", {
+        condition: {
+          on: "Approval",
+          waits: [
+            { waitId: "#0", kind: "gate", on: "Approval" },
+            { waitId: "#1", kind: "inbox", topic: "chat" },
+            { waitId: "#2", kind: "timer", wakeAt: 7000 },
+          ],
+        },
+      }),
+      ev(
+        "v9",
+        2,
+        "MESSAGE_CONSUMED",
+        {
+          waitId: "#1",
+          topic: "chat",
+          messageId: "m1",
+          inboxSeq: 0,
+          sender: { actor: "a" },
+          payload: "hi",
+        },
+        { kernel: true }
+      ),
+      ev(
+        "v9",
+        3,
+        "EXECUTION_RESUMED",
+        { waitId: "#0", payload: { approved: true } },
+        { kernel: true }
+      ),
+    ],
+    expected: {
+      status: "running",
+      sequence: 3,
+      variables: {
+        _input: {},
+        _waits: { "#2": { kind: "timer", wakeAt: 7000 } },
+        _inbox: { cursors: { chat: 0 }, dedupe: ["m1"] },
+        _waitAnswers: {
+          "#1": { kind: "inbox", name: "chat", payload: "hi" },
+          "#0": { kind: "gate", name: "Approval", payload: { approved: true } },
+        },
+      },
+      frames: {},
+    },
+  },
+  {
+    // ADR 0112 D2, ADR 0115 D2, ADR 0116 D1: the scope outcome, an open metering dimension (a bad
+    // key skipped, deterministically) and a late outcome.
+    name: "PARALLEL_COMPLETED, RESOURCE_METERED.custom and a late OUTCOME_RECORDED",
+    events: [
+      ev("v10", 0, "EXECUTION_STARTED", { input: {} }),
+      ev(
+        "v10",
+        1,
+        "PARALLEL_COMPLETED",
+        { scopePath: "/0.1", failedBranch: 1, error: "boom", cancelled: ["b#0"] },
+        { kernel: true }
+      ),
+      ev("v10", 2, "RESOURCE_METERED", { ms: 1, custom: { gpu_seconds: 2, "Bad Key": 9 } }),
+      ev("v10", 3, "OUTCOME_RECORDED", {
+        key: "route",
+        score: 1,
+        decisionId: "d",
+        recordedBy: "ops",
+        late: true,
+      }),
+    ],
+    expected: {
+      status: "running",
+      sequence: 3,
+      variables: {
+        _input: {},
+        _scopes: { "/0.1": { failedBranch: 1, error: "boom", cancelled: ["b#0"] } },
+        _resources: { tokens: 0, costUsd: 0, ms: 1, count: 1, custom: { gpu_seconds: 2 } },
+        _outcomes: [{ key: "route", score: 1, decisionId: "d", recordedBy: "ops", late: true }],
+      },
+      frames: {},
+    },
+  },
+  {
+    // The marker rule: the SAME events without `metadata.kernel` fold as an app event always did
+    // (no handler effect at all), so an existing log that happens to use these names replays
+    // byte-identically. Only PARALLEL_COMPLETED had a (no-op) handler before; it keeps it.
+    name: "the new kinds without the kernel stamp fold as no-ops",
+    events: [
+      ev("v11", 0, "EXECUTION_STARTED", { input: {} }),
+      ev("v11", 1, "EXECUTION_CONTINUED", { successorId: "v11~1", chainId: "v11", generation: 1 }),
+      ev("v11", 2, "MESSAGE_CONSUMED", {
+        waitId: "#0",
+        topic: "t",
+        messageId: "m",
+        inboxSeq: 0,
+        payload: 1,
+      }),
+      ev("v11", 3, "PARALLEL_COMPLETED", {
+        scopePath: "/0.0",
+        failedBranch: 0,
+        error: "e",
+        cancelled: [],
+      }),
+    ],
+    expected: {
+      status: "running",
+      sequence: 3,
+      variables: { _input: {} },
+      frames: {},
+    },
+  },
+  {
+    // A fork of a chain member leaves the chain (ADR 0109 D7) and acts as the forker (ADR 0111 D7).
+    name: "forkChain and forkedBy on a copied start replace the copied chain and principal",
+    events: [
+      ev(
+        "v12",
+        0,
+        "EXECUTION_STARTED",
+        {
+          input: {},
+          principal: { v: 1, ref: "owner" },
+          chainId: "v7",
+          generation: 2,
+          continuedFrom: {
+            executionId: "v7~1",
+            carried: { inbox: { cursors: { t: 3 }, dedupe: [] } },
+          },
+        },
+        { forkChain: { chainId: "v12", generation: 0 }, forkedBy: { v: 1, ref: "forker" } }
+      ),
+    ],
+    expected: {
+      status: "running",
+      sequence: 0,
+      variables: {
+        _input: {},
+        _principal: { v: 1, ref: "forker" },
+        _chain: { chainId: "v12", generation: 0 },
+      },
+      frames: {},
+    },
+  },
 ];
 
 /** Run the reference fold over every vector; returns per-vector pass/fail + detail. */

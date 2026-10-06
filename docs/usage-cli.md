@@ -830,10 +830,10 @@ npx loom kernel-manifest
 
 ```text
 Loom kernel manifest
-  kernel ABI      1.2.0   (10 syscalls)
-  event schema    1.22.0  (30 event types)
+  kernel ABI      1.3.0   (10 syscalls)
+  event schema    1.23.0  (32 event types)
   wire ABI        1.0.0
-  event store SPI 2.0.0
+  event store SPI 2.1.0
   snapshot SPI    1.1.0
   branch SPI      1.2.0
   dispatcher SPI  1.0.0

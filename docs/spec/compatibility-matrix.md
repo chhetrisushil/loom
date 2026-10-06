@@ -13,10 +13,10 @@ mechanism (`checkCompatibility`) exists for the day a deployment's MAJOR diverge
 
 | Contract | Version | Source of truth |
 |---|---|---|
-| Kernel ABI (K1) | `1.2.0` | `KERNEL_ABI_VERSION` · `abi.test.ts` |
-| Event Schema (K5) | `1.22.0` | `EVENT_SCHEMA_VERSION` · `eventSchema.test.ts` |
+| Kernel ABI (K1) | `1.3.0` | `KERNEL_ABI_VERSION` · `abi.test.ts` |
+| Event Schema (K5) | `1.23.0` | `EVENT_SCHEMA_VERSION` · `eventSchema.test.ts` |
 | Wire ABI (T2) | `1.0.0` | `WIRE_ABI_VERSION` · `wire-abi.test.ts` |
-| EventStore SPI | `2.0.0` | `EVENT_STORE_SPI_VERSION` · conformance kit |
+| EventStore SPI | `2.1.0` | `EVENT_STORE_SPI_VERSION` · conformance kit |
 | SnapshotStore SPI | `1.1.0` | `SNAPSHOT_STORE_SPI_VERSION` · conformance kit |
 | BranchRegistry SPI | `2.0.0` | `BRANCH_REGISTRY_SPI_VERSION` · conformance kit |
 | LeaseStore SPI | `2.1.0` | `LEASE_STORE_SPI_VERSION` · conformance kit |
@@ -25,7 +25,7 @@ mechanism (`checkCompatibility`) exists for the day a deployment's MAJOR diverge
 | ContentStore SPI | `1.3.0` | `CONTENT_STORE_SPI_VERSION` · conformance kit |
 | Compiler manifest | `1` | `COMPILER_MANIFEST_VERSION` |
 
-Event types folded by K5: **30** · Kernel syscalls: **10**.
+Event types folded by K5: **32** · Kernel syscalls: **10**.
 
 Validate a deployment: `loom compat --abi <v> --event-schema <v> [...]` (exit non-zero on a
 major mismatch), or `checkCompatibility(deploymentVersions)` from `@loom/spec`.

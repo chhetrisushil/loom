@@ -117,7 +117,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   execution's snapshots, which makes the log authoritative.
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.22.0** — after the
+  the pinned type set MUST change together. The current version is **1.23.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -147,6 +147,19 @@ load-bearing, plus the global guardrails that gate every additive capability:
   ADR 0107 added 1.22.0, one new event kind: `EVENTS_REHOMED`, the lifecycle-stream fact the
   operator repair of the pre-0106 blank stream journals per segment it re-homes. Pure audit into
   `_lifecycle`; no existing fold changes.
+  Wave 2 (W2-0, ADRs 0109–0116 and 0118) added 1.23.0: every new fold handler and reserved shape,
+  with no kernel writer yet. Two new kinds, `EXECUTION_CONTINUED` (terminal status `continued`,
+  `_continuedTo`) and `MESSAGE_CONSUMED` (`_inbox`, `_waitAnswers`); a payload for
+  `PARALLEL_COMPLETED` (`_scopes`); and optional fields on `EXECUTION_STARTED` (`_principal`,
+  `_parent`, `_chain`, `_codeHash`, and a validated carry that seeds `_resources`/`_inbox`),
+  `EXECUTION_SUSPENDED` (`waits[]`, `_waits`), a wait-addressed `EXECUTION_RESUMED`
+  (`_waitAnswers`), `RESOURCE_METERED` (`custom`) and `OUTCOME_RECORDED` (`recordedBy`, `late`).
+  The fold now reads three more envelope metadata keys — `kernel`, `forkChain`, `forkedBy` — and
+  the new kinds, the `PARALLEL_COMPLETED` payload and a wait-addressed resume fold ONLY a
+  kernel-stamped (`metadata.kernel: true`) envelope, so an application event that already carries
+  one of those names in an existing log folds as the no-op it always was. `ExecutionStatus`
+  widens by `continued`. The shapes are frozen at W2-0: a later change is an additive schema
+  change. See the Wave 2 design document (`docs/requirements/2026-10-05-wave2-kernel-design.md`).
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
   resume `null` into an unparked or in-doubt execution, or hold a `STEP_FAILED`
   that no status-setting event follows, replay byte-identically.

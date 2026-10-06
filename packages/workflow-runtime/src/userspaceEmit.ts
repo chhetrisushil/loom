@@ -1,4 +1,9 @@
-import { knownEventTypes } from "@loom/replay-vm";
+import {
+  CUSTOM_DIMENSION_CEILING,
+  CUSTOM_DIMENSION_MAX,
+  CUSTOM_DIMENSION_PATTERN,
+  knownEventTypes,
+} from "@loom/replay-vm";
 import { assertUnreservedDecisionId } from "./inDoubt";
 
 // ADR 0104 — what flow and effect code may append.
@@ -85,6 +90,30 @@ export function assertFlowDecisionId(decisionId: unknown): void {
   }
 }
 
+function assertCustomDimensions(eventType: string, custom: unknown): void {
+  if (custom === null || typeof custom !== "object" || Array.isArray(custom)) {
+    refuse(eventType, "custom must be an object of metering dimensions");
+  }
+  const entries = Object.entries(custom as Record<string, unknown>);
+  if (entries.length > CUSTOM_DIMENSION_MAX) {
+    refuse(eventType, `custom names at most ${CUSTOM_DIMENSION_MAX} dimensions`);
+  }
+  for (const [name, v] of entries) {
+    if (!CUSTOM_DIMENSION_PATTERN.test(name) || name === "constructor" || name === "prototype") {
+      refuse(
+        eventType,
+        `custom dimension "${name}" must match ${String(CUSTOM_DIMENSION_PATTERN)}`
+      );
+    }
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > CUSTOM_DIMENSION_CEILING) {
+      refuse(
+        eventType,
+        `custom.${name} must be a finite number in [0, ${CUSTOM_DIMENSION_CEILING}] (got ${String(v)})`
+      );
+    }
+  }
+}
+
 function refuse(eventType: string, why: string): never {
   throw new Error(`${eventType} refused (ADR 0104): ${why}`);
 }
@@ -99,6 +128,11 @@ function refuse(eventType: string, why: string): never {
  *   refused (no overwrite).
  * - `RESOURCE_METERED`: every meter field present must be a finite, non-negative number under
  *   its ceiling.
+ *   `custom` (ADR 0115, EVENT_SCHEMA 1.23.0) must be a plain object of at most 32 names, each
+ *   matching `/^[a-z][a-z0-9._-]{0,63}$/`, none of `constructor`/`prototype`, each value a
+ *   finite number in [0, 1e15].
+ * - `OUTCOME_RECORDED`: `recordedBy` and `late` are written only by `recordOutcome` (ADR 0116)
+ *   and are refused here, so a learning pipeline can trust them.
  * - `QUOTA_EXCEEDED`: `reason`, when present, must be a string of at most 1024 characters.
  */
 export function guardUserspaceEmit(
@@ -143,6 +177,18 @@ export function guardUserspaceEmit(
           refuse(
             eventType,
             `${field} must be a finite number in [0, ${ceiling}] (got ${String(v)}); a meter only ever adds`
+          );
+        }
+      }
+      if ("custom" in plain) assertCustomDimensions(eventType, plain.custom);
+      return plain;
+    }
+    case "OUTCOME_RECORDED": {
+      for (const field of ["recordedBy", "late"]) {
+        if (field in plain) {
+          refuse(
+            eventType,
+            `"${field}" is written only by the kernel's recordOutcome (ADR 0116); a flow's own outcome cannot claim it`
           );
         }
       }

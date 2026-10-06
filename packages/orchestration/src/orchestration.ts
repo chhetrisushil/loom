@@ -732,7 +732,12 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     for (;;) {
       const s = await loadParent(parentId);
       if (parkedOn(s, key)) return "parked";
-      if (s?.status === "completed" || s?.status === "failed" || s?.status === "cancelled") {
+      if (
+        s?.status === "completed" ||
+        s?.status === "failed" ||
+        s?.status === "cancelled" ||
+        s?.status === "continued" // ADR 0109: the CHILD_DONE park belonged to the predecessor
+      ) {
         return "gone";
       }
       if (Date.now() >= deadline) return "timeout";
@@ -774,7 +779,12 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         for (let n = 0; ; n++) {
           await sleepUnref(Math.min(tune.retryBaseMs * 2 ** n, tune.retryMaxMs));
           const s = await loadParent(parentId);
-          if (s?.status === "completed" || s?.status === "failed" || s?.status === "cancelled") {
+          if (
+            s?.status === "completed" ||
+            s?.status === "failed" ||
+            s?.status === "cancelled" ||
+            s?.status === "continued"
+          ) {
             return;
           }
           if (parkedOn(s, key)) {
@@ -1231,6 +1241,8 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           }
         : "absent";
     }
+    // A `continued` child is deliberately NOT settled here: it is "look at the head" (ADR 0109
+    // D6), never a result. Following `_continuedTo` is R1b's; until then it stays unsettled.
     if (st.status !== "completed" && st.status !== "failed" && st.status !== "cancelled") {
       return "running";
     }
@@ -1264,7 +1276,12 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   const parkGone = async (parentId: string, key: string): Promise<boolean> => {
     const st = await loadParent(parentId);
     if (st === undefined || st === null) return false;
-    if (st.status === "completed" || st.status === "failed" || st.status === "cancelled") {
+    if (
+      st.status === "completed" ||
+      st.status === "failed" ||
+      st.status === "cancelled" ||
+      st.status === "continued"
+    ) {
       return true;
     }
     if (parkedOn(st, key)) return false;

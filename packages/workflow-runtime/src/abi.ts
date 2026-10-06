@@ -15,7 +15,11 @@
 // 1.2.0: `decide`'s decider now receives a `DecideScope` argument (L30). Additive = MINOR:
 //        a `() => T` decider is unchanged, but a flow that USES the scope throws on an
 //        older kernel, so it must be able to require >= 1.2.0.
-export const KERNEL_ABI_VERSION = "1.2.0";
+// 1.3.0: Wave 2 (W2-0) RESERVES the bump with the rest of the coordinated version plan. It adds
+//        `continueAsNew`, `receive` and `select` (ADRs 0109/0110) and deprecates `ui` (ADR 0114)
+//        in their item PRs; no syscall enters `KERNEL_SYSCALLS` here, because a syscall without a
+//        writer behind its `kernel.features` flag would be a lie in the table.
+export const KERNEL_ABI_VERSION = "1.3.0";
 
 export type SyscallKind = "call" | "accessor";
 

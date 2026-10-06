@@ -32,7 +32,12 @@ export const LIFECYCLE_STREAM = "__loom_lifecycle__";
 // executions, and compaction guarantees `fold(snapshot, suffix) === fold(events)`
 // so a compacted execution still resumes/replays identically.
 
-const TERMINAL = new Set<ExecutionState["status"]>(["completed", "failed", "cancelled"]);
+const TERMINAL = new Set<ExecutionState["status"]>([
+  "completed",
+  "failed",
+  "cancelled",
+  "continued", // ADR 0109: terminal for retention; the successor's sequence 0 is durable first
+]);
 
 export interface RetentionPolicy {
   /** Keep a terminal execution this long after its last event, then reclaim it. */

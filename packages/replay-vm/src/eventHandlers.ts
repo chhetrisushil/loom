@@ -1,5 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
-import type { ExecutionFrame, ExecutionState } from "@loom/core";
+import type { ExecutionFrame, ExecutionState, SuspendWait } from "@loom/core";
 
 type Handler = (state: ExecutionState, event: EventEnvelope) => ExecutionState;
 
@@ -197,26 +197,207 @@ function withoutFailedWhileParked(variables: Record<string, unknown>): Record<st
   return rest;
 }
 
+// ── 1.23.0 (Wave 2, W2-0) — reserved shapes, folded only from what the kernel wrote ──────────
+//
+// The new kinds (`EXECUTION_CONTINUED`, `MESSAGE_CONSUMED`) and the PARALLEL_COMPLETED payload
+// fold ONLY an envelope carrying `metadata.kernel === true`. An application event that already
+// carries one of those names in an existing log therefore folds as the no-op it always was
+// (byte-identically), even though a handler now exists and no kernel writer does yet (ADR 0110
+// "Marker"; design §3). The journal stamps the marker for {@link KERNEL_STAMPED_EVENT_TYPES}.
+// A wait-addressed EXECUTION_RESUMED carries the same stamp (ADR 0110 D3).
+
+/** Kinds whose fold requires the kernel stamp, and which the journal stamps when it writes one. */
+export const KERNEL_STAMPED_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "EXECUTION_CONTINUED",
+  "MESSAGE_CONSUMED",
+  "PARALLEL_COMPLETED",
+]);
+
+function isKernelWritten(event: EventEnvelope): boolean {
+  return event.metadata?.kernel === true;
+}
+
+function isPlain(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+/** Every inbox dedupe window the fold keeps is capped here; the runtime may apply a smaller one. */
+export const INBOX_DEDUPE_CAP = 1024;
+/** ADR 0115 D2 — custom metering dimension names, count and per-value ceiling. */
+export const CUSTOM_DIMENSION_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
+export const CUSTOM_DIMENSION_MAX = 32;
+export const CUSTOM_DIMENSION_CEILING = 1e15;
+
+/** A fold-owned copy-on-write record (the same ownership rule as `_decisions`). */
+function ownedRecord<T>(prior: Record<string, T> | undefined): Record<string, T> {
+  if (prior !== undefined && foldOwned.has(prior)) return prior;
+  const next: Record<string, T> = prior === undefined ? {} : { ...prior };
+  foldOwned.add(next);
+  return next;
+}
+
+function safeMapKey(key: unknown): key is string {
+  return typeof key === "string" && key.length > 0 && !RESERVED_FOLD_KEYS.has(key);
+}
+
+/**
+ * ADR 0115 D2 — add the valid entries of a `custom` metering map onto the running one. Never
+ * throws: a bad name, a prototype name, a non-finite / negative / over-ceiling value, or the
+ * 33rd distinct name is skipped deterministically and the rest folds, so every replica folds the
+ * same state from a log it did not write the guard for. Returns `prior` when nothing changed.
+ */
+function addCustomDimensions(
+  prior: Record<string, number> | undefined,
+  raw: unknown
+): Record<string, number> | undefined {
+  if (!isPlain(raw)) return prior;
+  let next: Record<string, number> | undefined;
+  let names = prior === undefined ? 0 : Object.keys(prior).length;
+  for (const [name, v] of Object.entries(raw)) {
+    if (!CUSTOM_DIMENSION_PATTERN.test(name) || RESERVED_FOLD_KEYS.has(name)) continue;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > CUSTOM_DIMENSION_CEILING) {
+      continue;
+    }
+    const known = (next ?? prior) !== undefined && Object.hasOwn((next ?? prior) as object, name);
+    if (!known) {
+      if (names >= CUSTOM_DIMENSION_MAX) continue;
+      names++;
+    }
+    next ??= { ...prior };
+    next[name] = (next[name] ?? 0) + v;
+  }
+  return next ?? prior;
+}
+
+/** A validated `_resources` seed from `continuedFrom.carried.resources`; invalid parts are ignored. */
+function seedResources(raw: unknown): Record<string, unknown> | undefined {
+  if (!isPlain(raw)) return undefined;
+  const num = (v: unknown): number =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+  const custom = addCustomDimensions(undefined, raw.custom);
+  const memBytes = num(raw.memBytes);
+  const wallMs = num(raw.wallMs);
+  const netBytes = num(raw.netBytes);
+  return {
+    tokens: num(raw.tokens),
+    costUsd: num(raw.costUsd),
+    ms: num(raw.ms),
+    count: num(raw.count),
+    ...(memBytes > 0 && { memBytes }),
+    ...(wallMs > 0 && { wallMs }),
+    ...(netBytes > 0 && { netBytes }),
+    ...(custom !== undefined && { custom }),
+  };
+}
+
+/** A validated `_inbox` seed from `continuedFrom.carried.inbox`; invalid parts are ignored. */
+function seedInbox(
+  raw: unknown
+): { cursors: Record<string, number>; dedupe: string[] } | undefined {
+  if (!isPlain(raw)) return undefined;
+  const cursors: Record<string, number> = {};
+  if (isPlain(raw.cursors)) {
+    for (const [topic, seq] of Object.entries(raw.cursors)) {
+      if (safeMapKey(topic) && Number.isSafeInteger(seq) && (seq as number) >= 0) {
+        cursors[topic] = seq as number;
+      }
+    }
+  }
+  const dedupe = Array.isArray(raw.dedupe)
+    ? raw.dedupe.filter((id): id is string => typeof id === "string").slice(-INBOX_DEDUPE_CAP)
+    : [];
+  return { cursors, dedupe };
+}
+
+/** The chain identity a `forkChain` stamp or the start payload names; `undefined` if malformed. */
+function chainIdentity(v: unknown): { chainId: string; generation: number } | undefined {
+  if (!isPlain(v)) return undefined;
+  const { chainId, generation } = v;
+  if (typeof chainId !== "string" || chainId.length === 0) return undefined;
+  if (!Number.isSafeInteger(generation) || (generation as number) < 0) return undefined;
+  return { chainId, generation: generation as number };
+}
+
+/** ADR 0110 D3 — a wait-addressed resume: kernel-stamped, payload `{ waitId, payload }`. */
+type WaitResume =
+  | { answer: true; waitId: string; wait: SuspendWait; inner: unknown }
+  | { answer: false };
+function parseWaitResume(state: ExecutionState, event: EventEnvelope): WaitResume | undefined {
+  if (!isKernelWritten(event)) return undefined;
+  const p = event.payload;
+  if (!isPlain(p) || typeof p.waitId !== "string" || !Object.hasOwn(p, "payload")) {
+    return undefined;
+  }
+  const wait =
+    state.status === "suspended"
+      ? state.suspendedOn?.waits?.find((w) => w.waitId === p.waitId)
+      : undefined;
+  if (wait === undefined || !safeMapKey(p.waitId)) return { answer: false };
+  return { answer: true, waitId: p.waitId, wait, inner: p.payload };
+}
+
 const handlers: Record<string, Handler> = {
   EXECUTION_STARTED: (state, event) => {
     // `flowHash` (K11.1, additive — absent on legacy logs) is the content hash
     // of the flow code this execution started under; resume/recovery compares
     // it against the registered flow so changed code never silently folds an
     // in-flight log. Reserved fold key: `variables._flowHash`.
-    const payload = event.payload as { input?: unknown; flowHash?: string };
-    const hasVars = payload.input !== undefined || payload.flowHash !== undefined;
+    //
+    // 1.23.0 (Wave 2) — further additive fields, each folded to a reserved key and each absent
+    // from every older log: `principal` → `_principal` (ADR 0111; a fork's `forkedBy` stamp
+    // wins), `parent` → `_parent`, `chainId` + `generation` (+ `continuedFrom`) → `_chain`
+    // (ADR 0109; a fork's `forkChain` stamp wins and drops `continuedFrom`), `codeHash` →
+    // `_codeHash` (ADR 0113). A successor's validated `continuedFrom.carried` seeds `_resources`
+    // and `_inbox` (never for a fork, which starts a fresh chain); an invalid carry is ignored,
+    // never thrown.
+    const payload = event.payload as {
+      input?: unknown;
+      flowHash?: string;
+      principal?: unknown;
+      parent?: unknown;
+      chainId?: unknown;
+      generation?: unknown;
+      continuedFrom?: unknown;
+      codeHash?: unknown;
+    };
+    const meta = event.metadata;
+    const vars: Record<string, unknown> = {};
+    if (payload.input !== undefined) vars._input = payload.input;
+    if (payload.flowHash !== undefined) vars._flowHash = payload.flowHash;
+    const principal = isPlain(meta?.forkedBy) ? meta.forkedBy : payload.principal;
+    if (isPlain(principal)) vars._principal = principal;
+    if (typeof payload.parent === "string" && payload.parent.length > 0) {
+      vars._parent = payload.parent;
+    }
+    const forkChain = chainIdentity(meta?.forkChain);
+    let carriedFrom: Record<string, unknown> | undefined;
+    const own = forkChain ?? chainIdentity(payload);
+    if (own !== undefined) {
+      const from = payload.continuedFrom;
+      const continuedFrom =
+        forkChain === undefined &&
+        isPlain(from) &&
+        typeof from.executionId === "string" &&
+        (from.carried === undefined || isPlain(from.carried))
+          ? {
+              executionId: from.executionId,
+              ...(from.carried !== undefined && { carried: from.carried }),
+            }
+          : undefined;
+      vars._chain = { ...own, ...(continuedFrom !== undefined && { continuedFrom }) };
+      carriedFrom = continuedFrom?.carried as Record<string, unknown> | undefined;
+    }
+    if (typeof payload.codeHash === "string") vars._codeHash = payload.codeHash;
+    const resources = seedResources(carriedFrom?.resources);
+    if (resources !== undefined) vars._resources = resources;
+    const inbox = seedInbox(carriedFrom?.inbox);
+    if (inbox !== undefined) vars._inbox = inbox;
     return {
       ...state,
       status: "running",
       startedAt: event.timestamp,
       updatedAt: event.timestamp,
-      ...(hasVars && {
-        variables: {
-          ...state.variables,
-          ...(payload.input !== undefined && { _input: payload.input }),
-          ...(payload.flowHash !== undefined && { _flowHash: payload.flowHash }),
-        },
-      }),
+      ...(Object.keys(vars).length > 0 && { variables: { ...state.variables, ...vars } }),
     };
   },
 
@@ -355,15 +536,126 @@ const handlers: Record<string, Handler> = {
     return { ...state, frames, updatedAt: event.timestamp };
   },
 
+  // 1.23.0 (ADR 0112 D2) — the journaled fail-fast scope outcome. Folds `_scopes[scopePath]` ONLY
+  // from a kernel-stamped envelope; an unstamped one keeps the pre-1.23.0 behaviour (no variable
+  // change, `updatedAt` only), so a log that already holds such an event replays identically.
   PARALLEL_COMPLETED: (state, event) => {
-    return { ...state, updatedAt: event.timestamp };
+    if (!isKernelWritten(event)) return { ...state, updatedAt: event.timestamp };
+    const p = event.payload as {
+      scopePath?: unknown;
+      failedBranch?: unknown;
+      error?: unknown;
+      cancelled?: unknown;
+    };
+    if (!isPlain(p) || !safeMapKey(p.scopePath)) return { ...state, updatedAt: event.timestamp };
+    const scopes = ownedRecord(state.variables._scopes as Record<string, unknown> | undefined);
+    scopes[p.scopePath] = {
+      ...(typeof p.failedBranch === "number" && { failedBranch: p.failedBranch }),
+      ...(p.error !== undefined && { error: p.error }),
+      cancelled: Array.isArray(p.cancelled)
+        ? p.cancelled.filter((id): id is string => typeof id === "string")
+        : [],
+    };
+    return {
+      ...state,
+      variables: { ...state.variables, _scopes: scopes },
+      updatedAt: event.timestamp,
+    };
+  },
+
+  // 1.23.0 (ADR 0109 D2) — the predecessor of a continue-as-new ends, naming its successor. A NEW
+  // terminal status, `continued` (never `completed`: there is no output), and `_continuedTo`.
+  // Kernel-stamped envelopes only; an unstamped one is the no-op an unknown kind always was.
+  EXECUTION_CONTINUED: (state, event) => {
+    if (!isKernelWritten(event)) return state;
+    const p = event.payload as { successorId?: unknown };
+    if (!isPlain(p) || typeof p.successorId !== "string" || p.successorId.length === 0) {
+      return state;
+    }
+    return {
+      ...state,
+      status: "continued",
+      variables: { ...withoutFailedWhileParked(state.variables), _continuedTo: p.successorId },
+      updatedAt: event.timestamp,
+    };
+  },
+
+  // 1.23.0 (ADR 0110 D5/D6) — the owner consumed an inbox message: the per-topic cursor advances,
+  // the bounded dedupe window remembers the id, and the delivered payload answers its wait
+  // (`_waitAnswers[waitId]`, first answer wins). A `messageId` already in the window is a
+  // duplicate: the cursor advances, nothing is delivered. Kernel-stamped envelopes only.
+  MESSAGE_CONSUMED: (state, event) => {
+    if (!isKernelWritten(event)) return state;
+    const p = event.payload as {
+      waitId?: unknown;
+      topic?: unknown;
+      messageId?: unknown;
+      inboxSeq?: unknown;
+      payload?: unknown;
+    };
+    if (
+      !isPlain(p) ||
+      !safeMapKey(p.waitId) ||
+      !safeMapKey(p.topic) ||
+      typeof p.messageId !== "string" ||
+      !Number.isSafeInteger(p.inboxSeq) ||
+      (p.inboxSeq as number) < 0
+    ) {
+      return state;
+    }
+    const prior = state.variables._inbox as
+      | { cursors?: Record<string, number>; dedupe?: string[] }
+      | undefined;
+    const cursors = ownedRecord(prior?.cursors);
+    cursors[p.topic] = Math.max(cursors[p.topic] ?? -1, p.inboxSeq as number);
+    const window = prior?.dedupe;
+    const duplicate = window?.includes(p.messageId) === true;
+    let dedupe = window;
+    if (!duplicate) {
+      dedupe = appendAudit(window, p.messageId);
+      if (dedupe.length > INBOX_DEDUPE_CAP) dedupe.splice(0, dedupe.length - INBOX_DEDUPE_CAP);
+    }
+    const variables: Record<string, unknown> = {
+      ...state.variables,
+      _inbox: { cursors, dedupe: dedupe ?? [] },
+    };
+    if (!duplicate) {
+      const answers = ownedRecord(
+        state.variables._waitAnswers as Record<string, unknown> | undefined
+      );
+      if (!Object.hasOwn(answers, p.waitId)) {
+        answers[p.waitId] = { kind: "inbox", name: p.topic, payload: p.payload };
+      }
+      variables._waitAnswers = answers;
+    }
+    return { ...state, variables, updatedAt: event.timestamp };
   },
 
   EXECUTION_SUSPENDED: (state, event) => {
     const payload = event.payload as {
-      condition: { on: string; timeout?: number; correlationKey?: string };
+      condition: {
+        on: string;
+        timeout?: number;
+        correlationKey?: string;
+        waits?: SuspendWait[];
+      };
     };
-    const variables = withoutFailedWhileParked(state.variables);
+    let variables = withoutFailedWhileParked(state.variables);
+    // 1.23.0 (ADR 0110 D4) — a timer arm's `wakeAt` is recorded at its FIRST registration and
+    // served on every later one, so sibling traffic cannot push a deadline out.
+    const waits: unknown = payload.condition?.waits;
+    if (Array.isArray(waits)) {
+      let recorded: Record<string, unknown> | undefined;
+      for (const w of waits as unknown[]) {
+        if (!isPlain(w) || w.kind !== "timer" || !safeMapKey(w.waitId)) continue;
+        if (typeof w.wakeAt !== "number" || !Number.isFinite(w.wakeAt)) continue;
+        recorded ??= ownedRecord(variables._waits as Record<string, unknown> | undefined);
+        if (!Object.hasOwn(recorded, w.waitId)) {
+          recorded[w.waitId] = { kind: "timer", wakeAt: w.wakeAt };
+        }
+      }
+      if (recorded !== undefined) variables = { ...variables, _waits: recorded };
+    }
     return {
       ...state,
       status: "suspended",
@@ -375,6 +667,33 @@ const handlers: Record<string, Handler> = {
 
   EXECUTION_RESUMED: (state, event) => {
     const { suspendedOn: _removed, ...rest } = state;
+    // 1.23.0 (ADR 0110 D3) — a wait-addressed resume answers ONE wait of a multi-wait park: its
+    // payload is `{ waitId, payload }` and the fold unwraps it into `_waitAnswers[waitId]`
+    // (kind and name from the park's wait; first answer wins) and drops the wait's pinned
+    // `_waits` entry. It never enters the positional `_resumePayloads` (the two mechanisms do
+    // not share entries). One naming no wait of the current park is a status-only re-open.
+    const addressed = parseWaitResume(state, event);
+    if (addressed !== undefined) {
+      const variables = { ...withoutFailedWhileParked(state.variables) };
+      if (addressed.answer) {
+        const { waitId, wait, inner } = addressed;
+        const answers = ownedRecord(variables._waitAnswers as Record<string, unknown> | undefined);
+        if (!Object.hasOwn(answers, waitId)) {
+          answers[waitId] = {
+            kind: wait.kind,
+            name: wait.on ?? wait.topic ?? wait.kind,
+            payload: inner,
+          };
+        }
+        variables._waitAnswers = answers;
+        if (isPlain(variables._waits) && Object.hasOwn(variables._waits, waitId)) {
+          const waits = ownedRecord(variables._waits as Record<string, unknown>);
+          delete waits[waitId];
+          variables._waits = waits;
+        }
+      }
+      return { ...rest, status: "running", variables, updatedAt: event.timestamp };
+    }
     return {
       ...rest,
       status: "running",
@@ -588,6 +907,10 @@ const handlers: Record<string, Handler> = {
       success?: boolean;
       score?: number;
       decisionId?: string;
+      // 1.23.0 (ADR 0116) — written only by `recordOutcome`; userspace emits carrying them
+      // are refused by `guardUserspaceEmit`. Absent = a live, in-run outcome.
+      recordedBy?: string;
+      late?: boolean;
     };
     return {
       ...state,
@@ -598,6 +921,8 @@ const handlers: Record<string, Handler> = {
           ...(p.success !== undefined && { success: p.success }),
           ...(p.score !== undefined && { score: p.score }),
           ...(p.decisionId !== undefined && { decisionId: p.decisionId }),
+          ...(typeof p.recordedBy === "string" && { recordedBy: p.recordedBy }),
+          ...(p.late === true && { late: true }),
         }),
       },
       updatedAt: event.timestamp,
@@ -806,6 +1131,8 @@ const handlers: Record<string, Handler> = {
       memBytes?: number;
       wallMs?: number;
       netBytes?: number;
+      // 1.23.0 (ADR 0115) — open metering dimensions, folded into `_resources.custom`.
+      custom?: unknown;
     };
     const r = (state.variables._resources as
       | {
@@ -816,6 +1143,7 @@ const handlers: Record<string, Handler> = {
           memBytes?: number;
           wallMs?: number;
           netBytes?: number;
+          custom?: Record<string, number>;
           exceeded?: boolean;
         }
       | undefined) ?? { tokens: 0, costUsd: 0, ms: 0, count: 0 };
@@ -824,6 +1152,7 @@ const handlers: Record<string, Handler> = {
     const memBytes = (r.memBytes ?? 0) + (p.memBytes ?? 0);
     const wallMs = (r.wallMs ?? 0) + (p.wallMs ?? 0);
     const netBytes = (r.netBytes ?? 0) + (p.netBytes ?? 0);
+    const custom = addCustomDimensions(r.custom, p.custom);
     return {
       ...state,
       variables: {
@@ -836,6 +1165,7 @@ const handlers: Record<string, Handler> = {
           ...(memBytes > 0 && { memBytes }),
           ...(wallMs > 0 && { wallMs }),
           ...(netBytes > 0 && { netBytes }),
+          ...(custom !== undefined && { custom }),
           ...(r.exceeded === true && { exceeded: true }),
         },
       },
@@ -985,7 +1315,18 @@ export function getHandler(eventType: string): Handler | undefined {
 // 1.22.0: added EVENTS_REHOMED (ADR 0107 — the operator repair of the pre-0106 blank-stream
 //   events). Pure audit into `_lifecycle` on the lifecycle stream; a log that is never repaired
 //   replays byte-identically. The re-homed events themselves are the kinds they always were.
-export const EVENT_SCHEMA_VERSION = "1.22.0";
+// 1.23.0: Wave 2 (W2-0, ADRs 0109–0116) — every new fold handler and reserved shape, with no
+//   writer yet. New kinds `EXECUTION_CONTINUED` (→ status `continued`, `_continuedTo`) and
+//   `MESSAGE_CONSUMED` (→ `_inbox`, `_waitAnswers`); a payload and handler for the existing
+//   `PARALLEL_COMPLETED` (→ `_scopes`); additive `EXECUTION_STARTED.{principal, parent, chainId,
+//   generation, continuedFrom, codeHash}` (→ `_principal`, `_parent`, `_chain`, `_codeHash`; the
+//   carry seeds `_resources` / `_inbox`), `EXECUTION_SUSPENDED.condition.waits[]` (→ `_waits`),
+//   a wait-addressed `EXECUTION_RESUMED` `{ waitId, payload }` (→ `_waitAnswers`),
+//   `RESOURCE_METERED.custom` (→ `_resources.custom`), `OUTCOME_RECORDED.{recordedBy, late}`.
+//   The envelope metadata the fold now reads: `kernel` (the new kinds, `PARALLEL_COMPLETED` and a
+//   wait-addressed resume fold ONLY a kernel-stamped envelope), `forkChain`, `forkedBy`. A log
+//   carrying none of these replays byte-identically.
+export const EVENT_SCHEMA_VERSION = "1.23.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

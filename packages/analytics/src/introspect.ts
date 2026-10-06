@@ -10,7 +10,13 @@ import { type DecisionGraph, decisionGraph } from "./decisions";
 // observes, it never steers. ("Fiber graph" from the requirements is the task graph
 // — fibers were rejected.) Reuses `decisionGraph` (ADR 0030) verbatim.
 
-export type ExecutionStatus = "running" | "completed" | "failed" | "cancelled" | "suspended";
+export type ExecutionStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "continued"
+  | "suspended";
 
 export interface ExecutionNode {
   executionId: string;
@@ -94,6 +100,8 @@ const TERMINAL: Record<string, ExecutionStatus> = {
   EXECUTION_COMPLETED: "completed",
   EXECUTION_FAILED: "failed",
   EXECUTION_CANCELLED: "cancelled",
+  // EVENT_SCHEMA 1.23.0 (ADR 0109): terminal, but handed to a successor — not "completed".
+  EXECUTION_CONTINUED: "continued",
 };
 const TERMINAL_STEP: Record<string, string> = {
   STEP_COMPLETED: "completed",
@@ -133,7 +141,12 @@ export function executionNodes(events: EventEnvelope[]): ExecutionNode[] {
       // to `Object.prototype` — not `undefined`, so the guard below would admit it and report
       // the execution as terminal with an object for a status. The sibling `TERMINAL_STEP`
       // reads are inside a `switch` on known types and cannot be reached this way.
-      const terminal = Object.hasOwn(TERMINAL, e.eventType) ? TERMINAL[e.eventType] : undefined;
+      // EXECUTION_CONTINUED counts only when the kernel stamped it (the fold's own rule).
+      const terminal =
+        Object.hasOwn(TERMINAL, e.eventType) &&
+        (e.eventType !== "EXECUTION_CONTINUED" || e.metadata?.kernel === true)
+          ? TERMINAL[e.eventType]
+          : undefined;
       if (terminal !== undefined) {
         status = terminal;
         completedAt = e.timestamp;

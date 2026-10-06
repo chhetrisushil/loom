@@ -97,6 +97,10 @@ defaulting to plaintext under a stated erasure obligation is exactly the silent 
 prevent. Test: strict with no crypto and no codec refuses at composition; strict + codec writes no actor in
 the log; non-strict default writes the subset and the docs state the limit.
 
+The fold keeps `parent` as `_parent` and the chain identity as `_chain` (ADR 0109); a fork's `forkedBy`
+is read from the **`EXECUTION_STARTED` envelope's metadata** and replaces the payload `principal` in
+`_principal`. A malformed record or `forkedBy` (not an object) is ignored, never thrown.
+
 `parent` (the supervisor's `parentExecutionId`, today descriptive and only reported on
 `committed`) is recorded beside it as `EXECUTION_STARTED.payload.parent`. It is lineage, not
 identity; ADR 0109's `continuedFrom` and R8k's pin predicate use it.

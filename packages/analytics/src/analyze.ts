@@ -14,7 +14,7 @@ export interface ExecutionAnalytics {
   cancelledSteps: number;
   suspended: boolean;
   resumes: number;
-  status?: "completed" | "failed" | "cancelled";
+  status?: "completed" | "failed" | "cancelled" | "continued";
 }
 
 export interface CostAnalytics {
@@ -86,6 +86,9 @@ export function executionAnalytics(events: EventEnvelope[]): ExecutionAnalytics 
         break;
       case "EXECUTION_CANCELLED":
         a.status = "cancelled";
+        break;
+      case "EXECUTION_CONTINUED":
+        if (e.metadata?.kernel === true) a.status = "continued";
         break;
     }
   }
@@ -211,6 +214,9 @@ export function analyze(events: EventEnvelope[]): Analytics {
         break;
       case "EXECUTION_CANCELLED":
         execution.status = "cancelled";
+        break;
+      case "EXECUTION_CONTINUED":
+        if (e.metadata?.kernel === true) execution.status = "continued";
         break;
       case "RESOURCE_METERED": {
         const p = e.payload as { tokens?: number; costUsd?: number; ms?: number };

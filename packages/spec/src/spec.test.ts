@@ -340,16 +340,18 @@ describe("checkCompatibility", () => {
     expect(report.issues[0]?.component).toBe("leaseStoreSpi");
   });
 
-  it("refuses a 1.x EventStore (SPI 2.0.0, ADR 0108: pinned id order + id cursors)", () => {
+  it("refuses a 1.x EventStore (SPI 2.x, ADR 0108: pinned id order + id cursors)", () => {
     // A 1.5.0 store may page in any order with an opaque cursor, which ShardedEventStore and
-    // TenantScopedEventStore can no longer tolerate — the reason the bump is MAJOR.
-    expect(kernelManifest().spis.eventStore).toBe("2.0.0");
+    // TenantScopedEventStore can no longer tolerate — the reason the bump is MAJOR. 2.1.0 is
+    // Wave 2's additive MINOR (acquireFenceIf, reserved at W2-0): a 2.0.0 store still conforms.
+    expect(kernelManifest().spis.eventStore).toBe("2.1.0");
     const report = checkCompatibility({ eventStoreSpi: "1.5.0" });
     expect(report.ok).toBe(false);
     expect(report.issues).toEqual([
-      expect.objectContaining({ component: "eventStoreSpi", expected: "2.0.0", actual: "1.5.0" }),
+      expect.objectContaining({ component: "eventStoreSpi", expected: "2.1.0", actual: "1.5.0" }),
     ]);
     expect(checkCompatibility({ eventStoreSpi: "2.0.0" }).ok).toBe(true);
+    expect(checkCompatibility({ eventStoreSpi: "2.1.0" }).ok).toBe(true);
   });
 
   it("accepts a same-major (MINOR-bumped) deployment", () => {

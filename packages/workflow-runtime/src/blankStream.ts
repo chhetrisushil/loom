@@ -145,6 +145,7 @@ const DRAINED = new Set<ExecutionState["status"]>([
   "completed",
   "failed",
   "cancelled",
+  "continued",
 ]);
 
 const isBlank = (s: Snapshot): boolean => s.state.executionId === "";

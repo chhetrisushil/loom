@@ -72,7 +72,7 @@ by one value; see the schema row).
 | Contract | Now | Target | Driven by | Nature |
 |---|---|---|---|---|
 | **KERNEL_ABI** | 1.2.0 | **1.3.0** | R1b `continueAsNew`; R2 `receive`, `select`; R14 `ui` marked `deprecated` and `negotiateBudget` added to the table | additive MINOR; **removal of `ctx.ui` is a later MAJOR** |
-| **EVENT_SCHEMA** | 1.22.0 | **1.23.0** | new kinds `EXECUTION_CONTINUED { successorId, chainId, generation }` (R1b), `MESSAGE_CONSUMED { waitId, topic, messageId, inboxSeq, sender, payload }` (R2); a **writer and payload for the existing `PARALLEL_COMPLETED { scopePath, failedBranch, error, cancelled[] }`** (R6); additive payload fields: `EXECUTION_STARTED.{principal (always `{ v: 1 }` at least), parent, continuedFrom { executionId, carried }, chainId, generation, codeHash}` (R3k, R1b, R7), `EXECUTION_SUSPENDED.condition.waits[]` and `EXECUTION_RESUMED.waitId` (R2), `RESOURCE_METERED.custom` (R15), `OUTCOME_RECORDED.{recordedBy, late}` (R11, guarded); new reserved fold keys `_principal`, `_continuedTo`, `_inbox`, `_waitAnswers`, `_waits`, `_scopes`, `_codeHash`, `_resources.custom`; **new `ExecutionStatus` value `"continued"`** (R1b) | additive MINOR; folded types 30 → 32. The widened status union is a source-level change for exhaustive switches (the consumer list is in ADR 0109 D2) and is listed in the CHANGELOG |
+| **EVENT_SCHEMA** | 1.22.0 | **1.23.0** | new kinds `EXECUTION_CONTINUED { successorId, chainId, generation }` (R1b), `MESSAGE_CONSUMED { waitId, topic, messageId, inboxSeq, sender, payload }` (R2); a **writer and payload for the existing `PARALLEL_COMPLETED { scopePath, failedBranch, error, cancelled[] }`** (R6); additive payload fields: `EXECUTION_STARTED.{principal (always `{ v: 1 }` at least), parent, continuedFrom { executionId, carried }, chainId, generation, codeHash}` (R3k, R1b, R7), `EXECUTION_SUSPENDED.condition.waits[]` and `EXECUTION_RESUMED.waitId` (R2), `RESOURCE_METERED.custom` (R15), `OUTCOME_RECORDED.{recordedBy, late}` (R11, guarded); new reserved fold keys `_principal`, `_parent`, `_chain`, `_continuedTo`, `_inbox`, `_waitAnswers`, `_waits`, `_scopes`, `_codeHash`, `_resources.custom` (`_parent` and `_chain` added at W2-0 implementation, see "Frozen at W2-0" below); **new `ExecutionStatus` value `"continued"`** (R1b) | additive MINOR; folded types 30 → 32. The widened status union is a source-level change for exhaustive switches (the consumer list is in ADR 0109 D2) and is listed in the CHANGELOG |
 | **EVENT_STORE_SPI** | 2.0.0 | **2.1.0** | R8k optional `acquireFenceIf(id, { fence, parkSeq })` (+ conformance cases, decorators decide it; Postgres append guard reads the fence row `FOR SHARE` only for batches containing an answering kind) | additive MINOR |
 | `TimerStore` | — | unversioned; additive `TimerRecord.redrive` | R8k | mixed-fleet caveat (an older `TimerService.fire` retires a redrive row), so redrive writes sit behind `kernel.features.redrive`; guarded SQL migration for both SQL stores |
 | DISPATCHER_SPI | 1.2.0 | 1.2.0 | R3k deliberately adds nothing: the owner is read from the log | unchanged |
@@ -82,15 +82,17 @@ by one value; see the schema row).
 | Reserved ids | — | `~` refused in caller-chosen execution ids at creation | R1b | behavioural; existing ids stay resumable |
 | `InboxSource` | — | 1.0 (a function seam, not yet a versioned SPI) | R2 | new |
 
-**Metadata the fold now reads (replay note).** Today the fold reads exactly one metadata key, `flowEmit`
-(ADR 0102); the comment at `WorkflowRuntime.ts:94` says so and **must be updated in the implementation PRs**.
+**Metadata the fold now reads (replay note).** Before 1.23.0 the fold read exactly one metadata key, `flowEmit`
+(ADR 0102). The comment at `WorkflowRuntime.ts:94` that said so is updated in W2-0.
 Wave 2 adds three, each a fold INPUT (so a replay depends on it and a snapshot must carry what it produced):
 
 | Metadata key | Written by | Read by the fold | Notes |
 |---|---|---|---|
 | `forkChain: { chainId, generation }` | `fork` (`forkMeta`, `WorkflowRuntime.ts:2441`; lands on **every** copied envelope) | chain identity: preferred over sequence 0's `chainId`/`continuedFrom`; a fork has no `continuedFrom` | read from the fold, not from raw seq 0 (ADR 0109 D2, D7) |
 | `forkedBy: PrincipalRecord` | `fork` (ADR 0111 D7) | the principal resolver, in preference to the copied `principal` | |
-| `kernel: true` | the journal, for the new kinds | the new handlers ignore a new-kind envelope without it | survives `copyPrefix`, compaction, decorators (§3 "How one bump lands") |
+| `kernel: true` | the journal, for `EXECUTION_CONTINUED`, `MESSAGE_CONSUMED`, `PARALLEL_COMPLETED` (`KERNEL_STAMPED_EVENT_TYPES`), and by the R2 writer on a wait-addressed `EXECUTION_RESUMED` | the new handlers ignore a stamped-kind envelope without it; a wait-addressed resume is recognised only with it | survives `copyPrefix`, compaction, decorators (§3 "How one bump lands") |
+
+`forkChain` and `forkedBy` are read from the **`EXECUTION_STARTED` envelope** (a fork stamps every copied envelope, so sequence 0 carries them): `forkChain` replaces the payload's `chainId`/`generation`, drops `continuedFrom` and suppresses seeding from `carried`; `forkedBy` replaces the payload `principal`. `forkActAs: "owner"` (ADR 0111 D7) is descriptive and not read.
 
 Replay is unchanged for any log that carries none of them (every pre-1.23.0 log), byte-identically.
 
@@ -150,6 +152,28 @@ kernel fact. The marker closes (b):
 - The version has never been released (the monorepo is lockstep and unpublished), so a kind that no item
   ends up writing is never added. `PARALLEL_STARTED` and `STEP_RETRYING` remain reserved with handlers and
   no writer from before this wave (§7 question 12); the assertion lists them as the known exceptions.
+
+### Frozen at W2-0: the inner shapes and the choices that fix them
+
+The round-4 design froze the event and payload shapes but left the folded INNER shapes, and four
+mechanisms, open. W2-0 decided them (user, 2026-10-06); they are frozen with the rest, and a later
+change is an additive schema change.
+
+| Item | Decision |
+|---|---|
+| Chain identity and lineage | `_chain = { chainId, generation, continuedFrom? }` and `_parent`, both folded from `EXECUTION_STARTED`. A valid `forkChain` replaces `_chain` (and drops `continuedFrom`); read chain identity from the fold, never raw sequence 0 (ADR 0109 D2/D7). |
+| Wait-addressed resume | `EXECUTION_RESUMED` with `metadata.kernel: true` and payload `{ waitId, payload }`; the fold unwraps it (the flow receives the inner `payload`) into `_waitAnswers[waitId]` and never into `_resumePayloads`. No fourth metadata key. A bare resume folds exactly as before. One naming no wait of the current park is a status-only re-open. |
+| The carry | The `EXECUTION_STARTED` handler seeds `_resources` and `_inbox` from a **validated** `continuedFrom.carried` (not when `forkChain` is present). "Validated": each field is read defensively, a malformed part is ignored deterministically and never thrown. `chainDeadline` stays in `_chain.continuedFrom.carried`. |
+| `_inbox` | `{ cursors: { [topic]: inboxSeq }, dedupe: string[] }`. The dedupe window is capped at **1,024 in the fold** (oldest dropped); the runtime applies any smaller `inboxDedupeWindow` itself (a larger one is not representable). |
+| Duplicate `MESSAGE_CONSUMED` | A `messageId` already in the window advances the cursor and delivers nothing. |
+| `_waitAnswers` / `_waits` / `_scopes` | `_waitAnswers[waitId] = { kind, name, payload }` (first answer wins); `_waits[waitId] = { kind: "timer", wakeAt }` (first registration wins; removed when that wait is answered; a losing `select` arm's entry persists until the chain rotates); `_scopes[scopePath] = { failedBranch, error, cancelled }`. |
+| Marker on `PARALLEL_COMPLETED` | Not a new kind, but its payload is new: it folds `_scopes` only from a kernel-stamped envelope; unstamped it keeps the pre-1.23.0 handler (`updatedAt` only). |
+| `RESOURCE_METERED.custom` in the fold | Fixed default ceiling 1e15 and the 32-name cap; `meterCeilings` overrides apply at the guard/runtime, never in the fold. |
+| Userspace guard | New kinds are refused automatically (not in `USERSPACE_KERNEL_EVENTS`); `OUTCOME_RECORDED` carrying `recordedBy`/`late` is refused; `RESOURCE_METERED.custom` is validated (pattern, ≤ 32, no `constructor`/`prototype`, finite in [0, 1e15]). |
+| No caller metadata ingress | The only inputs to envelope metadata are the fixed `computeTarget` hint, the fork metadata the kernel builds, and the journal's own `fence`/`flowEmit`/`kernel` stamps, so nothing refuses a caller-supplied `kernel`; a test pins that a userspace emit cannot produce one. |
+| `kernel.features` | **W2-0 adds no flag.** Each flag lands with its writer's PR. |
+| `continued` consumers | Terminal and **not completed** everywhere: core type, replay-vm, `LogLifecycle` retention, `blankStream`, strays scanner, `eraseSubject`, analytics, learning (`outcome: "continued"`, no terminal reward), A2A bus (`working`), local worker (not `completed`), orchestration (a continued PARENT's park is gone; a continued CHILD is deliberately never settled), `cancel` (no-op) and `resumeAs` (refused). Follow-to-head (`waitForCompletion { continuedTo }`, the supervisor following `_continuedTo`) is deferred to R1b. |
+| Residual | An existing log whose app-emitted `RESOURCE_METERED` / `OUTCOME_RECORDED` already carries a field named `custom` / `recordedBy` / `late` folds differently from 1.23.0 (those are payload fields on kinds that were already folded, so the marker rule cannot cover them). Recorded in the CHANGELOG. |
 
 ### Rolling upgrade: writers behind flags
 

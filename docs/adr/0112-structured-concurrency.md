@@ -75,6 +75,10 @@ PARALLEL_COMPLETED { scopePath, failedBranch, error, cancelled: [stepId...] }
 
 (an existing reserved kind whose handler was a no-op; it now folds `_scopes[scopePath]`, a small
 fold-owned map with one entry per fail-fast scope, ≤ 1 KiB each, and gives the kind its first writer).
+The fold records `_scopes[scopePath] = { failedBranch, error, cancelled }` (`cancelled` keeps only string
+step ids) and, like every Wave 2 handler, only from a **kernel-stamped** envelope (`metadata.kernel:
+true`, stamped by the journal); an unstamped `PARALLEL_COMPLETED` keeps the pre-1.23.0 handler, which
+changes nothing but `updatedAt`.
 On a re-run, a scope whose path is in `_scopes` is **served from the record**: it rethrows the recorded
 error (the typed failure where there was one) and **does not start** any branch listed in `cancelled`;
 branches that completed before the failure are served by their frames as today. A scope that completed

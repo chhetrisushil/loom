@@ -1,6 +1,7 @@
 import { StorageWriteError } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import type { EventStore } from "@loom/event-runtime";
+import { KERNEL_STAMPED_EVENT_TYPES } from "@loom/replay-vm";
 import type { ReplayVM } from "@loom/replay-vm";
 
 /**
@@ -75,9 +76,17 @@ export class ExecutionJournal {
     fence: number | undefined,
     now: () => number
   ): EventEnvelope {
+    // EVENT_SCHEMA 1.23.0 — the journal stamps `kernel: true` on the kinds whose fold requires
+    // it. The stamp is applied LAST, so it is the journal's alone: no caller metadata sets it
+    // for any other kind, and a userspace emit of these kinds is refused before it gets here.
+    const stamp = KERNEL_STAMPED_EVENT_TYPES.has(eventType);
     const metadata =
-      opts?.metadata !== undefined || fence !== undefined
-        ? { ...opts?.metadata, ...(fence !== undefined && { fence }) }
+      opts?.metadata !== undefined || fence !== undefined || stamp
+        ? {
+            ...opts?.metadata,
+            ...(fence !== undefined && { fence }),
+            ...(stamp && { kernel: true }),
+          }
         : undefined;
     return {
       id: opts?.id ?? `${identity.executionId}-${sequence}`,

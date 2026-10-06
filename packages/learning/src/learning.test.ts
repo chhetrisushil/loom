@@ -135,6 +135,22 @@ describe("trajectories — extraction", () => {
     expect(trajectories(log)[0]?.steps[0]?.rewardSource).toBe("none");
   });
 
+  it("a continued execution is terminal but NOT completed: outcome `continued`, no terminal credit (ADR 0109)", () => {
+    seq = 0;
+    const stamped = {
+      ...ev("x", "EXECUTION_CONTINUED", { successorId: "x~1" }),
+      metadata: { kernel: true },
+    };
+    const log = [decision("x", "a", "1"), stamped];
+    const [t] = trajectories(log);
+    expect(t?.outcome).toBe("continued");
+    expect(t?.steps[0]?.rewardSource).toBe("none");
+    // The unstamped name is an application event (the fold ignores it too): the run stays open.
+    seq = 0;
+    const [open] = trajectories([decision("x", "a", "1"), ev("x", "EXECUTION_CONTINUED", {})]);
+    expect(open?.outcome).toBe("open");
+  });
+
   it("separates executions and keeps decisions in sequence order", () => {
     seq = 0;
     const log = [decision("x", "a", "1"), decision("y", "a", "2"), decision("x", "b", "3")];

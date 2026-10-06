@@ -395,6 +395,29 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
   repaired replays byte-identically. The re-homed events keep their own kinds and payloads; they
   carry `metadata.rehomedFrom` (their blank-stream id).
 
+#### `EXECUTION_CONTINUED`
+- **Introduced:** 1.23.0 — Wave 2 W2-0 ([ADR 0109](../adr/0109-bounded-history-and-continue-as-new.md)).
+  **Reserved: no kernel writer yet** (`ctx.continueAsNew` lands in R1b behind
+  `kernel.features.continueAsNew`). The predecessor of a continue-as-new ends here, after its
+  successor's `EXECUTION_STARTED` is durable.
+- **Payload:** `{ successorId: string, chainId: string, generation: number }`
+- **Marker:** folds ONLY an envelope with `metadata.kernel === true`; unstamped it is the no-op an
+  unknown kind always was (byte-identical replay of a log whose app already emitted that name).
+- **Folds into:** `status = "continued"` (terminal, not completed) and `variables._continuedTo =
+  successorId`; clears `_failedWhileParked`.
+
+#### `MESSAGE_CONSUMED`
+- **Introduced:** 1.23.0 — Wave 2 W2-0 ([ADR 0110](../adr/0110-durable-inbox-and-receive-select.md)).
+  **Reserved: no kernel writer yet** (`ctx.receive` / `ctx.select` / `runtime.send` land in R2
+  behind `kernel.features.inbox`).
+- **Payload:** `{ waitId, topic, messageId, inboxSeq, sender, payload }`
+- **Marker:** folds ONLY a `metadata.kernel === true` envelope; unstamped is a no-op.
+- **Folds into:** `variables._inbox = { cursors: { [topic]: inboxSeq }, dedupe: string[] }`
+  (cursor is monotone; the dedupe window is capped at 1,024 ids, oldest dropped) and the wait's
+  answer `variables._waitAnswers[waitId] = { kind: "inbox", name: topic, payload }` (first answer
+  wins). A `messageId` already in the window is a duplicate: the cursor advances, nothing is
+  delivered. Malformed or reserved names are ignored.
+
 #### `ERASURE_PENDING`
 - **Introduced:** 1.14.0 — T3-R4.5 deferred-erasure protocol ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
   Written by the `EraseCoordinator` (`@loom/compliance`) to a reserved control stream
@@ -446,10 +469,37 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
 
 ---
 
+### 2.6 Wave 2 additions to existing events (1.23.0, no writer yet)
+
+Every field below is optional and absent from every pre-1.23.0 log, which replays byte-identically.
+Frozen at W2-0: a later change to any of these shapes is an additive schema change (a further
+optional field and a MINOR bump), never an edit in place.
+
+| Event | Field | Folds into | ADR |
+|---|---|---|---|
+| `EXECUTION_STARTED` | `principal: { v: 1, ref?, identity?, delegation? }` (a fork's `forkedBy` envelope metadata wins) | `_principal` | 0111 |
+| | `parent: string` | `_parent` | 0111 |
+| | `chainId`, `generation`, `continuedFrom: { executionId, carried? }` (a fork's `forkChain` metadata wins and drops `continuedFrom`) | `_chain = { chainId, generation, continuedFrom? }` | 0109 |
+| | `continuedFrom.carried.{resources, inbox}` (validated; an invalid carry is ignored, never thrown; not applied to a fork) | seeds `_resources`, `_inbox`; `chainDeadline` stays in `_chain.continuedFrom.carried` | 0109 D3 |
+| | `codeHash: string` | `_codeHash` | 0113 |
+| `EXECUTION_SUSPENDED` | `condition.waits[]: { waitId, kind: "gate"|"inbox"|"timer", on?, topic?, viewDigest?, correlationKey?, wakeAt? }` (also kept verbatim in `suspendedOn`) | `_waits[waitId] = { kind: "timer", wakeAt }`, set at the FIRST park that lists the timer arm | 0110 D4 |
+| `EXECUTION_RESUMED` | a **wait-addressed** resume: `metadata.kernel === true` and payload `{ waitId, payload }`, unwrapped by the fold | `_waitAnswers[waitId] = { kind, name, payload }` (kind and name from the park's wait; first answer wins); drops `_waits[waitId]`; never enters `_resumePayloads`. Naming no wait of the current park: status-only re-open | 0110 D3 |
+| `PARALLEL_COMPLETED` | `{ scopePath, failedBranch, error, cancelled[] }`, **kernel-stamped only** (unstamped: `updatedAt` only, as before) | `_scopes[scopePath] = { failedBranch, error, cancelled }` | 0112 D2 |
+| `RESOURCE_METERED` | `custom: Record<string, number>` (names `/^[a-z][a-z0-9._-]{0,63}$/`, not `constructor`/`prototype`, ≤ 32 per execution, each value finite in [0, 1e15]; a bad key is **skipped deterministically**, never thrown) | `_resources.custom` (absent until used) | 0115 D2 |
+| `OUTCOME_RECORDED` | `recordedBy: string`, `late: true` (userspace emits carrying them are refused) | ride on the `_outcomes` entry | 0116 |
+
+**Envelope metadata the fold reads (1.23.0):** `flowEmit` (1.19.0), and now `kernel` (the kinds and
+shapes marked above fold only a kernel-stamped envelope; the journal stamps `kernel: true` on
+`EXECUTION_CONTINUED`, `MESSAGE_CONSUMED` and `PARALLEL_COMPLETED`), `forkChain` and `forkedBy`
+(read from the `EXECUTION_STARTED` envelope: a fork leaves its chain and acts as the forker). No
+ingress accepts caller metadata, so the stamp cannot be forged.
+
 ## 3. Execution status transitions
 
-`ExecutionStatus` = `"pending" | "running" | "suspended" | "completed" | "failed" | "cancelled"`.
-The fold seed is `"pending"`; the terminal states are `completed`, `failed`, `cancelled`.
+`ExecutionStatus` = `"pending" | "running" | "suspended" | "completed" | "failed" | "cancelled" | "continued"`.
+The fold seed is `"pending"`; the terminal states are `completed`, `failed`, `cancelled` and
+(1.23.0, ADR 0109) `continued` — terminal but NOT completed: it has no output, and
+`variables._continuedTo` names the successor that carries the work on.
 (`suspended` is durable and may outlive the process, resuming to `running`.)
 
 ```mermaid
@@ -461,10 +511,12 @@ stateDiagram-v2
   running --> completed: EXECUTION_COMPLETED
   running --> failed: EXECUTION_FAILED
   running --> cancelled: EXECUTION_CANCELLED
+  running --> continued: EXECUTION_CONTINUED (kernel-stamped)
   suspended --> cancelled: EXECUTION_CANCELLED
   completed --> [*]
   failed --> [*]
   cancelled --> [*]
+  continued --> [*]
   note right of running
     STEP_STARTED / STEP_COMPLETED / STEP_FAILED /
     STEP_CANCELLED,
@@ -477,7 +529,8 @@ stateDiagram-v2
 
 Only these events move the execution `status`: `EXECUTION_STARTED` (→ running),
 `EXECUTION_SUSPENDED` (→ suspended), `EXECUTION_RESUMED` (→ running), `EXECUTION_COMPLETED`
-(→ completed), `EXECUTION_FAILED` (→ failed), `EXECUTION_CANCELLED` (→ cancelled). Everything
+(→ completed), `EXECUTION_FAILED` (→ failed), `EXECUTION_CANCELLED` (→ cancelled),
+`EXECUTION_CONTINUED` (→ continued, kernel-stamped only). Everything
 else — including `STEP_FAILED` (ADR 0105) — folds only into `frames` / `variables`.
 
 ---
@@ -533,7 +586,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.22.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104); 1.21.0 STEP_FAILED folds the step's frame only — the execution fails only on EXECUTION_FAILED — and _failedWhileParked keeps a null resume after a while-parked failure status-only (ADR 0105) — all NO new event kinds; 1.22.0 EVENTS_REHOMED — the blank-stream repair's lifecycle fact (ADR 0107)
+export const EVENT_SCHEMA_VERSION = "1.23.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104); 1.21.0 STEP_FAILED folds the step's frame only — the execution fails only on EXECUTION_FAILED — and _failedWhileParked keeps a null resume after a while-parked failure status-only (ADR 0105) — all NO new event kinds; 1.22.0 EVENTS_REHOMED — the blank-stream repair's lifecycle fact (ADR 0107); 1.23.0 Wave 2 W2-0 — every fold handler and reserved shape for ADRs 0109–0116 / 0118 with NO writer yet: EXECUTION_CONTINUED, MESSAGE_CONSUMED, a PARALLEL_COMPLETED payload, additive EXECUTION_STARTED / EXECUTION_SUSPENDED / EXECUTION_RESUMED / RESOURCE_METERED / OUTCOME_RECORDED fields, and the envelope metadata the fold now reads (`kernel`, `forkChain`, `forkedBy`)
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

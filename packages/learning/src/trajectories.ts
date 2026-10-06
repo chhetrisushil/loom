@@ -21,12 +21,15 @@ const TERMINAL: Record<string, Trajectory["outcome"]> = {
   EXECUTION_COMPLETED: "completed",
   EXECUTION_FAILED: "failed",
   EXECUTION_CANCELLED: "cancelled",
+  // EVENT_SCHEMA 1.23.0 (ADR 0109) — the execution handed its work to a successor. Terminal,
+  // but NOT a completion: it says nothing about decision quality (the chain's last generation does).
+  EXECUTION_CONTINUED: "continued",
 };
 
 function defaultTerminalReward(outcome: Trajectory["outcome"]): number | undefined {
   if (outcome === "completed") return 1;
   if (outcome === "failed") return 0;
-  return undefined; // cancelled/open says nothing about decision quality
+  return undefined; // cancelled/continued/open says nothing about decision quality
 }
 
 function outcomeValue(o: OutcomeRecord): number {
@@ -127,6 +130,8 @@ export function trajectories<A = unknown>(
   for (const e of events) {
     const outcome = TERMINAL[e.eventType];
     if (outcome === undefined) continue;
+    // A continuation counts only when the kernel stamped it (the fold's own rule).
+    if (e.eventType === "EXECUTION_CONTINUED" && e.metadata?.kernel !== true) continue;
     terminals.set(e.executionId, outcome);
     const list = terminalEvents.get(e.executionId);
     if (list === undefined) terminalEvents.set(e.executionId, [e]);
