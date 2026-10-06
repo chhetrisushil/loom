@@ -920,6 +920,7 @@ export class WorkflowContextImpl implements WorkflowContext {
           resources: this.resourceSnapshot(),
           ...(signal !== undefined && { signal }),
           ...(this.principal !== undefined && { principal: this.principal }),
+          ...(o?.onDelta !== undefined && { onDelta: o.onDelta }),
         });
       },
     };

@@ -48,6 +48,22 @@ export interface ResourceSnapshot {
   exceeded?: boolean;
 }
 
+/**
+ * ADR 0119 — one live delta of a streaming effect's output, delivered to the
+ * per-call sink a caller attached ({@link EffectContext.onDelta}). Text deltas carry
+ * `delta` (never empty); the TERMINAL chunk has `done: true`, an empty `delta`, and
+ * the provider's `usage` when it reported one. The text is untrusted model output
+ * (ADR 0085): treat it as such wherever it is rendered or fed back into a prompt.
+ */
+export interface EffectDelta {
+  readonly delta: string;
+  readonly done?: true;
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
+}
+
+/** A per-call, live-only, synchronous, fire-and-forget delta sink (ADR 0119). */
+export type DeltaSink = (chunk: EffectDelta) => void;
+
 export interface EffectContext {
   executionId: string;
   stepId: string;
@@ -69,6 +85,14 @@ export interface EffectContext {
    * (their stepId is unique) and on bare transient calls.
    */
   readonly callKey?: string;
+  /**
+   * ADR 0119 — the per-call delta sink of a transient call that asked for one. A
+   * streaming effect (`createLlmEffect({ stream: true })`) calls it for each delta,
+   * IN ADDITION to its own configured `onDelta`. Live-only: never journaled, and not
+   * called on replay. The runtime hands the effect a wrapper that never throws and
+   * goes silent once the call settles, so an effect may call it unguarded.
+   */
+  readonly onDelta?: DeltaSink;
   emit(eventType: string, payload: unknown): void;
   /**
    * Cooperative cancellation for this effect. Aborts when the owning execution is
@@ -169,6 +193,12 @@ export interface TransientInvokeOptions {
    * never reaches the fold (a decider's LLM spend is invisible to the budget).
    */
   readonly resources?: ResourceSnapshot;
+  /**
+   * ADR 0119 — a live delta sink for this call, surfaced as `EffectContext.onDelta`.
+   * Synchronous and fire-and-forget; a throw is swallowed (and warned), never fails
+   * the call. Does not change what the call records (nothing — it is transient).
+   */
+  readonly onDelta?: DeltaSink;
 }
 
 /** The execution identity a transient invocation is stamped with (L30). */

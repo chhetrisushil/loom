@@ -42,7 +42,11 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
    * delta into (2026-09-27 audit).
    *
    * Not called on replay: a completed effect is served from the log and never
-   * re-invoked, so a tail attached to a replay sees silence. That is true of every
+   * re-invoked, so a tail attached to a replay sees silence.
+   *
+   * A per-call sink (`EffectContext.onDelta`, ADR 0119 — what `DecideScope.invokeTransient`
+   * `{ onDelta }` sets) is called IN ADDITION to this one, with `{ delta }` per delta and a
+   * final `{ delta: "", done: true, usage }`. That is true of every
    * effect, but streaming is where authors expect otherwise.
    */
   onDelta?: (delta: string, ctx: EffectContext) => void;
@@ -82,12 +86,28 @@ export function createLlmEffect<TIn = string, TOut = string>(
       const response = await (options.stream === true && options.provider.stream !== undefined
         ? collectStream(options.provider.stream(request as LlmRequest), {
             ...(ctx.signal !== undefined && { signal: ctx.signal }),
-            ...(options.onDelta !== undefined && {
-              onDelta: (delta: string) => options.onDelta?.(delta, ctx),
+            // ADR 0119 — the configured sink AND the per-call sink (ctx.onDelta, set by a
+            // decider's scope) both fire; neither replaces the other. The runtime's
+            // wrapper around ctx.onDelta never throws, so it is called unguarded.
+            ...((options.onDelta !== undefined || ctx.onDelta !== undefined) && {
+              onDelta: (delta: string) => {
+                options.onDelta?.(delta, ctx);
+                ctx.onDelta?.({ delta });
+              },
             }),
             ...(options.guard !== undefined && { guard: options.guard(ctx) }),
           })
         : options.provider.complete(request));
+      // ADR 0119 — the terminal chunk carries usage, so a per-call sink learns the
+      // spend (the charge itself is dropped by a transient call's no-op emit).
+      // Streamed path only: a `complete` fallback delivered no deltas to terminate.
+      if (options.stream === true && options.provider.stream !== undefined) {
+        ctx.onDelta?.({
+          delta: "",
+          done: true,
+          ...(response.usage !== undefined && { usage: response.usage }),
+        });
+      }
 
       return parse(response, input);
     },

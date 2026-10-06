@@ -191,3 +191,36 @@ describe("streaming LLM effect (R9)", () => {
     expect(seen[0]).toContain("<untrusted-input");
   });
 });
+
+// ADR 0119 — the per-call sink on EffectContext.onDelta.
+describe("createLlmEffect per-call delta sink (ADR 0119)", () => {
+  it("calls ctx.onDelta per delta plus a terminal chunk with usage, in addition to options.onDelta", async () => {
+    const configured: string[] = [];
+    const perCall: unknown[] = [];
+    const effect = createLlmEffect<string, string>({
+      provider: provider(),
+      buildRequest: (i) => ({ messages: [{ role: "user", content: i }] }),
+      stream: true,
+      onDelta: (d) => configured.push(d),
+    });
+    const ctx: EffectContext = { ...makeCtx(), onDelta: (c) => perCall.push(c) };
+    await effect.execute("hi", ctx);
+    expect(configured).toEqual(["Look", "ing"]);
+    expect(perCall).toEqual([
+      { delta: "Look" },
+      { delta: "ing" },
+      { delta: "", done: true, usage: { inputTokens: 7, outputTokens: 3 } },
+    ]);
+  });
+
+  it("a per-call sink alone (no configured onDelta) still receives deltas", async () => {
+    const perCall: string[] = [];
+    const effect = createLlmEffect<string, string>({
+      provider: provider(),
+      buildRequest: (i) => ({ messages: [{ role: "user", content: i }] }),
+      stream: true,
+    });
+    await effect.execute("hi", { ...makeCtx(), onDelta: (c) => perCall.push(c.delta) });
+    expect(perCall).toEqual(["Look", "ing", ""]);
+  });
+});

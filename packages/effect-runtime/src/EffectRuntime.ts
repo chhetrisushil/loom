@@ -7,6 +7,7 @@ import {
 } from "./authz";
 import { EffectModeViolationError } from "./types";
 import type {
+  DeltaSink,
   Effect,
   EffectContext,
   EffectMiddleware,
@@ -22,6 +23,7 @@ export class EffectRuntime {
   private readonly authorizer: CapabilityAuthorizer | undefined;
   private readonly scheduler: Scheduler | undefined;
   private readonly warmer: Warmer | undefined;
+  private readonly onWarn: (message: string) => void;
 
   /**
    * @param middleware Cross-cutting middleware applied around every effect
@@ -38,6 +40,7 @@ export class EffectRuntime {
     this.authorizer = options.authorizer;
     this.scheduler = options.scheduler;
     this.warmer = options.warmer;
+    this.onWarn = options.onWarn ?? ((m) => console.warn(m));
   }
 
   register(toolId: string, effect: Effect): void {
@@ -205,6 +208,22 @@ export class EffectRuntime {
     // are meaningful only for the lifetime of this call: `executionId` carries
     // the trace label for middleware correlation, `stepId` the toolId. `emit` is
     // the drop sink (R4) — including the authz-denial emit, which still throws.
+    // ADR 0119 — the effect receives a guarded wrapper: a throwing sink never fails
+    // the call, and nothing is delivered once the call has settled.
+    let settled = false;
+    const onDelta: DeltaSink | undefined =
+      opts.onDelta === undefined
+        ? undefined
+        : (chunk) => {
+            if (settled) return;
+            try {
+              opts.onDelta?.(chunk);
+            } catch (err) {
+              this.onWarn(
+                `invokeTransient("${toolId}"): onDelta sink threw (ignored): ${String(err)}`
+              );
+            }
+          };
     const ctx: EffectContext = {
       executionId: opts.as?.executionId ?? `transient:${opts.label ?? toolId}`,
       stepId: opts.as?.stepId ?? toolId,
@@ -215,8 +234,13 @@ export class EffectRuntime {
       ...(opts.resources !== undefined && { resources: opts.resources }),
       ...(opts.signal !== undefined && { signal: opts.signal }),
       ...(opts.principal !== undefined && { principal: opts.principal }),
+      ...(onDelta !== undefined && { onDelta }),
     };
-    return this.runSeam<TIn, TOut>(toolId, input, ctx, "ambient");
+    try {
+      return await this.runSeam<TIn, TOut>(toolId, input, ctx, "ambient");
+    } finally {
+      settled = true;
+    }
   }
 
   has(toolId: string): boolean {

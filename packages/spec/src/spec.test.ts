@@ -296,6 +296,10 @@ const NOT_A_CAPABILITY = new Set([
   // cancellation, the parallel combinator, the R8 supervisor); the event shapes were frozen at W2-0.
   // No new subsystem to grade.
   "0112",
+  // 0119 — a per-call live delta sink on the decide scope (EffectContext.onDelta). An additive 1P
+  // extension of ctx.decide's scope / invokeTransient (ADR 0066, L30); no kernel change. No new
+  // subsystem to grade.
+  "0119",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
