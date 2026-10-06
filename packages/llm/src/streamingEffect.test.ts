@@ -1,4 +1,4 @@
-import { isTainted } from "@loom/classify";
+import { isTainted, tainted } from "@loom/classify";
 import { TypedFailure } from "@loom/core";
 import type { EffectContext, EffectDelta } from "@loom/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -195,7 +195,7 @@ describe("streaming LLM effect (R9)", () => {
 
 // ADR 0119 — the per-call sink on EffectContext.onDelta.
 describe("createLlmEffect per-call delta sink (ADR 0119)", () => {
-  it("calls ctx.onDelta per delta (tainted) plus a done+usage chunk, BEFORE options.onDelta", async () => {
+  it("calls ctx.onDelta per delta (tainted) plus a done+usage chunk; the configured sink is reached only via the runtime's deltaSink", async () => {
     const order: string[] = [];
     const perCall: EffectDelta[] = [];
     const effect = createLlmEffect<string, string>({
@@ -212,7 +212,12 @@ describe("createLlmEffect per-call delta sink (ADR 0119)", () => {
       },
     };
     await effect.execute("hi", ctx);
-    expect(order).toEqual(["call:Look", "configured:Look", "call:ing", "configured:ing", "call:"]);
+    // Under a runtime ctx.onDelta is the GUARDED channel; the configured sink is NOT called
+    // by the effect (the runtime forwards to `effect.deltaSink` after the guards).
+    expect(order).toEqual(["call:Look", "call:ing", "call:"]);
+    effect.deltaSink?.({ delta: tainted("Look", "t") }, ctx);
+    expect(order).toEqual(["call:Look", "call:ing", "call:", "configured:Look"]);
+    order.pop();
     expect(perCall.slice(0, 2).map((c) => [isTainted(c.delta), c.delta.value])).toEqual([
       [true, "Look"],
       [true, "ing"],

@@ -375,7 +375,16 @@ export class AgentRunner {
       this.config.stream === true && provider.stream !== undefined
         ? await collectStream(provider.stream(request), {
             ...(args.signal !== undefined && { signal: args.signal }),
-            ...(this.config.onDelta !== undefined && { onDelta: this.config.onDelta }),
+            // ADR 0119 — under an EffectRuntime ctx.onDelta is the GUARDED channel (the
+            // runtime forwards to the configured sink via asEffect's `deltaSink`, after the
+            // middleware delta guards); bare, the configured sink is called directly.
+            ...((this.config.onDelta !== undefined || ctx.onDelta !== undefined) && {
+              onDelta: (delta: string) => {
+                if (ctx.onDelta !== undefined) {
+                  ctx.onDelta({ delta: tainted(delta, `agent:${ctx.stepId}`) });
+                } else this.config.onDelta?.(delta);
+              },
+            }),
           })
         : await provider.complete(request);
     return {
@@ -386,8 +395,16 @@ export class AgentRunner {
   }
 
   asEffect(): LlmEffect<AgentInput, AgentOutput> {
-    return new LlmEffect<AgentInput, AgentOutput>((input: AgentInput, ctx: EffectContext) =>
-      this.run(input, ctx)
+    const onDelta = this.config.onDelta;
+    return new LlmEffect<AgentInput, AgentOutput>(
+      (input: AgentInput, ctx: EffectContext) => this.run(input, ctx),
+      onDelta === undefined
+        ? {}
+        : {
+            deltaSink: (chunk) => {
+              if (chunk.reset !== true && chunk.done !== true) onDelta(unwrapTainted(chunk.delta));
+            },
+          }
     );
   }
 }

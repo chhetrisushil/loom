@@ -99,14 +99,16 @@ export interface EffectContext {
   readonly callKey?: string;
   /**
    * ADR 0119 — the per-call delta sink of a transient call that asked for one. A
-   * streaming effect (`createLlmEffect({ stream: true })`) calls it for each delta,
-   * IN ADDITION to its own configured `onDelta`. Live-only: never journaled, and not
+   * streaming effect (`createLlmEffect({ stream: true })`) calls it for each delta;
+   * the runtime forwards to the effect's CONFIGURED sink ({@link Effect.deltaSink}) from
+   * here, after the guards, so the configured sink is governed on every path. Live-only: never journaled, and not
    * called on replay. The runtime hands the effect a wrapper that goes silent once the
    * call settles or aborts and swallows a throw of the CALLER's sink. It throws in ONE
    * case: a middleware delta guard (e.g. a safety delta validator) refused the running
    * text — that throw means "sever the stream", so an effect MUST let it propagate
-   * (do not catch it around the call). Absent when the caller asked for none OR the
-   * runtime refused the sink because an output validator has no delta form.
+   * (do not catch it around the call). Absent when no runtime is
+   * involved or neither a caller nor the effect has a sink. When the runtime REFUSED streaming
+   * (an output validator has no delta form) it is a silent no-op — never absent.
    */
   readonly onDelta?: DeltaSink;
   emit(eventType: string, payload: unknown): void;
@@ -284,6 +286,15 @@ export interface Effect<TIn = unknown, TOut = unknown> {
    * execution at all, so there remains exactly one replay model.
    */
   readonly mode?: EffectMode;
+  /**
+   * ADR 0119 — the effect's own CONFIGURED live-delta sink (e.g. `createLlmEffect({ onDelta })`).
+   * Declared here so the RUNTIME owns delivery: the effect calls `ctx.onDelta` and the runtime
+   * forwards text and reset chunks (never the terminal one) to this sink only AFTER the
+   * middleware delta guards ran, on durable and transient calls alike; it is silent (fail
+   * closed) under an output validator that has no delta form. Called directly by the effect
+   * only when there is no runtime (`ctx.onDelta` absent).
+   */
+  readonly deltaSink?: (chunk: EffectDelta, ctx: EffectContext) => void;
   /**
    * R12 — the sub-resource one call of this effect targets, for per-resource authorization.
    * ONE registered effect can front many resources (`mcp.invoke` fronts every tool on an MCP

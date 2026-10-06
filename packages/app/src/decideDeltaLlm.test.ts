@@ -1,4 +1,4 @@
-import { type FlowDefinition, TypedFailure } from "@loom/core";
+import { type FlowDefinition, TypedFailure, step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { EffectDelta, EffectMiddleware } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -23,6 +23,13 @@ import { z } from "zod";
 // a stand-in effect; this is where the two meet, and where a mismatch between what the
 // effect sends and what the runtime expects would show.
 
+const modelStep = step$({
+  id: "model-step",
+  name: "Model",
+  toolId: "model",
+  inputSchema: z.string(),
+  outputSchema: z.string(),
+});
 const io = z.object({}).passthrough() as z.ZodSchema<Record<string, unknown>>;
 type R = FlowRunner<Record<string, unknown>, Record<string, unknown>>;
 
@@ -51,7 +58,12 @@ function provider(
   };
 }
 
-function build(runner: R, prov: LlmProvider, middleware: EffectMiddleware[] = []) {
+function build(
+  runner: R,
+  prov: LlmProvider,
+  middleware: EffectMiddleware[] = [],
+  llmOpts: { onDelta?: (d: string) => void; onReset?: (n: number) => void } = {}
+) {
   const eventStore = new InMemoryAsyncEventStore();
   const warns: string[] = [];
   const effects = new EffectRuntime(middleware, { onWarn: (m) => warns.push(m) });
@@ -61,6 +73,7 @@ function build(runner: R, prov: LlmProvider, middleware: EffectMiddleware[] = []
       provider: prov,
       stream: true,
       buildRequest: (i) => ({ messages: [{ role: "user", content: i }] }),
+      ...llmOpts,
     })
   );
   const runtime = new WorkflowRuntime({
@@ -217,5 +230,116 @@ describe("DecideScope.invokeTransient onDelta × real createLlmEffect (ADR 0119)
     expect(reason).toBeInstanceOf(TypedFailure);
     expect((reason as TypedFailure).channel).toBe(LLM_INTERRUPTED);
     expect(await types("x4")).not.toContain("DECISION_RECORDED");
+  });
+});
+
+describe("the CONFIGURED sink is guarded on every path (ADR 0119, review 2)", () => {
+  const leaky = (): LlmProvider =>
+    provider([
+      async function* () {
+        yield delta("write to ");
+        yield delta("bob@");
+        yield delta("corp.io");
+        yield delta(" please");
+        yield done();
+      },
+    ]);
+
+  it("durable ctx.run: a PII delta guard severs the configured sink before the leak", async () => {
+    const seen: string[] = [];
+    const runner: R = async (ctx) => {
+      try {
+        await ctx.run(modelStep, "hi");
+      } catch {
+        /* the sever fails the step */
+      }
+      return {};
+    };
+    const { runtime, definition } = build(
+      runner,
+      leaky(),
+      [safetyMiddleware({ validators: [piiValidator()] })],
+      { onDelta: (d) => seen.push(d) }
+    );
+    await (await runtime.start(definition, {}, { executionId: "d1" })).waitForCompletion();
+    expect(seen.join("")).not.toContain("corp.io");
+    expect(seen.length).toBeGreaterThan(0);
+  });
+
+  it("durable ctx.run: an output validator WITHOUT a delta form -> the configured sink gets nothing, the call completes", async () => {
+    const seen: string[] = [];
+    let out: unknown;
+    const runner: R = async (ctx) => {
+      out = await ctx.run(modelStep, "hi");
+      return {};
+    };
+    const noDelta = safetyMiddleware({
+      validators: [{ id: "len", phase: "output", check: () => ({ ok: true }) }],
+    });
+    const { runtime, definition, warns } = build(runner, leaky(), [noDelta], {
+      onDelta: (d) => seen.push(d),
+    });
+    await (await runtime.start(definition, {}, { executionId: "d2" })).waitForCompletion();
+    expect(seen).toEqual([]);
+    expect(out).toBe("write to bob@corp.io please");
+    expect(warns.join("\n")).toMatch(/streaming disabled: .* inspects output without a delta form/);
+  });
+
+  it("transient call WITHOUT a per-call sink: configured sink is still guarded; and refused per-call sink also silences it", async () => {
+    const seen: string[] = [];
+    const runner: R = async (ctx) => {
+      await ctx.decide("a", (s) => s.invokeTransient<string, string>("model", "hi"));
+      return {};
+    };
+    const noDelta = safetyMiddleware({
+      validators: [{ id: "len", phase: "output", check: () => ({ ok: true }) }],
+    });
+    const { runtime, definition } = build(runner, leaky(), [noDelta], {
+      onDelta: (d) => seen.push(d),
+    });
+    await (await runtime.start(definition, {}, { executionId: "d3" })).waitForCompletion();
+    expect(seen).toEqual([]);
+
+    const seen2: string[] = [];
+    const caller: string[] = [];
+    const runner2: R = async (ctx) => {
+      await ctx.decide("a", (s) =>
+        s.invokeTransient<string, string>("model", "hi", {
+          onDelta: (d) => caller.push(d.delta.value),
+        })
+      );
+      return {};
+    };
+    const b = build(runner2, leaky(), [noDelta], { onDelta: (d) => seen2.push(d) });
+    await (await b.runtime.start(b.definition, {}, { executionId: "d4" })).waitForCompletion();
+    expect(seen2).toEqual([]);
+    expect(caller).toEqual([]);
+  });
+
+  it("a retry resets the configured sink too (onReset fires when attempt 2 begins)", async () => {
+    const seen: string[] = [];
+    const resets: number[] = [];
+    const runner: R = async (ctx) => {
+      await ctx.run(modelStep, "hi");
+      return {};
+    };
+    const { runtime, definition } = build(
+      runner,
+      provider([
+        async function* () {
+          yield delta("par");
+          throw new Error("boom");
+        },
+        async function* () {
+          yield delta("whole");
+          yield done();
+        },
+      ]),
+      [retryMiddleware({ jitter: false, sleep: async () => {} })],
+      { onDelta: (d) => seen.push(d), onReset: (n) => resets.push(n) }
+    );
+    await (await runtime.start(definition, {}, { executionId: "d5" })).waitForCompletion();
+    expect(resets).toEqual([2]);
+    expect(seen).toEqual(["par", "whole"]);
   });
 });
