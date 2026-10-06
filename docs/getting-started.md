@@ -40,6 +40,7 @@ Create `src/hello.ts`:
 import { z } from "zod";
 import { step$, handler$, flow$ } from "@loom/core";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { surface } from "@loom/agent-surface";
 
 // A step: schema-checked input/output + the work to do.
 const greetStep = step$({
@@ -52,12 +53,12 @@ const greetStep = step$({
   })),
 });
 
-// A runner: plain async orchestration. `ctx.ui.*` pushes UI updates to a surface.
+// A runner: plain async orchestration. `surface(ctx)` (from `@loom/agent-surface`) pushes UI updates to a surface.
 const runner: FlowRunner<{ name: string }, { message: string }> = async (ctx, input) => {
-  ctx.ui.set("phase", "greeting");
+  surface(ctx).set("phase", "greeting");
   const result = await ctx.run(greetStep, { name: input.name });
-  ctx.ui.append("timeline", result.message);
-  ctx.ui.set("phase", "done");
+  surface(ctx).append("timeline", result.message);
+  surface(ctx).set("phase", "done");
   return result;
 };
 
@@ -119,6 +120,7 @@ The feature that sets Loom apart: a flow can **suspend** at a durable checkpoint
 import { z } from "zod";
 import { step$, handler$, flow$ } from "@loom/core";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { surface } from "@loom/agent-surface";
 
 const ApprovalDecision = z.object({ approved: z.boolean(), approvedBy: z.string() });
 type ApprovalDecision = z.infer<typeof ApprovalDecision>;
@@ -133,7 +135,7 @@ const applyStep = step$({
 
 const runner: FlowRunner<{ target: string }, { applied: boolean; approvedBy?: string }> =
   async (ctx, input) => {
-    ctx.ui.set("phase", "awaiting-approval");
+    surface(ctx).set("phase", "awaiting-approval");
 
     // Durable checkpoint: persists, returns control to the caller. The type argument
     // names what the gate delivers; declare the same schema in `resumeSchemas` on the
@@ -145,13 +147,13 @@ const runner: FlowRunner<{ target: string }, { applied: boolean; approvedBy?: st
     });
 
     if (!decision.approved) {
-      ctx.ui.set("phase", "rejected");
+      surface(ctx).set("phase", "rejected");
       return { applied: false, approvedBy: decision.approvedBy };
     }
 
-    ctx.ui.set("phase", "applying");
+    surface(ctx).set("phase", "applying");
     const { applied } = await ctx.run(applyStep, { target: input.target });
-    ctx.ui.set("phase", "done");
+    surface(ctx).set("phase", "done");
     return { applied, approvedBy: decision.approvedBy };
   };
 

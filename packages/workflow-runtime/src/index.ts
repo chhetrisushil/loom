@@ -136,11 +136,13 @@ export type {
   ErrorClassCtor,
   ParallelOptions,
   WorkflowContext,
+  ExecutionContextExtensions,
 } from "./types";
 // Re-exported so apps that name `runtime.invokeTransient(...)` options through
 // the top-level runtime (or @loom/sdk) can name the type too (ADR 0066).
 export type { TransientInvokeOptions } from "@loom/effect-runtime";
 export { KERNEL_ABI, KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "./abi";
+export type { SurfaceFactory } from "./WorkflowContext";
 export type { KernelAbi, KernelSyscall, SyscallKind } from "./abi";
 export {
   serializeExecution,

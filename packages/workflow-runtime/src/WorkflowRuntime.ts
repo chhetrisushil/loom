@@ -31,6 +31,7 @@ import { ulid } from "ulid";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { highestMissing } from "./LogLifecycle";
 import { WorkflowContextImpl } from "./WorkflowContext";
+import type { SurfaceFactory } from "./WorkflowContext";
 import {
   armDeadline,
   assertFlowBudgets,
@@ -188,6 +189,14 @@ export interface WorkflowRuntimeDeps {
    * non-`Error`, falls back to `ParallelScopeFailedError`.
    */
   errorClasses?: Record<string, ErrorClassCtor>;
+  /**
+   * ADR 0114 — the factory behind `ctx.ui`: `(emit) => accessor`. The kernel names no UI
+   * vocabulary, so a composed app passes `createSurfaceEmitter` from `@loom/agent-surface`
+   * (`defineConfig`, `@loom/testing` and the scaffold already do). Without it `ctx.ui` THROWS a
+   * message naming this dep — the deliberate "break now" for a bare `new WorkflowRuntime`. The
+   * documented spelling for new code is `surface(ctx)` from `@loom/agent-surface`.
+   */
+  surface?: SurfaceFactory;
   /**
    * Take a mid-run snapshot every N committed events, bounding the replay tail so
    * a resume/recovery folds only ~N events instead of the whole log. Omit (or 0)
@@ -541,6 +550,7 @@ export class WorkflowRuntime {
   private readonly parkDrainMs: number | undefined;
   private readonly scopes: boolean;
   private readonly errorClasses: Record<string, ErrorClassCtor> | undefined;
+  private readonly surface: SurfaceFactory | undefined;
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
   private readonly executionAuthorizer: ExecutionAuthorizer | undefined;
@@ -584,6 +594,7 @@ export class WorkflowRuntime {
     this.parkDrainMs = deps.parkDrainMs;
     this.scopes = deps.scopes === true;
     this.errorClasses = deps.errorClasses;
+    this.surface = deps.surface;
     this.resumeAuthenticator = deps.resumeAuthenticator;
     this.timerStore = deps.timerStore;
     this.executionAuthorizer = deps.executionAuthorizer;
@@ -3393,6 +3404,7 @@ export class WorkflowRuntime {
         onWarn: this.onWarn,
         scopes: this.scopes,
         ...(this.errorClasses !== undefined && { errorClasses: this.errorClasses }),
+        ...(this.surface !== undefined && { surface: this.surface }),
       }
     );
 

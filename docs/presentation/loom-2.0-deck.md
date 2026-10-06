@@ -171,7 +171,7 @@ A framework becomes a kernel when it adds the enforcement rings a real kernel ha
 
 | Ring | Mechanism |
 |---|---|
-| **K1 Syscall ABI** | `KERNEL_SYSCALLS` — versioned, conformance-pinned (`execute/run/decide/parallel/suspend/sleep/sleepUntil/emit/stream/ui`) |
+| **K1 Syscall ABI** | `KERNEL_SYSCALLS` — versioned, conformance-pinned (`execute/run/decide/negotiateBudget/parallel/suspend/sleep/sleepUntil/emit/stream/ui`) |
 | **K2 Protection** | `EffectRuntime` denies ungranted effects (`GrantTable`, least-privilege); denials logged |
 | **K3 Accounting** | `meteringMiddleware` — tokens/$/latency metered + budget **admission control** |
 | **K4 Supervision** | `SupervisingDispatcher` — restart/backoff + **circuit breaker** |
@@ -259,7 +259,7 @@ Not a runtime NL interpreter. **Brownfield-aware codegen.**
         │  applyChanges (pure, surgical, formatting-preserving)
         ▼
    plain, static TypeScript you own — new flows + in-place edits
-   (flow$ / step$ + defineConfig; ctx.suspend gate; ctx.ui)
+   (flow$ / step$ + defineConfig; ctx.suspend gate; surface(ctx))
    --dry-run shows a diff · .loom lockfile replays it with no model
 ```
 

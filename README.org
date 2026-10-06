@@ -203,7 +203,7 @@ Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) tha
 *Projection & UI*
 
 | ~@loom/projection-runtime~ | Event → projection folding with live subscriptions |
-| ~@loom/agent-surface~      | The agent-surface patch protocol — durable patch/event UI updates (~ctx.ui.set/merge/append~). Loom's native surface mechanism, /not/ the Google A2UI wire protocol (ADR 0069 renamed it) |
+| ~@loom/agent-surface~      | The agent-surface patch protocol — durable patch/event UI updates (~surface(ctx).set/merge/append~). Loom's native surface mechanism, /not/ the Google A2UI wire protocol (ADR 0069 renamed it) |
 | ~@loom/blueprint-runtime~  | Schema-driven, JSON-serializable UI blueprints |
 | ~@loom/plugin-renderer-react~ | React renderer (with opt-in render-side fiber) |
 | ~@loom/plugin-renderer-terminal~ | Terminal renderer — same blueprint, non-React surface |

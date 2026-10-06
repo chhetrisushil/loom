@@ -19,7 +19,6 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/agent-surface": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",

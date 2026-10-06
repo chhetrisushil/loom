@@ -86,7 +86,7 @@ pod is recycled at step 7 of 12, three days into an approval wait?"
 
 ```ts
 const runner: FlowRunner<In, Out> = async (ctx, input) => {
-  ctx.ui.set("phase", "investigating");
+  surface(ctx).set("phase", "investigating");
   const found = await ctx.run(investigateStep, { target: input.target });
 
   // Durable checkpoint — persists, hands control back to the caller.

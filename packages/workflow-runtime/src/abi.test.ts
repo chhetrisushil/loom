@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -6,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { KERNEL_ABI, KERNEL_ABI_VERSION, KERNEL_SYSCALLS } from "./abi";
+import { testSurface } from "./testSurface";
 import type { ExecutionContext, FlowRunner, RegisteredFlow } from "./types";
 
 // K1 conformance: the live ExecutionContext must expose exactly the declared syscall
@@ -42,6 +45,8 @@ async function captureContext(): Promise<ExecutionContext> {
     eventStore: new InMemoryAsyncEventStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime,
+    // ADR 0114: `ui` is an injected accessor; the kernel's own tests inject the stub.
+    surface: testSurface,
   });
   let captured: ExecutionContext | undefined;
   const runner: FlowRunner<Record<string, never>, unknown> = async (ctx) => {
@@ -90,6 +95,7 @@ describe("Kernel ABI (K1)", () => {
       "decide",
       "emit",
       "execute",
+      "negotiateBudget",
       "parallel",
       "run",
       "sleep",
@@ -98,5 +104,32 @@ describe("Kernel ABI (K1)", () => {
       "suspend",
       "ui",
     ]);
+  });
+
+  it("ADR 0114: `ui` is deprecated (not removed) and negotiateBudget is in the table at 1.3.0", () => {
+    const ui = KERNEL_SYSCALLS.find((s) => s.name === "ui");
+    expect(ui?.kind).toBe("accessor");
+    expect(ui?.deprecated).toBe(true);
+    const nb = KERNEL_SYSCALLS.find((s) => s.name === "negotiateBudget");
+    expect(nb).toMatchObject({ kind: "call", since: "1.3.0" });
+    // Only `ui` is deprecated; nothing else was quietly marked.
+    expect(KERNEL_SYSCALLS.filter((s) => s.deprecated === true).map((s) => s.name)).toEqual(["ui"]);
+  });
+
+  it("ADR 0114 D3: the ExecutionContext interface and the syscall table agree", () => {
+    // Members of `interface ExecutionContext` in the source, minus the two identity fields; the
+    // `ui` accessor is merged in by @loom/agent-surface and so is not in the kernel's interface.
+    const src = readFileSync(join(__dirname, "types.ts"), "utf8");
+    const body = /export interface ExecutionContext extends [A-Za-z]+ \{([\s\S]*?)\n\}\n/.exec(src);
+    expect(body, "ExecutionContext interface not found").not.toBeNull();
+    const members = new Set(
+      [...(body?.[1] ?? "").matchAll(/^ {2}(?:readonly )?([a-zA-Z]+)\s*[(<:?]/gm)].map((m) => m[1])
+    );
+    members.delete("executionId");
+    members.delete("workflowId");
+    const table = new Set(KERNEL_SYSCALLS.map((s) => s.name));
+    table.delete("ui");
+    expect([...members].sort()).toEqual([...table].sort());
+    expect(members.has("ui"), "the kernel interface must not declare ui").toBe(false);
   });
 });

@@ -8,6 +8,7 @@ export type {
 export { applySurfacePatch, applySurfacePatches, getSurfaceValue } from "./applyPatch";
 export { createSurfaceEmitter } from "./emitter";
 export type { SurfaceEmitter } from "./emitter";
+export { surface } from "./context";
 export { AgentSurfaceRuntime } from "./AgentSurfaceRuntime";
 export {
   agentSurfaceProjection,

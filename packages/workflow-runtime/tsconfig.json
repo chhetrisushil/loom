@@ -12,7 +12,6 @@
     { "path": "../replay-vm" },
     { "path": "../scheduler" },
     { "path": "../effect-runtime" },
-    { "path": "../snapshot-runtime" },
-    { "path": "../agent-surface" }
+    { "path": "../snapshot-runtime" }
   ]
 }

@@ -118,7 +118,7 @@ You write functions. Loom records every meaningful moment as a sequenced event, 
 
 ```ts
 const runner: FlowRunner<In, Out> = async (ctx, input) => {
-  ctx.ui.set("phase", "investigating");
+  surface(ctx).set("phase", "investigating");
   const found = await ctx.run(investigateStep, { target: input.target });
 
   // Durable checkpoint — persists, hands control back to the caller.
@@ -129,7 +129,7 @@ const runner: FlowRunner<In, Out> = async (ctx, input) => {
 };
 ```
 
-`ctx.run` (recorded work) · `ctx.suspend` (durable pause) · `ctx.parallel` · `ctx.ui.*` (live UI).
+`ctx.run` (recorded work) · `ctx.suspend` (durable pause) · `ctx.parallel` · `surface(ctx).*` (live UI).
 Everything else is ordinary `async`/`await`, `if`, `for`, and your types.
 
 ---

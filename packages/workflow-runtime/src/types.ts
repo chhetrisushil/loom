@@ -1,4 +1,3 @@
-import type { SurfaceEmitter } from "@loom/agent-surface";
 import type { ExecutableTask, ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
 import type { DeltaSink, PrincipalChain } from "@loom/effect-runtime";
 
@@ -148,7 +147,7 @@ export interface BranchContext extends ExecutionContext {
 // Loom 2.0: the execution-facing context. `execute` is the generalized durable
 // primitive (any task kind); `run` is the step-shaped alias kept for source
 // compatibility and the simplest path. `WorkflowContext` remains an alias below.
-export interface ExecutionContext {
+export interface ExecutionContext extends ExecutionContextExtensions {
   readonly executionId: string;
   readonly workflowId: string;
 
@@ -254,11 +253,18 @@ export interface ExecutionContext {
   // An `emit` of `{ delta, done }` — the same once-per-execution rule.
   stream(eventType: string, delta: string, done?: boolean): void;
 
-  // Agent-surface — drive the UI with durable, replayable patch/event updates.
-  // Each patch is an `emit`, so it is appended once per execution (ADR 0102).
-  // ctx.ui.set(path, value) / append / merge / increment / remove / patch.
-  readonly ui: SurfaceEmitter;
+  // `ctx.ui` (agent-surface) is NOT declared here (ADR 0114): `@loom/agent-surface` merges
+  // `readonly ui: SurfaceEmitter` into `ExecutionContextExtensions` below, so it type-checks
+  // wherever that package is in the program and nowhere else. New code spells it `surface(ctx)`.
 }
+
+/**
+ * Types owned by packages ABOVE the kernel, merged into `ExecutionContext` by declaration
+ * merging (ADR 0114). Empty in the kernel on purpose: the kernel names no UI vocabulary.
+ * `@loom/agent-surface` adds `ui`.
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: the extension point is the empty interface.
+export interface ExecutionContextExtensions {}
 
 // Back-compat alias. Existing code importing `WorkflowContext` keeps working; the
 // two are identical types. New code should prefer `ExecutionContext`.

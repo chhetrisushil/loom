@@ -3,11 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import { testSurface } from "./testSurface";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "./types";
 
 const inputSchema = z.object({ incidentId: z.string() });
@@ -140,6 +143,7 @@ describe("WorkflowRuntime — agent-surface (ctx.ui)", () => {
       eventStore,
       snapshotStore,
       effectRuntime,
+      surface: testSurface,
       onEvent: (e) => events.push({ eventType: e.eventType, payload: e.payload }),
     });
 
@@ -162,6 +166,29 @@ describe("WorkflowRuntime — agent-surface (ctx.ui)", () => {
       surface: "ui",
       patches: [{ op: "set", path: "phase", value: "investigating" }],
     });
+  });
+});
+
+describe("WorkflowRuntime — ctx.ui is injected, not built in (ADR 0114)", () => {
+  it("a bare runtime (no `surface` dep) throws a clear error naming the dep on ctx.ui", async () => {
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: new EffectRuntime(),
+    });
+    let message = "";
+    const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx) => {
+      try {
+        (ctx as unknown as { ui: unknown }).ui;
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      return { resolved: true };
+    };
+    await (await runtime.start(makeFlow(runner), { incidentId: "bare" })).waitForCompletion();
+    expect(message).toMatch(/ctx\.ui is not available/);
+    expect(message).toMatch(/surface/);
+    expect(message).toMatch(/ADR 0114/);
   });
 });
 

@@ -25,5 +25,6 @@ export {
   PURE_PACKAGES,
   readWorkspaceGraph,
   findLayeringViolations,
+  findKernelClosureViolations,
   type LayeringViolation,
 } from "./layering";

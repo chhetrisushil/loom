@@ -61,10 +61,10 @@ interface In { target: string }
 interface Out { summary: string }
 
 const runner: FlowRunner<In, Out> = async (ctx, input) => {
-  ctx.ui.set("phase", "investigating");
+  surface(ctx).set("phase", "investigating");
   const found = await ctx.run(investigateStep, { target: input.target });
-  ctx.ui.append("timeline", found.summary);
-  ctx.ui.set("phase", "done");
+  surface(ctx).append("timeline", found.summary);
+  surface(ctx).set("phase", "done");
   return { summary: found.summary };
 };
 
@@ -94,7 +94,7 @@ Inside a runner you have the full `ExecutionContext` (`WorkflowContext` is an al
 | `ctx.sleep(ms)` / `ctx.sleepUntil(wakeAt)` | **Durable** timer suspension — the absolute wake time is in the log, so restarts survive it and wall-clock drift never enters the fold |
 | `ctx.emit(type, payload)` | Append a domain event — **durable**, appended **once per execution**: a resume or recovery re-runs the flow from the top, and each emit the log already holds is served from it rather than appended again (ADR 0102). Load-bearing forever |
 | `ctx.stream(type, delta, done?)` | Stream incremental output (e.g. LLM output). **Each call appends a durable event**, once per execution like `ctx.emit` — chunk at a semantic granularity (sentence / tool call), not per token; for per-token feedback use `@loom/live-query` `subscribe` or `progressHub` instead |
-| `ctx.ui.set/merge/append(path, …)` | Push updates to a UI surface (agent-surface) — **durable per patch**, appended once per execution (so `append`/`increment` before a gate do not repeat on resume), and the same granularity rule as `ctx.stream` applies |
+| `surface(ctx).set/merge/append(path, …)` (sugar over `ctx.emit`) | Push updates to a UI surface (agent-surface; `import { surface } from "@loom/agent-surface"`, the old `ctx.ui` accessor is deprecated and injected, ADR 0114) — **durable per patch**, appended once per execution (so `append`/`increment` before a gate do not repeat on resume), and the same granularity rule as `ctx.stream` applies |
 
 **Streaming from a decider ([ADR 0119](adr/0119-decide-scope-streaming-deltas.md)).** `scope.invokeTransient(toolId, input, { onDelta })` hands a streaming effect (`createLlmEffect({ stream: true })`, `createAgentModelEffect`) a per-call sink. It receives `EffectDelta` chunks: text (`delta` is a **tainted** string, `unwrapTainted(chunk.delta)` to display it — `guardRequest` refuses it if you feed it into a prompt), a `{ reset: true, attempt }` chunk before a retried attempt (clear your view and re-render), and a final `{ done: true, usage }` sent only after the call **succeeded** — the promise's settlement is authoritative. The call is governed exactly like one without a sink (authz, middleware, kill switch, taint, budget admission, cancellation). Deltas are live-only (never journaled, silent on replay; the decision records only your return value); a throwing sink is swallowed and warned; the sink goes silent once the call settles or aborts. **Safety:** `safetyMiddleware` validators with a delta form (`piiValidator()`, `denyPatterns()` by default) check the running text and sever the stream before the offending delta is delivered. If an output validator has NO delta form (e.g. `schemaValidator`), streaming is disabled (warned): the per-call sink AND any sink configured on the effect (`createLlmEffect({ onDelta })`, `AgentRunner` `onDelta`) receive nothing and the call completes non-streamed. The configured sink is guarded the same way on durable `ctx.run` calls too, and `createLlmEffect({ onReset })` is its reset hook. A middleware that rejects or rewrites output after `next()` MUST set `inspectsOutput` (or provide a `deltaGuard`); `redactionMiddleware` does so when `redactOutput` is set. A UI that displays deltas depends on `@loom/classify` to `unwrapTainted` them. Delta checks scan the last `deltaWindow` characters (default 4096): text before a match completes is delivered, and a pattern wider than the window can evade the delta form.
 
@@ -197,13 +197,13 @@ Because state is `fold(events)`, you can also inspect without running: `await ap
 
 ## Step 5 — Drive a live UI with surfaces
 
-Flows push UI updates through `ctx.ui` (the **agent-surface** patch protocol). These fold into named **surfaces** in the `ProjectionRuntime`, completely decoupled from durability.
+Flows push UI updates through `surface(ctx)` from `@loom/agent-surface` (the **agent-surface** patch protocol). `ctx.ui` is the deprecated spelling: the kernel no longer imports agent-surface ([ADR 0114](adr/0114-ctx-ui-leaves-the-kernel.md)), so `ctx.ui` exists only on a runtime built with the `surface` dep (`defineConfig` supplies it) and a bare `new WorkflowRuntime(...)` throws on it. These fold into named **surfaces** in the `ProjectionRuntime`, completely decoupled from durability.
 
 ```ts
 const runner: FlowRunner<In, Out> = async (ctx, input) => {
-  ctx.ui.set("phase", "investigating");            // overwrite a value
-  ctx.ui.merge("metrics", { cpu: 87, memMb: 14000 }); // shallow-merge an object
-  ctx.ui.append("timeline", "collected metrics");   // push to an array
+  surface(ctx).set("phase", "investigating");            // overwrite a value
+  surface(ctx).merge("metrics", { cpu: 87, memMb: 14000 }); // shallow-merge an object
+  surface(ctx).append("timeline", "collected metrics");   // push to an array
   // …
 };
 ```
@@ -330,7 +330,7 @@ const ApprovalDecision = z.object({ approved: z.boolean(), approvedBy: z.string(
 type ApprovalDecision = z.infer<typeof ApprovalDecision>;
 
 const runner: FlowRunner<{ target: string }, { applied: boolean }> = async (ctx, input) => {
-  ctx.ui.set("phase", "awaiting-approval");
+  surface(ctx).set("phase", "awaiting-approval");
 
   const decision = await ctx.suspend<ApprovalDecision>({
     on: "ApprovalGranted",

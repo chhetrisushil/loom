@@ -44,7 +44,7 @@ projectionRuntime.register(TaskProjection);
 const app = defineConfig({
   storage: { kind: "memory" },          // no server, no DB
   projectionRuntime,
-  surfaces: ["ui"],                      // the A2UI surface ctx.ui.* targets
+  surfaces: ["ui"],                      // the A2UI surface surface(ctx).* targets
   catalog,                              // registers the flow as a capability
   observability: { telemetry: [ConsoleTelemetryAdapter, ReactAdapter] },
 });

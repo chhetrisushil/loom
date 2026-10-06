@@ -9,6 +9,7 @@
   "references": [
     { "path": "../classify" },
     { "path": "../core" },
-    { "path": "../projection-runtime" }
+    { "path": "../projection-runtime" },
+    { "path": "../workflow-runtime" }
   ]
 }

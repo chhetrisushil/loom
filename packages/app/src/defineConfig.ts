@@ -1,5 +1,5 @@
 import { SkillRegistry } from "@loom/agent";
-import { agentSurfaceProjection } from "@loom/agent-surface";
+import { agentSurfaceProjection, createSurfaceEmitter } from "@loom/agent-surface";
 import {
   EraseCoordinator,
   type EraseSubjectResult,
@@ -1157,6 +1157,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     snapshotStore: stores.snapshotStore,
     effectRuntime,
     onEvent,
+    // ADR 0114: the kernel names no UI vocabulary, so the composed app injects the `ctx.ui` accessor.
+    surface: createSurfaceEmitter,
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),
     ...(config.timers !== undefined && { timerStore: config.timers.store }),
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),

@@ -21,11 +21,16 @@
   "dependencies": {
     "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
-    "@loom/projection-runtime": "workspace:*"
+    "@loom/projection-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "zod": "^3.23.8"
   }
 }

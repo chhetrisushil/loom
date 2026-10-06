@@ -108,7 +108,7 @@ onEvent → ProjectionRuntime → UI
 ```
 
 - `WorkflowRuntime` (`packages/workflow-runtime`) orchestrates; `EffectRuntime` isolates side effects; `ReplayVM` (`packages/replay-vm`) folds events → state.
-- Event store + snapshot store persist everything — **async-first** interfaces, so in-memory + SQLite ship in the box and Postgres/Redis/DynamoDB plug in as first-class backends (a per-execution `ExecutionJournal` keeps `ctx.emit`/`ctx.ui` synchronous).
+- Event store + snapshot store persist everything — **async-first** interfaces, so in-memory + SQLite ship in the box and Postgres/Redis/DynamoDB plug in as first-class backends (a per-execution `ExecutionJournal` keeps `ctx.emit`/`surface(ctx)` synchronous).
 
 ---
 
@@ -148,9 +148,10 @@ await ctx.parallel([[a, i], [b, j]])// run steps concurrently
 await ctx.decide(key, () => choose())// a learned choice, recorded — replay serves the choice
 await ctx.suspend({ on: "ApprovalGranted", correlationKey, timeout })
 await ctx.sleep(60_000)             // durable timer (or ctx.sleepUntil(absoluteMs))
+await ctx.negotiateBudget("tokens", 5000)  // a logged budget grant (ADR 0032)
 ctx.emit("DOMAIN_EVENT", payload)   // durable custom event
 ctx.stream("TOKEN", delta, done)    // token streaming
-ctx.ui.set("phase", "triaging")     // agent-surface — drive the UI (durable patch)
+surface(ctx).set("phase", "triaging")     // agent-surface — drive the UI (durable patch)
 ```
 
 That is the whole surface: **`KERNEL_SYSCALLS`**, versioned by `KERNEL_ABI_VERSION` and pinned by
@@ -306,9 +307,9 @@ Built on Node `http` + `fetch` — no framework HTTP dependency. Because A2A is 
 Agents drive the UI with **typed, durable patches** — not ad‑hoc messages:
 
 ```ts
-ctx.ui.set("phase", "triaging");
-ctx.ui.merge("metrics", { cpu: 87 });
-ctx.ui.append("timeline", "root cause found");   // set / merge / append / remove / increment
+surface(ctx).set("phase", "triaging");
+surface(ctx).merge("metrics", { cpu: 87 });
+surface(ctx).append("timeline", "root cause found");   // set / merge / append / remove / increment
 ```
 
 - Each call emits one `SURFACE_PATCH` event → **durable & replayable**.

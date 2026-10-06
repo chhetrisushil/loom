@@ -1053,7 +1053,7 @@ function SurfaceTab({
   if (patches.length === 0) {
     return (
       <div style={s.empty}>
-        No agent-surface patches yet — run the flow. Each <code>ctx.ui.*</code> call emits one
+        No agent-surface patches yet — run the flow. Each <code>surface(ctx).*</code> call emits one
         durable, replayable <code>SURFACE_PATCH</code> event that folds into the surface.
       </div>
     );

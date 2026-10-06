@@ -148,13 +148,27 @@ export class FlowEditor {
 
   /** Insert a durable UI surface write into the runner, unless one already exists. */
   ensureUi(): void {
-    if (/ctx\.ui\.set\s*\(/.test(this.src)) {
+    if (/(?:ctx\.ui|surface\s*\(\s*ctx\s*\))\.set\s*\(/.test(this.src)) {
       this.notes.push("UI surface already present — left as-is");
       return;
     }
+    // ADR 0114: `ctx.ui` is typed by @loom/agent-surface (declaration merging), so the documented
+    // spelling is `surface(ctx)`, and the file must import it to type-check.
+    const first = this.sf.statements[0];
+    const hasImport =
+      /import\s*\{[^}]*\bsurface\b[^}]*\}\s*from\s*["']@loom\/agent-surface["']/.test(this.src);
+    if (first !== undefined && !hasImport) {
+      const pos = first.getStart(this.sf);
+      const lineStart = this.src.lastIndexOf("\n", pos - 1) + 1;
+      this.splices.push({
+        start: lineStart,
+        end: lineStart,
+        text: 'import { surface } from "@loom/agent-surface";\n',
+      });
+    }
     this.insertBeforeRunnerReturn(
-      '  ctx.ui.set("status", "done"); // durable, replayable UI surface\n',
-      "added UI surface (ctx.ui.set)"
+      '  surface(ctx).set("status", "done"); // durable, replayable UI surface\n',
+      "added UI surface (surface(ctx).set)"
     );
   }
 

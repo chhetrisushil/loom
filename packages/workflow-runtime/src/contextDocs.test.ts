@@ -104,7 +104,11 @@ describe("context/doc durability coverage (fitness)", () => {
 
   it("parses the ExecutionContext surface", () => {
     expect(members).toContain("execute");
-    expect(members).toContain("ui");
+    expect(members).toContain("negotiateBudget");
+    expect(
+      members,
+      "ui is merged in by @loom/agent-surface, not declared (ADR 0114)"
+    ).not.toContain("ui");
     expect(members.length).toBeGreaterThanOrEqual(10);
   });
 
