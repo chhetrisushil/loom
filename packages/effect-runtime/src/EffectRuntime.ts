@@ -3,6 +3,7 @@ import {
   type CapabilityAuthorizer,
   CapabilityDeniedError,
   type EffectRuntimeOptions,
+  principalBlocked,
 } from "./authz";
 import { EffectModeViolationError } from "./types";
 import type {
@@ -75,6 +76,15 @@ export class EffectRuntime {
     ctx: EffectContext,
     seam: "journaled" | "ambient"
   ): Promise<TOut> {
+    // R3k (ADR 0111 D4) — the KERNEL refuses a principal whose recorded identity could not be
+    // restored (an unrestorable delegation, a shredded or unresolvable record), BEFORE any
+    // authorizer: correctness must not depend on which authorizer happens to be composed.
+    const blocked = principalBlocked(ctx.principal);
+    if (blocked !== undefined) {
+      ctx.emit("EFFECT_DENIED", { toolId, stepId: ctx.stepId, reason: blocked });
+      throw new CapabilityDeniedError(toolId, blocked);
+    }
+
     // Protection ring first: an unauthorized effect never runs, and its denial is a
     // durable, auditable fact (P9). Checked before registry lookup so probing for
     // unregistered effects is denied too.

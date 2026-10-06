@@ -25,7 +25,38 @@ export interface PrincipalChain {
   onBehalfOf?: string;
   /** K12.4 — a verifiable attenuated-delegation token, checked at the callee. */
   delegation?: DelegatedGrant;
+  /**
+   * R3k (ADR 0111 D2/D4) — set ONLY by the kernel's principal resolver, never by a caller: the
+   * execution's recorded principal carried a delegation (this is its digest id) that no codec or
+   * resolver could restore. The effect seam refuses every effect of such a principal BEFORE any
+   * authorizer is consulted ({@link principalBlocked}); it never falls back to a broader identity.
+   */
+  delegationUnresolved?: string;
+  /** R3k — the recorded principal was crypto-shredded: every effect is denied (never the resumer's). */
+  principalShredded?: true;
+  /** R3k — the recorded principal could not be rehydrated (a `ref` with no codec, an unknown record version). */
+  principalUnresolved?: string;
   [key: string]: unknown;
+}
+
+/**
+ * R3k (ADR 0111 D4) — why the KERNEL refuses every effect of this principal before any
+ * authorizer is asked, or `undefined` when it does not. A `PolicyAuthorizer`, a `GrantTable` or a
+ * 3P authorizer would otherwise judge a chain whose delegation could not be restored on its own
+ * terms (an unattenuated child after a crash is the privilege escalation this closes).
+ */
+export function principalBlocked(principal: PrincipalChain | undefined): string | undefined {
+  if (principal === undefined) return undefined;
+  if (principal.principalShredded === true) {
+    return "the execution's recorded principal was crypto-shredded";
+  }
+  if (principal.delegationUnresolved !== undefined) {
+    return `the execution's recorded delegation "${String(principal.delegationUnresolved)}" could not be restored (no principalCodec/resolver)`;
+  }
+  if (principal.principalUnresolved !== undefined) {
+    return `the execution's recorded principal could not be restored: ${String(principal.principalUnresolved)}`;
+  }
+  return undefined;
 }
 
 export interface CapabilityRequest {
@@ -195,6 +226,9 @@ export class DelegationAuthorizer implements CapabilityAuthorizer {
   }
 
   authorize(req: CapabilityRequest): CapabilityDecision {
+    // Defence in depth: the kernel already refuses these before any authorizer (principalBlocked).
+    const blocked = principalBlocked(req.principal);
+    if (blocked !== undefined) return { allowed: false, reason: blocked };
     const token = req.principal?.delegation;
     if (token === undefined) {
       return this.options.base.authorize(req);
@@ -249,7 +283,7 @@ export class DelegationAuthorizer implements CapabilityAuthorizer {
 // is bound into the signature. The intersection is computed from the VERIFIED
 // set, never a forgeable field.
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 /** A signed delegation: the grant subset a delegator conferred, HMAC-bound. */
 export interface DelegatedGrant {
@@ -281,6 +315,15 @@ export function signDelegation(
     .update(delegationPayload(issuedTo, grants, exp))
     .digest("hex");
   return { grants: [...grants], issuedTo, ...(exp !== undefined && { exp }), sig };
+}
+
+/**
+ * R3k (ADR 0111 D1) — a stable, NON-bearer identifier of a token, for the durable principal
+ * record: SHA-256 over the signature, so the log can say which delegation an execution held
+ * without holding anything that can be presented. The token itself is never written.
+ */
+export function delegationDigest(token: DelegatedGrant): string {
+  return createHash("sha256").update(String(token.sig)).digest("hex");
 }
 
 /** Verify a delegation's signature (constant-time). A forged/tampered token fails. */

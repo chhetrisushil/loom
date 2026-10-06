@@ -25,6 +25,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import type { PrincipalResolver } from "./principal";
 import type { FlowRunner } from "./types";
 
 // L30 — a decider's transient calls run AS the deciding execution: its workflowId,
@@ -36,7 +37,11 @@ const io = z.object({}).passthrough() as z.ZodSchema<Record<string, unknown>>;
 function setup(
   flowId: string,
   runner: FlowRunner<Record<string, unknown>, Record<string, unknown>>,
-  opts: { authorizer?: CapabilityAuthorizer; middleware?: EffectMiddleware[] } = {}
+  opts: {
+    authorizer?: CapabilityAuthorizer;
+    middleware?: EffectMiddleware[];
+    principalResolver?: PrincipalResolver;
+  } = {}
 ) {
   const eventStore = new InMemoryAsyncEventStore();
   let calls = 0;
@@ -55,6 +60,8 @@ function setup(
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime: effects,
     onWarn: () => {},
+    // R3k — a start carrying a delegation needs a restorer (ADR 0111 D4); the log holds only a digest.
+    ...(opts.principalResolver !== undefined && { principalResolver: opts.principalResolver }),
   });
   const definition: FlowDefinition<Record<string, unknown>, Record<string, unknown>> = {
     _tag: "FlowDefinition",
@@ -130,6 +137,7 @@ describe("ctx.decide hands the decider an invoker stamped with the deciding exec
         },
       },
       middleware: [mw],
+      principalResolver: { resolve: () => principal },
     });
     const h = await runtime.start(definition, {}, { executionId: "e3", principal });
     await h.waitForCompletion();
@@ -151,12 +159,12 @@ describe("ctx.decide hands the decider an invoker stamped with the deciding exec
       secret: "s3cret",
       base: new GrantTable({ "any-flow": ["*"] }),
     });
-    const { runtime, definition, calls } = setup("any-flow", decidingRunner, { authorizer });
-    const h = await runtime.start(
-      definition,
-      {},
-      { executionId: "e4", principal: { actor: "alice", delegation: token } }
-    );
+    const principal = { actor: "alice", delegation: token };
+    const { runtime, definition, calls } = setup("any-flow", decidingRunner, {
+      authorizer,
+      principalResolver: { resolve: () => principal },
+    });
+    const h = await runtime.start(definition, {}, { executionId: "e4", principal });
     await expect(h.waitForCompletion()).rejects.toBeInstanceOf(CapabilityDeniedError);
     expect(calls()).toBe(0);
   });

@@ -21,6 +21,13 @@ export {
   StepTimeoutError,
   TIMER_FIRED,
 } from "./types";
+export { PrincipalUnrestorableError } from "./principal";
+export type {
+  PrincipalCodec,
+  PrincipalIdentityMode,
+  PrincipalRecord,
+  PrincipalResolver,
+} from "./principal";
 export {
   TimerService,
   type TimerServiceOptions,

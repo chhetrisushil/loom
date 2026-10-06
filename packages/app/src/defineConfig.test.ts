@@ -21,7 +21,13 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import { type CatalogLike, defineConfig } from "./defineConfig";
+import { type CatalogLike, defineConfig as defineConfigRaw } from "./defineConfig";
+import { withPrincipalCodec } from "./principalTestSupport";
+
+// ADR 0111 D1 — a composed compliance plugin requires crypto or a principalCodec; most suites here
+// are about other things, so the in-memory test codec is added where a config needs one.
+const defineConfig: typeof defineConfigRaw = (config) =>
+  defineConfigRaw(withPrincipalCodec(config));
 
 const incident = z.object({ incidentId: z.string() });
 const resolved = z.object({ resolved: z.boolean() });

@@ -1,7 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { fail } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
-import { signDelegation } from "@loom/effect-runtime";
+import { signDelegation, verifyDelegation } from "@loom/effect-runtime";
 import {
   type ExecutionEnumerable,
   isReservedStream,
@@ -10,6 +10,7 @@ import {
 import { ResumeRefusedError } from "@loom/workflow-runtime";
 import type {
   ExecutionContext,
+  PrincipalCodec,
   RegisteredFlow,
   SystemGrant,
   WorkflowRuntime,
@@ -568,6 +569,74 @@ function childStartOptions(
   };
 }
 
+// ── R3k (ADR 0111 D3/D4) — a supervised child's attenuation survives a crash ───────────────
+//
+// `childStartOptions` hands the child `{ actor: childId, delegation: token }`. The kernel records
+// the principal on the child's `EXECUTION_STARTED` but NEVER the token (a bearer credential in a
+// permanent log). Without a restorer, a recovered child would lose the token and fall through to
+// the callee's `base` authority: a privilege escalation across a crash. This codec is the
+// restorer. Its `ref` is the SUBSET the spawn conferred — plain effect ids, the same description
+// the parent's spawn decision already journals — plus the holder and expiry; `fromRef` re-signs
+// it with the delegation secret the supervisor holds, so a recovered child gets the SAME
+// attenuation back (not a fresh or broader one). The secret never enters the log.
+
+const ORCH_REF_PREFIX = "loom:orch:v1:";
+/** A ref longer than this is not produced: the delegation is then unrestorable and the start is refused. */
+const ORCH_REF_MAX = 8192;
+
+/**
+ * The {@link PrincipalCodec} for supervised children. `superviseChildren` composes it onto its
+ * runtime when `delegation` is configured; exported for apps that hand-build a runtime.
+ */
+export function orchestrationPrincipalCodec(secret: string): PrincipalCodec {
+  return {
+    toRef(chain) {
+      const token = chain.delegation;
+      // Only the supervisor's own shape: a holder-bound token on its own actor, no human identity
+      // fields (a ref must stay non-identifying). A token that does not verify is NEVER re-signed
+      // into a valid one, so it falls through to the default record and is refused (D4).
+      if (token === undefined || token === null) return undefined;
+      if (typeof chain.actor !== "string" || chain.actor !== token.issuedTo) return undefined;
+      if (chain.tenant !== undefined || chain.onBehalfOf !== undefined) return undefined;
+      if (!verifyDelegation(secret, token)) return undefined;
+      const body = JSON.stringify({
+        a: token.issuedTo,
+        g: [...token.grants].sort(),
+        ...(token.exp !== undefined && { e: token.exp }),
+      });
+      const ref = ORCH_REF_PREFIX + Buffer.from(body, "utf8").toString("base64url");
+      return ref.length <= ORCH_REF_MAX ? ref : undefined;
+    },
+    fromRef(ref) {
+      if (!ref.startsWith(ORCH_REF_PREFIX)) return undefined; // not ours: another codec's ref
+      try {
+        const body = JSON.parse(
+          Buffer.from(ref.slice(ORCH_REF_PREFIX.length), "base64url").toString("utf8")
+        ) as { a?: unknown; g?: unknown; e?: unknown };
+        if (
+          typeof body.a !== "string" ||
+          !Array.isArray(body.g) ||
+          !body.g.every((g) => typeof g === "string") ||
+          (body.e !== undefined && typeof body.e !== "number")
+        ) {
+          return undefined;
+        }
+        return {
+          actor: body.a,
+          delegation: signDelegation(
+            secret,
+            body.a,
+            body.g as string[],
+            body.e as number | undefined
+          ),
+        };
+      } catch {
+        return undefined;
+      }
+    },
+  };
+}
+
 /** The error a store raised, unwrapped from the `StorageWriteError` the journal puts around it. */
 function rootCause(err: unknown): unknown {
   const cause = (err as { name?: unknown; cause?: unknown } | null)?.cause;
@@ -603,6 +672,12 @@ const LIFECYCLE_STREAM = "__loom_lifecycle__";
  * durability gate below).
  */
 export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
+  // R3k (ADR 0111 D4 rule 3) — with a delegation secret the supervisor mints narrowed tokens, so
+  // it also composes the codec that restores them after a crash; the supported path needs no
+  // configuration, and a runtime that cannot restore a delegation refuses the start instead.
+  if (deps.delegation !== undefined) {
+    deps.runtime.composePrincipalCodec(orchestrationPrincipalCodec(deps.delegation.secret));
+  }
   // childId → spec, learned from DECISION_RECORDED before the parent's suspend lands.
   const specs = new Map<
     string,

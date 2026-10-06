@@ -101,7 +101,8 @@ export class EncryptingEventStore implements EventStore {
     readonly keys: KeyStore,
     options: EncryptingEventStoreOptions
   ) {
-    this.sensitive = options.sensitive;
+    // Copied, never aliased: `registerSensitive` adds paths and must not mutate the caller's map.
+    this.sensitive = { ...options.sensitive };
     this.subjectOf = options.subjectOf ?? ((e) => e.executionId);
     this.onShredded = options.onShredded ?? "throw";
     const plan = {
@@ -148,6 +149,18 @@ export class EncryptingEventStore implements EventStore {
       listExecutionsPage: "forward",
     } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
     installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
+  }
+
+  /**
+   * R3k (ADR 0111 D1) — add sensitive dot-paths for an event type AFTER construction (union with
+   * any already declared). `defineConfig` calls this to register `principal.identity.*` on
+   * `EXECUTION_STARTED` when crypto is composed, so the identity subset is encrypted at rest and
+   * shredded with the subject. Must run before the first matching append: a path registered later
+   * leaves earlier events as they were written.
+   */
+  registerSensitive(eventType: string, paths: readonly string[]): void {
+    const existing = pathsFor(this.sensitive, eventType) ?? [];
+    this.sensitive[eventType] = [...new Set([...existing, ...paths])];
   }
 
   private encrypt(envelope: EventEnvelope, paths: readonly string[], key: Buffer): EventEnvelope {

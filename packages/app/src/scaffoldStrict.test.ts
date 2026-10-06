@@ -33,7 +33,7 @@ describe("scaffolded app", () => {
 
   it("config.ts requests strict mode and passes both authorizers from security.ts", () => {
     expect(files["app/config.ts"]).toMatch(
-      /security: \{ strict: true, authorizer, executionAuthorizer, resumeAuthenticator \}/
+      /security: \{\s*strict: true,\s*authorizer,\s*executionAuthorizer,\s*resumeAuthenticator,\s*principalCodec/
     );
     expect(files["app/security.ts"]).toContain("GrantTable");
     expect(files["README.md"]).toContain("security.ts");

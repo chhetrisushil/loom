@@ -203,3 +203,44 @@ describe("EncryptingEventStore under the coalescer (ADR 0074 Amendment)", () => 
     expect(await raw.read("t")).toEqual([]);
   });
 });
+
+describe("registerSensitive (R3k, ADR 0111 D1)", () => {
+  it("adds paths after construction (union, no mutation of the caller's map) for events and snapshots", async () => {
+    const sensitive = { STEP_COMPLETED: ["output.ssn"] };
+    const keys = new InMemoryKeyStore();
+    const inner = new InMemoryAsyncEventStore();
+    const store = new EncryptingEventStore(inner, keys, { sensitive });
+    store.registerSensitive("EXECUTION_STARTED", ["principal.identity.actor"]);
+    store.registerSensitive("STEP_COMPLETED", ["output.ssn", "output.email"]);
+    expect(sensitive).toEqual({ STEP_COMPLETED: ["output.ssn"] }); // caller's map untouched
+
+    await store.append({
+      id: "e-0",
+      workflowId: "w",
+      executionId: "e",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: { principal: { v: 1, identity: { actor: "alice", tenant: "acme" } } },
+    });
+    const raw = (await inner.read("e"))[0]?.payload as {
+      principal: { identity: { actor: unknown; tenant: unknown } };
+    };
+    expect(raw.principal.identity.actor).toMatchObject({ __loomEnc: "loom/aes-256-gcm" });
+    expect(raw.principal.identity.tenant).toBe("acme"); // only the registered path
+    // an anonymous record has none of the paths: nothing to encrypt, nothing thrown
+    await store.append({
+      id: "f-0",
+      workflowId: "w",
+      executionId: "f",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: { principal: { v: 1 } },
+    });
+    expect((await store.read("f"))[0]?.payload).toEqual({ principal: { v: 1 } });
+    expect((await store.read("e"))[0]?.payload).toEqual({
+      principal: { v: 1, identity: { actor: "alice", tenant: "acme" } },
+    });
+  });
+});

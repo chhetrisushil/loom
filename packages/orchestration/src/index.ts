@@ -22,5 +22,6 @@ export {
   depthOf,
   parentOf,
   superviseChildren,
+  orchestrationPrincipalCodec,
 } from "./orchestration";
 export { fanout$, type FanoutOptions } from "./fanout";

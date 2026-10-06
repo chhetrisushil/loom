@@ -1,6 +1,6 @@
 # ADR 0111 — The execution's principal is durable
 
-- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
+- Status: **Accepted — implemented** (2026-10-06; proposed 2026-10-05, design approved after 4 review rounds). See "Implementation (as built)".
 - Date: 2026-10-05
 - Closes: R3 kernel half (agentic-readiness audit, governance appendix, principal-propagation rows)
 - Builds on: R3 1P half (fail-closed execution authz, `executionAccessPolicy`, `SystemGrant`,
@@ -244,3 +244,52 @@ tenant ALLOW.
 - **Enforcing `delegationUnresolved` only in `DelegationAuthorizer`**: other authorizers authorize it.
 - **A principal event after sequence 0** (`PRINCIPAL_BOUND`): not needed while the principal is
   immutable for an execution; it would also be a new forged-kernel-event surface.
+
+## Implementation (as built, 2026-10-06)
+
+Decisions the text above left to the implementation; none changes a shape frozen at W2-0.
+
+- **Where the codec is composed (D4 rule 3).** The child supervisor is app-owned and built AFTER
+  `defineConfig`, so `defineConfig` cannot see it. `superviseChildren({ delegation })` itself
+  composes `orchestrationPrincipalCodec(secret)` onto its runtime
+  (`WorkflowRuntime.composePrincipalCodec`, a composition-time contributor; the newest codec is asked
+  first, `toRef`/`fromRef` fall through on `undefined`). The supported path still needs no
+  configuration, and a runtime that never saw a supervisor refuses a delegated start (rule 2).
+- **The orchestration `ref`.** `loom:orch:v1:` + base64url `{ a: childId, g: grants[], e?: exp }`: the
+  SUBSET the spawn conferred (plain effect ids, the description the parent's spawn decision already
+  journals), the holder and the expiry. `fromRef` re-signs it with the supervisor's secret, so a recovered
+  child gets the same attenuation back; the secret and the token never enter the log. `toRef` handles only
+  the supervisor's own shape (a verified, holder-bound token on its own actor, no human identity fields); a
+  token that does not verify is never re-signed and falls through to the default record, which is refused.
+- **The acting principal is the REHYDRATED record on every path, `start` included.** A first run and a
+  recovery must see the same chain, so `start` also runs `rehydratePrincipal(record)`: only
+  `{ tenant, actor, onBehalfOf }` reaches the effects (D1: extra fields are dropped); a `principalCodec`
+  or `principalResolver` carries anything more.
+- **`PrincipalCodec.toRef` may return `undefined`** ("not mine"), so codecs compose and the default record
+  applies to everything the codec does not claim. Under `identity: "ref"` (strict/compliance without
+  crypto) an unclaimed identified principal REFUSES the start with `PrincipalUnrestorableError`, log empty.
+- **A ref no codec restores fails closed.** The D4 text covers a recorded `delegation`; a `{ v: 1, ref }`
+  record with no codec (or whose `fromRef` returns `undefined`) is marked `principalUnresolved` and the
+  kernel denies the effects exactly like `delegationUnresolved`: anonymous would silently drop tenant rules,
+  the bug this ADR exists to fix. A record that is present but malformed or of another `v` denies the same way.
+- **`defineConfig` surface.** `security.principalCodec`, `security.principalResolver`, and `security.crypto:
+  { events, snapshots? }` (the `EncryptingEventStore` / `EncryptingSnapshotStore`, which gained
+  `registerSensitive`). There is no other signal that crypto is composed, so it is passed explicitly. Under
+  crypto, `defineConfig` registers `principal.identity.*` on `EXECUTION_STARTED` AND
+  `variables._principal.identity.*` on the snapshot store (the fold carries the principal; an encrypted log
+  with a plaintext snapshot is the A1 erasure-theatre hole). Strict/compliance with neither crypto nor a codec
+  throws `PrincipalRecordingRefusedError`; "a composed compliance plugin" is `security.compliance`.
+- **A fork under crypto-without-codec is refused.** `forkedBy` rides ENVELOPE METADATA, which the crypto
+  plugin does not encrypt, so a fork of an identified forker with `identity: "encrypted"` and no codec
+  refuses (`PrincipalUnrestorableError`, nothing written). With a codec the fork records a `ref`.
+- **`parent`** is recorded from `RunOptions.parentExecutionId` whenever it is a non-empty string; lineage
+  for authorization is still trusted only from the system grant / fork path (R3 round 2). Consumers of
+  `_parent` (R6 cascade, R8k pin) must not treat it as authenticated beyond that.
+- **Owners.** A supervisor child started with no principal has NO owner (D5, as written): it no longer
+  inherits its parent's owner from an in-process table. `executionAccessPolicy` lost `ownerOf`, `adopt`,
+  `tracked`, `maxTracked` and `committed` handling; `resolveOwner` answers only for a log that recorded none;
+  an owner naming neither tenant nor actor is no owner.
+- **Reading the record.** One point read of sequence 0 per `execute()` (resume reuses the envelope it
+  already read). A `PayloadShreddedError` from that read, or `$shredded` markers inside the record, is the
+  shredded marker (denies). No `kernel.features` flag: the optional payload fields are harmless to an older node
+  (rolling-upgrade note in the Wave 2 design).

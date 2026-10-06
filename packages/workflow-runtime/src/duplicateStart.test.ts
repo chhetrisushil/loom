@@ -463,7 +463,11 @@ describe("ADR 0103 — the barrier's ordering, and the ulid path's byte-identity
       eventType: "EXECUTION_STARTED",
       sequence: 0,
       timestamp: T0,
-      payload: { input: { k: 1 }, flowHash: expect.stringMatching(/^fnv1a:/) },
+      payload: {
+        input: { k: 1 },
+        flowHash: expect.stringMatching(/^fnv1a:/),
+        principal: { v: 1 }, // R3k: every 1.23.0 start records one, anonymous included
+      },
       metadata: { computeTarget: "gpu-lane", fence: 7 },
     });
     // The whole log matches too — the barrier moved WHEN sequence 0 is written, not WHAT.

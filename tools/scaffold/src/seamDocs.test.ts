@@ -79,6 +79,10 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
     Warmer: "no conformance kit — not advertised as a third-party seam",
     KillSwitchRegistry:
       "no conformance kit yet — a 3-line contract (`check(ctx)` → verdict | none; a throw fails closed)",
+    PrincipalResolver:
+      "no conformance kit — an app-owned binding from a recorded principal to its identity (R3k, ADR 0111), not a distributable plugin",
+    PrincipalCodec:
+      "no conformance kit — an app-owned map from an opaque ref to a principal (R3k, ADR 0111), not a distributable plugin",
     // Covered by an existing seam rather than needing their own:
     SnapshotStore: "scaffolded by the `store` seam, alongside EventStore",
     BranchRegistry: "scaffolded by the `store` seam, behind its `branching` option",

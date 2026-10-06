@@ -28,7 +28,7 @@ export interface EncryptingSnapshotStoreOptions {
  */
 export class EncryptingSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
-  private readonly sensitive: readonly string[];
+  private sensitive: readonly string[];
   private readonly subjectOf: (s: Pick<Snapshot, "executionId" | "workflowId">) => string;
 
   constructor(
@@ -41,7 +41,7 @@ export class EncryptingSnapshotStore implements SnapshotStore {
     readonly keys: KeyStore,
     options: EncryptingSnapshotStoreOptions
   ) {
-    this.sensitive = options.sensitive;
+    this.sensitive = [...options.sensitive];
     this.subjectOf = options.subjectOf ?? ((s) => s.executionId);
     const plan = {
       // Deleting ciphertext only reduces data — and without it a retention sweep over an
@@ -58,6 +58,16 @@ export class EncryptingSnapshotStore implements SnapshotStore {
       inner,
       plan
     );
+  }
+
+  /**
+   * R3k (ADR 0111 D1) — add sensitive dot-paths into the folded state AFTER construction
+   * (union). The fold carries the recorded principal at `variables._principal`, so `defineConfig`
+   * registers `variables._principal.identity.*` here alongside the event store's
+   * `principal.identity.*`: a snapshot must not keep the identity a shredded log no longer has.
+   */
+  registerSensitive(paths: readonly string[]): void {
+    this.sensitive = [...new Set([...this.sensitive, ...paths])];
   }
 
   async save(snapshot: Snapshot): Promise<void> {

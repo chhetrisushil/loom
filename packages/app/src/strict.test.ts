@@ -8,8 +8,13 @@ import { signedResumeAuthenticator } from "@loom/workflow-runtime";
 import type { ExecutionAuthorizer, FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { defineConfig, normalizeConfig } from "./defineConfig";
+import { defineConfig as defineConfigRaw, normalizeConfig } from "./defineConfig";
+import { withPrincipalCodec } from "./principalTestSupport";
 import { STRICT_DEFAULTS } from "./strict";
+
+// ADR 0111 D1 — strict requires crypto or a principalCodec; these suites are about other things.
+const defineConfig: typeof defineConfigRaw = (config) =>
+  defineConfigRaw(withPrincipalCodec(config));
 
 // ── R9 — strict mode + the autonomy envelope, through defineConfig ────────────
 

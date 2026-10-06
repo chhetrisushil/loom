@@ -66,18 +66,31 @@ describe("P2-A — acquireFence gateAs", () => {
 });
 
 describe("P3-1 — RunOptions.parentExecutionId is not a caller-controlled owner source", () => {
+  /** What owner the kernel reports to the policy for `id` (asks as alice, reads the request). */
+  async function ownerSeen(rt: WorkflowRuntime, seen: Map<string, unknown>, id: string) {
+    await rt.loadState(id, { principal: alice }).catch(() => undefined);
+    return seen.get(id);
+  }
+  function spyBuild(policy: ExecutionAuthorizer) {
+    const seen = new Map<string, unknown>();
+    const rt = build({
+      authorize: (r) => {
+        seen.set(r.executionId, r.owner);
+        return policy.authorize(r);
+      },
+    });
+    return { rt, seen };
+  }
   it("an anonymous start naming a parent does not inherit the parent's owner", async () => {
-    const policy = executionAccessPolicy({ allowAnonymous: true });
-    const rt = build(policy);
+    const { rt, seen } = spyBuild(executionAccessPolicy({ allowAnonymous: true }));
     const h = await rt.start(gate, { n: 1 }, { executionId: "a1", principal: alice });
     await h.waitForSuspend();
     const x = await rt.start(gate, { n: 1 }, { executionId: "x1", parentExecutionId: "a1" });
     await x.waitForSuspend();
-    expect(policy.ownerOf("x1")?.actor).not.toBe("alice");
+    expect(await ownerSeen(rt, seen, "x1")).toBeUndefined();
   });
-  it("a system-granted start (supervisor) still inherits the parent's owner", async () => {
-    const policy = executionAccessPolicy();
-    const rt = build(policy);
+  it("a system-granted start (supervisor) with no principal has NO owner either (ADR 0111 D5)", async () => {
+    const { rt, seen } = spyBuild(executionAccessPolicy());
     const h = await rt.start(gate, { n: 1 }, { executionId: "a1", principal: alice });
     await h.waitForSuspend();
     const x = await rt.start(
@@ -86,7 +99,8 @@ describe("P3-1 — RunOptions.parentExecutionId is not a caller-controlled owner
       { executionId: "x2", parentExecutionId: "a1", ...rt.systemOptions() }
     );
     await x.waitForSuspend();
-    expect(policy.ownerOf("x2")?.actor).toBe("alice");
+    expect(await ownerSeen(rt, seen, "x2")).toBeUndefined();
+    await expect(rt.loadState("x2", { principal: alice })).rejects.toThrow(/owner is unknown/);
   });
 });
 
