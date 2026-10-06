@@ -1430,6 +1430,20 @@ export function runTimerStoreConformance(factory: () => TimerStore, label = "Tim
       await s.close();
     });
 
+    it("due({ redrive: false }) excludes re-drive rows BEFORE the limit, so they cannot starve plain wakes (ADR 0118 D4)", async () => {
+      const s = factory();
+      for (let i = 0; i < 4; i++) {
+        await s.schedule({ executionId: `r${i}`, wakeAt: i, redrive: { attempt: 1 } });
+      }
+      await s.schedule({ executionId: "plain", wakeAt: 50 });
+      expect((await s.due(100, 2)).map((t) => t.executionId)).toEqual(["r0", "r1"]);
+      expect(await s.due(100, 2, { redrive: false })).toEqual([
+        { executionId: "plain", wakeAt: 50 },
+      ]);
+      expect((await s.due(100, 10, { redrive: true })).length).toBe(5);
+      await s.close();
+    });
+
     it("complete removes a fired timer; unknown timers are a no-op", async () => {
       const s = factory();
       await s.schedule({ executionId: "a", wakeAt: 100 });

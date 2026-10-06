@@ -566,7 +566,8 @@ export interface ChildSupervisor {
    * child's own recorded `parent` (`EXECUTION_STARTED.parent`, written only through the runtime's
    * lineage grant, so a caller cannot forge it); for a child recorded before R3k, from this
    * supervisor's rebuilt state. Costs two folds and a read of the parent's log; the backing of
-   * {@link pinParkedChildren}.
+   * {@link pinParkedChildren}. A crypto-shredded log answers `false`; any other read failure rejects
+   * (the retention run fails and the log is kept).
    */
   parkedOnChild(executionId: string): Promise<boolean>;
   /** @internal Sizes of the supervisor's in-memory maps (a leak check; not a stable API). */
@@ -1785,9 +1786,19 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       if (key === childId) return true; // a single child: the park's key IS the child id
       const { grp } = await durableSpawn(parentId, key);
       return grp?.members.some((m) => m.childId === childId) ?? false;
-    } catch {
-      // Unreadable is not "safe to delete": a retention pass must fail toward KEEPING the log.
-      return true;
+    } catch (err) {
+      // A crypto-shredded log is unreadable BY DESIGN and forever (the key is destroyed): nothing
+      // can be parked on it, and pinning it would block its retention AND compaction for good.
+      // Matched by NAME (this package does not depend on the crypto plugin), through the
+      // StorageWriteError/cause wrappers. Any OTHER failure is rethrown: the retention run fails
+      // visibly and the log is KEPT (a swallowed error would have to guess).
+      if (
+        errName(rootCause(err)) === "PayloadShreddedError" ||
+        errName(err) === "PayloadShreddedError"
+      ) {
+        return false;
+      }
+      throw err;
     }
   };
 

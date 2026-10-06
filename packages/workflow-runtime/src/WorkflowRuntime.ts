@@ -1655,12 +1655,14 @@ export class WorkflowRuntime {
     parkSeq: number,
     system: SystemGrant | undefined,
     /** What the caller already folded and read: spares a read of the park and a re-fold. */
-    held: { state: ExecutionState; events: readonly EventEnvelope[] | undefined }
-  ): Promise<number | undefined> {
+    held: { vm: ReplayVM; events: readonly EventEnvelope[] | undefined }
+  ): Promise<{ fence: number | undefined; vm: ReplayVM }> {
     const store = this.eventStore;
     // A store without the conditional keeps today's behaviour (the unconditional acquire and its
     // documented residual); one without fencing at all yields no token.
-    if (store.acquireFenceIf === undefined) return this.fenceOf(executionId);
+    if (store.acquireFenceIf === undefined) {
+      return { fence: await this.fenceOf(executionId), vm: held.vm };
+    }
     const notSuspended = (detail: string): ResumeRefusedError =>
       new ResumeRefusedError(executionId, resumeEvent.eventType, "not-suspended", detail);
     const park =
@@ -1680,10 +1682,14 @@ export class WorkflowRuntime {
         // still be this unanswered one UNDER the fence we now hold.
         // The fold in hand plus whatever was appended since (one tail read, folded incrementally —
         // the same fold a fresh `loadState` would produce).
-        const tail = await store.readFrom(executionId, held.state.sequence + 1);
-        const fresh = tail.length === 0 ? held.state : new ReplayVM(tail, held.state).getState();
-        this.assertResumable(executionId, fresh, resumeEvent, "all", system);
-        return got.fence;
+        // The caller MUST run from the advanced VM (returned): an ignorable append (an unfenced
+        // EXECUTION_DENIED, an app emit) between its fold and this acquire would otherwise make
+        // `execute` append at a stale sequence — a burned token and nothing appended.
+        const heldState = held.vm.getState();
+        const tail = await store.readFrom(executionId, heldState.sequence + 1);
+        const vm = tail.length === 0 ? held.vm : new ReplayVM(tail, heldState);
+        this.assertResumable(executionId, vm.getState(), resumeEvent, "all", system);
+        return { fence: got.fence, vm };
       }
       // Stale: the token moved, or an answering event is past the park. Re-read the park. If it is
       // still THIS park, unanswered, the token moved only because someone acquired and never
@@ -2362,34 +2368,41 @@ export class WorkflowRuntime {
 
     // ADR 0118 D2 — the conditional fence is taken LAST, after every check that can refuse without
     // appending: a fence acquired and then abandoned supersedes whoever holds the old one.
-    const fence =
-      options?.fenceIfParkedAt !== undefined
-        ? await this.acquireFenceIfParked(
-            executionId,
-            resumeEvent,
-            options.fenceIfParkedAt,
-            options.system,
-            { state: vm.getState(), events: allEvents ?? tailEvents }
-          )
-        : options?.fence;
+    // R3k (D2) — the owner recorded at sequence 0, on every resume path (an approval, a timer
+    // wake, recovery, a remote worker): never the resumer. Computed BEFORE the acquire so the fence
+    // is strictly last (an await that can throw between acquire and append burns the token).
+    const acting = await this.actingPrincipal(executionId, options?.principal, {
+      first: firstEvent,
+    });
+    let runVm = vm;
+    let fence = options?.fence;
+    if (options?.fenceIfParkedAt !== undefined) {
+      const got = await this.acquireFenceIfParked(
+        executionId,
+        resumeEvent,
+        options.fenceIfParkedAt,
+        options.system,
+        { vm, events: allEvents ?? tailEvents }
+      );
+      fence = got.fence;
+      runVm = got.vm;
+    }
 
     return this.execute(
       executionId,
       workflowId,
-      vm,
+      runVm,
       resolved.runner as FlowRunner<unknown, unknown>,
       effectiveInput,
       [
         ...(approval !== undefined ? [approval] : []),
         ...discardEvents,
         { eventType: resumeEvent.eventType, payload: resumePayload },
-        ...answerEvents(vm.getState(), resumePayload),
+        ...answerEvents(runVm.getState(), resumePayload),
       ],
       fence,
       options?.deadlineMs ?? resolved.definition.deadlineMs,
-      // R3k (D2) — the owner recorded at sequence 0, on every resume path (an approval, a timer
-      // wake, recovery, a remote worker): never the resumer.
-      await this.actingPrincipal(executionId, options?.principal, { first: firstEvent })
+      acting
     );
   }
 
@@ -2573,20 +2586,26 @@ export class WorkflowRuntime {
 
     const recorded = state.variables._flowHash;
     // ADR 0118 D2 — last, after every refusal that appends nothing (see `resume`).
-    const fence =
-      options.fenceIfParkedAt !== undefined
-        ? await this.acquireFenceIfParked(
-            executionId,
-            resumeEvent,
-            options.fenceIfParkedAt,
-            options.system,
-            { state: vm.getState(), events: allEvents }
-          )
-        : options.fence;
+    const acting = await this.actingPrincipal(executionId, options.principal, {
+      first: firstEvent,
+    });
+    let runVm = vm;
+    let fence = options.fence;
+    if (options.fenceIfParkedAt !== undefined) {
+      const got = await this.acquireFenceIfParked(
+        executionId,
+        resumeEvent,
+        options.fenceIfParkedAt,
+        options.system,
+        { vm, events: allEvents }
+      );
+      fence = got.fence;
+      runVm = got.vm;
+    }
     return this.execute(
       executionId,
       workflowId,
-      vm,
+      runVm,
       target.runner as FlowRunner<unknown, unknown>,
       stateMigrated ? migratedInput : recordedInput,
       [
@@ -2603,11 +2622,11 @@ export class WorkflowRuntime {
           },
         },
         { eventType: resumeEvent.eventType, payload: resumePayload },
-        ...answerEvents(state, resumePayload),
+        ...answerEvents(runVm.getState(), resumePayload),
       ],
       fence,
       options.deadlineMs ?? target.definition.deadlineMs,
-      await this.actingPrincipal(executionId, options.principal, { first: firstEvent })
+      acting
     );
   }
 

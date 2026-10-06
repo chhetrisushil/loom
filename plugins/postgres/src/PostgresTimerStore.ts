@@ -44,10 +44,12 @@ export class PostgresTimerStore implements TimerStore {
     );
   }
 
-  async due(now: number, limit = 100): Promise<TimerRecord[]> {
+  async due(now: number, limit = 100, options?: { redrive?: boolean }): Promise<TimerRecord[]> {
     await this.ready;
     const { rows } = await this.pool.query<TimerRow>(
-      "SELECT execution_id, wake_at, redrive FROM timers WHERE wake_at <= $1 ORDER BY wake_at ASC LIMIT $2",
+      `SELECT execution_id, wake_at, redrive FROM timers WHERE wake_at <= $1${
+        options?.redrive === false ? " AND redrive IS NULL" : ""
+      } ORDER BY wake_at ASC LIMIT $2`,
       [now, limit]
     );
     return rows.map((r) => ({

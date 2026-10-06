@@ -916,6 +916,37 @@ describe("R8k D3 — pinParkedChildren", () => {
     expect(await pinParkedChildren(() => undefined)("G::g#1")).toBe(false);
   }, 20000);
 
+  it("a crypto-shredded (unreadable) log is NOT pinned; any OTHER read failure rethrows so retention fails visibly (P2-3)", async () => {
+    const w = world();
+    const a = boot(w);
+    await a.runtime.start("single", {}, { executionId: "P" });
+    await until(a.runtime, "P::k", (s) => s.status === "suspended");
+    const failing = (make: () => Error): World => {
+      const events = Object.create(w.events) as InMemoryAsyncEventStore;
+      events.readRange = async () => {
+        throw make();
+      };
+      events.readFrom = async () => {
+        throw make();
+      };
+      return { events, snaps: w.snaps };
+    };
+    const shredded = (): Error => {
+      const e = new Error("payload was crypto-shredded");
+      e.name = "PayloadShreddedError";
+      return e;
+    };
+    const wrapped = (): Error =>
+      Object.assign(new Error("Durable event write failed"), {
+        name: "StorageWriteError",
+        cause: shredded(),
+      });
+    expect(await pinParkedChildren(boot(failing(shredded)).sup)("P::k")).toBe(false);
+    expect(await pinParkedChildren(boot(failing(wrapped)).sup)("P::k")).toBe(false);
+    const down = failing(() => new Error("connection reset"));
+    await expect(pinParkedChildren(boot(down).sup)("P::k")).rejects.toThrow("connection reset");
+  }, 20000);
+
   it("a child the parent is parked on under a DIFFERENT key is not pinned", async () => {
     const w = world();
     const a = boot(w);

@@ -32,8 +32,15 @@ export interface TimerRecord {
 export interface TimerStore {
   /** Idempotent per (executionId, wakeAt): re-scheduling the same wake is a no-op. */
   schedule(timer: TimerRecord): Promise<void>;
-  /** Timers with `wakeAt <= now`, ordered soonest-first. */
-  due(now: number, limit?: number): Promise<TimerRecord[]>;
+  /**
+   * Timers with `wakeAt <= now`, ordered soonest-first.
+   *
+   * `options.redrive === false` (ADR 0118 D4) EXCLUDES re-drive rows BEFORE the limit applies: a
+   * node with no re-driver registered would otherwise see a batch full of rows it cannot judge and
+   * starve every plain wake behind them. A store that ignores the option is still correct (the
+   * service skips such rows itself); it only keeps that starvation window.
+   */
+  due(now: number, limit?: number, options?: { redrive?: boolean }): Promise<TimerRecord[]>;
   /** Remove a fired (or obsolete) timer. Unknown timers are a no-op. */
   complete(executionId: string, wakeAt: number): Promise<void>;
   close(): Promise<void>;
@@ -58,9 +65,9 @@ export class InMemoryTimerStore implements TimerStore {
     });
   }
 
-  async due(now: number, limit = 100): Promise<TimerRecord[]> {
+  async due(now: number, limit = 100, options?: { redrive?: boolean }): Promise<TimerRecord[]> {
     return [...this.timers.values()]
-      .filter((t) => t.wakeAt <= now)
+      .filter((t) => t.wakeAt <= now && (options?.redrive !== false || t.redrive === undefined))
       .sort((a, b) => a.wakeAt - b.wakeAt)
       .slice(0, limit)
       .map((t) => ({ ...t }));

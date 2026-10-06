@@ -1,9 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
-import { KERNEL_EVENT_KINDS } from "@loom/core";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
-  EVENT_KIND_CLASS,
   StaleFenceError,
   SubscriberRegistry,
   bucketOf,
@@ -13,22 +11,7 @@ import {
 import type { AcquireFenceIfResult, EventStore } from "@loom/event-runtime";
 import { Client, type Notification } from "pg";
 import { type PgConfig, type PoolLike, nextSenderId, toClientConfig, toPool } from "./pool";
-import { NOTIFY_CHANNEL, migrate } from "./schema";
-
-/** The kernel kinds that answer a park (ADR 0118 D1), from the one classification map. */
-const ANSWERING_KERNEL_KINDS: readonly string[] = KERNEL_EVENT_KINDS.filter(
-  (k) => EVENT_KIND_CLASS[k] === "answering"
-);
-
-/** `ARRAY['A','B']::text[]` for constant kernel kind names (inlined: see `acquireFenceIf`). */
-function kindsSql(kinds: readonly string[]): string {
-  for (const k of kinds) {
-    if (!/^[A-Z_]+$/.test(k)) throw new Error(`kernel event kind "${k}" cannot be inlined`);
-  }
-  return `ARRAY[${kinds.map((k) => `'${k}'`).join(",")}]::text[]`;
-}
-const ANSWERING_KINDS_SQL = kindsSql(ANSWERING_KERNEL_KINDS);
-const KERNEL_KINDS_SQL = kindsSql(KERNEL_EVENT_KINDS);
+import { ANSWERING_KINDS_SQL, KERNEL_KINDS_SQL, NOTIFY_CHANNEL, migrate } from "./schema";
 
 export interface PostgresEventStoreOptions {
   /**
@@ -600,6 +583,12 @@ export class PostgresEventStore implements EventStore {
   async deleteExecution(executionId: string): Promise<void> {
     await this.ready;
     await this.pool.query("DELETE FROM events WHERE execution_id = $1", [executionId]);
+    // ADR 0118: a park leaves an inert token-0 fence row (so an answering append has a row to lock).
+    // It is garbage once the log is gone; a row with a real token (> 0) is KEPT, as before — it is
+    // the only thing that keeps a zombie writer of a re-created id fenced out.
+    await this.pool.query("DELETE FROM fences WHERE execution_id = $1 AND fence = 0", [
+      executionId,
+    ]);
   }
 
   async truncatePrefix(executionId: string, throughSequence: number): Promise<void> {

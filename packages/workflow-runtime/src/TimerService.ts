@@ -4,7 +4,7 @@ import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
-import { ExecutionAlreadyExistsError, TIMER_FIRED } from "./types";
+import { ExecutionAlreadyExistsError, ResumeRefusedError, TIMER_FIRED } from "./types";
 
 /**
  * ADR 0118 D4 — what a registered re-driver answers for one re-drive row.
@@ -58,11 +58,18 @@ export async function scheduleRedrive(
   executionId: string,
   attempt: number,
   now: number,
-  backoff: RedriveBackoff = {}
+  backoff: RedriveBackoff = {},
+  /**
+   * The earliest `wakeAt` the row may take. A row written by the service for the NEXT attempt
+   * passes `firedWakeAt + 1`: with a zero jitter draw `now + delay` can equal the row that is about
+   * to be `complete`d, and a row with the same `(executionId, wakeAt)` is the SAME row — it would
+   * be upserted and then deleted, losing the re-drive.
+   */
+  minWakeAt?: number
 ): Promise<TimerRecord> {
   const row: TimerRecord = {
     executionId,
-    wakeAt: now + redriveDelayMs(attempt, backoff),
+    wakeAt: Math.max(now + redriveDelayMs(attempt, backoff), minWakeAt ?? Number.MIN_SAFE_INTEGER),
     redrive: { attempt },
   };
   await store.schedule(row);
@@ -322,7 +329,13 @@ export class TimerService {
     if (this.ticking) return; // never overlap polls
     this.ticking = true;
     try {
-      const due = await this.store.due(now, this.batch);
+      // A node with no re-driver cannot judge a re-drive row: ask the store to leave them out BEFORE
+      // the batch limit, or a batch of them starves every plain wake behind it.
+      const due = await this.store.due(
+        now,
+        this.batch,
+        this.redrivers.length === 0 ? { redrive: false } : undefined
+      );
       for (const timer of due) {
         await this.fire(timer.executionId, timer.wakeAt, timer.redrive);
       }
@@ -426,7 +439,14 @@ export class TimerService {
       if (next >= this.maxRedriveAttempts) {
         this.onError?.(executionId, new RedriveExhaustedError(executionId, next));
       } else {
-        await scheduleRedrive(this.store, executionId, next, this.now(), this.redriveBackoff);
+        await scheduleRedrive(
+          this.store,
+          executionId,
+          next,
+          this.now(),
+          this.redriveBackoff,
+          wakeAt + 1
+        );
       }
     }
     await this.store.complete(executionId, wakeAt);
@@ -467,14 +487,17 @@ export class TimerService {
       const stillWaiting =
         state !== null && state.status === "suspended" && state.suspendedOn?.wakeAt === wakeAt;
       if (stillWaiting) {
-        // K9.4 — in fenced deployments, acquire a newer token first so a
-        // duplicate cross-node fire loses at the store instead of double-writing.
-        const fence = this.fenced
-          ? await this.runtime.acquireFence(executionId, this.runtime.systemOptions())
-          : undefined;
         const resumeEvent = { eventType: TIMER_FIRED, payload: { wakeAt } };
 
         if (this.dispatcher !== undefined) {
+          // K9.4 — in fenced deployments, acquire a newer token first so a
+          // duplicate cross-node fire loses at the store instead of double-writing.
+          // (ADR 0118 as-built: this path keeps the UNCONDITIONAL acquire — the worker SPI's
+          // `allocate` acquires its own token per dispatch, so a conditional fence here would
+          // need a `WorkerRequest` extension; a named follow-up.)
+          const fence = this.fenced
+            ? await this.runtime.acquireFence(executionId, this.runtime.systemOptions())
+            : undefined;
           // #392 — the wake goes back to where the execution belongs. The recorded target
           // is a HINT handed to the placement policy, which may route elsewhere: a lane
           // that has since been retired must not strand what named it. Dispatch settles
@@ -492,10 +515,36 @@ export class TimerService {
             target !== undefined ? { target } : undefined
           );
         } else {
-          const handle = await this.runtime.resume(executionId, resumeEvent, {
-            ...(fence !== undefined && { fence }),
-            ...this.runtime.systemOptions(),
-          });
+          // ADR 0118 D2 — in a fenced deployment the wake takes its fence as an acquire-IF-PARKED
+          // on THIS park: a park also answered externally (an approval, a child's result) no longer
+          // lets the timer supersede the holder of the body that answer started. A park that is no
+          // longer the unanswered one is OBSOLETE (retired below); a fence the runtime could not
+          // take after its bounded retries (`ResumeContendedError`) leaves the row for the next
+          // poll, exactly like any other failed fire.
+          let fenceIfParkedAt: number | undefined;
+          if (this.fenced) {
+            fenceIfParkedAt = await this.runtime.parkedAtSequence(
+              executionId,
+              this.runtime.systemOptions()
+            );
+          }
+          if (this.fenced && fenceIfParkedAt === undefined) {
+            await this.store.complete(executionId, wakeAt); // no unanswered park: obsolete
+            return;
+          }
+          let handle: Awaited<ReturnType<WorkflowRuntime["resume"]>>;
+          try {
+            handle = await this.runtime.resume(executionId, resumeEvent, {
+              ...(fenceIfParkedAt !== undefined && { fenceIfParkedAt }),
+              ...this.runtime.systemOptions(),
+            });
+          } catch (err) {
+            if (err instanceof ResumeRefusedError && err.reason === "not-suspended") {
+              await this.store.complete(executionId, wakeAt); // answered meanwhile: obsolete
+              return;
+            }
+            throw err;
+          }
           // Wait for the run to settle (suspend again, complete, or fail) so the
           // timer is only retired once the wake durably took effect.
           await Promise.race([

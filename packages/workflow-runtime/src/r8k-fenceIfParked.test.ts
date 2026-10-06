@@ -172,6 +172,73 @@ describe("R8k — resume with fenceIfParkedAt", () => {
     expect(await h.kinds()).toContain("EXECUTION_COMPLETED");
   });
 
+  it("an ignorable append BETWEEN the caller's fold and the acquire does not burn the token: the run executes from the advanced fold (P2-1)", async () => {
+    const h = await build({
+      before: async (call, inner) => {
+        if (call !== 1) return;
+        const tip = (await inner.head("e1")) as number;
+        await inner.append({
+          id: "e1-late-d",
+          workflowId: "gated",
+          executionId: "e1",
+          eventType: "EXECUTION_DENIED",
+          sequence: tip + 1,
+          timestamp: 1,
+          payload: { op: "query" },
+        });
+      },
+    });
+    const handle = await h.runtime.resume("e1", GO, { fenceIfParkedAt: h.parkSeq });
+    await handle.waitForCompletion();
+    expect(await h.kinds()).toContain("EXECUTION_COMPLETED");
+    expect((await h.kinds()).filter((k) => k === "EXECUTION_RESUMED")).toHaveLength(1);
+    expect(await h.inner.acquireFence("e1")).toBe(2); // one token, and it was USED
+  });
+
+  it("the same for resumeAs (P2-1)", async () => {
+    const h = await build({
+      before: async (call, inner) => {
+        if (call !== 1) return;
+        const tip = (await inner.head("e1")) as number;
+        await inner.append({
+          id: "e1-late-d2",
+          workflowId: "gated",
+          executionId: "e1",
+          eventType: "EXECUTION_DENIED",
+          sequence: tip + 1,
+          timestamp: 1,
+          payload: { op: "query" },
+        });
+      },
+    });
+    const handle = await h.runtime.resumeAs("e1", "gated", GO, {
+      strategy: "operator-ack",
+      fenceIfParkedAt: h.parkSeq,
+    });
+    await handle.waitForCompletion();
+    expect(await h.kinds()).toContain("EXECUTION_COMPLETED");
+  });
+
+  it("LOG half of staleness: an answer lands past the park with the token UNCHANGED -> refused not-suspended, nothing appended by the loser (P3-9)", async () => {
+    let aDone: Promise<unknown> | undefined;
+    const h = await build({
+      before: async (call, _inner, rt) => {
+        if (call !== 1) return;
+        const handle = await rt().resume("e1", GO); // unfenced answer: token stays 0
+        aDone = handle.waitForCompletion();
+        await aDone;
+      },
+    });
+    const err = await h.runtime
+      .resume("e1", GO, { fenceIfParkedAt: h.parkSeq })
+      .then(() => undefined)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ResumeRefusedError);
+    expect((err as ResumeRefusedError).reason).toBe("not-suspended");
+    expect((await h.kinds()).filter((k) => k === "EXECUTION_RESUMED")).toHaveLength(1);
+    expect(await h.kinds()).toContain("EXECUTION_COMPLETED");
+  });
+
   it("an already-answered park is refused not-suspended, the log is untouched and NO token is taken", async () => {
     const h = await build({});
     await (await h.runtime.resume("e1", GO)).waitForCompletion();
