@@ -4,6 +4,7 @@ import {
   type Pricing,
   QuotaExceededError,
   type ResourceDelta,
+  isCustomDimensionName,
   overCustomBudget,
 } from "./metering";
 
@@ -37,6 +38,9 @@ export interface ScopeSpend {
  * eventually consistent by nature; two nodes may briefly under-count, which is
  * the accepted trade-off for cross-execution budgets.
  */
+/** Distinct custom dimension names one ledger scope keeps (the fold's own cap, ADR 0115). */
+const LEDGER_CUSTOM_MAX = 32;
+
 export class BudgetLedger {
   private readonly spend = new Map<string, ScopeSpend>();
 
@@ -50,7 +54,11 @@ export class BudgetLedger {
       custom = { ...cur.custom };
       for (const [name, v] of Object.entries(delta.custom)) {
         if (typeof v !== "number" || !Number.isFinite(v) || v < 0) continue;
-        if (name === "__proto__" || name === "constructor" || name === "prototype") continue;
+        if (name === "constructor" || name === "prototype" || !isCustomDimensionName(name))
+          continue;
+        if (!Object.hasOwn(custom, name) && Object.keys(custom).length >= LEDGER_CUSTOM_MAX) {
+          continue;
+        }
         custom[name] = (Object.hasOwn(custom, name) ? (custom[name] as number) : 0) + v;
       }
     }

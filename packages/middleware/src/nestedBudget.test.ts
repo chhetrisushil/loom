@@ -1,6 +1,6 @@
 import type { EffectContext, ResourceSnapshot } from "@loom/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
-import { QuotaExceededError } from "./metering";
+import { QuotaExceededError, meteringMiddleware } from "./metering";
 import { BudgetLedger, type BudgetScope, nestedBudgetMiddleware } from "./nestedBudget";
 
 const zero: ResourceSnapshot = { tokens: 0, costUsd: 0, ms: 0, count: 0 };
@@ -120,5 +120,27 @@ describe("open dimensions in nested budgets (ADR 0115)", () => {
       ],
     });
     await expect(mw(ctx(), {}, async () => "x")).rejects.toBeInstanceOf(QuotaExceededError);
+  });
+
+  it("skips built-in and invalid names and caps distinct names at 32 per scope", () => {
+    const ledger = new BudgetLedger();
+    ledger.applyMetered(["t"], { custom: { tokens: 5, "Bad Name": 1, ok: 1 } });
+    expect(ledger.spent("t").custom).toEqual({ ok: 1 });
+    const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`d${i}`, 1]));
+    ledger.applyMetered(["u"], { custom: many });
+    ledger.applyMetered(["u"], { custom: { d0: 2, d39: 1 } });
+    const custom = ledger.spent("u").custom as Record<string, number>;
+    expect(Object.keys(custom)).toHaveLength(32);
+    expect(custom.d0).toBe(3);
+    expect(custom.d39).toBeUndefined();
+  });
+
+  it("Budget.maxCustom may not name a built-in dimension", () => {
+    expect(() =>
+      meteringMiddleware({ pricing: () => ({}), budget: { maxCustom: { tokens: 5 } } })
+    ).toThrow(/built-in dimension/);
+    expect(() =>
+      meteringMiddleware({ pricing: () => ({}), budget: { maxCustom: { credits: 5 } } })
+    ).not.toThrow();
   });
 });

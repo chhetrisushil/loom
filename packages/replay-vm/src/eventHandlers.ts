@@ -1436,7 +1436,9 @@ export function getHandler(eventType: string): Handler | undefined {
 //   generation, continuedFrom, codeHash}` (→ `_principal`, `_parent`, `_chain`, `_codeHash`; the
 //   carry seeds `_resources` / `_inbox`), `EXECUTION_SUSPENDED.condition.waits[]` (→ `_waits`),
 //   a wait-addressed `EXECUTION_RESUMED` `{ waitId, payload }` (→ `_waitAnswers`),
-//   `RESOURCE_METERED.custom` (→ `_resources.custom`), `OUTCOME_RECORDED.{recordedBy, late}`.
+//   `RESOURCE_METERED.custom` (→ `_resources.custom`), `DECISION_RECORDED.estimatedCost` (the
+//   descriptive open spelling of `estimatedCostUsd`, never a replay input),
+//   `OUTCOME_RECORDED.{recordedBy, late}`.
 //   The envelope metadata the fold now reads: `kernel` (the new kinds, `PARALLEL_COMPLETED` and a
 //   wait-addressed resume fold ONLY a kernel-stamped envelope), `forkChain`, `forkedBy`. A log
 //   carrying none of these replays byte-identically.
