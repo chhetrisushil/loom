@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Streaming deltas through `DecideScope.invokeTransient` ([ADR 0119](docs/adr/0119-decide-scope-streaming-deltas.md)).** `invokeTransient(toolId, input, { signal?, onDelta? })` delivers a streaming effect's deltas (`{ delta }`, then a terminal `{ delta: "", done: true, usage? }`) to that call's sink via the new `EffectContext.onDelta` (also `TransientInvokeOptions.onDelta`). Governance is identical to a non-streaming call (authz, middleware, kill switch, taint, budget admission, cancellation); deltas are live-only (never journaled, silent on replay), a throwing sink is swallowed and warned (`EffectRuntimeOptions.onWarn`). `createLlmEffect` (`stream: true`) calls it in addition to its configured `onDelta`. Additive: EVENT_SCHEMA and KERNEL_ABI unchanged.
+
 ### Documentation
 
 - **Wave 2 coordinated kernel design (agentic-readiness, Part R; design only, no runtime change).** One design document ([`docs/requirements/2026-10-05-wave2-kernel-design.md`](docs/requirements/2026-10-05-wave2-kernel-design.md)) and nine **Proposed** ADRs, planned together so the contract bumps happen once (KERNEL_ABI 1.2.0 → 1.3.0, EVENT_SCHEMA 1.22.0 → 1.23.0, EventStore SPI 2.0.0 → 2.1.0; nothing is bumped by this change). Each ADR is accepted at its own implementation PR.

@@ -6,7 +6,9 @@ export { HumanEffect } from "./effects/HumanEffect";
 export { A2AEffect } from "./effects/A2AEffect";
 export { EffectModeViolationError } from "./types";
 export type {
+  DeltaSink,
   Effect,
+  EffectDelta,
   EffectContext,
   EffectKind,
   EffectMiddleware,

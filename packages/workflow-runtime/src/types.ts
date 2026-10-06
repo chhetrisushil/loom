@@ -1,6 +1,6 @@
 import type { SurfaceEmitter } from "@loom/agent-surface";
 import type { ExecutableTask, ExecutionState, FlowDefinition, StepDefinition } from "@loom/core";
-import type { PrincipalChain } from "@loom/effect-runtime";
+import type { DeltaSink, PrincipalChain } from "@loom/effect-runtime";
 
 export interface SuspendConfig {
   on: string;
@@ -61,7 +61,19 @@ export interface DecideScope {
   invokeTransient<TIn = unknown, TOut = unknown>(
     toolId: string,
     input: TIn,
-    opts?: { readonly signal?: AbortSignal }
+    opts?: {
+      readonly signal?: AbortSignal;
+      /**
+       * ADR 0119 — live deltas from a streaming effect (`createLlmEffect({ stream: true })`
+       * / `createAgentModelEffect`), delivered to THIS call's sink only. The call is
+       * governed exactly as without it (authz, middleware, taint, budget admission, kill
+       * switch, cancellation, reach). Live-only: never journaled (the decision records
+       * the decider's return), silent on replay, and the text is untrusted model output
+       * (ADR 0085). Synchronous, fire-and-forget; a throw is swallowed and warned. The
+       * terminal chunk is `{ delta: "", done: true, usage? }`.
+       */
+      readonly onDelta?: DeltaSink;
+    }
   ): Promise<TOut>;
 }
 

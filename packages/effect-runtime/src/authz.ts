@@ -393,4 +393,6 @@ export interface EffectRuntimeOptions {
   scheduler?: Scheduler;
   /** Advisory pre-warm hook, invoked off-log before each effect (M6). */
   warmer?: Warmer;
+  /** ADR 0119 — where a swallowed delta-sink throw is reported. Defaults to `console.warn`. */
+  onWarn?: (message: string) => void;
 }
