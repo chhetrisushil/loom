@@ -89,7 +89,7 @@ describe("P3-1 — RunOptions.parentExecutionId is not a caller-controlled owner
     await x.waitForSuspend();
     expect(await ownerSeen(rt, seen, "x1")).toBeUndefined();
   });
-  it("a system-granted start (supervisor) with no principal has NO owner either (ADR 0111 D5)", async () => {
+  it("a supervisor start with no principal has no OWN owner; its parent's owner arrives as parentOwner (ADR 0111 D6)", async () => {
     const { rt, seen } = spyBuild(executionAccessPolicy());
     const h = await rt.start(gate, { n: 1 }, { executionId: "a1", principal: alice });
     await h.waitForSuspend();
@@ -100,7 +100,8 @@ describe("P3-1 — RunOptions.parentExecutionId is not a caller-controlled owner
     );
     await x.waitForSuspend();
     expect(await ownerSeen(rt, seen, "x2")).toBeUndefined();
-    await expect(rt.loadState("x2", { principal: alice })).rejects.toThrow(/owner is unknown/);
+    // D6 — the PARENT's owner may run the child's lifecycle (not its effects, which stay anonymous).
+    expect((await rt.loadState("x2", { principal: alice }))?.status).toBe("suspended");
   });
 });
 

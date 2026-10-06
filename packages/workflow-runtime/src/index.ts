@@ -110,6 +110,7 @@ export type {
   ExecutionHandle,
   ExecutionOp,
   SystemGrant,
+  LineageGrant,
   ForkOptions,
   ForkResult,
   FlowRunner,

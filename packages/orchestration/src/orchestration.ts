@@ -11,6 +11,7 @@ import {
 import { ResumeRefusedError } from "@loom/workflow-runtime";
 import type {
   ExecutionContext,
+  LineageGrant,
   PrincipalCodec,
   RegisteredFlow,
   SystemGrant,
@@ -546,12 +547,13 @@ function childStartOptions(
   childId: string,
   spec: { grants?: readonly string[]; expiresAt?: number },
   delegation: { secret: string } | undefined,
-  system: { system?: SystemGrant },
+  system: { system?: SystemGrant; lineage?: LineageGrant },
   parentExecutionId: string | undefined
 ): {
   executionId: string;
   principal?: PrincipalChain;
   system?: SystemGrant;
+  lineage?: LineageGrant;
   parentExecutionId?: string;
 } {
   // R3 — a child start is the supervisor acting, so it presents the system grant (bypasses the
@@ -1128,7 +1130,13 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       await deps.runtime.start(
         flow,
         spec.input,
-        childStartOptions(childId, spec, deps.delegation, deps.runtime.systemOptions(), parentId)
+        childStartOptions(
+          childId,
+          spec,
+          deps.delegation,
+          { ...deps.runtime.systemOptions(), ...deps.runtime.lineageOptions() },
+          parentId
+        )
       );
       startedTotal++;
     } catch (err) {
