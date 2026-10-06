@@ -135,6 +135,22 @@ describe("loom CLI", () => {
       expect(text).toContain("⏸");
       expect(text).toContain("EXECUTION_SUSPENDED");
     });
+    it("formatLog renders a continue-as-new hand-off with its successor (EVENT_SCHEMA 1.23.0)", () => {
+      const text = formatLog([
+        {
+          id: "c-1",
+          workflowId: "wf",
+          executionId: "c",
+          eventType: "EXECUTION_CONTINUED",
+          sequence: 1,
+          timestamp: 1,
+          payload: { successorId: "c~1" },
+          metadata: { kernel: true },
+        },
+      ]);
+      expect(text).toContain("EXECUTION_CONTINUED");
+      expect(text).toContain("c~1");
+    });
     it("describeState summarizes frames + status", () => {
       const text = describeState(foldAt(log));
       expect(text).toContain("status: suspended");

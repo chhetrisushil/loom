@@ -149,7 +149,12 @@ the inner `payload`, which may be `null`), and records `_waitAnswers[waitId] = {
 with kind and name taken from that wait in the park's `waits[]` (first answer wins), drops the wait's
 `_waits` entry, and never touches `_resumePayloads`. A stamped resume naming no wait of the current
 park re-opens status-only. An unstamped object that merely looks like `{ waitId, payload }` is an
-ordinary answer. **R13's pre-append `viewDigest` check** (ADR 0117) reads a wait-addressed resume's
+ordinary answer. **The park's `waits` is stamp-gated too (W2-0 review).** `condition.waits` is
+honoured only on a kernel-stamped `EXECUTION_SUSPENDED`: the runtime's commit site strips `waits`
+(and an unearned `stepId`) from every userspace park, the R2 writer adds `waits` after the strip and
+stamps the event, and the fold drops `waits` from an unstamped park. The lookup the resume does is
+against the fold-owned `suspendedOn.waits` of a stamped park only, and is total (malformed entries
+are skipped). **R13's pre-append `viewDigest` check** (ADR 0117) reads a wait-addressed resume's
 **inner** payload: it echoes `payload.viewDigest` of the unwrapped value and is compared with the
 `viewDigest` of THAT wait in `waits[]` (per wait; ambiguous names are refused as above); a bare resume is
 checked against the single gate's digest exactly as today, and the signed-approval binding is
@@ -230,7 +235,8 @@ the stream.
 
 **Frozen fold shapes (W2-0).** `_inbox = { cursors: { [topic]: inboxSeq }, dedupe: string[] }`; the
 cursor is monotone; `_waitAnswers[waitId] = { kind: "inbox", name: topic, payload }` (first answer wins);
-a `messageId` already in the window advances the cursor and delivers nothing.
+a `messageId` already in the window advances the cursor and delivers nothing. Cursor reads are
+own-property (`Object.hasOwn`): a topic named `toString` keeps a numeric cursor.
 
 ### D6 — Bounded dedupe, carried across continuation
 

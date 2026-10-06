@@ -1591,7 +1591,11 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       if (
         event.eventType === "EXECUTION_COMPLETED" ||
         event.eventType === "EXECUTION_FAILED" ||
-        event.eventType === "EXECUTION_CANCELLED"
+        event.eventType === "EXECUTION_CANCELLED" ||
+        // ADR 0109: a continued parent is as finished as a completed one — it spawns no further
+        // children and nothing will resume it, so its recorded-but-never-started specs and
+        // unresolved groups are dead.
+        (event.eventType === "EXECUTION_CONTINUED" && event.metadata?.kernel === true)
       ) {
         const execId = event.executionId;
         // Reclaim specs for any recorded-but-never-started child of a parent that has now
@@ -1613,7 +1617,9 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           }
         }
 
-        onChildTerminal(event);
+        // A continued execution is NOT a child result (ADR 0109 D6: "look at the head"; following
+        // `_continuedTo` is R1b's), so it never settles a group slot or resumes a parent.
+        if (event.eventType !== "EXECUTION_CONTINUED") onChildTerminal(event);
       }
     },
     recover,

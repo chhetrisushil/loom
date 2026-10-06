@@ -75,7 +75,9 @@ It is not an `ExecutionContext` member (no ABI), it is not a state change, and i
   fooled. `guardUserspaceEmit` therefore **refuses an `OUTCOME_RECORDED` carrying `recordedBy` or `late`**
   from userspace; only `recordOutcome` writes them (it appends through the runtime's own path, which does
   not pass the guard). The fold keeps appending to `_outcomes`; as of W2-0 (EVENT_SCHEMA 1.23.0) the handler copies the two
-  fields onto the entry (`recordedBy` when a string, `late` when `true`), so they ride the fold.
+  fields onto the entry (`recordedBy` when a string, `late` when `true`) — only from an envelope with
+  `metadata.kernel === true`, which the `recordOutcome` writer stamps, so a log the guard did not
+  protect cannot make a pipeline trust a forged field.
 - It does not change status and does not touch `_failedWhileParked`. **Retention is measured from the
   terminal event.** `LogLifecycle` today computes the end of an execution as
   `max(lastEvent.timestamp, state.updatedAt)` (`LogLifecycle.ts:320`), so a late outcome appended days after

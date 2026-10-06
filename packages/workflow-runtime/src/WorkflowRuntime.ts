@@ -38,6 +38,7 @@ import {
   remainingBudget,
 } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
+import { isKernelHumanPark } from "./kernelPark";
 import { COMPUTE_TARGET_KEY } from "./placement";
 import {
   type StrayPassthroughReport,
@@ -2921,12 +2922,27 @@ export class WorkflowRuntime {
           // from `suspend({ timeout })` (this is the only place wall clock
           // enters the log — replay serves the recorded value, P9). Unwired,
           // the condition is committed byte-identically to before (G2).
-          const condition = err.condition as {
+          // EVENT_SCHEMA 1.23.0 — the park is committed from what the KERNEL decided, never from
+          // what userspace put in the error. `waits` (ADR 0110 D4) is written only by the
+          // kernel's own multi-wait writer, which adds it AFTER this strip and stamps the event;
+          // `stepId` (ADR 0104) is kept only on a park the kernel built for a human step. Every
+          // path funnels here — `ctx.suspend`, a raw `throw new SuspendError`, a human step.
+          const {
+            waits: _waits,
+            stepId: claimedStep,
+            ...stripped
+          } = err.condition as {
             on: string;
             timeout?: number;
             correlationKey?: string;
             wakeAt?: number;
+            waits?: unknown;
+            stepId?: unknown;
           };
+          const condition: typeof stripped & { stepId?: unknown } =
+            isKernelHumanPark(err) && claimedStep !== undefined
+              ? { ...stripped, stepId: claimedStep }
+              : stripped;
           const wakeAt =
             this.timerStore !== undefined
               ? (condition.wakeAt ??

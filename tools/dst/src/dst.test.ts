@@ -209,3 +209,28 @@ describe("flagship — kernel crash-recovery invariants under seeded faults", ()
     expect(sawCrash).toBe(true); // the fault model really exercised crashes
   });
 });
+
+describe("invariants know the `continued` terminal (EVENT_SCHEMA 1.23.0)", () => {
+  const e = (sequence: number, eventType: string, metadata?: Record<string, unknown>) =>
+    ({
+      id: `i-${sequence}`,
+      workflowId: "f",
+      executionId: "i",
+      eventType,
+      sequence,
+      timestamp: sequence,
+      payload: {},
+      ...(metadata !== undefined && { metadata }),
+    }) as EventEnvelope;
+
+  it("exactlyOnceOutcome rejects a completion AND a continuation in one log", () => {
+    const inv = ALL_INVARIANTS.find((i) => i.name === "exactlyOnceOutcome");
+    const log = [
+      e(0, "EXECUTION_STARTED"),
+      e(1, "EXECUTION_CONTINUED", { kernel: true }),
+      e(2, "EXECUTION_COMPLETED"),
+    ];
+    expect(inv?.check({ log } as never).ok).toBe(false);
+    expect(inv?.check({ log: log.slice(0, 2) } as never).ok).toBe(true);
+  });
+});

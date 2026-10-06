@@ -43,7 +43,11 @@ load-bearing, plus the global guardrails that gate every additive capability:
   authoritative, versioned syscall set is **`KERNEL_SYSCALLS`**
   (`packages/workflow-runtime/src/abi.ts`), version **`KERNEL_ABI_VERSION`**, pinned by
   `abi.test.ts`. The syscalls: `execute`, `run`, `decide`, `parallel`, `suspend`, `sleep`,
-  `sleepUntil`, `emit`, `stream`, `ui`.
+  `sleepUntil`, `emit`, `stream`, `ui`. `KERNEL_ABI` 1.3.0 *reserves* Wave 2's `continueAsNew`,
+  `receive` and `select` without containing them: a syscall is available iff it is in
+  `KERNEL_SYSCALLS`, which the wire handshake (`WIRE_ABI.syscalls`) advertises next to
+  `kernelAbiVersion`, so clients feature-detect against that list and never infer a syscall from
+  `kernelAbiVersion >= 1.3.0`.
 - `ctx.execute(task, input)` is the generalized durable primitive; on replay a completed task is
   **served from the log** and its effect MUST NOT re-run. `ctx.run(step, input)` is the step-shaped
   alias. Task kinds (step/llm/agent/tool/ui/…) resolve through the effect boundary by `toolId`; the

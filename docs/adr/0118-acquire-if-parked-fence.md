@@ -71,12 +71,24 @@ Ignored, because they are audit appends that follow a park without answering it:
 (unfenced, `recordExecutionDenied`), `OUTCOME_RECORDED` (ADR 0116, terminal-only anyway), `STEP_FAILED`
 while parked (ADR 0105), `MESSAGE_CONSUMED` (ADR 0110: it is written by the running owner, before a park or
 after the `EXECUTION_RESUMED` that answers one, so it never answers by itself), `EXECUTION_MIGRATED`,
-annotations and every other kind. The classification is a **required** `Record<EventKind, "answering" | "ignorable">`
-in `@loom/event-runtime` (no default: an unclassified kind is a compile error, so adding one forces the
-decision). At runtime a kind absent from the map (only possible in a mixed fleet, where a newer node wrote a
-kind this node does not know) is treated as **answering**: fail-closed, it costs at worst a `contended`
-(retried by D4), never a fenced-out body. The SQL scan therefore filters `kind NOT IN (<ignorable list>)`, not
-`= ANY(<answering list>)`. The token is the right
+annotations and every other KERNEL kind. The classification is a **required** `Record<EventKind, "answering" | "ignorable">`
+in `@loom/event-runtime` (no default: an unclassified kernel kind is a compile error, so adding one forces the
+decision), applied by `isAnsweringKind(event)`, which reads the kind AND the envelope's `metadata.kernel`:
+
+1. a kind in `KERNEL_EVENT_KINDS` is classified by its map entry;
+2. a kind NOT in `KERNEL_EVENT_KINDS` is an **application event** (`ctx.emit`, a `ctx.stream` delta, a
+   parallel sibling's output) and is **ignorable**: counting it would let a sibling that keeps emitting after the
+   park make every `acquireFenceIf` stale forever, so the execution could never be resumed;
+3. EXCEPT an unknown kind carrying `metadata.kernel === true`: a kernel kind written by a NEWER node in a mixed
+   fleet, which this node cannot classify. It is **answering**: fail-closed, it costs at worst a `contended`
+   (retried by D4), never a fenced-out body. **Rule for every future kernel kind: its writer MUST stamp
+   `metadata.kernel: true`** (an unstamped new kernel kind is indistinguishable from an app event and would be
+   ignorable on an older node).
+
+The SQL scan therefore filters
+`kind = ANY(<answering kernel kinds>) OR (kind <> ALL(<KERNEL_EVENT_KINDS>) AND metadata->>'kernel' = 'true')`
+(SQLite: `kind IN (…) OR (kind NOT IN (…) AND json_extract(metadata,'$.kernel') = 1)`), not a
+`NOT IN (<ignorable list>)`. The token is the right
 condition because it is what every legitimate writer's append is checked against (`StaleFenceError`,
 `event-runtime/src/fencing`), and it moves **only** when someone acquires, never when an unfenced audit
 event is appended. The caller passes the token under which the park it is answering was written: events
@@ -89,8 +101,8 @@ interleave with an append). **Postgres** cannot do it as one statement: its appe
 subquery (`PostgresEventStore.ts:177`) and takes no lock on the `fences` row, so under READ COMMITTED an
 append that passed the guard at token 6 could commit after a single-statement `NOT EXISTS` had already
 looked, and the acquire would fence out a body that had just been answered. So (1) the append's fence guard
-reads the row `FOR SHARE` **only when the appended batch contains an answering kind** (`EXECUTION_RESUMED`,
-`EXECUTION_SUSPENDED`, or a terminal kind including `EXECUTION_CONTINUED`) and (2) `acquireFenceIf` is a transaction: `SELECT fence … FOR UPDATE` (waits for in-flight
+reads the row `FOR SHARE` **only when the appended batch contains an answering event** (`EXECUTION_RESUMED`,
+`EXECUTION_SUSPENDED`, a terminal kind including `EXECUTION_CONTINUED`, or an unknown kind stamped `metadata.kernel: true`; app events do not) and (2) `acquireFenceIf` is a transaction: `SELECT fence … FOR UPDATE` (waits for in-flight
 appends, blocks new ones), then a **separate statement** scanning `events` for an answering kind past
 `parkSeq` (a fresh snapshot, so it sees every committed append), then the `UPDATE`. Why only answering appends: `fences` rows are created on the first `acquireFence`
 (`PostgresEventStore.ts:445-446`) and never deleted, so a `FOR SHARE` on every append of any ever-fenced
@@ -219,7 +231,7 @@ fence acquire and the `appendMany`, and after it) over the inbox path: the redri
 exactly one `MESSAGE_CONSUMED` and one `EXECUTION_RESUMED`, never two deliveries and never none. Conformance: `acquireFenceIf` is `stale`
 when an `EXECUTION_RESUMED` / `EXECUTION_SUSPENDED` / terminal kind exists past `parkSeq` even though the
 token matches, and is NOT stale for `EXECUTION_DENIED`, `OUTCOME_RECORDED`, `STEP_FAILED`,
-`MESSAGE_CONSUMED`; plus the Postgres append-vs-acquire race case (D1; answering append vs `acquireFenceIf`, on both the single-append and the `appendMany` JOIN path), and an unclassified-kind case (a kind absent from the map is treated as answering).
+`MESSAGE_CONSUMED`; plus the Postgres append-vs-acquire race case (D1; answering append vs `acquireFenceIf`, on both the single-append and the `appendMany` JOIN path), and two unclassified-kind cases (an unknown kind stamped `metadata.kernel: true` is answering; an unknown kind WITHOUT the stamp, e.g. a parallel sibling's `ctx.emit` after the park, is NOT stale).
 Conformance case (token and `parkSeq` match → new token returned; token moved → `stale`, token unchanged; concurrent
 callers → exactly one wins; **an unfenced append after the park (an `EXECUTION_DENIED`) does NOT make the
 acquire stale — the negative for the head-based design**); DST: two supervisors race a park with crashes between acquire and append

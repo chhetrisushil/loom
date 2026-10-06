@@ -29,7 +29,12 @@ const fenceOf = (e: EventEnvelope): number | undefined => {
   return typeof f === "number" ? f : undefined;
 };
 
-const TERMINAL = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"]);
+const TERMINAL = new Set([
+  "EXECUTION_COMPLETED",
+  "EXECUTION_FAILED",
+  "EXECUTION_CANCELLED",
+  "EXECUTION_CONTINUED", // ADR 0109: a continued execution's one terminal fact
+]);
 
 /**
  * A non-idempotent effect must leave at most one durable completion per step: after

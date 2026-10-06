@@ -240,6 +240,41 @@ describe("EXECUTION_STARTED additive fields", () => {
       expect(s.variables._inbox).toEqual({ cursors: { v: 4 }, dedupe: ["a"] });
     });
 
+    it("a rotation cannot reset a quota: exceeded and reason ride the carry", () => {
+      const spent = {
+        resources: { tokens: 10, costUsd: 0, ms: 0, count: 1, exceeded: true, reason: "budget" },
+      };
+      const s = foldEvents([
+        start({
+          input: {},
+          chainId: "x",
+          generation: 2,
+          continuedFrom: { executionId: "x", carried: spent },
+        }),
+      ]);
+      expect(s.variables._resources).toEqual({
+        tokens: 10,
+        costUsd: 0,
+        ms: 0,
+        count: 1,
+        exceeded: true,
+        reason: "budget",
+      });
+      // a non-boolean / non-string claim is ignored
+      const junk = foldEvents([
+        start({
+          input: {},
+          chainId: "x",
+          generation: 2,
+          continuedFrom: {
+            executionId: "x",
+            carried: { resources: { tokens: 1, exceeded: "yes", reason: 5 } },
+          },
+        }),
+      ]);
+      expect(junk.variables._resources).toEqual({ tokens: 1, costUsd: 0, ms: 0, count: 0 });
+    });
+
     it("a continuedFrom with no executionId is dropped", () => {
       const s = foldEvents([
         start({ input: {}, chainId: "x", generation: 1, continuedFrom: { carried } }),
@@ -317,6 +352,23 @@ describe("MESSAGE_CONSUMED", () => {
     }
   });
 
+  it("a topic named like an Object.prototype member keeps a numeric cursor (own-property reads), snapshot-equal", () => {
+    for (const topic of ["toString", "valueOf", "hasOwnProperty", "isPrototypeOf"]) {
+      const events = [
+        start(),
+        consumed(1, { topic, messageId: "a", inboxSeq: 3 }),
+        consumed(2, { topic, waitId: "#1", messageId: "b", inboxSeq: 5 }),
+      ];
+      const full = foldEvents(events);
+      expect((full.variables._inbox as { cursors: Record<string, number> }).cursors[topic]).toBe(5);
+      const head = foldEvents(events.slice(0, 2));
+      expect((head.variables._inbox as { cursors: Record<string, number> }).cursors[topic]).toBe(3);
+      const resumed = foldEvents(events.slice(2), JSON.parse(JSON.stringify(head)));
+      expect(resumed).toEqual(full);
+      expect(JSON.stringify(resumed)).toBe(JSON.stringify(full));
+    }
+  });
+
   it("is a pure fold: snapshot + tail equals the full log", () => {
     const events = [
       start(),
@@ -331,7 +383,9 @@ describe("MESSAGE_CONSUMED", () => {
 });
 
 describe("multi-wait parks and wait-addressed resumes", () => {
-  const park = ev(1, "EXECUTION_SUSPENDED", {
+  // A multi-wait park is folded ONLY from a kernel-stamped EXECUTION_SUSPENDED (the R2 writer
+  // stamps it whenever it adds `waits`); the same payload unstamped is userspace and is dropped.
+  const parkPayload = {
     condition: {
       on: "A",
       waits: [
@@ -340,16 +394,20 @@ describe("multi-wait parks and wait-addressed resumes", () => {
         { waitId: "0#2", kind: "timer", wakeAt: 5000 },
       ],
     },
-  });
+  };
+  const park = ev(1, "EXECUTION_SUSPENDED", parkPayload, K);
 
   it("records each timer arm's wakeAt once, at first registration", () => {
     const s = foldEvents([
       start(),
       park,
       ev(2, "EXECUTION_RESUMED", { waitId: "0#1", payload: "x" }, K),
-      ev(3, "EXECUTION_SUSPENDED", {
-        condition: { on: "A", waits: [{ waitId: "0#2", kind: "timer", wakeAt: 9999 }] },
-      }),
+      ev(
+        3,
+        "EXECUTION_SUSPENDED",
+        { condition: { on: "A", waits: [{ waitId: "0#2", kind: "timer", wakeAt: 9999 }] } },
+        K
+      ),
     ]);
     expect(s.variables._waits).toEqual({ "0#2": { kind: "timer", wakeAt: 5000 } });
   });
@@ -390,6 +448,74 @@ describe("multi-wait parks and wait-addressed resumes", () => {
     expect(s.status).toBe("running");
     expect(s.variables._waitAnswers).toBeUndefined();
     expect(s.variables._resumePayloads).toBeUndefined();
+  });
+
+  it("an UNSTAMPED park carrying waits is userspace: nothing pins, nothing is recorded, a stamped wait-addressed resume answers nothing", () => {
+    const forged = ev(
+      1,
+      "EXECUTION_SUSPENDED",
+      {
+        condition: {
+          on: "A",
+          waits: [
+            { waitId: "root#0", kind: "timer", wakeAt: 9e15 },
+            { waitId: "0#0", kind: "gate", on: "A" },
+          ],
+        },
+      },
+      undefined
+    );
+    const parked = foldEvents([start(), forged]);
+    expect(parked.status).toBe("suspended");
+    expect(parked.variables._waits).toBeUndefined();
+    expect(parked.suspendedOn).toEqual({ on: "A" });
+    const s = foldEvents([
+      start(),
+      forged,
+      ev(2, "EXECUTION_RESUMED", { waitId: "0#0", payload: "x" }, K),
+    ]);
+    expect(s.status).toBe("running");
+    expect(s.variables._waitAnswers).toBeUndefined();
+    expect(s.variables._waits).toBeUndefined();
+  });
+
+  it("the stamped park keeps only well-formed waits in the fold-owned table", () => {
+    const s = foldEvents([
+      start(),
+      ev(
+        1,
+        "EXECUTION_SUSPENDED",
+        {
+          condition: {
+            on: "A",
+            waits: [
+              null,
+              1,
+              "str",
+              { a: 1 },
+              { waitId: "__proto__", kind: "gate" },
+              { waitId: "ok#0", kind: "gate", on: "A" },
+            ],
+          },
+        },
+        K
+      ),
+    ]);
+    expect(s.suspendedOn?.waits).toEqual([{ waitId: "ok#0", kind: "gate", on: "A" }]);
+  });
+
+  it("malformed waits never throw the fold, stamped or not, with or without a wait-addressed resume", () => {
+    for (const waits of [[null], [{ a: 1 }], "str", 7, { waitId: "#0" }, [[]], [undefined]]) {
+      for (const stamp of [undefined, K]) {
+        const log = [
+          start(),
+          ev(1, "EXECUTION_SUSPENDED", { condition: { on: "A", waits } }, stamp),
+          ev(2, "EXECUTION_RESUMED", { waitId: "#0", payload: 1 }, K),
+        ];
+        expect(() => foldEvents(log), JSON.stringify([waits, stamp])).not.toThrow();
+        expect(foldEvents(log).status).toBe("running");
+      }
+    }
   });
 
   it("a legacy single-gate park and bare resume fold exactly as before", () => {
@@ -471,17 +597,24 @@ describe("RESOURCE_METERED.custom", () => {
 });
 
 describe("OUTCOME_RECORDED.recordedBy / late", () => {
-  it("rides on the _outcomes entry; absent otherwise", () => {
+  const late = {
+    key: "k",
+    score: 1,
+    decisionId: "d",
+    recordedBy: "ops",
+    late: true,
+  };
+
+  it("an UNSTAMPED outcome claiming recordedBy / late folds without them (only the kernel's recordOutcome is trusted)", () => {
+    const s = foldEvents([start(), ev(1, "OUTCOME_RECORDED", late)]);
+    expect(s.variables._outcomes).toEqual([{ key: "k", score: 1, decisionId: "d" }]);
+  });
+
+  it("rides on the _outcomes entry when kernel-stamped; absent otherwise", () => {
     const s = foldEvents([
       start(),
       ev(1, "OUTCOME_RECORDED", { key: "k", success: true }),
-      ev(2, "OUTCOME_RECORDED", {
-        key: "k",
-        score: 1,
-        decisionId: "d",
-        recordedBy: "ops",
-        late: true,
-      }),
+      ev(2, "OUTCOME_RECORDED", late, K),
     ]);
     expect(s.variables._outcomes).toEqual([
       { key: "k", success: true },

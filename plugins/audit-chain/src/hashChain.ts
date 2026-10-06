@@ -169,7 +169,12 @@ const chainOf = (e: EventEnvelope): ChainMetadata | undefined =>
 // A terminal event ends an execution's write stream — its cached chain head can be
 // dropped to bound the per-execution cache. A rare post-terminal append (a late audit
 // fact) just cold-reads the tail again, which is correct, only slower.
-const TERMINAL_EVENTS = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"]);
+const TERMINAL_EVENTS = new Set([
+  "EXECUTION_COMPLETED",
+  "EXECUTION_FAILED",
+  "EXECUTION_CANCELLED",
+  "EXECUTION_CONTINUED", // ADR 0109: the predecessor's write stream ends at the hand-off
+]);
 
 /**
  * Wrap a store so every append is hash-chained (and optionally HMAC-signed).

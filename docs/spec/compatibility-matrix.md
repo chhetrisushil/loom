@@ -27,5 +27,10 @@ mechanism (`checkCompatibility`) exists for the day a deployment's MAJOR diverge
 
 Event types folded by K5: **32** · Kernel syscalls: **10**.
 
+**Kernel ABI 1.3.0 reserves the Wave 2 syscalls (`continueAsNew`, `receive`, `select`); it does not
+contain them.** A syscall is callable iff it is in the kernel's syscall table, which the wire
+handshake advertises (`syscalls`) beside `kernelAbiVersion`. Feature-detect against that list;
+do not infer availability from `kernelAbiVersion >= 1.3.0` until the writers land.
+
 Validate a deployment: `loom compat --abi <v> --event-schema <v> [...]` (exit non-zero on a
 major mismatch), or `checkCompatibility(deploymentVersions)` from `@loom/spec`.
