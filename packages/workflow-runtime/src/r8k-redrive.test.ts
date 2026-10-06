@@ -14,7 +14,7 @@ import { WorkflowRuntime } from "./WorkflowRuntime";
 // ADR 0118 D4 — the live re-driver: a `contended` resume leaves a due-later row, `TimerService`
 // fires it through the registered re-drivers with backoff, and gives up exactly once.
 
-function boot(redrivers: Redriver[], opts: { max?: number } = {}) {
+function boot(redrivers: Redriver[], opts: { max?: number; batch?: number } = {}) {
   const timers = new InMemoryTimerStore();
   const errors: unknown[] = [];
   const runtime = new WorkflowRuntime({
@@ -27,6 +27,7 @@ function boot(redrivers: Redriver[], opts: { max?: number } = {}) {
     redrivers,
     redriveBackoff: { random: () => 0.999 }, // the largest jitter: delays are deterministic
     ...(opts.max !== undefined && { maxRedriveAttempts: opts.max }),
+    ...(opts.batch !== undefined && { batch: opts.batch }),
     onError: (_id, err) => errors.push(err),
     now: () => 0,
   });
@@ -146,6 +147,38 @@ describe("R8k D4 — TimerService fires a re-drive row", () => {
     await h.service.tick(0);
     expect(await rows(h.timers)).toEqual([]);
     unregister();
+  });
+
+  it("the NEXT row never collides with the row it retires, even with a zero jitter draw at wakeAt == now (P3-7)", async () => {
+    const h = boot([async () => "contended" as const]);
+    // random() = 0 -> delay 0; now() = 0 = the row's wakeAt: the next row would be the SAME key.
+    const service = new TimerService(h.runtime, h.timers, {
+      redrivers: [async () => "contended"],
+      redriveBackoff: { random: () => 0 },
+      now: () => 0,
+    });
+    await h.timers.schedule({ executionId: "p", wakeAt: 0, redrive: { attempt: 0 } });
+    await service.tick(0);
+    const pending = await rows(h.timers);
+    expect(pending).toHaveLength(1); // the re-drive survived `complete`
+    expect(pending[0]?.redrive).toEqual({ attempt: 1 });
+    expect(pending[0]?.wakeAt).toBe(1);
+    // and the helper's bound is explicit
+    const t = new InMemoryTimerStore();
+    expect((await scheduleRedrive(t, "q", 1, 10, { random: () => 0 }, 11)).wakeAt).toBe(11);
+  });
+
+  it("a node with NO re-driver does not starve plain wakes behind a batch of re-drive rows (P3-8)", async () => {
+    const h = boot([], { batch: 2 });
+    for (let i = 0; i < 4; i++) {
+      await h.timers.schedule({ executionId: `r${i}`, wakeAt: i, redrive: { attempt: 0 } });
+    }
+    // a plain wake for an execution that does not exist: fired = retired as obsolete
+    await h.timers.schedule({ executionId: "plain-obsolete", wakeAt: 100 });
+    await h.service.tick(1000);
+    expect(h.errors).toEqual([]);
+    const left = (await rows(h.timers)).map((r) => r.executionId).sort();
+    expect(left).toEqual(["r0", "r1", "r2", "r3"]); // the plain row was reached and retired
   });
 
   it("scheduleRedrive writes a flagged, due-later row", async () => {

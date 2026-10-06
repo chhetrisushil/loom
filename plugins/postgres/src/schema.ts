@@ -1,4 +1,21 @@
+import { KERNEL_EVENT_KINDS } from "@loom/core";
+import { EVENT_KIND_CLASS } from "@loom/event-runtime";
 import type { PoolLike } from "./pool";
+
+/** The kernel kinds that answer a park (ADR 0118 D1), from the one classification map. */
+const ANSWERING_KERNEL_KINDS: readonly string[] = KERNEL_EVENT_KINDS.filter(
+  (k) => EVENT_KIND_CLASS[k] === "answering"
+);
+
+/** `ARRAY['A','B']::text[]` for constant kernel kind names (inlined: see `acquireFenceIf`). */
+function kindsSql(kinds: readonly string[]): string {
+  for (const k of kinds) {
+    if (!/^[A-Z_]+$/.test(k)) throw new Error(`kernel event kind "${k}" cannot be inlined`);
+  }
+  return `ARRAY[${kinds.map((k) => `'${k}'`).join(",")}]::text[]`;
+}
+export const ANSWERING_KINDS_SQL = kindsSql(ANSWERING_KERNEL_KINDS);
+export const KERNEL_KINDS_SQL = kindsSql(KERNEL_EVENT_KINDS);
 
 // Advisory-lock key for the migration, as the two-int form: ("LOOM" as ASCII, 1).
 // Application-defined and namespaced to this library, so it cannot collide with an
@@ -115,6 +132,15 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
     ]);
     await client.query(DDL_EVENTS);
     await client.query(DDL_REST);
+    // ADR 0118 D1 — one-time backfill of the token-0 fence rows a park now writes itself, for the
+    // parks that PREDATE that. Before the L21/L10 conversions: it only reads \`events\`, and must
+    // not run while their ACCESS EXCLUSIVE lock is held. Exempt from the caller's statement_timeout
+    // (a scan of the whole log, once), then restored.
+    await client.query("SELECT set_config('statement_timeout', '0', true)");
+    await client.query(R8K_PARK_FENCES);
+    await client.query("SELECT set_config('statement_timeout', $1, true)", [
+      callerStatementTimeout,
+    ]);
     // Review round 1 (P2) — L21 (`refs`) runs BEFORE L10 (`events`), both after DDL_REST,
     // which is what creates `refs` on a fresh database. Ordering matters for more than
     // "lock the hot table last": this transaction acquires ACCESS EXCLUSIVE on `refs` and
@@ -152,6 +178,38 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
     client.release();
   }
 }
+
+/**
+ * ADR 0118 D1 — backfill the inert token-0 `fences` row of every execution that is PARKED right
+ * now but parked before this version (a park now ensures its own row; see
+ * `PostgresEventStore.append`). Without the row an answering append has nothing to lock
+ * `FOR SHARE`, so the FIRST `acquireFenceIf` of such a park races it (probe: 279 of 300 batch
+ * appends both succeeded). Only parks with no ANSWERING event after them get one (a settled
+ * execution never needs it), so the table does not grow by the whole history.
+ *
+ * Runs ONCE: the marker is a comment on the `fences` table, written in the same transaction as
+ * the backfill, under the migration advisory lock (no peer runs it twice or sees it half done).
+ * A fresh database finds an empty log and just writes the marker. `ON CONFLICT DO NOTHING`
+ * never touches a real token.
+ */
+const R8K_PARK_FENCES = `
+    DO $r8k_park_fences$
+    BEGIN
+      IF COALESCE(obj_description('fences'::regclass, 'pg_class'), '') <> 'loom:r8k-park-fences' THEN
+        INSERT INTO fences (execution_id, fence)
+        SELECT p.execution_id, 0 FROM events p
+        WHERE p.event_type = 'EXECUTION_SUSPENDED'
+          AND NOT EXISTS (
+            SELECT 1 FROM events a
+            WHERE a.execution_id = p.execution_id AND a.sequence > p.sequence
+              AND a.event_type = ANY (${ANSWERING_KINDS_SQL})
+          )
+        ON CONFLICT (execution_id) DO NOTHING;
+        COMMENT ON TABLE fences IS 'loom:r8k-park-fences';
+      END IF;
+    END
+    $r8k_park_fences$;
+`;
 
 const DDL_EVENTS = `
     CREATE TABLE IF NOT EXISTS events (
@@ -269,9 +327,12 @@ const DDL_REST = `
     );
     CREATE INDEX IF NOT EXISTS idx_lineage_parent ON lineage (parent_execution_id);
 
-    -- K9.4 fencing: the current monotonic fence token per execution. A row exists
-    -- only once a dispatcher/worker acquires a fence; executions that never fence
-    -- pay nothing. Appends carrying a stale/missing token are rejected in append().
+    -- K9.4 fencing: the current monotonic fence token per execution. A row exists once a
+    -- dispatcher/worker acquires a fence, AND (ADR 0118 D1) once the execution PARKS: a park
+    -- writes an inert token-0 row so an answering append has a row to lock \`FOR SHARE\` against
+    -- \`acquireFenceIf\`'s \`FOR UPDATE\` (deleteExecution removes a token-0 row with the log;
+    -- a row with a real token is kept). Executions that never park or fence pay nothing.
+    -- Appends carrying a stale/missing token are rejected in append().
     CREATE TABLE IF NOT EXISTS fences (
       execution_id TEXT NOT NULL PRIMARY KEY,
       fence BIGINT NOT NULL
@@ -282,13 +343,34 @@ const DDL_REST = `
     CREATE TABLE IF NOT EXISTS timers (
       execution_id TEXT NOT NULL,
       wake_at BIGINT NOT NULL,
+      redrive JSONB,
       PRIMARY KEY (execution_id, wake_at)
     );
     CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC);
-    -- ADR 0118 D4: marks a re-drive row (a backed-off retry of a contended resume). \`CREATE TABLE
-    -- IF NOT EXISTS\` never adds a column to a table an older version created, so this is its own
-    -- idempotent statement.
-    ALTER TABLE timers ADD COLUMN IF NOT EXISTS redrive JSONB;
+    -- ADR 0118 D4: \`redrive\` marks a re-drive row (a backed-off retry of a contended resume).
+    -- \`CREATE TABLE IF NOT EXISTS\` never adds a column to a table an older version created, so
+    -- an older table gains it here. \`ADD COLUMN IF NOT EXISTS\` would take ACCESS EXCLUSIVE on
+    -- EVERY boot (the lock is requested before the existence check), queueing every timer read
+    -- behind any open transaction; the catalog is consulted first, and the one real ALTER waits
+    -- under \`loom.migration_lock_timeout\` (a timeout fails this boot, which retries cleanly).
+    DO $timers_redrive$
+    DECLARE
+      caller_lock_timeout text := current_setting('lock_timeout');
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'timers' AND column_name = 'redrive'
+      ) THEN
+        PERFORM set_config(
+          'lock_timeout',
+          COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
+          true
+        );
+        ALTER TABLE timers ADD COLUMN IF NOT EXISTS redrive JSONB;
+        PERFORM set_config('lock_timeout', caller_lock_timeout, true);
+      END IF;
+    END
+    $timers_redrive$;
 
     -- #380 — durable ownership of a RUNNING execution. One row per execution: a lease is
     -- exclusive by definition, so the primary key is the mutual exclusion.

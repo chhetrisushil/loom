@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SqliteTimerStore } from "./SqliteTimerStore";
 
 // ADR 0118 D4 — `CREATE TABLE IF NOT EXISTS` never adds a column to a table an older version
@@ -46,5 +46,44 @@ describe("SqliteTimerStore migration (ADR 0118 D4)", () => {
     await again.schedule({ executionId: "x", wakeAt: 1, redrive: { attempt: 0 } });
     expect(await again.due(10)).toEqual([{ executionId: "x", wakeAt: 1, redrive: { attempt: 0 } }]);
     await again.close();
+  });
+
+  it("a peer that adds the column between this process's check and its ALTER does not fail the boot (P3-6)", async () => {
+    const path = join(dir, "loom.db");
+    const old = new Database(path);
+    old.exec(`CREATE TABLE timers (
+      execution_id TEXT NOT NULL, wake_at INTEGER NOT NULL, PRIMARY KEY (execution_id, wake_at))`);
+    old.close();
+    const realPragma = Database.prototype.pragma;
+    let raced = false;
+    const spy = vi.spyOn(Database.prototype, "pragma").mockImplementation(function (
+      this: Database.Database,
+      ...args: Parameters<typeof realPragma>
+    ) {
+      const out = realPragma.apply(this, args);
+      if (!raced && String(args[0]).startsWith("table_info")) {
+        raced = true;
+        // the peer process: sees the same missing column and adds it right after our check
+        const peer = new Database(path, { timeout: 0 });
+        try {
+          peer.exec("ALTER TABLE timers ADD COLUMN redrive TEXT");
+        } catch {
+          // blocked by our write lock: the transaction is doing its job
+        } finally {
+          peer.close();
+        }
+      }
+      return out;
+    });
+    try {
+      const store = new SqliteTimerStore(path);
+      await store.schedule({ executionId: "x", wakeAt: 1, redrive: { attempt: 0 } });
+      expect(await store.due(10)).toEqual([
+        { executionId: "x", wakeAt: 1, redrive: { attempt: 0 } },
+      ]);
+      await store.close();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

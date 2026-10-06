@@ -287,11 +287,7 @@ KERNEL_ABI and EVENT_SCHEMA are untouched. Where the code differs from the decis
     `EXECUTION_SUSPENDED` append (single and `appendMany`) also does `INSERT INTO fences … VALUES (id, 0)
     ON CONFLICT DO NOTHING`, so the row exists, committed, before anyone can answer or acquire for that
     park. A token-0 row is inert for every guard (`COALESCE(0, token) <= token`; `acquireFence` upserts to
-    1 as before) and costs an index probe per park once it exists. **Residual (documented, not closed):** a
-    park written BEFORE this version, on its FIRST-ever acquire, has no row; the acquirer creates it, and
-    an answering append already in flight that read "no row" can still land after the scan. The
-    supervisor resumes unfenced first, so it reaches `acquireFenceIf` only for an execution that already
-    has a fence row.
+    1 as before) and costs an index probe per park once it exists. **The pre-version residual is closed by a one-time backfill** (review round 1, below): `migrate` inserts the token-0 row of every execution that is parked and unanswered right now, so a park written BEFORE this version has its row too (probe before the fix: the batch path let both an answer and the acquire succeed in 279 of 300 first-ever acquires of a pre-version park).
   - The append guard takes `FOR SHARE` only for a batch containing an answering kind, on BOTH paths.
     `FOR SHARE OF f` cannot be applied to the nullable side of the JOIN's `LEFT JOIN`, so the
     locking variant reads the rows through a `locked AS MATERIALIZED (… FOR SHARE OF f)` CTE (which
@@ -317,8 +313,11 @@ KERNEL_ABI and EVENT_SCHEMA are untouched. Where the code differs from the decis
 - **D3:** `pinParkedChildren(supervisor | () => supervisor)` and `ChildSupervisor.parkedOnChild`
   (`@loom/orchestration`). The edge is the child's own `EXECUTION_STARTED.parent` (R3k: only the lineage
   grant writes it), falling back to the supervisor's rebuilt state; the parent must be non-terminal,
-  parked on `CHILD_DONE`, with the child's own key or a group that names it. An unreadable log answers
-  "pinned" (retention fails toward keeping). **`defineConfig` cannot compose it by itself**: the
+  parked on `CHILD_DONE`, with the child's own key or a group that names it. A crypto-shredded log
+  (`PayloadShreddedError`, matched by name through the `StorageWriteError` wrapper) is NOT pinned (it is
+  unreadable by design and forever; pinning it blocked its retention and compaction for good). Any other
+  read failure is RETHROWN, so the retention run fails visibly and the log is kept (round 1: it used to
+  answer "pinned" for every error, which the shredded case turned into a permanent pin). **`defineConfig` cannot compose it by itself**: the
   supervisor is built from the runtime `defineConfig` returns. The seam is `app.supervise(supervisor)`,
   which ORs the predicate into `app.lifecycle`'s pin (with `durability.retention.pinned`).
 - **D4:** `TimerRecord.redrive?: { attempt }`; the in-memory store, SQLite (`ALTER TABLE … ADD COLUMN
@@ -342,6 +341,56 @@ KERNEL_ABI and EVENT_SCHEMA are untouched. Where the code differs from the decis
 - **Not done here:** ADR 0110's inbox notify path as a second re-driver (R2 registers it; `redrivers` is
   the seam), and the coalescing predicate for redrive rows (R2's, ADR 0110): a redrive row is
   distinguishable through `due`, which is all this ADR promises.
+
+### Review round 1 (Opus review of PR #498): what changed
+
+- **P2-1, the runtime ran on a stale VM.** `acquireFenceIfParked` folded the tail for `assertResumable`
+  only; `execute` then appended at the OLD sequence, so an ignorable append (an unfenced
+  `EXECUTION_DENIED`, an app emit) between the caller's fold and the acquire gave `duplicate sequence`,
+  a burned token and nothing appended. It now returns the VM advanced by the tail and `resume` /
+  `resumeAs` run `execute` and build `answerEvents` from it. The acting principal is computed BEFORE
+  the acquire (P3-1), so the fence is strictly the last await before `execute`.
+- **P2-2, the timer wake is acquire-if-parked.** In `fenced` mode on the in-process path
+  `TimerService.fire` resumes with `fenceIfParkedAt` (from `runtime.parkedAtSequence`): no unanswered
+  park, or `not-suspended` from the runtime, retires the timer as obsolete; `ResumeContendedError`
+  leaves the row for the next poll (the existing at-least-once semantics; the re-driver is the
+  supervisor's, a timer wake is not its to re-derive). **Not converted, by design:**
+  - the **dispatcher path** (`timers.dispatcher`): the worker SPI's `allocate` acquires its own token
+    per dispatch (`LocalWorkerRuntime.allocate` -> `acquireFence`), and `WorkerRequest` has no way to
+    carry a park sequence; converting needs a `WorkerRequest` / `WorkerLease` extension and a worker
+    that resumes with `fenceIfParkedAt`. Named follow-up (window 2 stays open on that path, as before);
+  - **`recoverAbandoned`**: it acquires on executions that are `running` / `pending`, not parked, so
+    there is no park to condition on (its own guard is the lease and the fresh-status re-check);
+  - **`LocalWorkerRuntime.allocate`**: same reason (and it also serves starts and recoveries).
+- **P2-3, the pin predicate** (D3, above).
+- **P3-2 backfill.** One-time, in `migrate`, under the advisory lock, outside the L10/L21 table locks,
+  exempt from the caller's `statement_timeout`: `INSERT INTO fences … SELECT` every `EXECUTION_SUSPENDED`
+  with no answering event after it, `ON CONFLICT DO NOTHING`; a comment on `fences`
+  (`loom:r8k-park-fences`) is the marker written in the same transaction, so it never runs twice.
+- **P3-3, rolling upgrade is NOT safe in both directions.** An OLD node's answering append takes no
+  `FOR SHARE`, so while old and new nodes share a database the conditional acquire is only as safe as
+  the unconditional one was (the residual window 2 remains for old writers). **Upgrade order:** roll
+  EVERY node to this version first, and only then turn on anything that relies on `fenceIfParkedAt` (the
+  supervisor's conditional resume, a fenced `TimerService`, `kernel.features.redrive`). A new node
+  against old ones degrades to the previous behaviour; it never corrupts, it just does not exclude.
+- **P3-4.** `deleteExecution` also deletes the execution's token-0 fence row (inert); a row with a real
+  token is kept, as before (it fences out a zombie writer of a re-created id). The `schema.ts` comment
+  ("a row exists only once someone acquires") now says a park writes one too.
+- **P3-5.** `ADD COLUMN IF NOT EXISTS` takes ACCESS EXCLUSIVE before it checks, so every boot queued
+  behind any open transaction on `timers`. The column is now in `CREATE TABLE` and an older table gains
+  it from a DO block that consults `information_schema.columns` first and waits under
+  `loom.migration_lock_timeout` (a timeout fails that boot, which retries cleanly; the column is not
+  optional, so it is not a WARNING like L10/L21).
+- **P3-6.** SQLite: the `table_info` check and the `ALTER` run in one `BEGIN IMMEDIATE`, and a
+  `duplicate column name` is tolerated, so two processes opening the file together both boot.
+- **P3-7.** `scheduleRedrive` takes a `minWakeAt`; the service passes `firedWakeAt + 1`, so a zero jitter
+  draw at `wakeAt == now` cannot produce the SAME `(executionId, wakeAt)` key that is about to be
+  `complete`d.
+- **P3-8.** `TimerStore.due(now, limit, { redrive: false })` excludes re-drive rows BEFORE the limit;
+  a node with no re-driver asks for that, so a batch of rows it cannot judge no longer starves plain
+  wakes behind it. A store that ignores the option is still correct (the service still skips the rows).
+  New conformance case.
+- **P3-9.** Runtime test for the LOG half of staleness (an answer past the park, token unchanged).
 
 ### Tests (each failed first)
 
