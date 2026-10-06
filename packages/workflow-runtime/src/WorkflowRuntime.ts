@@ -626,14 +626,25 @@ function rememberBounded<V>(map: Map<string, V>, key: string, value: V): void {
   map.set(key, value);
 }
 
+/** An inbox bound, when given, must be a positive integer: NaN / 0 / negative / fractional never silently clamp. */
+function assertPositiveInt(name: string, value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(
+      `${name} must be a positive integer (got ${String(value)}): it bounds the durable inbox (ADR 0110)`
+    );
+  }
+}
+
 /** How long a scan that found a chain's inbox full is trusted (see `assertInboxHasRoom`). */
 const INBOX_FULL_TTL_MS = 250;
 
-/** Messages one notify read asks for, and the most MESSAGE_CONSUMED facts one atomic batch carries. */
 const RETRY = Symbol("notify-retry");
 const RETRY_FENCED = Symbol("notify-retry-fenced");
 const NOTIFY_ATTEMPTS = 4;
+/** Messages one notify read asks for. */
 const NOTIFY_PAGE = 64;
+/** The most MESSAGE_CONSUMED facts one atomic batch carries. */
 const NOTIFY_BATCH_CAP = 1024;
 
 /** The `eventType` of the kernel's own inbox-delivery resume (ADR 0110 D5): never a caller's. */
@@ -671,9 +682,14 @@ export class WorkflowRuntime {
   private readonly inboxMaxBacklog: number;
   private readonly inboxMaxPayloadBytes: number;
   private readonly inboxMaxRetained: number;
+  /**
+   * Chains already warned about a pinned inbox, with the inbox sequence of the pin warned about
+   * (see `assertInboxHasRoom`). Re-armed eagerly: the trim that moves the floor past the pin
+   * clears it, and a scan that finds a DIFFERENT oldest-unconsumed message warns again. The map is
+   * bounded (FIFO): an entry evicted under extreme chain churn can cost one repeat warning.
+   */
+  private readonly inboxWarned = new Map<string, number>();
   /** Per chain, the last exact backlog count (see `assertInboxHasRoom`): an upper-bound base for later sends. */
-  /** Chains already warned about a pinned inbox (see `assertInboxHasRoom`); re-armed when the pin clears. */
-  private readonly inboxWarned = new Map<string, true>();
   private readonly inboxCounted = new Map<string, { head: number; unconsumed: number }>();
   /** Per chain, the stream sequence this process last trimmed through (a cheap "nothing new" test). */
   private readonly inboxTrimmed = new Map<string, number>();
@@ -739,15 +755,15 @@ export class WorkflowRuntime {
       );
     }
     this.inboxSource = deps.inbox ?? createInboxSource(deps.eventStore);
-    this.inboxMaxBacklog = Math.max(1, deps.inboxMaxBacklog ?? DEFAULT_INBOX_MAX_BACKLOG);
+    assertPositiveInt("inboxMaxBacklog", deps.inboxMaxBacklog);
+    assertPositiveInt("inboxMaxRetained", deps.inboxMaxRetained);
+    assertPositiveInt("inboxMaxPayloadBytes", deps.inboxMaxPayloadBytes);
+    this.inboxMaxBacklog = deps.inboxMaxBacklog ?? DEFAULT_INBOX_MAX_BACKLOG;
     this.inboxMaxRetained = Math.max(
       this.inboxMaxBacklog,
       deps.inboxMaxRetained ?? this.inboxMaxBacklog * 4
     );
-    this.inboxMaxPayloadBytes = Math.max(
-      1,
-      deps.inboxMaxPayloadBytes ?? DEFAULT_INBOX_MAX_PAYLOAD_BYTES
-    );
+    this.inboxMaxPayloadBytes = deps.inboxMaxPayloadBytes ?? DEFAULT_INBOX_MAX_PAYLOAD_BYTES;
     this.errorClasses = deps.errorClasses;
     this.surface = deps.surface;
     this.resumeAuthenticator = deps.resumeAuthenticator;
@@ -3169,8 +3185,8 @@ export class WorkflowRuntime {
     // A stream retaining half its cap above one unconsumed message is being pinned (a cold topic
     // beside a hot one): say so ONCE, naming it, long before `send` starts refusing (ADR 0110 D1).
     if (head - newFloor >= this.inboxMaxRetained / 2 && exact.oldest !== undefined) {
-      if (!this.inboxWarned.has(chainId)) {
-        rememberBounded(this.inboxWarned, chainId, true);
+      if (this.inboxWarned.get(chainId) !== exact.oldest) {
+        rememberBounded(this.inboxWarned, chainId, exact.oldest);
         this.onWarn(
           `inbox of execution "${executionId}" retains ${head - newFloor} entries (${Math.round(((head - newFloor) / this.inboxMaxRetained) * 100)}% of inboxMaxRetained=${this.inboxMaxRetained}) above its oldest unconsumed message: topic "${exact.oldestTopic ?? "?"}" at inbox sequence ${exact.oldest}, which nothing consumes and which pins every later entry. Once the cap is reached \`send\` refuses. Consume that topic (a flow that never receives it needs a receive for it), or see ADR 0110's follow-ups (operator discard, per-topic streams).`
         );
@@ -3216,8 +3232,13 @@ export class WorkflowRuntime {
       const floor = this.inboxFloors.get(chainId) ?? -1;
       const through = await trimInbox(this.eventStore, chainId, cursors, floor);
       rememberBounded(this.inboxTrimmed, chainId, through ?? max);
-      if (through !== undefined)
-        rememberBounded(this.inboxFloors, chainId, Math.max(floor, through));
+      if (through !== undefined) {
+        const next = Math.max(floor, through);
+        rememberBounded(this.inboxFloors, chainId, next);
+        // The floor passed the message a pin warning named: that pin is gone, re-arm for the next.
+        const warnedAt = this.inboxWarned.get(chainId);
+        if (warnedAt !== undefined && next >= warnedAt) this.inboxWarned.delete(chainId);
+      }
     } catch (err) {
       this.onStorageError?.(chainId, err);
     }
@@ -3302,13 +3323,15 @@ export class WorkflowRuntime {
   /** Per inbox-delivery handle: resolves when its atomic batch is durable, rejects when it was lost. */
   private readonly inboxLanded = new WeakMap<ExecutionHandle, Promise<void>>();
 
+  /**
+   * The notify pass in flight (or queued) per execution. A follow-up is installed here
+   * SYNCHRONOUSLY when it is queued (`started` false until its predecessor settles), so there is
+   * never a window with no entry: exactly one pass per execution is in flight, and a caller that
+   * arrives before the follow-up starts shares it.
+   */
   private readonly notifying = new Map<
     string,
-    {
-      pass: Promise<{ handle?: ExecutionHandle; contended: boolean }>;
-      /** The ONE follow-up pass every caller that arrived mid-pass shares. */
-      next?: Promise<{ handle?: ExecutionHandle; contended: boolean }>;
-    }
+    { pass: Promise<{ handle?: ExecutionHandle; contended: boolean }>; started: boolean }
   >();
 
   /**
@@ -3338,31 +3361,38 @@ export class WorkflowRuntime {
     if (!this.inboxEnabled) return { contended: false };
     const running = this.notifying.get(executionId);
     if (running !== undefined) {
+      // A follow-up that has not started reads the stream after this caller's append: share it.
+      if (!running.started) return running.pass;
       // The pass in flight may have read the stream BEFORE this caller's append (a `send` that
       // lands just after the owner's own post-park read), so its "nothing to do" says nothing
-      // about this caller's message. Share ONE follow-up pass, which starts after this call.
-      running.next ??= running.pass
-        .then(
-          () => undefined,
-          () => undefined
-        )
-        .then(() => this.startNotify(executionId, undefined));
-      return running.next;
+      // about this caller's message. Queue ONE follow-up pass, which starts after this call.
+      return this.startNotify(executionId, undefined, running.pass);
     }
     return this.startNotify(executionId, hint);
   }
 
   private startNotify(
     executionId: string,
-    hint: { parked?: ExecutionState } | undefined
+    hint: { parked?: ExecutionState } | undefined,
+    after?: Promise<unknown>
   ): Promise<{ handle?: ExecutionHandle; contended: boolean }> {
-    const entry: {
-      pass: Promise<{ handle?: ExecutionHandle; contended: boolean }>;
-      next?: Promise<{ handle?: ExecutionHandle; contended: boolean }>;
-    } = {
-      pass: Promise.resolve({ contended: false }),
+    const entry = {
+      pass: undefined as unknown as Promise<{ handle?: ExecutionHandle; contended: boolean }>,
+      started: after === undefined,
     };
-    entry.pass = this.notifyPass(executionId, hint).finally(() => {
+    const body =
+      after === undefined
+        ? this.notifyPass(executionId, hint)
+        : after
+            .then(
+              () => undefined,
+              () => undefined
+            )
+            .then(() => {
+              entry.started = true;
+              return this.notifyPass(executionId, undefined);
+            });
+    entry.pass = body.finally(() => {
       if (this.notifying.get(executionId) === entry) this.notifying.delete(executionId);
     });
     this.notifying.set(executionId, entry);
@@ -3593,7 +3623,10 @@ export class WorkflowRuntime {
           got.fence,
           this.now
         );
-        journal.commitAtomic(pre.map((e) => ({ eventType: e.eventType, payload: e.payload })));
+        journal.commitAtomic(
+          pre.map((e) => ({ eventType: e.eventType, payload: e.payload })),
+          { deferOnEvent: true }
+        );
         await journal.drain();
         return "ok";
       } catch (err) {
@@ -4566,7 +4599,9 @@ export class WorkflowRuntime {
     let atomicRun: BootstrapEvent[] = [];
     const flushAtomic = (): void => {
       if (atomicRun.length === 0) return;
-      journal.commitAtomic(atomicRun);
+      // An inbox delivery may LOSE its batch and be retried: its facts reach `onEvent` only once
+      // the batch is durable, so a subscriber never sees a consumption that never landed.
+      journal.commitAtomic(atomicRun, { deferOnEvent: inboxDelivery });
       atomicRun = [];
     };
     for (const b of bootstrapEvents) {

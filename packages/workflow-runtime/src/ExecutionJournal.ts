@@ -162,8 +162,14 @@ export class ExecutionJournal {
       eventType: string;
       payload: unknown;
       metadata?: Record<string, unknown>;
-    }>
+    }>,
+    /**
+     * `deferOnEvent` — fire `onEvent` for the batch only AFTER it is durable (never for a batch
+     * that was lost), in sequence order. The batch is still folded into the VM synchronously.
+     */
+    opts?: { deferOnEvent?: boolean }
   ): EventEnvelope[] {
+    const defer = opts?.deferOnEvent === true;
     const envelopes: EventEnvelope[] = [];
     for (const e of events) {
       const sequence = ++this.seq;
@@ -177,7 +183,7 @@ export class ExecutionJournal {
         this.now
       );
       this.vm.applyEvent(envelope);
-      this.onEvent?.(envelope);
+      if (!defer) this.onEvent?.(envelope);
       envelopes.push(envelope);
     }
     this.tail = this.tail
@@ -187,7 +193,18 @@ export class ExecutionJournal {
         if (store.appendBatch === undefined) {
           throw new Error("commitAtomic needs an EventStore with an atomic appendBatch");
         }
-        return store.appendBatch(envelopes);
+        return store.appendBatch(envelopes).then(() => {
+          if (!defer) return;
+          // Durable now: tell the live subscribers. A throwing subscriber must not read as a
+          // lost write.
+          for (const envelope of envelopes) {
+            try {
+              this.onEvent?.(envelope);
+            } catch {
+              // subscriber fault, not a storage fault
+            }
+          }
+        });
       })
       .catch((err: unknown) => {
         if (this.firstWriteError === undefined) {
