@@ -17,7 +17,7 @@ export interface RetryOptions {
    * EXCEPT `TypedFailure` (DE-4) — a declared domain outcome is not transient, so
    * retrying it by default would just burn attempts on a deterministic result — and any
    * error that declares `retryable: false` (R9's `KillSwitchEngagedError`,
-   * `RateLimitExceededError`, `SpawnLimitExceededError`).
+   * `RateLimitExceededError`, `SpawnLimitExceededError`, `SafetyViolationError`).
    * An explicit `isRetryable` retains full control (retrying a TypedFailure
    * in-memory is legal: no durable event has been emitted yet).
    */
