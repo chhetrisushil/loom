@@ -207,10 +207,12 @@ export class ExecutionJournal {
           state: "ready" | "pending" | "dropped";
         };
         held.push(entry);
-        this.emitQueue.push(entry);
       } else this.emit(envelope);
       envelopes.push(envelope);
     }
+    // Queue the batch's entries only once every envelope was built and folded: a throw part-way
+    // through the loop above must not leave a pending head that withholds every later onEvent.
+    for (const entry of held) this.emitQueue.push(entry);
     this.tail = this.tail
       .then(() => {
         if (this.firstWriteError !== undefined) {
@@ -270,6 +272,9 @@ export class ExecutionJournal {
       if (head === undefined || head.state === "pending") return;
       this.emitQueue.shift();
       if (head.state === "dropped") continue;
+      // Unlike the synchronous path (where a throwing subscriber propagates to the committer, as
+      // before), a queued delivery has no caller to report to; a throw is swallowed so one faulty
+      // subscriber cannot stall the queue head and freeze every subscriber behind it.
       try {
         this.onEvent?.(head.envelope);
       } catch {
