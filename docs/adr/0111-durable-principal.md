@@ -282,13 +282,16 @@ Decisions the text above left to the implementation; none changes a shape frozen
 - **A fork under crypto-without-codec is refused.** `forkedBy` rides ENVELOPE METADATA, which the crypto
   plugin does not encrypt, so a fork of an identified forker with `identity: "encrypted"` and no codec
   refuses (`PrincipalUnrestorableError`, nothing written). With a codec the fork records a `ref`.
-- **`parent`** is recorded only under the condition lineage is trusted for authorization: the start
-  presents the runtime's valid system grant (review round 1, P2-b), or no `executionAuthorizer` is
-  configured at all (no boundary to cross). A caller-supplied `parentExecutionId` under an authorizer is
-  dropped, so a starter cannot pin another execution's retention (R8k). Consumers of `_parent` (R6 cascade,
-  R8k pin) still must not treat it as authenticated beyond that.
-- **Owners.** A supervisor child started with no principal has NO owner (D5, as written): it no longer
-  inherits its parent's owner from an in-process table. `executionAccessPolicy` lost `ownerOf`, `adopt`,
+- **`parent`** is recorded ONLY at a trusted start, in EVERY mode (superseded by review round 2: the "no
+  authorizer records it" carve-out is gone). Trusted = the start presents the runtime's lineage grant
+  (`runtime.lineageOptions()`, which the supervisor always spreads) or its system grant. A caller-supplied
+  `parentExecutionId` is OMITTED from the log, so a recorded `parent` is always the kernel's/supervisor's and
+  needs no separate trust flag. **R8k must read `_parent` as that**: a retention pin may honour any `parent`
+  it finds (an untrusted one was never written), but must not be extended to a source that writes `parent`
+  without the lineage grant.
+- **Owners.** A supervisor child started with no principal has NO owner of its own (D5): it no longer
+  inherits its parent's owner from an in-process table (its LIFECYCLE follows the parent's owner by D6
+  below, round 2). `executionAccessPolicy` lost `ownerOf`, `adopt`,
   `tracked`, `maxTracked` and `committed` handling; `resolveOwner` answers only for a log that recorded none;
   an owner naming neither tenant nor actor is no owner.
 - **Reading the record.** One point read of sequence 0 per `execute()` (resume reuses the envelope it
@@ -323,3 +326,40 @@ Decisions the text above left to the implementation; none changes a shape frozen
 unencrypted envelope metadata), which makes forks unusable for an identified forker under crypto unless
 the app wires a codec. Either the scaffold always generates a codec, or the crypto plugin encrypts the
 metadata paths (`forkedBy`). Decide before crypto-by-default ships.
+
+### Review round 2 — decided (user, 2026-10-06)
+
+**Decided (user, 2026-10-06) — a principal-less supervised child's lifecycle is authorized via its recorded
+parent.** On main an owner-tracking policy let the parent's owner query/cancel its supervised child; round 1
+removed that with the in-process table. Restored durably: `ExecutionAuthzRequest` gains the optional
+`parentOwner` (additive; an authorizer that ignores it is unaffected). The kernel fills it when the
+execution's own record is ANONYMOUS (no identity at all — a shredded, unrestorable or delegation-only record
+stays unknown) by walking the child's recorded `parent` (sequence 0, written only at a trusted start) to the
+nearest recorded owner: at most **8 hops**, cycle-safe, an unreadable link or a chain that ends / runs out is
+an unknown owner (deny by default). Cost: one sequence-0 read per hop, only for an anonymous child under an
+authorizer. `executionAccessPolicy` uses `parentOwner` as the owner for every op EXCEPT `actAsOwner`, so
+query/cancel/resume of the child follow the parent's owner, a stranger is refused, and a caller-supplied
+`parentExecutionId` confers nothing (it is never recorded). The child's EFFECTS stay anonymous: nothing about
+`actingPrincipal` changes. Residual: a child started WITH a delegation records `{ actor: <childId> }` as its
+owner, so it has an own owner and the parent's owner does not inherit it (the delegated child is the
+supervisor's, reachable through the system grant).
+
+**The trust token (closing the gap).** After round 1 `parent` was recorded only with a valid system grant, but
+the runtime mints that grant only under `requirePrincipal`, so with an authorizer and no `requirePrincipal`
+the supervisor could not prove itself and no lineage was recorded. Options weighed: (a) mint the system grant
+whenever an authorizer is configured — rejected: that grant also gates the timer wake (`TIMER_FIRED` is refused
+without it), so it would silently tighten every non-strict deployment's resume path, and it bypasses the
+authorizer; (b) a separate **`LineageGrant`**, minted in every mode (even with no authorizer), handed out by
+`WorkflowRuntime.lineageOptions()`, accepted for one purpose — recording `parent` (and reporting it on
+`committed`). It bypasses no authorizer, gates nothing else, is identity-compared (a structurally equal object
+is ignored), and is not a principal. (b) is chosen: the narrowest. Like the system grant it is a runtime-held
+reference: anything in the process that can call `lineageOptions()` can record a `parent`; the public edge
+never receives it (it is not part of any wire type). `superviseChildren` spreads it with `systemOptions()`.
+Tested in all three modes (no authorizer / authorizer / authorizer + `requirePrincipal`).
+
+**Decided (user, 2026-10-06) — threat model.** Write access to the event store is INSIDE the principal trust
+boundary: whoever can append to the log can already forge any event and outcome, including a principal
+record, a `parent` or an `APPROVAL_GRANTED`. Integrity of the recorded principal therefore comes from the
+store's access control, plus the audit chain and crypto where they are composed — not from the record. The
+orchestration `ref` stays MACed (defence in depth against a ref altered in transit or at rest), but nothing
+here claims protection from a principal-record forger with store write access.

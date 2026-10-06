@@ -66,15 +66,19 @@ describe("R3 — child supervisor under strict execution authz", () => {
     expect(state?.status).toBe("completed");
     expect(state?.variables._output).toEqual({ v: 42 });
     await expect(runtime.loadState("P")).rejects.toMatchObject({ name: "ExecutionDeniedError" });
-    // R3k (ADR 0111 D5) — the owner is the principal recorded on the child's own sequence 0, and
-    // a supervisor child started with no principal has none: "owner unknown" applies (it no longer
-    // inherits its parent's owner from an in-process table). Kernel-internal readers still reach it.
+    // R3k (ADR 0111 D5/D6) — a supervisor child started with no principal has no owner of its own
+    // (its effects stay anonymous); its LIFECYCLE belongs to its parent's owner, read from the
+    // child's recorded `parent` — not from an in-process table, so it survives a restart. A
+    // stranger is still refused. Kernel-internal readers reach it too.
     const alice = { actor: "alice", tenant: "t" };
     const childId = [...seen].find((i) => i !== "P");
     expect(childId).toBeDefined();
-    await expect(runtime.loadState(childId as string, { principal: alice })).rejects.toMatchObject({
-      name: "ExecutionDeniedError",
-    });
+    expect((await runtime.loadState(childId as string, { principal: alice }))?.status).toBe(
+      "completed"
+    );
+    await expect(
+      runtime.loadState(childId as string, { principal: { actor: "mallory", tenant: "other" } })
+    ).rejects.toMatchObject({ name: "ExecutionDeniedError" });
     expect((await runtime.loadState(childId as string, runtime.systemOptions()))?.status).toBe(
       "completed"
     );

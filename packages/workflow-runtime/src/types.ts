@@ -290,6 +290,22 @@ export interface RunOptions {
    * reported on {@link ExecutionAuthorizer.committed} so a policy can inherit the owner.
    */
   parentExecutionId?: string;
+  /**
+   * R3k round 2 (ADR 0111 D6) — the runtime's LINEAGE grant (see {@link WorkflowRuntime.lineageOptions}).
+   * Compared by identity against the runtime's own; anything else is ignored. It authorizes ONE
+   * thing: that `parentExecutionId` is written to the execution's log as its `parent`. It bypasses
+   * no authorizer and is not a principal.
+   */
+  lineage?: LineageGrant;
+}
+
+/**
+ * R3k round 2 — opaque, identity-compared token the child supervisor presents so the `parent` it
+ * names is RECORDED. Narrower than {@link SystemGrant} (which bypasses the authorizer and gates
+ * the timer wake); held by the runtime in every mode, handed out only by `lineageOptions()`.
+ */
+export interface LineageGrant {
+  readonly __loomLineageGrant: true;
 }
 
 /** R3 — opaque, identity-compared capability held by kernel-internal callers. Not forgeable by copy. */
@@ -325,6 +341,15 @@ export interface ExecutionAuthzRequest {
    * policy's `unknownOwner` rule then applies.
    */
   owner?: { tenant?: string; actor?: string; onBehalfOf?: string };
+  /**
+   * R3k round 2 (ADR 0111 D6) — the NEAREST recorded owner up the execution's trusted lineage,
+   * present only when `owner` is absent because the execution itself was started anonymously (a
+   * principal-less supervised child). The kernel reads it from the child's recorded `parent`
+   * (written only at a trusted start), walking at most 8 hops, cycle-safe; a chain that ends
+   * without an owner, or is longer, yields none. It scopes who may run LIFECYCLE ops on the
+   * child; the child's own effects stay anonymous. An authorizer that ignores it is unaffected.
+   */
+  parentOwner?: { tenant?: string; actor?: string; onBehalfOf?: string };
   /**
    * R3 — on a {@link ExecutionAuthorizer.committed} notification only: the execution whose
    * supervisor/forker started this one (a child workflow, a fork), when the runtime knows it. A

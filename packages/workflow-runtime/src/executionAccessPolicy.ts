@@ -26,6 +26,10 @@ import type {
  *    `unknownOwner: "deny"` its owner/tenant-scoped ops are refused. `resolveOwner` is consulted
  *    only when the kernel supplied no owner (legacy logs); `unknownOwner: "allow"` is UNSAFE
  *    without it: anyone who can name such an id can act on it.
+ *  - A principal-less SUPERVISED child inherits its lifecycle owner: the kernel reads the nearest
+ *    recorded owner up the child's trusted `parent` chain (`ExecutionAuthzRequest.parentOwner`,
+ *    at most 8 hops, cycle-safe) and the policy treats it as the owner of a child that has none.
+ *    Only the lifecycle; the child's effects stay anonymous (ADR 0111 D6).
  *  - A principal-less caller is refused unless `allowAnonymous: true` (default false).
  *  - Kernel-internal callers (timers, recovery, supervisor, local worker) never reach this:
  *    they present the runtime's system grant and bypass the authorizer. The effects of those
@@ -121,7 +125,18 @@ export function executionAccessPolicy(options: ExecutionAccessOptions = {}): Exe
         (request.owner.actor !== undefined || request.owner.tenant !== undefined)
           ? request.owner
           : undefined;
-      const owner = recorded ?? options.resolveOwner?.(executionId);
+      // R3k round 2 (D6) — a principal-less supervised child has no owner of its own; the kernel
+      // supplies the nearest recorded owner up its trusted lineage, so its parent's owner may
+      // run its lifecycle (query/cancel/resume). NEVER for `actAsOwner`: the child's effects stay
+      // anonymous, so there is no owner authority there to act as.
+      const inherited =
+        recorded === undefined &&
+        op !== "actAsOwner" &&
+        request.parentOwner !== undefined &&
+        (request.parentOwner.actor !== undefined || request.parentOwner.tenant !== undefined)
+          ? request.parentOwner
+          : undefined;
+      const owner = recorded ?? inherited ?? options.resolveOwner?.(executionId);
       if (owner === undefined) {
         return options.unknownOwner === "allow"
           ? allow
