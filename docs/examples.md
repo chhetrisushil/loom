@@ -173,6 +173,19 @@ pnpm --filter @loom/db-observability start
   afresh); replay serves the recorded plan with no model call, also on a fresh runtime;
   cancelling mid-call rejects with `ExecutionCancelledError` and records nothing;
   `checkPlannerConformance` with a `scopeProbe` passes. Headless, offline.
+- **`provenance-explain`** — loom-ui's per-node provenance, explanation and per-viewer seen log
+  (U12) on an incident-triage board. The reference planner stamps its loom decision on every op
+  (`plannerProvenance`); an edit and a revert show up in the per-node ledger; `Lineage.explain`
+  answers "why is this here" for a cleared viewer and returns the same bare
+  `{ available: false }` for a card a low-clearance viewer may not see as for an unknown id. The
+  secret card is classed by its **capability** (`sensitivity: "secret"`), not by the model: the
+  planner floors the bound node, and the host binds `declaredToolClassesFrom(capabilities)` once
+  as a `ReadPolicy` on `Lineage`, `SeenLog` and hydration, so even a stored node nobody classified
+  stays hidden (U10b) — a control rig without the policy shows it. What each viewer saw is
+  recorded (`snapshotSeen` → `SeenLog.record`) and replayed as of an approval
+  (`read({ until })` → `seenToState`); `eraseViewer` crypto-shreds one viewer and
+  `collectSeenGarbage` sweeps exactly that viewer's unique blob while a value the other viewer
+  also saw survives, and retention rolls old views off. Headless, offline.
 - **`appgen-brownfield`**, **`appgen-models`** — AI-driven app generation
   (`@loom/appgen`).
 
