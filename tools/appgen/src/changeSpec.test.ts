@@ -165,6 +165,12 @@ describe("FlowEditor.ensureUi — import handling (ADR 0114)", () => {
     expect(out).toContain("const surface = 1;");
   });
 
+  it("picks a fresh alias when `loomSurface` is also bound", () => {
+    const out = edit(body("const surface = 1;\nconst loomSurface = 2;"));
+    expect(out).toContain('import { surface as loomSurface2 } from "@loom/agent-surface";');
+    expect(out).toContain('loomSurface2(ctx).set("status"');
+  });
+
   it("a type-only import does not count (and its name forces an alias)", () => {
     const out = edit(body('import type { surface } from "@loom/agent-surface";'));
     expect(out).toContain('import { surface as loomSurface } from "@loom/agent-surface";');
