@@ -103,6 +103,14 @@ over the SAME stores (a process restart, or a second node) picks up where the la
   (ADR 0118 D3; the edge is the child's own recorded `parent`). When a terminal event was
   compacted away the fold still gives the outcome, but a failed child's error text and a
   cancelled child's reason are lost.
+- **Cancelling a parent cancels its children (ADR 0112 D5).** On a parent's `EXECUTION_CANCELLED` (or
+  `EXECUTION_CONTINUED`) the supervisor cancels every child the parent spawned that is still running,
+  with reason `{"kind":"cascade","parent":"<id>"}`, transitively; a child never cancels its parent.
+  Spawn with `detached: true` (`awaitChild`, or per member of `awaitChildren`) for work that must
+  outlive the parent. The live path reads the parent's recorded spawn decisions; `recover()` also
+  sweeps orphans (a parent cancelled where no supervisor listened) by each child's RECORDED parent
+  and reports them as `RecoverSummary.cascaded`. The sweep scans the child side, so the guarantee is
+  that a scheduled `recover()` bounds an orphan's lifetime; it is not a live property.
 - **A slow store is retried, never silently abandoned.** The live path waits ~1s for the parent's
   park to become durable. If it is still unreadable (a slow store), the supervisor backs off
   exponentially and `adopt`s the parent from the log, for as long as it is non-terminal; only

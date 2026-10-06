@@ -112,6 +112,25 @@ export interface DecisionPolicyStamp {
   propensity?: number;
 }
 
+/** Options for {@link ExecutionContext.parallel} (ADR 0112). */
+export interface ParallelOptions {
+  /** Bounded concurrency; omit for unbounded. Results are always in input order. */
+  limit?: number;
+  /** Abort the scope on the first real branch failure. Default `true`. */
+  failFast?: boolean;
+  /** What a park does to siblings still running: let them `"drain"` (default) or `"abort"` them first. */
+  onPark?: "drain" | "abort";
+}
+
+/**
+ * The context a `parallel` branch function receives (ADR 0112): the same execution context, whose
+ * steps belong to the branch's cancellation scope, plus the scope's deterministic identity
+ * (`"<parent>/<k>.<branch>"`, `""` at the root; a pure function of the flow's control flow).
+ */
+export interface BranchContext extends ExecutionContext {
+  readonly scopePath: string;
+}
+
 // Loom 2.0: the execution-facing context. `execute` is the generalized durable
 // primitive (any task kind); `run` is the step-shaped alias kept for source
 // compatibility and the simplest path. `WorkflowContext` remains an alias below.
@@ -153,12 +172,27 @@ export interface ExecutionContext {
     opts?: { id?: string; ceiling?: number; rationale?: unknown }
   ): Promise<number>;
 
+  /**
+   * Run branches concurrently as ONE CANCELLATION SCOPE (ADR 0112). A branch is a
+   * `[step, input]` pair or a function `(b: BranchContext) => Promise<T>` (a sub-flow whose
+   * steps all belong to the scope). Results come back in input order.
+   *
+   * With `failFast` (default `true`) the first real branch failure aborts the scope: in-flight
+   * steps see it on their `signal` and record `STEP_CANCELLED`, queued branches never start, the
+   * call rethrows the first (by input order) real error, and the outcome is journaled as
+   * `PARALLEL_COMPLETED` so a re-run serves it instead of starting the cancelled branches.
+   *
+   * A park (`SuspendError`) in one branch is NOT a failure: it is a barrier. New step starts are
+   * frozen, in-flight siblings drain (or, with `onPark: "abort"`, are aborted first) within
+   * `parkDrainMs`, and no sibling event follows `EXECUTION_SUSPENDED`.
+   */
   parallel<TResults extends unknown[]>(
-    pairs: { [K in keyof TResults]: [StepDefinition<unknown, TResults[K]>, unknown] },
-    // Optional bounded concurrency. Omit for the current unbounded behaviour.
-    // Results are always returned in input order regardless of `limit`, which is
-    // load-bearing for deterministic replay.
-    options?: { limit?: number }
+    branches: {
+      [K in keyof TResults]:
+        | [StepDefinition<unknown, TResults[K]>, unknown]
+        | ((branch: BranchContext) => Promise<TResults[K]>);
+    },
+    options?: ParallelOptions
   ): Promise<TResults>;
 
   /**
@@ -822,6 +856,23 @@ export class StepTimeoutError extends Error {
     super(`step "${stepId}" exceeded its deadline (timeoutMs=${timeoutMs})`);
     this.name = "StepTimeoutError";
     Object.setPrototypeOf(this, StepTimeoutError.prototype);
+  }
+}
+
+/**
+ * ADR 0112 D2 — the rethrow of a fail-fast `parallel` scope SERVED from its journaled
+ * `PARALLEL_COMPLETED` record on a re-run (replay never depends on timing). It carries the
+ * recorded error text; a typed failure (ADR 0060) is rethrown as the `TypedFailure` itself.
+ */
+export class ParallelScopeFailedError extends Error {
+  constructor(
+    message: string,
+    readonly scopePath: string,
+    readonly failedBranch: number | undefined
+  ) {
+    super(message);
+    this.name = "ParallelScopeFailedError";
+    Object.setPrototypeOf(this, ParallelScopeFailedError.prototype);
   }
 }
 

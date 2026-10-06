@@ -98,7 +98,18 @@ describe("a 1.20.0 resumeAs after a late sibling failure, replayed by 1.21.0 (AD
     try {
       const h = await old.runtime.start(old.flow, {}, { executionId: "x" });
       await h.waitForSuspend();
-      await settle(60); // the sibling fails after the park
+      // The sibling fails after the park — as a 1.20.0 kernel wrote it (this kernel's park
+      // barrier, ADR 0112, drains the sibling BEFORE the park, so it cannot produce this log).
+      const log = await old.stores.eventStore.read("x");
+      const last = log[log.length - 1] as EventEnvelope;
+      await old.stores.eventStore.append({
+        ...last,
+        id: "x-late",
+        eventType: "STEP_FAILED",
+        sequence: last.sequence + 1,
+        payload: { stepId: "slow", error: "Error: late boom" },
+      });
+      await settle(20);
       // The replica is faithful: the 1.20.0 fold called this parked execution "failed"…
       expect((await old.runtime.loadState("x"))?.status).toBe("failed");
 

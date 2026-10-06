@@ -346,20 +346,54 @@ function parkedBoot(opts: { failFirst?: boolean } = {}) {
   return { runtime, eventStore, flow: { definition, runner } };
 }
 
+/**
+ * What a PRE-ADR-0112 kernel (or a zombie of another writer) left in a log: a sibling's
+ * `STEP_FAILED` AFTER the park. This kernel's park barrier (ADR 0112 D3) drains in-flight siblings
+ * BEFORE the park, so the live runtime can no longer produce it; the fold still reads it.
+ */
+async function lateSiblingFailure(eventStore: InMemoryAsyncEventStore, executionId: string) {
+  const log = await eventStore.read(executionId);
+  const last = log[log.length - 1] as EventEnvelope;
+  await eventStore.append({
+    ...last,
+    id: `${executionId}-late`,
+    eventType: "STEP_FAILED",
+    sequence: last.sequence + 1,
+    payload: { stepId: "slow", error: "Error: late boom" },
+  });
+}
+
 describe("a parallel sibling that fails after the flow parked (ADR 0105)", () => {
-  it("the execution stays suspended on its gate, and the gate can still be answered", async () => {
+  it("the park barrier (ADR 0112) lands the failing sibling BEFORE the park; the gate is answerable", async () => {
     const { runtime, eventStore, flow } = parkedBoot();
     const handle = await runtime.start(flow, {}, { executionId: "late" });
     await handle.waitForSuspend();
-    await settle(80); // the sibling fails after the park
+    await settle(80);
 
     const types = (await eventStore.read("late")).map((e) => e.eventType);
-    expect(types.indexOf("STEP_FAILED")).toBeGreaterThan(types.indexOf("EXECUTION_SUSPENDED"));
+    expect(types.indexOf("STEP_FAILED")).toBeGreaterThan(-1);
+    expect(types.indexOf("STEP_FAILED")).toBeLessThan(types.indexOf("EXECUTION_SUSPENDED"));
+    expect(types.at(-1)).toBe("EXECUTION_SUSPENDED"); // nothing follows the park
     const parked = await runtime.loadState("late");
     expect(parked?.status).toBe("suspended");
     expect(parked?.suspendedOn?.on).toBe("Approval");
 
     const resumed = await runtime.resume("late", { eventType: "Approval", payload: { ok: true } });
+    await expect(resumed.waitForCompletion()).resolves.toMatchObject({ status: "completed" });
+  });
+
+  it("a log with a sibling failure AFTER the park (older kernel) still folds suspended and resumes", async () => {
+    const { runtime, eventStore, flow } = parkedBoot();
+    const handle = await runtime.start(flow, {}, { executionId: "late-legacy" });
+    await handle.waitForSuspend();
+    await lateSiblingFailure(eventStore, "late-legacy");
+    const parked = await runtime.loadState("late-legacy");
+    expect(parked?.status).toBe("suspended");
+    expect(parked?.suspendedOn?.on).toBe("Approval");
+    const resumed = await runtime.resume("late-legacy", {
+      eventType: "Approval",
+      payload: { ok: true },
+    });
     await expect(resumed.waitForCompletion()).resolves.toMatchObject({ status: "completed" });
   });
 });
@@ -369,7 +403,7 @@ describe("a null answer after a parked failure is refused, not silently re-parke
     const { runtime, eventStore, flow } = parkedBoot();
     const handle = await runtime.start(flow, {}, { executionId: "null-answer" });
     await handle.waitForSuspend();
-    await settle(80); // the sibling fails after the park
+    await lateSiblingFailure(eventStore, "null-answer"); // the sibling fails after the park
     const before = await eventStore.read("null-answer");
 
     const err = await runtime.resume("null-answer", { eventType: "Approval", payload: null }).then(
@@ -394,7 +428,7 @@ describe("a null answer after a parked failure is refused, not silently re-parke
     const { runtime, eventStore, flow } = parkedBoot();
     const handle = await runtime.start(flow, {}, { executionId: "null-as" });
     await handle.waitForSuspend();
-    await settle(80);
+    await lateSiblingFailure(eventStore, "null-as");
     const before = await eventStore.read("null-as");
     await expect(
       runtime.resumeAs(

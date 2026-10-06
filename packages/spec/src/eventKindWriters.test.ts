@@ -14,7 +14,6 @@ import { describe, expect, it } from "vitest";
 const RESERVED_NO_WRITER: Record<string, string> = {
   EXECUTION_CONTINUED: "R1b (ADR 0109): ctx.continueAsNew",
   MESSAGE_CONSUMED: "R2 (ADR 0110): ctx.receive / ctx.select, runtime.send",
-  PARALLEL_COMPLETED: "R6 (ADR 0112): the fail-fast scope outcome",
   // Pre-existing exceptions (design §3, §7 question 12): reserved long before Wave 2.
   PARALLEL_STARTED: "none (reserved with a handler since before Wave 2)",
   STEP_RETRYING: "none (reserved with a handler since before Wave 2)",
