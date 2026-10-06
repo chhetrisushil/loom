@@ -148,28 +148,80 @@ export class FlowEditor {
 
   /** Insert a durable UI surface write into the runner, unless one already exists. */
   ensureUi(): void {
-    if (/(?:ctx\.ui|surface\s*\(\s*ctx\s*\))\.set\s*\(/.test(this.src)) {
+    // ADR 0114: `ctx.ui` is typed by @loom/agent-surface (declaration merging), so the documented
+    // spelling is `surface(ctx)`, and the file must import it to type-check. Reuse an existing
+    // import of `surface` in ANY form (multi-line, aliased, namespace); alias ours around a clash.
+    const existing = this.surfaceImportCallee();
+    const callee = existing ?? (this.hasLocalBinding("surface") ? "loomSurface" : "surface");
+    const escaped = callee.replace(/[.$]/g, "\\$&");
+    if (new RegExp(`(?:ctx\\.ui|${escaped}\\s*\\(\\s*ctx\\s*\\))\\.set\\s*\\(`).test(this.src)) {
       this.notes.push("UI surface already present — left as-is");
       return;
     }
-    // ADR 0114: `ctx.ui` is typed by @loom/agent-surface (declaration merging), so the documented
-    // spelling is `surface(ctx)`, and the file must import it to type-check.
     const first = this.sf.statements[0];
-    const hasImport =
-      /import\s*\{[^}]*\bsurface\b[^}]*\}\s*from\s*["']@loom\/agent-surface["']/.test(this.src);
-    if (first !== undefined && !hasImport) {
+    if (first !== undefined && existing === undefined) {
       const pos = first.getStart(this.sf);
       const lineStart = this.src.lastIndexOf("\n", pos - 1) + 1;
+      const spec = callee === "surface" ? "surface" : `surface as ${callee}`;
       this.splices.push({
         start: lineStart,
         end: lineStart,
-        text: 'import { surface } from "@loom/agent-surface";\n',
+        text: `import { ${spec} } from "@loom/agent-surface";\n`,
       });
     }
     this.insertBeforeRunnerReturn(
-      '  surface(ctx).set("status", "done"); // durable, replayable UI surface\n',
+      `  ${callee}(ctx).set("status", "done"); // durable, replayable UI surface\n`,
       "added UI surface (surface(ctx).set)"
     );
+  }
+
+  /**
+   * The expression that calls `surface` via an existing VALUE import from `@loom/agent-surface`
+   * (`surface`, the alias in `surface as s`, or `ns.surface` for a namespace import), if any.
+   */
+  private surfaceImportCallee(): string | undefined {
+    for (const stmt of this.sf.statements) {
+      if (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+      if (stmt.moduleSpecifier.text !== "@loom/agent-surface") continue;
+      const clause = stmt.importClause;
+      if (clause === undefined || clause.isTypeOnly) continue;
+      const bindings = clause.namedBindings;
+      if (bindings === undefined) continue;
+      if (ts.isNamespaceImport(bindings)) return `${bindings.name.text}.surface`;
+      for (const el of bindings.elements) {
+        if (el.isTypeOnly) continue;
+        if ((el.propertyName ?? el.name).text === "surface") return el.name.text;
+      }
+    }
+    return undefined;
+  }
+
+  /** Whether `name` is already bound anywhere in the file (declaration, parameter, import). */
+  private hasLocalBinding(name: string): boolean {
+    let found = false;
+    const visit = (node: ts.Node): void => {
+      if (found) return;
+      if (
+        (ts.isVariableDeclaration(node) ||
+          ts.isParameter(node) ||
+          ts.isFunctionDeclaration(node) ||
+          ts.isClassDeclaration(node) ||
+          ts.isBindingElement(node) ||
+          ts.isImportSpecifier(node) ||
+          ts.isImportClause(node) ||
+          ts.isNamespaceImport(node) ||
+          ts.isEnumDeclaration(node)) &&
+        node.name !== undefined &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === name
+      ) {
+        found = true;
+        return;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(this.sf);
+    return found;
   }
 
   /**
