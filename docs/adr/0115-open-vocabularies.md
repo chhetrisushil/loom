@@ -63,6 +63,10 @@ the pattern, a prototype name, a non-finite or out-of-range value, or the 33rd d
 and the rest of the event folds — so every replica folds the same state and a poisoned event cannot make
 replay fail. The conformance vectors include an event with bad keys and the expected folded state.
 
+The fold's ceiling is the fixed default (1e15) and its name cap is 32; a per-dimension
+`meterCeilings` override applies at the guard and in the runtime, never in the fold, because a pure
+fold cannot read a runtime setting.
+
 `ResourceDimension` becomes `BuiltinDimension | (string & {})`. Budgets, `QUOTA_EXCEEDED`,
 `negotiateBudget` and `ExecutionPolicy` resource ceilings accept any name; `currentResource(name)`
 reads `custom[name]` for a non-built-in. The kernel assigns no unit and no price: converting

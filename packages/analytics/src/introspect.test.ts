@@ -160,6 +160,23 @@ describe("formatIntrospection", () => {
   });
 });
 
+describe("executionNodes — continued (ADR 0109)", () => {
+  it("a kernel-stamped EXECUTION_CONTINUED is the status `continued`; an unstamped one is ignored", () => {
+    seq = 0;
+    const started = ev("EXECUTION_STARTED", 0, { input: {} });
+    const stamped = {
+      ...ev("EXECUTION_CONTINUED", 5, { successorId: "x~1" }),
+      metadata: { kernel: true },
+    };
+    expect(executionNodes([started, stamped])[0]?.status).toBe("continued");
+    seq = 0;
+    const unstamped = ev("EXECUTION_CONTINUED", 5, { successorId: "x~1" });
+    expect(executionNodes([ev("EXECUTION_STARTED", 0, { input: {} }), unstamped])[0]?.status).toBe(
+      "running"
+    );
+  });
+});
+
 describe("executionNodes — a hostile event type", () => {
   // `eventType` is caller-controlled: `runtime.resume(id, { eventType, payload })` writes the
   // caller's own string into the durable log, and every lens then reads it back. A plain

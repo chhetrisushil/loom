@@ -181,6 +181,10 @@ function outcomeOf(status: ExecutionState["status"]): ExecutionOutcome {
       return "completed";
     case "suspended":
       return "suspended";
+    case "continued":
+      // ADR 0109: terminal but not completed (no output; the successor carries on). Following
+      // a chain to its head is writer-era work (R1b); until then it is not a completion.
+      return "failed";
     default:
       // running should not be observed post-race; treat anything else (failed,
       // cancelled, pending) as a failed outcome for the dispatch.

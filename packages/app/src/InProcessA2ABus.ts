@@ -150,6 +150,7 @@ function executionStatusToA2A(status: string): A2ATaskStatus {
       return "failed";
     case "running":
     case "suspended":
+    case "continued": // ADR 0109: the task goes on in the successor, it is not done
       return "working";
     default:
       return "submitted";

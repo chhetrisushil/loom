@@ -91,7 +91,10 @@ interface BootstrapEvent {
   payload: unknown;
   /**
    * Envelope metadata — operational. Carries the placement hint (#392). The fold reads
-   * exactly one metadata key, `flowEmit` (ADR 0102), which a bootstrap event never carries.
+   * `flowEmit` (ADR 0102) and, since EVENT_SCHEMA 1.23.0, `kernel` (the Wave 2 kinds fold only
+   * a kernel-stamped envelope), `forkChain` and `forkedBy` (a fork's chain identity and acting
+   * principal, read from the `EXECUTION_STARTED` envelope). A bootstrap event carries none of
+   * them; `kernel` is stamped by the journal, never taken from a caller.
    */
   metadata?: Record<string, unknown>;
   /**
@@ -1418,7 +1421,12 @@ export class WorkflowRuntime {
     if (state === null) {
       throw new Error(`No execution found for id: ${executionId}`);
     }
-    if (state.status === "completed" || state.status === "failed" || state.status === "cancelled") {
+    if (
+      state.status === "completed" ||
+      state.status === "failed" ||
+      state.status === "cancelled" ||
+      state.status === "continued" // ADR 0109: terminal; the chain's cancel is the writer-era follow-up
+    ) {
       return false;
     }
     const fence = await this.fenceOf(executionId);
@@ -2041,6 +2049,13 @@ export class WorkflowRuntime {
     const state = vm.getState();
     if (state.status === "cancelled") {
       throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
+    }
+    // ADR 0109: a continued execution handed its work to a successor; re-opening it would run
+    // the same flow twice. Resume the head of the chain instead.
+    if (state.status === "continued") {
+      throw new Error(
+        `Execution ${executionId} was continued as ${String(state.variables._continuedTo)}; resume refused (terminal status)`
+      );
     }
 
     if (options.strategy === "replay-check") {

@@ -19,8 +19,18 @@ import { DEFAULT_TENANT, type SubjectIndex } from "./SubjectIndex";
 /** Reserved control stream carrying deferred-erasure facts (ERASURE_PENDING). */
 export const ERASURE_STREAM = "__loom_erasure__";
 
-const TERMINAL_STATUS = new Set<ExecutionState["status"]>(["completed", "failed", "cancelled"]);
-const TERMINAL_EVENTS = new Set(["EXECUTION_COMPLETED", "EXECUTION_FAILED", "EXECUTION_CANCELLED"]);
+const TERMINAL_STATUS = new Set<ExecutionState["status"]>([
+  "completed",
+  "failed",
+  "cancelled",
+  "continued",
+]);
+const TERMINAL_EVENTS = new Set([
+  "EXECUTION_COMPLETED",
+  "EXECUTION_FAILED",
+  "EXECUTION_CANCELLED",
+  "EXECUTION_CONTINUED",
+]);
 
 /**
  * Destroy a subject's erasure key across the given executions. Wire this to the crypto

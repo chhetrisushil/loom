@@ -15,7 +15,22 @@ export type StrayPassthroughVerdict =
   /** Entries predate the retained log (prefix truncated) and one looks like a recovery `{}`. */
   | { kind: "unverifiable"; count: number };
 
-const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL = new Set(["completed", "failed", "cancelled", "continued"]);
+
+function isWaitAddressedResume(e: {
+  payload: unknown;
+  metadata?: Record<string, unknown>;
+}): boolean {
+  const p = e.payload;
+  return (
+    e.metadata?.kernel === true &&
+    p !== null &&
+    typeof p === "object" &&
+    !Array.isArray(p) &&
+    typeof (p as { waitId?: unknown }).waitId === "string" &&
+    Object.hasOwn(p, "payload")
+  );
+}
 
 function isEmptyObject(v: unknown): boolean {
   return v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0;
@@ -187,6 +202,15 @@ export class StrayScanner {
         break;
       }
       case "EXECUTION_RESUMED": {
+        // EVENT_SCHEMA 1.23.0 (ADR 0110 D3): a kernel-stamped, wait-addressed resume answers a wait
+        // of a multi-wait park and never enters `_resumePayloads`, so it is not a passthrough.
+        if (isWaitAddressedResume(e)) {
+          this.failedWhileParked = false;
+          this.status = "running";
+          this.parkedOn = undefined;
+          this.parkedHuman = undefined;
+          break;
+        }
         const answersGate =
           this.status === "suspended" && this.parkedOn !== EFFECT_INDOUBT_RESOLVED;
         // Mirrors the fold's `isStatusOnlyResume` (1.20.0 + 1.21.0), so the entry count lines
@@ -219,6 +243,13 @@ export class StrayScanner {
       case "EXECUTION_CANCELLED":
         this.status = "cancelled";
         this.failedWhileParked = false;
+        break;
+      case "EXECUTION_CONTINUED":
+        // Mirrors the fold: only a kernel-stamped envelope ends the execution.
+        if (e.metadata?.kernel === true) {
+          this.status = "continued";
+          this.failedWhileParked = false;
+        }
         break;
     }
   }

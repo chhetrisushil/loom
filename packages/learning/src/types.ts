@@ -98,7 +98,7 @@ export interface Trajectory<A = unknown> {
   steps: TrajectoryStep<A>[];
   /** Terminal reward for the execution as a whole, if one could be determined. */
   terminalReward?: number;
-  outcome: "completed" | "failed" | "cancelled" | "open";
+  outcome: "completed" | "failed" | "cancelled" | "continued" | "open";
 }
 
 export interface TrajectoryOptions {

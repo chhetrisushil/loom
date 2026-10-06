@@ -57,6 +57,24 @@ describe("T2.3 — language-agnostic fold conformance vectors", () => {
     expect(runFoldVectors(metadataBlind).every((r) => r.passed)).toBe(false);
   });
 
+  it("covers the 1.23.0 kernel marker (Wave 2) — a fold that ignores metadata.kernel fails", () => {
+    const stamped = FOLD_VECTORS.filter((v) => v.events.some((e) => e.metadata?.kernel === true));
+    expect(stamped.length).toBeGreaterThanOrEqual(3);
+    const markerBlind = stamped.map((v) => ({
+      ...v,
+      events: v.events.map(({ metadata: _m, ...e }) => e),
+    }));
+    for (const r of runFoldVectors(markerBlind)) expect(r.passed, r.name).toBe(false);
+    // …and one that folds the new kinds WITHOUT requiring the stamp fails the no-op vector.
+    const unstamped = FOLD_VECTORS.find((v) => v.name.startsWith("the new kinds without"));
+    const stampedAll = {
+      ...unstamped!,
+      events: unstamped!.events.map((e) => ({ ...e, metadata: { kernel: true } })),
+    };
+    expect(runFoldVectors([unstamped!])[0]?.passed).toBe(true);
+    expect(runFoldVectors([stampedAll])[0]?.passed).toBe(false);
+  });
+
   it("covers the 1.21.0 STEP_FAILED contract (ADR 0105) — a fold that fails the execution on a step failure fails", () => {
     const caught = FOLD_VECTORS.find((v) => v.name.startsWith("a caught step failure"));
     expect(caught).toBeDefined();

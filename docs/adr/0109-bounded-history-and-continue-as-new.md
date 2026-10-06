@@ -169,6 +169,15 @@ be archived only because the successor's sequence 0 is durable *before* the comm
 is a source-level break for exhaustive switches over `ExecutionStatus`, so it is listed in the CHANGELOG
 for the 1.23.0 bump.
 
+**W2-0 (EVENT_SCHEMA 1.23.0) reserves the handler.** `EXECUTION_CONTINUED` folds only a
+kernel-stamped envelope (`metadata.kernel: true`, stamped by the journal); an unstamped one is the no-op
+an unknown kind always was, so a log in which an app already emitted that name replays byte-identically.
+Chain identity is folded to `_chain = { chainId, generation, continuedFrom? }` (and `parent` to
+`_parent`) from `EXECUTION_STARTED`, so "read through the fold" has a key to read. In W2-0 every consumer
+above treats `continued` as terminal and not completed; a `continued` child is deliberately never
+settled by the supervisor and `waitForCompletion { continuedTo }` is not yet implemented: following a
+chain to its head lands with the writer (R1b).
+
 Cross-stream atomicity is not required of the store, and no `EventStore` SPI changes: the fact that must
 be atomic (the predecessor ending and naming its successor) is ONE event in ONE log, and the successor
 start is made idempotent and *earlier*, so a crash can only leave a state the existing recovery repairs.
@@ -180,6 +189,15 @@ registered *now*. A continuation is therefore the clean re-versioning point ADR 
 months-old run stays pinned to a stale flow hash, no old closure has to ship in the binary forever, and
 `resumeAs` + `transformState` is not needed for a deploy. The carry is the state contract; a flow that
 changes its carry shape handles both shapes at start (the K11.5 contract validation on `input` applies).
+
+**The fold applies the carry.** The successor's `EXECUTION_STARTED` handler seeds `_resources` and
+`_inbox` from a **validated** `continuedFrom.carried` (so replay needs no runtime help), except when a
+`forkChain` stamp is present (a fork starts a fresh chain, D7). *Validated* means each part is read
+defensively: `resources` takes only finite non-negative numbers for the known dimensions and a valid
+`custom` map (ADR 0115 rules); `inbox.cursors` takes only non-negative safe integers under non-reserved
+topic names; `inbox.dedupe` takes only strings, last 1,024; anything malformed is **ignored
+deterministically and never thrown**, so every replica folds the same state from a log it did not
+write. `chainDeadline` is not folded into a key of its own: it stays in `_chain.continuedFrom.carried`.
 
 The successor inherits, from the predecessor's record and not from the caller: the principal (ADR 0111;
 attenuation preserved, never widened), the tenant scope, the tags, `chainId`, and the `carried` block
@@ -252,6 +270,9 @@ leak: ADR 0110 D5 copies payloads into the log), and, when the fork point is at 
   sequence-0 payload and **ignores `continuedFrom`** (so inherited `carried` cursors, dedupe window, chain
   deadline are not applied: the fork starts a fresh chain with an empty inbox). Rewriting sequence 0's
   payload is not needed and `copyPrefix` is unchanged.
+- The fold reads `forkChain` from the **`EXECUTION_STARTED` envelope's metadata** (every copied envelope
+  carries it, sequence 0 included) and folds `_chain = { chainId, generation }` from it, with no
+  `continuedFrom` and no seeding from `carried`.
 - A fork point **at or after `EXECUTION_CONTINUED`** is refused with a typed `ForkPastContinuationError`
   naming the successor (the caller can fork the successor instead); before it, the fork is ordinary and,
   when it re-runs to `continueAsNew`, starts `<fork-id>~1`.

@@ -141,6 +141,20 @@ D1); a wait's id is that path plus its ordinal within the scope, a pure function
 stable across re-runs. Answers are keyed by `waitId`: `EXECUTION_RESUMED` gains an additive optional
 `waitId`, and the fold keeps `_waitAnswers: { [waitId]: { kind, name, payload } }`.
 
+**The wait-addressed resume (frozen at W2-0).** `EXECUTION_RESUMED` is a bare answer today (its payload
+IS the gate's answer), so the `waitId` cannot ride in the payload of a bare resume. A resume that
+addresses ONE wait of a multi-wait park is written by the kernel with `metadata.kernel: true` and the
+payload `{ waitId, payload }`. The fold recognises it only with the stamp, unwraps it (the flow receives
+the inner `payload`, which may be `null`), and records `_waitAnswers[waitId] = { kind, name, payload }`
+with kind and name taken from that wait in the park's `waits[]` (first answer wins), drops the wait's
+`_waits` entry, and never touches `_resumePayloads`. A stamped resume naming no wait of the current
+park re-opens status-only. An unstamped object that merely looks like `{ waitId, payload }` is an
+ordinary answer. **R13's pre-append `viewDigest` check** (ADR 0117) reads a wait-addressed resume's
+**inner** payload: it echoes `payload.viewDigest` of the unwrapped value and is compared with the
+`viewDigest` of THAT wait in `waits[]` (per wait; ambiguous names are refused as above); a bare resume is
+checked against the single gate's digest exactly as today, and the signed-approval binding is
+unchanged.
+
 **Ordinals shift when a body is edited** (an inserted `receive` renumbers every later wait on the same
 scope). So the fold stores, with each answer, the wait's **kind and its topic / gate name**; when a re-run
 registers `waitId` X with a different kind or name than the recorded one, the runtime raises
@@ -214,11 +228,17 @@ commit, the message sits in the stream with nobody resuming for it. Three closur
 Exactly-once consumption is a property of the owner's log (CAS on sequence plus the fenced resume), not of
 the stream.
 
+**Frozen fold shapes (W2-0).** `_inbox = { cursors: { [topic]: inboxSeq }, dedupe: string[] }`; the
+cursor is monotone; `_waitAnswers[waitId] = { kind: "inbox", name: topic, payload }` (first answer wins);
+a `messageId` already in the window advances the cursor and delivers nothing.
+
 ### D6 — Bounded dedupe, carried across continuation
 
 Senders retry, so `messageId` is the idempotency key. The fold keeps the last `inboxDedupeWindow` (default
 1,024, configurable) consumed message ids; a duplicate inside the window is skipped (its cursor advances
-without a consumption); one beyond the window is delivered. The contract: *at-least-once send,
+without a consumption); one beyond the window is delivered. The window is **capped at 1,024 in the fold** (the oldest ids are dropped): a pure
+fold cannot read a runtime setting, so a larger `inboxDedupeWindow` is not representable and the runtime
+applies any smaller one itself. The contract: *at-least-once send,
 exactly-once consumption within the window*. The window **travels across a continuation**
 (`EXECUTION_STARTED.continuedFrom.carried.inbox`, ADR 0109 D4), so a retry after a rotation is still
 deduplicated. An `EventStore.appendIfAbsent(id)` SPI method, which would make duplicates impossible at the
