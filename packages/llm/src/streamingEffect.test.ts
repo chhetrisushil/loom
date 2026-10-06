@@ -1,5 +1,6 @@
+import { isTainted } from "@loom/classify";
 import { TypedFailure } from "@loom/core";
-import type { EffectContext } from "@loom/effect-runtime";
+import type { EffectContext, EffectDelta } from "@loom/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { LLM_INTERRUPTED } from "./assembleStream";
 import type { InterruptedGeneration } from "./assembleStream";
@@ -194,23 +195,49 @@ describe("streaming LLM effect (R9)", () => {
 
 // ADR 0119 — the per-call sink on EffectContext.onDelta.
 describe("createLlmEffect per-call delta sink (ADR 0119)", () => {
-  it("calls ctx.onDelta per delta plus a terminal chunk with usage, in addition to options.onDelta", async () => {
+  it("calls ctx.onDelta per delta (tainted) plus a done+usage chunk, BEFORE options.onDelta", async () => {
+    const order: string[] = [];
+    const perCall: EffectDelta[] = [];
+    const effect = createLlmEffect<string, string>({
+      provider: provider(),
+      buildRequest: (i) => ({ messages: [{ role: "user", content: i }] }),
+      stream: true,
+      onDelta: (d) => order.push(`configured:${d}`),
+    });
+    const ctx: EffectContext = {
+      ...makeCtx(),
+      onDelta: (c) => {
+        perCall.push(c);
+        order.push(`call:${c.delta.value}`);
+      },
+    };
+    await effect.execute("hi", ctx);
+    expect(order).toEqual(["call:Look", "configured:Look", "call:ing", "configured:ing", "call:"]);
+    expect(perCall.slice(0, 2).map((c) => [isTainted(c.delta), c.delta.value])).toEqual([
+      [true, "Look"],
+      [true, "ing"],
+    ]);
+    expect(perCall[2]).toMatchObject({ done: true, usage: { inputTokens: 7, outputTokens: 3 } });
+  });
+
+  it("a per-call sink that throws severs the stream before the configured sink sees the delta", async () => {
     const configured: string[] = [];
-    const perCall: unknown[] = [];
     const effect = createLlmEffect<string, string>({
       provider: provider(),
       buildRequest: (i) => ({ messages: [{ role: "user", content: i }] }),
       stream: true,
       onDelta: (d) => configured.push(d),
     });
-    const ctx: EffectContext = { ...makeCtx(), onDelta: (c) => perCall.push(c) };
-    await effect.execute("hi", ctx);
-    expect(configured).toEqual(["Look", "ing"]);
-    expect(perCall).toEqual([
-      { delta: "Look" },
-      { delta: "ing" },
-      { delta: "", done: true, usage: { inputTokens: 7, outputTokens: 3 } },
-    ]);
+    const boom = new Error("sever");
+    await expect(
+      effect.execute("hi", {
+        ...makeCtx(),
+        onDelta: () => {
+          throw boom;
+        },
+      })
+    ).rejects.toBe(boom);
+    expect(configured).toEqual([]);
   });
 
   it("a per-call sink alone (no configured onDelta) still receives deltas", async () => {
@@ -220,7 +247,7 @@ describe("createLlmEffect per-call delta sink (ADR 0119)", () => {
       buildRequest: (i) => ({ messages: [{ role: "user", content: i }] }),
       stream: true,
     });
-    await effect.execute("hi", { ...makeCtx(), onDelta: (c) => perCall.push(c.delta) });
+    await effect.execute("hi", { ...makeCtx(), onDelta: (c) => perCall.push(c.delta.value) });
     expect(perCall).toEqual(["Look", "ing", ""]);
   });
 });

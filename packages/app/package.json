@@ -40,6 +40,7 @@
     "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
+    "@loom/llm": "workspace:*",
     "@loom/compiler": "workspace:*",
     "@loom/scaffold": "workspace:*",
     "@types/node": "^22.0.0",

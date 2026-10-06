@@ -1,3 +1,4 @@
+import type { TaintedValue } from "@loom/classify";
 import type { EffectKind, EffectMode } from "@loom/core";
 import type { PrincipalChain } from "./authz";
 
@@ -49,15 +50,26 @@ export interface ResourceSnapshot {
 }
 
 /**
- * ADR 0119 — one live delta of a streaming effect's output, delivered to the
- * per-call sink a caller attached ({@link EffectContext.onDelta}). Text deltas carry
- * `delta` (never empty); the TERMINAL chunk has `done: true`, an empty `delta`, and
- * the provider's `usage` when it reported one. The text is untrusted model output
- * (ADR 0085): treat it as such wherever it is rendered or fed back into a prompt.
+ * ADR 0119 — one live chunk of a streaming effect's output, delivered to the per-call
+ * sink a caller attached ({@link EffectContext.onDelta}).
+ *
+ * - TEXT chunk: `delta` carries the text (never empty), WRAPPED as untrusted content
+ *   (`TaintedValue<string>`, ADR 0085): model output is third-party text, and the
+ *   wrapper makes `guardRequest` refuse it if it is fed back into a prompt. A UI tail
+ *   unwraps explicitly (`unwrapTainted`) to display it.
+ * - RESET chunk (`reset: true`, `attempt: n`, empty `delta`): attempt `n > 1` of the
+ *   call is starting (retry middleware re-ran the effect) — discard everything shown
+ *   so far and re-render from this attempt's deltas.
+ * - TERMINAL chunk (`done: true`, empty `delta`, `usage` if the provider reported
+ *   one): sent ONLY after the call has succeeded (middleware output phase and parse
+ *   included). On failure or abort there is no terminal chunk — the call's promise
+ *   settlement is authoritative.
  */
 export interface EffectDelta {
-  readonly delta: string;
+  readonly delta: TaintedValue<string>;
   readonly done?: true;
+  readonly reset?: true;
+  readonly attempt?: number;
   readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
 }
 
@@ -89,8 +101,12 @@ export interface EffectContext {
    * ADR 0119 — the per-call delta sink of a transient call that asked for one. A
    * streaming effect (`createLlmEffect({ stream: true })`) calls it for each delta,
    * IN ADDITION to its own configured `onDelta`. Live-only: never journaled, and not
-   * called on replay. The runtime hands the effect a wrapper that never throws and
-   * goes silent once the call settles, so an effect may call it unguarded.
+   * called on replay. The runtime hands the effect a wrapper that goes silent once the
+   * call settles or aborts and swallows a throw of the CALLER's sink. It throws in ONE
+   * case: a middleware delta guard (e.g. a safety delta validator) refused the running
+   * text — that throw means "sever the stream", so an effect MUST let it propagate
+   * (do not catch it around the call). Absent when the caller asked for none OR the
+   * runtime refused the sink because an output validator has no delta form.
    */
   readonly onDelta?: DeltaSink;
   emit(eventType: string, payload: unknown): void;
@@ -320,8 +336,23 @@ export type EffectNext = (input?: unknown) => Promise<unknown>;
  * Ordering is static (fixed at `EffectRuntime` construction) so it is
  * deterministic across replay: `middleware[0]` is outermost.
  */
-export type EffectMiddleware = (
-  ctx: EffectContext,
-  input: unknown,
-  next: EffectNext
-) => Promise<unknown>;
+export interface EffectMiddleware {
+  (ctx: EffectContext, input: unknown, next: EffectNext): Promise<unknown>;
+  /**
+   * ADR 0119 — declares that this middleware INSPECTS THE OUTPUT of the effect (an
+   * output-phase safety validator). A streamed call would deliver text to a live sink
+   * before that inspection could run, so: if any middleware in the chain has
+   * `inspectsOutput: true`, the runtime REFUSES the per-call sink (warns; the call
+   * completes non-streamed). Fail-closed — no configuration streams text past an
+   * output check that cannot see it. A middleware whose every output check has a delta
+   * form covers it with {@link deltaGuard} and leaves this unset.
+   */
+  readonly inspectsOutput?: boolean;
+  /**
+   * ADR 0119 — a per-call-attempt guard over the RUNNING text of a streamed call.
+   * Called once per attempt to build a `(delta) => void`, which the runtime invokes for
+   * each text delta BEFORE it is delivered; it THROWS to sever the stream (the
+   * offending delta is not delivered).
+   */
+  readonly deltaGuard?: (ctx: EffectContext) => (delta: string) => void;
+}

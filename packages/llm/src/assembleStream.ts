@@ -152,7 +152,9 @@ export async function collectStream(
       text += chunk.delta;
       // Providers report usage late; keep the most recent one seen.
       if (chunk.usage !== undefined) usage = chunk.usage;
-      if (chunk.delta !== "") options.onDelta?.(chunk.delta);
+      // The guard runs BEFORE delivery: a delta that breaches it severs the stream
+      // and is never handed to a sink (ADR 0119 — a live tail must not see what the
+      // guard exists to stop).
       if (options.guard !== undefined) {
         try {
           options.guard({
@@ -165,6 +167,15 @@ export async function collectStream(
           throw err;
         }
       }
+      // A provider that ignores the signal keeps yielding after an abort; checking
+      // here severs it at the next chunk instead of delivering text to a caller who
+      // has gone (the catch below turns it into the LLM_INTERRUPTED partial).
+      if (options.signal?.aborted === true) {
+        throw options.signal.reason instanceof Error
+          ? options.signal.reason
+          : new Error("generation aborted");
+      }
+      if (chunk.delta !== "") options.onDelta?.(chunk.delta);
     }
   } catch (err) {
     if (guardError !== undefined) throw guardError;
