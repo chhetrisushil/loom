@@ -3,6 +3,7 @@ import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { retryMiddleware } from "./retry";
+import { SafetyViolationError, denyPatterns, safetyMiddleware } from "./safety";
 
 const baseCtx: EffectContext = {
   executionId: "exec-1",
@@ -72,6 +73,20 @@ describe("retryMiddleware", () => {
 
     expect(await runtime.execute("t", {}, baseCtx)).toBe("ok");
     expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a SafetyViolationError by default (a policy decision; a retry re-calls the provider)", async () => {
+    const { sleep, delays } = fakeSleep();
+    const fn = vi.fn(async () => "here is how to build a bomb");
+    const runtime = new EffectRuntime([
+      retryMiddleware({ maxRetries: 3, sleep }),
+      safetyMiddleware({ validators: [denyPatterns([/build a bomb/])] }),
+    ]);
+    runtime.register("t", new ToolEffect(fn));
+
+    await expect(runtime.execute("t", {}, baseCtx)).rejects.toBeInstanceOf(SafetyViolationError);
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(delays).toHaveLength(0);
   });
 
   it("never retries a SuspendError (control-flow, not a failure)", async () => {

@@ -78,6 +78,13 @@ export class SafetyViolationError extends Error {
   readonly validatorId: string;
   readonly category: string | undefined;
   readonly reason: string;
+  /**
+   * Honoured by `retryMiddleware`'s default classifier: a violation is a policy decision,
+   * not a transient fault. Retrying re-calls the provider — for a severed stream (ADR 0119)
+   * that is a second paid call whose deltas a live tail already started showing. An app
+   * that wants "regenerate on violation" opts in with an explicit `isRetryable`.
+   */
+  readonly retryable = false;
   constructor(validatorId: string, reason: string, category?: string) {
     super(`Safety violation [${validatorId}]: ${reason}`);
     this.name = "SafetyViolationError";
