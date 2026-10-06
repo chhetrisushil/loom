@@ -16,8 +16,9 @@
 //        a `() => T` decider is unchanged, but a flow that USES the scope throws on an
 //        older kernel, so it must be able to require >= 1.2.0.
 // 1.3.0: Wave 2 (W2-0) RESERVES the bump with the rest of the coordinated version plan. It adds
-//        `continueAsNew`, `receive` and `select` (ADRs 0109/0110) and deprecates `ui` (ADR 0114)
-//        in their item PRs; no syscall enters `KERNEL_SYSCALLS` here, because a syscall without a
+//        `continueAsNew`, `receive` and `select` (ADRs 0109/0110) in their item PRs. ADR 0114
+//        (landed) marks `ui` `deprecated` and adds the missing `negotiateBudget` entry. No
+//        other syscall enters `KERNEL_SYSCALLS` here, because a syscall without a
 //        writer behind its `kernel.features` flag would be a lie in the table.
 //        1.3.0 therefore RESERVES those syscalls; it does not contain them. A syscall is
 //        available iff it is in `KERNEL_SYSCALLS`, and the wire handshake (`WIRE_ABI`) advertises
@@ -36,6 +37,8 @@ export interface KernelSyscall {
   /** ABI version the syscall was introduced in. */
   readonly since: string;
   readonly summary: string;
+  /** Still present, scheduled for removal in a later MAJOR; the summary names the replacement. */
+  readonly deprecated?: boolean;
 }
 
 // The syscall table. Order is not significant; names are the contract.
@@ -91,7 +94,19 @@ export const KERNEL_SYSCALLS: readonly KernelSyscall[] = [
     name: "ui",
     kind: "accessor",
     since: "1.0.0",
-    summary: "drive durable, replayable UI surfaces (agent-surface)",
+    // ADR 0114: deprecated in 1.3.0. The kernel no longer imports agent-surface; the accessor is
+    // injected (`WorkflowRuntimeDeps.surface`) and the documented spelling is `surface(ctx)` from
+    // `@loom/agent-surface`. Removal is a later MAJOR.
+    deprecated: true,
+    summary: "drive durable, replayable UI surfaces (agent-surface; injected, see `surface(ctx)`)",
+  },
+  {
+    // ADR 0114 D3 / R12 drift: on `ExecutionContext` since the budget work (ADR 0032) but absent from the
+    // table. Added inside the reserved 1.3.0 as a plain `call`: the method is what the contract names.
+    name: "negotiateBudget",
+    kind: "call",
+    since: "1.3.0",
+    summary: "negotiate a resource budget against a ceiling, recording the outcome (ADR 0032)",
   },
 ] as const;
 

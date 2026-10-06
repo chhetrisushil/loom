@@ -1,6 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createSurfaceEmitter } from "@loom/agent-surface";
-import type { SurfaceEmitter } from "@loom/agent-surface";
 import { SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
 import type { ExecutableTask, StepDefinition } from "@loom/core";
 import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loom/effect-runtime";
@@ -270,10 +268,12 @@ function stripNamePrefix(text: string, name: string): string {
   return out;
 }
 
+/** Builds the `ctx.ui` accessor from `ctx.emit` (ADR 0114); agent-surface's `createSurfaceEmitter`. */
+export type SurfaceFactory = (emit: (eventType: string, payload: unknown) => void) => unknown;
+
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
   readonly workflowId: string;
-  readonly ui: SurfaceEmitter;
   private suspendPassthroughsConsumed = 0;
   // ADR 0102 — how many flow-level emits of each content digest THIS run has made
   // (served or appended), and how many of this context's effects/deciders are running
@@ -313,6 +313,30 @@ export class WorkflowContextImpl implements WorkflowContext {
   private readonly onWarn: (message: string) => void;
   private readonly scopesEnabled: boolean;
   private readonly errorClasses: Map<string, ErrorClassCtor>;
+  private readonly surfaceFactory: SurfaceFactory | undefined;
+  private surfaceAccessor: unknown;
+
+  /**
+   * `ctx.ui` (ADR 0114). The kernel does not know what a surface is: the accessor comes from the
+   * injected `WorkflowRuntimeDeps.surface` factory (`defineConfig`, `@loom/testing` and the scaffold
+   * pass agent-surface's `createSurfaceEmitter`). Its patches are plain `emit`s, so they are durable and
+   * replay deterministically alongside every other event. Built lazily, once; with no factory the
+   * access throws a message naming the dep (a bare runtime, "break now").
+   */
+  get ui(): unknown {
+    if (this.surfaceFactory === undefined) {
+      throw new Error(
+        "ctx.ui is not available: this WorkflowRuntime was built without the `surface` dep " +
+          "(ADR 0114). Pass `surface: createSurfaceEmitter` from @loom/agent-surface in " +
+          "WorkflowRuntimeDeps, build the runtime through defineConfig, or use `surface(ctx)` " +
+          "from @loom/agent-surface."
+      );
+    }
+    this.surfaceAccessor ??= this.surfaceFactory((eventType, payload) =>
+      this.emit(eventType, payload)
+    );
+    return this.surfaceAccessor;
+  }
 
   constructor(
     executionId: string,
@@ -339,8 +363,10 @@ export class WorkflowContextImpl implements WorkflowContext {
       onWarn?: (message: string) => void;
       scopes?: boolean;
       errorClasses?: Record<string, ErrorClassCtor>;
+      surface?: SurfaceFactory;
     } = {}
   ) {
+    this.surfaceFactory = opts.surface;
     this.parkDrainMs = opts.parkDrainMs ?? DEFAULT_PARK_DRAIN_MS;
     this.onWarn = opts.onWarn ?? (() => {});
     this.scopesEnabled = opts.scopes === true;
@@ -361,9 +387,6 @@ export class WorkflowContextImpl implements WorkflowContext {
     };
     this.executionId = executionId;
     this.workflowId = workflowId;
-    // agent-surface patches flow through the normal event pipeline, so UI updates are
-    // durable and replay deterministically alongside every other event.
-    this.ui = createSurfaceEmitter((eventType, payload) => this.emit(eventType, payload));
     // `decide` is the one context method routinely passed AS A VALUE rather than
     // called: `TieredMemory.recall({ decide })`, `recallRelevant({ decide })`,
     // any decider-taking helper. Unbound, `decide: ctx.decide` loses its receiver

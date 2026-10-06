@@ -56,7 +56,7 @@ The storage interfaces are **async-first**: `append`/`read`/`save`/`load*` retur
 Two things make it seamless:
 
 - **The runtime never asks the store for a sequence number.** Sequence allocation lives in the per-execution in-memory `ExecutionJournal`, so `append` is a single INSERT — no read-then-write round-trip, and the `UNIQUE(execution_id, sequence)` constraint is the durable safety net.
-- **`ctx.emit` / `ctx.stream` / `ctx.ui` stay synchronous** for flow authors. The journal folds the event in memory synchronously and enqueues the durable INSERT on a per-execution FIFO writer; the runtime drains that writer at durability barriers (before completion, and before a snapshot on suspend). Your `append` can take 20ms and the flow code never changes.
+- **`ctx.emit` / `ctx.stream` / `surface(ctx)` stay synchronous** for flow authors. The journal folds the event in memory synchronously and enqueues the durable INSERT on a per-execution FIFO writer; the runtime drains that writer at durability barriers (before completion, and before a snapshot on suspend). Your `append` can take 20ms and the flow code never changes.
 
 ## `subscribe` is async for a reason
 

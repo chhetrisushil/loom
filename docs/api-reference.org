@@ -487,7 +487,9 @@ interface ExecutionContext {
   sleepUntil(wakeAt: number): Promise<void>;                                           // (2.0, T1) wake at absolute ms
   emit(eventType: string, payload: unknown): void;                                     // durable domain event
   stream(eventType: string, delta: string, done?: boolean): void;                      // token streaming
-  readonly ui: SurfaceEmitter;                                                            // ctx.ui.set/merge/append …
+  // `ui` is NOT declared by the kernel (ADR 0114): @loom/agent-surface merges `readonly ui: SurfaceEmitter` into
+  // `ExecutionContextExtensions` (deprecated spelling); use `surface(ctx).set/merge/append …` from @loom/agent-surface.
+  negotiateBudget(dimension: ResourceDimension, request: number, opts?: { id?: string; ceiling?: number; rationale?: unknown }): Promise<number>;
 }
 #+end_src
 
@@ -1139,7 +1141,7 @@ projects these surfaces onto the A2UI wire format.
 
 #+begin_src typescript
 const SURFACE_PATCH = "SURFACE_PATCH";
-const DEFAULT_SURFACE = "ui";                    // the surface ctx.ui.* targets
+const DEFAULT_SURFACE = "ui";                    // the surface `surface(ctx)` targets
 
 type SurfacePatch =
   | { op: "set";       path: string; value: unknown }
@@ -1305,7 +1307,7 @@ onClientMessage((m) => {
 // Grain A — read a client value via a suspend/resume gate (no live socket).
 // In the flow: announce the pending call, then suspend on the result.
 const callId = `${ctx.executionId}:getLocale#1`;          // deterministic + call-site-unique
-ctx.ui.set("pendingCall", { callId, name: "getLocale" });
+surface(ctx).set("pendingCall", { callId, name: "getLocale" });
 const reply = (await ctx.suspend({ on: "A2UIFunctionResult", correlationKey: callId })) as { result?: unknown };
 // In the driver: emit the request, get the client's answer, resume the gate.
 send(bridge.callFunction("getLocale", {}, { callId }));   // → client
@@ -1450,7 +1452,7 @@ const signal = (await ctx.suspend({ on: "TaskApproved" })) as { stale: boolean; 
 if (signal.stale) {
   // This gate refuses; another flow could legitimately accept. Declare
   // `staleDecision` on the step to make it a recorded, branchable outcome.
-  ctx.ui.set("status", "re-review");
+  surface(ctx).set("status", "re-review");
 }
 #+end_src
 

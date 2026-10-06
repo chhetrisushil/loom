@@ -45,19 +45,19 @@ The whole thing runs **in the browser**, durably — refresh mid-incident and it
 `flows/InvestigateIncident.ts` — 28 lines, and the `ctx.suspend` is the human gate:
 
 ```ts
-ctx.ui.set("phase", "investigating");
+surface(ctx).set("phase", "investigating");
 const metrics = await ctx.run(FetchMetricsStep, { incidentId });
 const logs    = await ctx.run(FetchLogsStep,    { incidentId });
 
-ctx.ui.set("phase", "triaging");
+surface(ctx).set("phase", "triaging");
 const triage  = await ctx.run(AiTriageStep, { metrics, logs });   // streams to UI
 
-ctx.ui.set("phase", "awaiting-approval");
+surface(ctx).set("phase", "awaiting-approval");
 await ctx.suspend({ on: "ApprovalGranted", correlationKey: incidentId,
                     timeout: 24 * 60 * 60 * 1000 });               // ← durable pause
-ctx.ui.set("phase", "remediating");
+surface(ctx).set("phase", "remediating");
 const remediation = await ctx.run(ApplyRemediationStep, { incidentId });
-ctx.ui.set("phase", "resolved");
+surface(ctx).set("phase", "resolved");
 ```
 
 Every `ctx.run` is a checkpoint; `ctx.suspend` persists and waits — **restart-safe**.

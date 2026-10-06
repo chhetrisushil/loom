@@ -65,7 +65,8 @@ A framework becomes a kernel when userspace can depend on a **narrow, versioned 
 | `sleepUntil` | call | 1.1.0 | suspend durably until an absolute time recorded in the log (T1) |
 | `emit` | call | 1.0.0 | append a durable domain event |
 | `stream` | call | 1.0.0 | emit an incremental delta event |
-| `ui` | accessor | 1.0.0 | drive durable, replayable UI surfaces (A2UI) |
+| `ui` | accessor | 1.0.0 | **deprecated** (ADR 0114): drive durable, replayable UI surfaces (agent-surface; injected, new code uses `surface(ctx)`) |
+| `negotiateBudget` | call | 1.3.0 | negotiate a resource budget against a ceiling, recorded once (ADR 0032) |
 
 Each entry records its `kind` (`"call"` for a method, `"accessor"` for a property object such as `ui`), the ABI version it was `since`, and a one-line `summary` ([`abi.ts`](../../packages/workflow-runtime/src/abi.ts)). `KERNEL_ABI` bundles the version and the table into one exported object ([`abi.ts`](../../packages/workflow-runtime/src/abi.ts)).
 
@@ -98,7 +99,7 @@ flowchart TB
   subgraph ABI["🚪 Kernel ABI — KERNEL_SYSCALLS (versioned, pinned)"]
     S1["execute · run · parallel"]
     S2["suspend · sleep · sleepUntil"]
-    S3["decide"]
+    S3["decide · negotiateBudget"]
     S4["emit · stream · ui"]
   end
 

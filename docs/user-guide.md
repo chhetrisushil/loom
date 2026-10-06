@@ -481,12 +481,12 @@ await branchRegistry.promote("commit", "main"); // pointer move, no merge
 
 ## 6. Projections & agent surfaces
 
-A **projection** is a read model folded from events, independent of durability. Flows emit UI patches via `ctx.ui`; they fold into named **surfaces**.
+A **projection** is a read model folded from events, independent of durability. Flows emit UI patches via `surface(ctx)` (`import { surface } from "@loom/agent-surface"`; the old `ctx.ui` accessor is deprecated and only exists where the `surface` dep is injected, ADR 0114); they fold into named **surfaces**.
 
 ```ts
-ctx.ui.set("phase", "investigating");                 // overwrite path
-ctx.ui.merge("metrics", { cpu: 87, memMb: 14000 });   // shallow-merge object
-ctx.ui.append("timeline", "collected metrics");        // push to array (amortized O(1) in a batch)
+surface(ctx).set("phase", "investigating");                 // overwrite path
+surface(ctx).merge("metrics", { cpu: 87, memMb: 14000 });   // shallow-merge object
+surface(ctx).append("timeline", "collected metrics");        // push to array (amortized O(1) in a batch)
 ```
 
 Read a surface (server, client, or test):
@@ -787,7 +787,7 @@ await runtime.resume(executionId, {
 
 // In the flow, at the gate — policy:
 const signal = await ctx.suspend<{ stale: boolean }>({ on: "TaskApproved" });
-if (signal.stale) ctx.ui.set("status", "re-review");   // this gate refuses; another could accept
+if (signal.stale) surface(ctx).set("status", "re-review");   // this gate refuses; another could accept
 ```
 
 Declare a `staleDecision` channel on the step (ADR 0060) when you want the refusal recorded and

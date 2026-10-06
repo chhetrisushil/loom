@@ -25,7 +25,7 @@ mechanism (`checkCompatibility`) exists for the day a deployment's MAJOR diverge
 | ContentStore SPI | `1.3.0` | `CONTENT_STORE_SPI_VERSION` · conformance kit |
 | Compiler manifest | `1` | `COMPILER_MANIFEST_VERSION` |
 
-Event types folded by K5: **32** · Kernel syscalls: **10**.
+Event types folded by K5: **32** · Kernel syscalls: **11**.
 
 **Kernel ABI 1.3.0 reserves the Wave 2 syscalls (`continueAsNew`, `receive`, `select`); it does not
 contain them.** A syscall is callable iff it is in the kernel's syscall table, which the wire

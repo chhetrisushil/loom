@@ -1,3 +1,4 @@
+import { surface } from "@loom/agent-surface";
 import { flow$, handler$, step$ } from "@loom/core";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { z } from "zod";
@@ -63,39 +64,39 @@ export const TaskFlow = flow$({
 const runner: FlowRunner<TaskInput, TaskOutput> = async (ctx, input) => {
   ctx.emit("TASK_STARTED", { taskId: input.taskId, label: input.label });
 
-  // agent-surface: drive the UI with durable, replayable patches. Every ctx.ui.* call
+  // agent-surface: drive the UI with durable, replayable patches. Every surface(ctx).* call
   // emits one A2UI_PATCH event — watch them stream in on the "agent-surface" tab.
-  ctx.ui.set("taskId", input.taskId);
-  ctx.ui.set("status", "fetching");
-  ctx.ui.append("progressLog", `Fetching data for ${input.taskId}`);
+  surface(ctx).set("taskId", input.taskId);
+  surface(ctx).set("status", "fetching");
+  surface(ctx).append("progressLog", `Fetching data for ${input.taskId}`);
 
   // Fetch raw data
   const data = await ctx.run(FetchDataStep, { taskId: input.taskId });
   ctx.emit("DATA_FETCHED", { items: data.items, source: data.source });
-  ctx.ui.merge("stats", { items: data.items });
-  ctx.ui.increment("stepsCompleted");
-  ctx.ui.set("status", "processing");
-  ctx.ui.append("progressLog", `Fetched ${data.items} items`);
+  surface(ctx).merge("stats", { items: data.items });
+  surface(ctx).increment("stepsCompleted");
+  surface(ctx).set("status", "processing");
+  surface(ctx).append("progressLog", `Fetched ${data.items} items`);
 
   // Process the fetched data
   const result = await ctx.run(ProcessDataStep, { taskId: input.taskId, items: data.items });
   ctx.emit("DATA_PROCESSED", { processed: result.processed, score: result.score });
-  ctx.ui.merge("stats", { processed: result.processed, score: result.score });
-  ctx.ui.increment("stepsCompleted");
-  ctx.ui.append("progressLog", `Processed — score ${result.score}`);
+  surface(ctx).merge("stats", { processed: result.processed, score: result.score });
+  surface(ctx).increment("stepsCompleted");
+  surface(ctx).append("progressLog", `Processed — score ${result.score}`);
 
   // Suspend and wait for human approval — resume via the Approve button
-  ctx.ui.set("status", "awaiting-approval");
+  surface(ctx).set("status", "awaiting-approval");
   ctx.emit("APPROVAL_REQUESTED", { taskId: input.taskId, score: result.score });
   await ctx.suspend({ on: "TaskApproved", correlationKey: input.taskId });
 
   // Apply after approval
-  ctx.ui.set("status", "applying");
+  surface(ctx).set("status", "applying");
   const applied = await ctx.run(ApplyResultStep, { taskId: input.taskId, score: result.score });
   ctx.emit("TASK_COMPLETED", { taskId: input.taskId, summary: applied.summary });
-  ctx.ui.increment("stepsCompleted");
-  ctx.ui.set("status", "done");
-  ctx.ui.append("progressLog", applied.summary);
+  surface(ctx).increment("stepsCompleted");
+  surface(ctx).set("status", "done");
+  surface(ctx).append("progressLog", applied.summary);
 
   return { taskId: input.taskId, summary: applied.summary, applied: applied.applied };
 };

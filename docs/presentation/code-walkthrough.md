@@ -17,32 +17,32 @@ A read‑along tour of real files. Open each path as you go. The **Cloud Command
 ```ts
 export const investigateIncidentRunner: FlowRunner<InvestigateInput, InvestigateOutput> =
   async (ctx, input) => {
-    ctx.ui.set("phase", "investigating");                       // agent-surface patch → live UI
+    surface(ctx).set("phase", "investigating");                       // agent-surface patch → live UI
 
     const metrics = await ctx.run(FetchMetricsStep, { incidentId: input.incidentId });
     const logs    = await ctx.run(FetchLogsStep,    { incidentId: input.incidentId });
 
-    ctx.ui.set("phase", "triaging");
+    surface(ctx).set("phase", "triaging");
     const triage  = await ctx.run(AiTriageStep, { metrics, logs });   // LLM step, streams to UI
 
-    ctx.ui.set("phase", "awaiting-approval");
+    surface(ctx).set("phase", "awaiting-approval");
     ctx.emit("APPROVAL_REQUESTED", { incidentId: input.incidentId, aiAnalysis: triage.analysis });
 
     await ctx.suspend({ on: "ApprovalGranted", correlationKey: input.incidentId,
                         timeout: 24 * 60 * 60 * 1000 });            // wait — possibly for days
 
-    ctx.ui.set("phase", "remediating");
+    surface(ctx).set("phase", "remediating");
     const remediation = await ctx.run(ApplyRemediationStep, { incidentId: input.incidentId });
 
-    ctx.ui.set("phase", "resolved");
+    surface(ctx).set("phase", "resolved");
     return { resolved: remediation.success, summary: remediation.summary };
   };
 ```
 
 **Why it matters**
-- Reads like a plain async function — but every `ctx.run` / `ctx.emit` / `ctx.ui` / `ctx.suspend` is a **durable event**.
+- Reads like a plain async function — but every `ctx.run` / `ctx.emit` / `surface(ctx)` / `ctx.suspend` is a **durable event**.
 - `ctx.suspend` parks the workflow (a snapshot is saved); it can wait 24h and survive restarts.
-- `ctx.ui.set(...)` drives the UI from the flow with **no bespoke event or projection wiring** (that's the agent-surface protocol).
+- `surface(ctx).set(...)` drives the UI from the flow with **no bespoke event or projection wiring** (that's the agent-surface protocol).
 
 ---
 

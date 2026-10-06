@@ -571,7 +571,8 @@ the contract**.
 | `sleepUntil` | call | 1.1.0 | suspend durably until an absolute time recorded in the log (T1) |
 | `emit` | call | 1.0.0 | append a durable domain event |
 | `stream` | call | 1.0.0 | emit an incremental delta event |
-| `ui` | accessor | 1.0.0 | drive durable, replayable UI surfaces (A2UI) |
+| `ui` | accessor | 1.0.0 | **deprecated** (ADR 0114): drive durable, replayable UI surfaces (agent-surface; injected, new code uses `surface(ctx)`) |
+| `negotiateBudget` | call | 1.3.0 | negotiate a resource budget against a ceiling, recorded once (ADR 0032) |
 
 _(Source of truth: `KERNEL_SYSCALLS` at `packages/workflow-runtime/src/abi.ts`.)_
 

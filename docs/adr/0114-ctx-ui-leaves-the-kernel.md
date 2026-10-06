@@ -1,6 +1,6 @@
 # ADR 0114 — `ctx.ui` leaves the kernel
 
-- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
+- Status: **Accepted — implemented** (2026-10-07) — design approved after 4 review rounds; see "Implementation notes" for the deviations
 - Date: 2026-10-05
 - Closes: R14 (agentic-readiness audit, kernel appendix G1)
 - Builds on: [ADR 0043](0043-plugin-packaging-and-1p-3p-separation.md) (the layering guard),
@@ -88,3 +88,23 @@ the old accessor (a fold-equality test over a recorded surface log).
 - **Deleting `ctx.ui` now**: a MAJOR; deprecation first.
 - **A generic "context extension registry"** for third parties: a seam with one user. Declaration merging
   plus one injected factory is enough, and a second extension would be the evidence to revisit.
+
+## Implementation notes (2026-10-07)
+
+- **D1.** As designed. `ctx.ui` is a lazy, memoised getter on `WorkflowContextImpl`: with no factory it throws
+  (`ctx.ui is not available: ... pass surface: createSurfaceEmitter ... or use surface(ctx)`), so a bare runtime
+  breaks only when a flow touches `ctx.ui`, not at construction. `@loom/agent-surface` now depends on
+  `@loom/workflow-runtime` (types only) for the merge; the inverse edge is gone, so there is no cycle. The kernel's
+  own tests inject a tiny local stub (`testSurface.ts`) instead of importing agent-surface.
+- **`@loom/testing` and `@loom/scaffold` need no `surface` argument.** Neither constructs a `WorkflowRuntime`: both go
+  through `defineConfig`, which now passes `createSurfaceEmitter`. What the scaffold/appgen DID need was the
+  *type*: a generated flow that wrote `ctx.ui.set(...)` no longer type-checks unless agent-surface is in the
+  program, so `@loom/appgen` emits `surface(ctx).set(...)` plus the import (and `ensureUi` adds the import to an
+  edited file), and the scaffold's package.json depends on `@loom/agent-surface`.
+- **D3.** `negotiateBudget` is added to the table as a `call` (`since: "1.3.0"`), not declared derived. The test
+  (`abi.test.ts`) reads the `ExecutionContext` source and asserts its members equal the table minus `ui`.
+- **D4.** The closed set needed ONE addition the ADR did not foresee: `effect-runtime` has always imported
+  `@loom/classify` (a vocabulary leaf with only `zod` behind it). It joins `KERNEL_PACKAGES` rather than being
+  carved out as an exception; `workflow-runtime` -> `agent-surface` is the only edge that was red on `main` once it did.
+- **Fold-equality test** lives in `@loom/agent-surface` (`context.test.ts`): the injected `ctx.ui`, `surface(ctx)` and
+  the pre-0114 in-kernel accessor give a byte-identical event log and an equal surface fold.

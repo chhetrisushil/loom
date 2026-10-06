@@ -1,3 +1,4 @@
+import { surface } from "@loom/agent-surface";
 import { secret, sensitive } from "@loom/classify";
 import {
   agent$,
@@ -97,6 +98,40 @@ describe("defineConfig — flowModules + manifest cross-check", () => {
     // The manifest flow with no matching registration is flagged.
     expect(warnings.some((w) => w.includes("missing") && w.includes("not registered"))).toBe(true);
     expect(warnings.some((w) => w.includes('"gated"'))).toBe(false);
+    await app.close();
+  });
+});
+
+describe("defineConfig — ctx.ui is injected (ADR 0114)", () => {
+  it("a composed app's flow can use ctx.ui and surface(ctx), with identical patches", async () => {
+    const seen: { eventType: string; payload: unknown }[] = [];
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      observability: { onEvent: (e) => seen.push({ eventType: e.eventType, payload: e.payload }) },
+      flows: [
+        {
+          definition: {
+            _tag: "FlowDefinition",
+            id: "ui-flow",
+            name: "ui-flow",
+            version: "1.0.0",
+            inputSchema: z.object({}),
+            outputSchema: z.object({}),
+            steps: [],
+          },
+          runner: (async (ctx: WorkflowContext) => {
+            (ctx as unknown as { ui: { set(p: string, v: unknown): void } }).ui.set("a", 1);
+            surface(ctx).set("a", 1);
+            return {};
+          }) as never,
+        } as RegisteredFlow,
+      ],
+    });
+    const handle = await app.runtime.start(app.runtime.getFlow("ui-flow") as RegisteredFlow, {});
+    await handle.waitForCompletion();
+    const patches = seen.filter((e) => e.eventType === "SURFACE_PATCH");
+    expect(patches).toHaveLength(2);
+    expect(patches[0]?.payload).toEqual(patches[1]?.payload);
     await app.close();
   });
 });

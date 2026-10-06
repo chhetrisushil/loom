@@ -22,7 +22,8 @@ Everything else is built from these.
 | `ctx.sleepUntil` | pause until an absolute time recorded in the log |
 | `ctx.emit` | append a durable domain event — once per execution; a re-run serves it from the log |
 | `ctx.stream` | emit an incremental delta event (once per execution, like `emit`) |
-| `ctx.ui` | drive durable, replayable UI surfaces |
+| `ctx.ui` | **deprecated** (ADR 0114): drive durable, replayable UI surfaces — injected accessor; new code uses `surface(ctx)` from `@loom/agent-surface` |
+| `ctx.negotiateBudget` | negotiate a resource budget against a ceiling, recorded once (ADR 0032) |
 
 > **Nothing else is durable.** A bare `await fetch()` in a runner re-runs on replay and is
 > never recorded. If an outcome matters, it goes through a syscall.

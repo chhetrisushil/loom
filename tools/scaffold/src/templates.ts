@@ -239,6 +239,8 @@ export function appFiles(appName: string): Record<string, string> {
           gen: "loom gen --dir app",
         },
         dependencies: {
+          // `surface(ctx)` / the typing of `ctx.ui` (ADR 0114): a flow that drives a UI surface imports it.
+          "@loom/agent-surface": "workspace:*",
           "@loom/app": "workspace:*",
           "@loom/core": "workspace:*",
           "@loom/effect-runtime": "workspace:*",

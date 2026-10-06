@@ -81,7 +81,7 @@ The store/transport interfaces are **async-first** — any backend plugs in. Shi
 Because `EventStore`/`SnapshotStore`/`BranchRegistry` return Promises, a **network backend is first-class** — no adapter, no in-memory shim. The only *runtime* Node-only deps are the SQLite stores and the A2A server; `@loom/compiler` is Node-only but runs at **build time**, never bundled.
 
 <!--
-Presenter: this is the payoff of async-first storage. Postgres via LISTEN/NOTIFY, Redis, DynamoDB — all implement the same interface and inject the same way. The sync ctx.emit/ctx.ui API is preserved by a per-execution write pipeline (next-level detail on the Execution model slide).
+Presenter: this is the payoff of async-first storage. Postgres via LISTEN/NOTIFY, Redis, DynamoDB — all implement the same interface and inject the same way. The sync ctx.emit/surface(ctx) API is preserved by a per-execution write pipeline (next-level detail on the Execution model slide).
 -->
 
 ---
@@ -101,7 +101,7 @@ runtime  ─await→  journal.drain()   at durability barriers:
 ```
 
 - **Any backend**: `EventStore`/`SnapshotStore`/`BranchRegistry`/`TimerStore`/`MemoryStore` are Promise-returning, each with a published conformance kit. In-memory, SQLite and Postgres all ship; a third-party backend proves itself by running the same kit (`loom-plugin-vector` does, for `MemoryStore`, by cosine similarity rather than an index).
-- **Sync `ctx.emit`/`ctx.ui` preserved**: the journal folds in memory synchronously; durable writes flush in order at barriers. No `nextSequence` round-trip — the sequencer is in-memory.
+- **Sync `ctx.emit`/`surface(ctx)` preserved**: the journal folds in memory synchronously; durable writes flush in order at barriers. No `nextSequence` round-trip — the sequencer is in-memory.
 - **New failure mode**: a rejected `append` aborts the run → `StorageWriteError` at the barrier + `onStorageError` hook. Never fabricated into the log.
 - Reference: `docs/examples/postgres-backend/` (`LISTEN/NOTIFY`) · `InMemoryAsyncEventStore` proves it in the async test suite.
 

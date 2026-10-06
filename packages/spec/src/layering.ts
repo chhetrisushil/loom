@@ -23,6 +23,10 @@ export const KERNEL_PACKAGES: readonly string[] = [
   "@loom/workflow-runtime",
   "@loom/scheduler",
   "@loom/wire-abi",
+  // A zero-workspace-dependency vocabulary leaf (data-class paths, `zod` only) that `effect-runtime`
+  // has always imported. Naming it here is what makes the closed-set rule below true without
+  // pretending the edge is something else (ADR 0114 D4).
+  "@loom/classify",
 ];
 
 /**
@@ -131,6 +135,35 @@ export function findLayeringViolations(root: string = REPO_ROOT): LayeringViolat
       const node = graph.get(current);
       if (node === undefined) continue;
       for (const dep of node.workspaceDeps) queue.push([...path, dep]);
+    }
+  }
+  return violations;
+}
+
+export interface KernelClosureViolation {
+  /** A kernel package… */
+  from: string;
+  /** …that declares a workspace dependency on a package outside `KERNEL_PACKAGES`. */
+  dependsOn: string;
+}
+
+/**
+ * ADR 0114 D4 — the inverse rule: **a kernel package depends only on kernel packages** (a closed
+ * set). The ADR 0043 rule forbids kernel → `plugins/*`; it cannot see kernel → application
+ * vocabulary (a UI package, a projection runtime). A kernel package that needs an external type
+ * takes it structurally (or by declaration merging owned by the other package) instead.
+ *
+ * Reads declared `dependencies` only: a `devDependency` is test scaffolding, not a build edge.
+ */
+export function findKernelClosureViolations(root: string = REPO_ROOT): KernelClosureViolation[] {
+  const graph = readWorkspaceGraph(root);
+  const kernel = new Set(KERNEL_PACKAGES);
+  const violations: KernelClosureViolation[] = [];
+  for (const name of KERNEL_PACKAGES) {
+    const node = graph.get(name);
+    if (node === undefined) continue;
+    for (const dep of node.workspaceDeps) {
+      if (!kernel.has(dep)) violations.push({ from: name, dependsOn: dep });
     }
   }
   return violations;

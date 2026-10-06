@@ -280,6 +280,9 @@ const NOT_A_CAPABILITY = new Set([
   // a reference ResumeAuthenticator, and no bus auto-approve: hardening of existing capabilities
   // (resume gate, K12.2 authenticator, A2A bus). No new subsystem to grade.
   "0117",
+  // 0114 — R14: `ctx.ui` leaves the kernel (a dependency edge removed, an ABI entry deprecated and
+  // `negotiateBudget` added to the table, a layering rule). No runtime subsystem to grade.
+  "0114",
   // 0111 — R3k: the execution's principal is recorded on EXECUTION_STARTED and rehydrated on every
   // path (EVENT_SCHEMA 1.23.0 payload fields only; no ABI or dispatcher change). Closes the
   // identity half of existing capabilities (K12.1 principal, K2 ring, R3 execution authz); the

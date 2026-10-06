@@ -16,6 +16,7 @@ function generateFlowFile(cap: CapabilitySpec): GeneratedFile {
     `import { flow$, handler$, step$ } from "@loom/core";`,
     `import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";`,
     `import { z } from "zod";`,
+    ...(cap.ui === true ? [`import { surface } from "@loom/agent-surface";`] : []),
     // A commented hint (not a live import) so the generated file has no unused symbol.
     ...(usesReasoning ? [`// import { ReasoningRuntime } from "@loom/reasoning";`] : []),
   ].join("\n");
@@ -47,7 +48,8 @@ function generateFlowFile(cap: CapabilitySpec): GeneratedFile {
     );
   }
   if (cap.ui === true) {
-    runnerBody.push(`  ctx.ui.set("status", "done"); // durable, replayable UI surface`);
+    // ADR 0114: `ctx.ui` is typed by @loom/agent-surface; `surface(ctx)` is the documented spelling.
+    runnerBody.push(`  surface(ctx).set("status", "done"); // durable, replayable UI surface`);
   }
   runnerBody.push("  return out;");
 

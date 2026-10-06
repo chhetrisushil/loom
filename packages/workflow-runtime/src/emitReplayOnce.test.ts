@@ -1,5 +1,3 @@
-import { agentSurfaceProjection } from "@loom/agent-surface";
-import type { SurfaceState } from "@loom/agent-surface";
 import { TypedFailure, step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
@@ -12,6 +10,7 @@ import { LogLifecycle } from "./LogLifecycle";
 import { flowEmitDigest } from "./WorkflowContext";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { recoverAbandoned } from "./recoverAbandoned";
+import { foldTestSurface, testSurface } from "./testSurface";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "./types";
 
 // ── ADR 0102 — flow-level emit / stream / ui append ONCE per execution ────────
@@ -63,6 +62,7 @@ function boot(
     snapshotStore: stores.snapshotStore,
     effectRuntime: effects,
     branchRegistry: stores.branchRegistry,
+    surface: testSurface,
     ...(opts.snapshotEvery !== undefined && { snapshotEvery: opts.snapshotEvery }),
     ...(opts.now !== undefined && { now: opts.now }),
   });
@@ -85,13 +85,7 @@ const count = (events: EventEnvelope[], type: string) =>
   events.filter((e) => e.eventType === type).length;
 
 /** Fold the SURFACE_PATCH events of a log exactly as a live projection would. */
-function foldSurface(events: EventEnvelope[]): SurfaceState {
-  const projection = agentSurfaceProjection();
-  const handler = projection.handlers.SURFACE_PATCH!;
-  let state = projection.initialState;
-  for (const e of events) if (e.eventType === "SURFACE_PATCH") state = handler(state, e);
-  return state;
-}
+const foldSurface = foldTestSurface;
 
 /** Start, then resume each gate in turn, returning the log after every step. */
 async function driveGates(
