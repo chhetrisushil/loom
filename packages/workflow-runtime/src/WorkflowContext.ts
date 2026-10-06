@@ -159,8 +159,11 @@ class ScopeServedError extends Error {
 /** A `parallel` branch: a `[step, input]` pair or a branch function. */
 type Branch = [StepDefinition, unknown] | ((branch: BranchContext) => Promise<unknown>);
 
-/** Most gate answers a scope record carries (`consumed`); past it the record falls back to positional. */
-const SCOPE_CONSUMED_CAP = 128;
+/**
+ * Byte budget of a scope record's serialized `consumed` (runs `[branchScopePath, startIdx, count]`);
+ * past it the record omits the list and a re-run falls back to taking answers by position.
+ */
+const SCOPE_CONSUMED_BYTES = 16 * 1024;
 /** A typed failure's payload rides the scope record only while its JSON stays this small. */
 const SCOPE_PAYLOAD_CAP = 1024;
 
@@ -170,15 +173,27 @@ interface ScopeGroup {
   parked: boolean;
   /** Step ids that recorded `STEP_CANCELLED` under this scope (descendants included). */
   readonly cancelled: string[];
-  /** Gate answers consumed under this scope (descendants included): `[branchScopePath, answerIndex]`. */
-  readonly consumed: Array<[string, number]>;
+  /**
+   * Gate answers consumed under this scope (descendants included), per branch path, as runs of
+   * contiguous answer indices `[startIdx, count]`.
+   */
+  readonly consumed: Map<string, Array<[number, number]>>;
+  /** Approximate serialized size of `consumed`, against {@link SCOPE_CONSUMED_BYTES}. */
+  consumedBytes: number;
   consumedOverflow: boolean;
+}
+
+/** The runs a served branch takes, with a read position. */
+interface ServedRuns {
+  readonly runs: Array<[number, number]>;
+  run: number;
+  offset: number;
 }
 
 /** A scope replaying its journaled outcome: which answer each branch consumed on the first run. */
 interface ServedScope {
   /** `undefined` for a record that predates the consumption field: answers are taken positionally. */
-  readonly consumed: Map<string, { indices: number[]; next: number }> | undefined;
+  readonly consumed: Map<string, ServedRuns> | undefined;
 }
 
 /** A branch's place in the scope tree: its path, its signal, and its group chain. */
@@ -203,8 +218,16 @@ function scopeIsParked(scope: Scope | undefined): boolean {
  * The scope the CURRENT async context runs in. A branch that closes over the root `ctx` (instead of
  * using the `BranchContext` it was handed) still belongs to its scope: abort cancels it, and the
  * `parallel` calls it makes are numbered in its own scope, not in whichever order timing delivers.
+ * Work detached through a callback that does not propagate async context (an event emitter bound
+ * outside the branch, a thread pool) falls back to the ROOT scope.
  */
 const scopeStore = new AsyncLocalStorage<{ owner: object; scope: Scope }>();
+
+function flattenRuns(m: Map<string, Array<[number, number]>>): Array<[string, number, number]> {
+  const out: Array<[string, number, number]> = [];
+  for (const [path, runs] of m) for (const [start, count] of runs) out.push([path, start, count]);
+  return out;
+}
 
 /** The journaled outcome of a fail-fast scope, as the fold holds it (`_scopes[scopePath]`). */
 interface RecordedScope {
@@ -214,7 +237,7 @@ interface RecordedScope {
   errorChannel: string | undefined;
   errorPayload: unknown;
   launched: number | undefined;
-  consumed: Array<[string, number]> | undefined;
+  consumed: Array<[string, number, number]> | undefined;
   cursor: number | undefined;
 }
 
@@ -284,6 +307,7 @@ export class WorkflowContextImpl implements WorkflowContext {
   private idleWaiters: Array<() => void> = [];
   private frozen = false;
   private sealed = false;
+  private sealedByCancel = false;
   private warnedSealed = false;
   private readonly parkDrainMs: number;
   private readonly onWarn: (message: string) => void;
@@ -412,6 +436,8 @@ export class WorkflowContextImpl implements WorkflowContext {
    */
   private isSealed(eventType: string): boolean {
     if (!this.sealed) return false;
+    // A cancel seals everything EXCEPT the STEP_CANCELLED records of steps the abort interrupts.
+    if (this.sealedByCancel && eventType === "STEP_CANCELLED") return false;
     if (!this.warnedSealed) {
       this.warnedSealed = true;
       this.onWarn(
@@ -427,7 +453,8 @@ export class WorkflowContextImpl implements WorkflowContext {
    * appends reaches the log. The barrier drains in-flight STEPS; user code between steps (an
    * `emit`, a `decide`) can still run after a branch settled, and must not follow the terminal.
    */
-  seal(): void {
+  seal(opts?: { cancel?: boolean }): void {
+    this.sealedByCancel = opts?.cancel === true && !this.sealed;
     this.sealed = true;
   }
 
@@ -1072,7 +1099,8 @@ export class WorkflowContextImpl implements WorkflowContext {
       controller: new AbortController(),
       parked: false,
       cancelled: [],
-      consumed: [],
+      consumed: new Map(),
+      consumedBytes: 2,
       consumedOverflow: false,
     };
     const groupSignal = linkSignals(parent.signal, group.controller.signal);
@@ -1220,7 +1248,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       const record = this.describeFailure(failure, failed);
       if (group.consumedOverflow) {
         this.onWarn(
-          `execution "${this.executionId}": parallel scope "${scopePath}" consumed more than ${SCOPE_CONSUMED_CAP} gate answers — its record omits the consumption list, so a re-run falls back to taking answers by position`
+          `execution "${this.executionId}": parallel scope "${scopePath}" consumed more than ${SCOPE_CONSUMED_BYTES} bytes of gate-answer record (nest \`parallel\` per chunk for very large scopes) — its record omits the consumption list, so a re-run falls back to taking answers by position`
         );
       }
       // An empty list is exact too ("consumed nothing"); only an overflow drops it.
@@ -1235,12 +1263,31 @@ export class WorkflowContextImpl implements WorkflowContext {
         cancelled: group.cancelled.slice(0, SCOPE_CANCELLED_CAP),
         launched: started,
         ...(exact && {
-          consumed: group.consumed,
+          consumed: flattenRuns(group.consumed),
           cursor: this.suspendPassthroughsConsumed,
         }),
       });
       // The first run throws what a served re-run will throw: the value rebuilt from the record.
-      throw this.errorFromRecord(record, scopePath, failed);
+      // `cause` (the ORIGINAL error, with its stack) exists on the FIRST run only: a served re-run
+      // has nothing but the record. It is set after the record is committed, so determinism is
+      // untouched — never branch control flow on it.
+      const rebuilt = this.errorFromRecord(record, scopePath, failed);
+      try {
+        Object.defineProperty(rebuilt, "cause", {
+          value: failure,
+          configurable: true,
+          writable: true,
+          enumerable: false,
+        });
+      } catch {
+        // A frozen/sealed rebuilt error simply carries no cause.
+      }
+      this.onWarn(
+        `execution "${this.executionId}": parallel scope "${scopePath}" failed in branch ${failed}; original error: ${
+          failure instanceof Error ? (failure.stack ?? String(failure)) : String(failure)
+        }`
+      );
+      throw rebuilt;
     }
     throw failure;
   }
@@ -1316,11 +1363,11 @@ export class WorkflowContextImpl implements WorkflowContext {
 
   private servedFrom(rec: RecordedScope): ServedScope {
     if (rec.consumed === undefined) return { consumed: undefined };
-    const consumed = new Map<string, { indices: number[]; next: number }>();
-    for (const [path, index] of rec.consumed) {
+    const consumed = new Map<string, ServedRuns>();
+    for (const [path, start, count] of rec.consumed) {
       const entry = consumed.get(path);
-      if (entry === undefined) consumed.set(path, { indices: [index], next: 0 });
-      else entry.indices.push(index);
+      if (entry === undefined) consumed.set(path, { runs: [[start, count]], run: 0, offset: 0 });
+      else entry.runs.push([start, count]);
     }
     return { consumed };
   }
@@ -1333,12 +1380,14 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (r === undefined || r === null || typeof r !== "object") return undefined;
     const consumed = Array.isArray(r.consumed)
       ? (r.consumed as unknown[]).filter(
-          (e): e is [string, number] =>
+          (e): e is [string, number, number] =>
             Array.isArray(e) &&
-            e.length === 2 &&
+            e.length === 3 &&
             typeof e[0] === "string" &&
             Number.isSafeInteger(e[1]) &&
-            (e[1] as number) >= 0
+            (e[1] as number) >= 0 &&
+            Number.isSafeInteger(e[2]) &&
+            (e[2] as number) >= 1
         )
       : undefined;
     return {
@@ -1430,11 +1479,16 @@ export class WorkflowContextImpl implements WorkflowContext {
     const served = scope.served;
     if (served?.consumed !== undefined) {
       const entry = served.consumed.get(scope.path);
-      if (entry === undefined || entry.next >= entry.indices.length) {
+      const cur = entry?.runs[entry.run];
+      if (entry === undefined || cur === undefined) {
         throw new ScopeServedError(what, scope.path);
       }
       const recorded = this.recordedPassthroughs();
-      const index = entry.indices[entry.next++] as number;
+      const index = cur[0] + entry.offset;
+      if (++entry.offset >= cur[1]) {
+        entry.run++;
+        entry.offset = 0;
+      }
       if (index >= recorded.length) throw new ScopeServedError(what, scope.path);
       this.segmentLive = false;
       return { payload: recorded[index] };
@@ -1444,8 +1498,22 @@ export class WorkflowContextImpl implements WorkflowContext {
       for (let g: Scope | undefined = scope; g !== undefined; g = g.parent) {
         const group = g.group;
         if (group === undefined) continue;
-        if (group.consumed.length >= SCOPE_CONSUMED_CAP) group.consumedOverflow = true;
-        else group.consumed.push([scope.path, answer.index]);
+        if (group.consumedOverflow) continue;
+        const runs = group.consumed.get(scope.path);
+        const last = runs?.[runs.length - 1];
+        if (last !== undefined && last[0] + last[1] === answer.index) {
+          last[1]++;
+        } else {
+          // A new run: ~ `["<path>",<start>,<count>],` — the budget counts what the record will weigh.
+          group.consumedBytes += scope.path.length + String(answer.index).length + 12;
+          if (group.consumedBytes > SCOPE_CONSUMED_BYTES) {
+            group.consumedOverflow = true;
+            group.consumed.clear();
+            continue;
+          }
+          if (runs === undefined) group.consumed.set(scope.path, [[answer.index, 1]]);
+          else runs.push([answer.index, 1]);
+        }
       }
     }
     return answer;

@@ -221,8 +221,9 @@ questions on 2026-10-06; this is what was built.
   A served scope launched every branch (a `limit` leaves branches the first run never started, whose live
   `decide`/`suspend`/`emit` then ran) and took gate answers by position (a served branch whose first-run gate never opened
   consumed the answer of a LATER gate, which then re-parked). `PARALLEL_COMPLETED` / `_scopes[scopePath]` gains optional
-  `launched` (the count: branches launch in input order, so `0..launched-1`), `consumed` (`[branchScopePath, answerIndex][]`,
-  descendants included, at most 128; past it the field is omitted and a warning says so) and `cursor` (the gate-answer cursor
+  `launched` (the count: branches launch in input order, so `0..launched-1`), `consumed` (`[branchScopePath, startIdx, count][]` runs of contiguous answer indices,
+  descendants included, within a 16 KiB serialized budget; past it the field is omitted and a warning says so — nest `parallel`
+  per chunk for very large scopes; round 2 replaced the unreleased `[path, index]` pair form, so the fold reads runs only) and `cursor` (the gate-answer cursor
   after the scope). A served scope launches exactly `launched` branches; a served branch takes exactly the answers `consumed`
   lists for its path (none listed: `ScopeServedError`, nothing consumed) and the cursor is set to `cursor` at the end, so the
   gate after the scope receives the answer it received on the first run. A suspend or sleep inside an ABORTED scope throws the
@@ -258,3 +259,17 @@ questions on 2026-10-06; this is what was built.
   detached from it by a non-async-context-propagating mechanism is not.
 - **P3.** `recover()` reads a gone parent's log once per pass (a bounded cache), not once per orphan. First `recover()` after
   upgrading to this version cancels the live children of parents that were cancelled or continued before it (the sweep is new).
+
+## Review round 2 (as built)
+
+- **`consumed` is run-length encoded** (`[branchScopePath, startIdx, count]`, 16 KiB budget instead of a 128-entry cap), so a
+  big scope with contiguous answers per branch stays exact. Overflow keeps the old behaviour: field omitted, `onWarn`, and a
+  re-run takes answers by position. The pair form never shipped (EVENT_SCHEMA 1.23.0 is unreleased), so the fold, the
+  wire-abi vectors and this ADR were updated in place.
+- **First-run `cause`.** The first run throws the error rebuilt from the record with `cause` = the original (and `onWarn`
+  logs the original's stack). A served re-run has no original: `cause` is absent. The record is unchanged, so determinism
+  holds; never branch control flow on `cause`.
+- **Rolling upgrade.** The always-on journal seal drops late appends after `EXECUTION_SUSPENDED` / terminal /
+  `EXECUTION_CANCELLED` that an old node would have written. Those were never fold-relevant, are regenerated on re-run, and
+  dropping them is strictly safer.
+- **Cancel seals the context** too: a zombie cannot append after `EXECUTION_CANCELLED` (only the `STEP_CANCELLED` of steps the abort interrupts still lands).

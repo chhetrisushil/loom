@@ -576,8 +576,13 @@ const handlers: Record<string, Handler> = {
     const nonNegInt = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
     const consumed = Array.isArray(p.consumed)
       ? p.consumed.filter(
-          (e): e is [string, number] =>
-            Array.isArray(e) && e.length === 2 && typeof e[0] === "string" && nonNegInt(e[1])
+          (e): e is [string, number, number] =>
+            Array.isArray(e) &&
+            e.length === 3 &&
+            typeof e[0] === "string" &&
+            nonNegInt(e[1]) &&
+            nonNegInt(e[2]) &&
+            e[2] >= 1
         )
       : undefined;
     scopes[p.scopePath] = {

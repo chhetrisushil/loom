@@ -3412,6 +3412,8 @@ export class WorkflowRuntime {
       journal.commit("EXECUTION_CANCELLED", {
         ...(reason !== undefined && { reason: String(reason) }),
       });
+      // A zombie (an effect still running) must not append after the cancel record.
+      ctx.seal({ cancel: true }); // keeps only STEP_CANCELLED of the steps the abort interrupts
       rejectCompletion(err);
     };
 

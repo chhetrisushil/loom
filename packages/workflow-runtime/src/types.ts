@@ -870,6 +870,10 @@ export class StepTimeoutError extends Error {
  * of (ADR 0112 D2): a fail-fast scope journals its failing error as `{ name, message }`, and both
  * the first run and every served re-run throw the value built from that record. It must be
  * deterministic and construct from the message alone (no `cause`, no other state).
+ *
+ * A class whose constructor is `(code, message)` (or any other shape) receives the message in the
+ * WRONG slot: leave it out of the registry, and it falls back to `ParallelScopeFailedError`.
+ * Constructor side effects run on every serve (once per re-run), so keep it pure.
  */
 export type ErrorClassCtor = new (message: string) => Error;
 
