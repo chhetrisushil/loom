@@ -803,7 +803,7 @@ describe("a served scope is EXACT: the branches the first run launched, the answ
     const rec = (await h.eventStore.read("cursor")).find(
       (e) => e.eventType === "PARALLEL_COMPLETED"
     );
-    expect(rec?.payload).toMatchObject({ launched: 2, consumed: [["/0.0", 0]], cursor: 1 });
+    expect(rec?.payload).toMatchObject({ launched: 2, consumed: [["/0.0", 0, 1]], cursor: 1 });
     const r2 = await h.runtime.resume("cursor", { eventType: "later", payload: "L" });
     expect(await outcome(r2)).toBe("completed");
     expect(branchSaw).toEqual(["I", "I"]); // first run + served
@@ -869,6 +869,112 @@ describe("a served scope is EXACT: the branches the first run launched, the answ
     const r = await h2.runtime.resume("legacy", { eventType: "go", payload: {} });
     await r.waitForCompletion();
     expect(invoked).toEqual([0, 1]); // old behaviour: no `launched` → both branches start (served)
+  });
+});
+
+describe("the consumption record is run-length encoded under a byte budget (review round 2)", () => {
+  /** Park at gate "g", then pad the log with `extra` more gate answers (synthetic RESUMED+SUSPENDED pairs). */
+  async function withAnswers(h: Harness, id: string, extra: number): Promise<void> {
+    const run = await h.runtime.start(h.flow, {}, { executionId: id });
+    await run.waitForSuspend();
+    const r = await h.runtime.resume(id, { eventType: "g", payload: "p" });
+    await r.waitForSuspend();
+    const log = await h.eventStore.read(id);
+    const resumed = log.filter((e) => e.eventType === "EXECUTION_RESUMED").at(-1) as EventEnvelope;
+    const suspended = log.at(-1) as EventEnvelope;
+    let seq = suspended.sequence;
+    for (let i = 0; i < extra; i++) {
+      await h.eventStore.append({ ...resumed, id: `${id}-r${i}`, sequence: ++seq });
+      await h.eventStore.append({ ...suspended, id: `${id}-s${i}`, sequence: ++seq });
+    }
+  }
+  const scopeRecord = async (h: Harness, id: string) =>
+    (await h.eventStore.read(id)).find((e) => e.eventType === "PARALLEL_COMPLETED")
+      ?.payload as Record<string, unknown>;
+
+  it("one branch taking hundreds of answers journals ONE run, and a served re-run takes exactly them", async () => {
+    const A = mk("a");
+    const N = 300;
+    const saw: unknown[] = [];
+    const h = boot(
+      ["a"],
+      {
+        a: async () => {
+          await tick(30);
+          throw new Error("a exploded");
+        },
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel([
+            async (b: BranchContext) => {
+              for (let i = 0; i < N; i++) saw.push(await b.suspend({ on: "g" }));
+              return b.run(A, {});
+            },
+            async (b: BranchContext) => {
+              await tick(100);
+              return b.sleep(1);
+            },
+          ]);
+        } catch (e) {
+          if (e instanceof SuspendError) throw e;
+        }
+        await ctx.suspend({ on: "later" });
+        return {};
+      }
+    );
+    await withAnswers(h, "rle", N - 2);
+    const r = await h.runtime.resume("rle", { eventType: "g", payload: "p" });
+    await r.waitForSuspend();
+    const rec = await scopeRecord(h, "rle");
+    expect(rec.consumed).toEqual([["/0.0", 0, N]]);
+    expect(h.warnings.filter((w) => w.includes("consumed more than"))).toEqual([]);
+    const r2 = await h.runtime.resume("rle", { eventType: "later", payload: "L" });
+    expect(await outcome(r2)).toBe("completed");
+  });
+
+  it("past the byte budget the record OMITS `consumed`, warns, and a re-run falls back to positional", async () => {
+    const A = mk("a");
+    const N = 900; // non-contiguous per branch path: one run each, ~20 bytes apiece > 16 KiB
+    const took: number[] = [];
+    const laterSaw: unknown[] = [];
+    const h = boot(
+      ["a"],
+      {
+        a: async () => {
+          await tick(30);
+          throw new Error("a exploded");
+        },
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel(
+            Array.from({ length: N }, (_, i) => async (b: BranchContext) => {
+              await b.suspend({ on: "g" });
+              took.push(i);
+              if (i === N - 1) return b.run(A, {});
+              await tick(200);
+              return i;
+            })
+          );
+        } catch (e) {
+          if (e instanceof SuspendError) throw e;
+        }
+        laterSaw.push(await ctx.suspend({ on: "later" }));
+        return {};
+      }
+    );
+    await withAnswers(h, "ovf", N - 2);
+    const r = await h.runtime.resume("ovf", { eventType: "g", payload: "p" });
+    await r.waitForSuspend();
+    const rec = await scopeRecord(h, "ovf");
+    expect("consumed" in rec).toBe(false);
+    expect("cursor" in rec).toBe(false);
+    expect(h.warnings.some((w) => w.includes("consumed more than"))).toBe(true);
+    took.length = 0;
+    const r2 = await h.runtime.resume("ovf", { eventType: "later", payload: "L" });
+    expect(await outcome(r2)).toBe("completed"); // positional fallback still completes
+    expect(laterSaw).toEqual(["L"]);
   });
 });
 
@@ -1208,6 +1314,59 @@ describe("nothing follows the park or the terminal event (P2-A)", () => {
     const r = await h.runtime.resume("dec", { eventType: "go", payload: {} });
     await r.waitForCompletion();
     expect(count(await h.eventStore.read("dec"), "DECISION_RECORDED")).toBe(0);
+  });
+});
+
+describe("cause and cancel seal (review round 2)", () => {
+  it("the FIRST run's thrown error carries the original as `cause` (and warns with its stack); a served re-run has none", async () => {
+    const A = mk("a");
+    const causes: unknown[] = [];
+    const h = boot(
+      ["a"],
+      {
+        a: async () => {
+          await tick(5);
+          throw new Error("orig boom");
+        },
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel([async (b: BranchContext) => b.run(A, {})]);
+        } catch (e) {
+          causes.push((e as Error).cause);
+        }
+        await ctx.suspend({ on: "go" });
+        return {};
+      }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "cause" });
+    await run.waitForSuspend();
+    expect(String((causes[0] as Error).message)).toContain("orig boom");
+    expect(h.warnings.some((w) => w.includes("original error") && w.includes("orig boom"))).toBe(
+      true
+    );
+    const r = await h.runtime.resume("cause", { eventType: "go", payload: {} });
+    await r.waitForCompletion();
+    expect(causes[1]).toBeUndefined();
+  });
+
+  it("a zombie cannot append after EXECUTION_CANCELLED", async () => {
+    const h = boot([], {}, async (ctx) => {
+      void (async () => {
+        await tick(40);
+        ctx.emit("zombie.after.cancel", {});
+      })();
+      await tick(500);
+      return {};
+    });
+    const run = await h.runtime.start(h.flow, {}, { executionId: "zc" });
+    await tick(5);
+    run.cancel("stop");
+    await run.waitForCompletion().catch(() => {});
+    await tick(80);
+    const t = types(await h.eventStore.read("zc"));
+    expect(t).toContain("EXECUTION_CANCELLED");
+    expect(t.some((x) => x.includes("zombie.after"))).toBe(false);
   });
 });
 
