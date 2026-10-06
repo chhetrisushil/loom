@@ -1,6 +1,6 @@
-import { tainted } from "@loom/classify";
+import { tainted, unwrapTainted } from "@loom/classify";
 import { LlmEffect } from "@loom/effect-runtime";
-import type { EffectContext } from "@loom/effect-runtime";
+import type { EffectContext, EffectDelta } from "@loom/effect-runtime";
 import { collectStream } from "./assembleStream";
 import type { StreamProgress } from "./assembleStream";
 import type {
@@ -45,12 +45,22 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
    * Not called on replay: a completed effect is served from the log and never
    * re-invoked, so a tail attached to a replay sees silence.
    *
-   * A per-call sink (`EffectContext.onDelta`, ADR 0119 — what `DecideScope.invokeTransient`
+   * ADR 0119 — under an `EffectRuntime` this sink is GOVERNED: it receives a delta only
+   * after every middleware delta guard accepted it (a PII/output validator severs the
+   * stream before the breaching delta), on durable and transient calls alike, and it
+   * receives NOTHING when a middleware `inspectsOutput` without a delta form (the call
+   * completes non-streamed). Used bare (no runtime) it is called directly.
+   *
+   * A per-call sink (`EffectContext.onDelta` — what `DecideScope.invokeTransient`
    * `{ onDelta }` sets) is called IN ADDITION to this one, with `{ delta }` per delta and a
-   * final `{ delta: "", done: true, usage }`. That is true of every
-   * effect, but streaming is where authors expect otherwise.
+   * final `{ delta: "", done: true, usage }`.
    */
   onDelta?: (delta: string, ctx: EffectContext) => void;
+  /**
+   * ADR 0119 — called when a retried attempt `attempt` (> 1) begins: discard what
+   * {@link onDelta} delivered so far. Same governed delivery as `onDelta`.
+   */
+  onReset?: (attempt: number, ctx: EffectContext) => void;
   /**
    * K8.4 — a mid-flight guard, called after every delta; THROW to sever the
    * generation. Curried over the effect context so it can read `ctx.resources`
@@ -92,10 +102,13 @@ export function createLlmEffect<TIn = string, TOut = string>(
             // FIRST: it is the governed one, and a middleware delta guard severs the stream
             // by THROWING from it — which must happen before any other tail sees the delta.
             // Do not catch around it. The text is wrapped as untrusted content (ADR 0085).
+            // The configured sink is NOT called here under a runtime: ctx.onDelta is the
+            // guarded channel and the runtime forwards to `deltaSink` after the guards.
             ...((options.onDelta !== undefined || ctx.onDelta !== undefined) && {
               onDelta: (delta: string) => {
-                ctx.onDelta?.({ delta: tainted(delta, `llm:${ctx.stepId}`) });
-                options.onDelta?.(delta, ctx);
+                if (ctx.onDelta !== undefined) {
+                  ctx.onDelta({ delta: tainted(delta, `llm:${ctx.stepId}`) });
+                } else options.onDelta?.(delta, ctx);
               },
             }),
             ...(options.guard !== undefined && { guard: options.guard(ctx) }),
@@ -117,6 +130,14 @@ export function createLlmEffect<TIn = string, TOut = string>(
     },
     // Wire pre-warm to the provider's own warm hook (connection/model cache),
     // only when the provider implements one.
-    options.provider.warm !== undefined ? { warm: () => options.provider.warm?.() } : {}
+    {
+      ...(options.provider.warm !== undefined && { warm: () => options.provider.warm?.() }),
+      ...((options.onDelta !== undefined || options.onReset !== undefined) && {
+        deltaSink: (chunk: EffectDelta, ctx: EffectContext) => {
+          if (chunk.reset === true) options.onReset?.(chunk.attempt ?? 2, ctx);
+          else if (chunk.done !== true) options.onDelta?.(unwrapTainted(chunk.delta), ctx);
+        },
+      }),
+    }
   );
 }

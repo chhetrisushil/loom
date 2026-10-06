@@ -1,6 +1,6 @@
 import { pathsOfClass } from "@loom/classify";
 import type { StepDefinition } from "@loom/core";
-import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
+import type { EffectContext, EffectMiddleware, EffectNext } from "@loom/effect-runtime";
 
 // ── K10.3 — redaction markers: keep secrets OUT of the log entirely ───────────
 //
@@ -106,7 +106,7 @@ function getPath(
  * play, it is a deep-walk pass-through (G2).
  */
 export function redactionMiddleware(options: RedactionOptions): EffectMiddleware {
-  return async (ctx: EffectContext, input: unknown, next): Promise<unknown> => {
+  const mw = async (ctx: EffectContext, input: unknown, next: EffectNext): Promise<unknown> => {
     // Input phase — resolve references into the value the tool actually sees,
     // WITHOUT touching the logged input (STEP_STARTED keeps the reference).
     const resolvedInput = await deepResolve(input, options.resolver);
@@ -132,6 +132,13 @@ export function redactionMiddleware(options: RedactionOptions): EffectMiddleware
     }
     return redacted;
   };
+  // ADR 0119 — output redaction REWRITES the result after `next()`; a streamed delta
+  // bypasses that masking, so declare it: the runtime then refuses live deltas (fail
+  // closed) rather than stream the secret past the mask. Input-only resolution does not
+  // touch output, so it stays streamable.
+  return (
+    options.redactOutput !== undefined ? Object.assign(mw, { inspectsOutput: true as const }) : mw
+  ) as EffectMiddleware;
 }
 
 // ── K10-R2 — derive output redaction from `secret()` marks ────────────────────

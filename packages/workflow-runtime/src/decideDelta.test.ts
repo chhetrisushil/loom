@@ -307,7 +307,7 @@ describe("ctx.decide scope: streaming deltas (ADR 0119)", () => {
     });
     expect(got).toEqual([]);
     expect(outcome.status).toBe("fulfilled");
-    expect(warns.some((w) => w.includes("refused"))).toBe(true);
+    expect(warns.some((w) => w.includes("streaming disabled"))).toBe(true);
   });
 
   it("FAIL-CLOSED: one uncovered output validator among covered ones still refuses the sink", async () => {

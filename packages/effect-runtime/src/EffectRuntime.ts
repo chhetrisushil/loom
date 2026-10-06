@@ -54,7 +54,23 @@ export class EffectRuntime {
     input: TIn,
     ctx: EffectContext
   ): Promise<TOut> {
-    return this.runSeam<TIn, TOut>(toolId, input, ctx, "journaled");
+    // ADR 0119 (review 2) — a durable call whose effect has a CONFIGURED delta sink gets the
+    // same guarded channel as a transient one: the configured sink is reached ONLY through
+    // the middleware delta guards (and fails closed under an uncovered output validator).
+    // Deltas stay live-only — never journaled.
+    const pipe = ctx.onDelta === undefined ? this.deltaPipe(toolId, ctx, undefined) : undefined;
+    if (pipe === undefined) return this.runSeam<TIn, TOut>(toolId, input, ctx, "journaled");
+    try {
+      return await this.runSeam<TIn, TOut>(
+        toolId,
+        input,
+        { ...ctx, onDelta: pipe.sink },
+        "journaled",
+        pipe.onExecute
+      );
+    } finally {
+      pipe.close();
+    }
   }
 
   // R12 — the sub-resource a call targets, for per-resource authorization. Never throws: a
@@ -226,7 +242,7 @@ export class EffectRuntime {
       ...(opts.signal !== undefined && { signal: opts.signal }),
       ...(opts.principal !== undefined && { principal: opts.principal }),
     };
-    const pipe = opts.onDelta === undefined ? undefined : this.deltaPipe(toolId, base, opts);
+    const pipe = this.deltaPipe(toolId, base, opts.onDelta);
     const ctx: EffectContext = pipe === undefined ? base : { ...base, onDelta: pipe.sink };
     try {
       const out = await this.runSeam<TIn, TOut>(toolId, input, ctx, "ambient", pipe?.onExecute);
@@ -257,7 +273,7 @@ export class EffectRuntime {
   private deltaPipe(
     toolId: string,
     base: EffectContext,
-    opts: TransientInvokeOptions
+    callerSink: DeltaSink | undefined
   ):
     | {
         sink: DeltaSink;
@@ -266,28 +282,49 @@ export class EffectRuntime {
         close: () => void;
       }
     | undefined {
-    if (this.middleware.some((m) => m.inspectsOutput === true)) {
+    // The effect's own CONFIGURED sink (createLlmEffect/AgentRunner `onDelta`) is reached
+    // only through this pipe, so it is governed exactly like the per-call one.
+    const configured = this.registry.get(toolId)?.deltaSink;
+    if (callerSink === undefined && configured === undefined) return undefined;
+    const uncovered = this.middleware.findIndex((m) => m.inspectsOutput === true);
+    if (uncovered >= 0) {
+      const mw = this.middleware[uncovered] as EffectMiddleware;
       this.onWarn(
-        `invokeTransient("${toolId}"): onDelta sink refused — an output validator in the middleware chain has no delta form, so streamed text would bypass it; the call completes non-streamed`
+        `invokeTransient("${toolId}"): streaming disabled: ${
+          mw.name !== "" ? mw.name : `middleware[${uncovered}]`
+        } inspects output without a delta form, so streamed text would bypass it; the call completes non-streamed (no delta sink — per-call or configured — receives anything)`
       );
-      return undefined;
+      // Fail closed: a DEFINED, silent sink — so the effect cannot fall back to calling
+      // its configured sink directly.
+      return { sink: () => {}, onExecute: () => {}, finish: () => {}, close: () => {} };
     }
     const mwCtx: EffectContext = { ...base, toolId };
+    const { onDelta: _own, ...plain } = base;
+    const sinkCtx: EffectContext = plain;
     const origin = `effect:${toolId}`;
     const factories = this.middleware.filter((m) => m.deltaGuard !== undefined);
-    const caller = opts.onDelta as DeltaSink;
     let settled = false;
     let attempts = 0;
     let guards: Array<(delta: string) => void> = [];
     let sawDone = false;
     let heldUsage: EffectDelta["usage"];
-    const dead = (): boolean => settled || opts.signal?.aborted === true;
+    const dead = (): boolean => settled || base.signal?.aborted === true;
     const deliver = (chunk: EffectDelta): void => {
       if (dead()) return;
-      try {
-        caller(chunk);
-      } catch (err) {
-        this.onWarn(`invokeTransient("${toolId}"): onDelta sink threw (ignored): ${String(err)}`);
+      if (callerSink !== undefined) {
+        try {
+          callerSink(chunk);
+        } catch (err) {
+          this.onWarn(`invokeTransient("${toolId}"): onDelta sink threw (ignored): ${String(err)}`);
+        }
+      }
+      // The configured sink sees text and resets, never the terminal chunk.
+      if (configured !== undefined && chunk.done !== true) {
+        try {
+          configured(chunk, sinkCtx);
+        } catch (err) {
+          this.onWarn(`effect "${toolId}": configured onDelta threw (ignored): ${String(err)}`);
+        }
       }
     };
     return {

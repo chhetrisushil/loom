@@ -134,3 +134,13 @@ describe("K10-R2 — derive output redaction from secret() marks", () => {
     expect((logged as { ok: boolean }).ok).toBe(true);
   });
 });
+
+describe("ADR 0119 — output redaction declares inspectsOutput", () => {
+  it("is marked when redactOutput is configured (deltas would bypass the mask) and not otherwise", () => {
+    const resolver = new InMemorySecretResolver();
+    expect(redactionMiddleware({ resolver, redactOutput: () => ["token"] }).inspectsOutput).toBe(
+      true
+    );
+    expect(redactionMiddleware({ resolver }).inspectsOutput).toBeUndefined();
+  });
+});

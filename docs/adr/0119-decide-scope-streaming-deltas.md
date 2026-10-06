@@ -37,9 +37,8 @@ Round-1 review decisions are recorded as "Decided (user, 2026-10-06)" below.
    so the charge is otherwise invisible). Plain strings were rejected: usage would need a second channel. The
    provider's `LlmStreamChunk` was rejected as the public type: it carries `toolCalls`/`stopReason`, which
    belong to the returned response, not to a live view.
-4. **Precedence.** `createLlmEffect` calls `ctx.onDelta` AND its configured `onDelta`, per-call sink FIRST;
-   neither replaces the other (the configured sink is the app's own tail, the per-call sink is the caller's, and
-   is the only one middleware governs). The effect's end-of-stream chunk is sent on the streamed path only — a
+4. **Precedence.** Superseded by decision 12: the configured sink is no longer called by the effect beside
+   `ctx.onDelta`; the runtime forwards to it from the guarded channel. Both sinks still fire, per-call first. The effect's end-of-stream chunk is sent on the streamed path only — a
    `complete` fallback produced no deltas to terminate. `createAgentModelEffect` is a thin wrapper over
    `createLlmEffect` and needs no change.
 5. **Live-only.** Deltas are never journaled and are not called on replay (a recorded decision serves
@@ -79,7 +78,27 @@ Round-1 review decisions are recorded as "Decided (user, 2026-10-06)" below.
 11. **Reset on retry.** Decided (user, 2026-10-06): the runtime counts `effect.execute` invocations of the call
     (a retry middleware re-enters it) and sends `{ delta: "", reset: true, attempt: n }` at the start of attempt
     `n > 1`, and resets the delta guards' running text. A consumer clears and re-renders; the reconstruction
-    equals the recorded decision.
+    equals the recorded decision. The reset is sent EAGERLY: when attempt `n > 1` begins, before any of its
+    deltas (not lazily on its first delta), so a view is cleared even if the retry produces no text.
+12. **The configured sink is guarded on EVERY path.** Decided (user, 2026-10-06): round 1 guarded only the
+    per-call sink; `createLlmEffect({ onDelta })`, `AgentRunner.config.onDelta` and
+    `createAgentModelEffect({ onDelta })` still received raw deltas on a durable `ctx.run`, on a transient call
+    without a per-call sink, and when the per-call sink was refused. Now an effect declares its configured sink
+    as `Effect.deltaSink`, and the RUNTIME owns delivery: on durable (`execute`) and transient calls alike it
+    puts one guarded channel on `ctx.onDelta`, and forwards text and reset chunks (never the terminal one) to
+    the per-call sink and to `deltaSink` only AFTER the middleware delta guards accepted the text. A PII
+    validator severs the configured sink before the leak. Under an uncovered `inspectsOutput` middleware the
+    channel is a silent no-op: NEITHER sink receives anything, the call completes non-streamed, and the warning
+    says so ("streaming disabled: <middleware> inspects output without a delta form"). Reset/attempt semantics
+    apply to the configured sink too (`createLlmEffect({ onReset })`). Deltas stay live-only on the durable path
+    (never journaled). The effect calls its configured sink directly only when there is no runtime
+    (`ctx.onDelta` absent). BREAKING: an app streaming past an output validator that has no delta form stops
+    streaming.
+13. **`inspectsOutput` stays opt-in; the 3P obligation is documented.** Decided (user, 2026-10-06): a
+    middleware that REJECTS or REWRITES the effect's output after `next()` MUST set `inspectsOutput: true` (or
+    provide a `deltaGuard`), otherwise streamed text bypasses it. loom's own `redactionMiddleware` now sets it
+    when `redactOutput` is configured (deltas would bypass its masking). The scaffold's middleware template
+    states the obligation. Consumers displaying deltas depend on `@loom/classify` to `unwrapTainted` them.
 ## Consequences
 
 - A streaming planner is expressible inside the scope with no governance bypass.
@@ -94,3 +113,4 @@ Round-1 review decisions are recorded as "Decided (user, 2026-10-06)" below.
 - A loom-ui-side router re-implementing the call outside the scope (the bypass this closes).
 - Journaling deltas, or making them an async iterable return (ST-R: fold economics).
 - Replacing the effect's configured sink when a per-call sink is present (surprising to the app's tail).
+- Auto-detecting output-rewriting middleware (undecidable from a function value): opt-in marker + documented obligation instead.
