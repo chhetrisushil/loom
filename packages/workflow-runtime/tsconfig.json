@@ -5,8 +5,9 @@
     "outDir": "dist"
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts", "src/testSurface.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts", "src/testSurface.ts", "src/__tests__"],
   "references": [
+    { "path": "../classify" },
     { "path": "../core" },
     { "path": "../event-runtime" },
     { "path": "../replay-vm" },

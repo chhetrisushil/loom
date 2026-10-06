@@ -616,6 +616,25 @@ export interface LoomConfig {
        * node runs a version that folds `PARALLEL_COMPLETED`.
        */
       scopes?: boolean;
+      /**
+       * ADR 0110 (R2) — the durable inbox: `ctx.receive` / `ctx.select` (registering waits, a
+       * multi-wait park, wait-addressed resumes) and the authorized `runtime.send`. OFF by default
+       * because an execution that has ever parked with `waits` cannot be driven by an older node
+       * (its fold ignores `waits` and `MESSAGE_CONSUMED`): the one-way door of an additive-kind
+       * bump. Off, `ctx.receive` / `ctx.select` / `send` throw a message naming this flag. Wire
+       * `timers` on every node too: a send from another process wakes a parked owner through a
+       * `TimerStore` row.
+       */
+      inbox?: boolean;
+    };
+    /** ADR 0110 D1/D6 — inbox bounds (read only when `features.inbox` is on). */
+    inbox?: {
+      /** `send` refuses beyond this many unconsumed messages per chain. Default 10 000. */
+      maxBacklog?: number;
+      /** Consumed message ids remembered for dedupe; capped at 1 024 (the fold's window). */
+      dedupeWindow?: number;
+      /** Largest JSON payload `send` accepts, in bytes. Default 65 536. */
+      maxPayloadBytes?: number;
     };
   };
   /**
@@ -1164,6 +1183,18 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
     ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
     ...(config.kernel?.features?.scopes === true && { scopes: true }),
+    ...(config.kernel?.features?.inbox === true && {
+      inboxEnabled: true,
+      ...(config.kernel.inbox?.maxBacklog !== undefined && {
+        inboxMaxBacklog: config.kernel.inbox.maxBacklog,
+      }),
+      ...(config.kernel.inbox?.dedupeWindow !== undefined && {
+        inboxDedupeWindow: config.kernel.inbox.dedupeWindow,
+      }),
+      ...(config.kernel.inbox?.maxPayloadBytes !== undefined && {
+        inboxMaxPayloadBytes: config.kernel.inbox.maxPayloadBytes,
+      }),
+    }),
     ...(config.errorClasses !== undefined && { errorClasses: config.errorClasses }),
     ...(config.onStorageError !== undefined && { onStorageError: config.onStorageError }),
     // One warning channel for the app: the same sink that reports a schedule which can
@@ -1255,6 +1286,14 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         "kernel.features.redrive is on but no `timers` store is configured — nothing can fire a re-drive row, so a contended resume is reported through onError and left to recover()."
       );
     }
+  }
+
+  // ADR 0110 — the durable inbox's cross-process wake and its timer arms need a TimerStore.
+  if (config.kernel?.features?.inbox === true && config.timers === undefined) {
+    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    warn(
+      "kernel.features.inbox is on but no `timers` store is configured — a message sent from another process cannot wake a parked execution, and a ctx.select timer arm never fires. Add `timers: { store }`."
+    );
   }
 
   // K10.1 — log lifecycle wired over the same stores. Cheap to construct; drives nothing

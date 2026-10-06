@@ -2,6 +2,7 @@ import type { EventEnvelope } from "@loom/core";
 import {
   type ExecutionEnumerable,
   type LeaseStore,
+  isReservedStream,
   iterateExecutionIds,
   readRangeOf,
 } from "@loom/event-runtime";
@@ -155,6 +156,11 @@ export interface RecoverAbandonedSummary {
   failed: number;
   /** Claimed candidates skipped: `maxRecoveries` consecutive re-drives made no progress. */
   exhausted: number;
+  /**
+   * ADR 0110 D5 — parked executions whose inbox notify path delivered a message (a wake a crashed
+   * sender or owner never completed). Present only when at least one was woken.
+   */
+  inboxWoken?: number;
 }
 
 /**
@@ -211,10 +217,35 @@ export async function recoverAbandoned(
     // A dry run recovers nothing, so `recovered` would never reach the limit and the scan
     // would run to the end of the store. Bound the mode that is actually counting.
     if ((options.dryRun === true ? summary.candidates : summary.recovered) >= limit) break;
+    // A reserved control stream (retention trail, an inbox stream) is no execution: folded it
+    // reads `pending`, and re-driving it would be refused (ADR 0110: inbox streams are common).
+    if (isReservedStream(executionId)) continue;
     summary.scanned++;
 
     const state = await runtime.loadState(executionId, runtime.systemOptions());
     if (state === null) continue;
+    // ADR 0110 D5 — a PARKED execution with an inbox wait: any node's pass runs the notify path, so
+    // a wake lost with a crashed sender or owner is not lost for good. Idempotent and fenced.
+    if (
+      state.status === "suspended" &&
+      options.dryRun !== true &&
+      options.source !== undefined &&
+      runtime.hasInboxWake(state)
+    ) {
+      try {
+        const woke = await runtime.notifyInboxDetailed(executionId);
+        if (woke.handle !== undefined) {
+          summary.inboxWoken = (summary.inboxWoken ?? 0) + 1;
+          await Promise.race([
+            woke.handle.waitForSuspend().catch(() => undefined),
+            woke.handle.waitForCompletion().catch(() => undefined),
+          ]);
+        }
+      } catch (err) {
+        options.onError?.(executionId, err);
+      }
+      continue;
+    }
     if (state.status !== "running" && state.status !== "pending") continue;
     summary.candidates++;
 

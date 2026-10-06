@@ -1,18 +1,21 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { tainted } from "@loom/classify";
 import { SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
-import type { ExecutableTask, StepDefinition } from "@loom/core";
+import type { ExecutableTask, StepDefinition, SuspendWait } from "@loom/core";
 import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
 import { linkSignals, parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
 import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
-import { markKernelHumanPark } from "./kernelPark";
+import { INBOX_DEDUPE_CAP, cursorFor, cursorsOf, topicProblem } from "./inbox";
+import { WaitsPark, markKernelHumanPark } from "./kernelPark";
 import { discardDecisionId } from "./strayPassthroughs";
 import {
   DecideScopeClosedError,
   EFFECT_INDOUBT_RESOLVED,
   ExecutionCancelledError,
+  FlowDivergenceError,
   ParallelScopeFailedError,
   StepTimeoutError,
   TIMER_FIRED,
@@ -23,8 +26,11 @@ import type {
   DecideScope,
   EffectInDoubtResolution,
   ErrorClassCtor,
+  InboxSource,
   ParallelOptions,
   ResourceDimension,
+  SelectArm,
+  SelectResult,
   SuspendConfig,
   WorkflowContext,
 } from "./types";
@@ -271,6 +277,46 @@ function stripNamePrefix(text: string, name: string): string {
 /** Builds the `ctx.ui` accessor from `ctx.emit` (ADR 0114); agent-surface's `createSurfaceEmitter`. */
 export type SurfaceFactory = (emit: (eventType: string, payload: unknown) => void) => unknown;
 
+// ── ADR 0110 — registered waits ──────────────────────────────────────────────────────────────────
+
+/** One arm of a registered `select`: a wait with a deterministic identity. */
+interface ArmReg {
+  readonly waitId: string;
+  readonly kind: "gate" | "inbox" | "timer";
+  /** The gate name, the inbox topic, or `"timer"`: what a recorded answer is compared with. */
+  readonly name: string;
+  readonly index: number;
+  readonly viewDigest?: string;
+  readonly correlationKey?: string;
+  readonly wakeAt?: number;
+}
+
+/** A `select` that has registered and not yet been answered. */
+interface PendingSelect {
+  readonly arms: readonly ArmReg[];
+  settled: boolean;
+  resolve(value: SelectResult): void;
+  reject(err: unknown): void;
+  /** Detaches the scope-abort listener. */
+  detach?: () => void;
+}
+
+/** What the runtime hands the context to serve `receive` / `select` (ADR 0110). */
+export interface InboxBinding {
+  /** `kernel.features.inbox`. Off: `receive` / `select` reject with a message naming the flag. */
+  readonly enabled: boolean;
+  /** The chain whose stream this execution reads (the execution itself until R1b continues one). */
+  readonly chainId: string;
+  readonly read: InboxSource;
+  /** The dedupe window the runtime applies (≤ the fold's 1 024 cap). */
+  readonly dedupeWindow: number;
+}
+
+/** How many messages one inbox read asks for beyond the waits it must satisfy (duplicates are skipped). */
+const INBOX_READ_SLACK = 16;
+/** Bound on one quiescence pass's reads (a stream of nothing but duplicates cannot spin it). */
+const INBOX_READ_PASSES = 8;
+
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
   readonly workflowId: string;
@@ -315,6 +361,19 @@ export class WorkflowContextImpl implements WorkflowContext {
   private readonly errorClasses: Map<string, ErrorClassCtor>;
   private readonly surfaceFactory: SurfaceFactory | undefined;
   private surfaceAccessor: unknown;
+  // ADR 0110 — registered waits. `waitOrdinals` numbers waits per scope path (a pure function of the
+  // flow's control flow, so a re-run mints the same ids); `pending` is the set of selects not yet
+  // answered, in registration order; `epoch` moves on every change quiescence depends on.
+  private readonly inboxBinding: InboxBinding | undefined;
+  private readonly waitOrdinals = new Map<string, number>();
+  private readonly pending = new Set<PendingSelect>();
+  private epoch = 0;
+  private quiescenceScheduled = false;
+  private quiescenceChecking = false;
+  private parkDecided = false;
+  private rejectPark: ((err: unknown) => void) | undefined;
+  /** Rejects with a {@link WaitsPark} once the flow is quiescent with waits registered. */
+  readonly parkSignal: Promise<never>;
 
   /**
    * `ctx.ui` (ADR 0114). The kernel does not know what a surface is: the accessor comes from the
@@ -364,8 +423,14 @@ export class WorkflowContextImpl implements WorkflowContext {
       scopes?: boolean;
       errorClasses?: Record<string, ErrorClassCtor>;
       surface?: SurfaceFactory;
+      inbox?: InboxBinding;
     } = {}
   ) {
+    this.inboxBinding = opts.inbox;
+    this.parkSignal = new Promise<never>((_resolve, reject) => {
+      this.rejectPark = reject;
+    });
+    this.parkSignal.catch(() => {});
     this.surfaceFactory = opts.surface;
     this.parkDrainMs = opts.parkDrainMs ?? DEFAULT_PARK_DRAIN_MS;
     this.onWarn = opts.onWarn ?? (() => {});
@@ -479,19 +544,23 @@ export class WorkflowContextImpl implements WorkflowContext {
   seal(opts?: { cancel?: boolean }): void {
     this.sealedByCancel = opts?.cancel === true && !this.sealed;
     this.sealed = true;
+    this.releasePending();
   }
 
   // ── ADR 0112 D3 — the park barrier (called by the runtime around the park commit) ─────────
 
   private beginWork(): void {
     this.activeWork++;
+    this.epoch++;
   }
 
   private endWork(): void {
+    this.epoch++;
     if (--this.activeWork > 0) return;
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
     for (const w of waiters) w();
+    this.scheduleQuiescence();
   }
 
   /** Resolves true when the in-flight set is empty, false when `ms` elapse first. */
@@ -1043,7 +1112,17 @@ export class WorkflowContextImpl implements WorkflowContext {
   }
 
   /** The context a branch function receives: this context, with the branch's scope bound in. */
-  private branchContext(scope: Scope): BranchContext {
+  private branchContext(scope: Scope, legacy = false): BranchContext {
+    // A wait's identity is `<scopePath>#<ordinal>`: deterministic only when concurrent waits live in
+    // DISTINCT scopes. With scopes off `ctx.parallel` is the pre-R6 `Promise.all` and every branch
+    // shares the root scope, so branch waits would be numbered by timing and could swap answers on a
+    // re-run: refused loudly rather than mis-delivered (ADR 0110 D3, ADR 0112).
+    const needScopes = (): Promise<never> =>
+      Promise.reject(
+        new Error(
+          "ctx.receive / ctx.select inside ctx.parallel need `kernel.features.scopes`: without scopes the branches share one scope and their waits cannot have a deterministic identity (ADR 0110 D3, ADR 0112)"
+        )
+      );
     const overrides: Record<string, unknown> = {
       scopePath: scope.path,
       execute: (task: ExecutableTask, input: unknown) => this.executeIn(scope, task, input),
@@ -1052,6 +1131,8 @@ export class WorkflowContextImpl implements WorkflowContext {
         this.decideIn(scope, id, decider, o),
       parallel: (b: Branch[], o?: ParallelOptions) => this.parallelIn(scope, b, o),
       suspend: (config: SuspendConfig) => this.suspendIn(scope, config),
+      receive: legacy ? needScopes : (topic: string) => this.receiveIn(scope, topic),
+      select: legacy ? needScopes : (arms: readonly SelectArm[]) => this.selectIn(scope, arms),
       sleep: (ms: number) => this.sleepIn(scope, ms),
       sleepUntil: (wakeAt: number) => this.sleepUntilIn(scope, wakeAt),
     };
@@ -1074,7 +1155,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       (branch) => () =>
         Array.isArray(branch)
           ? this.executeIn(scope, branch[0], branch[1])
-          : Promise.resolve(branch(this.branchContext(scope)))
+          : Promise.resolve(branch(this.branchContext(scope, true)))
     );
     return parallelLimit(tasks, {
       ...(options?.limit !== undefined && { limit: options.limit }),
@@ -1458,6 +1539,309 @@ export class WorkflowContextImpl implements WorkflowContext {
       ...condition
     } = _config as SuspendConfig & { stepId?: unknown; waits?: unknown };
     throw new SuspendError(condition);
+  }
+
+  // ── ADR 0110 — receive / select ──────────────────────────────────────────────────────────────
+
+  receive<T = unknown>(topic: string): Promise<T> {
+    return this.receiveIn(this.currentScope(), topic) as Promise<T>;
+  }
+
+  select<T = unknown>(arms: readonly SelectArm[]): Promise<SelectResult<T>> {
+    return this.selectIn(this.currentScope(), arms) as Promise<SelectResult<T>>;
+  }
+
+  private async receiveIn(scope: Scope, topic: string): Promise<unknown> {
+    const r = await this.selectIn(scope, [{ inbox: topic }]);
+    return r.value;
+  }
+
+  /** The next ordinal of a wait in `scope` (ids are `<scopePath>#<ordinal>`, ADR 0110 D3). */
+  private nextWaitId(scope: Scope): string {
+    const n = this.waitOrdinals.get(scope.path) ?? 0;
+    this.waitOrdinals.set(scope.path, n + 1);
+    return `${scope.path}#${n}`;
+  }
+
+  private armOf(arm: SelectArm, index: number, waitId: string): ArmReg {
+    const named = (["gate", "inbox", "timer"] as const).filter(
+      (k) => arm !== null && typeof arm === "object" && Object.hasOwn(arm, k)
+    );
+    if (named.length !== 1) {
+      throw new TypeError(
+        `ctx.select arm ${index} must name exactly one of gate / inbox / timer (got ${named.length})`
+      );
+    }
+    if ("gate" in arm) {
+      if (typeof arm.gate !== "string" || arm.gate.length === 0) {
+        throw new TypeError(`ctx.select arm ${index}: gate must be a non-empty string`);
+      }
+      return {
+        waitId,
+        kind: "gate",
+        name: arm.gate,
+        index,
+        ...(arm.viewDigest !== undefined && { viewDigest: arm.viewDigest }),
+        ...(arm.correlationKey !== undefined && { correlationKey: arm.correlationKey }),
+      };
+    }
+    if ("inbox" in arm) {
+      const problem = topicProblem(arm.inbox);
+      if (problem !== undefined) throw new TypeError(`ctx.select arm ${index}: ${problem}`);
+      return { waitId, kind: "inbox", name: arm.inbox, index };
+    }
+    if ("timer" in arm && arm.timer !== null && typeof arm.timer === "object") {
+      const t = arm.timer as { afterMs?: unknown; at?: unknown };
+      const requested =
+        typeof t.at === "number" && Number.isFinite(t.at)
+          ? t.at
+          : typeof t.afterMs === "number" && Number.isFinite(t.afterMs) && t.afterMs >= 0
+            ? this.now() + t.afterMs
+            : undefined;
+      if (requested === undefined) {
+        throw new TypeError(
+          `ctx.select arm ${index}: a timer needs a finite { afterMs >= 0 } or { at }`
+        );
+      }
+      // `wakeAt` is recorded at FIRST registration (the fold's `_waits`) and served on every later
+      // one: an `afterMs` is a request, the recorded instant is the fact (ADR 0110 D4).
+      const waits = this.vm.peekState().variables._waits as Record<string, unknown> | undefined;
+      const recorded =
+        waits !== undefined && Object.hasOwn(waits, waitId)
+          ? (waits[waitId] as { wakeAt?: unknown } | undefined)?.wakeAt
+          : undefined;
+      return {
+        waitId,
+        kind: "timer",
+        name: "timer",
+        index,
+        wakeAt: typeof recorded === "number" && Number.isFinite(recorded) ? recorded : requested,
+      };
+    }
+    throw new TypeError(`ctx.select arm ${index}: unknown arm shape`);
+  }
+
+  private selectIn(scope: Scope, armsIn: readonly SelectArm[]): Promise<SelectResult> {
+    try {
+      return this.registerSelect(scope, armsIn);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  private registerSelect(scope: Scope, armsIn: readonly SelectArm[]): Promise<SelectResult> {
+    const binding = this.inboxBinding;
+    if (binding === undefined || !binding.enabled) {
+      throw new Error(
+        "ctx.receive / ctx.select need the durable inbox: turn on `kernel.features.inbox` (WorkflowRuntimeDeps.inboxEnabled) once every node folds MESSAGE_CONSUMED and multi-wait parks (ADR 0110)"
+      );
+    }
+    if (!Array.isArray(armsIn) || armsIn.length === 0) {
+      throw new TypeError("ctx.select needs at least one arm");
+    }
+    // A wait inside a CANCELLED scope never registers and never consumes (ADR 0112).
+    if (scope !== this.rootScope) this.throwIfCancelled(scope.signal);
+    const arms = armsIn.map((a, i) => this.armOf(a, i, this.nextWaitId(scope)));
+
+    // Replay: the lowest-index arm the log has answered. Only one can be (the first answer settles).
+    const answers = this.vm.peekState().variables._waitAnswers as
+      | Record<string, { kind?: unknown; name?: unknown; payload?: unknown }>
+      | undefined;
+    if (answers !== undefined) {
+      for (const arm of arms) {
+        if (!Object.hasOwn(answers, arm.waitId)) continue;
+        const rec = answers[arm.waitId] as { kind?: unknown; name?: unknown; payload?: unknown };
+        if (rec.kind !== arm.kind || rec.name !== arm.name) {
+          throw new FlowDivergenceError(
+            this.executionId,
+            arm.waitId,
+            { kind: String(rec.kind), name: String(rec.name) },
+            { kind: arm.kind, name: arm.name }
+          );
+        }
+        return Promise.resolve({
+          arm: arm.index,
+          kind: arm.kind,
+          value: this.deliveredValue(arm, rec.payload),
+        });
+      }
+    }
+    // A scope served from its recorded outcome never starts a wait it did not have an answer for.
+    if (scope.served !== undefined) throw new ScopeServedError("select", scope.path);
+
+    return new Promise<SelectResult>((resolve, reject) => {
+      const sel: PendingSelect = { arms, settled: false, resolve, reject };
+      const signal = scope.signal;
+      if (signal !== undefined) {
+        const onAbort = (): void => {
+          this.dropPending(sel);
+          reject(
+            signal.reason instanceof Error
+              ? signal.reason
+              : new ExecutionCancelledError("execution cancelled", signal.reason)
+          );
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        sel.detach = () => signal.removeEventListener("abort", onAbort);
+      }
+      this.pending.add(sel);
+      this.epoch++;
+      this.scheduleQuiescence();
+    });
+  }
+
+  /** What a settled arm hands the flow: the (tainted) message, the gate's payload, the timer's `{ wakeAt }`. */
+  private deliveredValue(arm: ArmReg, payload: unknown): unknown {
+    return arm.kind === "inbox" ? tainted(payload, `inbox:${arm.name}`) : payload;
+  }
+
+  private dropPending(sel: PendingSelect): void {
+    sel.settled = true;
+    sel.detach?.();
+    if (this.pending.delete(sel)) this.epoch++;
+  }
+
+  /** Nothing registered will ever be answered by this context again: free what it holds. */
+  private releasePending(): void {
+    for (const sel of this.pending) sel.detach?.();
+    this.pending.clear();
+  }
+
+  /** The waits a park must list: every unsettled arm of every pending select, in registration order. */
+  pendingWaits(): SuspendWait[] {
+    const out: SuspendWait[] = [];
+    for (const sel of this.pending) {
+      if (sel.settled) continue;
+      for (const a of sel.arms) {
+        out.push({
+          waitId: a.waitId,
+          kind: a.kind,
+          ...(a.kind === "gate" && { on: a.name }),
+          ...(a.kind === "inbox" && { topic: a.name }),
+          ...(a.viewDigest !== undefined && { viewDigest: a.viewDigest }),
+          ...(a.correlationKey !== undefined && { correlationKey: a.correlationKey }),
+          ...(a.wakeAt !== undefined && { wakeAt: a.wakeAt }),
+        });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * ADR 0110 D2 — quiescence, evaluated at a MACROTASK boundary after the last settlement: the
+   * in-flight set of `ctx` operations is empty and every live branch is blocked on a registered
+   * wait, so continuations that run in microtasks after a settlement have had the chance to
+   * register their next wait or start their next step. Sees only `ctx` operations (a bare
+   * non-`ctx` promise is invisible to it: the determinism rule).
+   */
+  private scheduleQuiescence(): void {
+    if (this.quiescenceScheduled || this.parkDecided || this.sealed) return;
+    this.quiescenceScheduled = true;
+    setImmediate(() => {
+      this.quiescenceScheduled = false;
+      void this.checkQuiescence();
+    });
+  }
+
+  private async checkQuiescence(): Promise<void> {
+    if (this.parkDecided || this.sealed || this.quiescenceChecking) return;
+    if (this.pending.size === 0 || this.activeWork > 0) return;
+    this.quiescenceChecking = true;
+    const epoch = this.epoch;
+    try {
+      // Closure 1 of the lost-wakeup protocol (ADR 0110 D5): a message already waiting satisfies
+      // its wait LIVE (MESSAGE_CONSUMED) instead of parking.
+      const delivered = await this.satisfyFromInbox();
+      if (delivered || this.epoch !== epoch || this.activeWork > 0 || this.sealed) {
+        this.quiescenceChecking = false;
+        this.scheduleQuiescence();
+        return;
+      }
+      this.parkDecided = true;
+      this.rejectPark?.(new WaitsPark(this.pendingWaits()));
+    } catch (err) {
+      this.parkDecided = true;
+      this.rejectPark?.(err);
+    } finally {
+      this.quiescenceChecking = false;
+    }
+  }
+
+  /**
+   * Read each pending inbox topic past its cursor and consume what is there, FIFO, one message per
+   * wait (and at most one per `select`, which the first answered arm settles). Returns whether
+   * anything was delivered. A duplicate (`messageId` inside the dedupe window) advances the cursor
+   * with a `MESSAGE_CONSUMED` that delivers nothing.
+   */
+  private async satisfyFromInbox(): Promise<boolean> {
+    const binding = this.inboxBinding;
+    if (binding === undefined) return false;
+    let delivered = false;
+    const topics = new Set<string>();
+    for (const sel of this.pending) {
+      for (const a of sel.arms) if (a.kind === "inbox") topics.add(a.name);
+    }
+    for (const topic of topics) {
+      for (let pass = 0; pass < INBOX_READ_PASSES; pass++) {
+        const waiting = this.waitsOnTopic(topic);
+        if (waiting.length === 0) break;
+        const cursor = cursorFor(cursorsOf(this.vm.peekState().variables), topic);
+        const msgs = await binding.read(
+          binding.chainId,
+          topic,
+          cursor,
+          waiting.length + INBOX_READ_SLACK
+        );
+        if (this.sealed || this.parkDecided) return delivered;
+        if (msgs.length === 0) break;
+        const window = new Set<string>();
+        for (const m of msgs) {
+          const target = this.waitsOnTopic(topic)[0];
+          if (target === undefined) break;
+          const duplicate = this.isDuplicate(m.messageId, binding.dedupeWindow, window);
+          window.add(m.messageId);
+          this.commit("MESSAGE_CONSUMED", {
+            waitId: target.arm.waitId,
+            topic,
+            messageId: m.messageId,
+            inboxSeq: m.inboxSeq,
+            sender: m.sender,
+            payload: m.payload,
+          });
+          if (duplicate) continue;
+          delivered = true;
+          this.dropPending(target.sel);
+          target.sel.resolve({
+            arm: target.arm.index,
+            kind: "inbox",
+            value: this.deliveredValue(target.arm, m.payload),
+          });
+        }
+        if (msgs.length < waiting.length + INBOX_READ_SLACK) break;
+      }
+    }
+    return delivered;
+  }
+
+  /** The unsettled inbox arms on `topic`, in registration order (one entry per arm). */
+  private waitsOnTopic(topic: string): Array<{ sel: PendingSelect; arm: ArmReg }> {
+    const out: Array<{ sel: PendingSelect; arm: ArmReg }> = [];
+    for (const sel of this.pending) {
+      if (sel.settled) continue;
+      for (const arm of sel.arms)
+        if (arm.kind === "inbox" && arm.name === topic) out.push({ sel, arm });
+    }
+    return out;
+  }
+
+  private isDuplicate(messageId: string, windowSize: number, local: Set<string>): boolean {
+    if (local.has(messageId)) return true;
+    const dedupe = (this.vm.peekState().variables._inbox as { dedupe?: string[] } | undefined)
+      ?.dedupe;
+    if (dedupe === undefined) return false;
+    const size = Math.max(1, Math.min(windowSize, INBOX_DEDUPE_CAP));
+    const at = dedupe.lastIndexOf(messageId);
+    return at >= 0 && at >= dedupe.length - size;
   }
 
   /** Recorded gate answers not yet consumed by this run. */

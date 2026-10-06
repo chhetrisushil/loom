@@ -17,6 +17,9 @@
       "path": "../../packages/event-runtime"
     },
     {
+      "path": "../../packages/replay-vm"
+    },
+    {
       "path": "../../packages/snapshot-runtime"
     },
     {

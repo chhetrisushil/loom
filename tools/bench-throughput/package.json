@@ -13,7 +13,8 @@
     "bench": "tsc --build && node dist/index.js",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "hardware": "tsc --build && node dist/hardware.js",
-    "bench:fence": "tsc --build && node dist/fenceIf.js"
+    "bench:fence": "tsc --build && node dist/fenceIf.js",
+    "bench:inbox": "tsc --build && node dist/inbox.js"
   },
   "dependencies": {
     "@loom/core": "workspace:*",
@@ -24,7 +25,8 @@
     "@loom/workflow-runtime": "workspace:*",
     "pg": "^8.13.0",
     "zod": "^3.23.8",
-    "@loom/middleware": "workspace:*"
+    "@loom/middleware": "workspace:*",
+    "@loom/replay-vm": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

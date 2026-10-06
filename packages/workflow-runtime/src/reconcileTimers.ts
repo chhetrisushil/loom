@@ -1,8 +1,10 @@
 import {
   type ExecutionEnumerable,
   type TimerStore,
+  isReservedStream,
   iterateExecutionIds,
 } from "@loom/event-runtime";
+import { INBOX_WAKE_AT } from "./inbox";
 import type { CensusStateReader } from "./orphanCensus";
 
 // ── ADR 0105 — re-arm timed parks whose timer row is gone ─────────────────────
@@ -53,15 +55,30 @@ export async function reconcileTimers(
 ): Promise<ReconcileTimersSummary> {
   const summary: ReconcileTimersSummary = { scanned: 0, timedParks: 0, scheduled: 0 };
   for await (const executionId of iterateExecutionIds(options.source, options.pageSize)) {
+    if (isReservedStream(executionId)) continue; // a control stream (an inbox) is no execution
     summary.scanned++;
     const state = await reader.loadState(executionId);
-    const wakeAt = state?.suspendedOn?.wakeAt;
-    if (state?.status !== "suspended" || typeof wakeAt !== "number") continue;
+    if (state?.status !== "suspended") continue;
+    // ADR 0110 — a multi-wait park is several records too: one row per TIMER arm (its recorded
+    // `wakeAt`), and the due-now inbox row when an inbox wait is parked on (the notify path is
+    // idempotent: a row with nothing to deliver is retired). Re-asserting them is as safe as the
+    // legacy row.
+    const wakes: number[] = [];
+    if (typeof state.suspendedOn?.wakeAt === "number") wakes.push(state.suspendedOn.wakeAt);
+    const answers = state.variables._waitAnswers as Record<string, unknown> | undefined;
+    for (const w of state.suspendedOn?.waits ?? []) {
+      if (answers !== undefined && Object.hasOwn(answers, w.waitId)) continue;
+      if (w.kind === "timer" && typeof w.wakeAt === "number") wakes.push(w.wakeAt);
+      else if (w.kind === "inbox" && !wakes.includes(INBOX_WAKE_AT)) wakes.push(INBOX_WAKE_AT);
+    }
+    if (wakes.length === 0) continue;
     summary.timedParks++;
-    options.onTimedPark?.(executionId, wakeAt);
-    if (options.dryRun === true) continue;
-    await options.timers.schedule({ executionId, wakeAt });
-    summary.scheduled++;
+    for (const wakeAt of wakes) {
+      options.onTimedPark?.(executionId, wakeAt);
+      if (options.dryRun === true) continue;
+      await options.timers.schedule({ executionId, wakeAt });
+      summary.scheduled++;
+    }
   }
   return summary;
 }

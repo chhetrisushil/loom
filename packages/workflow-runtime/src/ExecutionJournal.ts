@@ -1,5 +1,6 @@
 import { StorageWriteError } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
+import { appendBatchOf } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { KERNEL_STAMPED_EVENT_TYPES } from "@loom/replay-vm";
 import type { ReplayVM } from "@loom/replay-vm";
@@ -147,6 +148,52 @@ export class ExecutionJournal {
     this.enqueue(envelope); // durable write — async, order-preserving
     this.onCommit?.(sequence); // snapshot cadence hook
     return envelope;
+  }
+
+  /**
+   * SYNCHRONOUS, like {@link commit}, but the envelopes become durable as ONE write
+   * (`EventStore.appendBatch`, atomic per execution): all of them land or none do. ADR 0110 D5 — the
+   * notify path's `[MESSAGE_CONSUMED…, EXECUTION_RESUMED]`: a crash cannot leave the consumption
+   * journaled with its resume missing. A store without `appendBatch` falls back to sequential
+   * appends (the next notify then heals a half-written pair: it resumes a park whose wait is
+   * already answered, consuming nothing twice).
+   */
+  commitAtomic(
+    events: ReadonlyArray<{
+      eventType: string;
+      payload: unknown;
+      metadata?: Record<string, unknown>;
+    }>
+  ): EventEnvelope[] {
+    const envelopes: EventEnvelope[] = [];
+    for (const e of events) {
+      const sequence = ++this.seq;
+      const envelope = ExecutionJournal.build(
+        this.identity,
+        sequence,
+        e.eventType,
+        e.payload,
+        e.metadata !== undefined ? { metadata: e.metadata } : undefined,
+        this.fence,
+        this.now
+      );
+      this.vm.applyEvent(envelope);
+      this.onEvent?.(envelope);
+      envelopes.push(envelope);
+    }
+    this.tail = this.tail
+      .then(() => {
+        if (this.firstWriteError !== undefined) return;
+        return appendBatchOf(this.store, envelopes);
+      })
+      .catch((err: unknown) => {
+        if (this.firstWriteError === undefined) {
+          this.firstWriteError = err;
+          this.onWriteError(err);
+        }
+      });
+    for (const envelope of envelopes) this.onCommit?.(envelope.sequence);
+    return envelopes;
   }
 
   /**
