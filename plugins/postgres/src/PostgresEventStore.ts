@@ -35,6 +35,12 @@ export interface PostgresEventStoreOptions {
    * constructing any store is the reliable way to set it. Default 2000 ms.
    */
   migrationLockTimeoutMs?: number;
+  /**
+   * ADR 0118 D1 — run the one-time park-fence backfill at boot (default `true`). `false` for a very
+   * large log: run `backfillParkFences(pool)` offline instead (see `MigrateOptions.backfillParkFences`).
+   * Like `migrationLockTimeoutMs`, only the first migrator of a pool decides.
+   */
+  backfillParkFences?: boolean;
 }
 
 /**
@@ -153,6 +159,9 @@ export class PostgresEventStore implements EventStore {
     this.ready = migrate(this.pool, {
       ...(options.migrationLockTimeoutMs !== undefined && {
         lockTimeoutMs: options.migrationLockTimeoutMs,
+      }),
+      ...(options.backfillParkFences !== undefined && {
+        backfillParkFences: options.backfillParkFences,
       }),
     });
   }

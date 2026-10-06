@@ -392,6 +392,43 @@ KERNEL_ABI and EVENT_SCHEMA are untouched. Where the code differs from the decis
   New conformance case.
 - **P3-9.** Runtime test for the LOG half of staleness (an answer past the park, token unchanged).
 
+### Review round 2: what changed
+
+- **P3-1, a contended timer wake was an acquire storm.** A fenced plain wake that hit
+  `ResumeContendedError` left its row due, so every poll (250 ms) took up to three more tokens,
+  uncapped, which can keep invalidating a LIVE holder's token. The service now backs off IN PROCESS
+  (a per-execution `nextTryAt` map, bounded to 1024 entries, same exponential full-jitter schedule and
+  the same `maxRedriveAttempts` cap as D4): no acquire is made before `nextTryAt`; exhaustion reports
+  `RedriveExhaustedError` to `onError` ONCE, retires the row and leaves the execution to `recover()`.
+  A persisted re-drive row was considered and rejected for a PLAIN wake: re-drive rows are handed to
+  the registered re-drivers (the supervisor's), which re-derive THEIR resume and answer `noop` for a
+  timer wake, so the wake would be lost; and a node with no re-driver never sees the row.
+- **P3-2, the backfill's cost.** The one-time park-fence backfill is a full sequential scan of `events`
+  (no `event_type` index) under the migration advisory lock, exempt from `statement_timeout`. A
+  partial index would not make the boot cheaper: `CREATE INDEX` (not `CONCURRENTLY`, which cannot run
+  in the migration transaction) is itself a full scan holding a SHARE lock that blocks appends. So the
+  boot path stays index-free and gains an opt-out, and the large-install path does the work in batches:
+  `migrate(pool, { backfillParkFences: false })` (also `PostgresEventStore` / `postgresStorage`
+  option `backfillParkFences`) and the exported `backfillParkFences(pool, { batchSize })`, which builds
+  a PARTIAL index `events (execution_id, sequence) WHERE event_type = 'EXECUTION_SUSPENDED'` with
+  `CREATE INDEX CONCURRENTLY`, walks executions in id order one short statement per batch
+  (`ON CONFLICT DO NOTHING`, resumable, idempotent), writes the same marker and DROPS the index. The
+  index is not kept: after the backfill nothing scans by event type (a park lookup is per execution,
+  served by `(execution_id, sequence)`), so a permanent index would only tax every
+  `EXECUTION_SUSPENDED` append.
+- **Rollout note.** The first boot over a large log runs the one-time backfill under the migration
+  lock. For a very large installation, disable it (`backfillParkFences: false`), boot, and run
+  `backfillParkFences(pool)` offline; until it has run, the first `acquireFenceIf` of a park that
+  predates the upgrade can race an answering append (the pre-upgrade behaviour). A boot that fails on a
+  lock timeout is retryable (the migration is not cached on failure): retry it, or raise
+  `migrationLockTimeoutMs`.
+- **For 3P `TimerStore` authors.** Honour `due(now, limit, { redrive: false })` by excluding re-drive
+  rows BEFORE applying `limit` (a store that ignores it is still correct, but a batch of rows a node
+  cannot judge starves the plain wakes behind it).
+- **For R2 (ADR 0110).** A fenced timer wake must retire its row only when ITS wait is no longer
+  pending, not merely when `status !== "suspended"`: in a multi-wait park another wait may have
+  answered while the park (and this timer's wait) is still the open one, or the reverse.
+
 ### Tests (each failed first)
 
 Conformance (every backend that offers the method; Postgres needs `LOOM_TEST_POSTGRES_URL`): next token

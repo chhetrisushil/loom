@@ -2,7 +2,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresTimerStore } from "./PostgresTimerStore";
-import { migrate } from "./schema";
+import { backfillParkFences, migrate } from "./schema";
 
 // ADR 0118 (R8k review round 1) — the migration's two one-time steps:
 //  - P3-2: backfill the token-0 fence row of every execution PARKED before this version;
@@ -90,6 +90,37 @@ if (PG_URL === undefined) {
       await store.acquireFence("never-parked");
       expect(await fenceRows(d)).toContainEqual(["parked", 0]);
       await store.close();
+    });
+
+    it("opt-out skips the boot backfill; backfillParkFences (batched, temp index dropped) does it offline, once", async () => {
+      const a = fresh();
+      await migrate(a);
+      await a.query("DELETE FROM events"); // earlier cases left parks in this schema
+      for (const id of ["o1", "o2", "o3", "o4"]) {
+        await a.query(
+          "INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload) VALUES ($1,'w',$2,'EXECUTION_STARTED',0,0,'{}'), ($3,'w',$2,'EXECUTION_SUSPENDED',1,1,'{}')",
+          [`${id}-0`, id, `${id}-1`]
+        );
+      }
+      await a.query(
+        "INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload) VALUES ('o2-2','w','o2','EXECUTION_RESUMED',2,2,'{}')"
+      );
+      await a.query("DELETE FROM fences");
+      await a.query("COMMENT ON TABLE fences IS NULL");
+      await a.end();
+
+      const b = fresh();
+      await migrate(b, { backfillParkFences: false });
+      expect((await fenceRows(b)).map((r) => r[0])).not.toContain("o1"); // skipped at boot
+      const r = await backfillParkFences(b, { batchSize: 2 }); // 4 executions = 2 batches
+      expect(r.inserted).toBe(3);
+      expect((await fenceRows(b)).map((x) => x[0])).toEqual(["o1", "o3", "o4"]);
+      const idx = await b.query(
+        "SELECT 1 FROM pg_indexes WHERE indexname = 'idx_events_suspended_r8k_tmp' AND schemaname = current_schema()"
+      );
+      expect(idx.rowCount).toBe(0); // the temporary index is gone
+      expect((await backfillParkFences(b)).inserted).toBe(0); // marker: runs once
+      await b.end();
     });
 
     it("deleteExecution removes the inert token-0 row but KEEPS a real token (P3-4)", async () => {

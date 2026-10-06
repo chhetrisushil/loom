@@ -4,7 +4,12 @@ import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
-import { ExecutionAlreadyExistsError, ResumeRefusedError, TIMER_FIRED } from "./types";
+import {
+  ExecutionAlreadyExistsError,
+  ResumeContendedError,
+  ResumeRefusedError,
+  TIMER_FIRED,
+} from "./types";
 
 /**
  * ADR 0118 D4 — what a registered re-driver answers for one re-drive row.
@@ -32,6 +37,9 @@ export interface RedriveBackoff {
   /** Jitter source in [0, 1) — inject a seeded one for deterministic simulation. Default `Math.random`. */
   random?: () => number;
 }
+
+/** Bound on the in-process contended-wake backoff map. */
+const MAX_WAKE_BACKOFFS = 1024;
 
 /** Attempts a contended resume is re-driven before the service gives up (ADR 0118 D4). */
 export const DEFAULT_MAX_REDRIVE_ATTEMPTS = 8;
@@ -258,6 +266,13 @@ export class TimerService {
   private readonly redriveBackoff: RedriveBackoff;
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
+  /**
+   * R8k review 2 — in-process backoff for a plain wake whose fenced resume was contended
+   * (`ResumeContendedError`). Keyed by execution id; bounded (oldest evicted). Without it the row
+   * stays due and every 250 ms poll takes up to 3 more fence tokens, which can keep invalidating a
+   * live holder's token.
+   */
+  private readonly wakeBackoff = new Map<string, { attempt: number; nextTryAt: number }>();
   private readonly now: () => number;
 
   private readonly dispatcher: TimerDispatcher | undefined;
@@ -483,6 +498,8 @@ export class TimerService {
         await this.fireRedrive(executionId, wakeAt, redrive.attempt);
         return;
       }
+      const backoff = this.wakeBackoff.get(executionId);
+      if (backoff !== undefined && backoff.nextTryAt > this.now()) return; // backing off: no acquire
       const state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
       const stillWaiting =
         state !== null && state.status === "suspended" && state.suspendedOn?.wakeAt === wakeAt;
@@ -543,8 +560,31 @@ export class TimerService {
               await this.store.complete(executionId, wakeAt); // answered meanwhile: obsolete
               return;
             }
+            if (err instanceof ResumeContendedError) {
+              // A re-drive row would be handed to the supervisor's re-drivers, which re-derive THEIR
+              // resume and answer "noop" for a timer wake — the wake would be lost. So the bounded
+              // backoff (same schedule + attempt cap as D4) runs in-process, and the row stays.
+              const attempt = (this.wakeBackoff.get(executionId)?.attempt ?? 0) + 1;
+              if (attempt >= this.maxRedriveAttempts) {
+                this.wakeBackoff.delete(executionId);
+                this.onError?.(executionId, new RedriveExhaustedError(executionId, attempt));
+                await this.store.complete(executionId, wakeAt);
+                return;
+              }
+              this.wakeBackoff.delete(executionId); // re-insert at the end: eviction order = recency
+              if (this.wakeBackoff.size >= MAX_WAKE_BACKOFFS) {
+                const oldest = this.wakeBackoff.keys().next().value;
+                if (oldest !== undefined) this.wakeBackoff.delete(oldest);
+              }
+              this.wakeBackoff.set(executionId, {
+                attempt,
+                nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
+              });
+              return;
+            }
             throw err;
           }
+          this.wakeBackoff.delete(executionId);
           // Wait for the run to settle (suspend again, complete, or fail) so the
           // timer is only retired once the wake durably took effect.
           await Promise.race([
@@ -554,6 +594,7 @@ export class TimerService {
         }
       }
       // Fired — or obsolete (resumed by other means, terminal, unknown): retire it.
+      this.wakeBackoff.delete(executionId);
       await this.store.complete(executionId, wakeAt);
     } catch (err) {
       // Leave the timer in place; the next poll retries (at-least-once).
