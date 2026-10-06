@@ -126,5 +126,13 @@ bad keys folds to the same state on two replicas); fold equality on every existi
   optional within the unreleased 1.23.0, like the `PARALLEL_COMPLETED` amendment; an older fold ignores
   it). Validated at `ctx.decide` (plain object, at most 32 names, dimension pattern, finite non-negative);
   the fold keeps only the valid entries and never throws. A conformance vector covers both maps.
+- **Built-in names are not custom names.** A `custom` entry naming a built-in dimension (`custom: { tokens: 5 }`)
+  is refused by the emit guard, by `Budget.maxCustom` validation and by the ledger (which skips it): the frozen
+  fold would otherwise file it under `_resources.custom.tokens`, invisible to `currentResource("tokens")`,
+  `negotiateBudget` and the built-in ceiling. `meterCeilings` keeps a built-in name as a built-in ceiling only.
+  A metering `pricing` function that returns a bad custom name throws from `ctx.emit` after the effect ran, as a
+  built-in ceiling breach does. Summed custom totals can exceed 2^53 (a single increment is capped at 1e15 and
+  the fold is deterministic), so treat a very large total as approximate.
 - **Not done.** No unit or price registry (as designed). `analytics` does not yet surface custom
-  dimensions in its per-step attribution.
+  dimensions: its per-step attribution and its `total` cover the BUILT-IN dimensions (tokens, costUsd, ms)
+  only. Custom dimensions in analytics are a listed follow-up.

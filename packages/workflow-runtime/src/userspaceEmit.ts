@@ -162,6 +162,12 @@ function assertCustomDimensions(
     refuse(eventType, `custom names at most ${CUSTOM_DIMENSION_MAX} dimensions`);
   }
   for (const [name, v] of entries) {
+    if (Object.hasOwn(METER_CEILINGS, name)) {
+      refuse(
+        eventType,
+        `custom.${name} names a built-in dimension; meter it as a top-level "${name}" field (a custom entry would be invisible to currentResource and budgets and skip its ceiling)`
+      );
+    }
     if (!CUSTOM_DIMENSION_PATTERN.test(name) || name === "constructor" || name === "prototype") {
       refuse(
         eventType,

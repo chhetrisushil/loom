@@ -17,6 +17,7 @@ export interface ExecutionAnalytics {
   status?: "completed" | "failed" | "cancelled" | "continued";
 }
 
+/** Cost over the BUILT-IN dimensions only (custom metering dimensions are not summed, ADR 0115). */
 export interface CostAnalytics {
   tokens: number;
   costUsd: number;

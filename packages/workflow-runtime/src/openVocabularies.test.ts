@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import type { FlowRunner, RegisteredFlow } from "./types";
-import { assertMeterCeilings, guardUserspaceEmit } from "./userspaceEmit";
+import { assertEstimatedCost, assertMeterCeilings, guardUserspaceEmit } from "./userspaceEmit";
 
 // ADR 0115 (R15) — open vocabularies: effect kinds, task kinds, metering dimensions.
 
@@ -242,6 +242,45 @@ describe("custom metering dimensions (RESOURCE_METERED.custom)", () => {
     expect(done.variables._resources).toBeUndefined();
   });
 
+  it("refuses a built-in dimension name inside custom (it would alias past the built-in ceiling)", () => {
+    for (const name of ["tokens", "costUsd", "ms", "memBytes", "wallMs", "netBytes"]) {
+      expect(() =>
+        guardUserspaceEmit("RESOURCE_METERED", { custom: { [name]: 5 } }, undefined)
+      ).toThrow(/built-in dimension/);
+    }
+    expect(() =>
+      guardUserspaceEmit("RESOURCE_METERED", { custom: { gpu_seconds: 5 } }, undefined)
+    ).not.toThrow();
+    // a meterCeilings entry for a built-in name is a built-in ceiling only
+    expect(() => assertMeterCeilings({ tokens: 5 })).not.toThrow();
+  });
+
+  it("the fold caps distinct custom names at 32, across events, and still sums known names", () => {
+    const base = { workflowId: "f", executionId: "x", timestamp: 1 };
+    const names = (from: number, n: number) =>
+      Object.fromEntries(Array.from({ length: n }, (_, i) => [`d${from + i}`, 1]));
+    const log = [
+      { id: "a", sequence: 0, eventType: "EXECUTION_STARTED", payload: { input: {} } },
+      { id: "b", sequence: 1, eventType: "RESOURCE_METERED", payload: { custom: names(0, 32) } },
+      {
+        id: "c",
+        sequence: 2,
+        eventType: "RESOURCE_METERED",
+        payload: { custom: { ...names(32, 3), d0: 4 } },
+      },
+    ].map((e) => ({ ...base, ...e }));
+    const vm = new ReplayVM(log as never, {
+      executionId: "x",
+      workflowId: "f",
+      workflowVersion: "1",
+    });
+    const custom = (vm.peekState().variables._resources as { custom: Record<string, number> })
+      .custom;
+    expect(Object.keys(custom)).toHaveLength(32);
+    expect(custom.d32).toBeUndefined();
+    expect(custom.d0).toBe(5);
+  });
+
   it("the fold skips bad keys deterministically, identically on two replicas", () => {
     const mk = () => {
       const vm = new ReplayVM([], { executionId: "x", workflowId: "f", workflowVersion: "1" });
@@ -326,5 +365,11 @@ describe("decide({ estimatedCost }) — the open spelling beside estimatedCostUs
     });
     expect(decisions.d2).toBeUndefined();
     expect(refusal).toMatch(/estimatedCost.*ADR 0115/);
+  });
+
+  it("assertEstimatedCost refuses constructor and prototype names", () => {
+    expect(() => assertEstimatedCost({ constructor: 1 })).toThrow(/not usable/);
+    expect(() => assertEstimatedCost({ prototype: 1 })).toThrow(/not usable/);
+    expect(() => assertEstimatedCost({ gpu_seconds: 1 })).not.toThrow();
   });
 });

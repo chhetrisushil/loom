@@ -59,6 +59,10 @@ export interface ResourceNode {
 
 export interface ResourceGraph {
   executionId: string;
+  /**
+   * Totals over the BUILT-IN dimensions only (tokens, costUsd, ms). Custom metering dimensions
+   * (`RESOURCE_METERED.custom`, ADR 0115) are not attributed here; that is a listed follow-up.
+   */
   total: { tokens: number; costUsd: number; ms: number };
   byStep: ResourceNode[];
 }
@@ -225,6 +229,7 @@ export function taskGraph(events: EventEnvelope[], executionId?: string): TaskGr
  * Resource usage attributed to the step that was running when each RESOURCE_METERED
  * event landed (the log doesn't carry a stepId on the meter event, so we attribute to
  * the most recent STEP_STARTED — steps with no active step go to "(execution)").
+ * Attribution and totals cover the BUILT-IN dimensions only; custom dimensions are not included.
  */
 export function resourceGraph(events: EventEnvelope[], executionId?: string): ResourceGraph {
   const { id, scoped } = scope(events, executionId);
