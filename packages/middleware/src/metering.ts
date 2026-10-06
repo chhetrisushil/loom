@@ -68,7 +68,6 @@ export interface Budget {
   maxCustom?: Readonly<Record<string, number>>;
 }
 
-
 /** True when `name` is a built-in metering dimension (never a custom one). */
 export function isBuiltinDimension(name: string): boolean {
   return BUILTIN_METER_DIMENSIONS.has(name);

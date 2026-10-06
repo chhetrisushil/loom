@@ -4,8 +4,8 @@ import {
   type Pricing,
   QuotaExceededError,
   type ResourceDelta,
-  isCustomDimensionName,
   assertMaxCustom,
+  isCustomDimensionName,
   overCustomBudget,
 } from "./metering";
 

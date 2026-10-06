@@ -69,7 +69,11 @@ export type {
   TaskKind,
   ToolDefinition,
 } from "./types/definitions";
-export { BUILTIN_METER_DIMENSIONS, VOCABULARY_NAME_PATTERN, isVocabularyName } from "./types/definitions";
+export {
+  BUILTIN_METER_DIMENSIONS,
+  VOCABULARY_NAME_PATTERN,
+  isVocabularyName,
+} from "./types/definitions";
 export {
   agent$,
   flow$,
