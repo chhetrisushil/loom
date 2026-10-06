@@ -13,7 +13,7 @@ import {
   tick,
   until,
 } from "./__tests__/r2Harness";
-import { inboxStreamId } from "./inbox";
+import { dedupeKeyOf, inboxStreamId } from "./inbox";
 import { InboxClosedError, InboxMessageRefusedError, ResumeRefusedError } from "./types";
 
 // ADR 0110 (R2) — the durable inbox, `ctx.receive` and `ctx.select`: delivery.
@@ -52,7 +52,7 @@ describe("R2 — receive / send: exactly-once delivery", () => {
     expect(consumed?.payload).toMatchObject({
       waitId: "#0",
       topic: "greet",
-      messageId: "m-1",
+      messageId: dedupeKeyOf({ messageId: "m-1", sender: {} }),
       inboxSeq: 0,
       sender: {},
       payload: { hello: "x" },
@@ -117,11 +117,14 @@ describe("R2 — receive / send: exactly-once delivery", () => {
     expect((await h.rt.loadState("e1"))?.variables._output).toEqual({ a: "one", b: "two" });
     // the duplicate advanced the cursor (a MESSAGE_CONSUMED that delivered nothing)
     const consumed = await eventsOf(h.eventStore, "e1", "MESSAGE_CONSUMED");
+    const key = (id: string) => dedupeKeyOf({ messageId: id, sender: {} });
     expect(consumed.map((c) => (c.payload as { messageId: string }).messageId)).toEqual([
-      "dup",
-      "dup",
-      "m2",
+      key("dup"),
+      key("dup"),
+      key("m2"),
     ]);
+    // the duplicate delivered nothing and its payload was not copied into the log
+    expect((consumed[1]?.payload as { payload: unknown }).payload).toBeNull();
   });
 
   it("FIFO per topic under concurrent senders", async () => {

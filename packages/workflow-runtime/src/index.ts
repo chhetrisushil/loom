@@ -62,7 +62,7 @@ export { placementOf, COMPUTE_TARGET_KEY } from "./placement";
 export {
   DEFAULT_INBOX_MAX_BACKLOG,
   DEFAULT_INBOX_MAX_PAYLOAD_BYTES,
-  INBOX_DEDUPE_CAP,
+  MAX_MESSAGE_ID_LENGTH,
   INBOX_STREAM_PREFIX,
   INBOX_WAKE_AT,
   createInboxSource,

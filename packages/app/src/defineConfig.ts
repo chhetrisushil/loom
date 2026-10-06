@@ -631,8 +631,6 @@ export interface LoomConfig {
     inbox?: {
       /** `send` refuses beyond this many unconsumed messages per chain. Default 10 000. */
       maxBacklog?: number;
-      /** Consumed message ids remembered for dedupe; capped at 1 024 (the fold's window). */
-      dedupeWindow?: number;
       /** Largest JSON payload `send` accepts, in bytes. Default 65 536. */
       maxPayloadBytes?: number;
     };
@@ -1187,9 +1185,6 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       inboxEnabled: true,
       ...(config.kernel.inbox?.maxBacklog !== undefined && {
         inboxMaxBacklog: config.kernel.inbox.maxBacklog,
-      }),
-      ...(config.kernel.inbox?.dedupeWindow !== undefined && {
-        inboxDedupeWindow: config.kernel.inbox.dedupeWindow,
       }),
       ...(config.kernel.inbox?.maxPayloadBytes !== undefined && {
         inboxMaxPayloadBytes: config.kernel.inbox.maxPayloadBytes,

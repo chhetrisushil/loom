@@ -246,3 +246,44 @@ describe("carrier principal under fail-closed execution authz", () => {
     }
   });
 });
+
+describe("ADR 0110 D3 — a wire resume carries its waitId through to the runtime", () => {
+  it("execution.resume with a waitId answers THAT wait of a multi-wait park (the field is not dropped)", async () => {
+    const effects = new EffectRuntime();
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+      inboxEnabled: true,
+    });
+    const definition = {
+      _tag: "FlowDefinition",
+      id: "sel",
+      name: "sel",
+      version: "1.0.0",
+      ...io,
+      steps: [],
+    } as unknown as FlowDefinition;
+    runtime.registerFlow(definition, async (ctx) => {
+      const r = await ctx.select([{ gate: "A" }, { gate: "B" }]);
+      return { arm: r.arm };
+    });
+    const started = await handleRpc(runtime, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "execution.start",
+      params: { flowId: "sel", input: { n: 1 }, executionId: "w1" },
+    });
+    expect((started as { error?: unknown }).error).toBeUndefined();
+    const resumed = await handleRpc(runtime, {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "execution.resume",
+      params: { executionId: "w1", event: { eventType: "B", waitId: "#1", payload: { ok: 1 } } },
+    });
+    expect((resumed as { error?: unknown }).error).toBeUndefined();
+    const state = await runtime.loadState("w1", runtime.systemOptions());
+    expect(state?.status).toBe("completed");
+    expect(state?.variables._output).toEqual({ arm: 1 });
+  });
+});

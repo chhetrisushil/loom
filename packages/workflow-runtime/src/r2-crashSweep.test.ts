@@ -37,7 +37,8 @@ describe("R2 D5 — crash-point sweep", () => {
   it("a crash at ANY owner append converges to: both messages, once each, in order", async () => {
     const total = await nominalAppends();
     expect(total).toBeGreaterThanOrEqual(6);
-    for (const atomicBatch of [true, false]) {
+    // the inbox refuses a store without an atomic appendBatch (ADR 0110), so only that shape is swept
+    for (const atomicBatch of [true]) {
       for (let k = 1; k <= total; k++) {
         let appended = 0;
         const c = crashHarness((e) => e.executionId === "e1" && ++appended === k, { atomicBatch });

@@ -160,22 +160,6 @@ describe("R2 D5 — crash at every step of the send / wake protocol", () => {
     };
   }
 
-  it("after MESSAGE_CONSUMED, before the resume: the surviving due-now row heals it with ONE delivery", async () => {
-    const o = await owner((e) => e.eventType === "EXECUTION_RESUMED");
-    await o.h.rt.send("e1", { topic: "x", payload: "survives", messageId: "m1" });
-    await until(() => o.crash.crashed);
-    const ks = await kinds(o.inner, "e1");
-    expect(ks).toContain("MESSAGE_CONSUMED");
-    expect(ks).not.toContain("EXECUTION_RESUMED"); // parked, answer journaled, wake lost
-    const rt2 = await o.reboot();
-    await new TimerService(rt2, o.h.timers).tick(Date.now() + 1);
-    await until(async () => (await rt2.loadState("e1"))?.status === "completed");
-    expect((await rt2.loadState("e1"))?.variables._output).toBe("survives");
-    expect((await consumed(o.inner)).length).toBe(1); // not consumed twice
-    expect((await eventsOf(o.inner, "e1", "EXECUTION_RESUMED")).length).toBe(1);
-    expect(await o.h.timers.due(Date.now() + 1e9)).toEqual([]);
-  });
-
   it("the pair is ONE atomic write: a crash before it lands leaves the park untouched, and the row redelivers", async () => {
     const o = await owner((e) => e.eventType === "EXECUTION_RESUMED", recv("x"), {
       atomicBatch: true,
@@ -340,6 +324,7 @@ describe("R2 D1 — the stream is bounded and cheap", () => {
     const f = flow("w", async (ctx) => {
       const got: string[] = [];
       for (let i = 0; i < 3; i++) got.push(unwrapTainted(await ctx.receive<string>("a")));
+      await ctx.suspend({ on: "hold" });
       return got;
     });
     h.rt.registerFlow(f.definition, f.runner);
@@ -359,16 +344,19 @@ describe("R2 D1 — the stream is bounded and cheap", () => {
       );
     }
     await h.rt.notifyInbox("e1").then((x) => x && settle(x));
-    await completed(h);
-    await tick(30); // the trim runs after the completion's drain
+    await until(async () => (await h.rt.loadState("e1"))?.suspendedOn?.on === "hold");
+    await tick(30); // the trim runs after the park's drain
     const left = (await inner.read(inboxStreamId("e1"))).map((e) => e.sequence);
     expect(left).toContain(2); // the unconsumed b1 survives
     expect(left).toContain(3); // the head is never truncated (monotonic head + 1 allocation)
     expect(left).not.toContain(1); // the consumed prefix is gone (sequence 0 is the store's anchor)
+    const fence = await inner.acquireFence("e1"); // the store is fenced since the notify's acquire
+    await h.rt.resume("e1", { eventType: "hold", payload: { ok: true } }, { fence });
+    await completed(h);
     expect((await h.rt.loadState("e1"))?.variables._output).toEqual(["a1", "a2", "a3"]);
   });
 
-  it("the stream is deleted with its chain when retention reclaims the head", async () => {
+  it("the stream is deleted with its chain when the head turns terminal, and again when retention reclaims it", async () => {
     const h = build();
     const f = recv("x");
     h.rt.registerFlow(f.definition, f.runner);
@@ -376,7 +364,8 @@ describe("R2 D1 — the stream is bounded and cheap", () => {
     await h.rt.send("e1", { topic: "x", payload: "bye" });
     await completed(h);
     await tick(30);
-    expect((await h.eventStore.read(inboxStreamId("e1"))).length).toBeGreaterThan(0);
+    // the head turned terminal: nothing can ever read its inbox, so the stream went with it
+    expect(await h.eventStore.read(inboxStreamId("e1"))).toEqual([]);
     const life = new LogLifecycle(h.eventStore, h.snapshotStore);
     expect(await life.applyRetention("e1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
       "reclaimed"

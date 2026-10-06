@@ -1,6 +1,5 @@
 import { StorageWriteError } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
-import { appendBatchOf } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { KERNEL_STAMPED_EVENT_TYPES } from "@loom/replay-vm";
 import type { ReplayVM } from "@loom/replay-vm";
@@ -154,9 +153,9 @@ export class ExecutionJournal {
    * SYNCHRONOUS, like {@link commit}, but the envelopes become durable as ONE write
    * (`EventStore.appendBatch`, atomic per execution): all of them land or none do. ADR 0110 D5 — the
    * notify path's `[MESSAGE_CONSUMED…, EXECUTION_RESUMED]`: a crash cannot leave the consumption
-   * journaled with its resume missing. A store without `appendBatch` falls back to sequential
-   * appends (the next notify then heals a half-written pair: it resumes a park whose wait is
-   * already answered, consuming nothing twice).
+   * journaled with its resume missing. The runtime refuses to enable the inbox over a store without
+   * `appendBatch`, so there is no sequential fallback here: a half-applied batch is not a state this
+   * path can produce.
    */
   commitAtomic(
     events: ReadonlyArray<{
@@ -184,7 +183,11 @@ export class ExecutionJournal {
     this.tail = this.tail
       .then(() => {
         if (this.firstWriteError !== undefined) return;
-        return appendBatchOf(this.store, envelopes);
+        const store = this.store;
+        if (store.appendBatch === undefined) {
+          throw new Error("commitAtomic needs an EventStore with an atomic appendBatch");
+        }
+        return store.appendBatch(envelopes);
       })
       .catch((err: unknown) => {
         if (this.firstWriteError === undefined) {

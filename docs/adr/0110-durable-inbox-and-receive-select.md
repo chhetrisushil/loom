@@ -241,12 +241,18 @@ own-property (`Object.hasOwn`): a topic named `toString` keeps a numeric cursor.
 
 ### D6 — Bounded dedupe, carried across continuation
 
-Senders retry, so `messageId` is the idempotency key. The fold keeps the last `inboxDedupeWindow` (default
-1,024, configurable) consumed message ids; a duplicate inside the window is skipped (its cursor advances
-without a consumption); one beyond the window is delivered. The window is **capped at 1,024 in the fold** (the oldest ids are dropped): a pure
-fold cannot read a runtime setting, so a larger `inboxDedupeWindow` is not representable and the runtime
-applies any smaller one itself. The contract: *at-least-once send,
-exactly-once consumption within the window*. The window **travels across a continuation**
+Senders retry, so `messageId` is the idempotency key. The fold keeps the last **1,024** consumed
+keys; a duplicate inside the window is skipped (its cursor advances without a consumption); one beyond the
+window is delivered. The window is **fixed in the fold** and there is no setting for it: a pure fold cannot
+read a runtime setting, so a smaller runtime window made the live run deliver a message the fold treated as
+a duplicate (the log then replayed differently from the run that wrote it). The runtime's duplicate test
+is exactly the fold's, "the key is in the folded window". **The key is `(sender, messageId)`**, not the bare
+id: two senders that both number their messages `1, 2, 3` do not swallow each other's. It is journaled in
+`MESSAGE_CONSUMED.messageId` as an opaque composite string (`dedupeKeyOf`), so the frozen fold and event
+shape are unchanged. `messageId` is at most 256 characters (a longer one is refused: it lands in folded
+state and every snapshot). **`sender` is only as trustworthy as the principal that sent it**: with no
+`executionAuthorizer` wired it is whatever the caller claimed, and the keying inherits that. The contract:
+*at-least-once send, exactly-once consumption within the window, per sender*. The window **travels across a continuation**
 (`EXECUTION_STARTED.continuedFrom.carried.inbox`, ADR 0109 D4), so a retry after a rotation is still
 deduplicated. An `EventStore.appendIfAbsent(id)` SPI method, which would make duplicates impossible at the
 stream, is **deferred** (design document §7 question 4: adopt the bounded window; revisit with evidence).
@@ -335,10 +341,11 @@ pub/sub, dead-lettering, retry helpers). The design plan split it into its own P
    answered arm settles it: consuming two messages for two arms of one `select` would lose one. The resumed
    run's quiescence commit (closure 1) knows the groups and drains the rest live without parking, so a
    backlog costs one wake, not one per message.
-2. **`[MESSAGE_CONSUMED…, EXECUTION_RESUMED]` is ONE `appendBatch` where the store has it** (new
-   `ExecutionJournal.commitAtomic`; memory, SQLite and Postgres all do). A store without `appendBatch`
-   falls back to sequential appends; a crash between the two then leaves a park whose wait is already
-   ANSWERED, and the next notify resumes it consuming nothing again (tested, both shapes).
+2. **`[MESSAGE_CONSUMED…, EXECUTION_RESUMED]` is ONE atomic `appendBatch`, and the inbox REFUSES a store
+   without one** (new `ExecutionJournal.commitAtomic`; memory, SQLite and Postgres all have it). With
+   `kernel.features.inbox` on, `WorkflowRuntime` throws at composition naming the requirement; there is no
+   sequential fallback and no healing path is claimed for one. (The notify path still resumes a park whose
+   wait is already answered, consuming nothing again, as a defensive no-op.)
 3. **A contended post-park self-resume writes (or keeps) the due-now row, not a `redrive` row (D5.2).** A
    registered re-driver re-derives ITS resume and answers `noop` for an inbox wake, which would retire the
    row. The plain row is judged by the notify path, and `TimerService` backs off in process (the same
@@ -349,12 +356,16 @@ pub/sub, dead-lettering, retry helpers). The design plan split it into its own P
    the owner is parked on an UNANSWERED inbox wait for THAT topic. The row is retired only after the notify
    pass, and the park is looked at once more after retiring it, so a send that coalesced into the row just
    before is never stranded (the race the ADR called "benign").
-5. **`send` classifies its target from the log's tip, not from a fold.** A running owner in a message loop
+5. **`send` classifies its target from the log's tail, not from a fold.** A running owner in a message loop
    holds thousands of events and possibly no recent snapshot; a fold per send is O(its log) (measured: the
-   first build was quadratic). `send` reads sequence 0, `head()` and the tip event, and folds only when the
-   tip is a park or an audit appended after one (a parked owner took a snapshot at its park, so that fold
-   is a short tail). Consequence: a half-written NON-atomic pair (tip `MESSAGE_CONSUMED`) reads "running";
-   the row the earlier send wrote heals it.
+   first build was quadratic). `send` reads sequence 0 and the newest 8 events, walks back past the kinds
+   `EVENT_KIND_CLASS` calls ignorable (a `TIMER_FIRED` or discard `DECISION_RECORDED` whose resume never
+   landed, an `APPROVAL_GRANTED` / `OUTCOME_RECORDED` / `EXECUTION_DENIED` audit row) to the newest ANSWERING
+   kind, and folds only when that is a park (a parked owner took a snapshot at its park, so the fold is a
+   short tail). A resume, or no answering kind inside the window, reads "running". **The wake decision is
+   taken from a SECOND read after the append** (lost-wakeup protocol: the owner parks durably and then
+   re-reads the stream, the sender appends and then reads the owner, so one always sees the other); the
+   first read serves authorization and the closed-owner refusal only.
 6. **`waitRegisteredAtSequence` is the sequence of the park that LISTS the wait, not the first park that
    registered it.** The frozen fold keeps only timer waits in `_waits`, so "first registration" is not
    recoverable for a gate wait. The binding is therefore stricter than the ADR's (a later re-park of the
@@ -379,11 +390,39 @@ pub/sub, dead-lettering, retry helpers). The design plan split it into its own P
 fields and adds `waits`; a bare resume of the positional gate answers it as ever (the fold's
 `_resumePayloads`), a bare `TIMER_FIRED` for a positional sleep is the legacy timed wake.
 
+12. **Review round 1.** (a) A fork seeds its inbox stream with a floor marker at its highest inherited
+    cursor, written BEFORE the child exists, so a send to a fork allocates above every inherited cursor
+    (it used to land at a sequence the copied cursors had passed: skipped forever, then trimmed). The
+    cursors stay what the fold computed (replay of the copied prefix needs them); a fork leaving the chain
+    by a stamped `forkChain` is ADR 0109 D7's writer, not part of this change. (b) The notify path pages
+    past duplicates (they carry no payload) and journals them in the same atomic batch as the real
+    delivery, in chunks of 1,024; duplicates alone are journaled under the fence with no resume. (c) A
+    refused send costs one bounded scan per 250 ms per chain, not a fold plus a full backlog read; trim
+    scans from the known floor and stops at the first unconsumed message. (d) **When the head turns
+    terminal its inbox stream is deleted**, after the terminal event is durable; a `send` re-reads the
+    owner after its append and, seeing a terminal, deletes the stream again and reports `InboxClosedError`,
+    so a send racing the completion leaves no orphan. (e) A node with the inbox flag off leaves the due-now
+    rows alone (a flag-on node in a mixed fleet still needs them). (f) A second `ctx.receive` / `ctx.select`
+    registered in a scope after any ctx operation started or finished while an earlier wait in that scope is
+    unanswered is refused with a clear error (best effort: its ordinal would be completion order); waits
+    registered in one synchronous turn, and branches of `ctx.parallel`, are unaffected. (g) A kernel-stamped
+    park drops `_waits` entries for timer arms it no longer lists (their select was settled by another
+    arm), so a loop of `select([inbox, timer])` does not grow folded state. (h) `inboxMaxPayloadBytes`
+    measures UTF-8 bytes.
+
 **Residuals (documented, not closed).**
 - A message consumed for a branch that is then aborted by a sibling's failure is consumed: it is recorded
   in the log and the flow never sees it (the same as a gate answer in an aborted scope).
-- The inbox stream holds payloads until they are consumed and trimmed or the chain is deleted. Erasure
-  reaches `MESSAGE_CONSUMED` in the owner's log (`PAYLOAD_SHREDDED`), not the stream.
+- The inbox stream holds payloads until they are consumed and trimmed or the head turns terminal (the
+  stream is deleted then). **`eraseSubject` does not reach payloads still in flight in the stream**: erasure
+  reaches `MESSAGE_CONSUMED` in the owner's log (`PAYLOAD_SHREDDED`), not the stream. Follow-up: extend
+  erasure into reserved streams.
+- **The park-per-message loop is quadratic until R1b.** A slow-sender loop re-parks between messages and
+  every park snapshots (and every wake re-runs) a state holding one answer per consumed message: turn n is
+  O(n), the whole conversation O(n^2). The inbox itself is flat (measured below); continue-as-new (R1b,
+  ADR 0109) is what bounds the history.
+- A refused send may keep being refused for up to 250 ms after the owner drains the backlog (the full
+  verdict is cached per chain and head).
 - A message whose owner never waits on its topic pins the stream up to `inboxMaxBacklog`; `send` then
   refuses (`InboxFullError`).
 - Each wake of a long-lived message loop re-runs the flow from the top and the park serializes a state
@@ -416,7 +455,7 @@ woke the owner, which then drained all 10 000 in order in about 0.8 s in memory 
 
 **Verification** (all in `packages/workflow-runtime/src/r2-*.test.ts`): send-before-receive and
 receive-before-send each deliver once; a crash-point SWEEP kills the owner at every append of a
-two-message conversation (with an atomic and a non-atomic batch store), reboots a fresh runtime, drives
+two-message conversation (atomic batch store; the inbox refuses any other), reboots a fresh runtime, drives
 `TimerService` + `recoverAbandoned`, and requires both messages, once each, in order; explicit
 interleavings for a send between the quiescence read and the park commit, between the park commit and the
 second read, and from another process with an idle owner; two notifiers racing one park; a contended fence;
