@@ -394,6 +394,34 @@ export const FOLD_VECTORS: FoldVector[] = [
     },
   },
   {
+    // ADR 0115 D2/D3 — an open dimension's bad keys (a prototype name, a negative, an over-ceiling
+    // value) are skipped and the rest folds; a decision's descriptive `estimatedCost` map keeps
+    // its valid entries only. Neither is ever a replay input.
+    name: "RESOURCE_METERED.custom with prototype-named keys, and DECISION_RECORDED.estimatedCost",
+    events: [
+      ev("v11", 0, "EXECUTION_STARTED", { input: {} }),
+      ev("v11", 1, "RESOURCE_METERED", {
+        ms: 1,
+        custom: JSON.parse('{"credits":3,"constructor":4,"__proto__":5,"neg":-1,"big":1e16}'),
+      }),
+      ev("v11", 2, "DECISION_RECORDED", {
+        decisionId: "route",
+        choice: "a",
+        estimatedCost: { gpu_seconds: 2, "Bad Key": 1, credits: -1 },
+      }),
+    ],
+    expected: {
+      status: "running",
+      sequence: 2,
+      variables: {
+        _input: {},
+        _resources: { tokens: 0, costUsd: 0, ms: 1, count: 1, custom: { credits: 3 } },
+        _decisions: { route: { choice: "a", estimatedCost: { gpu_seconds: 2 } } },
+      },
+      frames: {},
+    },
+  },
+  {
     // ADR 0112 D2 — the scope record's ADDITIVE fields (amended 2026-10-06, R6 review): the
     // launched count, the per-branch gate-answer consumption + cursor, and the failing error's
     // class (and a typed failure's channel + payload). Malformed entries (a negative or fractional

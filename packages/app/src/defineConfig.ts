@@ -640,6 +640,13 @@ export interface LoomConfig {
       /** Largest JSON payload `send` accepts, in bytes. Default 65 536. */
       maxPayloadBytes?: number;
     };
+    /**
+     * ADR 0115 (R15) — per-dimension override of the sanity ceiling on one `RESOURCE_METERED`
+     * increment, enforced where userspace appends (`guardUserspaceEmit`). A built-in dimension
+     * may be raised or lowered; a custom one defaults to 1e15 and may only be lowered. The fold
+     * never reads it (a pure fold cannot read a runtime setting).
+     */
+    meterCeilings?: Readonly<Record<string, number>>;
   };
   /**
    * T1 — durable timers. Wire a {@link TimerStore} (`InMemoryTimerStore`,
@@ -1186,6 +1193,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.timers !== undefined && { timerStore: config.timers.store }),
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
     ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
+    ...(config.kernel?.meterCeilings !== undefined && {
+      meterCeilings: config.kernel.meterCeilings,
+    }),
     ...(config.kernel?.features?.scopes === true && { scopes: true }),
     ...(config.kernel?.features?.inbox === true && {
       inboxEnabled: true,

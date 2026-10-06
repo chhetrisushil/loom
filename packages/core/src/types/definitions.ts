@@ -1,7 +1,33 @@
 import type { ZodSchema, ZodTypeAny } from "zod";
 import type { EventEnvelope } from "./event";
 
-export type EffectKind = "tool" | "llm" | "human" | "a2a";
+/**
+ * ADR 0115 — the effect kinds first-party code gives a name. The kernel gives exactly ONE of
+ * them meaning: an effect declaring `kind: "human"` PARKS the execution for an external answer
+ * (the answer is a resume). Every other value, known or custom, is advisory metadata
+ * (placement compatibility, analytics, authorization displays). `"a2a"` names a protocol that
+ * lives in `@loom/plugin-a2a`; the kernel attaches no behaviour to it.
+ */
+export type KnownEffectKind = "tool" | "llm" | "human" | "a2a";
+
+/**
+ * An effect's kind: a {@link KnownEffectKind} or any custom name matching
+ * {@link VOCABULARY_NAME_PATTERN} (`"sensor"`, `"robot"`, `"payment"`). `string & {}` keeps the
+ * known values in autocomplete. Pinned: `"human"` is the one value with kernel semantics.
+ */
+export type EffectKind = KnownEffectKind | (string & {});
+
+/**
+ * ADR 0115 — the shape of a custom kind or metering-dimension name: lower-case start, then
+ * lower-case letters, digits, `.`, `_`, `-`; at most 64 characters. A name is safe as a map key
+ * and as a metrics label. (`__proto__` cannot match: it starts with `_`.)
+ */
+export const VOCABULARY_NAME_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
+
+/** Whether `name` is a well-formed custom kind / dimension name ({@link VOCABULARY_NAME_PATTERN}). */
+export function isVocabularyName(name: unknown): name is string {
+  return typeof name === "string" && VOCABULARY_NAME_PATTERN.test(name);
+}
 
 // ── Handler types (used by handler$() and the compiler) ──────────────────────
 
@@ -181,7 +207,10 @@ export interface StepDefinition<TIn = unknown, TOut = unknown> {
 // `ctx.execute(step)` with zero behaviour change. All kinds still resolve through
 // the EffectRuntime by toolId; `kind` is advisory metadata for scheduling,
 // reasoning and observability. Additive by design: the wire events stay STEP_*.
-export type TaskKind = "step" | "llm" | "agent" | "tool" | "ui" | "memory" | "human" | "plan";
+export type KnownTaskKind = "step" | "llm" | "agent" | "tool" | "memory" | "human" | "plan";
+
+/** ADR 0115 — open like {@link EffectKind}: a known kind or any custom name (advisory metadata). */
+export type TaskKind = KnownTaskKind | (string & {});
 
 export interface TaskDefinition<TIn = unknown, TOut = unknown> {
   readonly _tag: "TaskDefinition";

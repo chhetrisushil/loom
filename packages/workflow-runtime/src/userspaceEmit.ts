@@ -90,7 +90,70 @@ export function assertFlowDecisionId(decisionId: unknown): void {
   }
 }
 
-function assertCustomDimensions(eventType: string, custom: unknown): void {
+/**
+ * ADR 0115 D2 — `WorkflowRuntimeDeps.meterCeilings`: a per-dimension override of the sanity
+ * ceiling on one RESOURCE_METERED increment (built-in or custom). Checked at construction: a
+ * name must be a built-in or match the custom-name pattern, and a ceiling must be a finite
+ * number > 0. A CUSTOM dimension's ceiling may not exceed the fold's own 1e15 (the fold, a pure
+ * function, skips a larger value; a guard that admitted it would let an event through that the
+ * fold then ignores).
+ */
+export function assertMeterCeilings(ceilings: Readonly<Record<string, number>> | undefined): void {
+  if (ceilings === undefined) return;
+  for (const [name, c] of Object.entries(ceilings)) {
+    const builtin = Object.hasOwn(METER_CEILINGS, name);
+    if (!builtin && !CUSTOM_DIMENSION_PATTERN.test(name)) {
+      throw new Error(
+        `meterCeilings: "${name}" is neither a built-in dimension nor a valid custom name ${String(CUSTOM_DIMENSION_PATTERN)}`
+      );
+    }
+    if (!builtin && (name === "constructor" || name === "prototype")) {
+      throw new Error(`meterCeilings: "${name}" is not a usable dimension name`);
+    }
+    if (typeof c !== "number" || !Number.isFinite(c) || c <= 0) {
+      throw new Error(`meterCeilings.${name} must be a finite number > 0 (got ${String(c)})`);
+    }
+    if (!builtin && c > CUSTOM_DIMENSION_CEILING) {
+      throw new Error(
+        `meterCeilings.${name} must be at most ${CUSTOM_DIMENSION_CEILING}: the fold skips a larger custom value`
+      );
+    }
+  }
+}
+
+/**
+ * ADR 0115 D3 — `DecideOptions.estimatedCost` is descriptive, so it is bounded like the
+ * metering map it mirrors (a plain object, at most 32 names matching the dimension pattern,
+ * finite non-negative values) and refused before the decision is recorded. The fold skips a
+ * bad entry instead of throwing, for a log this guard did not write.
+ */
+export function assertEstimatedCost(estimatedCost: unknown): void {
+  const fail = (why: string): never => {
+    throw new Error(`decide: estimatedCost ${why} (ADR 0115)`);
+  };
+  if (estimatedCost === null || typeof estimatedCost !== "object" || Array.isArray(estimatedCost)) {
+    fail("must be an object of per-dimension costs");
+  }
+  const entries = Object.entries(estimatedCost as Record<string, unknown>);
+  if (entries.length > CUSTOM_DIMENSION_MAX) {
+    fail(`names at most ${CUSTOM_DIMENSION_MAX} dimensions`);
+  }
+  for (const [name, v] of entries) {
+    if (!CUSTOM_DIMENSION_PATTERN.test(name) && !Object.hasOwn(METER_CEILINGS, name)) {
+      fail(`dimension "${name}" must match ${String(CUSTOM_DIMENSION_PATTERN)}`);
+    }
+    if (name === "constructor" || name === "prototype") fail(`dimension "${name}" is not usable`);
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) {
+      fail(`${name} must be a finite non-negative number (got ${String(v)})`);
+    }
+  }
+}
+
+function assertCustomDimensions(
+  eventType: string,
+  custom: unknown,
+  ceilings: Readonly<Record<string, number>> | undefined
+): void {
   if (custom === null || typeof custom !== "object" || Array.isArray(custom)) {
     refuse(eventType, "custom must be an object of metering dimensions");
   }
@@ -105,10 +168,14 @@ function assertCustomDimensions(eventType: string, custom: unknown): void {
         `custom dimension "${name}" must match ${String(CUSTOM_DIMENSION_PATTERN)}`
       );
     }
-    if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > CUSTOM_DIMENSION_CEILING) {
+    const ceiling =
+      ceilings !== undefined && Object.hasOwn(ceilings, name)
+        ? Math.min(ceilings[name] as number, CUSTOM_DIMENSION_CEILING)
+        : CUSTOM_DIMENSION_CEILING;
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > ceiling) {
       refuse(
         eventType,
-        `custom.${name} must be a finite number in [0, ${CUSTOM_DIMENSION_CEILING}] (got ${String(v)})`
+        `custom.${name} must be a finite number in [0, ${ceiling}] (got ${String(v)})`
       );
     }
   }
@@ -130,7 +197,8 @@ function refuse(eventType: string, why: string): never {
  *   its ceiling.
  *   `custom` (ADR 0115, EVENT_SCHEMA 1.23.0) must be a plain object of at most 32 names, each
  *   matching `/^[a-z][a-z0-9._-]{0,63}$/`, none of `constructor`/`prototype`, each value a
- *   finite number in [0, 1e15].
+ *   finite number in [0, 1e15] (a `WorkflowRuntimeDeps.meterCeilings` entry lowers a
+ *   dimension's ceiling; built-ins may also be raised).
  * - `OUTCOME_RECORDED`: `recordedBy` and `late` are written only by `recordOutcome` (ADR 0116)
  *   and are refused here, so a learning pipeline can trust them.
  * - `QUOTA_EXCEEDED`: `reason`, when present, must be a string of at most 1024 characters.
@@ -138,7 +206,8 @@ function refuse(eventType: string, why: string): never {
 export function guardUserspaceEmit(
   eventType: string,
   payload: unknown,
-  scope?: EmitScope
+  scope?: EmitScope,
+  ceilings?: Readonly<Record<string, number>>
 ): unknown {
   if (!KERNEL.has(eventType)) return payload;
   if (!USERSPACE_KERNEL_EVENTS.has(eventType)) {
@@ -170,8 +239,12 @@ export function guardUserspaceEmit(
       return plain;
     }
     case "RESOURCE_METERED": {
-      for (const [field, ceiling] of Object.entries(METER_CEILINGS)) {
+      for (const [field, defaultCeiling] of Object.entries(METER_CEILINGS)) {
         if (!(field in plain)) continue;
+        const ceiling =
+          ceilings !== undefined && Object.hasOwn(ceilings, field)
+            ? (ceilings[field] as number)
+            : defaultCeiling;
         const v = plain[field];
         if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || v > ceiling) {
           refuse(
@@ -180,7 +253,7 @@ export function guardUserspaceEmit(
           );
         }
       }
-      if ("custom" in plain) assertCustomDimensions(eventType, plain.custom);
+      if ("custom" in plain) assertCustomDimensions(eventType, plain.custom, ceilings);
       return plain;
     }
     case "OUTCOME_RECORDED": {

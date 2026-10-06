@@ -1,5 +1,11 @@
 import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
-import { type Budget, type Pricing, QuotaExceededError, type ResourceDelta } from "./metering";
+import {
+  type Budget,
+  type Pricing,
+  QuotaExceededError,
+  type ResourceDelta,
+  overCustomBudget,
+} from "./metering";
 
 // ── K12.3 — nested budgets (tenant → workflow → execution) ────────────────────
 //
@@ -20,6 +26,8 @@ export interface ScopeSpend {
   memBytes?: number;
   wallMs?: number;
   netBytes?: number;
+  /** ADR 0115 — open dimensions, accumulated by name (own-property keys only). */
+  custom?: Record<string, number>;
 }
 
 /**
@@ -37,8 +45,18 @@ export class BudgetLedger {
     const memBytes = (cur.memBytes ?? 0) + (delta.memBytes ?? 0);
     const wallMs = (cur.wallMs ?? 0) + (delta.wallMs ?? 0);
     const netBytes = (cur.netBytes ?? 0) + (delta.netBytes ?? 0);
+    let custom = cur.custom;
+    if (delta.custom !== undefined) {
+      custom = { ...cur.custom };
+      for (const [name, v] of Object.entries(delta.custom)) {
+        if (typeof v !== "number" || !Number.isFinite(v) || v < 0) continue;
+        if (name === "__proto__" || name === "constructor" || name === "prototype") continue;
+        custom[name] = (Object.hasOwn(custom, name) ? (custom[name] as number) : 0) + v;
+      }
+    }
     this.spend.set(scopeKey, {
       tokens: cur.tokens + (delta.tokens ?? 0),
+      ...(custom !== undefined && { custom }),
       costUsd: cur.costUsd + (delta.costUsd ?? 0),
       ...(memBytes > 0 && { memBytes }),
       ...(wallMs > 0 && { wallMs }),
@@ -58,8 +76,12 @@ export class BudgetLedger {
       memBytes?: number;
       wallMs?: number;
       netBytes?: number;
+      custom?: Record<string, number>;
     };
     const delta: ResourceDelta = {
+      ...(p.custom !== undefined &&
+        typeof p.custom === "object" &&
+        p.custom !== null && { custom: p.custom }),
       ...(p.tokens !== undefined && { tokens: p.tokens }),
       ...(p.costUsd !== undefined && { costUsd: p.costUsd }),
       ...(p.memBytes !== undefined && { memBytes: p.memBytes }),
@@ -100,7 +122,8 @@ function over(spent: ScopeSpend, b: Budget): boolean {
     (b.maxTokens !== undefined && spent.tokens >= b.maxTokens) ||
     (b.maxMemBytes !== undefined && (spent.memBytes ?? 0) >= b.maxMemBytes) ||
     (b.maxWallMs !== undefined && (spent.wallMs ?? 0) >= b.maxWallMs) ||
-    (b.maxNetBytes !== undefined && (spent.netBytes ?? 0) >= b.maxNetBytes)
+    (b.maxNetBytes !== undefined && (spent.netBytes ?? 0) >= b.maxNetBytes) ||
+    overCustomBudget(spent.custom, b.maxCustom) !== null
   );
 }
 
@@ -130,6 +153,9 @@ export function nestedBudgetMiddleware(options: NestedBudgetOptions): EffectMidd
               ...(ctx.resources?.memBytes !== undefined && { memBytes: ctx.resources.memBytes }),
               ...(ctx.resources?.wallMs !== undefined && { wallMs: ctx.resources.wallMs }),
               ...(ctx.resources?.netBytes !== undefined && { netBytes: ctx.resources.netBytes }),
+              ...(ctx.resources?.custom !== undefined && {
+                custom: ctx.resources.custom as Record<string, number>,
+              }),
             }
           : options.ledger.spent(scope.key);
       if (over(spent, scope.budget)) {
@@ -147,6 +173,7 @@ export function nestedBudgetMiddleware(options: NestedBudgetOptions): EffectMidd
     ctx.emit("RESOURCE_METERED", {
       ...(delta.tokens !== undefined && { tokens: delta.tokens }),
       ...(delta.costUsd !== undefined && { costUsd: delta.costUsd }),
+      ...(delta.custom !== undefined && { custom: delta.custom }),
       ms: delta.ms ?? ms,
     });
     // Update the projection for the broader (non-execution) levels immediately,

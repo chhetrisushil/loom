@@ -91,6 +91,13 @@ export interface DecideOptions {
   alternatives?: unknown;
   /** Advisory predicted cost of the chosen alternative, in USD. */
   estimatedCostUsd?: number;
+  /**
+   * ADR 0115 — the open spelling of {@link DecideOptions.estimatedCostUsd}: a predicted cost per
+   * dimension name (`{ gpu_seconds: 3, credits: 2 }`). Descriptive only, like every D1 field
+   * (never a replay input). At most 32 names, each matching the metering-dimension pattern,
+   * values finite and non-negative; anything else is refused before the decision is recorded.
+   */
+  estimatedCost?: { readonly [dimension: string]: number };
   /** Advisory predicted latency of the chosen alternative, in ms. */
   estimatedLatencyMs?: number;
   /** Confidence in the choice (convention: 0–1). */
@@ -310,8 +317,16 @@ export interface ExecutionContextExtensions {}
 // two are identical types. New code should prefer `ExecutionContext`.
 export type WorkflowContext = ExecutionContext;
 
-/** A negotiable/metered resource dimension (ADR 0032). */
-export type ResourceDimension = "tokens" | "costUsd" | "ms" | "memBytes" | "wallMs" | "netBytes";
+/** The built-in resource dimensions (ADR 0032): top-level fields of the `_resources` fold. */
+export type BuiltinDimension = "tokens" | "costUsd" | "ms" | "memBytes" | "wallMs" | "netBytes";
+
+/**
+ * A negotiable/metered resource dimension (ADR 0032, opened by ADR 0115). The six built-ins, or
+ * any name matching `/^[a-z][a-z0-9._-]{0,63}$/` (`gpu_seconds`, `credits`): a custom name is
+ * metered through `RESOURCE_METERED.custom` and read from `_resources.custom`. The kernel
+ * assigns no unit and no price.
+ */
+export type ResourceDimension = BuiltinDimension | (string & {});
 
 export interface RunOptions {
   /**

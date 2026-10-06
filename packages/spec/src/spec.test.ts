@@ -280,6 +280,11 @@ const NOT_A_CAPABILITY = new Set([
   // a reference ResumeAuthenticator, and no bus auto-approve: hardening of existing capabilities
   // (resume gate, K12.2 authenticator, A2A bus). No new subsystem to grade.
   "0117",
+  // 0115 — R15: three closed vocabularies (effect/task kinds, metering dimensions) become open
+  // names with a pattern; the metering fold shape was frozen at W2-0. It widens existing
+  // capabilities (K3 metering and quotas, ADR 0032 dimensions, ADR 0030 decisions). No new
+  // subsystem to grade.
+  "0115",
   // 0114 — R14: `ctx.ui` leaves the kernel (a dependency edge removed, an ABI entry deprecated and
   // `negotiateBudget` added to the table, a layering rule). No runtime subsystem to grade.
   "0114",

@@ -34,7 +34,16 @@ import type {
   SuspendConfig,
   WorkflowContext,
 } from "./types";
-import { assertFlowDecisionId, guardUserspaceEmit } from "./userspaceEmit";
+import { assertEstimatedCost, assertFlowDecisionId, guardUserspaceEmit } from "./userspaceEmit";
+
+const BUILTIN_DIMENSIONS: ReadonlySet<string> = new Set([
+  "tokens",
+  "costUsd",
+  "ms",
+  "memBytes",
+  "wallMs",
+  "netBytes",
+]);
 
 // Audit MEM-HIGH (DE-4 follow-up) — typed-failure payloads land inline in the
 // log and the folded frame with no claim-check path (middleware inspects only
@@ -401,6 +410,9 @@ export class WorkflowContextImpl implements WorkflowContext {
     return this.surfaceAccessor;
   }
 
+  /** ADR 0115 — per-dimension overrides of the metering sanity ceilings (the guard reads them). */
+  private readonly meterCeilings: Readonly<Record<string, number>> | undefined;
+
   constructor(
     executionId: string,
     workflowId: string,
@@ -428,9 +440,11 @@ export class WorkflowContextImpl implements WorkflowContext {
       errorClasses?: Record<string, ErrorClassCtor>;
       surface?: SurfaceFactory;
       inbox?: InboxBinding;
+      meterCeilings?: Readonly<Record<string, number>>;
     } = {}
   ) {
     this.inboxBinding = opts.inbox;
+    this.meterCeilings = opts.meterCeilings;
     this.parkSignal = new Promise<never>((_resolve, reject) => {
       this.rejectPark = reject;
     });
@@ -489,10 +503,15 @@ export class WorkflowContextImpl implements WorkflowContext {
    * duplicate, never a loss (the residual conditions are in ADR 0102 D2).
    */
   emit(eventType: string, rawPayload: unknown): void {
-    const payload = guardUserspaceEmit(eventType, rawPayload, {
-      kind: "flow",
-      conflicts: this.decisionConflict,
-    }); // ADR 0104
+    const payload = guardUserspaceEmit(
+      eventType,
+      rawPayload,
+      {
+        kind: "flow",
+        conflicts: this.decisionConflict,
+      },
+      this.meterCeilings
+    ); // ADR 0104
     const digest = flowEmitDigest(eventType, payload, this.suspendPassthroughsConsumed);
     if (digest === undefined) {
       this.commit(eventType, payload); // cannot be matched: always append (never stamped)
@@ -825,12 +844,17 @@ export class WorkflowContextImpl implements WorkflowContext {
       emit: (eventType: string, payload: unknown) =>
         this.commit(
           eventType,
-          guardUserspaceEmit(eventType, payload, {
-            kind: "effect",
-            stepId: id,
-            attempt: this.vm.peekState().frames[id]?.attempts ?? 1,
-            conflicts: this.decisionConflict,
-          })
+          guardUserspaceEmit(
+            eventType,
+            payload,
+            {
+              kind: "effect",
+              stepId: id,
+              attempt: this.vm.peekState().frames[id]?.attempts ?? 1,
+              conflicts: this.decisionConflict,
+            },
+            this.meterCeilings
+          )
         ), // ADR 0104
       ...(stepSignal !== undefined && { signal: stepSignal }),
       // K12.1 — the principal chain flows to the K2 authorizer (carried opaque).
@@ -969,6 +993,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (this.vm.hasDecision(decisionId)) {
       return this.vm.getDecision(decisionId) as T;
     }
+    if (opts?.estimatedCost !== undefined) assertEstimatedCost(opts.estimatedCost);
 
     // ADR 0112 — a decision is a start of work too. A scope served from its journaled outcome never
     // makes one the first run did not (it would append what no first run recorded); a cancelled
@@ -1041,6 +1066,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       ...(opts?.source !== undefined && { source: opts.source }),
       ...(opts?.alternatives !== undefined && { alternatives: opts.alternatives }),
       ...(opts?.estimatedCostUsd !== undefined && { estimatedCostUsd: opts.estimatedCostUsd }),
+      ...(opts?.estimatedCost !== undefined && { estimatedCost: opts.estimatedCost }),
       ...(opts?.estimatedLatencyMs !== undefined && {
         estimatedLatencyMs: opts.estimatedLatencyMs,
       }),
@@ -1092,8 +1118,17 @@ export class WorkflowContextImpl implements WorkflowContext {
 
   /** Current spend for a dimension, read from the deterministic `_resources` fold (0 if unset). */
   private currentResource(dimension: ResourceDimension): number {
-    const r = this.vm.peekState().variables._resources as Record<string, number> | undefined;
-    return r?.[dimension] ?? 0;
+    const r = this.vm.peekState().variables._resources as
+      | (Record<string, unknown> & { custom?: Record<string, number> })
+      | undefined;
+    if (r === undefined) return 0;
+    // ADR 0115 — a built-in is a top-level field, anything else lives in `custom`. Own-property
+    // reads only: a dimension is a caller-chosen name (`constructor` must not read a prototype).
+    if (BUILTIN_DIMENSIONS.has(dimension)) return (r[dimension] as number | undefined) ?? 0;
+    const custom = r.custom;
+    return custom !== undefined && Object.hasOwn(custom, dimension)
+      ? (custom[dimension] as number)
+      : 0;
   }
 
   parallel<TResults extends unknown[]>(

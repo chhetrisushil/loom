@@ -1,6 +1,6 @@
 # ADR 0115 — Open vocabularies: `EffectKind`, `TaskKind`, and metering dimensions
 
-- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
+- Status: **Accepted — implemented** (2026-10-07) — design approved after 4 review rounds; see "Implementation notes" for what the code does beyond the text
 - Date: 2026-10-05
 - Closes: R15 (agentic-readiness audit, kernel appendix G2/G3)
 - Builds on: [ADR 0032](0032-resource-dimensions-bounded-negotiation.md) (the fixed dimensions),
@@ -99,3 +99,32 @@ bad keys folds to the same state on two replicas); fold equality on every existi
   documentation and the autocomplete.
 - **A dimension registry with units and prices**: a policy surface with no second consumer yet; names
   plus a ceiling are the minimal kernel contract.
+
+## Implementation notes (2026-10-07)
+
+- **Frozen at W2-0, unchanged.** `RESOURCE_METERED.custom`, the `_resources.custom` fold, the fold's
+  skip-a-bad-key rule and the guard's validation (`assertCustomDimensions`) were reserved at W2-0 and are
+  untouched in shape; EVENT_SCHEMA stays 1.23.0 and KERNEL_ABI 1.3.0. R15 adds only the open types, the
+  ceiling override, the consumers (quota, `negotiateBudget`, middleware) and the descriptive map below.
+- **D1.** `KnownEffectKind` / `KnownTaskKind` document the first-party names; `EffectKind` /
+  `TaskKind` are `Known | (string & {})`. The pattern is `VOCABULARY_NAME_PATTERN` (exported from
+  `@loom/core`, one constant for kinds and dimensions). `EffectRuntime.register` refuses a kind that fails
+  it. `"ui"` left `KnownTaskKind` (ADR 0114). `"human"` is pinned by a test: a custom effect declaring
+  `kind: "human"` parks. `A2AEffect` is now defined in `@loom/plugin-a2a`; `@loom/effect-runtime` keeps a
+  deprecated **copy**, not a re-export (a re-export would make a kernel-adjacent package depend on a plugin
+  that depends on it). The copy is removed with the next effect-runtime major.
+- **D2 ceilings.** `WorkflowRuntimeDeps.meterCeilings` (and `defineConfig({ kernel: { meterCeilings } })`)
+  overrides the per-increment sanity ceiling in `guardUserspaceEmit` for a built-in (raise or lower) or a
+  custom dimension (lower only: the fold skips a custom value above 1e15, so a guard that admitted more
+  would let through an increment the fold then ignores; refused at construction). Never read by the fold.
+- **Consumers.** `ResourceDimension` is open; `negotiateBudget` / `currentResource` read a built-in as a
+  top-level field and anything else with an own-property read of `_resources.custom` (`constructor` reads
+  0). `ResourceSnapshot.custom`, `ResourceDelta.custom`, `Budget.maxCustom` (metering and nested budgets,
+  including the ledger projection) enforce a ceiling on a custom name through the existing
+  `QUOTA_EXCEEDED` path.
+- **D3.** `DecideOptions.estimatedCost` lands as a descriptive field on the decision entry (additive and
+  optional within the unreleased 1.23.0, like the `PARALLEL_COMPLETED` amendment; an older fold ignores
+  it). Validated at `ctx.decide` (plain object, at most 32 names, dimension pattern, finite non-negative);
+  the fold keeps only the valid entries and never throws. A conformance vector covers both maps.
+- **Not done.** No unit or price registry (as designed). `analytics` does not yet surface custom
+  dimensions in its per-step attribution.

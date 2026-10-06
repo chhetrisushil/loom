@@ -45,6 +45,11 @@ export interface ResourceSnapshot {
   memBytes?: number;
   wallMs?: number;
   netBytes?: number;
+  /**
+   * ADR 0115 — open metering dimensions (`gpu_seconds`, `credits`, ...), present only once
+   * something meters one. Read with `Object.hasOwn`: the keys are caller-chosen names.
+   */
+  custom?: Readonly<Record<string, number>>;
   /** Set once a quota has been exceeded. */
   exceeded?: boolean;
 }

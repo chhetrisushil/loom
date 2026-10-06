@@ -23,6 +23,12 @@ export interface ResourceDelta {
   wallMs?: number;
   /** Network bytes transferred by the effect. */
   netBytes?: number;
+  /**
+   * ADR 0115 — open dimensions (`gpu_seconds`, `credits`), by name. Folded into
+   * `_resources.custom`; the kernel assigns no unit and no price, so converting these to money
+   * is this pricing function's job. At most 32 names, each `/^[a-z][a-z0-9._-]{0,63}$/`.
+   */
+  custom?: Readonly<Record<string, number>>;
 }
 
 export interface MeterInfo {
@@ -50,6 +56,26 @@ export interface Budget {
   maxMemBytes?: number;
   maxWallMs?: number;
   maxNetBytes?: number;
+  /**
+   * ADR 0115 — ceilings for open dimensions, by name (`{ gpu_seconds: 60 }`): an execution whose
+   * `_resources.custom[name]` has reached the ceiling has its next effect denied, like every
+   * other dimension. Only enforced where set.
+   */
+  maxCustom?: Readonly<Record<string, number>>;
+}
+
+/** The first custom ceiling the spend has reached, as a reason — own-property reads only. */
+export function overCustomBudget(
+  custom: Readonly<Record<string, number>> | undefined,
+  maxCustom: Readonly<Record<string, number>> | undefined
+): string | null {
+  if (maxCustom === undefined) return null;
+  for (const [name, max] of Object.entries(maxCustom)) {
+    const spent =
+      custom !== undefined && Object.hasOwn(custom, name) ? (custom[name] as number) : 0;
+    if (spent >= max) return `${name} ${spent} >= budget ${max}`;
+  }
+  return null;
 }
 
 export interface MeteringOptions {
@@ -87,17 +113,21 @@ function overBudget(r: ResourceSnapshot, b: Budget): string | null {
   if (b.maxNetBytes !== undefined && (r.netBytes ?? 0) >= b.maxNetBytes) {
     return `netBytes ${r.netBytes ?? 0} >= budget ${b.maxNetBytes}`;
   }
-  return null;
+  return overCustomBudget(r.custom, b.maxCustom);
 }
 
 /** The RESOURCE_METERED payload for a delta — only dimensions the pricing reported. */
-export function meteredPayload(delta: ResourceDelta, ms: number): Record<string, number> {
+export function meteredPayload(
+  delta: ResourceDelta,
+  ms: number
+): Record<string, number | Readonly<Record<string, number>>> {
   return {
     ...(delta.tokens !== undefined && { tokens: delta.tokens }),
     ...(delta.costUsd !== undefined && { costUsd: delta.costUsd }),
     ...(delta.memBytes !== undefined && { memBytes: delta.memBytes }),
     ...(delta.wallMs !== undefined && { wallMs: delta.wallMs }),
     ...(delta.netBytes !== undefined && { netBytes: delta.netBytes }),
+    ...(delta.custom !== undefined && { custom: delta.custom }),
     ms: delta.ms ?? ms,
   };
 }

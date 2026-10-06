@@ -41,6 +41,8 @@ export type {
   AgentSkillDef,
   AnyProjectionDefinition,
   EffectKind,
+  KnownEffectKind,
+  KnownTaskKind,
   EffectMode,
   FlowDefinition,
   HandlerFn,
@@ -67,6 +69,7 @@ export type {
   TaskKind,
   ToolDefinition,
 } from "./types/definitions";
+export { VOCABULARY_NAME_PATTERN, isVocabularyName } from "./types/definitions";
 export {
   agent$,
   flow$,

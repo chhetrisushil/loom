@@ -1,3 +1,4 @@
+export { A2AEffect } from "./A2AEffect";
 export { createA2AClientEffect } from "./A2AClientEffect";
 export type { A2AClientOptions } from "./A2AClientEffect";
 export { A2APeerClient, fetchAgentCard } from "./A2APeerClient";
