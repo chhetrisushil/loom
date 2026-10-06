@@ -24,6 +24,17 @@ export class ExecutionJournal {
   private seq: number;
   private tail: Promise<void> = Promise.resolve();
   private firstWriteError: unknown;
+  /**
+   * ADR 0110 — `onEvent` delivery order. Live subscribers (projections, the compliance subject
+   * index) fold in sequence order, so an envelope whose `onEvent` is deferred until its batch is
+   * durable must also hold back every LATER envelope: otherwise a cancel committed while a
+   * delivery batch is in flight reaches subscribers before the consumption it follows. Entries
+   * leave from the head once they are not pending; a lost batch's entries are dropped.
+   */
+  private readonly emitQueue: Array<{
+    envelope: EventEnvelope;
+    state: "ready" | "pending" | "dropped";
+  }> = [];
 
   constructor(
     private readonly store: EventStore,
@@ -143,7 +154,7 @@ export class ExecutionJournal {
       this.now
     );
     this.vm.applyEvent(envelope); // in-memory fold — synchronous, authoritative
-    this.onEvent?.(envelope); // live projection fold — synchronous, durability-independent
+    this.emit(envelope); // live projection fold — synchronous unless held behind a deferred batch
     this.enqueue(envelope); // durable write — async, order-preserving
     this.onCommit?.(sequence); // snapshot cadence hook
     return envelope;
@@ -171,6 +182,13 @@ export class ExecutionJournal {
   ): EventEnvelope[] {
     const defer = opts?.deferOnEvent === true;
     const envelopes: EventEnvelope[] = [];
+    const held: Array<{ envelope: EventEnvelope; state: "ready" | "pending" | "dropped" }> = [];
+    const settle = (state: "ready" | "dropped"): void => {
+      if (held.length === 0) return;
+      for (const entry of held) entry.state = state;
+      held.length = 0;
+      this.flushEmits();
+    };
     for (const e of events) {
       const sequence = ++this.seq;
       const envelope = ExecutionJournal.build(
@@ -183,30 +201,32 @@ export class ExecutionJournal {
         this.now
       );
       this.vm.applyEvent(envelope);
-      if (!defer) this.onEvent?.(envelope);
+      if (defer) {
+        const entry = { envelope, state: "pending" as const } as {
+          envelope: EventEnvelope;
+          state: "ready" | "pending" | "dropped";
+        };
+        held.push(entry);
+        this.emitQueue.push(entry);
+      } else this.emit(envelope);
       envelopes.push(envelope);
     }
     this.tail = this.tail
       .then(() => {
-        if (this.firstWriteError !== undefined) return;
+        if (this.firstWriteError !== undefined) {
+          settle("dropped");
+          return;
+        }
         const store = this.store;
         if (store.appendBatch === undefined) {
           throw new Error("commitAtomic needs an EventStore with an atomic appendBatch");
         }
-        return store.appendBatch(envelopes).then(() => {
-          if (!defer) return;
-          // Durable now: tell the live subscribers. A throwing subscriber must not read as a
-          // lost write.
-          for (const envelope of envelopes) {
-            try {
-              this.onEvent?.(envelope);
-            } catch {
-              // subscriber fault, not a storage fault
-            }
-          }
-        });
+        // Durable now: release the batch (and whatever queued behind it) to the live subscribers.
+        // A throwing subscriber must not read as a lost write (flushEmits swallows it).
+        return store.appendBatch(envelopes).then(() => settle("ready"));
       })
       .catch((err: unknown) => {
+        settle("dropped");
         if (this.firstWriteError === undefined) {
           this.firstWriteError = err;
           this.onWriteError(err);
@@ -230,8 +250,32 @@ export class ExecutionJournal {
     }
     this.seq = envelope.sequence;
     this.vm.applyEvent(envelope);
-    this.onEvent?.(envelope);
+    this.emit(envelope);
     this.onCommit?.(envelope.sequence);
+  }
+
+  /** Fire `onEvent` now, or queue it behind a pending (deferred) envelope. */
+  private emit(envelope: EventEnvelope): void {
+    if (this.emitQueue.length === 0) {
+      this.onEvent?.(envelope); // the common case: synchronous, exactly as before
+      return;
+    }
+    this.emitQueue.push({ envelope, state: "ready" });
+  }
+
+  /** Deliver every head entry that is no longer pending, in order. */
+  private flushEmits(): void {
+    while (this.emitQueue.length > 0) {
+      const head = this.emitQueue[0];
+      if (head === undefined || head.state === "pending") return;
+      this.emitQueue.shift();
+      if (head.state === "dropped") continue;
+      try {
+        this.onEvent?.(head.envelope);
+      } catch {
+        // subscriber fault, not a storage fault
+      }
+    }
   }
 
   private enqueue(envelope: EventEnvelope): void {
