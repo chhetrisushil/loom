@@ -1,6 +1,6 @@
 # ADR 0112 — Structured concurrency: cancellation scopes, a park barrier, and the cancel cascade
 
-- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
+- Status: **Accepted — implemented** (2026-10-06; proposed 2026-10-05, design approved after 4 review rounds). See "Implementation (as built)" for where the code differs from the text above.
 - Date: 2026-10-05
 - Closes: R6 (agentic-readiness audit, kernel appendix §2d, risk R6) and the R9 cancel-cascade item
 - Builds on: [ADR 0105](0105-a-caught-step-failure-is-not-the-executions.md) (`_failedWhileParked`,
@@ -157,3 +157,55 @@ completion and the park commit. Cascade: parent cancelled → children cancelled
   non-idempotent effects into `EFFECT_INDOUBT`; `"drain"` is the safe default.
 - **A kernel `children` table for the cascade**: see D5.
 - **Making `Promise.all` scoped**: JavaScript owns that combinator; the answer is the branch function.
+
+## Implementation (as built)
+
+Accepted with R6 (kernel: `WorkflowContext`, `WorkflowRuntime`; 1P: `@loom/orchestration`). Nothing in the frozen W2-0
+shapes changed: the `PARALLEL_COMPLETED` payload, the `_scopes` fold key and the `metadata.kernel` marker (stamped by the
+journal) are used exactly as reserved. What the code does, and where it differs from the text above:
+
+- **Identity.** A `parallel` call is `"<parent path>/<k>"` (the root path is `""`, so the first call is `"/0"`); its
+  branches are `"<parent path>/<k>.<i>"`. `PARALLEL_COMPLETED.scopePath` is the CALL's path, `failedBranch` the index of the
+  error that is rethrown. `k` counts `parallel` calls per scope node, so sequential calls cannot collide and a nested call
+  inside branch `/0.1` is `"/0.1/0"`. A branch function receives a `BranchContext` (the execution context with the
+  branch's scope bound in, plus `scopePath`); `ctx.parallel` still accepts `[step, input]` pairs.
+- **Step ids are unchanged.** No step id derivation changed (a scope path never enters a step id), so a mixed fleet derives the
+  same ids for every step; the design's rollout question is answered "byte-identical". The `PARALLEL_COMPLETED` writer is NOT
+  behind a `kernel.features` flag: a node older than 1.23.0 folds the record as a no-op and so would re-run a failed scope
+  live, which is exactly the pre-0112 behaviour, never worse. The `STEP_CANCELLED` writer already existed for an execution
+  cancel; it now also fires when the scope's (or the park-drain's) signal aborts a step.
+- **Fail-fast.** The first REAL branch failure (not a `SuspendError`, not cancellation noise, and not while the execution
+  itself is being cancelled) aborts the scope. The call waits for its branches to settle (work that ignores the signal gets
+  `min(parkDrainMs, 1000)` ms of grace), appends `PARALLEL_COMPLETED` once, and rethrows the first real error by input order.
+  Queued branches (with `limit`) never start. `failFast: false` runs every branch and journals nothing. An inner scope that
+  is aborted by an OUTER scope's failure records nothing of its own; the outer record's `cancelled` includes the inner step
+  ids. `error` is `String(err)` capped at 512 chars and `cancelled` at 32 ids, so a record stays about 1 KiB.
+- **Served scope (stronger than "does not start cancelled branches").** A scope found in `_scopes` runs its branches in
+  SERVED-ONLY mode: a step already completed (or with a recorded typed failure) is served from its frame, and every other
+  step throws before `STEP_STARTED`, so nothing is started, whatever the first run's timing. The recorded failure is rethrown:
+  as the `TypedFailure` when the failed branch's frame holds one, else a `ParallelScopeFailedError` whose `message` is the
+  original error's message (the class name is not preserved: the record carries the text, not the class).
+- **Park barrier.** `SuspendError` is never a failure. A branch's park marks its scope chain parked (no sibling branch and no
+  queued branch starts new work; a step start in a parked scope, or after the runner decided the park, returns a promise that
+  does not settle: the resume re-runs the flow, and the step-identity rule re-issues it). The park itself is committed by the
+  runner only after every step and decider in flight in the execution has settled (`WorkflowContext.parkBarrier`), bounded by
+  `parkDrainMs` (`WorkflowRuntimeDeps.parkDrainMs`, default 30 000; NOT yet in `defineConfig`). With `onPark: "abort"` the
+  scope aborts first. Past the bound the stragglers are aborted (the context's park signal is part of every step's signal),
+  given `min(parkDrainMs, 1000)` ms, and then the journal is SEALED for that context: a later append from the flow side is
+  dropped with one `onWarn`, never written. A seal exists only in that case; a zombie that is not in flight (a step whose
+  deadline already raced it) still appends as before. A hand-rolled `Promise.all([ctx.run(...), ctx.suspend(...)])` is drained
+  too (the in-flight set is per execution, not per scope). Cancelled while draining: `EXECUTION_CANCELLED` wins, no park is
+  written.
+- **`_failedWhileParked`** can no longer be produced by this kernel's own siblings; the fold keeps the flag for older logs
+  (the ADR 0105 tests that produced it live now append the late `STEP_FAILED` by hand).
+- **Cascade (`@loom/orchestration`).** `awaitChild` / `awaitChildren` accept `detached` (per member for a group), recorded in the
+  spawn decision. `superviseChildren.onEvent`, on a parent's `EXECUTION_CANCELLED` (or kernel-stamped `EXECUTION_CONTINUED`),
+  cancels every non-detached child named by the parent's recorded spawn decisions (read from its log) and by the supervisor's
+  in-memory view, through `runtime.cancel(child, JSON.stringify({ kind: "cascade", parent }), systemOptions())` (the recorded
+  reason is a string: the kernel records `String(reason)`). A child never started is skipped; cancelling a child cancels its
+  own children the same way and never its parent. `recover()` additionally cancels any live execution whose RECORDED parent
+  (`_parent`, written only through the lineage grant, so a pre-R3k child without one is not swept) folds `cancelled` or
+  `continued` and whose spawn was not detached; `RecoverSummary.cascaded` counts them. The sweep is a scan of the child side:
+  the guarantee is that a scheduled `recover()` bounds an orphan's lifetime.
+- **Not done here (named).** `parkDrainMs` in `defineConfig`; DST over every interleaving (the tests vary timing
+  explicitly instead); R2's `waitId` consumes `scopePath` in its own PR; `PARALLEL_STARTED` and `STEP_RETRYING` stay reserved.

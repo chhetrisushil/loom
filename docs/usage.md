@@ -87,7 +87,7 @@ Inside a runner you have the full `ExecutionContext` (`WorkflowContext` is an al
 |---|---|
 | `ctx.execute(task, input)` | Run any task kind to durable completion — **recorded** as `STEP_STARTED`/`STEP_COMPLETED` and served from the log on replay, never re-executed. The generalized primitive |
 | `ctx.run(step, input)` | The step-shaped alias for `execute` — **recorded**, replay-safe, exactly-once |
-| `ctx.parallel(pairs, { limit })` | Run steps concurrently; each is **recorded** on its own, and results return in *input* order regardless of completion order (load-bearing for replay) |
+| `ctx.parallel(branches, { limit, failFast, onPark })` | Run branches (`[step, input]` pairs or `(b) => Promise` functions) concurrently as one **cancellation scope**; each step is **recorded** on its own, and results return in *input* order regardless of completion order (load-bearing for replay). The first real failure aborts the siblings (`STEP_CANCELLED`, outcome journaled as `PARALLEL_COMPLETED`, served on re-run); a park drains in-flight siblings before `EXECUTION_SUSPENDED` (ADR 0112) |
 | `ctx.decide(id, decider, opts?)` | **Recorded** advisory choice (`DECISION_RECORDED`) — on replay the recorded choice is returned and `decider` is never called, so routing can change run-to-run while any single run stays pure (P9) |
 | `ctx.negotiateBudget(dim, request, opts?)` | **Recorded** budget grant through the decision seam — advisory and replay-safe; enforcement stays with metering middleware (`QUOTA_EXCEEDED`) |
 | `ctx.suspend({ on, correlationKey, timeout })` | **Durable** pause for a human/signal. `resume()` routes by **executionId**; `correlationKey` is metadata for an external dispatcher that knows a business key instead |

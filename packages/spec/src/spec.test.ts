@@ -290,6 +290,12 @@ const NOT_A_CAPABILITY = new Set([
   // the R8 supervisor, T1 timers, the K10.6 pin seam); the SPI version is already in the
   // compatibility matrix. No new subsystem to grade.
   "0118",
+  // 0112 — R6: `ctx.parallel` becomes a cancellation scope (fail-fast aborts siblings, the outcome
+  // is journaled as `PARALLEL_COMPLETED`), a park drains in-flight steps before it commits, and a
+  // 1P cancel cascade in `@loom/orchestration`. It completes existing capabilities (K8
+  // cancellation, the parallel combinator, the R8 supervisor); the event shapes were frozen at W2-0.
+  // No new subsystem to grade.
+  "0112",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

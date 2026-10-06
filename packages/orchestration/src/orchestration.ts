@@ -173,6 +173,8 @@ interface SpawnChoice {
   grants?: readonly string[];
   /** Absolute epoch-ms expiry for the minted token. Absolute, so a re-mint on recovery is identical. */
   expiresAt?: number;
+  /** ADR 0112 D5 — opts out of the cancel cascade: this child outlives a cancelled parent. */
+  detached?: boolean;
 }
 
 function asSpawnChoice(value: unknown): SpawnChoice | undefined {
@@ -193,6 +195,8 @@ interface GroupMember {
   /** The capability subset conferred on THIS member (see {@link SpawnChoice.grants}). */
   grants?: readonly string[];
   expiresAt?: number;
+  /** ADR 0112 D5 — see {@link SpawnChoice.detached}. */
+  detached?: boolean;
 }
 
 /**
@@ -253,6 +257,11 @@ export async function awaitChild<TOut = unknown>(
     grants?: readonly string[];
     /** Absolute epoch-ms expiry for the conferred authority. Absolute so a re-mint on recovery is identical. */
     expiresAt?: number;
+    /**
+     * ADR 0112 D5 — opt out of the cancel cascade. By default cancelling this execution cancels
+     * the child it is awaiting; a `detached` child is work that must outlive its parent.
+     */
+    detached?: boolean;
   }
 ): Promise<TOut> {
   const childId = childIdFor(ctx.executionId, spec.key);
@@ -269,6 +278,7 @@ export async function awaitChild<TOut = unknown>(
     input: spec.input,
     ...(spec.grants !== undefined && { grants: spec.grants }),
     ...(spec.expiresAt !== undefined && { expiresAt: spec.expiresAt }),
+    ...(spec.detached === true && { detached: true }),
   }));
   // R8 round 1 — `viewDigest` binds the park to ITS child: a supervisor's resume must echo it, so
   // a stale/duplicate resume (a slow supervisor that read the park earlier) is refused by the
@@ -318,6 +328,8 @@ export async function awaitChildren<TOut = unknown>(
       input: unknown;
       grants?: readonly string[];
       expiresAt?: number;
+      /** ADR 0112 D5 — this member outlives a cancelled parent (see `awaitChild`). */
+      detached?: boolean;
     }[];
     maxDepth?: number;
   }
@@ -333,6 +345,7 @@ export async function awaitChildren<TOut = unknown>(
     input: c.input,
     ...(c.grants !== undefined && { grants: c.grants }),
     ...(c.expiresAt !== undefined && { expiresAt: c.expiresAt }),
+    ...(c.detached === true && { detached: true }),
   }));
   if (group.maxDepth !== undefined) {
     const depth = depthOf(members[0]!.childId);
@@ -536,6 +549,8 @@ export interface RecoverSummary {
   resumed: number;
   /** Children (or group members) started because the log held a spawn but no child. */
   started: number;
+  /** ADR 0112 D5 — orphans of a cancelled parent this pass cancelled (non-detached, non-terminal). */
+  cascaded: number;
 }
 
 export interface ChildSupervisor {
@@ -765,7 +780,13 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   // childId → spec, learned from DECISION_RECORDED before the parent's suspend lands.
   const specs = new Map<
     string,
-    { flowId: string; input: unknown; grants?: readonly string[]; expiresAt?: number }
+    {
+      flowId: string;
+      input: unknown;
+      grants?: readonly string[];
+      expiresAt?: number;
+      detached?: boolean;
+    }
   >();
   // childIds (and groupIds) already started this process (idempotency within the runtime).
   const started = new Set<string>();
@@ -1738,18 +1759,129 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     started.delete(execId);
   };
 
+  // ── ADR 0112 D5 — the cancel cascade (1P: the kernel has no child relation) ─────────────────
+  //
+  // Cancelling a parent cancels the children it spawned that are still running, unless a child
+  // was spawned `detached`. A cancel is the one terminal the parent cannot recover from, so a
+  // non-detached child left running would be work nobody awaits and nobody can see.
+  //
+  // LIVE: the parent's own `EXECUTION_CANCELLED` (and a continued parent's `EXECUTION_CONTINUED`)
+  // reaches `onEvent`; the child list is the parent's recorded spawn decisions (the durable
+  // authority, read from its log) plus whatever this supervisor holds in memory. An id with no
+  // execution (a spawn recorded but never started) is ignored.
+  // SWEEP: `recover()` also cancels any non-terminal execution whose RECORDED lineage
+  // (`EXECUTION_STARTED.parent`, written only through the runtime's lineage grant) names a
+  // parent that is cancelled/continued: that finds the orphans the live path missed (the parent
+  // was cancelled on a node with no supervisor, or the supervisor was down). It is a scan of the
+  // child side, so the GUARANTEE is "a scheduled `recover()` bounds an orphan's lifetime", not a
+  // live property.
+  let cascadedTotal = 0;
+  const cascadeReason = (parentId: string): string =>
+    JSON.stringify({ kind: "cascade", parent: parentId });
+
+  const cascadeCancel = async (childId: string, parentId: string): Promise<void> => {
+    try {
+      const cancelled = await deps.runtime.cancel(
+        childId,
+        cascadeReason(parentId),
+        deps.runtime.systemOptions()
+      );
+      if (cancelled) cascadedTotal++;
+    } catch (err) {
+      // A child that was never started has no execution to cancel: nothing to do.
+      if (!String((err as Error | undefined)?.message ?? err).startsWith("No execution found")) {
+        fail(err);
+      }
+    }
+  };
+
+  /** The children `parentId` spawned, with whether each opted out, from memory and (durably) its log. */
+  const spawnedBy = async (
+    parentId: string,
+    fromMemory: Map<string, boolean>
+  ): Promise<Map<string, boolean>> => {
+    const out = new Map(fromMemory);
+    try {
+      for (const e of await deps.runtime.events.read(parentId)) {
+        if (e.eventType !== "DECISION_RECORDED") continue;
+        const choice = (e.payload as { choice?: unknown }).choice;
+        const one = asSpawnChoice(choice);
+        if (one !== undefined) out.set(one.childId, one.detached === true);
+        const many = asGroupChoice(choice);
+        if (many !== undefined) {
+          for (const m of many.members) out.set(m.childId, m.detached === true);
+        }
+      }
+    } catch {
+      // An unreadable (or shredded) parent log: the in-memory view and the sweep are what is left.
+    }
+    return out;
+  };
+
+  /** What this supervisor holds in memory for `parentId`'s children (read BEFORE the reclaim drops it). */
+  const memorySpawnedBy = (parentId: string): Map<string, boolean> => {
+    const out = new Map<string, boolean>();
+    for (const [childId, spec] of specs) {
+      if (parentOf(childId) === parentId) out.set(childId, spec.detached === true);
+    }
+    for (const group of groups.values()) {
+      if (group.parentId !== parentId) continue;
+      for (const m of group.members) out.set(m.childId, m.detached === true);
+    }
+    return out;
+  };
+
+  const cascadeFrom = async (parentId: string, fromMemory: Map<string, boolean>): Promise<void> => {
+    const children = await spawnedBy(parentId, fromMemory);
+    const work: Promise<void>[] = [];
+    for (const [childId, detached] of children) {
+      if (!detached) work.push(cascadeCancel(childId, parentId));
+    }
+    await Promise.all(work);
+  };
+
+  /** Is `childId` a detached spawn of `parentId`? Read from the parent's recorded decisions. */
+  const isDetachedSpawn = async (parentId: string, childId: string): Promise<boolean> =>
+    (await spawnedBy(parentId, new Map())).get(childId) === true;
+
   const recover = async (options?: {
     source?: ExecutionEnumerable;
     pageSize?: number;
   }): Promise<RecoverSummary> => {
     const source = options?.source ?? (deps.runtime.events as unknown as ExecutionEnumerable);
-    const summary: RecoverSummary = { scanned: 0, parked: 0, resumed: 0, started: 0 };
+    const summary: RecoverSummary = { scanned: 0, parked: 0, resumed: 0, started: 0, cascaded: 0 };
     const resumed0 = resumedTotal;
     const started0 = startedTotal;
+    const cascaded0 = cascadedTotal;
+    // parent id → is it cancelled / continued (an orphan's parent). Bounded: a pass over a big
+    // store must not hold every parent it ever met.
+    const parentGone = new Map<string, boolean>();
     for await (const id of iterateExecutionIds(source, options?.pageSize)) {
       if (isReservedStream(id)) continue;
       summary.scanned++;
       const st = await deps.runtime.loadState(id, deps.runtime.systemOptions()).catch(() => null);
+      // ADR 0112 D5 — an orphan: still live, with a RECORDED parent that was cancelled/continued.
+      const recordedParent = (st?.variables as { _parent?: unknown } | undefined)?._parent;
+      if (
+        st !== null &&
+        st !== undefined &&
+        typeof recordedParent === "string" &&
+        (st.status === "running" || st.status === "suspended" || st.status === "pending")
+      ) {
+        let gone = parentGone.get(recordedParent);
+        if (gone === undefined) {
+          const ps = await deps.runtime
+            .loadState(recordedParent, deps.runtime.systemOptions())
+            .catch(() => null);
+          gone = ps?.status === "cancelled" || ps?.status === "continued";
+          if (parentGone.size >= 1024) parentGone.clear();
+          parentGone.set(recordedParent, gone);
+        }
+        if (gone && !(await isDetachedSpawn(recordedParent, id))) {
+          await cascadeCancel(id, recordedParent);
+          continue;
+        }
+      }
       if (st?.status !== "suspended" || st.suspendedOn?.on !== CHILD_DONE) continue;
       summary.parked++;
       await adopt(id);
@@ -1759,6 +1891,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     await sweep().catch(fail);
     summary.resumed = resumedTotal - resumed0;
     summary.started = startedTotal - started0;
+    summary.cascaded = cascadedTotal - cascaded0;
     return summary;
   };
 
@@ -1831,6 +1964,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
             input: single.input,
             ...(single.grants !== undefined && { grants: single.grants }),
             ...(single.expiresAt !== undefined && { expiresAt: single.expiresAt }),
+            ...(single.detached === true && { detached: true }),
           });
           ensureSweeper();
           return;
@@ -1874,6 +2008,14 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
         (event.eventType === "EXECUTION_CONTINUED" && event.metadata?.kernel === true)
       ) {
         const execId = event.executionId;
+        // ADR 0112 D5 — a cancelled (or continued) parent cancels its non-detached children. The
+        // in-memory view is captured NOW, before the reclaim below drops it.
+        if (
+          event.eventType === "EXECUTION_CANCELLED" ||
+          event.eventType === "EXECUTION_CONTINUED"
+        ) {
+          track(cascadeFrom(execId, memorySpawnedBy(execId)).catch(fail));
+        }
         // Reclaim specs for any recorded-but-never-started child of a parent that has now
         // terminated. If a parent fails/cancels before its CHILD_DONE suspend lands, the
         // child never starts, so no child-terminal event ever arrives to clean its spec —

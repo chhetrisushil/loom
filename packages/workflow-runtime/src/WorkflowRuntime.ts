@@ -161,6 +161,13 @@ export interface WorkflowRuntimeDeps {
    */
   onWarn?: (message: string) => void;
   /**
+   * ADR 0112 D3 — how long a park waits for the steps still in flight (a parallel sibling's)
+   * to settle before it is committed. Default 30 000 ms. Past it the stragglers are aborted
+   * and, if they still have not settled, their appends are dropped (they re-run on resume
+   * under the same idempotency key).
+   */
+  parkDrainMs?: number;
+  /**
    * Take a mid-run snapshot every N committed events, bounding the replay tail so
    * a resume/recovery folds only ~N events instead of the whole log. Omit (or 0)
    * to keep the default cadence (snapshots only at suspend + fork). A larger N
@@ -510,6 +517,7 @@ export class WorkflowRuntime {
     { scanner: StrayScanner; definition: FlowDefinition<unknown, unknown> }
   >();
   private readonly snapshotEvery: number | undefined;
+  private readonly parkDrainMs: number | undefined;
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
   private readonly executionAuthorizer: ExecutionAuthorizer | undefined;
@@ -550,6 +558,7 @@ export class WorkflowRuntime {
     this.onStorageError = deps.onStorageError;
     this.onWarn = deps.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
     this.snapshotEvery = deps.snapshotEvery;
+    this.parkDrainMs = deps.parkDrainMs;
     this.resumeAuthenticator = deps.resumeAuthenticator;
     this.timerStore = deps.timerStore;
     this.executionAuthorizer = deps.executionAuthorizer;
@@ -3353,7 +3362,11 @@ export class WorkflowRuntime {
       this.effectRuntime,
       controller.signal,
       principal,
-      this.now
+      this.now,
+      {
+        ...(this.parkDrainMs !== undefined && { parkDrainMs: this.parkDrainMs }),
+        onWarn: this.onWarn,
+      }
     );
 
     const cancel = (reason?: unknown): void => {
@@ -3461,6 +3474,16 @@ export class WorkflowRuntime {
             wakeAt !== undefined && condition.wakeAt === undefined
               ? { ...condition, wakeAt }
               : condition;
+          // ADR 0112 D3 — the PARK BARRIER. The park is decided: freeze new step starts and let
+          // the steps already in flight settle, so their events land BEFORE the park (nothing from
+          // this execution's own siblings follows EXECUTION_SUSPENDED). Bounded by `parkDrainMs`.
+          const drained = ctx.parkBarrier();
+          if (drained !== undefined) await drained;
+          // Cancelled while draining: EXECUTION_CANCELLED owns the outcome, never a park after it.
+          if (cancelled) {
+            await journal.drain().catch(() => {});
+            return;
+          }
           journal.commit("EXECUTION_SUSPENDED", { condition: committedCondition });
           // MUST drain before snapshotting: a snapshot must never reference
           // events that are not yet durably in the log.

@@ -14,6 +14,7 @@ export {
   FlowCodeMismatchError,
   FlowMigrationCheckError,
   InputValidationError,
+  ParallelScopeFailedError,
   ResumePayloadValidationError,
   ResumeContendedError,
   ResumeRefusedError,
@@ -131,6 +132,8 @@ export type {
   ResumeVerdict,
   RunOptions,
   SuspendConfig,
+  BranchContext,
+  ParallelOptions,
   WorkflowContext,
 } from "./types";
 // Re-exported so apps that name `runtime.invokeTransient(...)` options through
