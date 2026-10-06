@@ -14,8 +14,11 @@ export type {
   ExecutionStatus,
   FrameStatus,
   SuspendCondition,
+  SuspendWait,
 } from "./types/execution";
 export { executionFromState } from "./types/execution";
+export { KERNEL_EVENT_KINDS } from "./eventKinds";
+export type { EventKind } from "./eventKinds";
 export { flowContentHash } from "./flowHash";
 export { checkVersionPins } from "./versionPins";
 export type { PinFinding, PinFindingCode, PinReport, VersionPins } from "./versionPins";

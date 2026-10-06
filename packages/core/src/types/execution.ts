@@ -6,7 +6,11 @@ export type ExecutionStatus =
   | "suspended"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  // EVENT_SCHEMA 1.23.0 (ADR 0109) — terminal, but NOT completed: the execution ended by
+  // handing its work to a successor (`_continuedTo`). It has no output of its own, so a
+  // consumer that reads "completed" as "the flow returned a value" must not treat it as one.
+  | "continued";
 
 export type FrameStatus = "pending" | "running" | "completed" | "failed" | "skipped" | "cancelled";
 
@@ -62,6 +66,27 @@ export interface SuspendCondition {
    * is. Absent on every `ctx.suspend` park and on every pre-0104 human park.
    */
   stepId?: string;
+  /**
+   * EVENT_SCHEMA 1.23.0 (ADR 0110) — every wait of a multi-wait park (`ctx.select` /
+   * concurrent `ctx.receive`). Additive: a single-gate park keeps writing only the legacy
+   * fields above, byte-identically, so older readers and `locatePark` are unaffected.
+   */
+  waits?: SuspendWait[];
+}
+
+/** One wait of a multi-wait park (EVENT_SCHEMA 1.23.0, ADR 0110 D4). */
+export interface SuspendWait {
+  /** `<scopePath>#<ordinal>` (ADR 0110 D3). */
+  waitId: string;
+  kind: "gate" | "inbox" | "timer";
+  /** The gate name (`kind: "gate"`). */
+  on?: string;
+  /** The inbox topic (`kind: "inbox"`). */
+  topic?: string;
+  viewDigest?: string;
+  correlationKey?: string;
+  /** A timer arm's wake (epoch ms), recorded once at first registration. */
+  wakeAt?: number;
 }
 
 export interface ExecutionState {

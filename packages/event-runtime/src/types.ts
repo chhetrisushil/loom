@@ -35,6 +35,13 @@ export type { EventEnvelope };
  *   the same rule that made MemoryStore 2.0.0 (ADR 0091). No method was added or removed: a
  *   store that already paged ids in that order with id cursors (SQLite; the in-memory store
  *   on well-formed BMP ids) conforms unchanged.
+ * 2.1.0: RESERVED by Wave 2 (W2-0) for the optional `acquireFenceIf(id, { fence, parkSeq })`
+ *   (ADR 0118 R8k: an atomic compare-and-set on the fence token AND "no answering event past the
+ *   park"). The constant moves with the rest of the Wave 2 bump so the compatibility matrix is
+ *   regenerated once; the METHOD, its conformance cases and the decorator forwarding land in
+ *   the R8k PR. What this version DOES ship is the classification the method will read:
+ *   {@link EVENT_KIND_CLASS} / {@link isAnsweringKind} (every kernel event kind is `answering`
+ *   or `ignorable`, a required total map). No existing method changed, so a 2.0.0 store conforms.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -44,7 +51,7 @@ export type { EventEnvelope };
  * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
  * fitness test makes every in-repo decorator run it).
  */
-export const EVENT_STORE_SPI_VERSION = "2.0.0";
+export const EVENT_STORE_SPI_VERSION = "2.1.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
