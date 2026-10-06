@@ -1,15 +1,20 @@
-import { SuspendError, VOCABULARY_NAME_PATTERN, step$ } from "@loom/core";
+import { BUILTIN_METER_DIMENSIONS, SuspendError, VOCABULARY_NAME_PATTERN, step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { Effect, EffectContext } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { meteringMiddleware } from "@loom/middleware";
-import { ReplayVM } from "@loom/replay-vm";
+import { BUILTIN_DIMENSION_NAMES, CUSTOM_DIMENSION_PATTERN, ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import type { FlowRunner, RegisteredFlow } from "./types";
-import { assertEstimatedCost, assertMeterCeilings, guardUserspaceEmit } from "./userspaceEmit";
+import {
+  METER_CEILINGS,
+  assertEstimatedCost,
+  assertMeterCeilings,
+  guardUserspaceEmit,
+} from "./userspaceEmit";
 
 // ADR 0115 (R15) — open vocabularies: effect kinds, task kinds, metering dimensions.
 
@@ -371,5 +376,18 @@ describe("decide({ estimatedCost }) — the open spelling beside estimatedCostUs
     expect(() => assertEstimatedCost({ constructor: 1 })).toThrow(/not usable/);
     expect(() => assertEstimatedCost({ prototype: 1 })).toThrow(/not usable/);
     expect(() => assertEstimatedCost({ gpu_seconds: 1 })).not.toThrow();
+  });
+});
+
+describe("ADR 0115 — vocabulary copies agree", () => {
+  it("core and replay-vm name patterns are identical", () => {
+    expect(CUSTOM_DIMENSION_PATTERN.source).toBe(VOCABULARY_NAME_PATTERN.source);
+    expect(CUSTOM_DIMENSION_PATTERN.flags).toBe(VOCABULARY_NAME_PATTERN.flags);
+  });
+
+  it("core, replay-vm and the meter ceilings name the same built-in dimensions", () => {
+    const core = [...BUILTIN_METER_DIMENSIONS].sort();
+    expect([...BUILTIN_DIMENSION_NAMES].sort()).toEqual(core);
+    expect(Object.keys(METER_CEILINGS).sort()).toEqual(core);
   });
 });

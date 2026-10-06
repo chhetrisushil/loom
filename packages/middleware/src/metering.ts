@@ -10,6 +10,8 @@ import type { EffectContext, EffectMiddleware, ResourceSnapshot } from "@loom/ef
 // the accounting and the enforcement are replay-safe (metered facts live in the log;
 // the running total is read from the deterministic fold via `ctx.resources`).
 
+import { BUILTIN_METER_DIMENSIONS, isVocabularyName } from "@loom/core";
+
 export interface ResourceDelta {
   tokens?: number;
   costUsd?: number;
@@ -26,8 +28,9 @@ export interface ResourceDelta {
   /**
    * ADR 0115 — open dimensions (`gpu_seconds`, `credits`), by name. Folded into
    * `_resources.custom`; the kernel assigns no unit and no price, so converting these to money
-   * is this pricing function's job. At most 32 names, each `/^[a-z][a-z0-9._-]{0,63}$/`, never a built-in name. A bad
-   * name (or value) makes `ctx.emit` throw AFTER the effect ran, like a built-in ceiling breach.
+   * is this pricing function's job. At most 32 names, each matching `VOCABULARY_NAME_PATTERN`
+   * (`@loom/core`), never a built-in name. A bad name (or value) makes `ctx.emit` throw AFTER the
+   * effect ran, like a built-in ceiling breach.
    */
   custom?: Readonly<Record<string, number>>;
 }
@@ -65,37 +68,29 @@ export interface Budget {
   maxCustom?: Readonly<Record<string, number>>;
 }
 
-/** Built-in dimension names: a `custom` entry may never alias one (ADR 0115). */
-const BUILTIN_DIMENSIONS: ReadonlySet<string> = new Set([
-  "tokens",
-  "costUsd",
-  "ms",
-  "memBytes",
-  "wallMs",
-  "netBytes",
-]);
-const CUSTOM_NAME = /^[a-z][a-z0-9._-]{0,63}$/;
 
 /** True when `name` is a built-in metering dimension (never a custom one). */
 export function isBuiltinDimension(name: string): boolean {
-  return BUILTIN_DIMENSIONS.has(name);
+  return BUILTIN_METER_DIMENSIONS.has(name);
 }
 
 /** True when `name` is a valid custom dimension name (pattern shared with the fold's guard). */
 export function isCustomDimensionName(name: string): boolean {
-  return CUSTOM_NAME.test(name) && !BUILTIN_DIMENSIONS.has(name);
+  return isVocabularyName(name) && !BUILTIN_METER_DIMENSIONS.has(name);
 }
 
-const checkedMaxCustom = new WeakSet<object>();
-
 /**
- * Refuse a `Budget.maxCustom` that names a built-in dimension (use `maxTokens` etc.: a custom
- * ceiling on `tokens` would read `_resources.custom.tokens`, which nothing meters) or a non-numeric ceiling. Memoised per object so the per-effect path stays O(1).
+ * Validate a `Budget.maxCustom` and return a FROZEN shallow copy to enforce against (so a later
+ * mutation of the caller's object cannot smuggle in a built-in name or a bad ceiling). Refuses a
+ * built-in dimension name (use `maxTokens` etc.: a custom ceiling on `tokens` would read
+ * `_resources.custom.tokens`, which nothing meters) and a non-numeric ceiling.
  */
-export function assertMaxCustom(maxCustom: Readonly<Record<string, number>> | undefined): void {
-  if (maxCustom === undefined || checkedMaxCustom.has(maxCustom)) return;
+export function assertMaxCustom(
+  maxCustom: Readonly<Record<string, number>> | undefined
+): Readonly<Record<string, number>> | undefined {
+  if (maxCustom === undefined) return undefined;
   for (const [name, max] of Object.entries(maxCustom)) {
-    if (BUILTIN_DIMENSIONS.has(name)) {
+    if (BUILTIN_METER_DIMENSIONS.has(name)) {
       throw new Error(
         `Budget.maxCustom."${name}" names a built-in dimension; use its own max field (e.g. maxTokens)`
       );
@@ -104,7 +99,7 @@ export function assertMaxCustom(maxCustom: Readonly<Record<string, number>> | un
       throw new Error(`Budget.maxCustom."${name}" must be a finite non-negative number`);
     }
   }
-  checkedMaxCustom.add(maxCustom);
+  return Object.freeze({ ...maxCustom });
 }
 
 /** The first custom ceiling the spend has reached, as a reason — own-property reads only. */
@@ -113,7 +108,6 @@ export function overCustomBudget(
   maxCustom: Readonly<Record<string, number>> | undefined
 ): string | null {
   if (maxCustom === undefined) return null;
-  assertMaxCustom(maxCustom);
   for (const [name, max] of Object.entries(maxCustom)) {
     const spent =
       custom !== undefined && Object.hasOwn(custom, name) ? (custom[name] as number) : 0;
@@ -186,11 +180,15 @@ export function llmUsageTokens(result: unknown): number {
 
 export function meteringMiddleware(options: MeteringOptions): EffectMiddleware {
   const now = options.clock ?? (() => Date.now());
-  assertMaxCustom(options.budget?.maxCustom);
+  const frozenMax = assertMaxCustom(options.budget?.maxCustom);
+  const budget: Budget | undefined =
+    options.budget === undefined
+      ? undefined
+      : { ...options.budget, ...(frozenMax !== undefined && { maxCustom: frozenMax }) };
   return async (ctx: EffectContext, input: unknown, next): Promise<unknown> => {
     // Admission control: refuse if the execution has already spent its budget.
-    if (options.budget !== undefined && ctx.resources !== undefined) {
-      const reason = overBudget(ctx.resources, options.budget);
+    if (budget !== undefined && ctx.resources !== undefined) {
+      const reason = overBudget(ctx.resources, budget);
       if (reason !== null) {
         ctx.emit("QUOTA_EXCEEDED", { stepId: ctx.stepId, reason });
         throw new QuotaExceededError(reason);

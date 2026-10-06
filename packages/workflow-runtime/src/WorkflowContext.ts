@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { tainted } from "@loom/classify";
-import { SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
+import { BUILTIN_METER_DIMENSIONS, SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
 import type { ExecutableTask, StepDefinition, SuspendWait } from "@loom/core";
 import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loom/effect-runtime";
 import type { ReplayVM } from "@loom/replay-vm";
@@ -35,15 +35,6 @@ import type {
   WorkflowContext,
 } from "./types";
 import { assertEstimatedCost, assertFlowDecisionId, guardUserspaceEmit } from "./userspaceEmit";
-
-const BUILTIN_DIMENSIONS: ReadonlySet<string> = new Set([
-  "tokens",
-  "costUsd",
-  "ms",
-  "memBytes",
-  "wallMs",
-  "netBytes",
-]);
 
 // Audit MEM-HIGH (DE-4 follow-up) — typed-failure payloads land inline in the
 // log and the folded frame with no claim-check path (middleware inspects only
@@ -1124,7 +1115,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (r === undefined) return 0;
     // ADR 0115 — a built-in is a top-level field, anything else lives in `custom`. Own-property
     // reads only: a dimension is a caller-chosen name (`constructor` must not read a prototype).
-    if (BUILTIN_DIMENSIONS.has(dimension)) return (r[dimension] as number | undefined) ?? 0;
+    if (BUILTIN_METER_DIMENSIONS.has(dimension)) return (r[dimension] as number | undefined) ?? 0;
     const custom = r.custom;
     return custom !== undefined && Object.hasOwn(custom, dimension)
       ? (custom[dimension] as number)
