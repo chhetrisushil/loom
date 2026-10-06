@@ -394,6 +394,72 @@ export const FOLD_VECTORS: FoldVector[] = [
     },
   },
   {
+    // ADR 0112 D2 — the scope record's ADDITIVE fields (amended 2026-10-06, R6 review): the
+    // launched count, the per-branch gate-answer consumption + cursor, and the failing error's
+    // class (and a typed failure's channel + payload). Malformed entries (a negative or fractional
+    // index, a non-string path) are skipped; a record without them folds as before.
+    name: "PARALLEL_COMPLETED's additive launched / consumed / cursor / error-class fields",
+    events: [
+      ev("v10b", 0, "EXECUTION_STARTED", { input: {} }),
+      ev(
+        "v10b",
+        1,
+        "PARALLEL_COMPLETED",
+        {
+          scopePath: "/0",
+          failedBranch: 0,
+          error: "TypedFailure: outage",
+          errorName: "TypedFailure",
+          errorChannel: "outage",
+          errorPayload: { code: 503 },
+          cancelled: [],
+          launched: 2,
+          consumed: [
+            ["/0.0", 0],
+            ["/0.1", 1.5],
+            ["/0.1", -1],
+            [7, 2],
+            ["/0.1", 2],
+          ],
+          cursor: 3,
+        },
+        { kernel: true }
+      ),
+      ev(
+        "v10b",
+        2,
+        "PARALLEL_COMPLETED",
+        { scopePath: "/1", failedBranch: 0, error: "x", cancelled: [], launched: -1, cursor: "z" },
+        { kernel: true }
+      ),
+    ],
+    expected: {
+      status: "running",
+      sequence: 2,
+      variables: {
+        _input: {},
+        _scopes: {
+          "/0": {
+            failedBranch: 0,
+            error: "TypedFailure: outage",
+            errorName: "TypedFailure",
+            errorChannel: "outage",
+            errorPayload: { code: 503 },
+            cancelled: [],
+            launched: 2,
+            consumed: [
+              ["/0.0", 0],
+              ["/0.1", 2],
+            ],
+            cursor: 3,
+          },
+          "/1": { failedBranch: 0, error: "x", cancelled: [] },
+        },
+      },
+      frames: {},
+    },
+  },
+  {
     // The marker rule: the SAME events without `metadata.kernel` fold as an app event always did
     // (no handler effect at all), so an existing log that happens to use these names replays
     // byte-identically. Only PARALLEL_COMPLETED had a (no-op) handler before; it keeps it.

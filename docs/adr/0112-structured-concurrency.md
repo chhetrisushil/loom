@@ -12,7 +12,9 @@
   The scope id is schema-visible through ADR 0110's `waitId`, and (round 1) the scope's outcome is
   journaled as `PARALLEL_COMPLETED` (D2), an EXISTING reserved kind that gains its first writer and a
   payload; no new kind.
-- Revision: round 1 (Opus review of PR #495): the fail-fast outcome is journaled so replay does not depend
+- Revision: **review round 1 of PR #499 (2026-10-06, user decisions Q1-Q3)** amends the frozen `PARALLEL_COMPLETED` shape
+  additively, rehydrates the thrown error, gates the scope writer behind `kernel.features.scopes` and seals the journal after
+  every park/terminal (see "Review round 1 (as built)"). Earlier: round 1 (Opus review of PR #495): the fail-fast outcome is journaled so replay does not depend
   on timing (D2); a park is not a failure and freezes new step starts (D2/D3); `scopePath` carries the
   ordinal of the `parallel` call (D1). **R6 lands before R2 and R1b** (both need the barrier).
 
@@ -160,9 +162,9 @@ completion and the park commit. Cascade: parent cancelled → children cancelled
 
 ## Implementation (as built)
 
-Accepted with R6 (kernel: `WorkflowContext`, `WorkflowRuntime`; 1P: `@loom/orchestration`). Nothing in the frozen W2-0
-shapes changed: the `PARALLEL_COMPLETED` payload, the `_scopes` fold key and the `metadata.kernel` marker (stamped by the
-journal) are used exactly as reserved. What the code does, and where it differs from the text above:
+Accepted with R6 (kernel: `WorkflowContext`, `WorkflowRuntime`; 1P: `@loom/orchestration`). The `_scopes` fold key and the
+`metadata.kernel` marker (stamped by the journal) are used as reserved; the `PARALLEL_COMPLETED` payload was extended
+additively by the review round below. What the code does, and where it differs from the text above:
 
 - **Identity.** A `parallel` call is `"<parent path>/<k>"` (the root path is `""`, so the first call is `"/0"`); its
   branches are `"<parent path>/<k>.<i>"`. `PARALLEL_COMPLETED.scopePath` is the CALL's path, `failedBranch` the index of the
@@ -170,9 +172,9 @@ journal) are used exactly as reserved. What the code does, and where it differs 
   inside branch `/0.1` is `"/0.1/0"`. A branch function receives a `BranchContext` (the execution context with the
   branch's scope bound in, plus `scopePath`); `ctx.parallel` still accepts `[step, input]` pairs.
 - **Step ids are unchanged.** No step id derivation changed (a scope path never enters a step id), so a mixed fleet derives the
-  same ids for every step; the design's rollout question is answered "byte-identical". The `PARALLEL_COMPLETED` writer is NOT
-  behind a `kernel.features` flag: a node older than 1.23.0 folds the record as a no-op and so would re-run a failed scope
-  live, which is exactly the pre-0112 behaviour, never worse. The `STEP_CANCELLED` writer already existed for an execution
+  same ids for every step; the design's rollout question is answered "byte-identical". (Superseded by the review round: the
+  scope writer IS behind `kernel.features.scopes`, default off, because a mixed fleet where one node failed fast and an
+  older one re-runs the scope live is a divergence, not "never worse".) The `STEP_CANCELLED` writer already existed for an execution
   cancel; it now also fires when the scope's (or the park-drain's) signal aborts a step.
 - **Fail-fast.** The first REAL branch failure (not a `SuspendError`, not cancellation noise, and not while the execution
   itself is being cancelled) aborts the scope. The call waits for its branches to settle (work that ignores the signal gets
@@ -209,3 +211,50 @@ journal) are used exactly as reserved. What the code does, and where it differs 
   the guarantee is that a scheduled `recover()` bounds an orphan's lifetime.
 - **Not done here (named).** `parkDrainMs` in `defineConfig`; DST over every interleaving (the tests vary timing
   explicitly instead); R2's `waitId` consumes `scopePath` in its own PR; `PARALLEL_STARTED` and `STEP_RETRYING` stay reserved.
+
+## Review round 1 (as built)
+
+Review of PR #499 (an Opus adversarial review) found three P1s, three P2s and a P3. The user decided the three design
+questions on 2026-10-06; this is what was built.
+
+- **Q1 — the frozen shape is AMENDED, additively (P1-A, P1-B).** *Frozen shape amended by user decision 2026-10-06 (R6 P1-A/B).*
+  A served scope launched every branch (a `limit` leaves branches the first run never started, whose live
+  `decide`/`suspend`/`emit` then ran) and took gate answers by position (a served branch whose first-run gate never opened
+  consumed the answer of a LATER gate, which then re-parked). `PARALLEL_COMPLETED` / `_scopes[scopePath]` gains optional
+  `launched` (the count: branches launch in input order, so `0..launched-1`), `consumed` (`[branchScopePath, answerIndex][]`,
+  descendants included, at most 128; past it the field is omitted and a warning says so) and `cursor` (the gate-answer cursor
+  after the scope). A served scope launches exactly `launched` branches; a served branch takes exactly the answers `consumed`
+  lists for its path (none listed: `ScopeServedError`, nothing consumed) and the cursor is set to `cursor` at the end, so the
+  gate after the scope receives the answer it received on the first run. A suspend or sleep inside an ABORTED scope throws the
+  scope's noise without consuming. A record without the fields (written before this amendment) serves as before. EVENT_SCHEMA
+  stays 1.23.0 (unreleased; an additive payload field needs no bump, and an older fold ignores it); the wire-abi vectors,
+  the fold handler, the `_scopes` shape and the design document's "Frozen at W2-0" table carry the amendment.
+- **Q2 — one thrown value (P1-C).** The scope records the failing error's `errorName` (and, for a `TypedFailure`, its
+  `errorChannel` and a JSON-bounded `errorPayload`) beside `error` (`"Name: message"`, the double `TypedFailure:` prefix is
+  gone). BOTH the first run and every served re-run throw the value built from that record: a `TypedFailure` stays typed; a
+  class named in the registry (`WorkflowRuntimeDeps.errorClasses` / `defineConfig({ execution: { errorClasses } })`, plus the
+  built-in `Error`/`TypeError`/`RangeError`/`ReferenceError`/`SyntaxError`/`EvalError`/`URIError`) is rebuilt
+  `new ctor(message)` (no `cause`; a constructor that throws or returns a non-`Error` falls back); anything else is
+  `ParallelScopeFailedError(message, scopePath, failedBranch, errorName)`. Consequence, documented: the first run no longer
+  throws the ORIGINAL object (its `cause` and extra fields are gone), and inside a branch, user code that catches a step's
+  error sees the effect's error on the first run but `ScopeServedError` on a replay, so it must rethrow or use typed failures.
+  `failFast: false` and an execution cancel record nothing and throw the original error as before.
+- **Q3 — `kernel.features.scopes` (P2-B).** Default OFF, like `redrive`. Off, `ctx.parallel` is the pre-R6 bounded
+  `Promise.all` (`parallelLimit` over the execution's signal): no scope abort, no `STEP_CANCELLED` for a sibling, no
+  `PARALLEL_COMPLETED`, no consultation of a record found in the log, no park-drain abort. The park barrier (ordering) and the
+  seal below are always on: they write no new kind and make the log more regular, not less. Wired
+  `defineConfig.kernel.features.scopes` -> `WorkflowRuntimeDeps.scopes`.
+- **P2-A — nothing follows the park or the terminal.** The context is SEALED the instant `EXECUTION_SUSPENDED`,
+  `EXECUTION_COMPLETED` or `EXECUTION_FAILED` is enqueued (previously only after a drain timeout), so user code that runs after
+  a branch settled (an `emit`, a `decide`) cannot append behind it, and an abandoned task cannot append after the terminal.
+  `decide` gained the frozen/parked guard (it waits for the resume, like a step start), throws `ScopeServedError` in a served
+  scope when the decision is not already recorded, and throws the scope's noise in an aborted one. Tightening of ADR 0102's
+  note on a zombie effect's late emit: it is now DROPPED with a warning instead of appended after the park; the timed-out step
+  re-executes on the resume, which emits it again.
+- **P2-C — a branch that closes over the ROOT `ctx`.** Each branch runs inside an `AsyncLocalStorage` bound to its scope, and
+  every root-`ctx` call (`run`, `execute`, `decide`, `parallel`, `suspend`, `sleep`) resolves to the scope of the CALLING async
+  context: the abort cancels it, and the `parallel` calls it makes are numbered per scope, not by timing. (`node:async_hooks`
+  is available: the package already imports `node:crypto`.) Only calls made inside a branch's async context are bound: work
+  detached from it by a non-async-context-propagating mechanism is not.
+- **P3.** `recover()` reads a gone parent's log once per pass (a bounded cache), not once per orphan. First `recover()` after
+  upgrading to this version cancels the live children of parents that were cancelled or continued before it (the sweep is new).

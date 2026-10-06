@@ -1840,9 +1840,26 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     await Promise.all(work);
   };
 
-  /** Is `childId` a detached spawn of `parentId`? Read from the parent's recorded decisions. */
-  const isDetachedSpawn = async (parentId: string, childId: string): Promise<boolean> =>
-    (await spawnedBy(parentId, new Map())).get(childId) === true;
+  /**
+   * Is `childId` a detached spawn of `parentId`? Read from the parent's recorded decisions. A
+   * `recover` pass passes its own `cache` so a gone parent's log is read ONCE per pass, not once
+   * per orphan (a parent with N orphaned children cost N full log reads). Bounded by the caller.
+   */
+  const isDetachedSpawn = async (
+    parentId: string,
+    childId: string,
+    cache?: Map<string, Map<string, boolean>>
+  ): Promise<boolean> => {
+    let spawned = cache?.get(parentId);
+    if (spawned === undefined) {
+      spawned = await spawnedBy(parentId, new Map());
+      if (cache !== undefined) {
+        if (cache.size >= 64) cache.clear();
+        cache.set(parentId, spawned);
+      }
+    }
+    return spawned.get(childId) === true;
+  };
 
   const recover = async (options?: {
     source?: ExecutionEnumerable;
@@ -1856,6 +1873,8 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     // parent id → is it cancelled / continued (an orphan's parent). Bounded: a pass over a big
     // store must not hold every parent it ever met.
     const parentGone = new Map<string, boolean>();
+    // parent id → its recorded spawns (child → detached), read once per pass (bounded).
+    const spawnCache = new Map<string, Map<string, boolean>>();
     for await (const id of iterateExecutionIds(source, options?.pageSize)) {
       if (isReservedStream(id)) continue;
       summary.scanned++;
@@ -1877,7 +1896,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           if (parentGone.size >= 1024) parentGone.clear();
           parentGone.set(recordedParent, gone);
         }
-        if (gone && !(await isDetachedSpawn(recordedParent, id))) {
+        if (gone && !(await isDetachedSpawn(recordedParent, id, spawnCache))) {
           await cascadeCancel(id, recordedParent);
           continue;
         }

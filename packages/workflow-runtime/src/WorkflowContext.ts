@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createSurfaceEmitter } from "@loom/agent-surface";
 import type { SurfaceEmitter } from "@loom/agent-surface";
 import { SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
@@ -23,6 +24,7 @@ import type {
   DecideOptions,
   DecideScope,
   EffectInDoubtResolution,
+  ErrorClassCtor,
   ParallelOptions,
   ResourceDimension,
   SuspendConfig,
@@ -157,12 +159,26 @@ class ScopeServedError extends Error {
 /** A `parallel` branch: a `[step, input]` pair or a branch function. */
 type Branch = [StepDefinition, unknown] | ((branch: BranchContext) => Promise<unknown>);
 
+/** Most gate answers a scope record carries (`consumed`); past it the record falls back to positional. */
+const SCOPE_CONSUMED_CAP = 128;
+/** A typed failure's payload rides the scope record only while its JSON stays this small. */
+const SCOPE_PAYLOAD_CAP = 1024;
+
 /** One `parallel` call: its controller, and what the call has learned about its branches. */
 interface ScopeGroup {
   readonly controller: AbortController;
   parked: boolean;
   /** Step ids that recorded `STEP_CANCELLED` under this scope (descendants included). */
   readonly cancelled: string[];
+  /** Gate answers consumed under this scope (descendants included): `[branchScopePath, answerIndex]`. */
+  readonly consumed: Array<[string, number]>;
+  consumedOverflow: boolean;
+}
+
+/** A scope replaying its journaled outcome: which answer each branch consumed on the first run. */
+interface ServedScope {
+  /** `undefined` for a record that predates the consumption field: answers are taken positionally. */
+  readonly consumed: Map<string, { indices: number[]; next: number }> | undefined;
 }
 
 /** A branch's place in the scope tree: its path, its signal, and its group chain. */
@@ -174,13 +190,61 @@ interface Scope {
   readonly signal: AbortSignal | undefined;
   /** Ordinal of the next `parallel` call made in this scope. */
   parallelCount: number;
-  /** This scope replays a journaled outcome: it serves frames and never starts work. */
-  readonly servedOnly: boolean;
+  /** Set when this scope replays a journaled outcome: it serves frames and never starts work. */
+  readonly served: ServedScope | undefined;
 }
 
 function scopeIsParked(scope: Scope | undefined): boolean {
   for (let s = scope; s !== undefined; s = s.parent) if (s.group?.parked === true) return true;
   return false;
+}
+
+/**
+ * The scope the CURRENT async context runs in. A branch that closes over the root `ctx` (instead of
+ * using the `BranchContext` it was handed) still belongs to its scope: abort cancels it, and the
+ * `parallel` calls it makes are numbered in its own scope, not in whichever order timing delivers.
+ */
+const scopeStore = new AsyncLocalStorage<{ owner: object; scope: Scope }>();
+
+/** The journaled outcome of a fail-fast scope, as the fold holds it (`_scopes[scopePath]`). */
+interface RecordedScope {
+  failedBranch: number | undefined;
+  error: string;
+  errorName: string | undefined;
+  errorChannel: string | undefined;
+  errorPayload: unknown;
+  launched: number | undefined;
+  consumed: Array<[string, number]> | undefined;
+  cursor: number | undefined;
+}
+
+const BUILTIN_ERROR_CLASSES: ReadonlyArray<readonly [string, ErrorClassCtor]> = [
+  ["Error", Error],
+  ["TypeError", TypeError],
+  ["RangeError", RangeError],
+  ["ReferenceError", ReferenceError],
+  ["SyntaxError", SyntaxError],
+  ["EvalError", EvalError],
+  ["URIError", URIError],
+];
+
+/** `JSON` round trip, or `undefined` when the value cannot (or should not) ride a scope record. */
+function jsonBounded(value: unknown): unknown {
+  try {
+    const text = JSON.stringify(value);
+    if (text === undefined || text.length > SCOPE_PAYLOAD_CAP) return undefined;
+    return JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Strip every leading `${name}: ` — `String(error)` of an error whose message repeats its name. */
+function stripNamePrefix(text: string, name: string): string {
+  const prefix = `${name}: `;
+  let out = text;
+  while (out.startsWith(prefix)) out = out.slice(prefix.length);
+  return out;
 }
 
 export class WorkflowContextImpl implements WorkflowContext {
@@ -223,6 +287,8 @@ export class WorkflowContextImpl implements WorkflowContext {
   private warnedSealed = false;
   private readonly parkDrainMs: number;
   private readonly onWarn: (message: string) => void;
+  private readonly scopesEnabled: boolean;
+  private readonly errorClasses: Map<string, ErrorClassCtor>;
 
   constructor(
     executionId: string,
@@ -244,17 +310,30 @@ export class WorkflowContextImpl implements WorkflowContext {
     // anchored to journal timestamps written with THIS clock, so the remaining budget
     // must be measured with it too — never with a raw `Date.now()`.
     private readonly now: () => number = Date.now,
-    opts: { parkDrainMs?: number; onWarn?: (message: string) => void } = {}
+    opts: {
+      parkDrainMs?: number;
+      onWarn?: (message: string) => void;
+      scopes?: boolean;
+      errorClasses?: Record<string, ErrorClassCtor>;
+    } = {}
   ) {
     this.parkDrainMs = opts.parkDrainMs ?? DEFAULT_PARK_DRAIN_MS;
     this.onWarn = opts.onWarn ?? (() => {});
+    this.scopesEnabled = opts.scopes === true;
+    this.errorClasses = new Map(BUILTIN_ERROR_CLASSES);
+    for (const [name, ctor] of Object.entries(opts.errorClasses ?? {})) {
+      if (typeof ctor === "function") this.errorClasses.set(name, ctor);
+    }
     this.rootScope = {
       path: "",
       parent: undefined,
       group: undefined,
-      signal: linkSignals(this.signal, this.parkController.signal),
+      // Scopes off (the pre-R6 semantics): the execution's own signal, no park-drain abort.
+      signal: this.scopesEnabled
+        ? linkSignals(this.signal, this.parkController.signal)
+        : this.signal,
       parallelCount: 0,
-      servedOnly: false,
+      served: undefined,
     };
     this.executionId = executionId;
     this.workflowId = workflowId;
@@ -336,10 +415,20 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (!this.warnedSealed) {
       this.warnedSealed = true;
       this.onWarn(
-        `execution "${this.executionId}": a ${eventType} from work still running after the park was committed was DROPPED (journal sealed, ADR 0112) — it re-runs on resume under the same idempotency key`
+        `execution "${this.executionId}": a ${eventType} from work still running after the execution's park or terminal event was committed was DROPPED (journal sealed, ADR 0112) — a parked execution re-runs it on resume under the same idempotency key`
       );
     }
     return true;
+  }
+
+  /**
+   * The runtime calls this the instant it enqueues `EXECUTION_SUSPENDED` / `EXECUTION_COMPLETED` /
+   * `EXECUTION_FAILED`: from then on nothing this context's (abandoned, or still-running) work
+   * appends reaches the log. The barrier drains in-flight STEPS; user code between steps (an
+   * `emit`, a `decide`) can still run after a branch settled, and must not follow the terminal.
+   */
+  seal(): void {
+    this.sealed = true;
   }
 
   // ── ADR 0112 D3 — the park barrier (called by the runtime around the park commit) ─────────
@@ -383,8 +472,14 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (this.activeWork === 0) return undefined;
     return (async () => {
       if (await this.idleWithin(this.parkDrainMs)) return;
-      this.parkController.abort(new ScopeAbortedError("", "park drain exceeded parkDrainMs"));
-      if (!(await this.idleWithin(Math.min(this.parkDrainMs, ABORT_GRACE_CAP_MS)))) {
+      // Scopes off: no abort (pre-R6 semantics) — whatever is still running is sealed out.
+      if (this.scopesEnabled) {
+        this.parkController.abort(new ScopeAbortedError("", "park drain exceeded parkDrainMs"));
+      }
+      if (
+        !this.scopesEnabled ||
+        !(await this.idleWithin(Math.min(this.parkDrainMs, ABORT_GRACE_CAP_MS)))
+      ) {
         // Still running after the abort and its grace: stop listening to it. The step's effect
         // ran, its result is not recorded, and it re-runs on resume under the same key.
         this.sealed = true;
@@ -406,7 +501,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     task: ExecutableTask<TIn, TOut>,
     input: TIn
   ): Promise<TOut> {
-    return this.executeIn(this.rootScope, task, input);
+    return this.executeIn(this.currentScope(), task, input);
   }
 
   /** `execute` as a step of `scope` (ADR 0112): the scope's signal governs it, its path names it. */
@@ -425,7 +520,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       if (isHuman) {
         // It took its answer — after any entries the operator discarded for it — so a
         // replay past it takes the same number (ADR 0104).
-        for (let k = this.discardedFor(id); k >= 0; k--) this.takePassthrough();
+        for (let k = this.discardedFor(id); k >= 0; k--) this.takeIn(scope, id);
       }
       return this.vm.getOutput(id) as TOut;
     }
@@ -449,7 +544,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     // ADR 0112 — a scope served from its journaled outcome never STARTS work: a step that is
     // not already completed (or a recorded typed failure, above) is one the first run
     // cancelled, failed or never reached, and starting it would make replay timing-dependent.
-    if (scope.servedOnly) throw new ScopeServedError(id, scope.path);
+    if (scope.served !== undefined) throw new ScopeServedError(id, scope.path);
 
     // K8 — a cancelled execution starts no further steps: bail before the
     // STEP_STARTED is even logged (EXECUTION_CANCELLED owns the outcome).
@@ -735,7 +830,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     decider: (scope: DecideScope) => T | Promise<T>,
     opts?: DecideOptions
   ): Promise<T> {
-    return this.decideIn(this.rootScope, decisionId, decider, opts);
+    return this.decideIn(this.currentScope(), decisionId, decider, opts);
   }
 
   private async decideIn<T>(
@@ -749,6 +844,13 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (this.vm.hasDecision(decisionId)) {
       return this.vm.getDecision(decisionId) as T;
     }
+
+    // ADR 0112 — a decision is a start of work too. A scope served from its journaled outcome never
+    // makes one the first run did not (it would append what no first run recorded); a cancelled
+    // scope makes none; and once a park is decided none starts before the park is committed.
+    if (cancelScope.served !== undefined) throw new ScopeServedError(decisionId, cancelScope.path);
+    if (cancelScope !== this.rootScope) this.throwIfCancelled(cancelScope.signal);
+    if (this.frozen || scopeIsParked(cancelScope)) return new Promise<T>(() => {});
 
     // ADR 0102 — a decider runs only when the decision is made (served on a re-run):
     // the decision is live for this segment, an emit appended while it runs is left
@@ -877,10 +979,16 @@ export class WorkflowContextImpl implements WorkflowContext {
     options?: ParallelOptions
   ): Promise<TResults> {
     return this.parallelIn(
-      this.rootScope,
+      this.currentScope(),
       branches as unknown as Branch[],
       options
     ) as Promise<TResults>;
+  }
+
+  /** The scope the current async context belongs to: its branch's, or the root. */
+  private currentScope(): Scope {
+    const store = scopeStore.getStore();
+    return store !== undefined && store.owner === this ? store.scope : this.rootScope;
   }
 
   /** The context a branch function receives: this context, with the branch's scope bound in. */
@@ -892,6 +1000,9 @@ export class WorkflowContextImpl implements WorkflowContext {
       decide: (id: string, decider: (s: DecideScope) => unknown, o?: DecideOptions) =>
         this.decideIn(scope, id, decider, o),
       parallel: (b: Branch[], o?: ParallelOptions) => this.parallelIn(scope, b, o),
+      suspend: (config: SuspendConfig) => this.suspendIn(scope, config),
+      sleep: (ms: number) => this.sleepIn(scope, ms),
+      sleepUntil: (wakeAt: number) => this.sleepUntilIn(scope, wakeAt),
     };
     return new Proxy(this, {
       get(target, prop) {
@@ -902,6 +1013,24 @@ export class WorkflowContextImpl implements WorkflowContext {
     }) as unknown as BranchContext;
   }
 
+  /** Scopes off (pre-R6 semantics): bounded concurrency, input-order results, no scope at all. */
+  private async parallelLegacy(
+    scope: Scope,
+    branches: Branch[],
+    options?: ParallelOptions
+  ): Promise<unknown[]> {
+    const tasks = branches.map(
+      (branch) => () =>
+        Array.isArray(branch)
+          ? this.executeIn(scope, branch[0], branch[1])
+          : Promise.resolve(branch(this.branchContext(scope)))
+    );
+    return parallelLimit(tasks, {
+      ...(options?.limit !== undefined && { limit: options.limit }),
+      ...(this.signal !== undefined && { signal: this.signal }),
+    });
+  }
+
   /**
    * ADR 0112 D1/D2 — one `parallel` call as a cancellation scope.
    *
@@ -909,15 +1038,19 @@ export class WorkflowContextImpl implements WorkflowContext {
    * made), its branches `"<parent>/<k>.<i>"` — a pure function of the flow's control flow.
    * A first REAL branch failure (not a park, not cancellation noise) aborts the scope's signal;
    * the call settles once every branch has (bounded by a grace for work that ignores the
-   * signal), journals `PARALLEL_COMPLETED`, and rethrows the first real error by input order.
-   * A re-run that finds the scope in `_scopes` is SERVED from the record: branches serve
-   * their frames, none starts work, and the recorded error is rethrown.
+   * signal), journals `PARALLEL_COMPLETED`, and throws the first real error by input order —
+   * NORMALIZED from the record (see {@link errorFromRecord}), so the first run and every re-run
+   * throw the same value.
+   * A re-run that finds the scope in `_scopes` is SERVED from the record: exactly the branches the
+   * first run launched are launched, each serves its frames and consumes exactly the gate answers
+   * it consumed then, none starts work, and the recorded error is thrown.
    */
   private async parallelIn(
     parent: Scope,
     branches: Branch[],
     options?: ParallelOptions
   ): Promise<unknown[]> {
+    if (!this.scopesEnabled) return this.parallelLegacy(parent, branches, options);
     const k = parent.parallelCount++;
     const scopePath = `${parent.path}/${k}`;
     const n = branches.length;
@@ -929,7 +1062,19 @@ export class WorkflowContextImpl implements WorkflowContext {
     const limit = Math.min(rawLimit === undefined || rawLimit <= 0 ? n : rawLimit, n);
 
     const recorded = this.recordedScope(scopePath);
-    const group: ScopeGroup = { controller: new AbortController(), parked: false, cancelled: [] };
+    // A served scope launches exactly what the first run launched (a `limit` leaves branches the
+    // first run never started: starting them now would run live work the record knows nothing of).
+    const toLaunch =
+      recorded?.launched !== undefined ? Math.min(Math.max(recorded.launched, 0), n) : n;
+    const served: ServedScope | undefined =
+      recorded !== undefined ? this.servedFrom(recorded) : parent.served;
+    const group: ScopeGroup = {
+      controller: new AbortController(),
+      parked: false,
+      cancelled: [],
+      consumed: [],
+      consumedOverflow: false,
+    };
     const groupSignal = linkSignals(parent.signal, group.controller.signal);
     const execAborted = (): boolean => parent.signal?.aborted === true;
 
@@ -952,8 +1097,12 @@ export class WorkflowContextImpl implements WorkflowContext {
     const canStart = (): boolean =>
       !triggered && firstPark === undefined && !execAborted() && !scopeIsParked(parent);
 
+    const maybeFinish = (): void => {
+      if (running === 0 && (started >= toLaunch || !canStart())) finish?.();
+    };
+
     const launch = (): void => {
-      while (running < limit && started < n && canStart()) {
+      while (running < limit && started < toLaunch && canStart()) {
         const i = started++;
         running++;
         const node: Scope = {
@@ -962,14 +1111,18 @@ export class WorkflowContextImpl implements WorkflowContext {
           group,
           signal: groupSignal,
           parallelCount: 0,
-          servedOnly: parent.servedOnly || recorded !== undefined,
+          served,
         };
         const branch = branches[i]!;
         let p: Promise<unknown>;
         try {
-          p = Array.isArray(branch)
-            ? this.executeIn(node, branch[0], branch[1])
-            : Promise.resolve(branch(this.branchContext(node)));
+          // The branch runs INSIDE its scope's async context: a call through the root `ctx` it
+          // closed over is still this scope's.
+          p = scopeStore.run({ owner: this, scope: node }, () =>
+            Array.isArray(branch)
+              ? this.executeIn(node, branch[0], branch[1])
+              : Promise.resolve(branch(this.branchContext(node)))
+          );
         } catch (err) {
           p = Promise.reject(err);
         }
@@ -1016,14 +1169,27 @@ export class WorkflowContextImpl implements WorkflowContext {
       running--;
       settled++;
       launch();
-      if (running === 0 && (started >= n || !canStart())) finish?.();
+      maybeFinish();
     };
 
     launch();
+    maybeFinish();
     await done;
     if (graceTimer !== undefined) clearTimeout(graceTimer);
 
     if (firstPark !== undefined) throw firstPark;
+
+    if (recorded !== undefined) {
+      // Served: the gate answers the first run consumed are consumed, the cursor lands where the
+      // first run left it, and the recorded failure is thrown — never the branch's own error.
+      if (recorded.cursor !== undefined) {
+        this.suspendPassthroughsConsumed = Math.max(
+          this.suspendPassthroughsConsumed,
+          recorded.cursor
+        );
+      }
+      throw this.errorFromRecord(recorded, scopePath);
+    }
 
     // Real errors by input order (cancellation noise excluded).
     let failed = -1;
@@ -1033,16 +1199,6 @@ export class WorkflowContextImpl implements WorkflowContext {
         failed = i;
         break;
       }
-    }
-
-    if (recorded !== undefined) {
-      // Served: rethrow the recorded failure, as the typed failure where the frames hold one.
-      const at = recorded.failedBranch;
-      const own = at !== undefined ? errors[at] : undefined;
-      if (own !== undefined && isReal(own.err)) throw own.err;
-      // The record is `String(error)` ("Name: message"): the rethrow carries the original message.
-      const m = /^[A-Za-z_$][\w$]*: ([\s\S]*)$/.exec(recorded.error);
-      throw new ParallelScopeFailedError(m?.[1] ?? recorded.error, scopePath, at);
     }
 
     if (failed < 0) {
@@ -1059,29 +1215,141 @@ export class WorkflowContextImpl implements WorkflowContext {
 
     const failure = errors[failed]!.err;
     if (failFast && !execAborted()) {
-      // Journaled BEFORE the rethrow, exactly once: a re-run serves the scope from this record
+      // Journaled BEFORE the throw, exactly once: a re-run serves the scope from this record
       // instead of re-deriving it from timing (a cancelled/untyped-failed frame re-executes).
+      const record = this.describeFailure(failure, failed);
+      if (group.consumedOverflow) {
+        this.onWarn(
+          `execution "${this.executionId}": parallel scope "${scopePath}" consumed more than ${SCOPE_CONSUMED_CAP} gate answers — its record omits the consumption list, so a re-run falls back to taking answers by position`
+        );
+      }
+      // An empty list is exact too ("consumed nothing"); only an overflow drops it.
+      const exact = !group.consumedOverflow;
       this.commit("PARALLEL_COMPLETED", {
         scopePath,
         failedBranch: failed,
-        error: String(failure).slice(0, SCOPE_ERROR_CAP),
+        error: record.error,
+        errorName: record.errorName,
+        ...(record.errorChannel !== undefined && { errorChannel: record.errorChannel }),
+        ...(record.errorPayload !== undefined && { errorPayload: record.errorPayload }),
         cancelled: group.cancelled.slice(0, SCOPE_CANCELLED_CAP),
+        launched: started,
+        ...(exact && {
+          consumed: group.consumed,
+          cursor: this.suspendPassthroughsConsumed,
+        }),
       });
+      // The first run throws what a served re-run will throw: the value rebuilt from the record.
+      throw this.errorFromRecord(record, scopePath, failed);
     }
     throw failure;
   }
 
+  /** How a failing error is journaled: name + message (+ a typed failure's channel and payload). */
+  private describeFailure(
+    failure: unknown,
+    failedBranch: number
+  ): Pick<RecordedScope, "error" | "errorName" | "errorChannel" | "errorPayload"> & {
+    failedBranch: number;
+  } {
+    const isObj = typeof failure === "object" && failure !== null;
+    const rawName = isObj ? (failure as { name?: unknown }).name : undefined;
+    const errorName =
+      typeof rawName === "string" && rawName.length > 0 && rawName.length <= 128
+        ? rawName
+        : "Error";
+    const rawMessage = isObj ? (failure as { message?: unknown }).message : undefined;
+    const text = stripNamePrefix(
+      typeof rawMessage === "string" ? rawMessage : String(failure),
+      errorName
+    );
+    const typed = failure instanceof TypedFailure ? failure : undefined;
+    const payload = typed !== undefined ? jsonBounded(typed.payload) : undefined;
+    return {
+      failedBranch,
+      error: `${errorName}: ${text}`.slice(0, SCOPE_ERROR_CAP),
+      errorName,
+      errorChannel: typed?.channel,
+      errorPayload: payload,
+    };
+  }
+
+  /**
+   * ADR 0112 D2 — the one value a failed scope throws, built from its RECORD alone (so the first
+   * run and a served re-run cannot differ): a `TypedFailure` stays typed; an error class named in
+   * the registry (the built-in `Error` family + `WorkflowRuntimeDeps.errorClasses`) is rebuilt
+   * from the recorded message; anything else is a `ParallelScopeFailedError` carrying the name.
+   */
+  private errorFromRecord(
+    rec: Pick<RecordedScope, "error" | "errorName" | "errorChannel" | "errorPayload"> & {
+      failedBranch?: number | undefined;
+    },
+    scopePath: string,
+    failedBranch: number | undefined = rec.failedBranch
+  ): Error {
+    let name = rec.errorName;
+    let text = rec.error;
+    if (name !== undefined) {
+      text = stripNamePrefix(text, name);
+    } else {
+      // A record that predates `errorName`: the text is `String(error)`, "Name: message".
+      const m = /^([A-Za-z_$][\w$]*): ([\s\S]*)$/.exec(rec.error);
+      if (m !== null) {
+        name = m[1] as string;
+        text = m[2] as string;
+      }
+    }
+    if (name === "TypedFailure" && rec.errorChannel !== undefined) {
+      return new TypedFailure(rec.errorChannel, rec.errorPayload, text);
+    }
+    const ctor = name !== undefined ? this.errorClasses.get(name) : undefined;
+    if (ctor !== undefined) {
+      try {
+        const rebuilt = new ctor(text);
+        if (rebuilt instanceof Error) return rebuilt;
+      } catch {
+        // A constructor that throws is not a rehydration: fall through to the typed carrier.
+      }
+    }
+    return new ParallelScopeFailedError(text, scopePath, failedBranch, name);
+  }
+
+  private servedFrom(rec: RecordedScope): ServedScope {
+    if (rec.consumed === undefined) return { consumed: undefined };
+    const consumed = new Map<string, { indices: number[]; next: number }>();
+    for (const [path, index] of rec.consumed) {
+      const entry = consumed.get(path);
+      if (entry === undefined) consumed.set(path, { indices: [index], next: 0 });
+      else entry.indices.push(index);
+    }
+    return { consumed };
+  }
+
   /** The journaled outcome of the scope at `scopePath`, when a previous run recorded one. */
-  private recordedScope(
-    scopePath: string
-  ): { failedBranch: number | undefined; error: string } | undefined {
+  private recordedScope(scopePath: string): RecordedScope | undefined {
     const scopes = this.vm.peekState().variables._scopes as Record<string, unknown> | undefined;
     if (scopes === undefined || !Object.hasOwn(scopes, scopePath)) return undefined;
-    const r = scopes[scopePath] as { failedBranch?: unknown; error?: unknown } | undefined;
+    const r = scopes[scopePath] as Record<string, unknown> | undefined;
     if (r === undefined || r === null || typeof r !== "object") return undefined;
+    const consumed = Array.isArray(r.consumed)
+      ? (r.consumed as unknown[]).filter(
+          (e): e is [string, number] =>
+            Array.isArray(e) &&
+            e.length === 2 &&
+            typeof e[0] === "string" &&
+            Number.isSafeInteger(e[1]) &&
+            (e[1] as number) >= 0
+        )
+      : undefined;
     return {
       failedBranch: typeof r.failedBranch === "number" ? r.failedBranch : undefined,
       error: typeof r.error === "string" ? r.error : String(r.error ?? "parallel scope failed"),
+      errorName: typeof r.errorName === "string" ? r.errorName : undefined,
+      errorChannel: typeof r.errorChannel === "string" ? r.errorChannel : undefined,
+      errorPayload: r.errorPayload,
+      launched: Number.isSafeInteger(r.launched) ? (r.launched as number) : undefined,
+      consumed,
+      cursor: Number.isSafeInteger(r.cursor) ? (r.cursor as number) : undefined,
     };
   }
 
@@ -1089,7 +1357,15 @@ export class WorkflowContextImpl implements WorkflowContext {
     this.emit(eventType, { delta, done });
   }
 
-  suspend<T = never>(_config: SuspendConfig): Promise<T> {
+  suspend<T = never>(config: SuspendConfig): Promise<T> {
+    return this.suspendIn(this.currentScope(), config);
+  }
+
+  private suspendIn<T = never>(scope: Scope, _config: SuspendConfig): Promise<T> {
+    // ADR 0112 — a gate inside a CANCELLED scope never opens and never consumes an answer: the
+    // aborted branch unwinds with the scope's own noise. (Taking one would hand a sibling-scope's
+    // — or a later gate's — answer to work that is already dead.)
+    if (scope !== this.rootScope) this.throwIfCancelled(scope.signal);
     // During resume replay, gates that were already resumed pass through IN
     // ORDER, each receiving ITS OWN recorded payload — the fold's ordered
     // `_resumePayloads` list (1.16.0, ADR 0057). The i-th suspend call in a
@@ -1098,7 +1374,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     // gate's payload in multi-gate flows — the silent bug the list fixes.)
     // Legacy fallback: a pre-1.16 snapshot folded only `_resumePayload`; treat
     // it as a one-entry list so single-gate flows resume byte-identically.
-    const answer = this.takePassthrough();
+    const answer = this.takeIn(scope, "suspend");
     if (answer !== undefined) return Promise.resolve(answer.payload) as Promise<T>;
     // `stepId` marks a KERNEL human-step park (ADR 0104) and `waits` is the kernel's multi-wait
     // table (ADR 0110); a flow can claim neither. Stripped here for the early error, and again at
@@ -1136,11 +1412,43 @@ export class WorkflowContextImpl implements WorkflowContext {
   }
 
   /** The next recorded gate answer, consumed in order; `undefined` when none is left. */
-  private takePassthrough(): { payload: unknown } | undefined {
+  private takePassthrough(): { payload: unknown; index: number } | undefined {
     const recorded = this.recordedPassthroughs();
     if (this.suspendPassthroughsConsumed >= recorded.length) return undefined;
     this.segmentLive = false; // ADR 0102 — a new gate segment starts served
-    return { payload: recorded[this.suspendPassthroughsConsumed++] };
+    const index = this.suspendPassthroughsConsumed++;
+    return { payload: recorded[index], index };
+  }
+
+  /**
+   * A gate answer for a branch of `scope` (ADR 0112). Live, answers are taken in call order as
+   * ever, and which one this branch took is journaled with the scope. SERVED, the branch takes
+   * exactly the answers the first run gave it — never "the next one", which on a re-run belongs to
+   * a LATER gate — and a branch that took none then (it parked or was aborted there) gets none.
+   */
+  private takeIn(scope: Scope, what: string): { payload: unknown } | undefined {
+    const served = scope.served;
+    if (served?.consumed !== undefined) {
+      const entry = served.consumed.get(scope.path);
+      if (entry === undefined || entry.next >= entry.indices.length) {
+        throw new ScopeServedError(what, scope.path);
+      }
+      const recorded = this.recordedPassthroughs();
+      const index = entry.indices[entry.next++] as number;
+      if (index >= recorded.length) throw new ScopeServedError(what, scope.path);
+      this.segmentLive = false;
+      return { payload: recorded[index] };
+    }
+    const answer = this.takePassthrough();
+    if (answer !== undefined) {
+      for (let g: Scope | undefined = scope; g !== undefined; g = g.parent) {
+        const group = g.group;
+        if (group === undefined) continue;
+        if (group.consumed.length >= SCOPE_CONSUMED_CAP) group.consumedOverflow = true;
+        else group.consumed.push([scope.path, answer.index]);
+      }
+    }
+    return answer;
   }
 
   // T1 — durable sleep. The absolute wake time is computed ONCE on the live
@@ -1150,11 +1458,19 @@ export class WorkflowContextImpl implements WorkflowContext {
   // The runtime's injectable clock, not raw `Date.now()`: the TimerService compares this
   // wakeAt with the same clock (it defaults to `runtime.clock`), so both must agree.
   async sleep(ms: number): Promise<void> {
-    await this.sleepUntil(this.now() + ms);
+    await this.sleepIn(this.currentScope(), ms);
   }
 
   async sleepUntil(wakeAt: number): Promise<void> {
-    await this.suspend({ on: TIMER_FIRED, wakeAt });
+    await this.sleepUntilIn(this.currentScope(), wakeAt);
+  }
+
+  private async sleepIn(scope: Scope, ms: number): Promise<void> {
+    await this.sleepUntilIn(scope, this.now() + ms);
+  }
+
+  private async sleepUntilIn(scope: Scope, wakeAt: number): Promise<void> {
+    await this.suspendIn(scope, { on: TIMER_FIRED, wakeAt });
   }
 
   // K8 — abort fast when the owning execution has been cancelled. Scoped to a

@@ -52,6 +52,18 @@ const groupParent = reg("group-parent", async (ctx) => {
   });
   return {};
 });
+// Awaits a GROUP of three attached members.
+const trioParent = reg("trio-parent", async (ctx) => {
+  await awaitChildren(ctx, {
+    key: "t",
+    children: [
+      { flowId: "waiter", input: {} },
+      { flowId: "waiter", input: {} },
+      { flowId: "waiter", input: {} },
+    ],
+  });
+  return {};
+});
 // Nested: the child is itself a parent.
 const middle = reg("middle", async (ctx) => {
   await awaitChild(ctx, { key: "leaf", flowId: "waiter", input: {} });
@@ -70,7 +82,14 @@ function build() {
     effectRuntime: new EffectRuntime(),
     onEvent: (e) => holder.supervisor?.onEvent(e),
   });
-  const flows = { waiter, parent, "group-parent": groupParent, middle, top };
+  const flows = {
+    waiter,
+    parent,
+    "group-parent": groupParent,
+    "trio-parent": trioParent,
+    middle,
+    top,
+  };
   for (const f of Object.values(flows)) {
     runtime.registerFlow(f.definition, f.runner as FlowRunner<unknown, unknown>);
   }
@@ -171,5 +190,32 @@ describe("cancel cascade (ADR 0112 D5)", () => {
     expect(await statusOf(runtime, "o2::c")).toBe("suspended"); // detached: untouched
     // Idempotent: a second pass finds nothing to do.
     expect((await supervisor.recover()).cascaded).toBe(0);
+  });
+
+  it("recover() reads a gone parent's log ONCE per pass, however many orphans it left", async () => {
+    const { runtime, holder, wire } = build();
+    wire();
+    await runtime.start(trioParent, {}, { executionId: "m1" });
+    await until(
+      async () =>
+        (await parked(runtime, "m1::t#0")) &&
+        (await parked(runtime, "m1::t#1")) &&
+        (await parked(runtime, "m1::t#2"))
+    );
+    holder.supervisor = undefined;
+    await runtime.cancel("m1", "operator");
+    await new Promise((r) => setTimeout(r, 50));
+    const supervisor = wire();
+    let parentReads = 0;
+    const events = runtime.events as unknown as { read: (id: string, ...a: unknown[]) => unknown };
+    const realRead = events.read.bind(events);
+    events.read = (id: string, ...a: unknown[]) => {
+      if (id === "m1") parentReads++;
+      return realRead(id, ...a);
+    };
+    const summary = await supervisor.recover();
+    expect(summary.cascaded).toBe(3);
+    // One read of the parent's recorded spawns for the whole pass (not one per orphan).
+    expect(parentReads).toBeLessThanOrEqual(1);
   });
 });

@@ -133,6 +133,7 @@ export type {
   RunOptions,
   SuspendConfig,
   BranchContext,
+  ErrorClassCtor,
   ParallelOptions,
   WorkflowContext,
 } from "./types";

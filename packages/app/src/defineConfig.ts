@@ -375,6 +375,15 @@ export interface ExecutionOptions {
   /** Static, ordered effect middleware (retries, logging, …). */
   effectMiddleware?: EffectMiddleware[];
   /**
+   * ADR 0112 D2 — error classes a fail-fast `parallel` scope may rehydrate BY NAME. The scope
+   * journals the failing error's name and message; the first run and every re-run throw the
+   * value built from that record: a `TypedFailure` stays typed, a class listed here (the built-in
+   * `Error` family is always known) is rebuilt `new ctor(message)` — deterministic, message
+   * only, no `cause` — and anything else is a `ParallelScopeFailedError` carrying the name.
+   * Only read when `kernel.features.scopes` is on.
+   */
+  errorClasses?: Record<string, new (message: string) => Error>;
+  /**
    * R9 — the autonomy envelope: bounds on what a runaway agent can do (spawn depth/breadth,
    * spend, effect rate). Off unless configured, except the defaults {@link SecurityOptions.strict}
    * applies. Installs its middleware between redaction and your `effectMiddleware`. See
@@ -597,6 +606,16 @@ export interface LoomConfig {
        * reported through `onError` and `recover()` re-drives it (today's behaviour).
        */
       redrive?: boolean;
+      /**
+       * ADR 0112 D1/D2 (R6) — cancellation scopes: `ctx.parallel` aborts the scope on the first real
+       * branch failure, records `STEP_CANCELLED` for the work it cancels and journals a
+       * `PARALLEL_COMPLETED` record that a re-run serves. OFF by default because an older node does
+       * not fold the record: it would re-run the cancelled branches live and diverge from the node
+       * that failed fast. Off, `parallel` is the pre-R6 bounded `Promise.all` (no abort, no record);
+       * the park barrier (ADR 0112 D3) writes no new event and is always on. Turn it on once every
+       * node runs a version that folds `PARALLEL_COMPLETED`.
+       */
+      scopes?: boolean;
     };
   };
   /**
@@ -864,7 +883,15 @@ export const GROUPED_OPTIONS = [
   ["durability", ["snapshotEvery", "retention"]],
   [
     "execution",
-    ["dispatcher", "effectMiddleware", "registerEffects", "now", "validateInput", "envelope"],
+    [
+      "dispatcher",
+      "effectMiddleware",
+      "registerEffects",
+      "now",
+      "validateInput",
+      "envelope",
+      "errorClasses",
+    ],
   ],
   ["checks", ["validate", "verify", "manifest"]],
 ] as const;
@@ -1134,6 +1161,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.timers !== undefined && { timerStore: config.timers.store }),
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
     ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
+    ...(config.kernel?.features?.scopes === true && { scopes: true }),
+    ...(config.errorClasses !== undefined && { errorClasses: config.errorClasses }),
     ...(config.onStorageError !== undefined && { onStorageError: config.onStorageError }),
     // One warning channel for the app: the same sink that reports a schedule which can
     // never fire also reports a deadline this runtime cannot keep.
