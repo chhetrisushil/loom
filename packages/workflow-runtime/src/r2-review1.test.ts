@@ -315,7 +315,7 @@ describe("P3-6 — a flag-off node leaves the inbox's due-now rows alone", () =>
     h.rt.registerFlow(f.definition, f.runner);
     await (await h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
     await appendInboxMessage(h.eventStore, "e1", stored("m", "later"), Date.now);
-    await h.timers.schedule({ executionId: "e1", wakeAt: 0 });
+    await h.timers.schedule({ executionId: "e1", wakeAt: -1 });
     const off = h.sibling({ inboxEnabled: false });
     off.registerFlow(f.definition, f.runner);
     await new TimerService(off, h.timers).tick(Date.now() + 1);

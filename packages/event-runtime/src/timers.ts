@@ -40,11 +40,11 @@ export interface TimerStore {
    * starve every plain wake behind them. A store that ignores the option is still correct (the
    * service skips such rows itself); it only keeps that starvation window.
    *
-   * `options.inbox === false` (ADR 0110) likewise EXCLUDES the inbox wake row (a NON-re-drive row at `wakeAt === 0`,
+   * `options.inbox === false` (ADR 0110) likewise EXCLUDES the inbox wake row (a NON-re-drive row at `wakeAt === -1`,
    * `INBOX_WAKE_AT`) before the limit: a node with the inbox flag off cannot run the notify path
-   * and must leave those rows for a node that can, but they sort first (instant 0), so a batch of
-   * them would starve every real timer behind it. A timed park at exactly instant 0 is therefore
-   * not fired by a flag-off node (it is by any flag-on one).
+   * and must leave those rows for a node that can, but they sort first (instant -1), so a batch of
+   * them would starve every real timer behind it. The sentinel is -1, an instant no timed
+   * park uses, so a flag-off node still fires every real timer (including `ctx.sleep(0)` at clock 0).
    */
   due(
     now: number,
@@ -85,7 +85,7 @@ export class InMemoryTimerStore implements TimerStore {
         (t) =>
           t.wakeAt <= now &&
           (options?.redrive !== false || t.redrive === undefined) &&
-          (options?.inbox !== false || t.wakeAt !== 0 || t.redrive !== undefined)
+          (options?.inbox !== false || t.wakeAt !== -1 || t.redrive !== undefined)
       )
       .sort((a, b) => a.wakeAt - b.wakeAt)
       .slice(0, limit)

@@ -77,7 +77,7 @@ export class SqliteTimerStore implements TimerStore {
       .prepare<[number, number]>(
         `SELECT execution_id, wake_at, redrive FROM timers WHERE wake_at <= ?${
           options?.redrive === false ? " AND redrive IS NULL" : ""
-        }${options?.inbox === false ? " AND (wake_at <> 0 OR redrive IS NOT NULL)" : ""} ORDER BY wake_at ASC LIMIT ?`
+        }${options?.inbox === false ? " AND (wake_at <> -1 OR redrive IS NOT NULL)" : ""} ORDER BY wake_at ASC LIMIT ?`
       )
       .all(now, limit) as TimerRow[];
     return rows.map((r) => ({

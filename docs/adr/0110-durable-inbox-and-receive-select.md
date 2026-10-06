@@ -355,7 +355,7 @@ pub/sub, dead-lettering, retry helpers). The design plan split it into its own P
    registered re-driver re-derives ITS resume and answers `noop` for an inbox wake, which would retire the
    row. The plain row is judged by the notify path, and `TimerService` backs off in process (the same
    schedule and attempt cap as a contended timed wake).
-4. **The due-now row has a fixed `wakeAt` (`INBOX_WAKE_AT = 0`).** The store's upsert per
+4. **The due-now row has a fixed `wakeAt` (`INBOX_WAKE_AT = -1`, a sentinel no timed park can collide with: `0` was a real instant).** The store's upsert per
    `(executionId, wakeAt)` then coalesces a burst without a query (the ADR's "a due-now row already
    exists" test, made free), and the skip-when-not-parked rule is sharpened: `send` writes the row only when
    the owner is parked on an UNANSWERED inbox wait for THAT topic. The row is retired only after the notify
@@ -435,8 +435,10 @@ fields and adds `waits`; a bare resume of the positional gate answers it as ever
     message (or the chain's retirement) releases the stream. A per-topic stream would remove the pin and is
     the follow-up if a workload needs a cold topic beside a hot one. (d) A flag-off `TimerService` passes
     `due(..., { inbox: false })` (new, mirrors `redrive: false`; all three stores and the conformance kit),
-    so inbox rows (instant 0, sorted first) cannot fill its batch and starve real timers. A timed park at
-    exactly instant 0 is not fired by a flag-off node. (e) **A terminal execution stays terminal for
+    so inbox rows (sorted first) cannot fill its batch and starve real timers. Round 3: the sentinel was
+    `0`, a real instant, so a flag-off node never fired `ctx.sleep(0)` at clock 0 (the default config's
+    clock-zero case); it is now `-1` (the feature is unreleased, so no row of the old value exists), which
+    no timed park can carry. (e) **A terminal execution stays terminal for
     senders, but `resume` / `resumeAs` CAN re-open a failed or completed one (ADR 0104).** Its stream was
     deleted when it finished, so a message not consumed by then is gone, and a re-opened execution would
     restart allocation at sequence 0 under the cursors its log still holds (every new message skipped).
@@ -444,13 +446,51 @@ fields and adds `waits`; a bare resume of the positional gate answers it as ever
     starts. Unconsumed messages at the moment of the terminal are discarded, by design. (f) An inbox stream
     whose owner is terminal and whose id maps to an execution (`recoverAbandoned` enumerates reserved
     streams) is reclaimed by the sweep (`inboxReclaimed`): the orphan a crash between a sender's append and
-    its re-read leaves. A fork's chain id is not an execution id, so a crash orphan of a fork chain is not
-    swept (the normal terminal path still deletes it). (g) **The notify path answers under a conditional
+    its re-read leaves. A fork's chain id is not an execution id and there is no chain-to-execution index,
+    so a crash orphan of a fork chain is NOT swept (best effort: the normal terminal path still deletes it;
+    only a crash in the sender's append-to-reread window leaves one, and it holds undelivered payloads of a
+    finished execution until `eraseSubject`/retention reaches the reserved stream). (g) **The notify path answers under a conditional
     fence only when the park was written under a token.** A fencing store refuses an append with NO token
     once any token exists, so acquiring one on the first inbox delivery of a never-fenced deployment made
     every later plain `resume` / `resumeAs` / recovery of that execution fail as a stale fence (found by
     the re-open test). Unfenced, a rival notifier loses at the `(executionId, sequence)` uniqueness of the
     atomic batch. The dedupe key is a fixed-size hash (see D6).
+
+**Review round 3 (R2, ADR 0110).**
+- **The unfenced delivery is a loop, not a single shot, and a handle means the append LANDED.** An inbox
+  delivery's batch is awaited before the runner starts (`ExecutionHandle` is still returned by `resumeCore`
+  first, so the kernel keeps a private "landed" promise per handle and the notify path awaits it). A batch
+  that loses is classified: (1) `StaleFence` on an unfenced attempt means a fence was acquired since the
+  park was written (the documented re-dispatch path acquires without appending), so the next attempt
+  answers under `acquireFenceIf` (recorded token 0, retried on the store's current one); (2) a
+  `DuplicateSequence` / `StaleFence` with the park still the unanswered one means an ignorable event
+  (`TIMER_FIRED`, an app emit, `EXECUTION_DENIED`) landed between the fold and the batch, so the pass refolds
+  and retries (4 attempts), and out of attempts reports `contended` so the due-now row is kept; (3) the
+  same error with the park already answered is a rival that won: a quiet "lost the race" (`{ contended:
+  false }`, no handle, NOT reported to `onStorageError`). The loser's runner never starts. Duplicate-only
+  journaling (`advanceInbox`) gets the same loop.
+- **A caller that arrives while a pass is in flight gets a FOLLOW-UP pass**, not the in-flight one's
+  result: that pass may have read the stream before this caller's append (a `send` landing just after the
+  owner's own post-park read was answered "nothing to do" by a pass that never saw its message). Every
+  mid-pass caller shares ONE follow-up.
+- **`inboxMaxRetained` is configurable** as `kernel.inbox.maxRetained` (`defineConfig`), beside
+  `maxBacklog`.
+- **Pinned-stream DoS: an accepted, documented interim, now observable.** A topic nothing consumes pins the
+  stream; the cap refuses further sends for the whole chain (including the hot topic). That is a bounded
+  failure, not a leak, and a flow that never receives a topic it is sent has a bug. `onWarn` fires once per
+  chain when the stream retains 50% of `inboxMaxRetained` above the oldest unconsumed message, naming that
+  message's topic and inbox sequence (re-armed when the pin clears). Per-topic refusal was deliberately
+  not built. Follow-ups: (1) a journaled, authorized operator discard (advance one topic's cursor up to a
+  sequence, as a log event, so it replays); (2) per-topic streams, with an optional TTL via a journaled
+  expiry. Both need the second consumer rule (ADR 0083) to be named before they ship.
+- **`resume` / `resumeAs` re-open a terminal owner's inbox only after every refusal passed** (replay-check,
+  migration, authz, not-suspended); a refused resume used to leave an empty stream behind for an execution
+  that stays terminal.
+- **Ambiguous-tip sends still write the due-now row BEFORE notifying** (considered and left): writing it
+  only if notify finds an unanswered inbox park would save one coalesced upsert for a running owner, but
+  the row-first order is what makes a sender's crash between its append and its notify recoverable, and a
+  notify that sees "running" proves nothing about a park that lands a moment later. The write is one
+  idempotent upsert per `(execution, instant)`; the row is not worth weakening the no-lost-wakeup argument.
 
 **Residuals (documented, not closed).**
 - A message consumed for a branch that is then aborted by a sibling's failure is consumed: it is recorded

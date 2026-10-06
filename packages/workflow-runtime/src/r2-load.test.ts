@@ -2,7 +2,7 @@ import { unwrapTainted } from "@loom/classify";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { build, flow, tick, until } from "./__tests__/r2Harness";
-import { inboxStreamId } from "./inbox";
+import { INBOX_WAKE_AT, inboxStreamId } from "./inbox";
 
 // ADR 0110 D5.3 — the load test the design asks for before the PR lands: a burst of 10,000 sends
 // to ONE parked chain. Records the timer rows written, the TimerService wake, and the drain.
@@ -35,7 +35,7 @@ describe("R2 load — a burst of 10,000 sends to one parked chain", () => {
     const sendMs = Date.now() - t0;
 
     const rows = await h.timers.due(Date.now() + 1e9);
-    expect(rows.map((r) => [r.executionId, r.wakeAt])).toEqual([["e1", 0]]); // N sends, ONE row
+    expect(rows.map((r) => [r.executionId, r.wakeAt])).toEqual([["e1", INBOX_WAKE_AT]]); // N sends, ONE row
 
     const t1 = Date.now();
     const service = new TimerService(h.rt, h.timers);

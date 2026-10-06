@@ -27,7 +27,7 @@ const INBOX_WORKFLOW_ID = "__loom_inbox__";
  * (ADR 0110 D5.3's "a due-now row already exists" test, made free). `TimerService` recognises the
  * value and runs the notify path instead of judging `suspendedOn.wakeAt`.
  */
-export const INBOX_WAKE_AT = 0;
+export const INBOX_WAKE_AT = -1;
 
 /** The `condition.on` of a park whose legacy single-gate fields cannot describe it (several waits). */
 export const WAITS_PARK_ON = "__loom_waits__";
@@ -299,18 +299,28 @@ export async function scanInbox(
   chainId: string,
   cursors: Record<string, number>,
   opts: { from?: number; stopAtFirst?: boolean; limit?: number } = {}
-): Promise<{ unconsumed: number; oldest: number | undefined; head: number | null }> {
+): Promise<{
+  unconsumed: number;
+  oldest: number | undefined;
+  /** The topic of `oldest`: the message pinning everything above it. */
+  oldestTopic: string | undefined;
+  head: number | null;
+}> {
   const stream = inboxStreamId(chainId);
   const head = await headOf(store, stream);
-  if (head === null) return { unconsumed: 0, oldest: undefined, head };
+  if (head === null) return { unconsumed: 0, oldest: undefined, oldestTopic: undefined, head };
   let unconsumed = 0;
   let oldest: number | undefined;
+  let oldestTopic: string | undefined;
   const visit = (events: readonly EventEnvelope[]): boolean => {
     for (const e of events) {
       const m = asMessage(e);
       if (m === undefined || e.sequence <= cursorFor(cursors, m.topic)) continue;
       unconsumed++;
-      oldest ??= e.sequence;
+      if (oldest === undefined) {
+        oldest = e.sequence;
+        oldestTopic = m.topic;
+      }
       if (opts.stopAtFirst === true) return true;
       if (opts.limit !== undefined && unconsumed >= opts.limit) return true;
     }
@@ -326,7 +336,7 @@ export async function scanInbox(
     if (visit(page)) break;
     lo = (page[page.length - 1] as EventEnvelope).sequence + 1;
   }
-  return { unconsumed, oldest, head };
+  return { unconsumed, oldest, oldestTopic, head };
 }
 
 /**

@@ -631,6 +631,12 @@ export interface LoomConfig {
     inbox?: {
       /** `send` refuses beyond this many unconsumed messages per chain. Default 10 000. */
       maxBacklog?: number;
+      /**
+       * `send` refuses once the stream retains this many entries above its oldest UNCONSUMED
+       * message, whatever their consumption state (a cold topic pins every entry above it).
+       * Default 4 x `maxBacklog`. An `onWarn` fires once per chain at 50% of it.
+       */
+      maxRetained?: number;
       /** Largest JSON payload `send` accepts, in bytes. Default 65 536. */
       maxPayloadBytes?: number;
     };
@@ -1185,6 +1191,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       inboxEnabled: true,
       ...(config.kernel.inbox?.maxBacklog !== undefined && {
         inboxMaxBacklog: config.kernel.inbox.maxBacklog,
+      }),
+      ...(config.kernel.inbox?.maxRetained !== undefined && {
+        inboxMaxRetained: config.kernel.inbox.maxRetained,
       }),
       ...(config.kernel.inbox?.maxPayloadBytes !== undefined && {
         inboxMaxPayloadBytes: config.kernel.inbox.maxPayloadBytes,
