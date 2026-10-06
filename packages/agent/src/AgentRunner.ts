@@ -65,6 +65,9 @@ export interface AgentConfig {
    * makes deliberately (R7).
    */
   onDelta?: (delta: string) => void;
+  // ADR 0119 — guarded (delta validators, inspectsOutput fail-closed) only when the runner
+  // runs as an effect: `asEffect()` / `ctx.run`. A direct `run()` (incl. `agentStep$`) has
+  // no effect middleware, so this sink then receives RAW model text.
 }
 
 /** The channel an interrupted agent run fails on (ADR 0060). */
@@ -226,7 +229,10 @@ export class AgentRunner {
           try {
             const refusal = menu.check(toolCall.name, toolCall.input);
             if (refusal !== undefined) return refusal;
-            return await effectRuntime.execute(toolCall.name, toolCall.input, ctx);
+            // ADR 0119 — the model's guarded delta channel is THIS turn's; a tool call gets
+            // its own pipe (and its own configured `deltaSink`), never the parent's.
+            const { onDelta: _parentDelta, ...toolCtx } = ctx;
+            return await effectRuntime.execute(toolCall.name, toolCall.input, toolCtx);
           } catch (err) {
             // R4 — an AUTHORITY error is not a tool error. Swallowing it into a
             // result hands the model "not authorized", which it reads as feedback:

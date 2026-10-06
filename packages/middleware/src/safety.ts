@@ -53,7 +53,7 @@ export interface SafetyValidator {
    * ADR 0119 — the DELTA FORM of an `"output"` validator: the same policy applied to the
    * running text of a streamed call (`info.phase === "delta"`, `info.text`). An output
    * validator WITHOUT one cannot see a stream, so when any is configured the runtime
-   * REFUSES a per-call delta sink (`EffectMiddleware.inspectsOutput`) rather than stream
+   * REFUSES streaming to every delta sink — per-call and configured (`EffectMiddleware.inspectsOutput`) rather than stream
    * text past it. The output form still runs on the final result either way.
    */
   checkDelta?(info: SafetyCheckInfo): SafetyVerdict;
