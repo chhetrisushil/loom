@@ -1444,12 +1444,12 @@ export function runTimerStoreConformance(factory: () => TimerStore, label = "Tim
       await s.close();
     });
 
-    it("due({ inbox: false }) excludes the inbox wake row (wakeAt 0) BEFORE the limit (ADR 0110)", async () => {
+    it("due({ inbox: false }) excludes the inbox wake row (wakeAt -1) BEFORE the limit (ADR 0110)", async () => {
       const s = factory();
-      for (let i = 0; i < 4; i++) await s.schedule({ executionId: `i${i}`, wakeAt: 0 });
+      for (let i = 0; i < 4; i++) await s.schedule({ executionId: `i${i}`, wakeAt: -1 });
       await s.schedule({ executionId: "real", wakeAt: 50 });
-      await s.schedule({ executionId: "redriven", wakeAt: 0, redrive: { attempt: 1 } });
-      expect((await s.due(100, 2)).map((t) => t.wakeAt)).toEqual([0, 0]);
+      await s.schedule({ executionId: "redriven", wakeAt: -1, redrive: { attempt: 1 } });
+      expect((await s.due(100, 2)).map((t) => t.wakeAt)).toEqual([-1, -1]);
       // a re-drive row is not an inbox row, even at instant 0
       expect((await s.due(100, 10, { inbox: false })).map((t) => t.executionId).sort()).toEqual([
         "real",

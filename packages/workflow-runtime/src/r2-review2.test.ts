@@ -179,13 +179,13 @@ describe("P3-1 — a flag-off TimerService is not starved by inbox rows", () => 
     });
     h.rt.registerFlow(f.definition, f.runner);
     await (await h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
-    for (let i = 0; i < 6; i++) await timers.schedule({ executionId: `ghost${i}`, wakeAt: 0 });
+    for (let i = 0; i < 6; i++) await timers.schedule({ executionId: `ghost${i}`, wakeAt: -1 });
     const svc = new TimerService(h.rt, timers, { batch: 3 });
     await tick(20);
     await svc.tick(Date.now() + 1000);
     await until(async () => (await statusOf(h)) === "completed", 5000);
     // the inbox rows were left for a node that can run them
-    expect((await timers.due(1000)).filter((t) => t.wakeAt === 0).length).toBe(6);
+    expect((await timers.due(1000)).filter((t) => t.wakeAt === -1).length).toBe(6);
   });
 });
 

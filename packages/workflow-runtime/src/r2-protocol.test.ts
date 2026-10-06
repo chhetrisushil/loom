@@ -17,7 +17,7 @@ import {
   until,
 } from "./__tests__/r2Harness";
 import { executionAccessPolicy } from "./executionAccessPolicy";
-import { appendInboxMessage, createInboxSource, inboxStreamId } from "./inbox";
+import { INBOX_WAKE_AT, appendInboxMessage, createInboxSource, inboxStreamId } from "./inbox";
 import { recoverAbandoned } from "./recoverAbandoned";
 import { ExecutionDeniedError } from "./types";
 
@@ -119,7 +119,7 @@ describe("R2 D5 — closures of the lost-wakeup window", () => {
     const f = recv("x");
     h.rt.registerFlow(f.definition, f.runner);
     // A FENCED deployment (the park carries a token): only then is the answer taken under a
-    // conditional fence (an unfenced execution is not pushed into fencing, see ADR 0110 round 2).
+    // conditional fence (an unfenced execution is not pushed into fencing, see `parkWasFenced`).
     const fence = await h.rt.acquireFence("e1");
     await (await h.rt.start(f, {}, { executionId: "e1", fence })).waitForSuspend();
     await appendInboxMessage(inner, "e1", stored("m", "later"), Date.now);
@@ -128,7 +128,7 @@ describe("R2 D5 — closures of the lost-wakeup window", () => {
     expect(r).toEqual({ contended: true });
     expect(await kinds(inner, "e1")).toEqual(before); // nothing appended
     expect((await h.timers.due(Date.now())).map((t) => [t.executionId, t.wakeAt])).toEqual([
-      ["e1", 0],
+      ["e1", INBOX_WAKE_AT],
     ]);
     contend = false;
     await new TimerService(h.rt, h.timers, { fenced: false }).tick(Date.now() + 10_000);

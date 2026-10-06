@@ -53,7 +53,7 @@ export class PostgresTimerStore implements TimerStore {
     const { rows } = await this.pool.query<TimerRow>(
       `SELECT execution_id, wake_at, redrive FROM timers WHERE wake_at <= $1${
         options?.redrive === false ? " AND redrive IS NULL" : ""
-      }${options?.inbox === false ? " AND (wake_at <> 0 OR redrive IS NOT NULL)" : ""} ORDER BY wake_at ASC LIMIT $2`,
+      }${options?.inbox === false ? " AND (wake_at <> -1 OR redrive IS NOT NULL)" : ""} ORDER BY wake_at ASC LIMIT $2`,
       [now, limit]
     );
     return rows.map((r) => ({

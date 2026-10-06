@@ -13,7 +13,7 @@ import {
   tick,
   until,
 } from "./__tests__/r2Harness";
-import { dedupeKeyOf, inboxStreamId } from "./inbox";
+import { INBOX_WAKE_AT, dedupeKeyOf, inboxStreamId } from "./inbox";
 import { InboxClosedError, InboxMessageRefusedError, ResumeRefusedError } from "./types";
 
 // ADR 0110 (R2) — the durable inbox, `ctx.receive` and `ctx.select`: delivery.
@@ -313,7 +313,7 @@ describe("R2 — TimerService: the cross-process wake", () => {
     await tick(30);
     expect((await h.rt.loadState("e1"))?.status).toBe("suspended"); // nobody woke it yet
     expect((await h.timers.due(Date.now())).map((t) => [t.executionId, t.wakeAt])).toEqual([
-      ["e1", 0],
+      ["e1", INBOX_WAKE_AT],
     ]);
 
     const service = new TimerService(h.rt, h.timers);

@@ -630,6 +630,9 @@ function rememberBounded<V>(map: Map<string, V>, key: string, value: V): void {
 const INBOX_FULL_TTL_MS = 250;
 
 /** Messages one notify read asks for, and the most MESSAGE_CONSUMED facts one atomic batch carries. */
+const RETRY = Symbol("notify-retry");
+const RETRY_FENCED = Symbol("notify-retry-fenced");
+const NOTIFY_ATTEMPTS = 4;
 const NOTIFY_PAGE = 64;
 const NOTIFY_BATCH_CAP = 1024;
 
@@ -669,6 +672,8 @@ export class WorkflowRuntime {
   private readonly inboxMaxPayloadBytes: number;
   private readonly inboxMaxRetained: number;
   /** Per chain, the last exact backlog count (see `assertInboxHasRoom`): an upper-bound base for later sends. */
+  /** Chains already warned about a pinned inbox (see `assertInboxHasRoom`); re-armed when the pin clears. */
+  private readonly inboxWarned = new Map<string, true>();
   private readonly inboxCounted = new Map<string, { head: number; unconsumed: number }>();
   /** Per chain, the stream sequence this process last trimmed through (a cheap "nothing new" test). */
   private readonly inboxTrimmed = new Map<string, number>();
@@ -2661,7 +2666,6 @@ export class WorkflowRuntime {
     if (vm.getState().status === "cancelled") {
       throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
     }
-    await this.reopenInbox(executionId, vm.getState());
 
     // K11.5 — a previously-migrated execution resumes with its RECORDED migrated
     // input (folded `_input`), never the pre-migration EXECUTION_STARTED payload.
@@ -2761,6 +2765,10 @@ export class WorkflowRuntime {
       approval
     );
 
+    // ADR 0110 D1 — only a resume that PASSED every refusal re-opens a terminal owner's inbox: a
+    // refused one (not-suspended, authz, replay-check, migration) must not leave a stream behind
+    // for an execution that stays terminal.
+    await this.reopenInbox(executionId, vm.getState());
     // ADR 0118 D2 — the conditional fence is taken LAST, after every check that can refuse without
     // appending: a fence acquired and then abandoned supersedes whoever holds the old one.
     // R3k (D2) — the owner recorded at sequence 0, on every resume path (an approval, a timer
@@ -2813,7 +2821,8 @@ export class WorkflowRuntime {
       ],
       fence,
       options?.deadlineMs ?? resolved.definition.deadlineMs,
-      acting
+      acting,
+      inboxWake !== undefined
     );
   }
 
@@ -3135,7 +3144,10 @@ export class WorkflowRuntime {
       counted !== undefined &&
       head >= counted.head &&
       counted.unconsumed + (head - counted.head) < this.inboxMaxBacklog &&
-      head - floor < this.inboxMaxRetained
+      head - floor < this.inboxMaxRetained &&
+      // Past half the retained cap, a chain that has not yet been warned about its pin takes the
+      // scan (below), which names the pinning message; once warned it is cheap again.
+      (head - floor < this.inboxMaxRetained / 2 || this.inboxWarned.has(chainId))
     ) {
       return;
     }
@@ -3154,6 +3166,18 @@ export class WorkflowRuntime {
     const newFloor = (exact.oldest ?? head + 1) - 1;
     rememberBounded(this.inboxFloors, chainId, newFloor);
     rememberBounded(this.inboxCounted, chainId, { head, unconsumed: exact.unconsumed });
+    // A stream retaining half its cap above one unconsumed message is being pinned (a cold topic
+    // beside a hot one): say so ONCE, naming it, long before `send` starts refusing (ADR 0110 D1).
+    if (head - newFloor >= this.inboxMaxRetained / 2 && exact.oldest !== undefined) {
+      if (!this.inboxWarned.has(chainId)) {
+        rememberBounded(this.inboxWarned, chainId, true);
+        this.onWarn(
+          `inbox of execution "${executionId}" retains ${head - newFloor} entries (${Math.round(((head - newFloor) / this.inboxMaxRetained) * 100)}% of inboxMaxRetained=${this.inboxMaxRetained}) above its oldest unconsumed message: topic "${exact.oldestTopic ?? "?"}" at inbox sequence ${exact.oldest}, which nothing consumes and which pins every later entry. Once the cap is reached \`send\` refuses. Consume that topic (a flow that never receives it needs a receive for it), or see ADR 0110's follow-ups (operator discard, per-topic streams).`
+        );
+      }
+    } else {
+      this.inboxWarned.delete(chainId);
+    }
     if (head - newFloor >= this.inboxMaxRetained) {
       refuse({
         unconsumed: exact.unconsumed,
@@ -3275,9 +3299,16 @@ export class WorkflowRuntime {
     }
   }
 
+  /** Per inbox-delivery handle: resolves when its atomic batch is durable, rejects when it was lost. */
+  private readonly inboxLanded = new WeakMap<ExecutionHandle, Promise<void>>();
+
   private readonly notifying = new Map<
     string,
-    Promise<{ handle?: ExecutionHandle; contended: boolean }>
+    {
+      pass: Promise<{ handle?: ExecutionHandle; contended: boolean }>;
+      /** The ONE follow-up pass every caller that arrived mid-pass shares. */
+      next?: Promise<{ handle?: ExecutionHandle; contended: boolean }>;
+    }
   >();
 
   /**
@@ -3306,18 +3337,87 @@ export class WorkflowRuntime {
   ): Promise<{ handle?: ExecutionHandle; contended: boolean }> {
     if (!this.inboxEnabled) return { contended: false };
     const running = this.notifying.get(executionId);
-    if (running !== undefined) return running;
-    const pass = this.notifyPass(executionId, hint).finally(() => {
-      this.notifying.delete(executionId);
-    });
-    this.notifying.set(executionId, pass);
-    return pass;
+    if (running !== undefined) {
+      // The pass in flight may have read the stream BEFORE this caller's append (a `send` that
+      // lands just after the owner's own post-park read), so its "nothing to do" says nothing
+      // about this caller's message. Share ONE follow-up pass, which starts after this call.
+      running.next ??= running.pass
+        .then(
+          () => undefined,
+          () => undefined
+        )
+        .then(() => this.startNotify(executionId, undefined));
+      return running.next;
+    }
+    return this.startNotify(executionId, hint);
   }
 
+  private startNotify(
+    executionId: string,
+    hint: { parked?: ExecutionState } | undefined
+  ): Promise<{ handle?: ExecutionHandle; contended: boolean }> {
+    const entry: {
+      pass: Promise<{ handle?: ExecutionHandle; contended: boolean }>;
+      next?: Promise<{ handle?: ExecutionHandle; contended: boolean }>;
+    } = {
+      pass: Promise.resolve({ contended: false }),
+    };
+    entry.pass = this.notifyPass(executionId, hint).finally(() => {
+      if (this.notifying.get(executionId) === entry) this.notifying.delete(executionId);
+    });
+    this.notifying.set(executionId, entry);
+    return entry.pass;
+  }
+
+  /**
+   * One notify pass: up to {@link NOTIFY_ATTEMPTS} attempts. An attempt is retried (from a fresh
+   * fold and scan) when its batch lost to something that did NOT answer the park: an ignorable
+   * event landing between its fold and its batch (a `TIMER_FIRED`, an app emit, an
+   * `EXECUTION_DENIED`), or a fence acquired without an append since the park was written (the
+   * documented re-dispatch path), which switches the attempt to the conditional fence. A loss to a
+   * rival that DID answer the park is a quiet "lost the race". Out of attempts, the pass reports
+   * `contended` so the due-now row stays.
+   */
   private async notifyPass(
     executionId: string,
     hint?: { parked?: ExecutionState }
   ): Promise<{ handle?: ExecutionHandle; contended: boolean }> {
+    let forceFence = false;
+    for (let attempt = 1; attempt <= NOTIFY_ATTEMPTS; attempt++) {
+      const r = await this.notifyAttempt(executionId, attempt === 1 ? hint : undefined, forceFence);
+      if (r !== RETRY && r !== RETRY_FENCED) return r;
+      if (r === RETRY_FENCED) forceFence = true;
+    }
+    return this.markContended(executionId);
+  }
+
+  /** The park is unanswered but could not be answered now: keep (or write) the durable due-now row. */
+  private async markContended(executionId: string): Promise<{ contended: true }> {
+    if (this.timerStore !== undefined) {
+      await this.timerStore
+        .schedule({ executionId, wakeAt: INBOX_WAKE_AT })
+        .catch((e: unknown) => this.onStorageError?.(executionId, e));
+    }
+    return { contended: true };
+  }
+
+  /** Is `parkSeq` still the execution's UNANSWERED park (a refold, never a hint)? */
+  private async parkStillOpen(executionId: string, parkSeq: number): Promise<boolean> {
+    const state = await this.foldState(executionId);
+    if (state === null || state.status !== "suspended") return false;
+    return (
+      (await this.locatePark(executionId, state, { events: undefined, complete: false })) ===
+      parkSeq
+    );
+  }
+
+  private async notifyAttempt(
+    executionId: string,
+    hint: { parked?: ExecutionState } | undefined,
+    forceFence: boolean
+  ): Promise<
+    { handle?: ExecutionHandle; contended: boolean } | typeof RETRY | typeof RETRY_FENCED
+  > {
     const none = { contended: false } as const;
     const state = hint?.parked ?? (await this.foldState(executionId));
     if (state === null || state.status !== "suspended") return none;
@@ -3334,16 +3434,9 @@ export class WorkflowRuntime {
 
     let target: SuspendWait | undefined;
     let pre: Array<{ eventType: string; payload: unknown }> = [];
-    const contended = async (): Promise<{ contended: true }> => {
-      // The park is still unanswered but the fence is contended: leave the durable row so the
-      // TimerService retries with backoff (writing one if this notify had none).
-      if (this.timerStore !== undefined) {
-        await this.timerStore
-          .schedule({ executionId, wakeAt: INBOX_WAKE_AT })
-          .catch((e: unknown) => this.onStorageError?.(executionId, e));
-      }
-      return { contended: true };
-    };
+    // The park is still unanswered but the fence is contended: leave the durable row so the
+    // TimerService retries with backoff (writing one if this notify had none).
+    const contended = (): Promise<{ contended: true }> => this.markContended(executionId);
     // Heal: a wait of THIS park is already answered (the owner or a notifier journaled the
     // consumption and died before the resume): resume it, consuming nothing again.
     target = waits.find((w) => w.kind === "inbox" && answered(w));
@@ -3411,21 +3504,34 @@ export class WorkflowRuntime {
       }
     }
 
+    const useFence = forceFence || (await this.parkWasFenced(executionId, parkSeq));
     try {
       const handle = await this.resumeCore(
         executionId,
         { eventType: INBOX_DELIVERY, waitId: target.waitId, payload: null },
         {
           // Only a FENCED execution is answered under a conditional fence (see `parkWasFenced`).
-          ...((await this.parkWasFenced(executionId, parkSeq)) && { fenceIfParkedAt: parkSeq }),
+          ...(useFence && { fenceIfParkedAt: parkSeq }),
           ...this.systemOptions(),
         },
         { pre }
       );
+      // `resumeCore` returns its handle BEFORE the batch is written. Report a handle only once
+      // the append LANDED; a lost batch throws here and is classified below.
+      await this.inboxLanded.get(handle);
       return { handle, contended: false };
     } catch (err) {
       if (err instanceof ResumeRefusedError) return none; // answered meanwhile / settled
       if (err instanceof ResumeContendedError) return contended();
+      const cause = err instanceof StorageWriteError ? err.cause : err;
+      // The park was written unfenced but a fence has been acquired since (without an append):
+      // the unfenced batch carried no token. Answer under the conditional fence instead.
+      if (isStaleFence(cause) && !useFence) return RETRY_FENCED;
+      if (isWriteConflict(cause) || isStaleFence(cause)) {
+        // Lost the slot or the fence. A rival that answered the park won (quiet, nothing to do:
+        // its resume drains the rest); anything else only moved the tip: refold and retry.
+        return (await this.parkStillOpen(executionId, parkSeq)) ? RETRY : none;
+      }
       throw err;
     }
   }
@@ -3456,45 +3562,56 @@ export class WorkflowRuntime {
     wait: SuspendWait,
     pre: ReadonlyArray<{ eventType: string; payload: unknown }>
   ): Promise<"ok" | "contended" | "gone"> {
-    try {
-      const got = (await this.parkWasFenced(executionId, parkSeq))
-        ? await this.acquireFenceIfParked(
-            executionId,
-            { eventType: INBOX_DELIVERY, waitId: wait.waitId, payload: null },
-            parkSeq,
-            this.systemOptions().system,
-            { vm: new ReplayVM([], state), events: undefined },
-            true
-          )
-        : {
-            fence: undefined,
-            // Whatever was appended since `state` (an earlier chunk of this very scan): fold it in,
-            // or the batch lands at a stale sequence and reads as contention.
-            vm: await (async () => {
-              const tail = await this.eventStore.readFrom(executionId, state.sequence + 1);
-              return tail.length === 0 ? new ReplayVM([], state) : new ReplayVM(tail, state);
-            })(),
-          };
-      const journal = new ExecutionJournal(
-        this.eventStore,
-        { executionId, workflowId: state.workflowId },
-        got.vm,
-        this.onEvent,
-        () => undefined,
-        undefined,
-        got.fence,
-        this.now
-      );
-      journal.commitAtomic(pre.map((e) => ({ eventType: e.eventType, payload: e.payload })));
-      await journal.drain();
-      return "ok";
-    } catch (err) {
-      if (err instanceof ResumeRefusedError) return "gone";
-      if (err instanceof ResumeContendedError) return "contended";
-      const cause = err instanceof StorageWriteError ? err.cause : err;
-      if (isWriteConflict(cause) || isStaleFence(cause)) return "contended";
-      throw err;
+    let fenced = await this.parkWasFenced(executionId, parkSeq);
+    for (let attempt = 1; attempt <= NOTIFY_ATTEMPTS; attempt++) {
+      try {
+        const got = fenced
+          ? await this.acquireFenceIfParked(
+              executionId,
+              { eventType: INBOX_DELIVERY, waitId: wait.waitId, payload: null },
+              parkSeq,
+              this.systemOptions().system,
+              { vm: new ReplayVM([], state), events: undefined },
+              true
+            )
+          : {
+              fence: undefined,
+              // Whatever was appended since `state` (an earlier chunk of this very scan, an app
+              // emit, a timer fire): fold it in, or the batch lands at a stale sequence.
+              vm: await (async () => {
+                const tail = await this.eventStore.readFrom(executionId, state.sequence + 1);
+                return tail.length === 0 ? new ReplayVM([], state) : new ReplayVM(tail, state);
+              })(),
+            };
+        const journal = new ExecutionJournal(
+          this.eventStore,
+          { executionId, workflowId: state.workflowId },
+          got.vm,
+          this.onEvent,
+          () => undefined,
+          undefined,
+          got.fence,
+          this.now
+        );
+        journal.commitAtomic(pre.map((e) => ({ eventType: e.eventType, payload: e.payload })));
+        await journal.drain();
+        return "ok";
+      } catch (err) {
+        if (err instanceof ResumeRefusedError) return "gone";
+        if (err instanceof ResumeContendedError) return "contended";
+        const cause = err instanceof StorageWriteError ? err.cause : err;
+        if (isStaleFence(cause) && !fenced) {
+          fenced = true; // a fence was acquired since the park: answer under the conditional one
+          continue;
+        }
+        if (isWriteConflict(cause) || isStaleFence(cause)) {
+          if (!(await this.parkStillOpen(executionId, parkSeq))) return "gone";
+          continue;
+        }
+        throw err;
+      }
     }
+    return "contended";
   }
 
   /**
@@ -3565,7 +3682,6 @@ export class WorkflowRuntime {
     if (state.status === "cancelled") {
       throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
     }
-    await this.reopenInbox(executionId, state);
     // ADR 0109: a continued execution handed its work to a successor; re-opening it would run
     // the same flow twice. Resume the head of the chain instead.
     if (state.status === "continued") {
@@ -3676,6 +3792,7 @@ export class WorkflowRuntime {
       approval
     );
 
+    await this.reopenInbox(executionId, state); // after every refusal (see `resume`)
     const recorded = state.variables._flowHash;
     // ADR 0118 D2 — last, after every refusal that appends nothing (see `resume`).
     const acting = await this.actingPrincipal(executionId, options.principal, {
@@ -4306,7 +4423,14 @@ export class WorkflowRuntime {
     bootstrapEvents: BootstrapEvent[],
     fence?: number,
     deadlineMs?: number,
-    principal?: PrincipalChain
+    principal?: PrincipalChain,
+    /**
+     * ADR 0110 — the kernel's own inbox delivery: the atomic batch is awaited BEFORE the runner
+     * starts (a run that lost the write never executes a step), and a lost race (a rival notifier
+     * took the slot, or a stale fence) is reported through {@link inboxLanded} rather than as a
+     * storage error: it is expected contention, not a fault.
+     */
+    inboxDelivery = false
   ): ExecutionHandle {
     // Backstop: `start`/`resume`/`resumeAs`/`restoreFromState` already validated the per-call
     // `options.deadlineMs` before appending anything; this covers the flow definition's own budget.
@@ -4427,7 +4551,9 @@ export class WorkflowRuntime {
       vm,
       this.onEvent,
       (err) => {
-        this.onStorageError?.(executionId, err);
+        if (!(inboxDelivery && (isWriteConflict(err) || isStaleFence(err)))) {
+          this.onStorageError?.(executionId, err);
+        }
         if (!cancelled) controller.abort(err);
       },
       maybeSnapshot,
@@ -4460,6 +4586,13 @@ export class WorkflowRuntime {
       );
     }
     flushAtomic();
+    // Resolves once the bootstrap batch is durable, rejects with its write error: the inbox
+    // delivery's proof that the append LANDED (a handle alone does not say so).
+    let bootstrapLanded: Promise<void> | undefined;
+    if (inboxDelivery) {
+      bootstrapLanded = journal.drain();
+      bootstrapLanded.catch(() => {});
+    }
 
     const ctx = new WorkflowContextImpl(
       executionId,
@@ -4528,6 +4661,16 @@ export class WorkflowRuntime {
     }
 
     const run = async () => {
+      if (bootstrapLanded !== undefined) {
+        try {
+          await bootstrapLanded;
+        } catch (lost) {
+          // The delivery did not land: nothing of this run is durable, so no step may start.
+          rejectCompletion(lost);
+          rejectSuspend(lost);
+          return;
+        }
+      }
       try {
         // ADR 0110 D2 — a quiescent flow with registered waits parks: the context rejects
         // `parkSignal` with a `WaitsPark`, which is handled exactly like a thrown `SuspendError`.
@@ -4748,6 +4891,7 @@ export class WorkflowRuntime {
     };
 
     // K8.2 — reachable by id while live; released when the run settles (any path).
+    if (bootstrapLanded !== undefined) this.inboxLanded.set(handle, bootstrapLanded);
     this.liveHandles.set(executionId, handle);
     void run().finally(() => {
       clearDeadline?.();

@@ -554,7 +554,7 @@ export class TimerService {
       // ADR 0110 D5 — the inbox wake row: run the notify path (read past the cursors, consume,
       // resume), then re-check after retiring the row so a send that coalesced into it just before
       // is never stranded.
-      // (A positional `ctx.sleepUntil(0)` parked on that very instant is a plain timed wake.)
+      // (INBOX_WAKE_AT is -1, an instant no timed park uses, so `ctx.sleepUntil(0)` is a plain timed wake.)
       if (wakeAt === INBOX_WAKE_AT && state?.suspendedOn?.wakeAt !== INBOX_WAKE_AT) {
         // A node with the inbox flag OFF cannot run the notify path, and must not retire the row as
         // obsolete: a node with it on (a mixed fleet mid-rollout) still needs it. Leave it be.
