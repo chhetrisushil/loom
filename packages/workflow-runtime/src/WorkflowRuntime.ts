@@ -126,6 +126,7 @@ import type {
   SendResult,
   SystemGrant,
 } from "./types";
+import { assertMeterCeilings } from "./userspaceEmit";
 import { isStaleFence, isWriteConflict } from "./writeConflict";
 
 /**
@@ -246,6 +247,13 @@ export interface WorkflowRuntimeDeps {
    * chain) releases it.
    */
   inboxMaxRetained?: number;
+  /**
+   * ADR 0115 D2 — per-dimension override of the sanity ceiling on one `RESOURCE_METERED`
+   * increment, applied in `guardUserspaceEmit` (never in the fold, which is pure and uses the
+   * fixed defaults). Built-in dimensions keep their defaults unless named; a custom dimension
+   * defaults to 1e15 and may only be lowered.
+   */
+  meterCeilings?: Readonly<Record<string, number>>;
   /** ADR 0110 D1 — the largest JSON payload `send` accepts, in bytes. Default 65 536. */
   inboxMaxPayloadBytes?: number;
   /**
@@ -682,6 +690,7 @@ export class WorkflowRuntime {
   private readonly inboxMaxBacklog: number;
   private readonly inboxMaxPayloadBytes: number;
   private readonly inboxMaxRetained: number;
+  private readonly meterCeilings: Readonly<Record<string, number>> | undefined;
   /**
    * Chains already warned about a pinned inbox, with the inbox sequence of the pin warned about
    * (see `assertInboxHasRoom`). Re-armed eagerly: the trim that moves the floor past the pin
@@ -758,6 +767,8 @@ export class WorkflowRuntime {
     assertPositiveInt("inboxMaxBacklog", deps.inboxMaxBacklog);
     assertPositiveInt("inboxMaxRetained", deps.inboxMaxRetained);
     assertPositiveInt("inboxMaxPayloadBytes", deps.inboxMaxPayloadBytes);
+    assertMeterCeilings(deps.meterCeilings);
+    this.meterCeilings = deps.meterCeilings === undefined ? undefined : { ...deps.meterCeilings };
     this.inboxMaxBacklog = deps.inboxMaxBacklog ?? DEFAULT_INBOX_MAX_BACKLOG;
     this.inboxMaxRetained = Math.max(
       this.inboxMaxBacklog,
@@ -4642,6 +4653,7 @@ export class WorkflowRuntime {
         ...(this.parkDrainMs !== undefined && { parkDrainMs: this.parkDrainMs }),
         onWarn: this.onWarn,
         scopes: this.scopes,
+        ...(this.meterCeilings !== undefined && { meterCeilings: this.meterCeilings }),
         ...(this.errorClasses !== undefined && { errorClasses: this.errorClasses }),
         ...(this.surface !== undefined && { surface: this.surface }),
         inbox: {

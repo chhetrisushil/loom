@@ -1,5 +1,5 @@
-import { A2AEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
+import { A2AEffect } from "./A2AEffect";
 import type { A2ATask, A2ATaskResult, A2ATaskStatus } from "./types";
 
 export interface A2AClientOptions {

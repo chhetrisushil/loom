@@ -101,3 +101,33 @@ describe("meteringMiddleware", () => {
     expect(emit).not.toHaveBeenCalled();
   });
 });
+
+describe("open dimensions (ADR 0115)", () => {
+  it("meters a custom dimension into the RESOURCE_METERED payload", async () => {
+    const emit = vi.fn();
+    const mw = meteringMiddleware({
+      pricing: () => ({ custom: { gpu_seconds: 3 } }),
+      clock: () => 0,
+    });
+    await mw(ctx(zero, emit), {}, async () => ({}));
+    expect(emit).toHaveBeenCalledWith(
+      "RESOURCE_METERED",
+      expect.objectContaining({ custom: { gpu_seconds: 3 } })
+    );
+  });
+
+  it("denies once a custom dimension has reached its ceiling, and not before", async () => {
+    const mw = meteringMiddleware({ pricing: () => ({}), budget: { maxCustom: { credits: 5 } } });
+    const next = vi.fn(async () => "ok");
+    await expect(mw(ctx({ ...zero, custom: { credits: 4 } }), {}, next)).resolves.toBe("ok");
+    await expect(mw(ctx({ ...zero, custom: { credits: 5 } }), {}, next)).rejects.toBeInstanceOf(
+      QuotaExceededError
+    );
+    // a dimension that was never metered reads 0 (and a prototype name is not a spend)
+    const proto = meteringMiddleware({
+      pricing: () => ({}),
+      budget: { maxCustom: { constructor: 1 } },
+    });
+    await expect(proto(ctx(zero), {}, next)).resolves.toBe("ok");
+  });
+});

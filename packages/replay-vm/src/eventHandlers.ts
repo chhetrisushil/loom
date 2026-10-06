@@ -274,6 +274,38 @@ function addCustomDimensions(
   return next ?? prior;
 }
 
+/**
+ * ADR 0115 D3 — the valid entries of a decision's descriptive `estimatedCost` map (a name
+ * matching the dimension pattern or a built-in, a finite non-negative value, at most 32), or
+ * `undefined` when none survive. Never throws, so a log written without the guard folds the same
+ * on every replica; null-prototype so a caller-chosen name cannot reach a prototype member.
+ */
+function sanitizeEstimatedCost(raw: unknown): Record<string, number> | undefined {
+  if (!isPlain(raw)) return undefined;
+  let out: Record<string, number> | undefined;
+  let names = 0;
+  for (const [name, v] of Object.entries(raw)) {
+    if (names >= CUSTOM_DIMENSION_MAX) break;
+    if (!BUILTIN_DIMENSION_NAMES.has(name)) {
+      if (!CUSTOM_DIMENSION_PATTERN.test(name) || RESERVED_FOLD_KEYS.has(name)) continue;
+    }
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 0) continue;
+    out ??= {};
+    out[name] = v;
+    names++;
+  }
+  return out;
+}
+
+const BUILTIN_DIMENSION_NAMES: ReadonlySet<string> = new Set([
+  "tokens",
+  "costUsd",
+  "ms",
+  "memBytes",
+  "wallMs",
+  "netBytes",
+]);
+
 /** A validated `_resources` seed from `continuedFrom.carried.resources`; invalid parts are ignored. */
 function seedResources(raw: unknown): Record<string, unknown> | undefined {
   if (!isPlain(raw)) return undefined;
@@ -804,6 +836,8 @@ const handlers: Record<string, Handler> = {
       // read by getDecision, so `choice` remains the sole replay input (P9). Absence = legacy.
       alternatives?: unknown;
       estimatedCostUsd?: number;
+      // ADR 0115 D3 — the open spelling of `estimatedCostUsd`: descriptive, never a replay input.
+      estimatedCost?: unknown;
       estimatedLatencyMs?: number;
       confidence?: number;
       // ADR 0079 — the observation the policy saw and which policy saw it. Same
@@ -826,6 +860,7 @@ const handlers: Record<string, Handler> = {
       decisions = prior === undefined ? {} : { ...prior };
       foldOwned.add(decisions);
     }
+    const estimatedCost = sanitizeEstimatedCost(payload.estimatedCost);
     decisions[payload.decisionId] = {
       choice: payload.choice,
       ...(payload.rationale !== undefined && { rationale: payload.rationale }),
@@ -834,6 +869,7 @@ const handlers: Record<string, Handler> = {
       ...(payload.estimatedCostUsd !== undefined && {
         estimatedCostUsd: payload.estimatedCostUsd,
       }),
+      ...(estimatedCost !== undefined && { estimatedCost }),
       ...(payload.estimatedLatencyMs !== undefined && {
         estimatedLatencyMs: payload.estimatedLatencyMs,
       }),

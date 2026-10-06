@@ -97,7 +97,7 @@ interface PolicyConfig { id: string; name: string; rules: Record<string, unknown
 ** Definition & handler types
 
 #+begin_src typescript
-type EffectKind = "tool" | "llm" | "human" | "a2a";
+type EffectKind = "tool" | "llm" | "human" | "a2a" | (string & {});   // open (ADR 0115): any /^[a-z][a-z0-9._-]{0,63}$/; only "human" has kernel semantics (parks)
 
 interface StepHandlerContext {
   executionId: string; stepId: string; workflowId: string; attempt: number;
@@ -935,7 +935,7 @@ Tenant isolation is enforced *by construction* at the store — see ~TenantScope
 #+begin_src typescript
 new ToolEffect((input, ctx) => Promise<TOut>)    // kind "tool" — any async work
 new LlmEffect((input, ctx) => Promise<TOut>)     // kind "llm"  — a model call
-new A2AEffect((input, ctx) => Promise<TOut>)     // kind "a2a"  — delegate to a remote agent
+new A2AEffect((input, ctx) => Promise<TOut>)     // kind "a2a"  — delegate to a remote agent (now defined in @loom/plugin-a2a; this copy is deprecated, ADR 0115)
 new HumanEffect({ on: string; timeout?: number; correlationKey?: (input) => string })  // kind "human" — throws SuspendError
 new LazyEffect(spec: HandlerSpec)                // kind "tool" — resolves an inline/lazy handler on first execute
 #+end_src

@@ -1,4 +1,5 @@
 import { type TaintedValue, isTainted, tainted, unwrapTainted } from "@loom/classify";
+import { VOCABULARY_NAME_PATTERN, isVocabularyName } from "@loom/core";
 import { Priority, type Scheduler } from "@loom/scheduler";
 import {
   type CapabilityAuthorizer,
@@ -46,6 +47,13 @@ export class EffectRuntime {
   }
 
   register(toolId: string, effect: Effect): void {
+    // ADR 0115 — a kind is an open vocabulary, but a malformed one is refused here, where the
+    // effect is declared, not later where the kind is used as a map key or a metrics label.
+    if (!isVocabularyName(effect.kind)) {
+      throw new Error(
+        `Effect "${toolId}" declares kind ${JSON.stringify(effect.kind)}: a kind must match ${String(VOCABULARY_NAME_PATTERN)} (ADR 0115)`
+      );
+    }
     this.registry.set(toolId, effect);
   }
 
@@ -421,7 +429,10 @@ export class EffectRuntime {
     return this.registry.get(toolId)?.mode;
   }
 
-  /** The registered effect's kind (`tool` / `llm` / `human` / `a2a`), for tooling. */
+  /**
+   * The registered effect's kind, for tooling: `tool` / `llm` / `human` / `a2a` or any custom
+   * name (ADR 0115). Only `"human"` has kernel semantics (it parks).
+   */
   kindOf(toolId: string): Effect["kind"] | undefined {
     return this.registry.get(toolId)?.kind;
   }

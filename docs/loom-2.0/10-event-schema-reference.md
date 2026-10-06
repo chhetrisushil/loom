@@ -71,7 +71,7 @@ Loom 2.0's advisory events fold into **reserved `variables` keys** rather than i
 | `variables._resumePayload` | `EXECUTION_RESUMED` | LATEST resume payload (legacy key, kept for pre-1.16 snapshots) |
 | `variables._resumePayloads` | `EXECUTION_RESUMED` | ORDERED list of every resume payload — gate *i* passes through with payload *i* on replay (1.16.0, ADR 0057) |
 | `variables._failedWhileParked` | `STEP_FAILED` while `suspended` (removed by `EXECUTION_SUSPENDED` / `EXECUTION_RESUMED` / a terminal event) | `true` — a `null` resume in this position is status-only (1.21.0, ADR 0105) |
-| `variables._decisions` | `DECISION_RECORDED` | `Record<decisionId, { choice, rationale?, source?, alternatives?, estimatedCostUsd?, estimatedLatencyMs?, confidence?, context?, policy? }>` — only `choice` is ever read back (P9) |
+| `variables._decisions` | `DECISION_RECORDED` | `Record<decisionId, { choice, rationale?, source?, alternatives?, estimatedCostUsd?, estimatedCost?, estimatedLatencyMs?, confidence?, context?, policy? }>` — only `choice` is ever read back (P9) |
 | `variables._denials` | `EFFECT_DENIED` | `Array<{ toolId, stepId?, reason? }>` |
 | `variables._executionDenials` | `EXECUTION_DENIED` | `Array<{ op, reason?, actor? }>` — refused lifecycle ops (C.1) |
 | `variables._resources` | `RESOURCE_METERED` / `QUOTA_EXCEEDED` | `{ tokens, costUsd, ms, count, exceeded? }` |
@@ -277,7 +277,7 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
   materialization fields in 1.10.0 (ADR 0030) and `context`/`policy` in 1.18.0 (ADR 0079).
 - **Emitted by:** `ctx.decide` on first run (`WorkflowContext.ts`).
 - **Payload:** `{ decisionId: string; choice: unknown; rationale?: unknown; source?: string;
-  alternatives?: unknown; estimatedCostUsd?: number; estimatedLatencyMs?: number;
+  alternatives?: unknown; estimatedCostUsd?: number; estimatedCost?: Record<string, number>; estimatedLatencyMs?: number;
   confidence?: number; context?: Record<string, unknown>;
   policy?: { id: string; version: string; propensity?: number } }`
 - **Folds into:** `variables._decisions[decisionId] = { choice, …every present field }` (merged

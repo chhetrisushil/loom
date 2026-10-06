@@ -3,11 +3,11 @@ import { tainted } from "@loom/classify";
 import { tool$ } from "@loom/core";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import { agent$ } from "@loom/core";
-import { A2AEffect } from "@loom/effect-runtime";
 import type { Effect, EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { z } from "zod";
 import { createA2AClientEffect } from "./A2AClientEffect";
 import type { A2AClientOptions } from "./A2AClientEffect";
+import { A2AEffect } from "./A2AEffect";
 import type { A2ATask, A2ATaskResult, AgentCard } from "./types";
 
 /**

@@ -105,3 +105,20 @@ describe("K12.3 — nested budgets (tenant → workflow → execution)", () => {
     expect(ledger.spent("workflow:audit")).toEqual({ tokens: 100, costUsd: 0.5 });
   });
 });
+
+describe("open dimensions in nested budgets (ADR 0115)", () => {
+  it("accumulates a custom dimension in the ledger and trips a tenant ceiling on it", async () => {
+    const ledger = new BudgetLedger();
+    ledger.applyMetered(["tenant:acme"], { costUsd: 0, custom: { credits: 4 } });
+    ledger.applyMetered(["tenant:acme"], { custom: { credits: 3, constructor: 9 } });
+    expect(ledger.spent("tenant:acme").custom).toEqual({ credits: 7 });
+    const mw = nestedBudgetMiddleware({
+      ledger,
+      pricing: () => ({}),
+      scopesOf: () => [
+        { level: "tenant", key: "tenant:acme", budget: { maxCustom: { credits: 7 } } },
+      ],
+    });
+    await expect(mw(ctx(), {}, async () => "x")).rejects.toBeInstanceOf(QuotaExceededError);
+  });
+});
