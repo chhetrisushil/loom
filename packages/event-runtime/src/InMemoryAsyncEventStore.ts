@@ -1,9 +1,10 @@
 import type { EventEnvelope } from "@loom/core";
 import { SubscriberRegistry } from "./SubscriberRegistry";
+import { isAnsweringKind } from "./eventKindClass";
 import { compareExecutionIds } from "./executionIdOrder";
 import { StaleFenceError, fenceOf } from "./fencing";
 import { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
-import type { EventStore } from "./types";
+import type { AcquireFenceIfResult, EventStore } from "./types";
 import { DuplicateEnvelopeIdError, DuplicateSequenceError } from "./writeConflicts";
 
 export interface InMemoryAsyncEventStoreOptions {
@@ -239,6 +240,26 @@ export class InMemoryAsyncEventStore implements EventStore {
     const next = (this.fences.get(executionId) ?? 0) + 1;
     this.fences.set(executionId, next);
     return next;
+  }
+
+  /**
+   * ADR 0118 D1 — one synchronous step after the tick, so it cannot interleave with an append's
+   * own check-and-commit (which is also synchronous after ITS tick): the token compare-and-set
+   * plus a scan of the tail past `parkSeq`, which is short (the events appended since the park).
+   */
+  async acquireFenceIf(
+    executionId: string,
+    expect: { fence: number; parkSeq: number }
+  ): Promise<AcquireFenceIfResult> {
+    await this.tick();
+    const current = this.fences.get(executionId) ?? 0;
+    if (current !== expect.fence) return { stale: true, fence: current };
+    const list = this.log.get(executionId) ?? [];
+    for (let i = lowerBoundBySequence(list, expect.parkSeq + 1); i < list.length; i++) {
+      if (isAnsweringKind(list[i] as EventEnvelope)) return { stale: true, fence: current };
+    }
+    this.fences.set(executionId, current + 1);
+    return { fence: current + 1 };
   }
 
   async deleteExecution(executionId: string): Promise<void> {

@@ -110,6 +110,7 @@ export class ShardedEventStore implements EventStore {
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
+  readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
@@ -140,6 +141,7 @@ export class ShardedEventStore implements EventStore {
       head: async (id) => (await this.route(id)).head!(id),
       readRange: async (id, from, to) => (await this.route(id)).readRange!(id, from, to),
       acquireFence: async (id) => (await this.route(id)).acquireFence!(id),
+      acquireFenceIf: async (id, expect) => (await this.route(id)).acquireFenceIf!(id, expect),
       deleteExecution: async (id) => {
         await (await this.route(id)).deleteExecution!(id);
         this.placementCache.delete(id);

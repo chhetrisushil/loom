@@ -173,6 +173,7 @@ export function faultInjectingStore(inner: EventStore, source: FaultSource): Fau
     head: "forward",
     readRange: "forward",
     acquireFence: "forward",
+    acquireFenceIf: "forward",
     copyPrefix: "forward",
     deleteExecution: "forward",
     truncatePrefix: "forward",

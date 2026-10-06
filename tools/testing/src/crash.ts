@@ -97,6 +97,7 @@ export function crashingEventStore(
     head: "forward",
     readRange: "forward",
     acquireFence: "forward",
+    acquireFenceIf: "forward",
     copyPrefix: "forward",
     deleteExecution: "forward",
     truncatePrefix: "forward",

@@ -5,6 +5,7 @@ import { migrate } from "./schema";
 interface TimerRow {
   execution_id: string;
   wake_at: string; // BIGINT → string from node-postgres
+  redrive: { attempt: number } | null; // JSONB → parsed by node-postgres
 }
 
 /**
@@ -29,19 +30,31 @@ export class PostgresTimerStore implements TimerStore {
 
   async schedule(timer: TimerRecord): Promise<void> {
     await this.ready;
+    // Upsert (ADR 0118 D4): `DO NOTHING` would drop the re-drive flag when it lands on an existing
+    // plain row; this never downgrades a flagged one and lets a flagged record flag a plain one.
     await this.pool.query(
-      "INSERT INTO timers (execution_id, wake_at) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-      [timer.executionId, timer.wakeAt]
+      `INSERT INTO timers (execution_id, wake_at, redrive) VALUES ($1, $2, $3::jsonb)
+       ON CONFLICT (execution_id, wake_at)
+       DO UPDATE SET redrive = COALESCE(EXCLUDED.redrive, timers.redrive)`,
+      [
+        timer.executionId,
+        timer.wakeAt,
+        timer.redrive !== undefined ? JSON.stringify(timer.redrive) : null,
+      ]
     );
   }
 
   async due(now: number, limit = 100): Promise<TimerRecord[]> {
     await this.ready;
     const { rows } = await this.pool.query<TimerRow>(
-      "SELECT execution_id, wake_at FROM timers WHERE wake_at <= $1 ORDER BY wake_at ASC LIMIT $2",
+      "SELECT execution_id, wake_at, redrive FROM timers WHERE wake_at <= $1 ORDER BY wake_at ASC LIMIT $2",
       [now, limit]
     );
-    return rows.map((r) => ({ executionId: r.execution_id, wakeAt: Number(r.wake_at) }));
+    return rows.map((r) => ({
+      executionId: r.execution_id,
+      wakeAt: Number(r.wake_at),
+      ...(r.redrive !== null && { redrive: r.redrive }),
+    }));
   }
 
   async complete(executionId: string, wakeAt: number): Promise<void> {

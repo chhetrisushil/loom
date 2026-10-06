@@ -85,6 +85,20 @@ class FakeWorker implements WorkerRuntime {
 // is the point: a third-party backend proves conformance the same way.
 runEventStoreConformance(() => new InMemoryAsyncEventStore(), "InMemoryAsyncEventStore");
 
+// The kit's acquireFenceIf cases run only when a store offers the method (like `copyPrefix`), which
+// is a vacuous pass for a store that silently lacks it. The reference stores MUST offer it, so the
+// cases above are exercised for real (ADR 0118; the vacuous-check lesson).
+it("the reference stores offer acquireFenceIf, so its conformance cases are not vacuous", () => {
+  expect(typeof new InMemoryAsyncEventStore().acquireFenceIf).toBe("function");
+  expect(typeof new CoalescingEventStore(new InMemoryAsyncEventStore()).acquireFenceIf).toBe(
+    "function"
+  );
+  expect(
+    typeof new ShardedEventStore(Array.from({ length: 2 }, () => new InMemoryAsyncEventStore()))
+      .acquireFenceIf
+  ).toBe("function");
+});
+
 // ADR 0074 — the scale decorators run the SAME suite as a backend. That is the strongest
 // statement available about a decorator: it is indistinguishable from the store it wraps,
 // including through the composition the ADR documents (sharding outermost).
@@ -175,6 +189,7 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
     readRange: inner.readRange.bind(inner),
     head: inner.head.bind(inner),
     acquireFence: inner.acquireFence.bind(inner),
+    acquireFenceIf: inner.acquireFenceIf.bind(inner),
     copyPrefix: inner.copyPrefix.bind(inner),
     deleteExecution: inner.deleteExecution.bind(inner),
     truncatePrefix: inner.truncatePrefix.bind(inner),

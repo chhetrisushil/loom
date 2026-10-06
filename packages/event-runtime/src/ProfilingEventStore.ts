@@ -41,6 +41,7 @@ export class ProfilingEventStore implements EventStore {
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
+  readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -66,6 +67,7 @@ export class ProfilingEventStore implements EventStore {
       head: "forward",
       readRange: "forward",
       acquireFence: "forward",
+      acquireFenceIf: "forward",
       copyPrefix: "forward",
       deleteExecution: "forward",
       truncatePrefix: "forward",

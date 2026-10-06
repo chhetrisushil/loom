@@ -1,10 +1,87 @@
 import type { ScheduleDefinition } from "@loom/core";
-import type { EventStore, LeaseStore, TimerStore } from "@loom/event-runtime";
+import type { EventStore, LeaseStore, TimerRecord, TimerStore } from "@loom/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
 import { ExecutionAlreadyExistsError, TIMER_FIRED } from "./types";
+
+/**
+ * ADR 0118 D4 — what a registered re-driver answers for one re-drive row.
+ *
+ *  - `"done"` — it re-derived its resume from the log and the resume took effect;
+ *  - `"noop"` — nothing for it to do (the park is answered, or the execution is not its concern);
+ *  - `"contended"` — the resume hit {@link ResumeContendedError} again: back off and try later.
+ */
+export type RedriveVerdict = "done" | "noop" | "contended";
+
+/**
+ * A re-driver is registered by whatever writes re-drive rows (the supervisor's resume path, the
+ * inbox notify path). It MUST re-derive the work from the log — the row carries only the execution
+ * id and the attempt — so it is idempotent: a crash between its resume and the row's completion
+ * re-delivers, and the answered park makes the second delivery a `"noop"`.
+ */
+export type Redriver = (executionId: string, info: { attempt: number }) => Promise<RedriveVerdict>;
+
+/** Backoff for a re-drive row (ADR 0118 D4): exponential, full jitter, capped. */
+export interface RedriveBackoff {
+  /** The ceiling of the first delay, in ms. Default 200. */
+  baseMs?: number;
+  /** The cap of one delay, in ms. Default 30 000. */
+  capMs?: number;
+  /** Jitter source in [0, 1) — inject a seeded one for deterministic simulation. Default `Math.random`. */
+  random?: () => number;
+}
+
+/** Attempts a contended resume is re-driven before the service gives up (ADR 0118 D4). */
+export const DEFAULT_MAX_REDRIVE_ATTEMPTS = 8;
+
+/**
+ * The delay before re-drive attempt `attempt` (0-based): `random() * min(cap, base * 2^attempt)` —
+ * exponential with FULL jitter, so rivals that contended at the same instant do not retry in step.
+ */
+export function redriveDelayMs(attempt: number, backoff: RedriveBackoff = {}): number {
+  const base = backoff.baseMs ?? 200;
+  const cap = backoff.capMs ?? 30_000;
+  const random = backoff.random ?? Math.random;
+  const ceiling = Math.min(cap, base * 2 ** Math.min(attempt, 30));
+  return Math.floor(random() * ceiling);
+}
+
+/**
+ * Write the due-later row that re-drives a contended resume (ADR 0118 D4): `attempt` is the try
+ * the row will make when it fires, its `wakeAt` is `now` plus the backoff for that attempt.
+ * Idempotent per `(executionId, wakeAt)` (the store upserts, never downgrading the flag).
+ */
+export async function scheduleRedrive(
+  store: TimerStore,
+  executionId: string,
+  attempt: number,
+  now: number,
+  backoff: RedriveBackoff = {}
+): Promise<TimerRecord> {
+  const row: TimerRecord = {
+    executionId,
+    wakeAt: now + redriveDelayMs(attempt, backoff),
+    redrive: { attempt },
+  };
+  await store.schedule(row);
+  return row;
+}
+
+/** What `onError` receives, once, when a contended resume exhausts its re-drive attempts. */
+export class RedriveExhaustedError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly attempts: number
+  ) {
+    super(
+      `execution "${executionId}" is still contended after ${attempts} re-drive attempts; leaving it to recover()`
+    );
+    this.name = "RedriveExhaustedError";
+    Object.setPrototypeOf(this, RedriveExhaustedError.prototype);
+  }
+}
 
 export interface TimerServiceOptions {
   /** Poll cadence for due timers, in ms. Default 250. */
@@ -13,6 +90,16 @@ export interface TimerServiceOptions {
   batch?: number;
   /** Observability hook for a failed fire (the timer is retried next poll). */
   onError?: (executionId: string, err: unknown) => void;
+  /**
+   * ADR 0118 D4 — re-drivers for RE-DRIVE rows (`TimerRecord.redrive`), registered up front;
+   * `registerRedriver` adds more later (what `superviseChildren({ redrive })` does). A re-drive row
+   * is NOT judged by `suspendedOn.wakeAt`: it is handed to each redriver in turn.
+   */
+  redrivers?: Redriver[];
+  /** Re-drive attempts before giving up (`onError` once, then left to `recover()`). Default 8. */
+  maxRedriveAttempts?: number;
+  /** Backoff for the NEXT re-drive row of a still-contended execution. Default 200 ms base, 30 s cap. */
+  redriveBackoff?: RedriveBackoff;
   /**
    * T1.2 — durable cron schedules (`schedule$`), statically wired (P5). Each
    * due occurrence starts its flow with the deterministic executionId
@@ -159,6 +246,9 @@ export class TimerService {
     cursor: number;
     warmed?: number; // the occurrence already pre-warmed (dedupe across polls)
   }>;
+  private readonly redrivers: Redriver[];
+  private readonly maxRedriveAttempts: number;
+  private readonly redriveBackoff: RedriveBackoff;
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
   private readonly now: () => number;
@@ -185,6 +275,9 @@ export class TimerService {
     this.batch = options.batch ?? 100;
     this.onError = options.onError;
     this.fenced = options.fenced ?? false;
+    this.redrivers = [...(options.redrivers ?? [])];
+    this.maxRedriveAttempts = options.maxRedriveAttempts ?? DEFAULT_MAX_REDRIVE_ATTEMPTS;
+    this.redriveBackoff = options.redriveBackoff ?? {};
     this.warmLeadMs = options.warmLeadMs ?? 0;
     this.now = options.now ?? runtime.clock;
     // Cron cursors start at construction time: no catch-up of occurrences that
@@ -196,6 +289,18 @@ export class TimerService {
       spec: parseCron(def.cron),
       cursor: floor,
     }));
+  }
+
+  /**
+   * ADR 0118 D4 — register a re-driver for RE-DRIVE rows. Returns the unregister function.
+   * Registering the same function twice is a no-op.
+   */
+  registerRedriver(redriver: Redriver): () => void {
+    if (!this.redrivers.includes(redriver)) this.redrivers.push(redriver);
+    return () => {
+      const i = this.redrivers.indexOf(redriver);
+      if (i >= 0) this.redrivers.splice(i, 1);
+    };
   }
 
   start(): void {
@@ -219,7 +324,7 @@ export class TimerService {
     try {
       const due = await this.store.due(now, this.batch);
       for (const timer of due) {
-        await this.fire(timer.executionId, timer.wakeAt);
+        await this.fire(timer.executionId, timer.wakeAt, timer.redrive);
       }
       for (const schedule of this.schedules) {
         await this.fireDueOccurrences(schedule, now);
@@ -292,7 +397,46 @@ export class TimerService {
     }
   }
 
-  private async fire(executionId: string, wakeAt: number): Promise<void> {
+  /**
+   * Run the registered re-drivers for one re-drive row. `done` / `noop` retires the row. A
+   * `contended` verdict (or a re-driver that threw) writes the NEXT row — with a larger backoff —
+   * BEFORE retiring this one, so a crash in between leaves two idempotent rows rather than none;
+   * once `maxRedriveAttempts` rows have fired, `onError` is called ONCE and the row retired, leaving
+   * the execution to `recover()`.
+   */
+  private async fireRedrive(executionId: string, wakeAt: number, attempt: number): Promise<void> {
+    // A node that registered no re-driver cannot judge this row, and the store is shared: leave it
+    // for one that can, rather than retire it (a retired row is a silent loss of the re-drive).
+    if (this.redrivers.length === 0) return;
+    let verdict: RedriveVerdict = "noop";
+    for (const redriver of [...this.redrivers]) {
+      let v: RedriveVerdict;
+      try {
+        v = await redriver(executionId, { attempt });
+      } catch {
+        v = "contended"; // a failed re-drive is retried on the same schedule, not silently dropped
+      }
+      if (v !== "noop") {
+        verdict = v;
+        break;
+      }
+    }
+    if (verdict === "contended") {
+      const next = attempt + 1;
+      if (next >= this.maxRedriveAttempts) {
+        this.onError?.(executionId, new RedriveExhaustedError(executionId, next));
+      } else {
+        await scheduleRedrive(this.store, executionId, next, this.now(), this.redriveBackoff);
+      }
+    }
+    await this.store.complete(executionId, wakeAt);
+  }
+
+  private async fire(
+    executionId: string,
+    wakeAt: number,
+    redrive?: { attempt: number }
+  ): Promise<void> {
     // #380 — claim the execution before waking it. `null` means another node holds it and is
     // presumably firing this same timer; skip WITHOUT completing it, so a wake is never lost
     // if that node dies between the claim and the resume. Its lease expires; we try again.
@@ -313,6 +457,12 @@ export class TimerService {
       );
     }
     try {
+      // ADR 0118 D4 — a RE-DRIVE row is not the wake of a timed suspend: judging it by
+      // `suspendedOn.wakeAt` would retire it as obsolete. It runs under the same lease claim.
+      if (redrive !== undefined) {
+        await this.fireRedrive(executionId, wakeAt, redrive.attempt);
+        return;
+      }
       const state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
       const stillWaiting =
         state !== null && state.status === "suspended" && state.suspendedOn?.wakeAt === wakeAt;

@@ -1,6 +1,6 @@
 # ADR 0118 — A conditional fence: acquire-if-parked
 
-- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
+- Status: **Accepted — implemented** (2026-10-06; proposed 2026-10-05, design approved after 4 review rounds). See "Implementation (as built)" for what differs from the text above (SQLite does not fence, the Postgres acquire is one round-trip and a park ensures its fence row, the supervisor keeps its unfenced first try, `app.supervise` / `app.redrive` are the wiring) and the acceptance benchmark.
 - Date: 2026-10-05
 - Closes: R8k (the R8 review's residual TOCTOU, named in the `@loom/orchestration` README, "Restart safety (R8)")
 - Builds on: K9.4 ([ADR 0021](0021-k9-effect-delivery-contract-idempotency-fencing.md), `acquireFence`),
@@ -254,3 +254,136 @@ archivable again once the parent is answered or terminal.
   already answers.
 - **Teaching `LogLifecycle` about children**: the kernel has no child relation; the pin seam exists
   exactly so policy stays outside it.
+
+## Implementation (as built)
+
+Shipped in R8k (Wave 2 lane B). EVENT_STORE_SPI 2.1.0 (bumped by W2-0) now contains the method;
+KERNEL_ABI and EVENT_SCHEMA are untouched. Where the code differs from the decision text above:
+
+- **SQLite does not implement `acquireFenceIf`.** D1 names "SQLite = one `BEGIN IMMEDIATE`", but
+  `SqliteEventStore` has never fenced (no `acquireFence`, no token, no append guard: single-node, the
+  process is the failure domain), so there is nothing to compare-and-set and neither window exists. The
+  method is optional and "a store without it keeps today's behaviour"; adding a whole fencing
+  subsystem to SQLite to host it would change what an append refuses there, which this ADR does not
+  decide. The conformance cases run only where the method exists (memory, Postgres, and every
+  decorator over them); the runtime's fallback on SQLite is "no token", exactly as before. The SQLite
+  half that DOES ship is the timer-table migration (D4).
+- **Memory** (`InMemoryAsyncEventStore`): one synchronous step after the tick, a binary search to
+  `parkSeq + 1` and a scan of the tail with `isAnsweringKind`, as specified.
+- **Postgres: one round-trip, and a park ensures its fence row.**
+  - `acquireFenceIf` is a single simple-protocol query of three statements (`INSERT … ON CONFLICT DO
+    NOTHING` the fence row; `SELECT … FOR UPDATE`; `UPDATE … WHERE fence = <expected> AND NOT EXISTS
+    (<answering event past parkSeq>) RETURNING`). A multi-statement simple query is ONE implicit
+    transaction, and each statement in READ COMMITTED takes its own snapshot, so the scan sees every
+    append committed before the lock was granted, which is the "separate statement" D1 asks for, without
+    `BEGIN`/`COMMIT` or a checked-out client (the first version took six round-trips and cost a third of
+    a resume's throughput). No row back means stale, and the current token is the `SELECT`'s. Values are
+    inlined (a multi-statement query takes no bind parameters): the id hex-encoded, numbers checked
+    integers, kinds the kernel's constant names.
+  - **An append can only take `FOR SHARE` on a row that exists.** An execution that was never fenced
+    has no `fences` row, so an answering append whose statement started before the acquirer created
+    one read "no fence", took no lock, and could land after the acquire had already looked: the
+    conformance race case caught it under load (about one full run in six). Fix: an
+    `EXECUTION_SUSPENDED` append (single and `appendMany`) also does `INSERT INTO fences … VALUES (id, 0)
+    ON CONFLICT DO NOTHING`, so the row exists, committed, before anyone can answer or acquire for that
+    park. A token-0 row is inert for every guard (`COALESCE(0, token) <= token`; `acquireFence` upserts to
+    1 as before) and costs an index probe per park once it exists. **Residual (documented, not closed):** a
+    park written BEFORE this version, on its FIRST-ever acquire, has no row; the acquirer creates it, and
+    an answering append already in flight that read "no row" can still land after the scan. The
+    supervisor resumes unfenced first, so it reaches `acquireFenceIf` only for an execution that already
+    has a fence row.
+  - The append guard takes `FOR SHARE` only for a batch containing an answering kind, on BOTH paths.
+    `FOR SHARE OF f` cannot be applied to the nullable side of the JOIN's `LEFT JOIN`, so the
+    locking variant reads the rows through a `locked AS MATERIALIZED (… FOR SHARE OF f)` CTE (which
+    also returns the post-wait row version, where a plain read in the same statement would use the
+    statement's old snapshot) and joins that.
+  - Fail-first: with the `FOR SHARE` reads disabled, the single-append and the `appendBatch` race cases
+    fail in 3 of 3 runs; enabled, 11 consecutive full-suite runs passed.
+- **Decorators** forward / route / scope it (tenant, coalescing, sharded, profiling, crypto, content,
+  audit-chain, the DST fault store, the crash harness); `OPTIONAL_EVENT_STORE_METHODS` lists it, so a
+  decorator that does not decide is a compile error (it was: six did not build until they did).
+- **Runtime (D2):** `RunOptions.fenceIfParkedAt` on `resume` and `resumeAs`. The park envelope comes from
+  the events the resume already holds (else one `readRange`), the fence is taken LAST (after every
+  check that can refuse without appending, because an abandoned acquire supersedes whoever holds the old
+  token), and `assertResumable` is re-run under the acquired fence against the fold in hand plus one
+  tail read. It takes precedence over `fence`; on a store without `acquireFenceIf` it falls back to
+  `acquireFence`; on a non-fencing store it is ignored. Three attempts, then `ResumeContendedError`
+  (`retryable: true`, `attempts`, not a `ResumeRefusedError`).
+- **The supervisor keeps its UNFENCED first try** and uses `fenceIfParkedAt` only on `StaleFenceError`
+  (at most three conditional resumes per `resumeParent`). D2 says the loop "collapses to one attempt";
+  taking a fence up front would make every supervised parent fenced forever, and a fenced execution
+  refuses an unfenced manual resume for good (`TimerService` is opt-in for the same reason). A store
+  without the method keeps the previous two-acquisition loop verbatim.
+- **D3:** `pinParkedChildren(supervisor | () => supervisor)` and `ChildSupervisor.parkedOnChild`
+  (`@loom/orchestration`). The edge is the child's own `EXECUTION_STARTED.parent` (R3k: only the lineage
+  grant writes it), falling back to the supervisor's rebuilt state; the parent must be non-terminal,
+  parked on `CHILD_DONE`, with the child's own key or a group that names it. An unreadable log answers
+  "pinned" (retention fails toward keeping). **`defineConfig` cannot compose it by itself**: the
+  supervisor is built from the runtime `defineConfig` returns. The seam is `app.supervise(supervisor)`,
+  which ORs the predicate into `app.lifecycle`'s pin (with `durability.retention.pinned`).
+- **D4:** `TimerRecord.redrive?: { attempt }`; the in-memory store, SQLite (`ALTER TABLE … ADD COLUMN
+  redrive TEXT`, guarded by `pragma table_info`; `INSERT … ON CONFLICT DO UPDATE SET redrive =
+  COALESCE(excluded.redrive, timers.redrive)`) and Postgres (`ADD COLUMN IF NOT EXISTS redrive JSONB`
+  in `migrate`; the same upsert) all upsert it, so a flagged row is never downgraded and a plain row
+  gains it. The timer conformance kit gained the round-trip and upsert cases and the Postgres timer
+  store now runs it; old-shape-table migration tests exist for both SQL stores. `TimerService`:
+  `redrivers` / `registerRedriver`, `maxRedriveAttempts` (8), `redriveBackoff { baseMs 200, capMs 30 000,
+  random }` (full jitter, `random * min(cap, base * 2^attempt)`). A re-drive row is NOT judged by
+  `suspendedOn.wakeAt`; each re-driver answers `done | noop | contended`, the first non-`noop` wins,
+  `contended` (or a re-driver that throws) writes row `attempt + 1` BEFORE retiring this one, and at
+  `maxRedriveAttempts` rows `onError` receives one `RedriveExhaustedError` and the row is retired,
+  leaving the execution to `recover()`. A node with NO re-driver registered leaves the row (the store is
+  shared; retiring it there would be the silent loss the flag exists to prevent).
+  `superviseChildren({ redrive: { timers, service } })` writes the first row (attempt 0) on
+  `ResumeContendedError` and registers its re-driver (`adopt` from the log). **The flag:**
+  `defineConfig({ kernel: { features: { redrive: true } } })` is the first member of the `kernel.features`
+  family; on, with `timers` configured, `app.redrive` hands the wiring out; off (default) nothing is
+  written and a contended resume goes to `onError` and `recover()`.
+- **Not done here:** ADR 0110's inbox notify path as a second re-driver (R2 registers it; `redrivers` is
+  the seam), and the coalescing predicate for redrive rows (R2's, ADR 0110): a redrive row is
+  distinguishable through `due`, which is all this ADR promises.
+
+### Tests (each failed first)
+
+Conformance (every backend that offers the method; Postgres needs `LOOM_TEST_POSTGRES_URL`): next token
+and old holder fenced; moved token is `stale` and returns the current one without changing it; eight
+concurrent callers, one winner; each answering kind past the park is stale with a matching token;
+answering at or before the park is not; `EXECUTION_DENIED`, `OUTCOME_RECORDED`, `STEP_FAILED`,
+`MESSAGE_CONSUMED`, `EXECUTION_MIGRATED`, `STEP_COMPLETED` and an app event are not; an unknown kind
+stamped `metadata.kernel: true` is, unstamped (or stamped `"true"`) is not; an answering append vs the
+acquire on both Postgres append paths; and **every interleaving** of two resumers with crashes
+(`{A,B}^n`, n <= 7, 255 schedules): at most one `EXECUTION_RESUMED`, the winner's body never fenced
+out, with the unconditional acquire as a negative control that does fence a body out. Runtime: dead
+acquirer then resume; three dead acquirers is `ResumeContendedError` (not `not-suspended`, log
+untouched); A's resume committing between B's re-read and B's acquire; an unfenced `EXECUTION_DENIED` /
+app event after the park; an answered park or a non-park sequence is `not-suspended` and takes no
+token; fallback without the method. Supervisor: two supervisors racing a fenced parent, a dead
+acquirer, a rival fencing behind every acquire (three conditional tries, then `onError`), the live
+re-drive completing with no `recover()`, exhaustion reporting once, the flag off, and the pin (parked,
+answered, after a restart, group members, a different key). Not run in CI: the Postgres cases skip
+without a database (CI has none); they were run locally against PostgreSQL 17.
+
+### Acceptance: `tools/bench-throughput` fenced vs unfenced, before and after
+
+`pnpm --filter @loom/bench-throughput bench:fence` (`src/fenceIf.ts`). 64 concurrent executions, 3 000
+per run, median of 5 runs, loopback PostgreSQL 17 on a laptop; two independent invocations per side.
+"Before" is `origin/main`'s `PostgresEventStore.ts` (the only hot-path file this ADR changes); "after" is
+this PR. `p-cond` is a park/resume under `fenceIfParkedAt`; "before" it is the documented fallback to
+`acquireFence`.
+
+| executions/sec (p50 ms) | unfenced | fenced | park/resume, unfenced | park/resume under `acquireFence` | park/resume under `fenceIfParkedAt` |
+|---|---:|---:|---:|---:|---:|
+| Postgres, before | 5 379 / 5 038 (11.6 / 12.4) | 4 461 / 4 399 (13.9 / 14.2) | 2 525 / 2 392 (25.2 / 26.2) | 2 313 / 2 219 (27.7 / 28.4) | 2 021 / 2 018 (fallback) |
+| Postgres, after | 5 292 / 5 037 (11.9 / 12.2) | 4 478 / 4 343 (14.0 / 14.5) | 2 364 / 2 330 (26.9 / 27.3) | 2 201 / 2 180 (28.8 / 29.2) | 1 718 / 1 641 (36.7 / 37.7) |
+| in-memory, after | 172 517 | 161 765 | 29 829 | 29 401 | 28 953 |
+| SQLite (unchanged code; no fencing, so "fenced" = unfenced) | 7 591 | 7 670 | 3 613 | 3 649 | 3 149 |
+
+Reading it: executions that never answer a park through the guard, and fenced ones, are within the
+run-to-run spread (two invocations of the SAME build differ by up to 7%). Park/resume, which is where
+the new `FOR SHARE` read and the park's fence-row probe live, is about 4% lower after (2.36K vs 2.46K
+unfenced, 2.19K vs 2.27K under `acquireFence`), which the spread does not exclude and which is the
+price named in D1 (answering appends only). The conditional resume itself is the real cost, about 25%
+below `acquireFence` (1.68K vs 2.19K): one more round-trip than the unconditional acquire (the tail
+read that re-checks the park under the fence) plus the caller's `parkedAtSequence`; it buys the
+guarantee, and the supervisor takes it only on a stale fence. In-memory is unchanged code. The Postgres
+numbers move at most a few percent where the ADR claimed the hot path would not.

@@ -1104,6 +1104,8 @@ interface LoomApp {
   memory: MemoryRuntime;                                        // every memory$ definition, over memoryStore
   knowledge(scope, options?): KnowledgeBase;                    // a document corpus over the same store (ADR 0091)
   lifecycle: LogLifecycle;                                      // K10.1 retention/compaction
+  supervise(supervisor): supervisor;                            // ADR 0118: register superviseChildren's result so retention keeps a child its parent is parked on
+  redrive?: { timers: TimerStore; service: TimerService };      // ADR 0118: present iff kernel.features.redrive + timers; pass to superviseChildren({ redrive })
   subjectIndex?: SubjectIndex;                                  // T3 (when compliance wired)
   exportSubject(id: string, o?: { includeEvents?: boolean; tenant?: string }): Promise<SubjectExport>;
   eraseSubject(id: string, tenant?: string): Promise<EraseSubjectResult>;
@@ -1592,6 +1594,18 @@ event is stamped with; the **store append rejects** a stale or missing token
 acquires it automatically; hand-driven runs pass `{ fence }` via `RunOptions`. Executions that
 never fence — and single-node SQLite, where the process is the failure domain — are entirely
 untouched (G2).
+
+**Acquire-if-parked (R8k, [ADR 0118](adr/0118-acquire-if-parked-fence.md)).** `acquireFence` is
+unconditional, so two resumers of one parked execution could fence each other out — one of them,
+after its resume was already recorded, superseding the holder of the *running* body. A fencing
+store may also offer `acquireFenceIf(id, { fence, parkSeq })`: one atomic step that takes the token
+only if it has not moved **and** nothing has answered the park since (`EXECUTION_RESUMED`, a later
+park or a terminal event; audit appends like `EXECUTION_DENIED` do not count). `resume` /
+`resumeAs` use it when given `{ fenceIfParkedAt: await runtime.parkedAtSequence(id) }`; a dead
+acquirer is retried on the token the store returns, an answered park is `ResumeRefusedError`
+`not-suspended`, and a resume that keeps losing is a retryable `ResumeContendedError`
+(`kernel.features.redrive` turns that into a backed-off timer row, so it completes without
+`recover()`). A store without the method falls back to `acquireFence` and its residual.
 
 ### Flow-code versioning (K11.1)
 

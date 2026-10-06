@@ -519,6 +519,293 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       expect((await store.read("unfenced")).map((e) => e.sequence)).toEqual([0]);
       await store.close();
     });
+
+    // ── ADR 0118 D1 — acquireFenceIf: a CAS on the token AND "the park is unanswered" ──────
+    // Every case writes under its own execution id (a Postgres harness shares a schema when the
+    // case count outgrows its pool) and runs only when the store offers the method, like
+    // `copyPrefix`. A park is `[STARTED@0, SUSPENDED@1]`, written with no fence (token 0).
+    const parked = async (store: EventStore, id: string): Promise<void> => {
+      await store.append(evt(id, 0, "EXECUTION_STARTED"));
+      await store.append(evt(id, 1, "EXECUTION_SUSPENDED"));
+    };
+
+    it("acquireFenceIf (if implemented): token and park match -> the NEXT token, and it fences the old holder", async () => {
+      const store = factory();
+      if (store.acquireFenceIf === undefined) return void (await store.close());
+      await parked(store, "aif-ok");
+      expect(await store.acquireFenceIf("aif-ok", { fence: 0, parkSeq: 1 })).toEqual({ fence: 1 });
+      // The token behaves as acquireFence's: the unfenced writer is now a zombie.
+      await expect(store.append(evt("aif-ok", 2))).rejects.toMatchObject({
+        name: "StaleFenceError",
+      });
+      await store.append({ ...evt("aif-ok", 2), metadata: { fence: 1 } });
+      expect(await store.acquireFence?.("aif-ok")).toBe(2);
+      await store.close();
+    });
+
+    it("acquireFenceIf (if implemented): a moved token is `stale`, returns the CURRENT token, changes nothing", async () => {
+      const store = factory();
+      if (store.acquireFenceIf === undefined || store.acquireFence === undefined) {
+        return void (await store.close());
+      }
+      await parked(store, "aif-moved");
+      expect(await store.acquireFence("aif-moved")).toBe(1); // a dead acquirer: token 1, no append
+      expect(await store.acquireFenceIf("aif-moved", { fence: 0, parkSeq: 1 })).toEqual({
+        stale: true,
+        fence: 1,
+      });
+      // Nothing moved: the next unconditional acquire is 2, not 3.
+      expect(await store.acquireFence("aif-moved")).toBe(2);
+      // And the retry on the RETURNED token (the log is still unanswered) wins.
+      expect(await store.acquireFenceIf("aif-moved", { fence: 2, parkSeq: 1 })).toEqual({
+        fence: 3,
+      });
+      await store.close();
+    });
+
+    it("acquireFenceIf (if implemented): concurrent callers on one token -> exactly one wins", async () => {
+      const store = factory();
+      if (store.acquireFenceIf === undefined) return void (await store.close());
+      await parked(store, "aif-race");
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () => store.acquireFenceIf!("aif-race", { fence: 0, parkSeq: 1 }))
+      );
+      const won = results.filter((r) => !("stale" in r));
+      expect(won).toEqual([{ fence: 1 }]);
+      for (const r of results) if ("stale" in r) expect(r.fence).toBe(1);
+      await store.close();
+    });
+
+    for (const kind of [
+      "EXECUTION_RESUMED",
+      "EXECUTION_SUSPENDED",
+      "EXECUTION_COMPLETED",
+      "EXECUTION_FAILED",
+      "EXECUTION_CANCELLED",
+      "EXECUTION_CONTINUED",
+    ]) {
+      it(`acquireFenceIf (if implemented): an ${kind} past the park is stale even though the token matches`, async () => {
+        const store = factory();
+        if (store.acquireFenceIf === undefined) return void (await store.close());
+        const id = `aif-ans-${kind}`;
+        await parked(store, id);
+        await store.append(evt(id, 2, kind)); // an answer appends under the SAME token
+        expect(await store.acquireFenceIf(id, { fence: 0, parkSeq: 1 })).toEqual({
+          stale: true,
+          fence: 0,
+        });
+        // ...and nothing was bumped: an unfenced writer is not fenced out.
+        await expect(store.append(evt(id, 3))).resolves.toBeUndefined();
+        await store.close();
+      });
+    }
+
+    it("acquireFenceIf (if implemented): an answering event AT or BEFORE the park does not count", async () => {
+      const store = factory();
+      if (store.acquireFenceIf === undefined) return void (await store.close());
+      // started, parked, resumed (an earlier answer), then parked again at 3.
+      await store.append(evt("aif-old", 0, "EXECUTION_STARTED"));
+      await store.append(evt("aif-old", 1, "EXECUTION_SUSPENDED"));
+      await store.append(evt("aif-old", 2, "EXECUTION_RESUMED"));
+      await store.append(evt("aif-old", 3, "EXECUTION_SUSPENDED"));
+      expect(await store.acquireFenceIf("aif-old", { fence: 0, parkSeq: 3 })).toEqual({ fence: 1 });
+      await store.close();
+    });
+
+    for (const kind of [
+      "EXECUTION_DENIED",
+      "OUTCOME_RECORDED",
+      "STEP_FAILED",
+      "MESSAGE_CONSUMED",
+      "EXECUTION_MIGRATED",
+      "STEP_COMPLETED",
+      "SOME_APP_EMIT", // an application event (ctx.emit): ignorable, or a sibling that keeps emitting wedges every resume
+    ]) {
+      it(`acquireFenceIf (if implemented): an unfenced ${kind} after the park does NOT make it stale`, async () => {
+        const store = factory();
+        if (store.acquireFenceIf === undefined) return void (await store.close());
+        const id = `aif-ign-${kind}`;
+        await parked(store, id);
+        await store.append(evt(id, 2, kind));
+        await store.append(evt(id, 3, kind));
+        expect(await store.acquireFenceIf(id, { fence: 0, parkSeq: 1 })).toEqual({ fence: 1 });
+        await store.close();
+      });
+    }
+
+    it("acquireFenceIf (if implemented): an UNKNOWN kind stamped metadata.kernel=true is answering; an unstamped one is not", async () => {
+      const store = factory();
+      if (store.acquireFenceIf === undefined) return void (await store.close());
+      await parked(store, "aif-unk-stamped");
+      await store.append({
+        ...evt("aif-unk-stamped", 2, "EXECUTION_FROM_THE_FUTURE"),
+        metadata: { kernel: true },
+      });
+      expect(await store.acquireFenceIf("aif-unk-stamped", { fence: 0, parkSeq: 1 })).toEqual({
+        stale: true,
+        fence: 0,
+      });
+      await parked(store, "aif-unk-plain");
+      await store.append(evt("aif-unk-plain", 2, "EXECUTION_FROM_THE_FUTURE"));
+      // `kernel: "true"` (a string) is not the stamp either.
+      await store.append({
+        ...evt("aif-unk-plain", 3, "EXECUTION_FROM_THE_FUTURE"),
+        metadata: { kernel: "true", other: 1 },
+      });
+      expect(await store.acquireFenceIf("aif-unk-plain", { fence: 0, parkSeq: 1 })).toEqual({
+        fence: 1,
+      });
+      await store.close();
+    });
+
+    it("acquireFenceIf (if implemented): an ANSWERING append racing the acquire never both succeed", async () => {
+      // The Postgres hazard (ADR 0118 D1): an append that passed its fence guard at the old
+      // token must not commit AFTER the acquire already looked. Either the answer lands and the
+      // acquire is stale, or the acquire wins and the answer is a StaleFenceError.
+      const store = factory();
+      if (store.acquireFenceIf === undefined) return void (await store.close());
+      for (let i = 0; i < 12; i++) {
+        const id = `aif-append-race-${i}`;
+        await parked(store, id);
+        const answer = store
+          .append(evt(id, 2, "EXECUTION_RESUMED"))
+          .then(() => "landed" as const)
+          .catch((e: unknown) => {
+            if ((e as { name?: string }).name === "StaleFenceError") return "fenced" as const;
+            throw e;
+          });
+        const acq = store.acquireFenceIf(id, { fence: 0, parkSeq: 1 });
+        const [a, r] = await Promise.all([answer, acq]);
+        if (a === "landed") {
+          expect(r, `${id}: the answer landed, so the acquire must be stale`).toMatchObject({
+            stale: true,
+          });
+        } else {
+          expect(r, `${id}: the acquire won, so the answer must have been fenced out`).toEqual({
+            fence: 1,
+          });
+          expect((await store.read(id)).map((e) => e.eventType)).not.toContain("EXECUTION_RESUMED");
+        }
+      }
+      await store.close();
+    });
+
+    it("acquireFenceIf (if implemented): over EVERY interleaving of two resumers (with crashes) one resume lands and its body is never fenced out", async () => {
+      // ADR 0118 D1/D2 — the property the conditional exists for. Two resumers A and B answer ONE
+      // park that a dead acquirer already left at token 1. Each runs the runtime's script — acquire
+      // (on `stale`, retry on the returned token, bounded), append `EXECUTION_RESUMED`, then its
+      // BODY's next append — as atomic steps; every schedule over {A,B}^n (n <= 7) is run, and an
+      // actor not scheduled again is a crash at that point. Invariants: at most one RESUMED, and an
+      // actor whose RESUMED landed is NEVER fenced out of its own body.
+      const store = factory();
+      if (store.acquireFenceIf === undefined || store.acquireFence === undefined) {
+        return void (await store.close());
+      }
+      interface Actor {
+        view: number;
+        token: number | undefined;
+        phase: "acquire" | "resume" | "body" | "done";
+        tries: number;
+        resumed: boolean;
+        fencedOut: boolean;
+      }
+      const nextSeq = async (id: string): Promise<number> => (await store.read(id)).length;
+      const step = async (id: string, a: Actor, conditional: boolean): Promise<void> => {
+        if (a.phase === "acquire") {
+          const got = conditional
+            ? await store.acquireFenceIf!(id, { fence: a.view, parkSeq: 1 })
+            : { fence: await store.acquireFence!(id) };
+          if ("stale" in got) {
+            a.view = got.fence; // the re-read: still parked, so retry on the token returned
+            if (++a.tries >= 3) a.phase = "done";
+          } else {
+            a.token = got.fence;
+            a.phase = "resume";
+          }
+        } else if (a.phase === "resume" || a.phase === "body") {
+          const seq = await nextSeq(id);
+          const kind = a.phase === "resume" ? "EXECUTION_RESUMED" : "STEP_COMPLETED";
+          try {
+            await store.append({
+              ...evt(id, seq, kind),
+              id: `${id}-${seq}-${a.token}`,
+              metadata: { fence: a.token },
+            });
+            if (a.phase === "resume") {
+              a.resumed = true;
+              a.phase = "body";
+            } else a.phase = "done";
+          } catch (e) {
+            const name = (e as { name?: string }).name;
+            if (name !== "StaleFenceError" && name !== "DuplicateSequenceError") throw e;
+            if (name === "StaleFenceError" && a.resumed) a.fencedOut = true;
+            a.phase = "done";
+          }
+        }
+      };
+      const schedules: string[] = [""];
+      for (let n = 1; n <= 7; n++) {
+        for (const prev of schedules.filter((x) => x.length === n - 1)) {
+          schedules.push(`${prev}A`, `${prev}B`);
+        }
+      }
+      let n = 0;
+      const violations = async (conditional: boolean): Promise<string[]> => {
+        const bad: string[] = [];
+        for (const schedule of schedules) {
+          const id = `aif-dst-${conditional ? "c" : "u"}-${n++}`;
+          await parked(store, id);
+          await store.acquireFence!(id); // the dead acquirer: token 1, the park was written under 0
+          const mk = (): Actor => ({
+            view: 0,
+            token: undefined,
+            phase: "acquire",
+            tries: 0,
+            resumed: false,
+            fencedOut: false,
+          });
+          const actors = { A: mk(), B: mk() };
+          for (const who of schedule) await step(id, actors[who as "A" | "B"], conditional);
+          const resumes = (await store.read(id)).filter((e) => e.eventType === "EXECUTION_RESUMED");
+          if (resumes.length > 1) bad.push(`${schedule}: ${resumes.length} resumes`);
+          for (const [name, a] of Object.entries(actors)) {
+            if (a.fencedOut) bad.push(`${schedule}: ${name}'s running body was fenced out`);
+          }
+        }
+        return bad;
+      };
+      expect(await violations(true)).toEqual([]);
+      // Negative control: the SAME schedules with the unconditional acquire DO fence a body out, so
+      // the enumeration is sensitive to the very bug the conditional closes.
+      expect((await violations(false)).length).toBeGreaterThan(0);
+      await store.close();
+    }, 120_000);
+
+    it("acquireFenceIf (if implemented): the same race through appendBatch (the JOIN guard path)", async () => {
+      const store = factory();
+      if (store.acquireFenceIf === undefined || store.appendBatch === undefined) {
+        return void (await store.close());
+      }
+      for (let i = 0; i < 12; i++) {
+        const id = `aif-batch-race-${i}`;
+        await parked(store, id);
+        const answer = store
+          .appendBatch([evt(id, 2, "MESSAGE_CONSUMED"), evt(id, 3, "EXECUTION_RESUMED")])
+          .then(() => "landed" as const)
+          .catch((e: unknown) => {
+            if ((e as { name?: string }).name === "StaleFenceError") return "fenced" as const;
+            throw e;
+          });
+        const acq = store.acquireFenceIf(id, { fence: 0, parkSeq: 1 });
+        const [a, r] = await Promise.all([answer, acq]);
+        if (a === "landed") expect(r).toMatchObject({ stale: true });
+        else {
+          expect(r).toEqual({ fence: 1 });
+          expect(await store.read(id)).toHaveLength(2); // all-or-nothing: the batch left no hole
+        }
+      }
+      await store.close();
+    });
   });
 }
 
@@ -1149,6 +1436,36 @@ export function runTimerStoreConformance(factory: () => TimerStore, label = "Tim
       await s.complete("a", 100);
       expect(await s.due(500)).toEqual([]);
       await expect(s.complete("nope", 1)).resolves.toBeUndefined();
+      await s.close();
+    });
+
+    it("a re-drive row round-trips through due, distinguishable from a plain wake (ADR 0118 D4)", async () => {
+      const s = factory();
+      await s.schedule({ executionId: "plain", wakeAt: 100 });
+      await s.schedule({ executionId: "redrive", wakeAt: 200, redrive: { attempt: 3 } });
+      const due = await s.due(500);
+      expect(due).toEqual([
+        { executionId: "plain", wakeAt: 100 },
+        { executionId: "redrive", wakeAt: 200, redrive: { attempt: 3 } },
+      ]);
+      expect("redrive" in (due[0] as object)).toBe(false);
+      await s.complete("redrive", 200);
+      expect((await s.due(500)).map((t) => t.executionId)).toEqual(["plain"]);
+      await s.close();
+    });
+
+    it("schedule UPSERTS the re-drive flag: never downgraded, and a plain row gains it (ADR 0118 D4)", async () => {
+      const s = factory();
+      // a flagged row, then a plain schedule of the SAME (executionId, wakeAt): the flag survives
+      await s.schedule({ executionId: "keep", wakeAt: 100, redrive: { attempt: 2 } });
+      await s.schedule({ executionId: "keep", wakeAt: 100 });
+      // a plain row, then a flagged schedule of the same key: the flag lands (not DO NOTHING)
+      await s.schedule({ executionId: "gain", wakeAt: 100 });
+      await s.schedule({ executionId: "gain", wakeAt: 100, redrive: { attempt: 1 } });
+      const due = await s.due(500);
+      expect(due).toHaveLength(2);
+      expect(due.find((t) => t.executionId === "keep")?.redrive).toEqual({ attempt: 2 });
+      expect(due.find((t) => t.executionId === "gain")?.redrive).toEqual({ attempt: 1 });
       await s.close();
     });
   });

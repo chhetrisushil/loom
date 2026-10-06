@@ -35,11 +35,10 @@ export type { EventEnvelope };
  *   the same rule that made MemoryStore 2.0.0 (ADR 0091). No method was added or removed: a
  *   store that already paged ids in that order with id cursors (SQLite; the in-memory store
  *   on well-formed BMP ids) conforms unchanged.
- * 2.1.0: RESERVED by Wave 2 (W2-0) for the optional `acquireFenceIf(id, { fence, parkSeq })`
- *   (ADR 0118 R8k: an atomic compare-and-set on the fence token AND "no answering event past the
- *   park"). The constant moves with the rest of the Wave 2 bump so the compatibility matrix is
- *   regenerated once; the METHOD, its conformance cases and the decorator forwarding land in
- *   the R8k PR. What this version DOES ship is the classification the method will read:
+ * 2.1.0: the optional `acquireFenceIf(id, { fence, parkSeq })` (ADR 0118 R8k: an atomic
+ *   compare-and-set on the fence token AND "no answering event past the park"). The constant
+ *   moved with the rest of the Wave 2 bump (W2-0); the method, its conformance cases and the
+ *   decorator forwarding landed with R8k. It reads the classification W2-0 shipped:
  *   {@link EVENT_KIND_CLASS} / {@link isAnsweringKind} (every kernel event kind is `answering`
  *   or `ignorable`, a required total map). No existing method changed, so a 2.0.0 store conforms.
  *
@@ -188,6 +187,30 @@ export interface EventStore {
    */
   acquireFence?(executionId: string): Promise<number>;
   /**
+   * OPTIONAL conditional fence (ADR 0118 D1, SPI 2.1.0) — "acquire, but only if the park I am
+   * answering is still unanswered", as ONE atomic operation. Bumps and returns the next token iff
+   *
+   * (a) the execution's CURRENT token equals `expect.fence` (0 when it was never acquired), AND
+   * (b) no ANSWERING event ({@link isAnsweringKind}) exists with `sequence > expect.parkSeq`;
+   *
+   * otherwise returns `{ stale: true, fence: <current> }` and changes nothing. (b) is what makes a
+   * retry on a re-read token safe: a resume's append does not move the token, so only the log can
+   * say "a resume for this park is already recorded" (a dead acquirer, by contrast, moves the
+   * token and appends nothing). Audit appends after a park (`EXECUTION_DENIED`, `OUTCOME_RECORDED`,
+   * application events, ...) do not answer it.
+   *
+   * Atomic against appends: an answering append that lands implies the acquire is `stale`; an
+   * acquire that wins implies that append is a `StaleFenceError`, never both succeeding. A store
+   * that fences implements it (memory: one synchronous step; Postgres: a transaction that locks
+   * the fence row, with the answering appends taking it `FOR SHARE`); a store that does not fence
+   * (single-node SQLite) omits it, and a caller falls back to `acquireFence` and the documented
+   * residual.
+   */
+  acquireFenceIf?(
+    executionId: string,
+    expect: { fence: number; parkSeq: number }
+  ): Promise<AcquireFenceIfResult>;
+  /**
    * OPTIONAL bulk copy of the prefix `[0..throughSequence]` of one execution's log
    * into another `executionId`, re-stamping `id` + `executionId` and merging
    * `metadata` into each copied event — WITHOUT round-tripping payloads through JS
@@ -260,6 +283,9 @@ export interface EventStore {
   close(): Promise<void>;
 }
 
+/** What {@link EventStore.acquireFenceIf} answers: the new token, or the (unchanged) current one. */
+export type AcquireFenceIfResult = { fence: number } | { stale: true; fence: number };
+
 /**
  * The names of the OPTIONAL {@link EventStore} methods, derived from the interface itself —
  * a key whose `Pick` admits `{}` is optional. A decorator that forgets one silently takes that
@@ -281,6 +307,7 @@ export const OPTIONAL_EVENT_STORE_METHODS = [
   "readRange",
   "head",
   "acquireFence",
+  "acquireFenceIf",
   "copyPrefix",
   "deleteExecution",
   "truncatePrefix",

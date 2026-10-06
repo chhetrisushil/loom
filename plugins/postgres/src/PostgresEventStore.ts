@@ -1,16 +1,34 @@
 import type { EventEnvelope } from "@loom/core";
+import { KERNEL_EVENT_KINDS } from "@loom/core";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
+  EVENT_KIND_CLASS,
   StaleFenceError,
   SubscriberRegistry,
   bucketOf,
   fenceOf,
+  isAnsweringKind,
 } from "@loom/event-runtime";
-import type { EventStore } from "@loom/event-runtime";
+import type { AcquireFenceIfResult, EventStore } from "@loom/event-runtime";
 import { Client, type Notification } from "pg";
 import { type PgConfig, type PoolLike, nextSenderId, toClientConfig, toPool } from "./pool";
 import { NOTIFY_CHANNEL, migrate } from "./schema";
+
+/** The kernel kinds that answer a park (ADR 0118 D1), from the one classification map. */
+const ANSWERING_KERNEL_KINDS: readonly string[] = KERNEL_EVENT_KINDS.filter(
+  (k) => EVENT_KIND_CLASS[k] === "answering"
+);
+
+/** `ARRAY['A','B']::text[]` for constant kernel kind names (inlined: see `acquireFenceIf`). */
+function kindsSql(kinds: readonly string[]): string {
+  for (const k of kinds) {
+    if (!/^[A-Z_]+$/.test(k)) throw new Error(`kernel event kind "${k}" cannot be inlined`);
+  }
+  return `ARRAY[${kinds.map((k) => `'${k}'`).join(",")}]::text[]`;
+}
+const ANSWERING_KINDS_SQL = kindsSql(ANSWERING_KERNEL_KINDS);
+const KERNEL_KINDS_SQL = kindsSql(KERNEL_EVENT_KINDS);
 
 export interface PostgresEventStoreOptions {
   /**
@@ -162,6 +180,14 @@ export class PostgresEventStore implements EventStore {
     // the execution has no fence, or the envelope's token (0 when absent) is at
     // least the current one. A conditional zero-row insert means a zombie write.
     const fence = fenceOf(envelope) ?? 0;
+    // ADR 0118 D1 — an ANSWERING append (a resume, a park, a terminal, a kernel kind this node
+    // cannot classify) reads the fence row `FOR SHARE`: it waits for an in-flight
+    // `acquireFenceIf` (which holds the row `FOR UPDATE`) and then sees the bumped token, so
+    // "the answer lands" and "the acquire wins" cannot both happen. Only answering appends pay for
+    // it: step, effect and audit appends keep the plain read (ceiling ~5.7K exec/s, ADR 0074/0075).
+    const fenceRead = isAnsweringKind(envelope)
+      ? "(SELECT fence FROM fences WHERE execution_id = $3 FOR SHARE)"
+      : "(SELECT fence FROM fences WHERE execution_id = $3)";
     // Cross-process delivery tag: a JSON-encoded [senderId, executionId, sequence], so our
     // own listener ignores what we deliver locally. The pg_notify is folded into the insert
     // as a CTE so it fires in the SAME round-trip and ONLY when a row actually landed —
@@ -169,12 +195,25 @@ export class PostgresEventStore implements EventStore {
     // 0 rows, the outer SELECT returns 0 rows, pg_notify is never called, and rowCount === 0
     // still signals the stale fence exactly as before.
     const notifyTag = JSON.stringify([this.senderId, envelope.executionId, envelope.sequence]);
+    // ADR 0118 D1 — a PARK also makes sure the execution has a fence row (token 0, a no-op for one
+    // that has it, an index probe). `acquireFenceIf` answers a park, and an append can only take
+    // `FOR SHARE` on a row that EXISTS: without one, an answering append whose statement began
+    // before the acquirer created the row read "no fence", took no lock, and could land after the
+    // acquire had already looked (first-ever fence of an execution; reproduced under load by the
+    // conformance race case). The park is committed before anyone can answer or acquire for it, so
+    // the row is visible to every statement that matters. A token-0 row is inert for every guard.
+    const ensureFence =
+      envelope.eventType === "EXECUTION_SUSPENDED"
+        ? `ensure AS (
+         INSERT INTO fences (execution_id, fence) VALUES ($3, 0) ON CONFLICT (execution_id) DO NOTHING
+       ), `
+        : "";
     const result = await this.pool
       .query(
-        `WITH ins AS (
+        `WITH ${ensureFence}ins AS (
          INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
          SELECT $1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb
-         WHERE COALESCE((SELECT fence FROM fences WHERE execution_id = $3), $9::bigint) <= $9::bigint
+         WHERE COALESCE(${fenceRead}, $9::bigint) <= $9::bigint
          RETURNING execution_id
        )
        SELECT pg_notify($10, $11) FROM ins`,
@@ -251,7 +290,18 @@ export class PostgresEventStore implements EventStore {
       fence: fenceOf(e) ?? 0,
       // Resolved per row, since a batch may span executions and therefore buckets.
       channel: this.channelFor(e.executionId),
+      // ADR 0118 D1 — see `append`: an answering row makes its execution's fence row a locking read.
+      answering: isAnsweringKind(e),
     }));
+    const anyAnswering = rows.some((r) => r.answering);
+    // ADR 0118 D1 — a park makes sure its execution has a fence row (see `append`).
+    const ensureFence = envelopes.some((e) => e.eventType === "EXECUTION_SUSPENDED")
+      ? `ensure AS (
+         INSERT INTO fences (execution_id, fence)
+         SELECT DISTINCT b.execution_id, 0 FROM batch b WHERE b.event_type = 'EXECUTION_SUSPENDED'
+         ON CONFLICT (execution_id) DO NOTHING
+       ), `
+      : "";
     // Everything in one statement: the insert, the all-or-nothing fence guard, and one
     // notification per envelope.
     //
@@ -271,23 +321,47 @@ export class PostgresEventStore implements EventStore {
     // per-event `append`: a cross-node subscriber sees every event, not just the last of a
     // batch. It costs nothing extra — `pg_notify` is transactional, so these are delivered
     // only if the statement commits, and they ride the same round-trip.
-    const { rows: notified } = await this.pool
-      .query<{ inserted: number }>(
-        `WITH batch AS (
-         SELECT x.id, x.workflow_id, x.execution_id, x.event_type, x."sequence", x."timestamp",
-                e->'payload' AS payload, x.metadata, x.fence, x.channel
-         FROM jsonb_array_elements($1::jsonb) AS e,
-              LATERAL jsonb_to_record(e) AS x(
-                id text, workflow_id text, execution_id text, event_type text,
-                "sequence" bigint, "timestamp" bigint, metadata jsonb,
-                fence bigint, channel text
-              )
+    //
+    // ADR 0118 D1 — when the batch holds an ANSWERING row, the fence rows of the executions it
+    // answers are read with `FOR SHARE` (waits for an in-flight `acquireFenceIf`, then reads the
+    // bumped token — a plain read in the same statement would use the statement's OLD snapshot).
+    // `FOR SHARE` cannot be applied to the nullable side of the LEFT JOIN the plain guard uses, so
+    // the locking variant reads the rows through a `locked` CTE and joins that.
+    const fenceGuard = anyAnswering
+      ? `locked AS MATERIALIZED (
+         SELECT f.execution_id, f.fence FROM fences f
+         WHERE f.execution_id IN (SELECT execution_id FROM batch WHERE answering)
+         FOR SHARE OF f
+       ), cur AS (
+         SELECT execution_id, fence FROM locked
+         UNION ALL
+         SELECT f.execution_id, f.fence FROM fences f
+         WHERE f.execution_id IN (SELECT execution_id FROM batch)
+           AND f.execution_id NOT IN (SELECT execution_id FROM batch WHERE answering)
        ), rejected AS (
+         SELECT 1 FROM batch b
+         LEFT JOIN cur f ON f.execution_id = b.execution_id
+         WHERE COALESCE(f.fence, b.fence) > b.fence
+         LIMIT 1
+       )`
+      : `rejected AS (
          SELECT 1 FROM batch b
          LEFT JOIN fences f ON f.execution_id = b.execution_id
          WHERE COALESCE(f.fence, b.fence) > b.fence
          LIMIT 1
-       ), ins AS (
+       )`;
+    const { rows: notified } = await this.pool
+      .query<{ inserted: number }>(
+        `WITH batch AS (
+         SELECT x.id, x.workflow_id, x.execution_id, x.event_type, x."sequence", x."timestamp",
+                e->'payload' AS payload, x.metadata, x.fence, x.channel, x.answering
+         FROM jsonb_array_elements($1::jsonb) AS e,
+              LATERAL jsonb_to_record(e) AS x(
+                id text, workflow_id text, execution_id text, event_type text,
+                "sequence" bigint, "timestamp" bigint, metadata jsonb,
+                fence bigint, channel text, answering boolean
+              )
+       ), ${ensureFence}${fenceGuard}, ins AS (
          INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
          SELECT b.id, b.workflow_id, b.execution_id, b.event_type, b."sequence", b."timestamp",
                 b.payload, b.metadata
@@ -449,6 +523,65 @@ export class PostgresEventStore implements EventStore {
       [executionId]
     );
     return Number(rows[0]?.fence ?? 1);
+  }
+
+  /**
+   * ADR 0118 D1 — conditional acquire: ONE round-trip, ONE implicit transaction.
+   *
+   * A simple-protocol query holding several statements runs as a single transaction (all or
+   * nothing, no BEGIN/COMMIT, nothing left aborted on a failure), and in READ COMMITTED every
+   * statement takes its OWN snapshot:
+   *
+   *  1. `INSERT … ON CONFLICT DO NOTHING` — make sure the fence row exists (an execution that was
+   *     never fenced has none, and an append can only take `FOR SHARE` on a row that is there);
+   *  2. `SELECT fence … FOR UPDATE` — waits for in-flight ANSWERING appends (they hold the row
+   *     `FOR SHARE`) and blocks new ones until the transaction ends. Its result is the CURRENT
+   *     token, returned when the conditional fails;
+   *  3. `UPDATE … SET fence = fence + 1 WHERE fence = <expected> AND NOT EXISTS (<answering event
+   *     past parkSeq>)` — a SEPARATE statement, so its snapshot is taken after the lock was
+   *     granted and sees every append that committed before it (kernel kinds per
+   *     `EVENT_KIND_CLASS`, plus an unknown kind stamped `metadata.kernel = true`, fail-closed).
+   *     No row returned = stale.
+   *
+   * No deadlock: an append locks the fence row `FOR SHARE` and then inserts in one statement; this
+   * transaction locks it `FOR UPDATE` and then only READS `events`.
+   *
+   * The values are inlined (a multi-statement simple query takes no bind parameters): the id is
+   * passed hex-encoded, the numbers are checked integers, the kinds are the kernel's own constant
+   * names — nothing caller-controlled reaches the SQL text unquoted.
+   *
+   * A park (`EXECUTION_SUSPENDED`) append already ensures the row exists (see `append`), so for any
+   * park written by this version step 1 is a no-op. RESIDUAL, only for a park written BEFORE this
+   * version, on its first-ever acquire: an answering append whose statement STARTED before this
+   * transaction's row became visible read "no fence row", took no lock, and may commit after step
+   * 3's scan.
+   */
+  async acquireFenceIf(
+    executionId: string,
+    expect: { fence: number; parkSeq: number }
+  ): Promise<AcquireFenceIfResult> {
+    await this.ready;
+    if (!Number.isSafeInteger(expect.fence) || !Number.isSafeInteger(expect.parkSeq)) {
+      throw new TypeError("acquireFenceIf: fence and parkSeq must be safe integers");
+    }
+    const id = `convert_from(decode('${Buffer.from(executionId, "utf8").toString("hex")}', 'hex'), 'UTF8')`;
+    const results = (await this.pool.query(
+      `INSERT INTO fences (execution_id, fence) VALUES (${id}, 0) ON CONFLICT (execution_id) DO NOTHING;
+       SELECT fence FROM fences WHERE execution_id = ${id} FOR UPDATE;
+       UPDATE fences SET fence = fence + 1
+        WHERE execution_id = ${id} AND fence = ${expect.fence}
+          AND NOT EXISTS (
+            SELECT 1 FROM events
+             WHERE execution_id = ${id} AND sequence > ${expect.parkSeq}
+               AND (event_type = ANY (${ANSWERING_KINDS_SQL})
+                    OR (event_type <> ALL (${KERNEL_KINDS_SQL}) AND metadata->'kernel' = 'true'::jsonb)))
+        RETURNING fence`
+    )) as unknown as Array<{ rows: Array<{ fence: string }> }>;
+    const won = results[2]?.rows[0];
+    if (won !== undefined) return { fence: Number(won.fence) };
+    // The SELECT's row is the current token (locked, so it cannot have moved); a vanished row
+    // (`deleteExecution` raced) reads as 0.
+    return { stale: true, fence: Number(results[1]?.rows[0]?.fence ?? 0) };
   }
 
   async subscribe(

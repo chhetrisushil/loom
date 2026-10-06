@@ -75,14 +75,19 @@ over the SAME stores (a process restart, or a second node) picks up where the la
   resume that loses the append race still runs the parent body in memory, so a child is started
   only once the parent is DURABLY parked on that exact key, and what is started comes from the
   durable spawn decision, never from the in-memory one. A parent that was ever fenced is resumed
-  under a fresh fence the supervisor acquires itself (`TimerService` fences up front; the
-  supervisor only on `StaleFenceError`). **Residual, kernel follow-up:** `acquireFence` is not
-  conditional on the parent still being parked, so a rival supervisor fencing between this one's
-  acquire and append makes the resume fail stale, and one fencing between its durable resume and
-  its read-back supersedes the holder of the already-running parent body. Acquisitions are
-  therefore bounded to two per resume, the park is re-read before each, and a resume still stale
-  after that goes to `onError` (`recover()` retries it). The fix is an "acquire-if-parked" fence
-  SPI, for the Wave 2 kernel design. A live resume refused `not-suspended` is quiet when the
+  under a fence the supervisor takes itself, **only if the park is still unanswered** (R8k,
+  [ADR 0118](../../docs/adr/0118-acquire-if-parked-fence.md): `fenceIfParkedAt`, an atomic
+  `EventStore.acquireFenceIf`; `TimerService` fences up front, the supervisor only on
+  `StaleFenceError`). That closes the two windows an unconditional `acquireFence` left: a rival
+  fencing between this supervisor's acquire and append (a clean `stale`, retried on the token the
+  store returns), and a rival fencing between its durable `EXECUTION_RESUMED` and the read-back,
+  which used to supersede the holder of the already-running parent body (now refused: an answering
+  event past the park makes the acquire stale). A resume that keeps losing is a retryable
+  `ResumeContendedError`: pass `redrive: app.redrive` (`kernel.features.redrive`) and it becomes a
+  backed-off `TimerStore` row that the app's `TimerService` fires, so the parent completes without
+  `recover()` (8 attempts, then `onError` once and `recover()`); without it the error goes to
+  `onError` and `recover()` retries. A store without `acquireFenceIf` keeps the previous behaviour
+  (an unconditional acquire, at most two per resume) and its residual. A live resume refused `not-suspended` is quiet when the
   durable log shows that park already answered. `resumed` counts a resume only once its append is
   durable; a failed append goes to `onError`.
 - **Group members on different nodes.** The in-memory `remaining` count is never trusted: when a
@@ -92,8 +97,10 @@ over the SAME stores (a process restart, or a second node) picks up where the la
   bounded by `limits.maxFanOut`).
 - **Retention.** A member whose execution retention already reclaimed (an `EXECUTION_DELETED`
   fact in the lifecycle stream) settles as a typed failure (`reclaimed by retention before its
-  result was collected`); it is never re-run. Open follow-up (not in this package): `LogLifecycle`
-  should refuse to delete a child whose parent is still parked on it. When a terminal event was
+  result was collected`); it is never re-run. Retention does not CREATE that failure any more: pass
+  `durability: { retention: { pinned: pinParkedChildren(() => supervisor) } }` (or `app.supervise(supervisor)`) and
+  `LogLifecycle` leaves a finished child its parent is still parked on exactly where it is
+  (ADR 0118 D3; the edge is the child's own recorded `parent`). When a terminal event was
   compacted away the fold still gives the outcome, but a failed child's error text and a
   cancelled child's reason are lost.
 - **A slow store is retried, never silently abandoned.** The live path waits ~1s for the parent's

@@ -70,6 +70,7 @@ export class ContentResolvingEventStore implements EventStore {
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
+  readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -97,6 +98,7 @@ export class ContentResolvingEventStore implements EventStore {
       readRange: (executionId, from, to) =>
         inner.readRange!(executionId, from, to).then((evs) => this.resolveAll(executionId, evs)),
       acquireFence: "forward",
+      acquireFenceIf: "forward",
       // Refs are content-addressed: copying them verbatim makes the fork share the parent's
       // blobs (dedup for free) — no decrypt/re-wrap step (contrast the crypto plugin's keys).
       copyPrefix: "forward",
