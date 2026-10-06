@@ -195,7 +195,8 @@ changes its carry shape handles both shapes at start (the K11.5 contract validat
 `forkChain` stamp is present (a fork starts a fresh chain, D7). *Validated* means each part is read
 defensively: `resources` takes only finite non-negative numbers for the known dimensions and a valid
 `custom` map (ADR 0115 rules); `inbox.cursors` takes only non-negative safe integers under non-reserved
-topic names; `inbox.dedupe` takes only strings, last 1,024; anything malformed is **ignored
+topic names; `inbox.dedupe` takes only strings, last 1,024; `resources` also carries `exceeded`
+(only `true`) and `reason` (only a string, only when `exceeded`), so a rotation cannot reset a quota; anything malformed is **ignored
 deterministically and never thrown**, so every replica folds the same state from a log it did not
 write. `chainDeadline` is not folded into a key of its own: it stays in `_chain.continuedFrom.carried`.
 

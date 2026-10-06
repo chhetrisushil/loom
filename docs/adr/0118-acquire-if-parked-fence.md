@@ -86,7 +86,7 @@ decision), applied by `isAnsweringKind(event)`, which reads the kind AND the env
    ignorable on an older node).
 
 The SQL scan therefore filters
-`kind = ANY(<answering kernel kinds>) OR (kind <> ALL(<KERNEL_EVENT_KINDS>) AND metadata->>'kernel' = 'true')`
+`kind = ANY(<answering kernel kinds>) OR (kind <> ALL(<KERNEL_EVENT_KINDS>) AND metadata->'kernel' = 'true'::jsonb)`
 (SQLite: `kind IN (…) OR (kind NOT IN (…) AND json_extract(metadata,'$.kernel') = 1)`), not a
 `NOT IN (<ignorable list>)`. The token is the right
 condition because it is what every legitimate writer's append is checked against (`StaleFenceError`,

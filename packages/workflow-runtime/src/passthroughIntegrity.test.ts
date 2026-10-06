@@ -202,6 +202,8 @@ describe("a HumanEffect step consumes its own answer (ADR 0104)", () => {
     const { runtime, stores, flow } = boot({ runner, steps: [human] });
     const parked = await (await runtime.start(flow, {}, { executionId: "e" })).waitForSuspend();
     expect(parked.suspendedOn?.on).toBe("Approve");
+    // W2-0: the commit-site strip keeps a KERNEL-built human park's `stepId` (ADR 0104 attribution).
+    expect((parked.suspendedOn as { stepId?: string } | undefined)?.stepId).toBeDefined();
 
     const afterHuman = await (
       await runtime.resume("e", { eventType: "Approve", payload: { by: "alice" } })
