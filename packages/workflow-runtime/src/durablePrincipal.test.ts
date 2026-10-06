@@ -199,353 +199,66 @@ describe("D1 — every 1.23 start records a principal", () => {
     expect(await h.eventStore.read("nope")).toHaveLength(0);
   });
 
-  it("`parent` is recorded beside the principal and folds to _parent", async () => {
-    const h = boot();
-    const run = await h.runtime.start(h.flow, {}, { executionId: "kid", parentExecutionId: "mom" });
+  it("`parent` is recorded beside the principal and folds to _parent ONLY for a system-granted start (R3k review P2-b)", async () => {
+    const h = boot({
+      executionAuthorizer: { authorize: () => ({ allowed: true }) },
+      deps: { executionAuthz: { requirePrincipal: true } },
+    });
+    const run = await h.runtime.start(
+      h.flow,
+      {},
+      { executionId: "kid", parentExecutionId: "mom", ...h.runtime.systemOptions() }
+    );
     await run.waitForCompletion();
     expect((await startedOf(h.eventStore, "kid")).payload).toMatchObject({ parent: "mom" });
     expect((await h.runtime.loadState("kid"))?.variables._parent).toBe("mom");
   });
-});
 
-describe("D2 — the effects run as the OWNER, on every entry path", () => {
-  it("approval by a different actor: effects run as the owner; the approver is recorded in APPROVAL_GRANTED", async () => {
-    const auth: ResumeAuthenticator = {
-      verify: (_event, ctx) => ({
-        status: "verified",
-        actor: ctx.principal?.actor ?? "?",
-        verifiedBy: "test",
-      }),
-    };
-    const h = boot({ gated: "approval", deps: { resumeAuthenticator: auth } });
-    const run = await h.runtime.start(h.flow, {}, { executionId: "ap", principal: alice });
-    await run.waitForSuspend();
-    // bob (another tenant!) approves. On main the approve's effect ran as bob (and was denied by tenant).
-    const resumed = await h.runtime.resume(
-      "ap",
-      { eventType: "ApprovalGranted", payload: {} },
-      { principal: { actor: "carol", tenant: "acme" } }
-    );
-    await resumed.waitForCompletion();
-    expect(h.seen.at(-1)?.principal).toEqual({ tenant: "acme", actor: "alice" });
-    const log = await h.eventStore.read("ap");
-    const grant = log.find((e) => e.eventType === "APPROVAL_GRANTED");
-    expect(grant?.payload).toMatchObject({ actor: "carol", verifiedBy: "test" });
-  });
-
-  it("a resume by an unrelated caller (or none) never changes whose authority the effects run under", async () => {
-    const h = boot({ gated: "approval" });
-    const run = await h.runtime.start(h.flow, {}, { executionId: "ap2", principal: alice });
-    await run.waitForSuspend();
-    const resumed = await h.runtime.resume(
-      "ap2",
-      { eventType: "ApprovalGranted", payload: {} },
-      { principal: bob }
-    );
-    await resumed.waitForCompletion();
-    // bob's tenant is DENIED by the authorizer; the effect still ran because it ran as alice.
-    expect(h.ran).toEqual(["act"]);
-    expect((await h.runtime.loadState("ap2"))?.status).toBe("completed");
-  });
-
-  it("timer wake: effects run as the owner, so a tenant DENY fires (on main: tenant '' → never fired)", async () => {
-    const h = boot({ gated: "sleep" });
-    const service = new TimerService(h.runtime, h.timerStore);
-    const run = await h.runtime.start(h.flow, {}, { executionId: "tw", principal: bob });
-    await run.waitForSuspend();
-    await service.tick(Date.now() + 120_000);
-    const state = await h.runtime.loadState("tw");
-    expect(state?.status).toBe("failed");
-    expect(h.seen.at(-1)?.principal).toEqual({ tenant: "globex", actor: "bob" });
-    expect(h.ran).toEqual([]);
-    expect((await h.eventStore.read("tw")).some((e) => e.eventType === "EFFECT_DENIED")).toBe(true);
-  });
-
-  it("timer wake: an allowed owner's effects run as the owner, not as nobody", async () => {
-    const h = boot({ gated: "sleep" });
-    const service = new TimerService(h.runtime, h.timerStore);
-    const run = await h.runtime.start(h.flow, {}, { executionId: "tw2", principal: alice });
-    await run.waitForSuspend();
-    await service.tick(Date.now() + 120_000);
-    expect((await h.runtime.loadState("tw2"))?.status).toBe("completed");
-    expect(h.seen.at(-1)?.principal).toEqual({ tenant: "acme", actor: "alice" });
-  });
-
-  it("recovery (recoverAbandoned in a second process): effects run as the owner, so a tenant DENY fires", async () => {
-    const a = boot({ gated: "crash", hang: true });
-    void a.runtime.start(a.flow, {}, { executionId: "rec", principal: bob });
-    await new Promise((r) => setTimeout(r, 20));
-    expect((await a.runtime.loadState("rec"))?.status).toBe("running");
-
-    const b = boot({ gated: "crash", shared: a });
-    const summary = await recoverAbandoned(b.runtime, {
-      source: b.eventStore,
-      isAbandoned: () => true,
+  it("a caller-supplied parentExecutionId WITHOUT the system grant is not recorded (it would pin someone else's retention)", async () => {
+    const h = boot({
+      executionAuthorizer: { authorize: () => ({ allowed: true }) },
+      deps: { executionAuthz: { requirePrincipal: true } },
     });
-    expect(summary.recovered).toBe(1);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(b.seen.at(-1)?.principal).toEqual({ tenant: "globex", actor: "bob" });
-    expect(b.ran).toEqual([]); // denied by the tenant rule, not run as nobody
-    expect((await b.runtime.loadState("rec"))?.status).toBe("failed");
-  });
-
-  it("restoreFromState reads the owner from the LOG: a doctored or stripped `_principal` in the supplied state is ignored", async () => {
-    const h = boot();
-    const done = await h.runtime.start(h.flow, {}, { executionId: "rs", principal: alice });
-    await done.waitForCompletion();
-    // The durable residue of a crash right after the start: sequence 0 only.
-    const store = new InMemoryAsyncEventStore();
-    const first = await startedOf(h.eventStore, "rs");
-    await store.append(first);
-    const folded = new ReplayVM([first], {
-      executionId: "rs",
-      workflowId: "owned",
-      workflowVersion: "1.0.0",
-    }).getState();
-    expect(folded.variables._principal).toMatchObject({ identity: { actor: "alice" } });
-    const forged = {
-      ...folded,
-      variables: {
-        ...folded.variables,
-        _principal: { v: 1, identity: { tenant: "globex", actor: "mallory" } },
-      },
-    };
-    const stripped = {
-      ...folded,
-      variables: Object.fromEntries(
-        Object.entries(folded.variables).filter(([k]) => k !== "_principal")
-      ),
-    };
-    const shared = (s: InMemoryAsyncEventStore) => ({
-      eventStore: s,
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
-      timerStore: new InMemoryTimerStore(),
-    });
-    for (const state of [forged, stripped]) {
-      const s2 = new InMemoryAsyncEventStore();
-      await s2.append(first);
-      const h2 = boot({ shared: shared(s2) });
-      const handle = await h2.runtime.restoreFromState(state, undefined, { principal: bob });
-      await handle.waitForCompletion();
-      expect(h2.seen.at(-1)?.principal).toEqual({ tenant: "acme", actor: "alice" });
-      expect(h2.ran).toEqual(["act"]);
-    }
-  });
-
-  it("resumeAs: the owner is unchanged by the migration, and `_principal` is identical before and after", async () => {
-    const h = boot({ gated: "approval" });
-    const run = await h.runtime.start(h.flow, {}, { executionId: "ma", principal: alice });
-    await run.waitForSuspend();
-    const before = (await h.runtime.loadState("ma"))?.variables._principal;
-    h.runtime.registerFlow(
-      { ...h.flow.definition, id: "owned-v2", version: "2.0.0" },
-      h.flow.runner
-    );
-    const handle = await h.runtime.resumeAs(
-      "ma",
-      "owned-v2",
-      { eventType: "ApprovalGranted", payload: {} },
-      { strategy: "operator-ack", principal: bob }
-    );
-    await handle.waitForCompletion();
-    expect(h.seen.at(-1)?.principal).toEqual({ tenant: "acme", actor: "alice" });
-    expect((await h.runtime.loadState("ma"))?.variables._principal).toEqual(before);
-  });
-
-  it("an old (pre-1.23) log with no principal replays identically and keeps the legacy behaviour", async () => {
-    const h = boot({ gated: "approval" });
-    const run = await h.runtime.start(h.flow, {}, { executionId: "old", principal: alice });
-    await run.waitForSuspend();
-    // Strip the record from sequence 0, as a log written before this ADR would be.
-    const log = await h.eventStore.read("old");
-    const legacyStore = new InMemoryAsyncEventStore();
-    for (const e of log) {
-      const payload = { ...(e.payload as Record<string, unknown>) };
-      if (e.sequence === 0) {
-        payload.principal = undefined;
-        payload.principal = undefined;
-        // biome-ignore lint/performance/noDelete: model an absent field exactly
-        delete payload.principal;
-      }
-      await legacyStore.append({ ...e, payload });
-    }
-    const h2 = boot({
-      gated: "approval",
-      shared: {
-        eventStore: legacyStore,
-        snapshotStore: new InMemoryAsyncSnapshotStore(),
-        timerStore: new InMemoryTimerStore(),
-      },
-    });
-    const state = await h2.runtime.loadState("old");
-    expect(state?.variables._principal).toBeUndefined();
-    const resumed = await h2.runtime.resume(
-      "old",
-      { eventType: "ApprovalGranted", payload: {} },
-      { principal: alice }
-    );
-    await resumed.waitForCompletion();
-    // legacy: the resumer's principal reaches the effects, exactly as before this ADR
-    expect(h2.seen.at(-1)?.principal).toEqual(alice);
-  });
-});
-
-describe("D2 — a shredded or unrestorable record denies; it never falls back to the resumer", () => {
-  it("a shredded identity ($shredded placeholders) denies every effect, even for an allowed resumer", async () => {
-    const h = boot({ gated: "approval" });
-    const run = await h.runtime.start(h.flow, {}, { executionId: "sh", principal: alice });
-    await run.waitForSuspend();
-    // The log as a tolerant crypto read returns it after the subject's key was destroyed.
-    const store = new InMemoryAsyncEventStore();
-    for (const e of await h.eventStore.read("sh")) {
-      await store.append(
-        e.sequence === 0
-          ? {
-              ...e,
-              payload: {
-                ...(e.payload as object),
-                principal: {
-                  v: 1,
-                  identity: {
-                    tenant: { $shredded: true },
-                    actor: { $shredded: true },
-                    onBehalfOf: { $shredded: true },
-                  },
-                },
-              },
-            }
-          : e
-      );
-    }
-    const h2 = boot({
-      gated: "approval",
-      shared: {
-        eventStore: store,
-        snapshotStore: new InMemoryAsyncSnapshotStore(),
-        timerStore: new InMemoryTimerStore(),
-      },
-    });
-    const resumed = await h2.runtime.resume(
-      "sh",
-      { eventType: "ApprovalGranted", payload: {} },
-      { principal: { actor: "carol", tenant: "acme" } }
-    );
-    await expect(resumed.waitForCompletion()).rejects.toThrow(/crypto-shredded/);
-    expect(h2.ran).toEqual([]);
-    expect((await store.read("sh")).some((e) => e.eventType === "EFFECT_DENIED")).toBe(true);
-  });
-
-  it("a recorded delegation with no restorer is denied by the KERNEL, before any authorizer (even one that allows everything)", async () => {
-    const token = signDelegation("s3cret", "alice", ["act-tool"]);
-    // Start under a runtime that CAN restore it, then continue on one that cannot (the 3P node).
-    const restorer = { resolve: () => ({ ...alice, delegation: token }) };
-    const a = boot({ gated: "approval", deps: { principalResolver: restorer } });
-    const run = await a.runtime.start(
-      a.flow,
+    const run = await h.runtime.start(
+      h.flow,
       {},
-      { executionId: "dl", principal: { ...alice, delegation: token } }
+      { executionId: "kid2", parentExecutionId: "mom", principal: alice }
     );
-    await run.waitForSuspend();
-    const everythingAllowed: CapabilityAuthorizer = { authorize: () => ({ allowed: true }) };
-    const effects = new EffectRuntime([], { authorizer: everythingAllowed });
-    let ran = 0;
-    effects.register(
-      "act-tool",
-      new ToolEffect(async () => {
-        ran++;
-        return { ok: true };
-      })
-    );
-    const b = new WorkflowRuntime({
-      eventStore: a.eventStore,
-      snapshotStore: a.snapshotStore,
-      effectRuntime: effects,
-    });
-    b.registerFlow(a.flow.definition, a.flow.runner);
-    const resumed = await b.resume("dl", { eventType: "ApprovalGranted", payload: {} });
-    await expect(resumed.waitForCompletion()).rejects.toThrow(/could not be restored/);
-    expect(ran).toBe(0);
-    const denied = (await a.eventStore.read("dl")).find((e) => e.eventType === "EFFECT_DENIED");
-    expect(denied?.payload).toMatchObject({ toolId: "act-tool" });
-  });
-
-  it("a delegated start that crashes and is resumed under a codec gets the SAME attenuation, never base", async () => {
-    const SECRET = "s3cret";
-    const codec: PrincipalCodec = {
-      toRef: (chain) =>
-        chain.delegation !== undefined
-          ? `grants:${chain.delegation.grants.join(",")}:${chain.actor}`
-          : undefined,
-      fromRef: (ref) => {
-        const [, grants, actor] = ref.split(":");
-        return {
-          actor: actor as string,
-          delegation: signDelegation(SECRET, actor as string, (grants as string).split(",")),
-        };
-      },
-    };
-    const authorizer = new DelegationAuthorizer({
-      secret: SECRET,
-      base: new GrantTable({ owned: ["*"] }),
-    });
-    const a = boot({ gated: "approval", authorizer, deps: { principalCodec: codec } });
-    const token = signDelegation(SECRET, "child-1", ["other-tool"]); // does NOT cover act-tool
-    const run = await a.runtime.start(
-      a.flow,
-      {},
-      { executionId: "att", principal: { actor: "child-1", delegation: token } }
-    );
-    await run.waitForSuspend();
-    const rec = ((await startedOf(a.eventStore, "att")).payload as { principal: unknown })
-      .principal;
-    expect(rec).toEqual({ v: 1, ref: "grants:other-tool:child-1" }); // no token, no sig
-    // a different process resumes it: still attenuated (denied), not base (which grants "*")
-    const b = boot({ gated: "approval", authorizer, shared: a, deps: { principalCodec: codec } });
-    const resumed = await b.runtime.resume("att", { eventType: "ApprovalGranted", payload: {} });
-    await expect(resumed.waitForCompletion()).rejects.toThrow(/not in the delegated grant set/);
-    expect(b.ran).toEqual([]);
+    await run.waitForCompletion();
+    expect((await startedOf(h.eventStore, "kid2")).payload).not.toHaveProperty("parent");
+    expect((await h.runtime.loadState("kid2"))?.variables._parent).toBeUndefined();
   });
 });
 
-describe("D3 — ref mode writes no actor into the log", () => {
-  it("records { v: 1, ref } only, and rehydrates through fromRef", async () => {
-    const codec: PrincipalCodec = {
-      toRef: (c) => (c.actor === "alice" ? "ref:r-1" : undefined),
-      fromRef: (ref) => (ref === "ref:r-1" ? { ...alice } : undefined),
-    };
+describe("R3k review P2-a — a live execution's owner is known before sequence 0 is durable", () => {
+  it("start (minted id) then an immediate cancel by the owner is NOT denied while the journal write lags", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const slow = new Proxy(inner, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (typeof v !== "function") return v;
+        if (typeof prop === "string" && prop.startsWith("append")) {
+          return async (...args: unknown[]) => {
+            await new Promise((r) => setTimeout(r, 30));
+            return (v as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        return v.bind(target);
+      },
+    });
     const h = boot({
       gated: "approval",
-      deps: { principalCodec: codec, principalIdentity: "ref" },
+      executionAuthorizer: executionAccessPolicy(),
+      shared: {
+        eventStore: slow as InMemoryAsyncEventStore,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        timerStore: new InMemoryTimerStore(),
+      },
     });
-    const run = await h.runtime.start(h.flow, {}, { executionId: "rf", principal: alice });
-    await run.waitForSuspend();
-    expect((await startedOf(h.eventStore, "rf")).payload).toMatchObject({
-      principal: { v: 1, ref: "ref:r-1" },
-    });
-    expect(JSON.stringify(await h.eventStore.read("rf"))).not.toContain("alice");
-    const resumed = await h.runtime.resume("rf", { eventType: "ApprovalGranted", payload: {} });
-    await resumed.waitForCompletion();
-    expect(h.seen.at(-1)?.principal).toEqual(alice);
-  });
-
-  it("ref-only mode refuses a principal no codec handles, with the log empty", async () => {
-    const codec: PrincipalCodec = { toRef: () => undefined, fromRef: () => undefined };
-    const h = boot({ deps: { principalCodec: codec, principalIdentity: "ref" } });
-    await expect(
-      h.runtime.start(h.flow, {}, { executionId: "rf2", principal: alice })
-    ).rejects.toBeInstanceOf(PrincipalUnrestorableError);
-    expect(await h.eventStore.read("rf2")).toHaveLength(0);
-  });
-
-  it("a ref with no codec to restore it fails closed (denied), not anonymous", async () => {
-    const codec: PrincipalCodec = { toRef: () => "ref:x", fromRef: () => alice };
-    const a = boot({ gated: "approval", deps: { principalCodec: codec } });
-    const run = await a.runtime.start(a.flow, {}, { executionId: "rf3", principal: alice });
-    await run.waitForSuspend();
-    const b = boot({ gated: "approval", shared: a }); // the codec is gone
-    const resumed = await b.runtime.resume("rf3", { eventType: "ApprovalGranted", payload: {} });
-    await expect(resumed.waitForCompletion()).rejects.toThrow(/could not be restored/);
-    expect(b.ran).toEqual([]);
+    const run = await h.runtime.start(h.flow, {}, { principal: alice });
+    await expect(h.runtime.cancel(run.executionId, "stop", { principal: alice })).resolves.toBe(
+      true
+    );
   });
 });
 

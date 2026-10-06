@@ -160,6 +160,15 @@ const hasShreddedMarker = (v: unknown, depth = 0): boolean => {
 /** Read the recorded principal of an execution out of its sequence-0 envelope (ADR 0111 D2). */
 export function storedPrincipalOf(first: EventEnvelope | undefined): StoredPrincipal {
   if (first === undefined) return { kind: "legacy" };
+  // R3k review P3-2 — the record lives on sequence 0 / EXECUTION_STARTED and nowhere else. Any
+  // other envelope here means the caller read the wrong slot: deny, never "legacy" (which would
+  // fall back to the caller's own principal).
+  if (first.sequence !== 0 || first.eventType !== "EXECUTION_STARTED") {
+    return {
+      kind: "malformed",
+      why: `the principal record must be read from sequence 0 / EXECUTION_STARTED, got sequence ${String(first.sequence)} / ${String(first.eventType)}`,
+    };
+  }
   const forkedBy = first.metadata?.forkedBy;
   const raw = isPlain(forkedBy)
     ? forkedBy
@@ -200,24 +209,32 @@ export async function rehydratePrincipal(
   executionId: string,
   deps: PrincipalRehydrateDeps
 ): Promise<PrincipalChain | undefined> {
-  if (deps.resolver !== undefined) {
-    const chain = await deps.resolver.resolve(record, { executionId });
-    if (chain === undefined && record.delegation !== undefined) {
-      return { delegationUnresolved: record.delegation.id };
-    }
-    return chain;
-  }
+  // R3k review P1 — a resolver's `undefined` is NEVER a silent "no principal" for a record that
+  // names something. A `ref` is the codec's own artefact (superviseChildren composes one), so the
+  // codec answers it FIRST; the resolver is the fallback. Only the empty `{ v: 1 }` record means
+  // "no principal" with a resolver configured.
   if (record.ref !== undefined) {
-    const chain = await deps.codec?.fromRef(record.ref, { executionId });
+    const viaCodec = await deps.codec?.fromRef(record.ref, { executionId });
+    if (viaCodec !== undefined) return viaCodec;
+    const viaResolver = await deps.resolver?.resolve(record, { executionId });
     return (
-      chain ?? {
+      viaResolver ?? {
         principalUnresolved: `ref "${record.ref}" could not be restored (no principalCodec handles it)`,
       }
     );
   }
   const identity = record.identity;
-  const chain: PrincipalChain | undefined =
-    identity !== undefined && Object.keys(identity).length > 0 ? { ...identity } : undefined;
+  const hasIdentity = identity !== undefined && Object.keys(identity).length > 0;
+  if (deps.resolver !== undefined) {
+    const chain = await deps.resolver.resolve(record, { executionId });
+    if (chain !== undefined) return chain;
+    if (record.delegation !== undefined) return { delegationUnresolved: record.delegation.id };
+    if (hasIdentity) {
+      return { principalUnresolved: "the principalResolver did not restore the recorded identity" };
+    }
+    return undefined;
+  }
+  const chain: PrincipalChain | undefined = hasIdentity ? { ...identity } : undefined;
   if (record.delegation !== undefined) {
     // The default resolver cannot restore a token (it was never written): mark the chain so the
     // kernel denies its effects, rather than letting it fall through to a broader authorizer rule.

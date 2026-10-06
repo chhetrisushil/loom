@@ -1,11 +1,23 @@
 import type { EventEnvelope, ExecutionState, FlowDefinition } from "@loom/core";
-import { DelegationAuthorizer, EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
+import {
+  DelegationAuthorizer,
+  EffectRuntime,
+  GrantTable,
+  ToolEffect,
+  signDelegation,
+} from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { type ChildSupervisor, awaitChild, childIdFor, superviseChildren } from "./orchestration";
+import {
+  type ChildSupervisor,
+  awaitChild,
+  childIdFor,
+  orchestrationPrincipalCodec,
+  superviseChildren,
+} from "./orchestration";
 
 // ── R5 — a spawned child should not inherit unattenuated authority ────────────
 //
@@ -92,6 +104,8 @@ function build(opts: {
   shared?: { eventStore: InMemoryAsyncEventStore; snapshotStore: InMemoryAsyncSnapshotStore };
   /** R3k — false: a runtime with NO supervisor, so nothing composes the delegation codec. */
   supervise?: boolean;
+  /** R3k review P1 — a principalResolver written for identity records (answers undefined otherwise). */
+  identityOnlyResolver?: boolean;
 }) {
   const attempted: string[] = [];
   const effects = new EffectRuntime([], {
@@ -119,6 +133,12 @@ function build(opts: {
   const runtime = new WorkflowRuntime({
     ...stores,
     effectRuntime: effects,
+    ...(opts.identityOnlyResolver === true && {
+      principalResolver: {
+        resolve: (record: { identity?: { actor?: string } }) =>
+          record.identity !== undefined ? { ...record.identity } : undefined,
+      },
+    }),
     onEvent: (e) => {
       events.push(e);
       holder.supervisor?.onEvent(e);
@@ -242,7 +262,10 @@ describe("attenuated authority for spawned children (R5)", () => {
     };
     expect(JSON.stringify(rec.principal)).not.toContain("sig");
     const body = JSON.parse(
-      Buffer.from(rec.principal.ref.replace("loom:orch:v1:", ""), "base64url").toString("utf8")
+      Buffer.from(
+        rec.principal.ref.replace("loom:orch:v2:", "").split(".")[0]!,
+        "base64url"
+      ).toString("utf8")
     );
     expect(body).toEqual({ a: CHILD, g: ["read-rows"] });
 
@@ -294,5 +317,60 @@ describe("attenuated authority for spawned children (R5)", () => {
     await runtime.start(parent as RegisteredFlow, {}, { executionId: PARENT });
     await waitTerminal(runtime, CHILD);
     expect((await stores.eventStore.read(CHILD))[0]?.payload).toMatchObject({ parent: PARENT });
+  });
+
+  // ── R3k review round 1 ───────────────────────────────────────────────────────────────────────
+
+  it("P1: a principalResolver written for identity records does NOT widen a delegated child to base (ref records go to the codec first)", async () => {
+    const { runtime, parent, attempted } = build({
+      grants: ["read-rows"],
+      tool: "delete-table",
+      identityOnlyResolver: true,
+    });
+    await runtime.start(parent as RegisteredFlow, {}, { executionId: PARENT });
+    const state = await waitTerminal(runtime, CHILD);
+    expect(state.status).toBe("failed");
+    expect(attempted).not.toContain("delete-table");
+  });
+
+  it("P1: with a resolver configured, a delegated child still runs what the parent conferred", async () => {
+    const { runtime, parent, attempted } = build({
+      grants: ["read-rows"],
+      tool: "read-rows",
+      identityOnlyResolver: true,
+    });
+    await runtime.start(parent as RegisteredFlow, {}, { executionId: PARENT });
+    await waitTerminal(runtime, CHILD);
+    expect(attempted).toEqual(["read-rows"]);
+  });
+
+  it("P3-1: the ref is MACed; a tampered, unsigned or foreign-secret ref is refused (fail closed)", () => {
+    const codec = orchestrationPrincipalCodec(SECRET);
+    const token = signDelegation(SECRET, "kid", ["read-rows"]);
+    const ref = codec.toRef({ actor: "kid", delegation: token }) as string;
+    expect(typeof ref).toBe("string");
+    const ctx = { executionId: "kid" };
+    expect(codec.fromRef(ref, ctx)).toBeTruthy();
+    // escalate the grant set inside the body, keep the MAC
+    const [head, mac] = ref.split(".") as [string, string];
+    const prefix = "loom:orch:v2:";
+    const body = JSON.parse(Buffer.from(head.slice(prefix.length), "base64url").toString("utf8"));
+    body.g = ["read-rows", "delete-table"];
+    const forged = `${prefix}${Buffer.from(JSON.stringify(body)).toString("base64url")}.${mac}`;
+    expect(codec.fromRef(forged, ctx)).toBeUndefined();
+    // unsigned (the pre-MAC shape) and a missing MAC
+    const legacy = `loom:orch:v1:${Buffer.from(JSON.stringify(body)).toString("base64url")}`;
+    expect(codec.fromRef(legacy, ctx)).toBeUndefined();
+    expect(codec.fromRef(head, ctx)).toBeUndefined();
+    // another supervisor's secret
+    expect(orchestrationPrincipalCodec("other-secret").fromRef(ref, ctx)).toBeUndefined();
+  });
+
+  it("P3-1: the MAC key is derived, so a ref MAC is never a valid delegation signature", () => {
+    const codec = orchestrationPrincipalCodec(SECRET);
+    const token = signDelegation(SECRET, "kid", ["read-rows"]);
+    const ref = codec.toRef({ actor: "kid", delegation: token }) as string;
+    const mac = ref.split(".")[1]!;
+    expect(mac).not.toBe(token.sig);
   });
 });

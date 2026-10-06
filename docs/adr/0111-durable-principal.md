@@ -282,9 +282,11 @@ Decisions the text above left to the implementation; none changes a shape frozen
 - **A fork under crypto-without-codec is refused.** `forkedBy` rides ENVELOPE METADATA, which the crypto
   plugin does not encrypt, so a fork of an identified forker with `identity: "encrypted"` and no codec
   refuses (`PrincipalUnrestorableError`, nothing written). With a codec the fork records a `ref`.
-- **`parent`** is recorded from `RunOptions.parentExecutionId` whenever it is a non-empty string; lineage
-  for authorization is still trusted only from the system grant / fork path (R3 round 2). Consumers of
-  `_parent` (R6 cascade, R8k pin) must not treat it as authenticated beyond that.
+- **`parent`** is recorded only under the condition lineage is trusted for authorization: the start
+  presents the runtime's valid system grant (review round 1, P2-b), or no `executionAuthorizer` is
+  configured at all (no boundary to cross). A caller-supplied `parentExecutionId` under an authorizer is
+  dropped, so a starter cannot pin another execution's retention (R8k). Consumers of `_parent` (R6 cascade,
+  R8k pin) still must not treat it as authenticated beyond that.
 - **Owners.** A supervisor child started with no principal has NO owner (D5, as written): it no longer
   inherits its parent's owner from an in-process table. `executionAccessPolicy` lost `ownerOf`, `adopt`,
   `tracked`, `maxTracked` and `committed` handling; `resolveOwner` answers only for a log that recorded none;
@@ -293,3 +295,31 @@ Decisions the text above left to the implementation; none changes a shape frozen
   already read). A `PayloadShreddedError` from that read, or `$shredded` markers inside the record, is the
   shredded marker (denies). No `kernel.features` flag: the optional payload fields are harmless to an older node
   (rolling-upgrade note in the Wave 2 design).
+
+### Review round 1 (as built)
+
+- **P1 — a resolver cannot widen a delegated child.** `rehydratePrincipal` now answers a `ref` record
+  from the composed `principalCodec` FIRST (the codec is the ref's author; `superviseChildren` composes
+  one), then the resolver, then `principalUnresolved`. A resolver returning `undefined` for ANY non-empty
+  record (ref, identity, delegation) denies (`principalUnresolved` / `delegationUnresolved`); only the empty
+  `{ v: 1 }` record means "no principal". Test: orchestration with a real `superviseChildren` + an
+  identity-only resolver.
+- **P2-a — the owner of a live execution is known before sequence 0 is durable.** A minted-id start journals
+  sequence 0 behind the fold, so a prompt `cancel`/`query` point-read nothing and read "legacy" (owner
+  undefined, owner denied). The runtime keeps the start's `PrincipalRecord` in a map keyed by live
+  execution (set at start, cleared when the handle settles or the start throws; bounded by live executions)
+  and `recordedPrincipal` answers from it. A read that fails is never legacy: `ownerForAuthz` reports an
+  unknown owner and the policy's `unknownOwner` rule decides (deny by default).
+- **P3-1 — the orchestration ref is MACed.** `loom:orch:v2:<body>.<mac>`; `mac = HMAC(K, "loom:orch:ref:v1|" + body)`
+  with `K = HMAC(secret, "loom:orch:ref-key:v1")`, so a ref MAC is never a delegation signature. `fromRef`
+  verifies (constant time) BEFORE re-signing; unsigned (v1) / malformed / foreign-secret refs return
+  `undefined` and the child is denied.
+- **P3-2 — `storedPrincipalOf` asserts its input** is sequence 0 / `EXECUTION_STARTED`; any other envelope is
+  `malformed` (deny), never `legacy`.
+- **P3-3 — `fork(…, { actAs: "owner" })` with no `executionAuthorizer`** is unrestricted, like every other
+  op without an authorizer; the default-deny `actAsOwner` op exists only when an authorizer is configured.
+
+**Follow-up (not in this PR).** A fork under crypto without a codec is refused (the forker's identity rides
+unencrypted envelope metadata), which makes forks unusable for an identified forker under crypto unless
+the app wires a codec. Either the scaffold always generates a codec, or the crypto plugin encrypts the
+metadata paths (`forkedBy`). Decide before crypto-by-default ships.
