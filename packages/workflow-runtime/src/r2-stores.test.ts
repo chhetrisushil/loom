@@ -224,11 +224,12 @@ for (const backend of [memory, sqlite, postgres]) {
       expect((await eventsOf(h.eventStore, e, "EXECUTION_RESUMED")).length).toBe(1);
     });
 
-    it("trim keeps the unconsumed and the head; retention deletes the stream", async () => {
+    it("trim keeps the unconsumed and the head; the terminal deletes the stream", async () => {
       const h = mk();
       const f = flow("w", async (ctx) => {
         const got: string[] = [];
         for (let i = 0; i < 3; i++) got.push(unwrapTainted(await ctx.receive<string>("a")));
+        await ctx.suspend({ on: "hold" });
         return got;
       });
       h.rt.registerFlow(f.definition, f.runner);
@@ -248,17 +249,22 @@ for (const backend of [memory, sqlite, postgres]) {
         );
       }
       await h.rt.notifyInbox(e);
-      await done(h, e);
+      await until(async () => (await h.rt.loadState(e))?.suspendedOn?.on === "hold", 8000);
       await tick(80);
       const left = (await h.eventStore.read(inboxStreamId(e))).map((x) => x.sequence);
       expect(left).toContain(2);
       expect(left).toContain(3);
       expect(left).not.toContain(1);
+      // the head turning terminal deletes the stream with it (nothing can ever consume it)
+      const fence = await h.eventStore.acquireFence?.(e);
+      await h.rt.resume(e, { eventType: "hold", payload: { ok: true } }, { fence });
+      await done(h, e);
+      await tick(80);
+      expect(await h.eventStore.read(inboxStreamId(e))).toEqual([]);
       const life = new LogLifecycle(h.eventStore, h.snapshotStore);
       expect(await life.applyRetention(e, { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
         "reclaimed"
       );
-      expect(await h.eventStore.read(inboxStreamId(e))).toEqual([]);
     });
 
     it("backpressure: InboxFullError at the backlog, owner's log untouched", async () => {

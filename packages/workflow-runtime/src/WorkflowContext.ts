@@ -8,7 +8,7 @@ import { linkSignals, parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
 import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
-import { INBOX_DEDUPE_CAP, cursorFor, cursorsOf, topicProblem } from "./inbox";
+import { cursorFor, cursorsOf, dedupeKeyOf, topicProblem } from "./inbox";
 import { WaitsPark, markKernelHumanPark } from "./kernelPark";
 import { discardDecisionId } from "./strayPassthroughs";
 import {
@@ -294,6 +294,10 @@ interface ArmReg {
 /** A `select` that has registered and not yet been answered. */
 interface PendingSelect {
   readonly arms: readonly ArmReg[];
+  /** The scope the select registered in (concurrent waits in one scope have no stable identity). */
+  readonly scope: Scope;
+  /** `workTicks` at registration: equal to the current value iff no ctx operation ran since. */
+  readonly turn: number;
   settled: boolean;
   resolve(value: SelectResult): void;
   reject(err: unknown): void;
@@ -308,8 +312,6 @@ export interface InboxBinding {
   /** The chain whose stream this execution reads (the execution itself until R1b continues one). */
   readonly chainId: string;
   readonly read: InboxSource;
-  /** The dedupe window the runtime applies (≤ the fold's 1 024 cap). */
-  readonly dedupeWindow: number;
 }
 
 /** How many messages one inbox read asks for beyond the waits it must satisfy (duplicates are skipped). */
@@ -367,6 +369,8 @@ export class WorkflowContextImpl implements WorkflowContext {
   private readonly inboxBinding: InboxBinding | undefined;
   private readonly waitOrdinals = new Map<string, number>();
   private readonly pending = new Set<PendingSelect>();
+  /** Moves on every start AND end of a ctx operation (see `registerSelect`'s concurrent-wait check). */
+  private workTicks = 0;
   private epoch = 0;
   private quiescenceScheduled = false;
   private quiescenceChecking = false;
@@ -551,10 +555,12 @@ export class WorkflowContextImpl implements WorkflowContext {
 
   private beginWork(): void {
     this.activeWork++;
+    this.workTicks++;
     this.epoch++;
   }
 
   private endWork(): void {
+    this.workTicks++;
     this.epoch++;
     if (--this.activeWork > 0) return;
     const waiters = this.idleWaiters;
@@ -1641,6 +1647,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     }
     // A wait inside a CANCELLED scope never registers and never consumes (ADR 0112).
     if (scope !== this.rootScope) this.throwIfCancelled(scope.signal);
+    const turn = this.workTicks;
     const arms = armsIn.map((a, i) => this.armOf(a, i, this.nextWaitId(scope)));
 
     // Replay: the lowest-index arm the log has answered. Only one can be (the first answer settles).
@@ -1668,9 +1675,23 @@ export class WorkflowContextImpl implements WorkflowContext {
     }
     // A scope served from its recorded outcome never starts a wait it did not have an answer for.
     if (scope.served !== undefined) throw new ScopeServedError("select", scope.path);
+    // A wait's identity is its ordinal in its scope, which is a pure function of the flow's control
+    // flow ONLY while one wait is registered at a time (or several in one synchronous turn, whose
+    // order is the call order). A second wait registered after ANY ctx operation started or finished
+    // while an earlier one in the same scope is still unanswered got its ordinal from completion order: a re-run
+    // may number the two the other way round and hand each the other's payload with no divergence
+    // error. Refused loudly; a branch of `ctx.parallel` has its own scope and is the supported way
+    // to wait on several things concurrently (ADR 0110 D3).
+    for (const other of this.pending) {
+      if (!other.settled && other.scope === scope && other.turn !== turn) {
+        throw new Error(
+          `ctx.receive / ctx.select: a second wait was registered in scope "${scope.path}" while an earlier one is still unanswered. Concurrent waits in one scope are numbered by timing, so a replay could hand each the other's message; wait on several things at once with ctx.parallel (one scope per branch) or register them in the same synchronous turn (ADR 0110 D3).`
+        );
+      }
+    }
 
     return new Promise<SelectResult>((resolve, reject) => {
-      const sel: PendingSelect = { arms, settled: false, resolve, reject };
+      const sel: PendingSelect = { arms, scope, turn, settled: false, resolve, reject };
       const signal = scope.signal;
       if (signal !== undefined) {
         const onAbort = (): void => {
@@ -1794,19 +1815,22 @@ export class WorkflowContextImpl implements WorkflowContext {
         );
         if (this.sealed || this.parkDecided) return delivered;
         if (msgs.length === 0) break;
-        const window = new Set<string>();
         for (const m of msgs) {
           const target = this.waitsOnTopic(topic)[0];
           if (target === undefined) break;
-          const duplicate = this.isDuplicate(m.messageId, binding.dedupeWindow, window);
-          window.add(m.messageId);
+          // Exactly the fold's own test (the key is in the folded window), so the live run and a
+          // replay of its log can never disagree about what was delivered (ADR 0110 D6).
+          const key = dedupeKeyOf(m);
+          const duplicate = this.isDuplicate(key);
           this.commit("MESSAGE_CONSUMED", {
             waitId: target.arm.waitId,
             topic,
-            messageId: m.messageId,
+            messageId: key,
             inboxSeq: m.inboxSeq,
             sender: m.sender,
-            payload: m.payload,
+            // A duplicate delivers nothing: the fold reads only its cursor and id, so its payload is
+            // not copied into the log.
+            payload: duplicate ? null : m.payload,
           });
           if (duplicate) continue;
           delivered = true;
@@ -1834,14 +1858,10 @@ export class WorkflowContextImpl implements WorkflowContext {
     return out;
   }
 
-  private isDuplicate(messageId: string, windowSize: number, local: Set<string>): boolean {
-    if (local.has(messageId)) return true;
+  private isDuplicate(key: string): boolean {
     const dedupe = (this.vm.peekState().variables._inbox as { dedupe?: string[] } | undefined)
       ?.dedupe;
-    if (dedupe === undefined) return false;
-    const size = Math.max(1, Math.min(windowSize, INBOX_DEDUPE_CAP));
-    const at = dedupe.lastIndexOf(messageId);
-    return at >= 0 && at >= dedupe.length - size;
+    return dedupe?.includes(key) === true;
   }
 
   /** Recorded gate answers not yet consumed by this run. */

@@ -33,8 +33,11 @@ export const WAITS_PARK_ON = "__loom_waits__";
 
 export const DEFAULT_INBOX_MAX_BACKLOG = 10_000;
 export const DEFAULT_INBOX_MAX_PAYLOAD_BYTES = 65_536;
-/** The fold's dedupe window cap (ADR 0110 D6): a larger configured window is not representable. */
-export const INBOX_DEDUPE_CAP = 1024;
+/**
+ * The longest `messageId` a sender may supply. The id (with the sender, see {@link dedupeKeyOf})
+ * lands in the fold's dedupe window, which is part of folded state and every snapshot.
+ */
+export const MAX_MESSAGE_ID_LENGTH = 256;
 const MAX_TOPIC_LENGTH = 256;
 const APPEND_ATTEMPTS = 64;
 
@@ -79,6 +82,21 @@ export function topicProblem(topic: unknown): string | undefined {
     return `"${topic}" is not a usable topic name`;
   }
   return undefined;
+}
+
+/**
+ * The idempotency key the owner's fold dedupes on, journaled as `MESSAGE_CONSUMED.messageId`.
+ * Keyed by `(sender, messageId)`, never by the bare id: two senders that both number their messages
+ * `1, 2, 3` must not swallow each other's. The fold treats the field as an opaque string, so the
+ * composite needs no fold change. The runtime's duplicate test is "is this key in the folded window" and nothing else, so it is
+ * exactly the fold's own (ADR 0110 D6). The sender is only as trustworthy as the principal that
+ * sent it: with no authorizer wired it is whatever the caller claimed.
+ */
+export function dedupeKeyOf(m: { messageId: string; sender: InboxMessage["sender"] }): string {
+  const s = m.sender;
+  // A JSON array: unambiguous whatever the fields contain, and free of raw control characters
+  // (a NUL cannot be stored by Postgres JSONB, and this string lands in the log).
+  return JSON.stringify([s.tenant ?? "", s.actor ?? "", s.onBehalfOf ?? "", m.messageId]);
 }
 
 /** The stored shape of one stream entry. */
@@ -218,27 +236,90 @@ export function cursorFor(cursors: Record<string, number>, topic: string): numbe
   return Object.hasOwn(cursors, topic) ? (cursors[topic] as number) : -1;
 }
 
+/** The kind of the marker a fork writes so its allocation starts above every inherited cursor. */
+export const INBOX_FLOOR_KIND = "INBOX_FLOOR";
+
 /**
- * The exact number of unconsumed messages in the retained stream, and the oldest one's sequence.
- * One tail read: used only when the cheap bound (`head - known floor`) says the backlog MIGHT be
- * over `inboxMaxBacklog`, and by trim.
+ * Make sure the chain's inbox stream's head is at least `floor`, so the next `send` allocates
+ * `floor + 1` or later. A FORK inherits its parent's per-topic cursors through the copied
+ * `MESSAGE_CONSUMED` prefix but owns a fresh, empty stream; without this its first sends would
+ * land at sequences the inherited cursors already passed, be skipped forever, and be trimmed. One
+ * marker at `floor` (not a message: readers ignore it) is the whole seed. Idempotent, and safe to
+ * race: a sender that already pushed the head to `floor` or beyond makes it a no-op.
  */
-export async function inboxBacklog(
+export async function ensureInboxFloor(
   store: EventStore,
   chainId: string,
-  cursors: Record<string, number>
+  floor: number,
+  now: () => number
+): Promise<void> {
+  if (!Number.isSafeInteger(floor) || floor < 0) return;
+  const stream = inboxStreamId(chainId);
+  const head = await headOf(store, stream);
+  if (head !== null && head >= floor) return;
+  try {
+    await store.append({
+      id: `${stream}-${floor}`,
+      workflowId: INBOX_WORKFLOW_ID,
+      executionId: stream,
+      eventType: INBOX_FLOOR_KIND,
+      sequence: floor,
+      timestamp: now(),
+      payload: { floor },
+    });
+  } catch (err) {
+    if (err instanceof DuplicateSequenceError || err instanceof DuplicateEnvelopeIdError) return;
+    throw err;
+  }
+}
+
+/** The largest cursor of `cursors` (the highest inbox sequence this owner has consumed), or -1. */
+export function maxCursor(cursors: Record<string, number>): number {
+  let max = -1;
+  for (const v of Object.values(cursors)) if (typeof v === "number" && v > max) max = v;
+  return max;
+}
+
+/**
+ * Scan the retained stream from `from` (inclusive) for UNCONSUMED messages (past their topic's
+ * cursor), in bounded pages. The caller passes a `from` below which everything is known consumed
+ * (or trimmed), so the cost follows the unconsumed backlog plus the consumed-but-untrimmed run, never
+ * the lifetime of the stream. `stopAtFirst` returns at the oldest unconsumed message (what trim
+ * needs); `limit` returns once that many are counted (what backpressure needs). A trimmed gap
+ * (a page that comes back empty below the head) falls back to one `readFrom`, which returns
+ * everything retained from there.
+ */
+export async function scanInbox(
+  store: EventStore,
+  chainId: string,
+  cursors: Record<string, number>,
+  opts: { from?: number; stopAtFirst?: boolean; limit?: number } = {}
 ): Promise<{ unconsumed: number; oldest: number | undefined; head: number | null }> {
   const stream = inboxStreamId(chainId);
   const head = await headOf(store, stream);
   if (head === null) return { unconsumed: 0, oldest: undefined, head };
-  const tail = await store.readFrom(stream, 0);
   let unconsumed = 0;
   let oldest: number | undefined;
-  for (const e of tail) {
-    const m = asMessage(e);
-    if (m === undefined || e.sequence <= cursorFor(cursors, m.topic)) continue;
-    unconsumed++;
-    oldest ??= e.sequence;
+  const visit = (events: readonly EventEnvelope[]): boolean => {
+    for (const e of events) {
+      const m = asMessage(e);
+      if (m === undefined || e.sequence <= cursorFor(cursors, m.topic)) continue;
+      unconsumed++;
+      oldest ??= e.sequence;
+      if (opts.stopAtFirst === true) return true;
+      if (opts.limit !== undefined && unconsumed >= opts.limit) return true;
+    }
+    return false;
+  };
+  let lo = Math.max(0, opts.from ?? 0);
+  while (lo <= head) {
+    const page = await readRangeOf(store, stream, lo, Math.min(head, lo + READ_CHUNK - 1));
+    if (page.length === 0) {
+      visit(await store.readFrom(stream, lo));
+      break;
+    }
+    if (visit(page)) break;
+    lo = (page[page.length - 1] as EventEnvelope).sequence + 1;
   }
   return { unconsumed, oldest, head };
 }
@@ -250,11 +331,16 @@ export async function inboxBacklog(
  * a consumer's cursor already passed, and the message would be skipped forever. Safe because
  * `MESSAGE_CONSUMED` copies the payload into the owner's log. No-op on a store without
  * `truncatePrefixKeeping` / `truncatePrefix`.
+ *
+ * Bounded: the scan starts just above `floor` (the highest sequence a previous trim, or a
+ * backpressure scan, proved consumed) and stops at the first unconsumed message, so one trim costs
+ * the entries it deletes plus one page, not the retained stream.
  */
 export async function trimInbox(
   store: EventStore,
   chainId: string,
-  cursors: Record<string, number>
+  cursors: Record<string, number>,
+  floor = -1
 ): Promise<number | undefined> {
   const truncate = store.truncatePrefixKeeping
     ? (id: string, through: number) => store.truncatePrefixKeeping?.(id, through, [])
@@ -262,10 +348,13 @@ export async function trimInbox(
       ? (id: string, through: number) => store.truncatePrefix?.(id, through)
       : undefined;
   if (truncate === undefined) return undefined;
-  const { oldest, head } = await inboxBacklog(store, chainId, cursors);
+  const { oldest, head } = await scanInbox(store, chainId, cursors, {
+    from: floor + 1,
+    stopAtFirst: true,
+  });
   if (head === null) return undefined;
   const through = Math.min(oldest === undefined ? head : oldest - 1, head - 1);
-  if (through < 1) return undefined; // sequence 0 is preserved by the store regardless
+  if (through < 1 || through <= floor) return undefined; // sequence 0 is preserved by the store regardless
   await truncate(inboxStreamId(chainId), through);
   return through;
 }

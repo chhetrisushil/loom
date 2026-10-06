@@ -42,7 +42,8 @@ interface StartParams {
 }
 interface ResumeParams {
   executionId: string;
-  event: { eventType: string; payload: unknown };
+  /** `waitId` addresses one wait of a multi-wait park (ADR 0110 D3); it must reach `runtime.resume` intact. */
+  event: { eventType: string; payload: unknown; waitId?: string };
 }
 interface IdParams {
   executionId: string;

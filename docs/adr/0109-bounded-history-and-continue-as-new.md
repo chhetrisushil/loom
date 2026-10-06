@@ -220,7 +220,7 @@ cursors in `continuedFrom.carried.inbox`. The predecessor is quiescent at the co
 outstanding wait, barrier drained), so it cannot consume a message after the cursor snapshot: a message
 appended at any time after the predecessor's last consumption is past the carried cursor and is delivered
 to the successor exactly once, never dropped, never doubled. The **dedupe window** (the last
-`inboxDedupeWindow` consumed message ids, ADR 0110 D6) is carried in the same block, so a sender retry
+1,024 consumed message keys, ADR 0110 D6) is carried in the same block, so a sender retry
 after a rotation is still deduplicated; it is bounded by the window size and is not counted against
 `maxCarryBytes`. This satisfies ADR 0052 D2's chain-scoped inbox without a transfer of live suspensions
 (ADR 0052 D3 stands). A continuation is legal only when nothing is parked, so there is no suspension to

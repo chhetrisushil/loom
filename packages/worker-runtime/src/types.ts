@@ -22,7 +22,7 @@ export interface ExecutionPackage {
   /** Input for a fresh start. Ignored on resume (it lives in the event log). */
   input?: unknown;
   /** Present ⇒ this is a resume dispatch. Delivered as the resume payload. */
-  resumeEvent?: { eventType: string; payload: unknown };
+  resumeEvent?: { eventType: string; payload: unknown; waitId?: string };
   /** Optional resume hints (a specific snapshot / event offset to rebuild from). */
   snapshotId?: string;
   fromSequence?: number;

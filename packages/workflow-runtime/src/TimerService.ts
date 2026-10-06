@@ -556,6 +556,9 @@ export class TimerService {
       // is never stranded.
       // (A positional `ctx.sleepUntil(0)` parked on that very instant is a plain timed wake.)
       if (wakeAt === INBOX_WAKE_AT && state?.suspendedOn?.wakeAt !== INBOX_WAKE_AT) {
+        // A node with the inbox flag OFF cannot run the notify path, and must not retire the row as
+        // obsolete: a node with it on (a mixed fleet mid-rollout) still needs it. Leave it be.
+        if (!this.runtime.inboxOn) return;
         await this.fireInbox(executionId, wakeAt);
         return;
       }

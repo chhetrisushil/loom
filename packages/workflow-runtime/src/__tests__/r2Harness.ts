@@ -156,14 +156,21 @@ export function crashingStore(
     if (guard(e)) return;
     return inner.append(e);
   };
+  if (inner.deleteExecution !== undefined) {
+    // A dead process deletes nothing (the owner's terminal-path inbox delete included).
+    view.deleteExecution = async (id: string) => {
+      if (crashed && !restored) return;
+      return inner.deleteExecution?.(id);
+    };
+  }
   if (inner.appendBatch !== undefined) {
     view.appendBatch = async (es) => {
-      if (opts.atomicBatch === true) {
+      if (opts.atomicBatch !== false) {
         // all-or-nothing, like a real transactional store: a crash drops the whole batch
         if (es.some((e) => guard(e))) return;
         return inner.appendBatch?.(es);
       }
-      for (const e of es) await view.append(e); // the non-atomic fallback: a prefix can land
+      for (const e of es) await view.append(e); // `atomicBatch: false` only: a store the inbox now refuses
     };
   }
   return {

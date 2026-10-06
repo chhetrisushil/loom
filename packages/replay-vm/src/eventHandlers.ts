@@ -715,6 +715,20 @@ const handlers: Record<string, Handler> = {
           }
         }
         if (recorded !== undefined) variables = { ...variables, _waits: recorded };
+        // A park lists EVERY unanswered arm of every pending select, so a recorded timer whose
+        // waitId this park does not list belongs to a select another arm already settled: drop
+        // it, or a loop of `select([inbox, timer])` grows `_waits` (state and every snapshot)
+        // by one entry per iteration, forever.
+        const priorWaits = variables._waits;
+        if (isPlain(priorWaits)) {
+          const listed = new Set(clean.map((w) => w.waitId));
+          const stale = Object.keys(priorWaits).filter((id) => !listed.has(id));
+          if (stale.length > 0) {
+            const kept = ownedRecord(priorWaits as Record<string, unknown>);
+            for (const id of stale) delete kept[id];
+            variables = { ...variables, _waits: kept };
+          }
+        }
       }
     }
     return {
