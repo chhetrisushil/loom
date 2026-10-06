@@ -265,7 +265,7 @@ describe("ADR 0110 D3 — a wire resume carries its waitId through to the runtim
       steps: [],
     } as unknown as FlowDefinition;
     runtime.registerFlow(definition, async (ctx) => {
-      const r = await ctx.select([{ gate: "A" }, { gate: "B" }]);
+      const r = await ctx.select([{ gate: "G" }, { gate: "G" }]);
       return { arm: r.arm };
     });
     const started = await handleRpc(runtime, {
@@ -279,7 +279,7 @@ describe("ADR 0110 D3 — a wire resume carries its waitId through to the runtim
       jsonrpc: "2.0",
       id: 2,
       method: "execution.resume",
-      params: { executionId: "w1", event: { eventType: "B", waitId: "#1", payload: { ok: 1 } } },
+      params: { executionId: "w1", event: { eventType: "G", waitId: "#1", payload: { ok: 1 } } },
     });
     expect((resumed as { error?: unknown }).error).toBeUndefined();
     const state = await runtime.loadState("w1", runtime.systemOptions());

@@ -39,8 +39,18 @@ export interface TimerStore {
    * node with no re-driver registered would otherwise see a batch full of rows it cannot judge and
    * starve every plain wake behind them. A store that ignores the option is still correct (the
    * service skips such rows itself); it only keeps that starvation window.
+   *
+   * `options.inbox === false` (ADR 0110) likewise EXCLUDES the inbox wake row (a NON-re-drive row at `wakeAt === 0`,
+   * `INBOX_WAKE_AT`) before the limit: a node with the inbox flag off cannot run the notify path
+   * and must leave those rows for a node that can, but they sort first (instant 0), so a batch of
+   * them would starve every real timer behind it. A timed park at exactly instant 0 is therefore
+   * not fired by a flag-off node (it is by any flag-on one).
    */
-  due(now: number, limit?: number, options?: { redrive?: boolean }): Promise<TimerRecord[]>;
+  due(
+    now: number,
+    limit?: number,
+    options?: { redrive?: boolean; inbox?: boolean }
+  ): Promise<TimerRecord[]>;
   /** Remove a fired (or obsolete) timer. Unknown timers are a no-op. */
   complete(executionId: string, wakeAt: number): Promise<void>;
   close(): Promise<void>;
@@ -65,9 +75,18 @@ export class InMemoryTimerStore implements TimerStore {
     });
   }
 
-  async due(now: number, limit = 100, options?: { redrive?: boolean }): Promise<TimerRecord[]> {
+  async due(
+    now: number,
+    limit = 100,
+    options?: { redrive?: boolean; inbox?: boolean }
+  ): Promise<TimerRecord[]> {
     return [...this.timers.values()]
-      .filter((t) => t.wakeAt <= now && (options?.redrive !== false || t.redrive === undefined))
+      .filter(
+        (t) =>
+          t.wakeAt <= now &&
+          (options?.redrive !== false || t.redrive === undefined) &&
+          (options?.inbox !== false || t.wakeAt !== 0 || t.redrive !== undefined)
+      )
       .sort((a, b) => a.wakeAt - b.wakeAt)
       .slice(0, limit)
       .map((t) => ({ ...t }));

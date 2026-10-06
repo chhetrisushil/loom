@@ -118,7 +118,10 @@ describe("R2 D5 — closures of the lost-wakeup window", () => {
     const h = build({}, { eventStore: view });
     const f = recv("x");
     h.rt.registerFlow(f.definition, f.runner);
-    await (await h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
+    // A FENCED deployment (the park carries a token): only then is the answer taken under a
+    // conditional fence (an unfenced execution is not pushed into fencing, see ADR 0110 round 2).
+    const fence = await h.rt.acquireFence("e1");
+    await (await h.rt.start(f, {}, { executionId: "e1", fence })).waitForSuspend();
     await appendInboxMessage(inner, "e1", stored("m", "later"), Date.now);
     const before = await kinds(inner, "e1");
     const r = await h.rt.notifyInboxDetailed("e1");

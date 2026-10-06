@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
   DuplicateEnvelopeIdError,
@@ -87,16 +88,20 @@ export function topicProblem(topic: unknown): string | undefined {
 /**
  * The idempotency key the owner's fold dedupes on, journaled as `MESSAGE_CONSUMED.messageId`.
  * Keyed by `(sender, messageId)`, never by the bare id: two senders that both number their messages
- * `1, 2, 3` must not swallow each other's. The fold treats the field as an opaque string, so the
- * composite needs no fold change. The runtime's duplicate test is "is this key in the folded window" and nothing else, so it is
- * exactly the fold's own (ADR 0110 D6). The sender is only as trustworthy as the principal that
- * sent it: with no authorizer wired it is whatever the caller claimed.
+ * `1, 2, 3` must not swallow each other's. It is the lowercase hex SHA-256 of the JSON array
+ * `[tenant, actor, onBehalfOf, messageId]`: deterministic, unambiguous whatever the fields contain,
+ * free of control characters, and a FIXED 64 characters however long the principal's fields are
+ * (the key lands in the fold's dedupe window, which is part of folded state and every snapshot).
+ * The fold treats the field as an opaque string, so no fold change is needed. The runtime's
+ * duplicate test is "is this key in the folded window" and nothing else, so it is exactly the
+ * fold's own (ADR 0110 D6). The sender is only as trustworthy as the principal that sent it: with
+ * no authorizer wired it is whatever the caller claimed.
  */
 export function dedupeKeyOf(m: { messageId: string; sender: InboxMessage["sender"] }): string {
   const s = m.sender;
-  // A JSON array: unambiguous whatever the fields contain, and free of raw control characters
-  // (a NUL cannot be stored by Postgres JSONB, and this string lands in the log).
-  return JSON.stringify([s.tenant ?? "", s.actor ?? "", s.onBehalfOf ?? "", m.messageId]);
+  return createHash("sha256")
+    .update(JSON.stringify([s.tenant ?? "", s.actor ?? "", s.onBehalfOf ?? "", m.messageId]))
+    .digest("hex");
 }
 
 /** The stored shape of one stream entry. */

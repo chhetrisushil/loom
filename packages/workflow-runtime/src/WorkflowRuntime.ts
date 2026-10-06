@@ -48,6 +48,7 @@ import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import {
   DEFAULT_INBOX_MAX_BACKLOG,
   DEFAULT_INBOX_MAX_PAYLOAD_BYTES,
+  INBOX_STREAM_PREFIX,
   INBOX_WAKE_AT,
   MAX_MESSAGE_ID_LENGTH,
   WAITS_PARK_ON,
@@ -235,6 +236,16 @@ export interface WorkflowRuntimeDeps {
   inbox?: InboxSource;
   /** ADR 0110 D1 — `send` refuses past this many unconsumed messages per chain. Default 10 000. */
   inboxMaxBacklog?: number;
+  /**
+   * ADR 0110 D1 — `send` refuses once the stream RETAINS this many entries above its trim floor,
+   * whatever their consumption state. Default 4 x `inboxMaxBacklog`. The stream is trimmed by
+   * prefix only (the `EventStore` SPI has no per-entry delete), so ONE unconsumed message on a topic
+   * nobody waits on pins every entry above it, consumed or not; without this cap a hot topic would
+   * grow the stream without bound behind it. Refusing is the bounded-storage answer: the sender
+   * sees `InboxFullError` naming the pin, and a consume of the pinned message (or retirement of the
+   * chain) releases it.
+   */
+  inboxMaxRetained?: number;
   /** ADR 0110 D1 — the largest JSON payload `send` accepts, in bytes. Default 65 536. */
   inboxMaxPayloadBytes?: number;
   /**
@@ -606,7 +617,7 @@ function legacyConditionOf(waits: readonly SuspendWait[]): {
 /** How many chains' inbox bookkeeping a runtime remembers (FIFO eviction; both maps are only hints). */
 const INBOX_HINT_MEMORY = 4096;
 
-function rememberBounded(map: Map<string, number>, key: string, value: number): void {
+function rememberBounded<V>(map: Map<string, V>, key: string, value: V): void {
   map.delete(key); // re-insert at the end: eviction order = recency
   if (map.size >= INBOX_HINT_MEMORY) {
     const oldest = map.keys().next().value;
@@ -656,6 +667,9 @@ export class WorkflowRuntime {
   private readonly inboxSource: InboxSource;
   private readonly inboxMaxBacklog: number;
   private readonly inboxMaxPayloadBytes: number;
+  private readonly inboxMaxRetained: number;
+  /** Per chain, the last exact backlog count (see `assertInboxHasRoom`): an upper-bound base for later sends. */
+  private readonly inboxCounted = new Map<string, { head: number; unconsumed: number }>();
   /** Per chain, the stream sequence this process last trimmed through (a cheap "nothing new" test). */
   private readonly inboxTrimmed = new Map<string, number>();
   /** Per chain, the highest sequence known consumed-and-trimmed: the cheap backlog floor. */
@@ -663,7 +677,7 @@ export class WorkflowRuntime {
   /** Per chain, a backlog scan that found the stream FULL (see `assertInboxHasRoom`). */
   private readonly inboxFull = new Map<
     string,
-    { head: number; until: number; unconsumed: number }
+    { head: number; until: number; unconsumed: number; pinnedAt?: number }
   >();
   private warnedNoInboxTimers = false;
   private readonly errorClasses: Record<string, ErrorClassCtor> | undefined;
@@ -721,6 +735,10 @@ export class WorkflowRuntime {
     }
     this.inboxSource = deps.inbox ?? createInboxSource(deps.eventStore);
     this.inboxMaxBacklog = Math.max(1, deps.inboxMaxBacklog ?? DEFAULT_INBOX_MAX_BACKLOG);
+    this.inboxMaxRetained = Math.max(
+      this.inboxMaxBacklog,
+      deps.inboxMaxRetained ?? this.inboxMaxBacklog * 4
+    );
     this.inboxMaxPayloadBytes = Math.max(
       1,
       deps.inboxMaxPayloadBytes ?? DEFAULT_INBOX_MAX_PAYLOAD_BYTES
@@ -2643,6 +2661,7 @@ export class WorkflowRuntime {
     if (vm.getState().status === "cancelled") {
       throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
     }
+    await this.reopenInbox(executionId, vm.getState());
 
     // K11.5 — a previously-migrated execution resumes with its RECORDED migrated
     // input (folded `_input`), never the pre-migration EXECUTION_STARTED payload.
@@ -2829,8 +2848,11 @@ export class WorkflowRuntime {
     first: EventEnvelope;
     workflowId: string;
     chainId: string;
-    /** `terminal` names the status; `parkedCandidate` carries the fold; otherwise it is running. */
-    status: "running" | "parkedCandidate" | string;
+    /**
+     * `terminal` names the status; `parkedCandidate` carries the fold; `ambiguous` is a tail that
+     * could not say (maybe parked, see {@link classifyTip}); otherwise it is running.
+     */
+    status: "running" | "ambiguous" | "parkedCandidate" | string;
     state?: ExecutionState;
   } | null> {
     let id = executionId;
@@ -2855,6 +2877,7 @@ export class WorkflowRuntime {
         const state = await this.foldState(id);
         return { ...base, status: "parkedCandidate", ...(state !== null && { state }) };
       }
+      if (tip.kind === "ambiguous") return { ...base, status: "ambiguous" };
       return { ...base, status: "running" };
     }
     return null;
@@ -2865,19 +2888,22 @@ export class WorkflowRuntime {
    * kinds that never answer a park (`EVENT_KIND_CLASS`: a `TIMER_FIRED` or a discard
    * `DECISION_RECORDED` whose resume never landed, an `APPROVAL_GRANTED` / `OUTCOME_RECORDED` /
    * `EXECUTION_DENIED` audit row, a half-written pair) to the newest ANSWERING one. A park means
-   * "might be parked": the caller folds. A resume or nothing answering inside the window means a
-   * running owner (a hot owner's tail is steps and decisions: its quiescence read sees the stream).
+   * "might be parked": the caller folds. A resume newest among the answering kinds means a running
+   * owner. A window with NO answering kind at all (eight app emits, parallel `STEP_*`, timer
+   * fires...) is AMBIGUOUS, never "running": the park may lie further back, and calling it running
+   * would skip the wake of a parked owner (a lost wakeup). The sender treats it as "maybe parked".
    */
   private async classifyTip(
     id: string
   ): Promise<
     | { kind: "running" }
+    | { kind: "ambiguous" }
     | { kind: "parkedCandidate" }
     | { kind: "terminal"; status: "completed" | "failed" | "cancelled" }
     | { kind: "continued"; successorId: string | undefined }
   > {
     const tipSeq = await headOf(this.eventStore, id);
-    if (tipSeq === null) return { kind: "running" };
+    if (tipSeq === null) return { kind: "ambiguous" };
     const window = await readRangeOf(
       this.eventStore,
       id,
@@ -2901,7 +2927,11 @@ export class WorkflowRuntime {
         ? { kind: "running" }
         : { kind: "parkedCandidate" }; // a park, or a kind this node cannot classify (fail closed)
     }
-    return { kind: "running" };
+    // Nothing in the window answers a park. If the window starts at sequence 0 the whole log was
+    // read and there is no park: running. Otherwise we cannot tell.
+    return window.length > 0 && (window[0] as EventEnvelope).sequence === 0
+      ? { kind: "running" }
+      : { kind: "ambiguous" };
   }
 
   /**
@@ -3009,13 +3039,31 @@ export class WorkflowRuntime {
     ) {
       // The owner turned terminal around the append: its own stream delete may have run BEFORE the
       // append landed, which would leave this message in an orphan stream. Delete it again (the
-      // terminal is durable, so nothing will ever read it) and report the close.
+      // terminal is durable, so nothing will ever read it). But was it DELIVERED first? The owner
+      // may have consumed it (cursor at or past its sequence, or its key already in the dedupe
+      // window) and then finished: that is a normal send, not a refusal.
+      const final = await this.foldState(after.id);
       await this.retireInbox(chainId);
-      throw new InboxClosedError(after.id, after.status);
+      const inbox = final?.variables._inbox as { dedupe?: string[] } | undefined;
+      const delivered =
+        final !== null &&
+        (cursorFor(cursorsOf(final.variables), message.topic) >= inboxSeq ||
+          (inbox?.dedupe ?? []).includes(
+            dedupeKeyOf({ messageId, sender: ownerOfChain(options?.principal) ?? {} })
+          ));
+      if (delivered) return { messageId, inboxSeq, executionId: after.id };
+      throw new InboxClosedError(after.id, after.status, true);
     }
     const live = after ?? head;
     const state = after !== null && after.status === "parkedCandidate" ? after.state : undefined;
-    if (state !== undefined && this.parkedOnInbox(state, message.topic)) {
+    // An AMBIGUOUS tail (no answering kind in the window, see `classifyTip`) is "maybe parked": the
+    // coalesced due-now row is written and the notify path judges the real state (a no-op for a
+    // running owner). Only a tail that provably is not a park skips the wake.
+    const maybeParked =
+      after !== null && after.status === "ambiguous"
+        ? true
+        : state !== undefined && this.parkedOnInbox(state, message.topic);
+    if (maybeParked) {
       if (this.timerStore !== undefined) {
         try {
           await this.timerStore.schedule({ executionId: live.id, wakeAt: INBOX_WAKE_AT });
@@ -3076,27 +3124,55 @@ export class WorkflowRuntime {
     if (head - floor < this.inboxMaxBacklog) return;
     const full = this.inboxFull.get(chainId);
     if (full !== undefined && full.head === head && this.now() < full.until) {
-      throw new InboxFullError(executionId, full.unconsumed);
+      throw this.inboxFullError(executionId, full);
+    }
+    // An exact count is the expensive part (a scan of the retained stream). The last one bounds
+    // every later count from above (each send adds one, a consume only subtracts), so a chain whose
+    // backlog is far below the cap rescans once per (cap - backlog) sends, not once per send. The
+    // retained-entries cap is judged against the same floor, which a scan has just advanced.
+    const counted = this.inboxCounted.get(chainId);
+    if (
+      counted !== undefined &&
+      head >= counted.head &&
+      counted.unconsumed + (head - counted.head) < this.inboxMaxBacklog &&
+      head - floor < this.inboxMaxRetained
+    ) {
+      return;
     }
     const state = await this.foldState(executionId);
     const exact = await scanInbox(this.eventStore, chainId, cursorsOf(state?.variables ?? {}), {
       from: floor + 1,
       limit: this.inboxMaxBacklog,
     });
-    if (exact.unconsumed >= this.inboxMaxBacklog) {
-      this.inboxFull.set(chainId, {
-        head,
-        until: this.now() + INBOX_FULL_TTL_MS,
-        unconsumed: exact.unconsumed,
-      });
-      if (this.inboxFull.size > INBOX_HINT_MEMORY) {
-        const oldest = this.inboxFull.keys().next().value;
-        if (oldest !== undefined) this.inboxFull.delete(oldest);
-      }
-      throw new InboxFullError(executionId, exact.unconsumed);
-    }
+    const refuse = (hint: { unconsumed: number; pinnedAt?: number }): never => {
+      const entry = { head, until: this.now() + INBOX_FULL_TTL_MS, ...hint };
+      rememberBounded(this.inboxFull, chainId, entry);
+      throw this.inboxFullError(executionId, entry);
+    };
+    if (exact.unconsumed >= this.inboxMaxBacklog) refuse({ unconsumed: exact.unconsumed });
     this.inboxFull.delete(chainId);
-    rememberBounded(this.inboxFloors, chainId, (exact.oldest ?? head + 1) - 1);
+    const newFloor = (exact.oldest ?? head + 1) - 1;
+    rememberBounded(this.inboxFloors, chainId, newFloor);
+    rememberBounded(this.inboxCounted, chainId, { head, unconsumed: exact.unconsumed });
+    if (head - newFloor >= this.inboxMaxRetained) {
+      refuse({
+        unconsumed: exact.unconsumed,
+        ...(exact.oldest !== undefined && { pinnedAt: exact.oldest }),
+      });
+    }
+  }
+
+  private inboxFullError(
+    executionId: string,
+    full: { unconsumed: number; pinnedAt?: number }
+  ): InboxFullError {
+    return new InboxFullError(
+      executionId,
+      full.unconsumed,
+      full.pinnedAt !== undefined
+        ? `the inbox retains ${this.inboxMaxRetained}+ entries above its oldest unconsumed message (inbox sequence ${full.pinnedAt}), which nothing consumes and which pins every entry above it (inboxMaxRetained); nothing was appended. Consume that message, or retry after it is consumed.`
+        : undefined
+    );
   }
 
   /**
@@ -3140,6 +3216,53 @@ export class WorkflowRuntime {
     this.inboxFloors.delete(chainId);
     this.inboxTrimmed.delete(chainId);
     this.inboxFull.delete(chainId);
+    this.inboxCounted.delete(chainId);
+  }
+
+  /**
+   * ADR 0110 D1 — a terminal execution (completed, failed) is being RE-OPENED (`resume` / `resumeAs`,
+   * ADR 0104). Its inbox stream was deleted when it finished, so a message not consumed by then is
+   * gone (a `send` after the terminal was refused; one that raced it was reported discarded). A
+   * fresh stream would restart at sequence 0 under the cursors the owner's log still holds, and
+   * every new message would be skipped as already consumed. So the allocation floor is seeded at the
+   * highest cursor, exactly as for a fork: new sends land above it. Best effort and idempotent.
+   */
+  private async reopenInbox(executionId: string, state: ExecutionState): Promise<void> {
+    if (!this.inboxEnabled) return;
+    if (state.status !== "completed" && state.status !== "failed") return;
+    const floor = maxCursor(cursorsOf(state.variables));
+    if (floor < 0) return;
+    try {
+      await ensureInboxFloor(this.eventStore, chainIdOf(state, executionId), floor, this.now);
+    } catch (err) {
+      this.onStorageError?.(executionId, err);
+    }
+  }
+
+  /**
+   * ADR 0110 D1 — reclaim an inbox stream whose owner is terminal: the sweep for the orphan a crash
+   * left (a sender appended after the owner's own delete, then died before its re-read). Only a
+   * chain whose id IS an execution id can be mapped back to an owner (not a fork's fresh chain).
+   * Returns whether it deleted the stream. Never throws.
+   */
+  async reclaimInbox(streamId: string): Promise<boolean> {
+    if (!this.inboxEnabled || !streamId.startsWith(INBOX_STREAM_PREFIX)) return false;
+    const chainId = streamId.slice(INBOX_STREAM_PREFIX.length);
+    try {
+      const head = await this.sendTarget(chainId);
+      if (
+        head === null ||
+        head.chainId !== chainId ||
+        (head.status !== "completed" && head.status !== "failed" && head.status !== "cancelled")
+      ) {
+        return false;
+      }
+      await deleteInbox(this.eventStore, chainId);
+      return true;
+    } catch (err) {
+      this.onStorageError?.(chainId, err);
+      return false;
+    }
   }
 
   /** Closure 2 (ADR 0110 D5): the park is durable; read once more and self-resume on a gap arrival. */
@@ -3292,7 +3415,11 @@ export class WorkflowRuntime {
       const handle = await this.resumeCore(
         executionId,
         { eventType: INBOX_DELIVERY, waitId: target.waitId, payload: null },
-        { fenceIfParkedAt: parkSeq, ...this.systemOptions() },
+        {
+          // Only a FENCED execution is answered under a conditional fence (see `parkWasFenced`).
+          ...((await this.parkWasFenced(executionId, parkSeq)) && { fenceIfParkedAt: parkSeq }),
+          ...this.systemOptions(),
+        },
         { pre }
       );
       return { handle, contended: false };
@@ -3301,6 +3428,20 @@ export class WorkflowRuntime {
       if (err instanceof ResumeContendedError) return contended();
       throw err;
     }
+  }
+
+  /**
+   * Was the park at `parkSeq` written under a fencing token? A fencing store refuses an append with
+   * NO token once ANY token has been acquired for the execution, so a deployment that never fences
+   * (its parks carry no token) must not be pushed into fencing by the first inbox delivery: every
+   * later plain `resume` / `resumeAs` / recovery of that execution would then be refused as a stale
+   * fence. A fenced execution (its park carries a token) is answered under `acquireFenceIf`, as
+   * ADR 0118 asks; an unfenced one is answered like any unfenced resume, and a rival notifier loses
+   * at the store's `(executionId, sequence)` uniqueness (the atomic batch lands whole or not at all).
+   */
+  private async parkWasFenced(executionId: string, parkSeq: number): Promise<boolean> {
+    const park = (await readRangeOf(this.eventStore, executionId, parkSeq, parkSeq))[0];
+    return typeof park?.metadata?.fence === "number";
   }
 
   /**
@@ -3316,14 +3457,24 @@ export class WorkflowRuntime {
     pre: ReadonlyArray<{ eventType: string; payload: unknown }>
   ): Promise<"ok" | "contended" | "gone"> {
     try {
-      const got = await this.acquireFenceIfParked(
-        executionId,
-        { eventType: INBOX_DELIVERY, waitId: wait.waitId, payload: null },
-        parkSeq,
-        this.systemOptions().system,
-        { vm: new ReplayVM([], state), events: undefined },
-        true
-      );
+      const got = (await this.parkWasFenced(executionId, parkSeq))
+        ? await this.acquireFenceIfParked(
+            executionId,
+            { eventType: INBOX_DELIVERY, waitId: wait.waitId, payload: null },
+            parkSeq,
+            this.systemOptions().system,
+            { vm: new ReplayVM([], state), events: undefined },
+            true
+          )
+        : {
+            fence: undefined,
+            // Whatever was appended since `state` (an earlier chunk of this very scan): fold it in,
+            // or the batch lands at a stale sequence and reads as contention.
+            vm: await (async () => {
+              const tail = await this.eventStore.readFrom(executionId, state.sequence + 1);
+              return tail.length === 0 ? new ReplayVM([], state) : new ReplayVM(tail, state);
+            })(),
+          };
       const journal = new ExecutionJournal(
         this.eventStore,
         { executionId, workflowId: state.workflowId },
@@ -3414,6 +3565,7 @@ export class WorkflowRuntime {
     if (state.status === "cancelled") {
       throw new Error(`Execution ${executionId} was cancelled; resume refused (terminal status)`);
     }
+    await this.reopenInbox(executionId, state);
     // ADR 0109: a continued execution handed its work to a successor; re-opening it would run
     // the same flow twice. Resume the head of the chain instead.
     if (state.status === "continued") {
