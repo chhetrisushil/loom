@@ -598,6 +598,14 @@ export class WorkflowRuntime {
           };
   }
   private readonly composedCodecs = new Set<PrincipalCodec>();
+  /**
+   * R3k review P2-a — the record a start wrote, kept for the life of its LIVE execution. A minted
+   * id's sequence 0 is journalled behind the fold, so a lifecycle op (`cancel`, `query`) landing
+   * in that window would point-read nothing, read "legacy", and report no owner (denying the
+   * owner). The map is bounded by the live executions of this runtime: set at start, cleared when
+   * the handle settles (or the start throws). Never consulted for a resume (sequence 0 is read).
+   */
+  private readonly startRecords = new Map<string, PrincipalRecord>();
 
   /** D1 — the record a start (or a fork's `forkedBy`) writes for `chain`. Throws before anything is appended. */
   private principalRecordFor(
@@ -619,13 +627,26 @@ export class WorkflowRuntime {
    * D2 — what the execution's effects run as, read from the LOG. `known` carries a sequence-0
    * envelope the caller already read (resume does); otherwise it is one point read. A caller-
    * supplied `ExecutionState` is never consulted: `restoreFromState` cannot forge the owner.
-   * `legacy: true` = the log predates EVENT_SCHEMA 1.23.0 and recorded no principal.
+   * `legacy: true` = the log predates EVENT_SCHEMA 1.23.0 and recorded no principal. A read that
+   * FAILS is never legacy: `actingPrincipal` propagates it and `ownerForAuthz` reports an unknown
+   * owner (the policy's `unknownOwner` rule decides: deny by default). A live execution of this
+   * runtime answers from the record its start wrote (see {@link startRecords}).
    */
   private async recordedPrincipal(
     executionId: string,
     known?: { first: EventEnvelope | undefined }
   ): Promise<{ legacy: true } | { legacy: false; chain: PrincipalChain | undefined }> {
     let first: EventEnvelope | undefined;
+    const live = known === undefined ? this.startRecords.get(executionId) : undefined;
+    if (live !== undefined) {
+      return {
+        legacy: false,
+        chain: await rehydratePrincipal(live, executionId, {
+          codec: this.principalCodec,
+          resolver: this.principalResolver,
+        }),
+      };
+    }
     if (known !== undefined) {
       first = known.first;
     } else {
@@ -1796,9 +1817,16 @@ export class WorkflowRuntime {
       codec: this.principalCodec,
       resolver: this.principalResolver,
     });
-    // `parent` (the supervisor's `parentExecutionId`) is lineage, not identity (D1).
+    // `parent` (the supervisor's `parentExecutionId`) is lineage, not identity (D1). Recorded only
+    // under the condition `notifyStarted` trusts it: a valid system grant. A caller-supplied one
+    // is NOT written when an executionAuthorizer draws a boundary, or any starter could pin another
+    // execution's retention (R8k predicate). With NO authorizer there is no boundary to cross
+    // (every op is unrestricted) and the supervisor's lineage is recorded as before.
     const parent =
-      typeof options?.parentExecutionId === "string" && options.parentExecutionId.length > 0
+      typeof options?.parentExecutionId === "string" &&
+      options.parentExecutionId.length > 0 &&
+      (this.executionAuthorizer === undefined ||
+        (options.system !== undefined && options.system === this.systemGrantToken))
         ? options.parentExecutionId
         : undefined;
 
@@ -1846,17 +1874,23 @@ export class WorkflowRuntime {
       options?.parentExecutionId
     );
 
-    return this.execute(
-      executionId,
-      definition.id,
-      vm,
-      runner as FlowRunner<unknown, unknown>,
-      effectiveInput,
-      [bootstrap],
-      options?.fence,
-      options?.deadlineMs ?? definition.deadlineMs,
-      actingAs
-    );
+    this.startRecords.set(executionId, principalRecord);
+    try {
+      return this.execute(
+        executionId,
+        definition.id,
+        vm,
+        runner as FlowRunner<unknown, unknown>,
+        effectiveInput,
+        [bootstrap],
+        options?.fence,
+        options?.deadlineMs ?? definition.deadlineMs,
+        actingAs
+      );
+    } catch (err) {
+      this.startRecords.delete(executionId);
+      throw err;
+    }
   }
 
   /**
@@ -3303,6 +3337,7 @@ export class WorkflowRuntime {
     void run().finally(() => {
       clearDeadline?.();
       this.liveHandles.delete(executionId);
+      this.startRecords.delete(executionId);
     });
 
     return handle;

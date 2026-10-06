@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import type { EventEnvelope } from "@loom/core";
 import { fail } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
@@ -580,7 +581,19 @@ function childStartOptions(
 // it with the delegation secret the supervisor holds, so a recovered child gets the SAME
 // attenuation back (not a fresh or broader one). The secret never enters the log.
 
-const ORCH_REF_PREFIX = "loom:orch:v1:";
+// v2 = MACed. The ref is the only thing the log holds to re-mint a child's attenuation from; were it
+// forgeable, anyone able to write a sequence-0 (a caller-chosen id, a restored backup) could
+// confer any grant set. The MAC key is DERIVED from the supervisor secret under a distinct label,
+// so a ref MAC is never a valid delegation signature (nor the reverse). Unsigned v1 refs never
+// shipped (R3k is unreleased) and are refused.
+const ORCH_REF_PREFIX = "loom:orch:v2:";
+const ORCH_REF_MAC_LABEL = "loom:orch:ref:v1|";
+const orchRefKey = (secret: string): Buffer =>
+  createHmac("sha256", secret).update("loom:orch:ref-key:v1").digest();
+const orchRefMac = (key: Buffer, bodyB64: string): Buffer =>
+  createHmac("sha256", key)
+    .update(ORCH_REF_MAC_LABEL + bodyB64)
+    .digest();
 /** A ref longer than this is not produced: the delegation is then unrestorable and the start is refused. */
 const ORCH_REF_MAX = 8192;
 
@@ -589,6 +602,7 @@ const ORCH_REF_MAX = 8192;
  * runtime when `delegation` is configured; exported for apps that hand-build a runtime.
  */
 export function orchestrationPrincipalCodec(secret: string): PrincipalCodec {
+  const key = orchRefKey(secret);
   return {
     toRef(chain) {
       const token = chain.delegation;
@@ -604,15 +618,24 @@ export function orchestrationPrincipalCodec(secret: string): PrincipalCodec {
         g: [...token.grants].sort(),
         ...(token.exp !== undefined && { e: token.exp }),
       });
-      const ref = ORCH_REF_PREFIX + Buffer.from(body, "utf8").toString("base64url");
+      const bodyB64 = Buffer.from(body, "utf8").toString("base64url");
+      const ref = `${ORCH_REF_PREFIX}${bodyB64}.${orchRefMac(key, bodyB64).toString("base64url")}`;
       return ref.length <= ORCH_REF_MAX ? ref : undefined;
     },
     fromRef(ref) {
       if (!ref.startsWith(ORCH_REF_PREFIX)) return undefined; // not ours: another codec's ref
       try {
-        const body = JSON.parse(
-          Buffer.from(ref.slice(ORCH_REF_PREFIX.length), "base64url").toString("utf8")
-        ) as { a?: unknown; g?: unknown; e?: unknown };
+        const [bodyB64, macB64, ...extra] = ref.slice(ORCH_REF_PREFIX.length).split(".");
+        if (bodyB64 === undefined || macB64 === undefined || extra.length > 0) return undefined;
+        const given = Buffer.from(macB64, "base64url");
+        const want = orchRefMac(key, bodyB64);
+        // Verify BEFORE anything is re-signed: a forged ref must never become a valid token.
+        if (given.length !== want.length || !timingSafeEqual(given, want)) return undefined;
+        const body = JSON.parse(Buffer.from(bodyB64, "base64url").toString("utf8")) as {
+          a?: unknown;
+          g?: unknown;
+          e?: unknown;
+        };
         if (
           typeof body.a !== "string" ||
           !Array.isArray(body.g) ||
