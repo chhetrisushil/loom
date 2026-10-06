@@ -62,7 +62,7 @@ import {
 import type { TelemetryAdapter } from "@loom/telemetry";
 import { type VerificationReport, runVerification, verify as runVerify } from "@loom/verify";
 import { LogLifecycle, TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
-import type { TimerDispatcher } from "@loom/workflow-runtime";
+import type { PrincipalCodec, PrincipalResolver, TimerDispatcher } from "@loom/workflow-runtime";
 import type {
   ArchiveStores,
   ExecutionAuthorizer,
@@ -72,6 +72,11 @@ import type {
   ResumeAuthenticator,
 } from "@loom/workflow-runtime";
 import { InProcessA2ABus } from "./InProcessA2ABus";
+import {
+  type PrincipalCryptoOptions,
+  registerPrincipalPaths,
+  resolvePrincipalIdentity,
+} from "./principalPolicy";
 import {
   type AgentModule,
   type FlowModule,
@@ -221,8 +226,8 @@ export interface SecurityOptions {
    * responsible for attaching an authenticated principal to every externally-originated
    * call. Under `strict` (R3) a principal-less call is NOT waved through — it reaches this
    * authorizer with `principal: undefined` and the policy decides — while the kernel's own
-   * machinery presents the runtime's system grant instead (INTERIM: the principal is not yet
-   * durable across recovery/timers/dispatcher/child spawn; R3's kernel half). Edge-enforced
+   * machinery presents the runtime's system grant instead (it authorizes the LIFECYCLE op only;
+   * the flow's effects run as the principal recorded at start, ADR 0111). Edge-enforced
    * policy, still not a substitute for authenticating the caller.
    *
    * Distinct from {@link authorizer}, which gates EFFECTS (the K2 capability ring). This
@@ -231,6 +236,27 @@ export interface SecurityOptions {
   executionAuthorizer?: ExecutionAuthorizer;
   /** C.1 — audit/telemetry hook fired whenever {@link executionAuthorizer} refuses. */
   onExecutionDenied?: (request: ExecutionAuthzRequest, reason?: string) => void;
+  /**
+   * R3k (ADR 0111 D3) — an app that must not put even an actor id in its log supplies a codec:
+   * every execution then records `{ v: 1, ref }` only, and the runtime rebuilds the effect
+   * principal with `fromRef` on every start / resume / timer wake / recovery. REQUIRED under
+   * {@link strict} or a composed {@link compliance} plugin unless {@link crypto} is composed
+   * (otherwise `defineConfig` refuses to compose, {@link PrincipalRecordingRefusedError}).
+   * `@loom/orchestration`'s supervisor composes its own codec for delegated children.
+   */
+  principalCodec?: PrincipalCodec;
+  /**
+   * R3k (ADR 0111 D2) — replace the default rehydration of a recorded principal (rebuild
+   * `{ tenant, actor, onBehalfOf }`; deny a delegation that cannot be restored) for every record.
+   */
+  principalResolver?: PrincipalResolver;
+  /**
+   * R3k (ADR 0111 D1) — the crypto plugin's stores. Composing them makes `defineConfig` register
+   * `principal.identity.*` (and the snapshot's `variables._principal.identity.*`) as sensitive, so
+   * the identity subset is encrypted at rest and shredded with the subject. Pass the SAME
+   * instances your stores are built from, before the first execution starts.
+   */
+  crypto?: PrincipalCryptoOptions;
   /**
    * T3 (GDPR/CCPA-enabling) — data-subject rights. Supply a {@link SubjectResolver} (given an
    * event, the data subject it concerns — usually read off EXECUTION_STARTED input, e.g. the
@@ -797,6 +823,9 @@ export const GROUPED_OPTIONS = [
       "compliance",
       "strict",
       "killSwitch",
+      "principalCodec",
+      "principalResolver",
+      "crypto",
     ],
   ],
   ["observability", ["telemetry", "onEvent", "onWarn", "onStorageError"]],
@@ -880,6 +909,15 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     const notice = permissiveNotice(posture);
     if (notice !== undefined) warnOut(notice);
   }
+  // R3k — how the principal's identity may be recorded. Resolved before anything is built, so a
+  // refusal leaves nothing half-composed; the crypto paths are registered once it is decided.
+  const principalIdentity = resolvePrincipalIdentity({
+    strict,
+    compliance: config.compliance !== undefined,
+    crypto: config.crypto,
+    codec: config.principalCodec,
+  });
+  if (config.crypto !== undefined) registerPrincipalPaths(config.crypto);
   const killSwitch: KillSwitchRegistry | undefined =
     config.killSwitch ?? (strict ? new InMemoryKillSwitch() : undefined);
   const ledger = new BudgetLedger();
@@ -1082,6 +1120,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.onExecutionDenied !== undefined && {
       onExecutionDenied: config.onExecutionDenied,
     }),
+    ...(config.principalCodec !== undefined && { principalCodec: config.principalCodec }),
+    ...(config.principalResolver !== undefined && { principalResolver: config.principalResolver }),
+    principalIdentity,
     ...(config.now !== undefined && { now: config.now }),
   });
 

@@ -13,6 +13,12 @@ export {
   type StorageConfig,
 } from "./defineConfig";
 export {
+  PrincipalRecordingRefusedError,
+  type PrincipalCryptoOptions,
+  type SensitivePathRegistry,
+  type SensitiveSnapshotRegistry,
+} from "./principalPolicy";
+export {
   STRICT_DEFAULTS,
   type AutonomyEnvelopeOptions,
   type ResolvedEnvelope,

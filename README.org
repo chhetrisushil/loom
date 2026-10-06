@@ -247,7 +247,7 @@ Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) tha
 | ~@loom/learning~           | The continuous-learning *substrate* (ADR 0080) — trajectories, SNIPS off-policy evaluation with unit-level ESS, a promotion gate, and the 3P ~Policy~ SPI. The learning *algorithm* stays third-party |
 | ~@loom/live-query~ · ~@loom/fair-scheduler~ | Live cross-execution queries over the log (ADR 0040) · per-tenant fair scheduling (ADR 0038) |
 
-/Security note (known issue until ADR 0111)./ The execution's principal is not yet durable: after a resume the flow's effects run under the /resumer's/ principal (the approver's grants after an approval; no principal after a timer wake or recovery, so tenant DENY policies do not fire; a delegation-attenuated child regains base authority after a crash). Execution-lifecycle authorization is unaffected. See [[file:docs/usage.md][docs/usage.md]] and the CHANGELOG "Known issues"; the fix is the durable principal ([[file:docs/adr/0111-durable-principal.md][ADR 0111]]), first in the Wave 2 kernel work.
+/The principal is durable (ADR 0111)./ The kernel records the principal on ~EXECUTION_STARTED~ and rehydrates it on every path, so a flow's effects run as its /owner/ — after an approval, a timer wake, crash recovery, a remote worker re-drive and a supervised child's start — not as whoever resumed it; ~options.principal~ is only the lifecycle caller. A fork acts as the forker. Executions started before 1.23.0 keep the old behaviour. See [[file:docs/usage.md][docs/usage.md]], the CHANGELOG (Security) and [[file:docs/adr/0111-durable-principal.md][ADR 0111]].
 
 *DX & tooling* (~tools/~)
 

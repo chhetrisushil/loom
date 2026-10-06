@@ -267,9 +267,17 @@ export interface RunOptions {
    */
   allowFlowCodeMismatch?: boolean;
   /**
-   * K12.1 — the authenticated principal chain for this run, established at the
-   * trust boundary (start / resume API / A2A server) and threaded opaquely into
-   * every effect's authorization (K2). Undefined ⇒ no principal.
+   * K12.1 — the authenticated principal chain, established at the trust boundary (start /
+   * resume API / A2A server).
+   *
+   * R3k (ADR 0111): on `start` this is the principal the execution will OWN — its bounded
+   * identity (and a restorable delegation) is recorded on `EXECUTION_STARTED`, and every effect
+   * of the execution, on every later path, runs as that recorded owner. On `resume`, `resumeAs`,
+   * `restoreFromState`, `cancel`, `fork` and `loadState` it is only the LIFECYCLE CALLER: who may
+   * perform the op (`ExecutionAuthorizer`) and who answered an approval
+   * (`ResumeAuthenticator.verify`). It does not become the effect principal; that is the
+   * owner's. (A log that predates EVENT_SCHEMA 1.23.0 recorded none and keeps the old
+   * behaviour: the caller's principal reaches the effects.) Undefined ⇒ no principal.
    */
   principal?: PrincipalChain;
   /**
@@ -300,13 +308,23 @@ export interface SystemGrant {
 // start/query has no execution to append to and only throws.
 
 /** The execution-lifecycle operations an {@link ExecutionAuthorizer} can gate. */
-export type ExecutionOp = "start" | "resume" | "cancel" | "query";
+export type ExecutionOp = "start" | "resume" | "cancel" | "query" | "actAsOwner";
+// `"actAsOwner"` (ADR 0111 D7) authorizes `fork(…, { actAs: "owner" })` on the PARENT: the fork
+// then runs the owner's remaining effects under the owner's grants instead of the forker's.
 
 export interface ExecutionAuthzRequest {
   op: ExecutionOp;
   executionId: string;
   workflowId: string;
   principal?: PrincipalChain;
+  /**
+   * R3k (ADR 0111 D5) — who OWNS the execution, read by the kernel from sequence 0 of its own
+   * log (a fork's owner is the forker). Present for an op on an execution that already exists and
+   * recorded a principal; absent for a `start`, for a legacy log (started before EVENT_SCHEMA
+   * 1.23.0), for an anonymous start, and when the record was shredded or cannot be restored — the
+   * policy's `unknownOwner` rule then applies.
+   */
+  owner?: { tenant?: string; actor?: string; onBehalfOf?: string };
   /**
    * R3 — on a {@link ExecutionAuthorizer.committed} notification only: the execution whose
    * supervisor/forker started this one (a child workflow, a fork), when the runtime knows it. A
@@ -821,6 +839,12 @@ export interface ForkOptions {
    * which is exactly the work you do NOT want on the lane running the parent.
    */
   computeTarget?: string;
+  /**
+   * R3k (ADR 0111 D7) — whose authority the fork's remaining effects run under. Default: the
+   * FORKER (`principal`). `"owner"` keeps the parent's owner and is a separate, default-deny
+   * authorization (`ExecutionOp` `"actAsOwner"` on the parent); the log records `forkActAs`.
+   */
+  actAs?: "owner";
   /** R3 — the caller. Gated as `query` on the parent and `start` on the child (see `fork`). */
   principal?: PrincipalChain;
   /** R3 — the kernel-internal system grant (see `WorkflowRuntime.systemOptions`). */

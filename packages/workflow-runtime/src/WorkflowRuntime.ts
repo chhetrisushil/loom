@@ -41,6 +41,16 @@ import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { isKernelHumanPark } from "./kernelPark";
 import { COMPUTE_TARGET_KEY } from "./placement";
 import {
+  type PrincipalCodec,
+  type PrincipalIdentityMode,
+  type PrincipalRecord,
+  type PrincipalResolver,
+  buildPrincipalRecord,
+  ownerOfChain,
+  rehydratePrincipal,
+  storedPrincipalOf,
+} from "./principal";
+import {
   type StrayPassthroughReport,
   StrayScanner,
   discardDecisionId,
@@ -185,6 +195,26 @@ export interface WorkflowRuntimeDeps {
    */
   executionAuthorizer?: ExecutionAuthorizer;
   /**
+   * R3k (ADR 0111 D3) — an app that must not put even an actor id in its log supplies a codec:
+   * the start then records `{ v: 1, ref }` only, and every `execute()` rebuilds the effect
+   * principal with `fromRef`. This is also the mode that can re-issue a narrowed delegation
+   * (`superviseChildren({ delegation })` composes one). The kernel never interprets `ref`.
+   */
+  principalCodec?: PrincipalCodec;
+  /**
+   * R3k (ADR 0111 D2) — replaces the default rehydration of a recorded principal for EVERY record
+   * (the default rebuilds `{ tenant, actor, onBehalfOf }` and denies a recorded delegation it
+   * cannot restore). Also the restorer that lets a `start` carrying a delegation be accepted.
+   */
+  principalResolver?: PrincipalResolver;
+  /**
+   * R3k (ADR 0111 D1) — how a record may carry the identity subset. Default `"verbatim"`.
+   * `defineConfig` sets `"encrypted"` when crypto is composed and `"ref"` under `security.strict` /
+   * a composed compliance plugin without crypto, and refuses to compose when that needs a
+   * `principalCodec` and none was supplied.
+   */
+  principalIdentity?: PrincipalIdentityMode;
+  /**
    * R3 (1P half) — fail-closed execution authorization. OFF (default) = byte-identical to
    * before: principal-less calls bypass {@link executionAuthorizer}. With
    * `requirePrincipal: true` the authorizer is ALSO consulted for a call that carries NO
@@ -197,9 +227,9 @@ export interface WorkflowRuntimeDeps {
    * readers) presents this runtime's {@link WorkflowRuntime.systemOptions | system grant}
    * instead. The grant is an unguessable per-instance object compared BY IDENTITY: a
    * principal, a JSON body or a clone of the grant is not it. It is an in-process
-   * capability — never hand it to request-derived code. INTERIM: the kernel half of R3
-   * (ADR 0111) makes the principal durable so these paths can act as the principal that
-   * started the execution instead of a blanket system identity.
+   * capability — never hand it to request-derived code. The grant authorizes the LIFECYCLE
+   * op only: since ADR 0111 the principal is durable, so the effects of these paths run as the
+   * principal recorded when the execution started, never as the system.
    *
    * Inert without an {@link executionAuthorizer}. `@loom/app` sets it under `security.strict`.
    */
@@ -461,6 +491,11 @@ export class WorkflowRuntime {
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
   private readonly executionAuthorizer: ExecutionAuthorizer | undefined;
   private readonly requirePrincipal: boolean;
+  // R3k — the durable principal's record/rehydration seams (ADR 0111). The codec is mutable only
+  // through `composePrincipalCodec`, a composition-time contributor (the child supervisor).
+  private principalCodec: PrincipalCodec | undefined;
+  private readonly principalResolver: PrincipalResolver | undefined;
+  private readonly principalIdentity: PrincipalIdentityMode;
   // R3 — identity-compared grant for kernel-internal callers; undefined unless requirePrincipal.
   private readonly systemGrantToken: SystemGrant | undefined;
   private readonly validateInput: boolean;
@@ -493,6 +528,9 @@ export class WorkflowRuntime {
     this.resumeAuthenticator = deps.resumeAuthenticator;
     this.timerStore = deps.timerStore;
     this.executionAuthorizer = deps.executionAuthorizer;
+    this.principalCodec = deps.principalCodec;
+    this.principalResolver = deps.principalResolver;
+    this.principalIdentity = deps.principalIdentity ?? "verbatim";
     this.requirePrincipal =
       deps.executionAuthz?.requirePrincipal === true && deps.executionAuthorizer !== undefined;
     this.systemGrantToken = this.requirePrincipal
@@ -537,6 +575,121 @@ export class WorkflowRuntime {
     return { loadState: (executionId) => this.loadState(executionId, this.systemOptions()) };
   }
 
+  // ── R3k — the durable principal (ADR 0111) ─────────────────────────────────
+
+  /**
+   * R3k (ADR 0111 D4) — add a principal codec WITHOUT replacing the one the app configured. A
+   * composition-time contributor: `superviseChildren({ delegation })` calls it so a supervised
+   * child's narrowed delegation survives a crash with no configuration. The newest codec is asked
+   * first (`toRef`: first string wins; `fromRef`: first chain wins, so a codec returns `undefined`
+   * for a ref that is not its own). Installing the same codec twice is a no-op.
+   */
+  composePrincipalCodec(codec: PrincipalCodec): void {
+    if (this.composedCodecs.has(codec)) return;
+    this.composedCodecs.add(codec);
+    const existing = this.principalCodec;
+    this.principalCodec =
+      existing === undefined
+        ? codec
+        : {
+            toRef: (chain) => codec.toRef(chain) ?? existing.toRef(chain),
+            fromRef: async (ref, context) =>
+              (await codec.fromRef(ref, context)) ?? existing.fromRef(ref, context),
+          };
+  }
+  private readonly composedCodecs = new Set<PrincipalCodec>();
+
+  /** D1 — the record a start (or a fork's `forkedBy`) writes for `chain`. Throws before anything is appended. */
+  private principalRecordFor(
+    chain: PrincipalChain | undefined,
+    site: "payload" | "metadata" = "payload"
+  ): PrincipalRecord {
+    return buildPrincipalRecord(
+      chain,
+      {
+        identity: this.principalIdentity,
+        codec: this.principalCodec,
+        hasResolver: this.principalResolver !== undefined,
+      },
+      site
+    );
+  }
+
+  /**
+   * D2 — what the execution's effects run as, read from the LOG. `known` carries a sequence-0
+   * envelope the caller already read (resume does); otherwise it is one point read. A caller-
+   * supplied `ExecutionState` is never consulted: `restoreFromState` cannot forge the owner.
+   * `legacy: true` = the log predates EVENT_SCHEMA 1.23.0 and recorded no principal.
+   */
+  private async recordedPrincipal(
+    executionId: string,
+    known?: { first: EventEnvelope | undefined }
+  ): Promise<{ legacy: true } | { legacy: false; chain: PrincipalChain | undefined }> {
+    let first: EventEnvelope | undefined;
+    if (known !== undefined) {
+      first = known.first;
+    } else {
+      try {
+        first = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+      } catch (err) {
+        // A crypto-shredded record denies; it never falls back to the caller (D2).
+        if ((err as { name?: unknown } | null)?.name === "PayloadShreddedError") {
+          return { legacy: false, chain: { principalShredded: true } };
+        }
+        throw err;
+      }
+    }
+    const stored = storedPrincipalOf(first);
+    switch (stored.kind) {
+      case "legacy":
+        return { legacy: true };
+      case "shredded":
+        return { legacy: false, chain: { principalShredded: true } };
+      case "malformed":
+        return { legacy: false, chain: { principalUnresolved: stored.why } };
+      case "record":
+        return {
+          legacy: false,
+          chain: await rehydratePrincipal(stored.record, executionId, {
+            codec: this.principalCodec,
+            resolver: this.principalResolver,
+          }),
+        };
+    }
+  }
+
+  /**
+   * D2 — the principal `execute()` runs the flow's effects as, on EVERY entry path. `caller` is
+   * the LIFECYCLE caller (`RunOptions.principal`); it is used only for a legacy log that recorded
+   * no principal, exactly as before this ADR.
+   */
+  private async actingPrincipal(
+    executionId: string,
+    caller: PrincipalChain | undefined,
+    known?: { first: EventEnvelope | undefined }
+  ): Promise<PrincipalChain | undefined> {
+    const recorded = await this.recordedPrincipal(executionId, known);
+    return recorded.legacy ? caller : recorded.chain;
+  }
+
+  /** D5 — the owner an `ExecutionAuthzRequest` carries, only when the authorizer will be asked. */
+  private async ownerForAuthz(
+    executionId: string,
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined,
+    known?: { first: EventEnvelope | undefined }
+  ): Promise<ExecutionAuthzRequest["owner"]> {
+    if (this.executionAuthorizer === undefined || !this.authzApplies(principal, system)) {
+      return undefined;
+    }
+    try {
+      const recorded = await this.recordedPrincipal(executionId, known);
+      return recorded.legacy ? undefined : ownerOfChain(recorded.chain);
+    } catch {
+      return undefined; // an owner we cannot read is an unknown owner: the policy decides
+    }
+  }
+
   /** Is the authorizer consulted for this call? (principal present, or fail-closed and no valid system grant) */
   private authzApplies(
     principal: PrincipalChain | undefined,
@@ -553,7 +706,8 @@ export class WorkflowRuntime {
     executionId: string,
     workflowId: string,
     principal: PrincipalChain | undefined,
-    system?: SystemGrant
+    system?: SystemGrant,
+    owner?: ExecutionAuthzRequest["owner"]
   ): { reason?: string } | undefined {
     if (this.executionAuthorizer === undefined || !this.authzApplies(principal, system)) {
       return undefined;
@@ -563,6 +717,7 @@ export class WorkflowRuntime {
       executionId,
       workflowId,
       ...(principal !== undefined && { principal }),
+      ...(owner !== undefined && { owner }),
     });
     if (verdict.allowed) return undefined;
     return verdict.reason !== undefined ? { reason: verdict.reason } : {};
@@ -1341,7 +1496,10 @@ export class WorkflowRuntime {
         executionId,
         workflowId ?? "",
         options?.principal,
-        options?.system
+        options?.system,
+        workflowId === undefined
+          ? undefined
+          : await this.ownerForAuthz(executionId, options?.principal, options?.system)
       );
       if (denial !== undefined) {
         await this.denyOp(
@@ -1400,7 +1558,8 @@ export class WorkflowRuntime {
         executionId,
         gate.workflowId,
         options?.principal,
-        options?.system
+        options?.system,
+        await this.ownerForAuthz(executionId, options?.principal, options?.system)
       );
       if (cancelDenial !== undefined) {
         await this.denyOp(
@@ -1465,7 +1624,8 @@ export class WorkflowRuntime {
       preloadedState.executionId,
       preloadedState.workflowId,
       options?.principal,
-      options?.system
+      options?.system,
+      await this.ownerForAuthz(preloadedState.executionId, options?.principal, options?.system)
     );
     if (restoreDenial !== undefined) {
       await this.denyOp(
@@ -1526,7 +1686,11 @@ export class WorkflowRuntime {
         : [],
       options?.fence,
       options?.deadlineMs ?? flow.definition.deadlineMs,
-      options?.principal
+      // R3k (D2) — the effects run as the OWNER recorded in the log, never as the caller and
+      // never as whatever `preloadedState.variables._principal` claims (caller-supplied, so a
+      // doctored state cannot forge or strip the owner). `options.principal` stays the
+      // lifecycle caller, used above for authorization and the approval check.
+      await this.actingPrincipal(preloadedState.executionId, options?.principal)
     );
   }
 
@@ -1623,12 +1787,32 @@ export class WorkflowRuntime {
       workflowVersion: definition.version,
     });
 
+    // R3k (ADR 0111 D1) — the principal this execution OWNS, recorded on sequence 0. Built before
+    // anything is appended, so an unrestorable delegation or a record the configuration forbids
+    // (identity under strict without crypto/codec) refuses the start with the log empty. Every
+    // 1.23.0 start writes one, `{ v: 1 }` at least, so "absent" means a legacy log only.
+    const principalRecord = this.principalRecordFor(options?.principal);
+    const actingAs = await rehydratePrincipal(principalRecord, executionId, {
+      codec: this.principalCodec,
+      resolver: this.principalResolver,
+    });
+    // `parent` (the supervisor's `parentExecutionId`) is lineage, not identity (D1).
+    const parent =
+      typeof options?.parentExecutionId === "string" && options.parentExecutionId.length > 0
+        ? options.parentExecutionId
+        : undefined;
+
     // K11.1 — record the flow-code fingerprint this execution starts under
     // (additive payload field; legacy logs without it resume unchecked).
     const flowHash = this.flowHashes.get(definition.id);
     const bootstrap: BootstrapEvent = {
       eventType: "EXECUTION_STARTED",
-      payload: { input: effectiveInput, ...(flowHash !== undefined && { flowHash }) },
+      payload: {
+        input: effectiveInput,
+        ...(flowHash !== undefined && { flowHash }),
+        principal: principalRecord,
+        ...(parent !== undefined && { parent }),
+      },
       // #392 — where this execution belongs, recorded where it can be found again.
       // Sequence 0 is the execution's metadata anchor: `truncatePrefix` preserves it
       // through compaction, `deleteExecution` removes it with everything else, and
@@ -1671,7 +1855,7 @@ export class WorkflowRuntime {
       [bootstrap],
       options?.fence,
       options?.deadlineMs ?? definition.deadlineMs,
-      options?.principal
+      actingAs
     );
   }
 
@@ -1868,7 +2052,10 @@ export class WorkflowRuntime {
       executionId,
       workflowId,
       options?.principal,
-      options?.system
+      options?.system,
+      await this.ownerForAuthz(executionId, options?.principal, options?.system, {
+        first: firstEvent,
+      })
     );
     if (resumeDenial !== undefined) {
       // recordExecutionDenied dedups consecutive identical denials internally.
@@ -1979,7 +2166,9 @@ export class WorkflowRuntime {
       ],
       options?.fence,
       options?.deadlineMs ?? resolved.definition.deadlineMs,
-      options?.principal
+      // R3k (D2) — the owner recorded at sequence 0, on every resume path (an approval, a timer
+      // wake, recovery, a remote worker): never the resumer.
+      await this.actingPrincipal(executionId, options?.principal, { first: firstEvent })
     );
   }
 
@@ -2095,7 +2284,10 @@ export class WorkflowRuntime {
       executionId,
       workflowId,
       options.principal,
-      options.system
+      options.system,
+      await this.ownerForAuthz(executionId, options.principal, options.system, {
+        first: firstEvent,
+      })
     );
     if (resumeDenial !== undefined) {
       await this.denyOp(
@@ -2183,7 +2375,7 @@ export class WorkflowRuntime {
       ],
       options.fence,
       options.deadlineMs ?? target.definition.deadlineMs,
-      options.principal
+      await this.actingPrincipal(executionId, options.principal, { first: firstEvent })
     );
   }
 
@@ -2212,7 +2404,8 @@ export class WorkflowRuntime {
       executionId,
       state.workflowId,
       options?.principal,
-      options?.system
+      options?.system,
+      await this.ownerForAuthz(executionId, options?.principal, options?.system)
     );
     if (denial !== undefined) {
       throw new ExecutionDeniedError("query", executionId, denial.reason);
@@ -2347,12 +2540,18 @@ export class WorkflowRuntime {
       if (parentWorkflowId === undefined) {
         await this.denyMissing("query", parentExecutionId, opts?.principal, opts?.system);
       } else {
+        const parentOwner = await this.ownerForAuthz(
+          parentExecutionId,
+          opts?.principal,
+          opts?.system
+        );
         const queryDenial = this.authzDenial(
           "query",
           parentExecutionId,
           parentWorkflowId,
           opts?.principal,
-          opts?.system
+          opts?.system,
+          parentOwner
         );
         if (queryDenial !== undefined) {
           await this.denyOp(
@@ -2381,8 +2580,40 @@ export class WorkflowRuntime {
             undefined
           );
         }
+        // R3k (ADR 0111 D7) — acting as the parent's OWNER is an escalation over the default
+        // (a fork acts as the forker), so it is a separate, default-deny op on the parent.
+        if (opts?.actAs === "owner") {
+          const ownerDenial = this.authzDenial(
+            "actAsOwner",
+            parentExecutionId,
+            parentWorkflowId,
+            opts?.principal,
+            opts?.system,
+            parentOwner
+          );
+          if (ownerDenial !== undefined) {
+            await this.denyOp(
+              "actAsOwner",
+              parentExecutionId,
+              parentWorkflowId,
+              opts?.principal,
+              ownerDenial.reason,
+              undefined
+            );
+          }
+        }
       }
     }
+    if (opts?.actAs !== undefined && opts.actAs !== "owner") {
+      throw new Error(`fork: unknown actAs "${String(opts.actAs)}" (only "owner" is defined)`);
+    }
+    // R3k (D7) — the fork acts as the FORKER: its record (built exactly as a start's) rides in the
+    // metadata of every copied envelope, sequence 0 included, and the resolver prefers it over the
+    // copied `principal`. Built before anything is read or written, so a record the configuration
+    // forbids refuses the fork with nothing written. `actAs: "owner"` omits it and says so in the
+    // log (`forkActAs`, descriptive; nothing reads it).
+    const forkedBy =
+      opts?.actAs === "owner" ? undefined : this.principalRecordFor(opts?.principal, "metadata");
     const tip = await headOf(this.eventStore, parentExecutionId);
     if (tip === null) {
       throw new Error(`No execution found for id: ${parentExecutionId}`);
@@ -2426,7 +2657,7 @@ export class WorkflowRuntime {
     const workflowVersion = this.flows.get(workflowId)?.definition.version ?? "";
 
     // 1. Materialize state at the fork point (reusing the nearest prior snapshot).
-    const forkState = this.materializeStateAt(
+    const materialized = this.materializeStateAt(
       base,
       atSequence,
       window,
@@ -2434,6 +2665,13 @@ export class WorkflowRuntime {
       workflowId,
       workflowVersion
     );
+    // The child's fold reads `forkedBy` from sequence 0's envelope in preference to the payload,
+    // so the seed snapshot must carry the same `_principal` or snapshot-then-suffix would differ
+    // from the full fold (ADR 0111 D7).
+    const forkState: ExecutionState =
+      forkedBy === undefined
+        ? materialized
+        : { ...materialized, variables: { ...materialized.variables, _principal: forkedBy } };
 
     // 2. Copy the prefix [0..atSequence] into the child log. Re-stamp id +
     //    executionId, record provenance in metadata. This BYPASSES the journal —
@@ -2449,6 +2687,7 @@ export class WorkflowRuntime {
       forkedFrom: parentExecutionId,
       forkSequence: atSequence,
       ...(opts?.computeTarget !== undefined && { [COMPUTE_TARGET_KEY]: opts.computeTarget }),
+      ...(forkedBy !== undefined ? { forkedBy } : { forkActAs: "owner" }),
     };
     const restamp = (e: EventEnvelope): EventEnvelope => ({
       ...e,

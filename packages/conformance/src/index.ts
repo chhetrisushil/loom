@@ -40,12 +40,14 @@ export {
  * `@loom/worker-runtime-local` sees both packages and holds a compile-time proof that the
  * real interfaces still satisfy these. If an SPI gains a method, that build fails.
  */
-export type ExecutionOpLike = "start" | "resume" | "cancel" | "query";
+export type ExecutionOpLike = "start" | "resume" | "cancel" | "query" | "actAsOwner";
 
 export interface ExecutionAuthzRequestLike {
   op: ExecutionOpLike;
   executionId: string;
   workflowId: string;
+  /** R3k (ADR 0111 D5) — the owner the kernel read from sequence 0 of the execution's log. */
+  owner?: { tenant?: string; actor?: string; onBehalfOf?: string };
 }
 
 export interface ExecutionAuthorizerLike {
@@ -1368,7 +1370,7 @@ export function runExecutionAuthorizerConformance(
   factory: () => ExecutionAuthorizerLike,
   label = "ExecutionAuthorizer"
 ): void {
-  const OPS: ExecutionOpLike[] = ["start", "resume", "cancel", "query"];
+  const OPS: ExecutionOpLike[] = ["start", "resume", "cancel", "query", "actAsOwner"];
   const req = (op: ExecutionOpLike): ExecutionAuthzRequestLike => ({
     op,
     executionId: "e",
@@ -1401,6 +1403,22 @@ export function runExecutionAuthorizerConformance(
         const d = factory().authorize(req(op));
         if (!d.allowed && d.reason !== undefined) expect(typeof d.reason).toBe("string");
       }
+    });
+
+    it("tolerates the owner the kernel supplies (ADR 0111 D5) — a request with `owner` still gets a synchronous boolean", () => {
+      const a = factory();
+      for (const op of OPS) {
+        const verdict = a.authorize({
+          ...req(op),
+          owner: { tenant: "t", actor: "a", onBehalfOf: "b" },
+        });
+        expect(typeof verdict.allowed, `op "${op}" with an owner returned no decision`).toBe(
+          "boolean"
+        );
+        expect(typeof (verdict as unknown as { then?: unknown }).then).not.toBe("function");
+      }
+      // An owner with no fields (an anonymous start's record) is an UNKNOWN owner, not a crash.
+      expect(() => a.authorize({ ...req("resume"), owner: {} })).not.toThrow();
     });
 
     it("decides on the request alone — a missing principal is a policy choice, not a crash", () => {

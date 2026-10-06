@@ -31,8 +31,10 @@ const CHILD_KEY = "worker";
 const CHILD = childIdFor(PARENT, CHILD_KEY);
 
 /** The child calls whichever tool it was told to; the ring decides if it may. */
-type ChildIn = { tool: string };
+type ChildIn = { tool: string; park?: boolean };
 const childRunner: FlowRunner<ChildIn, { ok: boolean }> = async (ctx, input) => {
+  // R3k — a child that PARKS first, so a "crash" between the park and the effect can be driven.
+  if ((input as { park?: boolean }).park === true) await ctx.suspend({ on: "GO" });
   await ctx.execute(
     { _tag: "TaskDefinition", kind: "tool", id: "call", toolId: input.tool } as never,
     {}
@@ -46,19 +48,19 @@ const childFlow = {
     id: "child",
     name: "child",
     version: "1.0.0",
-    inputSchema: z.object({ tool: z.string() }),
+    inputSchema: z.object({ tool: z.string(), park: z.boolean().optional() }),
     outputSchema: z.object({ ok: z.boolean() }),
     steps: [],
   } satisfies FlowDefinition<ChildIn, { ok: boolean }>,
   runner: childRunner,
 } as RegisteredFlow<ChildIn, { ok: boolean }>;
 
-function parentFlowFor(grants: readonly string[] | undefined, tool: string) {
+function parentFlowFor(grants: readonly string[] | undefined, tool: string, park = false) {
   const runner: FlowRunner<unknown, { done: boolean }> = async (ctx) => {
     await awaitChild(ctx, {
       key: CHILD_KEY,
       flowId: "child",
-      input: { tool },
+      input: { tool, ...(park && { park }) },
       ...(grants !== undefined && { grants }),
     });
     return { done: true };
@@ -81,7 +83,16 @@ function parentFlowFor(grants: readonly string[] | undefined, tool: string) {
  * The child flow's OWN authority is broad — both tools. So anything the child is
  * stopped from doing was stopped by the delegation, not by its base grants.
  */
-function build(opts: { grants?: readonly string[]; tool: string; wireDelegation?: boolean }) {
+function build(opts: {
+  grants?: readonly string[];
+  tool: string;
+  wireDelegation?: boolean;
+  park?: boolean;
+  /** R3k — boot over the stores of an earlier "process" (a crash/restart). */
+  shared?: { eventStore: InMemoryAsyncEventStore; snapshotStore: InMemoryAsyncSnapshotStore };
+  /** R3k — false: a runtime with NO supervisor, so nothing composes the delegation codec. */
+  supervise?: boolean;
+}) {
   const attempted: string[] = [];
   const effects = new EffectRuntime([], {
     authorizer: new DelegationAuthorizer({
@@ -101,9 +112,12 @@ function build(opts: { grants?: readonly string[]; tool: string; wireDelegation?
 
   const events: EventEnvelope[] = [];
   const holder: { supervisor?: ChildSupervisor } = {};
-  const runtime = new WorkflowRuntime({
+  const stores = opts.shared ?? {
     eventStore: new InMemoryAsyncEventStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),
+  };
+  const runtime = new WorkflowRuntime({
+    ...stores,
     effectRuntime: effects,
     onEvent: (e) => {
       events.push(e);
@@ -111,16 +125,17 @@ function build(opts: { grants?: readonly string[]; tool: string; wireDelegation?
     },
   });
 
-  const parent = parentFlowFor(opts.grants, opts.tool);
+  const parent = parentFlowFor(opts.grants, opts.tool, opts.park === true);
   runtime.registerFlow(childFlow.definition, childRunner);
   runtime.registerFlow(parent.definition, parent.runner);
-  holder.supervisor = superviseChildren({
-    runtime,
-    flows: { child: childFlow as RegisteredFlow },
-    ...(opts.wireDelegation !== false && { delegation: { secret: SECRET } }),
-  });
+  if (opts.supervise !== false)
+    holder.supervisor = superviseChildren({
+      runtime,
+      flows: { child: childFlow as RegisteredFlow },
+      ...(opts.wireDelegation !== false && { delegation: { secret: SECRET } }),
+    });
 
-  return { runtime, parent, events, attempted };
+  return { runtime, parent, events, attempted, stores };
 }
 
 /**
@@ -206,5 +221,78 @@ describe("attenuated authority for spawned children (R5)", () => {
     // No minting configured, so the subset in the log is inert — the child runs on
     // its base grants. A supervisor that cannot mint must not silently half-enforce.
     expect(attempted).toEqual(["delete-table"]);
+  });
+
+  // ── R3k (ADR 0111 D4) — the attenuation survives a crash ─────────────────────────────────────
+  //
+  // Before: the supervisor minted the token in memory and never recorded it, so a child that
+  // parked and was resumed by ANOTHER process lost it and fell through to `base` (which grants
+  // the child flow "delete-table"): a privilege escalation across a crash.
+
+  it("a child that parks and is resumed by a restarted process is STILL attenuated (never base)", async () => {
+    const a = build({ grants: ["read-rows"], tool: "delete-table", park: true });
+    await a.runtime.start(a.parent as RegisteredFlow, {}, { executionId: PARENT });
+    for (let i = 0; i < 400 && (await a.runtime.loadState(CHILD))?.status !== "suspended"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    expect((await a.runtime.loadState(CHILD))?.status).toBe("suspended");
+    // the log holds a description of the authority, not the means of exercising it
+    const rec = (await a.stores.eventStore.read(CHILD))[0]?.payload as {
+      principal: { v: number; ref: string };
+    };
+    expect(JSON.stringify(rec.principal)).not.toContain("sig");
+    const body = JSON.parse(
+      Buffer.from(rec.principal.ref.replace("loom:orch:v1:", ""), "base64url").toString("utf8")
+    );
+    expect(body).toEqual({ a: CHILD, g: ["read-rows"] });
+
+    // "Process restart": a fresh runtime, effects and supervisor over the same durable stores.
+    const b = build({
+      grants: ["read-rows"],
+      tool: "delete-table",
+      park: true,
+      shared: a.stores,
+    });
+    const handle = await b.runtime.resume(CHILD, { eventType: "GO", payload: {} });
+    await expect(handle.waitForCompletion()).rejects.toThrow(/not in the delegated grant set/);
+    expect(b.attempted).not.toContain("delete-table");
+  });
+
+  it("the same restart restores a conferred capability the child IS allowed to use", async () => {
+    const a = build({ grants: ["read-rows"], tool: "read-rows", park: true });
+    await a.runtime.start(a.parent as RegisteredFlow, {}, { executionId: PARENT });
+    for (let i = 0; i < 400 && (await a.runtime.loadState(CHILD))?.status !== "suspended"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const b = build({ grants: ["read-rows"], tool: "read-rows", park: true, shared: a.stores });
+    const handle = await b.runtime.resume(CHILD, { eventType: "GO", payload: {} });
+    await handle.waitForCompletion();
+    expect(b.attempted).toEqual(["read-rows"]);
+  });
+
+  it("a restarted runtime with NOTHING able to restore the delegation DENIES the child; it never falls back to base", async () => {
+    const a = build({ grants: ["read-rows"], tool: "read-rows", park: true });
+    await a.runtime.start(a.parent as RegisteredFlow, {}, { executionId: PARENT });
+    for (let i = 0; i < 400 && (await a.runtime.loadState(CHILD))?.status !== "suspended"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // No supervisor on this runtime, so nothing composes the codec. base would allow read-rows.
+    const b = build({
+      grants: ["read-rows"],
+      tool: "read-rows",
+      park: true,
+      shared: a.stores,
+      supervise: false,
+    });
+    const handle = await b.runtime.resume(CHILD, { eventType: "GO", payload: {} });
+    await expect(handle.waitForCompletion()).rejects.toThrow(/could not be restored/);
+    expect(b.attempted).toEqual([]);
+  });
+
+  it("the child records its lineage: `parent` on sequence 0", async () => {
+    const { runtime, parent, stores } = build({ grants: ["read-rows"], tool: "read-rows" });
+    await runtime.start(parent as RegisteredFlow, {}, { executionId: PARENT });
+    await waitTerminal(runtime, CHILD);
+    expect((await stores.eventStore.read(CHILD))[0]?.payload).toMatchObject({ parent: PARENT });
   });
 });

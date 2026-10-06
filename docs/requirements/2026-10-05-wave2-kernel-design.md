@@ -293,7 +293,7 @@ from `ExecutionAuthorizer.committed`).
 
 **Placement.** The kernel only *records and rehydrates*; every decision stays 1P. Opaque by design (K12.1).
 
-**Known issue on `main` today (stop-gap documented in this change).** Until R3k lands, effects after a
+**Known issue (RESOLVED by the R3k implementation, 2026-10-06; kept as the problem statement).** Before R3k, effects after a
 resume run under the **resumer's** principal: the approver's grants after an approval; **no principal** after
 a timer wake or recovery, so tenant DENY rules never fire (and a tenant-scoped ALLOW silently denies); and a
 delegation-attenuated child regains `base` authority (`DelegationAuthorizer` falls through to `base` when
@@ -670,7 +670,7 @@ R11); Sonnet on R14 and R15 and every re-review. Two lanes at most (machine load
 | Step | PR | Lane | Needs | Notes |
 |---|---|---|---|---|
 | 0 | **W2-0** full reservation: the three constants, the compat matrix, **every new fold handler**, wire-abi vectors and the answering/ignorable classification map for the FINAL (round-4) shapes, the reserved-kinds fitness table | — | this design accepted | no writer exists yet; handlers fold only `metadata.kernel` instances; shapes frozen (later change = additive schema change) |
-| 1 | **R3k** durable principal (0111) | A | W2-0 | everything inherits from it; BREAKING note; the stop-gap Known-issue note is already published |
+| 1 | **R3k** durable principal (0111) | A | W2-0 | everything inherits from it; BREAKING note; **landed** (the stop-gap Known-issue note is resolved; see ADR 0111 "Implementation (as built)") |
 | 2 | **R8k** `acquireFenceIf` (token) + pin predicate (0118) | B | W2-0 | SPI MINOR, conformance + DST; the fence half has no other dependency |
 | 3 | **R6** scopes + park barrier + `PARALLEL_COMPLETED` + cascade sweep (0112) | A | W2-0 | mints scope paths; the barrier R2 and R1b need |
 | 4 | **R14** `ctx.ui` out (0114) | B | W2-0 | independent; drops the dependency edge early |

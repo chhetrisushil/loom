@@ -8,7 +8,7 @@ import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { executionAccessPolicy } from "./executionAccessPolicy";
 import { ExecutionAlreadyExistsError, ExecutionDeniedError, InputValidationError } from "./types";
-import type { FlowRunner, RegisteredFlow } from "./types";
+import type { ExecutionAuthzRequest, FlowRunner, RegisteredFlow } from "./types";
 
 // R3 round 1 (Opus review) — owner adoption after commit, op coverage, eviction, owner scope.
 
@@ -38,9 +38,18 @@ const alice: PrincipalChain = { actor: "alice", tenant: "t1" };
 const mallory: PrincipalChain = { actor: "mallory", tenant: "t1" };
 
 function build(
-  policy = executionAccessPolicy(),
+  base = executionAccessPolicy(),
   extra: { validateInput?: boolean; resumeAuth?: boolean } = {}
 ) {
+  // R3k — ownership is no longer a table in the policy: the kernel hands it over on every request.
+  // The spy remembers the last owner the kernel supplied for an id, so a test can ask who owns it.
+  const owners = new Map<string, unknown>();
+  const policy = {
+    authorize: (r: ExecutionAuthzRequest) => {
+      owners.set(r.executionId, r.owner);
+      return base.authorize(r);
+    },
+  };
   const effects = new EffectRuntime();
   effects.register("echo", new ToolEffect(async () => ({ ok: true })));
   const eventStore = new InMemoryAsyncEventStore();
@@ -56,7 +65,12 @@ function build(
     }),
   });
   runtime.registerFlow(gate.definition, gate.runner);
-  return { runtime, eventStore, policy };
+  /** Who the kernel says owns `id`: asks as the system-less alice and reads what the policy saw. */
+  const ownerOf = async (id: string): Promise<unknown> => {
+    await runtime.loadState(id, { principal: alice }).catch(() => undefined);
+    return owners.get(id);
+  };
+  return { runtime, eventStore, policy, ownerOf };
 }
 
 describe("P1-2 — owner is recorded only after the start commits", () => {
@@ -71,7 +85,7 @@ describe("P1-2 — owner is recorded only after the start commits", () => {
     await expect(
       h.runtime.start(gate, { n: 1 }, { executionId: "v1", principal: mallory })
     ).rejects.toBeInstanceOf(ExecutionAlreadyExistsError);
-    expect(h.policy.ownerOf("v1")).toBeUndefined();
+    expect(await h.ownerOf("v1")).toBeUndefined();
     await expect(h.runtime.loadState("v1", { principal: mallory })).rejects.toBeInstanceOf(
       ExecutionDeniedError
     );
@@ -85,10 +99,10 @@ describe("P1-2 — owner is recorded only after the start commits", () => {
     await expect(
       h.runtime.start(gate, { n: "bad" } as never, { executionId: "order-42", principal: mallory })
     ).rejects.toBeInstanceOf(InputValidationError);
-    expect(h.policy.ownerOf("order-42")).toBeUndefined();
+    expect(await h.ownerOf("order-42")).toBeUndefined();
     const ok = await h.runtime.start(gate, { n: 1 }, { executionId: "order-42", principal: alice });
     await ok.waitForSuspend();
-    expect(h.policy.ownerOf("order-42")).toEqual({ actor: "alice", tenant: "t1" });
+    expect(await h.ownerOf("order-42")).toEqual({ actor: "alice", tenant: "t1" });
     const owner = executionAccessPolicy({ rules: { query: "owner" } });
     void owner;
     expect((await h.runtime.loadState("order-42", { principal: alice }))?.status).toBe("suspended");
@@ -99,16 +113,8 @@ describe("P1-2 — owner is recorded only after the start commits", () => {
     const a = await h.runtime.start(gate, { n: 1 }, { executionId: "named", principal: alice });
     const b = await h.runtime.start(gate, { n: 1 }, { principal: alice });
     await Promise.all([a.waitForSuspend(), b.waitForSuspend()]);
-    expect(h.policy.ownerOf("named")).toEqual({ actor: "alice", tenant: "t1" });
-    expect(h.policy.ownerOf(b.getState().executionId)).toEqual({ actor: "alice", tenant: "t1" });
-  });
-
-  it("authorize('start') alone never adopts", () => {
-    const p = executionAccessPolicy();
-    expect(
-      p.authorize({ op: "start", executionId: "z", workflowId: "w", principal: alice }).allowed
-    ).toBe(true);
-    expect(p.ownerOf("z")).toBeUndefined();
+    expect(await h.ownerOf("named")).toEqual({ actor: "alice", tenant: "t1" });
+    expect(await h.ownerOf(b.getState().executionId)).toEqual({ actor: "alice", tenant: "t1" });
   });
 });
 
@@ -132,7 +138,7 @@ describe("P2-1 — every execution op is gated", () => {
     expect(await h.eventStore.read("kid")).toHaveLength(0);
     const r = await h.runtime.fork("a3", 0, { executionId: "kid", principal: alice });
     expect(r.executionId).toBe("kid");
-    expect(h.policy.ownerOf("kid")).toEqual({ actor: "alice", tenant: "t1" });
+    expect(await h.ownerOf("kid")).toEqual({ actor: "alice", tenant: "t1" });
     // system grant (kernel-internal) still forks
     await h.runtime.fork("a3", 0, { executionId: "kid2", ...h.runtime.systemOptions() });
   });
@@ -173,22 +179,6 @@ describe("P2-1 — every execution op is gated", () => {
     await expect(
       h.runtime.acquireFence("a3", { principal: { actor: "eve", tenant: "t2" } })
     ).rejects.toBeInstanceOf(ExecutionDeniedError);
-  });
-});
-
-describe("P2-2 — the owner table never evicts", () => {
-  it("a full table refuses new starts instead of evicting a victim's owner", async () => {
-    const policy = executionAccessPolicy({ maxTracked: 2, unknownOwner: "allow" });
-    const h = build(policy);
-    for (const id of ["victim", "f1"]) {
-      const x = await h.runtime.start(gate, { n: 1 }, { executionId: id, principal: alice });
-      await x.waitForSuspend();
-    }
-    await expect(
-      h.runtime.start(gate, { n: 1 }, { executionId: "f2", principal: mallory })
-    ).rejects.toBeInstanceOf(ExecutionDeniedError);
-    expect(policy.ownerOf("victim")).toEqual({ actor: "alice", tenant: "t1" });
-    expect(policy.tracked).toBe(2);
   });
 });
 

@@ -26,6 +26,8 @@ export {
   signDelegation,
   verifyDelegation,
   attenuateDelegation,
+  delegationDigest,
+  principalBlocked,
 } from "./authz";
 export { PolicyAuthorizer } from "./policy";
 export type { PolicyRules, PolicyMatchRule, PolicyAuthorizerOptions } from "./policy";
