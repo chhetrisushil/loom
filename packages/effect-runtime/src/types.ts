@@ -353,8 +353,8 @@ export interface EffectMiddleware {
    * ADR 0119 — declares that this middleware INSPECTS THE OUTPUT of the effect (an
    * output-phase safety validator). A streamed call would deliver text to a live sink
    * before that inspection could run, so: if any middleware in the chain has
-   * `inspectsOutput: true`, the runtime REFUSES the per-call sink (warns; the call
-   * completes non-streamed). Fail-closed — no configuration streams text past an
+   * `inspectsOutput: true`, the runtime REFUSES streaming to BOTH the per-call sink and
+   * the effect's configured `deltaSink` (warns; the call completes non-streamed). Fail-closed — no configuration streams text past an
    * output check that cannot see it. A middleware whose every output check has a delta
    * form covers it with {@link deltaGuard} and leaves this unset.
    */
