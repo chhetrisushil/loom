@@ -57,3 +57,9 @@ export {
   type VerifyAdapterInputs,
   type VerifyLintInputs,
 } from "./verifyAdapter";
+
+// ADR 0114 — `ctx.ui` is typed by declaration merging owned by `@loom/agent-surface`. Re-exporting
+// one of its types makes `app/dist/index.d.ts` pull that module (and its `declare module
+// "@loom/workflow-runtime"` augmentation) into every program that imports `@loom/app`, so a
+// composed app keeps `ctx.ui` typed without a direct agent-surface import.
+export type { SurfaceEmitter } from "@loom/agent-surface";

@@ -93,16 +93,24 @@ the old accessor (a fold-equality test over a recorded surface log).
 
 - **D1.** As designed. `ctx.ui` is a lazy, memoised getter on `WorkflowContextImpl`: with no factory it throws
   (`ctx.ui is not available: ... pass surface: createSurfaceEmitter ... or use surface(ctx)`), so a bare runtime
-  breaks only when a flow touches `ctx.ui`, not at construction. `@loom/agent-surface` now depends on
-  `@loom/workflow-runtime` (types only) for the merge; the inverse edge is gone, so there is no cycle. The kernel's
+  breaks only when a flow touches `ctx.ui`, not at construction. `@loom/agent-surface` now has an OPTIONAL
+  PEER on `@loom/workflow-runtime` (types only, for the merge; a dev dependency for its own tests); the inverse edge is gone, so there is no cycle. The kernel's
   own tests inject a tiny local stub (`testSurface.ts`) instead of importing agent-surface.
 - **`@loom/testing` and `@loom/scaffold` need no `surface` argument.** Neither constructs a `WorkflowRuntime`: both go
   through `defineConfig`, which now passes `createSurfaceEmitter`. What the scaffold/appgen DID need was the
   *type*: a generated flow that wrote `ctx.ui.set(...)` no longer type-checks unless agent-surface is in the
-  program, so `@loom/appgen` emits `surface(ctx).set(...)` plus the import (and `ensureUi` adds the import to an
-  edited file), and the scaffold's package.json depends on `@loom/agent-surface`.
+  program, so `@loom/appgen` emits `surface(ctx).set(...)` plus the import (`ensureUi` reuses an existing import of
+  any form, aliasing around a colliding local `surface`), and the scaffold's package.json depends on
+  `@loom/agent-surface`. `@loom/testing` is covered by a test that `ctx.ui` writes a `SURFACE_PATCH` through `createTestApp`.
+- **Type reach (review round 1).** `@loom/app` re-exports `type SurfaceEmitter` from `@loom/agent-surface`, which pulls
+  agent-surface's `declare module "@loom/workflow-runtime"` into every program that imports `@loom/app`: composed apps
+  keep `ctx.ui` typed with no agent-surface import. Bare-runtime users import `@loom/agent-surface` (or `@loom/sdk`,
+  which re-exports it). Proven by `tools/testing/src/uiTypes.test.ts`, which runs tsc over an `@loom/app`-only consumer
+  (and a negative control). The peer is optional: under `skipLibCheck: true` an agent-surface consumer WITHOUT
+  workflow-runtime type-checks; under `skipLibCheck: false` it errors TS2307 on agent-surface's `context.d.ts`, so
+  install `@loom/workflow-runtime` (documented in the agent-surface README).
 - **D3.** `negotiateBudget` is added to the table as a `call` (`since: "1.3.0"`), not declared derived. The test
-  (`abi.test.ts`) reads the `ExecutionContext` source and asserts its members equal the table minus `ui`.
+  (`abi.test.ts`) reads `ExecutionContext` through the TypeScript compiler API (own members, any `extends`/formatting) and asserts its members equal the table minus `ui`.
 - **D4.** The closed set needed ONE addition the ADR did not foresee: `effect-runtime` has always imported
   `@loom/classify` (a vocabulary leaf with only `zod` behind it). It joins `KERNEL_PACKAGES` rather than being
   carved out as an exception; `workflow-runtime` -> `agent-surface` is the only edge that was red on `main` once it did.

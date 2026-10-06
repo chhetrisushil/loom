@@ -4,6 +4,7 @@ import { step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
@@ -117,14 +118,23 @@ describe("Kernel ABI (K1)", () => {
   });
 
   it("ADR 0114 D3: the ExecutionContext interface and the syscall table agree", () => {
-    // Members of `interface ExecutionContext` in the source, minus the two identity fields; the
-    // `ui` accessor is merged in by @loom/agent-surface and so is not in the kernel's interface.
-    const src = readFileSync(join(__dirname, "types.ts"), "utf8");
-    const body = /export interface ExecutionContext extends [A-Za-z]+ \{([\s\S]*?)\n\}\n/.exec(src);
-    expect(body, "ExecutionContext interface not found").not.toBeNull();
-    const members = new Set(
-      [...(body?.[1] ?? "").matchAll(/^ {2}(?:readonly )?([a-zA-Z]+)\s*[(<:?]/gm)].map((m) => m[1])
+    // Own members of `interface ExecutionContext` (via the compiler API, so any `extends` list or
+    // formatting works), minus the two identity fields; the `ui` accessor is merged in by
+    // @loom/agent-surface and so is not in the kernel's interface.
+    const file = join(__dirname, "types.ts");
+    const sf = ts.createSourceFile(file, readFileSync(file, "utf8"), ts.ScriptTarget.ES2022, true);
+    const decl = sf.statements.find(
+      (n): n is ts.InterfaceDeclaration =>
+        ts.isInterfaceDeclaration(n) && n.name.text === "ExecutionContext"
     );
+    expect(decl, "ExecutionContext interface not found").toBeDefined();
+    const members = new Set<string>();
+    for (const m of decl?.members ?? []) {
+      if ((ts.isPropertySignature(m) || ts.isMethodSignature(m)) && ts.isIdentifier(m.name)) {
+        members.add(m.name.text);
+      }
+    }
+    expect(members.size, "parsed no members — the extraction is broken").toBeGreaterThan(5);
     members.delete("executionId");
     members.delete("workflowId");
     const table = new Set(KERNEL_SYSCALLS.map((s) => s.name));

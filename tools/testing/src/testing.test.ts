@@ -39,6 +39,36 @@ const gatedFlow = {
 } as RegisteredFlow;
 
 describe("createTestApp", () => {
+  it("ADR 0114: ctx.ui works in the harness with no `surface` argument (defineConfig injects it)", async () => {
+    const uiRunner: FlowRunner<Record<string, unknown>, Record<string, unknown>> = async (ctx) => {
+      (ctx as unknown as { ui: { set(p: string, v: unknown): void } }).ui.set("status", "ok");
+      return {};
+    };
+    const io = z.object({}).passthrough();
+    const uiFlow = {
+      definition: {
+        _tag: "FlowDefinition",
+        id: "ui-flow",
+        name: "UI",
+        version: "1.0.0",
+        inputSchema: io,
+        outputSchema: io,
+        steps: [metricsStep],
+      },
+      runner: uiRunner,
+    } as unknown as RegisteredFlow;
+    const app = createTestApp({ flows: [uiFlow] });
+    const handle = await app.runtime.start(uiFlow, {});
+    await handle.waitForCompletion();
+    const log = await app.stores.eventStore.read(handle.executionId);
+    const patches = log.filter((e) => e.eventType === "SURFACE_PATCH");
+    expect(patches).toHaveLength(1);
+    expect(patches[0]?.payload).toEqual({
+      surface: "ui",
+      patches: [{ op: "set", path: "status", value: "ok" }],
+    });
+  });
+
   it("defaults to in-memory storage and runs a flow to suspend, then resume", async () => {
     const app = createTestApp({ flows: [gatedFlow] });
     app.effectRuntime.register("metrics-tool", new ToolEffect(async () => ({ cpu: 87 })));

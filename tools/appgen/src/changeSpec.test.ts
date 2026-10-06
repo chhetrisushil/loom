@@ -120,3 +120,64 @@ describe("FlowEditor safety gate", () => {
     expect(editor.toString()).toContain("async () => ({ result: 'done' })");
   });
 });
+
+describe("FlowEditor.ensureUi — import handling (ADR 0114)", () => {
+  const body = (head: string) =>
+    `${head}\nconst runner = async (ctx: any) => {\n  await ctx.run();\n  return {};\n};\n`;
+  const edit = (src: string): string => {
+    const ed = new FlowEditor(src);
+    ed.ensureUi();
+    return ed.toString();
+  };
+  const importCount = (out: string) => (out.match(/@loom\/agent-surface/g) ?? []).length;
+
+  it("adds the import when absent", () => {
+    const out = edit(body('import { x } from "y";'));
+    expect(out).toContain('import { surface } from "@loom/agent-surface";');
+    expect(out).toContain('surface(ctx).set("status"');
+  });
+
+  it("reuses a multi-line import (no duplicate)", () => {
+    const out = edit(
+      body('import {\n  createSurfaceEmitter,\n  surface,\n} from "@loom/agent-surface";')
+    );
+    expect(importCount(out)).toBe(1);
+    expect(out).toContain('surface(ctx).set("status"');
+  });
+
+  it("reuses an aliased import under its local name", () => {
+    const out = edit(body('import { surface as s } from "@loom/agent-surface";'));
+    expect(importCount(out)).toBe(1);
+    expect(out).toContain('s(ctx).set("status"');
+    expect(out).not.toContain("surface(ctx)");
+  });
+
+  it("reuses a namespace import", () => {
+    const out = edit(body('import * as ui from "@loom/agent-surface";'));
+    expect(importCount(out)).toBe(1);
+    expect(out).toContain('ui.surface(ctx).set("status"');
+  });
+
+  it("aliases our import around a colliding local `surface` binding", () => {
+    const out = edit(body("const surface = 1;"));
+    expect(out).toContain('import { surface as loomSurface } from "@loom/agent-surface";');
+    expect(out).toContain('loomSurface(ctx).set("status"');
+    expect(out).toContain("const surface = 1;");
+  });
+
+  it("a type-only import does not count (and its name forces an alias)", () => {
+    const out = edit(body('import type { surface } from "@loom/agent-surface";'));
+    expect(out).toContain('import { surface as loomSurface } from "@loom/agent-surface";');
+    expect(out).toContain('loomSurface(ctx).set("status"');
+  });
+
+  it("leaves an existing surface write alone, including through an alias", () => {
+    const src = body('import { surface as s } from "@loom/agent-surface";').replace(
+      "return {};",
+      's(ctx).set("a", 1);\n  return {};'
+    );
+    const ed = new FlowEditor(src);
+    ed.ensureUi();
+    expect(ed.changed()).toBe(false);
+  });
+});

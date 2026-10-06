@@ -70,6 +70,34 @@ async function run(opts: { inject: boolean; pick: Drive }): Promise<EventEnvelop
 const shape = (events: EventEnvelope[]) =>
   events.map((e) => ({ type: e.eventType, payload: e.payload, metadata: e.metadata }));
 
+// Hand-written expected log. Captured from the pre-0114 behaviour (the in-kernel accessor was
+// `createSurfaceEmitter((t, p) => ctx.emit(t, p))`; `emitter.ts` and the `flowEmit` stamping are
+// untouched by ADR 0114), then frozen as literals so a regression in the emitter ITSELF fails —
+// the three-way comparison below can't see that, since every arm goes through the emitter.
+const patch = (flowEmit: string, patches: unknown[], by?: unknown) => ({
+  type: "SURFACE_PATCH",
+  payload: { surface: "ui", patches, ...(by !== undefined && { by }) },
+  metadata: { flowEmit },
+});
+const PRE_0114_LOG = [
+  { type: "EXECUTION_STARTED", payload: { input: {}, principal: { v: 1 } } },
+  patch("8e637de275a7181e", [{ op: "set", path: "phase", value: "investigating" }]),
+  patch("008660edb1d1207b", [{ op: "merge", path: "stats", value: { items: 3 } }]),
+  patch("04302d0b32367968", [{ op: "append", path: "log", value: "a" }]),
+  patch("f174004085e48e11", [{ op: "append", path: "log", value: "b" }]),
+  patch("8612f099c681ddce", [{ op: "increment", path: "steps" }]),
+  patch("f84e4d3a7799070f", [{ op: "set", path: "panels.why", value: { x: 1 } }], {
+    by: "planner",
+    note: "n",
+  }),
+  patch("05472bbae7bb17dc", [{ op: "remove", path: "log" }]),
+  patch("c6b46eb2719befe4", [
+    { op: "set", path: "p", value: 1 },
+    { op: "increment", path: "p", by: 2 },
+  ]),
+  { type: "EXECUTION_COMPLETED", payload: { output: {} } },
+];
+
 describe("ADR 0114 — ctx.ui and surface(ctx) produce byte-identical events", () => {
   it("injected ctx.ui, surface(ctx), and the pre-0114 in-kernel accessor agree", async () => {
     const injected = await run({ inject: true, pick: (ctx) => ctx.ui as SurfaceEmitter });
@@ -79,8 +107,11 @@ describe("ADR 0114 — ctx.ui and surface(ctx) produce byte-identical events", (
       pick: (ctx) => createSurfaceEmitter((t, p) => ctx.emit(t, p)),
     });
     expect(injected.filter((e) => e.eventType === "SURFACE_PATCH")).toHaveLength(8);
+    // Literal arms: all three must equal the frozen pre-0114 log, key order included.
+    expect(JSON.stringify(shape(old))).toBe(JSON.stringify(PRE_0114_LOG));
+    expect(JSON.stringify(shape(injected))).toBe(JSON.stringify(PRE_0114_LOG));
     expect(JSON.stringify(shape(injected))).toBe(JSON.stringify(shape(old)));
-    expect(JSON.stringify(shape(spelled))).toBe(JSON.stringify(shape(old)));
+    expect(JSON.stringify(shape(spelled))).toBe(JSON.stringify(PRE_0114_LOG));
     // The fold of the log is what a UI sees; it agrees as well.
     const projection = agentSurfaceProjection();
     const fold = (events: EventEnvelope[]) => {
