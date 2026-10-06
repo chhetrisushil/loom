@@ -5,6 +5,7 @@ import {
   QuotaExceededError,
   type ResourceDelta,
   isCustomDimensionName,
+  assertMaxCustom,
   overCustomBudget,
 } from "./metering";
 
@@ -31,6 +32,9 @@ export interface ScopeSpend {
   custom?: Record<string, number>;
 }
 
+/** Distinct custom dimension names one ledger scope keeps (the fold's own cap, ADR 0115). */
+const LEDGER_CUSTOM_MAX = 32;
+
 /**
  * A projection of spend per scope key (e.g. `tenant:acme`, `workflow:audit`).
  * The app updates it from the RESOURCE_METERED event stream (across all of a
@@ -38,9 +42,6 @@ export interface ScopeSpend {
  * eventually consistent by nature; two nodes may briefly under-count, which is
  * the accepted trade-off for cross-execution budgets.
  */
-/** Distinct custom dimension names one ledger scope keeps (the fold's own cap, ADR 0115). */
-const LEDGER_CUSTOM_MAX = 32;
-
 export class BudgetLedger {
   private readonly spend = new Map<string, ScopeSpend>();
 
@@ -150,6 +151,10 @@ export function nestedBudgetMiddleware(options: NestedBudgetOptions): EffectMidd
   const now = options.clock ?? (() => Date.now());
   return async (ctx: EffectContext, input: unknown, next): Promise<unknown> => {
     const scopes = options.scopesOf(ctx);
+    // Scopes are resolved per effect, so their budgets cannot be checked at construction; refuse a
+    // bad `maxCustom` (built-in name / non-numeric ceiling) here, before any scope is evaluated,
+    // rather than part-way through the admission loop. Not memoised: a mutation cannot bypass it.
+    for (const scope of scopes) assertMaxCustom(scope.budget.maxCustom);
 
     // Admission control — most-restrictive wins, attributed to its level.
     for (const scope of scopes) {

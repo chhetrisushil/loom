@@ -143,4 +143,29 @@ describe("open dimensions in nested budgets (ADR 0115)", () => {
       meteringMiddleware({ pricing: () => ({}), budget: { maxCustom: { credits: 5 } } })
     ).not.toThrow();
   });
+
+  it("refuses a bad scope maxCustom before evaluating any scope (even behind a tripped one)", async () => {
+    const next = vi.fn(async () => "x");
+    const mw = nestedBudgetMiddleware({
+      ledger: new BudgetLedger(),
+      pricing: () => ({}),
+      scopesOf: () => [
+        { level: "tenant", key: "t", budget: { maxCostUsd: 0 } }, // would trip first
+        { level: "workflow", key: "w", budget: { maxCustom: { tokens: 5 } } },
+      ],
+    });
+    await expect(mw(ctx(), {}, next)).rejects.toThrow(/built-in dimension/);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("a later mutation of a metering budget's maxCustom has no effect", async () => {
+    const maxCustom: Record<string, number> = { credits: 5 };
+    const mw = meteringMiddleware({ pricing: () => ({}), budget: { maxCustom } });
+    maxCustom.tokens = 1; // would be refused if validated now; must not be enforced
+    maxCustom.credits = 1000;
+    const next = vi.fn(async () => "ok");
+    await expect(mw(ctx({ resources: { ...zero, custom: { credits: 5 } } }), {}, next)).rejects.toBeInstanceOf(
+      QuotaExceededError
+    );
+  });
 });

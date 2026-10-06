@@ -24,6 +24,20 @@ export type EffectKind = KnownEffectKind | (string & {});
  */
 export const VOCABULARY_NAME_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 
+/**
+ * ADR 0115 — the built-in metering dimension names. A `custom` entry may never alias one (the
+ * fold reads these as top-level `_resources` fields). `replay-vm` keeps its own copy for kernel
+ * independence; a `workflow-runtime` agreement test pins that the copies are identical.
+ */
+export const BUILTIN_METER_DIMENSIONS: ReadonlySet<string> = new Set([
+  "tokens",
+  "costUsd",
+  "ms",
+  "memBytes",
+  "wallMs",
+  "netBytes",
+]);
+
 /** Whether `name` is a well-formed custom kind / dimension name ({@link VOCABULARY_NAME_PATTERN}). */
 export function isVocabularyName(name: unknown): name is string {
   return typeof name === "string" && VOCABULARY_NAME_PATTERN.test(name);

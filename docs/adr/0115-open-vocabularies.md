@@ -130,6 +130,9 @@ bad keys folds to the same state on two replicas); fold equality on every existi
   is refused by the emit guard, by `Budget.maxCustom` validation and by the ledger (which skips it): the frozen
   fold would otherwise file it under `_resources.custom.tokens`, invisible to `currentResource("tokens")`,
   `negotiateBudget` and the built-in ceiling. `meterCeilings` keeps a built-in name as a built-in ceiling only.
+  The three layers differ DELIBERATELY on a built-in name inside `custom`: the guard REFUSES it (loud, at the
+  write), the ledger SKIPS it (a projection must not throw on an event already in the log), and the fold still
+  FOLDS it into `_resources.custom` (tolerant of logs written without the guard; the frozen fold never throws).
   A metering `pricing` function that returns a bad custom name throws from `ctx.emit` after the effect ran, as a
   built-in ceiling breach does. Summed custom totals can exceed 2^53 (a single increment is capped at 1e15 and
   the fold is deterministic), so treat a very large total as approximate.

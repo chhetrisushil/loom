@@ -297,7 +297,7 @@ function sanitizeEstimatedCost(raw: unknown): Record<string, number> | undefined
   return out;
 }
 
-const BUILTIN_DIMENSION_NAMES: ReadonlySet<string> = new Set([
+export const BUILTIN_DIMENSION_NAMES: ReadonlySet<string> = new Set([
   "tokens",
   "costUsd",
   "ms",
