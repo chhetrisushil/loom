@@ -26,10 +26,14 @@ import type {
  *    `unknownOwner: "deny"` its owner/tenant-scoped ops are refused. `resolveOwner` is consulted
  *    only when the kernel supplied no owner (legacy logs); `unknownOwner: "allow"` is UNSAFE
  *    without it: anyone who can name such an id can act on it.
- *  - A principal-less SUPERVISED child inherits its lifecycle owner: the kernel reads the nearest
- *    recorded owner up the child's trusted `parent` chain (`ExecutionAuthzRequest.parentOwner`,
- *    at most 8 hops, cycle-safe) and the policy treats it as the owner of a child that has none.
- *    Only the lifecycle; the child's effects stay anonymous (ADR 0111 D6).
+ *  - A SUPERVISED child's lifecycle (query/cancel/resume — never `actAsOwner`) is also reachable by
+ *    its parent's owner: the kernel reads the nearest recorded owner up the child's trusted
+ *    `parent` chain (`ExecutionAuthzRequest.parentOwner`, at most 8 hops, cycle-safe) and the
+ *    policy accepts a match on the child's own owner OR on `parentOwner`. That covers a
+ *    principal-less child (no own owner) and a delegated one (own owner = its child id). Only the
+ *    lifecycle; the child's effects stay anonymous / under their attenuated delegation (D6).
+ *    Note resume is included: under the default "tenant" scope a same-tenant principal can
+ *    approve a gate inside a supervised child.
  *  - A principal-less caller is refused unless `allowAnonymous: true` (default false).
  *  - Kernel-internal callers (timers, recovery, supervisor, local worker) never reach this:
  *    they present the runtime's system grant and bypass the authorizer. The effects of those
@@ -125,30 +129,46 @@ export function executionAccessPolicy(options: ExecutionAccessOptions = {}): Exe
         (request.owner.actor !== undefined || request.owner.tenant !== undefined)
           ? request.owner
           : undefined;
-      // R3k round 2 (D6) — a principal-less supervised child has no owner of its own; the kernel
-      // supplies the nearest recorded owner up its trusted lineage, so its parent's owner may
-      // run its lifecycle (query/cancel/resume). NEVER for `actAsOwner`: the child's effects stay
-      // anonymous, so there is no owner authority there to act as.
-      const inherited =
-        recorded === undefined &&
+      // R3k rounds 2-3 (D6) — an execution started at a TRUSTED lineage (a supervised child) is
+      // also reachable through its parent's owner: the kernel supplies `parentOwner`, the nearest
+      // recorded owner up the trusted `parent` chain, for an anonymous child AND for an
+      // identified/delegated one (whose own owner is its child id). Owner match on the child's
+      // own recorded owner OR on `parentOwner`; either suffices. NEVER for `actAsOwner`: a child's
+      // effects stay under its own (anonymous or attenuated) authority, so there is no owner
+      // authority to act as. `resolveOwner` answers only when the kernel supplied neither.
+      const parentOwner =
         op !== "actAsOwner" &&
         request.parentOwner !== undefined &&
         (request.parentOwner.actor !== undefined || request.parentOwner.tenant !== undefined)
           ? request.parentOwner
           : undefined;
-      const owner = recorded ?? inherited ?? options.resolveOwner?.(executionId);
-      if (owner === undefined) {
+      const candidates: ExecutionOwner[] = [];
+      if (recorded !== undefined) candidates.push(recorded);
+      if (parentOwner !== undefined) candidates.push(parentOwner);
+      if (candidates.length === 0) {
+        const resolved = options.resolveOwner?.(executionId);
+        if (resolved !== undefined) candidates.push(resolved);
+      }
+      if (candidates.length === 0) {
         return options.unknownOwner === "allow"
           ? allow
           : deny("the execution's owner is unknown to this policy");
       }
-      if (!sameTenant(principal, owner)) return deny("the execution belongs to another tenant");
-      if (scope === "owner" && (owner.actor === undefined || owner.actor !== principal.actor)) {
+      let refusal = "";
+      for (const owner of candidates) {
+        if (!sameTenant(principal, owner)) {
+          refusal ||= "the execution belongs to another tenant";
+          continue;
+        }
         // An owner that names no actor cannot be matched, so "owner" must refuse — falling back
         // to the tenant would widen the rule the integrator wrote.
-        return deny("only the execution's owner may do this");
+        if (scope === "owner" && (owner.actor === undefined || owner.actor !== principal.actor)) {
+          refusal ||= "only the execution's owner may do this";
+          continue;
+        }
+        return allow;
       }
-      return allow;
+      return deny(refusal);
     },
   };
 }

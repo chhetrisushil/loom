@@ -166,3 +166,52 @@ describe("D6 — a principal-less child's lifecycle follows its parent's owner",
     await expect(runtime.loadState("a", { principal: alice })).rejects.toThrow(/owner is unknown/);
   });
 });
+
+describe("round 3 (user decision B) — an identified child is reachable through its trusted parent", () => {
+  const kid: PrincipalChain = { actor: "kid-actor", tenant: "t1" };
+  it("the parent's owner may query/cancel/resume a child that owns itself; a stranger may not", async () => {
+    const { runtime } = build("authorizer", { rules: { cancel: "owner", resume: "owner" } });
+    const p = await runtime.start(gate, { n: 1 }, { executionId: "p", principal: alice });
+    await p.waitForSuspend();
+    await startChild(runtime, "kid", "p", {
+      principal: kid,
+      ...runtime.systemOptions(),
+      ...runtime.lineageOptions(),
+    });
+    await expect(runtime.loadState("kid", { principal: mallory })).rejects.toThrow(/denied/);
+    expect((await runtime.loadState("kid", { principal: alice }))?.status).toBe("suspended");
+    expect((await runtime.loadState("kid", { principal: kid }))?.status).toBe("suspended");
+    // cancel is "owner"-scoped: a same-tenant bystander is refused, the parent's owner is not
+    await expect(
+      runtime.cancel("kid", "x", { principal: { actor: "bob", tenant: "t1" } })
+    ).rejects.toThrow(/denied/);
+    await expect(
+      runtime.resume("kid", { eventType: "GO", payload: {} }, { principal: mallory })
+    ).rejects.toThrow(/denied/);
+    const h = await runtime.resume("kid", { eventType: "GO", payload: {} }, { principal: alice });
+    await expect(h.waitForCompletion()).resolves.toBeDefined();
+  });
+
+  it("an UNTRUSTED parent confers nothing on an identified child", async () => {
+    const { runtime } = build("authorizer");
+    const p = await runtime.start(gate, { n: 1 }, { executionId: "p", principal: alice });
+    await p.waitForSuspend();
+    // another tenant, so only the parent could confer access; no lineage token
+    await startChild(runtime, "kid", "p", { principal: { actor: "kid-actor", tenant: "t3" } });
+    await expect(runtime.loadState("kid", { principal: alice })).rejects.toThrow(/denied/);
+  });
+
+  it("actAsOwner never inherits for an identified child either", async () => {
+    const { runtime } = build("authorizer", { rules: { actAsOwner: "owner" } });
+    const p = await runtime.start(gate, { n: 1 }, { executionId: "p", principal: alice });
+    await p.waitForSuspend();
+    await startChild(runtime, "kid", "p", {
+      principal: kid,
+      ...runtime.systemOptions(),
+      ...runtime.lineageOptions(),
+    });
+    await expect(runtime.fork("kid", 0, { principal: alice, actAs: "owner" })).rejects.toThrow(
+      /denied/
+    );
+  });
+});

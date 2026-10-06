@@ -340,9 +340,8 @@ an unknown owner (deny by default). Cost: one sequence-0 read per hop, only for 
 authorizer. `executionAccessPolicy` uses `parentOwner` as the owner for every op EXCEPT `actAsOwner`, so
 query/cancel/resume of the child follow the parent's owner, a stranger is refused, and a caller-supplied
 `parentExecutionId` confers nothing (it is never recorded). The child's EFFECTS stay anonymous: nothing about
-`actingPrincipal` changes. Residual: a child started WITH a delegation records `{ actor: <childId> }` as its
-owner, so it has an own owner and the parent's owner does not inherit it (the delegated child is the
-supervisor's, reachable through the system grant).
+`actingPrincipal` changes. (Residual — a delegated child's own owner, `{ actor: <childId> }`, hid it from the
+parent's owner — is CLOSED by round 3 below.)
 
 **The trust token (closing the gap).** After round 1 `parent` was recorded only with a valid system grant, but
 the runtime mints that grant only under `requirePrincipal`, so with an authorizer and no `requirePrincipal`
@@ -363,3 +362,26 @@ record, a `parent` or an `APPROVAL_GRANTED`. Integrity of the recorded principal
 store's access control, plus the audit chain and crypto where they are composed — not from the record. The
 orchestration `ref` stays MACed (defence in depth against a ref altered in transit or at rest), but nothing
 here claims protection from a principal-record forger with store write access.
+
+### Review round 3 — decided (user, 2026-10-06)
+
+**Decided (user, 2026-10-06) — A. resume is included.** The parent's owner of a supervised child may query,
+cancel AND resume it (`executionAccessPolicy` inherits for every op except `actAsOwner`). Consequence,
+recorded deliberately: under the default `"tenant"` rule scope a same-tenant principal can approve a gate
+inside a supervised child (documented in docs/usage.md and the CHANGELOG); an integrator who wants the
+parent's owner only sets `rules.resume: "owner"`.
+
+**Decided (user, 2026-10-06) — B. a delegated child is reachable through its recorded parent.** A child
+started with an attenuated delegation records `{ actor: <childId> }` as its owner, so round 2 left it
+unreachable from the parent's owner. The authz rule is now precise: the kernel fills `parentOwner` for any
+execution whose recorded `parent` is TRUSTED (anonymous or identified/delegated; never for a shredded or
+unrestorable record, which stays an unknown owner), walking at most 8 hops, cycle-safe, an unreadable or
+shredded link / a chain that ends = no `parentOwner`. `executionAccessPolicy` allows a lifecycle op
+(query/cancel/resume; NEVER `actAsOwner`) when the principal matches the child's own recorded owner OR
+`parentOwner` under the op's scope; `resolveOwner` answers only when the kernel supplied neither. Nothing
+widens the child's AUTHORITY: its effects still run under its attenuated delegation (D2/D4). An untrusted
+`parent` was never recorded, so it confers nothing.
+
+**Cost fold (controller).** `recordedPrincipal` now returns the record's `parent` alongside the principal, so
+the lineage walk's first hop re-reads nothing and each ancestor's one read supplies both its owner and the
+next link.

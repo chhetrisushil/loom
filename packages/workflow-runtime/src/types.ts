@@ -286,8 +286,11 @@ export interface RunOptions {
    */
   system?: SystemGrant;
   /**
-   * R3 — the execution that spawned this one (the child supervisor sets it). Descriptive: only
-   * reported on {@link ExecutionAuthorizer.committed} so a policy can inherit the owner.
+   * R3 — the execution that spawned this one (the child supervisor sets it). Recorded on sequence
+   * 0 as `parent` ONLY when trusted — the call carries the runtime's lineage or system grant — in
+   * every mode, with or without an authorizer; omitted otherwise (a caller-supplied one is
+   * dropped, so a non-supervisor caller passing it gets no parent recorded). Always reported on
+   * {@link ExecutionAuthorizer.committed} so a policy can inherit the owner.
    */
   parentExecutionId?: string;
   /**
@@ -342,12 +345,13 @@ export interface ExecutionAuthzRequest {
    */
   owner?: { tenant?: string; actor?: string; onBehalfOf?: string };
   /**
-   * R3k round 2 (ADR 0111 D6) — the NEAREST recorded owner up the execution's trusted lineage,
-   * present only when `owner` is absent because the execution itself was started anonymously (a
-   * principal-less supervised child). The kernel reads it from the child's recorded `parent`
-   * (written only at a trusted start), walking at most 8 hops, cycle-safe; a chain that ends
-   * without an owner, or is longer, yields none. It scopes who may run LIFECYCLE ops on the
-   * child; the child's own effects stay anonymous. An authorizer that ignores it is unaffected.
+   * R3k rounds 2-3 (ADR 0111 D6) — the NEAREST recorded owner up the execution's trusted lineage:
+   * present whenever the execution's recorded `parent` (written only at a trusted start) leads to
+   * one, for a principal-less child AND for an identified/delegated one (whose own `owner` is its
+   * child id). The kernel walks at most 8 hops, cycle-safe; a chain that ends without an owner, or
+   * is longer, yields none; a shredded/unrestorable record gets none. It scopes who may run
+   * LIFECYCLE ops (query/cancel/resume, never `actAsOwner`) on the child; the child's own effects
+   * stay anonymous or under its attenuated delegation. An authorizer that ignores it is unaffected.
    */
   parentOwner?: { tenant?: string; actor?: string; onBehalfOf?: string };
   /**
