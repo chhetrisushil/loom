@@ -21,6 +21,8 @@ export interface PostgresStorageOptions {
    * builds the event store first on its shared pool, so this value is the one that migrates.
    */
   migrationLockTimeoutMs?: number;
+  /** ADR 0118 D1 — run the one-time park-fence backfill at boot (default `true`); see {@link PostgresEventStore}. */
+  backfillParkFences?: boolean;
 }
 
 /**
@@ -45,6 +47,9 @@ export function postgresStorage(options: PostgresStorageOptions): CustomStorage 
     ...(options.notifyBuckets !== undefined && { notifyBuckets: options.notifyBuckets }),
     ...(options.migrationLockTimeoutMs !== undefined && {
       migrationLockTimeoutMs: options.migrationLockTimeoutMs,
+    }),
+    ...(options.backfillParkFences !== undefined && {
+      backfillParkFences: options.backfillParkFences,
     }),
   });
   const snapshotStore = new PostgresSnapshotStore(pool);

@@ -220,7 +220,8 @@ commit, the message sits in the stream with nobody resuming for it. Three closur
    fence acquired with `acquireFenceIf` (the resume is the only answering event; `MESSAGE_CONSUMED` stays
    ignorable, ADR 0118 D1); DST adds "crash mid-notify, the redrive completes with exactly one delivery".
    The check-then-insert race is benign (at worst
-   two rows; the second fire is a no-op under the fenced resume). The R2 implementation plan **must include
+   two rows; the second fire is a no-op under the fenced resume). A timer's row is retired only when ITS wait is no longer
+   pending in a multi-wait park, not merely when `status !== "suspended"` (ADR 0118 review round 2). The R2 implementation plan **must include
    a load test** (a burst of 10,000 sends to one parked chain: timer rows written, TimerService fires,
    wake latency) before the PR is merged, and records the measured row count in its ADR acceptance.
    The row for the chain's head (`TimerRecord { executionId, wakeAt: now }`; no SPI

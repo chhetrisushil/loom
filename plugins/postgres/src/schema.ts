@@ -74,6 +74,18 @@ export interface MigrateOptions {
    * store is the first to migrate its pool (the preset builds the event store first).
    */
   lockTimeoutMs?: number;
+  /**
+   * ADR 0118 D1 — run the ONE-TIME park-fence backfill during the boot migration. Default `true`.
+   *
+   * The backfill is a full sequential scan of `events` (there is no `event_type` index) under the
+   * migration advisory lock, exempt from `statement_timeout`: on a very large log the FIRST boot
+   * stalls every node that boots behind it. For such an installation pass `false`, boot, and run
+   * {@link backfillParkFences} offline (batched, no long lock). While it has not run, the first
+   * `acquireFenceIf` of a park that PREDATES the upgrade can race an answering append (the
+   * pre-upgrade behaviour); parks written after the upgrade are unaffected. A later boot with the
+   * default re-attempts the backfill until the marker exists.
+   */
+  backfillParkFences?: boolean;
 }
 
 export async function migrate(pool: PoolLike, options: MigrateOptions = {}): Promise<void> {
@@ -86,7 +98,7 @@ export async function migrate(pool: PoolLike, options: MigrateOptions = {}): Pro
       `migrate: lockTimeoutMs must be a positive integer (got ${lockTimeoutMs})`
     );
   }
-  const run = runMigration(pool, lockTimeoutMs);
+  const run = runMigration(pool, lockTimeoutMs, options.backfillParkFences ?? true);
   migrations.set(pool, run);
   // Never cache a rejection: a migration that failed (transient connection loss, a
   // database not yet accepting connections) must be retryable by the next caller.
@@ -97,7 +109,11 @@ export async function migrate(pool: PoolLike, options: MigrateOptions = {}): Pro
   return run;
 }
 
-async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void> {
+async function runMigration(
+  pool: PoolLike,
+  lockTimeoutMs: number,
+  backfill: boolean
+): Promise<void> {
   // A dedicated client, not `pool.query`: the advisory lock and the DDL must run in
   // ONE session and one transaction, which a pooled per-query checkout cannot promise.
   const client = await pool.connect();
@@ -136,11 +152,13 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
     // parks that PREDATE that. Before the L21/L10 conversions: it only reads \`events\`, and must
     // not run while their ACCESS EXCLUSIVE lock is held. Exempt from the caller's statement_timeout
     // (a scan of the whole log, once), then restored.
-    await client.query("SELECT set_config('statement_timeout', '0', true)");
-    await client.query(R8K_PARK_FENCES);
-    await client.query("SELECT set_config('statement_timeout', $1, true)", [
-      callerStatementTimeout,
-    ]);
+    if (backfill) {
+      await client.query("SELECT set_config('statement_timeout', '0', true)");
+      await client.query(R8K_PARK_FENCES);
+      await client.query("SELECT set_config('statement_timeout', $1, true)", [
+        callerStatementTimeout,
+      ]);
+    }
     // Review round 1 (P2) — L21 (`refs`) runs BEFORE L10 (`events`), both after DDL_REST,
     // which is what creates `refs` on a fresh database. Ordering matters for more than
     // "lock the hot table last": this transaction acquires ACCESS EXCLUSIVE on `refs` and
@@ -192,10 +210,11 @@ async function runMigration(pool: PoolLike, lockTimeoutMs: number): Promise<void
  * A fresh database finds an empty log and just writes the marker. `ON CONFLICT DO NOTHING`
  * never touches a real token.
  */
+const PARK_FENCE_MARKER = "loom:r8k-park-fences";
 const R8K_PARK_FENCES = `
     DO $r8k_park_fences$
     BEGIN
-      IF COALESCE(obj_description('fences'::regclass, 'pg_class'), '') <> 'loom:r8k-park-fences' THEN
+      IF COALESCE(obj_description('fences'::regclass, 'pg_class'), '') <> '${PARK_FENCE_MARKER}' THEN
         INSERT INTO fences (execution_id, fence)
         SELECT p.execution_id, 0 FROM events p
         WHERE p.event_type = 'EXECUTION_SUSPENDED'
@@ -205,11 +224,89 @@ const R8K_PARK_FENCES = `
               AND a.event_type = ANY (${ANSWERING_KINDS_SQL})
           )
         ON CONFLICT (execution_id) DO NOTHING;
-        COMMENT ON TABLE fences IS 'loom:r8k-park-fences';
+        COMMENT ON TABLE fences IS '${PARK_FENCE_MARKER}';
       END IF;
     END
     $r8k_park_fences$;
 `;
+
+/** The throwaway partial index {@link backfillParkFences} builds (and drops) to find parks. */
+const PARK_SCAN_INDEX = "idx_events_suspended_r8k_tmp";
+
+export interface BackfillParkFencesOptions {
+  /** Executions examined per statement. Default 1000. */
+  batchSize?: number;
+  /**
+   * Build a PARTIAL index `events (execution_id, sequence) WHERE event_type = 'EXECUTION_SUSPENDED'`
+   * (`CREATE INDEX CONCURRENTLY`: no write lock) for the run and drop it after. Default `true`.
+   * It is deliberately NOT kept: after the backfill nothing scans by event type (a park lookup is
+   * by execution, served by the `(execution_id, sequence)` unique index), and a permanent index
+   * would tax every `EXECUTION_SUSPENDED` append for no reader.
+   */
+  tempIndex?: boolean;
+}
+
+/**
+ * ADR 0118 D1 — the park-fence backfill for a LARGE installation, run outside the boot migration
+ * (boot with `migrate(pool, { backfillParkFences: false })`). Idempotent and resumable: it walks
+ * executions in id order, `ON CONFLICT DO NOTHING` (a real token is never touched), each batch its
+ * own short statement, and writes the same one-time marker the boot backfill does. Returns the
+ * number of fence rows inserted.
+ */
+export async function backfillParkFences(
+  pool: PoolLike,
+  options: BackfillParkFencesOptions = {}
+): Promise<{ inserted: number }> {
+  const batchSize = options.batchSize ?? 1000;
+  if (!Number.isInteger(batchSize) || batchSize <= 0) {
+    throw new RangeError(
+      `backfillParkFences: batchSize must be a positive integer (got ${batchSize})`
+    );
+  }
+  await migrate(pool, { backfillParkFences: false });
+  const marker = await pool.query<{ c: string | null }>(
+    "SELECT obj_description('fences'::regclass, 'pg_class') AS c"
+  );
+  if (marker.rows[0]?.c === PARK_FENCE_MARKER) return { inserted: 0 };
+  const useIndex = options.tempIndex ?? true;
+  if (useIndex) {
+    await pool.query(
+      `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${PARK_SCAN_INDEX} ON events (execution_id, sequence) WHERE event_type = 'EXECUTION_SUSPENDED'`
+    );
+  }
+  let inserted = 0;
+  try {
+    let cursor = "";
+    for (;;) {
+      const ids = await pool.query<{ execution_id: string }>(
+        `SELECT DISTINCT execution_id FROM events
+         WHERE event_type = 'EXECUTION_SUSPENDED' AND execution_id > $1
+         ORDER BY execution_id LIMIT $2`,
+        [cursor, batchSize]
+      );
+      if (ids.rows.length === 0) break;
+      const list = ids.rows.map((r) => r.execution_id);
+      const res = await pool.query(
+        `INSERT INTO fences (execution_id, fence)
+         SELECT DISTINCT p.execution_id, 0 FROM events p
+         WHERE p.execution_id = ANY($1::text[]) AND p.event_type = 'EXECUTION_SUSPENDED'
+           AND NOT EXISTS (
+             SELECT 1 FROM events a
+             WHERE a.execution_id = p.execution_id AND a.sequence > p.sequence
+               AND a.event_type = ANY (${ANSWERING_KINDS_SQL})
+           )
+         ON CONFLICT (execution_id) DO NOTHING`,
+        [list]
+      );
+      inserted += res.rowCount ?? 0;
+      cursor = list[list.length - 1] as string;
+    }
+    await pool.query(`COMMENT ON TABLE fences IS '${PARK_FENCE_MARKER}'`);
+  } finally {
+    if (useIndex) await pool.query(`DROP INDEX CONCURRENTLY IF EXISTS ${PARK_SCAN_INDEX}`);
+  }
+  return { inserted };
+}
 
 const DDL_EVENTS = `
     CREATE TABLE IF NOT EXISTS events (
