@@ -17,15 +17,21 @@ import type { EffectContext, EffectMiddleware } from "@loom/effect-runtime";
 // cheap and pure for latency and auditability, and route any ML/LLM classifier
 // verdict through the decision seam (P9) if it must be reproduced.
 
-export type SafetyPhase = "input" | "output";
+export type SafetyPhase = "input" | "output" | "delta";
 
 export interface SafetyCheckInfo {
   phase: SafetyPhase;
   stepId: string;
-  /** The effect input (both phases). */
+  /** The effect input ("input" and "output" phases; `undefined` on "delta"). */
   input: unknown;
   /** The effect result — present only on the "output" phase. */
   result?: unknown;
+  /**
+   * The RUNNING text of a streamed call — present only on the "delta" phase. It is the
+   * last {@link SafetyOptions.deltaWindow} characters received so far INCLUDING the delta
+   * under test, so a pattern split across deltas is seen whole (up to the window).
+   */
+  text?: string;
 }
 
 export interface SafetyVerdict {
@@ -37,12 +43,35 @@ export interface SafetyValidator {
   id: string;
   phase: SafetyPhase;
   category?: string;
-  /** Return `{ ok: false }` to block. Should be pure/deterministic. */
+  /**
+   * Return `{ ok: false }` to block. Should be pure/deterministic. A `"delta"`-phase
+   * validator receives `info.text` (the running streamed text) and runs ONLY on a
+   * streamed call, severing the stream before the offending delta is delivered.
+   */
   check(info: SafetyCheckInfo): SafetyVerdict;
+  /**
+   * ADR 0119 — the DELTA FORM of an `"output"` validator: the same policy applied to the
+   * running text of a streamed call (`info.phase === "delta"`, `info.text`). An output
+   * validator WITHOUT one cannot see a stream, so when any is configured the runtime
+   * REFUSES a per-call delta sink (`EffectMiddleware.inspectsOutput`) rather than stream
+   * text past it. The output form still runs on the final result either way.
+   */
+  checkDelta?(info: SafetyCheckInfo): SafetyVerdict;
 }
 
 export interface SafetyOptions {
   validators: readonly SafetyValidator[];
+  /**
+   * ADR 0119 — how many trailing characters of a streamed call's running text a delta
+   * check sees (default 4096). It bounds per-delta cost (the check is O(window), not
+   * O(text so far)). A pattern that SPANS more than the window across deltas can evade
+   * the delta check; the output form still sees the whole result, but by then the
+   * caller's live tail has already received it. Text BEFORE a match completes is also
+   * delivered (a card number is severed at its last digit, not its first) — a delta
+   * form narrows what a live tail can show, it does not make a stream as safe as a
+   * buffered result.
+   */
+  deltaWindow?: number;
 }
 
 export class SafetyViolationError extends Error {
@@ -61,25 +90,37 @@ export class SafetyViolationError extends Error {
 export function safetyMiddleware(options: SafetyOptions): EffectMiddleware {
   const inputValidators = options.validators.filter((v) => v.phase === "input");
   const outputValidators = options.validators.filter((v) => v.phase === "output");
+  // The delta checks: a delta-phase validator's `check`, an output validator's `checkDelta`.
+  const deltaChecks: Array<{ v: SafetyValidator; run: (i: SafetyCheckInfo) => SafetyVerdict }> = [];
+  for (const v of options.validators) {
+    if (v.phase === "delta") deltaChecks.push({ v, run: (i) => v.check(i) });
+    else if (v.phase === "output" && v.checkDelta !== undefined) {
+      const f = v.checkDelta.bind(v);
+      deltaChecks.push({ v, run: f });
+    }
+  }
+  const uncoveredOutput = outputValidators.some((v) => v.checkDelta === undefined);
+  const window = Math.max(1, options.deltaWindow ?? 4096);
+
+  const block = (ctx: EffectContext, v: SafetyValidator, phase: SafetyPhase, reason: string) => {
+    ctx.emit("SAFETY_BLOCKED", {
+      stepId: ctx.stepId,
+      validatorId: v.id,
+      phase,
+      reason,
+      ...(v.category !== undefined && { category: v.category }),
+    });
+    throw new SafetyViolationError(v.id, reason, v.category);
+  };
 
   const run = (ctx: EffectContext, validators: SafetyValidator[], info: SafetyCheckInfo): void => {
     for (const v of validators) {
       const verdict = v.check(info);
-      if (!verdict.ok) {
-        const reason = verdict.reason ?? "blocked";
-        ctx.emit("SAFETY_BLOCKED", {
-          stepId: ctx.stepId,
-          validatorId: v.id,
-          phase: info.phase,
-          reason,
-          ...(v.category !== undefined && { category: v.category }),
-        });
-        throw new SafetyViolationError(v.id, reason, v.category);
-      }
+      if (!verdict.ok) block(ctx, v, info.phase, verdict.reason ?? "blocked");
     }
   };
 
-  return async (ctx: EffectContext, input: unknown, next): Promise<unknown> => {
+  const mw = async (ctx: EffectContext, input: unknown, next: () => Promise<unknown>) => {
     run(ctx, inputValidators, { phase: "input", stepId: ctx.stepId, input });
     const result = await next();
     if (outputValidators.length > 0) {
@@ -87,6 +128,24 @@ export function safetyMiddleware(options: SafetyOptions): EffectMiddleware {
     }
     return result;
   };
+
+  return Object.assign(mw, {
+    // An output validator with no delta form cannot see a stream: tell the runtime so it
+    // refuses a live sink instead of streaming text past it (fail-closed).
+    ...(uncoveredOutput && { inspectsOutput: true as const }),
+    ...(deltaChecks.length > 0 && {
+      deltaGuard: (ctx: EffectContext) => {
+        let text = "";
+        return (delta: string): void => {
+          text = (text + delta).slice(-window);
+          for (const { v, run: check } of deltaChecks) {
+            const verdict = check({ phase: "delta", stepId: ctx.stepId, input: undefined, text });
+            if (!verdict.ok) block(ctx, v, "delta", verdict.reason ?? "blocked");
+          }
+        };
+      },
+    }),
+  }) as EffectMiddleware;
 }
 
 // ── Built-in validators ──────────────────────────────────────────────────────
@@ -101,17 +160,26 @@ export function denyPatterns(
   opts: { id?: string; phase?: SafetyPhase; category?: string } = {}
 ): SafetyValidator {
   const phase = opts.phase ?? "output";
+  const scan = (text: string): SafetyVerdict => {
+    for (const p of patterns) {
+      if (p.test(text)) return { ok: false, reason: `matched ${p}` };
+    }
+    return { ok: true };
+  };
   return {
     id: opts.id ?? "deny-patterns",
     phase,
     category: opts.category ?? "policy",
     check(info) {
-      const text = asText(phase === "output" ? info.result : info.input);
-      for (const p of patterns) {
-        if (p.test(text)) return { ok: false, reason: `matched ${p}` };
-      }
-      return { ok: true };
+      return scan(
+        info.phase === "delta"
+          ? (info.text ?? "")
+          : asText(phase === "output" ? info.result : info.input)
+      );
     },
+    // The delta form of the default (output) validator: the same patterns over the running
+    // text, so a default config protects a stream. An input-phase validator has none.
+    ...(phase === "output" && { checkDelta: (info: SafetyCheckInfo) => scan(info.text ?? "") }),
   };
 }
 

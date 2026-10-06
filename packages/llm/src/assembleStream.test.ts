@@ -148,7 +148,7 @@ describe("collectStream's mid-flight guard (K8.4's seam)", () => {
     }).catch((e) => e);
 
     expect((err as Error).message).toBe("budget");
-    expect(delivered).toBe(5); // not 1000
+    expect(delivered).toBe(4); // not 1000; the breaching 5th is withheld (ADR 0119 P3)
   });
 
   it("a guard throw is NOT an interruption, even under an abort signal", async () => {
@@ -166,5 +166,32 @@ describe("collectStream's mid-flight guard (K8.4's seam)", () => {
 
     expect((err as Error).message).toBe("budget");
     expect((err as { channel?: string }).channel).toBeUndefined();
+  });
+
+  it("the guard runs BEFORE delivery: the breaching delta is never handed to a sink (ADR 0119)", async () => {
+    const delivered: string[] = [];
+    await collectStream(endless(), {
+      onDelta: (d) => {
+        delivered.push(d);
+      },
+      guard: (p) => {
+        if (p.deltas >= 3) throw new Error("budget");
+      },
+    }).catch(() => {});
+    expect(delivered).toHaveLength(2); // deltas 1 and 2; the 3rd breached and was withheld
+  });
+
+  it("an abort severs a signal-IGNORING stream at the next chunk instead of delivering it", async () => {
+    const controller = new AbortController();
+    const delivered: string[] = [];
+    const err = await collectStream(endless(), {
+      signal: controller.signal,
+      onDelta: (d) => {
+        delivered.push(d);
+        if (delivered.length === 2) controller.abort(new Error("stop"));
+      },
+    }).catch((e) => e);
+    expect(delivered).toHaveLength(2); // not 1000
+    expect((err as { channel?: string }).channel).toBe("llmInterrupted");
   });
 });

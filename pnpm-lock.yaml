@@ -250,6 +250,9 @@ importers:
       '@loom/compiler':
         specifier: workspace:*
         version: link:../../tools/compiler
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../llm
       '@loom/scaffold':
         specifier: workspace:*
         version: link:../../tools/scaffold
@@ -431,6 +434,9 @@ importers:
 
   packages/effect-runtime:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
       '@loom/core':
         specifier: workspace:*
         version: link:../core

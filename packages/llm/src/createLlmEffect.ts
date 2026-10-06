@@ -1,3 +1,4 @@
+import { tainted } from "@loom/classify";
 import { LlmEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import { collectStream } from "./assembleStream";
@@ -86,24 +87,27 @@ export function createLlmEffect<TIn = string, TOut = string>(
       const response = await (options.stream === true && options.provider.stream !== undefined
         ? collectStream(options.provider.stream(request as LlmRequest), {
             ...(ctx.signal !== undefined && { signal: ctx.signal }),
-            // ADR 0119 — the configured sink AND the per-call sink (ctx.onDelta, set by a
-            // decider's scope) both fire; neither replaces the other. The runtime's
-            // wrapper around ctx.onDelta never throws, so it is called unguarded.
+            // ADR 0119 — the per-call sink (ctx.onDelta, set by a decider's scope) AND the
+            // configured one both fire; neither replaces the other. The per-call sink goes
+            // FIRST: it is the governed one, and a middleware delta guard severs the stream
+            // by THROWING from it — which must happen before any other tail sees the delta.
+            // Do not catch around it. The text is wrapped as untrusted content (ADR 0085).
             ...((options.onDelta !== undefined || ctx.onDelta !== undefined) && {
               onDelta: (delta: string) => {
+                ctx.onDelta?.({ delta: tainted(delta, `llm:${ctx.stepId}`) });
                 options.onDelta?.(delta, ctx);
-                ctx.onDelta?.({ delta });
               },
             }),
             ...(options.guard !== undefined && { guard: options.guard(ctx) }),
           })
         : options.provider.complete(request));
-      // ADR 0119 — the terminal chunk carries usage, so a per-call sink learns the
-      // spend (the charge itself is dropped by a transient call's no-op emit).
+      // ADR 0119 — hand the runtime the stream's end + usage. The runtime HOLDS this and
+      // sends the caller's terminal chunk only once the whole call has succeeded
+      // (middleware output phase and parse included), so `done` never precedes a failure.
       // Streamed path only: a `complete` fallback delivered no deltas to terminate.
       if (options.stream === true && options.provider.stream !== undefined) {
         ctx.onDelta?.({
-          delta: "",
+          delta: tainted("", `llm:${ctx.stepId}`),
           done: true,
           ...(response.usage !== undefined && { usage: response.usage }),
         });

@@ -1,3 +1,4 @@
+import { type TaintedValue, isTainted, tainted, unwrapTainted } from "@loom/classify";
 import { Priority, type Scheduler } from "@loom/scheduler";
 import {
   type CapabilityAuthorizer,
@@ -10,6 +11,7 @@ import type {
   DeltaSink,
   Effect,
   EffectContext,
+  EffectDelta,
   EffectMiddleware,
   EffectNext,
   ErrorChannelSchema,
@@ -77,7 +79,8 @@ export class EffectRuntime {
     toolId: string,
     input: TIn,
     ctx: EffectContext,
-    seam: "journaled" | "ambient"
+    seam: "journaled" | "ambient",
+    onExecute?: () => void
   ): Promise<TOut> {
     // R3k (ADR 0111 D4) — the KERNEL refuses a principal whose recorded identity could not be
     // restored (an unrestorable delegation, a shredded or unresolvable record), BEFORE any
@@ -140,7 +143,11 @@ export class EffectRuntime {
     // e.g. claim-check digests); the effect receives the caller's ctx unchanged.
     const mwCtx: EffectContext =
       this.middleware.length > 0 && ctx.toolId === undefined ? { ...ctx, toolId } : ctx;
-    let chain: EffectNext = (inp: unknown = input) => effect.execute(inp, ctx);
+    let chain: EffectNext = (inp: unknown = input) => {
+      // ADR 0119 — one tick per effect.execute (a retry middleware re-enters here).
+      onExecute?.();
+      return effect.execute(inp, ctx);
+    };
     for (let i = this.middleware.length - 1; i >= 0; i--) {
       const mw = this.middleware[i]!;
       const downstream = chain;
@@ -208,23 +215,7 @@ export class EffectRuntime {
     // are meaningful only for the lifetime of this call: `executionId` carries
     // the trace label for middleware correlation, `stepId` the toolId. `emit` is
     // the drop sink (R4) — including the authz-denial emit, which still throws.
-    // ADR 0119 — the effect receives a guarded wrapper: a throwing sink never fails
-    // the call, and nothing is delivered once the call has settled.
-    let settled = false;
-    const onDelta: DeltaSink | undefined =
-      opts.onDelta === undefined
-        ? undefined
-        : (chunk) => {
-            if (settled) return;
-            try {
-              opts.onDelta?.(chunk);
-            } catch (err) {
-              this.onWarn(
-                `invokeTransient("${toolId}"): onDelta sink threw (ignored): ${String(err)}`
-              );
-            }
-          };
-    const ctx: EffectContext = {
+    const base: EffectContext = {
       executionId: opts.as?.executionId ?? `transient:${opts.label ?? toolId}`,
       stepId: opts.as?.stepId ?? toolId,
       workflowId: opts.as?.workflowId ?? "transient",
@@ -234,13 +225,107 @@ export class EffectRuntime {
       ...(opts.resources !== undefined && { resources: opts.resources }),
       ...(opts.signal !== undefined && { signal: opts.signal }),
       ...(opts.principal !== undefined && { principal: opts.principal }),
-      ...(onDelta !== undefined && { onDelta }),
     };
+    const pipe = opts.onDelta === undefined ? undefined : this.deltaPipe(toolId, base, opts);
+    const ctx: EffectContext = pipe === undefined ? base : { ...base, onDelta: pipe.sink };
     try {
-      return await this.runSeam<TIn, TOut>(toolId, input, ctx, "ambient");
+      const out = await this.runSeam<TIn, TOut>(toolId, input, ctx, "ambient", pipe?.onExecute);
+      // The terminal chunk goes out only now — after the middleware output phase and
+      // the effect's own parse have accepted the result.
+      pipe?.finish();
+      return out;
     } finally {
-      settled = true;
+      pipe?.close();
     }
+  }
+
+  /**
+   * ADR 0119 — the per-call delta pipe between a streaming effect and the caller's
+   * sink. It owns every rule that makes a live tail safe:
+   *  - REFUSED (undefined) when any middleware `inspectsOutput` — streaming would
+   *    deliver text past a check that cannot see it; the call runs non-streamed.
+   *  - Each text delta passes the middleware `deltaGuard`s FIRST; a guard that throws
+   *    severs the stream and the offending delta is never delivered.
+   *  - Text is delivered as untrusted (tainted) content.
+   *  - Silent once the call settled or the call's signal aborted (an effect that
+   *    ignores the signal cannot reach a caller who moved on).
+   *  - A retry (the effect re-executed) resets guards and sends a `reset` chunk.
+   *  - The effect's own `done` chunk is held; the terminal chunk is sent by
+   *    {@link finish} after the call SUCCEEDED.
+   *  - The caller's sink throwing never fails the call (warned).
+   */
+  private deltaPipe(
+    toolId: string,
+    base: EffectContext,
+    opts: TransientInvokeOptions
+  ):
+    | {
+        sink: DeltaSink;
+        onExecute: () => void;
+        finish: () => void;
+        close: () => void;
+      }
+    | undefined {
+    if (this.middleware.some((m) => m.inspectsOutput === true)) {
+      this.onWarn(
+        `invokeTransient("${toolId}"): onDelta sink refused — an output validator in the middleware chain has no delta form, so streamed text would bypass it; the call completes non-streamed`
+      );
+      return undefined;
+    }
+    const mwCtx: EffectContext = { ...base, toolId };
+    const origin = `effect:${toolId}`;
+    const factories = this.middleware.filter((m) => m.deltaGuard !== undefined);
+    const caller = opts.onDelta as DeltaSink;
+    let settled = false;
+    let attempts = 0;
+    let guards: Array<(delta: string) => void> = [];
+    let sawDone = false;
+    let heldUsage: EffectDelta["usage"];
+    const dead = (): boolean => settled || opts.signal?.aborted === true;
+    const deliver = (chunk: EffectDelta): void => {
+      if (dead()) return;
+      try {
+        caller(chunk);
+      } catch (err) {
+        this.onWarn(`invokeTransient("${toolId}"): onDelta sink threw (ignored): ${String(err)}`);
+      }
+    };
+    return {
+      sink: (chunk) => {
+        if (dead()) return;
+        if (chunk.done === true) {
+          sawDone = true;
+          heldUsage = chunk.usage;
+          return;
+        }
+        // An effect that hands over a bare string (a JS caller) still delivers tainted.
+        const wrapped: TaintedValue<string> = isTainted(chunk.delta)
+          ? chunk.delta
+          : tainted(chunk.delta as unknown as string, origin);
+        const text = unwrapTainted(wrapped);
+        // May THROW — the sever. Runs before delivery, so a breaching delta is never seen.
+        for (const g of guards) g(text);
+        deliver({ delta: wrapped });
+      },
+      onExecute: () => {
+        attempts += 1;
+        guards = factories.map((m) => (m.deltaGuard as NonNullable<typeof m.deltaGuard>)(mwCtx));
+        sawDone = false;
+        heldUsage = undefined;
+        if (attempts > 1) deliver({ delta: tainted("", origin), reset: true, attempt: attempts });
+      },
+      finish: () => {
+        if (!sawDone) return;
+        deliver({
+          delta: tainted("", origin),
+          done: true,
+          ...(heldUsage !== undefined && { usage: heldUsage }),
+        });
+      },
+      close: () => {
+        settled = true;
+      },
+    };
   }
 
   has(toolId: string): boolean {
