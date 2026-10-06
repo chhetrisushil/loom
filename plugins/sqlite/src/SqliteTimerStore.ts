@@ -4,6 +4,7 @@ import Database from "better-sqlite3";
 interface TimerRow {
   execution_id: string;
   wake_at: number;
+  redrive: string | null;
 }
 
 /**
@@ -27,6 +28,13 @@ export class SqliteTimerStore implements TimerStore {
         );
         CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC);
       `);
+      // ADR 0118 D4 — `CREATE TABLE IF NOT EXISTS` never adds a column to a table an older version
+      // created, so the re-drive column is added by a guarded ALTER: only when `table_info` lacks it
+      // (SQLite has no `ADD COLUMN IF NOT EXISTS`, and a second ALTER would throw).
+      const columns = this.db.pragma("table_info(timers)") as { name: string }[];
+      if (!columns.some((c) => c.name === "redrive")) {
+        this.db.exec("ALTER TABLE timers ADD COLUMN redrive TEXT");
+      }
     } catch (err) {
       this.db.close(); // don't leak the file handle if setup fails on a bad/locked file
       throw err;
@@ -35,19 +43,30 @@ export class SqliteTimerStore implements TimerStore {
 
   async schedule(timer: TimerRecord): Promise<void> {
     this.db
-      .prepare<[string, number]>(
-        "INSERT OR IGNORE INTO timers (execution_id, wake_at) VALUES (?, ?)"
+      .prepare<[string, number, string | null]>(
+        // Upsert (ADR 0118 D4): a flagged row is never downgraded, a plain one gains the flag.
+        `INSERT INTO timers (execution_id, wake_at, redrive) VALUES (?, ?, ?)
+         ON CONFLICT (execution_id, wake_at)
+         DO UPDATE SET redrive = COALESCE(excluded.redrive, timers.redrive)`
       )
-      .run(timer.executionId, timer.wakeAt);
+      .run(
+        timer.executionId,
+        timer.wakeAt,
+        timer.redrive !== undefined ? JSON.stringify(timer.redrive) : null
+      );
   }
 
   async due(now: number, limit = 100): Promise<TimerRecord[]> {
     const rows = this.db
       .prepare<[number, number]>(
-        "SELECT execution_id, wake_at FROM timers WHERE wake_at <= ? ORDER BY wake_at ASC LIMIT ?"
+        "SELECT execution_id, wake_at, redrive FROM timers WHERE wake_at <= ? ORDER BY wake_at ASC LIMIT ?"
       )
       .all(now, limit) as TimerRow[];
-    return rows.map((r) => ({ executionId: r.execution_id, wakeAt: r.wake_at }));
+    return rows.map((r) => ({
+      executionId: r.execution_id,
+      wakeAt: r.wake_at,
+      ...(r.redrive !== null && { redrive: JSON.parse(r.redrive) as { attempt: number } }),
+    }));
   }
 
   async complete(executionId: string, wakeAt: number): Promise<void> {

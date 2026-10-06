@@ -15,6 +15,7 @@ export {
   FlowMigrationCheckError,
   InputValidationError,
   ResumePayloadValidationError,
+  ResumeContendedError,
   ResumeRefusedError,
   StartFencedOutError,
   StateMigrationError,
@@ -29,7 +30,14 @@ export type {
   PrincipalResolver,
 } from "./principal";
 export {
+  DEFAULT_MAX_REDRIVE_ATTEMPTS,
+  RedriveExhaustedError,
   TimerService,
+  redriveDelayMs,
+  scheduleRedrive,
+  type RedriveBackoff,
+  type RedriveVerdict,
+  type Redriver,
   type TimerServiceOptions,
   type TimerDispatcher,
 } from "./TimerService";

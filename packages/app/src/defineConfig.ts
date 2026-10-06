@@ -582,6 +582,24 @@ export interface LoomConfig {
    */
   agentSurface?: boolean;
   /**
+   * Wave 2 rolling-upgrade flags. Each flag guards a WRITER whose output an older node cannot read;
+   * turn it on only after every node runs the version that reads it (default off).
+   */
+  kernel?: {
+    features?: {
+      /**
+       * ADR 0118 D4 (R8k) — live re-drive of a contended resume. On, `app.redrive` is populated
+       * (needs `timers`), and a supervisor built with `superviseChildren({ redrive: app.redrive })`
+       * turns a `ResumeContendedError` into a backed-off `TimerStore` row that this app's
+       * `TimerService` fires, so the parent completes without anyone calling `recover()`. OFF by
+       * default because an older node's `TimerService` judges every row by `suspendedOn.wakeAt` and
+       * RETIRES a re-drive row as obsolete — a silent loss. With the flag off a contended resume is
+       * reported through `onError` and `recover()` re-drives it (today's behaviour).
+       */
+      redrive?: boolean;
+    };
+  };
+  /**
    * T1 — durable timers. Wire a {@link TimerStore} (`InMemoryTimerStore`,
    * `SqliteTimerStore`/`PostgresTimerStore` beside your event store) and the app
    * runs a {@link TimerService}: `ctx.sleep`/`ctx.sleepUntil` — and
@@ -740,6 +758,20 @@ export interface LoomApp {
    * operator pass (`loom retention run`); nothing runs it on a timer. See {@link LogLifecycle}.
    */
   lifecycle: LogLifecycle;
+  /**
+   * ADR 0118 D4 — what `superviseChildren({ redrive })` needs, present only when
+   * `kernel.features.redrive` is on AND `timers` is configured: the `TimerStore` the re-drive rows
+   * are written to and the `TimerService` that fires them.
+   */
+  redrive?: { timers: TimerStore; service: TimerService };
+  /**
+   * ADR 0118 D3 — register the app-owned child supervisor so `lifecycle` retention does not delete a
+   * finished child whose parent is still parked on it (`pinParkedChildren`, composed with
+   * `durability.retention.pinned` by OR). Returns the supervisor, so it composes inline:
+   * `const supervisor = app.supervise(superviseChildren({ runtime: app.runtime, flows }))`.
+   * `defineConfig` cannot do this itself: the supervisor is built FROM the runtime it returns.
+   */
+  supervise<S extends { parkedOnChild(executionId: string): Promise<boolean> }>(supervisor: S): S;
   /**
    * T3 — live subject index (`subjectId → executions`), present only when `compliance` is
    * wired. Fed by the event stream; rebuildable from the log. See `@loom/compliance`.
@@ -1181,12 +1213,37 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     );
   }
 
+  // ADR 0118 D4 — the re-drive flag. Resolved here, beside the TimerService it hands out.
+  let redrive: { timers: TimerStore; service: TimerService } | undefined;
+  if (config.kernel?.features?.redrive === true) {
+    if (timerService !== undefined && config.timers !== undefined) {
+      redrive = { timers: config.timers.store, service: timerService };
+    } else {
+      const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+      warn(
+        "kernel.features.redrive is on but no `timers` store is configured — nothing can fire a re-drive row, so a contended resume is reported through onError and left to recover()."
+      );
+    }
+  }
+
   // K10.1 — log lifecycle wired over the same stores. Cheap to construct; drives nothing
   // until a caller invokes applyRetention/compact (G2). The branch guard is active whenever
   // the backend supplies a branchRegistry.
+  // ADR 0118 D3 — a supervisor registered through `app.supervise` pins the children its parents are
+  // parked on; ORed with the app's own predicate. Constructed unconditionally and inert until a
+  // supervisor is registered, so the predicate is only added to the lifecycle when one could exist
+  // (it is consulted at retention time, never on a hot path).
+  const supervisors: Array<{ parkedOnChild(executionId: string): Promise<boolean> }> = [];
+  const pinned = async (executionId: string): Promise<boolean> => {
+    if (config.retention?.pinned !== undefined && (await config.retention.pinned(executionId))) {
+      return true;
+    }
+    for (const s of supervisors) if (await s.parkedOnChild(executionId)) return true;
+    return false;
+  };
   const lifecycle = new LogLifecycle(stores.eventStore, stores.snapshotStore, {
     ...(config.retention?.archive !== undefined && { archive: config.retention.archive }),
-    ...(config.retention?.pinned !== undefined && { pinned: config.retention.pinned }),
+    pinned,
     ...(config.retention?.pinnedEventTypes !== undefined && {
       pinnedEventTypes: config.retention.pinnedEventTypes,
     }),
@@ -1412,6 +1469,11 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       return kb;
     },
     lifecycle,
+    ...(redrive !== undefined && { redrive }),
+    supervise(supervisor) {
+      supervisors.push(supervisor);
+      return supervisor;
+    },
     ...(subjectIndex !== undefined && { subjectIndex }),
     exportSubject(subjectId, options) {
       if (subjectIndex === undefined) {

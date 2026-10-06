@@ -5,6 +5,7 @@ import {
   runLeaseStoreConformance,
   runMemoryStoreConformance,
   runReadModelStoreConformance,
+  runTimerStoreConformance,
 } from "@loom/conformance";
 import { CoalescingEventStore, TenantScopedEventStore } from "@loom/event-runtime";
 import { Pool } from "pg";
@@ -14,6 +15,7 @@ import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresLeaseStore } from "./PostgresLeaseStore";
 import { PostgresMemoryStore } from "./PostgresMemoryStore";
 import { PostgresReadModelStore } from "./PostgresReadModelStore";
+import { PostgresTimerStore } from "./PostgresTimerStore";
 import { migrate } from "./schema";
 
 // The portable EventStore contract (ADR 0033) against the Postgres backend — now including
@@ -53,6 +55,8 @@ if (PG_URL === undefined) {
   let nextBranch = 0;
   // Its own cursor as well: the lease kit reuses fixed ids ("x", "y") per case.
   let nextLease = 0;
+  // And the timer kit ("a", "b", ...). Until ADR 0118 D4 added a column, only a hand-rolled case ran.
+  let nextTimer = 0;
   // ADR 0074 Amendment (L1) — the decorator kit over the REAL backend, so the SQL
   // `appendBatch`, fencing and keyset paging are exercised THROUGH the decorators. Each run
   // gets its own cursor AND its own tenant: the tenant prefix keeps its rows (and its
@@ -121,6 +125,11 @@ if (PG_URL === undefined) {
     const pool = pools[nextReadModel++ % pools.length] as Pool;
     return new PostgresReadModelStore(pool);
   }, "PostgresReadModelStore");
+
+  runTimerStoreConformance(() => {
+    const pool = pools[nextTimer++ % pools.length] as Pool;
+    return new PostgresTimerStore(pool);
+  }, "PostgresTimerStore");
 
   runLeaseStoreConformance(() => {
     const pool = pools[nextLease++ % pools.length] as Pool;

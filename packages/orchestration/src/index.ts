@@ -9,6 +9,7 @@ export {
   type ChildResult,
   type ChildSupervisor,
   type RecoverSummary,
+  type RedriveWiring,
   type SpawnLimits,
   type SupervisorDeps,
   SpawnLimitExceededError,
@@ -21,6 +22,7 @@ export {
   childIdFor,
   depthOf,
   parentOf,
+  pinParkedChildren,
   superviseChildren,
   orchestrationPrincipalCodec,
 } from "./orchestration";

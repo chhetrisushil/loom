@@ -104,6 +104,30 @@ suite("@loom/plugin-postgres", () => {
       expect(await store.read("life")).toEqual([]);
     });
 
+    it("ADR 0118: a park ensures an inert token-0 fence row; acquireFenceIf also works on a park written before that (no row)", async () => {
+      const ev = (id: string, seq: number, eventType: string) => ({
+        ...makeEnvelope(id, seq),
+        eventType,
+      });
+      await store.append(ev("p0", 0, "EXECUTION_STARTED"));
+      await store.append(ev("p0", 1, "EXECUTION_SUSPENDED"));
+      const row = async (id: string) =>
+        (await admin.query("SELECT fence FROM fences WHERE execution_id = $1", [id])).rows;
+      expect(await row("p0")).toEqual([{ fence: "0" }]); // created by the park append, inert
+      await store.append(ev("p0", 2, "STEP_COMPLETED")); // an unfenced writer is NOT refused by a 0 row
+      expect(await store.acquireFenceIf("p0", { fence: 0, parkSeq: 1 })).toEqual({ fence: 1 });
+      // a step/audit event never creates the row (only a park does): the hot path is unchanged
+      await store.append(ev("p1", 0, "EXECUTION_STARTED"));
+      await store.append(ev("p1", 1, "STEP_COMPLETED"));
+      expect(await row("p1")).toEqual([]);
+      // a log written BEFORE this version: a park, no fence row. The conditional creates it itself.
+      await store.append(ev("legacy", 0, "EXECUTION_STARTED"));
+      await store.append(ev("legacy", 1, "EXECUTION_SUSPENDED"));
+      await admin.query("DELETE FROM fences WHERE execution_id = 'legacy'");
+      expect(await store.acquireFenceIf("legacy", { fence: 0, parkSeq: 1 })).toEqual({ fence: 1 });
+      expect(await row("legacy")).toEqual([{ fence: "1" }]);
+    });
+
     it("timers (T1.3): schedule is idempotent; due orders soonest-first; complete retires", async () => {
       const { PostgresTimerStore } = await import("./PostgresTimerStore");
       const timers = new PostgresTimerStore(PG_URL as string);

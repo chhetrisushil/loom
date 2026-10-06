@@ -249,6 +249,24 @@ export interface RunOptions {
    */
   fence?: number;
   /**
+   * ADR 0118 D2 (R8k) — on `resume` / `resumeAs`: answer the park at THIS sequence (what
+   * `parkedAtSequence` returns) under a CONDITIONAL fence instead of `fence`.
+   *
+   * The runtime reads that park, takes the token it was written under (`metadata.fence`, or 0), and
+   * calls `EventStore.acquireFenceIf(id, { fence, parkSeq })`: the fence is acquired only if the
+   * token has not moved AND nothing has answered the park since. A `stale` answer is re-read: if the
+   * execution is still parked on this same park the token moved only because someone acquired and
+   * never appended (a crashed supervisor), so it retries on the token the store returned (bounded,
+   * 3); an answered or different park is a `ResumeRefusedError` `not-suspended` with nothing
+   * appended; exhaustion is a {@link ResumeContendedError} (retryable), never `not-suspended`. The
+   * park is re-checked (`assertResumable`) under the acquired fence.
+   *
+   * Takes precedence over `fence`. On a store without `acquireFenceIf` it falls back to the
+   * unconditional `acquireFence` (and its documented residual: a rival's acquire may supersede an
+   * already-running body); on one without fencing it is ignored.
+   */
+  fenceIfParkedAt?: number;
+  /**
    * K8.3 — wall-clock deadline for this run, anchored to the LOGGED
    * `EXECUTION_STARTED` timestamp — so recovery/resume never resets the clock,
    * and resuming an execution whose deadline already passed cancels it
@@ -730,6 +748,28 @@ export class ResumeRefusedError extends Error {
     super(`resume of execution "${executionId}" refused (${reason}): ${detail}`);
     this.name = "ResumeRefusedError";
     Object.setPrototypeOf(this, ResumeRefusedError.prototype);
+  }
+}
+
+/**
+ * ADR 0118 D4 — a conditional-fence resume could not take the fence: other resumers kept moving the
+ * token while the park stayed unanswered (e.g. three dead acquirers in a row, or a live rival
+ * contending). **Retryable**: nothing was appended and the park is still unanswered. It is NOT a
+ * {@link ResumeRefusedError} (that class means "refused, final"), so a caller that treats every
+ * refusal as final cannot mistake "retry me" for "no". Raised only by `fenceIfParkedAt`'s
+ * exhaustion. A supervisor re-drives it with a backed-off `TimerStore` row (`kernel.features.redrive`).
+ */
+export class ResumeContendedError extends Error {
+  readonly retryable = true as const;
+  constructor(
+    readonly executionId: string,
+    readonly attempts: number
+  ) {
+    super(
+      `resume of execution "${executionId}" is contended: the conditional fence stayed stale after ${attempts} attempts while the park is still unanswered. Nothing was appended; retry.`
+    );
+    this.name = "ResumeContendedError";
+    Object.setPrototypeOf(this, ResumeContendedError.prototype);
   }
 }
 

@@ -1,12 +1,20 @@
 import type { EventEnvelope } from "@loom/core";
 import { TypedFailure } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, iterateExecutionIds } from "@loom/event-runtime";
+import {
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+  iterateExecutionIds,
+} from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import {
   type FlowRunner,
+  LogLifecycle,
+  RedriveExhaustedError,
   type RegisteredFlow,
+  ResumeContendedError,
   ResumeRefusedError,
+  TimerService,
   WorkflowRuntime,
   executionAccessPolicy,
 } from "@loom/workflow-runtime";
@@ -19,6 +27,7 @@ import {
   awaitAll,
   awaitChild,
   awaitChildren,
+  pinParkedChildren,
   superviseChildren,
 } from "./orchestration";
 
@@ -547,7 +556,7 @@ describe("R8 — restart-safe superviseChildren", () => {
     await delay(100);
   }, 20000);
 
-  it("P2-2: fence acquisition is bounded to TWO per resume (no ping-pong between supervisors)", async () => {
+  it("P2-2 (R8k): a rival that fences right behind each of our acquires is bounded to THREE conditional acquisitions, then reported", async () => {
     const w = world();
     const down = boot(w, { supervise: false });
     await down.runtime.start("single", {}, { executionId: "P" });
@@ -555,20 +564,20 @@ describe("R8 — restart-safe superviseChildren", () => {
     await down.runtime.start("instant", { n: 5 }, { executionId: "P::k" });
     await down.runtime.acquireFence("P", sys(down.runtime)); // fenced once already
     let acquisitions = 0;
-    const up = boot(w, {
-      wrap: (rt) => {
-        const orig = rt.acquireFence.bind(rt);
-        rt.acquireFence = async (...args: Parameters<typeof orig>) => {
-          acquisitions++;
-          const mine = await orig(...args);
-          await orig(...args); // a rival supervisor fences right behind us
-          return mine;
-        };
-      },
-    });
+    const orig = w.events.acquireFenceIf.bind(w.events);
+    w.events.acquireFenceIf = async (id, expect) => {
+      const got = await orig(id, expect);
+      if (!("stale" in got)) {
+        acquisitions++;
+        await w.events.acquireFence(id); // a rival supervisor fences right behind us
+      }
+      return got;
+    };
+    const up = boot(w);
     await up.sup.recover();
-    expect(acquisitions).toBe(2);
+    expect(acquisitions).toBe(3);
     expect(up.errors.length).toBeGreaterThanOrEqual(1);
+    expect(await resumedCount(w, "P")).toBe(0); // every append lost to the rival's fence: nothing recorded
   }, 20000);
 
   it("P2-2: a live resume refused not-suspended while the DURABLE log shows the park answered is quiet", async () => {
@@ -716,5 +725,203 @@ describe("R8 — restart-safe superviseChildren", () => {
     expect(summary.resumed).toBe(0);
     expect(up.errors).toEqual([]);
     hang = false;
+  }, 20000);
+});
+
+// ── R8k (ADR 0118) — the conditional fence, the live re-driver and the retention pin ──────────
+
+/** Make every `acquireFenceIf` on `w.events` first bump the token (a dead acquirer), `times` times. */
+function deadAcquirers(w: World, times: number): { stop(): void; calls(): number } {
+  let calls = 0;
+  const orig = w.events.acquireFenceIf.bind(w.events);
+  w.events.acquireFenceIf = async (id, expect) => {
+    if (calls < times) {
+      calls++;
+      await w.events.acquireFence(id); // acquire, never append
+    }
+    return orig(id, expect);
+  };
+  return {
+    stop: () => {
+      calls = Number.MAX_SAFE_INTEGER;
+    },
+    calls: () => calls,
+  };
+}
+
+async function fencedParkedParent(w: World) {
+  const down = boot(w, { supervise: false });
+  await down.runtime.start("single", {}, { executionId: "P" });
+  await until(down.runtime, "P", (s) => s.status === "suspended");
+  await down.runtime.start("instant", { n: 5 }, { executionId: "P::k" });
+  await down.runtime.acquireFence("P", sys(down.runtime)); // fenced: the unfenced first try is stale
+  return down;
+}
+
+function redriveWorld(w: World, opts: { max?: number } = {}) {
+  const timers = new InMemoryTimerStore();
+  const serviceErrors: unknown[] = [];
+  const holder: { sup?: ChildSupervisor } = {};
+  const runtime = new WorkflowRuntime({
+    eventStore: w.events,
+    snapshotStore: w.snaps,
+    effectRuntime: new EffectRuntime(),
+    timerStore: timers,
+    onEvent: (e) => holder.sup?.onEvent(e),
+  });
+  for (const f of Object.values(flows)) {
+    runtime.registerFlow(f.definition, f.runner as FlowRunner<unknown, unknown>);
+  }
+  const service = new TimerService(runtime, timers, {
+    ...(opts.max !== undefined && { maxRedriveAttempts: opts.max }),
+    redriveBackoff: { random: () => 0.5 },
+    onError: (_id, e) => serviceErrors.push(e),
+  });
+  const errors: unknown[] = [];
+  holder.sup = superviseChildren({
+    runtime,
+    flows,
+    onError: (e) => errors.push(e),
+    redrive: { timers, service, backoff: { random: () => 0.5 } },
+  });
+  return { runtime, timers, service, errors, serviceErrors, sup: holder.sup };
+}
+
+describe("R8k — conditional fence in the supervisor's resume", () => {
+  it("two supervisors racing one fenced parked parent: exactly one resume, the parent completes, nothing reported", async () => {
+    const w = world();
+    await fencedParkedParent(w);
+    const a = boot(w);
+    const b = boot(w);
+    await Promise.all([a.sup.recover(), b.sup.recover()]);
+    expect((await completed(a.runtime, "P")).status).toBe("completed");
+    expect(await resumedCount(w, "P")).toBe(1);
+    expect(a.errors).toEqual([]);
+    expect(b.errors).toEqual([]);
+  }, 20000);
+
+  it("a dead acquirer (acquire, never append) does not strand the parent: the conditional retry wins", async () => {
+    const w = world();
+    await fencedParkedParent(w);
+    const dead = deadAcquirers(w, 1);
+    const up = boot(w);
+    await up.sup.recover();
+    expect(dead.calls()).toBe(1);
+    expect((await completed(up.runtime, "P")).status).toBe("completed");
+    expect(up.errors).toEqual([]);
+  }, 20000);
+});
+
+describe("R8k — the live re-driver (kernel.features.redrive)", () => {
+  it("a contended resume leaves a backed-off row; the TimerService completes the parent with NO recover() call", async () => {
+    const w = world();
+    await fencedParkedParent(w);
+    const dead = deadAcquirers(w, 3); // the runtime's three attempts all lose, then it clears
+    const up = redriveWorld(w);
+    // The first resume is driven by recover() here only to START the scenario; completion below is not.
+    await up.sup.recover();
+    const rows = await up.timers.due(Number.MAX_SAFE_INTEGER);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ executionId: "P", redrive: { attempt: 0 } });
+    expect(up.errors).toEqual([]); // contended is NOT an error: it is scheduled
+    expect((await up.runtime.loadState("P", sys(up.runtime)))?.status).toBe("suspended");
+    expect(dead.calls()).toBe(3);
+    // No recover(): only the service's poll.
+    await up.service.tick(Date.now() + 10_000_000);
+    expect((await completed(up.runtime, "P")).status).toBe("completed");
+    expect(await up.timers.due(Number.MAX_SAFE_INTEGER)).toEqual([]);
+    expect(await resumedCount(w, "P")).toBe(1);
+    expect(up.errors).toEqual([]);
+    expect(up.serviceErrors).toEqual([]);
+  }, 20000);
+
+  it("exhaustion: onError ONCE (the service's), the parent still parked and left to recover(), which then completes it", async () => {
+    const w = world();
+    await fencedParkedParent(w);
+    const dead = deadAcquirers(w, Number.MAX_SAFE_INTEGER);
+    const up = redriveWorld(w, { max: 3 });
+    await up.sup.recover();
+    for (let i = 1; i <= 8; i++) await up.service.tick(Date.now() + i * 10_000_000);
+    expect(up.serviceErrors).toHaveLength(1);
+    expect(up.serviceErrors[0]).toBeInstanceOf(RedriveExhaustedError);
+    expect(up.errors).toEqual([]);
+    expect(await up.timers.due(Number.MAX_SAFE_INTEGER)).toEqual([]);
+    expect((await up.runtime.loadState("P", sys(up.runtime)))?.status).toBe("suspended");
+    dead.stop();
+    await up.sup.recover();
+    expect((await completed(up.runtime, "P")).status).toBe("completed");
+  }, 30000);
+
+  it("flag OFF (no redrive wiring): the contended resume is reported through onError, no row exists, recover() completes it", async () => {
+    const w = world();
+    await fencedParkedParent(w);
+    const dead = deadAcquirers(w, 3);
+    const up = boot(w);
+    await up.sup.recover();
+    expect(up.errors).toHaveLength(1);
+    expect(up.errors[0]).toBeInstanceOf(ResumeContendedError);
+    expect((await up.runtime.loadState("P", sys(up.runtime)))?.status).toBe("suspended");
+    dead.stop();
+    await up.sup.recover();
+    expect((await completed(up.runtime, "P")).status).toBe("completed");
+  }, 20000);
+});
+
+describe("R8k D3 — pinParkedChildren", () => {
+  async function finishedChildOfParkedParent(w: World) {
+    const a = boot(w);
+    await a.runtime.start("single", {}, { executionId: "P" });
+    await until(a.runtime, "P::k", (s) => s.status === "suspended");
+    // The parent is parked on the child; the child finishes but its supervisor resume is held back.
+    return a;
+  }
+
+  it("a finished child whose parent is parked on it is pinned; archivable again once the parent is answered", async () => {
+    const w = world();
+    // hold the supervisor's resume so the parent stays parked while the child is already terminal
+    let release!: () => void;
+    const hold = new Promise<void>((r) => {
+      release = r;
+    });
+    const a = boot(w, { holdResume: hold });
+    await a.runtime.start("single", {}, { executionId: "P" });
+    await until(a.runtime, "P::k", (s) => s.status === "suspended");
+    await a.runtime.resume("P::k", { eventType: "GO", payload: 1 }, sys(a.runtime));
+    await until(a.runtime, "P::k", (s) => s.status === "completed");
+
+    const pin = pinParkedChildren(a.sup);
+    expect(await pin("P::k")).toBe(true); // the parent is parked on it
+    expect(await pin("P")).toBe(false); // a root is nobody's child
+    expect(await pin("no-such")).toBe(false);
+
+    const lifecycle = new LogLifecycle(w.events, w.snaps, { pinned: pin });
+    expect(await lifecycle.evaluate("P::k", { terminalTtlMs: 0 }, Date.now() + 10)).toBe("pinned");
+
+    release(); // the parent is answered
+    await completed(a.runtime, "P");
+    expect(await pin("P::k")).toBe(false);
+    expect(await lifecycle.evaluate("P::k", { terminalTtlMs: 0 }, Date.now() + 10)).toBe(
+      "reclaimable"
+    );
+  }, 20000);
+
+  it("works after a restart (a fresh supervisor reads the child's RECORDED parent) and for group members", async () => {
+    const w = world();
+    const a = boot(w);
+    await a.runtime.start("group", {}, { executionId: "G" });
+    for (const i of [0, 1, 2]) await until(a.runtime, `G::g#${i}`, (s) => s.status === "suspended");
+    const b = boot(w); // a fresh supervisor knows nothing in memory
+    expect(await pinParkedChildren(b.sup)("G::g#1")).toBe(true);
+    expect(await pinParkedChildren(() => b.sup)("G::g#1")).toBe(true);
+    expect(await pinParkedChildren(() => undefined)("G::g#1")).toBe(false);
+  }, 20000);
+
+  it("a child the parent is parked on under a DIFFERENT key is not pinned", async () => {
+    const w = world();
+    const a = boot(w);
+    await a.runtime.start("twice", {}, { executionId: "T" });
+    await until(a.runtime, "T::k2", (s) => s.status === "suspended"); // k1 finished; parked on k2
+    expect(await pinParkedChildren(a.sup)("T::k1")).toBe(false);
+    expect(await pinParkedChildren(a.sup)("T::k2")).toBe(true);
   }, 20000);
 });

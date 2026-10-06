@@ -12,6 +12,7 @@ export { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 export { compareExecutionIds } from "./executionIdOrder";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
 export type {
+  AcquireFenceIfResult,
   EventStore,
   EventStoreOptions,
   ExecutionEnumerable,

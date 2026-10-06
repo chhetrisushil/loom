@@ -285,6 +285,10 @@ const DDL_REST = `
       PRIMARY KEY (execution_id, wake_at)
     );
     CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC);
+    -- ADR 0118 D4: marks a re-drive row (a backed-off retry of a contended resume). \`CREATE TABLE
+    -- IF NOT EXISTS\` never adds a column to a table an older version created, so this is its own
+    -- idempotent statement.
+    ALTER TABLE timers ADD COLUMN IF NOT EXISTS redrive JSONB;
 
     -- #380 — durable ownership of a RUNNING execution. One row per execution: a lease is
     -- exclusive by definition, so the primary key is the mutual exclusion.

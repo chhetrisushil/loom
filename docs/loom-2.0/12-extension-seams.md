@@ -46,7 +46,7 @@ that is what pins the contracts.
 
 | Seam | Interface | Required | Optional | Reference impls | Conformance kit |
 |---|---|---|---|---|---|
-| **Event log** | `EventStore` (`@loom/event-runtime`) | `append`, `read`, `readFrom`, `subscribe`, `close` | `readRange`, `acquireFence` (K9.4), `copyPrefix` (fork fast-path), `deleteExecution`/`truncatePrefix`/`truncatePrefixKeeping` (K10, ADR 0106) | `InMemoryAsyncEventStore`, `SqliteEventStore`, `PostgresEventStore` | `runEventStoreConformance` |
+| **Event log** | `EventStore` (`@loom/event-runtime`) | `append`, `read`, `readFrom`, `subscribe`, `close` | `readRange`, `acquireFence` (K9.4), `acquireFenceIf` (acquire only if the park is still unanswered, SPI 2.1.0, ADR 0118), `copyPrefix` (fork fast-path), `deleteExecution`/`truncatePrefix`/`truncatePrefixKeeping` (K10, ADR 0106) | `InMemoryAsyncEventStore`, `SqliteEventStore`, `PostgresEventStore` | `runEventStoreConformance` |
 | **Snapshots** | `SnapshotStore` (`@loom/snapshot-runtime`) | `save`, `loadLatest`, `loadAt`, `loadLatestBefore`, `close` | `deleteExecution` (K10.1), `loadLatestSealed` (ADR 0106) | `InMemoryAsyncSnapshotStore`, `SqliteSnapshotStore`, `PostgresSnapshotStore` | `runSnapshotStoreConformance` |
 | **Branches** | `BranchRegistry` (`@loom/event-runtime`) | `putRef`, `getRef`, `listRefs`, `moveTip`, `promote`, `deleteRef`, `recordLineage`, `getLineage`, `children`, `close` | — | `InMemoryBranchRegistry`, `SqliteBranchRegistry`, `PostgresBranchRegistry` | `runBranchRegistryConformance` |
 | **Timers** | `TimerStore` (`@loom/event-runtime`) | `putTimer`, `dueTimers`, `deleteTimer`, `close` | fencing (multi-node) | `InMemoryTimerStore`, `SqliteTimerStore`, `PostgresTimerStore` | `runTimerStoreConformance` |

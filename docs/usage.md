@@ -135,6 +135,7 @@ const app = defineConfig({
 | `projections` / `projectionModules` | `projection$` definitions (explicit, or discovered by `loom gen`) folded into surfaces |
 | `catalog` | the widget catalogue a model-composed blueprint is validated against (`validateBlueprint`, [ADR 0088](adr/0088-blueprint-conformance.md)) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
+| `kernel.features` | rolling-upgrade flags for writers an older node cannot read (default off): `redrive` (ADR 0118) turns a contended supervisor resume into a backed-off `TimerStore` row fired by the app's `TimerService`, so it completes without `recover()`; needs `timers`, hands out `app.redrive` for `superviseChildren({ redrive: app.redrive })` |
 | `agents` / `capabilityAgents` | A2A agent cards (or `agent$` definitions — see `a2a`/`agentSurface`) + capability→agent routing |
 | `a2a` | opt-in: auto-derive + register an `AgentCard` for each `agent$` definition in `agents` (no hand-built cards). Off ⇒ wire cards manually as before |
 | `agentSurface` | opt-in: auto-register an agent surface per agent (`surfaceId = agent.id`). Off ⇒ register `surfaces` manually |

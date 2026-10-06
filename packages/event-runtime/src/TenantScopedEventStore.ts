@@ -95,6 +95,7 @@ export class TenantScopedEventStore implements EventStore {
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
+  readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -125,6 +126,7 @@ export class TenantScopedEventStore implements EventStore {
       readRange: (id, from, to) =>
         inner.readRange!(scope(id), from, to).then((evs) => evs.map((e) => this.unscope(e))),
       acquireFence: (id) => inner.acquireFence!(scope(id)),
+      acquireFenceIf: (id, expect) => inner.acquireFenceIf!(scope(id), expect),
       // Fork stays IN-TENANT: both ids are scoped, so a fork can never cross the
       // tenant boundary (a cross-tenant copy is unaddressable here).
       copyPrefix: (from, to, through, metadata) =>

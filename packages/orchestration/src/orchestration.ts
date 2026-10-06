@@ -5,14 +5,19 @@ import type { PrincipalChain } from "@loom/effect-runtime";
 import { signDelegation, verifyDelegation } from "@loom/effect-runtime";
 import {
   type ExecutionEnumerable,
+  type TimerStore,
   isReservedStream,
   iterateExecutionIds,
+  readRangeOf,
 } from "@loom/event-runtime";
-import { ResumeRefusedError } from "@loom/workflow-runtime";
+import { ResumeContendedError, ResumeRefusedError, scheduleRedrive } from "@loom/workflow-runtime";
 import type {
   ExecutionContext,
   LineageGrant,
+  PinPredicate,
   PrincipalCodec,
+  RedriveBackoff,
+  Redriver,
   RegisteredFlow,
   SystemGrant,
   WorkflowRuntime,
@@ -472,8 +477,31 @@ export interface SupervisorDeps {
    * failed entries) — it never leaves the parent suspended forever. Unset ⇒ no bound (G2).
    */
   limits?: SpawnLimits;
+  /**
+   * ADR 0118 D4 — the LIVE re-driver for a contended resume. When a resume of a parked parent
+   * exhausts its conditional-fence attempts ({@link ResumeContendedError}), the supervisor writes a
+   * backed-off, due-later row to `timers` and returns; `service` (the `TimerService` polling that
+   * same store) fires it through the re-driver registered here, which re-derives the resume from
+   * the log (`adopt`). Completion then no longer depends on an app calling `recover()`.
+   *
+   * Pass `app.redrive` from `defineConfig({ kernel: { features: { redrive: true } } })`, which sets
+   * this up only when the flag is on — redrive rows are NOT safe on a fleet that still has a node
+   * whose `TimerService` retires them as obsolete. Unset ⇒ a contended resume goes to `onError`
+   * and `recover()` re-drives it (today's behaviour).
+   */
+  redrive?: RedriveWiring;
   /** @internal Timing knobs (milliseconds / counts). Defaults are production values; tests shrink them. */
   tuning?: Partial<SupervisorTuning>;
+}
+
+/** What {@link SupervisorDeps.redrive} needs: where the row goes, and who fires it. */
+export interface RedriveWiring {
+  /** The `TimerStore` the `service` polls. */
+  timers: TimerStore;
+  /** The `TimerService` that fires re-drive rows; the supervisor registers its re-driver on it. */
+  service: { registerRedriver(redriver: Redriver): () => void };
+  /** Backoff of the FIRST row (the service uses its own `redriveBackoff` for later ones). */
+  backoff?: RedriveBackoff;
 }
 
 /** @internal */
@@ -532,6 +560,15 @@ export interface ChildSupervisor {
    * narrower enumeration (e.g. a candidate list from your own index).
    */
   recover(options?: { source?: ExecutionEnumerable; pageSize?: number }): Promise<RecoverSummary>;
+  /**
+   * ADR 0118 D3 — is `executionId` a supervised child whose PARENT is non-terminal and durably
+   * parked on it (its own `CHILD_DONE` key, or a group that names it)? The parent edge is the
+   * child's own recorded `parent` (`EXECUTION_STARTED.parent`, written only through the runtime's
+   * lineage grant, so a caller cannot forge it); for a child recorded before R3k, from this
+   * supervisor's rebuilt state. Costs two folds and a read of the parent's log; the backing of
+   * {@link pinParkedChildren}.
+   */
+  parkedOnChild(executionId: string): Promise<boolean>;
   /** @internal Sizes of the supervisor's in-memory maps (a leak check; not a stable API). */
   size(): { specs: number; started: number; groups: number; memberOf: number; reclaimed: number };
 }
@@ -685,6 +722,27 @@ function isStaleFence(err: unknown): boolean {
 
 /** The lifecycle stream retention journals its `EXECUTION_DELETED` facts to (see `LogLifecycle`). */
 const LIFECYCLE_STREAM = "__loom_lifecycle__";
+
+/**
+ * ADR 0118 D3 — a retention pin predicate (`retention.pinned`, ADR 0055): a finished child whose
+ * parent is still parked on it is "pinned", so `LogLifecycle.applyRetention` cannot delete the log
+ * the parent's later `awaitChild` is about to read. It is archivable again once the parent is
+ * answered or terminal. Pass a function when the supervisor is created AFTER the config (it needs
+ * the config's runtime): the predicate is only consulted at retention time.
+ *
+ * Compose with an existing predicate by `||`-ing them; `LogLifecycle` consults it only for
+ * executions that are otherwise retention-eligible.
+ */
+export function pinParkedChildren(
+  supervisor:
+    | Pick<ChildSupervisor, "parkedOnChild">
+    | (() => Pick<ChildSupervisor, "parkedOnChild"> | undefined)
+): PinPredicate {
+  return async (executionId) => {
+    const s = typeof supervisor === "function" ? supervisor() : supervisor;
+    return s === undefined ? false : s.parkedOnChild(executionId);
+  };
+}
 
 /**
  * The supervisor that turns spawn intents into running children and their completions
@@ -1024,16 +1082,44 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   //
   // FENCES — a parent that was ever fenced (TimerService, recoverAbandoned, LocalWorkerRuntime)
   // refuses an unfenced write forever with `StaleFenceError`. That is NOT a lost race: the
-  // supervisor then acquires its own token and retries. (TimerService fences UP FRONT; this does
-  // not — a fence supersedes a live holder, and a parked parent usually has none.) RESIDUAL, which
-  // needs a kernel SPI to close: `acquireFence` is not conditional on the parent still being
-  // parked. If a second supervisor acquires F+1 between this one's acquire and its append, this
-  // resume fails stale; if it lands between this one's durable EXECUTION_RESUMED and the read-back,
-  // the new fence supersedes the holder of the ALREADY RUNNING parent body. So acquisitions are
-  // bounded to TWO per resume (an unbounded retry would ping-pong two supervisors, killing the
-  // parent body each round), the park is re-read right before each acquire, and a resume still
-  // stale after the bound is reported through `onError` — recover() picks it up. Follow-up: an
-  // "acquire-if-parked" (or readable-fence) SPI for the Wave 2 kernel design.
+  // supervisor then takes a fence and retries. It resumes UNFENCED first (a fence supersedes a live
+  // holder and a never-fenced parent has none; fencing every supervised parent would also make a
+  // manual, unfenced resume of it fail forever after).
+  //
+  // R8k (ADR 0118) — on `StaleFenceError` the fence is taken with `fenceIfParkedAt`: an
+  // acquire-IF-PARKED, atomic in the store on the token AND "no answering event since the park".
+  // That closes both windows the unconditional acquire left: a rival's acquire between this one's
+  // acquire and append (the loser's resume is a clean `stale`, retried by the runtime on the token
+  // the store returned), and a rival's acquire between this one's durable EXECUTION_RESUMED and the
+  // read-back, which used to supersede the holder of the ALREADY RUNNING parent body (now refused:
+  // an answering event past the park makes the acquire `stale`). A resume the runtime could not
+  // fence after its bounded retries is a retryable `ResumeContendedError`: with `deps.redrive` it
+  // becomes a backed-off `TimerStore` row fired by the `TimerService`; without it, `onError` and
+  // `recover()`. A store without `acquireFenceIf` keeps the previous behaviour (an unconditional
+  // acquire, bounded to two per resume, the park re-read before each) and its residual.
+  const fenceIfSupported = deps.runtime.events.acquireFenceIf !== undefined;
+  const FENCE_IF_TRIES = 3;
+  const now = (): number => deps.runtime.clock();
+  // Parents whose resume is being driven BY the re-driver: a `contended` outcome there is the
+  // re-driver's verdict (it reschedules with a larger backoff), not a new row.
+  const redriving = new Set<string>();
+  const redriveContended = new Set<string>();
+  const onContended = async (parentId: string, err: unknown): Promise<void> => {
+    if (redriving.has(parentId)) {
+      redriveContended.add(parentId);
+      return;
+    }
+    const wiring = deps.redrive;
+    if (wiring === undefined) {
+      fail(err);
+      return;
+    }
+    try {
+      await scheduleRedrive(wiring.timers, parentId, 0, now(), wiring.backoff);
+    } catch (writeErr) {
+      fail(writeErr); // the row could not be written: recover() is the backstop
+    }
+  };
   const resumeParent = async (
     parentId: string,
     payload: unknown,
@@ -1044,6 +1130,8 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     const body = key !== undefined ? { ...(payload as object), viewDigest: key } : payload;
     let fence: number | undefined;
     let fences = 0;
+    let fenceIfAt: number | undefined;
+    let fenceIfTries = 0;
     try {
       for (let attempt = 0; ; attempt++) {
         if (key !== undefined) {
@@ -1055,7 +1143,11 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           const handle = await deps.runtime.resume(
             parentId,
             { eventType: CHILD_DONE, payload: body },
-            { ...sys, ...(fence !== undefined && { fence }) }
+            {
+              ...sys,
+              ...(fence !== undefined && { fence }),
+              ...(fenceIfAt !== undefined && { fenceIfParkedAt: fenceIfAt }),
+            }
           );
           err = await observeResume(handle, parentId, key);
           if (err === null) {
@@ -1070,6 +1162,10 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           }
         } catch (e) {
           err = e;
+        }
+        if (err instanceof ResumeContendedError) {
+          await onContended(parentId, err);
+          return;
         }
         if (err instanceof ResumeRefusedError) {
           if (err.reason === "gate-mismatch" || err.reason === "view-digest-mismatch") return;
@@ -1087,7 +1183,22 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           const s = await deps.runtime.loadState(parentId, sys).catch(() => null);
           if (s !== null && !parkedOn(s, key)) return; // answered (by us or another): done.
         }
-        if (isStaleFence(err) && fences < 2) {
+        if (isStaleFence(err) && fenceIfSupported && fenceIfTries < FENCE_IF_TRIES) {
+          // The parent was fenced before: answer THIS park under a conditional fence.
+          try {
+            const cur = await deps.runtime.loadState(parentId, sys).catch(() => null);
+            if (key !== undefined && cur !== null && !parkedOn(cur, key)) return; // answered meanwhile.
+            const parkSeq = await deps.runtime.parkedAtSequence(parentId, sys);
+            if (parkSeq === undefined) return; // no park to answer (answered, compacted, gone).
+            fenceIfAt = parkSeq;
+            fenceIfTries++;
+          } catch (readErr) {
+            fail(readErr);
+            return;
+          }
+          continue;
+        }
+        if (isStaleFence(err) && !fenceIfSupported && fences < 2) {
           try {
             if (key !== undefined) {
               const now = await deps.runtime.loadState(parentId, sys).catch(() => null);
@@ -1650,6 +1761,54 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     return summary;
   };
 
+  // ADR 0118 D3 — "is a parent durably parked on this child?" (the retention pin).
+  const parkedOnChild = async (childId: string): Promise<boolean> => {
+    const sys = deps.runtime.systemOptions();
+    try {
+      // The parent edge: the child's OWN recorded `parent` (sequence 0; only the lineage grant
+      // writes it, so a caller cannot forge one). Before R3k logs carried none: fall back to what
+      // this supervisor has rebuilt (a group member's group, or a child it started/specced).
+      const first = (await readRangeOf(deps.runtime.events, childId, 0, 0))[0];
+      const recorded = (first?.payload as { parent?: unknown } | null | undefined)?.parent;
+      let parentId: string | undefined =
+        typeof recorded === "string" && recorded.length > 0 ? recorded : undefined;
+      if (parentId === undefined) {
+        const member = memberOf.get(childId);
+        if (member !== undefined) parentId = groups.get(member.groupId)?.parentId;
+        else if (started.has(childId) || specs.has(childId)) parentId = parentOf(childId);
+      }
+      if (parentId === undefined) return false;
+      const st = await deps.runtime.loadState(parentId, sys);
+      if (st?.status !== "suspended" || st.suspendedOn?.on !== CHILD_DONE) return false;
+      const key = st.suspendedOn.correlationKey;
+      if (key === undefined) return false;
+      if (key === childId) return true; // a single child: the park's key IS the child id
+      const { grp } = await durableSpawn(parentId, key);
+      return grp?.members.some((m) => m.childId === childId) ?? false;
+    } catch {
+      // Unreadable is not "safe to delete": a retention pass must fail toward KEEPING the log.
+      return true;
+    }
+  };
+
+  // ADR 0118 D4 — the re-driver this supervisor contributes to the `TimerService`: re-derive the
+  // resume of ONE parked parent from the log (`adopt`) and say whether it is still contended.
+  const redriver: Redriver = async (parentId) => {
+    const st = await loadParent(parentId);
+    if (st === undefined) return "contended"; // an unreadable store is retried, not dropped
+    if (st === null || st.status !== "suspended" || st.suspendedOn?.on !== CHILD_DONE) {
+      return "noop"; // answered (or gone): nothing to drive
+    }
+    redriving.add(parentId);
+    try {
+      await adopt(parentId);
+    } finally {
+      redriving.delete(parentId);
+    }
+    return redriveContended.delete(parentId) ? "contended" : "done";
+  };
+  deps.redrive?.service.registerRedriver(redriver);
+
   return {
     onEvent(event: EventEnvelope): void {
       if (event.eventType === "DECISION_RECORDED") {
@@ -1729,6 +1888,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
       }
     },
     recover,
+    parkedOnChild,
     size: () => ({
       specs: specs.size,
       started: started.size,

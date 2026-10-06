@@ -84,6 +84,7 @@ export class EncryptingEventStore implements EventStore {
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
+  readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -132,6 +133,7 @@ export class EncryptingEventStore implements EventStore {
       readRange: (executionId, from, to) =>
         inner.readRange!(executionId, from, to).then((evs) => this.decryptAll(executionId, evs)),
       acquireFence: "forward",
+      acquireFenceIf: "forward",
       // copyPrefix copies CIPHERTEXT verbatim in the inner store — a fork must
       // resolve to the parent's subject (A2) for the copied prefix to stay readable.
       copyPrefix: "forward",

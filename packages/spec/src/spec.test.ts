@@ -285,6 +285,11 @@ const NOT_A_CAPABILITY = new Set([
   // identity half of existing capabilities (K12.1 principal, K2 ring, R3 execution authz); the
   // kernel records and rehydrates, every decision stays in 1P. No new subsystem to grade.
   "0111",
+  // 0118 — R8k: an optional EventStore method (the conditional fence), a runtime option, a
+  // retryable error and a timer-store field. It completes existing capabilities (K9.4 fencing,
+  // the R8 supervisor, T1 timers, the K10.6 pin seam); the SPI version is already in the
+  // compatibility matrix. No new subsystem to grade.
+  "0118",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

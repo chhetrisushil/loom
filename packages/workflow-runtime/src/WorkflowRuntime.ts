@@ -67,6 +67,7 @@ import {
   FlowCodeMismatchError,
   FlowMigrationCheckError,
   InputValidationError,
+  ResumeContendedError,
   ResumePayloadValidationError,
   ResumeRefusedError,
   StartFencedOutError,
@@ -466,6 +467,9 @@ const STRAY_WARNING_MEMORY = 4096;
 
 /** R3k round 2 (ADR 0111 D6) — how far up a `parent` chain an owner is looked for. */
 const MAX_LINEAGE_HOPS = 8;
+
+/** ADR 0118 D2 — conditional-fence attempts before a resume surfaces `ResumeContendedError`. */
+const FENCE_IF_ATTEMPTS = 3;
 
 /** The `parent` recorded on an execution's sequence 0 (`undefined` for any other envelope). */
 function parentOfFirst(first: EventEnvelope | undefined): string | undefined {
@@ -1640,6 +1644,68 @@ export class WorkflowRuntime {
     return this.fenceOf(executionId);
   }
 
+  /**
+   * ADR 0118 D2 — answer the park at `parkSeq` under a CONDITIONAL fence (see
+   * {@link RunOptions.fenceIfParkedAt}). The resume was already authorized and validated by the
+   * caller; this only decides which fence token the append carries.
+   */
+  private async acquireFenceIfParked(
+    executionId: string,
+    resumeEvent: ResumeEvent,
+    parkSeq: number,
+    system: SystemGrant | undefined,
+    /** What the caller already folded and read: spares a read of the park and a re-fold. */
+    held: { state: ExecutionState; events: readonly EventEnvelope[] | undefined }
+  ): Promise<number | undefined> {
+    const store = this.eventStore;
+    // A store without the conditional keeps today's behaviour (the unconditional acquire and its
+    // documented residual); one without fencing at all yields no token.
+    if (store.acquireFenceIf === undefined) return this.fenceOf(executionId);
+    const notSuspended = (detail: string): ResumeRefusedError =>
+      new ResumeRefusedError(executionId, resumeEvent.eventType, "not-suspended", detail);
+    const park =
+      held.events?.find((e) => e.sequence === parkSeq) ??
+      (await readRangeOf(store, executionId, parkSeq, parkSeq))[0];
+    if (park === undefined || park.eventType !== "EXECUTION_SUSPENDED") {
+      throw notSuspended(`no park at sequence ${parkSeq}. Nothing was appended.`);
+    }
+    // The token the park was written under; a never-fenced execution is 0. It goes stale forever
+    // once anyone acquires without appending, which is what the retry below handles.
+    const recorded = park.metadata?.fence;
+    let fence = typeof recorded === "number" && Number.isSafeInteger(recorded) ? recorded : 0;
+    for (let attempt = 1; attempt <= FENCE_IF_ATTEMPTS; attempt++) {
+      const got = await store.acquireFenceIf(executionId, { fence, parkSeq });
+      if (!("stale" in got)) {
+        // Defence in depth for a store whose condition is weaker than the SPI's: the park must
+        // still be this unanswered one UNDER the fence we now hold.
+        // The fold in hand plus whatever was appended since (one tail read, folded incrementally —
+        // the same fold a fresh `loadState` would produce).
+        const tail = await store.readFrom(executionId, held.state.sequence + 1);
+        const fresh = tail.length === 0 ? held.state : new ReplayVM(tail, held.state).getState();
+        this.assertResumable(executionId, fresh, resumeEvent, "all", system);
+        return got.fence;
+      }
+      // Stale: the token moved, or an answering event is past the park. Re-read the park. If it is
+      // still THIS park, unanswered, the token moved only because someone acquired and never
+      // appended; retry on the token the store returned (never the envelope's, which a dead
+      // acquirer strands) with the SAME `parkSeq`. The store, not this re-read, refuses a retry
+      // whose park a rival has since answered.
+      const state = await this.foldState(executionId);
+      if (
+        state === null ||
+        state.status !== "suspended" ||
+        (await this.locatePark(executionId, state, { events: undefined, complete: false })) !==
+          parkSeq
+      ) {
+        throw notSuspended(
+          `the park at sequence ${parkSeq} is no longer the execution's unanswered park. Nothing was appended.`
+        );
+      }
+      fence = got.fence;
+    }
+    throw new ResumeContendedError(executionId, FENCE_IF_ATTEMPTS);
+  }
+
   /** The ungated fence acquisition, for callers that already authorized the op. */
   private async fenceOf(executionId: string): Promise<number | undefined> {
     if (this.eventStore.acquireFence === undefined) return undefined;
@@ -2294,6 +2360,19 @@ export class WorkflowRuntime {
       approval
     );
 
+    // ADR 0118 D2 — the conditional fence is taken LAST, after every check that can refuse without
+    // appending: a fence acquired and then abandoned supersedes whoever holds the old one.
+    const fence =
+      options?.fenceIfParkedAt !== undefined
+        ? await this.acquireFenceIfParked(
+            executionId,
+            resumeEvent,
+            options.fenceIfParkedAt,
+            options.system,
+            { state: vm.getState(), events: allEvents ?? tailEvents }
+          )
+        : options?.fence;
+
     return this.execute(
       executionId,
       workflowId,
@@ -2306,7 +2385,7 @@ export class WorkflowRuntime {
         { eventType: resumeEvent.eventType, payload: resumePayload },
         ...answerEvents(vm.getState(), resumePayload),
       ],
-      options?.fence,
+      fence,
       options?.deadlineMs ?? resolved.definition.deadlineMs,
       // R3k (D2) — the owner recorded at sequence 0, on every resume path (an approval, a timer
       // wake, recovery, a remote worker): never the resumer.
@@ -2493,6 +2572,17 @@ export class WorkflowRuntime {
     );
 
     const recorded = state.variables._flowHash;
+    // ADR 0118 D2 — last, after every refusal that appends nothing (see `resume`).
+    const fence =
+      options.fenceIfParkedAt !== undefined
+        ? await this.acquireFenceIfParked(
+            executionId,
+            resumeEvent,
+            options.fenceIfParkedAt,
+            options.system,
+            { state: vm.getState(), events: allEvents }
+          )
+        : options.fence;
     return this.execute(
       executionId,
       workflowId,
@@ -2515,7 +2605,7 @@ export class WorkflowRuntime {
         { eventType: resumeEvent.eventType, payload: resumePayload },
         ...answerEvents(state, resumePayload),
       ],
-      options.fence,
+      fence,
       options.deadlineMs ?? target.definition.deadlineMs,
       await this.actingPrincipal(executionId, options.principal, { first: firstEvent })
     );

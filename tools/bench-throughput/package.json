@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "bench": "tsc --build && node dist/index.js",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
-    "hardware": "tsc --build && node dist/hardware.js"
+    "hardware": "tsc --build && node dist/hardware.js",
+    "bench:fence": "tsc --build && node dist/fenceIf.js"
   },
   "dependencies": {
     "@loom/core": "workspace:*",
