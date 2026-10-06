@@ -549,3 +549,5 @@ send refused (strict) with the stream, the owner's log and the timer store untou
 bounds (send cost, trim below the oldest unconsumed message never touching the head, `InboxFullError`,
 the stream deleted with its chain); a fork leaves the chain. The protocol tests run on memory and SQLite
 and, with `LOOM_TEST_POSTGRES_URL`, on Postgres.
+
+**Live `onEvent` order (review round 4).** An inbox delivery's batch (and a duplicate-only advance) fires `onEvent` only once it is durable, so a retried or lost batch is never shown to live subscribers. Because projections and the compliance subject index fold in sequence order, the journal holds every LATER envelope's `onEvent` behind a pending deferred batch and releases them in sequence order when it lands; a lost batch's envelopes are dropped and what queued behind it is delivered. With nothing deferred, `onEvent` stays synchronous, exactly as before.
