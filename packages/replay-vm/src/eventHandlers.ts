@@ -204,7 +204,12 @@ function withoutFailedWhileParked(variables: Record<string, unknown>): Record<st
 // carries one of those names in an existing log therefore folds as the no-op it always was
 // (byte-identically), even though a handler now exists and no kernel writer does yet (ADR 0110
 // "Marker"; design §3). The journal stamps the marker for {@link KERNEL_STAMPED_EVENT_TYPES}.
-// A wait-addressed EXECUTION_RESUMED carries the same stamp (ADR 0110 D3).
+// Four more shapes ride the same stamp but are stamped by their WRITER through commit
+// `opts.metadata` (the kind also has an unstamped, userspace form, so the journal cannot stamp by
+// type): a wait-addressed EXECUTION_RESUMED (ADR 0110 D3), an EXECUTION_SUSPENDED carrying
+// `condition.waits` (D4 — the R2 writer adds `waits` AFTER the commit site's strip and stamps
+// the event; an unstamped park's `waits` is dropped by the fold), and an OUTCOME_RECORDED
+// carrying `recordedBy` / `late` (ADR 0116; the `recordOutcome` writer).
 
 /** Kinds whose fold requires the kernel stamp, and which the journal stamps when it writes one. */
 export const KERNEL_STAMPED_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -264,7 +269,7 @@ function addCustomDimensions(
       names++;
     }
     next ??= { ...prior };
-    next[name] = (next[name] ?? 0) + v;
+    next[name] = (Object.hasOwn(next, name) ? (next[name] as number) : 0) + v;
   }
   return next ?? prior;
 }
@@ -278,6 +283,10 @@ function seedResources(raw: unknown): Record<string, unknown> | undefined {
   const memBytes = num(raw.memBytes);
   const wallMs = num(raw.wallMs);
   const netBytes = num(raw.netBytes);
+  // A quota denial survives a rotation: the successor of an execution that exceeded its budget
+  // starts exceeded, with the reason it was given (a continue-as-new cannot reset a quota).
+  const exceeded = raw.exceeded === true;
+  const reason = exceeded && typeof raw.reason === "string" ? raw.reason : undefined;
   return {
     tokens: num(raw.tokens),
     costUsd: num(raw.costUsd),
@@ -287,6 +296,8 @@ function seedResources(raw: unknown): Record<string, unknown> | undefined {
     ...(wallMs > 0 && { wallMs }),
     ...(netBytes > 0 && { netBytes }),
     ...(custom !== undefined && { custom }),
+    ...(exceeded && { exceeded: true }),
+    ...(reason !== undefined && { reason }),
   };
 }
 
@@ -328,10 +339,14 @@ function parseWaitResume(state: ExecutionState, event: EventEnvelope): WaitResum
   if (!isPlain(p) || typeof p.waitId !== "string" || !Object.hasOwn(p, "payload")) {
     return undefined;
   }
-  const wait =
-    state.status === "suspended"
-      ? state.suspendedOn?.waits?.find((w) => w.waitId === p.waitId)
-      : undefined;
+  // The table is the fold-owned `suspendedOn.waits`: it exists ONLY when the park was a
+  // kernel-stamped EXECUTION_SUSPENDED (the handler drops `waits` from an unstamped one), and
+  // holds only well-formed entries, so a userspace park can never be answered as a multi-wait.
+  // Total: a non-array or malformed entry is skipped, never thrown.
+  const table: unknown = state.status === "suspended" ? state.suspendedOn?.waits : undefined;
+  const wait = Array.isArray(table)
+    ? (table as unknown[]).find((w): w is SuspendWait => isPlain(w) && w.waitId === p.waitId)
+    : undefined;
   if (wait === undefined || !safeMapKey(p.waitId)) return { answer: false };
   return { answer: true, waitId: p.waitId, wait, inner: p.payload };
 }
@@ -607,7 +622,9 @@ const handlers: Record<string, Handler> = {
       | { cursors?: Record<string, number>; dedupe?: string[] }
       | undefined;
     const cursors = ownedRecord(prior?.cursors);
-    cursors[p.topic] = Math.max(cursors[p.topic] ?? -1, p.inboxSeq as number);
+    // Own-property read: a topic named `toString` / `valueOf` must not read a prototype member.
+    const was = Object.hasOwn(cursors, p.topic) ? (cursors[p.topic] as number) : -1;
+    cursors[p.topic] = Math.max(was, p.inboxSeq as number);
     const window = prior?.dedupe;
     const duplicate = window?.includes(p.messageId) === true;
     let dedupe = window;
@@ -641,25 +658,42 @@ const handlers: Record<string, Handler> = {
       };
     };
     let variables = withoutFailedWhileParked(state.variables);
-    // 1.23.0 (ADR 0110 D4) — a timer arm's `wakeAt` is recorded at its FIRST registration and
-    // served on every later one, so sibling traffic cannot push a deadline out.
-    const waits: unknown = payload.condition?.waits;
-    if (Array.isArray(waits)) {
-      let recorded: Record<string, unknown> | undefined;
-      for (const w of waits as unknown[]) {
-        if (!isPlain(w) || w.kind !== "timer" || !safeMapKey(w.waitId)) continue;
-        if (typeof w.wakeAt !== "number" || !Number.isFinite(w.wakeAt)) continue;
-        recorded ??= ownedRecord(variables._waits as Record<string, unknown> | undefined);
-        if (!Object.hasOwn(recorded, w.waitId)) {
-          recorded[w.waitId] = { kind: "timer", wakeAt: w.wakeAt };
+    // 1.23.0 (ADR 0110 D4) — `condition.waits` is honoured ONLY on a kernel-stamped park (the R2
+    // writer stamps `metadata.kernel` on every EXECUTION_SUSPENDED that carries waits; the
+    // runtime's commit site strips `waits` from every userspace park, so no unstamped event
+    // carries them — this is the fold's own guard for a log it did not write). An unstamped
+    // park's `waits` is dropped from `suspendedOn` too, so nothing downstream (the wait-addressed
+    // resume's lookup, `loom` introspection) can read a table userspace wrote.
+    let condition: unknown = payload.condition;
+    if (isPlain(condition) && Object.hasOwn(condition, "waits")) {
+      const { waits: raw, ...rest } = condition;
+      condition = rest;
+      if (isKernelWritten(event) && Array.isArray(raw)) {
+        const clean = (raw as unknown[]).filter(
+          (w): w is SuspendWait =>
+            isPlain(w) &&
+            safeMapKey(w.waitId) &&
+            (w.kind === "gate" || w.kind === "inbox" || w.kind === "timer")
+        );
+        condition = { ...rest, waits: clean };
+        // A timer arm's `wakeAt` is recorded at its FIRST registration and served on every
+        // later one, so sibling traffic cannot push a deadline out.
+        let recorded: Record<string, unknown> | undefined;
+        for (const w of clean) {
+          if (w.kind !== "timer") continue;
+          if (typeof w.wakeAt !== "number" || !Number.isFinite(w.wakeAt)) continue;
+          recorded ??= ownedRecord(variables._waits as Record<string, unknown> | undefined);
+          if (!Object.hasOwn(recorded, w.waitId)) {
+            recorded[w.waitId] = { kind: "timer", wakeAt: w.wakeAt };
+          }
         }
+        if (recorded !== undefined) variables = { ...variables, _waits: recorded };
       }
-      if (recorded !== undefined) variables = { ...variables, _waits: recorded };
     }
     return {
       ...state,
       status: "suspended",
-      suspendedOn: payload.condition,
+      suspendedOn: condition as typeof payload.condition,
       ...(variables !== state.variables && { variables }),
       updatedAt: event.timestamp,
     };
@@ -902,13 +936,16 @@ const handlers: Record<string, Handler> = {
   // loop while keeping every future route a logged decision (P9). Folded into a
   // reserved `_outcomes` audit list; pure audit, does not change status.
   OUTCOME_RECORDED: (state, event) => {
+    const kernel = isKernelWritten(event);
     const p = event.payload as {
       key: string;
       success?: boolean;
       score?: number;
       decisionId?: string;
-      // 1.23.0 (ADR 0116) — written only by `recordOutcome`; userspace emits carrying them
-      // are refused by `guardUserspaceEmit`. Absent = a live, in-run outcome.
+      // 1.23.0 (ADR 0116) — written only by `recordOutcome`, which stamps `metadata.kernel`;
+      // the fold reads them ONLY from a stamped envelope (a userspace emit is refused by
+      // `guardUserspaceEmit`, and a log it did not write is not trusted either). Absent = a
+      // live, in-run outcome.
       recordedBy?: string;
       late?: boolean;
     };
@@ -921,8 +958,8 @@ const handlers: Record<string, Handler> = {
           ...(p.success !== undefined && { success: p.success }),
           ...(p.score !== undefined && { score: p.score }),
           ...(p.decisionId !== undefined && { decisionId: p.decisionId }),
-          ...(typeof p.recordedBy === "string" && { recordedBy: p.recordedBy }),
-          ...(p.late === true && { late: true }),
+          ...(kernel && typeof p.recordedBy === "string" && { recordedBy: p.recordedBy }),
+          ...(kernel && p.late === true && { late: true }),
         }),
       },
       updatedAt: event.timestamp,

@@ -480,17 +480,17 @@ optional field and a MINOR bump), never an edit in place.
 | `EXECUTION_STARTED` | `principal: { v: 1, ref?, identity?, delegation? }` (a fork's `forkedBy` envelope metadata wins) | `_principal` | 0111 |
 | | `parent: string` | `_parent` | 0111 |
 | | `chainId`, `generation`, `continuedFrom: { executionId, carried? }` (a fork's `forkChain` metadata wins and drops `continuedFrom`) | `_chain = { chainId, generation, continuedFrom? }` | 0109 |
-| | `continuedFrom.carried.{resources, inbox}` (validated; an invalid carry is ignored, never thrown; not applied to a fork) | seeds `_resources`, `_inbox`; `chainDeadline` stays in `_chain.continuedFrom.carried` | 0109 D3 |
+| | `continuedFrom.carried.{resources, inbox}` (validated; an invalid carry is ignored, never thrown; not applied to a fork; `resources` includes `exceeded`/`reason`, so a rotation cannot reset a quota) | seeds `_resources`, `_inbox`; `chainDeadline` stays in `_chain.continuedFrom.carried` | 0109 D3 |
 | | `codeHash: string` | `_codeHash` | 0113 |
-| `EXECUTION_SUSPENDED` | `condition.waits[]: { waitId, kind: "gate"|"inbox"|"timer", on?, topic?, viewDigest?, correlationKey?, wakeAt? }` (also kept verbatim in `suspendedOn`) | `_waits[waitId] = { kind: "timer", wakeAt }`, set at the FIRST park that lists the timer arm | 0110 D4 |
+| `EXECUTION_SUSPENDED` | `condition.waits[]: { waitId, kind: "gate"|"inbox"|"timer", on?, topic?, viewDigest?, correlationKey?, wakeAt? }`, **honoured only on a kernel-stamped park** (the runtime's commit site strips `waits` from every userspace park; the R2 writer adds it afterwards and stamps the event). Unstamped, the fold drops it from `suspendedOn` too | stamped: the well-formed entries are kept in `suspendedOn.waits` (the table a wait-addressed resume reads) and `_waits[waitId] = { kind: "timer", wakeAt }` is set at the FIRST park that lists the timer arm; malformed entries are skipped, never thrown | 0110 D4 |
 | `EXECUTION_RESUMED` | a **wait-addressed** resume: `metadata.kernel === true` and payload `{ waitId, payload }`, unwrapped by the fold | `_waitAnswers[waitId] = { kind, name, payload }` (kind and name from the park's wait; first answer wins); drops `_waits[waitId]`; never enters `_resumePayloads`. Naming no wait of the current park: status-only re-open | 0110 D3 |
 | `PARALLEL_COMPLETED` | `{ scopePath, failedBranch, error, cancelled[] }`, **kernel-stamped only** (unstamped: `updatedAt` only, as before) | `_scopes[scopePath] = { failedBranch, error, cancelled }` | 0112 D2 |
 | `RESOURCE_METERED` | `custom: Record<string, number>` (names `/^[a-z][a-z0-9._-]{0,63}$/`, not `constructor`/`prototype`, ≤ 32 per execution, each value finite in [0, 1e15]; a bad key is **skipped deterministically**, never thrown) | `_resources.custom` (absent until used) | 0115 D2 |
-| `OUTCOME_RECORDED` | `recordedBy: string`, `late: true` (userspace emits carrying them are refused) | ride on the `_outcomes` entry | 0116 |
+| `OUTCOME_RECORDED` | `recordedBy: string`, `late: true` (userspace emits carrying them are refused, and the fold reads them only from a kernel-stamped envelope) | ride on the `_outcomes` entry (stamped only) | 0116 |
 
 **Envelope metadata the fold reads (1.23.0):** `flowEmit` (1.19.0), and now `kernel` (the kinds and
 shapes marked above fold only a kernel-stamped envelope; the journal stamps `kernel: true` on
-`EXECUTION_CONTINUED`, `MESSAGE_CONSUMED` and `PARALLEL_COMPLETED`), `forkChain` and `forkedBy`
+`EXECUTION_CONTINUED`, `MESSAGE_CONSUMED` and `PARALLEL_COMPLETED`; the R2 / `recordOutcome` writers stamp a park carrying `waits`, a wait-addressed resume and an outcome carrying `recordedBy`/`late` through the commit's metadata), `forkChain` and `forkedBy`
 (read from the `EXECUTION_STARTED` envelope: a fork leaves its chain and acts as the forker). No
 ingress accepts caller metadata, so the stamp cannot be forged.
 

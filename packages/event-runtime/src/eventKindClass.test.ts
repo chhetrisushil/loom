@@ -2,6 +2,11 @@ import { KERNEL_EVENT_KINDS } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { EVENT_KIND_CLASS, isAnsweringKind } from "./eventKindClass";
 
+const env = (eventType: string, metadata?: Record<string, unknown>) => ({
+  eventType,
+  ...(metadata !== undefined && { metadata }),
+});
+
 describe("answering / ignorable classification (ADR 0118 D1)", () => {
   it("classifies every kernel kind, and nothing else", () => {
     expect(Object.keys(EVENT_KIND_CLASS).sort()).toEqual([...KERNEL_EVENT_KINDS].sort());
@@ -21,13 +26,36 @@ describe("answering / ignorable classification (ADR 0118 D1)", () => {
 
   it("audit appends that follow a park never answer it", () => {
     for (const k of ["EXECUTION_DENIED", "OUTCOME_RECORDED", "STEP_FAILED", "MESSAGE_CONSUMED"]) {
-      expect(isAnsweringKind(k)).toBe(false);
+      expect(isAnsweringKind(env(k))).toBe(false);
     }
   });
 
-  it("a kind absent from the map is answering (fail-closed), including prototype names", () => {
-    for (const k of ["SOME_FUTURE_KIND", "__proto__", "constructor", "toString", ""]) {
-      expect(isAnsweringKind(k)).toBe(true);
+  it("a kernel kind is classified by its entry, stamped or not", () => {
+    expect(isAnsweringKind(env("EXECUTION_RESUMED"))).toBe(true);
+    expect(isAnsweringKind(env("EXECUTION_RESUMED", { kernel: true }))).toBe(true);
+    expect(isAnsweringKind(env("STEP_STARTED", { kernel: true }))).toBe(false);
+  });
+
+  it("an APPLICATION kind never answers, so a parallel sibling's emit after the park cannot stale the acquire", () => {
+    // ctx.emit stamps `flowEmit`; ctx.stream deltas and app events carry no kernel stamp.
+    for (const e of [
+      env("app.sibling.emitted", { flowEmit: true }),
+      env("stream.delta"),
+      env("SOME_APP_KIND"),
+      env("__proto__"),
+      env("constructor"),
+      env("toString"),
+      env(""),
+    ]) {
+      expect(isAnsweringKind(e), JSON.stringify(e)).toBe(false);
     }
+    // a stamp that is not literally `true` is not a kernel claim
+    expect(isAnsweringKind(env("SOME_APP_KIND", { kernel: "true" }))).toBe(false);
+    expect(isAnsweringKind(env("SOME_APP_KIND", { kernel: 1 }))).toBe(false);
+  });
+
+  it("an unknown KERNEL kind (a newer node in a mixed fleet, stamped) is answering: fail-closed", () => {
+    expect(isAnsweringKind(env("EXECUTION_REWOUND", { kernel: true }))).toBe(true);
+    expect(isAnsweringKind(env("__proto__", { kernel: true }))).toBe(true);
   });
 });

@@ -306,16 +306,22 @@ export const FOLD_VECTORS: FoldVector[] = [
     name: "a multi-wait park answered per wait (MESSAGE_CONSUMED, then a wait-addressed resume)",
     events: [
       ev("v9", 0, "EXECUTION_STARTED", { input: {} }),
-      ev("v9", 1, "EXECUTION_SUSPENDED", {
-        condition: {
-          on: "Approval",
-          waits: [
-            { waitId: "#0", kind: "gate", on: "Approval" },
-            { waitId: "#1", kind: "inbox", topic: "chat" },
-            { waitId: "#2", kind: "timer", wakeAt: 7000 },
-          ],
+      ev(
+        "v9",
+        1,
+        "EXECUTION_SUSPENDED",
+        {
+          condition: {
+            on: "Approval",
+            waits: [
+              { waitId: "#0", kind: "gate", on: "Approval" },
+              { waitId: "#1", kind: "inbox", topic: "chat" },
+              { waitId: "#2", kind: "timer", wakeAt: 7000 },
+            ],
+          },
         },
-      }),
+        { kernel: true }
+      ),
       ev(
         "v9",
         2,
@@ -367,13 +373,13 @@ export const FOLD_VECTORS: FoldVector[] = [
         { kernel: true }
       ),
       ev("v10", 2, "RESOURCE_METERED", { ms: 1, custom: { gpu_seconds: 2, "Bad Key": 9 } }),
-      ev("v10", 3, "OUTCOME_RECORDED", {
-        key: "route",
-        score: 1,
-        decisionId: "d",
-        recordedBy: "ops",
-        late: true,
-      }),
+      ev(
+        "v10",
+        3,
+        "OUTCOME_RECORDED",
+        { key: "route", score: 1, decisionId: "d", recordedBy: "ops", late: true },
+        { kernel: true }
+      ),
     ],
     expected: {
       status: "running",
@@ -413,6 +419,33 @@ export const FOLD_VECTORS: FoldVector[] = [
       status: "running",
       sequence: 3,
       variables: { _input: {} },
+      frames: {},
+    },
+  },
+  {
+    // ADR 0110 D3/D4: `waits` is honoured only on a kernel-stamped EXECUTION_SUSPENDED. A flow that
+    // forges one (no stamp) pins nothing, records no deadline, and a stamped wait-addressed
+    // resume naming its wait answers nothing; an unstamped OUTCOME_RECORDED claiming
+    // recordedBy/late folds without them.
+    name: "an unstamped park's waits and an unstamped outcome's recordedBy/late are userspace and dropped",
+    events: [
+      ev("v13", 0, "EXECUTION_STARTED", { input: {} }),
+      ev("v13", 1, "EXECUTION_SUSPENDED", {
+        condition: {
+          on: "A",
+          waits: [
+            { waitId: "root#0", kind: "timer", wakeAt: 9e15 },
+            { waitId: "#0", kind: "gate", on: "A" },
+          ],
+        },
+      }),
+      ev("v13", 2, "EXECUTION_RESUMED", { waitId: "#0", payload: "yes" }, { kernel: true }),
+      ev("v13", 3, "OUTCOME_RECORDED", { key: "k", score: 1, recordedBy: "ops", late: true }),
+    ],
+    expected: {
+      status: "running",
+      sequence: 3,
+      variables: { _input: {}, _outcomes: [{ key: "k", score: 1 }] },
       frames: {},
     },
   },

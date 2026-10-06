@@ -69,3 +69,41 @@ describe("event kinds: handlers, type list, classification, writers", () => {
     expect(writerless.sort()).toEqual(Object.keys(RESERVED_NO_WRITER).sort());
   });
 });
+
+// P2-2 (W2-0 review): `EXECUTION_CONTINUED` is a terminal fact. A consumer keyed on the terminal
+// EVENT KIND (not on the folded status) that lists the other terminals and forgets this one
+// leaks per-execution state forever. Any literal array / Set that names BOTH
+// EXECUTION_COMPLETED and EXECUTION_FAILED is a terminal-kind set and must name
+// EXECUTION_CONTINUED, unless it is allowlisted with the reason it must not.
+
+/** `file suffix` -> why the set deliberately omits EXECUTION_CONTINUED. */
+const TERMINAL_SET_EXCEPTIONS: Record<string, string> = {
+  "packages/orchestration/src/orchestration.ts":
+    "ChildResult settlement: a continued child is `look at the head` (ADR 0109 D6), never a result; following `_continuedTo` is R1b's",
+};
+
+describe("terminal-kind sets", () => {
+  it("every literal set naming EXECUTION_COMPLETED and EXECUTION_FAILED also names EXECUTION_CONTINUED (or is allowlisted)", () => {
+    const offenders: string[] = [];
+    const used = new Set<string>();
+    for (const file of allSources()) {
+      const text = readFileSync(file, "utf8");
+      for (const m of text.matchAll(/\[[^[\]]*\]/g)) {
+        const body = m[0];
+        if (!body.includes('"EXECUTION_COMPLETED"') || !body.includes('"EXECUTION_FAILED"')) {
+          continue;
+        }
+        if (body.includes('"EXECUTION_CONTINUED"')) continue;
+        const rel = file.slice(ROOT.length + 1);
+        if (Object.hasOwn(TERMINAL_SET_EXCEPTIONS, rel)) {
+          used.add(rel);
+          continue;
+        }
+        offenders.push(`${rel}: ${body.replace(/\s+/g, " ").slice(0, 120)}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+    // an allowlist row that no longer matches anything is stale
+    expect([...used].sort()).toEqual(Object.keys(TERMINAL_SET_EXCEPTIONS).sort());
+  });
+});

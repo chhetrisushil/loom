@@ -8,6 +8,7 @@ import { linkSignals, parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
 import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
+import { markKernelHumanPark } from "./kernelPark";
 import { discardDecisionId } from "./strayPassthroughs";
 import {
   DecideScopeClosedError,
@@ -466,7 +467,9 @@ export class WorkflowContextImpl implements WorkflowContext {
       if (err instanceof SuspendError) {
         // ADR 0104 — a human step's park names the step, so the answer can be attributed to
         // it (and a pre-0104 park, which never did, told apart).
-        if (isHuman) throw new SuspendError({ ...err.condition, stepId: id });
+        if (isHuman) {
+          throw markKernelHumanPark(new SuspendError({ ...err.condition, stepId: id }));
+        }
         throw err;
       }
       // A cancelled execution surfaces here as an effect rejection. Record it as
@@ -698,8 +701,14 @@ export class WorkflowContextImpl implements WorkflowContext {
     // it as a one-entry list so single-gate flows resume byte-identically.
     const answer = this.takePassthrough();
     if (answer !== undefined) return Promise.resolve(answer.payload) as Promise<T>;
-    // `stepId` marks a KERNEL human-step park (ADR 0104); a flow cannot claim it.
-    const { stepId: _kernelOnly, ...condition } = _config as SuspendConfig & { stepId?: unknown };
+    // `stepId` marks a KERNEL human-step park (ADR 0104) and `waits` is the kernel's multi-wait
+    // table (ADR 0110); a flow can claim neither. Stripped here for the early error, and again at
+    // the commit site (WorkflowRuntime) for the paths that never come through `ctx.suspend`.
+    const {
+      stepId: _kernelStep,
+      waits: _kernelWaits,
+      ...condition
+    } = _config as SuspendConfig & { stepId?: unknown; waits?: unknown };
     throw new SuspendError(condition);
   }
 

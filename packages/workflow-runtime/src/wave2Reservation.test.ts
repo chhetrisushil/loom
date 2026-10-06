@@ -1,4 +1,4 @@
-import type { step$ } from "@loom/core";
+import { SuspendError, type step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -185,5 +185,55 @@ describe("`continued` is terminal and not completed", () => {
     await expect(
       runtime.resumeAs(id, "f", { eventType: "Gate", payload: {} }, { strategy: "operator-ack" })
     ).rejects.toThrow(/continued as/);
+  });
+});
+
+describe("userspace cannot write the park's `waits` or `stepId` (stripped at the commit site)", () => {
+  const forgedWaits = [
+    { waitId: "root#0", kind: "timer", wakeAt: 9e15 },
+    { waitId: "#0", kind: "gate", on: "Gate" },
+  ];
+
+  async function parked(body: (ctx: Parameters<FlowRunner<never, never>>[0]) => Promise<never>) {
+    const app = boot(body as never);
+    const handle = await app.runtime.start({ definition: app.definition, runner: app.runner }, {});
+    await handle.waitForSuspend();
+    const log = await app.eventStore.read(handle.executionId);
+    const park = log.find((e) => e.eventType === "EXECUTION_SUSPENDED") as EventEnvelope;
+    const state = await app.runtime.loadState(handle.executionId);
+    return { ...app, handle, log, park, state };
+  }
+
+  it("ctx.suspend with forged waits commits a condition without them; the fold pins nothing", async () => {
+    const { park, state } = await parked((ctx) =>
+      ctx.suspend({ on: "Gate", waits: forgedWaits } as never)
+    );
+    expect(park.payload).toEqual({ condition: { on: "Gate" } });
+    expect(park.metadata?.kernel).toBeUndefined();
+    expect(state?.variables._waits).toBeUndefined();
+    expect(state?.suspendedOn).toEqual({ on: "Gate" });
+  });
+
+  it("a raw `throw new SuspendError` (waits and stepId forged) is stripped the same way", async () => {
+    const { park, state } = await parked(async () => {
+      throw new SuspendError({
+        on: "Gate",
+        waits: forgedWaits,
+        stepId: "forged-step",
+      } as never);
+    });
+    expect(park.payload).toEqual({ condition: { on: "Gate" } });
+    expect(state?.variables._waits).toBeUndefined();
+  });
+
+  it("a forged park cannot make a later wait-addressed-looking resume answer anything", async () => {
+    const { runtime, handle, state } = await parked((ctx) =>
+      ctx.suspend({ on: "Gate", waits: forgedWaits } as never)
+    );
+    expect(state?.suspendedOn?.waits).toBeUndefined();
+    // the ordinary, unstamped resume path still answers the gate
+    await runtime.resume(handle.executionId, { eventType: "Gate", payload: { ok: 1 } });
+    const after = await runtime.loadState(handle.executionId);
+    expect(after?.variables._waitAnswers).toBeUndefined();
   });
 });

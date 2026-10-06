@@ -40,6 +40,8 @@ function detailOf(event: EventEnvelope, redact: readonly string[]): string {
       return truncate(JSON.stringify(maskPaths(p.output, redact)));
     case "EXECUTION_FAILED":
       return truncate(String(p.error ?? ""));
+    case "EXECUTION_CONTINUED":
+      return p.successorId === undefined ? "" : `-> ${truncate(String(p.successorId))}`;
     default:
       return "";
   }

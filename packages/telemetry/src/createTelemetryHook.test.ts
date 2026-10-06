@@ -4,7 +4,12 @@ import { createTelemetryHook } from "./createTelemetryHook";
 import type { TelemetryAdapter } from "./types";
 
 let seq = 0;
-function ev(eventType: string, payload: unknown = {}, executionId = "x"): EventEnvelope {
+function ev(
+  eventType: string,
+  payload: unknown = {},
+  executionId = "x",
+  metadata?: Record<string, unknown>
+): EventEnvelope {
   seq += 1;
   return {
     id: `e-${seq}`,
@@ -14,6 +19,7 @@ function ev(eventType: string, payload: unknown = {}, executionId = "x"): EventE
     sequence: seq,
     timestamp: seq,
     payload,
+    ...(metadata !== undefined && { metadata }),
   };
 }
 
@@ -30,6 +36,31 @@ describe("createTelemetryHook — per-execution state cleanup (leak fix)", () =>
 
     expect(adapter.onFlowComplete).toHaveBeenCalledOnce();
     expect(adapter.onFlowResume).not.toHaveBeenCalled();
+  });
+
+  it("a kernel-stamped EXECUTION_CONTINUED is terminal too: the per-execution state is freed", () => {
+    seq = 0;
+    const adapter: TelemetryAdapter = { onFlowResume: vi.fn() };
+    const onStepStart = vi.fn();
+    const hook = createTelemetryHook({ ...adapter, onStepStart });
+    hook(ev("EXECUTION_STARTED"));
+    hook(ev("STEP_STARTED", { stepId: "a" }));
+    hook(ev("EXECUTION_CONTINUED", { successorId: "x~1" }, "x", { kernel: true }));
+    hook(ev("EXECUTION_RESUMED"));
+    expect(adapter.onFlowResume).not.toHaveBeenCalled(); // flowState freed
+    hook(ev("EXECUTION_STARTED"));
+    hook(ev("STEP_STARTED", { stepId: "a" }));
+    expect(onStepStart).toHaveBeenLastCalledWith(expect.objectContaining({ attempt: 1 })); // step map freed
+  });
+
+  it("an UNSTAMPED app event named EXECUTION_CONTINUED frees nothing", () => {
+    seq = 0;
+    const adapter: TelemetryAdapter = { onFlowResume: vi.fn() };
+    const hook = createTelemetryHook(adapter);
+    hook(ev("EXECUTION_STARTED"));
+    hook(ev("EXECUTION_CONTINUED", { successorId: "x~1" }));
+    hook(ev("EXECUTION_RESUMED"));
+    expect(adapter.onFlowResume).toHaveBeenCalledOnce();
   });
 
   it("still tracks a normal suspend→resume (state kept across suspension)", () => {

@@ -76,6 +76,16 @@ export function createTelemetryHook(adapter: TelemetryAdapter): (event: EventEnv
         break;
       }
 
+      case "EXECUTION_CONTINUED": {
+        // Terminal (ADR 0109): the predecessor hands off to a successor with its own
+        // EXECUTION_STARTED. Only a kernel-stamped event is the kernel's fact — an application
+        // event that happens to carry the name must not free a live execution's state.
+        if (event.metadata?.kernel !== true) break;
+        flowState.delete(executionId);
+        dropExecutionSteps(executionId);
+        break;
+      }
+
       case "EXECUTION_SUSPENDED": {
         const info = flowState.get(executionId);
         if (!info) break;

@@ -19,6 +19,11 @@
 //        `continueAsNew`, `receive` and `select` (ADRs 0109/0110) and deprecates `ui` (ADR 0114)
 //        in their item PRs; no syscall enters `KERNEL_SYSCALLS` here, because a syscall without a
 //        writer behind its `kernel.features` flag would be a lie in the table.
+//        1.3.0 therefore RESERVES those syscalls; it does not contain them. A syscall is
+//        available iff it is in `KERNEL_SYSCALLS`, and the wire handshake (`WIRE_ABI`) advertises
+//        that list next to `kernelAbiVersion`, so a client MUST feature-detect against the
+//        advertised `syscalls` and MUST NOT infer availability from `kernelAbiVersion >= 1.3.0`
+//        until the writers land.
 export const KERNEL_ABI_VERSION = "1.3.0";
 
 export type SyscallKind = "call" | "accessor";
