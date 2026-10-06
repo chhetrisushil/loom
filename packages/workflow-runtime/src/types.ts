@@ -177,10 +177,16 @@ export interface ExecutionContext {
    * `[step, input]` pair or a function `(b: BranchContext) => Promise<T>` (a sub-flow whose
    * steps all belong to the scope). Results come back in input order.
    *
-   * With `failFast` (default `true`) the first real branch failure aborts the scope: in-flight
-   * steps see it on their `signal` and record `STEP_CANCELLED`, queued branches never start, the
-   * call rethrows the first (by input order) real error, and the outcome is journaled as
-   * `PARALLEL_COMPLETED` so a re-run serves it instead of starting the cancelled branches.
+   * Needs `kernel.features.scopes` (default off: `parallel` is then the pre-R6 bounded
+   * `Promise.all`). With `failFast` (default `true`) the first real branch failure aborts the
+   * scope: in-flight steps see it on their `signal` and record `STEP_CANCELLED`, queued branches
+   * never start, and the outcome is journaled as `PARALLEL_COMPLETED` so a re-run serves it
+   * exactly (the branches the first run launched, the gate answers it consumed). The call throws
+   * ONE value on the first run and every re-run, rebuilt from the record: a `TypedFailure` stays
+   * typed, a class in `errorClasses` (or the built-in `Error` family) is rebuilt from its message,
+   * anything else is a `ParallelScopeFailedError`. Inside a branch, code that catches a step's
+   * error sees the effect's error on the first run but a `ScopeServedError` on a replay: rethrow it
+   * or use typed failures.
    *
    * A park (`SuspendError`) in one branch is NOT a failure: it is a barrier. New step starts are
    * frozen, in-flight siblings drain (or, with `onPark: "abort"`, are aborted first) within
@@ -860,15 +866,25 @@ export class StepTimeoutError extends Error {
 }
 
 /**
- * ADR 0112 D2 — the rethrow of a fail-fast `parallel` scope SERVED from its journaled
- * `PARALLEL_COMPLETED` record on a re-run (replay never depends on timing). It carries the
- * recorded error text; a typed failure (ADR 0060) is rethrown as the `TypedFailure` itself.
+ * A constructor the runtime may use to REHYDRATE an error class it only has the NAME and message
+ * of (ADR 0112 D2): a fail-fast scope journals its failing error as `{ name, message }`, and both
+ * the first run and every served re-run throw the value built from that record. It must be
+ * deterministic and construct from the message alone (no `cause`, no other state).
+ */
+export type ErrorClassCtor = new (message: string) => Error;
+
+/**
+ * ADR 0112 D2 — what a fail-fast `parallel` scope throws when its failing error's class is
+ * neither a `TypedFailure` nor registered (`WorkflowRuntimeDeps.errorClasses`, plus the built-in
+ * `Error` family): the recorded message, the scope's identity, and the original class `errorName`.
+ * The FIRST run and every served re-run (from the journaled `PARALLEL_COMPLETED`) throw the same.
  */
 export class ParallelScopeFailedError extends Error {
   constructor(
     message: string,
     readonly scopePath: string,
-    readonly failedBranch: number | undefined
+    readonly failedBranch: number | undefined,
+    readonly errorName?: string
   ) {
     super(message);
     this.name = "ParallelScopeFailedError";

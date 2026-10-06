@@ -75,6 +75,7 @@ import {
   TIMER_FIRED,
 } from "./types";
 import type {
+  ErrorClassCtor,
   ExecutionAuthorizer,
   ExecutionAuthzRequest,
   ExecutionHandle,
@@ -167,6 +168,26 @@ export interface WorkflowRuntimeDeps {
    * under the same idempotency key).
    */
   parkDrainMs?: number;
+  /**
+   * ADR 0112 D1/D2 — cancellation scopes: `ctx.parallel` aborts the scope on the first real branch
+   * failure, records `STEP_CANCELLED` for the work it cancels and journals `PARALLEL_COMPLETED`
+   * (a kernel-stamped record an OLDER node's fold ignores). **Default `false`** (the rolling-upgrade
+   * rule, `kernel.features.scopes`): off, `parallel` behaves as before R6 — no scope abort, no
+   * `STEP_CANCELLED` for a sibling, no scope record, a served re-run never consults one. Turn it on
+   * only once every node runs a version that folds the record. (The park barrier, ADR 0112 D3, is
+   * an ordering guarantee that writes no new event and is always on.) Set by
+   * `defineConfig({ kernel: { features: { scopes: true } } })`.
+   */
+  scopes?: boolean;
+  /**
+   * ADR 0112 D2 — error classes a fail-fast scope may REHYDRATE by name (composition-time,
+   * deterministic): the scope journals the failing error's `name` and message, and the first run
+   * and every served re-run throw an instance built `new ctor(message)`. `TypedFailure` stays typed
+   * and the built-in `Error` family is registered already; anything else is thrown as a
+   * `ParallelScopeFailedError` carrying the name. A constructor that throws, or returns a
+   * non-`Error`, falls back to `ParallelScopeFailedError`.
+   */
+  errorClasses?: Record<string, ErrorClassCtor>;
   /**
    * Take a mid-run snapshot every N committed events, bounding the replay tail so
    * a resume/recovery folds only ~N events instead of the whole log. Omit (or 0)
@@ -518,6 +539,8 @@ export class WorkflowRuntime {
   >();
   private readonly snapshotEvery: number | undefined;
   private readonly parkDrainMs: number | undefined;
+  private readonly scopes: boolean;
+  private readonly errorClasses: Record<string, ErrorClassCtor> | undefined;
   private readonly timerStore: TimerStore | undefined;
   private readonly resumeAuthenticator: ResumeAuthenticator | undefined;
   private readonly executionAuthorizer: ExecutionAuthorizer | undefined;
@@ -559,6 +582,8 @@ export class WorkflowRuntime {
     this.onWarn = deps.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
     this.snapshotEvery = deps.snapshotEvery;
     this.parkDrainMs = deps.parkDrainMs;
+    this.scopes = deps.scopes === true;
+    this.errorClasses = deps.errorClasses;
     this.resumeAuthenticator = deps.resumeAuthenticator;
     this.timerStore = deps.timerStore;
     this.executionAuthorizer = deps.executionAuthorizer;
@@ -3366,6 +3391,8 @@ export class WorkflowRuntime {
       {
         ...(this.parkDrainMs !== undefined && { parkDrainMs: this.parkDrainMs }),
         onWarn: this.onWarn,
+        scopes: this.scopes,
+        ...(this.errorClasses !== undefined && { errorClasses: this.errorClasses }),
       }
     );
 
@@ -3415,6 +3442,8 @@ export class WorkflowRuntime {
         const output = await runner(ctx, input);
 
         journal.commit("EXECUTION_COMPLETED", { output });
+        // ADR 0112 D3 — nothing from this execution's own (abandoned) work follows its terminal.
+        ctx.seal();
         await journal.drain(); // durability barrier
         await checkpointOnSettle(); // bound reads of the settled execution
         resolveCompletion(vm.getState());
@@ -3485,6 +3514,9 @@ export class WorkflowRuntime {
             return;
           }
           journal.commit("EXECUTION_SUSPENDED", { condition: committedCondition });
+          // Sealed the instant the park is enqueued — not only when the drain gave up: a branch
+          // that settled cleanly may still run user code, and none of it may append after the park.
+          ctx.seal();
           // MUST drain before snapshotting: a snapshot must never reference
           // events that are not yet durably in the log.
           try {
@@ -3549,6 +3581,7 @@ export class WorkflowRuntime {
         }
 
         journal.commit("EXECUTION_FAILED", { error: String(err) });
+        ctx.seal();
         try {
           await journal.drain();
         } catch (drainErr) {

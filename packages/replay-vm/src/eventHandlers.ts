@@ -561,15 +561,37 @@ const handlers: Record<string, Handler> = {
       failedBranch?: unknown;
       error?: unknown;
       cancelled?: unknown;
+      errorName?: unknown;
+      errorChannel?: unknown;
+      errorPayload?: unknown;
+      launched?: unknown;
+      consumed?: unknown;
+      cursor?: unknown;
     };
     if (!isPlain(p) || !safeMapKey(p.scopePath)) return { ...state, updatedAt: event.timestamp };
     const scopes = ownedRecord(state.variables._scopes as Record<string, unknown> | undefined);
+    // Amended 2026-10-06 (R6 review, user decision) — ADDITIVE optional fields, each folded only
+    // when well-formed; a record without them folds exactly as before (and a re-run serves it
+    // as before: it launches every branch and takes gate answers by position).
+    const nonNegInt = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+    const consumed = Array.isArray(p.consumed)
+      ? p.consumed.filter(
+          (e): e is [string, number] =>
+            Array.isArray(e) && e.length === 2 && typeof e[0] === "string" && nonNegInt(e[1])
+        )
+      : undefined;
     scopes[p.scopePath] = {
       ...(typeof p.failedBranch === "number" && { failedBranch: p.failedBranch }),
       ...(p.error !== undefined && { error: p.error }),
+      ...(typeof p.errorName === "string" && { errorName: p.errorName }),
+      ...(typeof p.errorChannel === "string" && { errorChannel: p.errorChannel }),
+      ...(p.errorPayload !== undefined && { errorPayload: p.errorPayload }),
       cancelled: Array.isArray(p.cancelled)
         ? p.cancelled.filter((id): id is string => typeof id === "string")
         : [],
+      ...(nonNegInt(p.launched) && { launched: p.launched }),
+      ...(consumed !== undefined && { consumed }),
+      ...(nonNegInt(p.cursor) && { cursor: p.cursor }),
     };
     return {
       ...state,

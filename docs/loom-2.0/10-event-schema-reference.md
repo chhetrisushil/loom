@@ -224,10 +224,15 @@ generalization.
 - Handler: `eventHandlers.ts`.
 
 #### `PARALLEL_COMPLETED`
-- **Introduced:** 1.x core.
-- **Payload:** `{}` (no fields read).
-- **Folds into:** nothing but `updatedAt` — a pure marker event; the individual `STEP_COMPLETED`
-  events carry the real per-branch state.
+- **Introduced:** 1.x core as a marker; 1.23.0 (ADR 0112 D2) gives it a payload and a writer.
+- **Payload (1.23.0):** `{ scopePath, failedBranch, error, cancelled[] }` plus ADDITIVE optional fields
+  (amended 2026-10-06, R6 review): `errorName`, `errorChannel`, `errorPayload` (the failing error's
+  class and, for a `TypedFailure`, its channel and bounded payload), `launched` (branches the scope
+  started), `consumed` (`[branchScopePath, answerIndex][]`: the gate answers each branch took) and
+  `cursor` (the gate-answer cursor after the scope). Written once per FAIL-FAST scope, only with
+  `kernel.features.scopes` on.
+- **Folds into:** `_scopes[scopePath]`, ONLY from a kernel-stamped envelope; unstamped it changes
+  nothing but `updatedAt`, as before 1.23.0. A record without the additive fields folds as before.
 - Handler: `eventHandlers.ts`.
 
 ### 2.4 Suspend / resume events
@@ -484,7 +489,7 @@ optional field and a MINOR bump), never an edit in place.
 | | `codeHash: string` | `_codeHash` | 0113 |
 | `EXECUTION_SUSPENDED` | `condition.waits[]: { waitId, kind: "gate"|"inbox"|"timer", on?, topic?, viewDigest?, correlationKey?, wakeAt? }`, **honoured only on a kernel-stamped park** (the runtime's commit site strips `waits` from every userspace park; the R2 writer adds it afterwards and stamps the event). Unstamped, the fold drops it from `suspendedOn` too | stamped: the well-formed entries are kept in `suspendedOn.waits` (the table a wait-addressed resume reads) and `_waits[waitId] = { kind: "timer", wakeAt }` is set at the FIRST park that lists the timer arm; malformed entries are skipped, never thrown | 0110 D4 |
 | `EXECUTION_RESUMED` | a **wait-addressed** resume: `metadata.kernel === true` and payload `{ waitId, payload }`, unwrapped by the fold | `_waitAnswers[waitId] = { kind, name, payload }` (kind and name from the park's wait; first answer wins); drops `_waits[waitId]`; never enters `_resumePayloads`. Naming no wait of the current park: status-only re-open | 0110 D3 |
-| `PARALLEL_COMPLETED` | `{ scopePath, failedBranch, error, cancelled[] }`, **kernel-stamped only** (unstamped: `updatedAt` only, as before) | `_scopes[scopePath] = { failedBranch, error, cancelled }` | 0112 D2 |
+| `PARALLEL_COMPLETED` | `{ scopePath, failedBranch, error, cancelled[] }` + additive optional `errorName`, `errorChannel`, `errorPayload`, `launched`, `consumed[]`, `cursor` (amended 2026-10-06), **kernel-stamped only** (unstamped: `updatedAt` only, as before) | `_scopes[scopePath] = { failedBranch, error, cancelled, … }` (additive fields kept only when well-formed) | 0112 D2 |
 | `RESOURCE_METERED` | `custom: Record<string, number>` (names `/^[a-z][a-z0-9._-]{0,63}$/`, not `constructor`/`prototype`, ≤ 32 per execution, each value finite in [0, 1e15]; a bad key is **skipped deterministically**, never thrown) | `_resources.custom` (absent until used) | 0115 D2 |
 | `OUTCOME_RECORDED` | `recordedBy: string`, `late: true` (userspace emits carrying them are refused, and the fold reads them only from a kernel-stamped envelope) | ride on the `_outcomes` entry (stamped only) | 0116 |
 

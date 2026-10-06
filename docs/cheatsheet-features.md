@@ -16,7 +16,7 @@ Everything else is built from these.
 | `ctx.execute` | run any task to durable completion — the general primitive |
 | `ctx.run` | run a declared step; the `step` alias of execute |
 | `ctx.decide` | record an advisory choice; served from the log on replay |
-| `ctx.parallel` | run tasks concurrently as a cancellation scope (fail-fast aborts siblings), input order preserved |
+| `ctx.parallel` | run tasks concurrently, input order preserved; with `kernel.features.scopes` a cancellation scope (fail-fast aborts siblings) |
 | `ctx.suspend` | pause until an external signal, then resume *here* |
 | `ctx.sleep` | pause for a duration; the wake is a logged `TIMER_FIRED` |
 | `ctx.sleepUntil` | pause until an absolute time recorded in the log |

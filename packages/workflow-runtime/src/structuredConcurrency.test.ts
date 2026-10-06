@@ -1,4 +1,4 @@
-import { TypedFailure, fail, step$ } from "@loom/core";
+import { SuspendError, TypedFailure, fail, step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
@@ -7,6 +7,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import { ParallelScopeFailedError } from "./types";
 import type { BranchContext, FlowRunner } from "./types";
 
 // ── ADR 0112 — structured concurrency: cancellation scopes + the park barrier ──────────────
@@ -42,7 +43,12 @@ function boot(
   steps: Array<string | ReturnType<typeof mk>>,
   tools: Record<string, (input: unknown, ctx: EffectContext) => Promise<unknown>>,
   runner: FlowRunner<unknown, unknown>,
-  deps: { parkDrainMs?: number; shared?: { eventStore: InMemoryAsyncEventStore } } = {}
+  deps: {
+    parkDrainMs?: number;
+    scopes?: boolean;
+    errorClasses?: Record<string, new (message: string) => Error>;
+    shared?: { eventStore: InMemoryAsyncEventStore };
+  } = {}
 ): Harness {
   const started: string[] = [];
   const signals: Record<string, AbortSignal | undefined> = {};
@@ -66,6 +72,8 @@ function boot(
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime: effects,
     onWarn: (m) => warnings.push(m),
+    scopes: deps.scopes ?? true,
+    ...(deps.errorClasses !== undefined && { errorClasses: deps.errorClasses }),
     ...(deps.parkDrainMs !== undefined && { parkDrainMs: deps.parkDrainMs }),
   });
   const definition: FlowDefinition<unknown, unknown> = {
@@ -179,7 +187,7 @@ describe("fail-fast: a scope aborts its siblings and journals its outcome (ADR 0
     expect(seen).toHaveLength(2);
     expect(seen[0]).toContain("caught:");
     expect(seen[1]).toContain("a exploded");
-    expect(seen[1]).toContain("ParallelScopeFailedError"); // served from the journaled record
+    expect(seen[1]).toBe(seen[0]); // the first run threw exactly what the served re-run threw
     expect(seen).not.toContain("parallel-ok");
   });
 
@@ -662,5 +670,602 @@ describe("the park barrier (ADR 0112 D3)", () => {
     const t = types(await h.eventStore.read("raw"));
     expect(t.at(-1)).toBe("EXECUTION_SUSPENDED");
     expect(t.indexOf("STEP_COMPLETED")).toBeLessThan(t.indexOf("EXECUTION_SUSPENDED"));
+  });
+});
+
+// ── R6 review round 1 ──────────────────────────────────────────────────────────────────────
+
+const outcome = (r: {
+  waitForCompletion(): Promise<unknown>;
+  waitForSuspend(): Promise<unknown>;
+}): Promise<"completed" | "parked"> =>
+  Promise.race([
+    r.waitForCompletion().then(() => "completed" as const),
+    r.waitForSuspend().then(() => "parked" as const),
+  ]);
+
+describe("a served scope is EXACT: the branches the first run launched, the answers it consumed (P1-A/P1-B)", () => {
+  it("a limit-bounded scope serves only the branches it LAUNCHED: a never-launched branch's live decide/suspend cannot run (probe: stuck re-parked on the gate)", async () => {
+    const A = mk("a");
+    const invoked: number[] = [];
+    const h = boot(
+      ["a"],
+      {
+        a: async () => {
+          await tick(5);
+          throw new Error("a exploded");
+        },
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel(
+            [
+              async (b: BranchContext) => {
+                invoked.push(0);
+                return b.run(A, {});
+              },
+              async (b: BranchContext) => {
+                invoked.push(1); // never launched on the first run (limit 1, branch 0 failed)
+                await b.suspend({ on: "steal" });
+                return 1;
+              },
+            ],
+            { limit: 1 }
+          );
+        } catch {
+          // fail-fast
+        }
+        await ctx.suspend({ on: "go" });
+        return { done: true };
+      }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "lim-exact" });
+    await run.waitForSuspend();
+    expect(invoked).toEqual([0]);
+    const r = await h.runtime.resume("lim-exact", { eventType: "go", payload: {} });
+    expect(await outcome(r)).toBe("completed");
+    expect(invoked).toEqual([0, 0]); // branch 1 never launched, on either run
+    const rec = (await h.eventStore.read("lim-exact")).find(
+      (e) => e.eventType === "PARALLEL_COMPLETED"
+    );
+    expect((rec?.payload as { launched: number }).launched).toBe(1);
+  });
+
+  it("a branch swallowed by a triggered scope never steals a LATER gate's answer on the served re-run (probe: the later gate re-parked)", async () => {
+    const A = mk("a");
+    const seen: unknown[] = [];
+    const h = boot(
+      ["a"],
+      {
+        a: async () => {
+          await tick(5);
+          throw new Error("a exploded");
+        },
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel([
+            async (b: BranchContext) => b.run(A, {}),
+            async (b: BranchContext) => {
+              await tick(25); // the scope is already aborted when this gate is reached
+              return b.suspend({ on: "inner" });
+            },
+          ]);
+        } catch {
+          // fail-fast
+        }
+        seen.push(await ctx.suspend({ on: "later" }));
+        return { done: true };
+      }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "steal" });
+    await run.waitForSuspend();
+    const r = await h.runtime.resume("steal", { eventType: "later", payload: "L" });
+    expect(await outcome(r)).toBe("completed");
+    expect(seen).toEqual(["L"]); // the later gate got ITS answer
+  });
+
+  it("a branch that consumed a gate answer on the first run consumes THAT answer when served; the cursor lands after it", async () => {
+    const A = mk("a");
+    const branchSaw: unknown[] = [];
+    const laterSaw: unknown[] = [];
+    const h = boot(
+      ["a"],
+      {
+        a: async () => {
+          await tick(5);
+          throw new Error("a exploded");
+        },
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel([
+            async (b: BranchContext) => {
+              branchSaw.push(await b.suspend({ on: "inner" }));
+              return b.run(A, {});
+            },
+            async (b: BranchContext) => {
+              await tick(40);
+              return b.sleep(1); // aborted by then: never a gate, never an answer
+            },
+          ]);
+        } catch (e) {
+          if (e instanceof SuspendError) throw e; // a park is not a failure to swallow
+        }
+        laterSaw.push(await ctx.suspend({ on: "later" }));
+        return { done: true };
+      }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "cursor" });
+    await run.waitForSuspend(); // parked at "inner"
+    const r1 = await h.runtime.resume("cursor", { eventType: "inner", payload: "I" });
+    await r1.waitForSuspend(); // scope failed (recorded), parked at "later"
+    const rec = (await h.eventStore.read("cursor")).find(
+      (e) => e.eventType === "PARALLEL_COMPLETED"
+    );
+    expect(rec?.payload).toMatchObject({ launched: 2, consumed: [["/0.0", 0]], cursor: 1 });
+    const r2 = await h.runtime.resume("cursor", { eventType: "later", payload: "L" });
+    expect(await outcome(r2)).toBe("completed");
+    expect(branchSaw).toEqual(["I", "I"]); // first run + served
+    expect(laterSaw).toEqual(["L"]);
+  });
+
+  it("a record WITHOUT the additive fields (written before the amendment) serves as before: every branch launches", async () => {
+    const A = mk("a");
+    const invoked: number[] = [];
+    const h = boot(
+      ["a"],
+      {
+        a: async () => {
+          await tick(5);
+          throw new Error("a exploded");
+        },
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel(
+            [
+              async (b: BranchContext) => {
+                invoked.push(0);
+                return b.run(A, {});
+              },
+              async (b: BranchContext) => {
+                invoked.push(1);
+                return 1;
+              },
+            ],
+            { limit: 1 }
+          );
+        } catch {
+          // fail-fast
+        }
+        await ctx.suspend({ on: "go" });
+        return {};
+      }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "legacy" });
+    await run.waitForSuspend();
+    // Re-play the log into a fresh store with the amendment's fields stripped from the record.
+    const log = await h.eventStore.read("legacy");
+    const store2 = new InMemoryAsyncEventStore();
+    for (const e of log) {
+      if (e.eventType !== "PARALLEL_COMPLETED") {
+        await store2.append(e);
+        continue;
+      }
+      const {
+        launched: _l,
+        consumed: _c,
+        cursor: _k,
+        errorName: _n,
+        ...old
+      } = e.payload as Record<string, unknown>;
+      await store2.append({ ...e, payload: old });
+    }
+    const h2 = boot(["a"], { a: async () => ({}) }, h.flow.runner, {
+      shared: { eventStore: store2 },
+    });
+    invoked.length = 0;
+    const r = await h2.runtime.resume("legacy", { eventType: "go", payload: {} });
+    await r.waitForCompletion();
+    expect(invoked).toEqual([0, 1]); // old behaviour: no `launched` → both branches start (served)
+  });
+});
+
+describe("a failed scope throws ONE value, first run and re-run alike (P1-C)", () => {
+  class OutageError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "OutageError";
+    }
+  }
+  const tools = {
+    a: async () => {
+      await tick(5);
+      throw new OutageError("db is down");
+    },
+    b: untilAborted(),
+  };
+  const flowOf = (seen: unknown[]): FlowRunner<unknown, unknown> => {
+    const A = mk("a");
+    const B = mk("b");
+    return async (ctx) => {
+      try {
+        await ctx.parallel([
+          [A, {}],
+          [B, {}],
+        ]);
+      } catch (e) {
+        seen.push(e);
+      }
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+  };
+
+  it("an UNREGISTERED class is a ParallelScopeFailedError naming the class, with the same text both times", async () => {
+    const seen: unknown[] = [];
+    const h = boot(["a", "b"], tools, flowOf(seen));
+    const run = await h.runtime.start(h.flow, {}, { executionId: "e1" });
+    await run.waitForSuspend();
+    const r = await h.runtime.resume("e1", { eventType: "go", payload: {} });
+    await r.waitForCompletion();
+    expect(seen).toHaveLength(2);
+    for (const e of seen) {
+      expect(e).toBeInstanceOf(ParallelScopeFailedError);
+      expect((e as ParallelScopeFailedError).errorName).toBe("OutageError");
+      expect((e as ParallelScopeFailedError).message).toBe("db is down");
+      expect((e as ParallelScopeFailedError).scopePath).toBe("/0");
+      expect((e as ParallelScopeFailedError).failedBranch).toBe(0);
+    }
+    const rec = (await h.eventStore.read("e1")).find((e) => e.eventType === "PARALLEL_COMPLETED");
+    expect(rec?.payload).toMatchObject({
+      errorName: "OutageError",
+      error: "OutageError: db is down",
+    });
+  });
+
+  it("a REGISTERED class is rebuilt from the recorded message: first run and served re-run are both that class", async () => {
+    const seen: unknown[] = [];
+    const h = boot(["a", "b"], tools, flowOf(seen), { errorClasses: { OutageError } });
+    const run = await h.runtime.start(h.flow, {}, { executionId: "e2" });
+    await run.waitForSuspend();
+    const r = await h.runtime.resume("e2", { eventType: "go", payload: {} });
+    await r.waitForCompletion();
+    expect(seen).toHaveLength(2);
+    for (const e of seen) {
+      expect(e).toBeInstanceOf(OutageError);
+      expect((e as Error).message).toBe("db is down");
+    }
+  });
+
+  it("a registered constructor that THROWS falls back to the typed carrier", async () => {
+    class Picky extends Error {
+      constructor(_m: string) {
+        super("x");
+        throw new Error("cannot rebuild");
+      }
+    }
+    const seen: unknown[] = [];
+    const h = boot(["a", "b"], tools, flowOf(seen), { errorClasses: { OutageError: Picky } });
+    const run = await h.runtime.start(h.flow, {}, { executionId: "e3" });
+    await run.waitForSuspend();
+    expect(seen[0]).toBeInstanceOf(ParallelScopeFailedError);
+  });
+
+  it("a built-in class is rebuilt: a TypeError stays a TypeError on both runs", async () => {
+    const seen: unknown[] = [];
+    const h = boot(
+      ["a", "b"],
+      {
+        a: async () => {
+          await tick(5);
+          throw new TypeError("not a function");
+        },
+        b: untilAborted(),
+      },
+      flowOf(seen)
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "e4" });
+    await run.waitForSuspend();
+    const r = await h.runtime.resume("e4", { eventType: "go", payload: {} });
+    await r.waitForCompletion();
+    for (const e of seen) {
+      expect(e).toBeInstanceOf(TypeError);
+      expect((e as Error).message).toBe("not a function");
+    }
+  });
+
+  it("a TypedFailure stays typed (channel + payload) on both runs, and the text has ONE TypedFailure prefix", async () => {
+    const Typed = step$({
+      id: "typed",
+      name: "typed",
+      toolId: "tool-typed",
+      ...io,
+      errors: { outage: Outage },
+    });
+    const seen: unknown[] = [];
+    const h = boot(
+      [Typed, "b"],
+      { typed: async () => fail("outage", { code: 503 }), b: untilAborted() },
+      async (ctx) => {
+        try {
+          await ctx.parallel([
+            [Typed, {}],
+            [mk("b"), {}],
+          ]);
+        } catch (e) {
+          seen.push(e);
+        }
+        await ctx.suspend({ on: "go" });
+        return {};
+      }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "e5" });
+    await run.waitForSuspend();
+    const r = await h.runtime.resume("e5", { eventType: "go", payload: {} });
+    await r.waitForCompletion();
+    expect(seen).toHaveLength(2);
+    for (const e of seen) {
+      expect(e).toBeInstanceOf(TypedFailure);
+      expect((e as TypedFailure).channel).toBe("outage");
+      expect((e as TypedFailure).payload).toEqual({ code: 503 });
+      expect(String(e)).not.toContain("TypedFailure: TypedFailure");
+    }
+    expect((seen[0] as Error).message).toBe((seen[1] as Error).message);
+  });
+
+  it("a TypedFailure thrown by a branch FUNCTION (no step frame) stays typed when served", async () => {
+    const seen: unknown[] = [];
+    const h = boot([], {}, async (ctx) => {
+      try {
+        await ctx.parallel([
+          async () => {
+            await tick(5);
+            return fail("outage", { code: 7 });
+          },
+          async (b: BranchContext) => {
+            await tick(30);
+            return b.sleep(1);
+          },
+        ]);
+      } catch (e) {
+        seen.push(e);
+      }
+      await ctx.suspend({ on: "go" });
+      return {};
+    });
+    const run = await h.runtime.start(h.flow, {}, { executionId: "e6" });
+    await run.waitForSuspend();
+    const r = await h.runtime.resume("e6", { eventType: "go", payload: {} });
+    await r.waitForCompletion();
+    expect(seen).toHaveLength(2);
+    for (const e of seen) {
+      expect(e).toBeInstanceOf(TypedFailure);
+      expect((e as TypedFailure).payload).toEqual({ code: 7 });
+    }
+  });
+});
+
+describe("kernel.features.scopes: OFF by default is the pre-R6 behaviour (P2-B)", () => {
+  it("off: a failing branch aborts nothing, writes no STEP_CANCELLED and no PARALLEL_COMPLETED, and the ORIGINAL error is thrown", async () => {
+    const A = mk("a");
+    const B = mk("b");
+    const original = new Error("a exploded");
+    let caught: unknown;
+    const h = boot(
+      ["a", "b"],
+      {
+        a: async () => {
+          await tick(5);
+          throw original;
+        },
+        b: async (_i, ctx) => {
+          await tick(30);
+          return { aborted: ctx.signal?.aborted ?? false };
+        },
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel([
+            [A, {}],
+            [B, {}],
+          ]);
+        } catch (e) {
+          caught = e;
+        }
+        return {};
+      },
+      { scopes: false }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "off" });
+    await run.waitForCompletion();
+    expect(caught).toBe(original);
+    expect(h.signals.b?.aborted).toBeFalsy();
+    const log = await h.eventStore.read("off");
+    expect(count(log, "STEP_CANCELLED")).toBe(0);
+    expect(count(log, "PARALLEL_COMPLETED")).toBe(0);
+  });
+
+  it("is the DEFAULT when the dep is omitted, and a record written by a scopes-ON node is ignored (the branches re-run live)", async () => {
+    const A = mk("a");
+    let aCalls = 0;
+    const flow: FlowRunner<unknown, unknown> = async (ctx) => {
+      try {
+        await ctx.parallel([[A, {}]]);
+      } catch {
+        // fail-fast
+      }
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    const on = boot(
+      ["a"],
+      {
+        a: async () => {
+          aCalls++;
+          throw new Error("boom");
+        },
+      },
+      flow
+    );
+    const run = await on.runtime.start(on.flow, {}, { executionId: "mixed" });
+    await run.waitForSuspend();
+    expect(count(await on.eventStore.read("mixed"), "PARALLEL_COMPLETED")).toBe(1);
+    const off = boot(
+      ["a"],
+      {
+        a: async () => {
+          aCalls++;
+          return { ok: true };
+        },
+      },
+      flow,
+      { scopes: false, shared: { eventStore: on.eventStore } }
+    );
+    const r = await off.runtime.resume("mixed", { eventType: "go", payload: {} });
+    await r.waitForCompletion();
+    expect(aCalls).toBe(2); // not served from the record
+  });
+});
+
+describe("nothing follows the park or the terminal event (P2-A)", () => {
+  it("a branch that drained cleanly cannot emit or decide AFTER EXECUTION_SUSPENDED (probe: …EXECUTION_SUSPENDED,custom.after,DECISION_RECORDED)", async () => {
+    const B = mk("b");
+    const h = boot(
+      ["b"],
+      {
+        b: async () => {
+          await tick(20);
+          return {};
+        },
+      },
+      async (ctx) => {
+        await ctx.parallel([
+          async (c: BranchContext) => c.suspend({ on: "gate" }),
+          async (c: BranchContext) => {
+            await c.run(B, {});
+            await tick(10); // user code AFTER the step drained, past the park
+            c.emit("custom.after", {});
+            await c.decide("late", () => 1);
+            return 1;
+          },
+        ]);
+        return {};
+      }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "late" });
+    await run.waitForSuspend();
+    await tick(60);
+    const t = types(await h.eventStore.read("late"));
+    expect(t.at(-1)).toBe("EXECUTION_SUSPENDED");
+    expect(t).not.toContain("DECISION_RECORDED");
+  });
+
+  it("an abandoned task cannot append after EXECUTION_COMPLETED (zombie-after-terminal)", async () => {
+    const h = boot([], {}, async (ctx) => {
+      void (async () => {
+        await tick(25);
+        ctx.emit("zombie", {});
+      })();
+      return { ok: true };
+    });
+    const run = await h.runtime.start(h.flow, {}, { executionId: "zombie" });
+    await run.waitForCompletion();
+    await tick(50);
+    const t = types(await h.eventStore.read("zombie"));
+    expect(t.at(-1)).toBe("EXECUTION_COMPLETED");
+  });
+
+  it("a decide in a SERVED scope that was never recorded throws ScopeServedError and appends nothing (and an aborted scope makes none either)", async () => {
+    const A = mk("a");
+    const h = boot(
+      ["a"],
+      {
+        a: async () => {
+          await tick(5);
+          throw new Error("a exploded");
+        },
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel([
+            async (b: BranchContext) => b.run(A, {}),
+            async (b: BranchContext) => {
+              await tick(25);
+              return b.decide("fresh", () => "x");
+            },
+          ]);
+        } catch {
+          // fail-fast
+        }
+        await ctx.suspend({ on: "go" });
+        return {};
+      }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "dec" });
+    await run.waitForSuspend();
+    const r = await h.runtime.resume("dec", { eventType: "go", payload: {} });
+    await r.waitForCompletion();
+    expect(count(await h.eventStore.read("dec"), "DECISION_RECORDED")).toBe(0);
+  });
+});
+
+describe("a branch that closes over the ROOT ctx stays in its scope (P2-C)", () => {
+  it("abort cancels a step issued through the root ctx from inside a branch", async () => {
+    const A = mk("a");
+    const B = mk("b");
+    let caught: unknown;
+    const h = boot(
+      ["a", "b"],
+      {
+        a: async () => {
+          await tick(5);
+          throw new Error("a exploded");
+        },
+        b: untilAborted(),
+      },
+      async (ctx) => {
+        try {
+          await ctx.parallel([
+            async (b: BranchContext) => b.run(A, {}),
+            async () => ctx.run(B, {}), // the ROOT ctx, closed over
+          ]);
+        } catch (e) {
+          caught = e;
+        }
+        return {};
+      }
+    );
+    const run = await h.runtime.start(h.flow, {}, { executionId: "root-ctx" });
+    await run.waitForCompletion();
+    expect(String(caught)).toContain("a exploded");
+    expect(h.signals.b?.aborted).toBe(true); // the scope's abort reached it
+    expect(
+      (await h.eventStore.read("root-ctx")).filter((e) => e.eventType === "STEP_CANCELLED")
+    ).toHaveLength(1);
+  });
+
+  it("root ctx.parallel from concurrent branches numbers scopes by BRANCH, not by timing", async () => {
+    const paths: string[] = [];
+    const h = boot([], {}, async (ctx) => {
+      const inner = async (b: BranchContext) => {
+        paths.push(b.scopePath);
+        return 1;
+      };
+      await ctx.parallel([
+        async () => {
+          await tick(20); // arrives second
+          await ctx.parallel([inner]); // closed-over root ctx
+        },
+        async () => {
+          await ctx.parallel([inner]);
+        },
+      ]);
+      return {};
+    });
+    const run = await h.runtime.start(h.flow, {}, { executionId: "k-order" });
+    await run.waitForCompletion();
+    expect([...paths].sort()).toEqual(["/0.0/0.0", "/0.1/0.0"]);
   });
 });
