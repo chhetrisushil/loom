@@ -164,8 +164,8 @@ describe("open dimensions in nested budgets (ADR 0115)", () => {
     maxCustom.tokens = 1; // would be refused if validated now; must not be enforced
     maxCustom.credits = 1000;
     const next = vi.fn(async () => "ok");
-    await expect(mw(ctx({ resources: { ...zero, custom: { credits: 5 } } }), {}, next)).rejects.toBeInstanceOf(
-      QuotaExceededError
-    );
+    await expect(
+      mw(ctx({ resources: { ...zero, custom: { credits: 5 } } }), {}, next)
+    ).rejects.toBeInstanceOf(QuotaExceededError);
   });
 });
