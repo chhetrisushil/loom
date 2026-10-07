@@ -5,7 +5,7 @@ import { recordOutcome } from "@loom/analytics";
 import { step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { LogLifecycle, WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -128,5 +128,58 @@ describe("loom learn", () => {
     const { text, ok } = await cmdLearnEval({ db: dbPath }, mod, { executionId: id });
     expect(ok).toBe(false);
     expect(text).toMatch(/does not export a Policy/);
+  });
+
+  describe("a compacted execution (ADR 0116: its evidence lives in the checkpoint)", () => {
+    const compact = async (id: string) => {
+      const events = new SqliteEventStore(dbPath);
+      const snaps = new SqliteSnapshotStore(join(dir, "snap.db"));
+      expect(await new LogLifecycle(events, snaps).compact(id)).not.toBeNull();
+      events.close();
+    };
+
+    it("report with the snapshot store reads decisions and outcomes from the folded state", async () => {
+      const id = await record(learnable);
+      const before = await cmdLearnReport({ db: dbPath, snap: join(dir, "snap.db") }, id);
+      await compact(id);
+      const after = await cmdLearnReport({ db: dbPath, snap: join(dir, "snap.db") }, id);
+      expect(after).toMatch(
+        /1 execution\(s\), 1 decision\(s\) \(1 compacted execution\(s\) read from their checkpoints\)/
+      );
+      expect(after).toMatch(/with propensity\s+1 \(100%\)/);
+      expect(after).toMatch(/opus\s+0\.9000\s+n=1/);
+      expect(after).not.toMatch(/look compacted/);
+      expect(after.replace(" (1 compacted execution(s) read from their checkpoints)", "")).toEqual(
+        before
+      );
+    });
+
+    it("report WITHOUT a snapshot store warns and counts the executions it could not read", async () => {
+      const id = await record(learnable);
+      await compact(id);
+      const text = await cmdLearnReport({ db: dbPath }, id);
+      expect(text).toMatch(/1 execution\(s\) look compacted and no snapshot store is configured/);
+      expect(text).toContain(id);
+      expect(text).toMatch(/--snap/);
+    });
+
+    it("eval carries the same warning, and reads the checkpoint when it can", async () => {
+      const id = await record(learnable);
+      await compact(id);
+      const mod = join(dir, "policy.js");
+      writeFileSync(
+        mod,
+        "module.exports.policy = { id: 'always-opus', version: '1', select: () => ({ action: 'opus' }) };"
+      );
+      const blind = await cmdLearnEval({ db: dbPath }, mod, { executionId: id, minSteps: 1 });
+      expect(blind.text).toMatch(/look compacted/);
+      expect(blind.ok).toBe(false);
+      const seen = await cmdLearnEval({ db: dbPath, snap: join(dir, "snap.db") }, mod, {
+        executionId: id,
+        minSteps: 1,
+      });
+      expect(seen.text).not.toMatch(/look compacted/);
+      expect(seen.ok).toBe(true);
+    });
   });
 });

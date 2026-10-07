@@ -15,6 +15,20 @@ import type { EventEnvelope, ExecutionState } from "@loom/core";
 //
 // A log read alone (`trajectories(await store.read(id))`) is exact only for a log that was never
 // compacted.
+//
+// ORDER, precisely. The fold records WHAT each decision was, not WHEN: `_decisions` is a plain
+// object keyed by decisionId, and the fold shapes are frozen (the wire-abi fold vectors and the
+// `_decisions` entry shape are a cross-implementation contract), so no ordinal can be added
+// without a kernel ABI change. The order of a decision whose real event is still in the log is its
+// true `sequence` (exact). The order of a decision the checkpoint ABSORBED is the key order of the
+// folded map, which is insertion order except that (a) JavaScript lists array-index-like keys
+// ("0", "10", "2") first, ascending, and (b) a snapshot read back from a store that normalises
+// JSON (Postgres `jsonb` orders keys by length then bytes) has already lost it. Nothing but the
+// DISCOUNTED terminal credit (`trajectories` `discount < 1`) depends on that order — the
+// direct-outcome credit, the default `discount = 1`, per-arm statistics and the policy evaluation
+// are order-free. So a compacted execution's evidence is identical to the uncompacted one's
+// whenever `discount = 1`, or its absorbed decisionIds are not array-index-like and the snapshot
+// store keeps key order; otherwise the discount is applied in the folded-map order.
 
 const EVIDENCE = new Set(["DECISION_RECORDED", "OUTCOME_RECORDED"]);
 
@@ -32,8 +46,10 @@ const TERMINAL_OF_STATUS: Record<string, string> = {
  *   order (which is log order). A decision whose real event is still in `log` keeps its true
  *   `sequence` and `timestamp`; one the checkpoint absorbed gets its ordinal as `sequence` (always
  *   below every event the log still holds) and `state.startedAt` as `timestamp`, because the fold
- *   does not record when a decision was made. Nothing `trajectories` reads for credit assignment
- *   depends on either.
+ *   does not record when a decision was made. Only the `discount < 1` terminal credit depends on
+ *   the order of absorbed decisions, and that order is the folded map's key order — exact unless
+ *   an absorbed decisionId is array-index-like ("10") or the snapshot store does not preserve
+ *   object key order (see the ORDER note above).
  * - Every other event of `log` passes through unchanged — the terminal event is the one that
  *   matters (compaction never removes it); a log's own `DECISION_RECORDED` / `OUTCOME_RECORDED`
  *   events are dropped, the state being authoritative and complete.

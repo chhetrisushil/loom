@@ -312,7 +312,10 @@ export interface ExecutionProfile {
   replay: ReplayCost;
 }
 
-/** Combined per-execution profile: flame graph + latency breakdown + replay cost for one run. */
+/**
+ * Combined per-execution profile: flame graph + latency breakdown + replay cost for one run.
+ * Reads the log it is given; a compacted execution's pre-checkpoint events are gone from it (ADR 0106).
+ */
 export function profile(events: EventEnvelope[], executionId: string): ExecutionProfile {
   const scoped = events.filter((e) => e.executionId === executionId);
   return {

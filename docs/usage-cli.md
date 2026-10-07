@@ -90,6 +90,10 @@ loom — project-local commands for a Loom app
                                                   wrote to execution "" (ADR 0107): proven
                                                   segments only; the rest is listed with its
                                                   candidates, never guessed
+  loom repair terminal-event <store> [executionId] [--apply]
+                                                  give an execution a pre-0116 compaction left
+                                                  as [0]+checkpoint its terminal event back, so
+                                                  it can take a late outcome (ADR 0116)
   loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
@@ -739,6 +743,13 @@ npx loom repair blank-stream --config ./loom.config.ts --assign e1:13-15 --apply
 npx loom repair blank-stream --db .loom/events.db --snap .loom/snapshots.db   # SQLite shorthand
 ```
 
+### `loom repair terminal-event (--config <module> | --db <events.db> --snap <snap.db>) [executionId] [--apply]`
+
+A finished execution a pre-[ADR 0116](adr/0116-late-outcome-attach.md) compaction left as `[0]` + a
+checkpoint can never take a late outcome (`recordOutcome` refuses it) and retention cannot date its end.
+This writes the terminal event back above the checkpoint. **Dry run by default**, idempotent, refuses
+non-terminal executions; run it with the executions quiesced. Needs the snapshot store.
+
 ### `loom compliance report --db <path> --subject-path <dotpath> [--tenant-path <dotpath>]`
 
 A data-subject inventory (T3): folds every execution's `EXECUTION_STARTED`, attributing it to a
@@ -995,6 +1006,7 @@ npx loom plugin search postgres
 | `loom learn eval` | shadow-evaluate a candidate policy | `--db` *(req)*, `--policy` *(req)*, `--min-steps N` | promotion gate refuses |
 | `loom eval` | replay golden logs vs expectations | `--dir` *(req)* | any golden fails |
 | `loom deploy check` | replay logs vs new flow defs | `--logs` *(req)*, `--config` *(req)* | resume-breaking change |
+| `loom repair terminal-event` | restore the terminal event a pre-0116 compaction left off a `[0]`+checkpoint execution so it can take a late outcome (ADR 0116) | `--config` (preferred) or `--db` + `--snap`, `--apply` | error |
 | `loom repair blank-stream` | re-home events the pre-0106 compaction bug wrote to `""` (ADR 0107) | `--config` (preferred) or `--db` + `--snap`, `--assign`, `--apply` | error |
 | `loom retention run` | reclaim aged terminal executions | `--db` *(req)*, `--snap` *(req)*, `--ttl`, `--apply` | error |
 | `loom sweep content` | K10.6 pinned blob sweep | `--db` *(req)*, `--content` *(req)*, `--snap`, `--archive-db`, `--archive-snap`, `--pin`, `--ttl`, `--orphans`, `--no-archive`, `--apply` | error |

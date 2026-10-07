@@ -610,49 +610,223 @@ for (const backend of [memory, sqlite, postgres]) {
       });
     }
 
-    it("a reopen that loses its slot to something other than late outcomes still fails as before", async () => {
-      const h = mk();
-      const e = id();
+    // The reopen's retry (`landReopenBootstrap`) folds the events above its head ONLY when every
+    // one is a kernel-stamped, LATE `OUTCOME_RECORDED` in the very next slots. Each condition is
+    // pinned by an interloper that takes the reopener's slot with something that fails ONE of
+    // them; the reopen must then stay on the ordinary path (no durable landing, fails as before).
+    const interloped = async (
+      shape: (e: string, at: number, fence: number | undefined) => EventEnvelope[],
+      opts: { shiftRead?: number } = {}
+    ) => {
+      const base = backend.make();
+      let hook: (() => Promise<void>) | null = null;
+      const store = new Proxy(base.eventStore, {
+        get(t, k, recv) {
+          if (k === "append" || k === "appendBatch") {
+            return async (x: EventEnvelope | EventEnvelope[]) => {
+              const first = Array.isArray(x) ? x[0] : x;
+              if (hook !== null && first?.eventType !== "OUTCOME_RECORDED") {
+                const run = hook;
+                hook = null;
+                await run();
+              }
+              return (t as never as Record<string, (a: unknown) => unknown>)[k as string]?.call(
+                t,
+                x
+              );
+            };
+          }
+          if (k === "readFrom" && opts.shiftRead !== undefined) {
+            // a store that answers the tail with a hole in it
+            return async (eid: string, from: number) =>
+              (await (t as EventStore).readFrom(eid, from)).map((ev) =>
+                ev.eventType === "OUTCOME_RECORDED" && ev.sequence >= from
+                  ? { ...ev, sequence: ev.sequence + (opts.shiftRead as number) }
+                  : ev
+              );
+          }
+          const v = Reflect.get(t, k, recv);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }) as EventStore;
+      const h = mk({}, { ...base, eventStore: store });
       const failing = flow("fenced3", async (ctx) => {
         await ctx.decide("route", () => "opus");
         throw new Error("boom");
       });
+      const fixed = flow("fenced4", async (ctx) => {
+        await ctx.decide("route", () => "opus");
+        return { done: true };
+      });
       h.rt.registerFlow(failing.definition, failing.runner);
+      h.rt.registerFlow(fixed.definition, fixed.runner);
+      const e = id();
       await (await h.rt.start(failing, {}, { executionId: e }))
         .waitForCompletion()
         .catch(() => undefined);
-      const state = (await h.rt.loadState(e))!;
-      // a foreign writer (not a late outcome) takes the reopener's slot
-      await h.eventStore.append({
-        id: `${e}-rogue`,
-        workflowId: "fenced3",
-        executionId: e,
-        eventType: "NOTE",
-        sequence: state.sequence + 1,
-        timestamp: Date.now(),
-        payload: {},
+      const at = (await h.rt.loadState(e))!.sequence;
+      const fence = store.acquireFence !== undefined ? await h.rt.acquireFence(e) : undefined;
+      hook = async () => {
+        for (const ev of shape(e, at, fence)) await base.eventStore.append(ev);
+      };
+      const before = (await h.eventStore.read(e)).length;
+      let failed = false;
+      try {
+        const run = await h.rt.resumeAs(
+          e,
+          "fenced4",
+          { eventType: "RETRY", payload: {} },
+          { strategy: "operator-ack", ...(fence !== undefined && { fence }) }
+        );
+        await run.waitForCompletion();
+      } catch {
+        failed = true;
+      }
+      const log = await h.eventStore.read(e);
+      return { failed, log, before, e, h };
+    };
+    const outcomeAt = (
+      e: string,
+      sequence: number,
+      fence: number | undefined,
+      meta: Record<string, unknown>,
+      late: boolean
+    ): EventEnvelope => ({
+      id: `${e}-${sequence}-intruder`,
+      workflowId: "fenced3",
+      executionId: e,
+      eventType: "OUTCOME_RECORDED",
+      sequence,
+      timestamp: Date.now(),
+      payload: {
+        key: "x",
+        score: 0.1,
+        decisionId: "route",
+        recordedBy: "mallory",
+        ...(late && { late: true }),
+      },
+      metadata: { ...meta, ...(fence !== undefined && { fence }) },
+    });
+    for (const [name, shape, shift] of [
+      [
+        "an UNSTAMPED OUTCOME_RECORDED above the terminal event",
+        (e: string, at: number, f?: number) => [outcomeAt(e, at + 1, f, {}, true)],
+        undefined,
+      ],
+      [
+        "a kernel-stamped OUTCOME_RECORDED that is not late",
+        (e: string, at: number, f?: number) => [outcomeAt(e, at + 1, f, { kernel: true }, false)],
+        undefined,
+      ],
+      [
+        "a late outcome the store reports at a non-contiguous slot",
+        (e: string, at: number, f?: number) => [outcomeAt(e, at + 1, f, { kernel: true }, true)],
+        1,
+      ],
+    ] as const) {
+      it(`a reopen that loses its slot to ${name} stays on the ordinary path (fails as before)`, async () => {
+        const got = await interloped(shape, shift === undefined ? {} : { shiftRead: shift });
+        expect(got.failed).toBe(true);
+        // nothing of the reopen is durable: only the interloper's event sits above the terminal
+        expect(got.log.length).toBe(got.before + 1);
       });
-      const bootstrap = await (
-        h.rt as unknown as {
-          landReopenBootstrap: (
-            id: string,
-            wf: string,
-            vm: unknown,
-            evs: unknown[],
-            fence: undefined
-          ) => Promise<unknown[]>;
-        }
-      ).landReopenBootstrap.call(
-        h.rt,
-        e,
-        "fenced3",
-        { peekState: () => state, applyEvent() {} },
-        [{ eventType: "RETRY", payload: {} }],
-        undefined
-      );
-      // nothing durable was produced: the ordinary path will refuse it, exactly as it always did
-      expect((bootstrap[0] as { durable?: unknown }).durable).toBeUndefined();
-      expect((await h.eventStore.read(e)).filter((x) => x.eventType === "RETRY")).toEqual([]);
+    }
+
+    it("a store or decorator that drops the creation anchor is refused with a typed error, not 8 'moved' retries", async () => {
+      const base = backend.make();
+      let calls = 0;
+      const store = new Proxy(base.eventStore, {
+        get(t, k, recv) {
+          if (k === "appendIfUnchanged") {
+            return async (eid: string, ev: EventEnvelope | null, expect?: never) => {
+              calls++;
+              const r = await (t as EventStore).appendIfUnchanged!(eid, ev, expect);
+              const { anchor: _dropped, ...rest } = r as unknown as Record<string, unknown>;
+              return rest;
+            };
+          }
+          const v = Reflect.get(t, k, recv);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }) as EventStore;
+      const h = mk({}, { ...base, eventStore: store });
+      const e = id();
+      await finish(h, deciding, e);
+      const err = await h.rt
+        .recordOutcome(e, { decisionId: "route", key: "k", score: 1 })
+        .catch((x: unknown) => x);
+      expect(err).toBeInstanceOf(OutcomeRefusedError);
+      expect(String((err as Error).message)).toMatch(/dropped the creation anchor/);
+      expect(calls).toBe(1); // refused on the first observation, never retried
+      expect(await outcomes(h, e)).toEqual([]);
+    });
+
+    it("a pre-0116 compacted execution ([0] + checkpoint) refuses a late outcome until restoreTerminalEvent repairs it (idempotent, refuses non-terminal)", async () => {
+      const h = mk();
+      const e = id();
+      await finish(h, deciding, e);
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      // the OLD compaction shape: checkpoint at the tip, the log truncated through it to [0]
+      const state = (await h.rt.loadState(e))!;
+      await h.snapshotStore.save({
+        id: `${e}-old-ckpt`,
+        executionId: e,
+        workflowId: state.workflowId,
+        sequence: state.sequence,
+        state,
+        createdAt: 0,
+      });
+      await h.eventStore.truncatePrefix!(e, state.sequence);
+      expect((await h.eventStore.read(e)).map((x) => x.sequence)).toEqual([0]);
+      await expect(
+        h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 })
+      ).rejects.toBeInstanceOf(OutcomeRefusedError);
+
+      // dry run writes nothing
+      const dry = await life.restoreTerminalEvent(e);
+      expect(dry.status).toBe("would-restore");
+      expect((await h.eventStore.read(e)).length).toBe(1);
+      const done = await life.restoreTerminalEvent(e, { apply: true });
+      expect(done).toMatchObject({ status: "restored", sequence: state.sequence + 1 });
+      const after = (await h.rt.loadState(e))!;
+      expect(after.status).toBe("completed");
+      expect(after.sequence).toBe(state.sequence + 1);
+      expect({ ...after, sequence: 0, updatedAt: 0 }).toEqual({
+        ...state,
+        sequence: 0,
+        updatedAt: 0,
+      });
+      expect(after.updatedAt).toBe(state.updatedAt);
+      // idempotent
+      expect((await life.restoreTerminalEvent(e, { apply: true })).status).toBe("intact");
+      expect((await h.eventStore.read(e)).length).toBe(2);
+      // and the late outcome now lands, folded
+      const r = await h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 });
+      expect(r).toEqual({ appended: true, sequence: state.sequence + 2 });
+      expect(((await h.rt.loadState(e))!.variables._outcomes as unknown[]).length).toBe(1);
+      // never-compacted and non-terminal executions are left alone
+      const e2 = id();
+      await finish(h, deciding, e2);
+      expect((await life.restoreTerminalEvent(e2, { apply: true })).status).toBe("intact");
+      const e3 = id();
+      h.rt.registerFlow(parking.definition, parking.runner);
+      await h.rt.start(parking, {}, { executionId: e3 });
+      await until(async () => (await h.rt.loadState(e3))?.status === "suspended");
+      const s3 = (await h.rt.loadState(e3))!;
+      await h.snapshotStore.save({
+        id: `${e3}-old-ckpt`,
+        executionId: e3,
+        workflowId: s3.workflowId,
+        sequence: s3.sequence,
+        state: s3,
+        createdAt: 0,
+      });
+      await h.eventStore.truncatePrefix!(e3, s3.sequence);
+      expect(await life.restoreTerminalEvent(e3, { apply: true })).toMatchObject({
+        status: "not-terminal",
+        foldedStatus: "suspended",
+      });
+      expect((await h.eventStore.read(e3)).length).toBe(1);
     });
 
     it("a fence acquired after the end (redispatch, timers, recovery, a dead holder) does NOT block late outcomes; the token is never bumped", async () => {

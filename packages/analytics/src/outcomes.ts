@@ -130,7 +130,15 @@ export interface OutcomeAnalyticsOptions {
   now?: number;
 }
 
-/** Aggregate OUTCOME_RECORDED events into per-key stats, best-first. */
+/**
+ * Aggregate OUTCOME_RECORDED events into per-key stats, best-first.
+ *
+ * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
+ * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
+ * compacted, build the events from the folded state first —
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * pass THOSE.
+ */
 export function outcomeAnalytics(
   events: EventEnvelope[],
   opts: OutcomeAnalyticsOptions = {}

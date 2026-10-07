@@ -2905,6 +2905,16 @@ export class WorkflowRuntime {
   }
 
   /**
+   * Is this resume a REOPEN of a finished execution? Synchronous on purpose: every resume of a
+   * parked execution reaches `execute` in the same turn it always did (an extra `await` here
+   * reorders interleavings the orchestration supervisor is sensitive to).
+   */
+  private isReopen(vm: ReplayVM): boolean {
+    const status = vm.peekState().status;
+    return status === "completed" || status === "failed";
+  }
+
+  /**
    * ADR 0116 (round 3) — the REOPEN's side of the late-outcome race. A late outcome
    * (`recordOutcome`) may take the slot a reopening `resume`/`resumeAs` was about to write,
    * because it observed the log before the reopener acquired its fence and appended just after.
@@ -2920,16 +2930,6 @@ export class WorkflowRuntime {
    * fails or succeeds exactly as it always did. The batch is handed on as `durable` events
    * (`ExecutionJournal.adopt`), so `onEvent` fires once, after they are stored.
    */
-  /**
-   * Is this resume a REOPEN of a finished execution? Synchronous on purpose: every resume of a
-   * parked execution reaches `execute` in the same turn it always did (an extra `await` here
-   * reorders interleavings the orchestration supervisor is sensitive to).
-   */
-  private isReopen(vm: ReplayVM): boolean {
-    const status = vm.peekState().status;
-    return status === "completed" || status === "failed";
-  }
-
   private async landReopenBootstrap(
     executionId: string,
     workflowId: string,
@@ -3368,6 +3368,12 @@ export class WorkflowRuntime {
           `its log was compacted down to sequence ${seen.head} below its checkpoint (${state.sequence}) by a kernel older than ADR 0116, so a late outcome has no valid slot`
         );
       }
+      if (typeof seen.anchor !== "string") {
+        throw new OutcomeRefusedError(
+          executionId,
+          "the event store or a decorator dropped the creation anchor appendIfUnchanged must return"
+        );
+      }
       const sequence = seen.head + 1;
       const envelope: EventEnvelope = {
         id: `${executionId}-${sequence}-outcome`,
@@ -3394,7 +3400,7 @@ export class WorkflowRuntime {
         result = await store.appendIfUnchanged(executionId, envelope, {
           head: seen.head,
           fence: seen.fence,
-          anchor: seen.anchor as string,
+          anchor: seen.anchor,
         });
       } catch (err) {
         if (isWriteConflict(err)) continue; // a slot / id race: re-read, re-judge

@@ -275,9 +275,11 @@ with its `propensity` per `decisionId`; `_outcomes` has `key`, `success`, `score
 `OUTCOME_RECORDED` events of one execution from its folded state (passing the log's terminal events through, and
 synthesising one for a terminal state whose terminal event a pre-0116 compaction removed), and a learner calls
 `trajectories(evidenceEvents(await runtime.loadState(id), await store.read(id)))`. That result is identical
-compacted or not (a test compares the two). What a checkpoint cannot give back is WHEN a decision was made: a
-decision it absorbed gets its ordinal as `sequence` and `state.startedAt` as `timestamp`; nothing credit
-assignment reads depends on either. Compaction keeps nothing extra: late outcomes sit above the terminal event
+compacted or not (a test compares the two) EXCEPT for one input, stated precisely in round 4: the ORDER of
+decisions the checkpoint absorbed. A checkpoint cannot give back WHEN a decision was made: a decision it
+absorbed gets its ordinal as `sequence` and `state.startedAt` as `timestamp`, the ordinal being the key order of
+the folded `_decisions` map. Only the discounted terminal credit (`discount < 1`) reads that order; the direct
+credit, the default `discount = 1`, per-arm statistics and the policy evaluation are order-free. Compaction keeps nothing extra: late outcomes sit above the terminal event
 (Q3) and stay on the log until the next compaction folds them. `trajectories(await store.read(id))` alone is
 exact only for a log that was never compacted, and the other log-reading lenses of `@loom/analytics`
 (`decisionRecords`, `decisionStore`, the advisory correlation index) see only the events still on the log: a
@@ -310,3 +312,47 @@ its decision (it validates against the folded `_decisions`).
    write that already lost stores no blob. A blob is content-addressed and may be shared with other events, so
    a refused write never deletes one; the narrow window between the observation and the write leaves an
    orphan that `sweepUnpinnedContent` reclaims, exactly as a failed plain `append` does.
+
+## Round 4 (2026-10-07; re-review P2 + P3s)
+
+1. **The reopen retry's three guards are pinned through `resumeAs`.** `landReopenBootstrap` folds what sits above
+   its head only when EVERY event is a kernel-stamped (`metadata.kernel`), `late` `OUTCOME_RECORDED` in the very
+   next slots. Three tests take the reopener's slot with an unstamped outcome, a stamped one without `late`,
+   and a store tail with a hole (a late outcome reported non-contiguously); each leaves the reopen on the
+   ordinary path (nothing durable, fails as before), and each was checked to fail with its guard deleted. The
+   "rogue writer" test now goes through `resumeAs` too. An `EXECUTION_DENIED` above the tip is not a late
+   outcome either, so a reopen over one falls to the ordinary path (rare; behaviour unchanged).
+2. **Evidence ORDER, precisely.** The fold keeps `_decisions` as a plain object keyed by decisionId and records
+   no ordinal; the fold shapes are frozen (the wire-abi fold vectors are a cross-implementation contract), so
+   adding one is an ABI change this ADR does not make. A decision whose event is still on the log keeps its true
+   `sequence`; an absorbed one takes the folded map's key order, which is insertion order EXCEPT that
+   array-index-like ids (`"10"`, `"2"`) list first, ascending, and a snapshot store that normalises JSON
+   (Postgres `jsonb`) has already lost the order. So a compacted execution's evidence equals the uncompacted
+   one's whenever `discount = 1`, or its absorbed ids are not array-index-like and the store keeps key order.
+   Tests pin the exact cases and the documented limit. (Kernel-generated decision ids are never array-index-like.)
+3. **`loom learn report|eval` reads checkpoints.** With a snapshot store (`--snap`, or `--config`) each
+   execution's evidence is `evidenceEvents(folded state, log)`; without one, a log that looks compacted (a hole
+   in its sequences) is counted and named in a warning, never read quietly as "no decisions".
+4. **`recordOutcome` checks the anchor.** A store or decorator that drops the `anchor` an observation must
+   return is refused with `OutcomeRefusedError` on the first observation, not retried as eight `moved`s into a
+   misleading `OutcomeContendedError`.
+5. **Migration: `loom repair terminal-event` / `LogLifecycle.restoreTerminalEvent`.** A finished execution a
+   pre-0116 kernel compacted is `[0]` + a checkpoint at its terminal sequence `T`; it can never take a late
+   outcome (the one valid slot, `head + 1`, is below the checkpoint) and retention cannot date its end. The
+   repair writes the terminal event at `T + 1`, above the checkpoint, so the fold is `snapshot(T) + [T+1]`: the
+   terminal event type of the folded status, an EMPTY payload (every terminal handler leaves a terminal state
+   unchanged on one), the folded `updatedAt` as its timestamp, `metadata.kernel` + `restoredTerminal`. It
+   cannot use `appendIfUnchanged` (next slot only, P3 1), so it uses the ordinary `append` under a freshly
+   acquired fence on a fencing store, after re-checking the tip: run it with the executions quiesced, as
+   `loom repair blank-stream`. It is dry by default, idempotent (a head at or above the folded sequence is
+   `intact`), and refuses non-terminal and `continued` executions. A test compacts with the old shape, repairs,
+   and records a late outcome.
+6. **`@loom/analytics`'s log readers** (`decisionRecords`, `outcomeRecords`, `decisionStore`, `outcomeAnalytics`,
+   `advisoryPipeline`, `analyze`, `profile`) read the events they are given; their JSDoc now says a compacted
+   execution's evidence is in the checkpoint and points at `evidenceEvents` to build the input.
+7. **ABA under a frozen clock is documented, not hardened.** `creationMarker` is `timestamp:id`; an execution
+   deleted and re-created under the same id at the same instant (a frozen or virtual clock) with the same head
+   and token reads as the same log. A random nonce in the sequence-0 metadata would close it but would make the
+   start envelope non-deterministic, breaking byte-identical replay (DST seeds, the golden logs and the
+   cross-implementation vectors compare envelopes). Real clocks and retention-then-recreate are covered; a
+   test harness that freezes time and re-creates an id under a late write should vary the id.

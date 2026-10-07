@@ -23,7 +23,7 @@ import { cmdPluginCheck, cmdPluginNew, cmdPluginSeams } from "./plugin";
 import { cmdPluginSearch } from "./pluginSearch";
 import { cmdPluginTry } from "./pluginTry";
 import { cmdProfile } from "./profile";
-import { cmdRepairBlankStream } from "./repair";
+import { cmdRepairBlankStream, cmdRepairTerminalEvent } from "./repair";
 import { cmdRetentionRun } from "./retention";
 import { STORE_FLAG_HELP, hasStoreFlags, resolveStores, storeFlagsOf } from "./stores";
 import { cmdSweepContent } from "./sweepContent";
@@ -132,6 +132,10 @@ export const USAGE = `loom — project-local commands for a Loom app
                                                   wrote to execution "" (ADR 0107): proven
                                                   segments only; the rest is listed with its
                                                   candidates, never guessed
+  loom repair terminal-event <store> [executionId] [--apply]
+                                                  give an execution a pre-0116 compaction left
+                                                  as [0]+checkpoint its terminal event back, so
+                                                  it can take a late outcome (ADR 0116)
   loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
@@ -237,9 +241,21 @@ async function main(argv: string[]): Promise<number> {
     }
 
     case "repair": {
-      const sub = requirePositional(positionals, "blank-stream"); // `loom repair blank-stream`
+      const sub = requirePositional(positionals, "blank-stream | terminal-event");
+      if (sub === "terminal-event") {
+        if (!hasStoreFlags(flags)) return storeFlagError("repair terminal-event");
+        console.log(
+          await cmdRepairTerminalEvent(
+            { ...storeFlagsOf(flags), apply: flags.apply === "true" },
+            positionals[1]
+          )
+        );
+        return 0;
+      }
       if (sub !== "blank-stream") {
-        throw new Error(`unknown repair subcommand "${sub}" (expected blank-stream)`);
+        throw new Error(
+          `unknown repair subcommand "${sub}" (expected blank-stream | terminal-event)`
+        );
       }
       if (!hasStoreFlags(flags)) return storeFlagError("repair blank-stream");
       console.log(

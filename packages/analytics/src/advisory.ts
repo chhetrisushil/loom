@@ -141,6 +141,12 @@ function evaluateSubject(rec: Recommendation, index: CorrelationIndex): Recommen
  * observes telemetry, analyzes history, recommends, evaluates prior recommendations
  * against realized outcomes, and surfaces refreshed rankings to feed forward — all
  * without touching the fold or auto-adopting anything.
+ *
+ * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
+ * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
+ * compacted, build the events from the folded state first —
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * pass THOSE.
  */
 export function advisoryPipeline(events: EventEnvelope[], opts?: AdvisoryOptions): AdvisoryReport {
   const topModels = opts?.topModels ?? 3;

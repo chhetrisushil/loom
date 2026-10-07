@@ -22,6 +22,23 @@ import { chainIdOf, inboxStreamId } from "./inbox";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 import { isWriteConflict } from "./writeConflict";
 
+const RESTORABLE_TERMINAL: Record<string, string> = {
+  completed: "EXECUTION_COMPLETED",
+  failed: "EXECUTION_FAILED",
+  cancelled: "EXECUTION_CANCELLED",
+};
+
+/** What {@link LogLifecycle.restoreTerminalEvent} did (or, dry, would do) for one execution. */
+export type RestoreTerminalResult =
+  | {
+      executionId: string;
+      status: "restored" | "would-restore";
+      sequence: number;
+      eventType: string;
+    }
+  | { executionId: string; status: "intact" | "missing" | "not-an-execution" }
+  | { executionId: string; status: "not-terminal"; foldedStatus: string };
+
 /** Reserved control stream carrying retention facts (EXECUTION_ARCHIVED/_DELETED). */
 export const LIFECYCLE_STREAM = "__loom_lifecycle__";
 
@@ -766,5 +783,84 @@ export class LogLifecycle {
       await store.truncatePrefix(executionId, through);
     }
     return through;
+  }
+
+  /**
+   * ADR 0116 migration — restore the terminal event a pre-0116 compaction took off the log.
+   *
+   * Before ADR 0116, compacting a finished execution truncated THROUGH its tip: the log was left
+   * as `[0]` and the checkpoint (at the terminal sequence `T`) held the whole fold. Such an
+   * execution can never receive a late outcome — `recordOutcome` refuses it, because the one valid
+   * slot (`head + 1`) lies BELOW the checkpoint and would be invisible to every fold — and
+   * retention cannot date its end from the log.
+   *
+   * This writes the missing terminal event at `T + 1`, ABOVE the checkpoint, so the fold stays
+   * `snapshot(T) + [event T+1]`: an `EXECUTION_COMPLETED` / `_FAILED` / `_CANCELLED` (by the folded
+   * status) with an EMPTY payload, the timestamp the fold already holds (`updatedAt`), and
+   * `metadata.kernel` + `metadata.restoredTerminal`. Every terminal handler leaves a terminal state
+   * unchanged on an empty payload, so the folded state is byte-identical except `sequence`.
+   *
+   * - **Idempotent**: once the head reaches the folded sequence there is nothing to restore
+   *   (`intact`), so a re-run (or a log that was never compacted) writes nothing.
+   * - **Refuses non-terminal executions** (`not-terminal`) and `continued` ones (the successor id
+   *   is unrecoverable from nothing; a continued execution takes no late outcome anyway).
+   * - **Dry by default**: `apply: true` writes. Run it with the execution quiesced: the slot is
+   *   written with the ordinary `append` (a conditional append may only take `head + 1`, and the
+   *   slot above a checkpoint is by definition not that), under a freshly acquired fence token on a
+   *   fencing store, after re-reading the tip; a writer that wins the slot makes the append throw
+   *   rather than overwrite.
+   */
+  async restoreTerminalEvent(
+    executionId: string,
+    opts: { apply?: boolean } = {}
+  ): Promise<RestoreTerminalResult> {
+    if (executionId === "" || isReservedStream(executionId)) {
+      return { executionId, status: "not-an-execution" };
+    }
+    const store = this.eventStore;
+    const first = await readRangeOf(store, executionId, 0, 0);
+    if (first.length === 0) return { executionId, status: "missing" };
+    const head = (await headOf(store, executionId)) ?? 0;
+    const snapshot = await this.snapshotStore.loadLatest(executionId);
+    if (snapshot === null || snapshot.sequence <= head) return { executionId, status: "intact" };
+    assertSnapshotIdentity(snapshot.state, executionId, first[0]!.workflowId);
+    const tail = await store.readFrom(executionId, snapshot.sequence + 1);
+    const state = new ReplayVM(tail, {
+      ...normalizeSnapshotState(snapshot.state),
+      executionId,
+      workflowId: first[0]!.workflowId,
+    }).getState();
+    const eventType = RESTORABLE_TERMINAL[state.status];
+    if (eventType === undefined) {
+      return { executionId, status: "not-terminal", foldedStatus: state.status };
+    }
+    const sequence = state.sequence + 1;
+    if (opts.apply !== true) return { executionId, status: "would-restore", sequence, eventType };
+    const envelope = (fence?: number): EventEnvelope => ({
+      id: `${executionId}-${sequence}`,
+      workflowId: first[0]!.workflowId,
+      executionId,
+      eventType,
+      sequence,
+      timestamp: state.updatedAt,
+      payload: {},
+      metadata: { kernel: true, restoredTerminal: true, ...(fence !== undefined && { fence }) },
+    });
+    // Quiesced means the tip has not moved since the fold above; check it again at the write.
+    if (((await headOf(store, executionId)) ?? 0) !== head) {
+      throw new Error(
+        `${executionId} changed while its terminal event was being restored — re-run`
+      );
+    }
+    try {
+      await store.append(envelope());
+    } catch (err) {
+      const fenced =
+        err instanceof StaleFenceError ||
+        (err as { name?: unknown } | null)?.name === "StaleFenceError";
+      if (!fenced || store.acquireFence === undefined) throw err;
+      await store.append(envelope(await store.acquireFence(executionId)));
+    }
+    return { executionId, status: "restored", sequence, eventType };
   }
 }

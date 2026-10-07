@@ -154,6 +154,11 @@ export function failureAnalytics(events: EventEnvelope[]): FailureAnalytics {
   };
 }
 
+/**
+ * Analytics over a log. Decision and outcome counts come from the events it is given, so a
+ * compacted execution (its decisions and outcomes live in the checkpoint, ADR 0106/0116) is
+ * under-counted unless the events are rebuilt first: `evidenceEvents(state, log)` from `@loom/learning`.
+ */
 export function analyze(events: EventEnvelope[]): Analytics {
   // Single pass over the log building all four lenses at once. The standalone
   // `executionAnalytics`/`costAnalytics`/… helpers above are kept for callers that
