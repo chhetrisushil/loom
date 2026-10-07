@@ -173,6 +173,18 @@ pnpm --filter @loom/db-observability start
   afresh); replay serves the recorded plan with no model call, also on a fresh runtime;
   cancelling mid-call rejects with `ExecutionCancelledError` and records nothing;
   `checkPlannerConformance` with a `scopeProbe` passes. Headless, offline.
+- **`experience-tabs-planner`** — loom-ui's planner depth (U15) on a support-ticket triage view. The
+  reference planner composes one `tabs` container (Overview / Queue / History) when the host offers
+  the reference roles (`containers: REFERENCE_CONTAINER_ROLES`); every container it writes carries
+  `owner: "planner"`, and malformed nesting fails closed with the specific complaint. The browser
+  renderer draws an accessible tablist (`referenceContainers()`), the terminal stacks the panels. A
+  revise ("move SLA to Overview, add a Notes tab") is a minimal diff — one `moveNode` and two
+  `insertNode`, never a recompose — while an application-owned container stays byte-identical and a
+  model naming it is refused (`not-owned`). One `setRole` turns the tabs into a stepper. A panel whose
+  cards are all secret collapses to a bare "Restricted" placeholder for a low-clearance viewer
+  (policy A: no title, role or count — only its existence), and a host-inserted card with no class of
+  its own is still hidden by the declared tool-class read policy, which an empty-table control
+  proves. Headless, offline.
 - **`provenance-explain`** — loom-ui's per-node provenance, explanation and per-viewer seen log
   (U12) on an incident-triage board. The reference planner stamps its loom decision on every op
   (`plannerProvenance`); an edit and a revert show up in the per-node ledger; `Lineage.explain`
