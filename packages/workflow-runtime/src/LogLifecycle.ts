@@ -54,9 +54,6 @@ function terminalEndedAt(events: readonly EventEnvelope[], state: ExecutionState
   return Math.max(events[events.length - 1]!.timestamp, state.updatedAt);
 }
 
-/** Kernel kinds compaction keeps in place (ADR 0116 amendment): the log is where learning reads them. */
-const LEARNING_EVIDENCE_KINDS = ["DECISION_RECORDED", "OUTCOME_RECORDED"] as const;
-
 /** Index of the newest terminal event of `events`, or -1 (see {@link terminalEndedAt}). */
 function lastTerminalIndex(events: readonly EventEnvelope[]): number {
   for (let i = events.length - 1; i >= 1; i--) {
@@ -677,15 +674,9 @@ export class LogLifecycle {
     ) {
       return null;
     }
-    // ADR 0116 amendment (Q4) — the learning evidence is always kept in place: `@loom/learning`
-    // `trajectories` joins `DECISION_RECORDED` (what was chosen, with its context and propensity)
-    // to `OUTCOME_RECORDED` (in-run and late rewards) off the LOG, never off the checkpoint, so
-    // dropping either half would make a compacted execution vanish from the learning loop.
-    // Done here, kernel-side, because `assertPinnedEventTypes` refuses kernel kinds from policy.
-    const declared = this.keep;
-    const keep: ReadonlySet<string> = new Set([...declared, ...LEARNING_EVIDENCE_KINDS]);
+    const keep = this.keep;
     if (
-      declared.size === 0 &&
+      keep.size === 0 &&
       this.options.pinned !== undefined &&
       (await this.options.pinned(executionId)) === true
     ) {

@@ -5,6 +5,7 @@ import {
   StaleFenceError,
   SubscriberRegistry,
   bucketOf,
+  creationMarker,
   fenceOf,
   isAnsweringKind,
 } from "@loom/event-runtime";
@@ -529,6 +530,8 @@ export class PostgresEventStore implements EventStore {
    * nothing, no BEGIN/COMMIT, nothing left aborted on a failure), and in READ COMMITTED every
    * statement takes its OWN snapshot:
    *
+   *  0. `SET TRANSACTION ISOLATION LEVEL READ COMMITTED` — stated, not assumed: the "own snapshot per
+   *     statement" rule below is what the guard rests on, whatever the server default is;
    *  1. `INSERT … ON CONFLICT DO NOTHING` — make sure the fence row exists (an execution that was
    *     never fenced has none, and an append can only take `FOR SHARE` on a row that is there);
    *  2. `SELECT fence … FOR UPDATE` — waits for in-flight ANSWERING appends (they hold the row
@@ -563,7 +566,8 @@ export class PostgresEventStore implements EventStore {
     }
     const id = `convert_from(decode('${Buffer.from(executionId, "utf8").toString("hex")}', 'hex'), 'UTF8')`;
     const results = (await this.pool.query(
-      `INSERT INTO fences (execution_id, fence) VALUES (${id}, 0) ON CONFLICT (execution_id) DO NOTHING;
+      `SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+       INSERT INTO fences (execution_id, fence) VALUES (${id}, 0) ON CONFLICT (execution_id) DO NOTHING;
        SELECT fence FROM fences WHERE execution_id = ${id} FOR UPDATE;
        UPDATE fences SET fence = fence + 1
         WHERE execution_id = ${id} AND fence = ${expect.fence}
@@ -574,11 +578,11 @@ export class PostgresEventStore implements EventStore {
                     OR (event_type <> ALL (${KERNEL_KINDS_SQL}) AND metadata->'kernel' = 'true'::jsonb)))
         RETURNING fence`
     )) as unknown as Array<{ rows: Array<{ fence: string }> }>;
-    const won = results[2]?.rows[0];
+    const won = results[3]?.rows[0];
     if (won !== undefined) return { fence: Number(won.fence) };
     // The SELECT's row is the current token (locked, so it cannot have moved); a vanished row
     // (`deleteExecution` raced) reads as 0.
-    return { stale: true, fence: Number(results[1]?.rows[0]?.fence ?? 0) };
+    return { stale: true, fence: Number(results[2]?.rows[0]?.fence ?? 0) };
   }
 
   /**
@@ -586,18 +590,31 @@ export class PostgresEventStore implements EventStore {
    * SAME row `acquireFenceIf` and the answering appends use, so every interleaving with them is
    * decided by the row lock, not by timing:
    *
-   *  1. make sure the execution's fence row exists (token 0 is inert for every guard);
-   *  2. `SELECT fence … FOR UPDATE` — waits for an in-flight acquire / answering append and blocks
+   *  1. `BEGIN ISOLATION LEVEL READ COMMITTED`, stated rather than assumed: step 3 relies on a
+   *     fresh snapshot per statement, and a server whose `default_transaction_isolation` is
+   *     stricter would freeze it at the first read and miss what committed while we waited;
+   *  2. make sure the execution's fence row exists (token 0 is inert for every guard) and
+   *     `SELECT fence … FOR UPDATE` — waits for an in-flight acquire / answering append and blocks
    *     new ones until COMMIT. `deleteExecution` takes the row too, so a retention delete cannot
    *     land between the checks below and the insert (no orphan log);
-   *  3. a fresh statement (READ COMMITTED), so it sees everything committed before the lock was
-   *     granted: the stored head and whether sequence 0 still exists. Gone → the token-0 row this
+   *  3. a fresh statement, so it sees everything committed before the lock was granted: the stored
+   *     head, whether sequence 0 still exists and its creation marker. Gone → the token-0 row this
    *     call made is removed again and nothing is written (a real token is KEPT: it is the
    *     tombstone that keeps a zombie of a re-created id fenced out);
-   *  4. head and token equal the caller's observation → insert. The envelope's own token is neither
-   *     read nor presented, and the row is never bumped.
+   *  4. head, token and creation marker equal the caller's observation AND the event sits in the
+   *     very next slot → insert. A writer that does NOT take the row lock (a non-answering append
+   *     under the observed token) can still slip in after step 3; the next slot's unique
+   *     constraint is what arbitrates it (`DuplicateSequenceError`), which is why a skip-ahead is
+   *     refused: it has no such arbiter. The envelope's own token is neither read nor presented,
+   *     and the row is never bumped.
    *
-   * `event === null` is a lock-free observation (one statement, no row created).
+   * The token-0 fence row a first conditional append creates STAYS after a successful write (like
+   * the one a park leaves, ADR 0118): deleting it while another transaction is queued on it
+   * `FOR UPDATE` would make that waiter read a vanished row (a spurious "stale at 0"), and it is
+   * reclaimed with the log by `deleteExecution`. One tiny row per late-rewarded, never-fenced
+   * execution.
+   *
+   * `event === null` is a lock-free observation (no row created).
    */
   async appendIfUnchanged(
     executionId: string,
@@ -610,27 +627,33 @@ export class PostgresEventStore implements EventStore {
         "appendIfUnchanged: an event needs `expect` and the matching executionId"
       );
     }
-    const tipSql = `SELECT MAX(sequence) AS tip, COALESCE(bool_or(sequence = 0), false) AS anchored
+    type Tip = { tip: string | null; a_id: string | null; a_ts: string | null };
+    const tipSql = `SELECT MAX(sequence) AS tip,
+                           (array_agg(id) FILTER (WHERE sequence = 0))[1] AS a_id,
+                           (array_agg(timestamp) FILTER (WHERE sequence = 0))[1] AS a_ts
                       FROM events WHERE execution_id = $1`;
+    const tipOf = (row: Tip | undefined): { head: number; anchor: string } | null =>
+      row === undefined || row.a_id === null || row.a_ts === null || row.tip === null
+        ? null
+        : {
+            head: Number(row.tip),
+            anchor: creationMarker({ id: row.a_id, timestamp: Number(row.a_ts) }),
+          };
     if (event === null) {
       const f = await this.pool.query<{ fence: string }>(
         "SELECT fence FROM fences WHERE execution_id = $1",
         [executionId]
       );
-      const t = await this.pool.query<{ tip: string | null; anchored: boolean }>(tipSql, [
-        executionId,
-      ]);
+      const t = await this.pool.query<Tip>(tipSql, [executionId]);
       const fence = Number(f.rows[0]?.fence ?? 0);
-      const row = t.rows[0];
-      if (row === undefined || !row.anchored || row.tip === null) {
-        return { appended: false, reason: "gone", head: null, fence };
-      }
-      return { appended: false, reason: "observed", head: Number(row.tip), fence };
+      const tip = tipOf(t.rows[0]);
+      if (tip === null) return { appended: false, reason: "gone", head: null, fence, anchor: null };
+      return { appended: false, reason: "observed", head: tip.head, fence, anchor: tip.anchor };
     }
     const want = expect as TipObservation;
     const client = await this.pool.connect();
     try {
-      await client.query("BEGIN");
+      await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
       await client.query(
         "INSERT INTO fences (execution_id, fence) VALUES ($1, 0) ON CONFLICT (execution_id) DO NOTHING",
         [executionId]
@@ -640,21 +663,23 @@ export class PostgresEventStore implements EventStore {
         [executionId]
       );
       const fence = Number(locked.rows[0]?.fence ?? 0);
-      const t = await client.query<{ tip: string | null; anchored: boolean }>(tipSql, [
-        executionId,
-      ]);
-      const row = t.rows[0];
-      if (row === undefined || !row.anchored || row.tip === null) {
+      const t = await client.query<Tip>(tipSql, [executionId]);
+      const tip = tipOf(t.rows[0]);
+      if (tip === null) {
         await client.query("DELETE FROM fences WHERE execution_id = $1 AND fence = 0", [
           executionId,
         ]);
         await client.query("COMMIT");
-        return { appended: false, reason: "gone", head: null, fence };
+        return { appended: false, reason: "gone", head: null, fence, anchor: null };
       }
-      const head = Number(row.tip);
-      if (head !== want.head || fence !== want.fence || event.sequence <= head) {
+      if (
+        tip.head !== want.head ||
+        fence !== want.fence ||
+        tip.anchor !== want.anchor ||
+        event.sequence !== tip.head + 1
+      ) {
         await client.query("COMMIT");
-        return { appended: false, reason: "moved", head, fence };
+        return { appended: false, reason: "moved", head: tip.head, fence, anchor: tip.anchor };
       }
       await client.query(
         `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)

@@ -532,7 +532,7 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
     const obs = async (store: EventStore, id: string) => {
       const r = await store.appendIfUnchanged!(id, null);
       if (r.appended || r.head === null) throw new Error(`expected an observation of ${id}`);
-      return { head: r.head, fence: r.fence };
+      return { head: r.head, fence: r.fence, anchor: r.anchor as string };
     };
 
     it("appendIfUnchanged (if implemented): an unchanged execution takes the event; a stale head is `moved`, nothing written", async () => {
@@ -541,7 +541,8 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await store.append(evt("aiu-ok", 0));
       await store.append(evt("aiu-ok", 1));
       const seen = await obs(store, "aiu-ok");
-      expect(seen).toEqual({ head: 1, fence: 0 });
+      expect(seen).toMatchObject({ head: 1, fence: 0 });
+      expect(typeof seen.anchor).toBe("string");
       expect(await store.appendIfUnchanged("aiu-ok", evt("aiu-ok", 2), seen)).toEqual({
         appended: true,
       });
@@ -551,6 +552,7 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
         reason: "moved",
         head: 2,
         fence: 0,
+        anchor: seen.anchor,
       });
       expect((await store.read("aiu-ok")).map((e) => e.sequence)).toEqual([0, 1, 2]);
       await store.close();
@@ -565,7 +567,11 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
         head: null,
       });
       expect(
-        await store.appendIfUnchanged("aiu-none", evt("aiu-none", 1), { head: 0, fence: 0 })
+        await store.appendIfUnchanged("aiu-none", evt("aiu-none", 1), {
+          head: 0,
+          fence: 0,
+          anchor: "none",
+        })
       ).toMatchObject({ appended: false, reason: "gone" });
       expect(await store.read("aiu-none")).toEqual([]);
       expect(await store.head?.("aiu-none")).toBeNull();
@@ -619,6 +625,46 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await expect(store.append(evt("aiu-seen", 2))).rejects.toMatchObject({
         name: "StaleFenceError",
       });
+      await store.close();
+    });
+
+    it("appendIfUnchanged (if implemented): only the NEXT slot is accepted; a skip-ahead is `moved`, nothing written", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined) return void (await store.close());
+      await store.append(evt("aiu-skip", 0));
+      await store.append(evt("aiu-skip", 1));
+      const seen = await obs(store, "aiu-skip");
+      for (const sequence of [seen.head, seen.head + 2, seen.head + 9]) {
+        expect(
+          await store.appendIfUnchanged("aiu-skip", evt("aiu-skip", sequence), seen)
+        ).toMatchObject({ appended: false, reason: "moved", head: 1 });
+      }
+      expect((await store.read("aiu-skip")).map((e) => e.sequence)).toEqual([0, 1]);
+      expect(await store.appendIfUnchanged("aiu-skip", evt("aiu-skip", 2), seen)).toEqual({
+        appended: true,
+      });
+      await store.close();
+    });
+
+    it("appendIfUnchanged (if implemented): a log deleted and re-created with the same head and token is a DIFFERENT execution (ABA)", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined || store.deleteExecution === undefined) {
+        return void (await store.close());
+      }
+      await store.append({ ...evt("aiu-aba", 0), timestamp: 1_000 });
+      await store.append(evt("aiu-aba", 1));
+      const seen = await obs(store, "aiu-aba");
+      await store.deleteExecution("aiu-aba");
+      // the same id, the same head, the same token (0) — a new execution
+      await store.append({ ...evt("aiu-aba", 0), timestamp: 2_000 });
+      await store.append(evt("aiu-aba", 1));
+      const now = await obs(store, "aiu-aba");
+      expect({ head: now.head, fence: now.fence }).toEqual({ head: seen.head, fence: seen.fence });
+      expect(now.anchor).not.toBe(seen.anchor);
+      expect(
+        await store.appendIfUnchanged("aiu-aba", { ...evt("aiu-aba", 2), id: "aba-late" }, seen)
+      ).toMatchObject({ appended: false, reason: "moved" });
+      expect((await store.read("aiu-aba")).map((e) => e.sequence)).toEqual([0, 1]);
       await store.close();
     });
 

@@ -100,12 +100,38 @@ export class ContentResolvingEventStore implements EventStore {
         inner.readRange!(executionId, from, to).then((evs) => this.resolveAll(executionId, evs)),
       acquireFence: "forward",
       acquireFenceIf: "forward",
-      appendIfUnchanged: async (executionId, event, expect) =>
-        inner.appendIfUnchanged!(
-          executionId,
-          event === null ? null : await this.externalizeEnvelope(event),
-          expect
-        ),
+      // The blob is written BEFORE the store can say no, and a content-addressed blob may be
+      // shared with other events (so deleting it on a refusal could break them). So the
+      // externalisation happens only after a lock-free observation says the condition still
+      // holds: a late write that already lost (the common case) stores no blob at all. What is
+      // left is the window between the observation and the write, whose orphan is reclaimed by
+      // `sweepUnpinnedContent` exactly like a plain `append` that failed after its `put`.
+      appendIfUnchanged: async (executionId, event, expect) => {
+        if (event === null) return inner.appendIfUnchanged!(executionId, null, expect);
+        const paths = pathsFor(this.externalize, event.eventType);
+        if (paths !== undefined && paths.length > 0 && expect !== undefined) {
+          const now = await inner.appendIfUnchanged!(executionId, null);
+          if (
+            !now.appended &&
+            (now.reason === "gone" ||
+              now.head !== expect.head ||
+              now.fence !== expect.fence ||
+              now.anchor !== expect.anchor ||
+              event.sequence !== expect.head + 1)
+          ) {
+            return now.reason === "gone"
+              ? now
+              : {
+                  appended: false,
+                  reason: "moved",
+                  head: now.head,
+                  fence: now.fence,
+                  anchor: now.anchor,
+                };
+          }
+        }
+        return inner.appendIfUnchanged!(executionId, await this.externalizeEnvelope(event), expect);
+      },
       // Refs are content-addressed: copying them verbatim makes the fork share the parent's
       // blobs (dedup for free) — no decrypt/re-wrap step (contrast the crypto plugin's keys).
       copyPrefix: "forward",

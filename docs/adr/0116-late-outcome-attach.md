@@ -86,9 +86,9 @@ It is not an `ExecutionContext` member (no ABI), it is not a state change, and i
   the end is the timestamp of the newest **terminal** event (found by scanning the tail backwards, as
   `orchestration`'s `settle` does), falling back to the old formula only when the terminal event was
   compacted away. (Superseded by the amendment below: compaction never removes a terminal execution's
-  terminal event, and it KEEPS `OUTCOME_RECORDED` and `DECISION_RECORDED` in place. The first draft's
+  terminal event, and the learning evidence is read from the folded state, round 3. The first draft's
   claim that `OUTCOME_RECORDED` "is a pinned kind for compaction (ADR 0106)" was wrong:
-  `assertPinnedEventTypes` refuses kernel kinds, so nothing pinned it and compaction dropped it.)
+  `assertPinnedEventTypes` refuses kernel kinds, so nothing pinned it and compaction folds it like any other.)
 
 ### D2 — What stays 1P
 
@@ -112,8 +112,8 @@ negative: with a fence it would not)**; two concurrent identical calls append on
 outcome does not move the retention end** (an execution terminal for longer than `terminalTtlMs` is still
 reclaimed after an outcome is attached); unauthorized principal refused, no event appended (negative: log untouched); unknown
 decisionId refused; duplicate idempotent; conflicting score refused; strict + no principal refused;
-compaction keeps it;
-`@loom/learning` `trajectories` picks the late reward up from the fold with no join.
+compaction folds it (a late one stays above the terminal event until the next compaction);
+`@loom/learning` `trajectories` picks the late reward up with no join.
 
 ## Rejected
 
@@ -161,9 +161,8 @@ compaction keeps it;
 
 ## Review round 1 (2026-10-07)
 
-- **Sequence after compaction.** A late outcome is appended at `max(stored head, folded sequence) + 1`:
-  after a compaction the stored head can sit below the checkpoint, and an append there would be
-  invisible to the fold (and break idempotency).
+- **Sequence after compaction.** (Round 1 wrote at `max(stored head, folded sequence) + 1`; round 3 replaced
+  that with the next slot, refusing a log compacted below its checkpoint by a pre-0116 kernel. See round 3, P3 1.)
 - **Score bound.** `|score| <= 1e9` and finite, in `recordOutcome` AND in a flow's own
   `OUTCOME_RECORDED` emit (`guardUserspaceEmit`): a finite `1.7e308` otherwise sums to `Infinity` in
   `trajectories`, making the lift `NaN`, and `NaN < minLift` is false. `@loom/learning`'s
@@ -190,12 +189,13 @@ run to the late outcome. Both are time-of-check/time-of-use gaps that no amount 
 closes; they need one atomic step in the store.
 
 ```ts
-appendIfUnchanged?(executionId, event: EventEnvelope | null, expect?: { head: number; fence: number }):
-  Promise<{ appended: true } | { appended: false; reason: "moved" | "gone" | "observed"; head: number | null; fence: number }>;
+appendIfUnchanged?(executionId, event: EventEnvelope | null, expect?: { head: number; fence: number; anchor: string }):
+  Promise<{ appended: true } | { appended: false; reason: "moved" | "gone" | "observed"; head: number | null; fence: number; anchor: string | null }>;
 ```
 
 Atomically: append `event` iff (a) the execution EXISTS (its sequence-0 event is stored), (b) the stored head
-is exactly `expect.head`, and (c) the fence token is exactly `expect.fence` (0 = never fenced). Otherwise
+is exactly `expect.head`, (c) the fence token is exactly `expect.fence` (0 = never fenced), (d) the creation
+marker is exactly `expect.anchor`, and the event is in slot `expect.head + 1` (round 3, below). Otherwise
 nothing is written and the current tip is reported (`moved`, or `gone` with `head: null`). `event === null` is
 a pure observation. It **never presents, bumps or adopts a token**: the caller observed the token, the store
 proves it has not moved. `recordOutcome` observes (head, token), folds, validates, then appends conditionally;
@@ -204,14 +204,12 @@ proves it has not moved. `recordOutcome` observes (head, token), folds, validate
 clear error** (`OutcomeRefusedError` naming the method); there is no unsafe fallback to a plain append.
 
 Why the token is in the condition. A token that moved since the observation means a holder acquired after the
-caller looked; the write is refused rather than placed inside the holder's range. This closes holders that
-acquire AFTER the observation. A holder that acquired BEFORE it and has not yet appended (the window in the
-review's `p2_fence` probe) looks identical to a dead one, so `recordOutcome` adds a rule: on a fenced execution
-(token > 0) the newest terminal event must have been written under the CURRENT token (the finishing holder's
-own); a token acquired after the end is refused with a retryable `OutcomeContendedError` and nothing appended.
-Residual: a holder that acquired and died leaves the execution refusing late outcomes until it is re-run (or
-reopened and finished, which writes a new terminal event under the new token). A never-fenced execution, the
-common case, pays nothing for this.
+caller looked; the write is refused (`moved`, retried after a fresh observation) rather than placed inside the
+holder's range. The token rule is a CONDITION on the write, not a policy about the execution: round 3 dropped the
+first version's extra rule ("the terminal event must have been written under the current token"), which blocked
+late outcomes for good after any post-terminal acquire (an at-least-once redispatch's `LocalWorkerRuntime.allocate`,
+`TimerService`, `recoverAbandoned`, a dead holder) while telling the caller to retry. The one legitimate
+post-terminal writer, a REOPEN, is protected on its own side (round 3, below).
 
 Locks, per backend (the same row ADR 0118's `acquireFenceIf` and answering appends use):
 - Memory: one synchronous step after the tick (existence, head, token, commit).
@@ -241,12 +239,74 @@ retention always finds the end of the execution on the log and a late outcome (w
 `updatedAt`) can never extend it. Tested: three late outcomes each inside a TTL window do not pin a compacted
 log.
 
-### Q4 — compaction keeps the learning evidence
+### Q4 — compaction and the learning evidence (superseded by round 3)
 
-`OUTCOME_RECORDED` is kept in place by compaction (kernel-side, in `compact` itself: `assertPinnedEventTypes`
-refuses kernel kinds from policy). **`DECISION_RECORDED` is kept with it**, an addition the decision implies
-and the review did not name: `@loom/learning`'s `trajectories` joins a reward to its decision (context,
-propensity, action set) off the LOG, so keeping only the rewards would leave a compacted execution's rewards
-orphaned and `trajectories` empty for it (the test asserts the trajectories of a compacted log equal those of
-the full log, which fails with outcomes alone). Both sit below the checkpoint where no fold reads them. Cost:
-a compacted log retains its decisions and rewards (bounded by the decisions an execution made).
+Round 2 kept every `OUTCOME_RECORDED` and `DECISION_RECORDED` in place through compaction so `trajectories`
+could still read them off the log. Round 3 reverses that for the cost it carried: see below.
+
+## Round 3 (2026-10-07; user decisions A and i, seven P3s)
+
+### A — a late outcome never blocks on a fence; a REOPEN retries over it
+
+The "terminal event written under the current token" rule is gone (`WorkflowRuntime.recordOutcome` no longer
+reads the log at all). A late outcome is a conditional append (existence, head, token, creation marker): a
+holder that acquires before or after it simply makes it `moved`, and it re-observes. The risk the rule was
+standing in for is the REOPEN (`resume` / `resumeAs` onto a completed or failed execution, ADR 0104): a late
+outcome observed the log before the reopener acquired its token and appended just after, so it takes the slot
+the reopener was about to write. Left alone that fails the reopener's run, and the reopener is the execution's
+real writer. `WorkflowRuntime` now makes a reopen's bootstrap batch (approval, discards, migration, the resume
+event and its answers) durable BEFORE the run starts, as one all-or-nothing `appendBatch`
+(`landReopenBootstrap`). On a slot conflict it re-reads everything above the head it folded; if every event
+there is a kernel-stamped late `OUTCOME_RECORDED` (status-neutral by construction), it folds them, re-slots the
+batch above them and writes again, at most 3 times. Anything else (a real writer, a stale fence, a store with
+no `appendBatch`) returns the events untouched and the ordinary path fails or succeeds exactly as before.
+Both orders therefore land: a late outcome never displaces a reopener, and a reopener never loses one.
+`onEvent` for those bootstrap events now fires once they are stored (the `adopt` path), not when committed.
+The residual the first version listed (a dead holder blocks late outcomes) no longer exists.
+
+### i — compaction keeps no learning evidence in place
+
+Keeping every `DECISION_RECORDED` made a long agent run's log unreclaimable: 2000 decisions of 2 KB took the log
+from 4,356,284 bytes / 2004 events to 4,355,959 bytes / 2002 events after compaction; with the change the same compaction leaves 1
+event / 193 bytes (the checkpoint, in the snapshot store, holds the folded `_decisions`). Everything
+`trajectories` needs is already in the fold: `_decisions` has `choice`, `alternatives`, `context` and `policy`
+with its `propensity` per `decisionId`; `_outcomes` has `key`, `success`, `score`, `decisionId`, `recordedBy`,
+`late`. So `@loom/learning` gains `evidenceEvents(state, log)`, which rebuilds the `DECISION_RECORDED` /
+`OUTCOME_RECORDED` events of one execution from its folded state (passing the log's terminal events through, and
+synthesising one for a terminal state whose terminal event a pre-0116 compaction removed), and a learner calls
+`trajectories(evidenceEvents(await runtime.loadState(id), await store.read(id)))`. That result is identical
+compacted or not (a test compares the two). What a checkpoint cannot give back is WHEN a decision was made: a
+decision it absorbed gets its ordinal as `sequence` and `state.startedAt` as `timestamp`; nothing credit
+assignment reads depends on either. Compaction keeps nothing extra: late outcomes sit above the terminal event
+(Q3) and stay on the log until the next compaction folds them. `trajectories(await store.read(id))` alone is
+exact only for a log that was never compacted, and the other log-reading lenses of `@loom/analytics`
+(`decisionRecords`, `decisionStore`, the advisory correlation index) see only the events still on the log: a
+consumer that must cover compacted executions reads the state. A late outcome after compaction still joins to
+its decision (it validates against the folded `_decisions`).
+
+### P3s
+
+1. **Next slot only.** `appendIfUnchanged` requires `event.sequence === expect.head + 1` and answers `moved`
+   otherwise. A skip-ahead cannot be proved head-unchanged on Postgres (a non-locking append can slip in after
+   the head read; only the next slot's unique constraint arbitrates it). `recordOutcome` therefore writes at
+   `head + 1`; a log whose folded sequence is ABOVE its stored head (compacted by a kernel older than this ADR,
+   its terminal event gone) refuses with `OutcomeRefusedError` instead of writing under the checkpoint. Compaction
+   since Q3 never produces that shape.
+2. **Isolation is stated.** The Postgres conditional write opens `BEGIN ISOLATION LEVEL READ COMMITTED`, and
+   `acquireFenceIf` (the same assumption: a fresh snapshot per statement after the lock) starts with
+   `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`. Under a server default of REPEATABLE READ the acquire used
+   to win over an answering event that committed while it waited (tested, fails without the line).
+3. **ABA.** `TipObservation` and the observation result carry `anchor`, an opaque creation marker the store
+   derives from the sequence-0 envelope (`creationMarker`: timestamp and id; ids alone are deterministic). A log
+   deleted and re-created under the same id with the same head and token is a different execution and the write
+   is `moved`. Decorators forward it untouched.
+4. **The token-0 fence row stays.** On Postgres a first conditional append leaves the inert token-0 row it
+   created (as a park does, ADR 0118). Deleting it while another transaction is queued on it `FOR UPDATE` makes
+   that waiter read a vanished row, so it stays and is reclaimed with the log by `deleteExecution`.
+5. **No whole-log read.** `recordOutcome` reads nothing but the tip, the fold and the sequence-0 event.
+6. **Decorators are tested end to end**: tenant scope, encryption, content externalisation, sharding,
+   coalescing, profiling and the hash chain (the chain stays verifiable across late outcomes).
+7. **Content externalisation.** `ContentResolvingEventStore` observes the tip before it externalises: a late
+   write that already lost stores no blob. A blob is content-addressed and may be shared with other events, so
+   a refused write never deletes one; the narrow window between the observation and the write leaves an
+   orphan that `sweepUnpinnedContent` reclaims, exactly as a failed plain `append` does.

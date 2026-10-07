@@ -112,6 +112,30 @@ export class ExecutionJournal {
   }
 
   /**
+   * The envelope this journal WOULD commit at `sequence`, built without one: a reopen's bootstrap
+   * is made durable BEFORE the journal exists (so a late outcome that took its slot can be folded
+   * and the slot re-chosen, ADR 0116) and is then handed over through {@link adopt}. Same builder
+   * as {@link commit}, so the two can never drift.
+   */
+  static envelopeAt(
+    identity: { executionId: string; workflowId: string },
+    sequence: number,
+    eventType: string,
+    payload: unknown,
+    opts: { metadata?: Record<string, unknown>; fence?: number; now?: () => number } = {}
+  ): EventEnvelope {
+    return ExecutionJournal.build(
+      identity,
+      sequence,
+      eventType,
+      payload,
+      opts.metadata !== undefined ? { metadata: opts.metadata } : undefined,
+      opts.fence,
+      opts.now ?? Date.now
+    );
+  }
+
+  /**
    * ADR 0103 — the sequence-0 envelope a fresh execution's journal WOULD commit, built
    * without a journal so `start()` can make it durable before the body runs. Pass the same
    * `fence` and clock the journal will be constructed with; then hand the stored envelope to
