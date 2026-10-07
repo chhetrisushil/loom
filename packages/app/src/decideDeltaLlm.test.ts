@@ -62,7 +62,12 @@ function build(
   runner: R,
   prov: LlmProvider,
   middleware: EffectMiddleware[] = [],
-  llmOpts: { onDelta?: (d: string) => void; onReset?: (n: number) => void } = {}
+  llmOpts: {
+    onDelta?: (d: string) => void;
+    onReset?: (n: number) => void;
+    onToolDelta?: (d: { id: string; name?: string; inputDelta: string }) => void;
+    onToolReset?: (n: number) => void;
+  } = {}
 ) {
   const eventStore = new InMemoryAsyncEventStore();
   const warns: string[] = [];
@@ -341,5 +346,43 @@ describe("the CONFIGURED sink is guarded on every path (ADR 0119, review 2)", ()
     await (await runtime.start(definition, {}, { executionId: "d5" })).waitForCompletion();
     expect(resets).toEqual([2]);
     expect(seen).toEqual(["par", "whole"]);
+  });
+
+  it("R5: a retry resets tool-input fragments too (onToolReset fires at attempt 2; no duplicated fragments)", async () => {
+    const fragments: string[] = [];
+    const resets: number[] = [];
+    const runner: R = async (ctx) => {
+      await ctx.run(modelStep, "hi");
+      return {};
+    };
+    const toolDelta = (inputDelta: string): LlmStreamChunk => ({
+      delta: "",
+      done: false,
+      toolDelta: { id: "t1", inputDelta },
+    });
+    const { runtime, definition } = build(
+      runner,
+      provider([
+        async function* () {
+          yield toolDelta('{"a"');
+          throw new Error("boom");
+        },
+        async function* () {
+          yield toolDelta('{"a":1}');
+          yield done();
+        },
+      ]),
+      [retryMiddleware({ jitter: false, sleep: async () => {} })],
+      {
+        onToolDelta: (d) => fragments.push(d.inputDelta),
+        onToolReset: (n) => {
+          resets.push(n);
+          fragments.length = 0; // the consumer discards what the failed attempt delivered
+        },
+      }
+    );
+    await (await runtime.start(definition, {}, { executionId: "d6" })).waitForCompletion();
+    expect(resets).toEqual([2]);
+    expect(fragments).toEqual(['{"a":1}']);
   });
 });

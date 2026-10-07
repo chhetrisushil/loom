@@ -28,6 +28,8 @@ export function createAgentModelEffect(
     /** R5 — fetch the bytes behind a media `ref` at call time (e.g. from the ContentStore). */
     resolveContent?: ContentResolver;
     onToolDelta?: (delta: { id: string; name?: string; inputDelta: string }) => void;
+    /** R5 — discard the tool-input fragments delivered so far; a retried attempt is starting. */
+    onToolReset?: (attempt: number) => void;
   } = {}
 ): LlmEffect<AgentModelCall, LlmResponse> {
   return createLlmEffect<AgentModelCall, LlmResponse>({
@@ -39,6 +41,9 @@ export function createAgentModelEffect(
     ...(options.onToolDelta !== undefined && {
       onToolDelta: (delta: { id: string; name?: string; inputDelta: string }) =>
         options.onToolDelta?.(delta),
+    }),
+    ...(options.onToolReset !== undefined && {
+      onToolReset: (attempt: number) => options.onToolReset?.(attempt),
     }),
     ...(options.onDelta !== undefined && { onDelta: (delta: string) => options.onDelta?.(delta) }),
   });

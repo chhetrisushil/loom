@@ -97,6 +97,8 @@ export function fence(content: string, origin: string): string {
 
 /** Inline media is capped so the durable log can never carry real media (claim-check it instead). */
 export const MAX_INLINE_BYTES = 64 * 1024;
+/** Total inline media per request: many small parts must not add up to a log-sized payload. */
+export const MAX_INLINE_TOTAL_BYTES = 256 * 1024;
 
 /** A structurally invalid request: wrong part for the role, mislabeled media, orphan tool result. */
 export class InvalidLlmRequestError extends Error {
@@ -110,9 +112,9 @@ export class InvalidLlmRequestError extends Error {
 export class OversizedInlinePartError extends Error {
   readonly bytes: number;
   readonly limit: number;
-  constructor(bytes: number, limit: number) {
+  constructor(bytes: number, limit: number, scope: "part" | "request" = "part") {
     super(
-      `Inline media part is ${bytes} bytes, over the ${limit}-byte cap. Store it in the ContentStore and send a { kind: "ref" } source — inline bytes would be journaled into the log.`
+      `Inline media ${scope === "part" ? "part is" : "in this request totals"} ${bytes} bytes, over the ${limit}-byte cap. Store it in the ContentStore and send a { kind: "ref" } source — inline bytes would be journaled into the log.`
     );
     this.name = "OversizedInlinePartError";
     this.bytes = bytes;
@@ -123,6 +125,8 @@ export class OversizedInlinePartError extends Error {
 export interface GuardOptions {
   /** Cap on a single inline (`kind: "data"`) media part, decoded. Default {@link MAX_INLINE_BYTES}. */
   maxInlineBytes?: number;
+  /** Cap on ALL inline media in one request, decoded. Default {@link MAX_INLINE_TOTAL_BYTES}. */
+  maxInlineTotalBytes?: number;
 }
 
 /**
@@ -166,30 +170,81 @@ export function validateMediaPart(p: LlmMediaPart, limit: number = MAX_INLINE_BY
   }
 }
 
-/** A media part with the provenance flag stripped (providers never see it). */
-function plainMedia(p: LlmMediaPartInput): LlmMediaPart {
-  return Object.fromEntries(Object.entries(p).filter(([k]) => k !== "untrusted")) as LlmMediaPart;
+/** Mutable per-request accounting shared by every part the guard walks. */
+interface GuardState {
+  limit: number;
+  totalLimit: number;
+  inline: number;
 }
 
-/** Guard a list of result parts (text + media), fencing/bracketing untrusted ones. Only called for `user`. */
+/** Validate a media part inside a request: structure, the per-part and total inline caps, no untrusted ref. */
+function checkRequestMedia(p: LlmMediaPartInput, role: string, state: GuardState): void {
+  validateMediaPart(p, state.limit);
+  if (p.untrusted !== undefined && p.source.kind === "ref") {
+    // An untrusted party must not choose which stored blob enters the prompt: the ContentStore has
+    // no tenancy, so a ref it names is a read of someone else's content.
+    throw new UntrustedContentError(`${role} media ref`, p.untrusted.origin);
+  }
+  if (p.source.kind === "data") {
+    state.inline += base64ByteLength(p.source.data) ?? 0;
+    if (state.inline > state.totalLimit) {
+      throw new OversizedInlinePartError(state.inline, state.totalLimit, "request");
+    }
+  }
+}
+
+/**
+ * Bracket every `untrusted` media part with fence tags and drop the provenance flag (and an
+ * untrusted file's `name`, which a provider would send as a title/filename outside any fence).
+ * Provider mappers call this on a part list, because where the brackets can go is a property of
+ * the wire shape: a `tool` message that holds text only moves media elsewhere, and the fence has
+ * to travel with it (see {@link untrustedFence}).
+ */
+export function fenceUntrustedMedia<T extends LlmContentPart>(parts: readonly T[]): T[] {
+  const out: T[] = [];
+  for (const p of parts) {
+    if (
+      !(p.type === "image" || p.type === "audio" || p.type === "file") ||
+      p.untrusted === undefined
+    ) {
+      out.push(p);
+      continue;
+    }
+    const f = untrustedFence(p.untrusted.origin);
+    out.push(
+      { type: "text", text: f.open } as T,
+      stripUntrusted(p) as T,
+      { type: "text", text: f.close } as T
+    );
+  }
+  return out;
+}
+
+/** The tags that bracket untrusted media of `origin`. */
+export function untrustedFence(origin: string): { open: string; close: string } {
+  return { open: `<${FENCE_TAG} origin="${escapeOrigin(origin)}">`, close: `</${FENCE_TAG}>` };
+}
+
+/** The part without its provenance flag; an untrusted file also loses its `name`. */
+export function stripUntrusted<T extends LlmMediaPart>(p: T): T {
+  return Object.fromEntries(
+    Object.entries(p).filter(([k]) => k !== "untrusted" && !(k === "name" && p.untrusted))
+  ) as T;
+}
+
+/** Guard a list of result parts (text + media). Only called for `user`. */
 function guardResultParts(
   parts: readonly LlmResultPartInput[],
   position: string,
-  limit: number
+  state: GuardState
 ): LlmResultPart[] {
   const out: LlmResultPart[] = [];
   for (const p of parts) {
     if (p.type === "text") {
       out.push({ type: "text", text: resolve(p.text, position, true) });
     } else if (p.type === "image" || p.type === "audio" || p.type === "file") {
-      validateMediaPart(p, limit);
-      const origin = p.untrusted?.origin;
-      if (origin === undefined) out.push(plainMedia(p));
-      else {
-        out.push({ type: "text", text: `<${FENCE_TAG} origin="${escapeOrigin(origin)}">` });
-        out.push(plainMedia(p));
-        out.push({ type: "text", text: `</${FENCE_TAG}>` });
-      }
+      checkRequestMedia(p, position, state);
+      out.push(p);
     } else {
       throw new InvalidLlmRequestError("a tool_result may contain only text and media parts");
     }
@@ -197,10 +252,33 @@ function guardResultParts(
   return out;
 }
 
+const TAINT_WALK_NODES = 100_000;
+
+/** Whether a tainted value hides anywhere inside `value`. Iterative; fails closed past the node cap. */
+function findTaint(value: unknown): { origin: string } | undefined {
+  const stack: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  let nodes = 0;
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (typeof cur !== "object" || cur === null) continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    if (++nodes > TAINT_WALK_NODES) {
+      throw new InvalidLlmRequestError(
+        `a tool_use input has more than ${TAINT_WALK_NODES} nodes; it cannot be checked for untrusted content`
+      );
+    }
+    if (isTainted(cur)) return { origin: taintOf(cur)?.origin ?? "unknown" };
+    for (const v of Array.isArray(cur) ? cur : Object.values(cur)) stack.push(v);
+  }
+  return undefined;
+}
+
 function guardParts(
   role: LlmMessage["role"],
   parts: readonly LlmContentPartInput[],
-  limit: number,
+  state: GuardState,
   seenToolUses: Set<string>
 ): LlmContentPart[] {
   const fencedOk = role === "user";
@@ -219,15 +297,18 @@ function guardParts(
           if (p.untrusted !== undefined) throw new UntrustedContentError(role, p.untrusted.origin);
           throw new InvalidLlmRequestError(`${p.type} parts are allowed only in user messages`);
         }
-        out.push(...guardResultParts([p], role, limit));
+        out.push(...guardResultParts([p], role, state));
         break;
       }
       case "tool_use":
         if (role !== "assistant") {
           throw new InvalidLlmRequestError("tool_use parts are allowed only in assistant messages");
         }
-        if (isTainted(p.input)) {
-          throw new UntrustedContentError("tool_use", taintOf(p.input)?.origin ?? "unknown");
+        // The id and name are model output the provider echoes back; the input is arbitrary JSON a
+        // tainted value could hide in at any depth. All of it is the model's own call.
+        for (const slot of [p.id, p.name, p.input]) {
+          const found = findTaint(slot);
+          if (found !== undefined) throw new UntrustedContentError("tool_use", found.origin);
         }
         seenToolUses.add(p.id);
         out.push(p);
@@ -242,7 +323,7 @@ function guardParts(
           );
         }
         const content = Array.isArray(p.content)
-          ? guardResultParts(p.content, "tool_result", limit)
+          ? guardResultParts(p.content, "tool_result", state)
           : resolve(p.content, "tool_result", true);
         out.push({
           type: "tool_result",
@@ -277,13 +358,17 @@ function guardParts(
  * under the byte cap.
  */
 export function guardRequest(request: LlmRequestInput, options: GuardOptions = {}): LlmRequest {
-  const limit = options.maxInlineBytes ?? MAX_INLINE_BYTES;
+  const state: GuardState = {
+    limit: options.maxInlineBytes ?? MAX_INLINE_BYTES,
+    totalLimit: options.maxInlineTotalBytes ?? MAX_INLINE_TOTAL_BYTES,
+    inline: 0,
+  };
   const seenToolUses = new Set<string>();
   const messages: LlmMessage[] = request.messages.map((m) => {
     if (typeof m.content === "string" || isTainted(m.content)) {
       return { role: m.role, content: resolve(m.content, m.role, m.role === "user") };
     }
-    return { role: m.role, content: guardParts(m.role, m.content, limit, seenToolUses) };
+    return { role: m.role, content: guardParts(m.role, m.content, state, seenToolUses) };
   });
 
   // A tool's name and description are read as instructions by every provider.

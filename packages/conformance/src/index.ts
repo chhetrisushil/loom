@@ -22,6 +22,7 @@ import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
 import { checkContentStoreTouchContract, settle } from "./contentTouchContract";
+import { checkDeclaredMediaOnWire } from "./mediaWire";
 import { checkToolCallStreamParity } from "./toolCallParity";
 
 export {
@@ -1815,25 +1816,39 @@ export function runLlmProviderConformance(
       expect(["end_turn", "tool_use", "max_tokens"]).toContain(res.stopReason);
     });
 
+    const imageRequest = (data: string): LlmRequest => ({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "what is this?" },
+            { type: "image", mediaType: "image/png", source: { kind: "data", data } },
+          ],
+        },
+      ],
+    });
+
     it("refuses a modality it did not declare, before doing any work (R5 fail closed)", async () => {
       const provider = factory();
-      // A provider that declares image/png is exercised by its own tests; this pins the
-      // other half — silence is a refusal, never a silent drop of the media.
+      // A provider that declares image/png is exercised by the next case; this pins the other
+      // half — silence is a refusal, never a silent drop of the media.
       if (mediaTypeAccepted(provider.capabilities?.image, "image/png")) return;
-      const withImage: LlmRequest = {
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "what is this?" },
-              { type: "image", mediaType: "image/png", source: { kind: "data", data: "AAAA" } },
-            ],
-          },
-        ],
-      };
-      await expect(provider.complete(withImage)).rejects.toMatchObject({
+      await expect(provider.complete(imageRequest("AAAA"))).rejects.toMatchObject({
         name: "UnsupportedModalityError",
       });
+    });
+
+    it("refuses an undeclared modality on stream too (R5)", async () => {
+      const provider = factory();
+      if (provider.stream === undefined) return;
+      if (mediaTypeAccepted(provider.capabilities?.image, "image/png")) return;
+      await expect(
+        provider.stream(imageRequest("AAAA"))[Symbol.asyncIterator]().next()
+      ).rejects.toMatchObject({ name: "UnsupportedModalityError" });
+    });
+
+    it("a provider that DECLARES image support puts the image on the wire (R5)", async () => {
+      await checkDeclaredMediaOnWire(factory());
     });
 
     it("stream (when supported) yields chunks ending with done:true", async () => {

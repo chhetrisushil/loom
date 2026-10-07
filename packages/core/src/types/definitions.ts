@@ -145,6 +145,15 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
    */
   trustJsonSchemaText?: boolean;
   /**
+   * R5 (ADR 0120) — the operator declares that this tool may return a media result
+   * (`mediaResult(parts)` from `@loom/agent`), which agent loops then hand the model as image /
+   * audio / file parts. Absent: a result shaped like a media result is just data. Only the
+   * operator can set it (a tool's output cannot), and a TAINTED result is never interpreted as
+   * media whatever the tool declares — so third-party output cannot choose which stored blob
+   * enters the prompt.
+   */
+  returnsMedia?: boolean;
+  /**
    * K9 — the tool's declared delivery semantic. Effects are at-least-once (a
    * crash between the effect and its STEP_COMPLETED append re-runs it on
    * recovery). `idempotent: true` asserts a re-run is safe (dedupe at the

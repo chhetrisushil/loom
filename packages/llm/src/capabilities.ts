@@ -75,3 +75,18 @@ export function assertRequestSupported(
     }
   }
 }
+
+/**
+ * The modalities a shipped provider declares for `model`: `base` unless the id is a known
+ * text-only model (`textOnly` patterns), which declares none — so a text-only model behind a
+ * provider class that otherwise takes images is refused locally, not 400'd by the API. The table
+ * is a floor, not an oracle: an id it does not know gets `base`, and `config.capabilities`
+ * (`capabilities: {}` for text-only) always wins.
+ */
+export function capabilitiesForModel(
+  model: string,
+  base: LlmCapabilities,
+  textOnly: readonly RegExp[]
+): LlmCapabilities {
+  return textOnly.some((re) => re.test(model)) ? {} : base;
+}

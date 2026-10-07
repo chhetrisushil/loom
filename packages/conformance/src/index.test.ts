@@ -51,6 +51,7 @@ import {
   runSnapshotStoreConformance,
   runTimerStoreConformance,
 } from "./index";
+import { checkDeclaredMediaOnWire } from "./mediaWire";
 import { checkToolCallStreamParity } from "./toolCallParity";
 
 /** A minimal in-memory WorkerRuntime for the dispatcher conformance self-test. */
@@ -375,7 +376,8 @@ const richProvider: LlmProvider = {
       usage: { inputTokens: 7, outputTokens: 3 },
     };
   },
-  async *stream() {
+  async *stream(req) {
+    assertRequestSupported(req, undefined);
     yield { delta: "think", done: false };
     yield { delta: "ing", done: false };
     yield {
@@ -539,6 +541,37 @@ describe("checkContentStoreTouchContract", () => {
     ).rejects.toThrow(/together/);
     await expect(
       checkContentStoreTouchContract(fixture({ bump: true, methods: [] }))
+    ).resolves.toBeUndefined();
+  });
+});
+
+// --- checkDeclaredMediaOnWire: R5 "declared means delivered", unit-tested directly. ---
+describe("checkDeclaredMediaOnWire (R5)", () => {
+  const sendsBody = (build: (r: LlmRequest) => unknown): LlmProvider => ({
+    capabilities: { image: ["image/png"] },
+    async complete(r) {
+      await fetch("https://example.invalid/", { method: "POST", body: JSON.stringify(build(r)) });
+      return { content: "", stopReason: "end_turn" };
+    },
+  });
+
+  it("passes a provider that sends the image it declared", async () => {
+    await expect(checkDeclaredMediaOnWire(sendsBody((r) => r))).resolves.toBeUndefined();
+  });
+
+  it("FAILS a provider that declares images and silently drops them from the wire body", async () => {
+    const dropping = sendsBody((r) => ({
+      messages: r.messages.map((m) => ({
+        role: m.role,
+        content: typeof m.content === "string" ? m.content : textOf(m.content),
+      })),
+    }));
+    await expect(checkDeclaredMediaOnWire(dropping)).rejects.toThrow(/does not carry the image/);
+  });
+
+  it("is silent for a provider that does not declare images", async () => {
+    await expect(
+      checkDeclaredMediaOnWire({ complete: async () => ({ content: "", stopReason: "end_turn" }) })
     ).resolves.toBeUndefined();
   });
 });

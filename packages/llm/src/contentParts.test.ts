@@ -15,6 +15,7 @@ import {
   MAX_INLINE_BYTES,
   OversizedInlinePartError,
   UntrustedContentError,
+  fenceUntrustedMedia,
   guardRequest,
 } from "./untrusted";
 
@@ -128,15 +129,113 @@ describe("guardRequest — structure and provenance of parts (R5)", () => {
     ).toThrow(UntrustedContentError);
   });
 
-  it("brackets untrusted media with fence tags in a user message and strips the flag", () => {
+  it("keeps the untrusted mark for the provider mapper, which brackets it where its wire shape allows", () => {
     const r = guardRequest({
       messages: [{ role: "user", content: [{ ...img(), untrusted: { origin: "mcp:render" } }] }],
     });
-    expect(r.messages[0]?.content).toEqual([
-      { type: "text", text: '<untrusted-input origin="mcp:render">' },
+    expect(r.messages[0]?.content).toEqual([{ ...img(), untrusted: { origin: "mcp:render" } }]);
+    // and the shared helper does the bracketing, dropping the mark and an untrusted file's name
+    expect(
+      fenceUntrustedMedia([
+        { ...img(), untrusted: { origin: "mcp:render" } },
+        {
+          type: "file" as const,
+          mediaType: "application/pdf",
+          name: "ignore-me.pdf",
+          source: img().source,
+          untrusted: { origin: "o" },
+        },
+      ]).map((p) => (p.type === "text" ? p.text : { ...p }))
+    ).toEqual([
+      '<untrusted-input origin="mcp:render">',
       img(),
-      { type: "text", text: "</untrusted-input>" },
+      "</untrusted-input>",
+      '<untrusted-input origin="o">',
+      { type: "file", mediaType: "application/pdf", source: img().source },
+      "</untrusted-input>",
     ]);
+  });
+
+  it("REFUSES an untrusted media part that names a stored ref (the store has no tenancy)", () => {
+    expect(() =>
+      guardRequest({
+        messages: [
+          { role: "user", content: [{ ...ref("sha256:victim"), untrusted: { origin: "mcp:x" } }] },
+        ],
+      })
+    ).toThrow(UntrustedContentError);
+    // inside a tool_result too
+    expect(() =>
+      guardRequest({
+        messages: [
+          { role: "assistant", content: [toolUse] },
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                toolUseId: "t1",
+                content: [{ ...ref(), untrusted: { origin: "o" } }],
+              },
+            ],
+          },
+        ],
+      })
+    ).toThrow(UntrustedContentError);
+  });
+
+  it("REFUSES a tainted value at ANY depth of a tool_use input, and in its id or name", () => {
+    const deep = { a: [{ b: { c: tainted("x", "o") } }] };
+    expect(() =>
+      guardRequest({ messages: [{ role: "assistant", content: [{ ...toolUse, input: deep }] }] })
+    ).toThrow(UntrustedContentError);
+    expect(() =>
+      guardRequest({
+        messages: [
+          {
+            role: "assistant",
+            content: [{ ...toolUse, name: tainted("n", "o") as unknown as string }],
+          },
+        ],
+      })
+    ).toThrow(UntrustedContentError);
+    expect(() =>
+      guardRequest({
+        messages: [
+          {
+            role: "assistant",
+            content: [{ ...toolUse, id: tainted("i", "o") as unknown as string }],
+          },
+        ],
+      })
+    ).toThrow(UntrustedContentError);
+    // a clean deep input is fine
+    expect(() =>
+      guardRequest({
+        messages: [{ role: "assistant", content: [{ ...toolUse, input: { a: [{ b: 1 }] } }] }],
+      })
+    ).not.toThrow();
+  });
+
+  it("caps ALL inline media in a request (256 KiB), not just each part", () => {
+    const piece = Buffer.alloc(60 * 1024, 1).toString("base64");
+    const msg = (n: number) => ({
+      role: "user" as const,
+      content: Array.from({ length: n }, () => img(piece)),
+    });
+    expect(() => guardRequest({ messages: [msg(4)] })).not.toThrow(); // 240 KiB
+    const err = (() => {
+      try {
+        guardRequest({ messages: [msg(5)] }); // 300 KiB
+      } catch (e) {
+        return e;
+      }
+    })();
+    expect(err).toBeInstanceOf(OversizedInlinePartError);
+    expect((err as Error).message).toContain("request totals");
+    expect(() => guardRequest({ messages: [msg(2)] }, { maxInlineTotalBytes: 100 * 1024 })).toThrow(
+      OversizedInlinePartError
+    );
   });
 
   it("REFUSES untrusted media outside a user message, and any media outside user", () => {
@@ -327,7 +426,7 @@ describe("resolving claim-checked content at call time (R5)", () => {
     expect(seen).toHaveLength(0);
   });
 
-  it("refuses a request whose declared or resolved bytes exceed the total cap, before/after fetch", async () => {
+  it("refuses a ref that DECLARES a size over the cap before fetching, and a blob whose size differs from its declaration", async () => {
     const fetched = vi.fn(async () => new Uint8Array(10));
     const declared = {
       messages: [
@@ -345,10 +444,113 @@ describe("resolving claim-checked content at call time (R5)", () => {
     await expect(resolveRequestContent(declared, fetched, { maxBytes: 100 })).rejects.toThrow(
       /over the 100-byte cap/
     );
-    expect(fetched).not.toHaveBeenCalled(); // an admitted-too-big ref is refused before any fetch
+    expect(fetched).not.toHaveBeenCalled();
+    const lying = {
+      messages: [
+        {
+          role: "user" as const,
+          content: [
+            {
+              ...ref("sha256:l"),
+              source: { kind: "ref" as const, ref: { address: "sha256:l", size: 3 } },
+            },
+          ],
+        },
+      ],
+    };
+    await expect(resolveRequestContent(lying, fetched)).rejects.toThrow(/declares 3/);
+  });
+
+  it("P2-5: a running byte budget stops fetching early — it does not fetch everything and THEN count", async () => {
+    // 8 distinct 60-byte blobs under a 100-byte cap, 4 at a time: the first to overshoot aborts
+    // the rest, so the queue is not drained.
+    const addresses = Array.from({ length: 8 }, (_, i) => `sha256:b${i}`);
+    const started: string[] = [];
+    const aborted: boolean[] = [];
+    const resolver = vi.fn(async (r: { address: string }, c: { signal?: AbortSignal }) => {
+      started.push(r.address);
+      await Promise.resolve();
+      aborted.push(c.signal?.aborted === true);
+      return new Uint8Array(60);
+    });
     await expect(
-      resolveRequestContent(request("sha256:a", "sha256:b"), fetched, { maxBytes: 15 })
-    ).rejects.toThrow(/over the 15-byte cap/);
+      resolveRequestContent(request(...addresses), resolver, { maxBytes: 100 })
+    ).rejects.toThrow(/exceeds the 100-byte cap|budget was spent/);
+    expect(started.length).toBeLessThan(addresses.length);
+  });
+
+  it("P2-5: each fetch is told what is left of the budget", async () => {
+    const seen: number[] = [];
+    const resolver = async (_r: unknown, c: { maxBytes: number }) => {
+      seen.push(c.maxBytes);
+      return new Uint8Array(10);
+    };
+    await resolveRequestContent(request("sha256:a"), resolver, { maxBytes: 500 });
+    expect(seen).toEqual([500]);
+  });
+
+  it("P1(c): the resolver gets the execution, step and principal, and where the ref came from", async () => {
+    const contexts: unknown[] = [];
+    const resolver = async (_r: unknown, c: unknown) => {
+      contexts.push(c);
+      return new Uint8Array(1);
+    };
+    const principal = { subject: "alice" } as never;
+    const toolReq: LlmRequest = {
+      messages: [
+        { role: "assistant", content: [toolUse] },
+        {
+          role: "user",
+          content: [{ type: "tool_result", toolUseId: "t1", content: [ref("sha256:t")] }],
+        },
+        { role: "user", content: [ref("sha256:app")] },
+      ],
+    };
+    await resolveRequestContent(toolReq, resolver, {
+      context: { executionId: "e1", stepId: "s1", principal },
+    });
+    expect(contexts).toMatchObject([
+      { executionId: "e1", stepId: "s1", principal, origin: "tool" },
+      { executionId: "e1", stepId: "s1", principal, origin: "app" },
+    ]);
+  });
+
+  it("P1(d): a tool-originated ref that cannot be resolved becomes an isError text result; an app-supplied one fails the call", async () => {
+    const absent = async () => null;
+    const toolReq: LlmRequest = {
+      messages: [
+        { role: "assistant", content: [toolUse] },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              toolUseId: "t1",
+              content: [{ type: "text", text: "chart" }, ref("sha256:gone")],
+            },
+          ],
+        },
+      ],
+    };
+    const out = await resolveRequestContent(toolReq, absent);
+    const part = (out.messages[1]?.content as LlmContentPart[])[0] as {
+      isError?: boolean;
+      content: { type: string; text?: string }[];
+    };
+    expect(part.isError).toBe(true);
+    expect(part.content.map((c) => c.type)).toEqual(["text", "text"]);
+    expect(part.content[1]?.text).toContain("content_unavailable");
+    expect(part.content[1]?.text).toContain("sha256:gone");
+
+    await expect(
+      resolveRequestContent({ messages: [{ role: "user", content: [ref("sha256:gone")] }] }, absent)
+    ).rejects.toThrow(/absent/);
+    // a throwing resolver is the same failure, not an unhandled rejection
+    const boom = async () => {
+      throw new Error("denied");
+    };
+    const denied = await resolveRequestContent(toolReq, boom);
+    expect(JSON.stringify(denied.messages[1])).toContain("denied");
   });
 
   it("returns the very same request object when there is nothing to resolve", async () => {
@@ -390,5 +592,32 @@ describe("streamed tool-call input (R5)", () => {
     ]);
     expect(res.toolCalls).toEqual([{ id: "t1", name: "lookup", input: { a: 1 } }]);
     expect(JSON.stringify(res)).not.toContain("toolDelta");
+  });
+});
+
+describe("onToolReset — a retried attempt does not duplicate tool-input fragments (R5)", () => {
+  it("the runtime's reset chunk reaches onToolReset (and onReset), once per retry", async () => {
+    const resets: number[] = [];
+    const textResets: number[] = [];
+    const effect = createLlmEffect<string, string>({
+      provider: { complete: async () => ({ content: "", stopReason: "end_turn" as const }) },
+      buildRequest: (s) => ({ messages: [{ role: "user", content: s }] }),
+      onToolReset: (attempt) => resets.push(attempt),
+      onReset: (attempt) => textResets.push(attempt),
+    });
+    // The runtime delivers a reset chunk before attempt n > 1; a configured sink is how it arrives.
+    expect(effect.deltaSink).toBeDefined();
+    effect.deltaSink?.({ delta: tainted("", "llm:x"), reset: true, attempt: 2 }, ctx());
+    expect(resets).toEqual([2]);
+    expect(textResets).toEqual([2]);
+  });
+
+  it("is wired even when only onToolReset is configured", () => {
+    const effect = createLlmEffect<string, string>({
+      provider: { complete: async () => ({ content: "", stopReason: "end_turn" as const }) },
+      buildRequest: (s) => ({ messages: [{ role: "user", content: s }] }),
+      onToolReset: () => undefined,
+    });
+    expect(effect.deltaSink).toBeDefined();
   });
 });

@@ -12,6 +12,8 @@ export interface ToolConfig<TIn, TOut> {
   jsonInputSchema?: Readonly<Record<string, unknown>>;
   /** R4b — see {@link ToolDefinition.trustJsonSchemaText}. */
   trustJsonSchemaText?: boolean;
+  /** R5 — see {@link ToolDefinition.returnsMedia}. */
+  returnsMedia?: boolean;
   /**
    * K9 — declared delivery semantic (see {@link ToolDefinition.idempotent}).
    * `false` = mutating & non-idempotent: recovery parks an unknown-state attempt
@@ -63,6 +65,7 @@ export function tool$<TIn = unknown, TOut = unknown>(
     ...(config.trustJsonSchemaText !== undefined && {
       trustJsonSchemaText: config.trustJsonSchemaText,
     }),
+    ...(config.returnsMedia !== undefined && { returnsMedia: config.returnsMedia }),
     ...(config.idempotent !== undefined && { idempotent: config.idempotent }),
     ...(config.errors !== undefined && { errors: config.errors }),
     ...(config.mode !== undefined && { mode: config.mode }),

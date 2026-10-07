@@ -1,5 +1,5 @@
 import type { LlmResponse } from "@loom/llm";
-import { assertRequestSupported, guardRequest } from "@loom/llm";
+import { assertRequestSupported, guardRequest, resolveRequestContent } from "@loom/llm";
 import { stopReasonConfidence } from "./confidence";
 import { tagRouter } from "./router";
 import type {
@@ -80,7 +80,7 @@ export class ReasoningRuntime {
     let current = this.routes[currentIdx] as ModelRoute;
     const trace: ReasoningTraceEntry[] = [];
 
-    let res = await this.call(current, req, signal, opts.invoke);
+    let res = await this.call(current, req, signal, opts);
     let confidence = await this.confidence.score(req, res);
     trace.push({ modelId: current.id, tier: current.tier, confidence, elevated: false });
 
@@ -95,7 +95,7 @@ export class ReasoningRuntime {
       const chosenId = await decide(`reason:${key}:elevate:${step}`, () => next.id);
       currentIdx = this.indexOf(chosenId);
       current = this.routes[currentIdx] as ModelRoute;
-      res = await this.call(current, req, signal, opts.invoke);
+      res = await this.call(current, req, signal, opts);
       confidence = await this.confidence.score(req, res);
       trace.push({ modelId: current.id, tier: current.tier, confidence, elevated: true });
     }
@@ -124,8 +124,9 @@ export class ReasoningRuntime {
     route: ModelRoute,
     req: ReasoningRequest,
     signal: AbortSignal | undefined,
-    invoke: ModelInvoker | undefined
+    opts: ReasonOptions
   ): Promise<LlmResponse> {
+    const invoke = opts.invoke;
     if (invoke !== undefined) {
       // R9 — the host makes the call (as an effect, inside the ring). No cache: see ModelInvoker.
       // `guardRequest` still runs here, so a custom invoker that is NOT an effect cannot
@@ -167,7 +168,14 @@ export class ReasoningRuntime {
     });
     // R5 — a third-party provider may not check its own modalities; this runtime does.
     assertRequestSupported(guarded, route.provider.capabilities);
-    const res = await route.provider.complete(guarded);
+    // R5 — refs become bytes only now: after the capability check (a refusal must precede any
+    // fetch) and after the cache lookup above, whose key is the request as written.
+    const res = await route.provider.complete(
+      await resolveRequestContent(guarded, opts.resolveContent, {
+        ...(signal !== undefined && { signal }),
+        ...(opts.resolveContext !== undefined && { context: opts.resolveContext }),
+      })
+    );
     if (cacheKey !== undefined) this.cache?.set(cacheKey, res);
     return res;
   }

@@ -1,4 +1,8 @@
-import { type LlmCapabilities, assertRequestSupported } from "../capabilities";
+import {
+  type LlmCapabilities,
+  assertRequestSupported,
+  capabilitiesForModel,
+} from "../capabilities";
 import { type LlmContentPart, type LlmResultPart, textOf } from "../parts";
 import { inlineData } from "../resolveContent";
 import type {
@@ -9,6 +13,7 @@ import type {
   LlmStreamChunk,
   LlmToolCall,
 } from "../types";
+import { fenceUntrustedMedia } from "../untrusted";
 
 /**
  * Anthropic's `stop_reason` → the SPI's. ONE implementation, used by both
@@ -33,6 +38,9 @@ const ANTHROPIC_CAPABILITIES: LlmCapabilities = {
   image: ["image/jpeg", "image/png", "image/gif", "image/webp"],
   file: ["application/pdf"],
 };
+
+/** Known text-only model ids (Claude 2.x and Instant predate vision). */
+const ANTHROPIC_TEXT_ONLY = [/^claude-(2|instant)/];
 
 function mapResultPart(p: LlmResultPart): Record<string, unknown> {
   return mapPart(p);
@@ -62,7 +70,10 @@ export function mapPart(p: LlmContentPart): Record<string, unknown> {
       return {
         type: "tool_result",
         tool_use_id: p.toolUseId,
-        content: typeof p.content === "string" ? p.content : p.content.map(mapResultPart),
+        content:
+          typeof p.content === "string"
+            ? p.content
+            : fenceUntrustedMedia(p.content).map(mapResultPart),
         ...(p.isError === true && { is_error: true }),
       };
   }
@@ -70,7 +81,7 @@ export function mapPart(p: LlmContentPart): Record<string, unknown> {
 
 function mapContent(content: LlmMessage["content"]): string | Record<string, unknown>[] {
   if (typeof content === "string") return content;
-  return content.map(mapPart);
+  return fenceUntrustedMedia(content).map(mapPart);
 }
 
 interface AnthropicTextBlock {
@@ -98,7 +109,10 @@ export class AnthropicProvider implements LlmProvider {
   readonly capabilities: LlmCapabilities;
 
   constructor(config: AnthropicProviderConfig = {}) {
-    this.capabilities = config.capabilities ?? ANTHROPIC_CAPABILITIES;
+    const model = config.model ?? "claude-opus-4-8";
+    this.capabilities =
+      config.capabilities ??
+      capabilitiesForModel(model, ANTHROPIC_CAPABILITIES, ANTHROPIC_TEXT_ONLY);
     this.apiKey =
       config.apiKey ??
       (typeof process !== "undefined" ? (process.env.ANTHROPIC_API_KEY ?? "") : "");

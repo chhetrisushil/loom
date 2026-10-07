@@ -15,6 +15,7 @@ import type {
 } from "@loom/llm";
 import {
   LLM_INTERRUPTED,
+  MAX_INLINE_TOTAL_BYTES,
   assertRequestSupported,
   assistantMessageOf,
   collectStream,
@@ -26,7 +27,7 @@ import type { ReasoningRuntime } from "@loom/reasoning";
 import { parallelLimit, throwIfAborted } from "@loom/scheduler";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
-import { toolResultPart } from "./toolResultContent";
+import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
@@ -165,6 +166,8 @@ export class AgentRunner {
     });
     // R4 — only the menu the model was shown may run; see `buildToolMenu`.
     const menu = buildToolMenu(toolDefs);
+    const mediaTools = new Set(toolDefs.filter((t) => t.returnsMedia === true).map((t) => t.id));
+    let inlineUsed = 0;
 
     const memoryId = definition.memoryId;
     const memoryScope = input.memoryScope ?? ctx.executionId;
@@ -310,7 +313,13 @@ export class AgentRunner {
             toolOutput,
           });
 
-          results.push(toolResultPart(toolCall.id, toolCall.name, toolOutput, { isError }));
+          const part = toolResultPart(toolCall.id, toolCall.name, toolOutput, {
+            isError,
+            allowMedia: mediaTools.has(toolCall.name),
+            inlineBudget: MAX_INLINE_TOTAL_BYTES - inlineUsed,
+          });
+          inlineUsed += inlineBytesIn(part);
+          results.push(part);
         }
         // R5 — one user message answers every call of the turn, adjacent to the assistant
         // message that made them.
@@ -375,9 +384,20 @@ export class AgentRunner {
     if (this.config.reasoning === undefined) {
       assertRequestSupported(guarded, this.config.provider?.capabilities);
     }
-    const request = await resolveRequestContent(guarded, this.config.resolveContent, {
-      ...(args.signal !== undefined && { signal: args.signal }),
-    });
+    const resolveContext = {
+      executionId: ctx.executionId,
+      stepId: ctx.stepId,
+      ...(ctx.principal !== undefined && { principal: ctx.principal }),
+    };
+    // On the reasoning path the runtime resolves, once it has checked the CHOSEN route's capabilities
+    // and keyed its cache on addresses; resolving here would fetch before either.
+    const request =
+      this.config.reasoning !== undefined
+        ? guarded
+        : await resolveRequestContent(guarded, this.config.resolveContent, {
+            ...(args.signal !== undefined && { signal: args.signal }),
+            context: resolveContext,
+          });
 
     if (this.config.reasoning !== undefined) {
       // A HAND-EMITTED decision, and knowingly so: a step handler has `emit` and
@@ -394,7 +414,14 @@ export class AgentRunner {
       };
       const res = await this.config.reasoning.reason(
         { ...request, strategy: "agent" },
-        { decide, decisionKey: `agent:turn:${iteration}` }
+        {
+          decide,
+          decisionKey: `agent:turn:${iteration}`,
+          ...(this.config.resolveContent !== undefined && {
+            resolveContent: this.config.resolveContent,
+          }),
+          resolveContext,
+        }
       );
       return {
         content: res.content,
