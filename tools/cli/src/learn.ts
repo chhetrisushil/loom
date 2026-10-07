@@ -1,4 +1,6 @@
 import path from "node:path";
+import type { EventEnvelope } from "@loom/core";
+import type { EventStore } from "@loom/event-runtime";
 import {
   evaluatePolicy,
   formatEvalReport,
@@ -7,6 +9,9 @@ import {
   trajectories,
 } from "@loom/learning";
 import type { Policy, Trajectory } from "@loom/learning";
+import { evidenceEvents } from "@loom/learning";
+import { ReplayVM, normalizeSnapshotState } from "@loom/replay-vm";
+import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { type StoreFlags, resolveStores } from "./stores";
 
 /**
@@ -17,34 +22,100 @@ import { type StoreFlags, resolveStores } from "./stores";
  * application code, and the choice it then makes is still a logged `ctx.decide`.
  */
 
-async function readAll(flags: StoreFlags, executionId?: string) {
+/** What the learner could read, and what it knows it could NOT. */
+interface Evidence {
+  events: EventEnvelope[];
+  /** Executions whose evidence came from a checkpoint's fold (compacted logs, read correctly). */
+  folded: number;
+  /** Executions whose log looks compacted while no snapshot store is configured: evidence LOST. */
+  unreadable: string[];
+}
+
+/** A log with a hole in its sequences was compacted: events below the checkpoint are gone. */
+const looksCompacted = (log: readonly EventEnvelope[]): boolean =>
+  log.some((e, i) => e.sequence !== i);
+
+/**
+ * ADR 0116 — a compacted execution's decisions and outcomes live in its checkpoint, not its log,
+ * so a log read alone silently loses them. With a snapshot store the evidence is rebuilt from the
+ * folded state (`evidenceEvents`); without one a compacted log is reported, never read quietly.
+ */
+async function evidenceOf(
+  store: EventStore,
+  snapshots: SnapshotStore | undefined,
+  id: string
+): Promise<{ events: EventEnvelope[]; folded: boolean; unreadable: boolean }> {
+  const log = await store.read(id);
+  const compacted = looksCompacted(log);
+  if (snapshots === undefined) {
+    return { events: log, folded: false, unreadable: compacted };
+  }
+  const snapshot = await snapshots.loadLatest(id);
+  const first = log[0];
+  if (snapshot === null || first === undefined) {
+    return { events: log, folded: false, unreadable: compacted };
+  }
+  const tail = await store.readFrom(id, snapshot.sequence + 1);
+  const state = new ReplayVM(tail, {
+    ...normalizeSnapshotState(snapshot.state),
+    executionId: id,
+    workflowId: first.workflowId,
+  }).getState();
+  return { events: evidenceEvents(state, log), folded: compacted, unreadable: false };
+}
+
+async function readAll(flags: StoreFlags, executionId?: string): Promise<Evidence> {
   const resolved = await resolveStores(flags);
   const store = resolved.eventStore;
   try {
-    if (executionId !== undefined) return await store.read(executionId);
-    // listExecutions is OPTIONAL on the EventStore SPI (1.1.0) — a store without it
-    // can still be asked for one execution, so say that rather than crashing.
-    if (store.listExecutions === undefined) {
-      throw new Error(
-        "this event store cannot enumerate executions — pass an explicit <executionId>"
-      );
+    let ids: string[];
+    if (executionId !== undefined) ids = [executionId];
+    else {
+      // listExecutions is OPTIONAL on the EventStore SPI (1.1.0) — a store without it
+      // can still be asked for one execution, so say that rather than crashing.
+      if (store.listExecutions === undefined) {
+        throw new Error(
+          "this event store cannot enumerate executions — pass an explicit <executionId>"
+        );
+      }
+      ids = await store.listExecutions();
     }
-    const ids = await store.listExecutions();
-    const logs = await Promise.all(ids.map((id) => store.read(id)));
-    return logs.flat();
+    const out: Evidence = { events: [], folded: 0, unreadable: [] };
+    for (const id of ids) {
+      const got = await evidenceOf(store, resolved.snapshotStore, id);
+      out.events.push(...got.events);
+      if (got.folded) out.folded++;
+      if (got.unreadable) out.unreadable.push(id);
+    }
+    return out;
   } finally {
     await resolved.close();
   }
 }
 
+/** The warning a learner must not miss: evidence that is GONE from what it just read. */
+export function compactionNotice(e: Evidence): string[] {
+  if (e.unreadable.length === 0) return [];
+  const shown = e.unreadable.slice(0, 5).join(", ");
+  return [
+    "",
+    `  ! ${e.unreadable.length} execution(s) look compacted and no snapshot store is configured, so their decisions and outcomes (folded into the checkpoint) are NOT in this report: ${shown}${e.unreadable.length > 5 ? ", …" : ""}`,
+    "    pass --snap <snap.db> (or --config <module>) so the learner reads them from the folded state (ADR 0116)",
+  ];
+}
+
 /** `loom learn report --db <path> [executionId]` — what the log can and cannot teach. */
 export async function cmdLearnReport(flags: StoreFlags, executionId?: string): Promise<string> {
-  const events = await readAll(flags, executionId);
-  if (events.length === 0) return "(no events)";
+  const evidence = await readAll(flags, executionId);
+  const { events } = evidence;
+  const notice = compactionNotice(evidence);
+  if (events.length === 0) return ["(no events)", ...notice].join("\n");
 
   const ts = trajectories(events);
   const all = steps(ts);
-  if (all.length === 0) return "(no decisions recorded — nothing to learn from)";
+  if (all.length === 0) {
+    return ["(no decisions recorded — nothing to learn from)", ...notice].join("\n");
+  }
 
   const withContext = all.filter((s) => s.context !== undefined).length;
   const withPropensity = all.filter((s) => s.policy?.propensity !== undefined).length;
@@ -68,7 +139,7 @@ export async function cmdLearnReport(flags: StoreFlags, executionId?: string): P
 
   const pct = (n: number) => `${((n / all.length) * 100).toFixed(0)}%`;
   const lines = [
-    `Learning report — ${ts.length} execution(s), ${all.length} decision(s)`,
+    `Learning report — ${ts.length} execution(s), ${all.length} decision(s)${evidence.folded > 0 ? ` (${evidence.folded} compacted execution(s) read from their checkpoints)` : ""}`,
     "",
     "  Coverage",
     `    with context      ${withContext} (${pct(withContext)})`,
@@ -104,6 +175,7 @@ export async function cmdLearnReport(flags: StoreFlags, executionId?: string): P
     lines.push("", "  Blocking gaps:");
     for (const b of blockers) lines.push(`    ! ${b}`);
   }
+  lines.push(...notice);
   return lines.join("\n");
 }
 
@@ -133,8 +205,8 @@ export async function cmdLearnEval(
     };
   }
 
-  const events = await readAll(flags, opts.executionId);
-  const ts = trajectories(events) as Trajectory<unknown>[];
+  const evidence = await readAll(flags, opts.executionId);
+  const ts = trajectories(evidence.events) as Trajectory<unknown>[];
   const report = evaluatePolicy(ts, candidate);
   const verdict = promotionGate(
     report,
@@ -144,5 +216,6 @@ export async function cmdLearnEval(
   const lines = [formatEvalReport(report), ""];
   lines.push(verdict.ok ? "  GATE: pass" : "  GATE: refused");
   for (const r of verdict.reasons) lines.push(`    - ${r}`);
+  lines.push(...compactionNotice(evidence));
   return { text: lines.join("\n"), ok: verdict.ok };
 }

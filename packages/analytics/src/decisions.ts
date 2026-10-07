@@ -72,12 +72,28 @@ function outcomeFrom(e: EventEnvelope): OutcomeRecord {
   };
 }
 
-/** Every DECISION_RECORDED as a materialized record, in log order. */
+/**
+ * Every DECISION_RECORDED as a materialized record, in log order.
+ *
+ * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
+ * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
+ * compacted, build the events from the folded state first —
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * pass THOSE.
+ */
 export function decisionRecords(events: EventEnvelope[]): DecisionRecord[] {
   return events.filter((e) => e.eventType === "DECISION_RECORDED").map(decisionFrom);
 }
 
-/** Every OUTCOME_RECORDED as a materialized record, in log order. */
+/**
+ * Every OUTCOME_RECORDED as a materialized record, in log order.
+ *
+ * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
+ * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
+ * compacted, build the events from the folded state first —
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * pass THOSE.
+ */
 export function outcomeRecords(events: EventEnvelope[]): OutcomeRecord[] {
   return events.filter((e) => e.eventType === "OUTCOME_RECORDED").map(outcomeFrom);
 }
@@ -93,6 +109,12 @@ export interface DecisionQuery {
 /**
  * D2 — a queryable read-model over the decision log. Built once from the events;
  * the query helpers are pure filters over the materialized records.
+ *
+ * Reads the LOG it is given: a compacted execution's decisions and outcomes live in its checkpoint
+ * (ADR 0106/0116), not on the log, so they are absent here. For executions that may have been
+ * compacted, build the events from the folded state first —
+ * `evidenceEvents(await runtime.loadState(id), await store.read(id))` from `@loom/learning` — and
+ * pass THOSE.
  */
 export interface DecisionStore {
   readonly records: readonly DecisionRecord[];

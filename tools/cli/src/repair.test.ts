@@ -10,7 +10,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
-import { cmdRepairBlankStream, parseAssignments } from "./repair";
+import { cmdRepairBlankStream, cmdRepairTerminalEvent, parseAssignments } from "./repair";
 
 // `loom repair blank-stream` (ADR 0107) over a SQLite image of what the pre-0106 compaction bug
 // left: e1 compacted at gate 1 (blank checkpoint, log `[0]`), resumed twice — the first run's
@@ -175,5 +175,80 @@ describe("loom repair blank-stream", () => {
       { executionId: "run-7", fromSequence: 20, throughSequence: 22 },
     ]);
     expect(() => parseAssignments("e1:13")).toThrow(/expected <executionId>:<from>-<through>/);
+  });
+});
+
+describe("loom repair terminal-event (ADR 0116 migration)", () => {
+  let dir: string;
+  let db: string;
+  let snap: string;
+  const decideRunner = async (ctx: { decide(id: string, f: () => string): Promise<string> }) => {
+    await ctx.decide("route", () => "opus");
+    return {};
+  };
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "loom-repair-te-"));
+    db = join(dir, "events.db");
+    snap = join(dir, "snap.db");
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const stores = () => ({ events: new SqliteEventStore(db), snaps: new SqliteSnapshotStore(snap) });
+  const runtimeOver = (events: SqliteEventStore, snaps: SqliteSnapshotStore) => {
+    const runtime = new WorkflowRuntime({
+      eventStore: events,
+      snapshotStore: snaps,
+      effectRuntime: new EffectRuntime(),
+    });
+    runtime.registerFlow(definition, decideRunner as never);
+    return runtime;
+  };
+
+  it("restores the terminal event of a pre-0116 [0]+checkpoint execution so a late outcome lands", async () => {
+    const { events, snaps } = stores();
+    const runtime = runtimeOver(events, snaps);
+    await (await runtime.start("f", {}, { executionId: "done" })).waitForCompletion();
+    await (await runtime.start("f", {}, { executionId: "intact" })).waitForCompletion();
+    const state = (await runtime.loadState("done"))!;
+    // the OLD compaction shape: checkpoint at the tip, log truncated through it
+    await snaps.save({
+      id: "old",
+      executionId: "done",
+      workflowId: "f",
+      sequence: state.sequence,
+      state,
+      createdAt: 0,
+    });
+    await events.truncatePrefix!("done", state.sequence);
+    await expect(
+      runtime.recordOutcome("done", { decisionId: "route", key: "k", score: 1 })
+    ).rejects.toThrow(/compacted/);
+    events.close();
+    await snaps.close();
+
+    const dry = await cmdRepairTerminalEvent({ db, snap, apply: false });
+    expect(dry).toContain("DRY RUN");
+    expect(dry).toContain(`would restore EXECUTION_COMPLETED at sequence ${state.sequence + 1}`);
+    expect(dry).not.toContain("intact");
+    const applied = await cmdRepairTerminalEvent({ db, snap, apply: true });
+    expect(applied).toContain(`restored EXECUTION_COMPLETED at sequence ${state.sequence + 1}`);
+    expect(applied).toContain("1 restored");
+    // idempotent: a second run finds nothing to do
+    expect(await cmdRepairTerminalEvent({ db, snap, apply: true })).toContain("0 restored");
+
+    const after = stores();
+    const rt = runtimeOver(after.events, after.snaps);
+    expect(await rt.recordOutcome("done", { decisionId: "route", key: "k", score: 1 })).toEqual({
+      appended: true,
+      sequence: state.sequence + 2,
+    });
+    expect((await rt.loadState("done"))!.status).toBe("completed");
+    after.events.close();
+    await after.snaps.close();
+  });
+
+  it("asks for the snapshot store, and leaves a non-terminal execution alone", async () => {
+    expect(await cmdRepairTerminalEvent({ db, apply: true })).toMatch(/needs the snapshot store/);
   });
 });

@@ -424,4 +424,57 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
     expect(t?.steps).toHaveLength(1000);
     expect(t?.steps[999]?.action).toBe(`${big}999`);
   });
+
+  describe("decision ORDER of the evidence (discounted terminal credit)", () => {
+    const run = async (ids: string[]) => {
+      const eventStore = new InMemoryAsyncEventStore();
+      const snapshotStore = new InMemoryAsyncSnapshotStore();
+      const runner: FlowRunner<{ tokens: number }, { route: string }> = async (ctx) => {
+        for (const id of ids) await ctx.decide(id, () => id);
+        return { route: "done" };
+      };
+      const runtime = new WorkflowRuntime({
+        eventStore,
+        snapshotStore,
+        effectRuntime: new EffectRuntime(),
+      });
+      runtime.registerFlow(makeFlow(runner).definition, runner);
+      await (
+        await runtime.start(makeFlow(runner), { tokens: 1 }, { executionId: "o" })
+      ).waitForCompletion();
+      return { eventStore, snapshotStore, runtime };
+    };
+    const credit = (events: Parameters<typeof trajectories>[0]) =>
+      trajectories<string>(events, { discount: 0.5 })[0]?.steps.map((s) => [
+        s.decisionId,
+        s.reward,
+      ]);
+
+    it("an uncompacted log keeps the TRUE order even for array-index-like decisionIds", async () => {
+      const { eventStore, runtime } = await run(["b", "10", "2", "a"]);
+      const log = await eventStore.read("o");
+      const raw = credit(log);
+      expect(raw?.map((r) => r[0])).toEqual(["b", "10", "2", "a"]);
+      expect(credit(evidenceEvents((await runtime.loadState("o"))!, log))).toEqual(raw);
+    });
+
+    it("a compacted execution with ordinary decisionIds discounts identically", async () => {
+      const { eventStore, snapshotStore, runtime } = await run(["d-b", "d-10", "d-2", "d-a"]);
+      const raw = credit(await eventStore.read("o"));
+      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+      expect(
+        credit(evidenceEvents((await runtime.loadState("o"))!, await eventStore.read("o")))
+      ).toEqual(raw);
+    });
+
+    it("KNOWN LIMIT (documented): absorbed array-index-like ids are listed first by the folded map", async () => {
+      const { eventStore, snapshotStore, runtime } = await run(["b", "10", "2", "a"]);
+      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+      const got = credit(
+        evidenceEvents((await runtime.loadState("o"))!, await eventStore.read("o"))
+      );
+      // the fold does not record order (frozen shape), so the map's key order is all there is
+      expect(got?.map((r) => r[0])).toEqual(["2", "10", "b", "a"]);
+    });
+  });
 });

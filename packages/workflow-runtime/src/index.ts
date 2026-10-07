@@ -98,6 +98,7 @@ export {
   type ArchiveStores,
   type RetentionOutcome,
   type PinPredicate,
+  type RestoreTerminalResult,
 } from "./LogLifecycle";
 export {
   REHOMED_FROM_KEY,

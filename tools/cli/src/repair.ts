@@ -138,3 +138,60 @@ export async function cmdRepairBlankStream(
     await stores.close();
   }
 }
+
+/**
+ * `loom repair terminal-event <store> [executionId] [--apply]` (ADR 0116 migration)
+ *
+ * A finished execution a pre-0116 kernel compacted is left as `[0]` + a checkpoint at its terminal
+ * sequence: no valid slot for `recordOutcome`, no terminal event for retention to date. This
+ * writes the terminal event back ABOVE the checkpoint (`LogLifecycle.restoreTerminalEvent`):
+ * idempotent, refuses non-terminal executions, dry by default. Needs the snapshot store (the
+ * checkpoint is the proof of what the execution finished as) and, with no `executionId`, an
+ * enumerable event store. Run it with the executions quiesced.
+ */
+export async function cmdRepairTerminalEvent(
+  flags: StoreFlags & { apply: boolean },
+  executionId?: string
+): Promise<string> {
+  const stores = await resolveStores(flags);
+  try {
+    const events = stores.eventStore;
+    if (stores.snapshotStore === undefined) {
+      return "loom repair terminal-event needs the snapshot store — the checkpoint is what proves the execution finished: pass --snap <snap.db>, or use --config.";
+    }
+    let ids: string[];
+    if (executionId !== undefined) ids = [executionId];
+    else if (events.listExecutions !== undefined) ids = await events.listExecutions();
+    else {
+      return `loom repair terminal-event needs to enumerate executions, and the configured ${events.constructor.name} does not implement listExecutions: pass an <executionId>.`;
+    }
+    const lifecycle = new LogLifecycle(events, stores.snapshotStore);
+    const lines: string[] = [];
+    let scanned = 0;
+    let repaired = 0;
+    let failed = 0;
+    for (const id of ids) {
+      scanned++;
+      try {
+        const r = await lifecycle.restoreTerminalEvent(id, { apply: flags.apply });
+        if (r.status === "restored" || r.status === "would-restore") {
+          repaired++;
+          lines.push(
+            `  ${id.padEnd(28)} ${r.status === "restored" ? "restored" : "would restore"} ${r.eventType} at sequence ${r.sequence}`
+          );
+        } else if (r.status === "not-terminal" && executionId !== undefined) {
+          lines.push(`  ${id.padEnd(28)} not terminal (${r.foldedStatus}) — left alone`);
+        }
+      } catch (err) {
+        failed++;
+        lines.push(`  ✗ ${id}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return [
+      `repair terminal-event ${flags.apply ? "run" : "DRY RUN (pass --apply to write)"} — ${scanned} execution(s) scanned, ${repaired} ${flags.apply ? "restored" : "need a terminal event"}${failed > 0 ? `, ${failed} failed` : ""}`,
+      ...lines,
+    ].join("\n");
+  } finally {
+    await stores.close();
+  }
+}
