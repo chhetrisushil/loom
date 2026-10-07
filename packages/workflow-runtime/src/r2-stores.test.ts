@@ -250,7 +250,11 @@ for (const backend of [memory, sqlite, postgres]) {
       }
       await h.rt.notifyInbox(e);
       await until(async () => (await h.rt.loadState(e))?.suspendedOn?.on === "hold", 8000);
-      await tick(80);
+      // the trim runs in the background after the park: wait for it, not a fixed sleep
+      await until(
+        async () => !(await h.eventStore.read(inboxStreamId(e))).some((x) => x.sequence === 1),
+        8000
+      );
       const left = (await h.eventStore.read(inboxStreamId(e))).map((x) => x.sequence);
       expect(left).toContain(2);
       expect(left).toContain(3);
@@ -259,7 +263,7 @@ for (const backend of [memory, sqlite, postgres]) {
       const fence = await h.eventStore.acquireFence?.(e);
       await h.rt.resume(e, { eventType: "hold", payload: { ok: true } }, { fence });
       await done(h, e);
-      await tick(80);
+      await until(async () => (await h.eventStore.read(inboxStreamId(e))).length === 0, 8000);
       expect(await h.eventStore.read(inboxStreamId(e))).toEqual([]);
       const life = new LogLifecycle(h.eventStore, h.snapshotStore);
       expect(await life.applyRetention(e, { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(

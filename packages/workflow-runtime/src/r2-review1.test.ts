@@ -396,7 +396,7 @@ describe("(a) the inbox stream is deleted when the head turns terminal", () => {
     await (await h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
     await h.rt.send("e1", { topic: "x", payload: "bye" });
     await completed(h);
-    await tick(30);
+    await until(async () => (await h.eventStore.read(inboxStreamId("e1"))).length === 0, 8000);
     expect(await h.eventStore.read(inboxStreamId("e1"))).toEqual([]);
     await expect(h.rt.send("e1", { topic: "x", payload: "late" })).rejects.toBeInstanceOf(
       InboxClosedError
