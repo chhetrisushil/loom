@@ -308,6 +308,12 @@ const NOT_A_CAPABILITY = new Set([
   // cancellation, the parallel combinator, the R8 supervisor); the event shapes were frozen at W2-0.
   // No new subsystem to grade.
   "0112",
+  // 0109 — R1b: `ctx.continueAsNew` (one ABI entry), `EXECUTION_CONTINUED` and the `continued` status, a
+  // deterministic successor started first, behind `kernel.features.continueAsNew`; 1P chain lineage
+  // (`@loom/analytics`), supervisor follow-through and the `continueEvery` helper. It completes existing
+  // capabilities (the durable log and recovery, R8 supervision, the K10 retention clock); the event
+  // shapes were frozen at W2-0. No new subsystem to grade.
+  "0109",
   // 0110 — R2: `ctx.receive` / `ctx.select` (two ABI entries), `MESSAGE_CONSUMED` and the multi-wait park,
   // an authorized `runtime.send`, behind `kernel.features.inbox`; the 1P `@loom/inbox` package is a
   // separate item. It completes existing capabilities (the resume gate, K12 authz, the T1 timers, R8k

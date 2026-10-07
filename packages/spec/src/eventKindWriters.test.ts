@@ -12,7 +12,6 @@ import { describe, expect, it } from "vitest";
 
 /** Handlers that exist before their writer: kind → where the writer lands. */
 const RESERVED_NO_WRITER: Record<string, string> = {
-  EXECUTION_CONTINUED: "R1b (ADR 0109): ctx.continueAsNew",
   // Pre-existing exceptions (design §3, §7 question 12): reserved long before Wave 2.
   PARALLEL_STARTED: "none (reserved with a handler since before Wave 2)",
   STEP_RETRYING: "none (reserved with a handler since before Wave 2)",

@@ -93,6 +93,7 @@ describe("Kernel ABI (K1)", () => {
 
   it("pins the syscall set (guards against silent MAJOR breaks)", () => {
     expect([...KERNEL_SYSCALLS].map((s) => s.name).sort()).toEqual([
+      "continueAsNew",
       "decide",
       "emit",
       "execute",

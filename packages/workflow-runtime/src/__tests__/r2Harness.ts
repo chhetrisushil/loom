@@ -192,7 +192,7 @@ export function crashingStore(
  */
 export function crashHarness(
   dropFrom: (e: EventEnvelope) => boolean,
-  opts: { atomicBatch?: boolean; latch?: Latch } = {}
+  opts: { atomicBatch?: boolean; latch?: Latch; deps?: Partial<WorkflowRuntimeDeps> } = {}
 ) {
   const inner = new InMemoryAsyncEventStore();
   const rawSnap = new InMemoryAsyncSnapshotStore();
@@ -206,15 +206,12 @@ export function crashHarness(
   timerView.schedule = async (t) => {
     if (!crash.crashed) await rawTimers.schedule(t);
   };
-  const h = build(
-    {},
-    {
-      eventStore: crash.store,
-      snapshotStore: snapView,
-      timers: timerView,
-      ...(opts.latch !== undefined && { latch: opts.latch }),
-    }
-  );
+  const h = build(opts.deps ?? {}, {
+    eventStore: crash.store,
+    snapshotStore: snapView,
+    timers: timerView,
+    ...(opts.latch !== undefined && { latch: opts.latch }),
+  });
   const surviving = { eventStore: inner, snapshotStore: rawSnap, timerStore: rawTimers };
   return {
     inner,

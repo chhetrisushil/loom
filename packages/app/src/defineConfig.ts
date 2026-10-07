@@ -626,6 +626,23 @@ export interface LoomConfig {
        * `TimerStore` row.
        */
       inbox?: boolean;
+      /**
+       * ADR 0109 (R1b) — `ctx.continueAsNew`: end an execution and start its successor with a carry,
+       * so a long-lived conversational / multi-party agent keeps a bounded fold and snapshot. OFF by
+       * default because a pre-1.23.0 node ignores `EXECUTION_CONTINUED` and the `continued` status:
+       * it would read the predecessor as still running and re-drive it. Off, `ctx.continueAsNew`
+       * throws a message naming this flag (existing chains stay readable and resumable). Turn it on
+       * once every node folds `EXECUTION_CONTINUED`. The caller-chosen-id reservation of the
+       * successor shape (`<x>~<digits>` on the root segment) applies regardless of this flag.
+       */
+      continueAsNew?: boolean;
+    };
+    /** ADR 0109 D1/D4 — continue-as-new bounds (read only when `features.continueAsNew` is on). */
+    continuation?: {
+      /** Largest carry `ctx.continueAsNew` accepts, in bytes of its JSON text. Default 1 MiB. */
+      maxCarryBytes?: number;
+      /** `_continuedTo` links a head walk follows before refusing, naming the head. Default 8. */
+      maxChainHops?: number;
     };
     /** ADR 0110 D1/D6 — inbox bounds (read only when `features.inbox` is on). */
     inbox?: {
@@ -1197,6 +1214,15 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       meterCeilings: config.kernel.meterCeilings,
     }),
     ...(config.kernel?.features?.scopes === true && { scopes: true }),
+    ...(config.kernel?.features?.continueAsNew === true && {
+      continueAsNewEnabled: true,
+      ...(config.kernel.continuation?.maxCarryBytes !== undefined && {
+        maxCarryBytes: config.kernel.continuation.maxCarryBytes,
+      }),
+      ...(config.kernel.continuation?.maxChainHops !== undefined && {
+        maxChainHops: config.kernel.continuation.maxChainHops,
+      }),
+    }),
     ...(config.kernel?.features?.inbox === true && {
       inboxEnabled: true,
       ...(config.kernel.inbox?.maxBacklog !== undefined && {
