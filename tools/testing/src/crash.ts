@@ -1,8 +1,10 @@
 import type { EventEnvelope } from "@loom/core";
 import {
+  type AppendIfUnchangedResult,
   type DecoratorPlan,
   type EventStore,
   type OptionalEventStoreMethod,
+  type TipObservation,
   installOptional,
 } from "@loom/event-runtime";
 
@@ -98,6 +100,21 @@ export function crashingEventStore(
     readRange: "forward",
     acquireFence: "forward",
     acquireFenceIf: "forward",
+    // Honours the crash like `append`: a swallowed write reports success (the process "died").
+    appendIfUnchanged: async (
+      executionId: string,
+      event: EventEnvelope | null,
+      expect?: TipObservation
+    ): Promise<AppendIfUnchangedResult> => {
+      const conditional = inner.appendIfUnchanged as NonNullable<EventStore["appendIfUnchanged"]>;
+      if (event === null) return conditional.call(inner, executionId, null, expect);
+      if (!restored && (crashed || options.dropFrom(event))) {
+        crashed = true;
+        dropped.push(event);
+        return { appended: true };
+      }
+      return conditional.call(inner, executionId, event, expect);
+    },
     copyPrefix: "forward",
     deleteExecution: "forward",
     truncatePrefix: "forward",

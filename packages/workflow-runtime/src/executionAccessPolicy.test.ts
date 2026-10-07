@@ -97,13 +97,14 @@ describe("executionAccessPolicy", () => {
     expect(open.authorize(req("actAsOwner", alice2, "e1", "wf", ownerAlice)).allowed).toBe(false);
   });
 
-  it("annotate (ADR 0116) is tenant-scoped by default against the recorded owner; rules can narrow it", () => {
+  it("annotate (ADR 0116) is owner-scoped by default against the recorded owner; rules can widen it", () => {
     const p = executionAccessPolicy();
-    expect(p.authorize(req("annotate", alice2, "e1", "wf", ownerAlice)).allowed).toBe(true);
+    expect(p.authorize(req("annotate", alice, "e1", "wf", ownerAlice)).allowed).toBe(true);
+    expect(p.authorize(req("annotate", alice2, "e1", "wf", ownerAlice)).allowed).toBe(false);
     expect(p.authorize(req("annotate", eve, "e1", "wf", ownerAlice)).allowed).toBe(false);
-    const own = executionAccessPolicy({ rules: { annotate: "owner" } });
-    expect(own.authorize(req("annotate", alice2, "e1", "wf", ownerAlice)).allowed).toBe(false);
-    expect(own.authorize(req("annotate", alice, "e1", "wf", ownerAlice)).allowed).toBe(true);
+    const tenant = executionAccessPolicy({ rules: { annotate: "tenant" } });
+    expect(tenant.authorize(req("annotate", alice2, "e1", "wf", ownerAlice)).allowed).toBe(true);
+    expect(tenant.authorize(req("annotate", eve, "e1", "wf", ownerAlice)).allowed).toBe(false);
   });
 
   it("workflow allow-list and requireTenant", () => {

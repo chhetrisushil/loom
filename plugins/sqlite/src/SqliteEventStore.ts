@@ -1,5 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import type { AppendIfUnchangedResult, EventStore, TipObservation } from "@loom/event-runtime";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
@@ -186,6 +186,72 @@ export class SqliteEventStore implements EventStore {
       claimedIds.add(e.id);
     }
     return cause instanceof Error ? cause : new Error(String(cause));
+  }
+
+  /**
+   * SPI 2.2.0 (ADR 0116 amendment) — existence, head and the (always 0: SQLite does not fence)
+   * token are checked and the row inserted inside ONE `BEGIN IMMEDIATE` transaction, so a
+   * retention delete or another process's append cannot slip between the check and the write.
+   */
+  async appendIfUnchanged(
+    executionId: string,
+    event: EventEnvelope | null,
+    expect?: TipObservation
+  ): Promise<AppendIfUnchangedResult> {
+    if (event !== null && (expect === undefined || event.executionId !== executionId)) {
+      throw new TypeError(
+        "appendIfUnchanged: an event needs `expect` and the matching executionId"
+      );
+    }
+    const run = this.db.transaction((): AppendIfUnchangedResult => {
+      const anchor = this.db
+        .prepare<[string], { one: number }>(
+          "SELECT 1 AS one FROM events WHERE execution_id = ? AND sequence = 0"
+        )
+        .get(executionId);
+      if (anchor === undefined) return { appended: false, reason: "gone", head: null, fence: 0 };
+      const tip = this.db
+        .prepare<[string], { tip: number }>(
+          "SELECT MAX(sequence) AS tip FROM events WHERE execution_id = ?"
+        )
+        .get(executionId);
+      const head = tip?.tip ?? 0;
+      if (event === null) return { appended: false, reason: "observed", head, fence: 0 };
+      const want = expect as TipObservation;
+      if (head !== want.head || want.fence !== 0 || event.sequence <= head) {
+        return { appended: false, reason: "moved", head, fence: 0 };
+      }
+      this.db
+        .prepare(
+          `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          event.id,
+          event.workflowId,
+          event.executionId,
+          event.eventType,
+          event.sequence,
+          event.timestamp,
+          JSON.stringify(event.payload),
+          event.metadata !== undefined ? JSON.stringify(event.metadata) : null
+        );
+      return { appended: true };
+    });
+    let result: AppendIfUnchangedResult;
+    try {
+      result = run.immediate();
+    } catch (err) {
+      if (isDuplicateSequenceViolation(err)) {
+        throw new DuplicateSequenceError(executionId, event?.sequence ?? -1, err);
+      }
+      if (isDuplicateIdViolation(err)) {
+        throw new DuplicateEnvelopeIdError(event?.id ?? "", executionId, err);
+      }
+      throw err;
+    }
+    if (result.appended && event !== null) this.notify(executionId, event);
+    return result;
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {

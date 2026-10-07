@@ -305,7 +305,7 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
 | Effect / middleware / authority | `Effect` / `EffectMiddleware` / `CapabilityAuthorizer` (`@loom/effect-runtime`) | — | (staged) |
 
 - **Required vs optional:** each interface marks optional methods (e.g. `EventStore.readRange`,
-  `acquireFence`, `acquireFenceIf` (the conditional fence, SPI 2.1.0, [ADR 0118](../adr/0118-acquire-if-parked-fence.md)),
+  `acquireFence`, `acquireFenceIf` (the conditional fence, SPI 2.1.0, [ADR 0118](../adr/0118-acquire-if-parked-fence.md)), `appendIfUnchanged` (the conditional append a late outcome needs, SPI 2.2.0, [ADR 0116](../adr/0116-late-outcome-attach.md)),
   `copyPrefix`, `deleteExecution`, and the paged `listExecutionsPage` — SPI 1.2.0,
   the bounded-memory enumeration maintenance passes prefer). An implementation MAY omit optional
   methods; the conformance kit skips them. A store that omits `acquireFence` performs no fencing

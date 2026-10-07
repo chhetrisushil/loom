@@ -4,7 +4,7 @@ import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
-import { WorkflowRuntime } from "@loom/workflow-runtime";
+import { LogLifecycle, WorkflowRuntime } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { decideWithPolicy } from "./decideWithPolicy";
@@ -313,5 +313,49 @@ describe("reward poisoning cannot pass the promotion gate (ADR 0116 review)", ()
     const verdict = promotionGate(poisoned, { minSteps: 10 });
     expect(verdict.ok).toBe(false);
     expect(verdict.reasons.join(" ")).toMatch(/not a finite/);
+  });
+});
+
+describe("compaction keeps rewards (ADR 0116 amendment)", () => {
+  it("trajectories over a compacted log equal those over the full log (in-run and late rewards)", async () => {
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const policy = explorer(0.2);
+    const runner: FlowRunner<{ tokens: number }, { route: string }> = async (ctx, input) => {
+      for (let i = 0; i < 3; i++) await ctx.emit("note", { i }); // something to reclaim
+      const route = await decideWithPolicy(ctx, "route", policy, { tokens: input.tokens }, [
+        ...ROUTES,
+      ]);
+      recordOutcome(ctx, { key: `in-${route}`, score: 0.3, decisionId: "route" });
+      return { route };
+    };
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore,
+      effectRuntime: new EffectRuntime(),
+    });
+    runtime.registerFlow(makeFlow(runner).definition, runner);
+    const ids: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const h = await runtime.start(
+        makeFlow(runner),
+        { tokens: i * 100 },
+        { executionId: `c${i}` }
+      );
+      await h.waitForCompletion();
+      ids.push(`c${i}`);
+      await runtime.recordOutcome(`c${i}`, { decisionId: "route", key: "late", score: 0.9 });
+    }
+    const read = async () => (await Promise.all(ids.map((id) => eventStore.read(id)))).flat();
+    const shape = (ts: ReturnType<typeof trajectories<Route>>) =>
+      ts.map((t) =>
+        t.steps.map((s) => [s.decisionId, s.action, s.reward, s.rewardSource, s.policy, s.context])
+      );
+    const full = shape(trajectories<Route>(await read()));
+    const life = new LogLifecycle(eventStore, snapshotStore);
+    for (const id of ids) expect(await life.compact(id)).not.toBeNull();
+    const compactedLog = await read();
+    expect(compactedLog.filter((e) => e.eventType === "OUTCOME_RECORDED")).toHaveLength(20);
+    expect(shape(trajectories<Route>(compactedLog))).toEqual(full);
   });
 });

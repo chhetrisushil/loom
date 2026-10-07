@@ -8,7 +8,12 @@ import {
   fenceOf,
   isAnsweringKind,
 } from "@loom/event-runtime";
-import type { AcquireFenceIfResult, EventStore } from "@loom/event-runtime";
+import type {
+  AcquireFenceIfResult,
+  AppendIfUnchangedResult,
+  EventStore,
+  TipObservation,
+} from "@loom/event-runtime";
 import { Client, type Notification } from "pg";
 import { type PgConfig, type PoolLike, nextSenderId, toClientConfig, toPool } from "./pool";
 import { ANSWERING_KINDS_SQL, KERNEL_KINDS_SQL, NOTIFY_CHANNEL, migrate } from "./schema";
@@ -576,6 +581,116 @@ export class PostgresEventStore implements EventStore {
     return { stale: true, fence: Number(results[1]?.rows[0]?.fence ?? 0) };
   }
 
+  /**
+   * SPI 2.2.0 (ADR 0116 amendment, ADR 0118 cross-reference) — a conditional append that takes the
+   * SAME row `acquireFenceIf` and the answering appends use, so every interleaving with them is
+   * decided by the row lock, not by timing:
+   *
+   *  1. make sure the execution's fence row exists (token 0 is inert for every guard);
+   *  2. `SELECT fence … FOR UPDATE` — waits for an in-flight acquire / answering append and blocks
+   *     new ones until COMMIT. `deleteExecution` takes the row too, so a retention delete cannot
+   *     land between the checks below and the insert (no orphan log);
+   *  3. a fresh statement (READ COMMITTED), so it sees everything committed before the lock was
+   *     granted: the stored head and whether sequence 0 still exists. Gone → the token-0 row this
+   *     call made is removed again and nothing is written (a real token is KEPT: it is the
+   *     tombstone that keeps a zombie of a re-created id fenced out);
+   *  4. head and token equal the caller's observation → insert. The envelope's own token is neither
+   *     read nor presented, and the row is never bumped.
+   *
+   * `event === null` is a lock-free observation (one statement, no row created).
+   */
+  async appendIfUnchanged(
+    executionId: string,
+    event: EventEnvelope | null,
+    expect?: TipObservation
+  ): Promise<AppendIfUnchangedResult> {
+    await this.ready;
+    if (event !== null && (expect === undefined || event.executionId !== executionId)) {
+      throw new TypeError(
+        "appendIfUnchanged: an event needs `expect` and the matching executionId"
+      );
+    }
+    const tipSql = `SELECT MAX(sequence) AS tip, COALESCE(bool_or(sequence = 0), false) AS anchored
+                      FROM events WHERE execution_id = $1`;
+    if (event === null) {
+      const f = await this.pool.query<{ fence: string }>(
+        "SELECT fence FROM fences WHERE execution_id = $1",
+        [executionId]
+      );
+      const t = await this.pool.query<{ tip: string | null; anchored: boolean }>(tipSql, [
+        executionId,
+      ]);
+      const fence = Number(f.rows[0]?.fence ?? 0);
+      const row = t.rows[0];
+      if (row === undefined || !row.anchored || row.tip === null) {
+        return { appended: false, reason: "gone", head: null, fence };
+      }
+      return { appended: false, reason: "observed", head: Number(row.tip), fence };
+    }
+    const want = expect as TipObservation;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "INSERT INTO fences (execution_id, fence) VALUES ($1, 0) ON CONFLICT (execution_id) DO NOTHING",
+        [executionId]
+      );
+      const locked = await client.query<{ fence: string }>(
+        "SELECT fence FROM fences WHERE execution_id = $1 FOR UPDATE",
+        [executionId]
+      );
+      const fence = Number(locked.rows[0]?.fence ?? 0);
+      const t = await client.query<{ tip: string | null; anchored: boolean }>(tipSql, [
+        executionId,
+      ]);
+      const row = t.rows[0];
+      if (row === undefined || !row.anchored || row.tip === null) {
+        await client.query("DELETE FROM fences WHERE execution_id = $1 AND fence = 0", [
+          executionId,
+        ]);
+        await client.query("COMMIT");
+        return { appended: false, reason: "gone", head: null, fence };
+      }
+      const head = Number(row.tip);
+      if (head !== want.head || fence !== want.fence || event.sequence <= head) {
+        await client.query("COMMIT");
+        return { appended: false, reason: "moved", head, fence };
+      }
+      await client.query(
+        `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+        [
+          event.id,
+          event.workflowId,
+          event.executionId,
+          event.eventType,
+          event.sequence,
+          event.timestamp,
+          JSON.stringify(event.payload),
+          event.metadata !== undefined ? JSON.stringify(event.metadata) : null,
+        ]
+      );
+      await client.query("SELECT pg_notify($1, $2)", [
+        this.channelFor(executionId),
+        JSON.stringify([this.senderId, executionId, event.sequence]),
+      ]);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      if (isDuplicateSequenceViolation(err)) {
+        throw new DuplicateSequenceError(executionId, event.sequence, err);
+      }
+      if (isDuplicateIdViolation(err)) {
+        throw new DuplicateEnvelopeIdError(event.id, executionId, err);
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+    this.notifyLocal(executionId, event);
+    return { appended: true };
+  }
+
   async subscribe(
     executionId: string,
     handler: (event: EventEnvelope) => void
@@ -591,13 +706,20 @@ export class PostgresEventStore implements EventStore {
 
   async deleteExecution(executionId: string): Promise<void> {
     await this.ready;
-    await this.pool.query("DELETE FROM events WHERE execution_id = $1", [executionId]);
+    // ADR 0116 amendment: take the fence row so a conditional append (`appendIfUnchanged`, which
+    // holds it from its existence check to its insert) and this delete are strictly ordered —
+    // the late write can never land after the log is gone and leave an orphan. One implicit
+    // transaction (simple protocol), no bind parameters: the id is hex-encoded like `acquireFenceIf`.
+    const id = `convert_from(decode('${Buffer.from(executionId, "utf8").toString("hex")}', 'hex'), 'UTF8')`;
+    await this.pool.query(
+      `INSERT INTO fences (execution_id, fence) VALUES (${id}, 0) ON CONFLICT (execution_id) DO NOTHING;
+       SELECT fence FROM fences WHERE execution_id = ${id} FOR UPDATE;
+       DELETE FROM events WHERE execution_id = ${id};
+       DELETE FROM fences WHERE execution_id = ${id} AND fence = 0`
+    );
     // ADR 0118: a park leaves an inert token-0 fence row (so an answering append has a row to lock).
     // It is garbage once the log is gone; a row with a real token (> 0) is KEPT, as before — it is
     // the only thing that keeps a zombie writer of a re-created id fenced out.
-    await this.pool.query("DELETE FROM fences WHERE execution_id = $1 AND fence = 0", [
-      executionId,
-    ]);
   }
 
   async truncatePrefix(executionId: string, throughSequence: number): Promise<void> {

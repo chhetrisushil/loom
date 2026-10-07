@@ -527,6 +527,122 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await store.close();
     });
 
+    // ── SPI 2.2.0 (ADR 0116 amendment) — appendIfUnchanged: exists AND same head AND same token ──
+    // Runs only where the store offers the method. The token is COMPARED, never presented.
+    const obs = async (store: EventStore, id: string) => {
+      const r = await store.appendIfUnchanged!(id, null);
+      if (r.appended || r.head === null) throw new Error(`expected an observation of ${id}`);
+      return { head: r.head, fence: r.fence };
+    };
+
+    it("appendIfUnchanged (if implemented): an unchanged execution takes the event; a stale head is `moved`, nothing written", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined) return void (await store.close());
+      await store.append(evt("aiu-ok", 0));
+      await store.append(evt("aiu-ok", 1));
+      const seen = await obs(store, "aiu-ok");
+      expect(seen).toEqual({ head: 1, fence: 0 });
+      expect(await store.appendIfUnchanged("aiu-ok", evt("aiu-ok", 2), seen)).toEqual({
+        appended: true,
+      });
+      // the same observation is now stale
+      expect(await store.appendIfUnchanged("aiu-ok", evt("aiu-ok", 3), seen)).toEqual({
+        appended: false,
+        reason: "moved",
+        head: 2,
+        fence: 0,
+      });
+      expect((await store.read("aiu-ok")).map((e) => e.sequence)).toEqual([0, 1, 2]);
+      await store.close();
+    });
+
+    it("appendIfUnchanged (if implemented): an execution that does not exist is `gone` and NOTHING is written (no orphan)", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined) return void (await store.close());
+      expect(await store.appendIfUnchanged("aiu-none", null)).toMatchObject({
+        appended: false,
+        reason: "gone",
+        head: null,
+      });
+      expect(
+        await store.appendIfUnchanged("aiu-none", evt("aiu-none", 1), { head: 0, fence: 0 })
+      ).toMatchObject({ appended: false, reason: "gone" });
+      expect(await store.read("aiu-none")).toEqual([]);
+      expect(await store.head?.("aiu-none")).toBeNull();
+      // deleted between observation and write: refused, still no orphan
+      if (store.deleteExecution !== undefined) {
+        await store.append(evt("aiu-del", 0));
+        const seen = await obs(store, "aiu-del");
+        await store.deleteExecution("aiu-del");
+        expect(await store.appendIfUnchanged("aiu-del", evt("aiu-del", 1), seen)).toMatchObject({
+          appended: false,
+          reason: "gone",
+        });
+        expect(await store.read("aiu-del")).toEqual([]);
+      }
+      await store.close();
+    });
+
+    it("appendIfUnchanged (if implemented): a fence acquired after the observation makes it `moved`; the holder is never displaced", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined || store.acquireFence === undefined) {
+        return void (await store.close());
+      }
+      await store.append(evt("aiu-fence", 0));
+      const seen = await obs(store, "aiu-fence");
+      const token = await store.acquireFence("aiu-fence");
+      expect(await store.appendIfUnchanged("aiu-fence", evt("aiu-fence", 1), seen)).toMatchObject({
+        appended: false,
+        reason: "moved",
+        fence: token,
+      });
+      // the holder's own append still lands, under its token
+      await store.append({ ...evt("aiu-fence", 1), metadata: { fence: token } });
+      expect((await store.read("aiu-fence")).map((e) => e.sequence)).toEqual([0, 1]);
+      await store.close();
+    });
+
+    it("appendIfUnchanged (if implemented): on a fenced execution an observed token is compared, not presented or bumped", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined || store.acquireFence === undefined) {
+        return void (await store.close());
+      }
+      await store.append(evt("aiu-seen", 0));
+      const token = await store.acquireFence("aiu-seen");
+      const seen = await obs(store, "aiu-seen");
+      expect(seen.fence).toBe(token);
+      expect(await store.appendIfUnchanged("aiu-seen", evt("aiu-seen", 1), seen)).toEqual({
+        appended: true,
+      });
+      expect((await obs(store, "aiu-seen")).fence).toBe(token); // not bumped
+      // an unfenced plain append is still a zombie write
+      await expect(store.append(evt("aiu-seen", 2))).rejects.toMatchObject({
+        name: "StaleFenceError",
+      });
+      await store.close();
+    });
+
+    it("appendIfUnchanged (if implemented): concurrent callers on one observation -> exactly one wins", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined) return void (await store.close());
+      await store.append(evt("aiu-race", 0));
+      const seen = await obs(store, "aiu-race");
+      const results = await Promise.all(
+        Array.from({ length: 8 }, (_, i) =>
+          store.appendIfUnchanged!(
+            "aiu-race",
+            { ...evt("aiu-race", 1), id: `aiu-race-w${i}` },
+            seen
+          )
+            .then((r) => (r.appended ? "won" : r.reason))
+            .catch((e: Error) => e.name)
+        )
+      );
+      expect(results.filter((r) => r === "won")).toHaveLength(1);
+      expect((await store.read("aiu-race")).map((e) => e.sequence)).toEqual([0, 1]);
+      await store.close();
+    });
+
     // ── ADR 0118 D1 — acquireFenceIf: a CAS on the token AND "the park is unanswered" ──────
     // Every case writes under its own execution id (a Postgres harness shares a schema when the
     // case count outgrows its pool) and runs only when the store offers the method, like

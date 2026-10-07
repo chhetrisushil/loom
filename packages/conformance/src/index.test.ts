@@ -88,6 +88,17 @@ runEventStoreConformance(() => new InMemoryAsyncEventStore(), "InMemoryAsyncEven
 // The kit's acquireFenceIf cases run only when a store offers the method (like `copyPrefix`), which
 // is a vacuous pass for a store that silently lacks it. The reference stores MUST offer it, so the
 // cases above are exercised for real (ADR 0118; the vacuous-check lesson).
+it("the reference stores offer appendIfUnchanged (SPI 2.2.0), so its conformance cases are not vacuous", () => {
+  expect(typeof new InMemoryAsyncEventStore().appendIfUnchanged).toBe("function");
+  expect(typeof new CoalescingEventStore(new InMemoryAsyncEventStore()).appendIfUnchanged).toBe(
+    "function"
+  );
+  expect(
+    typeof new ShardedEventStore(Array.from({ length: 2 }, () => new InMemoryAsyncEventStore()))
+      .appendIfUnchanged
+  ).toBe("function");
+});
+
 it("the reference stores offer acquireFenceIf, so its conformance cases are not vacuous", () => {
   expect(typeof new InMemoryAsyncEventStore().acquireFenceIf).toBe("function");
   expect(typeof new CoalescingEventStore(new InMemoryAsyncEventStore()).acquireFenceIf).toBe(
@@ -190,6 +201,7 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
     head: inner.head.bind(inner),
     acquireFence: inner.acquireFence.bind(inner),
     acquireFenceIf: inner.acquireFenceIf.bind(inner),
+    appendIfUnchanged: inner.appendIfUnchanged.bind(inner),
     copyPrefix: inner.copyPrefix.bind(inner),
     deleteExecution: inner.deleteExecution.bind(inner),
     truncatePrefix: inner.truncatePrefix.bind(inner),

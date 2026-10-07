@@ -1230,10 +1230,11 @@ export class OutcomeRefusedError extends Error {
 /** `recordOutcome` lost the sequence compare-and-set on every bounded attempt: retry. */
 export class OutcomeContendedError extends Error {
   readonly retryable = true as const;
-  constructor(readonly executionId: string) {
-    super(
-      `recordOutcome on "${executionId}" lost the append race on every attempt (a concurrent writer kept taking the next sequence). Nothing was appended; retry.`
-    );
+  constructor(
+    readonly executionId: string,
+    reason = "lost the append race on every attempt (a concurrent writer kept taking the next sequence)"
+  ) {
+    super(`recordOutcome on "${executionId}" ${reason}. Nothing was appended; retry.`);
     this.name = "OutcomeContendedError";
     Object.setPrototypeOf(this, OutcomeContendedError.prototype);
   }

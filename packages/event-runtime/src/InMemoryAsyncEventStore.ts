@@ -4,7 +4,12 @@ import { isAnsweringKind } from "./eventKindClass";
 import { compareExecutionIds } from "./executionIdOrder";
 import { StaleFenceError, fenceOf } from "./fencing";
 import { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
-import type { AcquireFenceIfResult, EventStore } from "./types";
+import type {
+  AcquireFenceIfResult,
+  AppendIfUnchangedResult,
+  EventStore,
+  TipObservation,
+} from "./types";
 import { DuplicateEnvelopeIdError, DuplicateSequenceError } from "./writeConflicts";
 
 export interface InMemoryAsyncEventStoreOptions {
@@ -116,10 +121,10 @@ export class InMemoryAsyncEventStore implements EventStore {
    * Throws if this envelope may not land: a duplicate `(executionId, sequence)`, a
    * duplicate envelope `id`, K9.4 fencing, or an injected failure.
    */
-  private assertAppendable(envelope: EventEnvelope): void {
+  private assertAppendable(envelope: EventEnvelope, checkFence = true): void {
     // K9.4 — fencing: once a token has been acquired for this execution, an
     // append missing the current token is a zombie write and is rejected.
-    const currentFence = this.fences.get(envelope.executionId);
+    const currentFence = checkFence ? this.fences.get(envelope.executionId) : undefined;
     if (currentFence !== undefined) {
       const fence = fenceOf(envelope);
       if (fence === undefined || fence < currentFence) {
@@ -260,6 +265,39 @@ export class InMemoryAsyncEventStore implements EventStore {
     }
     this.fences.set(executionId, current + 1);
     return { fence: current + 1 };
+  }
+
+  /**
+   * SPI 2.2.0 (ADR 0116 amendment) — one synchronous step after the tick, so the existence,
+   * head and token checks and the commit cannot interleave with any other append, acquire or
+   * delete. The token is compared, never presented: the fence rule is deliberately skipped.
+   */
+  async appendIfUnchanged(
+    executionId: string,
+    event: EventEnvelope | null,
+    expect?: TipObservation
+  ): Promise<AppendIfUnchangedResult> {
+    await this.tick();
+    if (event !== null && (expect === undefined || event.executionId !== executionId)) {
+      throw new TypeError(
+        "appendIfUnchanged: an event needs `expect` and the matching executionId"
+      );
+    }
+    const list = this.log.get(executionId);
+    const fence = this.fences.get(executionId) ?? 0;
+    if (list === undefined || list.length === 0 || (list[0] as EventEnvelope).sequence !== 0) {
+      return { appended: false, reason: "gone", head: null, fence };
+    }
+    const head = (list[list.length - 1] as EventEnvelope).sequence;
+    if (event === null) return { appended: false, reason: "observed", head, fence };
+    const want = expect as TipObservation;
+    if (head !== want.head || fence !== want.fence || event.sequence <= head) {
+      return { appended: false, reason: "moved", head, fence };
+    }
+    this.assertAppendable(event, false);
+    this.commit(event);
+    this.subscribers.emit(event);
+    return { appended: true };
   }
 
   async deleteExecution(executionId: string): Promise<void> {

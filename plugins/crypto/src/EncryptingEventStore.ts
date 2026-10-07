@@ -85,6 +85,7 @@ export class EncryptingEventStore implements EventStore {
   readonly readRange?: NonNullable<EventStore["readRange"]>;
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
+  readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -134,6 +135,16 @@ export class EncryptingEventStore implements EventStore {
         inner.readRange!(executionId, from, to).then((evs) => this.decryptAll(executionId, evs)),
       acquireFence: "forward",
       acquireFenceIf: "forward",
+      // The event is encrypted exactly as `append` would; an observation (null) has no payload.
+      appendIfUnchanged: async (executionId, event, expect) => {
+        if (event === null) return inner.appendIfUnchanged!(executionId, null, expect);
+        const paths = pathsFor(this.sensitive, event.eventType);
+        const sealed =
+          paths === undefined || paths.length === 0
+            ? event
+            : this.encrypt(event, paths, await this.keys.getOrCreate(this.subjectOf(event)));
+        return inner.appendIfUnchanged!(executionId, sealed, expect);
+      },
       // copyPrefix copies CIPHERTEXT verbatim in the inner store — a fork must
       // resolve to the parent's subject (A2) for the copied prefix to stay readable.
       copyPrefix: "forward",

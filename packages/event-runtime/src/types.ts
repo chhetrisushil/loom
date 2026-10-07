@@ -41,6 +41,13 @@ export type { EventEnvelope };
  *   decorator forwarding landed with R8k. It reads the classification W2-0 shipped:
  *   {@link EVENT_KIND_CLASS} / {@link isAnsweringKind} (every kernel event kind is `answering`
  *   or `ignorable`, a required total map). No existing method changed, so a 2.0.0 store conforms.
+ * 2.2.0: the optional `appendIfUnchanged(id, event, { head, fence })` (ADR 0116 amendment, R11:
+ *   a late reward on a finished execution). ONE atomic step: append `event` iff the execution
+ *   still EXISTS (sequence 0), its stored head is exactly `expect.head` AND its fence token is
+ *   exactly `expect.fence`; otherwise change nothing and report the current tip. It never
+ *   presents or adopts a fence token, so it can neither supersede a live holder nor be
+ *   written under one it did not observe. A store that omits it makes `recordOutcome` refuse.
+ *   No existing method changed, so a 2.1.0 store conforms.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -50,7 +57,7 @@ export type { EventEnvelope };
  * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
  * fitness test makes every in-repo decorator run it).
  */
-export const EVENT_STORE_SPI_VERSION = "2.1.0";
+export const EVENT_STORE_SPI_VERSION = "2.2.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -211,6 +218,37 @@ export interface EventStore {
     expect: { fence: number; parkSeq: number }
   ): Promise<AcquireFenceIfResult>;
   /**
+   * OPTIONAL conditional append (SPI 2.2.0, ADR 0116 amendment) — "append this ONE event iff the
+   * execution is exactly as I observed it", atomically. With a non-null `event`
+   * (`event.executionId === executionId`), appends it iff ALL hold at the instant of the write:
+   *
+   * (a) the execution EXISTS — its sequence-0 event is still stored (a retention sweep that
+   *     deleted the log between the caller's read and now makes this `gone`, and NOTHING is
+   *     written: no orphan log, whatever fence row a store keeps);
+   * (b) the stored head (`MAX(sequence)`) equals `expect.head`;
+   * (c) the fence token equals `expect.fence` (0 when it was never acquired).
+   *
+   * It does NOT check or present the envelope's own `metadata.fence` and never bumps or adopts a
+   * token: the caller observed the token and the store proves it has not moved, so a holder that
+   * acquires after the observation makes this `moved` (retryable) instead of being displaced, and
+   * a holder whose appends landed makes (b) fail. `event.sequence` must exceed `expect.head`
+   * (the caller may skip ahead of a compaction checkpoint; the slot must still be free).
+   * A duplicate sequence / envelope id / injected failure throws exactly as `append` does.
+   *
+   * With `event === null` it is a pure OBSERVATION: nothing is written and the result is
+   * `{ appended: false, reason: "observed" | "gone", head, fence }` (`expect` is ignored).
+   *
+   * Implementations hold the same lock/row the fence uses (ADR 0118): memory one synchronous
+   * step; Postgres a transaction that takes the execution's fence row `FOR UPDATE`; SQLite
+   * `BEGIN IMMEDIATE` (no fencing: the token is always 0). A decorator transforms the event
+   * exactly as it does for `append` (tenant scope, encryption, externalisation, chain stamp).
+   */
+  appendIfUnchanged?(
+    executionId: string,
+    event: EventEnvelope | null,
+    expect?: TipObservation
+  ): Promise<AppendIfUnchangedResult>;
+  /**
    * OPTIONAL bulk copy of the prefix `[0..throughSequence]` of one execution's log
    * into another `executionId`, re-stamping `id` + `executionId` and merging
    * `metadata` into each copied event — WITHOUT round-tripping payloads through JS
@@ -283,6 +321,24 @@ export interface EventStore {
   close(): Promise<void>;
 }
 
+/** What a caller saw of an execution's tip: the stored head and the fence token (0 = never fenced). */
+export interface TipObservation {
+  head: number;
+  fence: number;
+}
+
+/** What {@link EventStore.appendIfUnchanged} answers. */
+export type AppendIfUnchangedResult =
+  | { appended: true }
+  | {
+      appended: false;
+      /** `moved`: the head or the fence changed; `gone`: no sequence-0 event; `observed`: a pure observation. */
+      reason: "moved" | "gone" | "observed";
+      /** The tip now (`null` when the execution is gone). */
+      head: number | null;
+      fence: number;
+    };
+
 /** What {@link EventStore.acquireFenceIf} answers: the new token, or the (unchanged) current one. */
 export type AcquireFenceIfResult = { fence: number } | { stale: true; fence: number };
 
@@ -308,6 +364,7 @@ export const OPTIONAL_EVENT_STORE_METHODS = [
   "head",
   "acquireFence",
   "acquireFenceIf",
+  "appendIfUnchanged",
   "copyPrefix",
   "deleteExecution",
   "truncatePrefix",

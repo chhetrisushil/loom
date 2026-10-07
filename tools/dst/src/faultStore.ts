@@ -1,8 +1,10 @@
 import type { EventEnvelope } from "@loom/core";
 import {
+  type AppendIfUnchangedResult,
   type DecoratorPlan,
   type EventStore,
   type OptionalEventStoreMethod,
+  type TipObservation,
   installOptional,
 } from "@loom/event-runtime";
 import type { Rng } from "./rng";
@@ -174,6 +176,31 @@ export function faultInjectingStore(inner: EventStore, source: FaultSource): Fau
     readRange: "forward",
     acquireFence: "forward",
     acquireFenceIf: "forward",
+    // One fault decision, exactly like a single `append`.
+    appendIfUnchanged: async (
+      executionId: string,
+      event: EventEnvelope | null,
+      expect?: TipObservation
+    ): Promise<AppendIfUnchangedResult> => {
+      const conditional = inner.appendIfUnchanged as NonNullable<EventStore["appendIfUnchanged"]>;
+      if (event === null) return conditional.call(inner, executionId, null, expect);
+      const at = tick++;
+      if (crashed && !restored) {
+        dropped.push(event);
+        return { appended: true };
+      }
+      if (shouldFault("crash", at)) {
+        crashed = true;
+        record("crash", event, at);
+        dropped.push(event);
+        return { appended: true };
+      }
+      if (shouldFault("appendReject", at)) {
+        record("appendReject", event, at);
+        throw new Error(`dst: injected append rejection for ${event.id}`);
+      }
+      return conditional.call(inner, executionId, event, expect);
+    },
     copyPrefix: "forward",
     deleteExecution: "forward",
     truncatePrefix: "forward",

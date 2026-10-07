@@ -35,11 +35,9 @@ export const LIFECYCLE_STREAM = "__loom_lifecycle__";
 
 /**
  * ADR 0116 — when an execution ended: the timestamp of its newest terminal event, found by
- * scanning the tail backwards (a late outcome sits after it). Falls back to the old formula
- * `max(last event, folded updatedAt)` only when no terminal event survives (compaction removed it).
- * Residual, recorded in the ADR: `OUTCOME_RECORDED`'s frozen handler moves `updatedAt`, so in that
- * fallback a late outcome does count; compaction keeps the tip, so it needs a compaction run AFTER
- * the terminal event AND a late outcome after that.
+ * scanning the tail backwards (a late outcome sits after it). Compaction never removes a terminal
+ * execution's terminal event (it stops just below it, ADR 0116 amendment), so the fallback to
+ * `max(last event, folded updatedAt)` serves only a log compacted by an older version.
  */
 function terminalEndedAt(events: readonly EventEnvelope[], state: ExecutionState): number {
   for (let i = events.length - 1; i >= 0; i--) {
@@ -54,6 +52,25 @@ function terminalEndedAt(events: readonly EventEnvelope[], state: ExecutionState
     }
   }
   return Math.max(events[events.length - 1]!.timestamp, state.updatedAt);
+}
+
+/** Kernel kinds compaction keeps in place (ADR 0116 amendment): the log is where learning reads them. */
+const LEARNING_EVIDENCE_KINDS = ["DECISION_RECORDED", "OUTCOME_RECORDED"] as const;
+
+/** Index of the newest terminal event of `events`, or -1 (see {@link terminalEndedAt}). */
+function lastTerminalIndex(events: readonly EventEnvelope[]): number {
+  for (let i = events.length - 1; i >= 1; i--) {
+    const e = events[i] as EventEnvelope;
+    if (
+      e.eventType === "EXECUTION_COMPLETED" ||
+      e.eventType === "EXECUTION_FAILED" ||
+      e.eventType === "EXECUTION_CANCELLED" ||
+      (e.eventType === "EXECUTION_CONTINUED" && e.metadata?.kernel === true)
+    ) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 const TERMINAL = new Set<ExecutionState["status"]>([
@@ -660,9 +677,15 @@ export class LogLifecycle {
     ) {
       return null;
     }
-    const keep = this.keep;
+    // ADR 0116 amendment (Q4) — the learning evidence is always kept in place: `@loom/learning`
+    // `trajectories` joins `DECISION_RECORDED` (what was chosen, with its context and propensity)
+    // to `OUTCOME_RECORDED` (in-run and late rewards) off the LOG, never off the checkpoint, so
+    // dropping either half would make a compacted execution vanish from the learning loop.
+    // Done here, kernel-side, because `assertPinnedEventTypes` refuses kernel kinds from policy.
+    const declared = this.keep;
+    const keep: ReadonlySet<string> = new Set([...declared, ...LEARNING_EVIDENCE_KINDS]);
     if (
-      keep.size === 0 &&
+      declared.size === 0 &&
       this.options.pinned !== undefined &&
       (await this.options.pinned(executionId)) === true
     ) {
@@ -681,6 +704,14 @@ export class LogLifecycle {
     let at = tipIndex;
     if (firstKept !== -1) {
       at = tipIndex - 1;
+      while (at > 0 && keep.has(events[at]!.eventType)) at--;
+    }
+    // ADR 0116 amendment (Q3) — a terminal execution's terminal event is never compacted away: the
+    // checkpoint stops just below it, so retention always finds when the execution ended on the
+    // log itself and a late outcome (whose handler moves `updatedAt`) cannot pin a compacted log.
+    const terminalAt = lastTerminalIndex(events);
+    if (terminalAt !== -1 && at >= terminalAt) {
+      at = terminalAt - 1;
       while (at > 0 && keep.has(events[at]!.eventType)) at--;
     }
     let keptBelow = firstKept !== -1 && firstKept < at;

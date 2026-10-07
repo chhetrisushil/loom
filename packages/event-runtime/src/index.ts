@@ -13,6 +13,8 @@ export { compareExecutionIds } from "./executionIdOrder";
 export type { InMemoryAsyncEventStoreOptions } from "./InMemoryAsyncEventStore";
 export type {
   AcquireFenceIfResult,
+  AppendIfUnchangedResult,
+  TipObservation,
   EventStore,
   EventStoreOptions,
   ExecutionEnumerable,

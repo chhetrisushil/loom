@@ -16,7 +16,7 @@ mechanism (`checkCompatibility`) exists for the day a deployment's MAJOR diverge
 | Kernel ABI (K1) | `1.3.0` | `KERNEL_ABI_VERSION` · `abi.test.ts` |
 | Event Schema (K5) | `1.23.0` | `EVENT_SCHEMA_VERSION` · `eventSchema.test.ts` |
 | Wire ABI (T2) | `1.0.0` | `WIRE_ABI_VERSION` · `wire-abi.test.ts` |
-| EventStore SPI | `2.1.0` | `EVENT_STORE_SPI_VERSION` · conformance kit |
+| EventStore SPI | `2.2.0` | `EVENT_STORE_SPI_VERSION` · conformance kit |
 | SnapshotStore SPI | `1.1.0` | `SNAPSHOT_STORE_SPI_VERSION` · conformance kit |
 | BranchRegistry SPI | `2.0.0` | `BRANCH_REGISTRY_SPI_VERSION` · conformance kit |
 | LeaseStore SPI | `2.1.0` | `LEASE_STORE_SPI_VERSION` · conformance kit |
