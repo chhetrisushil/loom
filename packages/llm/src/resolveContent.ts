@@ -1,6 +1,7 @@
 import type { PrincipalChain } from "@loom/effect-runtime";
 import type { LlmContentRef, LlmMediaPart, LlmResultPart } from "./parts";
 import type { LlmMessage, LlmRequest } from "./types";
+import { validRefSize } from "./untrusted";
 
 // ── R5 — resolving claim-checked media at call time ──────────────────────────
 //
@@ -95,7 +96,10 @@ type Fetched = { ok: true; b64: string; bytes: number } | { ok: false; reason: s
  * The byte budget is a RUNNING one: fetches start at most {@link FETCH_CONCURRENCY} at a time, each is
  * told what is left, and the first to push the total over `maxBytes` aborts the rest (their signal
  * fires and no queued fetch starts). A blob whose actual size differs from the size its ref declares
- * is refused. A failure — absent, over budget, size mismatch, a throwing resolver — for a ref that
+ * is refused. Overshoot is bounded, not zero: at most {@link FETCH_CONCURRENCY} fetches are in flight when
+ * the budget is spent, so a resolver that ignores `maxBytes` can hold at most that many blobs before the
+ * abort lands. Resolvers SHOULD honour `maxBytes` (return `null` or throw rather than read more).
+ * A failure — absent, over budget, size mismatch, a throwing resolver — for a ref that
  * sits inside a `tool_result` does NOT fail the call: the part becomes a text error and the
  * `tool_result` is marked `isError`, so the model sees that the tool's media is unavailable and can
  * carry on (the agent loop feeds a tool failure back the same way). The same failure for a ref the
@@ -108,12 +112,27 @@ export async function resolveRequestContent(
   options: {
     maxBytes?: number;
     signal?: AbortSignal;
-    context?: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
-  } = {}
+    /** REQUIRED: who is asking. A resolver cannot authorize a read it cannot attribute. */
+    context: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
+  }
 ): Promise<LlmRequest> {
   const refs = collectRefs(request.messages);
   if (refs.size === 0) return request;
   const first = refs.keys().next().value as string;
+  if (typeof options.context?.executionId !== "string" || options.context.executionId === "") {
+    throw new UnresolvedContentError(
+      first,
+      "no execution identity was supplied for the read; a resolver cannot authorize a read it cannot attribute"
+    );
+  }
+  for (const { ref } of refs.values()) {
+    if (!validRefSize(ref.size)) {
+      throw new UnresolvedContentError(
+        ref.address,
+        "its declared size is not a non-negative safe integer"
+      );
+    }
+  }
   if (resolver === undefined) {
     throw new UnresolvedContentError(
       first,
@@ -147,9 +166,9 @@ export async function resolveRequestContent(
       const { ref } = use;
       try {
         const bytes = await resolver(ref, {
-          executionId: options.context?.executionId ?? "",
-          ...(options.context?.stepId !== undefined && { stepId: options.context.stepId }),
-          ...(options.context?.principal !== undefined && { principal: options.context.principal }),
+          executionId: options.context.executionId,
+          ...(options.context.stepId !== undefined && { stepId: options.context.stepId }),
+          ...(options.context.principal !== undefined && { principal: options.context.principal }),
           origin: use.tool ? "tool" : "app",
           maxBytes: Math.max(0, limit - used),
           signal: budget.signal,

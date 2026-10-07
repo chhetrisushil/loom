@@ -39,8 +39,9 @@ const ANTHROPIC_CAPABILITIES: LlmCapabilities = {
   file: ["application/pdf"],
 };
 
-/** Known text-only model ids (Claude 2.x and Instant predate vision). */
-const ANTHROPIC_TEXT_ONLY = [/^claude-(2|instant)/];
+/** Model families that take images and PDFs: Claude 3 and later (2.x and Instant do not). */
+const ANTHROPIC_MEDIA_MODELS = [/^claude-(3|[4-9]\d*|opus|sonnet|haiku)/];
+const ANTHROPIC_DEFAULT_URL = "https://api.anthropic.com";
 
 function mapResultPart(p: LlmResultPart): Record<string, unknown> {
   return mapPart(p);
@@ -112,12 +113,14 @@ export class AnthropicProvider implements LlmProvider {
     const model = config.model ?? "claude-opus-4-8";
     this.capabilities =
       config.capabilities ??
-      capabilitiesForModel(model, ANTHROPIC_CAPABILITIES, ANTHROPIC_TEXT_ONLY);
+      (config.baseUrl !== undefined && config.baseUrl !== ANTHROPIC_DEFAULT_URL
+        ? {}
+        : capabilitiesForModel(model, ANTHROPIC_CAPABILITIES, ANTHROPIC_MEDIA_MODELS));
     this.apiKey =
       config.apiKey ??
       (typeof process !== "undefined" ? (process.env.ANTHROPIC_API_KEY ?? "") : "");
     this.model = config.model ?? "claude-opus-4-8";
-    this.baseUrl = config.baseUrl ?? "https://api.anthropic.com";
+    this.baseUrl = config.baseUrl ?? ANTHROPIC_DEFAULT_URL;
   }
 
   private buildBody(request: LlmRequest): Record<string, unknown> {

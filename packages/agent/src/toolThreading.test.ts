@@ -21,7 +21,7 @@ import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";
 import { agentLoop$ } from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
-import { mediaResult } from "./toolResultContent";
+import { mediaResult, toolResultPart } from "./toolResultContent";
 
 // ── R5 — real tool_use / tool_result turns ───────────────────────────────────
 //
@@ -553,5 +553,146 @@ describe("compaction never orphans a tool_result (R5)", () => {
       // after the summary comes an assistant turn (with its tool_use), never a bare result
       expect(r.messages[1]?.role).toBe("assistant");
     }
+  });
+});
+
+describe("toolResultPart honours the media marker only for a declared, UNtainted output (P1 invariant)", () => {
+  const part = {
+    type: "image" as const,
+    mediaType: "image/png",
+    source: { kind: "ref" as const, ref: { address: "sha256:victim" } },
+  };
+
+  it("a declared tool's untainted media result becomes parts", () => {
+    const r = toolResultPart("c1", "lookup", mediaResult([part]), { allowMedia: true });
+    expect(Array.isArray(r.content)).toBe(true);
+  });
+
+  it("tainted(mediaResult(ref)) from a declared tool is TEXT", () => {
+    const r = toolResultPart("c1", "lookup", tainted(mediaResult([part]), "mcp:evil"), {
+      allowMedia: true,
+    });
+    expect(typeof r.content).toBe("object"); // the tainted string wrapper, fenced at the guard
+    expect(Array.isArray(r.content)).toBe(false);
+  });
+
+  it("an object carrying BOTH the taint mark and the media marker is still text (the isTainted clause is load-bearing)", () => {
+    const both = { ...mediaResult([part]), __loomTainted: { origin: "mcp:evil" }, value: "x" };
+    const r = toolResultPart("c1", "lookup", both, { allowMedia: true });
+    expect(Array.isArray(r.content)).toBe(false);
+  });
+
+  it("an undeclared tool's media-shaped output is text", () => {
+    const r = toolResultPart("c1", "lookup", mediaResult([part]));
+    expect(typeof r.content).toBe("string");
+  });
+
+  it("end to end: a tainted output from a returnsMedia tool is fenced text and never reaches the resolver", async () => {
+    const { runtime, seen, resolved } = (() =>
+      boot(() => tainted(imageResult(1), "mcp:evil/render"), { caps: { image: ["image/png"] } }))();
+    const handle = await runtime.start(flowDef, {});
+    expect((await handle.waitForCompletion()).status).toBe("completed");
+    expect(resolved).toEqual([]);
+    const rp = parts((seen[1] as LlmRequest).messages[2]?.content ?? "") as LlmToolResultPart[];
+    expect(typeof rp[0]?.content).toBe("string");
+    expect(rp[0]?.content as string).toContain("<untrusted-input");
+  });
+});
+
+describe("an over-cap model-emitted tool_use does not brick the run (R5)", () => {
+  const huge = () => [...Array(100_001)].map(() => ({}));
+
+  function hostileProvider(seen: LlmRequest[]): LlmProvider {
+    return {
+      async complete(request) {
+        seen.push(JSON.parse(JSON.stringify(request)) as LlmRequest);
+        const turn = request.messages.filter((m) => m.role === "assistant").length;
+        if (turn === 0) {
+          return {
+            content: "",
+            toolCalls: [{ id: "big", name: "lookup", input: { blob: huge() } }],
+            stopReason: "tool_use",
+          } as LlmResponse;
+        }
+        if (turn === 1) {
+          return {
+            content: "",
+            toolCalls: [{ id: "ok", name: "lookup", input: { q: "fine" } }],
+            stopReason: "tool_use",
+          } as LlmResponse;
+        }
+        return { content: "done", stopReason: "end_turn" } as LlmResponse;
+      },
+    };
+  }
+
+  it("agentLoop$: the oversized call is refused with an isError result, a bounded placeholder stays in the transcript, and the next call runs", async () => {
+    const seen: LlmRequest[] = [];
+    const ran: unknown[] = [];
+    const effects = new EffectRuntime();
+    effects.register("model", createAgentModelEffect(hostileProvider(seen)));
+    effects.register(
+      "lookup",
+      new ToolEffect(async (input) => {
+        ran.push(input);
+        return { ok: true };
+      })
+    );
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+    });
+    const runner: FlowRunner<unknown, { content: string }> = async (ctx) => {
+      const out = await agentLoop$(
+        ctx,
+        { definition: dbAgent, modelToolId: "model", maxIterations: 6 },
+        { prompt: "go" }
+      );
+      return { content: out.content };
+    };
+    runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
+    const handle = await runtime.start(flowDef, {});
+    expect((await handle.waitForCompletion()).status).toBe("completed");
+
+    expect(ran).toEqual([{ q: "fine" }]); // the oversized call never ran; the later one did
+    const turn2 = seen[1] as LlmRequest;
+    expect(JSON.stringify(turn2).length).toBeLessThan(5_000); // a placeholder, not 100k nodes
+    const asst = parts(turn2.messages[1]?.content ?? "").find((p) => p.type === "tool_use");
+    expect(asst).toMatchObject({ id: "big", input: { __oversizedInput: true } });
+    const rp = parts(turn2.messages[2]?.content ?? "") as LlmToolResultPart[];
+    expect(rp[0]?.isError).toBe(true);
+    expect(rp[0]?.content as string).toContain("invalid_tool_input");
+  });
+
+  it("AgentRunner: the same", async () => {
+    const seen: LlmRequest[] = [];
+    const ran: unknown[] = [];
+    const effects = new EffectRuntime();
+    effects.register(
+      "lookup",
+      new ToolEffect(async (input) => {
+        ran.push(input);
+        return { ok: true };
+      })
+    );
+    const runner = new AgentRunner({
+      definition: dbAgent,
+      provider: hostileProvider(seen),
+      effectRuntime: effects,
+    });
+    const out = await runner.run(
+      { prompt: "hi" },
+      {
+        executionId: "exec-1",
+        stepId: "agent-step",
+        workflowId: "wf-1",
+        attempt: 1,
+        emit: vi.fn(),
+      }
+    );
+    expect(out.content).toBe("done");
+    expect(ran).toEqual([{ q: "fine" }]);
+    expect(JSON.stringify(out.toolCallLog[0]?.toolInput)).toContain("__oversizedInput");
   });
 });

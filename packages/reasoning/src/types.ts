@@ -111,23 +111,33 @@ export interface ModelCallRequest {
  */
 export type ModelInvoker = (route: ModelRoute, request: ModelCallRequest) => Promise<LlmResponse>;
 
-export interface ReasonOptions {
+export interface ReasonOptionsBase {
   /** When provided, route/elevation choices are recorded through it (P9). */
   decide?: DecideFn;
   /** R9 — make each model call through the host instead of the route's provider. See {@link ModelInvoker}. */
   invoke?: ModelInvoker;
-  /**
-   * R5 — fetch the bytes behind a media `ref` for the DIRECT (non-`invoke`) path, after the chosen
-   * route's capabilities have been checked and after the cache lookup (the cache is keyed on the
-   * request as written, i.e. on addresses, never on resolved bytes). Without it a ref is refused.
-   */
-  resolveContent?: ContentResolver;
-  /** R5 — passed to `resolveContent` so a store can authorize the read. */
-  resolveContext?: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
   signal?: AbortSignal;
   /** Namespaces decision ids so multiple reason() calls in one execution don't collide. */
   decisionKey?: string;
 }
+
+/**
+ * R5 — fetch the bytes behind a media `ref` for the DIRECT (non-`invoke`) path, after the chosen
+ * route's capabilities have been checked and after the cache lookup (the cache is keyed on the
+ * request as written, i.e. on addresses, never on resolved bytes). Without it a ref is refused.
+ *
+ * `resolveContent` and `resolveContext` come TOGETHER (the type makes one without the other an
+ * error): the context is what lets a store authorize the read, and a resolver MUST deny a read whose
+ * `executionId` / `principal` it cannot attribute.
+ */
+export type ReasonOptions = ReasonOptionsBase &
+  (
+    | { resolveContent?: undefined; resolveContext?: undefined }
+    | {
+        resolveContent: ContentResolver;
+        resolveContext: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
+      }
+  );
 
 export interface ReasoningRuntimeConfig {
   routes: ModelRoute[];

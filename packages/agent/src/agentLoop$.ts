@@ -18,6 +18,7 @@ import type { ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { createAgentModelEffect } from "./createAgentModelEffect";
+import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
@@ -521,15 +522,24 @@ export async function agentLoop$(
   let lastContent = "";
 
   /** Execute one turn's tool calls: gate, run, record, feed back. Shared by both paths. */
-  const runToolCalls = async (calls: readonly LlmToolCall[], turn: number): Promise<void> => {
+  const runToolCalls = async (
+    calls: readonly LlmToolCall[],
+    turn: number,
+    oversized: ReadonlySet<number>
+  ): Promise<void> => {
     const results: LlmToolResultPartInput[] = [];
     for (const [j, toolCall] of calls.entries()) {
       let output: unknown;
       let isError = false;
+      const tooBig = oversized.has(j);
+      if (tooBig) {
+        output = OVERSIZED_INPUT_REFUSAL;
+        isError = true;
+      }
 
       // Mid-loop HITL. The gate is BEFORE the effect, so a declined call never
       // runs — the point of asking.
-      if (config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
+      if (!tooBig && config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
         // The key carries `idPrefix` (the loop's definition id), so two loops in one flow do not
         // share `#turn:0:tool:0` — a shared key would let one loop's approval read as the other's.
         const gateKey = `${ctx.executionId}#${idPrefix}#turn:${turn}:tool:${j}`;
@@ -736,8 +746,9 @@ export async function agentLoop$(
       );
       lastContent = routed.content;
       if (routed.stopReason === "end_turn" || !routed.toolCalls?.length) break;
-      assistantTurn(routed);
-      await runToolCalls(routed.toolCalls, turn);
+      const screened = screenToolCalls(routed.toolCalls);
+      assistantTurn({ content: routed.content, toolCalls: screened.calls });
+      await runToolCalls(screened.calls, turn, screened.oversized);
       continue;
     }
 
@@ -762,9 +773,10 @@ export async function agentLoop$(
     lastContent = response.content;
     if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
 
-    assistantTurn(response);
+    const screened = screenToolCalls(response.toolCalls);
+    assistantTurn({ content: response.content, toolCalls: screened.calls });
 
-    await runToolCalls(response.toolCalls, turn);
+    await runToolCalls(screened.calls, turn, screened.oversized);
   }
 
   return { content: lastContent, toolCallLog, iterations };

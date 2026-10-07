@@ -142,7 +142,7 @@ const lookup = tool$({
 });
 const dba = agent$({ id: "dba", name: "DBA", tools: [lookup] });
 
-function provider(calls: { n: number }): LlmProvider {
+function provider(calls: { n: number }, perTurn = 2): LlmProvider {
   return {
     async complete(request: LlmRequest): Promise<LlmResponse> {
       calls.n++;
@@ -150,10 +150,11 @@ function provider(calls: { n: number }): LlmProvider {
       return turn < 5
         ? {
             content: `t${turn}`,
-            toolCalls: [
-              { id: `a${turn}`, name: "lookup", input: { i: turn, k: 0 } },
-              { id: `b${turn}`, name: "lookup", input: { i: turn, k: 1 } },
-            ],
+            toolCalls: Array.from({ length: perTurn }, (_, k) => ({
+              id: `c${turn}-${k}`,
+              name: "lookup",
+              input: { i: turn, k },
+            })),
             stopReason: "tool_use",
           }
         : { content: "final", stopReason: "end_turn" };
@@ -183,7 +184,7 @@ function boot(
   const calls = { n: 0 };
   const warnings: string[] = [];
   const effects = new EffectRuntime();
-  effects.register("model", createAgentModelEffect(provider(calls)));
+  effects.register("model", createAgentModelEffect(provider(calls, opts.perTurn)));
   effects.register("lookup", new ToolEffect(async (input) => ({ ok: true, input })));
   effects.register("summarize", new ToolEffect(async () => ({ summary: "folded" })));
   const eventStore = opts.store ?? new InMemoryAsyncEventStore();
@@ -228,9 +229,10 @@ const compactIds = (events: EventEnvelope[]): string[] =>
 
 async function crashAndResume(
   compaction: typeof COMPACTION & { afterBytes?: number },
-  crashAt: string
+  crashAt: string,
+  perTurn = 2
 ) {
-  const legacy = boot("legacy", { compaction });
+  const legacy = boot("legacy", { compaction, perTurn });
   const handle = await legacy.runtime.start(flowDef, {}, { executionId: "up-1" });
   expect((await handle.waitForCompletion()).status).toBe("completed");
   const full = await legacy.eventStore.read("up-1");
@@ -249,7 +251,7 @@ async function crashAndResume(
   }).getState();
   expect(folded.status).toBe("running");
 
-  const upgraded = boot("new", { store: crashed, compaction });
+  const upgraded = boot("new", { store: crashed, compaction, perTurn });
   const recovered = await upgraded.runtime.restoreFromState(folded);
   const state = await recovered.waitForCompletion();
   return { full, prefix, upgraded, state, final: await crashed.read("up-1") };
@@ -269,6 +271,21 @@ describe("a run recorded by the pre-R5 agent loop resumes under the new one (com
   it("byte trigger: the same, with afterBytes deciding", async () => {
     const compaction = { toolId: "summarize", afterBytes: 150, keepRecent: 3 };
     const { full, prefix, state, final, upgraded } = await crashAndResume(compaction, "dba#turn:3");
+    expect(compactIds(prefix).length).toBeGreaterThan(0);
+    expect(state.status).toBe("completed");
+    expect(upgraded.warnings.filter((w) => /diverge/i.test(w))).toEqual([]);
+    expect(compactIds(final)).toEqual(compactIds(full));
+  });
+
+  it("three calls per turn, keepRecent 3: the kept suffix is not the physical tail, and the frames still match", async () => {
+    // Here `messages.length - keepOld` differs from the virtual length (one physical results
+    // message stands for three old ones), the case a trigger computed on the wrong list gets wrong.
+    const compaction = { toolId: "summarize", afterMessages: 3, keepRecent: 3 };
+    const { full, prefix, state, final, upgraded } = await crashAndResume(
+      compaction,
+      "dba#turn:3",
+      3
+    );
     expect(compactIds(prefix).length).toBeGreaterThan(0);
     expect(state.status).toBe("completed");
     expect(upgraded.warnings.filter((w) => /diverge/i.test(w))).toEqual([]);
