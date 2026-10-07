@@ -32,6 +32,58 @@ async function seedStarted(store: InMemoryAsyncEventStore, executionId: string, 
   await store.append(ev(executionId, 0, "EXECUTION_STARTED", { input: { userId } }));
 }
 
+describe("EraseCoordinator and a continue-as-new chain (ADR 0109 D2)", () => {
+  const continued = (id: string, seq: number, to: string, kernel = true) => ({
+    ...ev(id, seq, "EXECUTION_CONTINUED", { successorId: to, chainId: "k", generation: 1 }),
+    ...(kernel && { metadata: { kernel: true } }),
+  });
+
+  it("a continued predecessor is TERMINAL: erasure proceeds when it is the subject's only execution", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "k", "dee");
+    await store.append(continued("k", 1, "k~1"));
+    const index = SubjectIndex.fromEvents(await store.read("k"), subjectOf);
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, shred });
+    expect((await coord.eraseSubject("dee")).outcome).toBe("erased");
+    expect(shred).toHaveBeenCalledWith("dee", ["k"]);
+  });
+
+  it("a LIVE successor still blocks erasure; the predecessor's EXECUTION_CONTINUED does not complete a parked one", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "k", "eve");
+    await seedStarted(store, "k~1", "eve"); // the successor carries the subject too
+    const index = SubjectIndex.fromEvents(
+      [...(await store.read("k")), ...(await store.read("k~1"))],
+      subjectOf
+    );
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, shred });
+    // while the predecessor is still running AND the successor is live: parked
+    expect((await coord.eraseSubject("eve")).outcome).toBe("parked");
+    // the predecessor's hand-off alone does not finish it: the successor is live
+    await store.append(continued("k", 1, "k~1"));
+    await coord.handleEvent(continued("k", 1, "k~1"));
+    expect(shred).not.toHaveBeenCalled();
+    expect(coord.pendingSubjects()).toEqual(["eve"]);
+    // the successor ends: now it completes
+    await store.append(ev("k~1", 1, "EXECUTION_COMPLETED", {}));
+    await coord.handleEvent(ev("k~1", 1, "EXECUTION_COMPLETED", {}));
+    expect(shred).toHaveBeenCalledWith("eve", ["k", "k~1"]);
+  });
+
+  it("an UNSTAMPED EXECUTION_CONTINUED is an app event: the execution stays live and erasure parks", async () => {
+    const store = new InMemoryAsyncEventStore();
+    await seedStarted(store, "k", "fay");
+    await store.append(continued("k", 1, "k~1", false));
+    const index = SubjectIndex.fromEvents(await store.read("k"), subjectOf);
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({ index, eventStore: store, shred });
+    expect((await coord.eraseSubject("fay")).outcome).toBe("parked");
+    expect(shred).not.toHaveBeenCalled();
+  });
+});
+
 describe("EraseCoordinator (T3 Phase B — erasure)", () => {
   it("shreds immediately when all of a subject's executions are terminal", async () => {
     const store = new InMemoryAsyncEventStore();

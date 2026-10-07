@@ -12,6 +12,8 @@ export type {
   ReasoningAnalytics,
   FailureAnalytics,
 } from "./analyze";
+export { chainLineage } from "./chain";
+export type { ChainGeneration, ChainGenerationStatus, ChainLineage } from "./chain";
 export { rankModels, hotFailures, runtimeIntelligence } from "./intelligence";
 export type {
   RuntimeIntelligenceReport,

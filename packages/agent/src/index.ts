@@ -15,6 +15,8 @@ export type {
   ApprovalPolicy,
   EffectRegistry,
 } from "./agentLoop$";
+export { continueEvery } from "./continueEvery";
+export type { TurnCounter } from "./continueEvery";
 export { chunkDeltas } from "./chunkDeltas";
 export type { ChunkDeltasOptions, ChunkedSink } from "./chunkDeltas";
 export { createAgentModelEffect } from "./createAgentModelEffect";

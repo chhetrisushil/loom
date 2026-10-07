@@ -129,3 +129,27 @@ describe("self-optimization (M10) + runtime intelligence (M11)", () => {
     expect(report.recommendations.suggestedBudgetUsd).toBeUndefined();
   });
 });
+
+describe("`continued` is terminal and NOT completed (ADR 0109 D2)", () => {
+  const kernelContinued = (): EventEnvelope => ({
+    ...ev("EXECUTION_CONTINUED", { successorId: "x~1", chainId: "x", generation: 1 }),
+    metadata: { kernel: true },
+  });
+
+  it("executionAnalytics and analyze report `continued`, never `completed`", () => {
+    seq = 0;
+    const log = [ev("EXECUTION_STARTED", { input: {} }), kernelContinued()];
+    expect(executionAnalytics(log).status).toBe("continued");
+    expect(analyze(log).execution.status).toBe("continued");
+  });
+
+  it("an UNSTAMPED app event named EXECUTION_CONTINUED changes nothing", () => {
+    seq = 0;
+    const log = [
+      ev("EXECUTION_STARTED", { input: {} }),
+      ev("EXECUTION_CONTINUED", { successorId: "x~1" }),
+    ];
+    expect(executionAnalytics(log).status).toBeUndefined();
+    expect(analyze(log).execution.status).toBeUndefined();
+  });
+});
