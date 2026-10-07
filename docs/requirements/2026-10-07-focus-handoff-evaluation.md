@@ -42,6 +42,35 @@ With those corrections, loom needs nothing. loom-ui needs one renderer seam, plu
 that exists today and that focus makes worse: a restricted node's placeholder keeps its lexical node id
 (§5.2).
 
+### Change map: what changes where, and when
+
+Each row names the layer, the trigger that schedules it, and the gate it must pass. loom changes are gated
+by the second-consumer rule (ADR 0083: name a second, unrelated consumer before a workload-derived
+requirement becomes kernel or 1P surface). loom-ui changes are not gated by that rule (loom-ui builds a
+capability before its consumers, with a slice and a reference example), but the maintainer's instruction
+for this work still applies: change loom-ui only when the application layer cannot do it.
+
+| # | Change | Layer | When (trigger) | Gate | Status |
+|---|---|---|---|---|---|
+| 1 | Append `focus.created` (or any app fact) to a finished run's log | loom kernel | Only if a second, unrelated consumer needs app facts on finished runs | ADR 0083 second consumer; then an ADR for an authorized `annotate`-style append (owner authz, CAS, audit), extending ADR 0116 | **Not now.** Focus has one consumer; it lives with the share (row 9) |
+| 2 | Resume the original run as the recipient | loom kernel | Never | Contradicts ADR 0111 (effects run as the recorded owner) | **Rejected.** Use fork or a new run (row 12) |
+| 3 | Evidence identity / semantic anchoring as a loom concept | loom 1P (if ever) | When regeneration-after-share is measured frequent enough to hurt, as its own project | Its own placement evaluation; ADR 0083 second consumer (the papers name agent evidence reuse as a candidate) | **Deferred** (both papers) |
+| 4 | Opaque ids on restricted placeholders (§5.2) | loom-ui | **Now**, independent of focus | None: a confidentiality fix to U10 Sensitivity enforcement | **Schedule** in the loom-ui lane |
+| 5 | Node-emphasis render seam in `renderer-lit` + `renderer-terminal` (§5.1) | loom-ui | When genUI schedules focus handoff (after the measure gate, row 7) | loom-ui rule: slice + loom-examples reference + genericity test; the app layer cannot style the renderer's DOM without an undocumented seam | **Ready to plan** |
+| 6 | Cross-viewer `SeenLog` read ("hydrate what the sender saw") | loom-ui (only if needed) | When genUI builds the sender-snapshot feature | Only if `SeenLog.read` cannot already read one viewer's record redacted for another; otherwise genUI uses it as is | **Deferred**; verify at build time |
+| 6a | Visible-count and "focus survives into version V" helpers | genUI first; loom-ui later | When a second loom-ui consumer or reference example needs the same logic | The maintainer's instruction (app layer first) | **Optional** |
+| 7 | Measure share frequency and locating language | genUI | First | Both papers: stop if shares are rare | **Gate for rows 5, 8–14** |
+| 8 | Wire a viewer into `compileWith` and hydration | genUI | Before any visibility behaviour; worth doing regardless | None (a fix in its own right) | **Prerequisite** |
+| 9 | `Focus` record beside `share_links`; server-side per-viewer resolution (visible ids + count only) | genUI | After rows 7–8 | Rows 4 and 8 landed (otherwise ids and visibility leak) | Planned |
+| 10 | Share-time warning; note takes the strictest class of the flagged nodes | genUI | With row 9 | — | Planned |
+| 11 | Recipient view: emphasis, banner, clear/restore, time window via `setParams` | genUI | After row 5 | Row 5 landed | Planned |
+| 12 | Continue as the recipient: fork or new run with the focus as `AgentInput.context` | genUI | With row 11 | — | Planned |
+| 13 | Slack node-addressed blocks + focus rendering; MCP App payload field | genUI | After genUI slices 6.2/6.3 | The legacy `DashboardPayload` path is gone | Deferred |
+| 14 | Agent-created focuses | genUI (planner output) | Only after human-to-human focus is validated | Its own evaluation (different trust requirements) | Out of scope |
+
+Net: **loom changes nothing now**; its only candidate (row 1) is closed by the second-consumer gate, and row 2
+is rejected outright. **loom-ui changes twice**: row 4 now, row 5 when focus handoff is scheduled.
+
 ## 2. Corrections to the papers
 
 | Paper claim | What the code does | Consequence |
