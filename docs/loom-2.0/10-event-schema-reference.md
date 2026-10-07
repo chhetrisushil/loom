@@ -474,7 +474,7 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
 
 ---
 
-### 2.6 Wave 2 additions to existing events (1.23.0, no writer yet)
+### 2.6 Wave 2 additions to existing events (1.23.0)
 
 Every field below is optional and absent from every pre-1.23.0 log, which replays byte-identically.
 Frozen at W2-0: a later change to any of these shapes is an additive schema change (a further
@@ -491,6 +491,10 @@ optional field and a MINOR bump), never an edit in place.
 | `EXECUTION_RESUMED` | a **wait-addressed** resume: `metadata.kernel === true` and payload `{ waitId, payload }`, unwrapped by the fold | `_waitAnswers[waitId] = { kind, name, payload }` (kind and name from the park's wait; first answer wins); drops `_waits[waitId]`; never enters `_resumePayloads`. Naming no wait of the current park: status-only re-open | 0110 D3 |
 | `PARALLEL_COMPLETED` | `{ scopePath, failedBranch, error, cancelled[] }` + additive optional `errorName`, `errorChannel`, `errorPayload`, `launched`, `consumed[]`, `cursor` (amended 2026-10-06), **kernel-stamped only** (unstamped: `updatedAt` only, as before) | `_scopes[scopePath] = { failedBranch, error, cancelled, … }` (additive fields kept only when well-formed) | 0112 D2 |
 | `RESOURCE_METERED` | `custom: Record<string, number>` (names `/^[a-z][a-z0-9._-]{0,63}$/`, not `constructor`/`prototype`, ≤ 32 per execution, each value finite in [0, 1e15]; a bad key is **skipped deterministically**, never thrown) | `_resources.custom` (absent until used) | 0115 D2 |
+| `STEP_STARTED` | `scope: string` (the cancellation-scope path the step first started in; written only with `kernel.features.scopes`), **honoured only on a kernel-stamped envelope** (amended, R7) | frame `scope` (kept from the FIRST start) | 0113 D3 |
+| (every frame) | the journal sequence of a step's first `STEP_STARTED` (amended, R7): set only when the frame is new, carried through every later frame event; a frame folded before this existed has none | frame `firstSeq` (the log's first-start order, which an object's key order cannot give) | 0113 D3 |
+| `DECISION_RECORDED` | `innerSteps: string[]` (the step ids the decider ran; always written, possibly empty; ≤ 4096 ids and ≤ 64 KiB of them), `innerStepsOverflow: true` + `innerFrom: number` (the journal sequence the decider began at; written past either cap) (amended, R7), **kernel-stamped only** | `_decisions[id].innerSteps`; with the overflow pair, `_decisions[id].{innerStepsOverflow, innerFrom, recordedAtSeq}` (`recordedAtSeq` = the record's own sequence). Descriptive: never a replay input | 0113 D3 |
+| `EXECUTION_MIGRATED` | `toCodeHash: string` (the target flow's body fingerprint; `""` = none) (amended, R7) | `_codeHash` (re-arms the fingerprint comparison) | 0113 D2 |
 | `OUTCOME_RECORDED` | `recordedBy: string`, `late: true` (userspace emits carrying them are refused, and the fold reads them only from a kernel-stamped envelope) | ride on the `_outcomes` entry (stamped only) | 0116 |
 
 **Envelope metadata the fold reads (1.23.0):** `flowEmit` (1.19.0), and now `kernel` (the kinds and

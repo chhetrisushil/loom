@@ -189,10 +189,19 @@ export class DivergenceGuard {
       for (const id of inner.steps) this.pending.delete(id);
       if (inner.overflow !== undefined) {
         const { from, to } = inner.overflow;
-        for (let k = 0; k < this.order.length; k++) {
+        // `seqs` is nondecreasing (unranked frames, `undefined`, sort first as -1): binary-search the
+        // first frame started after `from`, then walk to `to`.
+        let lo = 0;
+        let hi = this.seqs.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if ((this.seqs[mid] ?? -1) > from) hi = mid;
+          else lo = mid + 1;
+        }
+        for (let k = lo; k < this.seqs.length; k++) {
           const seq = this.seqs[k];
-          if (seq !== undefined && seq > from && seq < to)
-            this.pending.delete(this.order[k] as string);
+          if (seq === undefined || seq >= to) break;
+          this.pending.delete(this.order[k] as string);
         }
       }
       return;

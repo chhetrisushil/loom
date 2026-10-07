@@ -55,9 +55,9 @@ interface Rig {
   ): { rt: WorkflowRuntime; ran: string[]; warnings: string[]; def: FlowDefinition };
 }
 
-function rig(existing?: InMemoryAsyncEventStore): Rig {
+function rig(existing?: InMemoryAsyncEventStore, snaps?: InMemoryAsyncSnapshotStore): Rig {
   const store = existing ?? new InMemoryAsyncEventStore();
-  const snapshots = new InMemoryAsyncSnapshotStore();
+  const snapshots = snaps ?? new InMemoryAsyncSnapshotStore();
   return {
     store,
     snapshots,
@@ -1622,5 +1622,190 @@ describe("P3-4 — the refusal message says what happened", () => {
     expect(d2.warnings.some((m) => m.includes("PARKED on"))).toBe(true);
     expect(d2.ran).toEqual([]);
     expect((await d2.rt.loadState("x"))?.suspendedOn?.on).toBe("__loom_diverged__");
+  });
+});
+
+// ── Fix round 3 ─────────────────────────────────────────────────────────────────────────────────
+
+describe("R3 — a frame from a pre-upgrade snapshot, re-started in the tail", () => {
+  it("is not stamped with the LATER sequence: an unchanged body resumes clean under fail", async () => {
+    const r = rig();
+    let first = true;
+    const failB = (id: string): unknown => {
+      if (id === "B" && first) {
+        first = false;
+        throw new Error("B fails untyped");
+      }
+      return undefined;
+    };
+    const body: Body = async (ctx) => {
+      try {
+        await run(ctx, B); // fails untyped on the first run: re-started on every re-run
+      } catch {
+        /* carry on */
+      }
+      await run(ctx, A);
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    const d = r.deploy(body, { mode: "fail", tool: failB });
+    await (
+      await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" })
+    ).waitForSuspend();
+
+    // A snapshot as a pre-upgrade node saved it: frames without firstSeq / scope.
+    const snap = await r.snapshots.loadLatest("x");
+    expect(snap).toBeDefined();
+    const legacyFrames = Object.fromEntries(
+      Object.entries((snap as NonNullable<typeof snap>).state.frames).map(([k, f]) => {
+        const { firstSeq: _s, scope: _c, ...rest } = f;
+        return [k, rest];
+      })
+    );
+    const legacySnaps = new InMemoryAsyncSnapshotStore();
+    await legacySnaps.save({
+      ...(snap as NonNullable<typeof snap>),
+      id: "legacy",
+      state: { ...(snap as NonNullable<typeof snap>).state, frames: legacyFrames },
+    });
+    // The tail: B was re-started (a crash remnant of an earlier re-run) after the snapshot.
+    const head = (await r.store.read("x")).at(-1) as EventEnvelope;
+    await r.store.append({
+      ...head,
+      id: "x-tail-1",
+      eventType: "EXECUTION_RESUMED",
+      sequence: head.sequence + 1,
+      payload: {},
+    });
+    await r.store.append({
+      ...head,
+      id: "x-tail-2",
+      eventType: "STEP_STARTED",
+      sequence: head.sequence + 2,
+      payload: { stepId: "B", input: { id: "B" } },
+    });
+    const r2 = rig(r.store, legacySnaps);
+    const d2 = r2.deploy(body, { mode: "fail" });
+    const h = await d2.rt.resume("x", { eventType: "EXECUTION_RECOVERED", payload: {} });
+    await settle(h);
+    const rejected = await h.waitForCompletion().then(
+      (st) => st,
+      (e: unknown) => e
+    );
+    expect(rejected).not.toBeInstanceOf(Error);
+    expect(d2.warnings).toEqual([]);
+  });
+});
+
+describe("R3 — fold: scope is read only from a kernel-stamped STEP_STARTED", () => {
+  it("an unstamped STEP_STARTED carrying `scope` leaves frame.scope undefined", async () => {
+    const { ReplayVM } = await import("@loom/replay-vm");
+    const mk = (
+      seq: number,
+      type: string,
+      payload: unknown,
+      metadata?: Record<string, unknown>
+    ): EventEnvelope => ({
+      id: `e-${seq}`,
+      workflowId: "wf",
+      executionId: "e",
+      eventType: type,
+      sequence: seq,
+      timestamp: 1000 + seq,
+      payload,
+      ...(metadata !== undefined && { metadata }),
+    });
+    const vm = new ReplayVM([
+      mk(0, "EXECUTION_STARTED", { input: {} }),
+      mk(1, "STEP_STARTED", { stepId: "a", input: 1, scope: "/0.0" }),
+      mk(2, "STEP_STARTED", { stepId: "b", input: 1, scope: "/0.1" }, { kernel: true }),
+    ]);
+    const frames = vm.getState().frames;
+    expect(frames.a?.scope).toBeUndefined();
+    expect(frames.b?.scope).toBe("/0.1");
+  });
+});
+
+describe("R3 — the inner-step record is bounded by bytes as well as count", () => {
+  it("a few very long ids overflow the byte cap (the overflow path, not an oversized record)", async () => {
+    const r = rig();
+    const body: Body = async (ctx) => {
+      await ctx.decide("big", async () => {
+        for (let i = 0; i < 3; i++) {
+          const id = `${"x".repeat(30_000)}${i}`;
+          await ctx.execute(task(id), { id });
+        }
+        return 1;
+      });
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    const d = r.deploy(body, { mode: "fail" });
+    await (
+      await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" })
+    ).waitForSuspend();
+    const rec = (await r.store.read("x")).find((e) => e.eventType === "DECISION_RECORDED")
+      ?.payload as { innerSteps: string[]; innerStepsOverflow?: boolean };
+    expect(rec.innerStepsOverflow).toBe(true);
+    expect(rec.innerSteps).toHaveLength(2); // 64 KiB holds two 30k ids, not three
+    const { outcome, warnings } = await resumeOn(r, body, { mode: "fail" });
+    expect((outcome as { status: string }).status).toBe("completed");
+    expect(warnings).toEqual([]);
+  });
+});
+
+describe("R3 — R2 and R1b inside a scope, under fail", () => {
+  const scoped = {
+    mode: "fail" as const,
+    deps: { scopes: true, inboxEnabled: true, timerStore: new InMemoryTimerStore() },
+  };
+
+  it("ctx.receive inside a parallel branch: an unchanged body parks, is woken by send, and completes clean", async () => {
+    const r = rig();
+    const body: Body = async (ctx) => {
+      await run(ctx, A);
+      const [got] = await ctx.parallel([
+        async (b) => {
+          await b.run(B, { id: "B" });
+          return b.receive("t");
+        },
+      ]);
+      void got;
+      return { done: true };
+    };
+    const d = r.deploy(body, scoped);
+    const h = await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" });
+    await h.waitForSuspend();
+    await d.rt.send("x", { topic: "t", payload: 1 });
+    for (let i = 0; i < 400 && (await d.rt.loadState("x"))?.status !== "completed"; i++) {
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    expect((await d.rt.loadState("x"))?.status).toBe("completed");
+    expect(d.warnings).toEqual([]);
+    expect(d.ran).toEqual(["A", "B"]); // the wake re-ran the body: nothing ran twice
+  });
+
+  it("ctx.continueAsNew inside a scope keeps its typed refusal (the detector does not change it)", async () => {
+    const r = rig();
+    let reason: string | undefined;
+    const body: Body = async (ctx) => {
+      await run(ctx, A);
+      await ctx.parallel([
+        async (b) => {
+          try {
+            await b.continueAsNew({});
+          } catch (e) {
+            reason = String((e as Error).message);
+          }
+        },
+      ]);
+      return { done: true };
+    };
+    const d = r.deploy(body, { ...scoped, deps: { ...scoped.deps, continueAsNewEnabled: true } });
+    const h = await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" });
+    expect((await h.waitForCompletion()).status).toBe("completed");
+    expect(reason).toMatch(/parallel scope is open/);
+    expect(await kindsOf(r)).not.toContain("EXECUTION_CONTINUED");
+    expect(d.warnings).toEqual([]);
   });
 });

@@ -20,6 +20,12 @@ export interface FoldVector {
     sequence: number;
     variables: Record<string, unknown>;
     frames: Record<string, { status: string; attempts: number }>;
+    /**
+     * Optional (ADR 0113, additive): each frame's first-start sequence and kernel-recorded scope
+     * path. Present only on the vectors that pin them, so the vectors that predate them are
+     * unchanged.
+     */
+    frameMeta?: Record<string, { firstSeq?: number; scope?: string }>;
   };
 }
 
@@ -577,6 +583,61 @@ export const FOLD_VECTORS: FoldVector[] = [
       frames: {},
     },
   },
+  {
+    // ADR 0113 (R7, additive within 1.23.0): the first-start sequence of every frame (kept through
+    // later events and a re-start), the scope path of a STEP_STARTED folded ONLY from a kernel-stamped
+    // envelope, and a decision's innerSteps (kernel-stamped only; an overflow flag, the sequence the
+    // decider began at, and the record's own sequence ride along only when well-formed).
+    name: "R7: frame firstSeq/scope and DECISION_RECORDED innerSteps (kernel-stamped only)",
+    events: [
+      ev("v13", 0, "EXECUTION_STARTED", { input: {}, codeHash: "fp1" }),
+      ev("v13", 1, "STEP_STARTED", { stepId: "a", input: 1, scope: "/0.1" }, { kernel: true }),
+      ev("v13", 2, "STEP_STARTED", { stepId: "b", input: 2, scope: "/0.2" }), // unstamped: scope ignored
+      ev("v13", 3, "STEP_COMPLETED", { stepId: "a", output: 1 }),
+      ev("v13", 4, "STEP_STARTED", { stepId: "a", input: 1, scope: "/9" }, { kernel: true }), // re-start
+      ev(
+        "v13",
+        5,
+        "DECISION_RECORDED",
+        { decisionId: "d", choice: 1, innerSteps: ["a", 7, "b"] },
+        {
+          kernel: true,
+        }
+      ),
+      ev("v13", 6, "DECISION_RECORDED", { decisionId: "e", choice: 2, innerSteps: ["a"] }), // unstamped
+      ev(
+        "v13",
+        7,
+        "DECISION_RECORDED",
+        { decisionId: "f", choice: 3, innerSteps: ["a"], innerStepsOverflow: true, innerFrom: 4 },
+        { kernel: true }
+      ),
+      ev("v13", 8, "EXECUTION_MIGRATED", { toFlowId: "wf", toCodeHash: "fp2" }),
+    ],
+    expected: {
+      status: "running",
+      sequence: 8,
+      variables: {
+        _input: {},
+        _codeHash: "fp2",
+        _decisions: {
+          d: { choice: 1, innerSteps: ["a", "b"] },
+          e: { choice: 2 },
+          f: {
+            choice: 3,
+            innerSteps: ["a"],
+            innerStepsOverflow: true,
+            innerFrom: 4,
+            recordedAtSeq: 7,
+          },
+        },
+        _migratedTo: "wf",
+        _migrations: [{ toFlowId: "wf" }],
+      },
+      frames: { a: { status: "running", attempts: 2 }, b: { status: "running", attempts: 1 } },
+      frameMeta: { a: { firstSeq: 1, scope: "/0.1" }, b: { firstSeq: 2 } },
+    },
+  },
 ];
 
 /** Run the reference fold over every vector; returns per-vector pass/fail + detail. */
@@ -591,12 +652,22 @@ export function runFoldVectors(vectors: readonly FoldVector[] = FOLD_VECTORS): A
     for (const [k, f] of Object.entries(state.frames)) {
       framesView[k] = { status: f.status, attempts: f.attempts };
     }
-    const actual = {
+    const actual: FoldVector["expected"] = {
       status: state.status,
       sequence: state.sequence,
       variables: state.variables,
       frames: framesView,
     };
+    if (v.expected.frameMeta !== undefined) {
+      const meta: Record<string, { firstSeq?: number; scope?: string }> = {};
+      for (const [k, f] of Object.entries(state.frames)) {
+        meta[k] = {
+          ...(f.firstSeq !== undefined && { firstSeq: f.firstSeq }),
+          ...(f.scope !== undefined && { scope: f.scope }),
+        };
+      }
+      actual.frameMeta = meta;
+    }
     const passed = JSON.stringify(actual) === JSON.stringify(v.expected);
     return passed
       ? { name: v.name, passed }
