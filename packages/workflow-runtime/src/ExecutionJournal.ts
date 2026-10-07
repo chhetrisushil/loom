@@ -72,6 +72,17 @@ export class ExecutionJournal {
   }
 
   /**
+   * ADR 0113 D3 — a check run BEFORE every live append, ahead of the sequence allocation: a throw
+   * leaves the log, the fold and the sequence untouched. Installed by the runtime once the run's
+   * bootstrap events are in (the bootstrap is the runtime's own, not the flow body's).
+   */
+  private appendGuard: ((eventType: string, payload: unknown) => void) | undefined;
+
+  setAppendGuard(guard: ((eventType: string, payload: unknown) => void) | undefined): void {
+    this.appendGuard = guard;
+  }
+
+  /**
    * The ONE envelope builder, shared by {@link commit} and {@link bootstrapEnvelope} so the
    * two can never drift: a caller-chosen-id start (ADR 0103) writes its sequence 0 through
    * `bootstrapEnvelope` BEFORE a journal exists, and that envelope must be byte-identical to
@@ -167,6 +178,7 @@ export class ExecutionJournal {
     payload: unknown,
     opts?: { id?: string; timestamp?: number; metadata?: Record<string, unknown> }
   ): EventEnvelope {
+    this.appendGuard?.(eventType, payload);
     const sequence = ++this.seq;
     const envelope = ExecutionJournal.build(
       this.identity,
@@ -204,6 +216,8 @@ export class ExecutionJournal {
      */
     opts?: { deferOnEvent?: boolean }
   ): EventEnvelope[] {
+    if (this.appendGuard !== undefined)
+      for (const e of events) this.appendGuard(e.eventType, e.payload);
     const defer = opts?.deferOnEvent === true;
     const envelopes: EventEnvelope[] = [];
     const held: Array<{ envelope: EventEnvelope; state: "ready" | "pending" | "dropped" }> = [];

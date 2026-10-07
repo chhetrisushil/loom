@@ -664,6 +664,18 @@ export interface LoomConfig {
      * never reads it (a pure fold cannot read a runtime setting).
      */
     meterCeilings?: Readonly<Record<string, number>>;
+    /**
+     * ADR 0113 D3 (R7) — the replay-divergence detector. A re-run whose flow body never asks for a
+     * step the log records as completed, before its first live append of ANY kind (step, decision,
+     * emit, park, spawn, continuation) or at completion, has diverged from its log: the code
+     * changed shape under an in-flight execution. `"warn"` (default) reports once per run through
+     * `observability.onWarn` and proceeds; `"fail"` refuses BEFORE the append with
+     * `FlowReplayDivergenceError` (a `FlowDivergenceError`) and writes no terminal event;
+     * `"off"` is silent. Under `security.strict` the default is `"fail"`. Membership only, no
+     * order check; frames before an `EXECUTION_MIGRATED` are exempt. No wire change: the check
+     * is runtime-only, so it is not a rolling-upgrade flag.
+     */
+    divergence?: "off" | "warn" | "fail";
   };
   /**
    * T1 — durable timers. Wire a {@link TimerStore} (`InMemoryTimerStore`,
@@ -1212,6 +1224,10 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
     ...(config.kernel?.meterCeilings !== undefined && {
       meterCeilings: config.kernel.meterCeilings,
+    }),
+    // ADR 0113 D3 — an explicit setting wins; otherwise strict flips the default to `fail`.
+    ...((config.kernel?.divergence !== undefined || strict) && {
+      divergence: config.kernel?.divergence ?? STRICT_DEFAULTS.divergence,
     }),
     ...(config.kernel?.features?.scopes === true && { scopes: true }),
     ...(config.kernel?.features?.continueAsNew === true && {

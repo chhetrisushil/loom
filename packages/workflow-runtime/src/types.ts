@@ -960,10 +960,14 @@ export class FlowCodeMismatchError extends Error {
     readonly executionId: string,
     readonly workflowId: string,
     readonly recordedHash: string,
-    readonly registeredHash: string
+    readonly registeredHash: string,
+    /** ADR 0113 D2 — `"code"` when the body fingerprint (`codeHash`) differed, not the structural hash. */
+    readonly kind: "structure" | "code" = "structure"
   ) {
     super(
-      `flow code changed under in-flight execution "${executionId}" (flow "${workflowId}"): log was recorded under ${recordedHash}, registered code is ${registeredHash}. Exits: (1) PIN — deploy/register the original flow code and resume on it; (2) MIGRATE — resume with { allowFlowCodeMismatch: true } after verifying fold-compatibility (loom deploy check / @loom/deploy-sim); (3) DRAIN — cancel() the execution and restart it on the new code.`
+      kind === "code"
+        ? `flow code changed under in-flight execution "${executionId}" (flow "${workflowId}"): the body fingerprint recorded at start is ${recordedHash}, registered code is ${registeredHash}. Exits: (1) PIN — deploy/register the original flow code and resume on it; (2) COMPATIBLE — if the edit is replay-compatible, add ${recordedHash} to the flow's \`compatibleWith\`; (3) MIGRATE — resumeAs; (4) DRAIN — cancel() the execution and restart it on the new code.`
+        : `flow code changed under in-flight execution "${executionId}" (flow "${workflowId}"): log was recorded under ${recordedHash}, registered code is ${registeredHash}. Exits: (1) PIN — deploy/register the original flow code and resume on it; (2) MIGRATE — resume with { allowFlowCodeMismatch: true } after verifying fold-compatibility (loom deploy check / @loom/deploy-sim); (3) DRAIN — cancel() the execution and restart it on the new code.`
     );
     this.name = "FlowCodeMismatchError";
     Object.setPrototypeOf(this, FlowCodeMismatchError.prototype);
@@ -1332,5 +1336,32 @@ export class FlowDivergenceError extends Error {
     );
     this.name = "FlowDivergenceError";
     Object.setPrototypeOf(this, FlowDivergenceError.prototype);
+  }
+}
+
+/**
+ * ADR 0113 D3 — the replay-divergence detector: the flow body, re-run over an existing log, is about
+ * to make a LIVE journal append of kind `beforeEvent` while `skippedSteps` — steps the log records
+ * as completed — were never asked for. The code changed shape: it would skip durable work the log
+ * shows done and run new work under the wrong shape. Raised BEFORE that append (in `fail` mode), so
+ * nothing runs under the diverged body; membership only, no order. An instance of
+ * {@link FlowDivergenceError} (the same family as a wait-identity divergence).
+ */
+export class FlowReplayDivergenceError extends FlowDivergenceError {
+  constructor(
+    executionId: string,
+    readonly skippedSteps: readonly string[],
+    readonly skippedCount: number,
+    readonly beforeEvent: string
+  ) {
+    super(
+      executionId,
+      "",
+      { kind: "steps", name: skippedSteps.join(", ") },
+      { kind: "steps", name: "(not visited)" }
+    );
+    this.message = `execution "${executionId}": the flow body diverged from its log — ${skippedCount} recorded completed step(s) [${skippedSteps.join(", ")}${skippedCount > skippedSteps.length ? ", …" : ""}] were not asked for before the re-run reached a live ${beforeEvent} append. The body changed shape under an in-flight execution: re-register the original code (pin), list the recorded fingerprint in \`compatibleWith\` if the edit is replay-compatible, or migrate with resumeAs.`;
+    this.name = "FlowDivergenceError";
+    Object.setPrototypeOf(this, FlowReplayDivergenceError.prototype);
   }
 }

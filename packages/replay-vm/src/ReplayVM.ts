@@ -9,8 +9,45 @@ export class ReplayVM {
   // (`getState`), so a state a caller holds is never mutated afterwards.
   private owned = new WeakSet<object>();
 
+  // ADR 0113 D3 — the step ids that completed AFTER the execution's last `EXECUTION_MIGRATED`
+  // (the replay-divergence detector's baseline resets there: a migration deliberately changes the
+  // frame set). `undefined` until a migration is known: then every completed frame is baseline.
+  // Allocated only for an execution that has been migrated, so the common path pays one string
+  // compare per applied event.
+  private postMigration: Set<string> | undefined;
+
   constructor(events: EventEnvelope[], initial?: Partial<ExecutionState>) {
     this.state = foldEvents(events, initial, this.owned);
+    // A snapshot taken after a migration carries `_migrations`, but not WHEN: everything the
+    // snapshot already holds is exempt, so only the tail's completions count.
+    const migrated = initial?.variables?._migrations;
+    if (Array.isArray(migrated) && migrated.length > 0) this.postMigration = new Set();
+    for (const e of events) this.track(e);
+  }
+
+  private track(event: EventEnvelope): void {
+    if (event.eventType === "EXECUTION_MIGRATED") {
+      this.postMigration = new Set();
+    } else if (this.postMigration !== undefined && event.eventType === "STEP_COMPLETED") {
+      const id = (event.payload as { stepId?: unknown } | null)?.stepId;
+      if (typeof id === "string") this.postMigration.add(id);
+    }
+  }
+
+  /**
+   * ADR 0113 D3 — the ids of the COMPLETED frames a re-run of this execution is expected to
+   * visit: every completed frame, except those recorded before the execution's last
+   * `EXECUTION_MIGRATED` (a migration changes the frame set on purpose). A fresh array.
+   */
+  expectedReplayFrames(): string[] {
+    const frames = this.state.frames;
+    const out: string[] = [];
+    for (const id of Object.keys(frames)) {
+      if (frames[id]?.status !== "completed") continue;
+      if (this.postMigration !== undefined && !this.postMigration.has(id)) continue;
+      out.push(id);
+    }
+    return out;
   }
 
   hasCompleted(stepId: string): boolean {
@@ -88,5 +125,6 @@ export class ReplayVM {
 
   applyEvent(event: EventEnvelope): void {
     this.state = foldEvents([event], this.state, this.owned);
+    this.track(event);
   }
 }

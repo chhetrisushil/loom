@@ -48,6 +48,12 @@ export interface FlowConfig<TIn, TOut> {
    * ```
    */
   resumeSchemas?: Readonly<Record<string, z.ZodTypeAny>>;
+  /** ADR 0113 D2 — toolchain-supplied body fingerprint (see `FlowDefinition.codeFingerprint`). */
+  codeFingerprint?: string;
+  /** ADR 0113 D2 — earlier fingerprints asserted replay-compatible (see `FlowDefinition.compatibleWith`). */
+  compatibleWith?: readonly string[];
+  /** ADR 0113 D4 — step-id families for `replay-check` (see `FlowDefinition.stepFamilies`). */
+  stepFamilies?: readonly (string | RegExp)[];
 }
 
 export function flow$<TIn = unknown, TOut = unknown>(
@@ -67,5 +73,8 @@ export function flow$<TIn = unknown, TOut = unknown>(
     ...(config.deadlineMs !== undefined && { deadlineMs: config.deadlineMs }),
     ...(config.resumeSchemas !== undefined && { resumeSchemas: config.resumeSchemas }),
     ...(config.effectClass !== undefined && { effectClass: config.effectClass }),
+    ...(config.codeFingerprint !== undefined && { codeFingerprint: config.codeFingerprint }),
+    ...(config.compatibleWith !== undefined && { compatibleWith: config.compatibleWith }),
+    ...(config.stepFamilies !== undefined && { stepFamilies: config.stepFamilies }),
   };
 }

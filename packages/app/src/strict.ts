@@ -49,6 +49,12 @@ export const STRICT_DEFAULTS = {
    * `envelope.budget.pricing` for another unit.
    */
   perExecutionMaxTokens: 1_000_000,
+  /**
+   * ADR 0113 D3 — the replay-divergence detector's mode. A flow body that no longer asks for a step
+   * its in-flight log records as completed is refused BEFORE it appends anything (membership only,
+   * no order). Outside strict the default is `warn`; override with `kernel.divergence`.
+   */
+  divergence: "fail",
 } as const;
 
 export interface StrictOptions {

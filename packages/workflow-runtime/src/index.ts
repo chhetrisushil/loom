@@ -16,6 +16,7 @@ export {
   OutcomeRefusedError,
   FlowCodeMismatchError,
   FlowDivergenceError,
+  FlowReplayDivergenceError,
   FlowMigrationCheckError,
   InboxClosedError,
   InboxFullError,

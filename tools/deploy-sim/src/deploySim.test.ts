@@ -1,4 +1,4 @@
-import { step$ } from "@loom/core";
+import { legacyFlowContentHash, step$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -106,6 +106,23 @@ describe("simulateDeploy", () => {
       const drift = report.issues.find((i) => i.kind === "flow-code-drift");
       expect(drift?.severity).toBe("breaking");
       expect(drift?.detail).toMatch(/drain|pin|resumeAs/);
+    });
+
+    it("ADR 0113 D1 — a live execution that recorded a legacy fnv1a: hash is judged by the legacy hash of the new code", async () => {
+      const log = await record(gatedRunner);
+      const legacyOf = (d: ReturnType<typeof def>): string => legacyFlowContentHash(d);
+      const withLegacy = (hash: string) =>
+        log.map((e) =>
+          e.eventType === "EXECUTION_STARTED"
+            ? { ...e, payload: { ...(e.payload as object), flowHash: hash } }
+            : e
+        );
+      // same structure: no drift (and no false alarm from comparing fnv1a: with sha256:)
+      const same = simulateDeploy([withLegacy(legacyOf(def()))], resolver(def()));
+      expect(same.issues.filter((i) => i.kind === "flow-code-drift")).toEqual([]);
+      // changed structure: still flagged
+      const changed = simulateDeploy([withLegacy(legacyOf(def()))], resolver(def("2.0.0")));
+      expect(changed.issues.some((i) => i.kind === "flow-code-drift")).toBe(true);
     });
 
     it("ignores drift on terminal executions (they never resume)", async () => {
