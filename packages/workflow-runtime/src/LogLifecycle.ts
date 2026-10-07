@@ -33,6 +33,29 @@ export const LIFECYCLE_STREAM = "__loom_lifecycle__";
 // executions, and compaction guarantees `fold(snapshot, suffix) === fold(events)`
 // so a compacted execution still resumes/replays identically.
 
+/**
+ * ADR 0116 — when an execution ended: the timestamp of its newest terminal event, found by
+ * scanning the tail backwards (a late outcome sits after it). Falls back to the old formula
+ * `max(last event, folded updatedAt)` only when no terminal event survives (compaction removed it).
+ * Residual, recorded in the ADR: `OUTCOME_RECORDED`'s frozen handler moves `updatedAt`, so in that
+ * fallback a late outcome does count; compaction keeps the tip, so it needs a compaction run AFTER
+ * the terminal event AND a late outcome after that.
+ */
+function terminalEndedAt(events: readonly EventEnvelope[], state: ExecutionState): number {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i] as EventEnvelope;
+    if (
+      e.eventType === "EXECUTION_COMPLETED" ||
+      e.eventType === "EXECUTION_FAILED" ||
+      e.eventType === "EXECUTION_CANCELLED" ||
+      (e.eventType === "EXECUTION_CONTINUED" && e.metadata?.kernel === true)
+    ) {
+      return e.timestamp;
+    }
+  }
+  return Math.max(events[events.length - 1]!.timestamp, state.updatedAt);
+}
+
 const TERMINAL = new Set<ExecutionState["status"]>([
   "completed",
   "failed",
@@ -321,9 +344,9 @@ export class LogLifecycle {
 
     const state = await this.foldForRetention(executionId, events);
     if (!TERMINAL.has(state.status)) return "not-terminal";
-    // A compacted log's last surviving event may be the bootstrap, so the folded state's
-    // `updatedAt` (the terminal event's timestamp) is the end when it is later.
-    const endedAt = Math.max(events[events.length - 1]!.timestamp, state.updatedAt);
+    // ADR 0116 — the clock runs from the newest TERMINAL event, not the last event: a late
+    // outcome (or an audit row) appended days after the end must not postpone reclamation.
+    const endedAt = terminalEndedAt(events, state);
     if (now - endedAt < policy.terminalTtlMs) return "kept";
 
     // R5.3 — never delete a parent a live descendant branch still depends on.

@@ -43,6 +43,67 @@ export function recordOutcome(sink: OutcomeSink, outcome: Outcome): void {
   });
 }
 
+/** One late reward for a decision of a finished execution (ADR 0116). */
+export interface LateReward {
+  executionId: string;
+  decisionId: string;
+  key: string;
+  success?: boolean;
+  score?: number;
+}
+
+/**
+ * The slice of `WorkflowRuntime` {@link attachOutcomes} needs — structural, so analytics keeps no
+ * dependency on the runtime.
+ */
+export interface OutcomeAttacher {
+  recordOutcome(
+    executionId: string,
+    outcome: { decisionId: string; key: string; success?: boolean; score?: number },
+    options?: { principal?: unknown; system?: unknown }
+  ): Promise<{ appended: boolean }>;
+}
+
+export interface AttachOutcomesResult {
+  appended: number;
+  /** Already recorded (idempotent). */
+  duplicates: number;
+  /** Refused or exhausted retries; the reward pipeline decides what to do with these. */
+  failed: Array<{ reward: LateReward; error: unknown }>;
+}
+
+/**
+ * The thin reward pipeline over `runtime.recordOutcome` (ADR 0116 D2): attach each late reward in
+ * order, retrying only errors that say `retryable` (a lost sequence race) up to `retries` times.
+ * A refusal (unauthorized, not terminal, unknown decision, conflicting score) is NOT retried: it is
+ * reported in `failed` and the rest continue. Idempotent, so the whole batch is safe to re-run.
+ */
+export async function attachOutcomes(
+  runtime: OutcomeAttacher,
+  rewards: readonly LateReward[],
+  opts: { retries?: number; options?: { principal?: unknown; system?: unknown } } = {}
+): Promise<AttachOutcomesResult> {
+  const retries = Math.max(0, opts.retries ?? 3);
+  const result: AttachOutcomesResult = { appended: 0, duplicates: 0, failed: [] };
+  for (const reward of rewards) {
+    const { executionId, ...outcome } = reward;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const r = await runtime.recordOutcome(executionId, outcome, opts.options);
+        if (r.appended) result.appended++;
+        else result.duplicates++;
+        break;
+      } catch (error) {
+        const retryable = (error as { retryable?: unknown } | null)?.retryable === true;
+        if (retryable && attempt < retries) continue;
+        result.failed.push({ reward, error });
+        break;
+      }
+    }
+  }
+  return result;
+}
+
 function outcomeValue(o: { success?: boolean; score?: number }): number {
   if (typeof o.score === "number") return o.score;
   if (typeof o.success === "boolean") return o.success ? 1 : 0;
