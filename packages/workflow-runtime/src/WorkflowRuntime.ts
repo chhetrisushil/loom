@@ -52,8 +52,9 @@ import {
   chainOfFirstEnvelope,
   chainOfState,
   derivedParentOf,
-  hasSuccessorShape,
+  isVerifiedSuccessor,
   successorIdOf,
+  successorShapeOf,
 } from "./continuation";
 import {
   armDeadline,
@@ -2217,10 +2218,13 @@ export class WorkflowRuntime {
   async cancel(
     executionId: string,
     reason?: unknown,
-    options?: { principal?: PrincipalChain; system?: SystemGrant }
+    options?: { principal?: PrincipalChain; system?: SystemGrant; unbounded?: boolean }
   ): Promise<boolean> {
     assertNotReserved(executionId);
     const live = this.liveHandles.get(executionId);
+    // ADR 0109 D4 — a client's cancel walks at most `maxChainHops` links; the kernel's own
+    // followers (the child supervisor's cascade) pass `unbounded` and reach the end of the chain.
+    const maxHops = options?.unbounded === true ? Number.POSITIVE_INFINITY : this.maxChainHops;
 
     // C.1 — gate the cancel (only when configured AND a principal is present). Use the
     // live handle's state when running here, else fold; a denial is best-effort
@@ -2254,7 +2258,7 @@ export class WorkflowRuntime {
     if (live !== undefined) {
       live.cancel(reason);
       // ADR 0109 D2 (i) — a successor may have started in the start-to-commit window.
-      if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason);
+      if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, maxHops);
       return true;
     }
     const state = await this.foldState(executionId);
@@ -2264,11 +2268,13 @@ export class WorkflowRuntime {
     if (state.status === "continued") {
       // ADR 0109 D2 — a continued member's cancel is the CHAIN's: it reaches the live generation
       // (authorized above against the chain owner, which every generation inherits).
-      return this.cancelForward(executionId, reason);
+      return this.cancelForward(executionId, reason, maxHops);
     }
     if (state.status === "cancelled") {
       // A cancel that raced the start-to-commit window: the successor, if one started, goes too.
-      return this.continueAsNewEnabled ? this.cancelSuccessorsOf(executionId, reason) : false;
+      return this.continueAsNewEnabled
+        ? this.cancelSuccessorsOf(executionId, reason, maxHops)
+        : false;
     }
     if (state.status === "completed" || state.status === "failed") {
       return false;
@@ -2288,7 +2294,7 @@ export class WorkflowRuntime {
     await this.eventStore.append(envelope);
     this.onEvent?.(envelope);
     await this.retireInbox(chainIdOf(state, executionId));
-    if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason);
+    if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, maxHops);
     return true;
   }
 
@@ -2297,14 +2303,18 @@ export class WorkflowRuntime {
    * `<chainId>~<generation+1>`, accepted only when it continued from `executionId`), and every
    * generation after it. `true` only when something was cancelled.
    */
-  private async cancelSuccessorsOf(executionId: string, reason: unknown): Promise<boolean> {
+  private async cancelSuccessorsOf(
+    executionId: string,
+    reason: unknown,
+    maxHops: number = this.maxChainHops
+  ): Promise<boolean> {
     try {
       const state =
         this.liveHandles.get(executionId)?.getState() ?? (await this.foldState(executionId));
       if (state === null) return false;
       const next = await this.probeSuccessor(executionId, chainOfState(state, executionId));
       if (next === undefined) return false;
-      return await this.cancelForward(next, reason);
+      return await this.cancelForward(next, reason, maxHops);
     } catch (err) {
       this.onStorageError?.(executionId, err);
       return false;
@@ -2375,7 +2385,15 @@ export class WorkflowRuntime {
     );
     // ADR 0105 — a preloaded state is a stored fold (often a snapshot's): repair a pre-1.21.0
     // one the same way every snapshot read does.
-    const vm = new ReplayVM([], normalizeSnapshotState(preloadedState));
+    // ADR 0109 — the reserved IDENTITY keys of a caller-supplied state are never trusted: the
+    // principal, lineage and chain identity (and `_continuedTo`) are overwritten with what the
+    // execution's own sequence 0 / the durable log say (dropped when the log says nothing), so a
+    // doctored state cannot forge who owns a successor, which chain it joins, or where it points.
+    const restoredFirst = (await readRangeOf(this.eventStore, preloadedState.executionId, 0, 0))[0];
+    const vm = new ReplayVM(
+      [],
+      this.withLogIdentity(normalizeSnapshotState(preloadedState), restoredFirst)
+    );
     const originalInput = preloadedState.variables._input;
     return this.execute(
       preloadedState.executionId,
@@ -2395,8 +2413,29 @@ export class WorkflowRuntime {
       // never as whatever `preloadedState.variables._principal` claims (caller-supplied, so a
       // doctored state cannot forge or strip the owner). `options.principal` stays the
       // lifecycle caller, used above for authorization and the approval check.
-      await this.actingPrincipal(preloadedState.executionId, options?.principal)
+      await this.actingPrincipal(preloadedState.executionId, options?.principal, {
+        first: restoredFirst,
+      })
     );
+  }
+
+  /**
+   * `state` with its reserved identity keys (`_principal`, `_chain`, `_parent`, `_continuedTo`) taken
+   * from the execution's own sequence 0 (`first`) instead of from the (caller-supplied) state: the
+   * fold of the log's first event IS the identity the log records, by the fold's own rules.
+   */
+  private withLogIdentity(state: ExecutionState, first: EventEnvelope | undefined): ExecutionState {
+    const logged = new ReplayVM(first !== undefined ? [first] : [], {
+      executionId: state.executionId,
+      workflowId: state.workflowId,
+      workflowVersion: state.workflowVersion,
+    }).getState().variables;
+    const variables: Record<string, unknown> = { ...state.variables };
+    for (const key of ["_principal", "_chain", "_parent", "_continuedTo"] as const) {
+      delete variables[key];
+      if (key !== "_continuedTo" && logged[key] !== undefined) variables[key] = logged[key];
+    }
+    return { ...state, variables };
   }
 
   /**
@@ -2448,8 +2487,9 @@ export class WorkflowRuntime {
     // ADR 0109 D2 (a) — a caller-chosen id may not have the reserved successor shape (a minted ulid
     // cannot), unless it is a `::`-derived child of an existing log (a supervised child of a
     // continued generation).
-    if (options?.executionId !== undefined) await this.assertCreatable(executionId);
-    else assertNotReserved(executionId);
+    if (options?.executionId !== undefined) {
+      await this.assertCreatable(executionId, this.lineageTrusted(options));
+    } else assertNotReserved(executionId);
     const { definition, runner } = this.resolveFlow(flow);
 
     // C.1 — gate the start (no execution exists yet, so no durable record).
@@ -3094,7 +3134,10 @@ export class WorkflowRuntime {
    * would be O(its log) per message; a bounded tail read is O(1). Follows a continuation
    * (`EXECUTION_CONTINUED`, kernel-stamped, names its successor) to the head, bounded.
    */
-  private async sendTarget(executionId: string): Promise<{
+  private async sendTarget(
+    executionId: string,
+    opts: { unbounded?: boolean; first?: EventEnvelope } = {}
+  ): Promise<{
     id: string;
     first: EventEnvelope;
     workflowId: string;
@@ -3105,29 +3148,37 @@ export class WorkflowRuntime {
      */
     status: "running" | "ambiguous" | "parkedCandidate" | "hop-limit" | string;
     state?: ExecutionState;
-    /** `status: "hop-limit"`: the furthest head the bounded walk could name (ADR 0109 D4). */
-    hopLimit?: string;
+    /**
+     * `status: "hop-limit"`: names the furthest head the bounded walk can reach (ADR 0109 D4). Lazy:
+     * the galloping probe costs ~O(log n) reads and is run only AFTER the caller authorized.
+     */
+    hopLimitOf?: () => Promise<string>;
   } | null> {
+    const maxHops = opts.unbounded === true ? Number.POSITIVE_INFINITY : this.maxChainHops;
     let id = executionId;
     for (let hop = 0; ; hop++) {
-      const first = (await readRangeOf(this.eventStore, id, 0, 0))[0];
+      const first =
+        hop === 0 && opts.first !== undefined
+          ? opts.first
+          : (await readRangeOf(this.eventStore, id, 0, 0))[0];
       if (first === undefined) return null; // hop 0: not found; later: the successor is not durable yet
       const base = { id, first, workflowId: first.workflowId, chainId: chainIdOfFirst(first, id) };
       const tip = await this.classifyTip(id);
       if (tip.kind === "continued") {
         const next = tip.successorId;
         if (next !== undefined) {
-          if (hop >= this.maxChainHops) {
-            // Reported, not thrown: `send` authorizes against this id's owner (the chain's) first,
-            // so an unauthorized caller learns nothing about the chain's depth or head.
+          if (hop >= maxHops) {
+            // Reported, not thrown, and named lazily: `send` has authorized against the chain's
+            // owner already, and an unauthorized caller learns nothing about its depth or head.
             return {
               ...base,
               status: "hop-limit",
-              hopLimit: await this.deepestGeneration(id, chainOfFirstEnvelope(first, id)),
+              hopLimitOf: () => this.deepestGeneration(id, chainOfFirstEnvelope(first, id)),
             };
           }
           const successor = (await readRangeOf(this.eventStore, next, 0, 0))[0];
-          if (successor !== undefined) {
+          // Only a VERIFIED link is followed; a pointer at a foreign id is a dead end.
+          if (successor !== undefined && isVerifiedSuccessor(first, id, successor, next)) {
             id = next;
             continue;
           }
@@ -3144,13 +3195,13 @@ export class WorkflowRuntime {
       // addressed to the predecessor would reach a body that is about to stop, so resolve forward
       // by probing `<chainId>~<generation+1>`. One point read, and only with the feature on.
       if (this.continueAsNewEnabled) {
-        const next = await this.probeSuccessor(id, chainOfFirstEnvelope(first, id));
+        const next = await this.probeSuccessor(id, chainOfFirstEnvelope(first, id), first);
         if (next !== undefined) {
-          if (hop >= this.maxChainHops) {
+          if (hop >= maxHops) {
             return {
               ...base,
               status: "hop-limit",
-              hopLimit: await this.deepestGeneration(id, chainOfFirstEnvelope(first, id)),
+              hopLimitOf: () => this.deepestGeneration(id, chainOfFirstEnvelope(first, id)),
             };
           }
           id = next;
@@ -3231,33 +3282,44 @@ export class WorkflowRuntime {
   ): Promise<SendResult> {
     this.assertInboxEnabled("runtime.send");
     assertNotReserved(executionId);
-    const head = await this.sendTarget(executionId);
-    if (head === null) {
+    // Authorize FIRST, against the addressed id's recorded owner (which every generation of the
+    // chain inherits): an unauthorized or unknown caller costs one point read and learns nothing
+    // of the chain's depth, its head, or whether a successor exists.
+    const addressed = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    if (addressed === undefined) {
       await this.denyMissing("send", executionId, options?.principal, options?.system);
       throw new Error(`No execution found for id: ${executionId}`);
     }
     const denial = this.authzDenial(
       "send",
-      head.id,
-      head.workflowId,
+      executionId,
+      addressed.workflowId,
       options?.principal,
       options?.system,
-      await this.ownerForAuthz(head.id, options?.principal, options?.system, { first: head.first })
+      await this.ownerForAuthz(executionId, options?.principal, options?.system, {
+        first: addressed,
+      })
     );
     if (denial !== undefined) {
       // No durable EXECUTION_DENIED: a sender must never write into the owner's log (that is the
       // very race the separate stream avoids). The audit callback still fires.
       await this.denyOp(
         "send",
-        head.id,
-        head.workflowId,
+        executionId,
+        addressed.workflowId,
         options?.principal,
         denial.reason,
         undefined
       );
     }
+    const head = await this.sendTarget(executionId, { first: addressed });
+    if (head === null) throw new Error(`No execution found for id: ${executionId}`);
     if (head.status === "hop-limit") {
-      throw new ChainHopLimitError(executionId, this.maxChainHops, head.hopLimit ?? head.id);
+      throw new ChainHopLimitError(
+        executionId,
+        this.maxChainHops,
+        (await head.hopLimitOf?.()) ?? head.id
+      );
     }
     const status =
       head.state !== undefined && head.status === "parkedCandidate"
@@ -3753,7 +3815,7 @@ export class WorkflowRuntime {
     if (!this.inboxEnabled || !streamId.startsWith(INBOX_STREAM_PREFIX)) return false;
     const chainId = streamId.slice(INBOX_STREAM_PREFIX.length);
     try {
-      const head = await this.sendTarget(chainId);
+      const head = await this.sendTarget(chainId, { unbounded: true });
       if (
         head === null ||
         head.chainId !== chainId ||
@@ -4940,19 +5002,26 @@ export class WorkflowRuntime {
   }
 
   /**
-   * Creation-time id check (ADR 0109 D2 (a)): everything `assertNotReserved` refuses, plus a
-   * root id segment of the SUCCESSOR SHAPE (`<x>~<digits>`). The shape is accepted only when the id
-   * is `::`-derived AND its parent's log exists (a point read), so a supervised child of a continued
-   * generation (`chain~1::g#0`) starts while a caller's `foo~1` or `foo~1::x` with no such log is
-   * refused. The kernel's own continuation start never comes through here.
+   * Creation-time id check (ADR 0109 D2 (a)): everything `assertNotReserved` refuses, plus the
+   * SUCCESSOR SHAPE (`<x>~<digits>`):
+   *  - on the LAST `::` segment (`a~1`, `parent::g#0~1`: the next generation of a chain, derived or
+   *    not) it is refused for every caller, trusted or not, existing log or not;
+   *  - only on the ROOT segment (`chain~1::g#0`, a supervised child of a generation) it is accepted
+   *    solely for a TRUSTED caller (the supervisor's lineage grant, or the system grant) and only
+   *    when the derived parent's log exists.
+   * An untrusted caller never causes a read, so the refusal is the same whether or not the parent
+   * exists (no existence oracle). The kernel's own continuation start never comes through here.
    */
-  private async assertCreatable(executionId: string): Promise<void> {
+  private async assertCreatable(executionId: string, trusted = false): Promise<void> {
     assertNotReserved(executionId);
-    if (!hasSuccessorShape(executionId)) return;
-    const parent = derivedParentOf(executionId);
-    if (parent !== undefined && parent.length > 0) {
-      const first = (await readRangeOf(this.eventStore, parent, 0, 0))[0];
-      if (first !== undefined) return;
+    const shape = successorShapeOf(executionId);
+    if (shape === "none") return;
+    if (shape === "derived" && trusted) {
+      const parent = derivedParentOf(executionId);
+      if (parent !== undefined && parent.length > 0) {
+        const first = (await readRangeOf(this.eventStore, parent, 0, 0))[0];
+        if (first !== undefined) return;
+      }
     }
     throw new ReservedSuccessorIdError(executionId);
   }
@@ -4962,23 +5031,49 @@ export class WorkflowRuntime {
    * its sequence 0 says it continued from `id` (ADR 0109 D2/D4). One point read. This is how the
    * START-TO-COMMIT window is bridged: until `EXECUTION_CONTINUED` commits, `_continuedTo` is unset.
    */
-  private async probeSuccessor(id: string, chain: ChainIdentity): Promise<string | undefined> {
+  private async probeSuccessor(
+    id: string,
+    chain: ChainIdentity,
+    knownFirst?: EventEnvelope
+  ): Promise<string | undefined> {
     const candidate = successorIdOf(chain.chainId, chain.generation);
     if (candidate === id) return undefined;
     const first = (await readRangeOf(this.eventStore, candidate, 0, 0))[0];
-    if (first === undefined || first.eventType !== "EXECUTION_STARTED") return undefined;
-    const from = (first.payload as { continuedFrom?: { executionId?: unknown } } | null)
-      ?.continuedFrom;
-    return from?.executionId === id ? candidate : undefined;
+    if (first === undefined) return undefined;
+    // Accepted only as a VERIFIED link (see `isVerifiedSuccessor`): a squatter at the deterministic
+    // id, or a log that merely names `id`, captures nothing.
+    const prev = knownFirst ?? (await readRangeOf(this.eventStore, id, 0, 0))[0];
+    return prev !== undefined && isVerifiedSuccessor(prev, id, first, candidate)
+      ? candidate
+      : undefined;
+  }
+
+  /** Is `nextId` the verified successor of `prevId` (both sequence 0s read here unless known)? */
+  private async verifiedHop(
+    prevId: string,
+    nextId: string,
+    prevFirst?: EventEnvelope
+  ): Promise<boolean> {
+    const prev = prevFirst ?? (await readRangeOf(this.eventStore, prevId, 0, 0))[0];
+    if (prev === undefined) return false;
+    const next = (await readRangeOf(this.eventStore, nextId, 0, 0))[0];
+    return isVerifiedSuccessor(prev, prevId, next, nextId);
   }
 
   /**
-   * Walk `_continuedTo` from `executionId` to the head of its chain (ADR 0109 D4): at most
-   * {@link maxChainHops} links, probing the successor when the commit has not landed. Reads through
-   * `foldState`, so it is a kernel-internal read (callers authorize first). `null` = no such execution.
+   * THE verified walk to the head of a chain (ADR 0109 D4), shared by every follower: `resume` /
+   * `followToHead` and the system followers. It follows `_continuedTo` (and probes the successor
+   * when the commit has not landed), but only across VERIFIED links (see `isVerifiedSuccessor`): a
+   * pointer at a foreign or squatted id ends the walk at the last verified member instead of
+   * leaking, resuming or cancelling something that is not this chain. `maxHops` bounds a
+   * CLIENT-addressed walk (`maxChainHops`, then a typed refusal naming the head); a SYSTEM follower
+   * (orchestration, the local worker) passes `Infinity`: generations strictly increase and every
+   * hop is verified, so the walk cannot cycle. Reads through `foldState`, so it is a kernel-internal
+   * read (callers authorize first). `null` = no such execution.
    */
   private async walkToHead(
-    executionId: string
+    executionId: string,
+    maxHops: number = this.maxChainHops
   ): Promise<{ id: string; state: ExecutionState; hops: number } | null> {
     let id = executionId;
     let last: { id: string; state: ExecutionState } | undefined;
@@ -4990,12 +5085,13 @@ export class WorkflowRuntime {
       if (state.status === "continued") {
         const to = state.variables._continuedTo;
         if (typeof to !== "string" || to.length === 0) return { id, state, hops: hop };
+        if (!(await this.verifiedHop(id, to))) return { id, state, hops: hop };
         next = to;
       } else if (state.status === "running" && this.continueAsNewEnabled) {
         next = await this.probeSuccessor(id, chainOfState(state, id));
       }
       if (next === undefined) return { id, state, hops: hop };
-      if (hop >= this.maxChainHops) {
+      if (hop >= maxHops) {
         throw new ChainHopLimitError(
           executionId,
           this.maxChainHops,
@@ -5037,16 +5133,21 @@ export class WorkflowRuntime {
    * Follow a continued execution to the head of its chain (ADR 0109 D4/D6): the head's id and
    * folded state. Authorized as `query` against the chain's OWNER (every generation inherits the
    * recorded principal). A head that is not continued returns itself. Refused with
-   * {@link ChainHopLimitError} past `maxChainHops` links.
+   * {@link ChainHopLimitError} past `maxChainHops` links, unless `unbounded` (for the kernel's own
+   * followers: the child supervisor, the local worker; the walk is verified link by link, so it
+   * ends at the true head however many generations were rotated).
    */
   async followToHead(
     executionId: string,
-    options?: { principal?: PrincipalChain; system?: SystemGrant }
+    options?: { principal?: PrincipalChain; system?: SystemGrant; unbounded?: boolean }
   ): Promise<{ executionId: string; state: ExecutionState; hops: number } | null> {
     assertNotReserved(executionId);
     const first = await this.loadState(executionId, options); // authorizes `query`, hides "not found"
     if (first === null) return null;
-    const head = await this.walkToHead(executionId);
+    const head = await this.walkToHead(
+      executionId,
+      options?.unbounded === true ? Number.POSITIVE_INFINITY : this.maxChainHops
+    );
     if (head === null) return null;
     return { executionId: head.id, state: head.state, hops: head.hops };
   }
@@ -5061,27 +5162,51 @@ export class WorkflowRuntime {
   private async startSuccessor(args: {
     predecessorId: string;
     workflowId: string;
-    state: ExecutionState;
-    chain: ChainIdentity;
+    workflowVersion: string;
     carry: unknown;
-    chainDeadline: number | undefined;
+    /** The execution's effective deadline budget (ms), for the chain deadline fixed at generation 0. */
+    deadlineMs: number | undefined;
     fallbackRunner: FlowRunner<unknown, unknown>;
-  }): Promise<{ successorId: string; generation: number; handle: ExecutionHandle | undefined }> {
-    const { predecessorId, workflowId, state, chain } = args;
-    const generation = chain.generation + 1;
-    const successorId = successorIdOf(chain.chainId, chain.generation);
+  }): Promise<{
+    successorId: string;
+    chainId: string;
+    generation: number;
+    handle: ExecutionHandle | undefined;
+  }> {
+    const { predecessorId, workflowId } = args;
     const registered = this.flows.get(workflowId);
     const runner = (registered?.runner ?? args.fallbackRunner) as FlowRunner<unknown, unknown>;
+    // EVERYTHING the successor inherits is read from the predecessor's DURABLE log, never from the
+    // running execution's fold: under `restoreFromState` that fold began as a caller-supplied
+    // `ExecutionState`, and the principal, lineage, chain identity and carried totals decide who
+    // OWNS the successor (ADR 0109 D2/D3). Sequence 0 answers principal, parent, chain and the
+    // chain deadline; the durable fold answers the running resources and the inbox cursors.
     const first0 = (await readRangeOf(this.eventStore, predecessorId, 0, 0))[0];
-    const recorded = state.variables._principal;
+    const seed = new ReplayVM(first0 !== undefined ? [first0] : [], {
+      executionId: predecessorId,
+      workflowId,
+      workflowVersion: args.workflowVersion,
+    }).getState();
+    const durable = (await this.foldState(predecessorId)) ?? seed;
+    const chain = chainOfState(seed, predecessorId);
+    const generation = chain.generation + 1;
+    const successorId = successorIdOf(chain.chainId, chain.generation);
+    // The chain's absolute deadline is fixed at generation 0 and carried unchanged afterwards.
+    const chainDeadline =
+      chainDeadlineOf(seed, predecessorId) ??
+      (chain.continuedFrom === undefined && args.deadlineMs !== undefined && durable.startedAt > 0
+        ? durable.startedAt + args.deadlineMs
+        : undefined);
+    const recorded = seed.variables._principal;
     const record: PrincipalRecord =
       typeof recorded === "object" && recorded !== null && !Array.isArray(recorded)
         ? (recorded as unknown as PrincipalRecord)
         : { v: 1 };
     const parent =
-      typeof state.variables._parent === "string" && state.variables._parent.length > 0
-        ? state.variables._parent
+      typeof seed.variables._parent === "string" && seed.variables._parent.length > 0
+        ? seed.variables._parent
         : undefined;
+    const state = durable;
     const flowHash = this.flowHashes.get(workflowId);
     const computeTarget = first0?.metadata?.[COMPUTE_TARGET_KEY];
     const bootstrap: BootstrapEvent = {
@@ -5095,7 +5220,7 @@ export class WorkflowRuntime {
         generation,
         continuedFrom: {
           executionId: predecessorId,
-          carried: carriedOf(state, args.chainDeadline),
+          carried: carriedOf(state, chainDeadline),
         },
       },
       ...(computeTarget !== undefined && { metadata: { [COMPUTE_TARGET_KEY]: computeTarget } }),
@@ -5109,7 +5234,7 @@ export class WorkflowRuntime {
         ?.continuedFrom?.executionId;
       if (from === predecessorId) {
         // A re-drive of a predecessor whose successor already started (ADR 0109 D2): no-op.
-        return { successorId, generation, handle: undefined };
+        return { successorId, chainId: chain.chainId, generation, handle: undefined };
       }
       throw new ContinuationConflictError(
         predecessorId,
@@ -5128,7 +5253,7 @@ export class WorkflowRuntime {
       const vm = new ReplayVM([], {
         executionId: successorId,
         workflowId,
-        workflowVersion: registered?.definition.version ?? state.workflowVersion,
+        workflowVersion: registered?.definition.version ?? args.workflowVersion,
       });
       const handle = this.execute(
         successorId,
@@ -5141,7 +5266,7 @@ export class WorkflowRuntime {
         registered?.definition.deadlineMs,
         actingAs
       );
-      return { successorId, generation, handle };
+      return { successorId, chainId: chain.chainId, generation, handle };
     } catch (err) {
       if (this.startRecords.get(successorId) === startRecord) this.startRecords.delete(successorId);
       throw err;
@@ -5170,10 +5295,14 @@ export class WorkflowRuntime {
    * start-to-commit window. No authorization here: the caller authorized against the chain owner.
    * Returns whether any cancellation was performed.
    */
-  private async cancelForward(executionId: string, reason: unknown): Promise<boolean> {
+  private async cancelForward(
+    executionId: string,
+    reason: unknown,
+    maxHops: number = this.maxChainHops
+  ): Promise<boolean> {
     let id = executionId;
     let performed = false;
-    for (let hop = 0; hop <= this.maxChainHops; hop++) {
+    for (let hop = 0; hop <= maxHops; hop++) {
       let state: ExecutionState | null;
       const live = this.liveHandles.get(id);
       if (live !== undefined) {
@@ -5212,10 +5341,15 @@ export class WorkflowRuntime {
       let next: string | undefined;
       if (state.status === "continued") {
         const to = state.variables._continuedTo;
-        next = typeof to === "string" && to.length > 0 ? to : undefined;
+        // Only a VERIFIED link is cancelled into: a pointer at a foreign id stops the cascade.
+        next =
+          typeof to === "string" && to.length > 0 && (await this.verifiedHop(id, to))
+            ? to
+            : undefined;
       }
       if (
         next === undefined &&
+        state.status !== "continued" &&
         (state.status === "running" || state.status === "cancelled") &&
         (this.continueAsNewEnabled || state.status === "cancelled")
       ) {
@@ -5546,23 +5680,16 @@ export class WorkflowRuntime {
         await journal.drain().catch(() => {});
         return undefined;
       }
-      const state = vm.getState();
-      const chain = chainOfState(state, executionId);
-      // The chain's absolute deadline is fixed at generation 0 and carried unchanged afterwards.
-      const chainDeadline =
-        chainDeadlineOf(state, executionId) ??
-        (chain.continuedFrom === undefined && deadlineMs !== undefined && state.startedAt > 0
-          ? state.startedAt + deadlineMs
-          : undefined);
       let started: Awaited<ReturnType<WorkflowRuntime["startSuccessor"]>>;
       try {
+        // Everything journaled so far is durable before the successor inherits from the log.
+        await journal.drain();
         started = await this.startSuccessor({
           predecessorId: executionId,
           workflowId,
-          state,
-          chain,
+          workflowVersion: vm.getState().workflowVersion,
           carry: sig.carry,
-          chainDeadline,
+          deadlineMs,
           fallbackRunner: runner,
         });
       } catch (err) {
@@ -5589,7 +5716,7 @@ export class WorkflowRuntime {
       rotated = true;
       journal.commit("EXECUTION_CONTINUED", {
         successorId: started.successorId,
-        chainId: chain.chainId,
+        chainId: started.chainId,
         generation: started.generation,
       });
       // ADR 0112 D3 — nothing from this execution's own (abandoned) work follows its terminal.

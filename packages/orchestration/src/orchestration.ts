@@ -70,8 +70,6 @@ export type ChildResult<TOut = unknown> =
 export const CHILD_FAILED = "childFailed";
 
 const SEP = "::";
-/** ADR 0109 D6 — how many `_continuedTo` links the supervisor follows from a child to its head. */
-const MAX_FOLLOW_HOPS = 8;
 
 /** Deterministic child execution id — `<parentId>::<key>` (stable across replay). */
 export function childIdFor(parentId: string, key: string): string {
@@ -1491,21 +1489,26 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           }
         : "absent";
     }
-    // A `continued` child is never a result (ADR 0109 D6): it is "look at the head". Follow
-    // `_continuedTo` (bounded) and settle from the head's own log; a head still running is
-    // remembered so its terminal event settles THIS child's slot.
+    // A `continued` child is never a result (ADR 0109 D6): it is "look at the head". The supervisor
+    // is a SYSTEM follower, so it follows to the true end of the chain however many generations
+    // rotated while it was away (`unbounded`; every link is verified by the kernel), and settles from
+    // the head's own log. A head still running is remembered so its terminal event settles THIS
+    // child's slot, and a further rotation advances it (`EXECUTION_CONTINUED` below).
     let headId = childId;
-    for (let hop = 0; st.status === "continued" && hop < MAX_FOLLOW_HOPS; hop++) {
-      const next = st.variables._continuedTo;
-      if (typeof next !== "string" || next.length === 0) return "running";
-      const nextState = await deps.runtime.loadState(next, deps.runtime.systemOptions());
-      if (nextState === null) return "running"; // the successor is not readable yet
-      headId = next;
-      st = nextState;
+    if (st.status === "continued") {
+      const head = await deps.runtime.followToHead(childId, {
+        ...deps.runtime.systemOptions(),
+        unbounded: true,
+      });
+      if (head === null) return "running";
+      headId = head.executionId;
+      st = head.state;
+      if (st.status === "continued") return "running"; // an unreadable successor: the sweep retries
     }
     if (headId !== childId) {
-      if (st.status === "continued") return "running"; // more hops than we follow: the sweep retries
       if (st.status !== "completed" && st.status !== "failed" && st.status !== "cancelled") {
+        // the furthest id reached stands in for the child: a stale nearer entry would never fire
+        for (const [k, original] of followed) if (original === childId) followed.delete(k);
         followed.set(headId, childId);
         return "running";
       }
@@ -1809,11 +1812,10 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
 
   const cascadeCancel = async (childId: string, parentId: string): Promise<void> => {
     try {
-      const cancelled = await deps.runtime.cancel(
-        childId,
-        cascadeReason(parentId),
-        deps.runtime.systemOptions()
-      );
+      const cancelled = await deps.runtime.cancel(childId, cascadeReason(parentId), {
+        ...deps.runtime.systemOptions(),
+        unbounded: true, // the cascade reaches the live generation however far the child rotated
+      });
       if (cancelled) cascadedTotal++;
     } catch (err) {
       // A child that was never started has no execution to cancel: nothing to do.

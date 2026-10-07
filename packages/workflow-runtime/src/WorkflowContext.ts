@@ -613,6 +613,14 @@ export class WorkflowContextImpl implements WorkflowContext {
     this.scheduleQuiescence();
   }
 
+  /** Resolves when the in-flight set is empty (no timeout: see `continueAsNew`). */
+  private idle(): Promise<void> {
+    if (this.activeWork === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.idleWaiters.push(resolve);
+    });
+  }
+
   /** Resolves true when the in-flight set is empty, false when `ms` elapse first. */
   private async idleWithin(ms: number): Promise<boolean> {
     if (this.activeWork === 0) return true;
@@ -1669,13 +1677,12 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (binding.validate !== undefined) normalized = binding.validate(normalized);
     // The park barrier (ADR 0112 D3): every step in flight — including one a hand-rolled
     // `Promise.all` started outside a scope — settles first, so a continuation never commits
-    // while a sibling of the predecessor can still append. Bounded by `parkDrainMs`; past it the
-    // call is refused and the flow (not frozen) carries on.
-    if (this.activeWork > 0 && !(await this.idleWithin(this.parkDrainMs))) {
-      refuse(
-        `a step is still in flight after parkDrainMs (${this.parkDrainMs} ms); let it finish before continuing`
-      );
-    }
+    // while a sibling of the predecessor can still append. UNBOUNDED, on purpose: a refusal that
+    // depended on how long a step took would be decided by the wall clock, and on a re-run (the
+    // step now a cache hit) the same call would be accepted where the original was refused,
+    // diverging the replay. Waiting is what `await p` would do; the steps' results are journaled
+    // as usual, and a cancel (which aborts them) is re-judged just below.
+    while (this.activeWork > 0) await this.idle();
     this.throwIfCancelled();
     if (this.sealed) refuse("the execution is no longer running (its journal is sealed)");
     if (this.continuation !== undefined) throw this.continuation;

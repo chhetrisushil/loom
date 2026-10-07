@@ -5,7 +5,8 @@
 // `EXECUTION_CONTINUED` to the predecessor. Everything here is pure (no I/O) so the shapes the
 // fold, the runtime and the tests share cannot drift.
 
-import type { ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loom/core";
+import { storedPrincipalOf } from "./principal";
 
 /** The default kernel cap on a carry (ADR 0109 D1, decided by the user 2026-10-05): 1 MiB. */
 export const DEFAULT_MAX_CARRY_BYTES = 1_048_576;
@@ -13,8 +14,8 @@ export const DEFAULT_MAX_CARRY_BYTES = 1_048_576;
 /** The default bound on a head walk (`_continuedTo`), `maxChainHops` (ADR 0109 D4). */
 export const DEFAULT_MAX_CHAIN_HOPS = 8;
 
-/** A root id segment (the text before the first `::`) of this shape is a SUCCESSOR id: `<chain>~<n>`. */
-const SUCCESSOR_ROOT = /^.+~[0-9]+$/;
+/** An id segment of this shape is a SUCCESSOR segment: `<x>~<n>` (the next generation of `<x>`'s chain). */
+const SUCCESSOR_SEGMENT = /^.+~[0-9]+$/;
 const SEP = "::";
 
 /** The root segment of an execution id: the text before the first `::`. */
@@ -23,9 +24,29 @@ export function rootSegment(executionId: string): string {
   return i < 0 ? executionId : executionId.slice(0, i);
 }
 
-/** Does `executionId`'s root segment have the reserved successor shape `<x>~<digits>`? */
+/** The last segment of an execution id: the text after the last `::` (the whole id when bare). */
+export function lastSegment(executionId: string): string {
+  const i = executionId.lastIndexOf(SEP);
+  return i < 0 ? executionId : executionId.slice(i + SEP.length);
+}
+
+/**
+ * How a caller-chosen id relates to the reserved successor shape (ADR 0109 D2 (a)):
+ *  - `"always"`: the LAST segment is `<x>~<digits>`. That is the id of a chain's next generation
+ *    (`a~1`, and for a `::`-derived chain `parent::g#0~1`, which is how an orchestration child
+ *    rotates), so only the kernel creates it; refused for every caller whether or not any log exists.
+ *  - `"derived"`: only the ROOT segment has the shape (`chain~1::g#0`, a supervised child of an
+ *    existing generation): creatable by the supervisor when the derived parent's log exists.
+ *  - `"none"`.
+ */
+export function successorShapeOf(executionId: string): "always" | "derived" | "none" {
+  if (SUCCESSOR_SEGMENT.test(lastSegment(executionId))) return "always";
+  return SUCCESSOR_SEGMENT.test(rootSegment(executionId)) ? "derived" : "none";
+}
+
+/** Does `executionId` have ANY reserved successor shape (see {@link successorShapeOf})? */
 export function hasSuccessorShape(executionId: string): boolean {
-  return SUCCESSOR_ROOT.test(rootSegment(executionId));
+  return successorShapeOf(executionId) !== "none";
 }
 
 /**
@@ -144,8 +165,7 @@ export class ContinueAsNewUnavailableError extends Error {
 
 /**
  * `ctx.continueAsNew` refused with the log untouched: a precondition does not hold (an open
- * `parallel` scope, an outstanding wait, a step still in flight past `parkDrainMs`, the execution
- * not running), or the carry is unusable (no JSON form, over `maxCarryBytes`).
+ * `parallel` scope, an outstanding wait, the execution not running), or the carry is unusable (no JSON form, over `maxCarryBytes`).
  */
 export class ContinueAsNewRefusedError extends Error {
   readonly retryable = false;
@@ -272,4 +292,67 @@ export function chainOfFirstEnvelope(
     valid(first.metadata?.forkChain) ??
     valid(first.payload) ?? { chainId: executionId, generation: 0 }
   );
+}
+
+/** JSON with object keys sorted at every level (a comparable form for a recorded structure). */
+function canonical(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+  if (v !== null && typeof v === "object") {
+    const o = v as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .sort()
+      .filter((k) => o[k] !== undefined)
+      .map((k) => `${JSON.stringify(k)}:${canonical(o[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+}
+
+/** The `parent` lineage a sequence-0 envelope records, if any. */
+function parentOfSeq0(first: EventEnvelope): string | undefined {
+  const parent = (first.payload as { parent?: unknown } | null | undefined)?.parent;
+  return typeof parent === "string" && parent.length > 0 ? parent : undefined;
+}
+
+/**
+ * The principal a sequence 0 records, as a comparable key: `undefined` when it cannot be compared
+ * (shredded or malformed: those never block a hop), `{"v":1}` for a legacy log (the successor of a
+ * principal-less execution records the empty record).
+ */
+function principalKeyOf(first: EventEnvelope): string | undefined {
+  const stored = storedPrincipalOf(first);
+  if (stored.kind === "legacy") return JSON.stringify({ v: 1 });
+  if (stored.kind !== "record") return undefined;
+  return canonical(stored.record);
+}
+
+/**
+ * ADR 0109 D4 — is `next` (the sequence 0 read at `nextId`) really the successor of `prev`, the
+ * execution at `prevId`? A hop is followed only when the successor's own start says so: it was
+ * created at the deterministic id `<chainId>~<generation+1>`, names `prevId` in
+ * `continuedFrom.executionId`, is the next generation of the same chain, and records the same owner
+ * and lineage. `_continuedTo` (or a probe) is a POINTER; this is what makes it a link, so a log that
+ * points at a foreign execution (a corrupted or forged `EXECUTION_CONTINUED`, a squatter at the
+ * deterministic id) is never walked into, cancelled through, or leaked.
+ */
+export function isVerifiedSuccessor(
+  prev: EventEnvelope,
+  prevId: string,
+  next: EventEnvelope | undefined,
+  nextId: string
+): boolean {
+  if (next === undefined || next.sequence !== 0 || next.eventType !== "EXECUTION_STARTED") {
+    return false;
+  }
+  const from = (next.payload as { continuedFrom?: { executionId?: unknown } } | null | undefined)
+    ?.continuedFrom;
+  if (from?.executionId !== prevId) return false;
+  const chain = chainOfFirstEnvelope(prev, prevId);
+  const own = chainOfFirstEnvelope(next, nextId);
+  if (own.chainId !== chain.chainId || own.generation !== chain.generation + 1) return false;
+  if (nextId !== successorIdOf(chain.chainId, chain.generation)) return false;
+  if (parentOfSeq0(prev) !== parentOfSeq0(next)) return false;
+  const a = principalKeyOf(prev);
+  const b = principalKeyOf(next);
+  return a === undefined || b === undefined || a === b;
 }

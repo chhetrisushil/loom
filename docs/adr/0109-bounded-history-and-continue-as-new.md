@@ -70,7 +70,10 @@ The call unwinds the runner with a kernel-private sentinel (like `SuspendError`)
 runs. Preconditions, all refused with a typed error: the execution is running; no `ctx.parallel` scope is
 open (R6); **no registered wait is outstanding** (a pending `select` in another branch is a park, not a
 rotation point); and the **park barrier** (ADR 0112 D3) has drained every in-flight step, including steps
-started outside a scope (a hand-rolled `Promise.all`), bounded by `parkDrainMs`. So a continuation never
+started outside a scope (a hand-rolled `Promise.all`). The wait is **unbounded and raises no refusal**:
+a refusal that depended on how long a step took would be decided by the wall clock, and on a re-run (the
+step now a cache hit) the same call would be accepted where the original was refused, so the replay would
+diverge. The call waits exactly as `await p` would, and the steps' results are journaled as usual. So a continuation never
 commits while a sibling of the predecessor can still append. Calling it from an effect is impossible by
 construction (effects have no `ctx`).
 
@@ -106,15 +109,20 @@ exists. Exactly one live successor exists after a crash at any point (ADR 0052's
 **Successor-id squatting.** ADR 0103 D2 treats any existing sequence 0 as a successful idempotent start, so
 a caller who started `foo~1` first would be adopted as the successor. Two guards:
 
-(a) **The successor SHAPE is reserved, not the character.** A caller-chosen id whose **root segment**
-(the text before the first `::`, `SEP` in `orchestration.ts:64-66`) matches `^.+~[0-9]+$` is refused at
-creation. Reserving `~` anywhere (the first draft) would have broken supervised children of a continued
+(a) **The successor SHAPE is reserved, not the character.** A caller-chosen id whose **LAST `::` segment**
+matches `^.+~[0-9]+$` is refused at creation for every caller, whether or not any log exists: that is the id of
+a chain's next generation, including a `::`-derived chain's (an orchestration child `parent::g#0` rotates to
+`parent::g#0~1`, so `a::b~1` and `parent::g#0~1` are reserved; the first draft checked only the root segment and
+left those squattable). A caller-chosen id whose **root segment** (the text before the first `::`, `SEP` in
+`orchestration.ts:64-66`) matches the shape, and whose last segment does not, is the derived case below. Reserving `~` anywhere (the first draft) would have broken supervised children of a continued
 generation: the successor `chain~1` spawns `awaitChild` children whose ids are `<parentId>::<key>#i` =
 `chain~1::g#0`, and the supervisor starts them through `start()`, where `assertNotReserved` runs
 (`WorkflowRuntime.ts:1570`, the id at 1569). Those ids have root segment `chain~1`, which is the successor
 shape; so the check cannot be a blanket refusal. **It is derived, not flagged**: an id whose root segment has the
-successor shape is accepted by `start` only if it contains `::` **and its parent (the id up to the last
-`::`) already exists as a log** (a point read of the parent's sequence 0). A bare `foo~1` has no parent, so
+successor shape is accepted by `start` only if it contains `::`, the call is **trusted** (the supervisor's lineage grant, or the
+system grant: an ordinary caller is refused without any read, so the refusal is the same whether or not the
+parent exists and gives no existence oracle) **and its parent (the id up to the last `::`) already exists as a log**
+(a point read of the parent's sequence 0). A bare `foo~1` has no parent, so
 `start` always refuses it; `foo~1::x` is refused unless a `foo~1` log exists (which only the kernel can have
 created); `chain~1::g#0` starts because `chain~1` exists. The kernel's own continuation start goes through
 a **kernel-private method** (not `start`, not reachable from a `RunOptions`, the wire ABI, or a dispatcher
@@ -122,7 +130,7 @@ payload; no option or flag exists that a caller could set, so there is nothing t
 continued parent therefore need no bypass at all, and a caller's own `start("chain~1", …)` or
 `start("chain~1::x", …)` with no such log is refused. (If the parent log has since been retention-deleted
 the child start is refused, which fails closed.) A `~` that is not `~<digits>` at the end of the root segment (`a~b`, `a~1x`,
-`a::b~1`) stays legal, so existing ids are not collateral. `assertNotReserved` (`WorkflowRuntime.ts:277`,
+`a::b~x`) stays legal, so existing ids are not collateral. `assertNotReserved` (`WorkflowRuntime.ts:277`,
 today refusing the `__loom_` prefix and the blank id) is called on resume paths too (`restoreFromState`
 1448, `resume` 1765, `resumeAs` 2013), so the shape refusal is a creation-only variant applied where a
 caller names a NEW id (`start`, line 1570; the fork child id, line 2324), never on resume of an existing one
@@ -298,11 +306,10 @@ Tests: (1) the frozen DST criterion, in both crash points — kill between the s
 commit, and before the start, with a message in flight; recover; assert exactly one live successor and
 exactly one delivery; (2) `exp.cjs` with `continueEvery(500)`: per-resume latency flat from turn 500 to
 20,000, snapshot size bounded; (3) negatives: a carry over `maxCarryBytes` refuses before any append; a
-call inside an open scope, or with an outstanding wait, or with an in-flight step past `parkDrainMs`
-refuses; **a caller cannot create `foo~1` or `foo~1::x` when no `foo~1` log exists (and no `RunOptions` field,
+call inside an open scope, or with an outstanding wait, refuses (an in-flight step is awaited, never refused); **a caller cannot create `foo~1` or `foo~1::x` when no `foo~1` log exists (and no `RunOptions` field,
 wire field or dispatcher payload field can change that), while a continued parent's children (`foo~1::x`
 with `foo~1` present) start, and
-`a~b` and `a::b~1` still start, and a pre-existing seq 0 whose `continuedFrom` names another execution raises
+`a~b` and `a::b~x` still start, `a::b~1` and `parent::g#0~1` are refused, and a pre-existing seq 0 whose `continuedFrom` names another execution raises
 `ContinuationConflictError`; a continued parent (`chain~1`) spawning `awaitChild` children (`chain~1::g#0`)
 works**; **cancel of the predecessor after the successor started (kill between start and commit, then
 cancel) leaves no live successor (probe path), and a cancel that lands after the probe is caught by the
@@ -353,10 +360,9 @@ in `WorkflowContext`; the rotation (`rotate`), the kernel-private `startSuccesso
 `SnapshotStore`, dispatcher or wire change; EVENT_SCHEMA stays 1.23.0 (every shape was frozen at W2-0) and
 KERNEL_ABI stays 1.3.0 with `continueAsNew` now in `KERNEL_SYSCALLS`.
 
-**D1.** Every refusal (flag off, open `parallel` scope, outstanding wait, in-flight step past `parkDrainMs`, a
+**D1.** Every refusal (flag off, open `parallel` scope, outstanding wait, a
 carry with no JSON form, over `maxCarryBytes`, a carry failing `validateInput`) is raised BEFORE anything is
-frozen or appended, so the flow may catch it and carry on (the in-flight case waits up to `parkDrainMs` for the
-set to drain and does not freeze until it has). An accepted call freezes new step starts, rejects a second
+frozen or appended, so the flow may catch it and carry on (an in-flight step is not a refusal: the call awaits the set to drain, unbounded, and does not freeze until it has; fix round 1). An accepted call freezes new step starts, rejects a second
 kernel promise (`continueSignal`, raced beside `parkSignal` in `run`), then throws the sentinel: a flow that
 swallows the sentinel still rotates, and a second call is the same rotation. The carry is JSON-normalised once
 (what the predecessor's re-drive computes is what the successor starts with). A **tainted** value in the carry
@@ -402,10 +408,11 @@ attached child is cancelled with a `{ kind: "cascade", parent }` reason and a de
 parent cannot continue, so the case is a child whose park the operator answered by hand. **D6:** the supervisor
 keeps a `followed` map (successor id -> the child id the parent's park names); a continued child's successor's
 terminal event settles the ORIGINAL slot, any number of rotations, live; `settledOf` (`adopt`, `recover`,
-`reconcileGroup`) follows `_continuedTo` (at most 8 links) and registers a running head. `LocalWorkerRuntime`
+`reconcileGroup`) follows the chain to its end (`followToHead({ unbounded })`, not bounded by `maxChainHops`) and registers the furthest running head. `LocalWorkerRuntime`
 follows to the head (a live handle when the runtime drives it, else the log) and reports the HEAD's outcome under
-the dispatched id; `ExecutionOutcome` is NOT widened (no dispatcher or worker SPI change), and an unreadable
-chain stays the fail-safe `failed`, never `completed`. `@loom/analytics` gains `chainLineage(events, id)` (a pure
+the dispatched id; `ExecutionOutcome` is NOT widened (no dispatcher or worker SPI change), the follow is unbounded (a flow that rotates
+ten times and completes is a `completed` dispatch), and an unreadable or unverifiable chain stays the fail-safe
+`failed`, never `completed`. `@loom/analytics` gains `chainLineage(events, id)` (a pure
 projection; chain identity read through the fold's rules, a fork is its own chain). `@loom/agent` gains
 `continueEvery(n)` (the turn counter; created inside the flow body, per generation).
 
@@ -427,6 +434,32 @@ test beside its code: replay-vm (the fold), workflow-runtime (`LogLifecycle` ret
 audit-chain (the head cache), telemetry, DST invariants and the CLI timeline. The `ExecutionStatus` union is
 pinned by a test (a type-level exhaustiveness check cannot run in vitest).
 
+**Fix round 1 (first adversarial review).**
+(1) **`restoreFromState` cannot forge a successor.** The successor's principal, `parent`, chain identity, chain
+deadline, resource totals and inbox seed are read by `startSuccessor` from the predecessor's DURABLE log (sequence 0
+folded through the fold's own rules, plus the durable fold for the running totals), after `journal.drain()`, never
+from the running execution's fold (which, under `restoreFromState`, began as caller-supplied). And
+`restoreFromState` overwrites the reserved IDENTITY keys of the supplied state (`_principal`, `_chain`, `_parent`,
+`_continuedTo`) with what sequence 0 records (dropped when it records nothing). `_resources` / `_inbox` are NOT
+overwritten there (they legitimately move with the run, and a rotation no longer reads them from the vm).
+(2) **Every follower walks VERIFIED links only** (`isVerifiedSuccessor`, shared by `walkToHead`, `cancelForward`,
+`sendTarget` and the start-to-commit probe): the successor's sequence 0 must sit at `<chainId>~<generation+1>`, name
+the hop it came from, be the next generation of the same chain, and record the same `parent` and principal. A
+pointer at a foreign or squatted id ends the walk at the last verified member (nothing is resumed, cancelled or
+leaked across it).
+(3) **The last `::` segment is reserved** (D2 (a)); only the supervisor (lineage / system grant) may start a
+`::`-child of a successor-shaped ROOT, and an untrusted caller causes no read (no existence oracle).
+(4) **System followers are unbounded; client walks are bounded.** `maxChainHops` bounds a client-addressed
+`resume` / `send` / `cancel` / `followToHead`. The kernel's own followers (the child supervisor's settle and
+cascade, `LocalWorkerRuntime`, the inbox reclaim) pass `unbounded`: generations strictly increase and every hop is
+verified, so the walk ends at the true head, and the supervisor registers the FURTHEST id reached so a later
+rotation advances it. (Whether a client walk should instead be routed to the head by the O(log n) id probe is an
+open question; the verified `walkToHead` is the one shared helper it would change.)
+(5) **`continueAsNew` never refuses on timing**: the drain is unbounded and `parkDrainMs` no longer applies to a
+continuation (it still bounds a PARK). (6) `send` authorizes against the addressed id's owner before any walk, and
+names the head of a hop-limit refusal lazily, after authorization. (7) A fork of a chain member keeps the carried
+`_resources` seed (a carried `exceeded` quota is not shed by forking); only chain membership and the inbox are dropped.
+
 **R11 carry-over.** `recordOutcome` accepts `continued` (ADR 0116 D1, amended): the decision lives in THAT
 generation's own log, so the outcome is attached to the id the caller named, never to the head. **Fixed on the
 way:** a run whose cancel landed before its flow returned (a deadline already past when a parked execution is
@@ -445,8 +478,8 @@ cancel now owns the outcome.
 Per-turn cost and folded state are bounded by the rotation interval, whatever the turn number; the runner
 re-runs once per turn in both cases (the re-run is over one generation).
 
-**Residuals.** (1) A head walk from a stale id more than `maxChainHops` generations back is refused (naming the
-head); a client addresses the `executionId` a `send` returned (or the head the error names). (2) The kernel has
+**Residuals.** (1) A CLIENT head walk from a stale id more than `maxChainHops` generations back is refused (naming the
+head; system followers are unbounded); a client addresses the `executionId` a `send` returned (or the head the error names). (2) The kernel has
 no rate limit on rotation: a flow that calls `continueAsNew` without ever consuming anything is a runaway chain
 (one successor per call, immediately); a flow rotates on a count or a size. (3) A parked successor is not
 cancelled at its chain deadline until it next resumes (the existing rule for any parked execution). (4) A

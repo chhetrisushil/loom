@@ -208,10 +208,11 @@ describe("EXECUTION_STARTED additive fields", () => {
       expect(s.variables._resources).toMatchObject({ tokens: 15, count: 3, custom: { gpu: 4 } });
     });
 
-    it("a fork of a successor starts a fresh chain: forkChain replaces _chain and nothing is seeded", () => {
+    it("a fork of a successor starts a fresh chain: forkChain replaces _chain, no inbox is seeded, but the carried RESOURCES are kept", () => {
       const s = foldEvents([succ({ forkChain: { chainId: "fork-1", generation: 0 } })]);
       expect(s.variables._chain).toEqual({ chainId: "fork-1", generation: 0 });
-      expect(s.variables._resources).toBeUndefined();
+      // a carried quota is the execution's own history, not chain membership (R1b fix round 1)
+      expect(s.variables._resources).toMatchObject({ tokens: 10, count: 2, custom: { gpu: 3 } });
       expect(s.variables._inbox).toBeUndefined();
     });
 

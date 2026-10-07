@@ -11,9 +11,6 @@ import type { RunOptions, SystemGrant, WorkflowRuntime } from "@loom/workflow-ru
 
 type Principal = NonNullable<RunOptions["principal"]>;
 
-/** ADR 0109 D6 — links of a `_continuedTo` chain the worker follows to the head. */
-const MAX_FOLLOW_HOPS = 8;
-
 /** What a worker acts as for one operation: the package's principal, else the trusted grant, else nobody. */
 type Identity = { principal?: Principal; system?: SystemGrant };
 
@@ -121,7 +118,7 @@ export class LocalWorkerRuntime implements WorkerRuntime {
    * the id the caller dispatched: a later resume addressed to that id is resolved forward by the
    * runtime. The head is waited on through its live handle when this runtime drives it (the kernel
    * starts a successor in-process), else read from the log. A chain that cannot be followed (an
-   * unreadable successor, more than 8 links) is left `continued` and reported as the old interim
+   * unreadable or unverifiable successor) is left `continued` and reported as the old interim
    * outcome, a failed dispatch, rather than guessed at.
    */
   private async followContinuation(
@@ -129,11 +126,20 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     state: ExecutionState
   ): Promise<ExecutionState> {
     let current = state;
-    for (let hop = 0; hop < MAX_FOLLOW_HOPS && current.status === "continued"; hop++) {
-      const next = current.variables._continuedTo;
-      if (typeof next !== "string" || next.length === 0) break;
-      const live = this.runtime.liveHandle(next);
-      if (live !== undefined) {
+    let id = state.executionId;
+    // A SYSTEM follower: not bounded by `maxChainHops` (a flow that rotates ten times and then
+    // completes is a completion, not a failure). `followToHead({ unbounded })` verifies every link
+    // and generations strictly increase, so the loop ends at the true head.
+    while (current.status === "continued") {
+      const head = await this.runtime.followToHead(id, {
+        ...this.identity(pkg.principal),
+        unbounded: true,
+      });
+      if (head === null || head.executionId === id) break; // an unreadable / unverifiable successor
+      id = head.executionId;
+      current = head.state;
+      const live = this.runtime.liveHandle(id);
+      if (live !== undefined && current.status === "running") {
         try {
           await Promise.race([
             live.waitForSuspend().then(() => undefined),
@@ -143,10 +149,6 @@ export class LocalWorkerRuntime implements WorkerRuntime {
           // a cancel / failure rejects the completion: the folded state below is authoritative
         }
         current = live.getState();
-      } else {
-        const loaded = await this.runtime.loadState(next, this.identity(pkg.principal));
-        if (loaded === null) break;
-        current = loaded;
       }
     }
     return current === state ? state : { ...current, executionId: pkg.executionId };
@@ -224,7 +226,7 @@ function outcomeOf(status: ExecutionState["status"]): ExecutionOutcome {
     case "continued":
       // ADR 0109: terminal but not completed (no output; the successor carries on). `execute`
       // follows a chain to its head first (`followContinuation`), so this is reached only for a
-      // chain that could not be followed (an unreadable successor, over the hop bound): a failed
+      // chain that could not be followed (an unreadable or unverifiable successor): a failed
       // dispatch, never a completion.
       return "failed";
     default:
