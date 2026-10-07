@@ -164,6 +164,10 @@ load-bearing, plus the global guardrails that gate every additive capability:
   one of those names in an existing log folds as the no-op it always was. `ExecutionStatus`
   widens by `continued`. The shapes are frozen at W2-0: a later change is an additive schema
   change. See the Wave 2 design document (`docs/requirements/2026-10-05-wave2-kernel-design.md`).
+  R7 (ADR 0113) is the first writer of one reserved key: `EXECUTION_STARTED.codeHash` (`_codeHash`) is
+  recorded when the flow supplies a `codeFingerprint`. `flowHash` is now `sha256:<hex>` for new starts
+  (a recorded `fnv1a:` value stays valid); no shape changed. The replay-divergence detector is
+  runtime-only: no event, no fold.
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
   resume `null` into an unparked or in-doubt execution, or hold a `STEP_FAILED`
   that no status-setting event follows, replay byte-identically.

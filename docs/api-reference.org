@@ -464,6 +464,8 @@ class WorkflowRuntime {
 
 *Flow-code versioning for in-flight executions (2.0, K11).* Each flow carries a ~flowContentHash~ (structural fingerprint over step bindings + durable policies, emitted by ~@loom/compiler~ and pinned into ~EXECUTION_STARTED~). A resume whose flow code no longer matches the pinned hash throws ~FlowCodeMismatchError~ rather than replaying against drifted code; ~resumeAs~ deliberately migrates such a run — ~"replay-check"~ verifies every recorded step still exists in the new flow (refuses with ~FlowMigrationCheckError~ otherwise), ~"operator-ack"~ vouches without the check. Either way it records a durable, replay-deterministic ~EXECUTION_MIGRATED~ verdict.
 
+*Body-aware fingerprint and divergence detection (ADR 0113, R7).* ~flowContentHash~ is SHA-256 (~sha256:~; a recorded legacy ~fnv1a:~ value is still accepted via ~flowHashMatches~). ~FlowDefinition.codeFingerprint~ (toolchain-supplied, optional) is recorded as ~EXECUTION_STARTED.codeHash~ and compared on resume: a different value throws ~FlowCodeMismatchError~ (~kind: "code"~) unless ~compatibleWith~ lists the recorded one. ~WorkflowRuntimeDeps.divergence~ / ~kernel.divergence~ (~"off" | "warn" | "fail"~, default ~warn~, ~fail~ under ~security.strict~) controls the replay-divergence detector, which raises ~FlowReplayDivergenceError~ (a ~FlowDivergenceError~) before the first live append when a recorded completed step was never asked for. ~"replay-check"~ treats ~base#…~ ids as family ~base~ and honours ~FlowDefinition.stepFamilies~.
+
 ~WorkflowRuntime~ is also exported as *~ExecutionRuntime~ (2.0)* — the same class, renamed for the execution-kernel framing.
 
 ** ~ExecutionContext~ — the flow API *(2.0; ~WorkflowContext~ is an alias)*
@@ -2516,6 +2518,7 @@ class EgressDeniedError extends Error            { readonly toolId: string; read
 class PayloadShreddedError extends Error         { /* subject key destroyed */ }                             // K10 — @loom/plugin-crypto
 class FlowCodeMismatchError extends Error        { /* pinned flowContentHash drifted */ }                    // K11 — @loom/workflow-runtime
 class FlowMigrationCheckError extends Error      { /* resumeAs replay-check refused */ }                     // K11 — @loom/workflow-runtime
+class FlowReplayDivergenceError extends FlowDivergenceError { /* body diverged from its log (skippedSteps, beforeEvent) */ } // ADR 0113 — @loom/workflow-runtime
 class CapabilityInvokeDeniedError extends Error  { readonly capabilityId: string; readonly reason: string; } // M7 — @loom/capability
 #+end_src
 

@@ -19,7 +19,8 @@ export type {
 export { executionFromState } from "./types/execution";
 export { KERNEL_EVENT_KINDS } from "./eventKinds";
 export type { EventKind } from "./eventKinds";
-export { flowContentHash } from "./flowHash";
+export { flowContentHash, flowHashMatches, legacyFlowContentHash } from "./flowHash";
+export { sha256Hex } from "./sha256";
 export { checkVersionPins } from "./versionPins";
 export type { PinFinding, PinFindingCode, PinReport, VersionPins } from "./versionPins";
 export { canonicalJson, fnv1a64, jsonSchemaHash } from "./schemaHash";

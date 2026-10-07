@@ -1,4 +1,4 @@
-import { flowContentHash } from "@loom/core";
+import { flowContentHash, flowHashMatches } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { replayAsFixture } from "@loom/eval";
 
@@ -113,7 +113,8 @@ export function simulateDeploy(logs: EventEnvelope[][], next: FlowResolver): Com
         nextHash = flowContentHash(def as FlowDefinition);
         hashCache.set(workflowId, nextHash);
       }
-      if (nextHash !== recorded) {
+      // ADR 0113 D1 — a `fnv1a:` recording is compared against the legacy hash of the new code.
+      if (!flowHashMatches(recorded, def as FlowDefinition)) {
         issues.push({
           executionId,
           workflowId,

@@ -1,4 +1,9 @@
-import { StorageWriteError, SuspendError, flowContentHash } from "@loom/core";
+import {
+  StorageWriteError,
+  SuspendError,
+  flowContentHash,
+  legacyFlowContentHash,
+} from "@loom/core";
 import type {
   EventEnvelope,
   ExecutionState,
@@ -34,6 +39,7 @@ import {
 } from "@loom/replay-vm";
 import { type Snapshot, type SnapshotStore, assertSnapshotIdentity } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
+import { DivergenceGuard, type DivergenceMode } from "./DivergenceGuard";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { highestMissing } from "./LogLifecycle";
 import { WorkflowContextImpl } from "./WorkflowContext";
@@ -115,6 +121,7 @@ import {
   ExecutionNotTerminalError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
+  FlowReplayDivergenceError,
   InboxClosedError,
   InboxFullError,
   InboxMessageRefusedError,
@@ -264,6 +271,25 @@ export interface WorkflowRuntimeDeps {
    * either way. Set by `defineConfig({ kernel: { features: { continueAsNew: true } } })`.
    */
   continueAsNewEnabled?: boolean;
+  /**
+   * ADR 0113 D3 — the replay-divergence detector. A re-run that is about to make a LIVE journal
+   * append (a step, a decision, an emit, a timer or suspend, a spawn, a receive, a continuation)
+   * or to complete, while a step the log records as completed was never asked for, has diverged
+   * from its log: the body changed shape under an in-flight execution.
+   *
+   * - `"warn"` (**default**): report once per run through `onWarn` (and count it, see
+   *   {@link WorkflowRuntime.divergenceWarnings}); the run proceeds. It can only report a fault
+   *   already silently present.
+   * - `"fail"`: raise {@link FlowReplayDivergenceError} BEFORE that append, so nothing runs under
+   *   the diverged body; no terminal event is written (a deploy fault must not make an execution
+   *   permanently failed — fix the code or migrate, and it resumes). `defineConfig` makes this the
+   *   default under `security.strict`.
+   * - `"off"`: silent.
+   *
+   * Membership only, no order; frames before an `EXECUTION_MIGRATED` are exempt; steps of an open
+   * `parallel` scope are compared as a set once it closes.
+   */
+  divergence?: DivergenceMode;
   /** ADR 0109 D1 — the kernel cap on a carry, in bytes of its JSON text. Default 1 MiB (1 048 576). */
   maxCarryBytes?: number;
   /**
@@ -776,6 +802,13 @@ export class WorkflowRuntime {
   private readonly continueAsNewEnabled: boolean;
   private readonly maxCarryBytes: number;
   private readonly maxChainHops: number;
+  // ADR 0113 D3 — the replay-divergence detector's mode, and how often it warned.
+  private readonly divergenceMode: DivergenceMode;
+  private divergenceWarned = 0;
+  /** ADR 0113 D3 — how many runs the detector has reported (`warn` mode) since this runtime was built. */
+  get divergenceWarnings(): number {
+    return this.divergenceWarned;
+  }
   private readonly inboxSource: InboxSource;
   private readonly inboxMaxBacklog: number;
   private readonly inboxMaxPayloadBytes: number;
@@ -823,10 +856,12 @@ export class WorkflowRuntime {
   private readonly flows = new Map<string, RegisteredFlow>();
   // K11.1 — content hash of each flow id's CURRENT (most recently registered) version.
   private readonly flowHashes = new Map<string, string>();
+  // ADR 0113 D1 — the pre-sha256 (`fnv1a:`) hash of the same, so a log that recorded one resumes.
+  private readonly flowLegacyHashes = new Map<string, string>();
   // K11.2 — every registered version per flow id, for pinned resumption.
   private readonly flowVersions = new Map<
     string,
-    Map<string, { flow: RegisteredFlow; hash: string }>
+    Map<string, { flow: RegisteredFlow; hash: string; legacy: string }>
   >();
   // K8.2 — live executions this runtime instance is currently driving, so
   // cancel() can reach an in-flight run by id. Entries are removed when the run
@@ -850,6 +885,11 @@ export class WorkflowRuntime {
     assertPositiveInt("maxChainHops", deps.maxChainHops);
     this.maxCarryBytes = deps.maxCarryBytes ?? DEFAULT_MAX_CARRY_BYTES;
     this.maxChainHops = deps.maxChainHops ?? DEFAULT_MAX_CHAIN_HOPS;
+    const divergence = deps.divergence ?? "warn";
+    if (divergence !== "off" && divergence !== "warn" && divergence !== "fail") {
+      throw new Error(`divergence must be "off", "warn" or "fail" (got ${String(divergence)})`);
+    }
+    this.divergenceMode = divergence;
     if (this.inboxEnabled && deps.eventStore.appendBatch === undefined) {
       // The notify path journals `[MESSAGE_CONSUMED…, EXECUTION_RESUMED]` as ONE atomic write: a
       // sequential fallback can leave a consumption journaled with its resume missing and a
@@ -1366,13 +1406,15 @@ export class WorkflowRuntime {
       );
     }
     const registered = { definition, runner } as RegisteredFlow;
-    versions.set(definition.version, { flow: registered, hash });
+    const legacy = legacyFlowContentHash(definition);
+    versions.set(definition.version, { flow: registered, hash, legacy });
     this.flowVersions.set(definition.id, versions);
     // The most recently registered version is the CURRENT one (used by start()
     // and as the resume default) — register the live version last, or rely on
     // pinned resumption to serve older in-flight executions.
     this.flows.set(definition.id, registered);
     this.flowHashes.set(definition.id, hash);
+    this.flowLegacyHashes.set(definition.id, legacy);
     for (const step of definition.steps) {
       const toolId = step.toolId ?? step.id;
       if (step.handler !== undefined && !this.effectRuntime.has(toolId)) {
@@ -2059,13 +2101,24 @@ export class WorkflowRuntime {
     if (typeof recorded !== "string" || options?.allowFlowCodeMismatch === true) {
       return current;
     }
-    if (this.flowHashes.get(targetId) === recorded) {
-      return current;
+    const legacyRecording = recorded.startsWith("fnv1a:"); // ADR 0113 D1
+    const matches = (hash: string, legacy: string): boolean =>
+      recorded === (legacyRecording ? legacy : hash);
+    const currentHash = this.flowHashes.get(targetId);
+    const currentLegacy = this.flowLegacyHashes.get(targetId);
+    if (
+      currentHash !== undefined &&
+      currentLegacy !== undefined &&
+      matches(currentHash, currentLegacy)
+    ) {
+      return this.assertCodeCompatible(executionId, targetId, state, current);
     }
     const versions = this.flowVersions.get(targetId);
     if (versions !== undefined) {
       for (const v of versions.values()) {
-        if (v.hash === recorded) return v.flow;
+        if (matches(v.hash, v.legacy)) {
+          return this.assertCodeCompatible(executionId, targetId, state, v.flow);
+        }
       }
     }
     throw new FlowCodeMismatchError(
@@ -2074,6 +2127,29 @@ export class WorkflowRuntime {
       recorded,
       this.flowHashes.get(targetId) ?? "unregistered"
     );
+  }
+
+  /**
+   * ADR 0113 D2 — the body fingerprint, compared beside the structural hash. Both sides must carry
+   * one (absent = "no fingerprint", today's behaviour); a recorded value the registered flow lists
+   * in `compatibleWith` is the author's explicit assertion that the edit is replay-compatible. An
+   * execution that has been MIGRATED is skipped: `EXECUTION_MIGRATED` re-points the structural
+   * hash but not `_codeHash`, and the migration was itself the operator's decision to run new code.
+   */
+  private assertCodeCompatible(
+    executionId: string,
+    workflowId: string,
+    state: ExecutionState,
+    flow: RegisteredFlow
+  ): RegisteredFlow {
+    const recorded = state.variables._codeHash;
+    const registered = flow.definition.codeFingerprint;
+    if (typeof recorded !== "string" || typeof registered !== "string" || recorded === registered) {
+      return flow;
+    }
+    if (state.variables._migratedTo !== undefined) return flow;
+    if (flow.definition.compatibleWith?.includes(recorded) === true) return flow;
+    throw new FlowCodeMismatchError(executionId, workflowId, recorded, registered, "code");
   }
 
   /**
@@ -2607,6 +2683,8 @@ export class WorkflowRuntime {
       payload: {
         input: effectiveInput,
         ...(flowHash !== undefined && { flowHash }),
+        // ADR 0113 D2 — the body fingerprint the toolchain supplied, when it supplied one.
+        ...(definition.codeFingerprint !== undefined && { codeHash: definition.codeFingerprint }),
         principal: principalRecord,
         ...(parent !== undefined && { parent }),
       },
@@ -4324,8 +4402,11 @@ export class WorkflowRuntime {
     if (options.strategy === "replay-check") {
       // Fold-compatibility: a recorded step missing from the new flow means its
       // durable output is orphaned and the new runner would re-execute it live.
-      const newStepIds = new Set(target.definition.steps.map((s) => s.id));
-      const orphaned = Object.keys(state.frames).filter((stepId) => !newStepIds.has(stepId));
+      const orphaned = orphanedFrames(
+        Object.keys(state.frames),
+        target.definition.steps.map((s) => s.id),
+        target.definition.stepFamilies
+      );
       if (orphaned.length > 0) {
         throw new FlowMigrationCheckError(executionId, newFlowId, orphaned);
       }
@@ -5324,6 +5405,11 @@ export class WorkflowRuntime {
       payload: {
         input: args.carry,
         ...(flowHash !== undefined && { flowHash }),
+        // ADR 0113 D2 (R1b) — a continuation is the clean re-version point: the successor runs the
+        // code registered NOW, so it records THAT code's fingerprint, not the predecessor's.
+        ...(registered?.definition.codeFingerprint !== undefined && {
+          codeHash: registered.definition.codeFingerprint,
+        }),
         principal: record,
         ...(parent !== undefined && { parent }),
         chainId: chain.chainId,
@@ -5688,6 +5774,30 @@ export class WorkflowRuntime {
       );
     }
     flushAtomic();
+    // ADR 0113 D3 — the replay-divergence detector. Armed AFTER the bootstrap (the runtime's own
+    // appends: the start, the resume and its answers, a migration), so it judges only what the flow
+    // BODY appends. The baseline is every completed frame (outside those a migration exempted):
+    // the body must ask for each of them before it does anything new.
+    const divergence: DivergenceGuard = new DivergenceGuard(
+      executionId,
+      this.divergenceMode,
+      vm.expectedReplayFrames(),
+      () => ctx.parallelOpen,
+      (message) => {
+        this.divergenceWarned++;
+        this.onWarn(message);
+      }
+    );
+    journal.setAppendGuard((eventType, payload) => {
+      // A step the LOG ALREADY HAS a frame for (a failed or in-flight one, re-run live by design
+      // — an untyped failure re-executes on every re-run) is part of the recorded shape, not new
+      // work under a changed one.
+      if (eventType === "STEP_STARTED" || eventType === "EFFECT_INDOUBT") {
+        const id = (payload as { stepId?: unknown } | null)?.stepId;
+        if (typeof id === "string" && Object.hasOwn(vm.peekState().frames, id)) return;
+      }
+      divergence.check(eventType);
+    });
     // Resolves once the bootstrap batch is durable, rejects with its write error: the inbox
     // delivery's proof that the append LANDED (a handle alone does not say so).
     let bootstrapLanded: Promise<void> | undefined;
@@ -5696,7 +5806,7 @@ export class WorkflowRuntime {
       bootstrapLanded.catch(() => {});
     }
 
-    const ctx = new WorkflowContextImpl(
+    const ctx: WorkflowContextImpl = new WorkflowContextImpl(
       executionId,
       workflowId,
       vm,
@@ -5712,6 +5822,7 @@ export class WorkflowRuntime {
         ...(this.meterCeilings !== undefined && { meterCeilings: this.meterCeilings }),
         ...(this.errorClasses !== undefined && { errorClasses: this.errorClasses }),
         ...(this.surface !== undefined && { surface: this.surface }),
+        divergence,
         inbox: {
           enabled: this.inboxEnabled,
           chainId: chainIdOf(vm.peekState(), executionId),
@@ -5783,6 +5894,17 @@ export class WorkflowRuntime {
       );
     }
 
+    // ADR 0113 D3 — the run was refused under a diverged body (`divergence: "fail"`). NOTHING is
+    // appended: no `EXECUTION_FAILED` (a deploy fault must not make a long-lived execution
+    // permanently failed — after the code is fixed, or the execution migrated, it resumes), and no
+    // park or completion. The log ends where the bootstrap left it; the handle rejects.
+    const refuseDiverged = async (err: unknown): Promise<void> => {
+      ctx.seal();
+      await journal.drain().catch(() => {});
+      rejectSuspend(err);
+      rejectCompletion(err);
+    };
+
     // ADR 0109 D2 — `ctx.continueAsNew` was accepted: start the successor FIRST (idempotent, at
     // its deterministic id), THEN commit `EXECUTION_CONTINUED` to this predecessor under its fence.
     // A crash between the two leaves a `running` predecessor, which `recoverAbandoned` re-drives:
@@ -5790,6 +5912,12 @@ export class WorkflowRuntime {
     // lands. Returns a failure to record (a conflicting successor id), or `undefined` when the
     // outcome has been settled here.
     const rotate = async (sig: ContinueAsNewSignal): Promise<{ error: unknown } | undefined> => {
+      // ADR 0113 D3 — before the successor is started: nothing runs under a diverged body.
+      const diverged = divergence.refusal("EXECUTION_CONTINUED");
+      if (diverged !== undefined) {
+        await refuseDiverged(diverged);
+        return undefined;
+      }
       const drained = ctx.parkBarrier(); // idle by construction (the call waited for it); freezes
       if (drained !== undefined) await drained;
       if (cancelled) {
@@ -5905,6 +6033,12 @@ export class WorkflowRuntime {
         resolveCompletion(vm.getState());
       } catch (caught) {
         let err: unknown = caught;
+        // ADR 0113 D3 — a refusal (even one the body swallowed, then failed on something else).
+        const refused = err instanceof FlowReplayDivergenceError ? err : divergence.latched;
+        if (refused !== undefined && !cancelled && !journal.failed) {
+          await refuseDiverged(refused);
+          return;
+        }
         if (err instanceof ContinueAsNewSignal) {
           const failure = await rotate(err);
           if (failure === undefined) return;
@@ -5972,6 +6106,12 @@ export class WorkflowRuntime {
             wakeAt !== undefined && condition.wakeAt === undefined
               ? { ...condition, wakeAt }
               : condition;
+          // ADR 0113 D3 — a park is a live append: refuse it BEFORE the barrier and the commit.
+          const divergedAtPark = divergence.refusal("EXECUTION_SUSPENDED");
+          if (divergedAtPark !== undefined) {
+            await refuseDiverged(divergedAtPark);
+            return;
+          }
           // ADR 0112 D3 — the PARK BARRIER. The park is decided: freeze new step starts and let
           // the steps already in flight settle, so their events land BEFORE the park (nothing from
           // this execution's own siblings follows EXECUTION_SUSPENDED). Bounded by `parkDrainMs`.
@@ -6127,4 +6267,46 @@ export class WorkflowRuntime {
 
     return handle;
   }
+}
+
+/**
+ * ADR 0113 D4 — the recorded frame ids a `replay-check` migration would orphan. A frame passes when
+ * its id is a step of the target flow OR belongs to a family the target still declares: the part
+ * before the first `#` (every ADR 0061 `id#n` mint and `agentLoop$`'s `<loop>#turn:<n>:tool:<j>`),
+ * or a name/RegExp in the target's `stepFamilies` for ids that do not follow that convention. A
+ * vanished family fails once, reported with its frame count rather than one name per dynamic frame.
+ */
+export function orphanedFrames(
+  recorded: readonly string[],
+  stepIds: readonly string[],
+  stepFamilies: readonly (string | RegExp)[] | undefined
+): string[] {
+  const known = new Set(stepIds);
+  const named = new Set<string>();
+  const patterns: RegExp[] = [];
+  for (const f of stepFamilies ?? []) {
+    if (typeof f === "string") named.add(f);
+    else patterns.push(f);
+  }
+  const lost = new Map<string, number>(); // family (or exact id) -> frames orphaned
+  for (const id of recorded) {
+    if (known.has(id)) continue;
+    const hash = id.indexOf("#");
+    const family = hash > 0 ? id.slice(0, hash) : undefined;
+    if (family !== undefined && (known.has(family) || named.has(family))) continue;
+    if (named.has(id)) continue;
+    if (
+      patterns.some((re) => {
+        re.lastIndex = 0; // a /g or /y pattern is stateful
+        return re.test(id);
+      })
+    ) {
+      continue;
+    }
+    const key = family !== undefined ? `${family}#*` : id;
+    lost.set(key, (lost.get(key) ?? 0) + 1);
+  }
+  return [...lost].map(([key, n]) =>
+    key.endsWith("#*") ? `${key} (${n} frame${n === 1 ? "" : "s"})` : key
+  );
 }

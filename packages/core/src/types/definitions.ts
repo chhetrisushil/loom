@@ -284,6 +284,27 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
   resumeSchemas?: Readonly<Record<string, ZodTypeAny>>;
   /** EF-1 — the flow's declared effect-class ceiling (app-supplied vocabulary). */
   effectClass?: string;
+  /**
+   * ADR 0113 D2 — a content hash of the flow BODY as built, supplied by the toolchain
+   * (`@loom/compiler`'s bundler plugin, a build step) or by the author. Recorded on
+   * `EXECUTION_STARTED.codeHash`; on resume/recovery a different value is a
+   * `FlowCodeMismatchError` unless {@link compatibleWith} lists the recorded one. The kernel
+   * never computes it (`Function.prototype.toString` is not stable across bundlers); absent on
+   * either side means "no fingerprint" and nothing changes.
+   */
+  codeFingerprint?: string;
+  /**
+   * ADR 0113 D2 — fingerprints of earlier builds the author asserts are REPLAY-COMPATIBLE with
+   * this one (the analogue of Temporal's `patched()`), reviewed in the diff that adds it. An
+   * execution recorded under a listed value resumes on this code.
+   */
+  compatibleWith?: readonly string[];
+  /**
+   * ADR 0113 D4 — step-id families for `resumeAs(…, "replay-check")`. A recorded frame id
+   * `base#suffix` already belongs to family `base`; list a string (an exact family) or a RegExp
+   * here for ids that do not follow the `#` convention.
+   */
+  stepFamilies?: readonly (string | RegExp)[];
 }
 
 // ── Schedules (schedule$) — durable cron-style executions (T1.2) ─────────────

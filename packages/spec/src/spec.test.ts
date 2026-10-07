@@ -319,6 +319,11 @@ const NOT_A_CAPABILITY = new Set([
   // separate item. It completes existing capabilities (the resume gate, K12 authz, the T1 timers, R8k
   // fencing); the event shapes were frozen at W2-0. No new subsystem to grade.
   "0110",
+  // 0113 — R7: SHA-256 for the structural flow hash (K11.1), an opt-in `codeFingerprint` recorded in the
+  // reserved `codeHash`, a runtime-only replay-divergence detector and step families for `replay-check`.
+  // It completes an existing capability (K11 flow-code versioning); the event shapes were frozen at
+  // W2-0. No new subsystem to grade.
+  "0113",
   // 0119 — a per-call live delta sink on the decide scope (EffectContext.onDelta). An additive 1P
   // extension of ctx.decide's scope / invokeTransient (ADR 0066, L30); no kernel change. No new
   // subsystem to grade.

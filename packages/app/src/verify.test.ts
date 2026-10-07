@@ -61,7 +61,7 @@ describe("resolveVerifyInput adapter", () => {
     expect(input.flows).toHaveLength(1);
     const f = input.flows[0]!;
     expect(f.id).toBe("gated");
-    expect(f.flowHash).toMatch(/^fnv1a:/);
+    expect(f.flowHash).toMatch(/^sha256:/);
     expect(f.effects?.map((e) => e.capability).sort()).toEqual([
       "metrics-tool",
       "remediation-tool",

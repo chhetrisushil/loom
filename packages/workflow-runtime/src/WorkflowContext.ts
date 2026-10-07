@@ -391,6 +391,13 @@ export class WorkflowContextImpl implements WorkflowContext {
   // accepted request, after which new step starts are frozen exactly like a park.
   private readonly continuationBinding: ContinuationBinding | undefined;
   private openParallels = 0;
+  /** ADR 0113 D3 — true while a `parallel` call is in flight (the detector defers to its close). */
+  get parallelOpen(): boolean {
+    return this.openParallels > 0;
+  }
+  private readonly divergence:
+    | { visit(id: string): void; check(eventType: string): void; decisionServed(): void }
+    | undefined;
   private continuation: ContinueAsNewSignal | undefined;
   private rejectContinue: ((err: unknown) => void) | undefined;
   /** Rejects with a {@link ContinueAsNewSignal} once a continuation was accepted (even if the flow swallowed the throw). */
@@ -461,8 +468,15 @@ export class WorkflowContextImpl implements WorkflowContext {
       inbox?: InboxBinding;
       continuation?: ContinuationBinding;
       meterCeilings?: Readonly<Record<string, number>>;
+      /** ADR 0113 D3 — told which recorded steps the re-run asks for. */
+      divergence?: {
+        visit(id: string): void;
+        check(eventType: string): void;
+        decisionServed(): void;
+      };
     } = {}
   ) {
+    this.divergence = opts.divergence;
     this.inboxBinding = opts.inbox;
     this.continuationBinding = opts.continuation;
     this.continueSignal = new Promise<never>((_resolve, reject) => {
@@ -688,6 +702,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     input: TIn
   ): Promise<TOut> {
     const id = task.id;
+    this.divergence?.visit(id); // ADR 0113 D3 — the re-run asked for this recorded step
     // ADR 0104 — a `kind: "human"` step (HumanEffect) is a SUSPEND POINT: its effect parks the
     // execution and the resume that answers it is a `_resumePayloads` entry. It consumes that
     // entry in order with every `ctx.suspend`, live AND on replay past the completed step —
@@ -1024,6 +1039,8 @@ export class WorkflowContextImpl implements WorkflowContext {
     // Checked before the replay lookup too: a reserved id is never a flow's to read either.
     assertFlowDecisionId(decisionId);
     if (this.vm.hasDecision(decisionId)) {
+      // ADR 0113 D3 — the decider is skipped, and so is every step it ran.
+      this.divergence?.decisionServed();
       return this.vm.getDecision(decisionId) as T;
     }
     if (opts?.estimatedCost !== undefined) assertEstimatedCost(opts.estimatedCost);
@@ -1034,6 +1051,10 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (cancelScope.served !== undefined) throw new ScopeServedError(decisionId, cancelScope.path);
     if (cancelScope !== this.rootScope) this.throwIfCancelled(cancelScope.signal);
     if (this.frozen || scopeIsParked(cancelScope)) return new Promise<T>(() => {});
+
+    // ADR 0113 D3 — a live decision is the first append under a diverged body too, and its decider
+    // (a model call, a router) is real work: refuse BEFORE it runs, not at the record after it.
+    this.divergence?.check("DECISION_RECORDED");
 
     // ADR 0102 — a decider runs only when the decision is made (served on a re-run):
     // the decision is live for this segment, an emit appended while it runs is left

@@ -1,3 +1,4 @@
+import { sha256Hex } from "./sha256";
 import type { FlowDefinition, RetryPolicy, StepDefinition } from "./types/definitions";
 
 // ── K11.1 — the flow content hash ─────────────────────────────────────────────
@@ -14,11 +15,12 @@ import type { FlowDefinition, RetryPolicy, StepDefinition } from "./types/defini
 //
 // What it deliberately EXCLUDES:
 //  - cosmetic metadata (name, description) — renames must not strand executions;
-//  - zod schemas and handler code — not stably serializable at runtime. A
-//    body-only edit folds an existing log identically (completed steps are
-//    served from the log), so the structural hash is the fold-compatibility
-//    fingerprint; code-level fingerprints (compiler chunk hashes) can be layered
-//    in via the version-aware registry (K11.2 follow-up).
+//  - zod schemas and handler code — not stably serializable at runtime. The
+//    structural hash is therefore BODY-BLIND: an edit that changes which step ids a
+//    re-run asks for goes unseen here. ADR 0113 closes that two ways, neither of which
+//    hashes `toString()`: an opt-in toolchain-supplied `FlowDefinition.codeFingerprint`
+//    (recorded as `EXECUTION_STARTED.codeHash`), and the runtime's replay-divergence
+//    detector (a recorded step the re-run never asked for).
 //
 // The hash is computed from the normalized in-memory definition — never from
 // bundler output — so a rebuild with identical structure yields an identical
@@ -54,18 +56,48 @@ function fnv1a(text: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-/**
- * K11.1 — deterministic content hash of a flow's fold-relevant structure.
- * Recorded in the `EXECUTION_STARTED` payload (`flowHash`) and compared by
- * `resume()`/recovery against the registered flow, so changed flow code never
- * silently folds an in-flight execution's log.
- */
-export function flowContentHash<TIn, TOut>(definition: FlowDefinition<TIn, TOut>): string {
-  const canonical = [
+function canonicalFlow<TIn, TOut>(definition: FlowDefinition<TIn, TOut>): string {
+  return [
     definition.id,
     definition.version,
     definition.deadlineMs ?? "",
     ...definition.steps.map(canonicalStep),
   ].join("\n");
-  return `fnv1a:${fnv1a(canonical)}`;
+}
+
+/**
+ * K11.1 — deterministic content hash of a flow's fold-relevant structure.
+ * Recorded in the `EXECUTION_STARTED` payload (`flowHash`) and compared by
+ * `resume()`/recovery against the registered flow, so changed flow code never
+ * silently folds an in-flight execution's log.
+ *
+ * ADR 0113 D1 — SHA-256 over the same canonical structure (no new inputs), prefixed `sha256:`.
+ * The first generation was a 32-bit FNV-1a (`fnv1a:`), which a deploy-time accident can collide;
+ * a log that recorded one is still compared against {@link legacyFlowContentHash} — see
+ * {@link flowHashMatches}.
+ */
+export function flowContentHash<TIn, TOut>(definition: FlowDefinition<TIn, TOut>): string {
+  return `sha256:${sha256Hex(canonicalFlow(definition))}`;
+}
+
+/**
+ * The pre-ADR-0113 hash (`fnv1a:`, 32 bits) of the same canonical structure. Kept ONLY so an
+ * execution that recorded one is not stranded by the upgrade; new starts never record it.
+ */
+export function legacyFlowContentHash<TIn, TOut>(definition: FlowDefinition<TIn, TOut>): string {
+  return `fnv1a:${fnv1a(canonicalFlow(definition))}`;
+}
+
+/**
+ * Whether `recorded` (a `flowHash` read from a log) names `definition`'s structure, whichever
+ * generation of hash recorded it: a `fnv1a:` recording is compared with the legacy hash of the
+ * definition, anything else with the current one.
+ */
+export function flowHashMatches<TIn, TOut>(
+  recorded: string,
+  definition: FlowDefinition<TIn, TOut>
+): boolean {
+  return recorded.startsWith("fnv1a:")
+    ? recorded === legacyFlowContentHash(definition)
+    : recorded === flowContentHash(definition);
 }

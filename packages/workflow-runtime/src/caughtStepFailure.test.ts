@@ -70,6 +70,8 @@ function boot(opts: {
   typed?: boolean;
   snapshotEvery?: number;
   eventStore?: InMemoryAsyncEventStore;
+  /** ADR 0113 D3 — a fixture that hand-appends steps no flow asks for would only trip the detector. */
+  divergenceOff?: boolean;
 }) {
   const ran: string[] = [];
   const effects = new EffectRuntime();
@@ -106,6 +108,7 @@ function boot(opts: {
     snapshotStore: stores.snapshotStore,
     effectRuntime: effects,
     ...(opts.snapshotEvery !== undefined && { snapshotEvery: opts.snapshotEvery }),
+    ...(opts.divergenceOff === true && { divergence: "off" as const }),
   });
 
   const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
@@ -528,7 +531,7 @@ describe("recoverAbandoned `maxRecoveries` (ADR 0105)", () => {
         });
       }
     }
-    const b = boot({ shared: a.stores, catches: true });
+    const b = boot({ shared: a.stores, catches: true, divergenceOff: true });
     const summary = await recoverAbandoned(b.runtime, {
       source: b.stores.eventStore,
       isAbandoned: () => true,
