@@ -352,8 +352,10 @@ export interface DivergenceHooks {
 interface InnerSteps {
   readonly ids: Set<string>;
   readonly parent: InnerSteps | undefined;
-  /** More steps than {@link MAX_INNER_STEPS} ran: the record lists the first ones and says so. */
+  /** Past {@link MAX_INNER_STEPS} ids or {@link MAX_INNER_BYTES} of them: the record lists the first ones and says so. */
   overflowed: boolean;
+  /** Total length of the ids held (a byte cap beside the count cap). */
+  bytes: number;
 }
 const deciderStore = new AsyncLocalStorage<{ owner: object; inner: InnerSteps }>();
 /**
@@ -361,6 +363,8 @@ const deciderStore = new AsyncLocalStorage<{ owner: object; inner: InnerSteps }>
  * `innerStepsOverflow` and a served decision also exempts the frames first started during it.
  */
 const MAX_INNER_STEPS = 4096;
+/** ...and at most this many characters of ids in total (a record must stay small). */
+const MAX_INNER_BYTES = 64 * 1024;
 
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
@@ -732,8 +736,11 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (deciding !== undefined && deciding.owner === this) {
       // Inside a live decider: the decision's record names this step (ADR 0113 D3, `innerSteps`).
       for (let d: InnerSteps | undefined = deciding.inner; d !== undefined; d = d.parent) {
-        if (d.ids.size < MAX_INNER_STEPS || d.ids.has(id)) d.ids.add(id);
-        else d.overflowed = true;
+        if (d.ids.has(id)) continue;
+        if (d.ids.size < MAX_INNER_STEPS && d.bytes + id.length <= MAX_INNER_BYTES) {
+          d.ids.add(id);
+          d.bytes += id.length;
+        } else d.overflowed = true;
       }
     }
     // ADR 0104 — a `kind: "human"` step (HumanEffect) is a SUSPEND POINT: its effect parks the
@@ -1140,6 +1147,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     const inner: InnerSteps = {
       ids: new Set(),
       overflowed: false,
+      bytes: 0,
       parent: (() => {
         const outer = deciderStore.getStore();
         return outer !== undefined && outer.owner === this ? outer.inner : undefined;

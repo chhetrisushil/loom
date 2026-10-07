@@ -471,9 +471,13 @@ const handlers: Record<string, Handler> = {
     const scope =
       existing?.scope ??
       (isKernelWritten(event) && typeof payload.scope === "string" ? payload.scope : undefined);
+    const firstSeq = existing === undefined ? event.sequence : existing.firstSeq;
     const frame: ExecutionFrame = {
       stepId: payload.stepId,
-      firstSeq: existing?.firstSeq ?? event.sequence,
+      // Set ONLY when the frame is new: a frame folded before `firstSeq` existed (an old snapshot)
+      // that is re-started in the tail must not be stamped with the LATER sequence, or it would
+      // rank last and an unchanged body would be refused. It stays unranked (sorts first).
+      ...(firstSeq !== undefined && { firstSeq }),
       ...(scope !== undefined && { scope }),
       status: "running",
       attempts: (existing?.attempts ?? 0) + 1,
