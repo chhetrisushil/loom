@@ -463,6 +463,20 @@ continuation (it still bounds a PARK). (6) `send` authorizes against the address
 names the head of a hop-limit refusal lazily, after authorization. (7) A fork of a chain member keeps the carried
 `_resources` seed (a carried `exceeded` quota is not shed by forking); only chain membership and the inbox are dropped.
 
+**Fix round 3 (re-review).**
+(1) **`restoreFromState` honours the id reservation:** restoring a state onto an id with NO log (it would create
+one) is refused with `ReservedSuccessorIdError` whenever the id has any successor shape (`victim~1`, `victim~5`,
+`victim::g#0~1`), for every caller, after the authorization and without a parent read. (2) **Precisely what the carry is
+read from.** `startSuccessor` reads the carry from the predecessor's durable fold (snapshot + tail). A snapshot saved
+by a restored run would persist the caller's state, so `restoreFromState` ALSO replaces the caller's `_resources`,
+`_inbox` and `startedAt` (which feeds the chain deadline) with the durable fold as it existed BEFORE the restore (it
+predates the caller's state), and drops them when no log exists. Together with the identity keys of round 1, nothing a
+rotation inherits comes from caller-supplied state. (3) **Routing stops at verification failure with a typed refusal:** when
+the deepest log fails verification and the chain is longer than `maxChainHops` past the addressed id, `followToHead`,
+`resume`, `cancel` and `send` refuse with `ChainHopLimitError` naming the furthest VERIFIED id reached (a cancel never
+reports success without reaching the head); the supervisor treats it as "running" (reported to `onError`, retried by
+the sweep) and `LocalWorkerRuntime` reports a failed dispatch.
+
 **R11 carry-over.** `recordOutcome` accepts `continued` (ADR 0116 D1, amended): the decision lives in THAT
 generation's own log, so the outcome is attached to the id the caller named, never to the head. **Fixed on the
 way:** a run whose cancel landed before its flow returned (a deadline already past when a parked execution is
@@ -481,7 +495,10 @@ cancel now owns the outcome.
 Per-turn cost and folded state are bounded by the rotation interval, whatever the turn number; the runner
 re-runs once per turn in both cases (the re-run is over one generation).
 
-**Residuals.** (1) If the deepest log fails verification AND the chain is longer than `maxChainHops` beyond the
+**Residuals.** (0) **A mid-chain gap.** Routing finds the deepest id by galloping over ids that must exist; if a MIDDLE log is
+deleted out of order (retention deletes oldest-first, so this is not the normal case), the head can be unreachable from
+older ids, depending on which ids the gallop probes: the walk then ends at the last verified member (a clean refusal,
+nothing appended), and addressing any surviving `<chainId>~k` still reaches the head. Pinned by a test. (1) If the deepest log fails verification AND the chain is longer than `maxChainHops` beyond the
 addressed id, the fallback verified walk refuses with `ChainHopLimitError` (it never routes to an unverified log). (2) The kernel has
 no rate limit on rotation: a flow that calls `continueAsNew` without ever consuming anything is a runaway chain
 (one successor per call, immediately); a flow rotates on a count or a size. (3) A parked successor is not

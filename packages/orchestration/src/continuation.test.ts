@@ -97,7 +97,7 @@ const awaitsMany = reg("awaits-many", async (ctx) => {
   return { got: out };
 });
 
-function build(withSupervisor = true) {
+function build(withSupervisor = true, extra: { maxChainHops?: number; errors?: unknown[] } = {}) {
   const holder: { supervisor?: ChildSupervisor } = {};
   const runtime = new WorkflowRuntime({
     eventStore: new InMemoryAsyncEventStore(),
@@ -105,6 +105,7 @@ function build(withSupervisor = true) {
     effectRuntime: new EffectRuntime(),
     inboxEnabled: true,
     continueAsNewEnabled: true,
+    ...(extra.maxChainHops !== undefined && { maxChainHops: extra.maxChainHops }),
     onEvent: (e) => holder.supervisor?.onEvent(e),
   });
   const flows = {
@@ -121,7 +122,11 @@ function build(withSupervisor = true) {
   runtime.registerFlow(groupParent.definition, groupParent.runner as FlowRunner<unknown, unknown>);
   const allFlows = { ...flows, "group-parent": groupParent };
   const wire = () => {
-    holder.supervisor = superviseChildren({ runtime, flows: allFlows });
+    holder.supervisor = superviseChildren({
+      runtime,
+      flows: allFlows,
+      ...(extra.errors !== undefined && { onError: (e: unknown) => extra.errors?.push(e) }),
+    });
     return holder.supervisor;
   };
   if (withSupervisor) wire();
@@ -248,5 +253,38 @@ describe("D6 - a child that rotated far more than maxChainHops while no supervis
     expect((await runtime.loadState("mp"))?.variables._output).toEqual({
       got: { finishedIn: 12 },
     });
+  });
+});
+
+describe("D6 - an unverifiable deepest generation past the hop bound", () => {
+  it("settledOf fails safe: the child stays running, onError hears ChainHopLimitError, recover() does not throw and the parent is not resumed", async () => {
+    const errors: unknown[] = [];
+    const { runtime, holder, wire } = build(true, { maxChainHops: 2, errors });
+    await runtime.start(awaitsMany, {}, { executionId: "sq" });
+    await until(async () => (await statusOf(runtime, "sq::c")) === "suspended");
+    holder.supervisor = undefined;
+    await runtime.send("sq::c", { topic: "go", payload: 1 }, sys(runtime));
+    await until(async () => (await statusOf(runtime, "sq::c~12")) === "suspended");
+    // a squatter at the deepest id, written straight to the store, naming another execution
+    await runtime.events.append({
+      id: "sq::c~13-0",
+      workflowId: "many-child",
+      executionId: "sq::c~13",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: {
+        input: {},
+        chainId: "sq::c",
+        generation: 13,
+        continuedFrom: { executionId: "elsewhere" },
+      },
+    });
+    const supervisor = wire();
+    await expect(supervisor.recover()).resolves.toBeDefined();
+    expect(errors.some((e) => (e as Error).name === "ChainHopLimitError")).toBe(true);
+    expect(await statusOf(runtime, "sq")).toBe("suspended");
+    expect(await statusOf(runtime, "sq::c~12")).toBe("suspended");
+    expect(supervisor.size().started).toBe(1); // still tracked as running: a later sweep retries
   });
 });
