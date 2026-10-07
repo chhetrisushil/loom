@@ -127,14 +127,10 @@ export class LocalWorkerRuntime implements WorkerRuntime {
   ): Promise<ExecutionState> {
     let current = state;
     let id = state.executionId;
-    // A SYSTEM follower: not bounded by `maxChainHops` (a flow that rotates ten times and then
-    // completes is a completion, not a failure). `followToHead({ unbounded })` verifies every link
-    // and generations strictly increase, so the loop ends at the true head.
+    // `followToHead` routes to the chain's newest generation however many times it rotated (a flow
+    // that rotates ten times and then completes is a completion, not a failure), verifying links.
     while (current.status === "continued") {
-      const head = await this.runtime.followToHead(id, {
-        ...this.identity(pkg.principal),
-        unbounded: true,
-      });
+      const head = await this.runtime.followToHead(id, this.identity(pkg.principal));
       if (head === null || head.executionId === id) break; // an unreadable / unverifiable successor
       id = head.executionId;
       current = head.state;

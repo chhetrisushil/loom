@@ -4,7 +4,7 @@ import type { EventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { build, crashHarness, eventsOf, flow, kinds, settle, until } from "./__tests__/r2Harness";
 import type { Harness } from "./__tests__/r2Harness";
-import { ChainHopLimitError, ForkPastContinuationError } from "./continuation";
+import { ForkPastContinuationError } from "./continuation";
 import { executionAccessPolicy } from "./executionAccessPolicy";
 import { recoverAbandoned } from "./recoverAbandoned";
 
@@ -65,29 +65,17 @@ describe("ADR 0109 D4 — head resolution", () => {
     expect((await kinds(h.eventStore, "g")).pop()).toBe("EXECUTION_CONTINUED");
   });
 
-  it("a walk of more than maxChainHops links refuses naming the head, and appends nothing", async () => {
+  it("a walk of more than maxChainHops generations is ROUTED to the head (the first id stays addressable)", async () => {
     const h = build({ ...on, maxChainHops: 2 });
     const head = await grow(h, "c", 4);
     expect(head).toBe("c~4");
-    const before = await kinds(h.eventStore, "c~4");
-    const err = await h.rt
-      .send("c", { topic: "go", payload: "x" })
-      .then(() => undefined)
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ChainHopLimitError);
-    expect((err as ChainHopLimitError).reached).toBe("c~4");
-    expect(await kinds(h.eventStore, "c~4")).toEqual(before);
-    // a resume walks the same bound
-    await expect(h.rt.resume("c", { eventType: "x", payload: 1 })).rejects.toBeInstanceOf(
-      ChainHopLimitError
-    );
-    // addressing the id the error named works
-    const sent = await h.rt.send("c~4", { topic: "go", payload: "x" });
+    const sent = await h.rt.send("c", { topic: "go", payload: "x", messageId: "x1" });
     expect(sent.executionId).toBe("c~4");
-    // and within the bound the old id still works
-    const ok = build({ ...on, maxChainHops: 8 });
-    await grow(ok, "d", 4);
-    expect((await ok.rt.send("d", { topic: "go", payload: 1 })).executionId).toBe("d~4");
+    await until(async () => (await h.rt.loadState("c~5")) !== null);
+    await parked(h, "c~5");
+    // a resume by the first id reaches the head too
+    await h.rt.send("c", { topic: "go", payload: "y", messageId: "y1" });
+    expect(await h.rt.followToHead("c")).toMatchObject({ executionId: "c~6" });
   });
 
   it("followToHead names the head and counts the hops", async () => {
@@ -287,14 +275,12 @@ describe("ADR 0109 D2 — cancel races the start-to-commit window", () => {
     expect(await h.rt.cancel("c", "again")).toBe(false); // the head is already terminal
   });
 
-  it("cancelling a chain deeper than maxChainHops refuses naming the head instead of reporting success", async () => {
+  it("cancelling a chain deeper than maxChainHops reaches the live head (routed)", async () => {
     const h = build({ ...on, maxChainHops: 1 });
     await grow(h, "c", 3);
-    const err = await h.rt.cancel("c", "stop").catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(ChainHopLimitError);
-    expect((err as ChainHopLimitError).reached).toBe("c~3");
-    expect((await h.rt.loadState("c~3"))?.status).toBe("suspended"); // still live: nothing pretended
-    expect(await h.rt.cancel("c~3", "stop")).toBe(true);
+    expect(await h.rt.cancel("c", "stop")).toBe(true);
+    expect((await h.rt.loadState("c~3"))?.status).toBe("cancelled");
+    expect(await h.rt.cancel("c~3", "stop")).toBe(false);
   });
 });
 

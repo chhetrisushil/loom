@@ -150,7 +150,7 @@ predecessor is still `running`. A cancel of the predecessor in that window would
 the successor would be an orphan that keeps running. Two closures, either sufficient and both required:
 (i) **`cancel` of a chain member checks for a started successor** (a point read of `<chainId>~<gen+1>`
 sequence 0, accepted only if its `continuedFrom.executionId` is this execution) and cancels it too, walking
-forward at most `maxChainHops`, under the same authorization (one chain, one owner, ADR 0111); (ii) **the
+forward to the newest verified generation (routed, D4), under the same authorization (one chain, one owner, ADR 0111, re-checked against the resolved head); (ii) **the
 successor checks its predecessor on its first run** (and on every recovery re-drive before its first
 effect): if the fold's chain identity (`continuedFrom.executionId`, read **through the fold**, which
 prefers a fork's `forkChain` and so yields no `continuedFrom` for a fork) is `cancelled` it appends its own `EXECUTION_CANCELLED` with
@@ -221,7 +221,7 @@ generation 0 (`carried.chainDeadline`, epoch ms) and every generation's own dead
 
 `chainId` is the stable identity external parties address (ADR 0052 wall 1). `runtime.resume` and
 `runtime.send` (ADR 0110) addressed to a continued execution resolve forward through `_continuedTo`
-(bounded walk, `maxChainHops` 8, then a typed refusal naming the head), so a caller holding an old id is
+(ROUTED to the newest generation, see below), so a caller holding an old id is
 not stranded; the authorization is judged against the **chain's owner** (ADR 0111), which every
 generation inherits. ADR 0110's inbox stream is keyed by `chainId`; the successor resumes reading from the
 cursors in `continuedFrom.carried.inbox`. The predecessor is quiescent at the commit point (D1: no
@@ -374,11 +374,18 @@ ctx.continueAsNew(..)])` is refused), and a call from inside a branch is refused
 deterministic id; an existing sequence 0 is adopted iff its `continuedFrom.executionId` is the predecessor,
 else `ContinuationConflictError`, which FAILS the predecessor (`EXECUTION_FAILED`) with the typed error. A storage
 failure before the successor is durable leaves the predecessor `running` and rejects its handle: recovery
-re-drives it. The chain's `maxChainHops` bounds head WALKS (`resume`, `send`, `cancel`, `followToHead`), not the
-chain's length, and past it the refusal is `ChainHopLimitError` naming the head, found by galloping +
-bisection over the deterministic ids `<chainId>~<n>` (O(log n) point reads; naming only, never routing).
-`send` reports the limit after authorizing against the chain owner, so an unauthorized caller learns nothing
-about the chain's depth. The start-to-commit probe (`<chainId>~<generation+1>` sequence 0, accepted only when
+re-drives it. **Head resolution is ROUTED** (user decision, round 2): `resume`, `send`, `cancel`, `followToHead` and the 1P
+followers (supervisor, `LocalWorkerRuntime`) resolve ANY generation's id to the chain's newest generation, so the
+first id stays addressable forever. `routeToDeepest` gallops + bisects over the deterministic ids
+`<chainId>~<n>` (O(log n) point reads, measured: a 200-generation chain resolves in under 60 store reads), then
+VERIFIES the candidate: its sequence 0 is the verified successor of generation n-1 (`isVerifiedSuccessor`: the
+deterministic id, names its predecessor, next generation of the same chain, same parent and principal) and records
+the same lineage and owner as the addressed id. A candidate that fails verification (a squatter written straight to
+the store) is never routed to: the walk falls back to stepping VERIFIED links from the addressed id. The caller is
+authorized against the ADDRESSED id first (an unauthorized caller causes no chain read) and again against the
+resolved head's recorded owner before acting. `maxChainHops` (default 8, config unchanged) now bounds only the
+RESIDUAL forward stepping after the jump (the start-to-commit window, or the fallback walk); past it the refusal is
+`ChainHopLimitError` naming the furthest id reached. There is no `unbounded` option: system followers use the same routing. The start-to-commit probe (`<chainId>~<generation+1>` sequence 0, accepted only when
 its `continuedFrom` names the id) runs in `send`, `walkToHead` and `cancel` and only with the flag on. The
 successor-shape reservation (`assertCreatable`: `start` with a caller id, `fork`'s child id) applies **whether
 or not the flag is on** (an app that used `task~1` as an id must rename it: CHANGELOG); resume paths and
@@ -408,9 +415,9 @@ attached child is cancelled with a `{ kind: "cascade", parent }` reason and a de
 parent cannot continue, so the case is a child whose park the operator answered by hand. **D6:** the supervisor
 keeps a `followed` map (successor id -> the child id the parent's park names); a continued child's successor's
 terminal event settles the ORIGINAL slot, any number of rotations, live; `settledOf` (`adopt`, `recover`,
-`reconcileGroup`) follows the chain to its end (`followToHead({ unbounded })`, not bounded by `maxChainHops`) and registers the furthest running head. `LocalWorkerRuntime`
+`reconcileGroup`) follows the chain to its newest generation (`followToHead`, routed) and registers the furthest running head. `LocalWorkerRuntime`
 follows to the head (a live handle when the runtime drives it, else the log) and reports the HEAD's outcome under
-the dispatched id; `ExecutionOutcome` is NOT widened (no dispatcher or worker SPI change), the follow is unbounded (a flow that rotates
+the dispatched id; `ExecutionOutcome` is NOT widened (no dispatcher or worker SPI change), the follow is routed (a flow that rotates
 ten times and completes is a `completed` dispatch), and an unreadable or unverifiable chain stays the fail-safe
 `failed`, never `completed`. `@loom/analytics` gains `chainLineage(events, id)` (a pure
 projection; chain identity read through the fold's rules, a fork is its own chain). `@loom/agent` gains
@@ -449,12 +456,8 @@ pointer at a foreign or squatted id ends the walk at the last verified member (n
 leaked across it).
 (3) **The last `::` segment is reserved** (D2 (a)); only the supervisor (lineage / system grant) may start a
 `::`-child of a successor-shaped ROOT, and an untrusted caller causes no read (no existence oracle).
-(4) **System followers are unbounded; client walks are bounded.** `maxChainHops` bounds a client-addressed
-`resume` / `send` / `cancel` / `followToHead`. The kernel's own followers (the child supervisor's settle and
-cascade, `LocalWorkerRuntime`, the inbox reclaim) pass `unbounded`: generations strictly increase and every hop is
-verified, so the walk ends at the true head, and the supervisor registers the FURTHEST id reached so a later
-rotation advances it. (Whether a client walk should instead be routed to the head by the O(log n) id probe is an
-open question; the verified `walkToHead` is the one shared helper it would change.)
+(4) **Every walk is routed to the newest generation (round 2 supersedes round 1's `unbounded` option).** See D2's
+"Head resolution is ROUTED". The supervisor registers the FURTHEST id reached so a later rotation advances it.
 (5) **`continueAsNew` never refuses on timing**: the drain is unbounded and `parkDrainMs` no longer applies to a
 continuation (it still bounds a PARK). (6) `send` authorizes against the addressed id's owner before any walk, and
 names the head of a hop-limit refusal lazily, after authorization. (7) A fork of a chain member keeps the carried
@@ -478,8 +481,8 @@ cancel now owns the outcome.
 Per-turn cost and folded state are bounded by the rotation interval, whatever the turn number; the runner
 re-runs once per turn in both cases (the re-run is over one generation).
 
-**Residuals.** (1) A CLIENT head walk from a stale id more than `maxChainHops` generations back is refused (naming the
-head; system followers are unbounded); a client addresses the `executionId` a `send` returned (or the head the error names). (2) The kernel has
+**Residuals.** (1) If the deepest log fails verification AND the chain is longer than `maxChainHops` beyond the
+addressed id, the fallback verified walk refuses with `ChainHopLimitError` (it never routes to an unverified log). (2) The kernel has
 no rate limit on rotation: a flow that calls `continueAsNew` without ever consuming anything is a runaway chain
 (one successor per call, immediately); a flow rotates on a count or a size. (3) A parked successor is not
 cancelled at its chain deadline until it next resumes (the existing rule for any parked execution). (4) A

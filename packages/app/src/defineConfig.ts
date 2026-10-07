@@ -641,7 +641,7 @@ export interface LoomConfig {
     continuation?: {
       /** Largest carry `ctx.continueAsNew` accepts, in bytes of its JSON text. Default 1 MiB. */
       maxCarryBytes?: number;
-      /** `_continuedTo` links a head walk follows before refusing, naming the head. Default 8. */
+      /** Bounds only the RESIDUAL forward stepping after a head walk is routed to the newest generation (ADR 0109 D4). Default 8. */
       maxChainHops?: number;
     };
     /** ADR 0110 D1/D6 — inbox bounds (read only when `features.inbox` is on). */

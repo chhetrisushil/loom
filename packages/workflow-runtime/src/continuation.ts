@@ -351,8 +351,17 @@ export function isVerifiedSuccessor(
   const own = chainOfFirstEnvelope(next, nextId);
   if (own.chainId !== chain.chainId || own.generation !== chain.generation + 1) return false;
   if (nextId !== successorIdOf(chain.chainId, chain.generation)) return false;
-  if (parentOfSeq0(prev) !== parentOfSeq0(next)) return false;
-  const a = principalKeyOf(prev);
-  const b = principalKeyOf(next);
-  return a === undefined || b === undefined || a === b;
+  return sameLineage(prev, next);
+}
+
+/**
+ * Do two sequence 0s record the same `parent` lineage and the same owner (principal)? A shredded or
+ * malformed principal cannot be compared and never blocks. Used for every hop and for the check that
+ * a routed-to generation belongs to the chain whose first id the caller addressed.
+ */
+export function sameLineage(a: EventEnvelope, b: EventEnvelope): boolean {
+  if (parentOfSeq0(a) !== parentOfSeq0(b)) return false;
+  const pa = principalKeyOf(a);
+  const pb = principalKeyOf(b);
+  return pa === undefined || pb === undefined || pa === pb;
 }
