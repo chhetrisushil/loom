@@ -53,12 +53,26 @@ function findControlBytes(content: Buffer): Array<{ line: number; codePoint: num
   return found;
 }
 
+/**
+ * Other packages' tests run while this walk does (turbo runs packages concurrently) and create
+ * and delete scratch files under the tree (e.g. `tools/cli/.tmp-*`). Those are not source: skip
+ * `.tmp*` directories, and treat a file or directory that vanished mid-walk as absent.
+ */
+const vanished = (err: unknown): boolean => (err as { code?: string } | null)?.code === "ENOENT";
+
 function textFiles(): string[] {
   const out: string[] = [];
   const walk = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    let entries: import("node:fs").Dirent[];
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      if (vanished(err)) return;
+      throw err;
+    }
+    for (const entry of entries) {
       if (entry.isDirectory()) {
-        if (!SKIP.has(entry.name)) walk(resolve(dir, entry.name));
+        if (!SKIP.has(entry.name) && !entry.name.startsWith(".tmp")) walk(resolve(dir, entry.name));
       } else if (EXTENSIONS.some((ext) => entry.name.endsWith(ext))) {
         out.push(resolve(dir, entry.name));
       }
@@ -89,7 +103,14 @@ describe("source hygiene: no raw control bytes", () => {
 
   it("finds no raw control byte anywhere in the repo's text files", () => {
     const offenders = textFiles().flatMap((file) => {
-      const hits = findControlBytes(readFileSync(file));
+      let content: Buffer;
+      try {
+        content = readFileSync(file);
+      } catch (err) {
+        if (vanished(err)) return [];
+        throw err;
+      }
+      const hits = findControlBytes(content);
       return hits.map((h) => `${relative(REPO_ROOT, file)}:${h.line} contains ${hex(h.codePoint)}`);
     });
     // Named, not counted: a bare "expected 3 to be 0" sends the reader hunting for a
