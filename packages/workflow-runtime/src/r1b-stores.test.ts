@@ -118,7 +118,14 @@ for (const backend of [memory, sqlite, postgres]) {
       const { h, f, id } = mk("rot");
       await (await h.rt.start(f, {}, { executionId: id })).waitForSuspend();
       await h.rt.send(id, { topic: "go", payload: 1, messageId: "m1" });
-      await until(async () => (await h.rt.loadState(`${id}~1`))?.status === "suspended", 8000);
+      // The successor starts FIRST and the predecessor's EXECUTION_CONTINUED commits after it, so the
+      // successor can park before that commit lands: wait for both, never for the successor alone.
+      await until(
+        async () =>
+          (await h.rt.loadState(`${id}~1`))?.status === "suspended" &&
+          (await h.rt.loadState(id))?.status === "continued",
+        8000
+      );
       const succ = (await h.eventStore.read(`${id}~1`))[0];
       const [cont] = await eventsOf(h.eventStore, id, "EXECUTION_CONTINUED");
       expect(succ?.timestamp).toBeLessThanOrEqual(cont?.timestamp as number); // successor FIRST
@@ -182,7 +189,14 @@ for (const backend of [memory, sqlite, postgres]) {
       const { h, f, id } = mk("fork");
       await (await h.rt.start(f, {}, { executionId: id })).waitForSuspend();
       await h.rt.send(id, { topic: "go", payload: 1 });
-      await until(async () => (await h.rt.loadState(`${id}~1`))?.status === "suspended", 8000);
+      // The successor starts FIRST and the predecessor's EXECUTION_CONTINUED commits after it, so the
+      // successor can park before that commit lands: wait for both, never for the successor alone.
+      await until(
+        async () =>
+          (await h.rt.loadState(`${id}~1`))?.status === "suspended" &&
+          (await h.rt.loadState(id))?.status === "continued",
+        8000
+      );
       const tip = (await h.eventStore.read(`${id}~1`)).length - 1;
       const forkId = `${id}-fork`;
       await h.rt.fork(`${id}~1`, tip, { executionId: forkId });
@@ -200,7 +214,14 @@ for (const backend of [memory, sqlite, postgres]) {
       const { h, f, id } = mk("ret");
       await (await h.rt.start(f, {}, { executionId: id })).waitForSuspend();
       await h.rt.send(id, { topic: "go", payload: 1 });
-      await until(async () => (await h.rt.loadState(`${id}~1`))?.status === "suspended", 8000);
+      // The successor starts FIRST and the predecessor's EXECUTION_CONTINUED commits after it, so the
+      // successor can park before that commit lands: wait for both, never for the successor alone.
+      await until(
+        async () =>
+          (await h.rt.loadState(`${id}~1`))?.status === "suspended" &&
+          (await h.rt.loadState(id))?.status === "continued",
+        8000
+      );
       const life = new LogLifecycle(h.eventStore, h.snapshotStore);
       expect(await life.applyRetention(id, { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
         "reclaimed"
