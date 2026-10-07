@@ -137,9 +137,10 @@ compaction folds it (a late one stays above the terminal event until the next co
   execution's log is evidence and a denied writer leaves it untouched; the `onExecutionDenied` callback fires.
 - **A fenced execution.** (Superseded by the amendment below: the round-0 design re-appended under the
   store's current token taken from `StaleFenceError`; that adoption path is removed.)
-- **`continued` is refused** with `ExecutionNotTerminalError` until R1b ships and defines the chain head (the
-  design's step 8 adds the clause); the retention clock already treats a kernel-stamped `EXECUTION_CONTINUED`
-  as a terminal event.
+- **`continued` is accepted** (R1b, ADR 0109, amends the original refusal): the decision lives in that generation's
+  own log, so the outcome is attached to the id the caller named, never to the head of the chain; a
+  `continued` execution is terminal for the retention clock (a kernel-stamped `EXECUTION_CONTINUED`).
+  `ExecutionNotTerminalError` still refuses a running or parked execution.
 - **`recordedBy`** is `"system"` for the runtime's own grant, otherwise what the principal record would write
   for the caller: the codec `ref` when one handles the chain, else the verbatim actor (`"anonymous"` with
   none); refused in `ref` mode with no codec, as a start is. The delegation token is never read. Under

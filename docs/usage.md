@@ -93,6 +93,7 @@ Inside a runner you have the full `ExecutionContext` (`WorkflowContext` is an al
 | `ctx.suspend({ on, correlationKey, timeout })` | **Durable** pause for a human/signal. `resume()` routes by **executionId**; `correlationKey` is metadata for an external dispatcher that knows a business key instead |
 | `ctx.receive(topic)` | **Durable** wait for the next message on this execution's inbox (`runtime.send`, ADR 0110). Registers a wait and parks when the flow is quiescent; consumption is a recorded `MESSAGE_CONSUMED`, so replay returns the recorded message and never reads the inbox. FIFO per topic, exactly once within the dedupe window. The payload arrives **tainted** (`inbox:<topic>`). Needs `kernel.features.inbox` |
 | `ctx.select([{ gate }, { inbox }, { timer }])` | **Durable** race of several waits; the first answered arm settles it and a later answer to a sibling is refused. Resolves `{ arm, kind, value }`; a timer arm's wake is **recorded** once at first registration. Arms are numbered `<scopePath>#<ordinal>`, so a body edit that shifts an ordinal raises `FlowDivergenceError`. Needs `kernel.features.inbox` |
+| `ctx.continueAsNew(carry)` | **Durable** end of this execution and start of its **successor** (id `<chainId>~<n>`) with `carry` as its input; never returns. The successor is started FIRST (idempotent), then a kernel-stamped `EXECUTION_CONTINUED` is **recorded** on the predecessor, which folds to the new terminal status `continued`. History stays bounded: the successor inherits the principal, the running resource totals, the inbox cursors and dedupe window and the chain's absolute deadline, and none of the fold. Refused (log untouched) inside a `ctx.parallel` scope, with a `receive` / `select` wait outstanding, or with a step still in flight past `parkDrainMs`; a carry over `kernel.continuation.maxCarryBytes` (1 MiB) is refused. Needs `kernel.features.continueAsNew` (ADR 0109) |
 | `ctx.sleep(ms)` / `ctx.sleepUntil(wakeAt)` | **Durable** timer suspension — the absolute wake time is in the log, so restarts survive it and wall-clock drift never enters the fold |
 | `ctx.emit(type, payload)` | Append a domain event — **durable**, appended **once per execution**: a resume or recovery re-runs the flow from the top, and each emit the log already holds is served from it rather than appended again (ADR 0102). Load-bearing forever |
 | `ctx.stream(type, delta, done?)` | Stream incremental output (e.g. LLM output). **Each call appends a durable event**, once per execution like `ctx.emit` — chunk at a semantic granularity (sentence / tool call), not per token; for per-token feedback use `@loom/live-query` `subscribe` or `progressHub` instead |
@@ -139,7 +140,7 @@ const app = defineConfig({
 | `projections` / `projectionModules` | `projection$` definitions (explicit, or discovered by `loom gen`) folded into surfaces |
 | `catalog` | the widget catalogue a model-composed blueprint is validated against (`validateBlueprint`, [ADR 0088](adr/0088-blueprint-conformance.md)) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
-| `kernel.features` | rolling-upgrade flags for writers an older node cannot read (default off): `redrive` (ADR 0118) turns a contended supervisor resume into a backed-off `TimerStore` row fired by the app's `TimerService`, so it completes without `recover()`; needs `timers`, hands out `app.redrive` for `superviseChildren({ redrive: app.redrive })`; `scopes` (ADR 0112) turns `ctx.parallel` into a cancellation scope (fail-fast abort, `STEP_CANCELLED`, a journaled `PARALLEL_COMPLETED` that a re-run serves) — off, `parallel` is the pre-R6 bounded `Promise.all`; `inbox` (ADR 0110) turns on `ctx.receive` / `ctx.select` and `runtime.send` (a durable inbox, multi-wait parks, wait-addressed resumes) — off, they throw; needs `timers` for the cross-process wake and `scopes` for a wait inside `ctx.parallel`; bounds in `kernel.inbox` (`maxBacklog`, `maxRetained` [default 4 x `maxBacklog`: the stream refuses `send` once it retains that many entries above its oldest unconsumed message, with an `onWarn` at half], `maxPayloadBytes`; the dedupe window is the fold's fixed 1 024, keyed by sender + `messageId`) |
+| `kernel.features` | rolling-upgrade flags for writers an older node cannot read (default off): `redrive` (ADR 0118) turns a contended supervisor resume into a backed-off `TimerStore` row fired by the app's `TimerService`, so it completes without `recover()`; needs `timers`, hands out `app.redrive` for `superviseChildren({ redrive: app.redrive })`; `scopes` (ADR 0112) turns `ctx.parallel` into a cancellation scope (fail-fast abort, `STEP_CANCELLED`, a journaled `PARALLEL_COMPLETED` that a replay serves) — off, `parallel` is the pre-R6 bounded `Promise.all`; `inbox` (ADR 0110) turns on `ctx.receive` / `ctx.select` and `runtime.send` (a durable inbox, multi-wait parks, wait-addressed resumes) — off, they throw; `continueAsNew` (ADR 0109) turns on `ctx.continueAsNew` (bounded history: a chain of executions linked by `EXECUTION_CONTINUED`) — off, it throws; bounds in `kernel.continuation` (`maxCarryBytes` [1 MiB], `maxChainHops` [8, the head walk from a stale id]); needs `timers` for the cross-process wake and `scopes` for a wait inside `ctx.parallel`; bounds in `kernel.inbox` (`maxBacklog`, `maxRetained` [default 4 x `maxBacklog`: the stream refuses `send` once it retains that many entries above its oldest unconsumed message, with an `onWarn` at half], `maxPayloadBytes`; the dedupe window is the fold's fixed 1 024, keyed by sender + `messageId`) |
 | `agents` / `capabilityAgents` | A2A agent cards (or `agent$` definitions — see `a2a`/`agentSurface`) + capability→agent routing |
 | `a2a` | opt-in: auto-derive + register an `AgentCard` for each `agent$` definition in `agents` (no hand-built cards). Off ⇒ wire cards manually as before |
 | `agentSurface` | opt-in: auto-register an agent surface per agent (`surfaceId = agent.id`). Off ⇒ register `surfaces` manually |
@@ -452,6 +453,44 @@ exactly-once within the dedupe window (`messageId` is the idempotency key: at-le
 a finished execution is refused (`InboxClosedError`); past `maxBacklog` unconsumed messages the sender gets
 `InboxFullError`. A park lists every wait in `state.suspendedOn.waits`; answer one gate wait by passing its
 `waitId` to `resume`. Waits inside `ctx.parallel` need `kernel.features.scopes`.
+
+### Keep a long conversation bounded: `ctx.continueAsNew` (ADR 0109)
+
+A flow that loops on a message (`while (true) { msg = await ctx.receive(...); ... }`) re-runs its body from the
+top on every wake, so the cost of turn *n* is O(n) and its folded state and every snapshot grow without bound.
+Compaction truncates the LOG, not the fold (the re-run needs every recorded step to short-circuit), so the
+bound has to be a point where the flow CHOOSES what it carries and starts over:
+
+```ts
+import { continueEvery } from "@loom/agent";
+
+const runner: FlowRunner<{ summary?: string }, never> = async (ctx, input) => {
+  const turns = continueEvery(500);                       // a flow counts its OWN turns
+  let summary = input.summary ?? "";
+  for (;;) {
+    const msg = unwrapTainted(await ctx.receive<string>("user"));
+    summary = await ctx.run(answer, { summary, msg });
+    if (turns.turn()) return ctx.continueAsNew({ summary }); // never returns; the carry is the successor's input
+  }
+};
+```
+
+`defineConfig({ kernel: { features: { continueAsNew: true } } })` (default off; turn it on once every node folds
+`EXECUTION_CONTINUED`). The successor `<chainId>~<n>` is a fresh execution on the code registered NOW (a rotation
+is the clean re-versioning point: no deploy needs `resumeAs`); it inherits the principal, the running resource
+totals (a rotation cannot reset a quota), the inbox cursors and dedupe window, and the chain's absolute
+deadline. Address the chain by any id you hold: `runtime.send` / `resume` / `cancel` resolve forward through
+`_continuedTo` (at most `kernel.continuation.maxChainHops`, default 8, then `ChainHopLimitError` names the head;
+use the `executionId` a `send` returns). `runtime.followToHead(id)` returns the head and its state.
+
+The call is refused, with the log untouched and a typed error the flow may catch, inside a `ctx.parallel`
+scope, with a `receive` / `select` wait outstanding, with a step still in flight past `parkDrainMs`, or with a
+carry over `kernel.continuation.maxCarryBytes` (1 MiB): carry a summary or a reference, not the history. Do not
+rotate unconditionally (a flow that consumes nothing between calls is a runaway chain). A tainted value in the
+carry stays tainted. Children of the predecessor that are not `detached` are cancelled when the rotation
+commits (`@loom/orchestration`); a supervised child may itself rotate, and the parent resumes with the head's
+output. `@loom/analytics`'s `chainLineage(events, id)` lists a chain's generations and head;
+`runtime.recordOutcome` on a rotated generation attaches the reward to the generation that made the decision.
 
 ## Step 10 — Branch: fork / simulate / promote
 

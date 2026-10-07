@@ -171,7 +171,7 @@ A framework becomes a kernel when it adds the enforcement rings a real kernel ha
 
 | Ring | Mechanism |
 |---|---|
-| **K1 Syscall ABI** | `KERNEL_SYSCALLS` — versioned, conformance-pinned (`execute/run/decide/negotiateBudget/parallel/suspend/sleep/sleepUntil/receive/select/emit/stream/ui`) |
+| **K1 Syscall ABI** | `KERNEL_SYSCALLS` — versioned, conformance-pinned (`execute/run/decide/negotiateBudget/parallel/suspend/sleep/sleepUntil/receive/select/continueAsNew/emit/stream/ui`) |
 | **K2 Protection** | `EffectRuntime` denies ungranted effects (`GrantTable`, least-privilege); denials logged |
 | **K3 Accounting** | `meteringMiddleware` — tokens/$/latency metered + budget **admission control** |
 | **K4 Supervision** | `SupervisingDispatcher` — restart/backoff + **circuit breaker** |
