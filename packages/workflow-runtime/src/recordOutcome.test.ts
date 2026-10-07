@@ -1066,7 +1066,7 @@ for (const backend of [memory, sqlite, postgres]) {
       expect(await h.eventStore.acquireFence?.(e)).toBe((token as number) + 1);
     });
 
-    it("a continued execution is refused until R1b defines the chain head", async () => {
+    it("a continued execution accepts a late outcome on its OWN log (ADR 0109 / 0116 D1)", async () => {
       const h = mk();
       const e = id();
       h.rt.registerFlow(parking.definition, parking.runner);
@@ -1083,10 +1083,12 @@ for (const backend of [memory, sqlite, postgres]) {
         metadata: { kernel: true },
       });
       expect((await h.rt.loadState(e))?.status).toBe("continued");
+      // the decision lives in THAT generation's log: the outcome lands there, not on the head
       await expect(
         h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 })
-      ).rejects.toBeInstanceOf(ExecutionNotTerminalError);
-      expect((await h.eventStore.read(e)).length).toBe(head + 1);
+      ).resolves.toEqual({ appended: true, sequence: head + 1 });
+      expect((await h.eventStore.read(e)).length).toBe(head + 2);
+      expect((await h.rt.loadState(e))?.status).toBe("continued");
     });
   });
 }

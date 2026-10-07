@@ -20,7 +20,8 @@
 //        (landed) marks `ui` `deprecated` and adds the missing `negotiateBudget` entry. No
 //        other syscall enters `KERNEL_SYSCALLS` here, because a syscall without a
 //        writer behind its `kernel.features` flag would be a lie in the table.
-//        `receive` / `select` (ADR 0110, R2) have landed behind `kernel.features.inbox`.
+//        `receive` / `select` (ADR 0110, R2) have landed behind `kernel.features.inbox`, and
+//        `continueAsNew` (ADR 0109, R1b) behind `kernel.features.continueAsNew`.
 //        1.3.0 therefore RESERVES those syscalls; it does not contain them. A syscall is
 //        available iff it is in `KERNEL_SYSCALLS`, and the wire handshake (`WIRE_ABI`) advertises
 //        that list next to `kernelAbiVersion`, so a client MUST feature-detect against the
@@ -114,6 +115,13 @@ export const KERNEL_SYSCALLS: readonly KernelSyscall[] = [
     since: "1.3.0",
     summary:
       "wait for the first of several gates, inbox topics and timers; deterministic, replay-served (ADR 0110)",
+  },
+  {
+    name: "continueAsNew",
+    kind: "call",
+    since: "1.3.0",
+    summary:
+      "end this execution and start its successor with a carry; never returns, bounds the history (ADR 0109)",
   },
   {
     // ADR 0114 D3 / R12 drift: on `ExecutionContext` since the budget work (ADR 0032) but absent from the

@@ -31,6 +31,20 @@ export {
   TIMER_FIRED,
 } from "./types";
 export { PrincipalUnrestorableError } from "./principal";
+export {
+  CarryTooLargeError,
+  ChainHopLimitError,
+  ContinuationConflictError,
+  ContinueAsNewRefusedError,
+  ContinueAsNewUnavailableError,
+  DEFAULT_MAX_CARRY_BYTES,
+  DEFAULT_MAX_CHAIN_HOPS,
+  ForkPastContinuationError,
+  ReservedSuccessorIdError,
+  chainOfState,
+  successorIdOf,
+  type ChainIdentity,
+} from "./continuation";
 export type {
   PrincipalCodec,
   PrincipalIdentityMode,

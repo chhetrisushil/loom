@@ -6,6 +6,12 @@ import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loom/effe
 import type { ReplayVM } from "@loom/replay-vm";
 import { linkSignals, parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
+import {
+  CarryTooLargeError,
+  ContinueAsNewRefusedError,
+  ContinueAsNewSignal,
+  ContinueAsNewUnavailableError,
+} from "./continuation";
 import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import { cursorFor, cursorsOf, dedupeKeyOf, topicProblem } from "./inbox";
@@ -314,6 +320,19 @@ export interface InboxBinding {
   readonly read: InboxSource;
 }
 
+/** What the runtime hands the context to serve `continueAsNew` (ADR 0109). */
+export interface ContinuationBinding {
+  /** `kernel.features.continueAsNew`. Off: the call throws {@link ContinueAsNewUnavailableError}. */
+  readonly enabled: boolean;
+  /** The kernel cap on a carry, in bytes of its JSON text. */
+  readonly maxCarryBytes: number;
+  /**
+   * Contract validation of the carry as the successor's `input` (`validateInput`, ADR 0051 D7):
+   * returns the parsed value or throws, before anything is appended.
+   */
+  readonly validate?: (carry: unknown) => unknown;
+}
+
 /** How many messages one inbox read asks for beyond the waits it must satisfy (duplicates are skipped). */
 const INBOX_READ_SLACK = 16;
 /** Bound on one quiescence pass's reads (a stream of nothing but duplicates cannot spin it). */
@@ -367,6 +386,15 @@ export class WorkflowContextImpl implements WorkflowContext {
   // flow's control flow, so a re-run mints the same ids); `pending` is the set of selects not yet
   // answered, in registration order; `epoch` moves on every change quiescence depends on.
   private readonly inboxBinding: InboxBinding | undefined;
+  // ADR 0109 — continue-as-new. `openParallels` counts `parallel` calls in flight (a hand-rolled
+  // `Promise.all([ctx.parallel(..), ctx.continueAsNew(..)])` is refused); `continuation` is the
+  // accepted request, after which new step starts are frozen exactly like a park.
+  private readonly continuationBinding: ContinuationBinding | undefined;
+  private openParallels = 0;
+  private continuation: ContinueAsNewSignal | undefined;
+  private rejectContinue: ((err: unknown) => void) | undefined;
+  /** Rejects with a {@link ContinueAsNewSignal} once a continuation was accepted (even if the flow swallowed the throw). */
+  readonly continueSignal: Promise<never>;
   private readonly waitOrdinals = new Map<string, number>();
   private readonly pending = new Set<PendingSelect>();
   /** Moves on every start AND end of a ctx operation (see `registerSelect`'s concurrent-wait check). */
@@ -431,10 +459,16 @@ export class WorkflowContextImpl implements WorkflowContext {
       errorClasses?: Record<string, ErrorClassCtor>;
       surface?: SurfaceFactory;
       inbox?: InboxBinding;
+      continuation?: ContinuationBinding;
       meterCeilings?: Readonly<Record<string, number>>;
     } = {}
   ) {
     this.inboxBinding = opts.inbox;
+    this.continuationBinding = opts.continuation;
+    this.continueSignal = new Promise<never>((_resolve, reject) => {
+      this.rejectContinue = reject;
+    });
+    this.continueSignal.catch(() => {});
     this.meterCeilings = opts.meterCeilings;
     this.parkSignal = new Promise<never>((_resolve, reject) => {
       this.rejectPark = reject;
@@ -1214,6 +1248,21 @@ export class WorkflowContextImpl implements WorkflowContext {
     branches: Branch[],
     options?: ParallelOptions
   ): Promise<unknown[]> {
+    // ADR 0109 — an open `parallel` is a state `continueAsNew` must refuse (a rotation inside a
+    // scope would orphan its branches), however the flow reaches it.
+    this.openParallels++;
+    try {
+      return await this.parallelScoped(parent, branches, options);
+    } finally {
+      this.openParallels--;
+    }
+  }
+
+  private async parallelScoped(
+    parent: Scope,
+    branches: Branch[],
+    options?: ParallelOptions
+  ): Promise<unknown[]> {
     if (!this.scopesEnabled) return this.parallelLegacy(parent, branches, options);
     const k = parent.parallelCount++;
     const scopePath = `${parent.path}/${k}`;
@@ -1571,6 +1620,76 @@ export class WorkflowContextImpl implements WorkflowContext {
       ...condition
     } = _config as SuspendConfig & { stepId?: unknown; waits?: unknown };
     throw new SuspendError(condition);
+  }
+
+  // ── ADR 0109 — continueAsNew ─────────────────────────────────────────────────────────────────
+
+  /**
+   * End this execution and start its successor with `carry` (ADR 0109 D1). Never returns: it
+   * rejects with a kernel sentinel the runner unwinds on (and the runtime ALSO reads
+   * {@link continueSignal}, so a flow that swallows the rejection still rotates). Every refusal
+   * below is raised BEFORE anything is frozen or appended: the flow may catch it and carry on.
+   */
+  async continueAsNew(carry?: unknown): Promise<never> {
+    const binding = this.continuationBinding;
+    if (binding === undefined || !binding.enabled) throw new ContinueAsNewUnavailableError();
+    // A second call after an accepted one is the same rotation (the flow swallowed the first).
+    if (this.continuation !== undefined) throw this.continuation;
+    const refuse = (reason: string): never => {
+      throw new ContinueAsNewRefusedError(this.executionId, reason);
+    };
+    this.throwIfCancelled();
+    if (this.sealed) refuse("the execution is no longer running (its journal is sealed)");
+    const preconditions = (): void => {
+      if (this.currentScope() !== this.rootScope || this.openParallels > 0) {
+        refuse(
+          "a ctx.parallel scope is open; finish it first (a rotation inside a scope would orphan its branches)"
+        );
+      }
+      if (this.pending.size > 0) {
+        refuse(
+          "a ctx.receive / ctx.select wait is outstanding; a parked wait is not a rotation point (answer or cancel it first)"
+        );
+      }
+    };
+    preconditions();
+    // The carry: JSON, bounded, normalised once (the predecessor's re-drive and the successor's
+    // start must see the same value).
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(carry);
+    } catch {
+      return refuse("the carry has no JSON form (a cycle or a BigInt)");
+    }
+    const bytes = json === undefined ? 0 : Buffer.byteLength(json, "utf8");
+    if (bytes > binding.maxCarryBytes) {
+      throw new CarryTooLargeError(this.executionId, bytes, binding.maxCarryBytes);
+    }
+    let normalized: unknown = json === undefined ? undefined : JSON.parse(json);
+    if (binding.validate !== undefined) normalized = binding.validate(normalized);
+    // The park barrier (ADR 0112 D3): every step in flight — including one a hand-rolled
+    // `Promise.all` started outside a scope — settles first, so a continuation never commits
+    // while a sibling of the predecessor can still append. Bounded by `parkDrainMs`; past it the
+    // call is refused and the flow (not frozen) carries on.
+    if (this.activeWork > 0 && !(await this.idleWithin(this.parkDrainMs))) {
+      refuse(
+        `a step is still in flight after parkDrainMs (${this.parkDrainMs} ms); let it finish before continuing`
+      );
+    }
+    this.throwIfCancelled();
+    if (this.sealed) refuse("the execution is no longer running (its journal is sealed)");
+    if (this.continuation !== undefined) throw this.continuation;
+    preconditions(); // the drain awaited: re-judge everything it could have changed
+    // Accepted. Synchronous from here: nothing starts between the idle check and the freeze.
+    this.frozen = true;
+    this.continuation = new ContinueAsNewSignal(normalized);
+    this.rejectContinue?.(this.continuation);
+    throw this.continuation;
+  }
+
+  /** The accepted continuation, once `continueAsNew` committed to one (the runtime reads it). */
+  get continuationRequest(): ContinueAsNewSignal | undefined {
+    return this.continuation;
   }
 
   // ── ADR 0110 — receive / select ──────────────────────────────────────────────────────────────

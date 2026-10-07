@@ -281,6 +281,25 @@ export interface ExecutionContext extends ExecutionContextExtensions {
    */
   select<T = unknown>(arms: readonly SelectArm[]): Promise<SelectResult<T>>;
 
+  /**
+   * ADR 0109 — end this execution and start its SUCCESSOR with `carry` as its input; NEVER returns
+   * (`return ctx.continueAsNew({ summary, turn: 0 })`). The successor is a fresh execution on the
+   * code registered now, in the same chain (`chainId`, `generation + 1`, id `<chainId>~<n>`); it
+   * inherits the principal, the tenant, the running resource totals, the inbox cursors and dedupe
+   * window and the chain's absolute deadline, and nothing of the fold (frames, decisions, resume
+   * payloads, outcomes), which is the point: history stays bounded. Legal only when the execution
+   * is running, outside any open `parallel` scope, with no outstanding `receive` / `select`
+   * wait, and once every step still in flight has settled (bounded by `parkDrainMs`); otherwise
+   * it throws {@link ContinueAsNewRefusedError} and appends nothing. A carry over `maxCarryBytes`
+   * (default 1 MiB) throws {@link CarryTooLargeError}. There is no `shouldContinueAsNew()`: count
+   * your own turns (`@loom/agent`'s `continueEvery(n)`). Needs `kernel.features.continueAsNew`.
+   *
+   * The predecessor's handle resolves `waitForCompletion()` with its own state (status `continued`,
+   * `variables._continuedTo` names the successor) and never resolves `waitForSuspend()`; follow the
+   * chain with `runtime.followToHead(id)`. A tainted value in the carry stays tainted.
+   */
+  continueAsNew(carry?: unknown): Promise<never>;
+
   // T1 — durable sleep (ABI 1.1.0). The execution suspends with the absolute
   // wake time recorded in the log; a wired TimerService fires the wake as a
   // durable TIMER_FIRED resume, surviving restarts and replaying

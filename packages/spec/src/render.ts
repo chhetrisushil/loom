@@ -53,7 +53,7 @@ export function renderCompatibilityMatrix(m: KernelManifest = kernelManifest()):
     "",
     "**Kernel ABI 1.3.0 reserves the Wave 2 syscalls (`continueAsNew`, `receive`, `select`); a reserved",
     "syscall is not in the table until its writer lands (`receive` / `select` have, behind",
-    "`kernel.features.inbox`).** A syscall is callable iff it is in the kernel's syscall table, which the",
+    "`kernel.features.inbox`, and `continueAsNew`, behind `kernel.features.continueAsNew`).** A syscall is callable iff it is in the kernel's syscall table, which the",
     "wire handshake advertises (`syscalls`) beside `kernelAbiVersion`. Feature-detect against that list;",
     "do not infer availability from `kernelAbiVersion >= 1.3.0` until the writers land.",
     "",
