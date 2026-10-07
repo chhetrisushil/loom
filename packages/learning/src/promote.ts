@@ -77,6 +77,19 @@ export function promotionGate(
       `no unbiased value estimate (estimator: ${report.estimator}) — log policy.propensity at decision time`
     );
   }
+  // `NaN < minLift` is false, so a non-finite number would otherwise pass every comparison.
+  for (const [name, v] of [
+    ["lift", report.lift],
+    ["estimatedValue", report.estimatedValue],
+    ["loggedValue", report.loggedValue],
+    ["effectiveSampleSize", report.effectiveSampleSize],
+  ] as const) {
+    if (v !== undefined && !Number.isFinite(v)) {
+      reasons.push(
+        `${name} is not a finite number (${String(v)}) — the evidence is poisoned or the report is corrupt`
+      );
+    }
+  }
   if (report.lift === undefined) {
     if (requireEstimate) reasons.push("no lift could be computed");
   } else if (report.lift < minLift) {

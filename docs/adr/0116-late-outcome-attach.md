@@ -160,3 +160,24 @@ compaction keeps it;
   execution's own result (a test pins the trajectories, the SNIPS estimate and the logged value equal to the
   on-time run).
 - **Not done here.** `propensity` range validation (design §7 question 8) stays a separate PR.
+
+## Review round 1 (2026-10-07)
+
+- **Sequence after compaction.** A late outcome is appended at `max(stored head, folded sequence) + 1`:
+  after a compaction the stored head can sit below the checkpoint, and an append there would be
+  invisible to the fold (and break idempotency).
+- **Score bound.** `|score| <= 1e9` and finite, in `recordOutcome` AND in a flow's own
+  `OUTCOME_RECORDED` emit (`guardUserspaceEmit`): a finite `1.7e308` otherwise sums to `Infinity` in
+  `trajectories`, making the lift `NaN`, and `NaN < minLift` is false. `@loom/learning`'s
+  `evaluatePolicy` now throws when its reward accumulators are non-finite, and `promotionGate`
+  fails on a non-finite `lift` / `estimatedValue` / `loggedValue` / `effectiveSampleSize`.
+- **Per-execution cap.** At most 1024 late outcomes per execution (`OutcomeRefusedError`); the
+  duplicate check and the fold are O(n), so the cap bounds the cost of a call.
+- **Reward pipelines use their own keys.** The idempotency key is `(decisionId, key)` across in-run
+  and late outcomes: an in-run outcome under the same pair makes a later late one a duplicate (same
+  value) or a conflict (different value). A reward pipeline should namespace its keys (for example
+  `csat:`, `thumbs:`) apart from the flow's own.
+- **Existence oracle.** Like `send` and `resume`, an authorized caller learns whether an execution
+  exists and whether it is terminal; an unauthorized caller is denied before either is revealed.
+- Pending user decisions (not implemented): fencing (Q1), `annotate` default scope (Q2), retention
+  residual (Q3), compaction vs `OUTCOME_RECORDED` (Q4).
