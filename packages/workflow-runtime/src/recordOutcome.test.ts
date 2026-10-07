@@ -829,6 +829,115 @@ for (const backend of [memory, sqlite, postgres]) {
       expect((await h.eventStore.read(e3)).length).toBe(1);
     });
 
+    // ADR 0116 round 5 — restoreTerminalEvent must never supersede a live fence holder.
+    const compactedOld = async (h: Harness, e: string) => {
+      await finish(h, deciding, e);
+      const state = (await h.rt.loadState(e))!;
+      await h.snapshotStore.save({
+        id: `${e}-old-ckpt`,
+        executionId: e,
+        workflowId: state.workflowId,
+        sequence: state.sequence,
+        state,
+        createdAt: 0,
+      });
+      await h.eventStore.truncatePrefix!(e, state.sequence);
+      return state;
+    };
+
+    it("restoreTerminalEvent never supersedes a live fence holder: the holder moves the token between the observation and the CAS -> busy, nothing written, the holder's append lands", async () => {
+      const h = mk();
+      const store = h.eventStore;
+      if (store.acquireFenceIf === undefined || store.appendIfUnchanged === undefined) return;
+      const e = id();
+      const state = await compactedOld(h, e);
+      await store.acquireFence!(e); // a token exists before the repair (token 1)
+      let holder = 0;
+      const wrapped = new Proxy(store, {
+        get: (t, k) => {
+          if (k === "appendIfUnchanged") {
+            return async (...a: Parameters<NonNullable<EventStore["appendIfUnchanged"]>>) => {
+              const r = await t.appendIfUnchanged!(...a);
+              holder = await t.acquireFence!(e); // the live holder wakes up right after the observation
+              return r;
+            };
+          }
+          return bind(Reflect.get(t, k), t);
+        },
+      }) as EventStore;
+      const life = new LogLifecycle(wrapped, h.snapshotStore);
+      const r = await life.restoreTerminalEvent(e, { apply: true });
+      expect(r.status).toBe("busy");
+      expect((await store.read(e)).length).toBe(1); // nothing written
+      // the holder's token was NOT superseded: its append succeeds
+      await store.append({
+        id: `${e}-holder`,
+        workflowId: state.workflowId,
+        executionId: e,
+        eventType: "OUTCOME_RECORDED",
+        sequence: state.sequence + 1,
+        timestamp: 1,
+        payload: {},
+        metadata: { fence: holder },
+      });
+      expect((await store.read(e)).length).toBe(2);
+    });
+
+    it("restoreTerminalEvent on an idle FENCED execution (token > 0, no holder) succeeds, then is intact", async () => {
+      const h = mk();
+      const store = h.eventStore;
+      if (store.acquireFenceIf === undefined || store.appendIfUnchanged === undefined) return;
+      const e = id();
+      const state = await compactedOld(h, e);
+      await store.acquireFence!(e);
+      const life = new LogLifecycle(store, h.snapshotStore);
+      expect(await life.restoreTerminalEvent(e, { apply: true })).toMatchObject({
+        status: "restored",
+        sequence: state.sequence + 1,
+      });
+      expect((await life.restoreTerminalEvent(e, { apply: true })).status).toBe("intact");
+      expect((await h.rt.loadState(e))!.status).toBe("completed");
+    });
+
+    it("concurrent restoreTerminalEvent repairs: exactly one writes, the other reports cleanly (no throw, no duplicate)", async () => {
+      const h = mk();
+      const store = h.eventStore;
+      if (store.acquireFenceIf === undefined || store.appendIfUnchanged === undefined) return;
+      const e = id();
+      await compactedOld(h, e);
+      await store.acquireFence!(e);
+      const life = new LogLifecycle(store, h.snapshotStore);
+      const rs = await Promise.all([
+        life.restoreTerminalEvent(e, { apply: true }),
+        life.restoreTerminalEvent(e, { apply: true }),
+      ]);
+      const statuses = rs.map((r) => r.status).sort();
+      expect(statuses.filter((x) => x === "restored")).toHaveLength(1);
+      expect(statuses.every((x) => x === "restored" || x === "busy" || x === "intact")).toBe(true);
+      expect((await store.read(e)).length).toBe(2);
+    });
+
+    it("a store WITHOUT acquireFenceIf refuses a fenced execution (busy) unless force: true", async () => {
+      const h = mk();
+      const store = h.eventStore;
+      if (store.acquireFence === undefined) return;
+      const e = id();
+      await compactedOld(h, e);
+      await store.acquireFence(e);
+      const bare = new Proxy(store, {
+        get: (t, k) =>
+          k === "acquireFenceIf" || k === "appendIfUnchanged"
+            ? undefined
+            : bind(Reflect.get(t, k), t),
+      }) as EventStore;
+      const life = new LogLifecycle(bare, h.snapshotStore);
+      expect((await life.restoreTerminalEvent(e, { apply: true })).status).toBe("busy");
+      expect((await store.read(e)).length).toBe(1);
+      expect((await life.restoreTerminalEvent(e, { apply: true, force: true })).status).toBe(
+        "restored"
+      );
+    });
+
     it("a fence acquired after the end (redispatch, timers, recovery, a dead holder) does NOT block late outcomes; the token is never bumped", async () => {
       const h = mk();
       const e = id();

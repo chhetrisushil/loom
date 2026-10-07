@@ -37,7 +37,12 @@ export type RestoreTerminalResult =
       eventType: string;
     }
   | { executionId: string; status: "intact" | "missing" | "not-an-execution" }
-  | { executionId: string; status: "not-terminal"; foldedStatus: string };
+  | { executionId: string; status: "not-terminal"; foldedStatus: string }
+  /** Nothing written: the execution is not quiescent (a holder, a writer, a racing repair). Retry later. */
+  | { executionId: string; status: "busy"; reason: string };
+
+const isStaleFence = (err: unknown): boolean =>
+  err instanceof StaleFenceError || (err as { name?: unknown } | null)?.name === "StaleFenceError";
 
 /** Reserved control stream carrying retention facts (EXECUTION_ARCHIVED/_DELETED). */
 export const LIFECYCLE_STREAM = "__loom_lifecycle__";
@@ -804,6 +809,10 @@ export class LogLifecycle {
    *   (`intact`), so a re-run (or a log that was never compacted) writes nothing.
    * - **Refuses non-terminal executions** (`not-terminal`) and `continued` ones (the successor id
    *   is unrecoverable from nothing; a continued execution takes no late outcome anyway).
+   * - **Never supersedes a live holder**: on a fencing store the token is taken by compare-and-set
+   *   on the observed `{head, fence}` (`acquireFenceIf`), and a refusal reports `busy` (nothing
+   *   written, retry later). A store without the CAS refuses a fenced execution (`busy`) unless
+   *   `force: true`.
    * - **Dry by default**: `apply: true` writes. Run it with the execution quiesced: the slot is
    *   written with the ordinary `append` (a conditional append may only take `head + 1`, and the
    *   slot above a checkpoint is by definition not that), under a freshly acquired fence token on a
@@ -812,7 +821,7 @@ export class LogLifecycle {
    */
   async restoreTerminalEvent(
     executionId: string,
-    opts: { apply?: boolean } = {}
+    opts: { apply?: boolean; force?: boolean } = {}
   ): Promise<RestoreTerminalResult> {
     if (executionId === "" || isReservedStream(executionId)) {
       return { executionId, status: "not-an-execution" };
@@ -846,20 +855,46 @@ export class LogLifecycle {
       payload: {},
       metadata: { kernel: true, restoredTerminal: true, ...(fence !== undefined && { fence }) },
     });
-    // Quiesced means the tip has not moved since the fold above; check it again at the write.
-    if (((await headOf(store, executionId)) ?? 0) !== head) {
-      throw new Error(
-        `${executionId} changed while its terminal event was being restored — re-run`
-      );
-    }
-    try {
-      await store.append(envelope());
-    } catch (err) {
-      const fenced =
-        err instanceof StaleFenceError ||
-        (err as { name?: unknown } | null)?.name === "StaleFenceError";
-      if (!fenced || store.acquireFence === undefined) throw err;
-      await store.append(envelope(await store.acquireFence(executionId)));
+    const busy = (reason: string): RestoreTerminalResult => ({
+      executionId,
+      status: "busy",
+      reason,
+    });
+    const stale = async (): Promise<boolean> => ((await headOf(store, executionId)) ?? 0) !== head;
+    if (store.appendIfUnchanged !== undefined && store.acquireFenceIf !== undefined) {
+      // A fencing store: never supersede a live holder. Observe {head, fence}, then take the token
+      // by compare-and-set on EXACTLY that observation (refused if the token moved or an
+      // answering event landed), and re-read the tip once it is ours.
+      const seen = await store.appendIfUnchanged(executionId, null);
+      if (seen.appended) throw new Error("appendIfUnchanged(null) must be a pure observation");
+      if (seen.head === null) return { executionId, status: "missing" };
+      if (seen.head !== head)
+        return busy("the tip moved while the terminal event was being restored");
+      const got = await store.acquireFenceIf(executionId, { fence: seen.fence, parkSeq: head });
+      if ("stale" in got) return busy("the fence token moved (a live holder or another writer)");
+      if (await stale()) return busy("the tip moved after the fence token was acquired");
+      try {
+        await store.append(envelope(got.fence));
+      } catch (err) {
+        if (isStaleFence(err)) return busy("the fence token was superseded");
+        throw err;
+      }
+    } else {
+      // Quiesced means the tip has not moved since the fold above; check it again at the write.
+      if (await stale()) return busy("the tip moved while the terminal event was being restored");
+      try {
+        await store.append(envelope());
+      } catch (err) {
+        // A fence row exists (token > 0): a store that cannot CAS the token can only supersede
+        // whoever holds it, so that takes an explicit force.
+        if (!isStaleFence(err) || store.acquireFence === undefined) throw err;
+        if (opts.force !== true) {
+          return busy(
+            "the execution carries a fence token and the store cannot compare-and-set it; re-run with force"
+          );
+        }
+        await store.append(envelope(await store.acquireFence(executionId)));
+      }
     }
     return { executionId, status: "restored", sequence, eventType };
   }

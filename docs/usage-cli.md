@@ -90,7 +90,7 @@ loom — project-local commands for a Loom app
                                                   wrote to execution "" (ADR 0107): proven
                                                   segments only; the rest is listed with its
                                                   candidates, never guessed
-  loom repair terminal-event <store> [executionId] [--apply]
+  loom repair terminal-event <store> [executionId] [--apply] [--force]
                                                   give an execution a pre-0116 compaction left
                                                   as [0]+checkpoint its terminal event back, so
                                                   it can take a late outcome (ADR 0116)
