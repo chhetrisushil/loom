@@ -22,12 +22,13 @@ const definition = (id: string): FlowDefinition<unknown, unknown> => ({
   steps: [],
 });
 
-function setup(runner: FlowRunner<unknown, unknown>) {
+function setup(runner: FlowRunner<unknown, unknown>, maxChainHops?: number) {
   const runtime = new WorkflowRuntime({
     eventStore: new InMemoryAsyncEventStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime: new EffectRuntime(),
     continueAsNewEnabled: true,
+    ...(maxChainHops !== undefined && { maxChainHops }),
     onWarn: () => {},
   });
   runtime.registerFlow(definition("rot"), runner);
@@ -124,5 +125,36 @@ describe("LocalWorkerRuntime — follow-to-head (ADR 0109 D6)", () => {
     expect(result.status).toBe("completed");
     expect(result.executionId).toBe("ten");
     expect(result.output).toEqual({ finishedIn: 10 });
+  });
+
+  it("an unverifiable deepest generation past maxChainHops is a failed dispatch, never a throw or a completion", async () => {
+    const { runtime, worker, pkg } = setup(async (ctx, input) => {
+      const gen = (input as { gen?: number } | undefined)?.gen ?? 0;
+      if (gen < 6) return ctx.continueAsNew({ gen: gen + 1 });
+      await ctx.suspend({ on: "end" });
+      return "end";
+    }, 2);
+    const h = await runtime.start(runtime.getFlow("rot")!, {}, { executionId: "sq" });
+    await h.waitForCompletion().catch(() => undefined);
+    for (let i = 0; i < 200 && (await runtime.loadState("sq~6"))?.status !== "suspended"; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    await runtime.events.append({
+      id: "sq~7-0",
+      workflowId: "rot",
+      executionId: "sq~7",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: {
+        input: {},
+        chainId: "sq",
+        generation: 7,
+        continuedFrom: { executionId: "elsewhere" },
+      },
+    });
+    const lease = await worker.allocate({ executionId: "sq", workflowId: "rot" } as never);
+    const result = await worker.execute(lease, pkg("sq"));
+    expect(result.status).toBe("failed");
   });
 });

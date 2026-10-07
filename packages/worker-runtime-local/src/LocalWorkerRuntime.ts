@@ -7,6 +7,7 @@ import type {
   WorkerRequest,
   WorkerRuntime,
 } from "@loom/worker-runtime";
+import { ChainHopLimitError } from "@loom/workflow-runtime";
 import type { RunOptions, SystemGrant, WorkflowRuntime } from "@loom/workflow-runtime";
 
 type Principal = NonNullable<RunOptions["principal"]>;
@@ -130,7 +131,15 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // `followToHead` routes to the chain's newest generation however many times it rotated (a flow
     // that rotates ten times and then completes is a completion, not a failure), verifying links.
     while (current.status === "continued") {
-      const head = await this.runtime.followToHead(id, this.identity(pkg.principal));
+      let head: Awaited<ReturnType<WorkflowRuntime["followToHead"]>>;
+      try {
+        head = await this.runtime.followToHead(id, this.identity(pkg.principal));
+      } catch (err) {
+        // an unverifiable deepest generation past the hop bound: leave the chain `continued` (the
+        // fail-safe `failed` dispatch), never guess and never throw out of the dispatch
+        if (err instanceof ChainHopLimitError) break;
+        throw err;
+      }
       if (head === null || head.executionId === id) break; // an unreadable / unverifiable successor
       id = head.executionId;
       current = head.state;

@@ -10,7 +10,12 @@ import {
   iterateExecutionIds,
   readRangeOf,
 } from "@loom/event-runtime";
-import { ResumeContendedError, ResumeRefusedError, scheduleRedrive } from "@loom/workflow-runtime";
+import {
+  ChainHopLimitError,
+  ResumeContendedError,
+  ResumeRefusedError,
+  scheduleRedrive,
+} from "@loom/workflow-runtime";
 import type {
   ExecutionContext,
   LineageGrant,
@@ -1496,7 +1501,19 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     // child's slot, and a further rotation advances it (`EXECUTION_CONTINUED` below).
     let headId = childId;
     if (st.status === "continued") {
-      const head = await deps.runtime.followToHead(childId, deps.runtime.systemOptions());
+      let head: Awaited<ReturnType<typeof deps.runtime.followToHead>>;
+      try {
+        head = await deps.runtime.followToHead(childId, deps.runtime.systemOptions());
+      } catch (err) {
+        // The deepest generation failed verification and the verified fallback ran out of hops:
+        // the head is not reachable NOW. Fail safe: the child stays "running" (nothing settles on
+        // an unverified log, the parent is not resumed) and the sweep retries; never a crash.
+        if (err instanceof ChainHopLimitError) {
+          fail(err);
+          return "running";
+        }
+        throw err;
+      }
       if (head === null) return "running";
       headId = head.executionId;
       st = head.state;

@@ -2409,9 +2409,21 @@ export class WorkflowRuntime {
     // execution's own sequence 0 / the durable log say (dropped when the log says nothing), so a
     // doctored state cannot forge who owns a successor, which chain it joins, or where it points.
     const restoredFirst = (await readRangeOf(this.eventStore, preloadedState.executionId, 0, 0))[0];
+    // ADR 0109 D2 (a) — restoring a state onto an id with NO log would CREATE that log: it may not
+    // be a reserved successor id (a squat at `victim~1`, `victim~5` or `victim::g#0~1` would fail
+    // or mis-route the victim's rotation). Refused for every caller, after the authorization above
+    // and without reading any parent (no existence oracle).
+    if (restoredFirst === undefined && successorShapeOf(preloadedState.executionId) !== "none") {
+      throw new ReservedSuccessorIdError(preloadedState.executionId);
+    }
+    // The durable fold as it exists BEFORE this restore (snapshot + tail of the existing log): it
+    // predates the caller's state, so it is what the log says about the running totals, the inbox
+    // cursors and the start time (which feeds the chain deadline).
+    const restoredDurable =
+      restoredFirst === undefined ? null : await this.foldState(preloadedState.executionId);
     const vm = new ReplayVM(
       [],
-      this.withLogIdentity(normalizeSnapshotState(preloadedState), restoredFirst)
+      this.withLogIdentity(normalizeSnapshotState(preloadedState), restoredFirst, restoredDurable)
     );
     const originalInput = preloadedState.variables._input;
     return this.execute(
@@ -2443,7 +2455,11 @@ export class WorkflowRuntime {
    * from the execution's own sequence 0 (`first`) instead of from the (caller-supplied) state: the
    * fold of the log's first event IS the identity the log records, by the fold's own rules.
    */
-  private withLogIdentity(state: ExecutionState, first: EventEnvelope | undefined): ExecutionState {
+  private withLogIdentity(
+    state: ExecutionState,
+    first: EventEnvelope | undefined,
+    durable: ExecutionState | null
+  ): ExecutionState {
     const logged = new ReplayVM(first !== undefined ? [first] : [], {
       executionId: state.executionId,
       workflowId: state.workflowId,
@@ -2454,7 +2470,14 @@ export class WorkflowRuntime {
       delete variables[key];
       if (key !== "_continuedTo" && logged[key] !== undefined) variables[key] = logged[key];
     }
-    return { ...state, variables };
+    // The running totals, the inbox cursors / dedupe window and the start time are the LOG's too:
+    // a snapshot saved from this run would otherwise persist the caller's values, and a rotation's
+    // carry (and chain deadline) reads the durable fold. No log: fresh defaults.
+    for (const key of ["_resources", "_inbox"] as const) {
+      delete variables[key];
+      if (durable?.variables[key] !== undefined) variables[key] = durable.variables[key];
+    }
+    return { ...state, startedAt: durable?.startedAt ?? 0, variables };
   }
 
   /**
@@ -3199,8 +3222,7 @@ export class WorkflowRuntime {
             return {
               ...base,
               status: "hop-limit",
-              hopLimitOf: async () =>
-                `${chainOfFirstEnvelope(first, id).chainId}~${await this.deepestGenerationOf(chainOfFirstEnvelope(first, id))}`,
+              hopLimitOf: async () => id, // the furthest VERIFIED id reached, never an unverified deepest log
             };
           }
           const successor = (await readRangeOf(this.eventStore, next, 0, 0))[0];
@@ -3233,8 +3255,7 @@ export class WorkflowRuntime {
             return {
               ...base,
               status: "hop-limit",
-              hopLimitOf: async () =>
-                `${chainOfFirstEnvelope(first, id).chainId}~${await this.deepestGenerationOf(chainOfFirstEnvelope(first, id))}`,
+              hopLimitOf: async () => id, // the furthest VERIFIED id reached, never an unverified deepest log
             };
           }
           id = next;
@@ -5454,11 +5475,12 @@ export class WorkflowRuntime {
         next = await this.probeSuccessor(id, chainOfState(state, id));
       }
       if (next === undefined) return performed;
+      // More links than `maxChainHops`: the cancel did NOT reach the head. Say so, naming the
+      // furthest id reached, rather than report a cancellation that left a live generation behind.
+      if (hop >= this.maxChainHops)
+        throw new ChainHopLimitError(executionId, this.maxChainHops, id);
       id = next;
     }
-    // More links than `maxChainHops`: the cancel did NOT reach the head. Say so, naming it, rather
-    // than report a cancellation that left a live generation behind.
-    const at = await this.foldState(id);
     throw new ChainHopLimitError(executionId, this.maxChainHops, id);
   }
 
