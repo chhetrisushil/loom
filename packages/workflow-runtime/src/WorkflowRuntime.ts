@@ -33,6 +33,7 @@ import { sliceBySequence } from "@loom/event-runtime/sequence";
 import {
   EVENT_SCHEMA_VERSION,
   FAILED_WHILE_PARKED,
+  FLOW_DIVERGED_GATE,
   ReplayVM,
   knownEventTypes,
   normalizeSnapshotState,
@@ -290,6 +291,15 @@ export interface WorkflowRuntimeDeps {
    * `parallel` scope are compared as a set once it closes.
    */
   divergence?: DivergenceMode;
+  /**
+   * ADR 0113 D1 — record the structural flow hash as `sha256:<hex>` on new starts. **Default
+   * `false`** (the rolling-upgrade rule, `kernel.features.sha256FlowHash`): a node that predates
+   * ADR 0113 compares the recorded value with its own 32-bit `fnv1a:` hash and would refuse to
+   * resume every execution a newer node started (`FlowCodeMismatchError`). Off, new starts keep
+   * writing `fnv1a:`; either form is always READ and accepted. Turn it on once every node reads
+   * `sha256:`.
+   */
+  sha256FlowHash?: boolean;
   /** ADR 0109 D1 — the kernel cap on a carry, in bytes of its JSON text. Default 1 MiB (1 048 576). */
   maxCarryBytes?: number;
   /**
@@ -532,6 +542,10 @@ function answerEvents(
 ): Array<{ eventType: string; payload: unknown }> {
   if (before.status === "suspended") {
     const condition = before.suspendedOn;
+    // ADR 0113 — the refusal park is re-driven, not answered: status-only, so the answer never
+    // reaches `_resumePayloads` (where the body's next gate would take it as its approval).
+    if (condition?.on === FLOW_DIVERGED_GATE)
+      return [{ eventType: "EXECUTION_RESUMED", payload: null }];
     if (condition?.on !== EFFECT_INDOUBT_RESOLVED) {
       return [{ eventType: "EXECUTION_RESUMED", payload }];
     }
@@ -804,7 +818,13 @@ export class WorkflowRuntime {
   private readonly maxChainHops: number;
   // ADR 0113 D3 — the replay-divergence detector's mode, and how often it warned.
   private readonly divergenceMode: DivergenceMode;
+  private readonly sha256FlowHash: boolean;
   private divergenceWarned = 0;
+  /** The hash a NEW start / migration records for `flowId` (see `sha256FlowHash`). */
+  private recordedHashOf(flowId: string): string | undefined {
+    return (this.sha256FlowHash ? this.flowHashes : this.flowLegacyHashes).get(flowId);
+  }
+
   /** ADR 0113 D3 — how many runs the detector has reported (`warn` mode) since this runtime was built. */
   get divergenceWarnings(): number {
     return this.divergenceWarned;
@@ -890,6 +910,7 @@ export class WorkflowRuntime {
       throw new Error(`divergence must be "off", "warn" or "fail" (got ${String(divergence)})`);
     }
     this.divergenceMode = divergence;
+    this.sha256FlowHash = deps.sha256FlowHash === true;
     if (this.inboxEnabled && deps.eventStore.appendBatch === undefined) {
       // The notify path journals `[MESSAGE_CONSUMED…, EXECUTION_RESUMED]` as ONE atomic write: a
       // sequential fallback can leave a consumption journaled with its resume missing and a
@@ -2132,9 +2153,9 @@ export class WorkflowRuntime {
   /**
    * ADR 0113 D2 — the body fingerprint, compared beside the structural hash. Both sides must carry
    * one (absent = "no fingerprint", today's behaviour); a recorded value the registered flow lists
-   * in `compatibleWith` is the author's explicit assertion that the edit is replay-compatible. An
-   * execution that has been MIGRATED is skipped: `EXECUTION_MIGRATED` re-points the structural
-   * hash but not `_codeHash`, and the migration was itself the operator's decision to run new code.
+   * in `compatibleWith` is the author's explicit assertion that the edit is replay-compatible.
+   * `EXECUTION_MIGRATED` re-arms the comparison: it records the target flow's fingerprint
+   * (`toCodeHash`, "" when it has none), so a migrated execution is held to the code it now runs.
    */
   private assertCodeCompatible(
     executionId: string,
@@ -2144,10 +2165,14 @@ export class WorkflowRuntime {
   ): RegisteredFlow {
     const recorded = state.variables._codeHash;
     const registered = flow.definition.codeFingerprint;
-    if (typeof recorded !== "string" || typeof registered !== "string" || recorded === registered) {
+    if (
+      typeof recorded !== "string" ||
+      recorded === "" || // a migration onto code with no fingerprint clears it
+      typeof registered !== "string" ||
+      recorded === registered
+    ) {
       return flow;
     }
-    if (state.variables._migratedTo !== undefined) return flow;
     if (flow.definition.compatibleWith?.includes(recorded) === true) return flow;
     throw new FlowCodeMismatchError(executionId, workflowId, recorded, registered, "code");
   }
@@ -2677,7 +2702,7 @@ export class WorkflowRuntime {
 
     // K11.1 — record the flow-code fingerprint this execution starts under
     // (additive payload field; legacy logs without it resume unchecked).
-    const flowHash = this.flowHashes.get(definition.id);
+    const flowHash = this.recordedHashOf(definition.id);
     const bootstrap: BootstrapEvent = {
       eventType: "EXECUTION_STARTED",
       payload: {
@@ -4373,7 +4398,7 @@ export class WorkflowRuntime {
     if (!target) {
       throw new Error(`No flow registered for workflowId: "${newFlowId}"`);
     }
-    const toHash = this.flowHashes.get(newFlowId);
+    const toHash = this.recordedHashOf(newFlowId);
 
     const snapshot = await this.snapshotStore.loadLatest(executionId);
     let vm: ReplayVM;
@@ -4532,6 +4557,8 @@ export class WorkflowRuntime {
           toFlowId: newFlowId,
           strategy: options.strategy,
           ...(toHash !== undefined && { toHash }),
+          // ADR 0113 D2 — re-arm the body-fingerprint comparison against the code now run ("" = none).
+          toCodeHash: target.definition.codeFingerprint ?? "",
           ...(typeof recorded === "string" && { fromHash: recorded }),
           ...(stateMigrated && { migratedInput }),
         },
@@ -4552,6 +4579,18 @@ export class WorkflowRuntime {
       options.deadlineMs ?? target.definition.deadlineMs,
       acting
     );
+  }
+
+  /**
+   * ADR 0113 (R7 fix round 1) — re-run an execution a `divergence: "fail"` refusal PARKED on the
+   * reserved gate, after the code was fixed, pinned (`registerFlow` the original), listed in
+   * `compatibleWith`, or migrated. It is `resume` addressed at that gate: the same authorization,
+   * identity and fencing checks apply (`options` are `resume`'s), and the answer is status-only. A
+   * re-run that still diverges parks again, once per call; an execution not parked there is
+   * refused (`gate-mismatch` / `not-suspended`).
+   */
+  retryDiverged(executionId: string, options?: RunOptions): Promise<ExecutionHandle> {
+    return this.resume(executionId, { eventType: FLOW_DIVERGED_GATE, payload: null }, options);
   }
 
   /**
@@ -5398,7 +5437,7 @@ export class WorkflowRuntime {
         ? seed.variables._parent
         : undefined;
     const state = durable;
-    const flowHash = this.flowHashes.get(workflowId);
+    const flowHash = this.recordedHashOf(workflowId);
     const computeTarget = first0?.metadata?.[COMPUTE_TARGET_KEY];
     const bootstrap: BootstrapEvent = {
       eventType: "EXECUTION_STARTED",
@@ -5782,7 +5821,7 @@ export class WorkflowRuntime {
       executionId,
       this.divergenceMode,
       vm.expectedReplayFrames(),
-      () => ctx.parallelOpen,
+      vm.recordedFrameOrder(),
       (message) => {
         this.divergenceWarned++;
         this.onWarn(message);
@@ -5790,11 +5829,14 @@ export class WorkflowRuntime {
     );
     journal.setAppendGuard((eventType, payload) => {
       // A step the LOG ALREADY HAS a frame for (a failed or in-flight one, re-run live by design
-      // — an untyped failure re-executes on every re-run) is part of the recorded shape, not new
-      // work under a changed one.
+      // — an untyped failure re-executes on every re-run) is part of the recorded shape, but only
+      // the frames recorded BEFORE it are excused from being asked for first.
       if (eventType === "STEP_STARTED" || eventType === "EFFECT_INDOUBT") {
         const id = (payload as { stepId?: unknown } | null)?.stepId;
-        if (typeof id === "string" && Object.hasOwn(vm.peekState().frames, id)) return;
+        if (typeof id === "string" && Object.hasOwn(vm.peekState().frames, id)) {
+          divergence.check(eventType, id);
+          return;
+        }
       }
       divergence.check(eventType);
     });
@@ -5899,6 +5941,25 @@ export class WorkflowRuntime {
     // permanently failed — after the code is fixed, or the execution migrated, it resumes), and no
     // park or completion. The log ends where the bootstrap left it; the handle rejects.
     const refuseDiverged = async (err: unknown): Promise<void> => {
+      // PARK on the reserved gate (user decision, R7 fix round 1): a refused run that stayed
+      // `running` was re-driven by every recovery pass, invisibly, forever. A park is the one state
+      // recovery and timers leave alone and every consumer already reads as "waiting on a person";
+      // `retryDiverged` re-runs it after the code is fixed, pinned or migrated. No EXECUTION_FAILED.
+      // Never appended over a failed store (the run is then recoverable as a storage failure).
+      if (!journal.failed && err instanceof FlowReplayDivergenceError && !cancelled) {
+        const summary = `skipped ${err.skippedCount}: ${err.skippedSteps.join(",")}`.slice(0, 256);
+        journal.commit(
+          "EXECUTION_SUSPENDED",
+          { condition: { on: FLOW_DIVERGED_GATE, correlationKey: summary } },
+          { unguarded: true }
+        );
+      }
+      // ALWAYS signalled (the log alone is silent): the runtime's warning channel, and the handle
+      // rejects, which `recoverAbandoned` reports through `onError` / `failed`.
+      this.divergenceWarned++;
+      this.onWarn(
+        `execution "${executionId}" PARKED on "${FLOW_DIVERGED_GATE}" (divergence: fail): ${(err as Error).message} Re-run with retryDiverged("${executionId}") after the code is fixed, pinned or migrated.`
+      );
       ctx.seal();
       await journal.drain().catch(() => {});
       rejectSuspend(err);
@@ -6044,7 +6105,7 @@ export class WorkflowRuntime {
           if (failure === undefined) return;
           err = failure.error; // a conflicting successor id: the predecessor FAILS with it
         }
-        if (err instanceof SuspendError) {
+        if (err instanceof SuspendError && err.condition.on !== FLOW_DIVERGED_GATE) {
           // T1 — when a timer store is wired, a wake time becomes part of the
           // durable condition: explicit (`ctx.sleep`'s wakeAt) or derived ONCE
           // from `suspend({ timeout })` (this is the only place wall clock

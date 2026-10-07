@@ -176,9 +176,15 @@ export class ExecutionJournal {
   commit(
     eventType: string,
     payload: unknown,
-    opts?: { id?: string; timestamp?: number; metadata?: Record<string, unknown> }
+    opts?: {
+      id?: string;
+      timestamp?: number;
+      metadata?: Record<string, unknown>;
+      /** Skip the append guard: the runtime's own refusal park, and flow-level emits (ADR 0113). */
+      unguarded?: boolean;
+    }
   ): EventEnvelope {
-    this.appendGuard?.(eventType, payload);
+    if (opts?.unguarded !== true) this.appendGuard?.(eventType, payload);
     const sequence = ++this.seq;
     const envelope = ExecutionJournal.build(
       this.identity,

@@ -465,7 +465,7 @@ describe("ADR 0103 — the barrier's ordering, and the ulid path's byte-identity
       timestamp: T0,
       payload: {
         input: { k: 1 },
-        flowHash: expect.stringMatching(/^sha256:/),
+        flowHash: expect.stringMatching(/^fnv1a:/),
         principal: { v: 1 }, // R3k: every 1.23.0 start records one, anonymous included
       },
       metadata: { computeTarget: "gpu-lane", fence: 7 },

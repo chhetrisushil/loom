@@ -1,6 +1,7 @@
-import type { ExecutionState } from "@loom/core";
+import { flowContentHash, legacyFlowContentHash } from "@loom/core";
+import type { ExecutionState, FlowDefinition } from "@loom/core";
 import { describe, expect, it } from "vitest";
-import { canServePin, describePin, pinOf } from "./pinning";
+import { canServePin, canServePinFrom, describePin, pinOf } from "./pinning";
 
 function state(variables: Record<string, unknown>, version = "1.0.0"): ExecutionState {
   return {
@@ -74,5 +75,23 @@ describe("canServePin", () => {
 
   it("serves a legacy execution — there is no pin to violate", () => {
     expect(canServePin(pinOf(state({})), new Set())).toBe(true);
+  });
+});
+
+describe("canServePinFrom — a pin in either hash generation (ADR 0113 D1)", () => {
+  const def = (version: string) =>
+    ({ _tag: "FlowDefinition", id: "wf", version, steps: [] }) as unknown as FlowDefinition;
+  it("a legacy fnv1a: pin is served by a definition whose current hash is sha256:", () => {
+    const legacy = pinOf(state({ _flowHash: legacyFlowContentHash(def("1")) }));
+    const modern = pinOf(state({ _flowHash: flowContentHash(def("1")) }));
+    expect(canServePinFrom(legacy, [def("1")])).toBe(true);
+    expect(canServePinFrom(modern, [def("1")])).toBe(true);
+    expect(canServePinFrom(legacy, [def("2")])).toBe(false);
+    expect(canServePinFrom(modern, [])).toBe(false);
+    // the raw-set form cannot know the two are the same structure (the reason this helper exists)
+    expect(canServePin(legacy, new Set([flowContentHash(def("1"))]))).toBe(false);
+  });
+  it("an unpinned legacy execution is served (no pin to violate)", () => {
+    expect(canServePinFrom(pinOf(state({})), [])).toBe(true);
   });
 });

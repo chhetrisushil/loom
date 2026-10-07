@@ -1,4 +1,5 @@
-import type { ExecutionState } from "@loom/core";
+import { flowHashMatches } from "@loom/core";
+import type { ExecutionState, FlowDefinition } from "@loom/core";
 import type { VersionPin } from "./types";
 
 // ── IX-5 — version-pinned reconstruction ──────────────────────────────────────
@@ -72,4 +73,23 @@ export function describePin(pin: VersionPin): string {
 export function canServePin(pin: VersionPin, availableFlowHashes: ReadonlySet<string>): boolean {
   if (pin.status === "unpinned-legacy") return true;
   return pin.flowHash !== undefined && availableFlowHashes.has(pin.flowHash);
+}
+
+/**
+ * ADR 0113 D1 — {@link canServePin} over DEFINITIONS rather than a set of hash strings. A pin
+ * recorded as the legacy 32-bit `fnv1a:` form and a definition whose current hash is `sha256:` are
+ * the same structure, and a raw string lookup cannot know that; this recomputes the comparison
+ * with `flowHashMatches`, which accepts either generation. Same rule otherwise: a pinned execution
+ * no available definition matches cannot be reconstructed, and the caller must say so.
+ */
+export function canServePinFrom(
+  pin: VersionPin,
+  definitions: Iterable<FlowDefinition<never, never> | FlowDefinition>
+): boolean {
+  if (pin.status === "unpinned-legacy") return true;
+  if (pin.flowHash === undefined) return false;
+  for (const def of definitions) {
+    if (flowHashMatches(pin.flowHash, def as FlowDefinition)) return true;
+  }
+  return false;
 }

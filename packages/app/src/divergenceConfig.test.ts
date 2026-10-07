@@ -71,3 +71,38 @@ describe("kernel.divergence", () => {
     await app.close();
   });
 });
+
+describe("kernel.features.sha256FlowHash (ADR 0113 D1, rolling-upgrade flag)", () => {
+  const flagOf = (app: { runtime: unknown }): boolean =>
+    (app.runtime as { sha256FlowHash: boolean }).sha256FlowHash;
+
+  it("is OFF by default, and security.strict does not turn it on (a fleet decision)", async () => {
+    const plain = defineConfigRaw({
+      storage: { kind: "memory" },
+      autostart: false,
+      security: { strict: false },
+    });
+    expect(flagOf(plain)).toBe(false);
+    await plain.close();
+    const strict = defineConfigRaw(
+      withPrincipalCodec({
+        storage: { kind: "memory" },
+        autostart: false,
+        security: strictSecurity,
+      })
+    );
+    expect(flagOf(strict)).toBe(false);
+    await strict.close();
+  });
+
+  it("reaches the runtime when set", async () => {
+    const app = defineConfigRaw({
+      storage: { kind: "memory" },
+      autostart: false,
+      security: { strict: false },
+      kernel: { features: { sha256FlowHash: true } },
+    });
+    expect(flagOf(app)).toBe(true);
+    await app.close();
+  });
+});

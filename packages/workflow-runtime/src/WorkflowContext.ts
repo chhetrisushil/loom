@@ -3,6 +3,7 @@ import { tainted } from "@loom/classify";
 import { BUILTIN_METER_DIMENSIONS, SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
 import type { ExecutableTask, StepDefinition, SuspendWait } from "@loom/core";
 import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loom/effect-runtime";
+import { FLOW_DIVERGED_GATE } from "@loom/replay-vm";
 import type { ReplayVM } from "@loom/replay-vm";
 import { linkSignals, parallelLimit } from "@loom/scheduler";
 import type { ExecutionJournal } from "./ExecutionJournal";
@@ -338,6 +339,23 @@ const INBOX_READ_SLACK = 16;
 /** Bound on one quiescence pass's reads (a stream of nothing but duplicates cannot spin it). */
 const INBOX_READ_PASSES = 8;
 
+/** What the context tells the replay-divergence detector (ADR 0113 D3). */
+export interface DivergenceHooks {
+  visit(id: string): void;
+  scopeOpen(stepIds: readonly string[]): void;
+  scopeClose(): void;
+  decisionServed(decisionId: string, innerSteps: readonly string[] | undefined): void;
+}
+
+/** The steps a live decider has run so far (and its enclosing deciders'), per async context. */
+interface InnerSteps {
+  readonly ids: Set<string>;
+  readonly parent: InnerSteps | undefined;
+}
+const deciderStore = new AsyncLocalStorage<{ owner: object; inner: InnerSteps }>();
+/** A decision record lists its inner steps only up to this many (past it the naming fallback applies). */
+const MAX_INNER_STEPS = 256;
+
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
   readonly workflowId: string;
@@ -395,9 +413,7 @@ export class WorkflowContextImpl implements WorkflowContext {
   get parallelOpen(): boolean {
     return this.openParallels > 0;
   }
-  private readonly divergence:
-    | { visit(id: string): void; check(eventType: string): void; decisionServed(): void }
-    | undefined;
+  private readonly divergence: DivergenceHooks | undefined;
   private continuation: ContinueAsNewSignal | undefined;
   private rejectContinue: ((err: unknown) => void) | undefined;
   /** Rejects with a {@link ContinueAsNewSignal} once a continuation was accepted (even if the flow swallowed the throw). */
@@ -469,11 +485,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       continuation?: ContinuationBinding;
       meterCeilings?: Readonly<Record<string, number>>;
       /** ADR 0113 D3 — told which recorded steps the re-run asks for. */
-      divergence?: {
-        visit(id: string): void;
-        check(eventType: string): void;
-        decisionServed(): void;
-      };
+      divergence?: DivergenceHooks;
     } = {}
   ) {
     this.divergence = opts.divergence;
@@ -553,7 +565,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     ); // ADR 0104
     const digest = flowEmitDigest(eventType, payload, this.suspendPassthroughsConsumed);
     if (digest === undefined) {
-      this.commit(eventType, payload); // cannot be matched: always append (never stamped)
+      this.commit(eventType, payload, { unguarded: true }); // cannot be matched: always append (never stamped)
       return;
     }
     const seen = this.flowEmitsSeen.get(digest) ?? 0;
@@ -561,11 +573,14 @@ export class WorkflowContextImpl implements WorkflowContext {
     const logged = this.vm.flowEmitCount(digest);
     if (seen < logged && !this.segmentLive) return; // proven: a replay of a logged emit
     if (seen < logged || this.inFlight > 0 || this.unsettled) {
-      this.commit(eventType, payload); // appended, unstamped: serves nothing later
+      this.commit(eventType, payload, { unguarded: true }); // appended, unstamped: serves nothing later
       return;
     }
     if (this.isSealed(eventType)) return;
-    this.journal.commit(eventType, payload, { metadata: { flowEmit: digest } });
+    this.journal.commit(eventType, payload, {
+      metadata: { flowEmit: digest },
+      unguarded: true, // ADR 0113: a flow-level emit is not judged (an unprovable one re-appends on every re-run)
+    });
   }
 
   // Synchronous: the journal allocates a sequence, folds the VM, fires onEvent,
@@ -574,9 +589,13 @@ export class WorkflowContextImpl implements WorkflowContext {
   // `EffectContext.emit` come through here, never through the flow-level `emit`:
   // their callers are already served from the fold on a re-run, and they must not
   // consume a flow-emit ordinal (ADR 0102).
-  private commit(eventType: string, payload: unknown): void {
+  private commit(
+    eventType: string,
+    payload: unknown,
+    opts?: { metadata?: Record<string, unknown>; unguarded?: boolean }
+  ): void {
     if (this.isSealed(eventType)) return;
-    this.journal.commit(eventType, payload);
+    this.journal.commit(eventType, payload, opts);
   }
 
   /**
@@ -703,6 +722,13 @@ export class WorkflowContextImpl implements WorkflowContext {
   ): Promise<TOut> {
     const id = task.id;
     this.divergence?.visit(id); // ADR 0113 D3 — the re-run asked for this recorded step
+    const deciding = deciderStore.getStore();
+    if (deciding !== undefined && deciding.owner === this) {
+      // Inside a live decider: the decision's record names this step (ADR 0113 D3, `innerSteps`).
+      for (let d: InnerSteps | undefined = deciding.inner; d !== undefined; d = d.parent) {
+        if (d.ids.size <= MAX_INNER_STEPS) d.ids.add(id);
+      }
+    }
     // ADR 0104 — a `kind: "human"` step (HumanEffect) is a SUSPEND POINT: its effect parks the
     // execution and the resume that answers it is a `_resumePayloads` entry. It consumes that
     // entry in order with every `ctx.suspend`, live AND on replay past the completed step —
@@ -1040,7 +1066,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     assertFlowDecisionId(decisionId);
     if (this.vm.hasDecision(decisionId)) {
       // ADR 0113 D3 — the decider is skipped, and so is every step it ran.
-      this.divergence?.decisionServed();
+      this.divergence?.decisionServed(decisionId, this.vm.getDecisionInnerSteps(decisionId));
       return this.vm.getDecision(decisionId) as T;
     }
     if (opts?.estimatedCost !== undefined) assertEstimatedCost(opts.estimatedCost);
@@ -1051,10 +1077,6 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (cancelScope.served !== undefined) throw new ScopeServedError(decisionId, cancelScope.path);
     if (cancelScope !== this.rootScope) this.throwIfCancelled(cancelScope.signal);
     if (this.frozen || scopeIsParked(cancelScope)) return new Promise<T>(() => {});
-
-    // ADR 0113 D3 — a live decision is the first append under a diverged body too, and its decider
-    // (a model call, a router) is real work: refuse BEFORE it runs, not at the record after it.
-    this.divergence?.check("DECISION_RECORDED");
 
     // ADR 0102 — a decider runs only when the decision is made (served on a re-run):
     // the decision is live for this segment, an emit appended while it runs is left
@@ -1101,8 +1123,15 @@ export class WorkflowContextImpl implements WorkflowContext {
         });
       },
     };
+    const inner: InnerSteps = {
+      ids: new Set(),
+      parent: (() => {
+        const outer = deciderStore.getStore();
+        return outer !== undefined && outer.owner === this ? outer.inner : undefined;
+      })(),
+    };
     try {
-      choice = await decider(scope);
+      choice = await deciderStore.run({ owner: this, inner }, () => decider(scope));
     } catch (err) {
       this.unsettled = true;
       throw err;
@@ -1113,23 +1142,32 @@ export class WorkflowContextImpl implements WorkflowContext {
       this.endWork();
     }
 
-    this.commit("DECISION_RECORDED", {
-      decisionId,
-      choice,
-      ...(opts?.rationale !== undefined && { rationale: opts.rationale }),
-      ...(opts?.source !== undefined && { source: opts.source }),
-      ...(opts?.alternatives !== undefined && { alternatives: opts.alternatives }),
-      ...(opts?.estimatedCostUsd !== undefined && { estimatedCostUsd: opts.estimatedCostUsd }),
-      ...(opts?.estimatedCost !== undefined && { estimatedCost: opts.estimatedCost }),
-      ...(opts?.estimatedLatencyMs !== undefined && {
-        estimatedLatencyMs: opts.estimatedLatencyMs,
-      }),
-      ...(opts?.confidence !== undefined && { confidence: opts.confidence }),
-      // ADR 0079 — the learning half of the D1 metadata: what the policy SAW and
-      // which policy it was. Descriptive only; `getDecision` still returns `choice`.
-      ...(opts?.context !== undefined && { context: opts.context }),
-      ...(opts?.policy !== undefined && { policy: opts.policy }),
-    });
+    // ADR 0113 D3 — the steps the decider ran ride the record (kernel-stamped), so a re-run that
+    // serves this decision knows exactly which recorded frames it will never be asked for.
+    const innerSteps =
+      inner.ids.size > 0 && inner.ids.size <= MAX_INNER_STEPS ? [...inner.ids] : [];
+    this.commit(
+      "DECISION_RECORDED",
+      {
+        decisionId,
+        choice,
+        ...(innerSteps.length > 0 && { innerSteps }),
+        ...(opts?.rationale !== undefined && { rationale: opts.rationale }),
+        ...(opts?.source !== undefined && { source: opts.source }),
+        ...(opts?.alternatives !== undefined && { alternatives: opts.alternatives }),
+        ...(opts?.estimatedCostUsd !== undefined && { estimatedCostUsd: opts.estimatedCostUsd }),
+        ...(opts?.estimatedCost !== undefined && { estimatedCost: opts.estimatedCost }),
+        ...(opts?.estimatedLatencyMs !== undefined && {
+          estimatedLatencyMs: opts.estimatedLatencyMs,
+        }),
+        ...(opts?.confidence !== undefined && { confidence: opts.confidence }),
+        // ADR 0079 — the learning half of the D1 metadata: what the policy SAW and
+        // which policy it was. Descriptive only; `getDecision` still returns `choice`.
+        ...(opts?.context !== undefined && { context: opts.context }),
+        ...(opts?.policy !== undefined && { policy: opts.policy }),
+      },
+      innerSteps.length > 0 ? { metadata: { kernel: true } } : undefined
+    );
 
     return choice;
   }
@@ -1280,10 +1318,14 @@ export class WorkflowContextImpl implements WorkflowContext {
     // ADR 0109 — an open `parallel` is a state `continueAsNew` must refuse (a rotation inside a
     // scope would orphan its branches), however the flow reaches it.
     this.openParallels++;
+    this.divergence?.scopeOpen(
+      branches.flatMap((b) => (Array.isArray(b) ? [(b[0] as StepDefinition).id] : []))
+    );
     try {
       return await this.parallelScoped(parent, branches, options);
     } finally {
       this.openParallels--;
+      this.divergence?.scopeClose();
     }
   }
 
@@ -1626,6 +1668,11 @@ export class WorkflowContextImpl implements WorkflowContext {
   }
 
   private suspendIn<T = never>(scope: Scope, _config: SuspendConfig): Promise<T> {
+    if (_config.on === FLOW_DIVERGED_GATE) {
+      throw new TypeError(
+        `ctx.suspend: "${FLOW_DIVERGED_GATE}" is reserved for the kernel (the park of a refused, diverged re-run, ADR 0113); name the gate something else`
+      );
+    }
     // ADR 0112 — a gate inside a CANCELLED scope never opens and never consumes an answer: the
     // aborted branch unwinds with the scope's own noise. (Taking one would hand a sibling-scope's
     // — or a later gate's — answer to work that is already dead.)
