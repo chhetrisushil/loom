@@ -4,6 +4,7 @@ import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
   SubscriberRegistry,
+  creationMarker,
 } from "@loom/event-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./schema";
@@ -204,22 +205,30 @@ export class SqliteEventStore implements EventStore {
       );
     }
     const run = this.db.transaction((): AppendIfUnchangedResult => {
-      const anchor = this.db
-        .prepare<[string], { one: number }>(
-          "SELECT 1 AS one FROM events WHERE execution_id = ? AND sequence = 0"
+      const first = this.db
+        .prepare<[string], { id: string; timestamp: number }>(
+          "SELECT id, timestamp FROM events WHERE execution_id = ? AND sequence = 0"
         )
         .get(executionId);
-      if (anchor === undefined) return { appended: false, reason: "gone", head: null, fence: 0 };
+      if (first === undefined) {
+        return { appended: false, reason: "gone", head: null, fence: 0, anchor: null };
+      }
+      const anchor = creationMarker(first);
       const tip = this.db
         .prepare<[string], { tip: number }>(
           "SELECT MAX(sequence) AS tip FROM events WHERE execution_id = ?"
         )
         .get(executionId);
       const head = tip?.tip ?? 0;
-      if (event === null) return { appended: false, reason: "observed", head, fence: 0 };
+      if (event === null) return { appended: false, reason: "observed", head, fence: 0, anchor };
       const want = expect as TipObservation;
-      if (head !== want.head || want.fence !== 0 || event.sequence <= head) {
-        return { appended: false, reason: "moved", head, fence: 0 };
+      if (
+        head !== want.head ||
+        want.fence !== 0 ||
+        anchor !== want.anchor ||
+        event.sequence !== head + 1
+      ) {
+        return { appended: false, reason: "moved", head, fence: 0, anchor };
       }
       this.db
         .prepare(

@@ -432,7 +432,7 @@ for (const backend of [memory, sqlite, postgres]) {
       expect((await h.rt.loadState(e))?.variables._outcomes).toHaveLength(3);
     });
 
-    it("compaction keeps in-run and late rewards in the log, and the folded state is unchanged", async () => {
+    it("compaction folds the in-run reward into the checkpoint; late rewards stay above the terminal event and the folded state is unchanged", async () => {
       const rewarding = flow("rewarder", async (ctx) => {
         for (let i = 0; i < 3; i++) await ctx.emit("note", { i });
         await ctx.decide("route", () => "opus");
@@ -448,8 +448,13 @@ for (const backend of [memory, sqlite, postgres]) {
       expect(await life.compact(e)).not.toBeNull();
       await h.rt.recordOutcome(e, { decisionId: "route", key: "late2", score: 1 });
       await life.compact(e); // nothing new below the terminal event: a no-op, not an error
+      // R11 round 3: compaction keeps NO learning evidence in place. The in-run reward (below the
+      // terminal event) is absorbed by the checkpoint; the late ones sit ABOVE the terminal event.
       const kept = (await outcomes(h, e)).map((x) => (x.payload as { key: string }).key);
-      expect(kept).toEqual(["inrun", "late", "late2"]);
+      expect(kept).toEqual(["late", "late2"]);
+      expect((await h.eventStore.read(e)).some((x) => x.eventType === "DECISION_RECORDED")).toBe(
+        false
+      );
       const after = (await h.rt.loadState(e))?.variables._outcomes as Array<{ key: string }>;
       expect(after.map((o) => o.key)).toEqual(["inrun", "late", "late2"]);
       expect(after.slice(0, 2)).toEqual(before);
@@ -498,11 +503,14 @@ for (const backend of [memory, sqlite, postgres]) {
       expect((await h.eventStore.read(e)).length).toBe(len);
     }, 120_000);
 
-    // The p2_fence scenario: a late outcome lands between the reopener's fold and its first
-    // append. The late outcome must not take the reopener's slot or token (ADR 0116 amendment).
-    it("a late outcome never displaces a reopener's append (concurrent fence holder)", async () => {
+    // The p2 scenario, round 3 (user decision A): a late outcome and a REOPEN race for the same
+    // slot. BOTH land, in either order, and the reopener is never the one displaced.
+    const reopenRace = async (
+      when: "before-its-append" | "acquire-in-window" | "after-it-finished"
+    ) => {
       const base = backend.make();
       let hook: (() => Promise<void>) | null = null;
+      let inWindow: (() => Promise<void>) | null = null;
       const store = new Proxy(base.eventStore, {
         get(t, k, recv) {
           if (k === "append" || k === "appendBatch") {
@@ -517,6 +525,16 @@ for (const backend of [memory, sqlite, postgres]) {
                 t,
                 x
               );
+            };
+          }
+          if (k === "appendIfUnchanged") {
+            return async (eid: string, ev: EventEnvelope | null, expect?: never) => {
+              if (ev !== null && inWindow !== null) {
+                const run = inWindow;
+                inWindow = null;
+                await run();
+              }
+              return (t as EventStore).appendIfUnchanged!(eid, ev, expect);
             };
           }
           const v = Reflect.get(t, k, recv);
@@ -538,41 +556,130 @@ for (const backend of [memory, sqlite, postgres]) {
       await (await h.rt.start(failing, {}, { executionId: e }))
         .waitForCompletion()
         .catch(() => undefined);
-      if (store.acquireFence === undefined) return;
-      const fence = await h.rt.acquireFence(e);
-      hook = async () => {
-        await expect(
-          h.rt.recordOutcome(e, { decisionId: "route", key: "late", score: 0 })
-        ).rejects.toMatchObject({ name: "OutcomeContendedError", retryable: true });
-      };
-      await (
-        await h.rt.resumeAs(
-          e,
-          "fenced2",
-          { eventType: "RETRY", payload: {} },
-          { strategy: "operator-ack", fence }
-        )
-      )
+      const fenced = store.acquireFence !== undefined; // SQLite does not fence
+      if (!fenced && when === "acquire-in-window") return undefined;
+      const late = (key: string) => h.rt.recordOutcome(e, { decisionId: "route", key, score: 0.5 });
+      let fence = 0;
+      let outcome: Promise<unknown> = Promise.resolve();
+      if (when === "acquire-in-window") {
+        // the late write OBSERVED the log before the reopener took its token, and appends after
+        inWindow = async () => {
+          fence = await h.rt.acquireFence(e);
+        };
+        const r = await late("a");
+        expect(r.appended).toBe(true); // `moved` -> re-observed -> landed
+        fence = await h.rt.acquireFence(e); // a fresh token for the reopen, as a real holder would
+      } else if (fenced) {
+        fence = await h.rt.acquireFence(e);
+      }
+      if (when === "before-its-append") {
+        // the reopener holds a token and has folded; the late outcome slips in before its append
+        hook = async () => {
+          const r = await late("b");
+          expect(r.appended).toBe(true);
+        };
+      }
+      const run = await h.rt.resumeAs(
+        e,
+        "fenced2",
+        { eventType: "RETRY", payload: {} },
+        { strategy: "operator-ack", ...(fenced && { fence }) }
+      );
+      await run.waitForCompletion();
+      if (when === "after-it-finished") outcome = late("c");
+      await outcome;
+      return { h, e, fence };
+    };
+
+    for (const when of ["before-its-append", "acquire-in-window", "after-it-finished"] as const) {
+      it(`a late outcome and a reopener race (${when}): both land, the reopener is never displaced`, async () => {
+        const got = await reopenRace(when);
+        if (got === undefined) return;
+        const { h, e } = got;
+        const state = await h.rt.loadState(e);
+        expect(state?.status).toBe("completed");
+        const log = await h.eventStore.read(e);
+        expect(log.map((x) => x.sequence)).toEqual(log.map((_, i) => i)); // gap-free
+        expect(new Set(log.map((x) => x.id)).size).toBe(log.length);
+        expect(log.filter((x) => x.eventType === "OUTCOME_RECORDED")).toHaveLength(1);
+        expect(log.some((x) => x.eventType === "EXECUTION_COMPLETED")).toBe(true);
+        expect((state?.variables._outcomes as unknown[]).length).toBe(1);
+        // the reopener's own events carry its token; the late outcome carries none
+        const o = log.find((x) => x.eventType === "OUTCOME_RECORDED") as EventEnvelope;
+        expect(o.metadata?.fence).toBeUndefined();
+      });
+    }
+
+    it("a reopen that loses its slot to something other than late outcomes still fails as before", async () => {
+      const h = mk();
+      const e = id();
+      const failing = flow("fenced3", async (ctx) => {
+        await ctx.decide("route", () => "opus");
+        throw new Error("boom");
+      });
+      h.rt.registerFlow(failing.definition, failing.runner);
+      await (await h.rt.start(failing, {}, { executionId: e }))
         .waitForCompletion()
         .catch(() => undefined);
-      // The reopener finished: its run is not dead because a late outcome took its token.
-      expect((await h.rt.loadState(e))?.status).toBe("completed");
-      expect(await outcomes(h, e)).toEqual([]);
+      const state = (await h.rt.loadState(e))!;
+      // a foreign writer (not a late outcome) takes the reopener's slot
+      await h.eventStore.append({
+        id: `${e}-rogue`,
+        workflowId: "fenced3",
+        executionId: e,
+        eventType: "NOTE",
+        sequence: state.sequence + 1,
+        timestamp: Date.now(),
+        payload: {},
+      });
+      const bootstrap = await (
+        h.rt as unknown as {
+          landReopenBootstrap: (
+            id: string,
+            wf: string,
+            vm: unknown,
+            evs: unknown[],
+            fence: undefined
+          ) => Promise<unknown[]>;
+        }
+      ).landReopenBootstrap.call(
+        h.rt,
+        e,
+        "fenced3",
+        { peekState: () => state, applyEvent() {} },
+        [{ eventType: "RETRY", payload: {} }],
+        undefined
+      );
+      // nothing durable was produced: the ordinary path will refuse it, exactly as it always did
+      expect((bootstrap[0] as { durable?: unknown }).durable).toBeUndefined();
+      expect((await h.eventStore.read(e)).filter((x) => x.eventType === "RETRY")).toEqual([]);
     });
 
-    it("a fence acquired AFTER the end is refused (retryable, nothing appended); one the finishing holder wrote under is accepted, token unchanged", async () => {
+    it("a fence acquired after the end (redispatch, timers, recovery, a dead holder) does NOT block late outcomes; the token is never bumped", async () => {
       const h = mk();
       const e = id();
       await finish(h, deciding, e);
       if (h.eventStore.acquireFence === undefined) return; // a store that does not fence
-      const token = await h.eventStore.acquireFence(e); // a holder that may be about to reopen
-      const len = (await h.eventStore.read(e)).length;
-      await expect(
-        h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 })
-      ).rejects.toMatchObject({ name: "OutcomeContendedError", retryable: true });
-      expect((await h.eventStore.read(e)).length).toBe(len);
+      // at-least-once redispatch acquires a fresh token on the finished execution, repeatedly
+      let token = 0;
+      for (let i = 0; i < 3; i++) token = await h.eventStore.acquireFence(e);
+      const r = await h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 });
+      expect(r.appended).toBe(true);
+      const [ev] = await outcomes(h, e);
+      expect(ev?.metadata?.fence).toBeUndefined(); // compared, never presented
+      expect(await h.eventStore.acquireFence(e)).toBe(token + 1); // not bumped by the attach
+      // idempotent, and a further acquire (a holder that died) still does not block a new key
+      expect(
+        (await h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 })).appended
+      ).toBe(false);
+      await h.eventStore.acquireFence(e);
+      expect(
+        (await h.rt.recordOutcome(e, { decisionId: "route", key: "k2", score: 1 })).appended
+      ).toBe(true);
+    });
 
-      // A holder that reopened and FINISHED under its own token: the terminal event carries it.
+    it("a holder that reopened and FINISHED under its own token: a late outcome lands, token unchanged", async () => {
+      const h = mk();
       const e2 = id();
       const failing = flow("failer2", async (ctx) => {
         await ctx.decide("route", () => "opus");
@@ -587,6 +694,7 @@ for (const backend of [memory, sqlite, postgres]) {
         .waitForCompletion()
         .catch(() => undefined);
       h.rt.registerFlow(fixed.definition, fixed.runner);
+      if (h.eventStore.acquireFence === undefined) return;
       const t2 = await h.rt.acquireFence(e2);
       await (
         await h.rt.resumeAs(
@@ -597,15 +705,10 @@ for (const backend of [memory, sqlite, postgres]) {
         )
       ).waitForCompletion();
       expect((await h.rt.loadState(e2))?.status).toBe("completed");
-      const r = await h.rt.recordOutcome(e2, { decisionId: "route", key: "k", score: 1 });
-      expect(r.appended).toBe(true);
-      const [ev] = await outcomes(h, e2);
-      expect(ev?.metadata?.fence).toBeUndefined(); // compared, never presented
-      expect(await h.eventStore.acquireFence(e2)).toBe(t2 + 1); // not bumped by the attach
       expect(
         (await h.rt.recordOutcome(e2, { decisionId: "route", key: "k", score: 1 })).appended
-      ).toBe(false);
-      expect(token).toBeGreaterThan(0);
+      ).toBe(true);
+      expect(await h.eventStore.acquireFence(e2)).toBe(t2 + 1);
     });
 
     it("refuses with a clear error when the store has no appendIfUnchanged (no unsafe fallback)", async () => {

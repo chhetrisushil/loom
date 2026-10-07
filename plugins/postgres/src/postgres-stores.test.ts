@@ -128,6 +128,157 @@ suite("@loom/plugin-postgres", () => {
       expect(await row("legacy")).toEqual([{ fence: "1" }]);
     });
 
+    it("appendIfUnchanged vs an unfenced plain append for the same slot: never a gap, exactly one lands (P3 #1)", async () => {
+      const ev = (id: string, seq: number, eventType: string) => ({
+        ...makeEnvelope(id, seq),
+        id: `${id}-${seq}-${eventType}`,
+        eventType,
+      });
+      for (let i = 0; i < 40; i++) {
+        const id = `race${i}`;
+        await store.append(ev(id, 0, "EXECUTION_STARTED"));
+        await store.append(ev(id, 1, "EXECUTION_COMPLETED"));
+        const seen = await store.appendIfUnchanged(id, null);
+        if (seen.appended) throw new Error("unreachable");
+        const obs = { head: seen.head as number, fence: seen.fence, anchor: seen.anchor as string };
+        const [a, b] = await Promise.all([
+          store
+            .appendIfUnchanged(id, ev(id, 2, "OUTCOME_RECORDED"), obs)
+            .then((r) => (r.appended ? "late" : r.reason))
+            .catch((e: Error) => e.name),
+          store
+            .append(ev(id, 2, "STEP_COMPLETED"))
+            .then(() => "plain")
+            .catch((e: Error) => e.name),
+        ]);
+        expect((await store.read(id)).map((e) => e.sequence)).toEqual([0, 1, 2]);
+        // one of them owns slot 2; the other was refused, never silently accepted elsewhere
+        expect([a === "late", b === "plain"].filter(Boolean)).toHaveLength(1);
+      }
+      // a skip-ahead is refused outright (the next slot's uniqueness is the only arbiter)
+      await store.append(ev("skip", 0, "EXECUTION_STARTED"));
+      const seen = await store.appendIfUnchanged("skip", null);
+      if (seen.appended) throw new Error("unreachable");
+      expect(
+        await store.appendIfUnchanged("skip", ev("skip", 5, "OUTCOME_RECORDED"), {
+          head: 0,
+          fence: seen.fence,
+          anchor: seen.anchor as string,
+        })
+      ).toMatchObject({ appended: false, reason: "moved" });
+      expect((await store.read("skip")).map((e) => e.sequence)).toEqual([0]);
+    });
+
+    it("a token-0 fence row the conditional append creates is inert and reclaimed with the log (P3 #4)", async () => {
+      const ev = (seq: number, eventType: string) => ({ ...makeEnvelope("t0", seq), eventType });
+      await store.append(ev(0, "EXECUTION_STARTED"));
+      await store.append(ev(1, "EXECUTION_COMPLETED"));
+      const seen = await store.appendIfUnchanged("t0", null);
+      if (seen.appended) throw new Error("unreachable");
+      const rows = async () =>
+        (await admin.query("SELECT fence FROM fences WHERE execution_id = 't0'")).rows;
+      expect(await rows()).toEqual([]); // an observation creates nothing
+      await store.appendIfUnchanged("t0", ev(2, "OUTCOME_RECORDED"), {
+        head: 1,
+        fence: 0,
+        anchor: seen.anchor as string,
+      });
+      expect(await rows()).toEqual([{ fence: "0" }]); // inert: a plain unfenced append is still accepted
+      await store.append(ev(3, "STEP_COMPLETED"));
+      await store.deleteExecution("t0");
+      expect(await rows()).toEqual([]); // gone with the log
+    });
+
+    // R11 round 3 (P3 #2): the conditional write and the conditional acquire both rest on "a
+    // fresh snapshot per statement after the row lock is granted". A server whose default
+    // isolation is stricter must not break that: the isolation is STATED, not assumed.
+    describe("under a server default of REPEATABLE READ", () => {
+      const rrPool = () =>
+        new Pool({
+          connectionString: PG_URL as string,
+          options: "-c default_transaction_isolation=repeatable\\ read",
+        });
+      const blockedOnLock = async () => {
+        for (let i = 0; i < 400; i++) {
+          const r = await admin.query(
+            "SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()"
+          );
+          if (r.rowCount === 1) return;
+          await new Promise((res) => setTimeout(res, 10)); // a poll interval, not a fixed wait
+        }
+        throw new Error("the transaction under test never blocked on the fence row");
+      };
+      const ev = (id: string, seq: number, eventType: string) => ({
+        ...makeEnvelope(id, seq),
+        eventType,
+      });
+
+      it("appendIfUnchanged: a write that committed while it waited for the row lock is `moved`, not a thrown duplicate", async () => {
+        const rr = rrPool();
+        const s = new PostgresEventStore(rr as never);
+        try {
+          await s.append(ev("rr1", 0, "EXECUTION_STARTED"));
+          await s.append(ev("rr1", 1, "EXECUTION_COMPLETED"));
+          const seen = await s.appendIfUnchanged("rr1", null);
+          expect(seen.appended).toBe(false);
+          const holder = await admin.connect();
+          try {
+            await holder.query("BEGIN");
+            await holder.query(
+              "INSERT INTO fences (execution_id, fence) VALUES ('rr1', 0) ON CONFLICT (execution_id) DO NOTHING"
+            );
+            await holder.query("SELECT fence FROM fences WHERE execution_id = 'rr1' FOR UPDATE");
+            const pending = s.appendIfUnchanged("rr1", ev("rr1", 2, "OUTCOME_RECORDED"), {
+              head: (seen as { head: number }).head,
+              fence: 0,
+              anchor: (seen as { anchor: string }).anchor,
+            });
+            await blockedOnLock();
+            await holder.query(
+              `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload)
+               VALUES ('rr1-rival', 'w', 'rr1', 'STEP_COMPLETED', 2, 1, '{}'::jsonb)`
+            );
+            await holder.query("COMMIT");
+            expect(await pending).toMatchObject({ appended: false, reason: "moved", head: 2 });
+          } finally {
+            holder.release();
+          }
+          expect((await s.read("rr1")).map((e) => e.sequence)).toEqual([0, 1, 2]);
+        } finally {
+          await s.close();
+        }
+      });
+
+      it("acquireFenceIf: an answering event that committed while it waited is seen (stale), not overwritten", async () => {
+        const rr = rrPool();
+        const s = new PostgresEventStore(rr as never);
+        try {
+          await s.append(ev("rr2", 0, "EXECUTION_STARTED"));
+          await s.append(ev("rr2", 1, "EXECUTION_SUSPENDED"));
+          const holder = await admin.connect();
+          try {
+            await holder.query("BEGIN");
+            await holder.query(
+              "INSERT INTO fences (execution_id, fence) VALUES ('rr2', 0) ON CONFLICT (execution_id) DO NOTHING"
+            );
+            await holder.query("SELECT fence FROM fences WHERE execution_id = 'rr2' FOR UPDATE");
+            const pending = s.acquireFenceIf("rr2", { fence: 0, parkSeq: 1 });
+            await blockedOnLock();
+            await holder.query(
+              `INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload)
+               VALUES ('rr2-resumed', 'w', 'rr2', 'EXECUTION_RESUMED', 2, 1, '{}'::jsonb)`
+            );
+            await holder.query("COMMIT");
+            expect(await pending).toEqual({ stale: true, fence: 0 });
+          } finally {
+            holder.release();
+          }
+        } finally {
+          await s.close();
+        }
+      });
+    });
+
     it("timers (T1.3): schedule is idempotent; due orders soonest-first; complete retires", async () => {
       const { PostgresTimerStore } = await import("./PostgresTimerStore");
       const timers = new PostgresTimerStore(PG_URL as string);

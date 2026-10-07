@@ -479,4 +479,4 @@ numbers move at most a few percent where the ADR claimed the hot path would not.
 `EventStore.appendIfUnchanged` (EVENT_STORE_SPI 2.2.0) is the append-side twin of `acquireFenceIf`: it
 takes the same Postgres fence row `FOR UPDATE`, and `deleteExecution` now takes that row too, so a
 conditional append, an acquire, an answering append and a retention delete are all ordered by it. It
-compares an observed token and never presents or bumps one. See ADR 0116, "Amendment — review round 2".
+compares an observed token and never presents or bumps one. See ADR 0116, "Amendment — review round 2" and "Round 3". Round 3 also states the isolation this method rests on: `acquireFenceIf` now starts with `SET TRANSACTION ISOLATION LEVEL READ COMMITTED`, because its guard needs a fresh snapshot per statement after the row lock is granted, and a server defaulting to REPEATABLE READ gave it a frozen one.

@@ -41,7 +41,7 @@ export type { EventEnvelope };
  *   decorator forwarding landed with R8k. It reads the classification W2-0 shipped:
  *   {@link EVENT_KIND_CLASS} / {@link isAnsweringKind} (every kernel event kind is `answering`
  *   or `ignorable`, a required total map). No existing method changed, so a 2.0.0 store conforms.
- * 2.2.0: the optional `appendIfUnchanged(id, event, { head, fence })` (ADR 0116 amendment, R11:
+ * 2.2.0: the optional `appendIfUnchanged(id, event, { head, fence, anchor })` (ADR 0116 amendment, R11:
  *   a late reward on a finished execution). ONE atomic step: append `event` iff the execution
  *   still EXISTS (sequence 0), its stored head is exactly `expect.head` AND its fence token is
  *   exactly `expect.fence`; otherwise change nothing and report the current tip. It never
@@ -236,7 +236,7 @@ export interface EventStore {
    * A duplicate sequence / envelope id / injected failure throws exactly as `append` does.
    *
    * With `event === null` it is a pure OBSERVATION: nothing is written and the result is
-   * `{ appended: false, reason: "observed" | "gone", head, fence }` (`expect` is ignored).
+   * `{ appended: false, reason: "observed" | "gone", head, fence, anchor }` (`expect` is ignored).
    *
    * Implementations hold the same lock/row the fence uses (ADR 0118): memory one synchronous
    * step; Postgres a transaction that takes the execution's fence row `FOR UPDATE`; SQLite
@@ -321,10 +321,18 @@ export interface EventStore {
   close(): Promise<void>;
 }
 
-/** What a caller saw of an execution's tip: the stored head and the fence token (0 = never fenced). */
+/**
+ * What a caller saw of an execution's tip: the stored head, the fence token (0 = never fenced) and
+ * the `anchor` — an OPAQUE creation marker the store derived from the execution's sequence-0
+ * envelope (its id and timestamp). The anchor is what tells "the log I observed" from "a log
+ * deleted and re-created under the same id that happens to have the same head and token" (the ABA
+ * case): envelope ids are deterministic (`<exec>-<seq>`), so the head and token alone cannot.
+ * Pass back exactly what an observation returned; a decorator forwards it untouched.
+ */
 export interface TipObservation {
   head: number;
   fence: number;
+  anchor: string;
 }
 
 /** What {@link EventStore.appendIfUnchanged} answers. */
@@ -337,6 +345,8 @@ export type AppendIfUnchangedResult =
       /** The tip now (`null` when the execution is gone). */
       head: number | null;
       fence: number;
+      /** The creation marker now (`null` when the execution is gone). */
+      anchor: string | null;
     };
 
 /** What {@link EventStore.acquireFenceIf} answers: the new token, or the (unchanged) current one. */

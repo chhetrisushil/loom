@@ -34,6 +34,7 @@ export {
   EVENT_STORE_SPI_VERSION,
 } from "./types";
 export { StaleFenceError, fenceOf } from "./fencing";
+export { creationMarker } from "./creationMarker";
 export { EVENT_KIND_CLASS, isAnsweringKind, type EventKindClass } from "./eventKindClass";
 export {
   InMemoryLeaseStore,

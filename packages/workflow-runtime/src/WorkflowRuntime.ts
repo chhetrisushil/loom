@@ -586,6 +586,8 @@ const STRAY_WARNING_MEMORY = 4096;
 
 /** R3k round 2 (ADR 0111 D6) — how far up a `parent` chain an owner is looked for. */
 const MAX_LINEAGE_HOPS = 8;
+/** ADR 0116 — how many times a reopen re-slots its bootstrap over late outcomes that took its slot. */
+const REOPEN_ATTEMPTS = 3;
 /** ADR 0116 — bounded sequence-CAS attempts of `recordOutcome` before it reports contention. */
 const RECORD_OUTCOME_ATTEMPTS = 8;
 /** The folded `_outcomes` entry fields `recordOutcome` compares for idempotency. */
@@ -2865,38 +2867,120 @@ export class WorkflowRuntime {
       runVm = got.vm;
     }
 
+    const bootstrap: BootstrapEvent[] = [
+      ...(approval !== undefined ? [approval] : []),
+      ...discardEvents,
+      ...(resolvedWait !== undefined
+        ? [
+            ...(inboxWake !== undefined
+              ? inboxWake.pre.map((e) => ({ ...e, atomic: true as const }))
+              : [{ eventType: resumeEvent.eventType, payload: resumePayload }]),
+            // ADR 0110 D3 — a wait-addressed resume: kernel-stamped, `{ waitId, payload }`.
+            {
+              eventType: "EXECUTION_RESUMED",
+              payload: { waitId: resolvedWait.waitId, payload: resumePayload },
+              metadata: { kernel: true },
+              ...(inboxWake !== undefined && { atomic: true as const }),
+            },
+          ]
+        : [
+            { eventType: resumeEvent.eventType, payload: resumePayload },
+            ...answerEvents(runVm.getState(), resumePayload),
+          ]),
+    ];
     return this.execute(
       executionId,
       workflowId,
       runVm,
       resolved.runner as FlowRunner<unknown, unknown>,
       effectiveInput,
-      [
-        ...(approval !== undefined ? [approval] : []),
-        ...discardEvents,
-        ...(resolvedWait !== undefined
-          ? [
-              ...(inboxWake !== undefined
-                ? inboxWake.pre.map((e) => ({ ...e, atomic: true as const }))
-                : [{ eventType: resumeEvent.eventType, payload: resumePayload }]),
-              // ADR 0110 D3 — a wait-addressed resume: kernel-stamped, `{ waitId, payload }`.
-              {
-                eventType: "EXECUTION_RESUMED",
-                payload: { waitId: resolvedWait.waitId, payload: resumePayload },
-                metadata: { kernel: true },
-                ...(inboxWake !== undefined && { atomic: true as const }),
-              },
-            ]
-          : [
-              { eventType: resumeEvent.eventType, payload: resumePayload },
-              ...answerEvents(runVm.getState(), resumePayload),
-            ]),
-      ],
+      inboxWake === undefined && this.isReopen(runVm)
+        ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence)
+        : bootstrap,
       fence,
       options?.deadlineMs ?? resolved.definition.deadlineMs,
       acting,
       inboxWake !== undefined
     );
+  }
+
+  /**
+   * ADR 0116 (round 3) — the REOPEN's side of the late-outcome race. A late outcome
+   * (`recordOutcome`) may take the slot a reopening `resume`/`resumeAs` was about to write,
+   * because it observed the log before the reopener acquired its fence and appended just after.
+   * The reopener must never be the loser: it is the execution's real writer, and a late reward is
+   * status-neutral evidence that changes nothing it folded.
+   *
+   * So a reopen onto a COMPLETED / FAILED execution makes its bootstrap batch durable BEFORE the
+   * run starts (all-or-nothing, `appendBatch`), and when the store answers with a slot conflict
+   * it re-reads the tail: if every event above the head it folded is a kernel-stamped late
+   * `OUTCOME_RECORDED`, it folds them and rewrites the batch at the new slots, at most
+   * {@link REOPEN_ATTEMPTS} times. Anything else (a real writer, a stale fence, a store without
+   * `appendBatch`, no conflict at all) returns the events UNTOUCHED for the ordinary path, which
+   * fails or succeeds exactly as it always did. The batch is handed on as `durable` events
+   * (`ExecutionJournal.adopt`), so `onEvent` fires once, after they are stored.
+   */
+  /**
+   * Is this resume a REOPEN of a finished execution? Synchronous on purpose: every resume of a
+   * parked execution reaches `execute` in the same turn it always did (an extra `await` here
+   * reorders interleavings the orchestration supervisor is sensitive to).
+   */
+  private isReopen(vm: ReplayVM): boolean {
+    const status = vm.peekState().status;
+    return status === "completed" || status === "failed";
+  }
+
+  private async landReopenBootstrap(
+    executionId: string,
+    workflowId: string,
+    vm: ReplayVM,
+    events: BootstrapEvent[],
+    fence: number | undefined
+  ): Promise<BootstrapEvent[]> {
+    const store = this.eventStore;
+    if (
+      !this.isReopen(vm) ||
+      store.appendBatch === undefined ||
+      events.length === 0 ||
+      events.some((e) => e.atomic === true || e.durable !== undefined)
+    ) {
+      return events;
+    }
+    for (let attempt = 0; attempt < REOPEN_ATTEMPTS; attempt++) {
+      const at = vm.peekState().sequence;
+      const envelopes = events.map((e, i) =>
+        ExecutionJournal.envelopeAt(
+          { executionId, workflowId },
+          at + 1 + i,
+          e.eventType,
+          e.payload,
+          {
+            ...(e.metadata !== undefined && { metadata: e.metadata }),
+            ...(fence !== undefined && { fence }),
+            now: this.now,
+          }
+        )
+      );
+      try {
+        await store.appendBatch(envelopes);
+        return events.map((e, i) => ({ ...e, durable: envelopes[i] as EventEnvelope }));
+      } catch (err) {
+        if (!isWriteConflict(err)) return events;
+        const between = await store.readFrom(executionId, at + 1);
+        const lateOnly =
+          between.length > 0 &&
+          between.every(
+            (e, i) =>
+              e.sequence === at + 1 + i &&
+              e.eventType === "OUTCOME_RECORDED" &&
+              e.metadata?.kernel === true &&
+              (e.payload as { late?: unknown } | undefined)?.late === true
+          );
+        if (!lateOnly) return events;
+        for (const e of between) vm.applyEvent(e);
+      }
+    }
+    return events;
   }
 
   // ── ADR 0110 — the durable inbox: send, notify, trim ─────────────────────────────────────────
@@ -3225,7 +3309,10 @@ export class WorkflowRuntime {
     }
     const missing = () => new Error(`No execution found for id: ${executionId}`);
     for (let attempt = 0; attempt < RECORD_OUTCOME_ATTEMPTS; attempt++) {
-      // Observe the tip (head AND fence token) BEFORE folding: the append below proves neither moved.
+      // Observe the tip (head, fence token, creation marker) BEFORE folding: the append below
+      // proves none of them moved. No fence rule beyond that: a token acquired after the execution
+      // ended is routine (redispatch, timers, recovery), and the one writer a late outcome must
+      // not displace, a reopen, retries over it instead (`landReopenBootstrap`).
       const seen = await store.appendIfUnchanged(executionId, null);
       if (seen.appended || seen.head === null) throw missing();
       const state = await this.foldState(executionId);
@@ -3268,36 +3355,20 @@ export class WorkflowRuntime {
           `the execution already holds ${LATE_OUTCOMES_MAX} late outcomes (the per-execution cap)`
         );
       }
-      // A fence acquired AFTER the execution ended may belong to a holder that is about to reopen
-      // it (it has acquired but not yet appended): the late write would take its sequence slot and
-      // fail its run. Only a token the finishing holder itself wrote the terminal event under is
-      // safe. A never-fenced execution (token 0) skips the read. Retryable: it clears once the
-      // reopener finishes (a new terminal event under the new token). Residual (ADR 0116): a holder
-      // that acquired and DIED leaves the execution refusing late outcomes until it is re-run.
-      if (seen.fence > 0) {
-        const log = await store.read(executionId);
-        let terminal: EventEnvelope | undefined;
-        for (let i = log.length - 1; i >= 1 && terminal === undefined; i--) {
-          const e = log[i] as EventEnvelope;
-          if (
-            e.eventType === "EXECUTION_COMPLETED" ||
-            e.eventType === "EXECUTION_FAILED" ||
-            e.eventType === "EXECUTION_CANCELLED"
-          ) {
-            terminal = e;
-          }
-        }
-        const wrote = terminal?.metadata?.fence;
-        if (typeof wrote !== "number" || wrote !== seen.fence) {
-          throw new OutcomeContendedError(
-            executionId,
-            `a fence (token ${seen.fence}) was acquired after the execution ended (its terminal event was written under ${typeof wrote === "number" ? `token ${wrote}` : "no token"}), so a holder may be about to reopen it`
-          );
-        }
+      // The slot is exactly the next one (SPI 2.2.0: the store refuses any other). A folded
+      // sequence ABOVE the stored head means a compaction by a kernel older than ADR 0116 took the
+      // tail (terminal event included) off the log: an append there would land under the
+      // checkpoint and be invisible to every fold, so it is refused rather than written.
+      if (state.sequence > seen.head) {
+        // ... unless a writer simply landed between the observation and the fold: re-judge.
+        const now = await store.appendIfUnchanged(executionId, null);
+        if (now.appended || now.head !== seen.head) continue;
+        throw new OutcomeRefusedError(
+          executionId,
+          `its log was compacted down to sequence ${seen.head} below its checkpoint (${state.sequence}) by a kernel older than ADR 0116, so a late outcome has no valid slot`
+        );
       }
-      // After a compaction the stored head can sit BELOW the folded checkpoint (the prefix is
-      // gone); an append there would land under the checkpoint and be invisible to the fold.
-      const sequence = Math.max(seen.head, state.sequence) + 1;
+      const sequence = seen.head + 1;
       const envelope: EventEnvelope = {
         id: `${executionId}-${sequence}-outcome`,
         workflowId: first.workflowId,
@@ -3323,6 +3394,7 @@ export class WorkflowRuntime {
         result = await store.appendIfUnchanged(executionId, envelope, {
           head: seen.head,
           fence: seen.fence,
+          anchor: seen.anchor as string,
         });
       } catch (err) {
         if (isWriteConflict(err)) continue; // a slot / id race: re-read, re-judge
@@ -4097,28 +4169,31 @@ export class WorkflowRuntime {
       fence = got.fence;
       runVm = got.vm;
     }
+    const bootstrap: BootstrapEvent[] = [
+      ...(approval !== undefined ? [approval] : []),
+      ...discardEvents,
+      {
+        eventType: "EXECUTION_MIGRATED",
+        payload: {
+          toFlowId: newFlowId,
+          strategy: options.strategy,
+          ...(toHash !== undefined && { toHash }),
+          ...(typeof recorded === "string" && { fromHash: recorded }),
+          ...(stateMigrated && { migratedInput }),
+        },
+      },
+      { eventType: resumeEvent.eventType, payload: resumePayload },
+      ...answerEvents(runVm.getState(), resumePayload),
+    ];
     return this.execute(
       executionId,
       workflowId,
       runVm,
       target.runner as FlowRunner<unknown, unknown>,
       stateMigrated ? migratedInput : recordedInput,
-      [
-        ...(approval !== undefined ? [approval] : []),
-        ...discardEvents,
-        {
-          eventType: "EXECUTION_MIGRATED",
-          payload: {
-            toFlowId: newFlowId,
-            strategy: options.strategy,
-            ...(toHash !== undefined && { toHash }),
-            ...(typeof recorded === "string" && { fromHash: recorded }),
-            ...(stateMigrated && { migratedInput }),
-          },
-        },
-        { eventType: resumeEvent.eventType, payload: resumePayload },
-        ...answerEvents(runVm.getState(), resumePayload),
-      ],
+      this.isReopen(runVm)
+        ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence)
+        : bootstrap,
       fence,
       options.deadlineMs ?? target.definition.deadlineMs,
       acting

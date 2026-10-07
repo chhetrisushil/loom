@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { decideWithPolicy } from "./decideWithPolicy";
 import { evaluatePolicy } from "./evaluate";
+import { evidenceEvents } from "./evidence";
 import { promotionGate } from "./promote";
 import { trajectories } from "./trajectories";
 import type { Policy } from "./types";
@@ -316,8 +317,8 @@ describe("reward poisoning cannot pass the promotion gate (ADR 0116 review)", ()
   });
 });
 
-describe("compaction keeps rewards (ADR 0116 amendment)", () => {
-  it("trajectories over a compacted log equal those over the full log (in-run and late rewards)", async () => {
+describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () => {
+  it("trajectories built from the folded state are identical compacted vs uncompacted (in-run and late rewards)", async () => {
     const eventStore = new InMemoryAsyncEventStore();
     const snapshotStore = new InMemoryAsyncSnapshotStore();
     const policy = explorer(0.2);
@@ -326,6 +327,7 @@ describe("compaction keeps rewards (ADR 0116 amendment)", () => {
       const route = await decideWithPolicy(ctx, "route", policy, { tokens: input.tokens }, [
         ...ROUTES,
       ]);
+      await decideWithPolicy(ctx, "second", policy, { tokens: input.tokens + 100 }, [...ROUTES]);
       recordOutcome(ctx, { key: `in-${route}`, score: 0.3, decisionId: "route" });
       return { route };
     };
@@ -346,16 +348,80 @@ describe("compaction keeps rewards (ADR 0116 amendment)", () => {
       ids.push(`c${i}`);
       await runtime.recordOutcome(`c${i}`, { decisionId: "route", key: "late", score: 0.9 });
     }
-    const read = async () => (await Promise.all(ids.map((id) => eventStore.read(id)))).flat();
     const shape = (ts: ReturnType<typeof trajectories<Route>>) =>
-      ts.map((t) =>
-        t.steps.map((s) => [s.decisionId, s.action, s.reward, s.rewardSource, s.policy, s.context])
-      );
-    const full = shape(trajectories<Route>(await read()));
+      ts.map((t) => ({
+        outcome: t.outcome,
+        terminalReward: t.terminalReward,
+        steps: t.steps.map((s) => [
+          s.decisionId,
+          s.action,
+          s.actions,
+          s.reward,
+          s.rewardSource,
+          s.directReward,
+          s.policy,
+          s.context,
+        ]),
+      }));
+    const evidence = async () =>
+      (
+        await Promise.all(
+          ids.map(async (id) =>
+            evidenceEvents((await runtime.loadState(id))!, await eventStore.read(id))
+          )
+        )
+      ).flat();
+    const full = shape(
+      trajectories<Route>((await Promise.all(ids.map((id) => eventStore.read(id)))).flat())
+    );
+    // the state-built path agrees with the log path on a log that was never compacted
+    expect(shape(trajectories<Route>(await evidence()))).toEqual(full);
+
     const life = new LogLifecycle(eventStore, snapshotStore);
     for (const id of ids) expect(await life.compact(id)).not.toBeNull();
-    const compactedLog = await read();
-    expect(compactedLog.filter((e) => e.eventType === "OUTCOME_RECORDED")).toHaveLength(20);
-    expect(shape(trajectories<Route>(compactedLog))).toEqual(full);
+    const log = (await Promise.all(ids.map((id) => eventStore.read(id)))).flat();
+    // nothing extra is kept in place: every decision and the in-run reward are in the checkpoint
+    expect(log.filter((e) => e.eventType === "DECISION_RECORDED")).toHaveLength(0);
+    expect(log.filter((e) => e.eventType === "OUTCOME_RECORDED")).toHaveLength(10); // late ones
+    expect(shape(trajectories<Route>(await evidence()))).toEqual(full);
+    // the log alone is NOT enough once compacted: that is why the state path exists
+    expect(shape(trajectories<Route>(log))).not.toEqual(full);
+    // and a late outcome after compaction still joins to its decision
+    const r = await runtime.recordOutcome("c0", { decisionId: "second", key: "later", score: 0.1 });
+    expect(r.appended).toBe(true);
+    const t0 = trajectories<Route>(
+      evidenceEvents((await runtime.loadState("c0"))!, await eventStore.read("c0"))
+    )[0];
+    expect(t0?.steps.find((s) => s.decisionId === "second")?.directReward).toBe(0.1);
+  });
+
+  it("a long agent run's decisions are reclaimed by compaction (2 KB x 1000 compacts back down)", async () => {
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const big = "x".repeat(2000);
+    const runner: FlowRunner<{ tokens: number }, { route: string }> = async (ctx) => {
+      for (let i = 0; i < 1000; i++) await ctx.decide(`llm-${i}`, () => big + i);
+      return { route: "done" };
+    };
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore,
+      effectRuntime: new EffectRuntime(),
+    });
+    runtime.registerFlow(makeFlow(runner).definition, runner);
+    await (
+      await runtime.start(makeFlow(runner), { tokens: 1 }, { executionId: "big" })
+    ).waitForCompletion();
+    const bytes = (evs: readonly { payload: unknown }[]) =>
+      evs.reduce((n, e) => n + JSON.stringify(e).length, 0);
+    const before = await eventStore.read("big");
+    expect(await new LogLifecycle(eventStore, snapshotStore).compact("big")).not.toBeNull();
+    const after = await eventStore.read("big");
+    expect(after.filter((e) => e.eventType === "DECISION_RECORDED")).toHaveLength(0);
+    expect(bytes(after)).toBeLessThan(bytes(before) / 50);
+    // ...and every decision is still there for the learner, from the folded state
+    const t = trajectories<string>(evidenceEvents((await runtime.loadState("big"))!, after))[0];
+    expect(t?.steps).toHaveLength(1000);
+    expect(t?.steps[999]?.action).toBe(`${big}999`);
   });
 });

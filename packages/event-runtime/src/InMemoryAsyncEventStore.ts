@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import { SubscriberRegistry } from "./SubscriberRegistry";
+import { creationMarker } from "./creationMarker";
 import { isAnsweringKind } from "./eventKindClass";
 import { compareExecutionIds } from "./executionIdOrder";
 import { StaleFenceError, fenceOf } from "./fencing";
@@ -286,13 +287,19 @@ export class InMemoryAsyncEventStore implements EventStore {
     const list = this.log.get(executionId);
     const fence = this.fences.get(executionId) ?? 0;
     if (list === undefined || list.length === 0 || (list[0] as EventEnvelope).sequence !== 0) {
-      return { appended: false, reason: "gone", head: null, fence };
+      return { appended: false, reason: "gone", head: null, fence, anchor: null };
     }
     const head = (list[list.length - 1] as EventEnvelope).sequence;
-    if (event === null) return { appended: false, reason: "observed", head, fence };
+    const anchor = creationMarker(list[0] as EventEnvelope);
+    if (event === null) return { appended: false, reason: "observed", head, fence, anchor };
     const want = expect as TipObservation;
-    if (head !== want.head || fence !== want.fence || event.sequence <= head) {
-      return { appended: false, reason: "moved", head, fence };
+    if (
+      head !== want.head ||
+      fence !== want.fence ||
+      anchor !== want.anchor ||
+      event.sequence !== head + 1
+    ) {
+      return { appended: false, reason: "moved", head, fence, anchor };
     }
     this.assertAppendable(event, false);
     this.commit(event);
