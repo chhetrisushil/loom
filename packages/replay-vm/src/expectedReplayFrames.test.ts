@@ -76,9 +76,9 @@ describe("ADR 0113 additive fold shapes", () => {
       return meta === undefined ? e : withMeta(e, meta);
     };
     const stamped = new ReplayVM([ev(0, "EXECUTION_STARTED", { input: {} }), rec(kernel)]);
-    expect(stamped.getDecisionInnerSteps("d")).toEqual(["a", "b"]);
+    expect(stamped.getDecisionInner("d")?.steps).toEqual(["a", "b"]);
     const plain = new ReplayVM([ev(0, "EXECUTION_STARTED", { input: {} }), rec()]);
-    expect(plain.getDecisionInnerSteps("d")).toBeUndefined();
+    expect(plain.getDecisionInner("d")).toBeUndefined();
     expect(plain.getDecision("d")).toBe(1); // the choice is unaffected either way
   });
 

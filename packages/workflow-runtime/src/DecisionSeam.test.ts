@@ -135,10 +135,11 @@ describe("ADR 0079 — context + policy on the decision seam", () => {
       choice: "opus",
       context: { intent: "summarize", tokens: 4096, tenant: "acme" },
       policy: { id: "linucb", version: "3", propensity: 0.7 },
+      innerSteps: [], // ADR 0113 D3: always written (an absent field means a pre-R7 record)
     });
-    // A decision no policy produced must stay exactly as it was before 1.18.0 —
-    // the fields are opt-in by presence, never defaulted in.
-    expect(decisions[1]).toEqual({ decisionId: "plain", choice: "unstamped" });
+    // A decision no policy produced stays exactly as it was before 1.18.0 apart from ADR 0113's
+    // `innerSteps` — the policy fields are opt-in by presence, never defaulted in.
+    expect(decisions[1]).toEqual({ decisionId: "plain", choice: "unstamped", innerSteps: [] });
   });
 
   it("does not make the observation a replay input — the decider stays uncalled", async () => {

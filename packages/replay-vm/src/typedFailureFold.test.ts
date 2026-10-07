@@ -57,6 +57,7 @@ describe("typed STEP_FAILED fold (DE-4, EVENT_SCHEMA 1.17.0)", () => {
       attempts: 1,
       startedAt: 1_001,
       firstStartedAt: 1_001,
+      firstSeq: 1, // ADR 0113 D3: the log's first-start order rides every frame
       input: { a: 1 },
       error: "Error: boom",
     });

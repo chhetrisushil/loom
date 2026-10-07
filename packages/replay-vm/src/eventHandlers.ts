@@ -465,10 +465,16 @@ const handlers: Record<string, Handler> = {
   },
 
   STEP_STARTED: (state, event) => {
-    const payload = event.payload as { stepId: string; input?: unknown };
+    const payload = event.payload as { stepId: string; input?: unknown; scope?: unknown };
     const existing = state.frames[payload.stepId];
+    // ADR 0113 D3 — the log's first-start order, and (kernel-stamped only) the scope it started in.
+    const scope =
+      existing?.scope ??
+      (isKernelWritten(event) && typeof payload.scope === "string" ? payload.scope : undefined);
     const frame: ExecutionFrame = {
       stepId: payload.stepId,
+      firstSeq: existing?.firstSeq ?? event.sequence,
+      ...(scope !== undefined && { scope }),
       status: "running",
       attempts: (existing?.attempts ?? 0) + 1,
       startedAt: event.timestamp,
@@ -491,6 +497,8 @@ const handlers: Record<string, Handler> = {
       stepId: payload.stepId,
       status: "completed",
       attempts: existing?.attempts ?? 1,
+      ...(existing?.firstSeq !== undefined && { firstSeq: existing.firstSeq }),
+      ...(existing?.scope !== undefined && { scope: existing.scope }),
       completedAt: event.timestamp,
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
       ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
@@ -518,6 +526,8 @@ const handlers: Record<string, Handler> = {
       stepId: payload.stepId,
       status: "failed",
       attempts: existing?.attempts ?? 1,
+      ...(existing?.firstSeq !== undefined && { firstSeq: existing.firstSeq }),
+      ...(existing?.scope !== undefined && { scope: existing.scope }),
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
       ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
       ...(existing?.input !== undefined && { input: existing.input }),
@@ -553,6 +563,8 @@ const handlers: Record<string, Handler> = {
       stepId: payload.stepId,
       status: "cancelled",
       attempts: existing?.attempts ?? 1,
+      ...(existing?.firstSeq !== undefined && { firstSeq: existing.firstSeq }),
+      ...(existing?.scope !== undefined && { scope: existing.scope }),
       ...(existing?.startedAt !== undefined && { startedAt: existing.startedAt }),
       ...(existing?.firstStartedAt !== undefined && { firstStartedAt: existing.firstStartedAt }),
       ...(existing?.input !== undefined && { input: existing.input }),
@@ -571,6 +583,8 @@ const handlers: Record<string, Handler> = {
       stepId: payload.stepId,
       status: "pending",
       attempts: payload.attempt,
+      ...(existing?.firstSeq !== undefined && { firstSeq: existing.firstSeq }),
+      ...(existing?.scope !== undefined && { scope: existing.scope }),
       ...(existing?.input !== undefined && { input: existing.input }),
     };
     return {
@@ -865,6 +879,10 @@ const handlers: Record<string, Handler> = {
       // (an app event naming it folds as before); a served decision exempts exactly these from the
       // replay-divergence detector. Descriptive: never a replay input.
       innerSteps?: unknown;
+      // Past the inner-step cap: the cap's worth of ids plus the journal sequence the decider began at
+      // (a served overflow decision also exempts the frames first started between it and this record).
+      innerStepsOverflow?: unknown;
+      innerFrom?: unknown;
     };
     assertSafeKey(payload.decisionId);
     // R1a — the decision map is a per-fold-owned container, written in place (the same rule
@@ -899,6 +917,12 @@ const handlers: Record<string, Handler> = {
       ...(isKernelWritten(event) &&
         Array.isArray(payload.innerSteps) && {
           innerSteps: payload.innerSteps.filter((id): id is string => typeof id === "string"),
+          ...(payload.innerStepsOverflow === true &&
+            Number.isSafeInteger(payload.innerFrom) && {
+              innerStepsOverflow: true,
+              innerFrom: payload.innerFrom as number,
+              recordedAtSeq: event.sequence,
+            }),
         }),
     };
     return {
