@@ -69,6 +69,9 @@ export function describePin(pin: VersionPin): string {
  * Callers MUST treat that as "cannot reconstruct" and say so — never fall back to the
  * current version. An `unpinned-legacy` execution returns `true`: there is no pin to
  * violate, and refusing it would make every pre-1.4.0 log uninspectable.
+ *
+ * @deprecated A raw string lookup cannot know that a legacy `fnv1a:` pin and a `sha256:` hash name the
+ * same structure (ADR 0113 D1). Use {@link canServePinFrom}, which compares through `flowHashMatches`.
  */
 export function canServePin(pin: VersionPin, availableFlowHashes: ReadonlySet<string>): boolean {
   if (pin.status === "unpinned-legacy") return true;

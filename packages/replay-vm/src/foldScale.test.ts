@@ -157,6 +157,7 @@ function referenceFold(events: EventEnvelope[]): ExecutionState {
         const old = frames[p.stepId];
         frames[p.stepId] = {
           stepId: p.stepId,
+          firstSeq: old?.firstSeq ?? e.sequence, // ADR 0113 D3: the log's first-start order
           status: "running",
           attempts: (old?.attempts ?? 0) + 1,
           startedAt: e.timestamp,
@@ -174,6 +175,7 @@ function referenceFold(events: EventEnvelope[]): ExecutionState {
           completedAt: e.timestamp,
           ...(old?.startedAt !== undefined && { startedAt: old.startedAt }),
           ...(old?.firstStartedAt !== undefined && { firstStartedAt: old.firstStartedAt }),
+          ...(old?.firstSeq !== undefined && { firstSeq: old.firstSeq }),
           ...(old?.input !== undefined && { input: old.input }),
           ...(p.output !== undefined && { output: p.output }),
         };
@@ -187,6 +189,7 @@ function referenceFold(events: EventEnvelope[]): ExecutionState {
           attempts: old?.attempts ?? 1,
           ...(old?.startedAt !== undefined && { startedAt: old.startedAt }),
           ...(old?.firstStartedAt !== undefined && { firstStartedAt: old.firstStartedAt }),
+          ...(old?.firstSeq !== undefined && { firstSeq: old.firstSeq }),
           ...(old?.input !== undefined && { input: old.input }),
           ...(p.error !== undefined && { error: p.error }),
         };

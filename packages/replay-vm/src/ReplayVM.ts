@@ -34,9 +34,53 @@ export class ReplayVM {
     }
   }
 
-  /** ADR 0113 D3 — every recorded frame id, in first-start order (the order the log began them). */
-  recordedFrameOrder(): string[] {
-    return Object.keys(this.state.frames);
+  /**
+   * ADR 0113 D3 — every recorded frame in the LOG's first-start order (by `firstSeq`, never by object
+   * key order, which floats integer-like ids to the front). A frame folded before `firstSeq` existed
+   * (an old snapshot) has none: those come first, in key order.
+   */
+  recordedFrames(): Array<{ id: string; completed: boolean; seq?: number; scope?: string }> {
+    const frames = this.state.frames;
+    const out = Object.keys(frames).map((id, keyIndex) => {
+      const f = frames[id] as NonNullable<(typeof frames)[string]>;
+      return {
+        id,
+        keyIndex,
+        completed: f.status === "completed",
+        ...(f.firstSeq !== undefined && { seq: f.firstSeq }),
+        ...(f.scope !== undefined && { scope: f.scope }),
+      };
+    });
+    out.sort((a, b) => (a.seq ?? -1) - (b.seq ?? -1) || a.keyIndex - b.keyIndex);
+    return out.map(({ keyIndex: _k, ...rest }) => rest);
+  }
+
+  /** ADR 0113 D3 — what a decision record says about the steps its decider ran. */
+  getDecisionInner(
+    decisionId: string
+  ): { steps: readonly string[]; overflow?: { from: number; to: number } } | undefined {
+    const decisions = this.state.variables._decisions as
+      | Record<
+          string,
+          {
+            innerSteps?: unknown;
+            innerStepsOverflow?: unknown;
+            innerFrom?: number;
+            recordedAtSeq?: number;
+          }
+        >
+      | undefined;
+    if (decisions === undefined || !Object.hasOwn(decisions, decisionId)) return undefined;
+    const rec = decisions[decisionId];
+    if (rec === undefined || !Array.isArray(rec.innerSteps)) return undefined;
+    return {
+      steps: rec.innerSteps as string[],
+      ...(rec.innerStepsOverflow === true &&
+        rec.innerFrom !== undefined &&
+        rec.recordedAtSeq !== undefined && {
+          overflow: { from: rec.innerFrom, to: rec.recordedAtSeq },
+        }),
+    };
   }
 
   /**
@@ -99,16 +143,6 @@ export class ReplayVM {
     // through the prototype chain.
     if (decisions === undefined || !Object.hasOwn(decisions, decisionId)) return undefined;
     return decisions[decisionId]?.choice;
-  }
-
-  /** ADR 0113 D3 — the steps a decision's decider ran (`innerSteps`), when the record carries them. */
-  getDecisionInnerSteps(decisionId: string): readonly string[] | undefined {
-    const decisions = this.state.variables._decisions as
-      | Record<string, { innerSteps?: unknown }>
-      | undefined;
-    if (decisions === undefined || !Object.hasOwn(decisions, decisionId)) return undefined;
-    const inner = decisions[decisionId]?.innerSteps;
-    return Array.isArray(inner) ? (inner as string[]) : undefined;
   }
 
   // ADR 0102 — how many stamped flow-level emits with this content digest the log holds

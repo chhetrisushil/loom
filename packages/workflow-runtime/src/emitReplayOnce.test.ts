@@ -230,7 +230,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
       ["EXECUTION_STARTED", expect.anything()],
       ["STEP_STARTED", { stepId: "a", input: {} }],
       ["STEP_COMPLETED", { stepId: "a", output: { a: 1 } }],
-      ["DECISION_RECORDED", { decisionId: "route", choice: "left" }],
+      ["DECISION_RECORDED", { decisionId: "route", choice: "left", innerSteps: [] }], // ADR 0113: always written
       ["note", { at: 1 }],
       ["EXECUTION_SUSPENDED", expect.anything()],
       ["go1", { i: 0 }],

@@ -5820,8 +5820,10 @@ export class WorkflowRuntime {
     const divergence: DivergenceGuard = new DivergenceGuard(
       executionId,
       this.divergenceMode,
-      vm.expectedReplayFrames(),
-      vm.recordedFrameOrder(),
+      (() => {
+        const expected = new Set(vm.expectedReplayFrames());
+        return vm.recordedFrames().map((f) => ({ ...f, completed: expected.has(f.id) }));
+      })(),
       (message) => {
         this.divergenceWarned++;
         this.onWarn(message);
@@ -5945,7 +5947,8 @@ export class WorkflowRuntime {
       // `running` was re-driven by every recovery pass, invisibly, forever. A park is the one state
       // recovery and timers leave alone and every consumer already reads as "waiting on a person";
       // `retryDiverged` re-runs it after the code is fixed, pinned or migrated. No EXECUTION_FAILED.
-      // Never appended over a failed store (the run is then recoverable as a storage failure).
+      // Never appended over a failed store or after a cancel (nothing may follow those).
+      let tryPark = false;
       if (!journal.failed && err instanceof FlowReplayDivergenceError && !cancelled) {
         const summary = `skipped ${err.skippedCount}: ${err.skippedSteps.join(",")}`.slice(0, 256);
         journal.commit(
@@ -5953,15 +5956,18 @@ export class WorkflowRuntime {
           { condition: { on: FLOW_DIVERGED_GATE, correlationKey: summary } },
           { unguarded: true }
         );
+        tryPark = true;
       }
-      // ALWAYS signalled (the log alone is silent): the runtime's warning channel, and the handle
-      // rejects, which `recoverAbandoned` reports through `onError` / `failed`.
-      this.divergenceWarned++;
-      this.onWarn(
-        `execution "${executionId}" PARKED on "${FLOW_DIVERGED_GATE}" (divergence: fail): ${(err as Error).message} Re-run with retryDiverged("${executionId}") after the code is fixed, pinned or migrated.`
-      );
       ctx.seal();
       await journal.drain().catch(() => {});
+      // The message says what actually happened: a park that did not land is not "PARKED".
+      const parked = tryPark && !journal.failed;
+      this.divergenceWarned++;
+      this.onWarn(
+        parked
+          ? `execution "${executionId}" PARKED on "${FLOW_DIVERGED_GATE}" (divergence: fail): ${(err as Error).message} Re-run with retryDiverged("${executionId}") after the code is fixed, pinned or migrated.`
+          : `execution "${executionId}" REFUSED (divergence: fail) and NOT parked (${cancelled ? "it was cancelled" : journal.failed ? "the store rejected the park" : "not a recorded-step divergence"}): ${(err as Error).message}`
+      );
       rejectSuspend(err);
       rejectCompletion(err);
     };

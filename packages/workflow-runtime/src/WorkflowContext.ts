@@ -6,6 +6,7 @@ import type { EffectRuntime, PrincipalChain, ResourceSnapshot } from "@loom/effe
 import { FLOW_DIVERGED_GATE } from "@loom/replay-vm";
 import type { ReplayVM } from "@loom/replay-vm";
 import { linkSignals, parallelLimit } from "@loom/scheduler";
+import type { DecisionInner } from "./DivergenceGuard";
 import type { ExecutionJournal } from "./ExecutionJournal";
 import {
   CarryTooLargeError,
@@ -342,19 +343,24 @@ const INBOX_READ_PASSES = 8;
 /** What the context tells the replay-divergence detector (ADR 0113 D3). */
 export interface DivergenceHooks {
   visit(id: string): void;
-  scopeOpen(stepIds: readonly string[]): void;
+  scopeOpen(path: string, stepIds: readonly string[], allExplicit: boolean): void;
   scopeClose(): void;
-  decisionServed(decisionId: string, innerSteps: readonly string[] | undefined): void;
+  decisionServed(decisionId: string, inner: DecisionInner | undefined): void;
 }
 
 /** The steps a live decider has run so far (and its enclosing deciders'), per async context. */
 interface InnerSteps {
   readonly ids: Set<string>;
   readonly parent: InnerSteps | undefined;
+  /** More steps than {@link MAX_INNER_STEPS} ran: the record lists the first ones and says so. */
+  overflowed: boolean;
 }
 const deciderStore = new AsyncLocalStorage<{ owner: object; inner: InnerSteps }>();
-/** A decision record lists its inner steps only up to this many (past it the naming fallback applies). */
-const MAX_INNER_STEPS = 256;
+/**
+ * A decision record lists its inner steps only up to this many; past it the record carries
+ * `innerStepsOverflow` and a served decision also exempts the frames first started during it.
+ */
+const MAX_INNER_STEPS = 4096;
 
 export class WorkflowContextImpl implements WorkflowContext {
   readonly executionId: string;
@@ -726,7 +732,8 @@ export class WorkflowContextImpl implements WorkflowContext {
     if (deciding !== undefined && deciding.owner === this) {
       // Inside a live decider: the decision's record names this step (ADR 0113 D3, `innerSteps`).
       for (let d: InnerSteps | undefined = deciding.inner; d !== undefined; d = d.parent) {
-        if (d.ids.size <= MAX_INNER_STEPS) d.ids.add(id);
+        if (d.ids.size < MAX_INNER_STEPS || d.ids.has(id)) d.ids.add(id);
+        else d.overflowed = true;
       }
     }
     // ADR 0104 — a `kind: "human"` step (HumanEffect) is a SUSPEND POINT: its effect parks the
@@ -859,7 +866,13 @@ export class WorkflowContextImpl implements WorkflowContext {
     }
 
     assertValidBudget("timeoutMs", task.timeoutMs, `step "${id}"`); // before anything is logged
-    this.commit("STEP_STARTED", { stepId: id, input });
+    // ADR 0113 D3 — with scopes on, the scope path the step starts in rides the record (kernel-stamped)
+    // so a re-run knows which recorded frames belong to which scope.
+    this.commit(
+      "STEP_STARTED",
+      { stepId: id, input, ...(this.scopesEnabled && { scope: scope.path }) },
+      this.scopesEnabled ? { metadata: { kernel: true } } : undefined
+    );
 
     // K8.3 — declared step deadline (`timeoutMs`), anchored to the step's FIRST
     // logged start so a crash-recovery re-run resumes the countdown rather than
@@ -1066,7 +1079,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     assertFlowDecisionId(decisionId);
     if (this.vm.hasDecision(decisionId)) {
       // ADR 0113 D3 — the decider is skipped, and so is every step it ran.
-      this.divergence?.decisionServed(decisionId, this.vm.getDecisionInnerSteps(decisionId));
+      this.divergence?.decisionServed(decisionId, this.vm.getDecisionInner(decisionId));
       return this.vm.getDecision(decisionId) as T;
     }
     if (opts?.estimatedCost !== undefined) assertEstimatedCost(opts.estimatedCost);
@@ -1123,8 +1136,10 @@ export class WorkflowContextImpl implements WorkflowContext {
         });
       },
     };
+    const decisionFrom = this.vm.peekState().sequence;
     const inner: InnerSteps = {
       ids: new Set(),
+      overflowed: false,
       parent: (() => {
         const outer = deciderStore.getStore();
         return outer !== undefined && outer.owner === this ? outer.inner : undefined;
@@ -1144,14 +1159,17 @@ export class WorkflowContextImpl implements WorkflowContext {
 
     // ADR 0113 D3 — the steps the decider ran ride the record (kernel-stamped), so a re-run that
     // serves this decision knows exactly which recorded frames it will never be asked for.
-    const innerSteps =
-      inner.ids.size > 0 && inner.ids.size <= MAX_INNER_STEPS ? [...inner.ids] : [];
+    // ALWAYS written, even empty (kernel-stamped): an absent field means a pre-R7 record, for which
+    // the served decision falls back to the naming convention. The decider must AWAIT the steps it
+    // runs: one it detaches and finishes after returning is not in the record (a residual).
+    const innerSteps = [...inner.ids];
     this.commit(
       "DECISION_RECORDED",
       {
         decisionId,
         choice,
-        ...(innerSteps.length > 0 && { innerSteps }),
+        innerSteps,
+        ...(inner.overflowed && { innerStepsOverflow: true, innerFrom: decisionFrom }),
         ...(opts?.rationale !== undefined && { rationale: opts.rationale }),
         ...(opts?.source !== undefined && { source: opts.source }),
         ...(opts?.alternatives !== undefined && { alternatives: opts.alternatives }),
@@ -1166,7 +1184,7 @@ export class WorkflowContextImpl implements WorkflowContext {
         ...(opts?.context !== undefined && { context: opts.context }),
         ...(opts?.policy !== undefined && { policy: opts.policy }),
       },
-      innerSteps.length > 0 ? { metadata: { kernel: true } } : undefined
+      { metadata: { kernel: true } }
     );
 
     return choice;
@@ -1319,7 +1337,9 @@ export class WorkflowContextImpl implements WorkflowContext {
     // scope would orphan its branches), however the flow reaches it.
     this.openParallels++;
     this.divergence?.scopeOpen(
-      branches.flatMap((b) => (Array.isArray(b) ? [(b[0] as StepDefinition).id] : []))
+      this.scopesEnabled ? `${parent.path}/${parent.parallelCount}` : "",
+      branches.flatMap((b) => (Array.isArray(b) ? [(b[0] as StepDefinition).id] : [])),
+      branches.every((b) => Array.isArray(b))
     );
     try {
       return await this.parallelScoped(parent, branches, options);

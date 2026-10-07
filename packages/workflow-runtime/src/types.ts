@@ -192,6 +192,11 @@ export interface ExecutionContext extends ExecutionContextExtensions {
   // This is the seam that lets routing/elevation/optimization change outcomes
   // run-to-run while keeping any single run's replay pure (P2). The choice must be
   // JSON-serializable (same constraint as a step output).
+  //
+  // ADR 0113 — the record lists the steps the decider ran (`innerSteps`), so a re-run that serves it
+  // knows those recorded frames will never be asked for. A decider MUST AWAIT every step it runs:
+  // one it detaches and finishes after returning is not in the record, and the replay-divergence
+  // detector will then report that step as skipped when the decision is served.
   decide<T = unknown>(
     decisionId: string,
     decider: (scope: DecideScope) => T | Promise<T>,

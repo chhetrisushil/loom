@@ -38,6 +38,18 @@ export interface ExecutionFrame {
   errorChannel?: string;
   errorPayload?: unknown;
   attempts: number;
+  /**
+   * ADR 0113 D3 — the journal sequence of this step's FIRST `STEP_STARTED`: the log's first-start
+   * order, which the replay-divergence detector ranks frames by. An object's key order cannot carry
+   * it (integer-like ids sort first). Absent on a frame folded before this field existed.
+   */
+  firstSeq?: number;
+  /**
+   * ADR 0113 D3 — the cancellation-scope path (ADR 0112) the step first started in (`""` = the
+   * root), recorded by the kernel only when `kernel.features.scopes` is on and folded only from a
+   * kernel-stamped envelope. Absent = unknown (scopes off, or a legacy log).
+   */
+  scope?: string;
 }
 
 export interface SuspendCondition {

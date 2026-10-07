@@ -2,11 +2,12 @@ import { flowContentHash, legacyFlowContentHash, step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { SuspendError } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { DivergenceMode } from "./DivergenceGuard";
+import { TimerService } from "./TimerService";
 import { WorkflowRuntime, orphanedFrames } from "./WorkflowRuntime";
 import { settle } from "./__tests__/r2Harness";
 import { recoverAbandoned } from "./recoverAbandoned";
@@ -1193,5 +1194,433 @@ describe("D1 — the sha256 flag (fix round 1, P2-2)", () => {
     ).waitForCompletion();
     const mig = (await r.store.read("x")).find((e) => e.eventType === "EXECUTION_MIGRATED");
     expect((mig?.payload as { toHash: string }).toHash).toMatch(/^sha256:/);
+  });
+});
+
+// ── Fix round 2 ─────────────────────────────────────────────────────────────────────────────────
+
+const stepOf = (id: string) => step$({ id, name: id, toolId: "count", ...io });
+const D = stepOf("D");
+const task = (id: string) =>
+  ({ _tag: "TaskDefinition", kind: "tool", id, toolId: "count" }) as const;
+
+describe("P2-A — the log's first-start order, not object key order (integer-like ids)", () => {
+  const ONE = stepOf("1");
+  const TWO = stepOf("2");
+
+  it("a failed (in-flight) step followed by numeric ids: an UNCHANGED body resumes clean under fail", async () => {
+    const r = rig();
+    let first = true;
+    const failB = (id: string): unknown => {
+      if (id === "B" && first) {
+        first = false;
+        throw new Error("B fails untyped");
+      }
+      return undefined;
+    };
+    const body: Body = async (ctx) => {
+      try {
+        await run(ctx, B);
+      } catch {
+        /* carry on */
+      }
+      await run(ctx, ONE);
+      await run(ctx, TWO);
+      await ctx.suspend({ on: "go" });
+      return { done: true };
+    };
+    const d = r.deploy(body, { mode: "fail", tool: failB });
+    await (
+      await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" })
+    ).waitForSuspend();
+    const { outcome, warnings } = await resumeOn(r, body, { mode: "fail" });
+    expect((outcome as { status: string }).status).toBe("completed");
+    expect(warnings).toEqual([]);
+  });
+
+  it("…and dropping a numeric step is still caught, naming it, before the next effect", async () => {
+    const r = rig();
+    const body: Body = async (ctx) => {
+      await run(ctx, A);
+      await run(ctx, ONE);
+      await run(ctx, TWO);
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    const d = r.deploy(body, { mode: "fail" });
+    await (
+      await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" })
+    ).waitForSuspend();
+    const v2: Body = async (ctx) => {
+      await run(ctx, A);
+      await run(ctx, TWO); // "1" dropped
+      await run(ctx, C);
+      return {};
+    };
+    const { outcome, ran } = await resumeOn(r, v2, { mode: "fail" });
+    expect((outcome as FlowReplayDivergenceError).skippedSteps).toEqual(["1"]);
+    expect(ran).toEqual([]);
+  });
+
+  it("the fold records each frame's first-start sequence (survives completion, failure and a snapshot)", async () => {
+    const r = rig();
+    const d = await parkedOnV1(r);
+    const st = await d.rt.loadState("x");
+    expect(st?.frames.A?.firstSeq).toBeLessThan(st?.frames.B?.firstSeq as number);
+    expect(typeof st?.frames.A?.firstSeq).toBe("number");
+  });
+});
+
+describe("P2-B — an EMPTY innerSteps is a post-R7 record: the naming convention does not apply", () => {
+  it("steps named like the decision's convention but run by the body are still judged", async () => {
+    const r = rig();
+    const v1b: Body = async (ctx) => {
+      await ctx.decide("plan", () => 1);
+      await ctx.execute(task("plan#a"), { id: "plan#a" });
+      await ctx.execute(task("plan:b"), { id: "plan:b" });
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    const d = r.deploy(v1b, { mode: "fail" });
+    await (
+      await d.rt.start({ definition: d.def, runner: v1b }, {}, { executionId: "x" })
+    ).waitForSuspend();
+    const rec = (await r.store.read("x")).find((e) => e.eventType === "DECISION_RECORDED");
+    expect((rec?.payload as { innerSteps?: string[] }).innerSteps).toEqual([]); // present, empty
+    expect(rec?.metadata?.kernel).toBe(true);
+    const v2: Body = async (ctx) => {
+      await ctx.decide("plan", () => 1);
+      await run(ctx, C); // both recorded steps dropped
+      return {};
+    };
+    const { outcome, ran } = await resumeOn(r, v2, { mode: "fail" });
+    expect((outcome as FlowReplayDivergenceError).skippedSteps).toEqual(["plan#a", "plan:b"]);
+    expect(ran).toEqual([]);
+  });
+});
+
+describe("P2-C — a step that starts inside a scope is judged against the frames outside it", () => {
+  const scoped = { mode: "fail" as const, deps: { scopes: true } };
+  const first: Body = async (ctx) => {
+    await run(ctx, A);
+    await run(ctx, B);
+    await ctx.suspend({ on: "go" });
+    return {};
+  };
+  async function parkedFirst(r: Rig, body: Body = first) {
+    const d = r.deploy(body, scoped);
+    await (
+      await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" })
+    ).waitForSuspend();
+  }
+
+  const probes: Array<[string, Body]> = [
+    [
+      "function branches, all-new ids",
+      async (ctx) => {
+        await ctx.parallel([
+          async (b) => b.run(C, { id: "C" }),
+          async (b) => b.run(D, { id: "D" }),
+        ]);
+        return {};
+      },
+    ],
+    [
+      "explicit branches, all-new ids",
+      async (ctx) => {
+        await ctx.parallel([
+          [C, { id: "C" }],
+          [D, { id: "D" }],
+        ]);
+        return {};
+      },
+    ],
+    [
+      "a nested scope inside a function branch",
+      async (ctx) => {
+        await ctx.parallel([async (b) => b.parallel([[C, { id: "C" }]])]);
+        return {};
+      },
+    ],
+    [
+      "a decision, then a new step, inside a branch",
+      async (ctx) => {
+        await ctx.parallel([
+          async (b) => {
+            await b.decide("d", () => 1);
+            await b.run(C, { id: "C" });
+          },
+        ]);
+        return {};
+      },
+    ],
+  ];
+  for (const [label, body] of probes) {
+    it(`${label}: refused with no effect run`, async () => {
+      const r = rig();
+      await parkedFirst(r);
+      const { outcome, ran } = await resumeOn(r, body, scoped);
+      expect(outcome).toBeInstanceOf(FlowReplayDivergenceError);
+      expect((outcome as FlowReplayDivergenceError).skippedSteps).toEqual(["A", "B"]);
+      expect(ran).toEqual([]);
+    });
+  }
+
+  it("explicit branches that drop a recorded scope step and add a new one: refused before the new one runs", async () => {
+    const r = rig();
+    const v1s: Body = async (ctx) => {
+      await ctx.parallel([
+        [A, { id: "A" }],
+        [B, { id: "B" }],
+      ]);
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    await parkedFirst(r, v1s);
+    const v2: Body = async (ctx) => {
+      await ctx.parallel([
+        [A, { id: "A" }],
+        [C, { id: "C" }],
+      ]);
+      return {};
+    };
+    const { outcome, ran } = await resumeOn(r, v2, scoped);
+    expect((outcome as FlowReplayDivergenceError).skippedSteps).toEqual(["B"]);
+    expect(ran).toEqual([]);
+  });
+
+  const unchanged: Array<[string, Body]> = [
+    [
+      "function branches",
+      async (ctx) => {
+        await run(ctx, A);
+        await ctx.parallel([
+          async (b) => b.run(B, { id: "B" }),
+          async (b) => b.run(C, { id: "C" }),
+        ]);
+        await ctx.suspend({ on: "go" });
+        return {};
+      },
+    ],
+    [
+      "explicit branches",
+      async (ctx) => {
+        await run(ctx, A);
+        await ctx.parallel([
+          [B, { id: "B" }],
+          [C, { id: "C" }],
+        ]);
+        await ctx.suspend({ on: "go" });
+        return {};
+      },
+    ],
+    [
+      "nested scopes",
+      async (ctx) => {
+        await run(ctx, A);
+        await ctx.parallel([
+          async (b) => b.parallel([[B, { id: "B" }]]),
+          async (b) => b.run(C, { id: "C" }),
+        ]);
+        await ctx.suspend({ on: "go" });
+        return {};
+      },
+    ],
+    [
+      "a decision inside a branch",
+      async (ctx) => {
+        await run(ctx, A);
+        await ctx.parallel([
+          async (b) => {
+            await b.decide("d", async () => {
+              await b.execute(task("d#inner"), { id: "inner" });
+              return 1;
+            });
+            await b.run(B, { id: "B" });
+          },
+          async (b) => b.run(C, { id: "C" }),
+        ]);
+        await ctx.suspend({ on: "go" });
+        return {};
+      },
+    ],
+  ];
+  for (const [label, body] of unchanged) {
+    it(`an UNCHANGED body (${label}) resumes clean under fail`, async () => {
+      const r = rig();
+      await parkedFirst(r, body);
+      const { outcome, warnings, ran } = await resumeOn(r, body, scoped);
+      expect((outcome as { status: string }).status).toBe("completed");
+      expect(warnings).toEqual([]);
+      expect(ran).toEqual([]);
+    });
+  }
+
+  it("STEP_STARTED inside a scope carries its scope path, kernel-stamped (and the fold keeps it)", async () => {
+    const r = rig();
+    await parkedFirst(r, unchanged[1]?.[1] as Body);
+    const started = (await r.store.read("x")).filter((e) => e.eventType === "STEP_STARTED");
+    const byId = Object.fromEntries(
+      started.map((e) => [(e.payload as { stepId: string }).stepId, e])
+    );
+    expect((byId.A?.payload as { scope: string }).scope).toBe("");
+    expect((byId.B?.payload as { scope: string }).scope).toMatch(/^\/0\.\d$/);
+    expect(byId.B?.metadata?.kernel).toBe(true);
+    const st = await r.deploy(first, scoped).rt.loadState("x");
+    expect(st?.frames.B?.scope).toMatch(/^\/0\.\d$/);
+  });
+
+  it("scopes OFF: no scope path is written (the legacy floor applies)", async () => {
+    const r = rig();
+    await parkedOnV1(r);
+    const started = (await r.store.read("x")).find((e) => e.eventType === "STEP_STARTED");
+    expect(started?.payload).not.toHaveProperty("scope");
+  });
+});
+
+describe("P3 — decisions: cap, overflow, residuals", () => {
+  it("(P3-1) an inner step with an id UNRELATED to the decision's name is exempt via innerSteps", async () => {
+    const r = rig();
+    const body: Body = async (ctx) => {
+      await ctx.decide("route", async () => {
+        await ctx.execute(task("zz"), { id: "zz" });
+        return 1;
+      });
+      await run(ctx, A);
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    const d = r.deploy(body, { mode: "fail" });
+    await (
+      await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" })
+    ).waitForSuspend();
+    const { outcome, warnings } = await resumeOn(r, body, { mode: "fail" });
+    expect((outcome as { status: string }).status).toBe("completed");
+    expect(warnings).toEqual([]);
+  });
+
+  it("(P3-2) up to the cap there is no overflow flag; past it the record lists the cap and says so, and an unchanged body still resumes", async () => {
+    const r = rig();
+    const N = 4100;
+    const body: Body = async (ctx) => {
+      await ctx.decide("big", async () => {
+        for (let i = 0; i < N; i++) await ctx.execute(task(`zz${i}`), { id: `zz${i}` });
+        return 1;
+      });
+      await run(ctx, A);
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    const d = r.deploy(body, { mode: "fail" });
+    await (
+      await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" })
+    ).waitForSuspend();
+    const rec = (await r.store.read("x")).find((e) => e.eventType === "DECISION_RECORDED")
+      ?.payload as { innerSteps: string[]; innerStepsOverflow?: boolean; innerFrom?: number };
+    expect(rec.innerSteps).toHaveLength(4096);
+    expect(rec.innerStepsOverflow).toBe(true);
+    expect(typeof rec.innerFrom).toBe("number");
+    const { outcome, warnings } = await resumeOn(r, body, { mode: "fail" });
+    expect((outcome as { status: string }).status).toBe("completed");
+    expect(warnings).toEqual([]);
+  }, 60_000);
+
+  it("(P3-2) a decider within the cap writes no overflow flag", async () => {
+    const r = rig();
+    const body: Body = async (ctx) => {
+      await ctx.decide("small", async () => {
+        await ctx.execute(task("zz"), { id: "zz" });
+        return 1;
+      });
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    const d = r.deploy(body, { mode: "fail" });
+    await (
+      await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" })
+    ).waitForSuspend();
+    const rec = (await r.store.read("x")).find((e) => e.eventType === "DECISION_RECORDED")
+      ?.payload as Record<string, unknown>;
+    expect(rec).not.toHaveProperty("innerStepsOverflow");
+  });
+
+  it("(P3-3) RESIDUAL, pinned: a step the decider DETACHES and finishes after returning is not recorded, so an unchanged body is refused on resume", async () => {
+    const r = rig();
+    const body: Body = async (ctx) => {
+      let detached: Promise<unknown> = Promise.resolve();
+      await ctx.decide("d", () => {
+        detached = new Promise((res) => setTimeout(res, 5)).then(() =>
+          ctx.execute(task("late"), { id: "late" })
+        );
+        return 1; // returns without awaiting its step: the documented contract is "await your steps"
+      });
+      await detached;
+      await ctx.suspend({ on: "go" });
+      return {};
+    };
+    const d = r.deploy(body, { mode: "fail" });
+    await (
+      await d.rt.start({ definition: d.def, runner: body }, {}, { executionId: "x" })
+    ).waitForSuspend();
+    const rec = (await r.store.read("x")).find((e) => e.eventType === "DECISION_RECORDED");
+    expect((rec?.payload as { innerSteps: string[] }).innerSteps).toEqual([]);
+    const { outcome } = await resumeOn(r, body, { mode: "fail" });
+    expect((outcome as FlowReplayDivergenceError).skippedSteps).toEqual(["late"]);
+  });
+});
+
+describe("P3-4 — the refusal message says what happened", () => {
+  it("a park the store rejects is reported as NOT parked", async () => {
+    const r = rig();
+    await parkedOnV1(r);
+    const flaky = Object.create(r.store) as InMemoryAsyncEventStore;
+    flaky.append = async (e: EventEnvelope) => {
+      if (e.eventType === "EXECUTION_SUSPENDED" && isDivergedPark(e)) throw new Error("disk full");
+      return r.store.append(e);
+    };
+    const r2 = rig(flaky);
+    const { outcome, warnings } = await resumeOn(
+      r2,
+      async (ctx) => {
+        await run(ctx, C);
+        return {};
+      },
+      { mode: "fail" }
+    );
+    expect(outcome).toBeInstanceOf(FlowReplayDivergenceError);
+    const w = warnings.filter((m) => m.includes("divergence: fail"));
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatch(/NOT parked/);
+    expect(w[0]).not.toMatch(/ PARKED on/);
+  });
+
+  it("a timer-woken re-drive is signalled too (TimerService path): onWarn fires and the run parks", async () => {
+    const r = rig();
+    const clock = { t: 1_000_000 };
+    const timerStore = new InMemoryTimerStore();
+    const waiting: Body = async (ctx) => {
+      await run(ctx, A);
+      await ctx.suspend({ on: "Gate", timeout: 500 });
+      return {};
+    };
+    const deps = { timerStore, now: () => clock.t };
+    const d = r.deploy(waiting, { mode: "fail", deps });
+    await (
+      await d.rt.start({ definition: d.def, runner: waiting }, {}, { executionId: "x" })
+    ).waitForSuspend();
+    const v2: Body = async (ctx) => {
+      await run(ctx, C); // A dropped
+      return {};
+    };
+    const d2 = r.deploy(v2, { mode: "fail", deps });
+    const service = new TimerService(d2.rt, timerStore);
+    clock.t += 1000;
+    await service.tick();
+    for (let i = 0; i < 200 && !d2.warnings.some((m) => m.includes("PARKED on")); i++) {
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    expect(d2.warnings.some((m) => m.includes("PARKED on"))).toBe(true);
+    expect(d2.ran).toEqual([]);
+    expect((await d2.rt.loadState("x"))?.suspendedOn?.on).toBe("__loom_diverged__");
   });
 });
