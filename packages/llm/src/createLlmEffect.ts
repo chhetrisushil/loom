@@ -3,6 +3,8 @@ import { LlmEffect } from "@loom/effect-runtime";
 import type { EffectContext, EffectDelta } from "@loom/effect-runtime";
 import { collectStream } from "./assembleStream";
 import type { StreamProgress } from "./assembleStream";
+import { assertRequestSupported } from "./capabilities";
+import { type ContentResolver, resolveRequestContent } from "./resolveContent";
 import type {
   LlmProvider,
   LlmRequest,
@@ -30,6 +32,27 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
    * partial text ({@link LLM_INTERRUPTED}).
    */
   stream?: boolean;
+  /**
+   * R5 — fetch the bytes behind a `{ kind: "ref" }` media source, at call time. The
+   * journaled request carries only the address; this is the one place bytes appear, and
+   * only on a LIVE call (a replay is served from the log and never reaches it). Typically
+   * `(ref) => contentStore.get({ __loomContent: ref.address })`. Without it, a request
+   * with a ref is refused (`UnresolvedContentError`) before any network call.
+   */
+  resolveContent?: ContentResolver;
+  /** R5 — cap on one inline media part, decoded. Default 64 KiB (`MAX_INLINE_BYTES`). */
+  maxInlineBytes?: number;
+  /** R5 — cap on the total bytes `resolveContent` may return for one request. Default 32 MiB. */
+  maxResolvedBytes?: number;
+  /**
+   * R5 — a sink for streamed tool-call INPUT fragments (`id`, `name` on the first, then
+   * partial JSON). Transient and bare: it is NOT routed through the governed `ctx.onDelta`
+   * channel (ADR 0119), because middleware delta guards inspect text. Streaming only.
+   */
+  onToolDelta?: (
+    delta: { id: string; name?: string; inputDelta: string },
+    ctx: EffectContext
+  ) => void;
   /**
    * Where deltas go. TRANSIENT by construction — this effect never journals them,
    * and must not: chunks-as-events is the fold-economics problem ST-R rejected,
@@ -82,7 +105,16 @@ export function createLlmEffect<TIn = string, TOut = string>(
       // The integrity check at the prompt boundary: tainted content is refused
       // outside a `user` message and fenced inside one, and what comes back is
       // plain strings — so no provider has to know taint exists.
-      const request = guardRequest(options.buildRequest(input, ctx));
+      const guarded = guardRequest(options.buildRequest(input, ctx), {
+        ...(options.maxInlineBytes !== undefined && { maxInlineBytes: options.maxInlineBytes }),
+      });
+      // R5 — fail closed on an undeclared modality BEFORE fetching any content or touching the
+      // network, then turn claim-check refs into bytes (live calls only).
+      assertRequestSupported(guarded, options.provider.capabilities);
+      const request = await resolveRequestContent(guarded, options.resolveContent, {
+        ...(options.maxResolvedBytes !== undefined && { maxBytes: options.maxResolvedBytes }),
+        ...(ctx.signal !== undefined && { signal: ctx.signal }),
+      });
       // K8.1 — forward the effect's cooperative-cancellation signal to the
       // provider (unless buildRequest already set one), so a cancelled/timed-out
       // execution severs the in-flight HTTP call instead of orphaning it.
@@ -110,6 +142,10 @@ export function createLlmEffect<TIn = string, TOut = string>(
                   ctx.onDelta({ delta: tainted(delta, `llm:${ctx.stepId}`) });
                 } else options.onDelta?.(delta, ctx);
               },
+            }),
+            ...(options.onToolDelta !== undefined && {
+              onToolDelta: (d: { id: string; name?: string; inputDelta: string }) =>
+                options.onToolDelta?.(d, ctx),
             }),
             ...(options.guard !== undefined && { guard: options.guard(ctx) }),
           })

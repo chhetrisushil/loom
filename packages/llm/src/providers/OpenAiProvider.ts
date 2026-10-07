@@ -1,4 +1,14 @@
-import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamChunk, LlmToolCall } from "../types";
+import { type LlmCapabilities, assertRequestSupported } from "../capabilities";
+import { type LlmMediaPart, textOf } from "../parts";
+import { inlineData } from "../resolveContent";
+import type {
+  LlmMessage,
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+  LlmStreamChunk,
+  LlmToolCall,
+} from "../types";
 
 /**
  * OpenAI's `finish_reason` → the SPI's. ONE implementation shared by `complete`
@@ -23,6 +33,107 @@ export interface OpenAiProviderConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  /** Override the declared modalities (e.g. a model without vision or audio input). */
+  capabilities?: LlmCapabilities;
+}
+
+/** Chat Completions: images, `input_audio` (wav/mp3) and PDF `file` inputs. */
+const OPENAI_CAPABILITIES: LlmCapabilities = {
+  image: ["image/jpeg", "image/png", "image/gif", "image/webp"],
+  audio: ["audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3"],
+  file: ["application/pdf"],
+};
+
+function dataUrl(p: LlmMediaPart): string {
+  return `data:${p.mediaType};base64,${inlineData(p)}`;
+}
+
+function mediaBlock(p: LlmMediaPart): Record<string, unknown> {
+  switch (p.type) {
+    case "image":
+      return { type: "image_url", image_url: { url: dataUrl(p) } };
+    case "audio": {
+      const mt = p.mediaType.toLowerCase();
+      const format = mt.endsWith("wav")
+        ? "wav"
+        : mt.endsWith("mpeg") || mt.endsWith("mp3")
+          ? "mp3"
+          : undefined;
+      if (format === undefined)
+        throw new Error(`OpenAI does not accept audio of type "${p.mediaType}"`);
+      return { type: "input_audio", input_audio: { data: inlineData(p), format } };
+    }
+    case "file":
+      return {
+        type: "file",
+        file: { filename: p.name ?? "file.pdf", file_data: dataUrl(p) },
+      };
+  }
+}
+
+/**
+ * SPI messages → Chat Completions messages. Exported for tests.
+ *
+ * `tool_result` parts become `role: "tool"` messages (which must directly follow the
+ * assistant message that made the calls, hence they come first); a tool message holds text
+ * only, so media a tool returned rides in a trailing `user` message. Other user parts become
+ * one content-array `user` message; an assistant's `tool_use` parts become `tool_calls`.
+ */
+export function mapMessages(messages: readonly LlmMessage[]): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const m of messages) {
+    if (typeof m.content === "string") {
+      out.push({ role: m.role, content: m.content });
+      continue;
+    }
+    if (m.role === "assistant") {
+      const toolCalls = m.content
+        .filter((p) => p.type === "tool_use")
+        .map((p) => {
+          const u = p as { id: string; name: string; input: unknown };
+          return {
+            id: u.id,
+            type: "function",
+            function: { name: u.name, arguments: JSON.stringify(u.input ?? {}) },
+          };
+        });
+      const text = textOf(m.content);
+      out.push({
+        role: "assistant",
+        content: text === "" && toolCalls.length > 0 ? null : text,
+        ...(toolCalls.length > 0 && { tool_calls: toolCalls }),
+      });
+      continue;
+    }
+    if (m.role === "system") {
+      out.push({ role: "system", content: textOf(m.content) });
+      continue;
+    }
+    const userBlocks: Record<string, unknown>[] = [];
+    const toolMedia: Record<string, unknown>[] = [];
+    for (const p of m.content) {
+      if (p.type === "tool_result") {
+        const items =
+          typeof p.content === "string" ? [{ type: "text" as const, text: p.content }] : p.content;
+        const text = items.flatMap((r) => (r.type === "text" ? [r.text] : [])).join("\n");
+        out.push({ role: "tool", tool_call_id: p.toolUseId, content: text });
+        for (const r of items) {
+          if (r.type !== "text") {
+            if (toolMedia.length === 0) {
+              toolMedia.push({ type: "text", text: `Media returned by tool call ${p.toolUseId}:` });
+            }
+            toolMedia.push(mediaBlock(r));
+          }
+        }
+      } else if (p.type === "text") userBlocks.push({ type: "text", text: p.text });
+      else if (p.type === "tool_use")
+        throw new Error("tool_use parts belong in assistant messages");
+      else userBlocks.push(mediaBlock(p));
+    }
+    const blocks = [...toolMedia, ...userBlocks];
+    if (blocks.length > 0) out.push({ role: "user", content: blocks });
+  }
+  return out;
 }
 
 interface OpenAiChoice {
@@ -53,8 +164,10 @@ export class OpenAiProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  readonly capabilities: LlmCapabilities;
 
   constructor(config: OpenAiProviderConfig = {}) {
+    this.capabilities = config.capabilities ?? OPENAI_CAPABILITIES;
     this.apiKey =
       config.apiKey ?? (typeof process !== "undefined" ? (process.env.OPENAI_API_KEY ?? "") : "");
     this.model = config.model ?? "gpt-4o";
@@ -62,7 +175,7 @@ export class OpenAiProvider implements LlmProvider {
   }
 
   private buildBody(request: LlmRequest, stream = false): Record<string, unknown> {
-    const messages = request.messages.map((m) => ({ role: m.role, content: m.content }));
+    const messages = mapMessages(request.messages);
     const body: Record<string, unknown> = {
       model: this.model,
       messages,
@@ -83,6 +196,7 @@ export class OpenAiProvider implements LlmProvider {
   }
 
   async complete(request: LlmRequest): Promise<LlmResponse> {
+    assertRequestSupported(request, this.capabilities, "OpenAiProvider");
     const resp = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: {
@@ -126,6 +240,7 @@ export class OpenAiProvider implements LlmProvider {
   }
 
   async *stream(request: LlmRequest): AsyncIterable<LlmStreamChunk> {
+    assertRequestSupported(request, this.capabilities, "OpenAiProvider");
     const resp = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: {
@@ -201,12 +316,22 @@ export class OpenAiProvider implements LlmProvider {
           }
           const choice = chunk.choices[0];
           const delta = choice?.delta?.content ?? "";
+          const toolDeltas: NonNullable<LlmStreamChunk["toolDelta"]>[] = [];
           for (const tc of choice?.delta?.tool_calls ?? []) {
             const open = openCalls.get(tc.index) ?? { id: "", name: "", argsJson: "" };
             if (tc.id !== undefined) open.id = tc.id;
             if (tc.function?.name !== undefined) open.name = tc.function.name;
             if (tc.function?.arguments !== undefined) open.argsJson += tc.function.arguments;
+            const first = !openCalls.has(tc.index);
             openCalls.set(tc.index, open);
+            const inputDelta = tc.function?.arguments ?? "";
+            if (first || inputDelta !== "") {
+              toolDeltas.push({
+                id: open.id,
+                ...(first && { name: open.name }),
+                inputDelta,
+              });
+            }
           }
           if (choice?.finish_reason != null) {
             stopReason = normalizeFinishReason(choice.finish_reason);
@@ -214,6 +339,7 @@ export class OpenAiProvider implements LlmProvider {
           if (delta !== "") {
             yield { delta, done: false };
           }
+          for (const toolDelta of toolDeltas) yield { delta: "", done: false, toolDelta };
         } catch {
           // skip malformed SSE lines
         }

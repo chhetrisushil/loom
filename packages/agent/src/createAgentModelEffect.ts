@@ -1,6 +1,6 @@
 import type { LlmEffect } from "@loom/effect-runtime";
 import { createLlmEffect } from "@loom/llm";
-import type { LlmProvider, LlmResponse } from "@loom/llm";
+import type { ContentResolver, LlmProvider, LlmResponse } from "@loom/llm";
 import type { AgentModelCall } from "./agentLoop$";
 
 /**
@@ -22,13 +22,24 @@ import type { AgentModelCall } from "./agentLoop$";
  */
 export function createAgentModelEffect(
   provider: LlmProvider,
-  options: { stream?: boolean; onDelta?: (delta: string) => void } = {}
+  options: {
+    stream?: boolean;
+    onDelta?: (delta: string) => void;
+    /** R5 — fetch the bytes behind a media `ref` at call time (e.g. from the ContentStore). */
+    resolveContent?: ContentResolver;
+    onToolDelta?: (delta: { id: string; name?: string; inputDelta: string }) => void;
+  } = {}
 ): LlmEffect<AgentModelCall, LlmResponse> {
   return createLlmEffect<AgentModelCall, LlmResponse>({
     provider,
     buildRequest: (call) => call,
     parseResponse: (response) => response,
     ...(options.stream !== undefined && { stream: options.stream }),
+    ...(options.resolveContent !== undefined && { resolveContent: options.resolveContent }),
+    ...(options.onToolDelta !== undefined && {
+      onToolDelta: (delta: { id: string; name?: string; inputDelta: string }) =>
+        options.onToolDelta?.(delta),
+    }),
     ...(options.onDelta !== undefined && { onDelta: (delta: string) => options.onDelta?.(delta) }),
   });
 }

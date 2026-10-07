@@ -16,7 +16,7 @@ import {
   readRangeOf,
 } from "@loom/event-runtime";
 import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
-import { assembleStream } from "@loom/llm";
+import { assembleStream, mediaTypeAccepted } from "@loom/llm";
 import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
@@ -1813,6 +1813,27 @@ export function runLlmProviderConformance(
       const res = await factory().complete(req);
       expect(typeof res.content).toBe("string");
       expect(["end_turn", "tool_use", "max_tokens"]).toContain(res.stopReason);
+    });
+
+    it("refuses a modality it did not declare, before doing any work (R5 fail closed)", async () => {
+      const provider = factory();
+      // A provider that declares image/png is exercised by its own tests; this pins the
+      // other half — silence is a refusal, never a silent drop of the media.
+      if (mediaTypeAccepted(provider.capabilities?.image, "image/png")) return;
+      const withImage: LlmRequest = {
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "what is this?" },
+              { type: "image", mediaType: "image/png", source: { kind: "data", data: "AAAA" } },
+            ],
+          },
+        ],
+      };
+      await expect(provider.complete(withImage)).rejects.toMatchObject({
+        name: "UnsupportedModalityError",
+      });
     });
 
     it("stream (when supported) yields chunks ending with done:true", async () => {

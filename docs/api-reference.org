@@ -1636,19 +1636,26 @@ class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime, optio
 ** ~@loom/llm~ — provider-agnostic models
 
 #+begin_src typescript
+interface LlmMessage { role: "system" | "user" | "assistant"; content: string | LlmContentPart[]; }   // R5 (ADR 0120)
 interface LlmRequest { messages: LlmMessage[]; tools?: LlmToolSpec[]; system?: string; maxTokens?: number; temperature?: number; signal?: AbortSignal; }
 interface LlmResponse { content: string; toolCalls?: LlmToolCall[]; stopReason: "end_turn" | "tool_use" | "max_tokens"; usage?: { inputTokens: number; outputTokens: number }; }
-interface LlmProvider { complete(request: LlmRequest): Promise<LlmResponse>; stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>; }
+interface LlmProvider { readonly capabilities?: LlmCapabilities; complete(request: LlmRequest): Promise<LlmResponse>; stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>; }
 
-class AnthropicProvider { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string }) }  // model default "claude-opus-4-8"
-class OpenAiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string }) }  // model default "gpt-4o"
+class AnthropicProvider { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities }) }  // model default "claude-opus-4-8"
+class OpenAiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities }) }  // model default "gpt-4o"
+class GeminiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities }) }  // model default "gemini-2.0-flash"
 
 function createLlmEffect<TIn = string, TOut = string>(options: {
   provider: LlmProvider;
   buildRequest: (input: TIn, ctx: EffectContext) => LlmRequest;
   parseResponse?: (response: LlmResponse, input: TIn) => TOut;   // default: response.content
+  resolveContent?: ContentResolver;   // R5 — bytes behind a media `ref`, fetched at call time (live calls only)
+  maxInlineBytes?: number; maxResolvedBytes?: number;   // R5 — caps (default 64 KiB inline / 32 MiB resolved per request)
+  onToolDelta?: (d: { id: string; name?: string; inputDelta: string }, ctx: EffectContext) => void;   // R5 — transient
 }): LlmEffect<TIn, TOut>
 #+end_src
+
+*Content parts and tool turns (R5, [[file:adr/0120-llm-content-parts-and-tool-threading.md][ADR 0120]]).* A message's ~content~ is a ~string~ (text only, unchanged) or an array of parts: ~{ type: "text" }~, ~{ type: "image" | "audio" | "file", mediaType, source }~ with ~source~ either ~{ kind: "ref", ref: { address, size? } }~ (a ContentStore claim-check) or ~{ kind: "data", data }~ (base64, at most ~MAX_INLINE_BYTES~ = 64 KiB), ~{ type: "tool_use", id, name, input }~ (assistant messages) and ~{ type: "tool_result", toolUseId, content, isError? }~ (user messages; there is no ~tool~ role). ~textOf~ / ~toParts~ read either form; ~assistantMessageOf(response)~ builds the assistant turn a tool result answers. A provider declares ~capabilities~ (~{ image?, audio?, file? }~, each a list of media types, ~"image/*"~ and ~"*"~ allowed); absent means text and tool calls only, and ~assertRequestSupported~ throws ~UnsupportedModalityError~ before any network call (~createLlmEffect~, ~AgentRunner~, ~ReasoningRuntime~ and each shipped provider all run it). ~guardRequest~ also enforces structure: ~tool_use~ only in ~assistant~, ~tool_result~ only in ~user~ and only for an earlier ~tool_use~ id, media only in ~user~, well-formed media types, inline data under the cap (~InvalidLlmRequestError~, ~OversizedInlinePartError~); a media part marked ~untrusted: { origin }~ is bracketed by the same ~<untrusted-input>~ fence as text and refused outside ~user~. ~resolveRequestContent~ / ~ContentResolver~ turn refs into bytes inside the effect (~UnresolvedContentError~ when absent or over ~maxResolvedBytes~); the journaled request carries the address only. Streaming adds ~LlmStreamChunk.toolDelta~ (tool-call input fragments; transient; the assembled call still arrives on the terminal chunk). Exported: ~LlmContentPart~ and the part types, ~LlmCapabilities~, ~MediaTypeSet~, ~UnsupportedModalityError~, ~InvalidLlmRequestError~, ~OversizedInlinePartError~, ~UnresolvedContentError~, ~MAX_INLINE_BYTES~, ~MAX_RESOLVED_BYTES~, ~assertRequestSupported~, ~mediaTypeAccepted~, ~requestMediaParts~, ~resolveRequestContent~, ~inlineData~, ~validateMediaPart~, ~textOf~, ~toParts~, ~hasStructuredParts~, ~assistantMessageOf~, ~base64ByteLength~. In ~@loom/agent~: ~mediaResult(parts)~ (what a tool returns to hand the model an image/file), ~isMediaResult~, ~toolResultPart~, and ~createAgentModelEffect(provider, { resolveContent, onToolDelta })~ / ~AgentConfig.resolveContent~.
 
 Providers talk to vendor HTTP APIs over ~fetch~ — no vendor SDK dependency. In tests, use the VCR providers from [[#dx][~@loom/testing~]].
 
@@ -2544,6 +2551,10 @@ class EffectModeViolationError extends Error     { readonly toolId: string; read
 #+begin_src typescript
 class VerificationError extends Error            { readonly report: VerificationReport; }                     // checks.verify === "error" — @loom/verify
 class UntrustedContentError extends Error        { readonly position: string; readonly origin: string; }      // ADR 0085 taint in an instruction slot — @loom/llm
+class UnsupportedModalityError extends Error     { readonly modality: "image" | "audio" | "file"; readonly mediaType: string; readonly provider?: string; }  // ADR 0120 — @loom/llm
+class OversizedInlinePartError extends Error     { readonly bytes: number; readonly limit: number; }          // ADR 0120 inline media over the cap — @loom/llm
+class UnresolvedContentError extends Error       { readonly address: string; }                                // ADR 0120 a media ref that cannot become bytes — @loom/llm
+class InvalidLlmRequestError extends Error       { }                                                          // ADR 0120 wrong part for the role, orphan tool_result — @loom/llm
 class ContentMissingError extends Error          { readonly contentAddress: string; readonly executionId?: string; }  // ADR 0046 — @loom/plugin-content
 class RevisionConflictError extends Error        { readonly key: string; readonly expectedRevision: number; readonly actualRevision: number; }  // @loom/plugin-durable-state
 class StateContractMismatchError extends Error   { readonly contractId: string; readonly storedVersion: number; readonly expectedVersion: number; }  // @loom/plugin-durable-state

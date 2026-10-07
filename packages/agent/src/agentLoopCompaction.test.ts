@@ -3,6 +3,7 @@ import { agent$, tool$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+import { textOf } from "@loom/llm";
 import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
@@ -107,7 +108,7 @@ describe("the loop can bound its own transcript", () => {
 
     expect(summaries.length).toBeGreaterThan(0);
     const compacted = seen.find((r) =>
-      r.messages.some((m) => m.content.startsWith("Summary of earlier turns:"))
+      r.messages.some((m) => textOf(m.content).startsWith("Summary of earlier turns:"))
     );
     expect(compacted).toBeDefined();
     // Bounded, not merely rewritten: the compacted prompt is the summary plus
@@ -121,7 +122,7 @@ describe("the loop can bound its own transcript", () => {
     await handle.waitForCompletion();
 
     const last = seen[seen.length - 1];
-    expect(last?.messages.some((m) => m.content.startsWith("Summary"))).toBe(false);
+    expect(last?.messages.some((m) => textOf(m.content).startsWith("Summary"))).toBe(false);
     // The behaviour this exists to bound: every turn is still in the prompt.
     expect(last?.messages.length ?? 0).toBeGreaterThan(4);
   });

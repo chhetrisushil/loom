@@ -206,6 +206,13 @@ still tainted**.
 as `<untrusted-input origin="…">…</untrusted-input>`, with any forged closing tag escaped so the
 content cannot move its own boundary.
 
+The rule applies to message **parts** too ([ADR 0120](adr/0120-llm-content-parts-and-tool-threading.md)): a
+tainted tool result is fenced inside its `tool_result` part (a `user`-position part), tainted text in a
+`system` / `assistant` part and a tainted `tool_use` input throw, and an image/audio/file part marked
+`untrusted: { origin }` (the media analogue of `tainted()`) is bracketed by the same fence tags in a `user`
+message and refused anywhere else. A media part cannot carry tags inside its bytes, so the bracket is a label
+around it, nothing more.
+
 Two halves, and they are not equally strong. The **refusal is structural** — after the guard runs,
 third-party bytes are not in an instruction slot. The **fence is a label** — a model can still be
 talked across it. Put [`UNTRUSTED_CONTENT_SYSTEM_NOTE`](adr/0085-untrusted-content-integrity-axis.md)

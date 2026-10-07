@@ -1,8 +1,15 @@
-import type { TaintedValue } from "@loom/classify";
+import type { LlmCapabilities } from "./capabilities";
+import type { LlmContent, LlmMessageContent, LlmMessageContentInput } from "./parts";
+
+export type { LlmContent } from "./parts";
 
 export interface LlmMessage {
   role: "system" | "user" | "assistant";
-  content: string;
+  /**
+   * R5 — a string (text only) or content parts (text, image, audio, file, `tool_use`,
+   * `tool_result`). Use `textOf` / `toParts` to read it without caring which.
+   */
+  content: LlmMessageContent;
 }
 
 export interface LlmToolSpec {
@@ -20,12 +27,9 @@ export interface LlmToolSpec {
 // `LlmRequest` is assignable to `LlmRequestInput`, so an application that never
 // taints anything sees no change at all.
 
-/** A content slot that may still carry provenance. */
-export type LlmContent = string | TaintedValue<string>;
-
 export interface LlmMessageInput {
   role: "system" | "user" | "assistant";
-  content: LlmContent;
+  content: LlmMessageContentInput;
 }
 
 export interface LlmToolSpecInput {
@@ -87,6 +91,15 @@ export interface LlmResponse {
 export interface LlmStreamChunk {
   delta: string;
   done: boolean;
+  /**
+   * R5 — an increment of a tool call's INPUT, streamed as it is generated. The first
+   * fragment of a call carries `id` and `name` (with `inputDelta` possibly `""`); later
+   * fragments carry the `id` and the next slice of the JSON text. Transient by
+   * construction, like `delta`: the assembled call still arrives whole on the terminal
+   * chunk's `toolCalls`, which is the only thing that is journaled. A fragment is
+   * partial JSON — never parse it.
+   */
+  toolDelta?: { id: string; name?: string; inputDelta: string };
   /** Tool calls the model made, assembled from the stream. Terminal chunk only. */
   toolCalls?: LlmToolCall[];
   /** Why generation stopped. Terminal chunk only. */
@@ -96,6 +109,13 @@ export interface LlmStreamChunk {
 }
 
 export interface LlmProvider {
+  /**
+   * R5 — which non-text modalities this provider accepts. ABSENT means text and tool
+   * calls only: a request carrying an image/audio/file part is refused with
+   * {@link UnsupportedModalityError} before any network call (fail closed — a provider
+   * that never declared media must not be handed it and left to drop it silently).
+   */
+  readonly capabilities?: LlmCapabilities;
   complete(request: LlmRequest): Promise<LlmResponse>;
   stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>;
   /**

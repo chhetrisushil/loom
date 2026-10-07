@@ -1,5 +1,5 @@
 import type { LlmResponse } from "@loom/llm";
-import { guardRequest } from "@loom/llm";
+import { assertRequestSupported, guardRequest } from "@loom/llm";
 import { stopReasonConfidence } from "./confidence";
 import { tagRouter } from "./router";
 import type {
@@ -157,16 +157,17 @@ export class ReasoningRuntime {
     // annotation is a claim, not a check: a tainted MCP tool description reaches
     // here through exactly such a field. `guardRequest` refuses taint in every
     // instruction position and returns an untainted request unchanged.
-    const res = await route.provider.complete(
-      guardRequest({
-        messages: req.messages,
-        ...(req.system !== undefined && { system: req.system }),
-        ...(req.tools !== undefined && { tools: req.tools }),
-        ...(req.maxTokens !== undefined && { maxTokens: req.maxTokens }),
-        ...(req.temperature !== undefined && { temperature: req.temperature }),
-        ...(signal !== undefined && { signal }),
-      })
-    );
+    const guarded = guardRequest({
+      messages: req.messages,
+      ...(req.system !== undefined && { system: req.system }),
+      ...(req.tools !== undefined && { tools: req.tools }),
+      ...(req.maxTokens !== undefined && { maxTokens: req.maxTokens }),
+      ...(req.temperature !== undefined && { temperature: req.temperature }),
+      ...(signal !== undefined && { signal }),
+    });
+    // R5 — a third-party provider may not check its own modalities; this runtime does.
+    assertRequestSupported(guarded, route.provider.capabilities);
+    const res = await route.provider.complete(guarded);
     if (cacheKey !== undefined) this.cache?.set(cacheKey, res);
     return res;
   }
