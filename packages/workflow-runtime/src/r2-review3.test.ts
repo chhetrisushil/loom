@@ -222,7 +222,7 @@ describe("P3-2 — a REFUSED resume of a terminal owner leaves no inbox stream b
     await (await h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
     await h.rt.send("e1", { topic: "x", payload: "p", messageId: "m" });
     await until(async () => (await statusOf(h)) === "completed", 3000);
-    await tick(30);
+    await until(async () => (await h.eventStore.read(inboxStreamId("e1"))).length === 0, 8000);
     expect(await h.eventStore.read(inboxStreamId("e1"))).toEqual([]);
     await expect(
       h.rt.resume("e1", { eventType: "FOO", payload: null }, h.rt.systemOptions())

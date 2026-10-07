@@ -348,7 +348,11 @@ describe("R2 D1 — the stream is bounded and cheap", () => {
     }
     await h.rt.notifyInbox("e1").then((x) => x && settle(x));
     await until(async () => (await h.rt.loadState("e1"))?.suspendedOn?.on === "hold");
-    await tick(30); // the trim runs after the park's drain
+    // the trim runs after the park's drain, in the background: wait for it, not a fixed sleep
+    await until(
+      async () => !(await inner.read(inboxStreamId("e1"))).some((e) => e.sequence === 1),
+      8000
+    );
     const left = (await inner.read(inboxStreamId("e1"))).map((e) => e.sequence);
     expect(left).toContain(2); // the unconsumed b1 survives
     expect(left).toContain(3); // the head is never truncated (monotonic head + 1 allocation)
@@ -366,8 +370,8 @@ describe("R2 D1 — the stream is bounded and cheap", () => {
     await (await h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
     await h.rt.send("e1", { topic: "x", payload: "bye" });
     await completed(h);
-    await tick(30);
     // the head turned terminal: nothing can ever read its inbox, so the stream went with it
+    await until(async () => (await h.eventStore.read(inboxStreamId("e1"))).length === 0, 8000);
     expect(await h.eventStore.read(inboxStreamId("e1"))).toEqual([]);
     const life = new LogLifecycle(h.eventStore, h.snapshotStore);
     expect(await life.applyRetention("e1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
