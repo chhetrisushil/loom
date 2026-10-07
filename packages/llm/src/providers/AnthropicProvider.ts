@@ -1,4 +1,14 @@
-import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamChunk, LlmToolCall } from "../types";
+import { type LlmCapabilities, assertRequestSupported } from "../capabilities";
+import { type LlmContentPart, type LlmResultPart, textOf } from "../parts";
+import { inlineData } from "../resolveContent";
+import type {
+  LlmMessage,
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+  LlmStreamChunk,
+  LlmToolCall,
+} from "../types";
 
 /**
  * Anthropic's `stop_reason` → the SPI's. ONE implementation, used by both
@@ -14,6 +24,53 @@ export interface AnthropicProviderConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  /** Override the declared modalities (e.g. a model without vision). */
+  capabilities?: LlmCapabilities;
+}
+
+/** Messages API: images (JPEG/PNG/GIF/WebP) and PDF documents; no audio. */
+const ANTHROPIC_CAPABILITIES: LlmCapabilities = {
+  image: ["image/jpeg", "image/png", "image/gif", "image/webp"],
+  file: ["application/pdf"],
+};
+
+function mapResultPart(p: LlmResultPart): Record<string, unknown> {
+  return mapPart(p);
+}
+
+/** SPI part → Anthropic content block. Exported for tests. */
+export function mapPart(p: LlmContentPart): Record<string, unknown> {
+  switch (p.type) {
+    case "text":
+      return { type: "text", text: p.text };
+    case "image":
+      return {
+        type: "image",
+        source: { type: "base64", media_type: p.mediaType, data: inlineData(p) },
+      };
+    case "file":
+      return {
+        type: "document",
+        source: { type: "base64", media_type: p.mediaType, data: inlineData(p) },
+        ...(p.name !== undefined && { title: p.name }),
+      };
+    case "audio":
+      throw new Error("Anthropic Messages does not accept audio content");
+    case "tool_use":
+      return { type: "tool_use", id: p.id, name: p.name, input: p.input };
+    case "tool_result":
+      return {
+        type: "tool_result",
+        tool_use_id: p.toolUseId,
+        content: typeof p.content === "string" ? p.content : p.content.map(mapResultPart),
+        ...(p.isError === true && { is_error: true }),
+      };
+  }
+}
+
+function mapContent(content: LlmMessage["content"]): string | Record<string, unknown>[] {
+  if (typeof content === "string") return content;
+  return content.map(mapPart);
 }
 
 interface AnthropicTextBlock {
@@ -38,8 +95,10 @@ export class AnthropicProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  readonly capabilities: LlmCapabilities;
 
   constructor(config: AnthropicProviderConfig = {}) {
+    this.capabilities = config.capabilities ?? ANTHROPIC_CAPABILITIES;
     this.apiKey =
       config.apiKey ??
       (typeof process !== "undefined" ? (process.env.ANTHROPIC_API_KEY ?? "") : "");
@@ -49,11 +108,12 @@ export class AnthropicProvider implements LlmProvider {
 
   private buildBody(request: LlmRequest): Record<string, unknown> {
     const systemMsg = request.messages.find((m) => m.role === "system");
-    const system = request.system ?? systemMsg?.content;
+    const system =
+      request.system ?? (systemMsg !== undefined ? textOf(systemMsg.content) : undefined);
 
     const messages = request.messages
       .filter((m) => m.role !== "system")
-      .map((m) => ({ role: m.role, content: m.content }));
+      .map((m) => ({ role: m.role, content: mapContent(m.content) }));
 
     const body: Record<string, unknown> = {
       model: this.model,
@@ -76,6 +136,8 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   async complete(request: LlmRequest): Promise<LlmResponse> {
+    assertRequestSupported(request, this.capabilities, "AnthropicProvider");
+    const body = this.buildBody(request);
     const resp = await fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
@@ -83,7 +145,7 @@ export class AnthropicProvider implements LlmProvider {
         "x-api-key": this.apiKey,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify(this.buildBody(request)),
+      body: JSON.stringify(body),
       ...(request.signal !== undefined && { signal: request.signal }),
     });
 
@@ -113,6 +175,7 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   async *stream(request: LlmRequest): AsyncIterable<LlmStreamChunk> {
+    assertRequestSupported(request, this.capabilities, "AnthropicProvider");
     const body = { ...this.buildBody(request), stream: true };
 
     const resp = await fetch(`${this.baseUrl}/v1/messages`, {
@@ -180,6 +243,15 @@ export class AnthropicProvider implements LlmProvider {
                 name: String(block.name ?? ""),
                 argsJson: "",
               });
+              yield {
+                delta: "",
+                done: false,
+                toolDelta: {
+                  id: String(block.id ?? ""),
+                  name: String(block.name ?? ""),
+                  inputDelta: "",
+                },
+              };
             }
           } else if (event.type === "content_block_delta") {
             const delta = event.delta as Record<string, unknown> | undefined;
@@ -187,7 +259,15 @@ export class AnthropicProvider implements LlmProvider {
               yield { delta: String(delta.text ?? ""), done: false };
             } else if (delta?.type === "input_json_delta") {
               const open = openBlocks.get(Number(event.index));
-              if (open !== undefined) open.argsJson += String(delta.partial_json ?? "");
+              if (open !== undefined) {
+                const fragment = String(delta.partial_json ?? "");
+                open.argsJson += fragment;
+                yield {
+                  delta: "",
+                  done: false,
+                  toolDelta: { id: open.id, inputDelta: fragment },
+                };
+              }
             }
           } else if (event.type === "content_block_stop") {
             const open = openBlocks.get(Number(event.index));

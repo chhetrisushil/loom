@@ -1512,6 +1512,42 @@ Two producers ship, both opt-in: `registerMcpInvoke(client, runtime, { taintResu
 a label** — put `UNTRUSTED_CONTENT_SYSTEM_NOTE` in your system prompt so the model knows what the tag
 means. Full treatment in [data classification](data-classification.md#the-integrity-axis--untrusted-content-adr-0085).
 
+### Images, audio, files and real tool turns (R5, [ADR 0120](adr/0120-llm-content-parts-and-tool-threading.md))
+
+A message's `content` is still a `string` (text only, unchanged) or now an array of **parts**: `text`,
+`image` / `audio` / `file` (each with a `mediaType` and a `source`), `tool_use` (the model's call) and
+`tool_result` (the answer). `agentLoop$` and `AgentRunner` thread real tool turns: the assistant message
+carries `tool_use` parts, and ONE `user` message of `tool_result` parts answers them by id (a refusal or a
+failing tool is `isError`). There is no `tool` role: each provider maps the one canonical shape to its own
+(Anthropic content blocks, OpenAI `tool_calls` + `role: "tool"`, Gemini `functionCall` / `functionResponse`).
+
+```ts
+import { mediaResult } from "@loom/agent";
+
+// A tool hands the model an image by CLAIM-CHECK: store the bytes, return the address.
+const ref = await contentStore.put(png);
+return mediaResult([
+  { type: "text", text: "latency by region" },
+  { type: "image", mediaType: "image/png", source: { kind: "ref", ref: { address: ref.__loomContent, size: png.length } } },
+]);
+
+// Resolve the address to bytes at call time — the journal keeps only the address.
+effects.register(
+  "model",
+  createAgentModelEffect(new AnthropicProvider(), {
+    resolveContent: async (r) => contentStore.get({ __loomContent: r.address }),
+  })
+);
+```
+
+Inline `{ kind: "data" }` media is capped at 64 KiB so the durable log can never carry real media; over the
+cap is refused (a tool's oversized inline result becomes an `isError` result the model can recover from).
+A provider declares which modalities it takes (`capabilities`); anything else throws
+`UnsupportedModalityError` before a network call, and so does a ref with no `resolveContent`. Media a tool
+got from an untrusted source (`tainted(mediaResult(...), origin)`) is bracketed by the same
+`<untrusted-input>` fence as text and refused outside a `user` message. Anything that reads
+`message.content` as a string should use `textOf(content)`.
+
 ### Pre-warming (latency, advisory)
 
 Cold starts live at I/O boundaries — a K7 child-process fork (~50ms), an LLM provider's

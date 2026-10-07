@@ -1,4 +1,5 @@
 import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
+import { textOf } from "@loom/llm";
 
 // A local, on-device LlmProvider backed by a small Gemma model via node-llama-cpp.
 //
@@ -60,7 +61,7 @@ export class GemmaProvider implements LlmProvider {
         this.config.jsonSchema !== undefined
           ? await llama.createGrammarForJsonSchema(this.config.jsonSchema)
           : undefined;
-      const prompt = request.messages.map((m) => m.content).join("\n\n");
+      const prompt = request.messages.map((m) => textOf(m.content)).join("\n\n");
       const content: string = await session.prompt(prompt, {
         temperature: request.temperature ?? this.config.temperature ?? 0,
         ...(grammar !== undefined && { grammar }),

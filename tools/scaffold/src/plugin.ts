@@ -984,11 +984,19 @@ const SEAMS: Record<string, SeamDef> = {
     index: (name) => {
       const P = pascal(name);
       return [
-        'import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";',
+        'import { assertRequestSupported } from "@loom/llm";',
+        'import type { LlmCapabilities, LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";',
         "",
         "/** An `LlmProvider` — wire via `createLlmEffect({ provider })` or an agent's `provider`. */",
         `export class ${P}Provider implements LlmProvider {`,
+        "  // Media this provider accepts (R5). ABSENT = text + tool calls only; declare e.g.",
+        '  // `{ image: ["image/png", "image/jpeg"] }` and map the parts in complete().',
+        "  readonly capabilities?: LlmCapabilities;",
+        "",
         "  async complete(request: LlmRequest): Promise<LlmResponse> {",
+        "    // Fail closed on an undeclared modality BEFORE any network call.",
+        `    assertRequestSupported(request, this.capabilities, "${P}Provider");`,
+        "    // Message content is `string | LlmContentPart[]` — read it with `textOf` / `toParts`.",
         "    throw new Error(`not implemented: complete (${request.messages.length} messages)`);",
         "  }",
         "  // stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk> — optional",

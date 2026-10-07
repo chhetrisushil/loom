@@ -1,4 +1,13 @@
 import { isTainted, taintOf } from "@loom/classify";
+import {
+  type LlmContentPart,
+  type LlmContentPartInput,
+  type LlmMediaPart,
+  type LlmMediaPartInput,
+  type LlmResultPart,
+  type LlmResultPartInput,
+  base64ByteLength,
+} from "./parts";
 import type { LlmMessage, LlmRequest, LlmRequestInput } from "./types";
 
 // ── The integrity check at the prompt boundary ───────────────────────────────
@@ -20,6 +29,11 @@ import type { LlmMessage, LlmRequest, LlmRequestInput } from "./types";
 //     one, which is why this is refused rather than fenced.
 //   • tool names and descriptions — read as instructions by every provider, and
 //     the vector most often forgotten.
+//   • (R5) the `input` of a `tool_use` part — it is the model's own call, and a
+//     tainted value there is a forged one. `tool_result` parts are `user`-role, so
+//     they are fenced like any other user content; MEDIA from an untrusted party
+//     (`untrusted: { origin }` on the part) cannot carry tags, so it is bracketed by
+//     a fence-open and a fence-close text part, and refused outside `user` all the same.
 //
 // Be precise about which half is a guarantee. The REFUSAL is structural: after
 // this runs, third-party bytes cannot be sitting in an instruction slot,
@@ -81,6 +95,36 @@ export function fence(content: string, origin: string): string {
   return `<${FENCE_TAG} origin="${escapeOrigin(origin)}">\n${escapeFenced(content)}\n</${FENCE_TAG}>`;
 }
 
+/** Inline media is capped so the durable log can never carry real media (claim-check it instead). */
+export const MAX_INLINE_BYTES = 64 * 1024;
+
+/** A structurally invalid request: wrong part for the role, mislabeled media, orphan tool result. */
+export class InvalidLlmRequestError extends Error {
+  constructor(message: string) {
+    super(`Invalid LLM request: ${message}`);
+    this.name = "InvalidLlmRequestError";
+  }
+}
+
+/** Thrown when an inline media part exceeds the cap; the remedy is a `ContentRef`. */
+export class OversizedInlinePartError extends Error {
+  readonly bytes: number;
+  readonly limit: number;
+  constructor(bytes: number, limit: number) {
+    super(
+      `Inline media part is ${bytes} bytes, over the ${limit}-byte cap. Store it in the ContentStore and send a { kind: "ref" } source — inline bytes would be journaled into the log.`
+    );
+    this.name = "OversizedInlinePartError";
+    this.bytes = bytes;
+    this.limit = limit;
+  }
+}
+
+export interface GuardOptions {
+  /** Cap on a single inline (`kind: "data"`) media part, decoded. Default {@link MAX_INLINE_BYTES}. */
+  maxInlineBytes?: number;
+}
+
 /**
  * Resolve one content slot to a plain string, refusing taint outside `user`.
  * `position` is used both for the decision and for the error message.
@@ -95,21 +139,152 @@ function resolve(content: unknown, position: string, fenced: boolean): string {
   return fence(typeof inner === "string" ? inner : JSON.stringify(inner), origin);
 }
 
+const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
+
+/**
+ * Validate one media part: well-formed `mediaType` matching its modality, valid base64 under
+ * the inline cap, or a ref with an address. Throws {@link InvalidLlmRequestError} /
+ * {@link OversizedInlinePartError}. Exported so a producer (an agent turning a tool's
+ * output into a `tool_result`) can refuse BEFORE the part is journaled.
+ */
+export function validateMediaPart(p: LlmMediaPart, limit: number = MAX_INLINE_BYTES): void {
+  if (!MEDIA_TYPE.test(p.mediaType)) {
+    throw new InvalidLlmRequestError(`${p.type} part has an invalid mediaType "${p.mediaType}"`);
+  }
+  if (!p.mediaType.toLowerCase().startsWith(`${p.type}/`) && p.type !== "file") {
+    throw new InvalidLlmRequestError(
+      `${p.type} part has mediaType "${p.mediaType}" (expected ${p.type}/*)`
+    );
+  }
+  if (p.source.kind === "data") {
+    const n = base64ByteLength(p.source.data);
+    if (n === undefined)
+      throw new InvalidLlmRequestError(`${p.type} part data is not valid base64`);
+    if (n > limit) throw new OversizedInlinePartError(n, limit);
+  } else if (typeof p.source.ref?.address !== "string" || p.source.ref.address === "") {
+    throw new InvalidLlmRequestError(`${p.type} part has a ref source without an address`);
+  }
+}
+
+/** A media part with the provenance flag stripped (providers never see it). */
+function plainMedia(p: LlmMediaPartInput): LlmMediaPart {
+  return Object.fromEntries(Object.entries(p).filter(([k]) => k !== "untrusted")) as LlmMediaPart;
+}
+
+/** Guard a list of result parts (text + media), fencing/bracketing untrusted ones. Only called for `user`. */
+function guardResultParts(
+  parts: readonly LlmResultPartInput[],
+  position: string,
+  limit: number
+): LlmResultPart[] {
+  const out: LlmResultPart[] = [];
+  for (const p of parts) {
+    if (p.type === "text") {
+      out.push({ type: "text", text: resolve(p.text, position, true) });
+    } else if (p.type === "image" || p.type === "audio" || p.type === "file") {
+      validateMediaPart(p, limit);
+      const origin = p.untrusted?.origin;
+      if (origin === undefined) out.push(plainMedia(p));
+      else {
+        out.push({ type: "text", text: `<${FENCE_TAG} origin="${escapeOrigin(origin)}">` });
+        out.push(plainMedia(p));
+        out.push({ type: "text", text: `</${FENCE_TAG}>` });
+      }
+    } else {
+      throw new InvalidLlmRequestError("a tool_result may contain only text and media parts");
+    }
+  }
+  return out;
+}
+
+function guardParts(
+  role: LlmMessage["role"],
+  parts: readonly LlmContentPartInput[],
+  limit: number,
+  seenToolUses: Set<string>
+): LlmContentPart[] {
+  const fencedOk = role === "user";
+  const out: LlmContentPart[] = [];
+  for (const p of parts) {
+    switch (p.type) {
+      case "text":
+        out.push({ type: "text", text: resolve(p.text, role, fencedOk) });
+        break;
+      case "image":
+      case "audio":
+      case "file": {
+        if (role !== "user") {
+          // Media is user-position only: a system/assistant media part is either a forged
+          // model turn or an instruction the model cannot be told is data.
+          if (p.untrusted !== undefined) throw new UntrustedContentError(role, p.untrusted.origin);
+          throw new InvalidLlmRequestError(`${p.type} parts are allowed only in user messages`);
+        }
+        out.push(...guardResultParts([p], role, limit));
+        break;
+      }
+      case "tool_use":
+        if (role !== "assistant") {
+          throw new InvalidLlmRequestError("tool_use parts are allowed only in assistant messages");
+        }
+        if (isTainted(p.input)) {
+          throw new UntrustedContentError("tool_use", taintOf(p.input)?.origin ?? "unknown");
+        }
+        seenToolUses.add(p.id);
+        out.push(p);
+        break;
+      case "tool_result": {
+        if (role !== "user") {
+          throw new InvalidLlmRequestError("tool_result parts are allowed only in user messages");
+        }
+        if (!seenToolUses.has(p.toolUseId)) {
+          throw new InvalidLlmRequestError(
+            `tool_result answers "${p.toolUseId}", which no earlier assistant tool_use declared`
+          );
+        }
+        const content = Array.isArray(p.content)
+          ? guardResultParts(p.content, "tool_result", limit)
+          : resolve(p.content, "tool_result", true);
+        out.push({
+          type: "tool_result",
+          toolUseId: p.toolUseId,
+          content,
+          ...(p.isError !== undefined && { isError: p.isError }),
+        });
+        break;
+      }
+      default:
+        throw new InvalidLlmRequestError(
+          `unknown content part type "${(p as { type?: unknown }).type}"`
+        );
+    }
+  }
+  return out;
+}
+
 /**
  * Check and normalize a built request: refuse tainted content in every
  * instruction position, fence it in `user` messages, and hand providers plain
- * strings so none of them has to know taint exists.
+ * strings and parts so none of them has to know taint exists.
  *
  * Runs unconditionally inside `createLlmEffect`. There is no flag, because a
  * check that defaults to off protects exactly the applications that never think
  * about it — and a request with no tainted content is returned structurally
  * unchanged, so the cost of the check is a walk and the behaviour is identical.
+ *
+ * R5 also validates part STRUCTURE here (the same walk): `tool_use` only in
+ * `assistant`, `tool_result` only in `user` and only for a `tool_use` an earlier
+ * message declared, media only in `user`, media types well-formed, and inline media
+ * under the byte cap.
  */
-export function guardRequest(request: LlmRequestInput): LlmRequest {
-  const messages: LlmMessage[] = request.messages.map((m) => ({
-    role: m.role,
-    content: resolve(m.content, m.role, m.role === "user"),
-  }));
+export function guardRequest(request: LlmRequestInput, options: GuardOptions = {}): LlmRequest {
+  const limit = options.maxInlineBytes ?? MAX_INLINE_BYTES;
+  const seenToolUses = new Set<string>();
+  const messages: LlmMessage[] = request.messages.map((m) => {
+    if (typeof m.content === "string" || isTainted(m.content)) {
+      return { role: m.role, content: resolve(m.content, m.role, m.role === "user") };
+    }
+    return { role: m.role, content: guardParts(m.role, m.content, limit, seenToolUses) };
+  });
 
   // A tool's name and description are read as instructions by every provider.
   const tools = request.tools?.map((t) => ({

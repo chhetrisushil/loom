@@ -88,6 +88,8 @@ export interface CollectStreamOptions {
   signal?: AbortSignal;
   /** Transient sink for deltas as they arrive. Never journaled by this function. */
   onDelta?: (delta: string) => void;
+  /** R5 — transient sink for tool-call input fragments. Never journaled. */
+  onToolDelta?: (delta: { id: string; name?: string; inputDelta: string }) => void;
   /**
    * Called after every delta. THROW to sever the generation mid-flight — the
    * throw propagates, the `for await` exits, and the underlying HTTP call is
@@ -176,6 +178,7 @@ export async function collectStream(
           : new Error("generation aborted");
       }
       if (chunk.delta !== "") options.onDelta?.(chunk.delta);
+      if (chunk.toolDelta !== undefined) options.onToolDelta?.(chunk.toolDelta);
     }
   } catch (err) {
     if (guardError !== undefined) throw guardError;

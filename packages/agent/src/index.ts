@@ -20,6 +20,8 @@ export type { TurnCounter } from "./continueEvery";
 export { chunkDeltas } from "./chunkDeltas";
 export type { ChunkDeltasOptions, ChunkedSink } from "./chunkDeltas";
 export { createAgentModelEffect } from "./createAgentModelEffect";
+export { isMediaResult, mediaResult, toolResultPart } from "./toolResultContent";
+export type { ToolMediaResult } from "./toolResultContent";
 export { agentStep$ } from "./agentStep$";
 export type { AgentStepConfig } from "./agentStep$";
 export type { AgentInput, AgentOutput, AgentStep } from "./types";

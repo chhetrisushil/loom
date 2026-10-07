@@ -16,6 +16,7 @@ import {
   TenantScopedEventStore,
 } from "@loom/event-runtime";
 import type { LlmProvider, LlmRequest } from "@loom/llm";
+import { assertRequestSupported, textOf } from "@loom/llm";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import {
   InMemoryAsyncSnapshotStore,
@@ -343,12 +344,17 @@ describe("SPI version constants", () => {
 // --- LlmProvider: a deterministic echo provider (offline). ---
 const echoProvider: LlmProvider = {
   async complete(req) {
+    assertRequestSupported(req, undefined);
     const last = req.messages[req.messages.length - 1];
-    return { content: `echo:${last?.content ?? ""}`, stopReason: "end_turn" };
+    return {
+      content: `echo:${last === undefined ? "" : textOf(last.content)}`,
+      stopReason: "end_turn",
+    };
   },
   async *stream(req) {
+    assertRequestSupported(req, undefined);
     const last = req.messages[req.messages.length - 1];
-    yield { delta: `echo:${last?.content ?? ""}`, done: false };
+    yield { delta: `echo:${last === undefined ? "" : textOf(last.content)}`, done: false };
     yield { delta: "", done: true };
   },
 };
@@ -360,7 +366,8 @@ runLlmProviderConformance(() => echoProvider, "EchoLlmProvider", { toolRequest: 
 // turn needs. Without one of these in the fixture set, the parity assertions all
 // take their "not reported" branch and the suite proves only that text matches.
 const richProvider: LlmProvider = {
-  async complete() {
+  async complete(req) {
+    assertRequestSupported(req, undefined);
     return {
       content: "thinking",
       toolCalls: [{ id: "c1", name: "lookup", input: { q: "x" } }],

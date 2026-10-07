@@ -3,11 +3,14 @@ import { loadInstructions } from "@loom/core";
 import type { Effect } from "@loom/effect-runtime";
 import type {
   LlmContent,
+  LlmContentPartInput,
   LlmMessageInput,
   LlmResponse,
   LlmToolCall,
+  LlmToolResultPartInput,
   LlmToolSpecInput,
 } from "@loom/llm";
+import { assistantMessageOf } from "@loom/llm";
 import type { TieredMemory } from "@loom/memory";
 import type { ModelInvoker, ReasoningRuntime } from "@loom/reasoning";
 import { approvalViewDigest } from "@loom/workflow-runtime";
@@ -15,7 +18,7 @@ import type { ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { createAgentModelEffect } from "./createAgentModelEffect";
-import { toolResultContent } from "./toolResultContent";
+import { toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
@@ -260,10 +263,50 @@ function toolSpecsFor(tools: readonly ToolDefinition[]): LlmToolSpecInput[] {
 
 const UTF8 = new TextEncoder();
 
-/** UTF-8 byte length of a message's content, unwrapping taint (ADR 0085) without stripping it. */
+const textBytes = (t: LlmContent): number =>
+  UTF8.encode(typeof t === "string" ? t : t.value).length;
+
+/**
+ * Journaled-size measure of one part. Text is its UTF-8 length (unwrapping taint, ADR 0085,
+ * without stripping it); inline media is its base64 length; a claim-checked ref costs its
+ * address plus a constant (the bytes are not in the log); `tool_use` / `tool_result` count their
+ * ids, names and serialized input. Every term is a pure function of the part's own value.
+ */
+function partBytes(p: LlmContentPartInput): number {
+  switch (p.type) {
+    case "text":
+      return textBytes(p.text);
+    case "image":
+    case "audio":
+    case "file":
+      return p.source.kind === "data" ? p.source.data.length : p.source.ref.address.length + 16;
+    case "tool_use":
+      return p.id.length + p.name.length + JSON.stringify(p.input ?? null).length;
+    case "tool_result":
+      return (
+        p.toolUseId.length +
+        (typeof p.content === "string" || !Array.isArray(p.content)
+          ? textBytes(p.content as LlmContent)
+          : p.content.reduce((n, r) => n + partBytes(r), 0))
+      );
+  }
+}
+
+/** UTF-8 byte length of a message's content (see {@link partBytes}). */
 function messageBytes(msg: LlmMessageInput): number {
-  const raw = typeof msg.content === "string" ? msg.content : msg.content.value;
-  return UTF8.encode(raw).length;
+  const c = msg.content;
+  return typeof c === "string" || !Array.isArray(c)
+    ? textBytes(c as LlmContent)
+    : c.reduce((n, p) => n + partBytes(p), 0);
+}
+
+/** Whether a message answers tool calls — it must never be the first kept message without its call. */
+function isToolResultMessage(msg: LlmMessageInput): boolean {
+  return (
+    msg.role === "user" &&
+    Array.isArray(msg.content) &&
+    msg.content.some((p) => p.type === "tool_result")
+  );
 }
 
 /**
@@ -447,8 +490,10 @@ export async function agentLoop$(
 
   /** Execute one turn's tool calls: gate, run, record, feed back. Shared by both paths. */
   const runToolCalls = async (calls: readonly LlmToolCall[], turn: number): Promise<void> => {
+    const results: LlmToolResultPartInput[] = [];
     for (const [j, toolCall] of calls.entries()) {
       let output: unknown;
+      let isError = false;
 
       // Mid-loop HITL. The gate is BEFORE the effect, so a declined call never
       // runs — the point of asking.
@@ -470,6 +515,7 @@ export async function agentLoop$(
           }
         }
         if (undigestible) {
+          isError = true;
           output = {
             refused: true,
             reason: "the tool input could not be put in front of an approver (too deeply nested)",
@@ -483,6 +529,7 @@ export async function agentLoop$(
           if (verdict?.approved !== true) {
             // A refusal is a fact the model should see and settle on, not an error:
             // it asked to do something a human declined, which is information.
+            isError = true;
             output = {
               refused: true,
               ...(verdict?.reason !== undefined && { reason: verdict.reason }),
@@ -499,7 +546,10 @@ export async function agentLoop$(
       // menu, so replay reproduces it with nothing appended to the log.
       if (output === undefined) {
         const refusal = menu.check(toolCall.name, toolCall.input);
-        if (refusal !== undefined) output = refusal;
+        if (refusal !== undefined) {
+          output = refusal;
+          isError = true;
+        }
       }
 
       if (output === undefined) {
@@ -520,8 +570,12 @@ export async function agentLoop$(
         toolInput: toolCall.input,
         toolOutput: output,
       });
-      pushMessage({ role: "user", content: toolResultContent(toolCall.name, output) });
+      results.push(toolResultPart(toolCall.id, toolCall.name, output, { isError }));
     }
+    // R5 — ONE user message answers all of the turn's calls, after the assistant message that
+    // made them (providers require that adjacency). Pushed only once every call has run, so a
+    // park on the approval gate mid-turn leaves the transcript as it was.
+    if (results.length > 0) pushMessage({ role: "user", content: results });
   };
 
   while (iterations < maxIterations) {
@@ -544,7 +598,16 @@ export async function agentLoop$(
         const keep = overBytes
           ? keptSuffixByBytes(messages, compaction.afterBytes as number, keepRecent)
           : keepRecent;
-        const foldLength = messages.length - keep;
+        // R5 — never start the kept suffix on a `tool_result` message: its `tool_use` would be
+        // folded away and the provider rejects an orphan result. Pull the assistant turn in.
+        let keepCount = keep;
+        while (
+          keepCount < messages.length &&
+          isToolResultMessage(messages[messages.length - keepCount] as LlmMessageInput)
+        ) {
+          keepCount++;
+        }
+        const foldLength = messages.length - keepCount;
 
         if (foldLength > 0) {
           const fold = messages.slice(0, foldLength);
@@ -611,7 +674,7 @@ export async function agentLoop$(
       );
       lastContent = routed.content;
       if (routed.stopReason === "end_turn" || !routed.toolCalls?.length) break;
-      pushMessage({ role: "assistant", content: routed.content || "(tool calls)" });
+      pushMessage(assistantMessageOf(routed));
       await runToolCalls(routed.toolCalls, turn);
       continue;
     }
@@ -637,7 +700,7 @@ export async function agentLoop$(
     lastContent = response.content;
     if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
 
-    pushMessage({ role: "assistant", content: response.content || "(tool calls)" });
+    pushMessage(assistantMessageOf(response));
 
     await runToolCalls(response.toolCalls, turn);
   }

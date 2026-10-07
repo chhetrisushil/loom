@@ -4,20 +4,29 @@ import { TypedFailure, fail, loadInstructions } from "@loom/core";
 import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { CapabilityDeniedError, EffectModeViolationError, LlmEffect } from "@loom/effect-runtime";
 import type {
+  ContentResolver,
   LlmContent,
   LlmMessageInput,
   LlmProvider,
   LlmResponse,
   LlmToolCall,
+  LlmToolResultPartInput,
   LlmToolSpecInput,
 } from "@loom/llm";
-import { LLM_INTERRUPTED, collectStream, guardRequest } from "@loom/llm";
+import {
+  LLM_INTERRUPTED,
+  assertRequestSupported,
+  assistantMessageOf,
+  collectStream,
+  guardRequest,
+  resolveRequestContent,
+} from "@loom/llm";
 import type { MemoryRuntime } from "@loom/memory";
 import type { ReasoningRuntime } from "@loom/reasoning";
 import { parallelLimit, throwIfAborted } from "@loom/scheduler";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
-import { toolResultContent } from "./toolResultContent";
+import { toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
@@ -30,6 +39,12 @@ export interface AgentConfig {
   // one must be supplied.
   provider?: LlmProvider;
   reasoning?: ReasoningRuntime;
+  /**
+   * R5 — fetch the bytes behind a media `ref` (a tool's `mediaResult`) at call time, e.g.
+   * `(ref) => contentStore.get({ __loomContent: ref.address })`. Without it, a transcript
+   * carrying a ref is refused before the provider is called.
+   */
+  resolveContent?: ContentResolver;
   effectRuntime: EffectRuntime;
   maxIterations?: number;
   systemPrompt?: string;
@@ -217,22 +232,27 @@ export class AgentRunner {
           break;
         }
 
-        messages.push({ role: "assistant", content: response.content || "(tool calls)" });
+        messages.push(assistantMessageOf(response));
 
         const toolCalls = response.toolCalls;
 
         // Execute a single tool call, swallowing errors into a result object so a
         // failing tool never rejects the batch (keeps behaviour identical between
         // sequential and parallel modes).
-        const runToolCall = async (toolCall: (typeof toolCalls)[number]): Promise<unknown> => {
+        const runToolCall = async (
+          toolCall: (typeof toolCalls)[number]
+        ): Promise<{ output: unknown; isError: boolean }> => {
           // R4 — refusal is a result fed back to the model, never an execution.
           try {
             const refusal = menu.check(toolCall.name, toolCall.input);
-            if (refusal !== undefined) return refusal;
+            if (refusal !== undefined) return { output: refusal, isError: true };
             // ADR 0119 — the model's guarded delta channel is THIS turn's; a tool call gets
             // its own pipe (and its own configured `deltaSink`), never the parent's.
             const { onDelta: _parentDelta, ...toolCtx } = ctx;
-            return await effectRuntime.execute(toolCall.name, toolCall.input, toolCtx);
+            return {
+              output: await effectRuntime.execute(toolCall.name, toolCall.input, toolCtx),
+              isError: false,
+            };
           } catch (err) {
             // R4 — an AUTHORITY error is not a tool error. Swallowing it into a
             // result hands the model "not authorized", which it reads as feedback:
@@ -247,11 +267,11 @@ export class AgentRunner {
             if (err instanceof CapabilityDeniedError || err instanceof EffectModeViolationError) {
               throw err;
             }
-            return { error: String(err) };
+            return { output: { error: String(err) }, isError: true };
           }
         };
 
-        let toolOutputs: unknown[];
+        let toolOutputs: { output: unknown; isError: boolean }[];
         if (this.parallelTools !== false) {
           throwIfAborted(ctx.signal);
           const limit =
@@ -271,9 +291,10 @@ export class AgentRunner {
 
         // Record, emit, and feed results back in the model's tool-call order —
         // deterministic regardless of which tool finished first.
+        const results: LlmToolResultPartInput[] = [];
         for (let i = 0; i < toolCalls.length; i++) {
           const toolCall = toolCalls[i]!;
-          const toolOutput = toolOutputs[i];
+          const { output: toolOutput, isError } = toolOutputs[i]!;
 
           toolCallLog.push({
             iteration: iterations,
@@ -289,8 +310,11 @@ export class AgentRunner {
             toolOutput,
           });
 
-          messages.push({ role: "user", content: toolResultContent(toolCall.name, toolOutput) });
+          results.push(toolResultPart(toolCall.id, toolCall.name, toolOutput, { isError }));
         }
+        // R5 — one user message answers every call of the turn, adjacent to the assistant
+        // message that made them.
+        messages.push({ role: "user", content: results });
       }
     } catch (err) {
       // Only a STOP is an interruption. An authority denial (R4) and an ordinary
@@ -339,10 +363,19 @@ export class AgentRunner {
     // This is the site ADR 0085 always described and never reached — `guardRequest`
     // lived only inside `createLlmEffect`, which had no production consumer, while
     // the agent assembled prompts from third-party bytes on a path of its own.
-    const request = guardRequest({
+    const guarded = guardRequest({
       messages: args.messages,
       ...(args.toolSpecs.length > 0 && { tools: args.toolSpecs }),
       ...(args.system !== undefined && { system: args.system }),
+      ...(args.signal !== undefined && { signal: args.signal }),
+    });
+    // R5 — fail closed on a modality the provider did not declare BEFORE fetching any content
+    // (the reasoning path checks each route's own provider in `ReasoningRuntime`), then turn
+    // claim-check refs into bytes for this call only.
+    if (this.config.reasoning === undefined) {
+      assertRequestSupported(guarded, this.config.provider?.capabilities);
+    }
+    const request = await resolveRequestContent(guarded, this.config.resolveContent, {
       ...(args.signal !== undefined && { signal: args.signal }),
     });
 

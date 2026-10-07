@@ -3,7 +3,7 @@ import { agent$, tool$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
 import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
-import { UntrustedContentError } from "@loom/llm";
+import { UntrustedContentError, textOf } from "@loom/llm";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { AgentRunner } from "./AgentRunner";
@@ -68,7 +68,7 @@ function capturingProvider(first: LlmResponse): { provider: LlmProvider; seen: L
 function toolResultMessage(request: LlmRequest | undefined): string {
   const last = request?.messages[request.messages.length - 1];
   expect(last?.role).toBe("user");
-  return last?.content as string;
+  return textOf(last?.content ?? "");
 }
 
 /** An agent whose one tool returns third-party bytes, tainted at ingress. */
