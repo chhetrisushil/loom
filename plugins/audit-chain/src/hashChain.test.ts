@@ -181,6 +181,37 @@ describe("hashChainedEventStore", () => {
   });
 });
 
+describe("hashChainedEventStore — a continued predecessor (ADR 0109)", () => {
+  it("chains transparently across EXECUTION_CONTINUED, and a late outcome after it still chains", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const chained = hashChainedEventStore(inner, { hmacSecret: "s3cret" });
+    await chained.append(ev("p", 0));
+    await chained.append({
+      ...ev("p", 1),
+      eventType: "EXECUTION_CONTINUED",
+      payload: { successorId: "p~1", chainId: "p", generation: 1 },
+      metadata: { kernel: true },
+    }); // terminal for the head cache: dropped
+    // `recordOutcome` (ADR 0116) appends to a continued generation's log: a cold tail read chains it
+    await chained.append({
+      ...ev("p", 2),
+      eventType: "OUTCOME_RECORDED",
+      metadata: { kernel: true },
+    });
+    const verdict = await chained.verifyChain("p");
+    expect(verdict.ok).toBe(true);
+    // the successor is its own chain: it starts a fresh one and verifies on its own
+    await chained.append(ev("p~1", 0));
+    expect((await chained.verifyChain("p~1")).ok).toBe(true);
+    // and the cache really dropped the predecessor's head: the metadata of the late append names
+    // the stored tail, not a stale cached one
+    const log = await inner.read("p");
+    const chainMeta = (e: (typeof log)[number]) =>
+      (e.metadata as { auditChain: { prevHash: string; hash: string } }).auditChain;
+    expect(chainMeta(log[2] as never).prevHash).toBe(chainMeta(log[1] as never).hash);
+  });
+});
+
 describe("hashChainedEventStore — the optional SPI (L1)", () => {
   it("a truncatePrefix-compacted log FAILS verifyChain — which is why the chain refuses truncatePrefix", async () => {
     // The probe that decided the plan. Compaction keeps sequence 0 and drops (0..through], so

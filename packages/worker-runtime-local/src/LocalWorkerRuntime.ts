@@ -11,6 +11,9 @@ import type { RunOptions, SystemGrant, WorkflowRuntime } from "@loom/workflow-ru
 
 type Principal = NonNullable<RunOptions["principal"]>;
 
+/** ADR 0109 D6 — links of a `_continuedTo` chain the worker follows to the head. */
+const MAX_FOLLOW_HOPS = 8;
+
 /** What a worker acts as for one operation: the package's principal, else the trusted grant, else nobody. */
 type Identity = { principal?: Principal; system?: SystemGrant };
 
@@ -84,7 +87,7 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // folded state (no handle, no re-run) — see resolveHandle.
     if (handle === null) {
       const state = await this.runtime.loadState(pkg.executionId, this.identity(pkg.principal));
-      return toResult(state!);
+      return toResult(await this.followContinuation(pkg, state!));
     }
 
     // waitForCompletion stays pending on suspend; waitForSuspend stays pending
@@ -109,7 +112,44 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     }
 
     const state = handle.getState();
-    return toResult(state);
+    return toResult(await this.followContinuation(pkg, state));
+  }
+
+  /**
+   * ADR 0109 D6 — a `continued` execution is not a failure and not a completion: its work goes on in
+   * a successor. The dispatch reports what the HEAD of the chain did (suspended, completed...), under
+   * the id the caller dispatched: a later resume addressed to that id is resolved forward by the
+   * runtime. The head is waited on through its live handle when this runtime drives it (the kernel
+   * starts a successor in-process), else read from the log. A chain that cannot be followed (an
+   * unreadable successor, more than 8 links) is left `continued` and reported as the old interim
+   * outcome, a failed dispatch, rather than guessed at.
+   */
+  private async followContinuation(
+    pkg: ExecutionPackage,
+    state: ExecutionState
+  ): Promise<ExecutionState> {
+    let current = state;
+    for (let hop = 0; hop < MAX_FOLLOW_HOPS && current.status === "continued"; hop++) {
+      const next = current.variables._continuedTo;
+      if (typeof next !== "string" || next.length === 0) break;
+      const live = this.runtime.liveHandle(next);
+      if (live !== undefined) {
+        try {
+          await Promise.race([
+            live.waitForSuspend().then(() => undefined),
+            live.waitForCompletion().then(() => undefined),
+          ]);
+        } catch {
+          // a cancel / failure rejects the completion: the folded state below is authoritative
+        }
+        current = live.getState();
+      } else {
+        const loaded = await this.runtime.loadState(next, this.identity(pkg.principal));
+        if (loaded === null) break;
+        current = loaded;
+      }
+    }
+    return current === state ? state : { ...current, executionId: pkg.executionId };
   }
 
   /**
@@ -182,8 +222,10 @@ function outcomeOf(status: ExecutionState["status"]): ExecutionOutcome {
     case "suspended":
       return "suspended";
     case "continued":
-      // ADR 0109: terminal but not completed (no output; the successor carries on). Following
-      // a chain to its head is writer-era work (R1b); until then it is not a completion.
+      // ADR 0109: terminal but not completed (no output; the successor carries on). `execute`
+      // follows a chain to its head first (`followContinuation`), so this is reached only for a
+      // chain that could not be followed (an unreadable successor, over the hop bound): a failed
+      // dispatch, never a completion.
       return "failed";
     default:
       // running should not be observed post-race; treat anything else (failed,

@@ -20,6 +20,15 @@ const runtime = new WorkflowRuntime({ /* … */, onEvent: (e) => supervisor?.onE
 supervisor = superviseChildren({ runtime, flows: { child: childFlow } });
 ```
 
+## Continue-as-new ([ADR 0109](../../docs/adr/0109-bounded-history-and-continue-as-new.md))
+
+A supervised CHILD may call `ctx.continueAsNew` any number of times: its successor (`<child id>~<n>`) stands
+in for it. The supervisor follows `_continuedTo` (live, from the successor's terminal event, and from the
+log in `adopt` / `recover`), so the parent resumes with the HEAD's output and a `continued` child is never
+mistaken for a result. A PARENT that continues cancels its non-`detached` children when the rotation commits
+(reason `{ kind: "cascade", parent }`, the same sweep as a cancel); a `detached` child survives, and its id
+may travel in the carry.
+
 ## How it works
 
 1. `awaitChild` fixes the child id (`<parentId>::<key>`) + spec with `ctx.decide` (replay-safe: a

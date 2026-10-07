@@ -70,6 +70,8 @@ export type ChildResult<TOut = unknown> =
 export const CHILD_FAILED = "childFailed";
 
 const SEP = "::";
+/** ADR 0109 D6 — how many `_continuedTo` links the supervisor follows from a child to its head. */
+const MAX_FOLLOW_HOPS = 8;
 
 /** Deterministic child execution id — `<parentId>::<key>` (stable across replay). */
 export function childIdFor(parentId: string, key: string): string {
@@ -805,6 +807,10 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
   >();
   // member childId → (groupId, index), so a member's terminal event lands in the right slot.
   const memberOf = new Map<string, { groupId: string; index: number }>();
+  // ADR 0109 D6 — a CONTINUED child is never a result: "look at the head". Successor id → the child id
+  // the parent's park names. A terminal event of the successor settles the ORIGINAL child's slot (or
+  // resumes the parent on its id), so a supervised child may rotate any number of times.
+  const followed = new Map<string, string>();
 
   const fail = (err: unknown): void => deps.onError?.(err);
   // Fire-and-forget work (child starts, refusals) that `recover` awaits before it reports.
@@ -875,6 +881,11 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     started.delete(key);
     specs.delete(key);
     const g = groups.get(key);
+    if (followed.size > 0) {
+      const ids = new Set<string>([key, ...(g?.members.map((m) => m.childId) ?? [])]);
+      for (const [successor, original] of followed)
+        if (ids.has(original)) followed.delete(successor);
+    }
     if (g !== undefined) {
       for (const m of g.members) {
         memberOf.delete(m.childId);
@@ -1471,7 +1482,7 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     if (hint !== undefined && hint.executionId === childId && TERMINAL.has(hint.eventType)) {
       return settle(hint);
     }
-    const st = await deps.runtime.loadState(childId, deps.runtime.systemOptions());
+    let st = await deps.runtime.loadState(childId, deps.runtime.systemOptions());
     if (st === null) {
       return (await wasReclaimed(childId, spawnedAt))
         ? {
@@ -1480,12 +1491,29 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           }
         : "absent";
     }
-    // A `continued` child is deliberately NOT settled here: it is "look at the head" (ADR 0109
-    // D6), never a result. Following `_continuedTo` is R1b's; until then it stays unsettled.
+    // A `continued` child is never a result (ADR 0109 D6): it is "look at the head". Follow
+    // `_continuedTo` (bounded) and settle from the head's own log; a head still running is
+    // remembered so its terminal event settles THIS child's slot.
+    let headId = childId;
+    for (let hop = 0; st.status === "continued" && hop < MAX_FOLLOW_HOPS; hop++) {
+      const next = st.variables._continuedTo;
+      if (typeof next !== "string" || next.length === 0) return "running";
+      const nextState = await deps.runtime.loadState(next, deps.runtime.systemOptions());
+      if (nextState === null) return "running"; // the successor is not readable yet
+      headId = next;
+      st = nextState;
+    }
+    if (headId !== childId) {
+      if (st.status === "continued") return "running"; // more hops than we follow: the sweep retries
+      if (st.status !== "completed" && st.status !== "failed" && st.status !== "cancelled") {
+        followed.set(headId, childId);
+        return "running";
+      }
+    }
     if (st.status !== "completed" && st.status !== "failed" && st.status !== "cancelled") {
       return "running";
     }
-    const log = await deps.runtime.events.read(childId);
+    const log = await deps.runtime.events.read(headId);
     for (let i = log.length - 1; i >= 0; i--) {
       const e = log[i];
       if (e !== undefined && TERMINAL.has(e.eventType)) return settle(e);
@@ -2054,9 +2082,33 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
           }
         }
 
-        // A continued execution is NOT a child result (ADR 0109 D6: "look at the head"; following
-        // `_continuedTo` is R1b's), so it never settles a group slot or resumes a parent.
-        if (event.eventType !== "EXECUTION_CONTINUED") onChildTerminal(event);
+        // A continued execution is NOT a child result (ADR 0109 D6: "look at the head"): it never
+        // settles a group slot or resumes a parent. If it is a child this supervisor tracks, its
+        // SUCCESSOR now stands in for it (any number of rotations), and the successor's terminal event
+        // settles the original slot.
+        if (event.eventType === "EXECUTION_CONTINUED") {
+          const successor = (event.payload as { successorId?: unknown } | null)?.successorId;
+          if (typeof successor === "string" && successor.length > 0) {
+            const tracked = followed.get(execId) ?? execId;
+            if (
+              memberOf.has(tracked) ||
+              started.has(tracked) ||
+              specs.has(tracked) ||
+              followed.has(execId)
+            ) {
+              followed.delete(execId);
+              followed.set(successor, tracked);
+            }
+          }
+        } else {
+          const original = followed.get(execId);
+          if (original !== undefined) {
+            followed.delete(execId);
+            onChildTerminal({ ...event, executionId: original });
+          } else {
+            onChildTerminal(event);
+          }
+        }
       }
     },
     recover,
