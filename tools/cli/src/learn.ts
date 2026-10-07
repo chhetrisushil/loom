@@ -32,8 +32,21 @@ interface Evidence {
 }
 
 /** A log with a hole in its sequences was compacted: events below the checkpoint are gone. */
-const looksCompacted = (log: readonly EventEnvelope[]): boolean =>
-  log.some((e, i) => e.sequence !== i);
+const hasHole = (log: readonly EventEnvelope[]): boolean => log.some((e, i) => e.sequence !== i);
+
+/**
+ * Pre-0116 compaction truncated THROUGH the tip, leaving the legacy `[0]` shape: a lone start
+ * event with no hole. A length-1 log is therefore "possibly compacted" when nothing can tell us
+ * otherwise (no snapshot store); with one, the checkpoint sitting past the log's head settles it.
+ */
+const looksCompacted = (log: readonly EventEnvelope[], snapshotSequence?: number): boolean => {
+  if (hasHole(log)) return true;
+  if (snapshotSequence !== undefined) {
+    const head = log[log.length - 1]?.sequence ?? -1;
+    return snapshotSequence > head;
+  }
+  return log.length === 1;
+};
 
 /**
  * ADR 0116 — a compacted execution's decisions and outcomes live in its checkpoint, not its log,
@@ -46,15 +59,15 @@ async function evidenceOf(
   id: string
 ): Promise<{ events: EventEnvelope[]; folded: boolean; unreadable: boolean }> {
   const log = await store.read(id);
-  const compacted = looksCompacted(log);
   if (snapshots === undefined) {
-    return { events: log, folded: false, unreadable: compacted };
+    return { events: log, folded: false, unreadable: looksCompacted(log) };
   }
   const snapshot = await snapshots.loadLatest(id);
   const first = log[0];
   if (snapshot === null || first === undefined) {
-    return { events: log, folded: false, unreadable: compacted };
+    return { events: log, folded: false, unreadable: looksCompacted(log) };
   }
+  const compacted = looksCompacted(log, snapshot.sequence);
   const tail = await store.readFrom(id, snapshot.sequence + 1);
   const state = new ReplayVM(tail, {
     ...normalizeSnapshotState(snapshot.state),

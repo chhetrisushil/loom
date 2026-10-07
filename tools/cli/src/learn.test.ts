@@ -163,6 +163,48 @@ describe("loom learn", () => {
       expect(text).toMatch(/--snap/);
     });
 
+    // the pre-0116 compaction shape: a checkpoint at the tip, the log truncated THROUGH it to [0]
+    const legacy = async (id: string) => {
+      const events = new SqliteEventStore(dbPath);
+      const snaps = new SqliteSnapshotStore(join(dir, "snap.db"));
+      const rt = new WorkflowRuntime({
+        eventStore: events,
+        snapshotStore: snaps,
+        effectRuntime: new EffectRuntime(),
+      });
+      const state = (await rt.loadState(id))!;
+      await snaps.save({
+        id: `${id}-old`,
+        executionId: id,
+        workflowId: state.workflowId,
+        sequence: state.sequence,
+        state,
+        createdAt: 0,
+      });
+      await events.truncatePrefix!(id, state.sequence);
+      expect((await events.read(id)).map((e) => e.sequence)).toEqual([0]);
+      events.close();
+    };
+
+    it("the legacy [0] shape (no hole) WITHOUT a snapshot store is counted and warned", async () => {
+      const id = await record(learnable);
+      await legacy(id);
+      const text = await cmdLearnReport({ db: dbPath }, id);
+      expect(text).toMatch(/1 execution\(s\) look compacted and no snapshot store is configured/);
+      expect(text).toContain(id);
+    });
+
+    it("the legacy [0] shape WITH a snapshot store is read from the checkpoint and counted as compacted", async () => {
+      const id = await record(learnable);
+      await legacy(id);
+      const text = await cmdLearnReport({ db: dbPath, snap: join(dir, "snap.db") }, id);
+      expect(text).toMatch(
+        /1 execution\(s\), 1 decision\(s\) \(1 compacted execution\(s\) read from their checkpoints\)/
+      );
+      expect(text).not.toMatch(/look compacted/);
+      expect(text).toMatch(/opus\s+0\.9000\s+n=1/);
+    });
+
     it("eval carries the same warning, and reads the checkpoint when it can", async () => {
       const id = await record(learnable);
       await compact(id);

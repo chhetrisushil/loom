@@ -150,7 +150,7 @@ export async function cmdRepairBlankStream(
  * enumerable event store. Run it with the executions quiesced.
  */
 export async function cmdRepairTerminalEvent(
-  flags: StoreFlags & { apply: boolean },
+  flags: StoreFlags & { apply: boolean; force?: boolean },
   executionId?: string
 ): Promise<string> {
   const stores = await resolveStores(flags);
@@ -173,7 +173,15 @@ export async function cmdRepairTerminalEvent(
     for (const id of ids) {
       scanned++;
       try {
-        const r = await lifecycle.restoreTerminalEvent(id, { apply: flags.apply });
+        const r = await lifecycle.restoreTerminalEvent(id, {
+          apply: flags.apply,
+          ...(flags.force === true && { force: true }),
+        });
+        if (r.status === "busy") {
+          failed++;
+          lines.push(`  ${id.padEnd(28)} busy, retry later — ${r.reason} (nothing written)`);
+          continue;
+        }
         if (r.status === "restored" || r.status === "would-restore") {
           repaired++;
           lines.push(

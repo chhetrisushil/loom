@@ -467,14 +467,20 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
       ).toEqual(raw);
     });
 
-    it("KNOWN LIMIT (documented): absorbed array-index-like ids are listed first by the folded map", async () => {
-      const { eventStore, snapshotStore, runtime } = await run(["b", "10", "2", "a"]);
-      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
-      const got = credit(
-        evidenceEvents((await runtime.loadState("o"))!, await eventStore.read("o"))
-      );
-      // the fold does not record order (frozen shape), so the map's key order is all there is
-      expect(got?.map((r) => r[0])).toEqual(["2", "10", "b", "a"]);
-    });
+    // KNOWN LIMIT, stated as the IDEAL: the fold's `decisions` map is a frozen shape (EVENT_SCHEMA /
+    // snapshot ABI) that records no order, so a compacted log can only list absorbed ids in JS
+    // object-key order (array-index-like keys first). `it.fails` passes while that holds and goes
+    // red the day the order is carried through the checkpoint -- then delete the `.fails`.
+    it.fails(
+      "IDEAL (known limit): absorbed array-index-like ids keep their true order",
+      async () => {
+        const { eventStore, snapshotStore, runtime } = await run(["b", "10", "2", "a"]);
+        expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+        const got = credit(
+          evidenceEvents((await runtime.loadState("o"))!, await eventStore.read("o"))
+        );
+        expect(got?.map((r) => r[0])).toEqual(["b", "10", "2", "a"]);
+      }
+    );
   });
 });

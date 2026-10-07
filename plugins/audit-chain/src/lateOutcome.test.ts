@@ -2,7 +2,12 @@ import { step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { type FlowRunner, type RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
+import {
+  type FlowRunner,
+  LogLifecycle,
+  type RegisteredFlow,
+  WorkflowRuntime,
+} from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { hashChainedEventStore } from "./hashChain";
@@ -57,5 +62,34 @@ describe("recordOutcome through hashChainedEventStore", () => {
     expect(log.filter((e) => e.eventType === "OUTCOME_RECORDED")).toHaveLength(2);
     // every stored event carries the chain stamp, the late ones included
     for (const e of log) expect(e.metadata?.auditChain).toBeDefined();
+  });
+
+  it("verifyChain still verifies after restoreTerminalEvent writes the terminal event above a pre-0116 checkpoint", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const store = hashChainedEventStore(inner);
+    const snapshots = new InMemoryAsyncSnapshotStore();
+    const rt = new WorkflowRuntime({
+      eventStore: store,
+      snapshotStore: snapshots,
+      effectRuntime: new EffectRuntime(),
+    });
+    rt.registerFlow(flow.definition, flow.runner);
+    await (await rt.start(flow, {}, { executionId: "r" })).waitForCompletion();
+    const state = (await rt.loadState("r"))!;
+    await snapshots.save({
+      id: "r-old-ckpt",
+      executionId: "r",
+      workflowId: state.workflowId,
+      sequence: state.sequence,
+      state,
+      createdAt: 0,
+    });
+    await inner.truncatePrefix!("r", state.sequence); // the pre-0116 shape: [0] + checkpoint
+    const life = new LogLifecycle(store, snapshots);
+    expect(await life.restoreTerminalEvent("r", { apply: true })).toMatchObject({
+      status: "restored",
+    });
+    expect(await store.verifyChain("r")).toMatchObject({ ok: true });
+    expect((await inner.read("r")).at(-1)?.metadata?.auditChain).toBeDefined();
   });
 });
