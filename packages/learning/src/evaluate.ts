@@ -119,6 +119,15 @@ export function evaluatePolicy<A>(
     }
   }
 
+  // A non-finite accumulator (a reward of 1.7e308 summed twice, or an Infinity/NaN that reached
+  // the log) makes every estimate NaN, and `NaN < minLift` is false: the gate would PASS on
+  // poisoned evidence. Refuse to produce a report at all.
+  if (![rewardSum, weightedReward, weightSum, weightSquares].every(Number.isFinite)) {
+    throw new Error(
+      "evaluatePolicy: the logged rewards sum to a non-finite value (an overflowing, Infinity or NaN reward is in the log); no estimate can be trusted. Find and exclude the offending outcomes."
+    );
+  }
+
   const warnings: string[] = [];
   const loggedValue = evaluated === 0 ? 0 : rewardSum / evaluated;
   const agreement = evaluated === 0 ? 0 : agreed / evaluated;

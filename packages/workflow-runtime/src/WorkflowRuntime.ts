@@ -132,7 +132,7 @@ import type {
   SendResult,
   SystemGrant,
 } from "./types";
-import { assertMeterCeilings } from "./userspaceEmit";
+import { OUTCOME_SCORE_BOUND, assertMeterCeilings } from "./userspaceEmit";
 import { isStaleFence, isWriteConflict } from "./writeConflict";
 
 /**
@@ -594,8 +594,13 @@ interface RecordedOutcome {
   decisionId?: string;
   success?: boolean;
   score?: number;
+  late?: boolean;
 }
 const OUTCOME_KEY_MAX = 256;
+/** ADR 0116 — a reward's magnitude bound: huge-but-finite scores overflow a SUM to Infinity. */
+export const OUTCOME_SCORE_MAX = OUTCOME_SCORE_BOUND;
+/** ADR 0116 — late outcomes one execution accepts; the duplicate check and the fold are O(n). */
+export const LATE_OUTCOMES_MAX = 1024;
 
 function outcomeShapeProblem(o: RecordOutcomeInput): string | undefined {
   if (typeof o !== "object" || o === null) return "the outcome is not an object";
@@ -606,8 +611,15 @@ function outcomeShapeProblem(o: RecordOutcomeInput): string | undefined {
     return `key must be a non-empty string of at most ${OUTCOME_KEY_MAX} characters`;
   }
   if (o.success !== undefined && typeof o.success !== "boolean") return "success must be a boolean";
-  if (o.score !== undefined && !(typeof o.score === "number" && Number.isFinite(o.score))) {
-    return "score must be a finite number";
+  if (
+    o.score !== undefined &&
+    !(
+      typeof o.score === "number" &&
+      Number.isFinite(o.score) &&
+      Math.abs(o.score) <= OUTCOME_SCORE_MAX
+    )
+  ) {
+    return `score must be a finite number with |score| <= ${OUTCOME_SCORE_MAX}`;
   }
   if (o.success === undefined && o.score === undefined) {
     return "an outcome needs a success or a score";
@@ -3221,9 +3233,15 @@ export class WorkflowRuntime {
           `decision "${outcome.decisionId}" was never recorded by this execution`
         );
       }
-      const prior = (state.variables._outcomes as RecordedOutcome[] | undefined)?.find(
-        (o) => o.decisionId === outcome.decisionId && o.key === outcome.key
-      );
+      const recorded = (state.variables._outcomes as RecordedOutcome[] | undefined) ?? [];
+      let prior: RecordedOutcome | undefined;
+      let lateCount = 0;
+      for (const o of recorded) {
+        if (o.late === true) lateCount++;
+        if (prior === undefined && o.decisionId === outcome.decisionId && o.key === outcome.key) {
+          prior = o;
+        }
+      }
       if (prior !== undefined) {
         if (prior.success === outcome.success && prior.score === outcome.score) {
           return { appended: false };
@@ -3233,7 +3251,15 @@ export class WorkflowRuntime {
           `(${outcome.decisionId}, ${outcome.key}) already has a different outcome; the log is append-only, record a correction under a new key`
         );
       }
-      const sequence = head + 1;
+      if (lateCount >= LATE_OUTCOMES_MAX) {
+        throw new OutcomeRefusedError(
+          executionId,
+          `the execution already holds ${LATE_OUTCOMES_MAX} late outcomes (the per-execution cap)`
+        );
+      }
+      // After a compaction the stored head can sit BELOW the folded checkpoint (the prefix is
+      // gone); an append there would land under the checkpoint and be invisible to the fold.
+      const sequence = Math.max(head, state.sequence) + 1;
       const envelope: EventEnvelope = {
         id: `${executionId}-${sequence}-outcome`,
         workflowId: first.workflowId,

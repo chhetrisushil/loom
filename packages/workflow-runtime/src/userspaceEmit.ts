@@ -187,6 +187,9 @@ function assertCustomDimensions(
   }
 }
 
+/** ADR 0116 — shared with `recordOutcome`. */
+export const OUTCOME_SCORE_BOUND = 1e9;
+
 function refuse(eventType: string, why: string): never {
   throw new Error(`${eventType} refused (ADR 0104): ${why}`);
 }
@@ -263,6 +266,19 @@ export function guardUserspaceEmit(
       return plain;
     }
     case "OUTCOME_RECORDED": {
+      if (
+        plain.score !== undefined &&
+        !(
+          typeof plain.score === "number" &&
+          Number.isFinite(plain.score) &&
+          Math.abs(plain.score) <= OUTCOME_SCORE_BOUND
+        )
+      ) {
+        refuse(
+          eventType,
+          `score must be a finite number with |score| <= ${OUTCOME_SCORE_BOUND} (got ${String(plain.score)}); a reward sum must not overflow`
+        );
+      }
       for (const field of ["recordedBy", "late"]) {
         if (field in plain) {
           refuse(

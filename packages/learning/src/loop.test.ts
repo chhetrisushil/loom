@@ -246,3 +246,72 @@ describe("late rewards flow into trajectories and evaluation like on-time ones",
     expect(b.every((t) => t.outcome === "completed")).toBe(true);
   });
 });
+
+describe("reward poisoning cannot pass the promotion gate (ADR 0116 review)", () => {
+  it("overflowing rewards make evaluatePolicy refuse, and a NaN-lift report fails the gate", async () => {
+    const eventStore = new InMemoryAsyncEventStore();
+    const policy = explorer(0.2);
+    const runner: FlowRunner<{ tokens: number }, { route: string }> = async (ctx, input) => {
+      const route = await decideWithPolicy(ctx, "route", policy, { tokens: input.tokens }, [
+        ...ROUTES,
+      ]);
+      return { route };
+    };
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: new EffectRuntime(),
+    });
+    runtime.registerFlow(makeFlow(runner).definition, runner);
+    const ids: string[] = [];
+    for (let i = 0; i < 20; i++) {
+      const h = await runtime.start(
+        makeFlow(runner),
+        { tokens: i * 100 },
+        { executionId: `p${i}` }
+      );
+      await h.waitForCompletion();
+      ids.push(`p${i}`);
+    }
+    // A log that already holds finite-but-enormous rewards (written around the guard, as an
+    // older or foreign writer could).
+    for (const id of ids) {
+      const evs = await eventStore.read(id);
+      for (const [n, key] of ["a", "b"].entries()) {
+        await eventStore.append({
+          id: `${id}-poison-${key}`,
+          workflowId: evs[0]?.workflowId as string,
+          executionId: id,
+          eventType: "OUTCOME_RECORDED",
+          sequence: evs.length + n,
+          timestamp: Date.now(),
+          payload: { key, decisionId: "route", score: 1.7e308 },
+        });
+      }
+    }
+    const log = (await Promise.all(ids.map((id) => eventStore.read(id)))).flat();
+    const candidate: Policy<Route> = {
+      id: "always-opus",
+      version: "1",
+      select: () => ({ action: "opus" }),
+    };
+    expect(() => evaluatePolicy(trajectories<Route>(log), candidate)).toThrow(/non-finite/);
+
+    // A hand-built / deserialized report with a NaN lift used to PASS (`NaN < minLift` is false).
+    const poisoned = {
+      policy: { id: "c", version: "1" },
+      evaluated: 100,
+      skipped: { noContext: 0, noActions: 0, noReward: 0 },
+      agreement: 0.5,
+      loggedValue: Number.POSITIVE_INFINITY,
+      estimatedValue: Number.NaN,
+      estimator: "snips" as const,
+      lift: Number.NaN,
+      effectiveSampleSize: 100,
+      warnings: [],
+    };
+    const verdict = promotionGate(poisoned, { minSteps: 10 });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toMatch(/not a finite/);
+  });
+});
