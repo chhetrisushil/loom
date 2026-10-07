@@ -402,9 +402,9 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
 
 #### `EXECUTION_CONTINUED`
 - **Introduced:** 1.23.0 — Wave 2 W2-0 ([ADR 0109](../adr/0109-bounded-history-and-continue-as-new.md)).
-  **Reserved: no kernel writer yet** (`ctx.continueAsNew` lands in R1b behind
-  `kernel.features.continueAsNew`). The predecessor of a continue-as-new ends here, after its
-  successor's `EXECUTION_STARTED` is durable.
+  **Written by the kernel since R1b** (`ctx.continueAsNew`, behind `kernel.features.continueAsNew`).
+  The predecessor of a continue-as-new ends here, after its successor's `EXECUTION_STARTED`
+  (`input` = the carry, `chainId`, `generation`, `continuedFrom { executionId, carried }`) is durable.
 - **Payload:** `{ successorId: string, chainId: string, generation: number }`
 - **Marker:** folds ONLY an envelope with `metadata.kernel === true`; unstamped it is the no-op an
   unknown kind always was (byte-identical replay of a log whose app already emitted that name).

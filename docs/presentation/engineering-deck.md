@@ -150,6 +150,7 @@ await ctx.suspend({ on: "ApprovalGranted", correlationKey, timeout })
 await ctx.sleep(60_000)             // durable timer (or ctx.sleepUntil(absoluteMs))
 await ctx.receive("topic")          // durable inbox: the next message, recorded (ADR 0110)
 await ctx.select([{ gate }, { inbox }, { timer }]) // first of several waits
+return ctx.continueAsNew({ summary })   // end here, start the successor with a carry (ADR 0109)
 await ctx.negotiateBudget("tokens", 5000)  // a logged budget grant (ADR 0032)
 ctx.emit("DOMAIN_EVENT", payload)   // durable custom event
 ctx.stream("TOKEN", delta, done)    // token streaming

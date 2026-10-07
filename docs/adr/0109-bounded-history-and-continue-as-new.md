@@ -1,6 +1,6 @@
 # ADR 0109 — Bounded history for a long-lived execution: `ctx.continueAsNew`
 
-- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
+- Status: **Accepted** (2026-10-07, R1b) — design approved after 4 review rounds (2026-10-05); implemented behind `kernel.features.continueAsNew`; the deviations and residuals are in "Implementation notes (as built)" at the end
 - Date: 2026-10-05
 - Closes: R1b (agentic-readiness audit, kernel appendix §2a/§6 gap 1)
 - Builds on: [ADR 0052](0052-run-chaining-deferred-evidence-gate.md) (the frozen `rotate$` draft
@@ -341,3 +341,114 @@ vectors for the new kind and status; (8) fold equality of every pre-existing vec
 - ADR 0052's frozen criterion becomes a standing DST test rather than a paragraph.
 - Ordering: R6 (barrier) and R3k (principal) land first; R2 (the inbox cursors) before the first
   inbox-using chain, though the syscall itself works without it.
+
+## Implementation notes (as built, R1b, 2026-10-07)
+
+What landed matches D1–D8; these are the places the build made a choice the text left open, or went beyond it.
+
+**Placement of the pieces.** `packages/workflow-runtime/src/continuation.ts` holds the pure pieces (the sentinel,
+the typed errors, `successorIdOf`, `chainOfState`, `carriedOf`, the successor-shape test). `ctx.continueAsNew` is
+in `WorkflowContext`; the rotation (`rotate`), the kernel-private `startSuccessor`, head resolution
+(`walkToHead`, `followToHead`), the cancel probe and the fork changes are in `WorkflowRuntime`. No `EventStore`,
+`SnapshotStore`, dispatcher or wire change; EVENT_SCHEMA stays 1.23.0 (every shape was frozen at W2-0) and
+KERNEL_ABI stays 1.3.0 with `continueAsNew` now in `KERNEL_SYSCALLS`.
+
+**D1.** Every refusal (flag off, open `parallel` scope, outstanding wait, in-flight step past `parkDrainMs`, a
+carry with no JSON form, over `maxCarryBytes`, a carry failing `validateInput`) is raised BEFORE anything is
+frozen or appended, so the flow may catch it and carry on (the in-flight case waits up to `parkDrainMs` for the
+set to drain and does not freeze until it has). An accepted call freezes new step starts, rejects a second
+kernel promise (`continueSignal`, raced beside `parkSignal` in `run`), then throws the sentinel: a flow that
+swallows the sentinel still rotates, and a second call is the same rotation. The carry is JSON-normalised once
+(what the predecessor's re-drive computes is what the successor starts with). A **tainted** value in the carry
+keeps its taint (the wrapper is plain JSON), so untrusted content does not launder through a rotation. A
+`parallel` call counts as open from its first await to its last (a hand-rolled `Promise.all([ctx.parallel(..),
+ctx.continueAsNew(..)])` is refused), and a call from inside a branch is refused through its scope.
+
+**D2.** The order is as specified. The successor start (`startSuccessor`) is `writeBootstrap` (ADR 0103) at the
+deterministic id; an existing sequence 0 is adopted iff its `continuedFrom.executionId` is the predecessor,
+else `ContinuationConflictError`, which FAILS the predecessor (`EXECUTION_FAILED`) with the typed error. A storage
+failure before the successor is durable leaves the predecessor `running` and rejects its handle: recovery
+re-drives it. The chain's `maxChainHops` bounds head WALKS (`resume`, `send`, `cancel`, `followToHead`), not the
+chain's length, and past it the refusal is `ChainHopLimitError` naming the head, found by galloping +
+bisection over the deterministic ids `<chainId>~<n>` (O(log n) point reads; naming only, never routing).
+`send` reports the limit after authorizing against the chain owner, so an unauthorized caller learns nothing
+about the chain's depth. The start-to-commit probe (`<chainId>~<generation+1>` sequence 0, accepted only when
+its `continuedFrom` names the id) runs in `send`, `walkToHead` and `cancel` and only with the flag on. The
+successor-shape reservation (`assertCreatable`: `start` with a caller id, `fork`'s child id) applies **whether
+or not the flag is on** (an app that used `task~1` as an id must rename it: CHANGELOG); resume paths and
+`cancel` of an existing id are unaffected. **Cancel:** `cancel(id)` of a live or stored chain member also
+cancels a successor started in the window (probe), `cancel` of a `continued` member cancels the chain's live
+generation (it is no longer a no-op: the one-chain, one-owner rule authorizes it once), a live predecessor
+whose commit is already journaled ignores a late cancel (`rotated`) so nothing follows `EXECUTION_CONTINUED` in
+its log (the successor is cancelled instead), and `rotate` re-checks `cancelled` after the start and cancels the
+successor it just started. The successor's first-run check (`predecessorCancelled`) runs on a fresh start and on
+a recovery re-drive (entry status `pending` / `running`), never on a resume from a park.
+
+**D3.** `chainDeadline` is fixed at generation 0 (`startedAt + deadlineMs`, from the option or the flow
+definition) and carried unchanged; each generation arms `min(its flow deadline, chainDeadline - its startedAt)`. A
+parked execution holds no deadline timer (it re-arms on resume, "resuming past the deadline cancels
+immediately", an existing rule), so a parked successor is cancelled at its next resume, not at the instant.
+`validateInput` applies to the carry as the successor's input, before anything is appended. The kernel has no
+`tags`, so there is nothing to inherit; tenant scoping rides the store decorator both generations share.
+The successor also inherits `parent` (lineage) and the placement hint `computeTarget` from the predecessor's
+sequence 0.
+
+**D4.** `resume` addressed to a continued id resolves forward (after the authorization against that id's owner,
+which every generation inherits) and re-enters itself on the head; the head authorizes again against the same
+owner. `ResumeEvent` is unchanged.
+
+**D5.** The cascade on `EXECUTION_CONTINUED` was built with R6 (`@loom/orchestration`); R1b adds its tests: an
+attached child is cancelled with a `{ kind: "cascade", parent }` reason and a detached one survives. A parked
+parent cannot continue, so the case is a child whose park the operator answered by hand. **D6:** the supervisor
+keeps a `followed` map (successor id -> the child id the parent's park names); a continued child's successor's
+terminal event settles the ORIGINAL slot, any number of rotations, live; `settledOf` (`adopt`, `recover`,
+`reconcileGroup`) follows `_continuedTo` (at most 8 links) and registers a running head. `LocalWorkerRuntime`
+follows to the head (a live handle when the runtime drives it, else the log) and reports the HEAD's outcome under
+the dispatched id; `ExecutionOutcome` is NOT widened (no dispatcher or worker SPI change), and an unreadable
+chain stays the fail-safe `failed`, never `completed`. `@loom/analytics` gains `chainLineage(events, id)` (a pure
+projection; chain identity read through the fold's rules, a fork is its own chain). `@loom/agent` gains
+`continueEvery(n)` (the turn counter; created inside the flow body, per generation).
+
+**D7.** A fork of a chain member is detected from the parent's FOLDED `_chain` (the snapshot, no read) or its
+sequence 0 (when there is no snapshot the window starts at 0 anyway). It stamps
+`forkChain: { chainId: <fork id>, generation: 0 }` on every copied envelope, and folds its seed state from the
+RESTAMPED prefix read from sequence 0 (a parent snapshot carries the seeded carry, which the fork must not have),
+so a compacted chain member refuses with `CompactedForkPointError`. A fork of an ordinary execution is
+byte-identical to before (no stamp, no extra read; the E5 read-count tests are unchanged).
+`ForkPastContinuationError` is decided from what the fork already reads (the window, or the snapshot's folded
+status): it costs no extra read, and names the successor.
+
+**D8.** The frozen DST criterion is a sweep (`r1b-crash.test.ts`): a kill at EVERY append of a two-generation
+conversation, a reboot, the existing `recoverAbandoned` and `TimerService`, and the same end state each time (one
+successor, one `EXECUTION_CONTINUED`, both messages exactly once). Each consumer of the `continued` status has a
+test beside its code: replay-vm (the fold), workflow-runtime (`LogLifecycle` retention, `strayPassthroughs`,
+`blankStream`, `resume`/`send`/`cancel`/`fork`, `waitForCompletion`), orchestration, `LocalWorkerRuntime`,
+`InProcessA2ABus`, analytics (`analyze`, `introspect`, `chainLineage`), learning, compliance (`eraseSubject`),
+audit-chain (the head cache), telemetry, DST invariants and the CLI timeline. The `ExecutionStatus` union is
+pinned by a test (a type-level exhaustiveness check cannot run in vitest).
+
+**R11 carry-over.** `recordOutcome` accepts `continued` (ADR 0116 D1, amended): the decision lives in THAT
+generation's own log, so the outcome is attached to the id the caller named, never to the head. **Fixed on the
+way:** a run whose cancel landed before its flow returned (a deadline already past when a parked execution is
+resumed, with a flow that returns without a step) appended `EXECUTION_COMPLETED` AFTER `EXECUTION_CANCELLED`; the
+cancel now owns the outcome.
+
+**Measured acceptance** (`docs/requirements/2026-10-05-agentic-readiness-experiments/exp-r1b.cjs`, the
+`exp.cjs` message loop; this machine, in-memory stores, `snapshotEvery: 50`):
+
+| turns | rotate every | per-resume at the last turn | total | head state (JSON) | log events of the head |
+|---|---|---|---|---|---|
+| 6 000 | never | 4.6-6.0 ms (0.5 ms at turn 1 000) | 8.3 s | 1 272 768 bytes | 30 002 |
+| 6 000 | 500 | 0.04 ms flat (0.3 ms on a rotating turn) | 0.74 s | at most 85 KB (one generation) | 2 |
+| 20 000 | 500 | 0.034-0.046 ms flat from turn 1 000 to 19 000 | 2.4 s | at most 86 KB | 2 |
+
+Per-turn cost and folded state are bounded by the rotation interval, whatever the turn number; the runner
+re-runs once per turn in both cases (the re-run is over one generation).
+
+**Residuals.** (1) A head walk from a stale id more than `maxChainHops` generations back is refused (naming the
+head); a client addresses the `executionId` a `send` returned (or the head the error names). (2) The kernel has
+no rate limit on rotation: a flow that calls `continueAsNew` without ever consuming anything is a runaway chain
+(one successor per call, immediately); a flow rotates on a count or a size. (3) A parked successor is not
+cancelled at its chain deadline until it next resumes (the existing rule for any parked execution). (4) A
+compacted chain member cannot be forked (its prefix is read from sequence 0). (5) The mixed-fleet rule is the
+flag: turn `kernel.features.continueAsNew` on only once every node folds `EXECUTION_CONTINUED`.

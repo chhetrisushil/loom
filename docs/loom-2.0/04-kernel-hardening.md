@@ -65,6 +65,7 @@ A framework becomes a kernel when userspace can depend on a **narrow, versioned 
 | `sleepUntil` | call | 1.1.0 | suspend durably until an absolute time recorded in the log (T1) |
 | `receive` | call | 1.3.0 | wait for the next message on an inbox topic; consumption is a journaled fact (ADR 0110) |
 | `select` | call | 1.3.0 | wait for the first of several gates, inbox topics and timers; deterministic, replay-served (ADR 0110) |
+| `continueAsNew` | call | 1.3.0 | end this execution and start its successor with a carry; never returns, bounds the history (ADR 0109) |
 | `emit` | call | 1.0.0 | append a durable domain event |
 | `stream` | call | 1.0.0 | emit an incremental delta event |
 | `ui` | accessor | 1.0.0 | **deprecated** (ADR 0114): drive durable, replayable UI surfaces (agent-surface; injected, new code uses `surface(ctx)`) |
@@ -103,7 +104,7 @@ flowchart TB
     S2["suspend · sleep · sleepUntil"]
     S3["decide · negotiateBudget"]
     S4["emit · stream · ui"]
-    S5["receive · select"]
+    S5["receive · select · continueAsNew"]
   end
 
   subgraph Kernel["🧵 Durable kernel (privileged — the core's concern)"]

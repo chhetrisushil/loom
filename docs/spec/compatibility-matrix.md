@@ -25,11 +25,11 @@ mechanism (`checkCompatibility`) exists for the day a deployment's MAJOR diverge
 | ContentStore SPI | `1.3.0` | `CONTENT_STORE_SPI_VERSION` · conformance kit |
 | Compiler manifest | `1` | `COMPILER_MANIFEST_VERSION` |
 
-Event types folded by K5: **32** · Kernel syscalls: **13**.
+Event types folded by K5: **32** · Kernel syscalls: **14**.
 
 **Kernel ABI 1.3.0 reserves the Wave 2 syscalls (`continueAsNew`, `receive`, `select`); a reserved
 syscall is not in the table until its writer lands (`receive` / `select` have, behind
-`kernel.features.inbox`).** A syscall is callable iff it is in the kernel's syscall table, which the
+`kernel.features.inbox`, and `continueAsNew`, behind `kernel.features.continueAsNew`).** A syscall is callable iff it is in the kernel's syscall table, which the
 wire handshake advertises (`syscalls`) beside `kernelAbiVersion`. Feature-detect against that list;
 do not infer availability from `kernelAbiVersion >= 1.3.0` until the writers land.
 

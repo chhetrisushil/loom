@@ -499,10 +499,10 @@ fields and adds `waits`; a bare resume of the positional gate answers it as ever
   stream is deleted then). **`eraseSubject` does not reach payloads still in flight in the stream**: erasure
   reaches `MESSAGE_CONSUMED` in the owner's log (`PAYLOAD_SHREDDED`), not the stream. Follow-up: extend
   erasure into reserved streams.
-- **The park-per-message loop is quadratic until R1b.** A slow-sender loop re-parks between messages and
+- **The park-per-message loop is quadratic until the flow rotates (R1b, ADR 0109, now Accepted).** A slow-sender loop re-parks between messages and
   every park snapshots (and every wake re-runs) a state holding one answer per consumed message: turn n is
   O(n), the whole conversation O(n^2). The inbox itself is flat (measured below); continue-as-new (R1b,
-  ADR 0109) is what bounds the history.
+  ADR 0109: a loop rotates every N turns, `@loom/agent`'s `continueEvery`) is what bounds the history.
 - A refused send may keep being refused for up to 250 ms after the owner drains the backlog (the full
   verdict is cached per chain and head).
 - A message whose owner never waits on its topic pins the stream: `send` refuses (`InboxFullError`) at
