@@ -47,6 +47,37 @@ function sourceAliases(): { find: RegExp; replacement: string }[] {
 
 const useSource = process.env.LOOM_TEST_SRC === "1";
 
+/**
+ * Give the package under test its OWN Postgres database (`<db>_<package>`), so suites that
+ * `TRUNCATE` cannot wipe another package's rows when turbo runs several packages at once against
+ * one `LOOM_TEST_POSTGRES_URL`. `vitest.pgSetup.ts` creates it; `LOOM_TEST_PG_SHARED=1` opts out.
+ */
+function packageDatabase(): { url: string; db: string; admin: string } | undefined {
+  const base = process.env.LOOM_TEST_POSTGRES_URL;
+  if (base === undefined || base === "" || process.env.LOOM_TEST_PG_SHARED === "1")
+    return undefined;
+  const manifest = join(process.cwd(), "package.json");
+  if (!existsSync(manifest)) return undefined;
+  const { name } = JSON.parse(readFileSync(manifest, "utf8")) as { name?: string };
+  if (name === undefined) return undefined;
+  const url = new URL(base);
+  const slug = name
+    .replace(/^@/, "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .toLowerCase();
+  const db = `${url.pathname.replace(/^\//, "") || "postgres"}_${slug}`.slice(0, 63);
+  const admin = url.toString();
+  url.pathname = `/${db}`;
+  return { url: url.toString(), db, admin };
+}
+
+const pgDb = packageDatabase();
+if (pgDb !== undefined) {
+  // Read by vitest.pgSetup.ts (global setup runs in this process).
+  process.env.LOOM_TEST_POSTGRES_ADMIN_URL = pgDb.admin;
+  process.env.LOOM_TEST_POSTGRES_PACKAGE_DB = pgDb.db;
+}
+
 /** The shared base. Pass overrides for the few packages that need them. */
 export function loomTest(overrides: UserConfig = {}): UserConfig {
   const { test: testOverrides, resolve: resolveOverrides, ...rest } = overrides;
@@ -59,6 +90,13 @@ export function loomTest(overrides: UserConfig = {}): UserConfig {
       ...(useSource && { alias: sourceAliases() }),
       ...resolveOverrides,
     },
-    test: { environment: "node", ...testOverrides },
+    test: {
+      environment: "node",
+      ...(pgDb !== undefined && {
+        globalSetup: [join(ROOT, "vitest.pgSetup.ts")],
+        env: { LOOM_TEST_POSTGRES_URL: pgDb.url },
+      }),
+      ...testOverrides,
+    },
   }) as UserConfig;
 }
