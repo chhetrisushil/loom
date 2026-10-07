@@ -1,9 +1,11 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import type { EventEnvelope } from "@loom/core";
 import {
+  type AppendIfUnchangedResult,
   type DecoratorPlan,
   type EventStore,
   type OptionalEventStoreMethod,
+  type TipObservation,
   installOptional,
 } from "@loom/event-runtime";
 
@@ -356,6 +358,23 @@ export function hashChainedEventStore(
     readRange: "forward",
     acquireFence: "forward",
     acquireFenceIf: "forward",
+    // Chained onto the tail like `append`. The store proves the head is still what the caller
+    // saw, so the tail hash derived here is the right one; a refusal drops the cached head (it
+    // may be stale) and a success advances it, the same rule as `append`.
+    appendIfUnchanged: async (
+      executionId: string,
+      event: EventEnvelope | null,
+      expect?: TipObservation
+    ): Promise<AppendIfUnchangedResult> => {
+      const conditional = inner.appendIfUnchanged as NonNullable<EventStore["appendIfUnchanged"]>;
+      if (event === null) return conditional.call(inner, executionId, null, expect);
+      lastHash.delete(executionId); // never trust a cached tail across a conditional write
+      const stamped = stamp(event, await priorHashFor(executionId));
+      const result = await conditional.call(inner, executionId, stamped, expect);
+      if (result.appended) advance(stamped, (chainOf(stamped) as ChainMetadata).hash);
+      else lastHash.delete(executionId);
+      return result;
+    },
     copyPrefix: "forward",
     deleteExecution: async (executionId: string): Promise<void> => {
       lastHash.delete(executionId); // drop the cache entry with the log

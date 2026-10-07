@@ -3213,12 +3213,23 @@ export class WorkflowRuntime {
     const problem = outcomeShapeProblem(outcome);
     if (problem !== undefined) throw new OutcomeRefusedError(executionId, problem);
     const recordedBy = this.outcomeRecordedBy(options?.principal, options?.system);
+    // ADR 0116 amendment — the write is a CONDITIONAL append at the store (SPI 2.2.0): there is
+    // no fallback to a plain `append`, because without it a retention delete between the fold and
+    // the write leaves an orphan log, and a fence acquired in that window is displaced.
+    const store = this.eventStore;
+    if (store.appendIfUnchanged === undefined) {
+      throw new OutcomeRefusedError(
+        executionId,
+        "the event store does not implement appendIfUnchanged (EventStore SPI 2.2.0), the atomic conditional append a late outcome needs; upgrade the store or its decorator"
+      );
+    }
+    const missing = () => new Error(`No execution found for id: ${executionId}`);
     for (let attempt = 0; attempt < RECORD_OUTCOME_ATTEMPTS; attempt++) {
-      const head = await headOf(this.eventStore, executionId);
-      const state = head === null ? null : await this.foldState(executionId);
-      if (head === null || state === null) {
-        throw new Error(`No execution found for id: ${executionId}`);
-      }
+      // Observe the tip (head AND fence token) BEFORE folding: the append below proves neither moved.
+      const seen = await store.appendIfUnchanged(executionId, null);
+      if (seen.appended || seen.head === null) throw missing();
+      const state = await this.foldState(executionId);
+      if (state === null) throw missing();
       if (
         state.status !== "completed" &&
         state.status !== "failed" &&
@@ -3257,9 +3268,36 @@ export class WorkflowRuntime {
           `the execution already holds ${LATE_OUTCOMES_MAX} late outcomes (the per-execution cap)`
         );
       }
+      // A fence acquired AFTER the execution ended may belong to a holder that is about to reopen
+      // it (it has acquired but not yet appended): the late write would take its sequence slot and
+      // fail its run. Only a token the finishing holder itself wrote the terminal event under is
+      // safe. A never-fenced execution (token 0) skips the read. Retryable: it clears once the
+      // reopener finishes (a new terminal event under the new token). Residual (ADR 0116): a holder
+      // that acquired and DIED leaves the execution refusing late outcomes until it is re-run.
+      if (seen.fence > 0) {
+        const log = await store.read(executionId);
+        let terminal: EventEnvelope | undefined;
+        for (let i = log.length - 1; i >= 1 && terminal === undefined; i--) {
+          const e = log[i] as EventEnvelope;
+          if (
+            e.eventType === "EXECUTION_COMPLETED" ||
+            e.eventType === "EXECUTION_FAILED" ||
+            e.eventType === "EXECUTION_CANCELLED"
+          ) {
+            terminal = e;
+          }
+        }
+        const wrote = terminal?.metadata?.fence;
+        if (typeof wrote !== "number" || wrote !== seen.fence) {
+          throw new OutcomeContendedError(
+            executionId,
+            `a fence (token ${seen.fence}) was acquired after the execution ended (its terminal event was written under ${typeof wrote === "number" ? `token ${wrote}` : "no token"}), so a holder may be about to reopen it`
+          );
+        }
+      }
       // After a compaction the stored head can sit BELOW the folded checkpoint (the prefix is
       // gone); an append there would land under the checkpoint and be invisible to the fold.
-      const sequence = Math.max(head, state.sequence) + 1;
+      const sequence = Math.max(seen.head, state.sequence) + 1;
       const envelope: EventEnvelope = {
         id: `${executionId}-${sequence}-outcome`,
         workflowId: first.workflowId,
@@ -3276,29 +3314,27 @@ export class WorkflowRuntime {
           late: true,
         },
         // The stamp the fold requires before it trusts `recordedBy` / `late` (W2-0): only the
-        // kernel writes it, and `guardUserspaceEmit` refuses those fields from a flow.
+        // kernel writes it, and `guardUserspaceEmit` refuses those fields from a flow. No fence
+        // token: the store compares the one observed above, it is never presented or adopted.
         metadata: { kernel: true },
       };
-      let landed: EventEnvelope = envelope;
+      let result: Awaited<ReturnType<NonNullable<typeof store.appendIfUnchanged>>>;
       try {
-        try {
-          await this.eventStore.append(envelope);
-        } catch (err) {
-          // An execution that was EVER fenced (a worker, a fenced timer wake, a cancel) refuses an
-          // unfenced append for good. Its holder is gone (it is terminal), so present the store's
-          // CURRENT token rather than acquiring a new one: nobody is superseded, and the sequence
-          // CAS still decides between writers.
-          const current = (err as { currentFence?: unknown } | null)?.currentFence;
-          if (!isStaleFence(err) || typeof current !== "number") throw err;
-          landed = { ...envelope, metadata: { kernel: true, fence: current } };
-          await this.eventStore.append(landed);
-        }
+        result = await store.appendIfUnchanged(executionId, envelope, {
+          head: seen.head,
+          fence: seen.fence,
+        });
       } catch (err) {
-        if (isWriteConflict(err) || isStaleFence(err)) continue; // lost the CAS: re-read, re-judge
+        if (isWriteConflict(err)) continue; // a slot / id race: re-read, re-judge
         throw err;
       }
-      this.onEvent?.(landed);
-      return { appended: true, sequence };
+      if (result.appended) {
+        this.onEvent?.(envelope);
+        return { appended: true, sequence };
+      }
+      // `moved` (a writer, a delete-and-recreate or a fence acquire since the observation):
+      // re-observe and re-judge. `gone`: the log was deleted under us; nothing was written.
+      if (result.reason === "gone") throw missing();
     }
     throw new OutcomeContendedError(executionId);
   }

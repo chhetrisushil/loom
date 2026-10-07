@@ -473,3 +473,10 @@ below `acquireFence` (1.68K vs 2.19K): one more round-trip than the unconditiona
 read that re-checks the park under the fence) plus the caller's `parkedAtSequence`; it buys the
 guarantee, and the supervisor takes it only on a stale fence. In-memory is unchanged code. The Postgres
 numbers move at most a few percent where the ADR claimed the hot path would not.
+
+## Cross-reference (ADR 0116 amendment)
+
+`EventStore.appendIfUnchanged` (EVENT_STORE_SPI 2.2.0) is the append-side twin of `acquireFenceIf`: it
+takes the same Postgres fence row `FOR UPDATE`, and `deleteExecution` now takes that row too, so a
+conditional append, an acquire, an answering append and a retention delete are all ordered by it. It
+compares an observed token and never presents or bumps one. See ADR 0116, "Amendment — review round 2".

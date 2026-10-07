@@ -177,7 +177,8 @@ describe("K10.4 — compaction (fold(snapshot, suffix) === fold(events))", () =>
 
     const life = new LogLifecycle(app.eventStore, app.snapshotStore);
     const through = await life.compact("comp-1");
-    expect(through).toBe(before.at(-1)!.sequence);
+    // ADR 0116 amendment (Q3): the checkpoint stops just BELOW the terminal event, which survives.
+    expect(through).toBe(before.at(-1)!.sequence - 1);
 
     // The log is bounded (only the bootstrap anchor + nothing after the tip)…
     const after = await app.eventStore.read("comp-1");
@@ -341,7 +342,7 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     const before = await app.eventStore.read("ec-1");
 
     const life = new LogLifecycle(app.eventStore, app.snapshotStore);
-    expect(await life.compact("ec-1")).toBe(before.at(-1)!.sequence);
+    expect(await life.compact("ec-1")).toBe(before.at(-1)!.sequence - 1);
     expect((await app.rawEvents.read("ec-1")).length).toBeLessThan(before.length);
 
     // The checkpoint is at rest as CIPHERTEXT at the declared path. (Only the declared paths:

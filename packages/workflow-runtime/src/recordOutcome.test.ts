@@ -87,6 +87,7 @@ const postgres: Backend = {
 };
 
 const alice = { tenant: "acme", actor: "alice" };
+const bind = (v: unknown, t: object): unknown => (typeof v === "function" ? v.bind(t) : v);
 const mallory = { tenant: "evil", actor: "mallory" };
 
 for (const backend of [memory, sqlite, postgres]) {
@@ -101,6 +102,12 @@ for (const backend of [memory, sqlite, postgres]) {
 
     // decide, then finish (or park / fail).
     const deciding = flow("decider", async (ctx) => {
+      await ctx.decide("route", () => "opus");
+      return { done: true };
+    });
+    // Application events below the decision: what compaction can actually reclaim.
+    const noisy = flow("noisy", async (ctx) => {
+      for (let i = 0; i < 3; i++) await ctx.emit("note", { i });
       await ctx.decide("route", () => "opus");
       return { done: true };
     });
@@ -375,7 +382,7 @@ for (const backend of [memory, sqlite, postgres]) {
       let clock = 1_000_000;
       const h = mk({ now: () => clock });
       const e = id();
-      await finish(h, deciding, e);
+      await finish(h, noisy, e);
       const terminal = (await h.eventStore.read(e)).at(-1) as EventEnvelope;
       clock = terminal.timestamp + 10;
       const life = new LogLifecycle(h.eventStore, h.snapshotStore);
@@ -392,8 +399,60 @@ for (const backend of [memory, sqlite, postgres]) {
       ]);
       expect((await h.rt.recordOutcome(e, o)).appended).toBe(false);
       expect((await outcomes(h, e)).length).toBe(1);
-      // (The retention verdict after compaction is the Q3 residual: compaction must keep the
-      // terminal event above the checkpoint. Pending a decision, not asserted here.)
+      // Retention is judged from the terminal event, which compaction keeps (Q3).
+      const ttl = 1_000;
+      clock = terminal.timestamp + ttl * 100;
+      expect(await life.evaluate(e, { terminalTtlMs: ttl }, terminal.timestamp + ttl + 1)).toBe(
+        "reclaimable"
+      );
+    });
+
+    it("compaction keeps the terminal event: one late outcome per TTL cannot pin a compacted log", async () => {
+      let clock = 1_000_000;
+      const h = mk({ now: () => clock });
+      const e = id();
+      await finish(h, noisy, e);
+      const terminal = (await h.eventStore.read(e)).at(-1) as EventEnvelope;
+      const ttl = 1_000;
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      await life.compact(e);
+      expect((await h.eventStore.read(e)).some((x) => x.eventType === "EXECUTION_COMPLETED")).toBe(
+        true
+      );
+      // A reward arrives just inside every TTL window: each would restart the clock if the
+      // retention fallback used `updatedAt` (the outcome handler moves it).
+      for (let k = 1; k <= 3; k++) {
+        clock = terminal.timestamp + Math.floor(ttl * 0.9) + k;
+        await h.rt.recordOutcome(e, { decisionId: "route", key: `w${k}`, score: 1 });
+        await life.compact(e);
+      }
+      expect(await life.evaluate(e, { terminalTtlMs: ttl }, terminal.timestamp + ttl + 1)).toBe(
+        "reclaimable"
+      );
+      expect((await h.rt.loadState(e))?.variables._outcomes).toHaveLength(3);
+    });
+
+    it("compaction keeps in-run and late rewards in the log, and the folded state is unchanged", async () => {
+      const rewarding = flow("rewarder", async (ctx) => {
+        for (let i = 0; i < 3; i++) await ctx.emit("note", { i });
+        await ctx.decide("route", () => "opus");
+        await ctx.emit("OUTCOME_RECORDED", { key: "inrun", decisionId: "route", score: 0.5 });
+        return { done: true };
+      });
+      const h = mk();
+      const e = id();
+      await finish(h, rewarding, e);
+      await h.rt.recordOutcome(e, { decisionId: "route", key: "late", score: 1 });
+      const before = (await h.rt.loadState(e))?.variables._outcomes;
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      expect(await life.compact(e)).not.toBeNull();
+      await h.rt.recordOutcome(e, { decisionId: "route", key: "late2", score: 1 });
+      await life.compact(e); // nothing new below the terminal event: a no-op, not an error
+      const kept = (await outcomes(h, e)).map((x) => (x.payload as { key: string }).key);
+      expect(kept).toEqual(["inrun", "late", "late2"]);
+      const after = (await h.rt.loadState(e))?.variables._outcomes as Array<{ key: string }>;
+      expect(after.map((o) => o.key)).toEqual(["inrun", "late", "late2"]);
+      expect(after.slice(0, 2)).toEqual(before);
     });
 
     it("refuses an overflowing score (finite or not), at the cap and in a flow's own emit", async () => {
@@ -439,10 +498,9 @@ for (const backend of [memory, sqlite, postgres]) {
       expect((await h.eventStore.read(e)).length).toBe(len);
     }, 120_000);
 
-    // SKIPPED until the Q1 fencing decision lands: today the late outcome adopts the store's
-    // current token from StaleFenceError, which supersedes the reopener's fence (the reopener's
-    // next append is refused and the run fails). The asserted end state is the CORRECT one.
-    it.skip("a late outcome never displaces a reopener's append (concurrent fence holder)", async () => {
+    // The p2_fence scenario: a late outcome lands between the reopener's fold and its first
+    // append. The late outcome must not take the reopener's slot or token (ADR 0116 amendment).
+    it("a late outcome never displaces a reopener's append (concurrent fence holder)", async () => {
       const base = backend.make();
       let hook: (() => Promise<void>) | null = null;
       const store = new Proxy(base.eventStore, {
@@ -483,7 +541,9 @@ for (const backend of [memory, sqlite, postgres]) {
       if (store.acquireFence === undefined) return;
       const fence = await h.rt.acquireFence(e);
       hook = async () => {
-        await h.rt.recordOutcome(e, { decisionId: "route", key: "late", score: 0 });
+        await expect(
+          h.rt.recordOutcome(e, { decisionId: "route", key: "late", score: 0 })
+        ).rejects.toMatchObject({ name: "OutcomeContendedError", retryable: true });
       };
       await (
         await h.rt.resumeAs(
@@ -497,21 +557,127 @@ for (const backend of [memory, sqlite, postgres]) {
         .catch(() => undefined);
       // The reopener finished: its run is not dead because a late outcome took its token.
       expect((await h.rt.loadState(e))?.status).toBe("completed");
+      expect(await outcomes(h, e)).toEqual([]);
     });
 
-    it("an execution that was ever fenced still accepts the attach, under its current token", async () => {
+    it("a fence acquired AFTER the end is refused (retryable, nothing appended); one the finishing holder wrote under is accepted, token unchanged", async () => {
       const h = mk();
       const e = id();
       await finish(h, deciding, e);
       if (h.eventStore.acquireFence === undefined) return; // a store that does not fence
-      const token = await h.eventStore.acquireFence(e);
-      const r = await h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 });
+      const token = await h.eventStore.acquireFence(e); // a holder that may be about to reopen
+      const len = (await h.eventStore.read(e)).length;
+      await expect(
+        h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 })
+      ).rejects.toMatchObject({ name: "OutcomeContendedError", retryable: true });
+      expect((await h.eventStore.read(e)).length).toBe(len);
+
+      // A holder that reopened and FINISHED under its own token: the terminal event carries it.
+      const e2 = id();
+      const failing = flow("failer2", async (ctx) => {
+        await ctx.decide("route", () => "opus");
+        throw new Error("boom");
+      });
+      const fixed = flow("failer2", async (ctx) => {
+        await ctx.decide("route", () => "opus");
+        return { done: true };
+      });
+      h.rt.registerFlow(failing.definition, failing.runner);
+      await (await h.rt.start(failing, {}, { executionId: e2 }))
+        .waitForCompletion()
+        .catch(() => undefined);
+      h.rt.registerFlow(fixed.definition, fixed.runner);
+      const t2 = await h.rt.acquireFence(e2);
+      await (
+        await h.rt.resumeAs(
+          e2,
+          "failer2",
+          { eventType: "RETRY", payload: {} },
+          { strategy: "operator-ack", fence: t2 }
+        )
+      ).waitForCompletion();
+      expect((await h.rt.loadState(e2))?.status).toBe("completed");
+      const r = await h.rt.recordOutcome(e2, { decisionId: "route", key: "k", score: 1 });
       expect(r.appended).toBe(true);
-      const [ev] = await outcomes(h, e);
-      expect(ev?.metadata?.fence).toBe(token);
+      const [ev] = await outcomes(h, e2);
+      expect(ev?.metadata?.fence).toBeUndefined(); // compared, never presented
+      expect(await h.eventStore.acquireFence(e2)).toBe(t2 + 1); // not bumped by the attach
       expect(
-        (await h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 })).appended
+        (await h.rt.recordOutcome(e2, { decisionId: "route", key: "k", score: 1 })).appended
       ).toBe(false);
+      expect(token).toBeGreaterThan(0);
+    });
+
+    it("refuses with a clear error when the store has no appendIfUnchanged (no unsafe fallback)", async () => {
+      const base = backend.make();
+      const bare = new Proxy(base.eventStore, {
+        get: (t, k, r) => (k === "appendIfUnchanged" ? undefined : bind(Reflect.get(t, k, r), t)),
+      }) as EventStore;
+      const h = mk({}, { ...base, eventStore: bare });
+      const e = id();
+      await finish(h, deciding, e);
+      const len = (await h.eventStore.read(e)).length;
+      await expect(
+        h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 })
+      ).rejects.toThrow(/appendIfUnchanged/);
+      expect((await h.eventStore.read(e)).length).toBe(len);
+    });
+
+    it("retention deleting the log between the observation and the write: refused, NO orphan log", async () => {
+      const base = backend.make();
+      let hook: (() => Promise<void>) | null = null;
+      const store = new Proxy(base.eventStore, {
+        get(t, k, r) {
+          if (k !== "appendIfUnchanged") return bind(Reflect.get(t, k, r), t);
+          return async (eid: string, ev: EventEnvelope | null, expect?: never) => {
+            if (ev !== null && hook !== null) {
+              const run = hook;
+              hook = null;
+              await run();
+            }
+            return (t as EventStore).appendIfUnchanged!(eid, ev, expect);
+          };
+        },
+      }) as EventStore;
+      const h = mk({}, { ...base, eventStore: store });
+      const e = id();
+      await finish(h, deciding, e);
+      const terminal = (await h.eventStore.read(e)).at(-1) as EventEnvelope;
+      const life = new LogLifecycle(base.eventStore, base.snapshotStore);
+      hook = async () => {
+        expect(await life.applyRetention(e, { terminalTtlMs: 0 }, terminal.timestamp + 10)).toBe(
+          "reclaimed"
+        );
+      };
+      await expect(
+        h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 })
+      ).rejects.toThrow(/No execution found/);
+      expect(await base.eventStore.read(e)).toEqual([]);
+      expect(await base.eventStore.head?.(e)).toBeNull();
+      expect(await base.eventStore.listExecutions?.()).not.toContain(e);
+    });
+
+    it("a tombstoned fence stays effective after retention: a plain unfenced append is still refused (postgres)", async () => {
+      if (backend.name !== "postgres") return;
+      const h = mk();
+      const e = id();
+      await finish(h, deciding, e);
+      const token = await h.eventStore.acquireFence?.(e);
+      expect(token).toBeGreaterThan(0);
+      const terminal = (await h.eventStore.read(e)).at(-1) as EventEnvelope;
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      expect(await life.applyRetention(e, { terminalTtlMs: 0 }, terminal.timestamp + 10)).toBe(
+        "reclaimed"
+      );
+      await expect(
+        h.rt.recordOutcome(e, { decisionId: "route", key: "k", score: 1 })
+      ).rejects.toThrow(/No execution found/);
+      expect(await h.eventStore.read(e)).toEqual([]);
+      // the zombie writer of a re-created id is still fenced out
+      await expect(
+        h.eventStore.append({ ...(terminal as EventEnvelope), sequence: 0, id: `${e}-z` })
+      ).rejects.toMatchObject({ name: "StaleFenceError" });
+      expect(await h.eventStore.acquireFence?.(e)).toBe((token as number) + 1);
     });
 
     it("a continued execution is refused until R1b defines the chain head", async () => {
