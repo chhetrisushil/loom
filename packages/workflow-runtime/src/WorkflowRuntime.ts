@@ -93,12 +93,15 @@ import {
   ExecutionAlreadyExistsError,
   ExecutionCancelledError,
   ExecutionDeniedError,
+  ExecutionNotTerminalError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
   InboxClosedError,
   InboxFullError,
   InboxMessageRefusedError,
   InputValidationError,
+  OutcomeContendedError,
+  OutcomeRefusedError,
   ResumeContendedError,
   ResumePayloadValidationError,
   ResumeRefusedError,
@@ -117,6 +120,9 @@ import type {
   ForkResult,
   InboxSource,
   LineageGrant,
+  RecordOutcomeInput,
+  RecordOutcomeOptions,
+  RecordOutcomeResult,
   RegisteredFlow,
   ResumeAuthenticator,
   ResumeEvent,
@@ -580,6 +586,34 @@ const STRAY_WARNING_MEMORY = 4096;
 
 /** R3k round 2 (ADR 0111 D6) — how far up a `parent` chain an owner is looked for. */
 const MAX_LINEAGE_HOPS = 8;
+/** ADR 0116 — bounded sequence-CAS attempts of `recordOutcome` before it reports contention. */
+const RECORD_OUTCOME_ATTEMPTS = 8;
+/** The folded `_outcomes` entry fields `recordOutcome` compares for idempotency. */
+interface RecordedOutcome {
+  key?: string;
+  decisionId?: string;
+  success?: boolean;
+  score?: number;
+}
+const OUTCOME_KEY_MAX = 256;
+
+function outcomeShapeProblem(o: RecordOutcomeInput): string | undefined {
+  if (typeof o !== "object" || o === null) return "the outcome is not an object";
+  if (typeof o.decisionId !== "string" || o.decisionId.length === 0) {
+    return "decisionId must be a non-empty string";
+  }
+  if (typeof o.key !== "string" || o.key.length === 0 || o.key.length > OUTCOME_KEY_MAX) {
+    return `key must be a non-empty string of at most ${OUTCOME_KEY_MAX} characters`;
+  }
+  if (o.success !== undefined && typeof o.success !== "boolean") return "success must be a boolean";
+  if (o.score !== undefined && !(typeof o.score === "number" && Number.isFinite(o.score))) {
+    return "score must be a finite number";
+  }
+  if (o.success === undefined && o.score === undefined) {
+    return "an outcome needs a success or a score";
+  }
+  return undefined;
+}
 /** How many of an owner's newest events `send` reads to tell parked from running. */
 const SEND_TIP_WALK = 8;
 
@@ -3112,6 +3146,152 @@ export class WorkflowRuntime {
       void this.notifyInbox(live.id).catch((err: unknown) => this.onStorageError?.(live.id, err));
     }
     return { messageId, inboxSeq, executionId: live.id };
+  }
+
+  /**
+   * ADR 0116 — attach a LATE reward to a decision of a FINISHED execution. A runtime method, not a
+   * syscall: it appends the existing `OUTCOME_RECORDED` (with the kernel-stamped `recordedBy` and
+   * `late: true`) and changes no state.
+   *
+   * - Authorized as `ExecutionOp` `"annotate"` against the RECORDED owner, before "not found" or
+   *   the execution's state is revealed; under `security.strict` a call with no principal is
+   *   refused. A denial appends NOTHING (a caller must not write into someone else's log).
+   * - Terminal only (`completed` / `failed` / `cancelled`): a running or parked execution is
+   *   refused with {@link ExecutionNotTerminalError}. There is NO fence: `acquireFence`
+   *   supersedes the holder, which would kill a live run, and a terminal execution has none.
+   *   A `continued` execution is refused too until R1b defines the chain head (ADR 0116 D1).
+   * - Sequence compare-and-set: read the head, fold, validate, append at exactly `head + 1`. A
+   *   collision (a concurrent `recordOutcome`, an audit append) re-reads and retries a bounded
+   *   number of times, so two identical concurrent calls resolve to one append and one
+   *   `{ appended: false }`.
+   * - The `decisionId` must be in the fold's `_decisions`. `(decisionId, key)` is idempotent; a
+   *   different `success`/`score` for the same pair is refused ({@link OutcomeRefusedError}).
+   */
+  async recordOutcome(
+    executionId: string,
+    outcome: RecordOutcomeInput,
+    options?: RecordOutcomeOptions
+  ): Promise<RecordOutcomeResult> {
+    assertNotReserved(executionId);
+    const first = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    if (first === undefined) {
+      await this.denyMissing("annotate", executionId, options?.principal, options?.system);
+      throw new Error(`No execution found for id: ${executionId}`);
+    }
+    const denial = this.authzDenial(
+      "annotate",
+      executionId,
+      first.workflowId,
+      options?.principal,
+      options?.system,
+      await this.ownerForAuthz(executionId, options?.principal, options?.system, { first })
+    );
+    if (denial !== undefined) {
+      // No durable EXECUTION_DENIED: the log is a finished execution's evidence, and a denied
+      // writer must leave it untouched. The audit callback still fires.
+      await this.denyOp(
+        "annotate",
+        executionId,
+        first.workflowId,
+        options?.principal,
+        denial.reason,
+        undefined
+      );
+    }
+    const problem = outcomeShapeProblem(outcome);
+    if (problem !== undefined) throw new OutcomeRefusedError(executionId, problem);
+    const recordedBy = this.outcomeRecordedBy(options?.principal, options?.system);
+    for (let attempt = 0; attempt < RECORD_OUTCOME_ATTEMPTS; attempt++) {
+      const head = await headOf(this.eventStore, executionId);
+      const state = head === null ? null : await this.foldState(executionId);
+      if (head === null || state === null) {
+        throw new Error(`No execution found for id: ${executionId}`);
+      }
+      if (
+        state.status !== "completed" &&
+        state.status !== "failed" &&
+        state.status !== "cancelled"
+      ) {
+        throw new ExecutionNotTerminalError(executionId, state.status);
+      }
+      const decisions = state.variables._decisions as Record<string, unknown> | undefined;
+      if (decisions === undefined || !Object.hasOwn(decisions, outcome.decisionId)) {
+        throw new OutcomeRefusedError(
+          executionId,
+          `decision "${outcome.decisionId}" was never recorded by this execution`
+        );
+      }
+      const prior = (state.variables._outcomes as RecordedOutcome[] | undefined)?.find(
+        (o) => o.decisionId === outcome.decisionId && o.key === outcome.key
+      );
+      if (prior !== undefined) {
+        if (prior.success === outcome.success && prior.score === outcome.score) {
+          return { appended: false };
+        }
+        throw new OutcomeRefusedError(
+          executionId,
+          `(${outcome.decisionId}, ${outcome.key}) already has a different outcome; the log is append-only, record a correction under a new key`
+        );
+      }
+      const sequence = head + 1;
+      const envelope: EventEnvelope = {
+        id: `${executionId}-${sequence}-outcome`,
+        workflowId: first.workflowId,
+        executionId,
+        eventType: "OUTCOME_RECORDED",
+        sequence,
+        timestamp: this.now(),
+        payload: {
+          key: outcome.key,
+          ...(outcome.success !== undefined && { success: outcome.success }),
+          ...(outcome.score !== undefined && { score: outcome.score }),
+          decisionId: outcome.decisionId,
+          recordedBy,
+          late: true,
+        },
+        // The stamp the fold requires before it trusts `recordedBy` / `late` (W2-0): only the
+        // kernel writes it, and `guardUserspaceEmit` refuses those fields from a flow.
+        metadata: { kernel: true },
+      };
+      let landed: EventEnvelope = envelope;
+      try {
+        try {
+          await this.eventStore.append(envelope);
+        } catch (err) {
+          // An execution that was EVER fenced (a worker, a fenced timer wake, a cancel) refuses an
+          // unfenced append for good. Its holder is gone (it is terminal), so present the store's
+          // CURRENT token rather than acquiring a new one: nobody is superseded, and the sequence
+          // CAS still decides between writers.
+          const current = (err as { currentFence?: unknown } | null)?.currentFence;
+          if (!isStaleFence(err) || typeof current !== "number") throw err;
+          landed = { ...envelope, metadata: { kernel: true, fence: current } };
+          await this.eventStore.append(landed);
+        }
+      } catch (err) {
+        if (isWriteConflict(err) || isStaleFence(err)) continue; // lost the CAS: re-read, re-judge
+        throw err;
+      }
+      this.onEvent?.(landed);
+      return { appended: true, sequence };
+    }
+    throw new OutcomeContendedError(executionId);
+  }
+
+  /**
+   * ADR 0116 — the `recordedBy` of a late outcome: `"system"` for the runtime's own grant, else the
+   * caller's identity as the principal record would write it (a codec `ref` when one handles the
+   * chain; the verbatim actor otherwise; refused in `ref` mode with no codec, exactly as a start
+   * is). Never the delegation token.
+   */
+  private outcomeRecordedBy(
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined
+  ): string {
+    if (system !== undefined && system === this.systemGrantToken) return "system";
+    if (principal === undefined) return "anonymous";
+    const { delegation: _delegation, ...identityOnly } = principal;
+    const record = this.principalRecordFor(identityOnly);
+    return record.ref ?? record.identity?.actor ?? "anonymous";
   }
 
   /** Whether `kernel.features.inbox` is on for this runtime (the `TimerService` leaves inbox rows alone when it is not). */

@@ -280,6 +280,10 @@ const NOT_A_CAPABILITY = new Set([
   // a reference ResumeAuthenticator, and no bus auto-approve: hardening of existing capabilities
   // (resume gate, K12.2 authenticator, A2A bus). No new subsystem to grade.
   "0117",
+  // 0116 — R11: one runtime method (`recordOutcome`) that appends the existing OUTCOME_RECORDED to a
+  // finished execution under a new authorizer op, plus a retention-clock fix. It extends the
+  // learning substrate (ADR 0078-0080) and execution authz (C.1). No new subsystem to grade.
+  "0116",
   // 0115 — R15: three closed vocabularies (effect/task kinds, metering dimensions) become open
   // names with a pattern; the metering fold shape was frozen at W2-0. It widens existing
   // capabilities (K3 metering and quotas, ADR 0032 dimensions, ADR 0030 decisions). No new

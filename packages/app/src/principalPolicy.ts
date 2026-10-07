@@ -47,6 +47,13 @@ export const PRINCIPAL_STATE_PATHS = [
 ] as const;
 
 /**
+ * ADR 0116 — a late outcome's `recordedBy` is the caller's actor (or a codec ref), so it is the
+ * same identity and is registered with the crypto plugin alongside the start's subset.
+ */
+export const OUTCOME_EVENT_PATHS = ["recordedBy"] as const;
+export const OUTCOME_STATE_PATHS = ["variables._outcomes[].recordedBy"] as const;
+
+/**
  * `defineConfig` refuses to compose: the app is under an erasure obligation (`security.strict`
  * or a composed compliance plugin) and nothing keeps the principal's identity out of a permanent,
  * un-redactable log. Names the three ways out.
@@ -90,5 +97,6 @@ export function resolvePrincipalIdentity(input: PrincipalPolicyInput): Principal
 /** Register the identity paths with the crypto plugin's stores (idempotent: the stores union). */
 export function registerPrincipalPaths(crypto: PrincipalCryptoOptions): void {
   crypto.events.registerSensitive("EXECUTION_STARTED", PRINCIPAL_EVENT_PATHS);
-  crypto.snapshots?.registerSensitive(PRINCIPAL_STATE_PATHS);
+  crypto.events.registerSensitive("OUTCOME_RECORDED", OUTCOME_EVENT_PATHS);
+  crypto.snapshots?.registerSensitive([...PRINCIPAL_STATE_PATHS, ...OUTCOME_STATE_PATHS]);
 }

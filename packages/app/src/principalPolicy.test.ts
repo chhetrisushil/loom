@@ -132,7 +132,9 @@ describe("security.strict / compliance: the identity subset is never written ver
     });
     expect(reg.calls).toEqual([
       { eventType: "EXECUTION_STARTED", paths: PRINCIPAL_EVENT_PATHS },
-      { paths: PRINCIPAL_STATE_PATHS },
+      // ADR 0116 — a late outcome's `recordedBy` is the same identity, so it is shredded with it.
+      { eventType: "OUTCOME_RECORDED", paths: ["recordedBy"] },
+      { paths: [...PRINCIPAL_STATE_PATHS, "variables._outcomes[].recordedBy"] },
     ]);
     expect(PRINCIPAL_EVENT_PATHS).toEqual([
       "principal.identity.tenant",

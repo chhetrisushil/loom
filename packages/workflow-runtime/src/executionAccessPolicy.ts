@@ -59,7 +59,8 @@ export interface ExecutionAccessOptions {
    * Scope per op. Defaults: `start: "any"`, `resume`/`cancel`/`query`: `"tenant"`,
    * `actAsOwner: "deny"` (a fork acts as the forker unless this is opened, ADR 0111 D7), and
    * `send: "tenant"` (ADR 0110 D1: a message steers an agent, so the sender is judged against the
-   * chain head's owner like a resume).
+   * chain head's owner like a resume), `annotate: "tenant"` (ADR 0116: a late reward steers policy learning, so it is
+   * judged against the recorded owner).
    */
   rules?: Partial<Record<ExecutionOp, ExecutionScope>>;
   /** When set, only these workflow ids may be started/resumed/cancelled/queried; others are denied. */
@@ -87,6 +88,7 @@ const DEFAULT_RULES: Record<ExecutionOp, ExecutionScope> = {
   query: "tenant",
   actAsOwner: "deny",
   send: "tenant",
+  annotate: "tenant",
 };
 
 const deny = (reason: string): ExecutionAuthzVerdict => ({ allowed: false, reason });

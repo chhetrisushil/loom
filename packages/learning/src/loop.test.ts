@@ -1,4 +1,4 @@
-import { recordOutcome } from "@loom/analytics";
+import { attachOutcomes, recordOutcome } from "@loom/analytics";
 import { step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -150,5 +150,99 @@ describe("the learning loop, end to end through the kernel", () => {
     expect(report.skipped.noContext).toBe(1);
     expect(report.warnings.join(" ")).toMatch(/no recorded context/);
     expect(promotionGate(report).ok).toBe(false);
+  });
+});
+
+// ADR 0116 — a reward that arrives AFTER the execution finished. `runtime.recordOutcome` appends it
+// to the terminal log; trajectories and the off-policy estimate must treat it exactly like an
+// in-run outcome, and the logged propensity must be untouched.
+describe("late rewards flow into trajectories and evaluation like on-time ones", () => {
+  it("a late outcome yields the same trajectory, evaluation and propensity as an on-time one", async () => {
+    const policy = explorer(0.2);
+    const make = (onTime: boolean) => {
+      const eventStore = new InMemoryAsyncEventStore();
+      const runner: FlowRunner<{ tokens: number }, { route: string }> = async (ctx, input) => {
+        const route = await decideWithPolicy(ctx, "route", policy, { tokens: input.tokens }, [
+          ...ROUTES,
+        ]);
+        if (onTime) {
+          recordOutcome(ctx, {
+            key: route,
+            score: route === "opus" ? 0.9 : 0.2,
+            decisionId: "route",
+          });
+        }
+        return { route };
+      };
+      const runtime = new WorkflowRuntime({
+        eventStore,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        effectRuntime: new EffectRuntime(),
+      });
+      runtime.registerFlow(makeFlow(runner).definition, runner);
+      return { runtime, eventStore, flow: makeFlow(runner) };
+    };
+    const onTime = make(true);
+    const late = make(false);
+    const ids: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      for (const app of [onTime, late]) {
+        const h = await app.runtime.start(app.flow, { tokens: i * 100 }, { executionId: `x${i}` });
+        await h.waitForCompletion();
+      }
+      ids.push(`x${i}`);
+    }
+    // Before the rewards arrive the late log has NO measured reward.
+    const bare = trajectories<Route>(
+      (await Promise.all(ids.map((id) => late.eventStore.read(id)))).flat()
+    );
+    expect(bare[0]?.steps[0]?.rewardSource).not.toBe("direct");
+
+    const rewards = await Promise.all(
+      ids.map(async (executionId) => {
+        const out = (await late.runtime.loadState(executionId))?.variables._output as {
+          route: string;
+        };
+        return {
+          executionId,
+          decisionId: "route",
+          key: out.route,
+          score: out.route === "opus" ? 0.9 : 0.2,
+        };
+      })
+    );
+    expect(await attachOutcomes(late.runtime, rewards)).toMatchObject({
+      appended: 40,
+      duplicates: 0,
+      failed: [],
+    });
+    // Re-running the batch is a no-op (idempotent).
+    expect(await attachOutcomes(late.runtime, rewards)).toMatchObject({
+      appended: 0,
+      duplicates: 40,
+      failed: [],
+    });
+
+    const read = async (app: typeof onTime) =>
+      trajectories<Route>((await Promise.all(ids.map((id) => app.eventStore.read(id)))).flat());
+    const a = await read(onTime);
+    const b = await read(late);
+    expect(
+      b.map((t) => t.steps.map((s) => [s.decisionId, s.action, s.reward, s.rewardSource, s.policy]))
+    ).toEqual(
+      a.map((t) => t.steps.map((s) => [s.decisionId, s.action, s.reward, s.rewardSource, s.policy]))
+    );
+    const candidate: Policy<Route> = {
+      id: "always-opus",
+      version: "1",
+      select: () => ({ action: "opus" }),
+    };
+    const ra = evaluatePolicy(a, candidate);
+    const rb = evaluatePolicy(b, candidate);
+    expect(rb.estimatedValue).toBeCloseTo(ra.estimatedValue as number);
+    expect(rb.loggedValue).toBeCloseTo(ra.loggedValue as number);
+    expect(rb.evaluated).toBe(ra.evaluated);
+    // The terminal outcome is still the execution's own result, not the late reward's.
+    expect(b.every((t) => t.outcome === "completed")).toBe(true);
   });
 });

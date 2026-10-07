@@ -1,6 +1,6 @@
 # ADR 0116 — Attaching an outcome to a past decision of a finished execution
 
-- Status: **Proposed** (2026-10-05) — design approved after 4 review rounds; Accepted per item at implementation
+- Status: **Accepted — implemented** (2026-10-07) — design approved after 4 review rounds; see "Implementation notes" for what the code does beyond the text
 - Date: 2026-10-05
 - Closes: R11 (agentic-readiness audit, kernel appendix §2i)
 - Builds on: [ADR 0030](0030-decision-materialization.md), [ADR 0078](0078-exploration-in-the-routing-seam.md)–[0080](0080-learning-substrate.md)
@@ -116,3 +116,47 @@ compaction keeps it;
 
 - **Side table** and **unauthorized 1P append**: see above.
 - **Reopening the execution (`resumeAs`)**: a code-migration verb that would also re-drive the flow.
+
+## Implementation notes (2026-10-07)
+
+- **Frozen at W2-0, unchanged.** `OUTCOME_RECORDED.{recordedBy, late}`, the stamp-gated fold and the
+  `guardUserspaceEmit` refusal were reserved at W2-0; EVENT_SCHEMA stays 1.23.0 and KERNEL_ABI 1.3.0. R11 adds
+  the writer (`WorkflowRuntime.recordOutcome`), the `"annotate"` op, three typed errors
+  (`ExecutionNotTerminalError`, `OutcomeRefusedError`, `OutcomeContendedError`) and the retention-clock change.
+- **No `idempotencyKey`.** The frozen payload has no field for one, and `(decisionId, key)` is already the
+  idempotency identity (D1), so the option the first draft listed is dropped rather than accepted and ignored.
+  The result gains `sequence` (where the outcome sits; absent on `{ appended: false }`).
+- **Order of checks.** Not-found (judged first for an anonymous strict caller, as `send` does) → authorize
+  `annotate` against the recorded owner → shape (`decisionId`, `key` of at most 256 characters, finite `score`,
+  boolean `success`, at least one of them) → then, inside the CAS loop, terminal → decision exists →
+  `(decisionId, key)` already present (same outcome: `{ appended: false }`; a different one:
+  `OutcomeRefusedError`). A denial appends **nothing** (like `send`, unlike a denied `resume`): a finished
+  execution's log is evidence and a denied writer leaves it untouched; the `onExecutionDenied` callback fires.
+- **A fenced execution.** The first draft said "no fence", which is right for *acquiring* one, but a store
+  that ever issued a fence (a worker, a fenced timer wake, a cancel) refuses an unfenced append for good. On a
+  `StaleFenceError` the writer re-appends under the store's **current** token (the error names it). That
+  supersedes nobody (a terminal execution has no live holder) and the sequence CAS still decides between
+  writers. Tested on the in-memory store, which fences.
+- **`continued` is refused** with `ExecutionNotTerminalError` until R1b ships and defines the chain head (the
+  design's step 8 adds the clause); the retention clock already treats a kernel-stamped `EXECUTION_CONTINUED`
+  as a terminal event.
+- **`recordedBy`** is `"system"` for the runtime's own grant, otherwise what the principal record would write
+  for the caller: the codec `ref` when one handles the chain, else the verbatim actor (`"anonymous"` with
+  none); refused in `ref` mode with no codec, as a start is. The delegation token is never read. Under
+  `security.crypto`, `defineConfig` registers `OUTCOME_RECORDED.recordedBy` (events) and
+  `variables._outcomes[].recordedBy` (snapshots) with the crypto stores, so the actor is shredded with the
+  subject like the start's identity subset. An actor literally named `"system"` is indistinguishable from the
+  grant in `recordedBy`; the field is provenance, not authorization.
+- **Retention.** `LogLifecycle` now measures the end from the newest terminal event, scanning the tail
+  backwards. Residual: the frozen `OUTCOME_RECORDED` handler moves `updatedAt`, so when compaction has
+  removed the terminal event the fallback (`max(last event, updatedAt)`) still counts a late outcome. It takes
+  a compaction run after the end plus a late outcome after that; the terminal event is the tip at any earlier
+  compaction, which keeps it.
+- **D2.** `attachOutcomes(runtime, rewards, { retries?, options? })` in `@loom/analytics`: a structural
+  `OutcomeAttacher` (no dependency on the runtime), retrying only errors that say `retryable`, reporting
+  `{ appended, duplicates, failed }`.
+- **Learning.** No change to `@loom/learning`: `trajectories` reads the log, so a late outcome is a `direct`
+  reward exactly like an in-run one, the logged propensity is untouched, and the terminal outcome stays the
+  execution's own result (a test pins the trajectories, the SNIPS estimate and the logged value equal to the
+  on-time run).
+- **Not done here.** `propensity` range validation (design §7 question 8) stays a separate PR.

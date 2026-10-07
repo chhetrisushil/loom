@@ -460,10 +460,18 @@ export interface SystemGrant {
 // start/query has no execution to append to and only throws.
 
 /** The execution-lifecycle operations an {@link ExecutionAuthorizer} can gate. */
-export type ExecutionOp = "start" | "resume" | "cancel" | "query" | "actAsOwner" | "send";
+export type ExecutionOp =
+  | "start"
+  | "resume"
+  | "cancel"
+  | "query"
+  | "actAsOwner"
+  | "send"
+  | "annotate";
 // `"actAsOwner"` (ADR 0111 D7) authorizes `fork(…, { actAs: "owner" })` on the PARENT: the fork
 // then runs the owner's remaining effects under the owner's grants instead of the forker's.
 // `"send"` (ADR 0110 D1) authorizes `runtime.send`, the only writer of an execution's inbox.
+// `"annotate"` (ADR 0116) authorizes `runtime.recordOutcome`, a late reward on a FINISHED execution.
 
 export interface ExecutionAuthzRequest {
   op: ExecutionOp;
@@ -1156,6 +1164,79 @@ export interface SendResult {
   inboxSeq: number;
   /** The execution the message was addressed to after following a continuation to the head. */
   executionId: string;
+}
+
+/** ADR 0116 — a late reward for a decision of a FINISHED execution. */
+export interface RecordOutcomeInput {
+  /** The `ctx.decide` decision the reward is for; it must exist in the execution's fold. */
+  decisionId: string;
+  /** What was chosen / what is being scored (the same `key` an in-run `OUTCOME_RECORDED` carries). */
+  key: string;
+  success?: boolean;
+  score?: number;
+}
+
+export interface RecordOutcomeOptions {
+  /** The authenticated caller, judged as `ExecutionOp` `"annotate"` against the recorded owner. */
+  principal?: PrincipalChain;
+  /** The kernel-internal grant (see `WorkflowRuntime.systemOptions`). */
+  system?: SystemGrant;
+}
+
+export interface RecordOutcomeResult {
+  /** `false` when an identical `(decisionId, key)` outcome was already recorded (idempotent). */
+  appended: boolean;
+  /** The sequence the outcome sits at (the existing one when `appended` is `false`). */
+  sequence?: number;
+}
+
+/**
+ * `recordOutcome` on an execution that is not finished (running, parked) or that continued into a
+ * successor: refused with nothing appended. A live run records its own outcomes with `ctx.emit`
+ * (an `OutcomeSink`); the late-attach path takes no fence, so it must never touch a live holder.
+ */
+export class ExecutionNotTerminalError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly executionId: string,
+    readonly status: string
+  ) {
+    super(
+      `execution "${executionId}" is ${status}: recordOutcome attaches a reward to a FINISHED execution (completed, failed, cancelled). A live run records its outcomes with ctx.emit. Nothing was appended.`
+    );
+    this.name = "ExecutionNotTerminalError";
+    Object.setPrototypeOf(this, ExecutionNotTerminalError.prototype);
+  }
+}
+
+/**
+ * `recordOutcome` refused the outcome itself, with nothing appended: an invalid shape, a
+ * `decisionId` the execution never recorded (reward poisoning by invented ids), or a different
+ * score/success for a `(decisionId, key)` already recorded (the log is append-only; a correction
+ * is a new `key`).
+ */
+export class OutcomeRefusedError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly executionId: string,
+    readonly reason: string
+  ) {
+    super(`recordOutcome on "${executionId}" refused: ${reason}. Nothing was appended.`);
+    this.name = "OutcomeRefusedError";
+    Object.setPrototypeOf(this, OutcomeRefusedError.prototype);
+  }
+}
+
+/** `recordOutcome` lost the sequence compare-and-set on every bounded attempt: retry. */
+export class OutcomeContendedError extends Error {
+  readonly retryable = true as const;
+  constructor(readonly executionId: string) {
+    super(
+      `recordOutcome on "${executionId}" lost the append race on every attempt (a concurrent writer kept taking the next sequence). Nothing was appended; retry.`
+    );
+    this.name = "OutcomeContendedError";
+    Object.setPrototypeOf(this, OutcomeContendedError.prototype);
+  }
 }
 
 /**
