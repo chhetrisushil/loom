@@ -1,8 +1,8 @@
 # Focus Handoff — placement evaluation (loom, loom-ui, genUI)
 
-- Status: **Verdicts recorded. Kernel change: none. loom 1P: none. loom-ui: one necessary generic seam
-  (node emphasis in the renderers) and three optional helpers. Everything else is genUI application
-  work.** Nothing is built; this document records placements, corrections and an order.
+- Status: **Verdicts recorded. Kernel change: none. loom 1P: none. loom-ui: two necessary changes
+  (node emphasis in the renderers; opaque ids on restricted placeholders, a pre-existing leak that focus
+  amplifies) and three optional helpers. Everything else is genUI application work.** Nothing is built; this document records placements, corrections and an order.
 - Evaluates: [Focus Handoff](2026-10-07-focus-handoff.md), two maintainer white papers. The first argues
   for *focus handoff*: a share that carries the sender's attention (a few flagged elements, an optional
   time window, one line of text) and is rendered as emphasis by the recipient's runtime, with replies
@@ -38,7 +38,9 @@ A fourth correction changes the loom-ui shape: an `emphasize` *operation* cannot
 hash, because every operation mints a new version. A focus is a **view-time overlay** outside the
 Experience.
 
-With those corrections, loom needs nothing and loom-ui needs one renderer seam.
+With those corrections, loom needs nothing. loom-ui needs one renderer seam, plus one confidentiality fix
+that exists today and that focus makes worse: a restricted node's placeholder keeps its lexical node id
+(§5.2).
 
 ## 2. Corrections to the papers
 
@@ -49,7 +51,7 @@ With those corrections, loom needs nothing and loom-ui needs one renderer seam.
 | Flagged nodes can be hydrated from the logged tool results | Hydration is transient (`invokeTransient`, ADR 0066; streaming deltas, ADR 0119, are ephemeral). Only durable step outputs (`STEP_COMPLETED`) and `DECISION_RECORDED` model calls are in the log. | Run-replay hydration is not available for GenUI surfaces. "What the sender saw" lives in loom-ui's `SeenLog` (U12). |
 | `emphasize` joins the mutation vocabulary and the recipient still sees the sender's hash | The operations in `loom-ui/packages/core/src/operations.ts` each record a new version; the hash covers every node field (`experienceArtifact`, `loom-ui/packages/core/src/log.ts`). | A view-time overlay, not an operation and not an IR field. |
 | DE-9 strips nodes per viewer | DE-9 exists (`@loom/classify` on tool contracts; DE-series evaluation, ADR 0063 usage) and loom-ui enforces `Sensitivity` per viewer, but genUI calls `compile()` with **no viewer** (`genUI/apps/server/app/services/experience.ts`). | genUI has no per-viewer visibility today; the paper's visibility section has nothing to act on until a viewer is wired. |
-| A stripped node is absent | `compile` replaces a restricted node with a `Note` placeholder ("Restricted") that keeps its id and grid cell; a container whose children are all restricted collapses (policy A). | Existence is already visible. "Never name the missing one" is a rule for the banner and count, not something the renderer gives. |
+| A stripped node is absent | `compile` replaces a restricted node with a `Note` placeholder ("Restricted") that keeps its id and grid cell; a container whose children are all restricted collapses (policy A). | Existence is already visible, and so is the node's *id*, which the planner mints as readable snake_case. "Never name the missing one" fails at the id before any banner is drawn (§5.2). |
 | Slack addresses nodes by `block_id` | `genUI/apps/server/app/slack/blocks.ts` builds Block Kit from the legacy `DashboardPayload`; no `block_id`, one `action_id` (`genui_open_live`). | Slack needs node-addressed blocks first, on the legacy path that genUI slices 6.2/6.3 rework. |
 | MCP App views are leaf nodes | genUI's MCP App serves the whole dashboard as one payload (`widgets[]`). | A focus there is a payload field, not a node reference. |
 | Blueprints change through mutations merged rebase-before-promote | loom-ui has a base-version check (`stale-base-version`) and compare-and-set heads; there is no rebase. `mergeExperiences` is a genUI 6.2 design item, not built. | No rebase to reuse; not needed for focus (§3). |
@@ -62,6 +64,12 @@ With those corrections, loom needs nothing and loom-ui needs one renderer seam.
   operations, never a new tree, and its conformance kit refuses remove-then-reinsert of an id. A focus
   anchored to `(versionHash, node id)` stays exact for that version forever (artifacts are immutable and
   content-addressed) and survives every revise for nodes that still exist.
+- **Ordering.** Sibling order is LexoRank-style fractional indexing (`orderKeyBetween`,
+  `loom-ui/packages/core/src/order.ts`): base-62 keys minted when an operation is authored, salted per author,
+  with render order totalled by node id. A focus references ids, never positions, so a revise that moves a
+  flagged node changes its key, not its id, and the focus still resolves. Ordering needs no change. Emphasis
+  must not reorder through order keys (a key change is an operation, so a new version and hash); Slack's
+  "flagged section first" is a reorder inside genUI's Block Kit projection.
 - **Node lineage** (open question 1). `describeChange(prev, next, { viewer })` in
   `loom-ui/packages/core/src/change.ts` reports `identity.dropped` / `identity.added` over viewer-visible
   ids, and `Lineage.explain` gives a per-node ledger. "Which flagged nodes survive into the current version
@@ -93,7 +101,9 @@ With those corrections, loom needs nothing and loom-ui needs one renderer seam.
 | `Focus` record `{ versionHash, nodes ≤ 5, window?, note?, author, origin? }` | **genUI** — beside `share_links` (`genUI/apps/server/app/store/shares.ts`), which already pins a `checkpointId` | App data about a share; no loom component reads it. |
 | Durable "fact about the run" | **genUI** — its own table or stream keyed by run id and version hash | A late append to a finished run is a kernel change with one consumer. |
 | Recipient continues the investigation | **genUI** — `fork` as the recipient, or a new run with `parent`; focus as `AgentInput.context` | Supported today; keeps "permissions follow the recipient" true under ADR 0111. |
-| Emphasis / subdued rendering | **loom-ui (necessary)** — §5 | The renderer owns the DOM; styling it from outside is a workaround. |
+| Emphasis / subdued rendering | **loom-ui (necessary)** — §5.1 | The renderer owns the DOM; styling it from outside is a workaround. |
+| Restricted placeholders carry the lexical node id | **loom-ui (necessary)** — §5.2 | A confidentiality leak in compile; no consumer can fix it from outside. |
+| Focus node ids delivered to the recipient | **genUI** — resolve the focus server-side per viewer; send only the visible ids and the count | The stored focus holds the sender's ids, which name nodes the recipient may not see. |
 | Surviving flagged nodes for a viewer and version | **genUI** over `describeChange`; optional loom-ui helper later | A few lines; no new capability. |
 | "N flagged, M visible to you" | **genUI** over `inspectExperience` + `mayView`; optional loom-ui helper later | Unknown and restricted ids must count the same so the count leaks nothing. |
 | Time window on flagged nodes | **genUI** via `setParams` per flagged handle | Supported today. |
@@ -103,9 +113,11 @@ With those corrections, loom needs nothing and loom-ui needs one renderer seam.
 | Slack / MCP App projections | **genUI, after slices 6.2/6.3** | Both still read the legacy `DashboardPayload`; Slack also needs node-addressed blocks. |
 | Agent-created focuses | **Out of scope here** | The planner already decides through `ctx.decide`, so it is feasible, but it is a different feature with different trust requirements; evaluate it on its own. |
 
-## 5. loom-ui: the one necessary change
+## 5. loom-ui: the two necessary changes
 
-**Node emphasis as a first-class renderer seam.** `renderer-lit` reconciles by key and never remounts a
+### 5.1 Node emphasis as a first-class renderer seam
+
+ `renderer-lit` reconciles by key and never remounts a
 widget whose id is unchanged; its only per-node hook today is the `data-widget-id` attribute
 (`loom-ui/packages/renderer-lit/src/dom/tree.ts`). A consumer styling `[data-widget-id]` from outside would
 depend on an undocumented seam, which the "grow the framework, never work around it" rule rules out.
@@ -122,7 +134,32 @@ depend on an undocumented seam, which the "grow the framework, never work around
   treated like any other id (the overlay may not reveal anything compile hid); the genericity test; a
   loom-examples reference example.
 
-**Optional, deferrable:** a fail-closed visible-count helper, a "focus survives into version V for this
+### 5.2 Opaque ids on restricted placeholders
+
+Node ids are lexical: `NodeId` is any non-empty string (`loom-ui/packages/core/src/node.ts`) and the
+reference planner instructs the model to mint readable snake_case ids (`loom-ui/packages/planner/src/prompt.ts`).
+That is good for focus (the recipient's agent can read what "this" is) and needs no change. But `compile`
+emits the restricted placeholder with the node's **original id** (`barePlaceholder` in
+`loom-ui/packages/core/src/compile.ts`), so a viewer who is not cleared still receives, in the Blueprint and
+as the DOM's `data-widget-id`, an id such as `payroll_salary_by_employee`, which says what the hidden node
+is about. This leak exists today, independent of focus; focus amplifies it, because a shared focus carries
+node ids to a different viewer by design.
+
+- **Fix.** The placeholder takes an opaque, stable alias, e.g. a keyed hash of `(experienceId, nodeId)`
+  under a host-held key: stable across versions so keyed reconciliation and layout keep working, and
+  meaningless to the viewer. The same alias replaces the id anywhere else a restricted node's id still
+  reaches a viewer (an audit is part of the fix; `describeChange` already collapses restricted changes into
+  one bare `restricted-changed` entry). Server-side findings and fingerprints (`restrictedHandles`) may keep
+  real ids. Policy A's collapsed container, which also keeps its id, needs the same treatment.
+- **Tests.** No restricted node's real id appears anywhere in a viewer's compiled output (a property test
+  over random sensitivity assignments, like the U15 container-agreement test); placeholders reconcile in
+  place across versions.
+- **Not about focus alone.** It is a correctness fix for loom-ui's Sensitivity enforcement (U10) and
+  should ship regardless of whether genUI builds focus handoff.
+
+### 5.3 Optional
+
+A fail-closed visible-count helper, a "focus survives into version V for this
 viewer" helper, and the cross-viewer `SeenLog` read path. Each is a few lines over existing APIs and can
 start life in genUI.
 
@@ -143,6 +180,8 @@ Nothing here touches `KERNEL_ABI`, `EVENT_SCHEMA` or any SPI.
    rules have nothing to work on. It is also a fix in its own right: with no viewer, loom-ui compiles any
    node classified `sensitive` or `secret` as a placeholder for everyone, the owner included.
 3. **`Focus` with the share**, including the share-time check of flagged nodes against their classes.
+   The stored focus is resolved per viewer on the server: the recipient receives only the flagged ids they
+   may see, plus the count, never the sender's raw id list.
 4. **Recipient view:** emphasis through the loom-ui seam (§5), the banner with the visible count,
    clear/restore, and the window through `setParams`.
 5. **Continue as the recipient:** fork or new run with the focus as context.
@@ -150,6 +189,7 @@ Nothing here touches `KERNEL_ABI`, `EVENT_SCHEMA` or any SPI.
 
 ## 8. Effect on the current plan
 
-One loom-ui item (the emphasis seam, with its reference example) joins the loom-ui lane whenever genUI
-decides to build focus handoff; it has no dependency on loom Wave 3. No loom items are added, and the loom
+Two loom-ui items join the loom-ui lane. The placeholder-id fix (§5.2) is a confidentiality fix to
+schedule now, whether or not focus handoff is built. The emphasis seam (§5.1, with its reference example)
+is scheduled when genUI decides to build focus handoff. Neither depends on loom Wave 3. No loom items are added, and the loom
 order (Wave 3: R5, R10, R17) is unchanged.
