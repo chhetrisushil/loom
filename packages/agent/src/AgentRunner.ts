@@ -27,6 +27,7 @@ import type { ReasoningRuntime } from "@loom/reasoning";
 import { parallelLimit, throwIfAborted } from "@loom/scheduler";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
+import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
@@ -235,9 +236,12 @@ export class AgentRunner {
           break;
         }
 
-        messages.push(assistantMessageOf(response));
+        // R5 — an over-cap tool input is replaced by a placeholder before it enters the transcript
+        // (the guard would otherwise refuse every later request carrying it) and is never run.
+        const screened = screenToolCalls(response.toolCalls);
+        messages.push(assistantMessageOf({ content: response.content, toolCalls: screened.calls }));
 
-        const toolCalls = response.toolCalls;
+        const toolCalls = screened.calls;
 
         // Execute a single tool call, swallowing errors into a result object so a
         // failing tool never rejects the batch (keeps behaviour identical between
@@ -245,6 +249,9 @@ export class AgentRunner {
         const runToolCall = async (
           toolCall: (typeof toolCalls)[number]
         ): Promise<{ output: unknown; isError: boolean }> => {
+          if (screened.oversized.has(toolCalls.indexOf(toolCall))) {
+            return { output: OVERSIZED_INPUT_REFUSAL, isError: true };
+          }
           // R4 — refusal is a result fed back to the model, never an execution.
           try {
             const refusal = menu.check(toolCall.name, toolCall.input);
@@ -419,8 +426,8 @@ export class AgentRunner {
           decisionKey: `agent:turn:${iteration}`,
           ...(this.config.resolveContent !== undefined && {
             resolveContent: this.config.resolveContent,
+            resolveContext,
           }),
-          resolveContext,
         }
       );
       return {

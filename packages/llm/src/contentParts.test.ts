@@ -14,7 +14,9 @@ import {
   InvalidLlmRequestError,
   MAX_INLINE_BYTES,
   OversizedInlinePartError,
+  TOOL_INPUT_NODE_CAP,
   UntrustedContentError,
+  exceedsNodeCap,
   fenceUntrustedMedia,
   guardRequest,
 } from "./untrusted";
@@ -37,6 +39,7 @@ const ref = (address = "sha256:abc") => ({
   mediaType: "image/png",
   source: { kind: "ref" as const, ref: { address } },
 });
+const CTX = { executionId: "exec-1", stepId: "s1" };
 const toolUse = { type: "tool_use" as const, id: "t1", name: "lookup", input: { q: 1 } };
 
 describe("part helpers", () => {
@@ -441,9 +444,9 @@ describe("resolving claim-checked content at call time (R5)", () => {
         },
       ],
     };
-    await expect(resolveRequestContent(declared, fetched, { maxBytes: 100 })).rejects.toThrow(
-      /over the 100-byte cap/
-    );
+    await expect(
+      resolveRequestContent(declared, fetched, { maxBytes: 100, context: CTX })
+    ).rejects.toThrow(/over the 100-byte cap/);
     expect(fetched).not.toHaveBeenCalled();
     const lying = {
       messages: [
@@ -458,7 +461,9 @@ describe("resolving claim-checked content at call time (R5)", () => {
         },
       ],
     };
-    await expect(resolveRequestContent(lying, fetched)).rejects.toThrow(/declares 3/);
+    await expect(resolveRequestContent(lying, fetched, { context: CTX })).rejects.toThrow(
+      /declares 3/
+    );
   });
 
   it("P2-5: a running byte budget stops fetching early — it does not fetch everything and THEN count", async () => {
@@ -474,7 +479,7 @@ describe("resolving claim-checked content at call time (R5)", () => {
       return new Uint8Array(60);
     });
     await expect(
-      resolveRequestContent(request(...addresses), resolver, { maxBytes: 100 })
+      resolveRequestContent(request(...addresses), resolver, { maxBytes: 100, context: CTX })
     ).rejects.toThrow(/exceeds the 100-byte cap|budget was spent/);
     expect(started.length).toBeLessThan(addresses.length);
   });
@@ -485,7 +490,7 @@ describe("resolving claim-checked content at call time (R5)", () => {
       seen.push(c.maxBytes);
       return new Uint8Array(10);
     };
-    await resolveRequestContent(request("sha256:a"), resolver, { maxBytes: 500 });
+    await resolveRequestContent(request("sha256:a"), resolver, { maxBytes: 500, context: CTX });
     expect(seen).toEqual([500]);
   });
 
@@ -532,7 +537,7 @@ describe("resolving claim-checked content at call time (R5)", () => {
         },
       ],
     };
-    const out = await resolveRequestContent(toolReq, absent);
+    const out = await resolveRequestContent(toolReq, absent, { context: CTX });
     const part = (out.messages[1]?.content as LlmContentPart[])[0] as {
       isError?: boolean;
       content: { type: string; text?: string }[];
@@ -543,19 +548,23 @@ describe("resolving claim-checked content at call time (R5)", () => {
     expect(part.content[1]?.text).toContain("sha256:gone");
 
     await expect(
-      resolveRequestContent({ messages: [{ role: "user", content: [ref("sha256:gone")] }] }, absent)
+      resolveRequestContent(
+        { messages: [{ role: "user", content: [ref("sha256:gone")] }] },
+        absent,
+        { context: CTX }
+      )
     ).rejects.toThrow(/absent/);
     // a throwing resolver is the same failure, not an unhandled rejection
     const boom = async () => {
       throw new Error("denied");
     };
-    const denied = await resolveRequestContent(toolReq, boom);
+    const denied = await resolveRequestContent(toolReq, boom, { context: CTX });
     expect(JSON.stringify(denied.messages[1])).toContain("denied");
   });
 
   it("returns the very same request object when there is nothing to resolve", async () => {
     const r: LlmRequest = { messages: [{ role: "user", content: "x" }] };
-    expect(await resolveRequestContent(r, undefined)).toBe(r);
+    expect(await resolveRequestContent(r, undefined, { context: CTX })).toBe(r);
   });
 });
 
@@ -619,5 +628,124 @@ describe("onToolReset — a retried attempt does not duplicate tool-input fragme
       onToolReset: () => undefined,
     });
     expect(effect.deltaSink).toBeDefined();
+  });
+});
+
+const refsRequest = (...addresses: string[]): LlmRequest => ({
+  messages: [{ role: "user", content: addresses.map((a) => ref(a)) }],
+});
+
+describe("R5 fix round 2", () => {
+  it("createLlmEffect passes the execution's principal (and ids) to the resolver", async () => {
+    const seen: unknown[] = [];
+    const principal = { subject: "alice" } as never;
+    const effect = createLlmEffect<LlmRequest, string>({
+      provider: {
+        capabilities: { image: ["image/png"] },
+        complete: async () => ({ content: "ok", stopReason: "end_turn" as const }),
+      },
+      buildRequest: (r) => r,
+      resolveContent: async (_ref, c) => {
+        seen.push(c);
+        return new Uint8Array([1]);
+      },
+    });
+    await effect.execute(
+      { messages: [{ role: "user", content: [ref("sha256:a")] }] },
+      { ...ctx(), executionId: "exec-7", stepId: "step-3", principal }
+    );
+    expect(seen[0]).toMatchObject({
+      executionId: "exec-7",
+      stepId: "step-3",
+      principal,
+      origin: "app",
+    });
+  });
+
+  it("the maxBytes hint SHRINKS as the budget is used", async () => {
+    const hints: number[] = [];
+    const resolver = async (_r: unknown, c: { maxBytes: number }) => {
+      hints.push(c.maxBytes);
+      await Promise.resolve();
+      return new Uint8Array(10);
+    };
+    // five refs, four fetched at once: the fifth starts after one has landed
+    await resolveRequestContent(
+      refsRequest("sha256:1", "sha256:2", "sha256:3", "sha256:4", "sha256:5"),
+      resolver,
+      {
+        maxBytes: 100,
+        context: CTX,
+      }
+    );
+    expect(hints.slice(0, 4)).toEqual([100, 100, 100, 100]);
+    expect(hints[4]).toBeLessThan(100);
+    expect(hints[4]).toBeGreaterThan(0);
+  });
+
+  it("refuses to resolve without an execution identity — a resolver cannot authorize a read it cannot attribute", async () => {
+    const resolver = vi.fn(async () => new Uint8Array(1));
+    await expect(
+      resolveRequestContent(refsRequest("sha256:a"), resolver, { context: { executionId: "" } })
+    ).rejects.toThrow(/cannot authorize a read it cannot attribute/);
+    await expect(
+      resolveRequestContent(refsRequest("sha256:a"), resolver, {} as never)
+    ).rejects.toThrow(UnresolvedContentError);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it.each([["10"], [-1], [1.5], [Number.NaN], [Number.POSITIVE_INFINITY], [2 ** 60]])(
+    "refuses a ref whose declared size is %s (guard AND resolver)",
+    async (size) => {
+      const bad = {
+        type: "image" as const,
+        mediaType: "image/png",
+        source: { kind: "ref" as const, ref: { address: "sha256:s", size: size as number } },
+      };
+      expect(() => guardRequest({ messages: [{ role: "user", content: [bad] }] })).toThrow(
+        InvalidLlmRequestError
+      );
+      const resolver = vi.fn(async () => new Uint8Array(1));
+      await expect(
+        resolveRequestContent({ messages: [{ role: "user", content: [bad] }] }, resolver, {
+          context: CTX,
+        })
+      ).rejects.toThrow(/declared size/);
+      expect(resolver).not.toHaveBeenCalled();
+    }
+  );
+
+  it("accepts size 0 and an absent size", () => {
+    const part = (size?: number) => ({
+      type: "image" as const,
+      mediaType: "image/png",
+      source: {
+        kind: "ref" as const,
+        ref: size === undefined ? { address: "sha256:s" } : { address: "sha256:s", size },
+      },
+    });
+    expect(() =>
+      guardRequest({ messages: [{ role: "user", content: [part(0), part()] }] })
+    ).not.toThrow();
+  });
+
+  it("the tool_use node cap: exactly at the cap passes, one over is refused by the guard", () => {
+    const withNodes = (n: number) => ({
+      type: "tool_use" as const,
+      id: "t1",
+      name: "n",
+      input: [...Array(n - 1)].map(() => ({})),
+    });
+    // root array + (n - 1) empty objects = n nodes
+    expect(exceedsNodeCap(withNodes(TOOL_INPUT_NODE_CAP).input)).toBe(false);
+    expect(exceedsNodeCap(withNodes(TOOL_INPUT_NODE_CAP + 1).input)).toBe(true);
+    expect(() =>
+      guardRequest({ messages: [{ role: "assistant", content: [withNodes(TOOL_INPUT_NODE_CAP)] }] })
+    ).not.toThrow();
+    expect(() =>
+      guardRequest({
+        messages: [{ role: "assistant", content: [withNodes(TOOL_INPUT_NODE_CAP + 1)] }],
+      })
+    ).toThrow(/cannot be checked for untrusted content/);
   });
 });

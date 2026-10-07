@@ -23,8 +23,9 @@ const GEMINI_CAPABILITIES: LlmCapabilities = {
   file: ["application/pdf", "text/plain"],
 };
 
-/** Known text-only ids (the original Gemini 1.0 Pro; `gemini-pro-vision` is a different id). */
-const GEMINI_TEXT_ONLY = [/^gemini-1\.0-pro(-0\d+)?$/, /^gemini-pro$/];
+/** Model families that take media: Gemini 1.5 and later, and the `-latest` aliases (1.0 Pro does not). */
+const GEMINI_MEDIA_MODELS = [/^gemini-(1\.5|[2-9])/, /^gemini-(flash|pro)(-lite)?-latest$/];
+const GEMINI_DEFAULT_URL = "https://generativelanguage.googleapis.com";
 
 /** Gemini returns no call id by default; the ones we synthesise carry this prefix and are never sent back. */
 const SYNTHETIC_ID = "gemini-call-";
@@ -127,14 +128,17 @@ export class GeminiProvider implements LlmProvider {
   constructor(config: GeminiProviderConfig = {}) {
     const model = config.model ?? "gemini-2.0-flash";
     this.capabilities =
-      config.capabilities ?? capabilitiesForModel(model, GEMINI_CAPABILITIES, GEMINI_TEXT_ONLY);
+      config.capabilities ??
+      (config.baseUrl !== undefined && config.baseUrl !== GEMINI_DEFAULT_URL
+        ? {}
+        : capabilitiesForModel(model, GEMINI_CAPABILITIES, GEMINI_MEDIA_MODELS));
     this.apiKey =
       config.apiKey ??
       (typeof process !== "undefined"
         ? (process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY ?? "")
         : "");
     this.model = config.model ?? "gemini-2.0-flash";
-    this.baseUrl = config.baseUrl ?? "https://generativelanguage.googleapis.com";
+    this.baseUrl = config.baseUrl ?? GEMINI_DEFAULT_URL;
   }
 
   private buildBody(request: LlmRequest): Record<string, unknown> {

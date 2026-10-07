@@ -28,7 +28,10 @@ describe("ReasoningRuntime and media refs (R5)", () => {
     const provider: LlmProvider = { complete: vi.fn(async () => ok) }; // declares no media
     const runtime = new ReasoningRuntime({ routes: [{ id: "text-only", provider, tier: 0 }] });
     await expect(
-      runtime.reason(refRequest("sha256:a"), { resolveContent: resolve })
+      runtime.reason(refRequest("sha256:a"), {
+        resolveContent: resolve,
+        resolveContext: { executionId: "e" },
+      })
     ).rejects.toBeInstanceOf(UnsupportedModalityError);
     expect(resolve).not.toHaveBeenCalled();
     expect(provider.complete).not.toHaveBeenCalled();
@@ -54,8 +57,14 @@ describe("ReasoningRuntime and media refs (R5)", () => {
       }),
     };
     const runtime = new ReasoningRuntime({ routes: [{ id: "vision", provider, tier: 0 }], cache });
-    await runtime.reason(refRequest("sha256:abc"), { resolveContent: resolve });
-    await runtime.reason(refRequest("sha256:abc"), { resolveContent: resolve });
+    await runtime.reason(refRequest("sha256:abc"), {
+      resolveContent: resolve,
+      resolveContext: { executionId: "e" },
+    });
+    await runtime.reason(refRequest("sha256:abc"), {
+      resolveContent: resolve,
+      resolveContext: { executionId: "e" },
+    });
     expect(provider.complete).toHaveBeenCalledOnce();
     expect(resolve).toHaveBeenCalledOnce();
     expect(keys[0]).toContain("sha256:abc");
@@ -77,5 +86,19 @@ describe("ReasoningRuntime and media refs (R5)", () => {
       resolveContext: { executionId: "exec-9", stepId: "s" },
     });
     expect(seen[0]).toMatchObject({ executionId: "exec-9", stepId: "s", origin: "app" });
+  });
+
+  it("a resolver without a context is a type error AND refused at runtime — it could not authorize the read", async () => {
+    const resolve = vi.fn(async () => new Uint8Array(1));
+    const provider: LlmProvider = {
+      capabilities: { image: ["image/png"] },
+      complete: async () => ok,
+    };
+    const runtime = new ReasoningRuntime({ routes: [{ id: "vision", provider, tier: 0 }] });
+    await expect(
+      // @ts-expect-error resolveContent requires resolveContext
+      runtime.reason(refRequest("sha256:a"), { resolveContent: resolve })
+    ).rejects.toThrow(/cannot authorize a read it cannot attribute/);
+    expect(resolve).not.toHaveBeenCalled();
   });
 });

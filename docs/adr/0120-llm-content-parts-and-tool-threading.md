@@ -64,7 +64,12 @@
    `guardRequest` fail the run. The total resolved bytes per request are capped too (32 MiB) as a RUNNING budget: fetches
    start four at a time, each is told what is left, the first to overshoot aborts the rest (their `signal` fires and no
    queued fetch starts), a ref that declares a size over the cap is refused before any fetch, and a blob whose size differs
-   from the declared one is refused.
+   from the declared one is refused (a declared `size` must be a non-negative safe integer or absent: anything else is refused by
+   the guard and by the resolver). The overshoot is bounded, not zero: at most four fetches are in flight when the budget is spent,
+   so a resolver that ignores `maxBytes` can hold at most that many blobs before the abort lands; resolvers SHOULD honour
+   `maxBytes`. **The resolve context is required**: `resolveContent` and its context come together (`ReasonOptions` is a union
+   that makes one without the other a type error; `resolveRequestContent` refuses at runtime when `executionId` is absent), and a
+   resolver MUST deny a read whose `executionId` / `principal` it cannot attribute.
 6. **Capabilities, fail closed.** `LlmProvider.capabilities?: { image?, audio?, file? }`, each a list of media types
    (`image/png`, `image/*`, `*`). Absent means text and tool calls only. `assertRequestSupported` throws
    `UnsupportedModalityError` BEFORE any resolution or network call, at every site that hands a request to a provider:
@@ -73,10 +78,15 @@
    images + wav/mp3 + PDF, Gemini images + audio + PDF/text; each overridable by config (a model without vision).
    `runLlmProviderConformance` gains three cases: a provider that did not declare `image/png` MUST refuse an image request
    from `complete` AND from `stream`, and a provider that DID declare it must put the image on the wire (observed at `fetch`):
-   declaring a modality and dropping it is the same silent loss. Declarations are **model-aware**: a small table of known
-   text-only ids (Claude 2.x/Instant, `gpt-3.5*`, `o1-mini`/`o1-preview`/`o3-mini`, `gpt-4-0613`/`-32k`, Gemini 1.0 Pro)
-   declares nothing, and OpenAI audio is declared only for the `audio` model family; an id the table does not know gets the
-   provider default. `capabilities: {}` makes any model text-only; `config.capabilities` always wins.
+   declaring a modality and dropping it is the same silent loss. Declarations are an **allowlist by model family**
+   (user decision): media is on only for the vendor's known media-capable families (OpenAI `gpt-4o*`, `gpt-4.1*`, `gpt-5*`,
+   `o1` / `o3` except `-mini` / `-preview`, `o4*`, dated non-preview `gpt-4-turbo`; Anthropic `claude-3` and later; Gemini 1.5+ and
+   2.x, and the `-latest` aliases) and OpenAI audio only for `audio` models. **Every other id declares nothing**: plain `gpt-4` and its
+   dated snapshots, `gpt-3.5`, `gemini-1.0-pro-latest`, a local alias or an unknown future id are refused locally rather than
+   400'd by the API (a new family needs one line in the table before it is trusted with media). A provider on a **non-default
+   `baseUrl`** (an OpenAI-compatible server, a proxy) declares nothing either, since the model id says nothing about what is
+   behind it. `config.capabilities` always wins, `capabilities: {}` is text-only, and passing `capabilities` is how a compatible
+   server opts in.
    **This fails a 3P provider that silently drops media until it adds `assertRequestSupported(request, this.capabilities)`
    (the scaffold now emits it).**
 7. **`guardRequest` enforces part structure and provenance in the same walk.** `tool_use` only in `assistant`;
@@ -92,7 +102,10 @@
    parts, and the fence open, media and fence close travel there together. An untrusted file's `name` is dropped (it would
    reach a title / filename outside any fence), and **an untrusted media part may not name a stored ref** (refused): an
    untrusted party must not choose which blob enters the prompt. A `tool_use` is checked deeply: a tainted value at any depth
-   of its `input`, or in its `id` or `name`, is refused (iterative walk; a 100 000-node input fails closed).
+   of its `input`, or in its `id` or `name`, is refused (iterative walk; a 100 000-node input fails closed). Because the guard
+   would then refuse EVERY later request carrying that assistant message, the agent loops screen a model's tool calls at
+   **dispatch**: an over-cap call is replaced, in the transcript, the approval digest and the tool-call log, by a small placeholder
+   (`{ __oversizedInput: true }`), never run, and answered with a static `isError` result; the run continues.
 8. **The response shape is unchanged** (`content`, `toolCalls`, `stopReason`, `usage`): `toolCalls` already are the
    `tool_use` parts, and a derived `parts` field could only disagree with them. `assistantMessageOf(response)` builds the
    assistant turn (text, then one `tool_use` per call). **Streaming** gains `LlmStreamChunk.toolDelta` (the call's `id` and
@@ -131,7 +144,8 @@
     `{ kind: "ref", ref: { address } }`, because that shape is deliberately not the `{ __loomContent }` marker the sweep
     knew; a blob cited as a media ref anywhere in a scanned log is pinned (retained while cited, like a bare ref). Without
     this an orphan sweep after the TTL reclaimed media the transcript still cited. A test puts a blob, cites it as an R5
-    ref in a `STEP_COMPLETED`, advances 10 days and sweeps with `reclaimOrphans`.
+    ref in a `STEP_COMPLETED`, advances 10 days and sweeps with `reclaimOrphans`. As with a bare ref today, the sweep sees a
+    media ref inside an ENCRYPTED payload only when it scans through a decrypting store.
 11. **Not decided here (follow-ups).** Audio/file `tool_result` mapping for providers whose tool message is text-only is a
     workaround (OpenAI: media rides in a trailing `user` message; Gemini: extra `inlineData` parts beside the
     `functionResponse`). Provider-hosted file ids (OpenAI Files, Anthropic Files API, Gemini fileData URIs) and URL sources are
@@ -158,7 +172,13 @@ untrusted file name reached a title, no per-request inline total, the reasoning 
 and keyed its cache on bytes, `onToolDelta` duplicated on retry, the conformance kit did not cover `stream` or a declared-but-
 dropped image. Q1/Q2 were decided by the controller: model-aware default declarations, and the 256 KiB inline total.
 
+### Fix round 2
+
+Seven P3s from the re-review (approved, no P1/P2): a per-call media header on OpenAI; test gaps (three calls per turn under
+compaction, the principal reaching the resolver, the 100k-node cap, a shrinking `maxBytes` hint, the taint invariant on a
+`returnsMedia` tool); capability defaults became an allowlist (decision 6); the resolve context is required; `ref.size` is
+validated; an over-cap tool call no longer bricks the run (decision 7).
+
 ## Questions for the user
 
-1. The model table behind the default declarations is a floor, not an oracle (it lists only known text-only ids). Should an
-   unknown id default to media-capable (as shipped) or to text-only until declared?
+None open.

@@ -77,16 +77,18 @@ export function assertRequestSupported(
 }
 
 /**
- * The modalities a shipped provider declares for `model`: `base` unless the id is a known
- * text-only model (`textOnly` patterns), which declares none — so a text-only model behind a
- * provider class that otherwise takes images is refused locally, not 400'd by the API. The table
- * is a floor, not an oracle: an id it does not know gets `base`, and `config.capabilities`
- * (`capabilities: {}` for text-only) always wins.
+ * The modalities a shipped provider declares for `model`: an ALLOWLIST. `base` only when the id
+ * matches a family known to take media (`allow`); every other id — unknown, older, a local alias —
+ * declares nothing, so a model that cannot take an image is refused locally instead of 400'd by the
+ * API, and a new family needs one line here before it is trusted with media. `config.capabilities`
+ * always wins (`capabilities: {}` = text-only). A provider on a non-default `baseUrl` (an
+ * OpenAI-compatible server) declares nothing either, since the model id says nothing about what is
+ * behind it; pass `capabilities` to turn media on.
  */
 export function capabilitiesForModel(
   model: string,
   base: LlmCapabilities,
-  textOnly: readonly RegExp[]
+  allow: readonly RegExp[]
 ): LlmCapabilities {
-  return textOnly.some((re) => re.test(model)) ? {} : base;
+  return allow.some((re) => re.test(model)) ? base : {};
 }

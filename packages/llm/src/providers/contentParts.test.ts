@@ -507,29 +507,148 @@ describe("untrusted media in a tool_result keeps its fence on each provider", ()
   });
 });
 
-describe("Q1 — declared modalities follow the model", () => {
-  it("known text-only models declare none; capable ones keep theirs; an override always wins", () => {
-    expect(new AnthropicProvider({ model: "claude-2.1" }).capabilities).toEqual({});
-    expect(new AnthropicProvider({ model: "claude-opus-4-8" }).capabilities.image).toBeDefined();
-    expect(new OpenAiProvider({ model: "gpt-3.5-turbo" }).capabilities).toEqual({});
-    expect(new OpenAiProvider({ model: "o1-mini" }).capabilities).toEqual({});
-    expect(new GeminiProvider({ model: "gemini-1.0-pro" }).capabilities).toEqual({});
-    expect(new GeminiProvider({ model: "gemini-2.0-flash" }).capabilities.image).toBeDefined();
-    // audio input is the audio-preview family only
+describe("OpenAI: one header per media-returning tool call", () => {
+  it("labels each call's media, in order, so the model can tell whose is whose", () => {
+    const img = (data: string) => ({
+      type: "image" as const,
+      mediaType: "image/png",
+      source: { kind: "data" as const, data },
+    });
+    const out = mapMessages([
+      {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "a", name: "n", input: {} },
+          { type: "tool_use", id: "b", name: "n", input: {} },
+        ],
+      },
+      {
+        role: "user",
+        content: [
+          { type: "tool_result", toolUseId: "a", content: [img("QUFB")] },
+          { type: "tool_result", toolUseId: "b", content: [{ type: "text", text: "no media" }] },
+          { type: "tool_result", toolUseId: "c", content: [img("QkJC"), img("Q0ND")] },
+        ],
+      },
+    ] as LlmMessage[]);
+    const media = out.at(-1) as { role: string; content: { type: string; text?: string }[] };
+    expect(media.role).toBe("user");
+    expect(media.content.map((b) => (b.type === "text" ? b.text : b.type))).toEqual([
+      "Media returned by tool call a:",
+      "image_url",
+      "Media returned by tool call c:",
+      "image_url",
+      "image_url",
+    ]);
+  });
+});
+
+// ── Capability defaults are an ALLOWLIST (ADR 0120, decision 6) ───────────────────────────────
+
+describe("default capabilities: media only for known media-capable families", () => {
+  const media = (c: { image?: readonly string[] }): boolean => c.image !== undefined;
+
+  it.each([
+    // OpenAI
+    ["openai", "gpt-4o", true],
+    ["openai", "gpt-4o-mini", true],
+    ["openai", "gpt-4.1", true],
+    ["openai", "gpt-4.1-mini", true],
+    ["openai", "gpt-5", true],
+    ["openai", "o1", true],
+    ["openai", "o1-2024-12-17", true],
+    ["openai", "o3", true],
+    ["openai", "o4-mini", true],
+    ["openai", "gpt-4-turbo", true],
+    ["openai", "gpt-4-turbo-2024-04-09", true],
+    ["openai", "o1-mini", false],
+    ["openai", "o1-preview", false],
+    ["openai", "o3-mini", false],
+    ["openai", "gpt-4", false],
+    ["openai", "gpt-4-0314", false],
+    ["openai", "gpt-4-0613", false],
+    ["openai", "gpt-4-32k", false],
+    ["openai", "gpt-4-1106-preview", false],
+    ["openai", "gpt-4-0125-preview", false],
+    ["openai", "gpt-4-turbo-preview", false],
+    ["openai", "gpt-3.5-turbo", false],
+    ["openai", "some-future-model", false],
+    ["openai", "", false],
+    // Anthropic
+    ["anthropic", "claude-3-haiku-20240307", true],
+    ["anthropic", "claude-3-5-sonnet-latest", true],
+    ["anthropic", "claude-sonnet-4-5", true],
+    ["anthropic", "claude-opus-4-8", true],
+    ["anthropic", "claude-haiku-4-5", true],
+    ["anthropic", "claude-2.1", false],
+    ["anthropic", "claude-instant-1.2", false],
+    ["anthropic", "my-finetune", false],
+    // Gemini
+    ["gemini", "gemini-1.5-pro", true],
+    ["gemini", "gemini-1.5-flash-8b", true],
+    ["gemini", "gemini-2.0-flash", true],
+    ["gemini", "gemini-2.5-pro", true],
+    ["gemini", "gemini-flash-latest", true],
+    ["gemini", "gemini-1.0-pro", false],
+    ["gemini", "gemini-1.0-pro-latest", false],
+    ["gemini", "gemini-pro", false],
+    ["gemini", "text-bison", false],
+  ] as const)("%s %s -> media %s", (vendor, model, expected) => {
+    const caps =
+      vendor === "openai"
+        ? new OpenAiProvider({ model }).capabilities
+        : vendor === "anthropic"
+          ? new AnthropicProvider({ model }).capabilities
+          : new GeminiProvider({ model }).capabilities;
+    expect(media(caps)).toBe(expected);
+  });
+
+  it("audio only for OpenAI audio models; PDF follows image", () => {
     expect(new OpenAiProvider({ model: "gpt-4o" }).capabilities.audio).toBeUndefined();
     expect(new OpenAiProvider({ model: "gpt-4o-audio-preview" }).capabilities.audio).toBeDefined();
+    expect(new OpenAiProvider({ model: "gpt-4o" }).capabilities.file).toBeDefined();
+    expect(new GeminiProvider({ model: "gemini-2.0-flash" }).capabilities.audio).toBeDefined();
+  });
+
+  it("a non-default baseUrl (an OpenAI-compatible server) is text-only unless capabilities are declared", () => {
     expect(
-      new OpenAiProvider({ model: "gpt-3.5-turbo", capabilities: { image: ["image/png"] } })
+      new OpenAiProvider({ model: "gpt-4o", baseUrl: "http://localhost:11434" }).capabilities
+    ).toEqual({});
+    expect(
+      new AnthropicProvider({ model: "claude-opus-4-8", baseUrl: "https://proxy.example" })
         .capabilities
+    ).toEqual({});
+    expect(
+      new GeminiProvider({ model: "gemini-2.0-flash", baseUrl: "https://proxy.example" })
+        .capabilities
+    ).toEqual({});
+    // the default URL spelled out is still the default
+    expect(
+      media(new OpenAiProvider({ model: "gpt-4o", baseUrl: "https://api.openai.com" }).capabilities)
+    ).toBe(true);
+    // declaring capabilities is how a compatible server opts in
+    expect(
+      new OpenAiProvider({
+        model: "llava",
+        baseUrl: "http://localhost:11434",
+        capabilities: { image: ["image/png"] },
+      }).capabilities
+    ).toEqual({ image: ["image/png"] });
+  });
+
+  it("config.capabilities always wins, and {} is text-only even on a media model", () => {
+    expect(new OpenAiProvider({ model: "gpt-4o", capabilities: {} }).capabilities).toEqual({});
+    expect(
+      new OpenAiProvider({ model: "gpt-4", capabilities: { image: ["image/png"] } }).capabilities
     ).toEqual({
       image: ["image/png"],
     });
   });
 
-  it("a text-only model refuses an image locally instead of 400ing from the API", async () => {
+  it("an unknown model refuses an image locally instead of 400ing from the API", async () => {
     const fn = stubJson({});
     await expect(
-      new OpenAiProvider({ apiKey: "k", model: "gpt-3.5-turbo" }).complete({
+      new OpenAiProvider({ apiKey: "k", model: "gpt-4" }).complete({
         messages: [
           {
             role: "user",

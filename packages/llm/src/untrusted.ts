@@ -143,6 +143,13 @@ function resolve(content: unknown, position: string, fenced: boolean): string {
   return fence(typeof inner === "string" ? inner : JSON.stringify(inner), origin);
 }
 
+/** A declared ref size is absent or a non-negative safe integer; anything else would defeat the byte budget. */
+export function validRefSize(size: unknown): boolean {
+  return (
+    size === undefined || (typeof size === "number" && Number.isSafeInteger(size) && size >= 0)
+  );
+}
+
 const MEDIA_TYPE = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
 
 /**
@@ -167,6 +174,10 @@ export function validateMediaPart(p: LlmMediaPart, limit: number = MAX_INLINE_BY
     if (n > limit) throw new OversizedInlinePartError(n, limit);
   } else if (typeof p.source.ref?.address !== "string" || p.source.ref.address === "") {
     throw new InvalidLlmRequestError(`${p.type} part has a ref source without an address`);
+  } else if (!validRefSize(p.source.ref.size)) {
+    throw new InvalidLlmRequestError(
+      `${p.type} part has a ref with an invalid size (a non-negative safe integer, or absent)`
+    );
   }
 }
 
@@ -252,7 +263,29 @@ function guardResultParts(
   return out;
 }
 
-const TAINT_WALK_NODES = 100_000;
+/** The most nodes a model-emitted `tool_use` input may have and still be walked for taint. */
+export const TOOL_INPUT_NODE_CAP = 100_000;
+const TAINT_WALK_NODES = TOOL_INPUT_NODE_CAP;
+
+/**
+ * Whether `value` has more than `cap` object/array nodes. Iterative, cycle-safe, and it stops
+ * counting at `cap + 1`, so it is cheap on a hostile input. An agent uses this to refuse such a
+ * `tool_use` at DISPATCH and keep a bounded placeholder in the transcript: the guard would
+ * otherwise refuse EVERY later request carrying it, bricking the run.
+ */
+export function exceedsNodeCap(value: unknown, cap: number = TOOL_INPUT_NODE_CAP): boolean {
+  const stack: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  let nodes = 0;
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (typeof cur !== "object" || cur === null || seen.has(cur)) continue;
+    seen.add(cur);
+    if (++nodes > cap) return true;
+    for (const v of Array.isArray(cur) ? cur : Object.values(cur)) stack.push(v);
+  }
+  return false;
+}
 
 /** Whether a tainted value hides anywhere inside `value`. Iterative; fails closed past the node cap. */
 function findTaint(value: unknown): { origin: string } | undefined {

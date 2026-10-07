@@ -1533,7 +1533,8 @@ return mediaResult([
 ]);
 
 // Resolve the address to bytes at call time — the journal keeps only the address. The resolver MUST
-// authorize: the store is content-addressed with no tenancy, so check that this execution may read it.
+// authorize: the store is content-addressed with no tenancy, so check that this execution may read it,
+// and DENY when `executionId` / `principal` is missing.
 effects.register(
   "model",
   createAgentModelEffect(new AnthropicProvider(), {
@@ -1550,8 +1551,10 @@ never carry real media; over the cap is refused (a tool's oversized inline resul
 the model can recover from). If a tool's ref cannot be resolved (erased, over the 32 MiB budget, a size that
 differs from the ref's declared one), the model sees an `isError` result instead of the run failing; the same
 failure for a ref your own code put in a message fails the call.
-A provider declares which modalities it takes (`capabilities`, per model for the shipped ones: known
-text-only ids declare none, and `capabilities: {}` makes any model text-only); anything else throws
+A provider declares which modalities it takes (`capabilities`). The shipped ones declare media only for
+known media-capable model families; an unknown model id, an older one (plain `gpt-4`) or a non-default
+`baseUrl` (an OpenAI-compatible server) is text-only until you pass `capabilities: { image: ["image/png"] }`,
+and `capabilities: {}` makes any model text-only; anything else throws
 `UnsupportedModalityError` before a network call, and so does a ref with no `resolveContent`. A TAINTED tool
 output is never interpreted as media (it stays fenced text), and an untrusted media part you build yourself
 (`untrusted: { origin }`) may not name a stored ref; it is bracketed by the same `<untrusted-input>` fence as

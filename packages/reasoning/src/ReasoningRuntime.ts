@@ -173,7 +173,8 @@ export class ReasoningRuntime {
     const res = await route.provider.complete(
       await resolveRequestContent(guarded, opts.resolveContent, {
         ...(signal !== undefined && { signal }),
-        ...(opts.resolveContext !== undefined && { context: opts.resolveContext }),
+        // Absent only when there is no resolver; a ref then fails before any fetch.
+        context: opts.resolveContext ?? { executionId: "" },
       })
     );
     if (cacheKey !== undefined) this.cache?.set(cacheKey, res);
