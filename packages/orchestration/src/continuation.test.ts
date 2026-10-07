@@ -83,6 +83,20 @@ const awaitsRot = reg("awaits-rot", async (ctx) => {
   return { got: out };
 });
 
+// A child that rotates MANY times in a row once told to `go` (no waiting between generations), then
+// parks on `end` at generation 12.
+const manyChild = reg("many-child", async (ctx, input) => {
+  const gen = (input as { gen?: number } | undefined)?.gen ?? 0;
+  if (gen === 0) await ctx.receive("go");
+  if (gen < 12) return ctx.continueAsNew({ gen: gen + 1 });
+  await ctx.suspend({ on: "end" });
+  return { finishedIn: gen };
+});
+const awaitsMany = reg("awaits-many", async (ctx) => {
+  const out = await awaitChild(ctx, { key: "c", flowId: "many-child", input: {} });
+  return { got: out };
+});
+
 function build(withSupervisor = true) {
   const holder: { supervisor?: ChildSupervisor } = {};
   const runtime = new WorkflowRuntime({
@@ -93,7 +107,14 @@ function build(withSupervisor = true) {
     continueAsNewEnabled: true,
     onEvent: (e) => holder.supervisor?.onEvent(e),
   });
-  const flows = { waiter, "rot-child": rotChild, "rot-parent": rotParent, "awaits-rot": awaitsRot };
+  const flows = {
+    waiter,
+    "rot-child": rotChild,
+    "rot-parent": rotParent,
+    "awaits-rot": awaitsRot,
+    "many-child": manyChild,
+    "awaits-many": awaitsMany,
+  };
   for (const f of Object.values(flows)) {
     runtime.registerFlow(f.definition, f.runner as FlowRunner<unknown, unknown>);
   }
@@ -207,5 +228,25 @@ describe("D6 — a continued CHILD is followed to its head", () => {
     }>;
     expect(settled[0]).toEqual({ status: "completed", output: { finishedIn: 2 } });
     expect(settled[1]?.status).toBe("cancelled");
+  });
+});
+
+describe("D6 - a child that rotated far more than maxChainHops while no supervisor listened", () => {
+  it("recover() follows it to the end and registers the head, so the parent completes (it used to stall at 8 hops)", async () => {
+    const { runtime, holder, wire } = build(true);
+    await runtime.start(awaitsMany, {}, { executionId: "mp" });
+    await until(async () => (await statusOf(runtime, "mp::c")) === "suspended");
+    holder.supervisor = undefined; // the supervisor dies
+    await runtime.send("mp::c", { topic: "go", payload: 1 }, sys(runtime));
+    await until(async () => (await statusOf(runtime, "mp::c~12")) === "suspended");
+    const supervisor = wire();
+    await supervisor.recover();
+    await supervisor.recover(); // a second sweep must not be stuck re-walking the same 8 hops
+    expect(await statusOf(runtime, "mp")).toBe("suspended");
+    await runtime.resume("mp::c~12", { eventType: "end", payload: 1 }, sys(runtime));
+    await until(async () => (await statusOf(runtime, "mp")) === "completed");
+    expect((await runtime.loadState("mp"))?.variables._output).toEqual({
+      got: { finishedIn: 12 },
+    });
   });
 });

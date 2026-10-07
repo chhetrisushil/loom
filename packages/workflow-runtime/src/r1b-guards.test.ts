@@ -97,33 +97,7 @@ describe("ctx.continueAsNew — preconditions (log untouched, typed refusal)", (
     expect(await h.eventStore.read("g~1")).toEqual([]);
   });
 
-  it("refuses when a step is still in flight past parkDrainMs, and the flow (not frozen) carries on", async () => {
-    const latch = new Latch();
-    const { h, handle } = await refusalOf(
-      async (ctx) => {
-        const inFlight = ctx.run(slow, "x");
-        let refused: string | undefined;
-        try {
-          await ctx.continueAsNew({});
-        } catch (e) {
-          refused = e instanceof ContinueAsNewRefusedError ? e.reason : String(e);
-        }
-        latch.release();
-        await inFlight;
-        // not frozen: a further step still runs
-        await ctx.run(echo, "after");
-        return refused;
-      },
-      { parkDrainMs: 40 },
-      { latch }
-    );
-    const done = await handle.waitForCompletion();
-    expect(done.variables._output).toMatch(/still in flight after parkDrainMs/);
-    expect(await kinds(h.eventStore, "g")).not.toContain("EXECUTION_CONTINUED");
-    expect(await h.eventStore.read("g~1")).toEqual([]);
-  });
-
-  it("waits for a step that settles within parkDrainMs: its event lands BEFORE EXECUTION_CONTINUED", async () => {
+  it("waits for an in-flight step to settle: its event lands BEFORE EXECUTION_CONTINUED (r1b-fix1 pins the unbounded wait)", async () => {
     const latch = new Latch();
     const h = build(on, { latch });
     const f = flow<{ gen?: number }, unknown>("drain", async (ctx, input) => {
@@ -212,8 +186,8 @@ describe("ADR 0109 D2 (a) — the successor shape is reserved in caller-chosen i
     return { h, handle: await h.rt.start(trivial, {}, { executionId: id }) };
   }
 
-  it.each(["foo~1", "foo~12", "foo~1::x", "a::b::c~7::y"].filter((id) => id !== "a::b::c~7::y"))(
-    "refuses start(%s) when no parent log exists, appending nothing",
+  it.each(["foo~1", "foo~12", "foo~1::x", "a::b~1", "parent::g#0~3"])(
+    "refuses start(%s) (bare, no parent log, or a derived chain's successor), appending nothing",
     async (id) => {
       const h = build(on);
       h.rt.registerFlow(trivial.definition, trivial.runner);
@@ -236,16 +210,25 @@ describe("ADR 0109 D2 (a) — the successor shape is reserved in caller-chosen i
       timestamp: 1,
       payload: { input: {} },
     });
-    const child = await h.rt.start(trivial, {}, { executionId: "chain~1::g#0" });
+    // only the supervisor (the lineage grant) may start the derived child of a generation
+    const child = await h.rt.start(
+      trivial,
+      {},
+      { executionId: "chain~1::g#0", ...h.rt.lineageOptions() }
+    );
     await child.waitForCompletion();
     expect((await h.eventStore.read("chain~1::g#0")).length).toBeGreaterThan(0);
     // ...but not when that parent's log is absent
-    await expect(h.rt.start(trivial, {}, { executionId: "chain~2::g#0" })).rejects.toBeInstanceOf(
+    await expect(
+      h.rt.start(trivial, {}, { executionId: "chain~2::g#0", ...h.rt.lineageOptions() })
+    ).rejects.toBeInstanceOf(ReservedSuccessorIdError);
+    // ...and an ordinary caller is refused whether or not the parent exists
+    await expect(h.rt.start(trivial, {}, { executionId: "chain~1::g#1" })).rejects.toBeInstanceOf(
       ReservedSuccessorIdError
     );
   });
 
-  it.each(["a~b", "a~1x", "a::b~1", "~", "a~", "plain~", "x~y~z"])(
+  it.each(["a~b", "a~1x", "a::b~x", "~", "a~", "plain~", "x~y~z"])(
     "still accepts %s (the reservation is the SHAPE, not the character)",
     async (id) => {
       const { handle } = await startWith(id);

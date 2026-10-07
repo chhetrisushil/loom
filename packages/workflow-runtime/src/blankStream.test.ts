@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LIFECYCLE_STREAM, LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import type { WorkflowRuntimeDeps } from "./WorkflowRuntime";
 import { REHOMED_FROM_KEY } from "./blankStream";
 import type { FlowRunner } from "./types";
 
@@ -49,7 +50,10 @@ const runner: FlowRunner<{ n: number }, { n: number }> = async (ctx, input) => {
   return { n: c.n };
 };
 
-function boot(wrap?: (raw: InMemoryAsyncEventStore) => EventStore) {
+function boot(
+  wrap?: (raw: InMemoryAsyncEventStore) => EventStore,
+  extra: Partial<WorkflowRuntimeDeps> = {}
+) {
   const effects = new EffectRuntime();
   for (const id of ["t1", "t2", "t3"]) {
     effects.register(id, new ToolEffect(async (x: { n: number }) => ({ n: x.n + 1 })));
@@ -63,6 +67,7 @@ function boot(wrap?: (raw: InMemoryAsyncEventStore) => EventStore) {
     effectRuntime: effects,
     now: () => 1_000,
     onWarn: () => {},
+    ...extra,
   });
   runtime.registerFlow(definition, runner);
   return {
@@ -144,6 +149,48 @@ async function pre0106(
 const seqs = (log: EventEnvelope[]) => log.map((e) => e.sequence);
 const range = (from: number, through: number) =>
   Array.from({ length: through - from + 1 }, (_, i) => from + i);
+
+/**
+ * The uncompacted history of an execution that CONTINUES at its second gate (ADR 0109): its tip is
+ * `EXECUTION_CONTINUED`, so the snapshot a resume checkpointed there folds `continued`.
+ */
+async function continuedHistory(n: number) {
+  const app = boot(undefined, { continueAsNewEnabled: true });
+  app.runtime.registerFlow(definition, async (ctx, input) => {
+    const a = await ctx.run(s1, input);
+    await ctx.suspend({ on: "go1" });
+    return ctx.continueAsNew({ n: a.n }) as never;
+  });
+  const h = await app.runtime.start({ definition, runner }, { n }, { executionId: "x" });
+  await h.waitForSuspend();
+  const gate1 = (await headOf(app.eventStore, "x"))!;
+  await (await app.runtime.resume("x", { eventType: "go1", payload: { n } })).waitForCompletion();
+  const log = await app.eventStore.read("x");
+  const at = (q: number) => new ReplayVM(log.filter((e) => e.sequence <= q)).getState();
+  const done = log[log.length - 1]!.sequence;
+  expect(log[log.length - 1]!.eventType).toBe("EXECUTION_CONTINUED");
+  return { log, gate1, gate2: done, done, at };
+}
+
+describe("ADR 0109 — the `continued` status in the blank-stream DRAINED set", () => {
+  it("a blank checkpoint folding `continued` is a drained top: its segment is proven and rehomable", async () => {
+    const h = await continuedHistory(1);
+    expect(h.at(h.gate2).status).toBe("continued");
+    const app = boot();
+    await pre0106(app, "e1", h, "resumed"); // the run's events in "", a blank `continued` snapshot at its tip
+    const census = await app.life.blankStreamCensus();
+    expect(census.segments).toEqual([
+      {
+        executionId: "e1",
+        fromSequence: h.gate1 + 1,
+        throughSequence: h.gate2,
+        proof: "snapshot",
+        status: "rehomable",
+      },
+    ]);
+    expect(census.unattributed).toEqual([]);
+  });
+});
 
 describe("ADR 0107 (B) — census of the blank stream", () => {
   it("proves the segment a drained snapshot folds, and names — but never attributes — the tail above it", async () => {

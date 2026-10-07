@@ -418,6 +418,7 @@ const handlers: Record<string, Handler> = {
     }
     const forkChain = chainIdentity(meta?.forkChain);
     let carriedFrom: Record<string, unknown> | undefined;
+    let forkResources: unknown;
     const own = forkChain ?? chainIdentity(payload);
     if (own !== undefined) {
       const from = payload.continuedFrom;
@@ -433,9 +434,17 @@ const handlers: Record<string, Handler> = {
           : undefined;
       vars._chain = { ...own, ...(continuedFrom !== undefined && { continuedFrom }) };
       carriedFrom = continuedFrom?.carried as Record<string, unknown> | undefined;
+      // A fork of a chain member leaves the chain (no `continuedFrom`, no carried inbox cursors or
+      // deadline), but it keeps what is the execution's OWN history rather than the chain's
+      // membership: the running resource totals, so a carried `exceeded` quota is not shed by
+      // forking (a fork of an ordinary execution keeps it through its copied prefix).
+      if (forkChain !== undefined && isPlain(payload.continuedFrom)) {
+        const carried = (payload.continuedFrom as { carried?: unknown }).carried;
+        if (isPlain(carried)) forkResources = carried.resources;
+      }
     }
     if (typeof payload.codeHash === "string") vars._codeHash = payload.codeHash;
-    const resources = seedResources(carriedFrom?.resources);
+    const resources = seedResources(carriedFrom?.resources ?? forkResources);
     if (resources !== undefined) vars._resources = resources;
     const inbox = seedInbox(carriedFrom?.inbox);
     if (inbox !== undefined) vars._inbox = inbox;

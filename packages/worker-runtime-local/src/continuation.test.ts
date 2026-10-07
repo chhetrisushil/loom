@@ -112,4 +112,17 @@ describe("LocalWorkerRuntime — follow-to-head (ADR 0109 D6)", () => {
     const result = await worker.execute(lease, pkg("g"));
     expect(result.status).toBe("failed");
   });
+
+  it("a flow that rotates 10 times (more than maxChainHops) and then completes is a COMPLETION, not a failure", async () => {
+    const { worker, pkg } = setup(async (ctx, input) => {
+      const gen = (input as { gen?: number } | undefined)?.gen ?? 0;
+      if (gen < 10) return ctx.continueAsNew({ gen: gen + 1 });
+      return { finishedIn: gen };
+    });
+    const lease = await worker.allocate({ executionId: "ten", workflowId: "rot" } as never);
+    const result = await worker.execute(lease, pkg("ten"));
+    expect(result.status).toBe("completed");
+    expect(result.executionId).toBe("ten");
+    expect(result.output).toEqual({ finishedIn: 10 });
+  });
 });
