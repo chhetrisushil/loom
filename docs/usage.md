@@ -479,9 +479,11 @@ const runner: FlowRunner<{ summary?: string }, never> = async (ctx, input) => {
 `EXECUTION_CONTINUED`). The successor `<chainId>~<n>` is a fresh execution on the code registered NOW (a rotation
 is the clean re-versioning point: no deploy needs `resumeAs`); it inherits the principal, the running resource
 totals (a rotation cannot reset a quota), the inbox cursors and dedupe window, and the chain's absolute
-deadline. Address the chain by any id you hold: `runtime.send` / `resume` / `cancel` resolve forward through
-`_continuedTo` (at most `kernel.continuation.maxChainHops`, default 8, then `ChainHopLimitError` names the head;
-use the `executionId` a `send` returns). `runtime.followToHead(id)` returns the head and its state.
+deadline. Address the chain by any id you hold: `runtime.send` / `resume` / `cancel` resolve forward to
+the chain's newest generation (an O(log n) probe over the deterministic ids, verified link by link, authorized
+against the owner), so the FIRST id stays addressable forever however many times it rotated;
+`kernel.continuation.maxChainHops` (default 8) bounds only the residual forward stepping. `runtime.followToHead(id)`
+returns the head and its state.
 
 The call is refused, with the log untouched and a typed error the flow may catch, inside a `ctx.parallel`
 scope, with a `receive` / `select` wait outstanding, or with a

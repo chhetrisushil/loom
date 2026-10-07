@@ -53,6 +53,7 @@ import {
   chainOfState,
   derivedParentOf,
   isVerifiedSuccessor,
+  sameLineage,
   successorIdOf,
   successorShapeOf,
 } from "./continuation";
@@ -266,9 +267,11 @@ export interface WorkflowRuntimeDeps {
   /** ADR 0109 D1 — the kernel cap on a carry, in bytes of its JSON text. Default 1 MiB (1 048 576). */
   maxCarryBytes?: number;
   /**
-   * ADR 0109 D4 — how many `_continuedTo` links a head walk (`resume`, `send`, `cancel`, follow-to-head)
-   * follows before refusing with {@link ChainHopLimitError} naming the furthest id it reached.
-   * Default 8. It bounds the WALK from a stale id, not the length of a chain.
+   * ADR 0109 D4 — a head walk (`resume`, `send`, `cancel`, follow-to-head) is ROUTED to the newest
+   * generation of the chain (an O(log n) probe over the deterministic ids, verified link by link), so
+   * the first id stays addressable forever. This bounds only the RESIDUAL forward stepping after that
+   * (the start-to-commit window, or the fallback when the deepest log fails verification): past it
+   * the walk refuses with {@link ChainHopLimitError} naming the furthest id it reached. Default 8.
    */
   maxChainHops?: number;
   /**
@@ -2218,13 +2221,28 @@ export class WorkflowRuntime {
   async cancel(
     executionId: string,
     reason?: unknown,
-    options?: { principal?: PrincipalChain; system?: SystemGrant; unbounded?: boolean }
+    options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<boolean> {
     assertNotReserved(executionId);
     const live = this.liveHandles.get(executionId);
-    // ADR 0109 D4 — a client's cancel walks at most `maxChainHops` links; the kernel's own
-    // followers (the child supervisor's cascade) pass `unbounded` and reach the end of the chain.
-    const maxHops = options?.unbounded === true ? Number.POSITIVE_INFINITY : this.maxChainHops;
+    // ADR 0109 D4 — a cancel addressed to any generation reaches the chain's newest one (routed),
+    // and is authorized AGAIN against that generation's recorded owner before it acts.
+    const recheck = async (id: string): Promise<void> => {
+      if (!this.authzApplies(options?.principal, options?.system)) return;
+      const f = (await readRangeOf(this.eventStore, id, 0, 0))[0];
+      if (f === undefined) return;
+      const denial = this.authzDenial(
+        "cancel",
+        id,
+        f.workflowId,
+        options?.principal,
+        options?.system,
+        await this.ownerForAuthz(id, options?.principal, options?.system, { first: f })
+      );
+      if (denial !== undefined) {
+        await this.denyOp("cancel", id, f.workflowId, options?.principal, denial.reason, undefined);
+      }
+    };
 
     // C.1 — gate the cancel (only when configured AND a principal is present). Use the
     // live handle's state when running here, else fold; a denial is best-effort
@@ -2258,7 +2276,7 @@ export class WorkflowRuntime {
     if (live !== undefined) {
       live.cancel(reason);
       // ADR 0109 D2 (i) — a successor may have started in the start-to-commit window.
-      if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, maxHops);
+      if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
       return true;
     }
     const state = await this.foldState(executionId);
@@ -2268,12 +2286,12 @@ export class WorkflowRuntime {
     if (state.status === "continued") {
       // ADR 0109 D2 — a continued member's cancel is the CHAIN's: it reaches the live generation
       // (authorized above against the chain owner, which every generation inherits).
-      return this.cancelForward(executionId, reason, maxHops);
+      return this.cancelForward(executionId, reason, recheck);
     }
     if (state.status === "cancelled") {
       // A cancel that raced the start-to-commit window: the successor, if one started, goes too.
       return this.continueAsNewEnabled
-        ? this.cancelSuccessorsOf(executionId, reason, maxHops)
+        ? this.cancelSuccessorsOf(executionId, reason, recheck)
         : false;
     }
     if (state.status === "completed" || state.status === "failed") {
@@ -2294,7 +2312,7 @@ export class WorkflowRuntime {
     await this.eventStore.append(envelope);
     this.onEvent?.(envelope);
     await this.retireInbox(chainIdOf(state, executionId));
-    if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, maxHops);
+    if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
     return true;
   }
 
@@ -2306,7 +2324,7 @@ export class WorkflowRuntime {
   private async cancelSuccessorsOf(
     executionId: string,
     reason: unknown,
-    maxHops: number = this.maxChainHops
+    recheck?: (id: string) => Promise<void>
   ): Promise<boolean> {
     try {
       const state =
@@ -2314,8 +2332,9 @@ export class WorkflowRuntime {
       if (state === null) return false;
       const next = await this.probeSuccessor(executionId, chainOfState(state, executionId));
       if (next === undefined) return false;
-      return await this.cancelForward(next, reason, maxHops);
+      return await this.cancelForward(next, reason, recheck);
     } catch (err) {
+      if (err instanceof ExecutionDeniedError) throw err; // the head's owner refused: say so
       this.onStorageError?.(executionId, err);
       return false;
     }
@@ -3136,7 +3155,7 @@ export class WorkflowRuntime {
    */
   private async sendTarget(
     executionId: string,
-    opts: { unbounded?: boolean; first?: EventEnvelope } = {}
+    opts: { first?: EventEnvelope } = {}
   ): Promise<{
     id: string;
     first: EventEnvelope;
@@ -3154,7 +3173,7 @@ export class WorkflowRuntime {
      */
     hopLimitOf?: () => Promise<string>;
   } | null> {
-    const maxHops = opts.unbounded === true ? Number.POSITIVE_INFINITY : this.maxChainHops;
+    const maxHops = this.maxChainHops; // bounds only the RESIDUAL stepping after a routed jump
     let id = executionId;
     for (let hop = 0; ; hop++) {
       const first =
@@ -3167,13 +3186,21 @@ export class WorkflowRuntime {
       if (tip.kind === "continued") {
         const next = tip.successorId;
         if (next !== undefined) {
+          // ROUTE to the newest verified generation (O(log n) probe); the verified single step
+          // below is the fallback when the deepest log cannot be verified.
+          const routed = await this.routeToDeepest(id, first);
+          if (routed !== undefined && routed.id !== id) {
+            id = routed.id;
+            continue;
+          }
           if (hop >= maxHops) {
             // Reported, not thrown, and named lazily: `send` has authorized against the chain's
             // owner already, and an unauthorized caller learns nothing about its depth or head.
             return {
               ...base,
               status: "hop-limit",
-              hopLimitOf: () => this.deepestGeneration(id, chainOfFirstEnvelope(first, id)),
+              hopLimitOf: async () =>
+                `${chainOfFirstEnvelope(first, id).chainId}~${await this.deepestGenerationOf(chainOfFirstEnvelope(first, id))}`,
             };
           }
           const successor = (await readRangeOf(this.eventStore, next, 0, 0))[0];
@@ -3197,11 +3224,17 @@ export class WorkflowRuntime {
       if (this.continueAsNewEnabled) {
         const next = await this.probeSuccessor(id, chainOfFirstEnvelope(first, id), first);
         if (next !== undefined) {
+          const routed = await this.routeToDeepest(id, first);
+          if (routed !== undefined && routed.id !== id) {
+            id = routed.id;
+            continue;
+          }
           if (hop >= maxHops) {
             return {
               ...base,
               status: "hop-limit",
-              hopLimitOf: () => this.deepestGeneration(id, chainOfFirstEnvelope(first, id)),
+              hopLimitOf: async () =>
+                `${chainOfFirstEnvelope(first, id).chainId}~${await this.deepestGenerationOf(chainOfFirstEnvelope(first, id))}`,
             };
           }
           id = next;
@@ -3314,6 +3347,29 @@ export class WorkflowRuntime {
     }
     const head = await this.sendTarget(executionId, { first: addressed });
     if (head === null) throw new Error(`No execution found for id: ${executionId}`);
+    // ...and again against the RESOLVED head's recorded owner before acting on it (D4).
+    if (head.id !== executionId && head.status !== "hop-limit") {
+      const headDenial = this.authzDenial(
+        "send",
+        head.id,
+        head.workflowId,
+        options?.principal,
+        options?.system,
+        await this.ownerForAuthz(head.id, options?.principal, options?.system, {
+          first: head.first,
+        })
+      );
+      if (headDenial !== undefined) {
+        await this.denyOp(
+          "send",
+          head.id,
+          head.workflowId,
+          options?.principal,
+          headDenial.reason,
+          undefined
+        );
+      }
+    }
     if (head.status === "hop-limit") {
       throw new ChainHopLimitError(
         executionId,
@@ -3815,7 +3871,7 @@ export class WorkflowRuntime {
     if (!this.inboxEnabled || !streamId.startsWith(INBOX_STREAM_PREFIX)) return false;
     const chainId = streamId.slice(INBOX_STREAM_PREFIX.length);
     try {
-      const head = await this.sendTarget(chainId, { unbounded: true });
+      const head = await this.sendTarget(chainId);
       if (
         head === null ||
         head.chainId !== chainId ||
@@ -5061,53 +5117,59 @@ export class WorkflowRuntime {
   }
 
   /**
-   * THE verified walk to the head of a chain (ADR 0109 D4), shared by every follower: `resume` /
-   * `followToHead` and the system followers. It follows `_continuedTo` (and probes the successor
-   * when the commit has not landed), but only across VERIFIED links (see `isVerifiedSuccessor`): a
-   * pointer at a foreign or squatted id ends the walk at the last verified member instead of
-   * leaking, resuming or cancelling something that is not this chain. `maxHops` bounds a
-   * CLIENT-addressed walk (`maxChainHops`, then a typed refusal naming the head); a SYSTEM follower
-   * (orchestration, the local worker) passes `Infinity`: generations strictly increase and every
-   * hop is verified, so the walk cannot cycle. Reads through `foldState`, so it is a kernel-internal
-   * read (callers authorize first). `null` = no such execution.
+   * THE walk to the head of a chain (ADR 0109 D4), shared by every follower (`resume`, `followToHead`,
+   * the supervisor, the local worker): the first id of a chain stays addressable forever. A
+   * `continued` (or, in the start-to-commit window, `running`) member is ROUTED to the deepest
+   * generation by {@link routeToDeepest} (O(log n) point reads, verified), then stepped forward over
+   * VERIFIED links only (`_continuedTo`, or the successor probe) for the residual window, at most
+   * `maxChainHops` steps. If the deepest log fails verification (a squatter written straight to the
+   * store) the walk falls back to stepping verified links from the addressed id: it never routes to an
+   * unverified log. Reads through `foldState`, so it is a kernel-internal read (callers authorize
+   * first, and again against the head's owner before acting). `null` = no such execution.
    */
   private async walkToHead(
-    executionId: string,
-    maxHops: number = this.maxChainHops
+    executionId: string
   ): Promise<{ id: string; state: ExecutionState; hops: number } | null> {
     let id = executionId;
-    let last: { id: string; state: ExecutionState } | undefined;
-    for (let hop = 0; ; hop++) {
-      const state = await this.foldState(id);
-      if (state === null) return last === undefined ? null : { ...last, hops: hop - 1 };
-      last = { id, state };
+    let state = await this.foldState(id);
+    if (state === null) return null;
+    let hops = 0;
+    if (state.status === "continued" || (state.status === "running" && this.continueAsNewEnabled)) {
+      const first = (await readRangeOf(this.eventStore, id, 0, 0))[0];
+      const routed = first === undefined ? undefined : await this.routeToDeepest(id, first);
+      const at = routed === undefined ? null : await this.foldState(routed.id);
+      if (routed !== undefined && at !== null) {
+        id = routed.id;
+        state = at;
+        hops = routed.hops;
+      }
+    }
+    for (let step = 0; ; step++) {
       let next: string | undefined;
       if (state.status === "continued") {
         const to = state.variables._continuedTo;
-        if (typeof to !== "string" || to.length === 0) return { id, state, hops: hop };
-        if (!(await this.verifiedHop(id, to))) return { id, state, hops: hop };
-        next = to;
+        if (typeof to === "string" && to.length > 0 && (await this.verifiedHop(id, to))) next = to;
       } else if (state.status === "running" && this.continueAsNewEnabled) {
         next = await this.probeSuccessor(id, chainOfState(state, id));
       }
-      if (next === undefined) return { id, state, hops: hop };
-      if (hop >= maxHops) {
-        throw new ChainHopLimitError(
-          executionId,
-          this.maxChainHops,
-          await this.deepestGeneration(id, chainOfState(state, id))
-        );
+      if (next === undefined) return { id, state, hops };
+      if (step >= this.maxChainHops) {
+        throw new ChainHopLimitError(executionId, this.maxChainHops, id);
       }
+      const nextState = await this.foldState(next);
+      if (nextState === null) return { id, state, hops }; // the successor is not readable yet
       id = next;
+      state = nextState;
+      hops++;
     }
   }
 
   /**
-   * The highest generation of `state`'s chain whose log exists, found by galloping + bisection over
-   * the deterministic ids `<chainId>~<n>` (O(log n) point reads): only used to NAME the head in a
-   * {@link ChainHopLimitError}, never to route. Best effort (a retention-deleted prefix may stop it early).
+   * The highest generation of `chain` whose log exists, found by galloping + bisection over the
+   * deterministic ids `<chainId>~<n>` (O(log n) point reads). Existence only: the caller verifies
+   * (see {@link routeToDeepest}). Best effort (a retention-deleted prefix may stop it early).
    */
-  private async deepestGeneration(id: string, chain: ChainIdentity): Promise<string> {
+  private async deepestGenerationOf(chain: ChainIdentity): Promise<number> {
     const exists = async (g: number): Promise<boolean> =>
       (await readRangeOf(this.eventStore, `${chain.chainId}~${g}`, 0, 0)).length > 0;
     let lo = chain.generation;
@@ -5124,31 +5186,58 @@ export class WorkflowRuntime {
         else hi = mid;
       }
     } catch {
-      /* naming the head is a courtesy */
+      /* routing is best effort: the verified walk is the fallback */
     }
-    return lo === chain.generation ? id : `${chain.chainId}~${lo}`;
+    return lo;
+  }
+
+  /**
+   * ADR 0109 D4 — route from `id` (whose sequence 0 is `first`) to the newest generation of its
+   * chain, or `undefined` when there is none beyond it or it cannot be VERIFIED. The deepest id
+   * found by {@link deepestGenerationOf} is accepted only if its sequence 0 is the verified
+   * successor of generation n-1 (`isVerifiedSuccessor`: deterministic id, names its predecessor,
+   * next generation, same parent and principal) AND records the same lineage and owner as `first`:
+   * a squatted log at the deterministic id is never routed to (the caller falls back to stepping
+   * verified links). `hops` is the generation distance.
+   */
+  private async routeToDeepest(
+    id: string,
+    first: EventEnvelope
+  ): Promise<{ id: string; first: EventEnvelope; hops: number } | undefined> {
+    const chain = chainOfFirstEnvelope(first, id);
+    const deepest = await this.deepestGenerationOf(chain);
+    if (deepest <= chain.generation) return undefined;
+    const headId = `${chain.chainId}~${deepest}`;
+    const headFirst = (await readRangeOf(this.eventStore, headId, 0, 0))[0];
+    if (headFirst === undefined) return undefined;
+    const prevGen = deepest - 1;
+    const prevId = prevGen === chain.generation ? id : `${chain.chainId}~${prevGen}`;
+    const prevFirst =
+      prevGen === chain.generation ? first : (await readRangeOf(this.eventStore, prevId, 0, 0))[0];
+    if (prevFirst === undefined || !isVerifiedSuccessor(prevFirst, prevId, headFirst, headId)) {
+      return undefined;
+    }
+    if (!sameLineage(first, headFirst)) return undefined;
+    return { id: headId, first: headFirst, hops: deepest - chain.generation };
   }
 
   /**
    * Follow a continued execution to the head of its chain (ADR 0109 D4/D6): the head's id and
-   * folded state. Authorized as `query` against the chain's OWNER (every generation inherits the
-   * recorded principal). A head that is not continued returns itself. Refused with
-   * {@link ChainHopLimitError} past `maxChainHops` links, unless `unbounded` (for the kernel's own
-   * followers: the child supervisor, the local worker; the walk is verified link by link, so it
-   * ends at the true head however many generations were rotated).
+   * folded state. Authorized as `query` against the addressed id first, then against the resolved
+   * head's owner (every generation inherits the recorded principal). A head that is not continued
+   * returns itself. The walk is routed (see {@link walkToHead}): any generation's id works however
+   * long the chain.
    */
   async followToHead(
     executionId: string,
-    options?: { principal?: PrincipalChain; system?: SystemGrant; unbounded?: boolean }
+    options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<{ executionId: string; state: ExecutionState; hops: number } | null> {
     assertNotReserved(executionId);
     const first = await this.loadState(executionId, options); // authorizes `query`, hides "not found"
     if (first === null) return null;
-    const head = await this.walkToHead(
-      executionId,
-      options?.unbounded === true ? Number.POSITIVE_INFINITY : this.maxChainHops
-    );
+    const head = await this.walkToHead(executionId);
     if (head === null) return null;
+    if (head.id !== executionId) await this.loadState(head.id, options); // authorizes against the head's owner
     return { executionId: head.id, state: head.state, hops: head.hops };
   }
 
@@ -5298,11 +5387,13 @@ export class WorkflowRuntime {
   private async cancelForward(
     executionId: string,
     reason: unknown,
-    maxHops: number = this.maxChainHops
+    recheck?: (id: string) => Promise<void>
   ): Promise<boolean> {
     let id = executionId;
     let performed = false;
-    for (let hop = 0; hop <= maxHops; hop++) {
+    for (let hop = 0; hop <= this.maxChainHops; hop++) {
+      // a hop past the addressed id is authorized against ITS owner before anything is cancelled
+      if (hop > 0 && recheck !== undefined) await recheck(id);
       let state: ExecutionState | null;
       const live = this.liveHandles.get(id);
       if (live !== undefined) {
@@ -5341,11 +5432,18 @@ export class WorkflowRuntime {
       let next: string | undefined;
       if (state.status === "continued") {
         const to = state.variables._continuedTo;
-        // Only a VERIFIED link is cancelled into: a pointer at a foreign id stops the cascade.
-        next =
-          typeof to === "string" && to.length > 0 && (await this.verifiedHop(id, to))
-            ? to
-            : undefined;
+        // Routed to the chain's newest verified generation (a continued member has nothing left to
+        // cancel), else only a VERIFIED single link is cancelled into: a pointer at a foreign id
+        // stops the cascade.
+        const first = (await readRangeOf(this.eventStore, id, 0, 0))[0];
+        const routed = first === undefined ? undefined : await this.routeToDeepest(id, first);
+        if (routed !== undefined) next = routed.id;
+        else {
+          next =
+            typeof to === "string" && to.length > 0 && (await this.verifiedHop(id, to))
+              ? to
+              : undefined;
+        }
       }
       if (
         next === undefined &&
@@ -5361,11 +5459,7 @@ export class WorkflowRuntime {
     // More links than `maxChainHops`: the cancel did NOT reach the head. Say so, naming it, rather
     // than report a cancellation that left a live generation behind.
     const at = await this.foldState(id);
-    throw new ChainHopLimitError(
-      executionId,
-      this.maxChainHops,
-      at === null ? id : await this.deepestGeneration(id, chainOfState(at, id))
-    );
+    throw new ChainHopLimitError(executionId, this.maxChainHops, id);
   }
 
   /**

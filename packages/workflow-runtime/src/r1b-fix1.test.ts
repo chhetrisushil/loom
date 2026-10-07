@@ -167,33 +167,6 @@ describe("P2-1 - successor ids of ::-derived chains are reserved too", () => {
   });
 });
 
-describe("P2-2 - system followers are not bounded by maxChainHops", () => {
-  const hop = () =>
-    flow<{ n?: number }, unknown>("hop12", async (ctx, input) => {
-      const n = input?.n ?? 0;
-      if (n >= 12) {
-        await ctx.suspend({ on: "end" });
-        return "end";
-      }
-      return ctx.continueAsNew({ n: n + 1 });
-    });
-
-  it("followToHead({unbounded}) reaches a head 12 generations away; the client walk is still bounded", async () => {
-    const h = build({ ...on, maxChainHops: 8 });
-    const f = hop();
-    h.rt.registerFlow(f.definition, f.runner);
-    await settle(await h.rt.start(f, {}, { executionId: "c" }));
-    await until(async () => (await status(h, "c~12")) === "suspended");
-    await expect(h.rt.followToHead("c")).rejects.toBeInstanceOf(ChainHopLimitError);
-    const head = await h.rt.followToHead("c", { unbounded: true });
-    expect(head?.executionId).toBe("c~12");
-    expect(head?.hops).toBe(12);
-    // an unbounded cancel reaches the head too
-    expect(await h.rt.cancel("c", "stop", { unbounded: true })).toBe(true);
-    expect(await status(h, "c~12")).toBe("cancelled");
-  });
-});
-
 describe("P2-3 - continueAsNew never raises a timing-dependent refusal", () => {
   const drain = () =>
     flow<{ c?: string }, unknown>("drain", async (ctx, input) => {
