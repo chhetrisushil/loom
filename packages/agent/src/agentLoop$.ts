@@ -10,7 +10,7 @@ import type {
   LlmToolResultPartInput,
   LlmToolSpecInput,
 } from "@loom/llm";
-import { assistantMessageOf } from "@loom/llm";
+import { MAX_INLINE_TOTAL_BYTES, assistantMessageOf } from "@loom/llm";
 import type { TieredMemory } from "@loom/memory";
 import type { ModelInvoker, ReasoningRuntime } from "@loom/reasoning";
 import { approvalViewDigest } from "@loom/workflow-runtime";
@@ -18,7 +18,7 @@ import type { ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { createAgentModelEffect } from "./createAgentModelEffect";
-import { toolResultPart } from "./toolResultContent";
+import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
@@ -266,12 +266,19 @@ const UTF8 = new TextEncoder();
 const textBytes = (t: LlmContent): number =>
   UTF8.encode(typeof t === "string" ? t : t.value).length;
 
-/**
- * Journaled-size measure of one part. Text is its UTF-8 length (unwrapping taint, ADR 0085,
- * without stripping it); inline media is its base64 length; a claim-checked ref costs its
- * address plus a constant (the bytes are not in the log); `tool_use` / `tool_result` count their
- * ids, names and serialized input. Every term is a pure function of the part's own value.
- */
+// ── The compaction measure is the PRE-R5 measure, on purpose ──────────────────
+//
+// R5 changed the transcript's shape (one assistant message + ONE user message of `tool_result` parts
+// per turn, where it was one assistant message + one user message PER RESULT). The compaction trigger
+// (`afterMessages` / `afterBytes`) and the kept-suffix size are decided from that transcript, and the
+// summary frame's id (`#turn:<t>:compact`) is a function of WHEN they fire. A measure over the new
+// shape would fire on different turns, so a run recorded by the old body and resumed by the new one
+// would ask for frames the log does not hold and skip ones it does (a replay divergence). So the
+// trigger is computed over a VIRTUAL transcript: one entry per message the old body would have held,
+// each with the byte size the old body measured. Physical messages carry how many virtual entries
+// they stand for (`physOld`). Everything below is a pure function of journaled values.
+
+/** Bytes of one part that has no pre-R5 equivalent (media, `tool_use`): its journaled size. */
 function partBytes(p: LlmContentPartInput): number {
   switch (p.type) {
     case "text":
@@ -283,21 +290,23 @@ function partBytes(p: LlmContentPartInput): number {
     case "tool_use":
       return p.id.length + p.name.length + JSON.stringify(p.input ?? null).length;
     case "tool_result":
-      return (
-        p.toolUseId.length +
-        (typeof p.content === "string" || !Array.isArray(p.content)
-          ? textBytes(p.content as LlmContent)
-          : p.content.reduce((n, r) => n + partBytes(r), 0))
-      );
+      return p.toolUseId.length + resultContentBytes(p.content);
   }
 }
 
-/** UTF-8 byte length of a message's content (see {@link partBytes}). */
-function messageBytes(msg: LlmMessageInput): number {
-  const c = msg.content;
-  return typeof c === "string" || !Array.isArray(c)
-    ? textBytes(c as LlmContent)
-    : c.reduce((n, p) => n + partBytes(p), 0);
+function resultContentBytes(content: LlmToolResultPartInput["content"]): number {
+  return Array.isArray(content)
+    ? content.reduce((n, r) => n + partBytes(r), 0)
+    : textBytes(content as LlmContent);
+}
+
+/**
+ * The virtual size of one tool result: exactly what the old body measured for its free-standing
+ * `user` message (the UTF-8 length of the `{ tool, result }` text, taint unwrapped). A media result
+ * has no old equivalent, so it counts its parts.
+ */
+function resultBytes(part: LlmToolResultPartInput): number {
+  return resultContentBytes(part.content);
 }
 
 /** Whether a message answers tool calls — it must never be the first kept message without its call. */
@@ -310,25 +319,35 @@ function isToolResultMessage(msg: LlmMessageInput): boolean {
 }
 
 /**
- * How many of the newest messages the byte-trigger fold keeps: the longest
- * suffix whose bytes total at most `afterBytes / 2`, floored at 1 (the newest
- * message always reaches the model) and capped at `keepRecent`.
+ * How many of the newest VIRTUAL messages the byte-trigger fold keeps: the longest suffix whose
+ * bytes total at most `afterBytes / 2`, floored at 1 (the newest message always reaches the model)
+ * and capped at `keepRecent`.
  */
 function keptSuffixByBytes(
-  messages: readonly LlmMessageInput[],
+  sizes: readonly number[],
   afterBytes: number,
   keepRecent: number
 ): number {
   const halfBudget = afterBytes / 2;
   let count = 1;
-  let bytes = messageBytes(messages[messages.length - 1] as LlmMessageInput);
-  for (let i = messages.length - 2; i >= 0 && count < keepRecent; i--) {
-    const b = messageBytes(messages[i] as LlmMessageInput);
+  let bytes = sizes[sizes.length - 1] as number;
+  for (let i = sizes.length - 2; i >= 0 && count < keepRecent; i--) {
+    const b = sizes[i] as number;
     if (bytes + b > halfBudget) break;
     bytes += b;
     count++;
   }
   return count;
+}
+
+/** Decoded inline media bytes in the transcript (what `MAX_INLINE_TOTAL_BYTES` counts). */
+function inlineBytesOf(messages: readonly LlmMessageInput[]): number {
+  let n = 0;
+  for (const m of messages) {
+    if (!Array.isArray(m.content)) continue;
+    for (const p of m.content) if (p.type === "tool_result") n += inlineBytesIn(p);
+  }
+  return n;
 }
 
 /**
@@ -447,17 +466,30 @@ export async function agentLoop$(
   const menu = buildToolMenu(toolDefs);
 
   const messages: LlmMessageInput[] = [];
-  // The running byte counter behind `compaction.afterBytes`: updated at every
-  // push, O(1) amortized per message, never a re-serialization of the array —
-  // see `messageBytes` above for why that keeps it replay-deterministic.
+  // The virtual (pre-R5-shaped) transcript behind compaction's triggers: `oldSizes` holds one byte
+  // size per message the old body would have held; `physOld[i]` is how many of them `messages[i]`
+  // stands for (the invariant: they sum to `oldSizes.length`); `transcriptBytes` is their sum. All
+  // updated per push, O(1) amortized, never a re-serialization — see the block comment above.
+  let oldSizes: number[] = [];
+  let physOld: number[] = [];
   let transcriptBytes = 0;
-  const pushMessage = (msg: LlmMessageInput): void => {
+  let inlineUsed = 0;
+  const pushMessage = (msg: LlmMessageInput, sizes: readonly number[]): void => {
     messages.push(msg);
-    transcriptBytes += messageBytes(msg);
+    physOld.push(sizes.length);
+    for (const b of sizes) {
+      oldSizes.push(b);
+      transcriptBytes += b;
+    }
   };
-  const pushMessages = (...msgs: LlmMessageInput[]): void => {
-    for (const msg of msgs) pushMessage(msg);
-  };
+  const textMessage = (msg: LlmMessageInput & { content: string }): void =>
+    pushMessage(msg, [UTF8.encode(msg.content).length]);
+  const assistantTurn = (response: { content: string; toolCalls?: readonly LlmToolCall[] }): void =>
+    // The old body journaled the placeholder text for a tool-only turn; its length is what it measured.
+    pushMessage(assistantMessageOf(response), [
+      UTF8.encode(response.content || "(tool calls)").length,
+    ]);
+  const mediaTools = new Set(toolDefs.filter((t) => t.returnsMedia === true).map((t) => t.id));
 
   if (config.memory !== undefined) {
     const tier = config.memoryTier ?? "working";
@@ -470,13 +502,13 @@ export async function agentLoop$(
       decisionKey: `${idPrefix}#recall`,
     });
     for (const entry of recalled) {
-      pushMessage({
+      textMessage({
         role: entry.role === "assistant" ? "assistant" : "user",
         content: String(entry.content),
       });
     }
   }
-  pushMessage({
+  textMessage({
     role: "user",
     content:
       input.context != null
@@ -570,12 +602,19 @@ export async function agentLoop$(
         toolInput: toolCall.input,
         toolOutput: output,
       });
-      results.push(toolResultPart(toolCall.id, toolCall.name, output, { isError }));
+      const part = toolResultPart(toolCall.id, toolCall.name, output, {
+        isError,
+        allowMedia: mediaTools.has(toolCall.name),
+        inlineBudget: MAX_INLINE_TOTAL_BYTES - inlineUsed,
+      });
+      inlineUsed += inlineBytesIn(part);
+      results.push(part);
     }
     // R5 — ONE user message answers all of the turn's calls, after the assistant message that
     // made them (providers require that adjacency). Pushed only once every call has run, so a
     // park on the approval gate mid-turn leaves the transcript as it was.
-    if (results.length > 0) pushMessage({ role: "user", content: results });
+    if (results.length > 0)
+      pushMessage({ role: "user", content: results }, results.map(resultBytes));
   };
 
   while (iterations < maxIterations) {
@@ -587,46 +626,69 @@ export async function agentLoop$(
     const compaction = config.compaction;
     if (compaction !== undefined) {
       const overMessages =
-        compaction.afterMessages !== undefined && messages.length > compaction.afterMessages;
+        compaction.afterMessages !== undefined && oldSizes.length > compaction.afterMessages;
       const overBytes =
         compaction.afterBytes !== undefined && transcriptBytes > compaction.afterBytes;
 
       if (overMessages || overBytes) {
         const keepRecent = compaction.keepRecent ?? 4;
         // The byte trigger sizes its own kept suffix (longest run ≤ half the
-        // budget); the message trigger keeps the original fixed count — G2.
-        const keep = overBytes
-          ? keptSuffixByBytes(messages, compaction.afterBytes as number, keepRecent)
+        // budget); the message trigger keeps the original fixed count — G2. Both over the VIRTUAL
+        // transcript, so they match what the old body decided.
+        const keepOld = overBytes
+          ? keptSuffixByBytes(oldSizes, compaction.afterBytes as number, keepRecent)
           : keepRecent;
-        // R5 — never start the kept suffix on a `tool_result` message: its `tool_use` would be
-        // folded away and the provider rejects an orphan result. Pull the assistant turn in.
-        let keepCount = keep;
-        while (
-          keepCount < messages.length &&
-          isToolResultMessage(messages[messages.length - keepCount] as LlmMessageInput)
-        ) {
-          keepCount++;
-        }
-        const foldLength = messages.length - keepCount;
 
-        if (foldLength > 0) {
-          const fold = messages.slice(0, foldLength);
-          const recent = messages.slice(foldLength);
-          const { summary } = (await ctx.execute(
-            {
-              _tag: "TaskDefinition",
-              kind: "memory",
-              id: `${idPrefix}#turn:${turn}:compact`,
-              toolId: compaction.toolId,
-            },
-            { messages: fold }
-          )) as { summary: string };
-          messages.length = 0;
-          transcriptBytes = 0;
-          pushMessages(
-            { role: "user", content: `Summary of earlier turns: ${summary}` },
-            ...recent
-          );
+        if (oldSizes.length - keepOld > 0) {
+          // The smallest physical suffix standing for at least `keepOld` virtual messages...
+          let keepPhys = 0;
+          for (let covered = 0; covered < keepOld && keepPhys < messages.length; ) {
+            keepPhys++;
+            covered += physOld[messages.length - keepPhys] as number;
+          }
+          // ...never starting on a `tool_result` message: its `tool_use` would be folded away and the
+          // provider rejects an orphan result. Pull the assistant turn in.
+          while (
+            keepPhys > 0 &&
+            keepPhys < messages.length &&
+            isToolResultMessage(messages[messages.length - keepPhys] as LlmMessageInput)
+          ) {
+            keepPhys++;
+          }
+          const foldLength = messages.length - keepPhys;
+
+          if (foldLength > 0) {
+            const fold = messages.slice(0, foldLength);
+            const recent = messages.slice(foldLength);
+            const { summary } = (await ctx.execute(
+              {
+                _tag: "TaskDefinition",
+                kind: "memory",
+                id: `${idPrefix}#turn:${turn}:compact`,
+                toolId: compaction.toolId,
+              },
+              { messages: fold }
+            )) as { summary: string };
+            const summaryText = `Summary of earlier turns: ${summary}`;
+            // Rebuild the virtual transcript exactly as the old body would hold it: the summary plus
+            // its `keepOld` newest messages. Physical messages pulled in beyond that (the alignment's
+            // assistant turn) stand for none of them.
+            const keptSizes = keepOld > 0 ? oldSizes.slice(oldSizes.length - keepOld) : [];
+            let remaining = keepOld;
+            const newPhysOld: number[] = new Array(recent.length).fill(0);
+            for (let k = recent.length - 1; k >= 0 && remaining > 0; k--) {
+              const take = Math.min(physOld[foldLength + k] as number, remaining);
+              newPhysOld[k] = take;
+              remaining -= take;
+            }
+            const summarySize = UTF8.encode(summaryText).length;
+            messages.length = 0;
+            messages.push({ role: "user", content: summaryText }, ...recent);
+            physOld = [1, ...newPhysOld];
+            oldSizes = [summarySize, ...keptSizes];
+            transcriptBytes = oldSizes.reduce((n, b) => n + b, 0);
+            inlineUsed = inlineBytesOf(messages);
+          }
         }
         // Else the kept suffix already covers the whole transcript — one
         // message alone is over `afterBytes` — so compaction is skipped for
@@ -674,7 +736,7 @@ export async function agentLoop$(
       );
       lastContent = routed.content;
       if (routed.stopReason === "end_turn" || !routed.toolCalls?.length) break;
-      pushMessage(assistantMessageOf(routed));
+      assistantTurn(routed);
       await runToolCalls(routed.toolCalls, turn);
       continue;
     }
@@ -700,7 +762,7 @@ export async function agentLoop$(
     lastContent = response.content;
     if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
 
-    pushMessage(assistantMessageOf(response));
+    assistantTurn(response);
 
     await runToolCalls(response.toolCalls, turn);
   }

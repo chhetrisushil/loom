@@ -40,7 +40,7 @@ export {
   mediaTypeAccepted,
   requestMediaParts,
 } from "./capabilities";
-export type { ContentResolver } from "./resolveContent";
+export type { ContentResolveContext, ContentResolver } from "./resolveContent";
 export {
   MAX_RESOLVED_BYTES,
   UnresolvedContentError,
@@ -50,11 +50,15 @@ export {
 export {
   InvalidLlmRequestError,
   MAX_INLINE_BYTES,
+  MAX_INLINE_TOTAL_BYTES,
   OversizedInlinePartError,
   UNTRUSTED_CONTENT_SYSTEM_NOTE,
   UntrustedContentError,
   fence,
+  fenceUntrustedMedia,
   guardRequest,
+  stripUntrusted,
+  untrustedFence,
   validateMediaPart,
 } from "./untrusted";
 export type { GuardOptions } from "./untrusted";

@@ -42,6 +42,8 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
   resolveContent?: ContentResolver;
   /** R5 — cap on one inline media part, decoded. Default 64 KiB (`MAX_INLINE_BYTES`). */
   maxInlineBytes?: number;
+  /** R5 — cap on ALL inline media in one request. Default 256 KiB (`MAX_INLINE_TOTAL_BYTES`). */
+  maxInlineTotalBytes?: number;
   /** R5 — cap on the total bytes `resolveContent` may return for one request. Default 32 MiB. */
   maxResolvedBytes?: number;
   /**
@@ -53,6 +55,14 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
     delta: { id: string; name?: string; inputDelta: string },
     ctx: EffectContext
   ) => void;
+  /**
+   * R5 — a retried attempt `attempt` (> 1) is about to stream: discard the fragments
+   * {@link onToolDelta} delivered so far (the same contract as {@link onReset} for text). Called
+   * once per retry, via the same runtime reset chunk as `onReset`. Like `onToolDelta`, it sits OUTSIDE the governed
+   * channel: no middleware delta guard or output validator sees tool-input fragments, and
+   * `streamTokenBudget` meters the text only.
+   */
+  onToolReset?: (attempt: number, ctx: EffectContext) => void;
   /**
    * Where deltas go. TRANSIENT by construction — this effect never journals them,
    * and must not: chunks-as-events is the fold-economics problem ST-R rejected,
@@ -107,6 +117,9 @@ export function createLlmEffect<TIn = string, TOut = string>(
       // plain strings — so no provider has to know taint exists.
       const guarded = guardRequest(options.buildRequest(input, ctx), {
         ...(options.maxInlineBytes !== undefined && { maxInlineBytes: options.maxInlineBytes }),
+        ...(options.maxInlineTotalBytes !== undefined && {
+          maxInlineTotalBytes: options.maxInlineTotalBytes,
+        }),
       });
       // R5 — fail closed on an undeclared modality BEFORE fetching any content or touching the
       // network, then turn claim-check refs into bytes (live calls only).
@@ -114,6 +127,11 @@ export function createLlmEffect<TIn = string, TOut = string>(
       const request = await resolveRequestContent(guarded, options.resolveContent, {
         ...(options.maxResolvedBytes !== undefined && { maxBytes: options.maxResolvedBytes }),
         ...(ctx.signal !== undefined && { signal: ctx.signal }),
+        context: {
+          executionId: ctx.executionId,
+          stepId: ctx.stepId,
+          ...(ctx.principal !== undefined && { principal: ctx.principal }),
+        },
       });
       // K8.1 — forward the effect's cooperative-cancellation signal to the
       // provider (unless buildRequest already set one), so a cancelled/timed-out
@@ -168,10 +186,14 @@ export function createLlmEffect<TIn = string, TOut = string>(
     // only when the provider implements one.
     {
       ...(options.provider.warm !== undefined && { warm: () => options.provider.warm?.() }),
-      ...((options.onDelta !== undefined || options.onReset !== undefined) && {
+      ...((options.onDelta !== undefined ||
+        options.onReset !== undefined ||
+        options.onToolReset !== undefined) && {
         deltaSink: (chunk: EffectDelta, ctx: EffectContext) => {
-          if (chunk.reset === true) options.onReset?.(chunk.attempt ?? 2, ctx);
-          else if (chunk.done !== true) options.onDelta?.(unwrapTainted(chunk.delta), ctx);
+          if (chunk.reset === true) {
+            options.onReset?.(chunk.attempt ?? 2, ctx);
+            options.onToolReset?.(chunk.attempt ?? 2, ctx);
+          } else if (chunk.done !== true) options.onDelta?.(unwrapTainted(chunk.delta), ctx);
         },
       }),
     }

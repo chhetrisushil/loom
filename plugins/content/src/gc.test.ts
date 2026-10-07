@@ -625,6 +625,59 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5�
     expect(await content.get(inFlight)).not.toBeNull(); // younger than the TTL — may be in flight
   });
 
+  it('R5 (ADR 0120): an LLM media ref cited as { kind: "ref", ref: { address } } pins its blob — an orphan sweep does not reclaim it', async () => {
+    const { clock, content } = clockedStore(OLD);
+    const cited = await content.put(
+      bytes("a chart image a tool returned, cited in a model-call input")
+    );
+    const unrelated = await content.put(bytes("put, then the process died before the append"));
+    clock.now = NOW; // 10 days of aging past OLD, well over the TTL
+    const live = new InMemoryAsyncEventStore();
+    await live.append(evt("run", 0, "EXECUTION_STARTED", { input: {} }, OLD));
+    await live.append(
+      evt(
+        "run",
+        1,
+        "STEP_COMPLETED",
+        {
+          output: {
+            messages: [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "tool_result",
+                    toolUseId: "c1",
+                    content: [
+                      {
+                        type: "image",
+                        mediaType: "image/png",
+                        source: { kind: "ref", ref: { address: cited.__loomContent } },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        OLD
+      )
+    );
+    const swept = await sweepUnpinnedContent({
+      eventStores: [live],
+      snapshotStores: [NO_SNAPSHOTS],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+      reclaimOrphans: true,
+    });
+    expect(swept.orphansReclaimed).toEqual([unrelated.__loomContent]);
+    expect(await content.get(cited)).not.toBeNull();
+    expect(await content.get(unrelated)).toBeNull();
+  });
+
   it("an external root set pins a blob through BOTH passes — an app table the log never sees", async () => {
     const { clock, content } = clockedStore(OLD);
     const onlyInAppTable = await content.put(bytes("a saved dashboard's frozen snapshot"));

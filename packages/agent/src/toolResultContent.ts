@@ -5,7 +5,12 @@ import type {
   LlmResultPartInput,
   LlmToolResultPartInput,
 } from "@loom/llm";
-import { MAX_INLINE_BYTES, validateMediaPart } from "@loom/llm";
+import {
+  MAX_INLINE_BYTES,
+  MAX_INLINE_TOTAL_BYTES,
+  base64ByteLength,
+  validateMediaPart,
+} from "@loom/llm";
 
 // ── R5 — a tool's output as a `tool_result` part ─────────────────────────────
 
@@ -15,6 +20,9 @@ import { MAX_INLINE_BYTES, validateMediaPart } from "@loom/llm";
  * the `tool_result`'s content. Put large bytes in the ContentStore and return a
  * `{ kind: "ref" }` source: an inline `data` source rides in the tool's output, which is
  * journaled, and is capped (`MAX_INLINE_BYTES`) for exactly that reason.
+ *
+ * Honoured only for a tool whose definition declares `returnsMedia: true`, and never for a tainted
+ * output (see {@link toolResultPart}).
  */
 export interface ToolMediaResult {
   readonly __loomMediaResult: true;
@@ -54,26 +62,47 @@ export function toolResultContent(toolName: string, toolOutput: unknown): LlmCon
   return tainted(body, origin);
 }
 
+/** Decoded inline-media bytes in a `tool_result` part (refs cost nothing here). */
+export function inlineBytesIn(part: LlmToolResultPartInput): number {
+  if (!Array.isArray(part.content)) return 0;
+  let n = 0;
+  for (const r of part.content) {
+    if (r.type !== "text" && r.source.kind === "data") n += base64ByteLength(r.source.data) ?? 0;
+  }
+  return n;
+}
+
 /**
  * The `tool_result` part answering `toolUseId` with `toolOutput`.
  *
  * Text results keep the `{ tool, result }` JSON envelope and the taint rules above, now as a
- * `tool_result` part instead of a free-standing user message. A {@link ToolMediaResult}
- * becomes content parts; when the output is tainted, every text part is tainted and every
- * media part is marked `untrusted`, so `guardRequest` fences/brackets all of it. A media
- * part that fails validation (bad type, bad base64, inline over the cap) is NOT fed to the
- * model or the log: it becomes an `isError` result saying why, so the model can recover.
+ * `tool_result` part instead of a free-standing user message.
+ *
+ * A {@link ToolMediaResult} becomes content parts ONLY when `allowMedia` is set (the loop passes the
+ * tool definition's `returnsMedia`) AND the output is not tainted. The marker is a shape any JSON
+ * can have, so honouring it unconditionally let a web page / MCP server / peer agent return
+ * `{ __loomMediaResult, parts: [{ source: { kind: "ref", ref: { address } } }] }` and choose which
+ * stored blob was fetched into the prompt (the ContentStore has no tenancy). Otherwise it is just data
+ * and goes through the text path, tainted or not.
+ *
+ * A media part that fails validation (bad type, bad base64, inline over `maxInlineBytes` or over the
+ * `inlineBudget` left in the transcript, an `untrusted` part naming a ref) is NOT fed to the model or
+ * the log: it becomes an `isError` result saying why, so the model can recover.
  */
 export function toolResultPart(
   toolUseId: string,
   toolName: string,
   toolOutput: unknown,
-  options: { isError?: boolean; maxInlineBytes?: number } = {}
+  options: {
+    isError?: boolean;
+    maxInlineBytes?: number;
+    /** Inline media bytes the transcript can still take (default `MAX_INLINE_TOTAL_BYTES`). */
+    inlineBudget?: number;
+    allowMedia?: boolean;
+  } = {}
 ): LlmToolResultPartInput {
   const isError = options.isError === true;
-  const origin = taintOf(toolOutput)?.origin;
-  const inner = isTainted(toolOutput) ? unwrapTainted(toolOutput) : toolOutput;
-  if (!isMediaResult(inner)) {
+  if (options.allowMedia !== true || isTainted(toolOutput) || !isMediaResult(toolOutput)) {
     return {
       type: "tool_result",
       toolUseId,
@@ -82,27 +111,36 @@ export function toolResultPart(
     };
   }
   const content: LlmResultPartInput[] = [];
+  let inline = 0;
+  const budget = options.inlineBudget ?? MAX_INLINE_TOTAL_BYTES;
   try {
-    for (const p of inner.parts) {
+    for (const p of toolOutput.parts) {
       if (p.type === "text") {
-        content.push({
-          type: "text",
-          text: origin === undefined ? p.text : tainted(p.text, origin),
-        });
-      } else {
-        validateMediaPart(p, options.maxInlineBytes ?? MAX_INLINE_BYTES);
-        content.push(origin === undefined ? p : { ...p, untrusted: { origin } });
+        content.push({ type: "text", text: p.text });
+        continue;
       }
+      validateMediaPart(p, options.maxInlineBytes ?? MAX_INLINE_BYTES);
+      if (p.untrusted !== undefined && p.source.kind === "ref") {
+        throw new Error("an untrusted media part cannot name a stored ref");
+      }
+      if (p.source.kind === "data") {
+        inline += base64ByteLength(p.source.data) ?? 0;
+        if (inline > budget) {
+          throw new Error(
+            `inline media would exceed the ${budget} bytes the transcript can still hold; store it and return a ref`
+          );
+        }
+      }
+      content.push(p);
     }
   } catch (err) {
-    const body = JSON.stringify({
-      tool: toolName,
-      error: { code: "invalid_media_result", message: String((err as Error).message) },
-    });
     return {
       type: "tool_result",
       toolUseId,
-      content: origin === undefined ? body : tainted(body, origin),
+      content: JSON.stringify({
+        tool: toolName,
+        error: { code: "invalid_media_result", message: String((err as Error).message) },
+      }),
       isError: true,
     };
   }

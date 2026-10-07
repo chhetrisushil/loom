@@ -1,7 +1,12 @@
-import { type LlmCapabilities, assertRequestSupported } from "../capabilities";
-import { type LlmMediaPart, textOf } from "../parts";
+import {
+  type LlmCapabilities,
+  assertRequestSupported,
+  capabilitiesForModel,
+} from "../capabilities";
+import { type LlmMediaPart, type LlmResultPart, textOf } from "../parts";
 import { inlineData } from "../resolveContent";
 import type { LlmMessage, LlmProvider, LlmRequest, LlmResponse, LlmToolCall } from "../types";
+import { fenceUntrustedMedia } from "../untrusted";
 
 export interface GeminiProviderConfig {
   apiKey?: string;
@@ -17,6 +22,9 @@ const GEMINI_CAPABILITIES: LlmCapabilities = {
   audio: ["audio/wav", "audio/mp3", "audio/mpeg", "audio/aac", "audio/ogg", "audio/flac"],
   file: ["application/pdf", "text/plain"],
 };
+
+/** Known text-only ids (the original Gemini 1.0 Pro; `gemini-pro-vision` is a different id). */
+const GEMINI_TEXT_ONLY = [/^gemini-1\.0-pro(-0\d+)?$/, /^gemini-pro$/];
 
 /** Gemini returns no call id by default; the ones we synthesise carry this prefix and are never sent back. */
 const SYNTHETIC_ID = "gemini-call-";
@@ -56,7 +64,7 @@ export function mapContents(messages: readonly LlmMessage[]): Record<string, unk
     }
     const parts: Record<string, unknown>[] = [];
     const trailing: Record<string, unknown>[] = [];
-    for (const p of m.content) {
+    for (const p of fenceUntrustedMedia(m.content)) {
       switch (p.type) {
         case "text":
           parts.push({ text: p.text });
@@ -89,7 +97,14 @@ export function mapContents(messages: readonly LlmMessage[]): Record<string, unk
               response: p.isError === true ? { error: text } : { output: text },
             },
           });
-          for (const r of items) if (r.type !== "text") trailing.push(inlineBlock(r));
+          for (const r of items) {
+            if (r.type === "text") continue;
+            // The fence travels with the media into the trailing parts; the functionResponse
+            // holds text only.
+            for (const q of fenceUntrustedMedia<LlmResultPart>([r])) {
+              trailing.push(q.type === "text" ? { text: q.text } : inlineBlock(q));
+            }
+          }
           break;
         }
       }
@@ -110,7 +125,9 @@ export class GeminiProvider implements LlmProvider {
   readonly capabilities: LlmCapabilities;
 
   constructor(config: GeminiProviderConfig = {}) {
-    this.capabilities = config.capabilities ?? GEMINI_CAPABILITIES;
+    const model = config.model ?? "gemini-2.0-flash";
+    this.capabilities =
+      config.capabilities ?? capabilitiesForModel(model, GEMINI_CAPABILITIES, GEMINI_TEXT_ONLY);
     this.apiKey =
       config.apiKey ??
       (typeof process !== "undefined"

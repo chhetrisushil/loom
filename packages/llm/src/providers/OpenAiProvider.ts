@@ -1,5 +1,9 @@
-import { type LlmCapabilities, assertRequestSupported } from "../capabilities";
-import { type LlmMediaPart, textOf } from "../parts";
+import {
+  type LlmCapabilities,
+  assertRequestSupported,
+  capabilitiesForModel,
+} from "../capabilities";
+import { type LlmMediaPart, type LlmResultPart, textOf } from "../parts";
 import { inlineData } from "../resolveContent";
 import type {
   LlmMessage,
@@ -9,6 +13,7 @@ import type {
   LlmStreamChunk,
   LlmToolCall,
 } from "../types";
+import { fenceUntrustedMedia } from "../untrusted";
 
 /**
  * OpenAI's `finish_reason` → the SPI's. ONE implementation shared by `complete`
@@ -43,6 +48,9 @@ const OPENAI_CAPABILITIES: LlmCapabilities = {
   audio: ["audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3"],
   file: ["application/pdf"],
 };
+
+/** Known text-only chat models (no `image_url` input). */
+const OPENAI_TEXT_ONLY = [/^gpt-3\.5/, /^o1-(mini|preview)/, /^o3-mini/, /^gpt-4-(0613|32k)/];
 
 function dataUrl(p: LlmMediaPart): string {
   return `data:${p.mediaType};base64,${inlineData(p)}`;
@@ -111,18 +119,21 @@ export function mapMessages(messages: readonly LlmMessage[]): Record<string, unk
     }
     const userBlocks: Record<string, unknown>[] = [];
     const toolMedia: Record<string, unknown>[] = [];
-    for (const p of m.content) {
+    for (const p of fenceUntrustedMedia(m.content)) {
       if (p.type === "tool_result") {
         const items =
           typeof p.content === "string" ? [{ type: "text" as const, text: p.content }] : p.content;
         const text = items.flatMap((r) => (r.type === "text" ? [r.text] : [])).join("\n");
         out.push({ role: "tool", tool_call_id: p.toolUseId, content: text });
         for (const r of items) {
-          if (r.type !== "text") {
-            if (toolMedia.length === 0) {
-              toolMedia.push({ type: "text", text: `Media returned by tool call ${p.toolUseId}:` });
-            }
-            toolMedia.push(mediaBlock(r));
+          if (r.type === "text") continue;
+          if (toolMedia.length === 0) {
+            toolMedia.push({ type: "text", text: `Media returned by tool call ${p.toolUseId}:` });
+          }
+          // The fence travels WITH the media into the trailing user message; the `tool` message
+          // (text only) never holds the bytes, so a bracket left there would fence nothing.
+          for (const q of fenceUntrustedMedia<LlmResultPart>([r])) {
+            toolMedia.push(q.type === "text" ? { type: "text", text: q.text } : mediaBlock(q));
           }
         }
       } else if (p.type === "text") userBlocks.push({ type: "text", text: p.text });
@@ -167,7 +178,16 @@ export class OpenAiProvider implements LlmProvider {
   readonly capabilities: LlmCapabilities;
 
   constructor(config: OpenAiProviderConfig = {}) {
-    this.capabilities = config.capabilities ?? OPENAI_CAPABILITIES;
+    const model = config.model ?? "gpt-4o";
+    // `input_audio` is only accepted by the audio-preview family, not by gpt-4o proper.
+    const { audio: _audio, ...noAudio } = OPENAI_CAPABILITIES;
+    this.capabilities =
+      config.capabilities ??
+      capabilitiesForModel(
+        model,
+        /audio/.test(model) ? OPENAI_CAPABILITIES : noAudio,
+        OPENAI_TEXT_ONLY
+      );
     this.apiKey =
       config.apiKey ?? (typeof process !== "undefined" ? (process.env.OPENAI_API_KEY ?? "") : "");
     this.model = config.model ?? "gpt-4o";

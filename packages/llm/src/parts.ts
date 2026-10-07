@@ -40,18 +40,22 @@ export interface LlmTextPart {
   type: "text";
   text: string;
 }
-export interface LlmImagePart {
+/** Provenance for a media part whose bytes came from an untrusted party (see `guardRequest`). */
+export interface LlmUntrustedMark {
+  untrusted?: { origin: string };
+}
+export interface LlmImagePart extends LlmUntrustedMark {
   type: "image";
   /** e.g. `image/png`. */
   mediaType: string;
   source: LlmBinarySource;
 }
-export interface LlmAudioPart {
+export interface LlmAudioPart extends LlmUntrustedMark {
   type: "audio";
   mediaType: string;
   source: LlmBinarySource;
 }
-export interface LlmFilePart {
+export interface LlmFilePart extends LlmUntrustedMark {
   type: "file";
   mediaType: string;
   source: LlmBinarySource;
@@ -95,9 +99,11 @@ export interface LlmTextPartInput {
 /**
  * A media part whose bytes came from an untrusted party. `untrusted` is the media
  * analogue of `tainted()` on text: `guardRequest` refuses it outside a `user`
- * message and, inside one, brackets it with the same fence tags as text.
+ * message, refuses one that names a stored `ref`, and leaves the mark on the part; the provider
+ * mappers bracket it with the same fence tags as text (`fenceUntrustedMedia`) where their wire
+ * shape allows — the fence must travel with the media, which not every wire keeps in one message.
  */
-export type LlmMediaPartInput = LlmMediaPart & { untrusted?: { origin: string } };
+export type LlmMediaPartInput = LlmMediaPart;
 export type LlmResultPartInput = LlmTextPartInput | LlmMediaPartInput;
 export interface LlmToolResultPartInput {
   type: "tool_result";

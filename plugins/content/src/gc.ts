@@ -33,6 +33,13 @@ function envelopeRef(value: object): string | undefined {
   return typeof address === "string" ? address : undefined;
 }
 
+/** The address of an R5 media source `{ kind: "ref", ref: { address: string } }`, if `value` is one. */
+function mediaSourceAddress(value: object): string | undefined {
+  if ((value as { kind?: unknown }).kind !== "ref") return undefined;
+  const address = (value as { ref?: { address?: unknown } | null }).ref?.address;
+  return typeof address === "string" ? address : undefined;
+}
+
 /**
  * Collect content addresses out of an event payload. Any object carrying a
  * string `__loomContent` is a ref leaf — this covers bare ADR 0046
@@ -70,6 +77,16 @@ function collectContentRefs(
     }
     if (Array.isArray(current)) {
       for (const item of current) stack.push(item);
+      continue;
+    }
+    // R5 (ADR 0120) — an LLM media source `{ kind: "ref", ref: { address } }` cites a blob by its
+    // address WITHOUT the `__loomContent` marker (deliberately: the resolving store would
+    // JSON-decode that marker). It is as load-bearing as a bare ref — a live model call resolves
+    // it, and erasing it makes the next call fail — so the mark phase must see it, or the sweep
+    // would reclaim media the transcript still cites.
+    const mediaAddress = mediaSourceAddress(current);
+    if (mediaAddress !== undefined) {
+      visit(mediaAddress, false);
       continue;
     }
     const offloaded = envelopeRef(current);

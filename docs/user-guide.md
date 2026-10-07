@@ -1524,28 +1524,40 @@ failing tool is `isError`). There is no `tool` role: each provider maps the one 
 ```ts
 import { mediaResult } from "@loom/agent";
 
-// A tool hands the model an image by CLAIM-CHECK: store the bytes, return the address.
+// A tool hands the model an image by CLAIM-CHECK: store the bytes, return the address. The tool must be
+// declared by the operator — `tool$({ ..., returnsMedia: true })` — or its result is just data.
 const ref = await contentStore.put(png);
 return mediaResult([
   { type: "text", text: "latency by region" },
   { type: "image", mediaType: "image/png", source: { kind: "ref", ref: { address: ref.__loomContent, size: png.length } } },
 ]);
 
-// Resolve the address to bytes at call time — the journal keeps only the address.
+// Resolve the address to bytes at call time — the journal keeps only the address. The resolver MUST
+// authorize: the store is content-addressed with no tenancy, so check that this execution may read it.
 effects.register(
   "model",
   createAgentModelEffect(new AnthropicProvider(), {
-    resolveContent: async (r) => contentStore.get({ __loomContent: r.address }),
+    resolveContent: async (r, { executionId, principal, maxBytes }) => {
+      if (!(await mayRead(principal, executionId, r.address))) return null;
+      return contentStore.get({ __loomContent: r.address });
+    },
   })
 );
 ```
 
-Inline `{ kind: "data" }` media is capped at 64 KiB so the durable log can never carry real media; over the
-cap is refused (a tool's oversized inline result becomes an `isError` result the model can recover from).
-A provider declares which modalities it takes (`capabilities`); anything else throws
-`UnsupportedModalityError` before a network call, and so does a ref with no `resolveContent`. Media a tool
-got from an untrusted source (`tainted(mediaResult(...), origin)`) is bracketed by the same
-`<untrusted-input>` fence as text and refused outside a `user` message. Anything that reads
+Inline `{ kind: "data" }` media is capped at 64 KiB per part and 256 KiB per request so the durable log can
+never carry real media; over the cap is refused (a tool's oversized inline result becomes an `isError` result
+the model can recover from). If a tool's ref cannot be resolved (erased, over the 32 MiB budget, a size that
+differs from the ref's declared one), the model sees an `isError` result instead of the run failing; the same
+failure for a ref your own code put in a message fails the call.
+A provider declares which modalities it takes (`capabilities`, per model for the shipped ones: known
+text-only ids declare none, and `capabilities: {}` makes any model text-only); anything else throws
+`UnsupportedModalityError` before a network call, and so does a ref with no `resolveContent`. A TAINTED tool
+output is never interpreted as media (it stays fenced text), and an untrusted media part you build yourself
+(`untrusted: { origin }`) may not name a stored ref; it is bracketed by the same `<untrusted-input>` fence as
+text and refused outside a `user` message. `onToolDelta` / `onToolReset` stream a tool call's input as it is
+generated; on a retry `onToolReset` fires so you discard the failed attempt's fragments (this channel is
+outside the delta validators). Anything that reads
 `message.content` as a string should use `textOf(content)`.
 
 ### Pre-warming (latency, advisory)
