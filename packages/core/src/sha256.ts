@@ -19,7 +19,11 @@ const K = new Uint32Array([
 
 const rotr = (x: number, n: number): number => (x >>> n) | (x << (32 - n));
 
-/** SHA-256 of the UTF-8 encoding of `text`, as 64 lowercase hex characters. */
+/**
+ * SHA-256 of the UTF-8 encoding of `text`, as 64 lowercase hex characters. `TextEncoder` replaces a
+ * lone surrogate with U+FFFD, so two strings that differ only in lone surrogates hash alike; the
+ * inputs here (flow ids, versions, step ids, tool ids) are identifiers, where that cannot matter.
+ */
 export function sha256Hex(text: string): string {
   const data = new TextEncoder().encode(text);
   const bitLen = data.length * 8;

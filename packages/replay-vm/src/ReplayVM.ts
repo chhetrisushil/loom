@@ -34,6 +34,11 @@ export class ReplayVM {
     }
   }
 
+  /** ADR 0113 D3 — every recorded frame id, in first-start order (the order the log began them). */
+  recordedFrameOrder(): string[] {
+    return Object.keys(this.state.frames);
+  }
+
   /**
    * ADR 0113 D3 — the ids of the COMPLETED frames a re-run of this execution is expected to
    * visit: every completed frame, except those recorded before the execution's last
@@ -94,6 +99,16 @@ export class ReplayVM {
     // through the prototype chain.
     if (decisions === undefined || !Object.hasOwn(decisions, decisionId)) return undefined;
     return decisions[decisionId]?.choice;
+  }
+
+  /** ADR 0113 D3 — the steps a decision's decider ran (`innerSteps`), when the record carries them. */
+  getDecisionInnerSteps(decisionId: string): readonly string[] | undefined {
+    const decisions = this.state.variables._decisions as
+      | Record<string, { innerSteps?: unknown }>
+      | undefined;
+    if (decisions === undefined || !Object.hasOwn(decisions, decisionId)) return undefined;
+    const inner = decisions[decisionId]?.innerSteps;
+    return Array.isArray(inner) ? (inner as string[]) : undefined;
   }
 
   // ADR 0102 — how many stamped flow-level emits with this content digest the log holds

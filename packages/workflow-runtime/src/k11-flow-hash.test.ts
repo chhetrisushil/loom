@@ -1,4 +1,4 @@
-import { flowContentHash, step$ } from "@loom/core";
+import { legacyFlowContentHash, step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -86,7 +86,7 @@ describe("K11.1 — flow content hash recording", () => {
 
     const events = await v1.eventStore.read("fh-1");
     const started = events.find((e: EventEnvelope) => e.eventType === "EXECUTION_STARTED");
-    const expected = flowContentHash(makeFlow(stepA).definition);
+    const expected = legacyFlowContentHash(makeFlow(stepA).definition);
     expect((started?.payload as { flowHash?: string }).flowHash).toBe(expected);
 
     const state = await v1.runtime.loadState("fh-1");

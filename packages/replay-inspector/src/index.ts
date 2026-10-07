@@ -21,7 +21,7 @@ export type {
   ReconstructOptions,
 } from "./reconstruct";
 
-export { canServePin, describePin, pinOf } from "./pinning";
+export { canServePin, canServePinFrom, describePin, pinOf } from "./pinning";
 
 export { indexByEventType, reconstructProjections } from "./projections";
 export type { ProjectionReconstructOptions } from "./projections";

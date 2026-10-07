@@ -1,4 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
+import { FLOW_DIVERGED_GATE } from "@loom/replay-vm";
 import { EFFECT_INDOUBT_RESOLVED } from "./types";
 
 // ADR 0104 D2 — finding the gate passthroughs a pre-0104 kernel recorded that answered NO
@@ -174,7 +175,7 @@ export class StrayScanner {
         this.parkedOn = on;
         this.parkedHuman = undefined;
         this.failedWhileParked = false;
-        if (on === EFFECT_INDOUBT_RESOLVED) break;
+        if (on === EFFECT_INDOUBT_RESOLVED || on === FLOW_DIVERGED_GATE) break;
         let legacy = false;
         if (typeof condition?.stepId === "string") {
           this.parkedHuman = condition.stepId;
@@ -212,7 +213,9 @@ export class StrayScanner {
           break;
         }
         const answersGate =
-          this.status === "suspended" && this.parkedOn !== EFFECT_INDOUBT_RESOLVED;
+          this.status === "suspended" &&
+          this.parkedOn !== EFFECT_INDOUBT_RESOLVED &&
+          this.parkedOn !== FLOW_DIVERGED_GATE;
         // Mirrors the fold's `isStatusOnlyResume` (1.20.0 + 1.21.0), so the entry count lines
         // up with `_resumePayloads`.
         const statusOnly = e.payload === null && (!answersGate || this.failedWhileParked);

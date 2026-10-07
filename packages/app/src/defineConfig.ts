@@ -636,6 +636,15 @@ export interface LoomConfig {
        * successor shape (`<x>~<digits>` on the root segment) applies regardless of this flag.
        */
       continueAsNew?: boolean;
+      /**
+       * ADR 0113 D1 (R7) — record the structural flow hash as `sha256:<hex>` on new starts. OFF by
+       * default because a node that predates ADR 0113 compares a recorded hash with its own 32-bit
+       * `fnv1a:` one and refuses (`FlowCodeMismatchError`) every execution a newer node started.
+       * Off, new starts keep writing `fnv1a:`; both forms are always READ. Turn it on once every
+       * node reads `sha256:`. `security.strict` does NOT turn it on: a rolling upgrade is a fleet
+       * decision, not a security posture.
+       */
+      sha256FlowHash?: boolean;
     };
     /** ADR 0109 D1/D4 — continue-as-new bounds (read only when `features.continueAsNew` is on). */
     continuation?: {
@@ -1229,6 +1238,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...((config.kernel?.divergence !== undefined || strict) && {
       divergence: config.kernel?.divergence ?? STRICT_DEFAULTS.divergence,
     }),
+    ...(config.kernel?.features?.sha256FlowHash === true && { sha256FlowHash: true }),
     ...(config.kernel?.features?.scopes === true && { scopes: true }),
     ...(config.kernel?.features?.continueAsNew === true && {
       continueAsNewEnabled: true,

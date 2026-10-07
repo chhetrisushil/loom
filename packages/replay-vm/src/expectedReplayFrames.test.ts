@@ -57,3 +57,55 @@ describe("ReplayVM.expectedReplayFrames", () => {
     expect(vm.expectedReplayFrames()).toEqual(["d"]); // `c` is in the snapshot: when it ran is unknown
   });
 });
+
+// ADR 0113 (fix round 1) — additive fold fields, and the reserved refusal gate.
+describe("ADR 0113 additive fold shapes", () => {
+  const kernel = { kernel: true };
+  const withMeta = (e: EventEnvelope, metadata: Record<string, unknown>): EventEnvelope => ({
+    ...e,
+    metadata,
+  });
+
+  it("DECISION_RECORDED.innerSteps folds ONLY from a kernel-stamped envelope", () => {
+    const rec = (meta?: Record<string, unknown>): EventEnvelope => {
+      const e = ev(1, "DECISION_RECORDED", {
+        decisionId: "d",
+        choice: 1,
+        innerSteps: ["a", 7, "b"],
+      });
+      return meta === undefined ? e : withMeta(e, meta);
+    };
+    const stamped = new ReplayVM([ev(0, "EXECUTION_STARTED", { input: {} }), rec(kernel)]);
+    expect(stamped.getDecisionInnerSteps("d")).toEqual(["a", "b"]);
+    const plain = new ReplayVM([ev(0, "EXECUTION_STARTED", { input: {} }), rec()]);
+    expect(plain.getDecisionInnerSteps("d")).toBeUndefined();
+    expect(plain.getDecision("d")).toBe(1); // the choice is unaffected either way
+  });
+
+  it("EXECUTION_MIGRATED.toCodeHash re-points _codeHash ('' clears it); absent leaves it", () => {
+    const base = [ev(0, "EXECUTION_STARTED", { input: {}, codeHash: "fp1" })];
+    const fold = (p: Record<string, unknown>) =>
+      new ReplayVM([...base, ev(1, "EXECUTION_MIGRATED", { toFlowId: "wf", ...p })]).getState()
+        .variables._codeHash;
+    expect(fold({ toCodeHash: "fp2" })).toBe("fp2");
+    expect(fold({ toCodeHash: "" })).toBe("");
+    expect(fold({})).toBe("fp1");
+  });
+
+  it("a null resume of the reserved refusal gate is status-only (never enters _resumePayloads)", () => {
+    const parked = [
+      ev(0, "EXECUTION_STARTED", { input: {} }),
+      ev(1, "EXECUTION_SUSPENDED", { condition: { on: "__loom_diverged__" } }),
+    ];
+    const resumed = new ReplayVM([...parked, ev(2, "EXECUTION_RESUMED", null)]).getState();
+    expect(resumed.status).toBe("running");
+    expect(resumed.variables._resumePayloads).toBeUndefined();
+    // an ordinary gate with a null answer IS recorded (the contrast)
+    const other = new ReplayVM([
+      ev(0, "EXECUTION_STARTED", { input: {} }),
+      ev(1, "EXECUTION_SUSPENDED", { condition: { on: "go" } }),
+      ev(2, "EXECUTION_RESUMED", null),
+    ]).getState();
+    expect(other.variables._resumePayloads).toEqual([null]);
+  });
+});

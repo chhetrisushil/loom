@@ -162,6 +162,12 @@ export function flowEmitCount(variables: Record<string, unknown>, digest: string
  * no suspend point and would have been served to the NEXT gate as `null` — the stray this fixes.
  */
 const IN_DOUBT_GATE = "EffectInDoubtResolved";
+/**
+ * ADR 0113 (R7 fix round 1) — the reserved gate a REFUSED re-run parks on. Like the in-doubt gate it
+ * is answered by the kernel's own status-only `null` resume (a re-drive after the code is fixed):
+ * the answer must NOT enter `_resumePayloads`, or the body's next gate would take it as its approval.
+ */
+export const FLOW_DIVERGED_GATE = "__loom_diverged__";
 
 /**
  * 1.21.0 (ADR 0105) — reserved fold key: `true` while the execution is PARKED and a
@@ -186,6 +192,7 @@ function isStatusOnlyResume(state: ExecutionState, payload: unknown): boolean {
     payload === null &&
     (state.status !== "suspended" ||
       state.suspendedOn?.on === IN_DOUBT_GATE ||
+      state.suspendedOn?.on === FLOW_DIVERGED_GATE ||
       state.variables[FAILED_WHILE_PARKED] === true)
   );
 }
@@ -854,6 +861,10 @@ const handlers: Record<string, Handler> = {
       // input. Absence = legacy (or a decision no policy produced).
       context?: Record<string, unknown>;
       policy?: { id: string; version: string; propensity?: number };
+      // ADR 0113 D3 (fix round 1) — the step ids the decider's own logic ran. Kernel-stamped only
+      // (an app event naming it folds as before); a served decision exempts exactly these from the
+      // replay-divergence detector. Descriptive: never a replay input.
+      innerSteps?: unknown;
     };
     assertSafeKey(payload.decisionId);
     // R1a — the decision map is a per-fold-owned container, written in place (the same rule
@@ -885,6 +896,10 @@ const handlers: Record<string, Handler> = {
       ...(payload.confidence !== undefined && { confidence: payload.confidence }),
       ...(payload.context !== undefined && { context: payload.context }),
       ...(payload.policy !== undefined && { policy: payload.policy }),
+      ...(isKernelWritten(event) &&
+        Array.isArray(payload.innerSteps) && {
+          innerSteps: payload.innerSteps.filter((id): id is string => typeof id === "string"),
+        }),
     };
     return {
       ...state,
@@ -1124,12 +1139,16 @@ const handlers: Record<string, Handler> = {
       fromHash?: string;
       strategy?: string;
       migratedInput?: unknown;
+      // ADR 0113 D2 (fix round 1) — the target flow's body fingerprint ("" = it has none): re-arms
+      // the `_codeHash` comparison against the code the execution now runs.
+      toCodeHash?: unknown;
     };
     return {
       ...state,
       variables: {
         ...state.variables,
         ...(p.toHash !== undefined && { _flowHash: p.toHash }),
+        ...(typeof p.toCodeHash === "string" && { _codeHash: p.toCodeHash }),
         // K11.5 — contract-versioned state migration: the recorded TRANSFORMED
         // input replaces `_input`, so every later resume/restore/replay folds
         // the same migrated value (the outcome is durable, not the function).

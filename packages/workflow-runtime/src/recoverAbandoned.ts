@@ -10,7 +10,7 @@ import type { TimerDispatcher } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
-import { EXECUTION_RECOVERED } from "./types";
+import { EXECUTION_RECOVERED, FlowReplayDivergenceError } from "./types";
 
 // ── Recovering executions whose supervisor died ───────────────────────────────
 //
@@ -349,10 +349,20 @@ export async function recoverAbandoned(
         });
         // Settle before moving on, so the pass applies backpressure instead of stampeding
         // every orphan into the runtime at once.
-        await Promise.race([
-          handle.waitForSuspend().catch(() => undefined),
-          handle.waitForCompletion().catch(() => undefined),
+        const refused = await Promise.race([
+          handle.waitForSuspend().then(
+            () => undefined,
+            (e: unknown) => e
+          ),
+          handle.waitForCompletion().then(
+            () => undefined,
+            (e: unknown) => e
+          ),
         ]);
+        // ADR 0113 — a re-drive refused as diverged (`divergence: "fail"`) is PARKED on a reserved
+        // gate, which later passes skip; report it as failed through `onError` rather than counting
+        // a re-drive that went nowhere as recovered.
+        if (refused instanceof FlowReplayDivergenceError) throw refused;
       }
       summary.recovered++;
       options.onRecovered?.(executionId);
