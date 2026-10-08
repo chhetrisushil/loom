@@ -127,7 +127,8 @@ describe("conversation: turns", () => {
     const b = boot({
       config: { onError: (id, err) => seen.push({ id, message: (err as Error).message }) },
       reply: (_req, nth) => {
-        if (nth === 1) throw new Error("upstream 503 at db.internal:5432 password=hunter2");
+        if (nth === 1)
+          throw new Error("upstream failure LEAKCANARY at db.internal password=hunter2");
         return { content: "ok", stopReason: "end_turn" };
       },
     });
@@ -135,7 +136,9 @@ describe("conversation: turns", () => {
     await b.conv.sendTurn(id, "one");
     const first = await messages(b, id, 2);
     expect(first[1]).toMatchObject({ role: "assistant", status: "failed", reason: "model-error" });
-    expect(JSON.stringify(first)).not.toMatch(/hunter2|db\.internal|503/); // nothing of the error reaches the transcript
+    // Letter-only sentinels: a digit pattern (it was `503`) also matches random UUIDs, error ids and
+    // timestamps in the record — a 1.4% false positive that read as a leak.
+    expect(JSON.stringify(first)).not.toMatch(/LEAKCANARY|hunter2|db\.internal/); // nothing of the error reaches the transcript
     expect(first[1]?.errorId).toBe(seen[0]?.id);
     expect(seen[0]?.message).toContain("hunter2"); // the HOST gets the real error, once
     await b.conv.sendTurn(id, "two");

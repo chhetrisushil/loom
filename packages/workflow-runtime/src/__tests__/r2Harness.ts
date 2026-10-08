@@ -126,7 +126,7 @@ export async function eventsOf(
 export const tick = (ms = 20): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** Wait (bounded) until `pred` holds. */
-export async function until(pred: () => Promise<boolean> | boolean, ms = 3000): Promise<void> {
+export async function until(pred: () => Promise<boolean> | boolean, ms = 20_000): Promise<void> {
   const t0 = Date.now();
   while (!(await pred())) {
     if (Date.now() - t0 > ms) throw new Error("until: timed out");

@@ -23,7 +23,8 @@ export async function waitFor(
   pred: () => boolean | Promise<boolean>,
   options: WaitOptions = {}
 ): Promise<void> {
-  const timeoutMs = options.timeoutMs ?? 5000;
+  // Generous by default: a loaded CI runner is 10-17x slower than a laptop; a hang still fails.
+  const timeoutMs = options.timeoutMs ?? 20_000;
   const intervalMs = options.intervalMs ?? 10;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {

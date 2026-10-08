@@ -4,7 +4,7 @@ import { ReplayVM } from "./ReplayVM";
 import { foldEvents } from "./foldEvents";
 
 // PERF SUITE (`*.perf.test.ts`): excluded from `pnpm test` and run by `pnpm test:perf` — a
-// non-blocking CI step and the nightly flake hunt. Timing RATIOS on a shared runner are noise-bound
+// manual flake hunt (`.github/workflows/flake-hunt.yml`). Timing RATIOS on a shared runner are noise-bound
 // (one GC pause multiplies a single-digit-ms sample), so they never gate a merge. The blocking
 // regression guard for the same property is the absolute ceiling in foldScale.test.ts.
 

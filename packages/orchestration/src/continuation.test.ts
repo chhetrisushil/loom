@@ -133,7 +133,7 @@ function build(withSupervisor = true, extra: { maxChainHops?: number; errors?: u
   return { runtime, holder, wire };
 }
 
-async function until(pred: () => Promise<boolean>, ms = 4000): Promise<void> {
+async function until(pred: () => Promise<boolean>, ms = 20_000): Promise<void> {
   const t0 = Date.now();
   while (!(await pred())) {
     if (Date.now() - t0 > ms) throw new Error("until: timed out");

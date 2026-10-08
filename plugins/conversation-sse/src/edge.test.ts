@@ -83,12 +83,20 @@ describe("history reads stop when the client goes away", () => {
     const b = await up();
     const id = await startConv(b);
     let seen: AbortSignal | undefined;
+    let readRan = false;
     const started = new Latch();
     const real = b.conversations.history.bind(b.conversations);
     (b.conversations as { history: typeof real }).history = async (cid, o) => {
       seen = o?.signal;
       started.release();
-      await new Promise((r) => setTimeout(r, 60));
+      // Wait for the abort itself (no fixed sleep), then prove the read was CUT SHORT.
+      await new Promise<void>((r) => {
+        if (o?.signal?.aborted) r();
+        else o?.signal?.addEventListener("abort", () => r(), { once: true });
+      });
+      if (o?.signal?.aborted)
+        return { entries: [], done: true } as unknown as ReturnType<typeof real>;
+      readRan = true;
       return real(cid, o);
     };
     const ctl = new AbortController();
@@ -101,6 +109,23 @@ describe("history reads stop when the client goes away", () => {
     ctl.abort();
     await p;
     await until(() => seen?.aborted === true, "the read to be told");
+    expect(readRan).toBe(false); // the read stopped: it never went on to the store
+  });
+
+  it("a read the client does NOT abandon is not aborted while it runs", async () => {
+    const b = await up();
+    const id = await startConv(b);
+    let abortedDuring: boolean | undefined;
+    const real = b.conversations.history.bind(b.conversations);
+    (b.conversations as { history: typeof real }).history = async (cid, o) => {
+      abortedDuring = o?.signal?.aborted;
+      return real(cid, o);
+    };
+    const res = await fetch(`${b.url}/conversations/${id}/history`, {
+      headers: bearer("tok-alice"),
+    });
+    expect(res.status).toBe(200);
+    expect(abortedDuring).toBe(false);
   });
 });
 

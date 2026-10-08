@@ -85,8 +85,10 @@ function bootNodeWithRuntime(
   return { worker: new LocalWorkerRuntime(runtime), runtime, effect };
 }
 
-async function waitFor(pred: () => Promise<boolean>, tries = 200): Promise<void> {
-  for (let i = 0; i < tries && !(await pred()); i++) {
+async function waitFor(pred: () => Promise<boolean>, ms = 20_000): Promise<void> {
+  const t0 = Date.now();
+  while (!(await pred())) {
+    if (Date.now() - t0 > ms) throw new Error("waitFor: timed out"); // never fall through silently
     await new Promise((r) => setTimeout(r, 5));
   }
 }

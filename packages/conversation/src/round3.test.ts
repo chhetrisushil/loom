@@ -60,7 +60,9 @@ describe("P3-1 the replay set's eviction cannot reopen an old envelope", () => {
             text: `flood ${i}`,
             asker: { actor: "stranger", tenant: "t9" },
             id: `flood-${i}`,
-            iat: Date.now() + 1 + i,
+            // NOT future-dated: eviction raises the floor to the newest evicted iat, so future-dated
+            // flood envelopes could push the floor past carol's real iat and refuse her turn as stale.
+            iat: Date.now(),
           }),
           messageId: `f${i}`,
         },
@@ -77,7 +79,8 @@ describe("P3-1 the replay set's eviction cannot reopen an old envelope", () => {
       async () =>
         (await lastEntries(b, id, 1))[0]?.role === "assistant" &&
         (await lastEntries(b, id, 1))[0]?.asker?.actor === "carol",
-      "carol's answer, after the flood"
+      "carol's answer, after the flood",
+      30_000 // draining 1 030 envelopes is ~70 ms idle but 10-17x slower on a loaded CI runner
     );
     const tail = await lastEntries(b, id, 6);
     expect(tail.at(-1)).toMatchObject({ role: "assistant", asker: id0(carol) });

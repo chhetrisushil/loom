@@ -44,7 +44,9 @@ export class Latch {
 export async function until(
   cond: () => boolean | Promise<boolean>,
   what = "condition",
-  ms = 5000
+  // Generous by default: a hang still fails (the global test timeout is 30 s), but a loaded CI
+  // runner (10-17x slower than a laptop) no longer reads as a failure.
+  ms = 20_000
 ): Promise<void> {
   const t0 = Date.now();
   while (!(await cond())) {

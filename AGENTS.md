@@ -58,13 +58,17 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
 
 ## Working in this repo
 
+- **GitHub Actions minutes are a budget.** CI runs once per READY pull request (drafts and pushes to
+  `main` do not run; `workflow_dispatch` runs it by hand). Open PRs as **drafts**, iterate fix rounds
+  against the full LOCAL verify (`pnpm build && npx turbo test --force --concurrency=2 && pnpm typecheck
+  && pnpm lint`), and mark the PR ready for review only when it is final. Never push just to "see CI".
 - **Writing tests — CI is concurrent and shared; a flaky test is a bug.** (Enforced by
-  `packages/spec/src/testTiming.test.ts`; flakes are hunted nightly by `.github/workflows/flake-hunt.yml`.)
+  `packages/spec/src/testTiming.test.ts`; flakes are hunted ON DEMAND by `.github/workflows/flake-hunt.yml` — manual only, it costs N× CI minutes.)
   - Wait on a CONDITION (`until(...)`, `eventually(...)`), never a fixed `sleep`/`tick(n)` before
     asserting a background effect — and wait for the WHOLE exchange (e.g. the predecessor's commit,
     not just the successor's park) before reading its results.
   - Never gate on wall-clock noise: no `performance.now()` and no timing ratios in a `*.test.ts`. Put
-    perf ratios/budgets in a `*.perf.test.ts` (excluded from `pnpm test`; `pnpm test:perf`, non-blocking
+    perf ratios/budgets in a `*.perf.test.ts` (excluded from `pnpm test`; run locally with `pnpm test:perf` or via the manual flake hunt, non-blocking
     in CI). Prefer deterministic evidence — call counts, rows scanned, round trips. When the slow path is
     a hang, completing within the test timeout IS the proof; otherwise justify an elapsed upper bound
     with `// timing-bound: <what the slow path costs>` and keep it ≥ 5 s.
