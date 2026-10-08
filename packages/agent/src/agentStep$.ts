@@ -16,6 +16,12 @@ export interface AgentStepConfig {
   systemPrompt?: string;
 }
 
+/**
+ * @deprecated R10 (ADR 0121) — use `agentLoop$` from a runner body: one durable frame per turn instead of
+ * one opaque frame for the whole run (a crash at turn 39 re-runs 39), plus mid-loop approval, recorded
+ * choices, tool-error feedback and parallel tools. Kept, unchanged, for the cheap single-frame form; it
+ * wraps the (also deprecated) `AgentRunner`.
+ */
 export function agentStep$(config: AgentStepConfig): StepDefinition<AgentInput, AgentOutput> {
   const runner = new AgentRunner({
     definition: config.agent,

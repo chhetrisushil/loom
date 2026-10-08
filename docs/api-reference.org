@@ -1688,6 +1688,7 @@ interface Router { select(req: ReasoningRequest, routes: ModelRoute[]): ModelRou
 ** ~@loom/agent~ — ReAct loop
 
 #+begin_src typescript
+/** @deprecated R10 — use agentLoop$ (ADR 0121). */
 class AgentRunner {
   constructor(config: {
     definition: AgentDefinition;
@@ -1705,12 +1706,20 @@ class AgentRunner {
 interface AgentInput  { prompt: string; context?: unknown; memoryScope?: string; }
 interface AgentOutput { content: string; toolCallLog: AgentStep[]; iterations: number; }
 
+/** @deprecated R10 — use agentLoop$ (ADR 0121). */
 function agentStep$(config: { id: string; name?: string; agent: AgentDefinition; provider: LlmProvider; effectRuntime: EffectRuntime; maxIterations?: number; systemPrompt?: string }): StepDefinition<AgentInput, AgentOutput>
 
 class SkillRegistry { register(skill): this; get(id); all(); ids(); find(query): SkillMatch[] }   // deterministic keyword scoring
 function deterministicSkillSelector(maxSkills?: number): SkillSelector
 function llmSkillSelector(provider: LlmProvider, maxSkills?: number): SkillSelector      // calls the provider DIRECTLY (outside authz/metering/kill switch; guardRequest runs)
 function llmSkillSelector(options: { toolId: string; maxSkills?: number }): SkillSelector // (R9) effect-backed: agentLoop$ only; a journaled frame `<agent>#skills:select`
+// agentLoop$ config (R10, ADR 0121 — THE canonical loop; AgentRunner and agentStep$ are @deprecated):
+//   toolErrors?: "feedback" | "fail"   — default feedback: a failing tool is an isError tool_result (authority/safety/quota/cancel/park never are)
+//   parallelTools?: boolean | number   — one turn's calls through ctx.parallel; ids `<agent>#turn:<i>:tool:<j>` unchanged; approvals first, in order
+//   signal?: AbortSignal               — stop THIS run: no further model/tool call; fails on AGENT_INTERRUPTED with InterruptedAgentRun
+//   turnTimeoutMs?, toolTimeoutMs?     — frame `timeoutMs` (model failure fails the run; a tool timeout is an isError result)
+//   writeBack?: boolean | { tier?, scope? } — with `memory`: remember prompt + answer on finish, idempotent (deterministic entry ids)
+//   `reasoning` without reasoningToolId: the response is a recorded decision `<agent>#turn:<i>:response:<n>` (no re-ask on resume)
 // agentLoop$ config (R9): reasoningToolId?: string | ((routeId) => string)   — each `reasoning` model call becomes a journaled
 //   ctx.execute frame `<agent>#turn:<i>:call:<n>` (authz, metering, kill switch, guardRequest, recorded on replay);
 //   requireEffectRing?: boolean — refuse `reasoning` without reasoningToolId and a non-effect-backed skillSelector.

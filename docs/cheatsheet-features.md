@@ -46,7 +46,7 @@ Everything else is built from these.
 | `policy$` | app-global rule, composed under the authorizer |
 | `handler$` | extractable handler body (compiler) |
 | `instructions$` | prompt material as a declared value |
-| `agentLoop$` / `agentStep$` | ReAct loop / single agent step — `@loom/agent` |
+| `agentLoop$` (canonical) / `agentStep$` (deprecated) | ReAct loop, one frame per turn / single opaque agent step — `@loom/agent` |
 
 ## Composition — `defineConfig`
 

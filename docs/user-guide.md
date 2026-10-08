@@ -561,11 +561,11 @@ const dbaAgent = agent$({
 
 `@loom/agent` runs a ReAct-style reason→act loop over an agent's tools; `@loom/plugin-mcp` discovers external tools via the Model Context Protocol.
 
-### Running the loop: `agentStep$` or `agentLoop$`
+### Running the loop: `agentLoop$`
 
-There are two ways to run that loop, and the choice is a real trade-off rather than a default plus a variant.
+`agentLoop$` is the canonical loop (R10, [ADR 0121](adr/0121-one-canonical-agent-loop.md)). `AgentRunner` and `agentStep$` are deprecated: they still work, unchanged, and the migration is in the ADR. What each costs, so the choice is informed:
 
-**`agentStep$` — one opaque frame.** The whole loop is a single `step$`, so the execution log gets one `STEP_STARTED`/`STEP_COMPLETED` pair no matter how many turns it took. Cheap, and the right choice when a turn is not worth recovering individually. The costs are structural, because a step *handler* receives `StepHandlerContext` — `emit`, and nothing else:
+**`agentStep$` (deprecated) — one opaque frame.** The whole loop is a single `step$`, so the execution log gets one `STEP_STARTED`/`STEP_COMPLETED` pair no matter how many turns it took. Cheap, and the right choice when a turn is not worth recovering individually. The costs are structural, because a step *handler* receives `StepHandlerContext` — `emit`, and nothing else:
 
 - a crash at turn 39 re-runs all 39, since the frame is the unit of recovery;
 - the agent cannot pause for approval, so a human gate has to sit outside the agent entirely;
@@ -590,9 +590,27 @@ runtime.registerFlow(askFlow, async (ctx, input) =>
 );
 ```
 
-**What it costs:** per-turn durability journals each turn's message array, so the log grows with conversation length. Two mitigations, both already in the box — claim-check middleware bounds the *bytes* per turn, and `compaction` bounds the *turns* (below). An adopter who wants neither keeps `agentStep$`.
+**What it costs:** per-turn durability journals each turn's message array, so the log grows with conversation length. Two mitigations, both already in the box — claim-check middleware bounds the *bytes* per turn, and `compaction` bounds the *turns* (below). An adopter who wants neither can still use the deprecated `agentStep$`.
 
 See [ADR 0087](adr/0087-durable-agent-loop.md).
+
+### Tool failures, parallel tools, stopping, memory
+
+A failing tool does not fail the run: the failure goes back to the model as an `isError` `tool_result` (`{ error }`) so it can retry or explain. Authority denials, safety and quota stops, cancellation and a park are never fed back. `toolErrors: "fail"` restores fail-the-run.
+
+```ts
+agentLoop$(ctx, {
+  definition: dbaAgent,
+  modelToolId: "model",
+  parallelTools: 4,              // one turn's calls overlap through ctx.parallel; true = unbounded
+  signal: turn.signal,           // stop THIS run (barge-in): no further model or tool call, AGENT_INTERRUPTED
+  turnTimeoutMs: 60_000,         // the model frame's kernel deadline
+  toolTimeoutMs: 15_000,         // a tool that exceeds it is an isError result
+  memory, writeBack: true,       // persist prompt + answer to memory, idempotently
+}, input);
+```
+
+Step ids do not change with `parallelTools` (`<loop>#turn:<i>:tool:<j>`), results reach the model in its order, and approvals are collected, in order, before any call of the turn starts. An untyped tool failure is re-run on replay (the kernel's rule for a failed step); a tool that must fail exactly once throws a `TypedFailure` on a declared channel. A `reasoning` model response is journaled as a decision, so a resumed run makes no model call for a completed turn.
 
 ### Pausing for a human
 
@@ -625,7 +643,7 @@ agentLoop$(ctx, {
 
 `recallLimit` matters more than it looks: without it, every remembered entry reaches the prompt and conversation length becomes a hard wall rather than a cost curve.
 
-Use `reasoning` **or** `modelToolId`, not both. The Reasoning Runtime routes and elevates across model tiers and records every choice — but it makes the model call through its own routes, so the request is still guarded at the prompt boundary while K2, metering and K9 in-doubt do not apply to it. `modelToolId` gets the full ring and no routing.
+Use `reasoning` **or** `modelToolId`, not both. The Reasoning Runtime routes and elevates across model tiers and records every choice, and the response is journaled (R10), so a resume does not re-ask — but without `reasoningToolId` it makes the model call through its own routes, so the request is still guarded at the prompt boundary while K2, metering and K9 in-doubt do not apply to it. `modelToolId` (or `reasoning` + `reasoningToolId`) gets the full ring.
 
 ### Bounding what the log carries
 

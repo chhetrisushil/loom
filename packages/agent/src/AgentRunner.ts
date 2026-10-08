@@ -27,6 +27,7 @@ import type { ReasoningRuntime } from "@loom/reasoning";
 import { parallelLimit, throwIfAborted } from "@loom/scheduler";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
+import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
 import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
@@ -87,23 +88,17 @@ export interface AgentConfig {
   // no effect middleware, so this sink then receives RAW model text.
 }
 
-/** The channel an interrupted agent run fails on (ADR 0060). */
-export const AGENT_INTERRUPTED = "agentInterrupted";
+export { AGENT_INTERRUPTED } from "./interrupted";
+export type { InterruptedAgentRun } from "./interrupted";
 
 /**
- * What the turn had produced when the stop landed. The tool calls are the point:
- * they are the expensive, already-paid-for half of the work, and re-running the
- * agent from nothing repeats every one of them.
+ * @deprecated R10 (ADR 0121) — `agentLoop$` is the canonical agent loop: per-turn durable frames, mid-loop
+ * approval, recorded skills / memory / routing, tool-error feedback, `parallelTools`, `signal` abort with
+ * `AGENT_INTERRUPTED`, and memory `writeBack`. Migrate by registering `createAgentModelEffect(provider)` as
+ * the `modelToolId` and calling `agentLoop$(ctx, { definition, … }, input)` from a runner body (the parity
+ * table and steps are in ADR 0121 D6). Kept, with no behaviour change, for an agent that runs as an effect
+ * with no `ExecutionContext`, and for executions and examples that still use it; removal needs a major.
  */
-export interface InterruptedAgentRun {
-  /** Partial text from the interrupted generation. Empty unless `stream` is on. */
-  content: string;
-  /** Turns begun before the interruption. */
-  iterations: number;
-  /** Tool calls that completed, in the model's order. */
-  toolCallLog: AgentStep[];
-}
-
 export class AgentRunner {
   private readonly maxIterations: number;
   private readonly parallelTools: boolean | number;
