@@ -245,6 +245,11 @@ export class ToolSearchSession {
     return this.loadedIds.has(id);
   }
 
+  /** Tools put on the menu by something else (a skill activation): search never offers them again. */
+  noteLoaded(tools: readonly ToolDefinition[]): void {
+    for (const t of tools) this.loadedIds.add(t.id);
+  }
+
   /** Tools the host marked always-on contribute to the menu budget. */
   private specChars(t: ToolDefinition): number {
     return JSON.stringify(toolSpecFor(t)).length;
