@@ -70,8 +70,10 @@ export interface MessageRecord {
    * written before R17b (ADR 0122 amendment); uniqueness holds among the records that carry one.
    */
   ord?: number;
-  /** A user turn that edits an earlier user turn: that turn's `ord`. The edit is still a NEW turn (append-only). */
+  /** A user turn that edits an earlier user turn: that turn's `ord` (the canonical reference). The edit is still a NEW turn (append-only). */
   editOf?: number;
+  /** The NUMBER of the edited turn (for display); `editOf` stays the canonical reference. */
+  editOfTurn?: number;
   role: "user" | "assistant";
   /** The message. Untrusted when `role === "user"`: render it as TEXT, never as markup. */
   text: string;
