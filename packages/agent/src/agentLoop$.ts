@@ -140,6 +140,12 @@ export interface AgentLoopConfig {
    */
   requireEffectRing?: boolean;
   systemPrompt?: string;
+  /**
+   * R17 (ADR 0122) — the id prefix of this loop's frames, decisions and gates. Default: the
+   * definition id. Two loops in ONE execution must not share it (the second would be served the
+   * first's recorded frames), so a flow that runs a loop per dialogue turn passes a per-turn id.
+   */
+  loopId?: string;
   maxIterations?: number;
   /**
    * R10 — what a FAILING tool does to the run. `"feedback"` (default): the failure becomes an
@@ -587,7 +593,7 @@ export async function agentLoop$(
   }
   const maxIterations = config.maxIterations ?? 10;
   const gate = config.approvalGate ?? DEFAULT_GATE;
-  const idPrefix = config.definition.id;
+  const idPrefix = config.loopId ?? config.definition.id;
 
   // ── The choices, recorded (P9) ─────────────────────────────────────────────
   // Both of these change what the model is asked and neither is derivable from
@@ -700,13 +706,29 @@ export async function agentLoop$(
       });
     }
   }
-  textMessage({
-    role: "user",
-    content:
-      input.context != null
-        ? `Context: ${JSON.stringify(input.context)}\n\n${input.prompt}`
-        : input.prompt,
-  });
+  // R17 (ADR 0122) — earlier turns of a dialogue, then the prompt. Untrusted content (an end user's
+  // words) is tainted here, so the prompt boundary fences it and refuses it outside a `user` message.
+  for (const h of input.history ?? []) {
+    const content: LlmContent = h.origin !== undefined ? tainted(h.content, h.origin) : h.content;
+    pushMessage({ role: h.role, content }, [textBytes(content)]);
+  }
+  if (input.promptOrigin !== undefined) {
+    if (input.context != null) {
+      throw new AgentLoopConfigError(
+        "agentLoop$: `promptOrigin` (untrusted prompt) cannot be combined with `context`"
+      );
+    }
+    const content = tainted(input.prompt, input.promptOrigin);
+    pushMessage({ role: "user", content }, [textBytes(content)]);
+  } else {
+    textMessage({
+      role: "user",
+      content:
+        input.context != null
+          ? `Context: ${JSON.stringify(input.context)}\n\n${input.prompt}`
+          : input.prompt,
+    });
+  }
 
   const toolCallLog: AgentStep[] = [];
   let iterations = 0;

@@ -174,6 +174,14 @@ and compute.
   and scopes every task id to the authenticated caller, so one caller cannot read or re-drive
   another's task.
 
+**Conversations**
+
+- `@loom/plugin-conversation-sse` — the authenticated end-user edge of `@loom/conversation` (ADR 0122): start a
+  conversation, send turns, and stream the durable messages and live reply deltas over Server-Sent Events, resuming from
+  `Last-Event-ID` (the SSE id is the history cursor, so it works across rotations). Fails closed: authentication is
+  required to create the server, a conversation the caller may not touch is indistinguishable from one that does not
+  exist, loopback by default, Origin-checked, bounded per connection.
+
 **Surfaces**
 
 - `@loom/plugin-a2ui` — projects a Loom agent surface onto the Google **A2UI** wire protocol v1.0

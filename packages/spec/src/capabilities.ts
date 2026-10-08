@@ -239,6 +239,30 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Pure read-model — no syscall, no event type (P10). L2 -> L3 once `child-orchestration` called it: the example polled `loadState` 400 times at 5ms for a terminal state, which is an interval that is either wasteful or too slow plus a cap that guesses how long a release takes. The supervisor turns spawn intents into child executions and completions into parent resumes off the event loop, so the log is the thing to wait on — `subscribe` pushes current state immediately, so an execution that already finished still resolves.",
   },
   {
+    id: "conversation",
+    title: "Conversation Layer",
+    package: "@loom/conversation",
+    level: "L2",
+    summary:
+      "A durable dialogue as ONE chained execution: `conversation$` parks on the inbox for each user turn, answers it with `agentLoop$` (history fitted to a token budget by a recorded verdict, evicted turns folded into a rolling summary through a compaction-contract effect), records every message as a decision (exactly once), and rotates by continue-as-new with a bounded carry. A new user message BARGES IN on the running turn through a host-side abort signal read only at the loop's recorded checkpoints (partial kept as an `interrupted` reply, the execution never cancelled). `createConversations` is the authorized client (start / sendTurn / close / history / status over runtime start, send and query); `followConversation` tails the log across rotations from a cursor.",
+    evidence: {
+      conformanceTest: "packages/conversation/src/bargeIn.test.ts",
+    },
+    note: "ADR 0122 (R17). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged; the three additive seams on `@loom/agent` are `loopId`, `AgentInput.history` and `AgentInput.promptOrigin`. The finding that shaped it: a registered `ctx.receive` is NOT woken while a step is in flight (ADR 0110 delivers at the owner's quiescence commit, and a model call is a step), so barge-in cannot be built from the inbox primitives and the signal comes from OUTSIDE the body (a store subscription on the conversation's inbox stream) — safe because `agentLoop$` records every checkpoint it reads. Records are decisions (`source: conversation-record`), not `ctx.emit`: an emit is served on a re-run only when the log proves the replay, and an interrupted turn leaves an unsettled step that defeats the proof, so the transcript was appended again on every wake. L2: the suite is the evidence (barge-in kept consistent across a restart with divergence \"fail\" and across a crash between the interrupting message and its consumption; rotation preserving history and dedupe; a recorded budget verdict that a changed counter cannot re-decide; bounded history reads); no example consumes it yet — the `chat-agent` loom-examples example named in the ADR is the L3 step.",
+  },
+  {
+    id: "conversation-sse",
+    title: "Conversation SSE Gateway",
+    package: "@loom/plugin-conversation-sse",
+    level: "L2",
+    summary:
+      "Authenticated end-user transport for a conversation: start / send a turn / close / history / status over JSON, and an SSE stream of the conversation's durable messages (the SSE `id` is the history cursor, so `Last-Event-ID` resumes across rotations) plus live reply deltas, resets and an in-progress catch-up. Fails closed: authentication is required to create the server, existence is hidden behind one 404, authorization is the runtime's per-conversation policy, open streams re-authorize, loopback by default, Origin-checked, with connection / body / pending-byte / lifetime limits.",
+    evidence: {
+      conformanceTest: "plugins/conversation-sse/src/security.test.ts",
+    },
+    note: "ADR 0122 D6. The R12 pattern (`authenticate` returns a principal with an actor; `insecure` is explicit and refused under strict; loopback default) applied to a streaming edge. Deltas are transient and lossy by design (ADR 0119): a slow client is coalesced, then closed past `maxPendingBytes`, and recovers from the log; only durable messages are resumable, the in-progress reply is caught up from the hub's bounded partial. Conversation ids are minted by the server so a client cannot squat or collide. L2: no loom-examples consumer yet.",
+  },
+  {
     id: "orchestration",
     title: "Child-Workflow Orchestration",
     package: "@loom/orchestration",

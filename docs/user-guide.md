@@ -682,6 +682,39 @@ Three things worth knowing:
 - **A runaway generation can be severed while it generates** (K8.4). Pass `guard: streamTokenBudget({ maxTokens })` to `createLlmEffect` and a breach emits `QUOTA_EXCEEDED` and aborts the call mid-stream, instead of letting it finish and denying the next one. The token count is an *estimate* from the text so far — severing at roughly the right point beats exact accounting that arrives after the money is spent.
 
 
+### Conversations: chat, barge-in and streaming (`@loom/conversation`, [ADR 0122](adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md))
+
+A chat is one long-lived execution. `conversation$` is its flow: it parks on the inbox for each user turn, answers it with `agentLoop$`, records the exchange, and rotates (`continueAsNew`) every `rotateEveryTurns` so no generation's log grows without bound. Needs `kernel.features.inbox` and `kernel.features.continueAsNew`.
+
+```ts
+import { agent$ } from "@loom/core";
+import { createAgentModelEffect } from "@loom/agent";
+import { ConversationHub, conversation$, createConversations, inboxBargeIn } from "@loom/conversation";
+
+const hub = new ConversationHub();
+effects.register("model", createAgentModelEffect(hub.wrapProvider(provider), { stream: true, onDelta: hub.deltaSink() }));
+
+const chat = conversation$({
+  agent: { definition: agent$({ id: "assistant", name: "Assistant", tools }), modelToolId: "model" },
+  budget: { contextWindow: 200_000, summarizerToolId: "summarize" },
+  bargeIn: inboxBargeIn(eventStore),
+  hub,
+});
+runtime.registerFlow(chat.definition, chat.runner);
+
+const conversations = createConversations({ runtime, eventStore, flow: chat });
+const { conversationId } = await conversations.start({ principal });
+await conversations.sendTurn(conversationId, "Plan a trip", { principal, messageId });   // retry-safe
+const latest = await conversations.history(conversationId, { principal, direction: "backward", limit: 20 });
+```
+
+- **Barge-in.** Sending a message while a turn runs interrupts that turn; the execution is never cancelled, the partial reply is kept as an `interrupted` message and is part of the next turn's context. The signal is a store subscription *outside* the flow (a registered `ctx.receive` is not woken mid-step), read by the loop only through its recorded checkpoints, so a restart replays it. A client's retry of the same `messageId` is not a barge-in. Without `bargeIn` the conversation queues instead.
+- **History** is the log: every message is a decision, `history` reads them with bounded range reads across all generations (`maxScan` caps the work of one call; `nextCursor` continues). Cursors are `<generation>.<sequence>`.
+- **Budgeting.** The prompt is fitted to `contextWindow` (minus `reserveOutputTokens`) by dropping the oldest *whole turns*; `counter` is pluggable (the default heuristic over-counts non-ASCII on purpose). The verdict is recorded, so replay never re-decides it. With `summarizerToolId`, dropped turns fold into a rolling summary (the same effect contract as `agentLoop$` `compaction.toolId`), delivered fenced in a user message, never the system prompt. In-run growth is still `agent.compaction`'s job.
+- **Trust.** The turn runs as the conversation's owner. User text is untrusted data (tainted `conversation:user`); render it as text. Who may send, read or close is the runtime's execution authorizer.
+
+For a browser, put `@loom/plugin-conversation-sse` in front: authenticated JSON routes plus an SSE stream whose event ids are the history cursors, so `EventSource`'s automatic `Last-Event-ID` reconnect resumes from the log. Live tokens (`delta`, `partial`) are transient and per process; only the durable `message` events are resumable.
+
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 
 For blueprint/interpreter-style flows whose tool calls are **data** (a saved manifest names
