@@ -50,7 +50,7 @@ const useSource = process.env.LOOM_TEST_SRC === "1";
 /**
  * The PERF suite (`*.perf.test.ts`): wall-clock ratios and budgets that measure the runner's load
  * as much as the code. `pnpm test` excludes them, so they never gate a merge; `pnpm test:perf`
- * (`LOOM_TEST_PERF=1`) runs ONLY them — a non-blocking CI step and the nightly flake hunt.
+ * (`LOOM_TEST_PERF=1`) runs ONLY them — locally, or in the manual flake hunt (never in per-PR CI).
  * `packages/spec/src/testTiming.test.ts` keeps timing assertions out of the blocking suite.
  */
 const perfOnly = process.env.LOOM_TEST_PERF === "1";
@@ -101,6 +101,9 @@ export function loomTest(overrides: UserConfig = {}): UserConfig {
     },
     test: {
       environment: "node",
+      // Above every wait helper's 20 s default, so a slow-but-correct test on a loaded runner passes
+      // while a genuine hang still fails. Packages may raise it (isolate, sandbox, worker-server).
+      testTimeout: 30_000,
       ...(perfOnly
         ? { include: [PERF_GLOB], passWithNoTests: true }
         : { exclude: [...configDefaults.exclude, PERF_GLOB] }),

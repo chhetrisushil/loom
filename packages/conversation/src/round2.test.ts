@@ -498,7 +498,8 @@ describe("P3 fairness and floods", () => {
         (await b.conv.reader.read(id, { limit: 500, maxScan: 20_000 })).entries.some(
           (e) => e.role === "assistant"
         ),
-      "the legitimate turn, after the flood"
+      "the legitimate turn, after the flood",
+      30_000 // a flood is heavy work on a loaded CI runner
     );
     expect((await rejections(b, id)).length).toBe(3);
     const counters = (await b.eventStore.read(id)).filter(

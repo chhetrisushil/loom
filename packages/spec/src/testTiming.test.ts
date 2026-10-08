@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 //
 // The rules, for every `*.test.ts` under packages/plugins/tools that is NOT a
 // `*.perf.test.ts` (the perf suite is excluded from `pnpm test`, runs in
-// `pnpm test:perf` — a non-blocking CI step — and in the nightly flake hunt):
+// `pnpm test:perf` — locally and in the manual flake hunt):
 //   1. no `performance.now()` — sub-millisecond timing belongs to the perf suite;
 //   2. no ratio of timings (`expect(a / b)` in a file that reads the clock);
 //   3. an upper bound on elapsed `Date.now()` time must carry a

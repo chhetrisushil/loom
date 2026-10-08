@@ -73,8 +73,10 @@ function boot(effects: Record<string, ToolEffect>, flow: RegisteredFlow<In, Out>
 }
 
 /** Poll until the durable write pipeline has flushed what we assert on. */
-async function eventually(pred: () => Promise<boolean>, tries = 200): Promise<void> {
-  for (let i = 0; i < tries && !(await pred()); i++) {
+async function eventually(pred: () => Promise<boolean>, ms = 20_000): Promise<void> {
+  const t0 = Date.now();
+  while (!(await pred())) {
+    if (Date.now() - t0 > ms) throw new Error("eventually: timed out"); // never fall through silently
     await new Promise((r) => setTimeout(r, 5));
   }
 }

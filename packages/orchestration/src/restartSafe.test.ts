@@ -184,7 +184,8 @@ async function until<T>(
   id: string,
   pred: (s: NonNullable<Awaited<ReturnType<WorkflowRuntime["loadState"]>>>) => boolean
 ) {
-  for (let i = 0; i < 600; i++) {
+  const t0 = Date.now();
+  while (Date.now() - t0 <= 20_000) {
     const s = await rt.loadState(id, sys(rt));
     if (s !== null && pred(s)) return s;
     await new Promise((r) => setTimeout(r, 5));

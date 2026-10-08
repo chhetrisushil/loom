@@ -6,9 +6,9 @@ name: Flake hunt
 # here first, with the failing attempt named, before it lands on someone's PR. It also runs the
 # non-blocking perf suite, so a real perf regression is noticed even though it never gates a merge.
 
+# MANUAL ONLY: a scheduled N-times run costs ~N x the CI minutes every night. Trigger it from the
+# Actions tab (or `gh workflow run flake-hunt.yml -f repeats=3`) when a flake is suspected.
 on:
-  schedule:
-    - cron: "17 3 * * *" # nightly, off the hour
   workflow_dispatch:
     inputs:
       repeats:

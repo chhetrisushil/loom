@@ -100,8 +100,12 @@ function build() {
   return { runtime, holder, wire };
 }
 
-async function until(pred: () => Promise<boolean>, tries = 400): Promise<void> {
-  for (let i = 0; i < tries && !(await pred()); i++) await new Promise((r) => setTimeout(r, 5));
+async function until(pred: () => Promise<boolean>, ms = 20_000): Promise<void> {
+  const t0 = Date.now();
+  while (!(await pred())) {
+    if (Date.now() - t0 > ms) throw new Error("until: timed out"); // never fall through silently
+    await new Promise((r) => setTimeout(r, 5));
+  }
 }
 const statusOf = async (rt: WorkflowRuntime, id: string) => (await rt.loadState(id))?.status;
 const parked = async (rt: WorkflowRuntime, id: string) => (await statusOf(rt, id)) === "suspended";

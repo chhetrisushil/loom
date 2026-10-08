@@ -1,10 +1,14 @@
 name: CI
 
+# Actions minutes are a budget, so CI runs ONCE per change that is ready:
+#   - no `push: main` run — a rebase-merge of a green PR onto an unchanged main is the tree CI
+#     already tested; `workflow_dispatch` runs main by hand when that is not the case;
+#   - draft PRs do not run — iterate (fix rounds) as a draft, mark "ready for review" to test once.
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -13,6 +17,7 @@ concurrency:
 jobs:
   build-and-test:
     name: build + typecheck + lint + test
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
     # The Postgres suites are gated on LOOM_TEST_POSTGRES_URL and skip cleanly
@@ -69,11 +74,3 @@ jobs:
           # Declared in turbo.json's `test` task, so it is part of the cache key —
           # otherwise a cached result from a database-less run is replayed here.
           LOOM_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/loomtest
-
-      # Timing ratios and budgets (`*.perf.test.ts`) are informative, never gating: a shared runner's
-      # load moves them as much as the code does. A regression shows here (and in the nightly flake
-      # hunt) without turning main red on noise. The blocking suite keeps only deterministic or
-      # far-from-noise guards (packages/spec/src/testTiming.test.ts enforces that).
-      - name: Perf suite (non-blocking)
-        continue-on-error: true
-        run: pnpm test:perf
