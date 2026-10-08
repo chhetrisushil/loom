@@ -711,7 +711,28 @@ const latest = await conversations.history(conversationId, { principal, directio
 - **Barge-in.** Sending a message while a turn runs interrupts that turn; the execution is never cancelled, the partial reply is kept as an `interrupted` message and is part of the next turn's context. The signal is a store subscription *outside* the flow (a registered `ctx.receive` is not woken mid-step), read by the loop only through its recorded checkpoints, so a restart replays it. A client's retry of the same `messageId` is not a barge-in. Without `bargeIn` the conversation queues instead.
 - **History** is the log: every message is a decision, `history` reads them with bounded range reads across all generations (`maxScan` caps the work of one call; `nextCursor` continues). Cursors are `<generation>.<sequence>`.
 - **Budgeting.** The prompt is fitted to `contextWindow` (minus `reserveOutputTokens`) by dropping the oldest *whole turns*; `counter` is pluggable (the default heuristic over-counts non-ASCII on purpose). The verdict is recorded, so replay never re-decides it. With `summarizerToolId`, dropped turns fold into a rolling summary (the same effect contract as `agentLoop$` `compaction.toolId`), delivered fenced in a user message, never the system prompt. In-run growth is still `agent.compaction`'s job.
-- **Trust.** The turn runs as the conversation's owner. User text is untrusted data (tainted `conversation:user`); render it as text. Who may send, read or close is the runtime's execution authorizer.
+- **Trust.** The turn runs as the conversation's owner, and **only the owner may talk to it**: the identity that started it (tenant, actor and `onBehalfOf` all equal; a delegate is a different identity) may send, close, read and stream; anyone else, a same-tenant colleague included, gets the same not-found as for a conversation that does not exist. User text is untrusted data (tainted `conversation:user`); render it as text. A failed turn records only a fixed reason and an `errorId`; pass `onError` to get the real error.
+
+**Sharing a conversation (shared mode).** To let several people use one chat, say who: participants, not tenants. Each turn runs as the person who asked (their grants, their quotas), the answer is classified by the tools it used, and a viewer not cleared for that class sees a bare placeholder instead of the answer, in history, on the stream and in the model's context.
+
+```ts
+import { conversation$, createConversations, logParticipants } from "@loom/conversation";
+
+const chat = conversation$({
+  agent: { definition, modelToolId: "model" },
+  shared: {
+    key: process.env.CONVERSATION_KEY!,                       // signs inbox envelopes: the body trusts an asker only from the host
+    directory: logParticipants(eventStore),                  // the participant set, an append-only log
+    classOf: (tool) => TOOL_CLASSES[tool],                   // undefined = "unclassified" (a label of its own)
+    cleared: (viewer, classes) => classes.every((c) => policy.mayRead(viewer, c)),   // fail closed: false for anything unknown
+    manageParticipants: (who) => responderLeads.has(who.actor),   // beside the owner
+  },
+});
+const conversations = createConversations({ runtime, eventStore, flow: chat, effects });   // registers the turn effect
+await conversations.addParticipant(id, { actor: "bob", tenant: "acme" }, { principal: owner });
+```
+
+The owner's authority only coordinates (grant it the `conversation.turn` effect); the turn execution starts as the asker. Turns queue first-come; a participant's follow-up interrupts only their own turn. Removing a participant is effective on their next request and ends their open streams at the next re-authorization. `requireApproval` stays unsupported (the future rule is in ADR 0122 D10.8).
 
 For a browser, put `@loom/plugin-conversation-sse` in front: authenticated JSON routes plus an SSE stream whose event ids are the history cursors, so `EventSource`'s automatic `Last-Event-ID` reconnect resumes from the log. Live tokens (`delta`, `partial`) are transient and per process; only the durable `message` events are resumable.
 

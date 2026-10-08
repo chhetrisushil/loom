@@ -2,30 +2,75 @@ import { createAgentModelEffect } from "@loom/agent";
 import {
   type ConversationConfig,
   ConversationHub,
+  type Identity,
   conversation$,
   createConversations,
   inboxBargeIn,
+  logParticipants,
 } from "@loom/conversation";
-import { agent$ } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { agent$, tool$ } from "@loom/core";
+import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
 import type { ExecutionAuthorizer } from "@loom/workflow-runtime";
+import { z } from "zod";
 import { type ConversationSseOptions, createConversationSseServer } from "../index";
 
 export const alice: PrincipalChain = { actor: "alice", tenant: "t1" };
 export const bob: PrincipalChain = { actor: "bob", tenant: "t2" };
 export const colleague: PrincipalChain = { actor: "carol", tenant: "t1" };
+export const dave: PrincipalChain = { actor: "dave", tenant: "t3" };
+export const SECRET = "TOP-SECRET-PAYLOAD";
+const SHARED_KEY = "sse-shared-key";
 
 /** Bearer tokens -> principals: the stand-in for a real verifier. */
 export const TOKENS: Record<string, PrincipalChain> = {
   "tok-alice": alice,
   "tok-bob": bob,
   "tok-carol": colleague,
+  "tok-dave": dave,
 };
+
+const kb = tool$({
+  id: "kb",
+  name: "kb",
+  description: "public",
+  kind: "tool",
+  inputSchema: z.object({}).passthrough(),
+  outputSchema: z.any(),
+});
+const secretDb = tool$({
+  id: "secret-db",
+  name: "secret-db",
+  description: "restricted",
+  kind: "tool",
+  inputSchema: z.object({}).passthrough(),
+  outputSchema: z.any(),
+});
+
+export function sharedScript(request: LlmRequest): {
+  content: string;
+  toolCalls?: { id: string; name: string; input: unknown }[];
+  stopReason: "end_turn" | "tool_use";
+} {
+  const last = request.messages[request.messages.length - 1];
+  const parts = Array.isArray(last?.content) ? last.content : [];
+  const results = parts.filter((p) => (p as { type?: string }).type === "tool_result");
+  if (results.length > 0) {
+    return {
+      content: `answer: ${JSON.stringify(results.map((r) => (r as { content: unknown }).content))}`,
+      stopReason: "end_turn",
+    };
+  }
+  const text = lastUserText(request);
+  const name = text.includes("secret") ? "secret-db" : text.includes("kb") ? "kb" : undefined;
+  return name === undefined
+    ? { content: `re: ${text}`, stopReason: "end_turn" }
+    : { content: "", toolCalls: [{ id: `c-${name}`, name, input: {} }], stopReason: "tool_use" };
+}
 
 export function lastUserText(request: LlmRequest): string {
   const last = request.messages[request.messages.length - 1];
@@ -62,6 +107,17 @@ export interface BootOptions {
   hub?: ConversationHub;
   /** The runtime's execution authorizer (default: the reference policy). */
   policy?: ExecutionAuthorizer;
+  /** SHARED mode: tools `kb` (public) and `secret-db` (restricted); per-asker grants; alice and dave are cleared for "restricted". */
+  shared?: boolean;
+  /** Run the conversations over a runtime with NO execution authorizer (for the insecure-mode tests). */
+  openRuntime?: boolean;
+  /** Provider behaviour for non-streaming turns. */
+  reply?: (
+    request: LlmRequest,
+    nth: number
+  ) =>
+    | { content: string; stopReason: "end_turn" }
+    | Promise<{ content: string; stopReason: "end_turn" }>;
   /** Tokens the default authenticate accepts (default {@link TOKENS}). */
   tokens?: Record<string, PrincipalChain>;
 }
@@ -73,6 +129,9 @@ export async function boot(opts: BootOptions = {}) {
     async complete(request) {
       calls.n++;
       requests.push(request);
+      const custom = await opts.reply?.(request, calls.n);
+      if (custom !== undefined) return custom;
+      if (opts.shared === true) return sharedScript(request);
       return { content: `re: ${lastUserText(request)}`, stopReason: "end_turn" };
     },
   };
@@ -85,7 +144,25 @@ export async function boot(opts: BootOptions = {}) {
     };
   }
   const hub = opts.hub ?? new ConversationHub();
-  const effects = new EffectRuntime();
+  const effects = new EffectRuntime(
+    [],
+    opts.shared === true
+      ? {
+          authorizer: new GrantTable(
+            {
+              alice: ["conversation.turn", "summarize", "model", "kb", "secret-db"],
+              bob: ["model", "kb", "summarize"],
+              dave: ["model", "kb", "secret-db", "summarize"],
+            },
+            { principal: (req) => req.principal?.actor ?? req.workflowId }
+          ),
+        }
+      : {}
+  );
+  if (opts.shared === true) {
+    effects.register("kb", new ToolEffect(async () => ({ fact: "public-fact" })));
+    effects.register("secret-db", new ToolEffect(async () => ({ secret: SECRET })));
+  }
   effects.register(
     "model",
     createAgentModelEffect(hub.wrapProvider(provider), {
@@ -106,17 +183,45 @@ export async function boot(opts: BootOptions = {}) {
     inboxEnabled: true,
     continueAsNewEnabled: true,
     divergence: "fail",
-    executionAuthorizer: opts.policy ?? executionAccessPolicy(),
-    executionAuthz: { requirePrincipal: true },
+    ...(opts.openRuntime !== true && {
+      executionAuthorizer: opts.policy ?? executionAccessPolicy(),
+      executionAuthz: { requirePrincipal: true },
+    }),
   });
   const flow = conversation$({
-    agent: { definition: agent$({ id: "chat", name: "Chat", tools: [] }), modelToolId: "model" },
+    agent: {
+      definition: agent$({
+        id: "chat",
+        name: "Chat",
+        tools: opts.shared === true ? [kb, secretDb] : [],
+      }),
+      modelToolId: "model",
+    },
     hub,
     bargeIn: inboxBargeIn(eventStore),
+    ...(opts.shared === true && {
+      shared: {
+        key: SHARED_KEY,
+        directory: logParticipants(eventStore),
+        cleared: (viewer: Identity, classes: readonly string[]) =>
+          classes.every(
+            (c) =>
+              c === "public" ||
+              (c === "restricted" && (viewer.actor === "alice" || viewer.actor === "dave"))
+          ),
+        classOf: (t: string) =>
+          t === "kb" ? "public" : t === "secret-db" ? "restricted" : undefined,
+      },
+    }),
     ...opts.config,
   });
   runtime.registerFlow(flow.definition, flow.runner);
-  const conversations = createConversations({ runtime, eventStore, flow });
+  const conversations = createConversations({
+    runtime,
+    eventStore,
+    flow,
+    ...(opts.shared === true && { effects }),
+  });
   const tokens = opts.tokens ?? TOKENS;
   const server = createConversationSseServer({
     conversations,
@@ -126,10 +231,21 @@ export async function boot(opts: BootOptions = {}) {
       const h = req.headers.authorization;
       return h?.startsWith("Bearer ") ? tokens[h.slice(7)] : undefined;
     },
+    ...(opts.openRuntime === true && { allowNoRuntimeAuthz: true }),
     ...opts.server,
   });
   await server.start();
-  return { server, conversations, runtime, eventStore, hub, requests, calls, url: server.url };
+  return {
+    server,
+    conversations,
+    runtime,
+    eventStore,
+    hub,
+    requests,
+    calls,
+    effects,
+    url: server.url,
+  };
 }
 export type Booted = Awaited<ReturnType<typeof boot>>;
 

@@ -7,10 +7,12 @@ import {
   type Conversations,
   InvalidCursorError,
   InvalidTurnError,
+  ParticipantLimitError,
   SubscriberLimitError,
   followConversation,
   isValidConversationId,
   parseCursor,
+  parseIdentity,
 } from "@loom/conversation";
 import { BadRequestError, exposeError } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
@@ -23,30 +25,37 @@ import {
 } from "@loom/workflow-runtime";
 import { SseSink, frame } from "./sse";
 
-// ── The end-user gateway of a conversation (ADR 0122 D6) ────────────────────────────────────────────
+// ── The end-user gateway of a conversation (ADR 0122 D6, D10) ───────────────────────────────────────
 //
-//   POST /conversations                  start one (the SERVER mints the id)
-//   GET  /conversations/:id              status
-//   POST /conversations/:id/turns        send a turn (a barge-in if one is running)   { text, messageId? }
-//   POST /conversations/:id/close        close it
-//   GET  /conversations/:id/history      a bounded page   ?limit&cursor&direction
-//   GET  /conversations/:id/events       the SSE stream   Last-Event-ID | ?cursor
+//   POST /conversations                          start one (the SERVER mints the id)
+//   GET  /conversations/:id                      status
+//   POST /conversations/:id/turns                send a turn   { text, messageId? }
+//   POST /conversations/:id/close                close it
+//   GET  /conversations/:id/history              a bounded page   ?limit&cursor&direction
+//   GET  /conversations/:id/events               the SSE stream   Last-Event-ID | ?cursor
+//   shared mode:
+//   GET  /conversations/:id/participants         the participant set        (owner / manager)
+//   POST /conversations/:id/participants         { actor, tenant?, onBehalfOf? }  add
+//   POST /conversations/:id/participants/remove  { actor, tenant?, onBehalfOf? }  remove
 //
 // SECURITY MODEL. Fail closed at every step, and say nothing a caller was not entitled to.
 //   * AUTHENTICATION: every route needs `authenticate(req)` to return a principal with an `actor`;
-//     the server REFUSES TO BE CREATED without it unless `insecure: true` (never under strict).
-//   * AUTHORIZATION is the runtime's, per conversation: `send` and `query` judged against the
-//     conversation's recorded owner (ADR 0111). There is no second ACL here to drift.
+//     the server REFUSES TO BE CREATED without it unless `insecure: true` (never under strict), and
+//     refuses a runtime with no fail-closed execution authorizer unless `allowNoRuntimeAuthz`.
+//   * AUTHORIZATION is `@loom/conversation`'s, per conversation: OWNER-ONLY by default (the identity that
+//     started it), or the explicit participant set of a shared conversation. There is no second ACL here.
 //   * EXISTENCE IS HIDDEN: a conversation the caller may not touch and one that does not exist both
-//     answer 404 `{"error":"not found"}`.
+//     answer 404 `{"error":"not found"}`, on every route including the stream.
 //   * ISOLATION: a stream is keyed by one conversation id; the live hub and the log reader are both
-//     keyed by it, and a cursor is a position INSIDE that conversation's chain, so a cursor from
-//     another conversation cannot read it.
-//   * LOOPBACK by default. CSRF: a browser request with an `Origin` outside `allowedOrigins` (and not
-//     same-origin) is refused, and POST bodies must be `application/json`.
+//     keyed by it, and a cursor is a position INSIDE that conversation's chain. Shared mode filters
+//     every entry, the stream's deltas and the partial reply PER VIEWER.
+//   * LOOPBACK by default; a loopback `Host` allowlist protects an unauthenticated server from DNS
+//     rebinding. CSRF/CORS: a request carrying an `Origin` must name one of `allowedOrigins` (the
+//     `Host` header is never trusted to prove same-origin), POST bodies must be `application/json`.
 //   * LIMITS: connections (total, per principal), live subscribers per conversation (the hub's),
-//     request body, per-connection pending bytes (a slow reader is closed), stream lifetime. A
-//     connection is re-authenticated periodically; a revoked token ends the stream.
+//     request body and timeouts, a POST rate limit per principal, per-connection pending bytes (a slow
+//     reader is closed), stream lifetime. A connection is re-authenticated periodically; a revoked token
+//     or a removed participant ends the stream.
 
 export interface ConversationSseOptions {
   conversations: Conversations;
@@ -67,11 +76,27 @@ export interface ConversationSseOptions {
   ) => PrincipalChain | undefined | Promise<PrincipalChain | undefined>;
   /** Explicit opt-out of authentication: any caller that can reach the socket converses. Warned; refused under `strict`. */
   insecure?: boolean;
-  /** Fail closed on a principal-less caller (default from `conversations`' runtime is not visible here: set it for strict deployments). */
+  /** Fail closed on a principal-less caller. DEFAULTS from the runtime (`requiresPrincipal`), as the A2A server does. */
   strict?: boolean;
+  /**
+   * Serve a runtime that has no fail-closed execution authorizer (`security.strict` / `executionAuthz:
+   * { requirePrincipal: true }`). Refused by default: this server is an edge, and an edge in front of a
+   * runtime that admits anonymous calls is a hole the application would have to remember.
+   */
+  allowNoRuntimeAuthz?: boolean;
   warn?: (message: string) => void;
-  /** Browser origins allowed to call this server (exact match). Same-origin requests need no entry. Default none. */
+  /**
+   * Browser origins allowed to call this server, matched exactly. A request with an `Origin` that is
+   * not listed is refused: `Host` is attacker-influenced and never proves same-origin. Default none.
+   */
   allowedOrigins?: readonly string[];
+  /** Send `access-control-allow-credentials: true` to the listed origins (cookies / `EventSource` `withCredentials`). Default false. */
+  allowCredentials?: boolean;
+  /**
+   * `Host` header values accepted (hostname, port ignored). Default: the loopback names when `insecure`
+   * (DNS-rebinding protection for an unauthenticated server); unchecked otherwise.
+   */
+  allowedHosts?: readonly string[];
   /** Path prefix. Default `/conversations`. */
   basePath?: string;
   /** Concurrent streams, all callers. Default 256. */
@@ -90,6 +115,16 @@ export interface ConversationSseOptions {
   reauthMs?: number;
   /** Safety-net poll of the log when no notification arrives, ms. Default 2 000. */
   pollMs?: number;
+  /** POSTs (start, turns, close, participants) one principal may make per window. Default 120 per minute. */
+  rateLimit?: { max?: number; windowMs?: number };
+  /** The clock the rate limit reads (tests). Default `Date.now`. */
+  now?: () => number;
+  /** Time a client may take to send its request, ms (slowloris). Default 30 000. */
+  requestTimeoutMs?: number;
+  /** Time a client may take to send its headers, ms. Default 15 000. */
+  headersTimeoutMs?: number;
+  /** Open sockets the server accepts at all (`http.Server.maxConnections`). Default 4096. */
+  maxSockets?: number;
   /** Real error behind a 500, with the `errorId` the caller was given. */
   onError?: (errorId: string, err: unknown) => void;
 }
@@ -100,6 +135,8 @@ export interface ConversationSseServer {
   readonly url: string;
   /** Open streams right now. */
   readonly connections: number;
+  /** The underlying `http.Server` (timeouts and limits are set on it; exposed for operators and tests). */
+  readonly http: http.Server;
 }
 
 const principalKey = (p: PrincipalChain | undefined): string =>
@@ -121,6 +158,7 @@ class HttpError extends Error {
 }
 
 const NOT_FOUND = new HttpError(404, { error: "not found" });
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1", "[::1]", "::1"];
 
 function sendJson(
   res: http.ServerResponse,
@@ -184,7 +222,10 @@ export function createConversationSseServer(
   const maxStreamMs = options.maxStreamMs ?? 15 * 60_000;
   const reauthMs = options.reauthMs ?? 30_000;
   const allowed = new Set(options.allowedOrigins ?? []);
-  const strict = options.strict === true;
+  const strict = options.strict ?? conversations.requiresPrincipal;
+  const rateMax = options.rateLimit?.max ?? 120;
+  const rateWindow = options.rateLimit?.windowMs ?? 60_000;
+  const now = options.now ?? Date.now;
 
   if (options.authenticate === undefined) {
     if (options.insecure !== true) {
@@ -201,10 +242,50 @@ export function createConversationSseServer(
       `[loom] WARNING: conversation gateway is running with insecure: true — NO authentication; any caller that can reach ${host} can converse.`
     );
   }
+  if (
+    !conversations.requiresPrincipal &&
+    options.allowNoRuntimeAuthz !== true &&
+    options.insecure !== true
+  ) {
+    throw new Error(
+      "createConversationSseServer: the runtime has no fail-closed execution authorizer (executionAuthorizer + executionAuthz.requirePrincipal, i.e. security.strict). Wire one, or pass `allowNoRuntimeAuthz: true` to accept an edge in front of an open runtime."
+    );
+  }
+  const hostAllow = new Set(
+    (options.allowedHosts ?? (options.insecure === true ? LOOPBACK_HOSTS : [])).map((h) =>
+      h.toLowerCase()
+    )
+  );
 
   let resolvedUrl = `http://${host.includes(":") ? `[${host}]` : host}:${options.port ?? 0}`;
   const open = new Set<{ close: () => void }>();
   const perPrincipal = new Map<string, number>();
+  const rate = new Map<string, { windowStart: number; n: number }>();
+
+  /** One window counter per principal for the POSTs; the map is bounded (expired entries are swept). */
+  function takeRate(key: string): void {
+    const t = now();
+    if (rate.size > 10_000) {
+      for (const [k, v] of rate) if (t - v.windowStart >= rateWindow) rate.delete(k);
+    }
+    const cur = rate.get(key);
+    if (cur === undefined || t - cur.windowStart >= rateWindow) {
+      rate.set(key, { windowStart: t, n: 1 });
+      return;
+    }
+    cur.n++;
+    if (cur.n > rateMax) {
+      throw new HttpError(
+        429,
+        { error: "too many requests" },
+        {
+          "retry-after": String(
+            Math.max(1, Math.ceil((rateWindow - (t - cur.windowStart)) / 1000))
+          ),
+        }
+      );
+    }
+  }
 
   async function identify(req: http.IncomingMessage): Promise<PrincipalChain | undefined> {
     if (options.authenticate === undefined) return undefined; // insecure
@@ -213,16 +294,33 @@ export function createConversationSseServer(
     return p;
   }
 
-  /** A browser's cross-site request is refused before anything runs. */
+  /** DNS rebinding: an unauthenticated loopback server must not answer a request addressed to some other name. */
+  function checkHost(req: http.IncomingMessage): void {
+    if (hostAllow.size === 0) return;
+    const raw = (req.headers.host ?? "").toLowerCase();
+    const name = raw.startsWith("[")
+      ? raw.slice(0, raw.indexOf("]") + 1)
+      : (raw.split(":")[0] ?? "");
+    if (!hostAllow.has(name)) throw new HttpError(421, { error: "misdirected request" });
+  }
+
+  /** The allowed browser origin of this request, or a refusal. `Host` is never consulted. */
   function checkOrigin(req: http.IncomingMessage): string | undefined {
     const origin = req.headers.origin;
     if (origin === undefined) return undefined; // not a browser cross-origin request
-    const same =
-      req.headers.host !== undefined &&
-      (origin === `http://${req.headers.host}` || origin === `https://${req.headers.host}`);
-    if (!same && !allowed.has(origin)) throw new HttpError(403, { error: "origin not allowed" });
-    return same ? undefined : origin;
+    if (!allowed.has(origin)) throw new HttpError(403, { error: "origin not allowed" });
+    return origin;
   }
+
+  /** CORS headers for an allowed origin: ride EVERY response, errors included (a browser cannot read a 4xx without them). */
+  const corsHeaders = (origin: string | undefined): Record<string, string> =>
+    origin === undefined
+      ? {}
+      : {
+          "access-control-allow-origin": origin,
+          vary: "Origin",
+          ...(options.allowCredentials === true && { "access-control-allow-credentials": "true" }),
+        };
 
   const mapError = (err: unknown, notFoundOnDeny: boolean): HttpError => {
     if (err instanceof HttpError) return err;
@@ -234,7 +332,8 @@ export function createConversationSseServer(
       err instanceof InvalidTurnError ||
       err instanceof InvalidCursorError ||
       err instanceof BadRequestError ||
-      err instanceof InboxMessageRefusedError
+      err instanceof InboxMessageRefusedError ||
+      err instanceof ParticipantLimitError
     ) {
       return new HttpError(400, { error: err.message });
     }
@@ -244,8 +343,9 @@ export function createConversationSseServer(
       return new HttpError(429, { error: "too many requests" }, { "retry-after": "1" });
     }
     const exposed = exposeError(err, randomUUID);
-    if (exposed.internal !== undefined)
+    if (exposed.internal !== undefined) {
       options.onError?.(exposed.body.errorId as string, exposed.internal);
+    }
     return new HttpError(exposed.status, exposed.body);
   };
 
@@ -255,12 +355,23 @@ export function createConversationSseServer(
     id: string,
     principal: PrincipalChain | undefined,
     url: URL,
-    corsOrigin: string | undefined
+    cors: Record<string, string>
   ): Promise<void> {
     const callOpts = principal !== undefined ? { principal } : {};
+    // The client may hang up while we authorize. Remember it from the first instant: a `close` that
+    // fires before the listener below exists would otherwise never be seen, and the slot would be held
+    // for the whole stream lifetime.
+    let gone = false;
+    const onGone = (): void => {
+      gone = true;
+    };
+    req.once("close", onGone);
+    res.once("close", onGone);
+    const dropped = (): boolean => gone || req.destroyed || res.destroyed || res.writableEnded;
     // AUTHORIZE FIRST: nothing below (not even a limit that would answer 429) may reveal that a
     // conversation exists to a caller who may not read it. `status` is that gate and the first frame.
     const status = await conversations.status(id, callOpts);
+    if (dropped()) return;
     const resume =
       (req.headers["last-event-id"] as string | undefined) ??
       url.searchParams.get("cursor") ??
@@ -271,12 +382,18 @@ export function createConversationSseServer(
     if (open.size >= maxConnections || (perPrincipal.get(key) ?? 0) >= maxPerPrincipal) {
       throw new HttpError(429, { error: "too many streams" }, { "retry-after": "5" });
     }
+    const viewer = conversations.viewerKey(principal);
     const ctl = new AbortController();
     // Live subscription (a limit here is still an HTTP answer), then the catch-up snapshot of the
     // in-progress reply taken in the same tick, so no delta falls between them.
     const sink = new SseSink(res, maxPending, () => end());
     const deltaFrame = (turn: number, text: string) => frame("delta", { turn, text });
+    // SHARED: a live delta streams to the ASKER alone. Whether the answer is restricted is only known when
+    // the turn ends (the tools it used), so until then nobody else may see its tokens; they get the
+    // durable entry (or a bare placeholder) on completion.
+    const mine = (asker: string | undefined): boolean => asker === undefined || asker === viewer;
     const unsubscribe = hub.subscribe(id, (ev) => {
+      if (!mine(ev.asker)) return;
       if (ev.type === "delta") sink.delta(ev.turn, ev.text, deltaFrame);
       else sink.send(frame("reset", { turn: ev.turn }));
     });
@@ -300,6 +417,14 @@ export function createConversationSseServer(
       else perPrincipal.set(key, n);
       res.end();
     }
+    // A hang-up that raced the setup above is acted on now, and one that comes later by the listeners.
+    req.once("close", end);
+    res.once("close", end);
+    res.on("error", end);
+    if (dropped()) {
+      end();
+      return;
+    }
 
     res.writeHead(200, {
       "content-type": "text/event-stream; charset=utf-8",
@@ -307,17 +432,14 @@ export function createConversationSseServer(
       connection: "keep-alive",
       "x-accel-buffering": "no",
       "x-content-type-options": "nosniff",
-      ...(corsOrigin !== undefined && {
-        "access-control-allow-origin": corsOrigin,
-        vary: "Origin",
-      }),
+      ...cors,
     });
     res.flushHeaders();
-    req.on("close", end);
-    res.on("error", end);
     sink.send("retry: 3000\n\n");
     sink.send(frame("status", status));
-    if (partial !== undefined) sink.send(frame("partial", partial));
+    if (partial !== undefined && mine(partial.asker)) {
+      sink.send(frame("partial", { turn: partial.turn, text: partial.text }));
+    }
 
     timers.push(setInterval(() => sink.send(": ping\n\n"), heartbeatMs).unref());
     timers.push(
@@ -351,8 +473,11 @@ export function createConversationSseServer(
           ...(options.pollMs !== undefined && { pollMs: options.pollMs }),
         }
       )) {
-        if (item.type === "message") sink.send(frame("message", item.entry, item.entry.cursor));
-        else {
+        if (item.type === "message") {
+          // The per-viewer filter: a restricted entry reaches this viewer as a bare placeholder.
+          const [entry] = await conversations.filterEntries([item.entry], principal);
+          if (entry !== undefined) sink.send(frame("message", entry, item.entry.cursor));
+        } else {
           sink.send(frame("closed", {}));
           break;
         }
@@ -367,20 +492,32 @@ export function createConversationSseServer(
     }
   }
 
-  async function route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  const identityBody = (body: unknown) => {
+    const identity = parseIdentity(body);
+    if (identity === undefined) throw new BadRequestError("`actor` must be a non-empty string");
+    return identity;
+  };
+
+  async function route(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    corsRef: { cors: Record<string, string> }
+  ): Promise<void> {
     const url = new URL(req.url ?? "/", "http://localhost");
     const method = req.method ?? "GET";
     if (url.pathname !== base && !url.pathname.startsWith(`${base}/`)) throw NOT_FOUND;
+    checkHost(req);
     const corsOrigin = checkOrigin(req);
+    corsRef.cors = corsHeaders(corsOrigin);
+    const cors = corsRef.cors;
     if (method === "OPTIONS") {
       // A preflight carries no credentials: answer it for allowed origins only.
       if (corsOrigin === undefined) throw NOT_FOUND;
       res.writeHead(204, {
-        "access-control-allow-origin": corsOrigin,
+        ...cors,
         "access-control-allow-methods": "GET, POST, OPTIONS",
         "access-control-allow-headers": "authorization, content-type, last-event-id",
         "access-control-max-age": "600",
-        vary: "Origin",
       });
       res.end();
       return;
@@ -388,8 +525,7 @@ export function createConversationSseServer(
     const principal = await identify(req);
     if (principal === undefined && strict) throw new HttpError(401, { error: "unauthorized" });
     const call = principal !== undefined ? { principal } : {};
-    const cors =
-      corsOrigin !== undefined ? { "access-control-allow-origin": corsOrigin, vary: "Origin" } : {};
+    if (method === "POST") takeRate(principalKey(principal));
     const rest = url.pathname
       .slice(base.length)
       .split("/")
@@ -403,8 +539,9 @@ export function createConversationSseServer(
     };
 
     if (rest.length === 0) {
-      if (method !== "POST")
+      if (method !== "POST") {
         throw new HttpError(405, { error: "method not allowed" }, { allow: "POST" });
+      }
       await readJson(req, maxBody); // no fields are honoured: the server mints the id
       try {
         const { conversationId } = await conversations.start(call);
@@ -452,6 +589,26 @@ export function createConversationSseServer(
         sendJson(res, 202, { messageId: sent.messageId }, cors);
         return;
       }
+      if (action === "participants") {
+        if (rest.length === 2 && method === "GET") {
+          sendJson(res, 200, { participants: await conversations.participants(id, call) }, cors);
+          return;
+        }
+        if (rest.length === 2 && method === "POST") {
+          await conversations.addParticipant(id, identityBody(await readJson(req, maxBody)), call);
+          sendJson(res, 202, { ok: true }, cors);
+          return;
+        }
+        if (rest.length === 3 && rest[2] === "remove" && method === "POST") {
+          await conversations.removeParticipant(
+            id,
+            identityBody(await readJson(req, maxBody)),
+            call
+          );
+          sendJson(res, 202, { ok: true }, cors);
+          return;
+        }
+      }
       if (rest.length === 2 && action === "history" && method === "GET") {
         const limit = url.searchParams.get("limit");
         const cursor = url.searchParams.get("cursor");
@@ -460,10 +617,15 @@ export function createConversationSseServer(
           throw new BadRequestError("`direction` must be forward or backward");
         }
         const n = limit === null ? undefined : Number(limit);
-        if (n !== undefined && (!Number.isInteger(n) || n < 1))
+        if (n !== undefined && (!Number.isInteger(n) || n < 1)) {
           throw new BadRequestError("`limit` must be a positive integer");
+        }
+        // A read stops when its client does: a hung-up request must not keep walking the log.
+        const gone = new AbortController();
+        res.once("close", () => gone.abort());
         const page = await conversations.history(id, {
           ...call,
+          signal: gone.signal,
           ...(n !== undefined && { limit: n }),
           ...(cursor !== null && { cursor }),
           ...(direction !== null && { direction }),
@@ -472,7 +634,7 @@ export function createConversationSseServer(
         return;
       }
       if (rest.length === 2 && action === "events" && method === "GET") {
-        await events(req, res, id, principal, url, corsOrigin);
+        await events(req, res, id, principal, url, cors);
         return;
       }
     } catch (err) {
@@ -482,16 +644,20 @@ export function createConversationSseServer(
   }
 
   const server = http.createServer((req, res) => {
-    void route(req, res).catch((err: unknown) => {
+    const corsRef: { cors: Record<string, string> } = { cors: {} };
+    void route(req, res, corsRef).catch((err: unknown) => {
       const e = mapError(err, true);
       if (res.headersSent) {
         res.end();
         return;
       }
       if (e.status === 413) res.once("finish", () => req.destroy());
-      sendJson(res, e.status, e.body, e.headers);
+      sendJson(res, e.status, e.body, { ...corsRef.cors, ...e.headers });
     });
   });
+  server.requestTimeout = options.requestTimeoutMs ?? 30_000;
+  server.headersTimeout = options.headersTimeoutMs ?? 15_000;
+  server.maxConnections = options.maxSockets ?? 4096;
 
   return {
     get url() {
@@ -500,6 +666,7 @@ export function createConversationSseServer(
     get connections() {
       return open.size;
     },
+    http: server,
     start(): Promise<void> {
       return new Promise((resolve, reject) => {
         server.once("error", reject);

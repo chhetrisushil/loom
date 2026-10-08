@@ -1,6 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { type EventStore, headOf, readRangeOf } from "@loom/event-runtime";
 import { createInboxSource, inboxStreamId } from "@loom/workflow-runtime";
+import { senderKey } from "./access";
 import { CONVERSATION_TOPIC } from "./types";
 
 // ── What notices a message while a turn is running (ADR 0122 D2) ──────────────────────────────────
@@ -27,6 +28,26 @@ export interface BargeInHandlers {
   onMessage: () => void;
   /** Whether a client idempotency key belongs to a turn this conversation already took (or is running). */
   isKnown: (id: string) => boolean;
+  /**
+   * Whether a stored inbox message may interrupt the running turn at all. Default: any message on the
+   * conversation topic. Shared mode passes a check that the envelope is signed AND from the SAME asker
+   * as the running turn: a participant interrupts only their own turn.
+   */
+  accept?: (stored: StoredInboxMessage) => boolean;
+  /**
+   * The idempotency key a stored message claims. Default (owner mode): the payload `id`, honoured only
+   * when it equals the kernel's dedupe identity of THIS message (`senderKey(sender, messageId)`), so a
+   * different sender replaying someone's id is a new message, not a retry.
+   */
+  idOf?: (stored: StoredInboxMessage) => string | undefined;
+}
+
+/** What the inbox stream holds per message (the shape `runtime.send` appends). */
+export interface StoredInboxMessage {
+  topic?: unknown;
+  messageId?: unknown;
+  payload?: unknown;
+  sender?: { tenant?: string; actor?: string; onBehalfOf?: string };
 }
 
 /**
@@ -41,38 +62,58 @@ export type BargeInSource = (
   handlers: BargeInHandlers
 ) => Promise<() => void> | (() => void);
 
-/** How far back in the owner's log the consumed cursor is looked for. */
-const TAIL_WINDOW = 64;
+/** How far back in the owner's log the consumed cursor is looked for, at most. */
+const MAX_LOOKBACK = 8192;
+const TAIL_BLOCK = 128;
 /** How many waiting messages a peek inspects. */
 const PEEK_LIMIT = 16;
 
-const idOf = (payload: unknown): string | undefined => {
-  const id = (payload as { id?: unknown } | null | undefined)?.id;
-  return typeof id === "string" ? id : undefined;
+const ownerModeId = (m: StoredInboxMessage): string | undefined => {
+  const id = (m.payload as { id?: unknown } | null | undefined)?.id;
+  if (typeof id !== "string" || typeof m.messageId !== "string") return undefined;
+  return id === senderKey(m.sender ?? {}, m.messageId) ? id : undefined;
 };
+
+/** Whether `m` is a NEW message by the handlers' rules (on the topic, accepted, not a known retry). */
+function isNew(
+  m: StoredInboxMessage,
+  h: Pick<BargeInHandlers, "isKnown" | "accept" | "idOf">
+): boolean {
+  if (m.topic !== CONVERSATION_TOPIC) return false;
+  if (h.accept !== undefined && !h.accept(m)) return false;
+  const id = (h.idOf ?? ownerModeId)(m);
+  return id === undefined || !h.isKnown(id);
+}
 
 /**
  * Whether the inbox holds a message the owner has not consumed and the conversation does not already
- * know: the stream past the newest `MESSAGE_CONSUMED` cursor in the tail of the owner's log. A few
- * point reads and one bounded range. Conservative: when the owner's tail holds no consumption at all
- * (nothing to compare with) it says `false`, and the message is simply handled after the turn.
+ * know: the stream past the newest `MESSAGE_CONSUMED` cursor in the owner's log. The owner's log is read
+ * BACKWARDS in blocks until a consumption is found (bounded by {@link MAX_LOOKBACK} events), so a turn
+ * with any amount of tool traffic, or a recovery re-running one, is still compared against the right
+ * cursor. Conservative: when no consumption is found (a fresh generation whose first message rode the
+ * carry) it says `false` and the message is simply handled after the turn.
  */
 export async function pendingInbox(
   store: EventStore,
   conversationId: string,
   ownerId: string,
-  isKnown: (id: string) => boolean = () => false
+  h: Pick<BargeInHandlers, "isKnown" | "accept" | "idOf"> = { isKnown: () => false }
 ): Promise<boolean> {
   const newest = await headOf(store, inboxStreamId(conversationId));
   if (newest === null) return false;
   const tip = await headOf(store, ownerId);
   if (tip === null) return false;
-  const tail = await readRangeOf(store, ownerId, Math.max(0, tip - TAIL_WINDOW + 1), tip);
   let consumed = -1;
-  for (const ev of tail as EventEnvelope[]) {
-    if (ev.eventType !== "MESSAGE_CONSUMED") continue;
-    const seq = (ev.payload as { inboxSeq?: unknown } | null)?.inboxSeq;
-    if (typeof seq === "number" && seq > consumed) consumed = seq;
+  let upper = tip;
+  while (upper >= 0 && tip - upper < MAX_LOOKBACK && consumed < 0) {
+    const lo = Math.max(0, upper - TAIL_BLOCK + 1);
+    const block = await readRangeOf(store, ownerId, lo, upper);
+    for (const ev of block as EventEnvelope[]) {
+      if (ev.eventType !== "MESSAGE_CONSUMED") continue;
+      const seq = (ev.payload as { inboxSeq?: unknown } | null)?.inboxSeq;
+      if (typeof seq === "number" && seq > consumed) consumed = seq;
+    }
+    upper = lo - 1;
   }
   if (consumed < 0 || newest <= consumed) return false;
   const waiting = await createInboxSource(store)(
@@ -81,10 +122,7 @@ export async function pendingInbox(
     consumed,
     PEEK_LIMIT
   );
-  return waiting.some((m) => {
-    const id = idOf(m.payload);
-    return id === undefined || !isKnown(id);
-  });
+  return waiting.some((m) => isNew(m, h));
 }
 
 /**
@@ -94,16 +132,12 @@ export async function pendingInbox(
  * consumption and now), so a message cannot be missed by arriving a moment early.
  */
 export function inboxBargeIn(eventStore: EventStore): BargeInSource {
-  return async (conversationId, ownerId, { onMessage, isKnown }) => {
+  return async (conversationId, ownerId, handlers) => {
     const unsubscribe = await eventStore.subscribe(inboxStreamId(conversationId), (ev) => {
-      const p = ev.payload as { topic?: unknown; payload?: unknown } | null;
-      if (p?.topic !== CONVERSATION_TOPIC) return;
-      const id = idOf(p.payload);
-      if (id !== undefined && isKnown(id)) return;
-      onMessage();
+      if (isNew(ev.payload as StoredInboxMessage, handlers)) handlers.onMessage();
     });
     try {
-      if (await pendingInbox(eventStore, conversationId, ownerId, isKnown)) onMessage();
+      if (await pendingInbox(eventStore, conversationId, ownerId, handlers)) handlers.onMessage();
     } catch (err) {
       unsubscribe();
       throw err;

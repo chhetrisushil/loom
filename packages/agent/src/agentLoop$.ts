@@ -1119,7 +1119,13 @@ export async function agentLoop$(
               }
               const summarySize = UTF8.encode(summaryText).length;
               messages.length = 0;
-              messages.push({ role: "user", content: summaryText }, ...recent);
+              // R17 (ADR 0122) — a summary written over content any of which was untrusted is itself
+              // model output derived from untrusted text. Re-inserted as a plain `user` message it would
+              // shed the fence; carry the taint so the prompt boundary keeps fencing it.
+              const summaryContent: LlmContent = JSON.stringify(fold).includes('"__loomTainted"')
+                ? tainted(summaryText, "agent:compaction-summary")
+                : summaryText;
+              messages.push({ role: "user", content: summaryContent }, ...recent);
               physOld = [1, ...newPhysOld];
               oldSizes = [summarySize, ...keptSizes];
               transcriptBytes = oldSizes.reduce((n, b) => n + b, 0);

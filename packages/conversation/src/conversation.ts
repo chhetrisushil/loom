@@ -6,13 +6,33 @@ import {
   continueEvery,
   isTerminalToolError,
 } from "@loom/agent";
-import { unwrapTainted } from "@loom/classify";
-import { TypedFailure, flow$ } from "@loom/core";
+import { tainted, unwrapTainted } from "@loom/classify";
+import { TypedFailure, flow$, fnv1a64 } from "@loom/core";
 import type { ExecutionContext, FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { z } from "zod";
-import { type BudgetVerdict, fitToWindow } from "./budget";
+import {
+  type Identity,
+  identityKey,
+  parseIdentity,
+  sameIdentity,
+  sign,
+  verifySignature,
+} from "./access";
+import {
+  type BudgetVerdict,
+  fitWithSummaryFallback,
+  heuristicTokenCounter,
+  truncateToTokens,
+} from "./budget";
 import { withTurnScope } from "./hub";
 import { conversationIdOf } from "./ids";
+import {
+  type TurnInput,
+  type TurnResult,
+  registerSharedTurnEffect,
+  sharedTurnEffect,
+  sharedTurnFlow,
+} from "./turn";
 import {
   CONVERSATION_TOPIC,
   type CarriedTurn,
@@ -52,6 +72,9 @@ const DEFAULTS = {
   maxSummaryChars: 16_000,
 } as const;
 const MAX_RECENT_IDS = 256;
+const MAX_CLASSES = 16;
+const MAX_CLASS_LEN = 64;
+const STATUSES = new Set<MessageStatus>(["complete", "interrupted", "failed", "rejected"]);
 
 const UTF8 = new TextEncoder();
 
@@ -61,6 +84,7 @@ function positive(name: string, v: number): void {
   }
 }
 
+/** The owner-mode envelope: unsigned (anything that may `send` is the owner, or the runtime refused it). */
 export function parseEnvelope(value: unknown): TurnEnvelope | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const o = value as Record<string, unknown>;
@@ -70,28 +94,107 @@ export function parseEnvelope(value: unknown): TurnEnvelope | undefined {
   return undefined;
 }
 
+/** The shared-mode envelope: valid only if signed by the host, and then the asker is as signed. */
+export function parseSignedEnvelope(
+  value: unknown,
+  key: string
+): { env?: TurnEnvelope; reason?: "malformed" | "unauthenticated" } {
+  if (typeof value !== "object" || value === null) return { reason: "malformed" };
+  const { sig, ...body } = value as Record<string, unknown>;
+  if (!verifySignature(key, body, sig)) return { reason: "unauthenticated" };
+  const id = typeof body.id === "string" && body.id.length <= 256 ? { id: body.id } : {};
+  if (body.kind === "close") {
+    const by = parseIdentity(body.by);
+    return by === undefined ? { reason: "malformed" } : { env: { kind: "close", by, ...id } };
+  }
+  const asker = parseIdentity(body.asker);
+  if (body.kind === "user" && typeof body.text === "string" && asker !== undefined) {
+    return { env: { kind: "user", text: body.text, asker, ...id } };
+  }
+  return { reason: "malformed" };
+}
+
+/** What the client signs / the body checks (the envelope without its signature). */
+export function signedEnvelope(
+  key: string,
+  body: Record<string, unknown>
+): Record<string, unknown> {
+  return { ...body, sig: sign(key, body) };
+}
+
 const clip = (s: string, max: number): string => (s.length <= max ? s : `${s.slice(0, max)}…`);
 
 function emptyCarry(): ConversationCarry {
   return { v: 1, seq: 0, ord: 0, turns: [] };
 }
 
-function carryOf(input: unknown): ConversationCarry {
+const safeInt = (v: unknown): number =>
+  typeof v === "number" && Number.isSafeInteger(v) && v >= 0 ? v : 0;
+
+/**
+ * The start input is the owner's, but it is read like any untrusted JSON: shape, counts and bytes are
+ * all bounded here, so a malformed or oversized input can neither crash the body nor inflate the window.
+ */
+export function carryOf(
+  input: unknown,
+  lim: { turns: number; turnChars: number; replyChars: number; summaryChars: number; bytes: number }
+): ConversationCarry {
   if (typeof input !== "object" || input === null) return emptyCarry();
-  const c = input as Partial<ConversationCarry>;
+  const c = input as Record<string, unknown>;
   if (c.v !== 1) return emptyCarry();
-  return {
+  const turns: CarriedTurn[] = [];
+  for (const t of Array.isArray(c.turns) ? c.turns : []) {
+    if (typeof t !== "object" || t === null) continue;
+    const o = t as Record<string, unknown>;
+    if (typeof o.user !== "string" || !STATUSES.has(o.status as MessageStatus)) continue;
+    const asker = parseIdentity(o.asker);
+    const classes = Array.isArray(o.classes)
+      ? o.classes
+          .filter((x): x is string => typeof x === "string" && x.length <= MAX_CLASS_LEN)
+          .slice(0, MAX_CLASSES)
+      : undefined;
+    turns.push({
+      n: safeInt(o.n),
+      user: clip(o.user, lim.turnChars),
+      ...(typeof o.assistant === "string" && { assistant: clip(o.assistant, lim.replyChars) }),
+      status: o.status as MessageStatus,
+      ...(typeof o.tokens === "number" &&
+        Number.isFinite(o.tokens) &&
+        o.tokens >= 0 && { tokens: o.tokens }),
+      ...(asker !== undefined && { asker }),
+      ...(classes !== undefined && classes.length > 0 && { classes }),
+    });
+  }
+  const owner = parseIdentity(c.owner);
+  const carry: ConversationCarry = {
     v: 1,
-    seq: typeof c.seq === "number" ? c.seq : 0,
-    ord: typeof c.ord === "number" ? c.ord : 0,
-    ...(typeof c.summary === "string" && { summary: c.summary }),
-    ...(Array.isArray(c.ids) && { ids: c.ids.filter((x): x is string => typeof x === "string") }),
-    turns: Array.isArray(c.turns) ? (c.turns as CarriedTurn[]) : [],
+    seq: safeInt(c.seq),
+    ord: safeInt(c.ord),
+    ...(owner !== undefined && { owner }),
+    ...(typeof c.summary === "string" && { summary: clip(c.summary, lim.summaryChars) }),
+    ids: (Array.isArray(c.ids) ? c.ids : [])
+      .filter((x): x is string => typeof x === "string" && x.length <= 256)
+      .slice(-MAX_RECENT_IDS),
+    turns: turns.slice(-lim.turns),
     ...(c.pending !== undefined && { pending: c.pending }),
   };
+  return trimCarry(carry, lim.bytes);
 }
 
-/** The earlier turns as the loop's history: the summary first, then whole turns, oldest first. */
+const PLACEHOLDER = {
+  interrupted: "(interrupted)",
+  failed: "(no reply: the request failed)",
+  rejected: "(no reply)",
+  complete: "(no reply)",
+  restricted: "(no reply)",
+} as const;
+
+/**
+ * The earlier turns as the loop's history: the summary first, then whole turns, oldest first. Roles
+ * ALTERNATE: a turn with no reply text (interrupted before any, failed) gets a placeholder assistant
+ * message, and the summary a short acknowledgement, so no provider that rejects consecutive user
+ * messages is ever sent two in a row.
+ */
 function historyOf(
   summary: string | undefined,
   turns: readonly CarriedTurn[]
@@ -103,22 +206,29 @@ function historyOf(
       content: `Summary of the earlier conversation: ${summary}`,
       origin: SUMMARY_ORIGIN,
     });
+    out.push({ role: "assistant", content: "(earlier conversation summarized above)" });
   }
   for (const t of turns) {
     out.push({ role: "user", content: t.user, origin: USER_ORIGIN });
-    if (t.assistant !== undefined && t.assistant !== "") {
-      out.push({ role: "assistant", content: t.assistant });
-    }
+    out.push({
+      role: "assistant",
+      content:
+        t.assistant !== undefined && t.assistant !== "" ? t.assistant : PLACEHOLDER[t.status],
+    });
   }
   return out;
 }
+
+const union = (...lists: (readonly string[] | undefined)[]): string[] =>
+  [...new Set(lists.flatMap((l) => l ?? []))].sort();
 
 /**
  * The flow body of a conversation. Register it with {@link conversation$} (which also builds the
  * definition) or call it from your own runner.
  */
 export function conversationRunner(
-  config: ConversationConfig
+  config: ConversationConfig,
+  shared?: { turnEffectId: string }
 ): FlowRunner<ConversationCarry | Record<string, never>, ConversationResult> {
   const rotateEvery = config.rotateEveryTurns ?? DEFAULTS.rotateEveryTurns;
   const maxTurnChars = config.maxTurnChars ?? DEFAULTS.maxTurnChars;
@@ -144,6 +254,21 @@ export function conversationRunner(
   if (budget !== undefined && !(budget.contextWindow > 0)) {
     throw new RangeError("conversation$: budget.contextWindow must be a positive number");
   }
+  const sharedCfg = config.shared;
+  if (sharedCfg !== undefined) {
+    const wb = config.agent.writeBack;
+    if (wb !== undefined && wb !== false && (typeof wb !== "object" || wb.toolId === undefined)) {
+      throw new Error(
+        "conversation$ (shared): `agent.writeBack` must go through an effect (`toolId`): a direct write would not be the asker's"
+      );
+    }
+    if (typeof sharedCfg.cleared !== "function") {
+      throw new Error("conversation$ (shared): `shared.cleared` is required (fail closed)");
+    }
+  }
+  const counter = budget?.counter ?? heuristicTokenCounter();
+  const maxSummaryTokens =
+    budget === undefined ? 0 : (budget.maxSummaryTokens ?? Math.floor(budget.contextWindow / 4));
   const toolText = config.agent.definition.tools
     .map((t) => `${t.name} ${t.description}`)
     .join("\n");
@@ -151,13 +276,20 @@ export function conversationRunner(
 
   return async (ctx: ExecutionContext, input) => {
     const conversationId = conversationIdOf(ctx.executionId);
-    const carry = carryOf(input);
+    const carry = carryOf(input, {
+      turns: maxWindowTurns,
+      turnChars: maxTurnChars,
+      replyChars: maxReplyChars,
+      summaryChars: DEFAULTS.maxSummaryChars,
+      bytes: maxCarryBytes,
+    });
     let seq = carry.seq;
     /** Messages consumed so far (accepted or not): the id space of every recorded fact, never reused. */
     let ord = carry.ord;
     let summary = carry.summary;
     let turns: CarriedTurn[] = carry.turns.slice();
     let pending: unknown = carry.pending;
+    const owner = carry.owner;
     /** Idempotency keys of recent turns, oldest first: what a barge-in watcher must NOT treat as new. */
     const ids: string[] = (carry.ids ?? []).slice(-MAX_RECENT_IDS);
     const known = new Set(ids);
@@ -168,7 +300,7 @@ export function conversationRunner(
       if (ids.length > MAX_RECENT_IDS) known.delete(ids.shift() as string);
     };
     let rotateDue = false;
-    const counter = continueEvery(rotateEvery);
+    const turnsCounter = continueEvery(rotateEvery);
 
     /**
      * Record a fact exactly once (a decision under a deterministic id; see {@link RECORD_SOURCE}).
@@ -188,13 +320,66 @@ export function conversationRunner(
         { source: RECORD_SOURCE }
       );
     };
+    const reject = (reason: string, asker?: Identity): Promise<void> =>
+      record("user", {
+        turn: seq + 1,
+        role: "user",
+        text: "",
+        status: "rejected",
+        reason,
+        ...(asker !== undefined && { asker }),
+      });
+
+    /**
+     * Fold `dropped` turns into the rolling summary (when a summarizer is configured): the user's words
+     * go in TAINTED, the previous summary too (model output over untrusted text), and the new summary is
+     * cut to `maxSummaryTokens` by a recorded decision, so it can never crowd the prompt out.
+     */
+    const summarize = async (dropped: readonly CarriedTurn[]): Promise<void> => {
+      if (budget?.summarizerToolId === undefined) return;
+      // SHARED: only unrestricted turns may be summarized. The summary reaches every participant's
+      // prompt, so restricted content must never be in it (evicted restricted turns are just dropped).
+      const usable = sharedCfg === undefined ? dropped : dropped.filter((t) => !t.classes?.length);
+      if (usable.length === 0) return;
+      const messages = [
+        ...(summary !== undefined && summary !== ""
+          ? [{ role: "user", content: tainted(`Summary so far: ${summary}`, SUMMARY_ORIGIN) }]
+          : []),
+        ...usable.flatMap((t) => [
+          { role: "user", content: tainted(t.user, USER_ORIGIN) },
+          ...(t.assistant ? [{ role: "assistant", content: t.assistant }] : []),
+        ]),
+      ];
+      const out = (await ctx.execute(
+        {
+          _tag: "TaskDefinition",
+          kind: "memory",
+          id: `conv#o${ord}:summarize`,
+          toolId: budget.summarizerToolId,
+        },
+        { messages }
+      )) as { summary?: unknown };
+      if (typeof out?.summary === "string") {
+        const raw = clip(out.summary, DEFAULTS.maxSummaryChars);
+        summary = await ctx.decide<string>(
+          `conv#o${ord}:summary-fit`,
+          () => truncateToTokens(raw, maxSummaryTokens, counter),
+          { source: "conversation-budget" }
+        );
+      }
+    };
 
     for (;;) {
       // Idle: the next message is either one already consumed (a rotation's `pending`) or a wait.
       // This is the ONLY place the execution parks.
       const raw: unknown = pending !== undefined ? pending : await ctx.receive(CONVERSATION_TOPIC);
       pending = undefined;
-      const env = parseEnvelope(unwrapTainted(raw));
+      const parsed =
+        sharedCfg === undefined
+          ? { env: parseEnvelope(unwrapTainted(raw)) }
+          : parseSignedEnvelope(unwrapTainted(raw), sharedCfg.key);
+      const env = parsed.env;
+      const badReason = (parsed as { reason?: string }).reason ?? "malformed";
 
       if (env?.kind === "close") {
         await ctx.decide("conv#closed", () => ({ kind: "closed", turns: seq }), {
@@ -209,7 +394,16 @@ export function conversationRunner(
       if (rotateDue) {
         return ctx.continueAsNew(
           trimCarry(
-            { v: 1, seq, ord, ids, ...(summary !== undefined && { summary }), turns, pending: raw },
+            {
+              v: 1,
+              seq,
+              ord,
+              ids,
+              ...(owner !== undefined && { owner }),
+              ...(summary !== undefined && { summary }),
+              turns,
+              pending: raw,
+            },
             maxCarryBytes
           )
         );
@@ -217,38 +411,72 @@ export function conversationRunner(
 
       ord++;
       remember(env?.id);
-      if (env === undefined || env.text.trim() === "") {
-        await record("user", {
-          turn: seq + 1,
-          role: "user",
-          text: "",
-          status: "rejected",
-          reason: "malformed",
-        });
+      if (env === undefined || env.kind !== "user" || env.text.trim() === "") {
+        await reject(env === undefined ? badReason : "malformed");
         continue;
       }
+      const asker = env.asker;
       if (env.text.length > maxTurnChars) {
-        await record("user", {
-          turn: seq + 1,
-          role: "user",
-          text: "",
-          status: "rejected",
-          reason: "too-long",
-        });
+        await reject("too-long", asker);
         continue;
+      }
+
+      // SHARED: is the asker (still) a participant? Judged when the turn is DEQUEUED, as a recorded
+      // verdict, so a participant removed while their message queued is not served.
+      if (sharedCfg !== undefined && asker !== undefined) {
+        const member = await ctx.decide<boolean>(
+          `conv#o${ord}:member`,
+          async () =>
+            sameIdentity(asker, owner) ||
+            (await sharedCfg.directory.list(conversationId)).some((i) => sameIdentity(i, asker)),
+          { source: "conversation-access" }
+        );
+        if (!member) {
+          await reject("not-a-participant", asker);
+          continue;
+        }
       }
 
       const ctl = new AbortController();
 
+      // The turns the asker's prompt may draw on. OWNER: all of them. SHARED: only the entries the ASKER
+      // is cleared for (a recorded verdict), so restricted content never enters an uncleared asker's context.
+      let visibleTurns = turns;
+      if (sharedCfg !== undefined && asker !== undefined) {
+        const verdict = await ctx.decide<boolean[]>(
+          `conv#o${ord}:visible`,
+          async () => {
+            const cache = new Map<string, boolean>();
+            return Promise.all(
+              turns.map(async (t) => {
+                if (!t.classes?.length || sameIdentity(t.asker, asker)) return true;
+                const k = t.classes.join("\u0000");
+                let ok = cache.get(k);
+                if (ok === undefined) {
+                  ok = (await sharedCfg.cleared(asker, t.classes)) === true;
+                  cache.set(k, ok);
+                }
+                return ok;
+              })
+            );
+          },
+          { source: "conversation-access" }
+        );
+        visibleTurns = turns.filter((_, i) => verdict[i] === true);
+      }
+
       // ── the token budget: a recorded verdict, then the (deterministic) eviction ────────────────
       const overflow = Math.max(0, turns.length - maxWindowTurns);
-      let dropCount = overflow;
+      let dropCount = sharedCfg === undefined ? overflow : 0;
+      let promptTurns: CarriedTurn[] = turns;
+      if (sharedCfg !== undefined)
+        promptTurns = visibleTurns.slice(Math.max(0, visibleTurns.length - maxWindowTurns));
       if (budget !== undefined) {
-        const view = turns.slice(overflow);
+        const view = sharedCfg !== undefined ? promptTurns : turns.slice(overflow);
         const verdict = await ctx.decide<BudgetVerdict>(
           `conv#fit:${ord}`,
           () =>
-            fitToWindow({
+            fitWithSummaryFallback({
               contextWindow: budget.contextWindow,
               ...(budget.reserveOutputTokens !== undefined && {
                 reserveOutputTokens: budget.reserveOutputTokens,
@@ -261,46 +489,52 @@ export function conversationRunner(
                 ...(t.assistant !== undefined && { assistant: t.assistant }),
                 ...(t.tokens !== undefined && { tokens: t.tokens }),
               })),
-              ...(budget.counter !== undefined && { counter: budget.counter }),
+              counter,
             }),
           { source: "conversation-budget" }
         );
         if (!verdict.ok) {
           // The message does not fit even alone: refused, never sent to the model, not a turn.
-          await record("user", {
-            turn: seq + 1,
-            role: "user",
-            text: "",
-            status: "rejected",
-            reason: "prompt-too-large",
-          });
+          await reject("prompt-too-large", asker);
           continue;
         }
+        if (verdict.dropSummary === true) summary = undefined;
         for (const [i, tokens] of verdict.counted) {
           const t = view[i];
           if (t !== undefined) t.tokens = tokens;
         }
-        dropCount = overflow + (view.length - verdict.keep);
+        if (sharedCfg !== undefined) promptTurns = view.slice(view.length - verdict.keep);
+        else dropCount = overflow + (view.length - verdict.keep);
       }
       const n = ++seq;
       // The barge-in watch starts when the turn goes LIVE: this decider runs only for a new turn, and
       // the provider wrapper starts it for a recovered one whose model call re-runs. A turn replayed
       // from the log (every wake re-runs the whole generation) never subscribes to anything.
+      // (SHARED mode watches inside the turn effect, for the asker's own messages only.)
       let watching: Promise<() => void> | undefined;
       const ensureWatch = (): Promise<() => void> => {
         if (watching === undefined) {
-          watching = Promise.resolve(
-            config.bargeIn?.(conversationId, ctx.executionId, {
-              onMessage: () => ctl.abort(),
-              isKnown: (id) => known.has(id),
-            }) ?? (() => undefined)
-          );
+          watching =
+            sharedCfg !== undefined
+              ? Promise.resolve(() => undefined)
+              : Promise.resolve(
+                  config.bargeIn?.(conversationId, ctx.executionId, {
+                    onMessage: () => ctl.abort(),
+                    isKnown: (id) => known.has(id),
+                  }) ?? (() => undefined)
+                );
         }
         return watching;
       };
       await record(
         "user",
-        { turn: n, role: "user", text: env.text, status: "complete" },
+        {
+          turn: n,
+          role: "user",
+          text: env.text,
+          status: "complete",
+          ...(asker !== undefined && { asker }),
+        },
         async () => {
           await ensureWatch();
         }
@@ -308,53 +542,66 @@ export function conversationRunner(
       if (dropCount > 0) {
         const dropped = turns.slice(0, dropCount);
         turns = turns.slice(dropCount);
-        if (budget?.summarizerToolId !== undefined) {
-          const messages = [
-            ...(summary !== undefined && summary !== ""
-              ? [{ role: "user", content: `Summary so far: ${summary}` }]
-              : []),
-            ...dropped.flatMap((t) => [
-              { role: "user", content: t.user },
-              ...(t.assistant ? [{ role: "assistant", content: t.assistant }] : []),
-            ]),
-          ];
-          const out = (await ctx.execute(
-            {
-              _tag: "TaskDefinition",
-              kind: "memory",
-              id: `conv#o${ord}:summarize`,
-              toolId: budget.summarizerToolId,
-            },
-            { messages }
-          )) as { summary?: unknown };
-          if (typeof out?.summary === "string") {
-            summary = clip(out.summary, DEFAULTS.maxSummaryChars);
-          }
-        }
+        await summarize(dropped);
       }
 
       // ── the turn ──────────────────────────────────────────────────────────────────────────────
       let reply = "";
       let status: MessageStatus = "complete";
       let reason: string | undefined;
+      let errorId: string | undefined;
+      let failure: unknown;
+      let toolNames: string[] = [];
+      let turnExecutionId: string | undefined;
+      const contextClasses = union(...promptTurns.map((t) => t.classes));
       try {
-        const out = await withTurnScope(
-          conversationId,
-          n,
-          ctl.signal,
-          () =>
-            agentLoop$(
-              ctx,
-              { ...config.agent, loopId: `conv#o${ord}`, signal: ctl.signal },
-              {
-                prompt: env.text,
-                promptOrigin: USER_ORIGIN,
-                history: historyOf(summary, turns),
-              }
-            ),
-          ensureWatch
-        );
-        reply = clip(out.content, maxReplyChars);
+        if (sharedCfg !== undefined && asker !== undefined) {
+          const out = (await ctx.execute(
+            {
+              _tag: "TaskDefinition",
+              kind: "tool",
+              id: `conv#o${ord}:turn`,
+              toolId: shared?.turnEffectId ?? "conversation.turn",
+            },
+            {
+              conversationId,
+              turn: n,
+              ord,
+              asker,
+              text: env.text,
+              ...(env.id !== undefined && { id: env.id }),
+              history: historyOf(summary, promptTurns),
+              known: [...known],
+              ownerExecutionId: ctx.executionId,
+            }
+          )) as TurnResult;
+          status = out.status;
+          reply = clip(out.content ?? "", maxReplyChars);
+          toolNames = out.tools ?? [];
+          turnExecutionId = out.turnExecutionId;
+          if (out.status === "failed") {
+            reason = out.reason ?? "turn-failed";
+            errorId = out.errorId;
+          }
+        } else {
+          const out = await withTurnScope(
+            conversationId,
+            n,
+            ctl.signal,
+            () =>
+              agentLoop$(
+                ctx,
+                { ...config.agent, loopId: `conv#o${ord}`, signal: ctl.signal },
+                {
+                  prompt: env.text,
+                  promptOrigin: USER_ORIGIN,
+                  history: historyOf(summary, turns),
+                }
+              ),
+            ensureWatch
+          );
+          reply = clip(out.content, maxReplyChars);
+        }
       } catch (e) {
         if (e instanceof TypedFailure && e.channel === AGENT_INTERRUPTED) {
           status = "interrupted";
@@ -362,24 +609,66 @@ export function conversationRunner(
         } else if (isTerminalToolError(e)) {
           throw e; // a park, an authority/safety stop, a cancel, a replay divergence: not a failed turn
         } else {
+          // The user sees a FIXED reason and a correlation id; the real error goes to the host's log.
           status = "failed";
-          reason = clip(e instanceof Error ? `${e.name}: ${e.message}` : String(e), 500);
+          reason = "model-error";
+          errorId = `err-${fnv1a64(`${ctx.executionId}:${ord}`)}`;
+          failure = e;
         }
       } finally {
         // Host-side, not a `ctx` operation: it can only fire the signal, which the loop reads
         // through its recorded checkpoints.
         if (watching !== undefined) (await watching.catch(() => () => undefined))();
       }
-      await record("reply", {
-        turn: n,
-        role: "assistant",
-        text: reply,
+
+      // SHARED: what the answer touched. The declared class of every tool called plus the classes of
+      // every entry that fed the context; a tool the policy does not know is "unclassified".
+      let classes: string[] = [];
+      if (sharedCfg !== undefined) {
+        classes = await ctx.decide<string[]>(
+          `conv#o${ord}:classes`,
+          () =>
+            union(
+              contextClasses,
+              toolNames.map((name) => sharedCfg.classOf?.(name) ?? "unclassified")
+            ),
+          { source: "conversation-access" }
+        );
+      }
+      await record(
+        "reply",
+        {
+          turn: n,
+          role: "assistant",
+          text: reply,
+          status,
+          ...(reason !== undefined && { reason }),
+          ...(errorId !== undefined && { errorId }),
+          ...(asker !== undefined && { asker }),
+          ...(classes.length > 0 && { classes }),
+          ...(turnExecutionId !== undefined && { turnExecutionId }),
+        },
+        async () => {
+          if (failure !== undefined && errorId !== undefined) {
+            config.onError?.(errorId, failure, { conversationId, turn: n });
+          }
+        }
+      );
+      turns.push({
+        n,
+        user: env.text,
+        assistant: reply,
         status,
-        ...(reason !== undefined && { reason }),
+        ...(asker !== undefined && { asker }),
+        ...(classes.length > 0 && { classes }),
       });
-      turns.push({ n, user: env.text, assistant: reply, status });
+      if (sharedCfg !== undefined && turns.length > maxWindowTurns) {
+        const dropped = turns.slice(0, turns.length - maxWindowTurns);
+        turns = turns.slice(turns.length - maxWindowTurns);
+        await summarize(dropped);
+      }
       hubEnd(config, conversationId, n);
-      if (counter.turn()) rotateDue = true;
+      if (turnsCounter.turn()) rotateDue = true;
     }
   };
 }
@@ -407,6 +696,22 @@ export interface ConversationFlowOptions {
   version?: string;
 }
 
+/** A conversation flow plus what a client needs to drive it. */
+export type ConversationFlow = RegisteredFlow<
+  ConversationCarry | Record<string, never>,
+  ConversationResult
+> & {
+  /** `"owner"` (default) or `"shared"` (a participant set; see {@link SharedConfig}). */
+  readonly mode: "owner" | "shared";
+  readonly config: ConversationConfig;
+  /** Shared mode only: the turn flow and the effect id to register. */
+  readonly sharedTurn?: {
+    flow: RegisteredFlow<TurnInput, Omit<TurnResult, "turnExecutionId">>;
+    effectId: string;
+    signals: Map<string, AbortSignal>;
+  };
+};
+
 /**
  * Build the registered flow of a conversation. Register it on the runtime
  * (`runtime.registerFlow(flow.definition, flow.runner)`) and drive it with {@link createConversations}.
@@ -415,17 +720,29 @@ export interface ConversationFlowOptions {
 export function conversation$(
   config: ConversationConfig,
   options: ConversationFlowOptions = {}
-): RegisteredFlow<ConversationCarry | Record<string, never>, ConversationResult> {
+): ConversationFlow {
+  const id = options.id ?? "conversation";
   const definition = flow$({
-    id: options.id ?? "conversation",
+    id,
     name: options.name ?? "Conversation",
     version: options.version ?? "1.0.0",
     inputSchema: z.any(),
     outputSchema: z.any(),
     steps: [],
   });
-  return { definition, runner: conversationRunner(config) } as RegisteredFlow<
-    ConversationCarry | Record<string, never>,
-    ConversationResult
-  >;
+  const effectId = config.shared?.turnEffectId ?? "conversation.turn";
+  const base = {
+    definition,
+    runner: conversationRunner(config, { turnEffectId: effectId }),
+    mode: config.shared === undefined ? "owner" : "shared",
+    config,
+  } as ConversationFlow;
+  if (config.shared === undefined) return base;
+  const signals = new Map<string, AbortSignal>();
+  return {
+    ...base,
+    sharedTurn: { flow: sharedTurnFlow(config, signals, `${id}-turn`), effectId, signals },
+  };
 }
+
+export { registerSharedTurnEffect, sharedTurnEffect };

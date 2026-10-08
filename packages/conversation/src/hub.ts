@@ -13,9 +13,9 @@ import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
 
 /** A live event for a conversation. Deltas and resets only: everything durable comes from the log. */
 export type LiveEvent =
-  | { type: "delta"; conversationId: string; turn: number; text: string }
+  | { type: "delta"; conversationId: string; turn: number; text: string; asker?: string }
   /** The turn's stream restarted from zero (a crash-recovered re-run asked the model again): discard the partial. */
-  | { type: "reset"; conversationId: string; turn: number };
+  | { type: "reset"; conversationId: string; turn: number; asker?: string };
 
 /** What the model effect's `onDelta` needs to know about the call it is serving. */
 interface TurnScope {
@@ -27,6 +27,8 @@ interface TurnScope {
   signal: AbortSignal;
   /** Called before a LIVE model request: starts whatever watches for a barge-in (a replayed turn never gets here). */
   ensure?: () => Promise<unknown>;
+  /** Shared mode: the identity key of the asker. Live deltas are published for THIS viewer only. */
+  asker?: string;
 }
 
 const scope = new AsyncLocalStorage<TurnScope>();
@@ -38,10 +40,18 @@ export function withTurnScope<T>(
   turn: number,
   signal: AbortSignal,
   fn: () => T,
-  ensure?: () => Promise<unknown>
+  ensure?: () => Promise<unknown>,
+  asker?: string
 ): T {
   return scope.run(
-    { conversationId, turn, run: ++runCounter, signal, ...(ensure !== undefined && { ensure }) },
+    {
+      conversationId,
+      turn,
+      run: ++runCounter,
+      signal,
+      ...(ensure !== undefined && { ensure }),
+      ...(asker !== undefined && { asker }),
+    },
     fn
   );
 }
@@ -85,12 +95,15 @@ export interface ConversationHubOptions {
 export interface PartialReply {
   turn: number;
   text: string;
+  /** Shared mode: whose turn it is. The partial is for that viewer alone until the turn is classified. */
+  asker?: string;
 }
 
 interface Partial {
   turn: number;
   run: number;
   text: string;
+  asker?: string;
 }
 
 export class ConversationHub {
@@ -132,7 +145,9 @@ export class ConversationHub {
   /** What the conversation has streamed of the reply in progress, if one is. Read it right after {@link subscribe}. */
   partialOf(conversationId: string): PartialReply | undefined {
     const p = this.partials.get(conversationId);
-    return p === undefined || p.text === "" ? undefined : { turn: p.turn, text: p.text };
+    return p === undefined || p.text === ""
+      ? undefined
+      : { turn: p.turn, text: p.text, ...(p.asker !== undefined && { asker: p.asker }) };
   }
 
   publish(conversationId: string, event: LiveEvent): void {
@@ -225,6 +240,7 @@ export class ConversationHub {
             type: "reset",
             conversationId: s.conversationId,
             turn: s.turn,
+            ...(s.asker !== undefined && { asker: s.asker }),
           });
         }
         if (cur === undefined && this.partials.size >= MAX_TRACKED_TURNS) {
@@ -232,7 +248,12 @@ export class ConversationHub {
           const oldest = this.partials.keys().next().value;
           if (oldest !== undefined) this.partials.delete(oldest);
         }
-        part = { turn: s.turn, run: s.run, text: "" };
+        part = {
+          turn: s.turn,
+          run: s.run,
+          text: "",
+          ...(s.asker !== undefined && { asker: s.asker }),
+        };
         this.partials.set(s.conversationId, part);
       }
       if (this.maxPartial > 0 && part !== undefined) {
@@ -245,6 +266,7 @@ export class ConversationHub {
         conversationId: s.conversationId,
         turn: s.turn,
         text: delta,
+        ...(s.asker !== undefined && { asker: s.asker }),
       });
     };
   }

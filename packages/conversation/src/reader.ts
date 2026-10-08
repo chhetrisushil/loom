@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import { type EventStore, headOf, readRangeOf } from "@loom/event-runtime";
+import { type Identity, parseIdentity } from "./access";
 import { generationId } from "./ids";
 import { type HistoryEntry, type MessageRecord, RECORD_SOURCE } from "./types";
 
@@ -54,6 +55,8 @@ export interface ReadOptions {
   cursor?: string;
   /** `"forward"` (oldest first, default) or `"backward"` (newest first). */
   direction?: "forward" | "backward";
+  /** Stop reading (the caller went away): the call returns what it has with `done: false`. */
+  signal?: AbortSignal;
 }
 
 export interface ReadResult {
@@ -97,6 +100,13 @@ function recordOf(ev: EventEnvelope): MessageRecord | undefined {
     text: p.text,
     status: p.status,
     ...(typeof p.reason === "string" && { reason: p.reason }),
+    ...(typeof p.errorId === "string" && { errorId: p.errorId }),
+    ...(parseIdentity(p.asker) !== undefined && { asker: parseIdentity(p.asker) as Identity }),
+    ...(Array.isArray(p.classes) &&
+      p.classes.length > 0 && {
+        classes: p.classes.filter((x): x is string => typeof x === "string"),
+      }),
+    ...(typeof p.turnExecutionId === "string" && { turnExecutionId: p.turnExecutionId }),
   };
 }
 
@@ -162,7 +172,7 @@ export function createConversationReader(store: EventStore): ConversationReader 
     let closed = false;
     const entries: HistoryEntry[] = [];
     for (;;) {
-      if (entries.length >= limit || scanned >= maxScan) {
+      if (entries.length >= limit || scanned >= maxScan || opts.signal?.aborted === true) {
         return { entries, ...(last && { nextCursor: formatCursor(last) }), done: false, closed };
       }
       const evs = await readRangeOf(
@@ -176,6 +186,7 @@ export function createConversationReader(store: EventStore): ConversationReader 
         if (await exists(store, generationId(conversationId, g + 1))) {
           g++;
           next = 0;
+          scanned++; // a generation hop is work: it counts against the scan budget
           continue;
         }
         return { entries, ...(last && { nextCursor: formatCursor(last) }), done: true, closed };
@@ -197,29 +208,29 @@ export function createConversationReader(store: EventStore): ConversationReader 
     const maxScan = Math.max(1, opts.maxScan ?? DEFAULT_MAX_SCAN);
     const before = parseCursor(opts.cursor);
     if (opts.cursor !== undefined && before === undefined) throw new InvalidCursorError();
-    let g: number;
-    let upper: number; // exclusive upper bound within generation g
-    if (before !== undefined) {
-      g = before.g;
-      upper = before.seq;
-    } else {
-      const head = await findHeadGeneration(store, conversationId);
-      if (head === undefined) return { entries: [], done: true };
-      g = head;
-      upper = ((await headOf(store, generationId(conversationId, g))) ?? -1) + 1;
-    }
+    // The cursor is UNTRUSTED input: it is clamped to what exists. A generation past the head, or a
+    // sequence past a generation's tip, means "from the end", never a walk through nothing.
+    const head = await findHeadGeneration(store, conversationId);
+    if (head === undefined) return { entries: [], done: true };
+    const tipOf = async (gen: number): Promise<number> =>
+      ((await headOf(store, generationId(conversationId, gen))) ?? -1) + 1;
+    let g = before === undefined ? head : Math.min(before.g, head);
+    let upper = await tipOf(g); // exclusive upper bound within generation g
+    if (before !== undefined && before.g <= head) upper = Math.min(before.seq, upper);
     let last: Position | undefined = before;
     let scanned = 0;
     const entries: HistoryEntry[] = [];
     for (;;) {
-      if (entries.length >= limit || scanned >= maxScan) {
+      if (entries.length >= limit || scanned >= maxScan || opts.signal?.aborted === true) {
         return { entries, ...(last && { nextCursor: formatCursor(last) }), done: false };
       }
       if (upper <= 0) {
         if (g === 0)
           return { entries, ...(last && { nextCursor: formatCursor(last) }), done: true };
         g--;
-        upper = ((await headOf(store, generationId(conversationId, g))) ?? -1) + 1;
+        upper = await tipOf(g);
+        scanned++; // a generation hop is work: it counts against the scan budget
+        last = { g, seq: upper };
         continue;
       }
       const take = Math.min(BLOCK, maxScan - scanned, upper);

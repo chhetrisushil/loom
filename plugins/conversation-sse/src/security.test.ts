@@ -59,10 +59,12 @@ describe("authentication: fail closed", () => {
     expect((await post(`${b.url}/conversations`, "anon", {})).status).toBe(401);
   });
 
-  it("the server refuses to be created without authenticate, unless insecure is explicit (and then warns; never under strict)", async () => {
-    const b = await up();
-    const base = { conversations: b.conversations, hub: b.hub, eventStore: b.eventStore };
-    expect(() => createConversationSseServer(base)).toThrow(/unauthenticated/);
+  it("the server refuses to be created without authenticate, unless insecure is explicit (and then warns; never on a strict runtime)", async () => {
+    const open = await up({ openRuntime: true, server: { allowNoRuntimeAuthz: true } });
+    const base = { conversations: open.conversations, hub: open.hub, eventStore: open.eventStore };
+    expect(() => createConversationSseServer({ ...base, allowNoRuntimeAuthz: true })).toThrow(
+      /unauthenticated/
+    );
     const warnings: string[] = [];
     expect(() =>
       createConversationSseServer({ ...base, insecure: true, warn: (m) => warnings.push(m) })
@@ -71,6 +73,28 @@ describe("authentication: fail closed", () => {
     expect(() => createConversationSseServer({ ...base, insecure: true, strict: true })).toThrow(
       /strict/
     );
+    // P3-2: `strict` defaults from the runtime, as the A2A server does: insecure on a strict runtime is refused
+    const strictRt = await up();
+    expect(() =>
+      createConversationSseServer({
+        conversations: strictRt.conversations,
+        hub: strictRt.hub,
+        eventStore: strictRt.eventStore,
+        insecure: true,
+      })
+    ).toThrow(/strict/);
+  });
+
+  it("P3-3: refuses to front a runtime with no fail-closed execution authorizer, unless that is explicit", async () => {
+    const open = await up({ openRuntime: true, server: { allowNoRuntimeAuthz: true } });
+    const base = {
+      conversations: open.conversations,
+      hub: open.hub,
+      eventStore: open.eventStore,
+      authenticate: () => ({ actor: "x" }),
+    };
+    expect(() => createConversationSseServer(base)).toThrow(/no fail-closed execution authorizer/);
+    expect(() => createConversationSseServer({ ...base, allowNoRuntimeAuthz: true })).not.toThrow();
   });
 
   it("binds loopback by default", async () => {
@@ -181,16 +205,25 @@ describe("authorization and isolation", () => {
     expect(unknown.body).toEqual(strangerOnReal.body);
   });
 
-  it("a same-tenant colleague is admitted by the runtime's policy (tenant scope), not by this server", async () => {
+  it("OWNER-ONLY by default: a same-tenant colleague is refused like any stranger (the 404), on every route and the stream", async () => {
     const b = await up();
     const id = await startConv(b, "tok-alice");
-    expect(
-      (await post(`${b.url}/conversations/${id}/turns`, "tok-carol", { text: "hi from carol" }))
-        .status
-    ).toBe(202);
-    await until(
-      async () => (await get(`${b.url}/conversations/${id}`, "tok-alice")).body.turns === 1
+    const before = await logSize(b, id);
+    const unknown = await get(`${b.url}/conversations/conv-nope`, "tok-carol");
+    for (const r of [
+      await post(`${b.url}/conversations/${id}/turns`, "tok-carol", { text: "hi from carol" }),
+      await post(`${b.url}/conversations/${id}/close`, "tok-carol", {}),
+      await get(`${b.url}/conversations/${id}`, "tok-carol"),
+      await get(`${b.url}/conversations/${id}/history`, "tok-carol"),
+    ]) {
+      expect(r.status).toBe(404);
+      expect(r.body).toEqual(unknown.body);
+    }
+    expect((await openSse(`${b.url}/conversations/${id}/events`, bearer("tok-carol"))).status).toBe(
+      404
     );
+    expect(await logSize(b, id)).toBe(before);
+    expect(b.calls.n).toBe(0);
   });
 
   it("conversation ids are minted by the server: a client cannot choose, collide with or squat one", async () => {
@@ -316,6 +349,11 @@ describe("browser safety", () => {
       headers: { origin: "https://evil.example" },
     });
     expect(badPre.status).toBe(403);
+    // P3-5: Host is attacker-influenced and never proves same-origin: the server's OWN origin is not listed, so refused
+    const own = await fetch(`${b.url}/conversations/${id}`, {
+      headers: { ...bearer("tok-alice"), origin: b.url },
+    });
+    expect(own.status).toBe(403);
     // no Origin (a non-browser client) is unaffected, and carries no CORS headers
     const plain = await fetch(`${b.url}/conversations/${id}`, { headers: bearer("tok-alice") });
     expect(plain.headers.get("access-control-allow-origin")).toBeNull();

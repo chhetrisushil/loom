@@ -81,6 +81,8 @@ export type BudgetVerdict =
       counted: [number, number][];
       /** The total the request will cost (fixed parts + kept turns), reply reserve excluded. */
       tokens: number;
+      /** The rolling summary alone made the request not fit, so it was left out of this fit (and is to be dropped). */
+      dropSummary?: true;
     }
   | { ok: false; reason: "prompt-too-large"; tokens: number; available: number };
 
@@ -131,4 +133,38 @@ export async function fitToWindow(req: BudgetRequest): Promise<BudgetVerdict> {
     keep++;
   }
   return { ok: true, keep, counted, tokens: used };
+}
+
+/**
+ * `fitToWindow`, but a rolling summary that is itself too big to leave room for the prompt is DROPPED
+ * rather than wedging the conversation: with no summary the same request may fit. The verdict says so
+ * (`dropSummary`) and the caller discards the summary. Still `prompt-too-large` when it cannot fit even so.
+ */
+export async function fitWithSummaryFallback(req: BudgetRequest): Promise<BudgetVerdict> {
+  const v = await fitToWindow(req);
+  if (v.ok || req.summary === undefined || req.summary === "") return v;
+  const { summary: _dropped, ...rest } = req;
+  const again = await fitToWindow(rest);
+  return again.ok ? { ...again, dropSummary: true } : again;
+}
+
+/**
+ * The longest prefix of `text` that costs at most `maxTokens`, with an ellipsis when cut: a binary
+ * search over prefix lengths, O(log n) counts. Deterministic for a deterministic counter, and the
+ * caller records its answer anyway.
+ */
+export async function truncateToTokens(
+  text: string,
+  maxTokens: number,
+  counter: TokenCounter
+): Promise<string> {
+  if ((await counter.count(text)) <= maxTokens) return text;
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    if ((await counter.count(text.slice(0, mid))) <= maxTokens) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo === 0 ? "" : `${text.slice(0, lo)}…`;
 }

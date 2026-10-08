@@ -99,4 +99,56 @@ describe("history reads are bounded", () => {
     const next = await reader.read(id, { cursor: first.nextCursor as string });
     expect(next.entries.map((m) => m.text)).toEqual(["two", "re: two"]);
   });
+
+  it("a crafted cursor cannot make one call walk billions of generations (P1-a)", async () => {
+    const b = boot({ config: { rotateEveryTurns: 2 } });
+    const { conversationId: id } = await b.conv.start();
+    for (let i = 1; i <= 3; i++) {
+      await b.conv.sendTurn(id, `q${i}`);
+      await messages(b, id, i * 2);
+    }
+    const calls = { n: 0 };
+    const spy = new Proxy(b.eventStore, {
+      get(t, p, r) {
+        const v = Reflect.get(t, p, r);
+        if (
+          typeof v === "function" &&
+          (p === "readRange" || p === "head" || p === "readFrom" || p === "read")
+        ) {
+          return (...a: unknown[]) => {
+            calls.n++;
+            return (v as (...x: unknown[]) => unknown).apply(t, a);
+          };
+        }
+        return v;
+      },
+    }) as EventStore;
+    const reader = createConversationReader(spy);
+    const bounded = await reader.read(id, {
+      direction: "backward",
+      cursor: "999999999.0",
+      maxScan: 50,
+    });
+    expect(calls.n).toBeLessThan(60);
+    // clamped to the real head: the newest messages still come back, none skipped
+    expect(bounded.entries.map((m) => m.text).slice(0, 2)).toEqual(["re: q3", "q3"]);
+    calls.n = 0;
+    const far = await reader.read(id, { direction: "backward", cursor: "0.999999", limit: 100 });
+    expect(far.entries.map((m) => m.text).slice(-2)).toEqual(["q1", "re: q1"].reverse());
+    expect(far.entries.length).toBeGreaterThan(0);
+    expect(calls.n).toBeLessThan(60);
+  });
+
+  it("a read stops when its caller goes away", async () => {
+    const b = boot();
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "one");
+    await messages(b, id, 2);
+    const reader = createConversationReader(b.eventStore);
+    const ctl = new AbortController();
+    ctl.abort();
+    const r = await reader.read(id, { direction: "backward", signal: ctl.signal });
+    expect(r.entries).toEqual([]);
+    expect(r.done).toBe(false);
+  });
 });
