@@ -1,7 +1,7 @@
 {
   "name": "@loom/eval",
   "version": "0.0.1",
-  "description": "Log-as-eval-fixture for Loom — replay a recorded event log deterministically, diff runs for golden-fixture regression, and score outcomes, with no live LLM/tool calls",
+  "description": "Log-as-eval-fixture and LLM evaluation harness for Loom \u2014 replay a recorded event log deterministically, diff runs for golden-fixture regression, score outcomes, and run graded suites (exact, regex, JSON Schema, LLM judge via the decide scope) over cassette-recorded providers, with no live LLM/tool calls",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@loom/core": "workspace:*",
+    "@loom/llm": "workspace:*",
     "@loom/replay-vm": "workspace:*"
   },
   "devDependencies": {
