@@ -40,6 +40,13 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "StartFencedOutError",
   "PrincipalUnrestorableError",
   "StorageWriteError",
+  // fencing / supersession: this execution no longer owns its log; a leaked egress or spawn bound
+  "StaleFenceError",
+  "ExecutionSupersededError",
+  "DuplicateEnvelopeIdError",
+  "DuplicateSequenceError",
+  "EgressDeniedError",
+  "SpawnLimitExceededError",
 ]);
 
 const MAX_CAUSE_DEPTH = 5;
@@ -72,6 +79,11 @@ function isTerminalOne(err: unknown): boolean {
  * (kill switch, quota, rate limit, anything declaring `retryable === false`), a cancellation, a
  * divergence, a continuation. The `cause` chain is walked (bounded), so a wrapper that re-throws
  * `new Error("tool failed", { cause: denial })` is still the denial.
+ *
+ * FOR THIRD-PARTY TOOLS: a tool whose failure means "stop, do not let the model retry" (a policy
+ * refusal, an exhausted budget of your own) declares it by setting `retryable = false` on the error it
+ * throws; that is the only hook, and it needs no import. The `cause` chain is walked to depth 5: an
+ * authority error wrapped more than five layers deep is treated as an ordinary failure.
  */
 export function isTerminalToolError(err: unknown): boolean {
   let e: unknown = err;

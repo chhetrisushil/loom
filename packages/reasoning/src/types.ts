@@ -117,6 +117,18 @@ export interface ReasonOptionsBase {
   /** R9 — make each model call through the host instead of the route's provider. See {@link ModelInvoker}. */
   invoke?: ModelInvoker;
   /**
+   * R10 — partition the response cache. The cache key is the request as written plus the route; two
+   * callers with an identical prompt would otherwise share a cached response. The runtime already
+   * adds the `resolveContext.principal` identity (tenant, actor, onBehalfOf) when it has one; a host
+   * that cannot hand over a principal (a runner body cannot read its own) passes a stable scope
+   * string here, e.g. the tenant id. Unset on a single-tenant host = one shared cache, as before.
+   *
+   * NOTE on metering: a cache hit makes no provider call, so on the direct path (no effect ring) it
+   * is not metered. That is the cache's purpose; a host that must meter every request routes the
+   * call through an effect (`invoke`), which bypasses this cache.
+   */
+  cacheScope?: string;
+  /**
    * R10 — journal the live provider call. Unlike {@link invoke} (which REPLACES the call so the host
    * can run it as an effect), this wraps it: the runtime still guards the request, checks the route's
    * modalities and keys its response cache on the request as written, and hands the host only the

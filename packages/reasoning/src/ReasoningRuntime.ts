@@ -165,7 +165,8 @@ export class ReasoningRuntime {
     assertRequestSupported(guarded, route.provider.capabilities);
     // The cache key is the request AS WRITTEN (addresses, not bytes); computed before the host's
     // wrapper so a journaled call and an unjournaled one share the same entries.
-    const cacheKey = this.cache !== undefined ? this.keyFor(route.id, req) : undefined;
+    const cacheKey =
+      this.cache !== undefined ? this.keyFor(route.id, req, this.scopeOf(opts)) : undefined;
     const run = async (): Promise<LlmResponse> => {
       if (cacheKey !== undefined) {
         const hit = this.cache?.get(cacheKey);
@@ -186,7 +187,23 @@ export class ReasoningRuntime {
     return opts.wrapCall !== undefined ? opts.wrapCall(route, run) : run();
   }
 
-  private keyFor(modelId: string, req: ReasoningRequest): string {
-    return JSON.stringify({ m: modelId, s: req.system, msgs: req.messages });
+  /** Who the cached response belongs to: the explicit scope and the principal identity, if any. */
+  private scopeOf(opts: ReasonOptions): string | undefined {
+    const p = opts.resolveContext?.principal;
+    const who =
+      p === undefined
+        ? undefined
+        : JSON.stringify([p.tenant ?? null, p.actor ?? null, p.onBehalfOf ?? null]);
+    if (opts.cacheScope === undefined && who === undefined) return undefined;
+    return JSON.stringify([opts.cacheScope ?? null, who ?? null]);
+  }
+
+  private keyFor(modelId: string, req: ReasoningRequest, scope?: string): string {
+    return JSON.stringify({
+      m: modelId,
+      s: req.system,
+      msgs: req.messages,
+      ...(scope !== undefined && { c: scope }),
+    });
   }
 }

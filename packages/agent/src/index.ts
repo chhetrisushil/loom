@@ -9,6 +9,8 @@ export type {
   SkillSelectorContext,
 } from "./SkillSelector";
 export {
+  AgentLoopConfigError,
+  ResponseTooLargeError,
   agentLoop$,
   boundResponse,
   MAX_RECORDED_RESPONSE_CHARS,

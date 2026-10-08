@@ -1718,7 +1718,7 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 //   parallelTools?: boolean | number   — one turn's calls through ctx.parallel; ids `<agent>#turn:<i>:tool:<j>` unchanged; approvals first, in order
 //   signal?: AbortSignal               — stop THIS run: no further model/tool call; fails on AGENT_INTERRUPTED with InterruptedAgentRun
 //   turnTimeoutMs?, toolTimeoutMs?     — frame `timeoutMs` (model failure fails the run; a tool timeout is an isError result)
-//   writeBack?: boolean | { tier?, scope?, toolId?, unless? } — with `memory`: remember prompt + answer on finish; keyed idempotent; toolId = journaled effect (memoryWriteBackEffect); tainted answer if the run saw taint
+//   writeBack?: false | { tier?, scope?, toolId?, unless?, allowDirect? } (needs one of toolId / unless / allowDirect: AgentLoopConfigError) — with `memory`: remember prompt + answer on finish; keyed idempotent; toolId = journaled effect (memoryWriteBackEffect); tainted answer if the run saw taint
 //   (with `signal`, each abort checkpoint is a recorded decision `<agent>#abort:<site>`; each tool outcome `<agent>#turn:<i>:tool:<j>:outcome`; both stamped, excluded from @loom/learning trajectories)
 //   `reasoning` without reasoningToolId: the response is a recorded decision `<agent>#turn:<i>:response:<n>` (no re-ask on resume)
 // agentLoop$ config (R9): reasoningToolId?: string | ((routeId) => string)   — each `reasoning` model call becomes a journaled

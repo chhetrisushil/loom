@@ -1,5 +1,5 @@
 import { isTainted, taintOf, tainted } from "@loom/classify";
-import type { AgentDefinition, ToolDefinition } from "@loom/core";
+import type { AgentDefinition, ExecutableTask, ToolDefinition } from "@loom/core";
 import { SuspendError, TypedFailure, fail, fnv1a64, loadInstructions } from "@loom/core";
 import type { Effect } from "@loom/effect-runtime";
 import { ToolEffect } from "@loom/effect-runtime";
@@ -121,6 +121,12 @@ export interface AgentLoopConfig {
    * `guardRequest` apply and a replay serves the recorded response. Ignored without `reasoning`.
    */
   reasoningToolId?: string | ((routeId: string) => string);
+  /**
+   * R10 — partition the Reasoning Runtime's response cache (`ReasonOptions.cacheScope`). A runner body
+   * cannot read its own principal, so a multi-tenant host that configures a cache passes the tenant id
+   * here; unset, identical prompts share cache entries. Ignored without `reasoning`.
+   */
+  cacheScope?: string;
   /**
    * R9 — refuse to run any model call outside the effect ring. With this set, `agentLoop$`
    * throws up front when `reasoning` is configured without {@link reasoningToolId}, and when a
@@ -270,9 +276,17 @@ export interface AgentLoopConfig {
         /**
          * Skip the write while this returns `true` (evaluated live, never journaled): the hook for a
          * forked or simulated execution, which must not write the real memory. The kernel gives a
-         * body no way to tell it is a fork, so the host that forks passes it.
+         * body no way to tell it is a fork (a fork replays the prefix of a real execution), so the
+         * host that forks passes it. The answer is journaled (`<loop>#writeback:skip`), so a resume in
+         * another process reaches the same verdict. Adding a fork marker to the kernel is a separate
+         * decision, noted in ADR 0121 as a follow-up.
          */
         unless?: () => boolean;
+        /**
+         * Accept a direct, unconditional, un-journaled write (no `toolId`, no `unless`). Required
+         * to say so: without any of the three, construction throws {@link AgentLoopConfigError}.
+         */
+        allowDirect?: boolean;
       };
   /** Memory tier to recall from. Default `"working"`. */
   memoryTier?: string;
@@ -521,6 +535,21 @@ export async function agentLoop$(
     // A compaction block that can never trigger reads as coverage it isn't.
     throw new Error("agentLoop$ compaction requires `afterMessages` or `afterBytes`");
   }
+  if (config.writeBack !== undefined && config.writeBack !== false) {
+    const w = config.writeBack;
+    if (
+      w === true ||
+      (w.toolId === undefined && w.unless === undefined && w.allowDirect !== true)
+    ) {
+      // A fork or a simulation replays the prefix of a real execution; an unconditional direct write
+      // from it would put its prompt and answer in the REAL memory. So the unsafe form is never the
+      // default: say where the write goes (`toolId`), when it must not happen (`unless`), or that you
+      // accept both (`allowDirect`).
+      throw new AgentLoopConfigError(
+        "agentLoop$ writeBack needs `toolId` (a journaled effect), `unless` (skip for forks / simulations) or `allowDirect: true`"
+      );
+    }
+  }
   if (config.writeBack !== undefined && config.writeBack !== false && config.memory === undefined) {
     // A write-back with nowhere to write reads as persistence it isn't.
     throw new Error("agentLoop$ writeBack requires `memory`");
@@ -673,17 +702,35 @@ export async function agentLoop$(
   // The interruption can arrive from several places (a checkpoint, a model call the provider
   // aborted mid-generation, a tool that took too long), and the work already done is worth the
   // same in all of them, so the capture wraps the whole loop rather than each site.
-  const interrupted = (err?: unknown): never => {
-    const partial =
-      err instanceof TypedFailure && err.channel === LLM_INTERRUPTED
-        ? ((err.payload as { content?: string }).content ?? "")
-        : "";
+  const partialOf = (err: unknown): string =>
+    err instanceof TypedFailure && err.channel === LLM_INTERRUPTED
+      ? ((err.payload as { content?: string }).content ?? "")
+      : "";
+  const interruptedWith = (partial: string): never =>
     fail(
       AGENT_INTERRUPTED,
       { content: partial, iterations, toolCallLog } satisfies InterruptedAgentRun,
       "agent run interrupted"
     );
-  };
+  const interrupted = (err?: unknown): never => interruptedWith(partialOf(err));
+  /**
+   * Whether `err` is the signal landing INSIDE a model call (the provider aborted, or the transport
+   * threw because the signal fired), as opposed to a failure the runtime owns.
+   */
+  const abortedInsideCall = (err: unknown): boolean =>
+    config.signal?.aborted === true &&
+    !isTerminalToolError(err) &&
+    !(err instanceof TypedFailure && err.channel === AGENT_INTERRUPTED);
+  /**
+   * R10 — make a model call's INTERRUPTION a recorded fact (signal configured only). The call itself
+   * is journaled (a frame, or a response decision), but a call the signal killed has no recorded
+   * outcome, so a replay would re-ask it live and carry on where the first run stopped. This wraps
+   * the call in a decision that records `{ interrupted, partial }` instead; the interruption is then
+   * raised from the record, identically on every replay.
+   */
+  type Interrupt = { interrupted: true; partial: string };
+  const isInterrupt = (v: unknown): v is Interrupt =>
+    typeof v === "object" && v !== null && (v as { interrupted?: unknown }).interrupted === true;
   /**
    * Whether the caller's signal had fired at this checkpoint. With a signal configured the answer is
    * a RECORDED decision (one id per site, so concurrent branches never share a counter), served on
@@ -834,7 +881,7 @@ export async function agentLoop$(
       if (config.toolErrors === "fail" || humanTools.has(toolCall.name)) {
         return { output: await c.execute(task, toolCall.input), isError: false };
       }
-      const recorded = await c.decide<{ ok: true } | { error: string }>(
+      const recorded = await c.decide<{ ok: true } | { failed: unknown } | { error: string }>(
         `${id}:outcome`,
         async () => {
           try {
@@ -843,12 +890,19 @@ export async function agentLoop$(
           } catch (err) {
             // Authority, safety, park, cancel and divergence are the runtime's: not recorded.
             if (fatal(err)) throw err;
-            return { error: boundedError(err) };
+            return { failed: failureOutput(toolCall.name, err) };
           }
         },
         { source: SOURCE_OUTCOME }
       );
-      if ("error" in recorded) return { output: { error: recorded.error }, isError: true };
+      if ("failed" in recorded) return { output: recorded.failed, isError: true };
+      // (A pre-fix-round-2 record held the bare string; it is fenced on the way out all the same.)
+      if ("error" in recorded) {
+        return {
+          output: tainted({ error: recorded.error }, errorOrigin(toolCall.name)),
+          isError: true,
+        };
+      }
       // Served from the completed frame (no second run).
       return { output: await c.execute(task, toolCall.input), isError: false };
     } catch (err) {
@@ -858,7 +912,7 @@ export async function agentLoop$(
         fatalSeen = true;
         throw err;
       }
-      return { output: { error: boundedError(err) }, isError: true };
+      return { output: failureOutput(toolCall.name, err), isError: true };
     }
   };
 
@@ -936,6 +990,29 @@ export async function agentLoop$(
     // park on the approval gate mid-turn leaves the transcript as it was.
     if (results.length > 0)
       pushMessage({ role: "user", content: results }, results.map(resultBytes));
+  };
+
+  /** A model call as a durable frame; with a signal, its interruption is a recorded decision too. */
+  const modelFrame = async (
+    task: ExecutableTask,
+    request: AgentModelCall
+  ): Promise<LlmResponse> => {
+    if (config.signal === undefined) return (await ctx.execute(task, request)) as LlmResponse;
+    const recorded = await ctx.decide<{ ok: true } | Interrupt>(
+      `${task.id}:interrupt`,
+      async () => {
+        try {
+          await ctx.execute(task, request);
+          return { ok: true as const };
+        } catch (err) {
+          if (abortedInsideCall(err)) return { interrupted: true, partial: partialOf(err) };
+          throw err;
+        }
+      },
+      { source: SOURCE_ABORT }
+    );
+    if ("interrupted" in recorded) return interruptedWith(recorded.partial);
+    return (await ctx.execute(task, request)) as LlmResponse; // served from the completed frame
   };
 
   try {
@@ -1037,7 +1114,7 @@ export async function agentLoop$(
           reasoningToolId === undefined
             ? undefined
             : (route, request) =>
-                ctx.execute(
+                modelFrame(
                   {
                     _tag: "TaskDefinition",
                     kind: "llm",
@@ -1049,7 +1126,7 @@ export async function agentLoop$(
                     ...(config.turnTimeoutMs !== undefined && { timeoutMs: config.turnTimeoutMs }),
                   },
                   request satisfies AgentModelCall
-                ) as Promise<LlmResponse>;
+                );
         // R10 — no effect id to journal a frame under, so the RESPONSE is journaled as a decision:
         // a replay serves the recorded answer and the provider is not called, so a completed turn is
         // never re-asked (and cannot answer differently and move the `#turn:<i>:tool:<j>` ids under
@@ -1059,12 +1136,25 @@ export async function agentLoop$(
         // authorization, metering or kill switch; `reasoningToolId` is how a host gets those.
         const wrapCall: ReasonOptions["wrapCall"] | undefined =
           reasoningToolId === undefined
-            ? (_route, run) =>
-                ctx.decide<LlmResponse>(
+            ? async (_route, run) => {
+                const recorded = await ctx.decide<LlmResponse | Interrupt>(
                   `${idPrefix}#turn:${turn}:response:${callSeq++}`,
-                  async () => boundResponse(await run()),
+                  async () => {
+                    try {
+                      return boundResponse(await run());
+                    } catch (err) {
+                      // The signal landed inside the call: record that, not an unrecorded throw.
+                      if (config.signal !== undefined && abortedInsideCall(err)) {
+                        return { interrupted: true, partial: partialOf(err) } satisfies Interrupt;
+                      }
+                      throw err;
+                    }
+                  },
                   { source: SOURCE_RESPONSE }
-                )
+                );
+                if (isInterrupt(recorded)) return interruptedWith(recorded.partial);
+                return recorded;
+              }
             : undefined;
         const callSignal = modelCallSignal();
         const routed = await config.reasoning.reason(
@@ -1075,6 +1165,7 @@ export async function agentLoop$(
             ...(invoke !== undefined && { invoke }),
             ...(wrapCall !== undefined && { wrapCall }),
             ...(callSignal !== undefined && { signal: callSignal }),
+            ...(config.cacheScope !== undefined && { cacheScope: config.cacheScope }),
           }
         );
         lastContent = routed.content;
@@ -1088,7 +1179,7 @@ export async function agentLoop$(
 
       // One durable frame per turn. On recovery this is served from the log for
       // every turn that completed — the crash at turn 39 costs turn 39, not 1..39.
-      const response = (await ctx.execute(
+      const response = await modelFrame(
         {
           _tag: "TaskDefinition",
           kind: "llm",
@@ -1103,7 +1194,7 @@ export async function agentLoop$(
           ...(tools.length > 0 && { tools }),
           ...(system !== undefined && { system }),
         } satisfies AgentModelCall
-      )) as LlmResponse;
+      );
 
       lastContent = response.content;
       if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
@@ -1130,7 +1221,15 @@ export async function agentLoop$(
   const wb = config.writeBack;
   if (wb !== undefined && wb !== false && config.memory !== undefined) {
     const o = typeof wb === "object" ? wb : {};
-    if (o.unless?.() !== true) {
+    // The verdict is a recorded decision, so a resume in another process (where the host's flag may
+    // read differently) does not flip a write that was, or was not, skipped.
+    const skip =
+      o.unless === undefined
+        ? false
+        : await ctx.decide<boolean>(`${idPrefix}#writeback:skip`, () => o.unless?.() === true, {
+            source: SOURCE_ABORT,
+          });
+    if (!skip) {
       const req = writeBackRequest({
         tier: o.tier ?? config.memoryTier ?? "working",
         scope: o.scope ?? config.memoryScope ?? ctx.executionId,
@@ -1164,6 +1263,16 @@ const SOURCE_ABORT = "agent-abort";
 
 /** Cap on a recorded error text: a tool's failure message is third-party bytes in the log. */
 const MAX_ERROR_CHARS = 2000;
+/**
+ * What the model reads when a tool fails. Error text is NEVER trusted instructions: an MCP server's
+ * remote text, an A2A peer's response body and a database driver's message all arrive inside thrown
+ * errors. So it is carried as a tainted value (ADR 0085) and fenced as data at the prompt boundary,
+ * and the recorded outcome keeps the taint, so a replay feeds it back fenced too.
+ */
+const errorOrigin = (toolName: string): string => `tool-error:${toolName}`;
+function failureOutput(toolName: string, err: unknown) {
+  return tainted({ error: boundedError(err) }, errorOrigin(toolName));
+}
 function boundedError(err: unknown): string {
   const text = String(err);
   return text.length <= MAX_ERROR_CHARS ? text : `${text.slice(0, MAX_ERROR_CHARS)}[truncated]`;
@@ -1176,6 +1285,26 @@ function boundedError(err: unknown): string {
  * replay serves): the text is cut with a marker. A response whose NON-text part (tool calls) is
  * itself over the cap is refused, because truncating a tool call would run a different call.
  */
+/** Raised when the agent loop is configured in a way that is unsafe or contradictory. */
+export class AgentLoopConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentLoopConfigError";
+    Object.setPrototypeOf(this, AgentLoopConfigError.prototype);
+  }
+}
+
+/** A model response whose tool calls alone exceed the recordable cap. Nothing is recorded; a resume re-asks. */
+export class ResponseTooLargeError extends Error {
+  constructor(readonly limit: number) {
+    super(
+      `agentLoop$: a model response's tool calls exceed ${limit} characters and cannot be recorded; refusing rather than truncating a call`
+    );
+    this.name = "ResponseTooLargeError";
+    Object.setPrototypeOf(this, ResponseTooLargeError.prototype);
+  }
+}
+
 export const MAX_RECORDED_RESPONSE_CHARS = 256 * 1024;
 export function boundResponse(res: LlmResponse): LlmResponse {
   const size = (r: LlmResponse): number => JSON.stringify(r).length;
@@ -1183,9 +1312,7 @@ export function boundResponse(res: LlmResponse): LlmResponse {
   const marker = `\n[truncated: the response exceeded ${MAX_RECORDED_RESPONSE_CHARS} characters]`;
   const withoutText = size({ ...res, content: marker });
   if (withoutText > MAX_RECORDED_RESPONSE_CHARS) {
-    throw new Error(
-      `agentLoop$: a model response's tool calls exceed ${MAX_RECORDED_RESPONSE_CHARS} characters and cannot be recorded; refusing rather than truncating a call`
-    );
+    throw new ResponseTooLargeError(MAX_RECORDED_RESPONSE_CHARS);
   }
   let keep = Math.min(res.content.length, MAX_RECORDED_RESPONSE_CHARS - withoutText);
   let out = { ...res, content: res.content.slice(0, keep) + marker };

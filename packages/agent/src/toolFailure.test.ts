@@ -1,8 +1,12 @@
 import * as capability from "@loom/capability";
 import * as core from "@loom/core";
 import * as effectRuntime from "@loom/effect-runtime";
+import * as eventRuntime from "@loom/event-runtime";
+import * as isolate from "@loom/isolate";
 import * as llm from "@loom/llm";
 import * as middleware from "@loom/middleware";
+import * as orchestration from "@loom/orchestration";
+import * as workerRuntime from "@loom/worker-runtime";
 import * as workflowRuntime from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { isTerminalToolError } from "./toolFailure";
@@ -21,6 +25,11 @@ const FEEDBACK = new Set([
   "StepError",
   "WorkflowNotFoundError",
   "BadRequestError",
+  // isolate / event-runtime: a tool that died or was refused its input is a tool failure
+  "IsolatedToolDisconnectedError",
+  "IsolatedToolInputError",
+  "IsolatedToolStartupError",
+  "BranchPromotionConflictError",
   "TypedFailure",
   // llm: a malformed or refused request is the caller's to fix, and the model can adapt it
   "UnsupportedModalityError",
@@ -76,6 +85,12 @@ const TERMINAL = new Set([
   "StartFencedOutError",
   "PrincipalUnrestorableError",
   "StorageWriteError",
+  "StaleFenceError",
+  "ExecutionSupersededError",
+  "DuplicateEnvelopeIdError",
+  "DuplicateSequenceError",
+  "EgressDeniedError",
+  "SpawnLimitExceededError",
   "ContinueAsNewRefusedError",
   "CarryTooLargeError",
   "ContinueAsNewUnavailableError",
@@ -95,6 +110,10 @@ const PACKAGES: Record<string, Record<string, unknown>> = {
   "@loom/capability": capability,
   "@loom/llm": llm,
   "@loom/core": core,
+  "@loom/event-runtime": eventRuntime,
+  "@loom/worker-runtime": workerRuntime,
+  "@loom/isolate": isolate,
+  "@loom/orchestration": orchestration,
 };
 
 describe("every exported error class is classified (fitness)", () => {

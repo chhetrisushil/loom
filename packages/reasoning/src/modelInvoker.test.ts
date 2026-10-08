@@ -108,3 +108,60 @@ describe("ReasonOptions.wrapCall (R10)", () => {
     expect(wrap).not.toHaveBeenCalled();
   });
 });
+
+describe("response cache (R10 fix round 2)", () => {
+  it("the prompt boundary runs BEFORE the cache: a hit cannot launder a tainted system prompt", async () => {
+    const provider: LlmProvider = { complete: vi.fn(async () => ok) };
+    const rt = new ReasoningRuntime({
+      routes: [{ id: "cheap", provider, tier: 0 }],
+      cache: { get: () => ok, set: () => {} }, // every lookup is a hit
+    });
+    await expect(
+      rt.reason({
+        messages: [{ role: "user", content: "q" }],
+        system: tainted("evil", "web") as never,
+      })
+    ).rejects.toThrow(UntrustedContentError);
+    expect(provider.complete).not.toHaveBeenCalled();
+  });
+
+  it("one tenant's identical prompt never hits another tenant's cached response", async () => {
+    const answers = ["for A", "for B"];
+    const provider: LlmProvider = {
+      complete: vi.fn(async () => ({ ...ok, content: answers.shift() as string })),
+    };
+    const store = new Map<string, LlmResponse>();
+    const rt = new ReasoningRuntime({
+      routes: [{ id: "cheap", provider, tier: 0 }],
+      cache: { get: (k) => store.get(k), set: (k, v) => void store.set(k, v) },
+    });
+    const ask = (tenant: string) =>
+      rt.reason(
+        { messages: [{ role: "user", content: "same prompt" }] },
+        {
+          resolveContent: async () => null,
+          resolveContext: { executionId: "e", principal: { tenant } },
+        }
+      );
+    expect((await ask("A")).content).toBe("for A");
+    expect((await ask("B")).content).toBe("for B"); // a miss, not A's answer
+    expect((await ask("A")).content).toBe("for A"); // A's own entry still hits
+    expect(provider.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("an explicit cacheScope partitions the cache the same way", async () => {
+    const answers = ["x", "y"];
+    const provider: LlmProvider = {
+      complete: vi.fn(async () => ({ ...ok, content: answers.shift() as string })),
+    };
+    const store = new Map<string, LlmResponse>();
+    const rt = new ReasoningRuntime({
+      routes: [{ id: "cheap", provider, tier: 0 }],
+      cache: { get: (k) => store.get(k), set: (k, v) => void store.set(k, v) },
+    });
+    const req = { messages: [{ role: "user" as const, content: "q" }] };
+    expect((await rt.reason(req, { cacheScope: "t1" })).content).toBe("x");
+    expect((await rt.reason(req, { cacheScope: "t2" })).content).toBe("y");
+    expect((await rt.reason(req, { cacheScope: "t1" })).content).toBe("x");
+  });
+});
