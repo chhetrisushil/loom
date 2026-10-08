@@ -2,7 +2,7 @@ import { isTainted, taintOf, tainted, unwrapTainted } from "@loom/classify";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import { TypedFailure, fail, loadInstructions } from "@loom/core";
 import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
-import { CapabilityDeniedError, EffectModeViolationError, LlmEffect } from "@loom/effect-runtime";
+import { LlmEffect } from "@loom/effect-runtime";
 import type {
   ContentResolver,
   LlmContent,
@@ -29,6 +29,7 @@ import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
 import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
+import { isTerminalToolError } from "./toolFailure";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
@@ -269,9 +270,10 @@ export class AgentRunner {
             // The blanket catch below stays, because it is right for everything
             // else: a timing-out API or a malformed argument IS feedback the model
             // can act on. The fix is telling the two apart.
-            if (err instanceof CapabilityDeniedError || err instanceof EffectModeViolationError) {
-              throw err;
-            }
+            // R10 — the same classification `agentLoop$` uses (`isTerminalToolError`): besides the
+            // authority errors, a park, a safety / kill-switch / quota / rate-limit stop and a
+            // cancellation are the runtime's and are never handed to the model.
+            if (isTerminalToolError(err)) throw err;
             return { output: { error: String(err) }, isError: true };
           }
         };

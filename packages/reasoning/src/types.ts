@@ -116,6 +116,15 @@ export interface ReasonOptionsBase {
   decide?: DecideFn;
   /** R9 — make each model call through the host instead of the route's provider. See {@link ModelInvoker}. */
   invoke?: ModelInvoker;
+  /**
+   * R10 — journal the live provider call. Unlike {@link invoke} (which REPLACES the call so the host
+   * can run it as an effect), this wraps it: the runtime still guards the request, checks the route's
+   * modalities and keys its response cache on the request as written, and hands the host only the
+   * part that touches the network (cache lookup, content resolution, `provider.complete`, cache
+   * fill) as `run`. The host records `run`'s result (`ctx.decide`) so a replay serves it and `run` is
+   * never called. Ignored when `invoke` is set.
+   */
+  wrapCall?: (route: ModelRoute, run: () => Promise<LlmResponse>) => Promise<LlmResponse>;
   signal?: AbortSignal;
   /** Namespaces decision ids so multiple reason() calls in one execution don't collide. */
   decisionKey?: string;

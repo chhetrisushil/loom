@@ -46,12 +46,26 @@ cancellation (`ExecutionCancelledError`, a scope's abort, a closed decide scope)
 continuation. `isTerminalToolError` is that classification; the kernel's unexported control-flow errors are matched by
 `name`, and `@loom/middleware`'s two classes the same way (it stays a dev-only dependency).
 
-*Replay caveat, stated plainly.* An untyped failure is recorded as `STEP_FAILED` and the kernel re-runs a failed step
-live on replay (at-least-once for a failed step). A resume that re-runs the body (for example after an approval) therefore
-calls the failed tool again. A tool that must fail EXACTLY ONCE throws a `TypedFailure` on a channel declared in its
-`errors`: that outcome is served from the log (ADR 0060). Journaling every failure through an extra `ctx.decide` was
-rejected: it adds a decision per tool call to every log to avoid a duplicate call on a failure path, and it cannot be
-consulted before the re-execution it is meant to prevent.
+*The classification is a hardened denylist, pinned by a fitness test.* `isTerminalToolError` matches along the whole prototype
+chain (so a subclass that sets its own `name`, `KillSwitchEngagedError`, is caught through `SafetyViolationError`), treats any
+error declaring `retryable === false` as terminal (the middleware's own rule for a decision rather than a fault) and walks
+`cause` to a bounded depth. `toolFailure.test.ts` enumerates EVERY exported error class of `@loom/middleware`,
+`effect-runtime`, `workflow-runtime`, `capability`, `llm` and `core` and requires each to be classified terminal or feedback, so a
+new class fails loudly until someone decides. The first cut missed the kill switch, `RateLimitExceededError` and
+`CapabilityInvokeDeniedError`. `AgentRunner` now uses the same function (a safety fix: a kill switch, quota or park raised by a
+tool is no longer fed back to the model there either).
+
+*Replay: the outcome is a recorded decision.* In feedback mode each call is `ctx.decide(<call>:outcome, …)` wrapping the
+`ctx.execute`: the decider records `{ ok }` or the bounded error text (2 000 characters), and the tool's output is read back from
+its own completed frame (never duplicated into the decision). A resume therefore serves what the model already consumed and a
+failed tool is not re-run, which the first cut did (an untyped `STEP_FAILED` is re-run live by the kernel's at-least-once rule, so a
+resume after the model had consumed the failure could quietly produce a different tool result than the transcript holds). The
+detector skips the served step through `DECISION_RECORDED.innerSteps`. `toolErrors: "fail"` records nothing extra, and a tool of
+`kind: "human"` is not wrapped (its resume answer is consumed by the step itself; a second `execute` on a completed human step
+would consume it again). A log recorded before this change has no outcome decision: the decider runs, the completed step is
+served, nothing re-runs (tested against the frozen old body, serial and parallel). The earlier objection to journaling failures
+through `ctx.decide` (it "cannot be consulted before the re-execution it is meant to prevent") does not hold when the decide
+WRAPS the execute, which is what this does.
 
 **D2 — Parallel tool calls: `parallelTools?: boolean | number`, default `false`.** One model turn's calls run through
 `ctx.parallel` (`kernel.features.scopes` on: one cancellation scope; off: the pre-R6 bounded `Promise.all`; everything
@@ -60,13 +74,15 @@ identity rule holds and a log recorded serially resumes in parallel mode (and th
 fed back in the model's order whichever call finishes first. A branch that fails is that call's `isError` result, not the
 scope's failure (D1). Approvals are gathered first, sequentially and in call order, before any call of the turn starts: a
 turn parked on an approval has run none of its calls, and a resume re-asks the gates in the same order. A turn with one
-runnable call runs it directly (no scope).
+runnable call runs it directly (no scope). A turn that holds a `kind: "human"` tool keeps the original sequential shape
+whatever `parallelTools` says: a human step consumes its resume answer in call order, and consuming approvals first would
+reorder the answers of a log recorded serially.
 
 **D3 — Abort and deadlines.** `signal?: AbortSignal` stops THIS run without cancelling the execution (a barge-in, a host
 shutting a turn down): checked before every model call and every tool call; once aborted nothing further is issued and the
 run fails on `AGENT_INTERRUPTED` carrying `InterruptedAgentRun` (`content` of the interrupted generation when the provider
 surfaces one, `iterations`, the completed `toolCallLog`), the same channel and payload `AgentRunner` uses (moved to
-`interrupted.ts`, still exported from `AgentRunner`). A signal is not journaled: the interruption is live-only. A kernel
+`interrupted.ts`, still exported from `AgentRunner`). A signal is not data, so with a `signal` configured each checkpoint (`<loop>#abort:<site>`: turn start, before the turn's tools, before each call's gate and run) is a RECORDED decision (`source: "agent-abort"`): a replay reproduces the interruption at the same point, so a host that catches `AGENT_INTERRUPTED` and carries on (for example suspends for the next prompt) takes the same branch after a restart; the first cut was live-only and a resume in a new process ran the remaining tools. The cost is a few small decisions per turn, written only when a signal is configured. An error a provider throws mid-generation because the signal fired is converted live and is not recorded (its call was never journaled, so a replay re-asks it). Inside a `parallel` scope a branch that wakes after the stop returns "not run" instead of throwing, and the interruption is raised after the scope with every completed call in the partial; throwing inside the branch failed the scope and journaled `PARALLEL_COMPLETED` with an empty log. A kernel
 cancel needs no signal: `ctx.execute` stops at the next frame and aborts the effect in flight (K8); the two compose.
 `turnTimeoutMs` / `toolTimeoutMs` set the frame's kernel `timeoutMs` (anchored to the first logged start, so a recovery
 re-run resumes the countdown); on the direct `reasoning` path `turnTimeoutMs` aborts the provider request. A model call
@@ -76,7 +92,7 @@ that times out fails the run (nothing to continue with); a tool that times out i
 loop remembers the prompt and the final answer as `user` / `assistant` entries in the tier and scope the next run recalls
 from. The write is a side effect in a body that re-runs on resume, so it is idempotent: entry ids are deterministic
 (execution, loop, a hash of the prompt / of prompt + answer) and an entry the scope already holds is skipped. A run that
-is interrupted or fails writes nothing. The residual: a tier that summarizes may fold an entry's id away, costing one
+is interrupted or fails writes nothing. The write is a keyed `forget` of the two ids followed by the append (no scope read). `writeBack.toolId` makes it a journaled `ctx.execute` against `memoryWriteBackEffect(memory)`, so K2 authorization, tenant / authority checks and the kill switch apply and a replay serves the write; without it the write is a direct call outside the ring, and `requireEffectRing` refuses that. `writeBack.unless` skips it for a forked or simulated execution (the kernel gives a body no way to tell it is a fork, so the host that forks passes it). Provenance: when any tool result in the run was tainted (ADR 0085) the assistant entry is stored tainted, and a recalled tainted entry goes into a fenced `user` message, never an assistant one. The residual: a tier that summarizes may fold an entry's id away, costing one
 repeated entry, never a lost one. Per-turn summaries were not added: `compaction` already owns summaries.
 
 **D5 — The `reasoning` response is journaled on the default path (H4).** With `reasoning` and no `reasoningToolId`, each
@@ -84,7 +100,7 @@ routed call's RESPONSE is recorded as a decision, `<loop>#turn:<i>:response:<n>`
 `ReasoningRuntime` already offers: the decider re-checks the route's declared modalities, resolves content, and calls the
 route's provider. A replay serves the recorded answer: **zero provider calls for a completed turn**, and the
 `#turn:<i>:tool:<j>` ids cannot move under the log because the answer that fixed them is the recorded one. The route and
-elevation decisions stay where they were, so `@loom/learning` still evaluates them. This is still OUTSIDE the ring (no K2
+elevation decisions stay where they were. The wrapper is a new `ReasonOptions.wrapCall` (not `invoke`): the runtime still guards the request, checks the route's modalities and consults its response cache (keyed on the request as written, per R5), and hands the host only the network part, so the cache survives the journal. The decision is stamped `source: "agent-response"` (the outcome and abort decisions `agent-outcome` / `agent-abort`) and `@loom/learning`'s `trajectories` excludes `RECORDED_FACT_SOURCES`, so the bookkeeping is neither an action nor a dilution of the terminal credit. The recorded response is bounded (256 K characters of JSON): over the cap the text is cut with a marker deterministically (what is recorded is what a replay serves); tool calls over the cap are refused, never truncated. This is still OUTSIDE the ring (no K2
 authorization, metering, kill switch, in-doubt): `reasoningToolId` / `requireEffectRing` remain the way to get those, and the
 one-time `LOOM_AGENT_RING` warning stays (its text now says the response is journaled). Making `reasoningToolId` mandatory
 was rejected: it would fail every existing `reasoning` caller at start for a property (the ring) that is a separate axis
@@ -133,6 +149,7 @@ opt-in:
 - the default (`parallelTools` unset) is the original gate, run, gate, run order with the same frames;
 - a tool that fails is the only new outcome in the default path, and no old log holds a caught failure (the old body
   failed the run on it);
+- the outcome decisions (D1) and abort checkpoints (D3) are appended only where the body asks for them: a log recorded before has none, the decider runs, the completed step is served and nothing re-runs;
 - the response decision (D5) is appended only where the body asks for it; a log recorded before has none, so that turn
   re-asks the model once, exactly as it did before (not a new divergence), and every later turn is journaled;
 - ids, the compaction virtual measure (ADR 0120) and the approval gate keys are untouched.
@@ -155,7 +172,7 @@ is listed as a companion change in the PR (name, what it shows); this repo does 
 - **Deleting `AgentRunner` / `agentStep$`.** Unreleased-or-internal is the bar for removal and they are neither (every
   example uses them).
 - **A loop-version marker.** See D7.
-- **Journaling tool failures through `ctx.decide`.** See D1.
+- **Journaling tool failures through a `ctx.decide` placed AFTER the execute.** It cannot be consulted before the re-execution it is meant to prevent. The accepted form wraps the execute (D1).
 - **Mandatory `reasoningToolId`.** See D5.
 - **A hard `signal` cut of an in-flight `ctx.execute`.** Racing the await would leave a step that completes after the body
   threw. The kernel cancel already aborts an in-flight effect; `signal` is checked at the boundaries.

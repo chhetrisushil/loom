@@ -8,7 +8,14 @@ export type {
   SkillSelector,
   SkillSelectorContext,
 } from "./SkillSelector";
-export { agentLoop$, registerReasoningRoutes } from "./agentLoop$";
+export {
+  agentLoop$,
+  boundResponse,
+  MAX_RECORDED_RESPONSE_CHARS,
+  memoryWriteBackEffect,
+  registerReasoningRoutes,
+} from "./agentLoop$";
+export { isTerminalToolError } from "./toolFailure";
 export type {
   AgentLoopConfig,
   AgentModelCall,

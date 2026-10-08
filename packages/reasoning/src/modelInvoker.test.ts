@@ -65,3 +65,46 @@ describe("ReasonOptions.invoke", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 });
+
+describe("ReasonOptions.wrapCall (R10)", () => {
+  it("wraps only the network part: guard still runs, a served wrapper skips the provider and the cache", async () => {
+    const provider: LlmProvider = { complete: vi.fn(async () => ok) };
+    const cache = new Map<string, LlmResponse>();
+    const rt = runtime(provider, cache);
+    // A host that serves a RECORDED answer without ever running the call (a replay).
+    const served = await rt.reason(
+      { messages: [{ role: "user", content: "q" }] },
+      { wrapCall: async () => ({ ...ok, content: "recorded" }) }
+    );
+    expect(served.content).toBe("recorded");
+    expect(provider.complete).not.toHaveBeenCalled();
+    expect(cache.size).toBe(0);
+
+    // A host that runs it (the first run): the provider is called and the cache is filled.
+    const live = await rt.reason(
+      { messages: [{ role: "user", content: "q" }] },
+      { wrapCall: (_route, run) => run() }
+    );
+    expect(live.content).toBe("hi");
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+    expect(cache.size).toBe(1);
+    // ...and a later wrapped call is a cache hit: still wrapped, provider not called again.
+    await rt.reason(
+      { messages: [{ role: "user", content: "q" }] },
+      { wrapCall: (_r, run) => run() }
+    );
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("NEGATIVE: tainted content in an instruction position is refused BEFORE the wrapper runs", async () => {
+    const provider: LlmProvider = { complete: vi.fn(async () => ok) };
+    const wrap = vi.fn(async (_r: unknown, run: () => Promise<LlmResponse>) => run());
+    await expect(
+      runtime(provider).reason(
+        { messages: [{ role: "user", content: "q" }], system: tainted("evil", "web") as never },
+        { wrapCall: wrap as never }
+      )
+    ).rejects.toThrow(UntrustedContentError);
+    expect(wrap).not.toHaveBeenCalled();
+  });
+});

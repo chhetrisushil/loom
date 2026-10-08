@@ -133,3 +133,33 @@ describe("a capability denial is terminal for the turn (R4)", () => {
     expect(JSON.stringify(out.toolCallLog)).toContain("upstream timeout");
   });
 });
+
+describe("AgentRunner shares the hardened classification (R10 Q3)", () => {
+  it("a kill switch / quota / park raised by a tool is terminal, not fed back to the model", async () => {
+    const { KillSwitchEngagedError, QuotaExceededError } = await import("@loom/middleware");
+    const { SuspendError } = await import("@loom/core");
+    const makers = [
+      () =>
+        new KillSwitchEngagedError({ scope: "global", key: undefined, reason: "stop" } as never),
+      () => new QuotaExceededError("tokens" as never, 1, 2),
+      () => new SuspendError({ on: "Gate" }),
+    ];
+    for (const make of makers) {
+      const { provider, turns } = providerCalling("read-rows");
+      const effectRuntime = new EffectRuntime();
+      effectRuntime.register(
+        "read-rows",
+        new ToolEffect(async () => {
+          throw make();
+        })
+      );
+      const runner = new AgentRunner({
+        definition: agent$({ id: "dba", name: "DBA", tools: [readRows] }),
+        provider,
+        effectRuntime,
+      });
+      await expect(runner.run({ prompt: "read" }, makeEffectContext())).rejects.toThrow();
+      expect(turns()).toBe(1);
+    }
+  });
+});

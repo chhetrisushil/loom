@@ -658,3 +658,34 @@ describe("privacy invariant: a report never names a unit", () => {
     assertNoUnitEscapes(report, 8);
   });
 });
+
+describe("trajectories — recorded facts are not actions (R10)", () => {
+  it("skips the agent loop's response / outcome / abort bookkeeping decisions", () => {
+    seq = 0;
+    const log = [
+      ev("x", "EXECUTION_STARTED", {}),
+      decision("x", "reason:agent#turn:0:route", "cheap", { alternatives: ["cheap", "strong"] }),
+      decision("x", "agent#turn:0:response:0", { content: "hi" }, { source: "agent-response" }),
+      decision("x", "agent#turn:0:tool:0:outcome", { ok: true }, { source: "agent-outcome" }),
+      decision("x", "agent#abort:t0:turn", false, { source: "agent-abort" }),
+      ev("x", "EXECUTION_COMPLETED", {}),
+    ];
+    const [t] = trajectories<string>(log);
+    // Only the real routing choice is a step, so the terminal credit lands on it undiluted.
+    expect(t?.steps.map((s) => s.decisionId)).toEqual(["reason:agent#turn:0:route"]);
+    expect(t?.steps[0]?.reward).toBe(1);
+    // ...and the bookkeeping choices never became part of any action set.
+    expect(t?.steps[0]?.actions).toEqual(["cheap", "strong"]);
+  });
+
+  it("NEGATIVE: an ordinary decision with another source is still a step", () => {
+    seq = 0;
+    const log = [
+      ev("x", "EXECUTION_STARTED", {}),
+      decision("x", "d1", "a", { source: "agent" }),
+      decision("x", "d2", "b"),
+      ev("x", "EXECUTION_COMPLETED", {}),
+    ];
+    expect(trajectories<string>(log)[0]?.steps).toHaveLength(2);
+  });
+});
