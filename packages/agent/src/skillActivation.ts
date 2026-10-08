@@ -59,6 +59,23 @@ export interface SkillActivationConfig {
   maxIndexBytes?: number;
   /** The meta-tool's name. Default `"activate_skill"`; it must not collide with any tool. */
   toolName?: string;
+  /**
+   * R22b (ADR 0125 D12) — how the model FINDS a skill. `"index"` (default): the bounded turn-0 index,
+   * byte-identical to a run without this option. `"search"`: the index is replaced by one short fixed
+   * line; skills are found with `search_tools` (hits under `skills`, never loaded by the search) and
+   * loaded with `activate_skill`. `"both"`: the index stays AND search covers skills (so a skill past
+   * the index cut is still reachable). `"search"` / `"both"` require `toolSearch` and its built-in ranker.
+   * Searchable skills = the whole catalog minus the upfront-selected ones, NOT limited by
+   * `maxIndex` / `maxIndexBytes`.
+   */
+  discovery?: "index" | "search" | "both";
+}
+
+/** What the activation session needs to know about the loop's `toolSearch` (R22b). */
+export interface SearchWiring {
+  readonly name: string;
+  /** A host-supplied `toolSearch.ranker` cannot rank skills: discovery by search refuses it. */
+  readonly customRanker: boolean;
 }
 
 export class SkillActivationError extends Error {
@@ -111,8 +128,12 @@ export class SkillActivationSession {
   readonly name: string;
   /** The meta-tool's definition, as the model is offered it. */
   readonly definition: ToolDefinition;
-  /** The offered skills, by id, in index (id) order. Only these can be activated. */
+  /** The offered skills, by id: index-listed (id order) then search-discoverable. Only these can be activated. */
   private readonly offered = new Map<string, SkillDefinition>();
+  /** R22b — skills found by search (the catalog minus upfront-selected, id order). Empty in `"index"` mode. */
+  private readonly discoverableList: SkillDefinition[] = [];
+  readonly discovery: "index" | "search" | "both";
+  private readonly searchName: string | undefined;
   private readonly active = new Set<string>();
   /** The index lines (one per offered skill, id order) and how many skills the byte cap left out. */
   private readonly lines: string[] = [];
@@ -129,9 +150,31 @@ export class SkillActivationSession {
       selected: ReadonlySet<string>;
       /** Every tool name that must not equal the meta-tool's name. */
       reservedNames: Iterable<string>;
+      /** The loop's `toolSearch`, when configured (required by `discovery: "search" | "both"`). */
+      search?: SearchWiring;
     }
   ) {
     this.name = cfg.toolName ?? DEFAULT_ACTIVATION_TOOL_NAME;
+    const discovery = cfg.discovery ?? "index";
+    if (discovery !== "index" && discovery !== "search" && discovery !== "both") {
+      throw new SkillActivationError(
+        `skillActivation.discovery must be "index", "search" or "both" (got ${String(discovery)})`
+      );
+    }
+    if (discovery !== "index") {
+      if (opts.search === undefined) {
+        throw new SkillActivationError(
+          `skillActivation.discovery "${discovery}" needs \`toolSearch\` (skills are found through search_tools)`
+        );
+      }
+      if (opts.search.customRanker) {
+        throw new SkillActivationError(
+          `skillActivation.discovery "${discovery}" needs the built-in ranker: remove toolSearch.ranker (a custom ranker cannot rank skills yet)`
+        );
+      }
+      this.searchName = opts.search.name;
+    }
+    this.discovery = discovery;
     this.maxActive = positiveInt(
       "maxActive",
       cfg.maxActive,
@@ -177,9 +220,17 @@ export class SkillActivationSession {
       candidates.push(s);
     }
     candidates.sort(byId);
+    if (discovery !== "index") {
+      // Search-discoverable = every candidate: the index cut does not apply (that is the point).
+      this.discoverableList.push(...candidates);
+      for (const s of candidates) {
+        this.offered.set(s.id, s);
+      }
+    }
     // The index is bounded three ways: skills (maxIndex), characters per field, total bytes. What
     // does not fit is not offered (so it cannot be activated blind) and is counted in a "+N more" line.
-    const listed = candidates.slice(0, maxIndex);
+    // In `"search"` mode there is no index (one fixed line), so nothing is listed and nothing is cut.
+    const listed = discovery === "search" ? [] : candidates.slice(0, maxIndex);
     let bytes = UTF8.encode(this.header()).length + MORE_RESERVE;
     for (const s of listed) {
       const line = this.lineFor(s);
@@ -189,7 +240,7 @@ export class SkillActivationSession {
       this.offered.set(s.id, s);
       this.lines.push(line);
     }
-    this.omitted = candidates.length - this.offered.size;
+    this.omitted = discovery === "search" ? 0 : candidates.length - this.lines.length;
     if (candidates.length > 0 && this.offered.size === 0) {
       throw new SkillActivationError(
         `skillActivation.maxIndexBytes (${maxIndexBytes}) is too small: not even one skill fits the index (the header alone needs ${bytes} bytes)`
@@ -202,12 +253,15 @@ export class SkillActivationSession {
         `skillActivation.toolName "${this.name}" collides with another tool`
       );
     }
+    const lead =
+      discovery === "index"
+        ? "Activate one of the listed skills by `name`."
+        : `Activate a skill by \`name\` (one that is listed, or one found with \`${this.searchName}\`).`;
     this.definition = {
       _tag: "ToolDefinition",
       id: this.name,
       name: this.name,
-      description:
-        "Activate one of the listed skills by `name`. The result is the skill's instructions, and the tools it brings can be called from the next step on. Activating an already-active skill returns its instructions again.",
+      description: `${lead} The result is the skill's instructions, and the tools it brings can be called from the next step on. Activating an already-active skill returns its instructions again.`,
       kind: "tool",
       inputSchema: activateInput.describe("activate_skill input"),
       outputSchema: z.unknown(),
@@ -232,6 +286,24 @@ export class SkillActivationSession {
     return [...this.active];
   }
 
+  /** R22b — the skills search may return, in id order (empty unless `discovery` is `"search"` / `"both"`). */
+  discoverable(): readonly SkillDefinition[] {
+    return this.discoverableList;
+  }
+
+  /** The meta-tool's name (the {@link SkillSearchSource} contract). */
+  get activationName(): string {
+    return this.name;
+  }
+
+  isActive(id: string): boolean {
+    return this.active.has(id);
+  }
+
+  get activeCount(): number {
+    return this.active.size;
+  }
+
   /** Ids of every tool the offered skills bring (the meta-tools' names must not collide with them). */
   offeredToolIds(): Set<string> {
     const ids = new Set<string>();
@@ -254,7 +326,18 @@ export class SkillActivationSession {
 
   /** The index, as appended to the turn-0 system prompt. Deterministic: id order, bounded in bytes. */
   indexText(): string {
-    const more = this.omitted > 0 ? [`- (+${this.omitted} more skills not listed)`] : [];
+    if (this.discovery === "search") {
+      // One fixed line: no skill text reaches the prompt at all, whatever the registry holds.
+      return `Skills (specialised instructions) exist beyond your tools: find them with the \`${this.searchName}\` tool (they come back under \`skills\`) and load one with the \`${this.name}\` tool, passing its id as \`name\`.`;
+    }
+    const more =
+      this.omitted > 0
+        ? [
+            this.discovery === "both"
+              ? `- (+${this.omitted} more skills not listed; find them with \`${this.searchName}\`)`
+              : `- (+${this.omitted} more skills not listed)`,
+          ]
+        : [];
     return [this.header(), ...this.lines, ...more].join("\n");
   }
 

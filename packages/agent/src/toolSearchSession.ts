@@ -1,5 +1,5 @@
 import { isTainted, tainted } from "@loom/classify";
-import type { ToolDefinition } from "@loom/core";
+import type { SkillDefinition, ToolDefinition } from "@loom/core";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import { z } from "zod";
 import { isTerminalToolError } from "./toolFailure";
@@ -34,6 +34,29 @@ const MAX_RECORDED_QUERY = 200;
  */
 const MAX_RANK_ROUNDS = 4;
 const MAX_RANK_ASK = 1000;
+
+/**
+ * R22b (ADR 0125 D12) — the index key of a skill. A skill and a tool with the same id must not
+ * collide, and tool ids are arbitrary strings (`skill:x` is a legal MCP-style id), so the key starts
+ * with a NUL, which no id the model can name carries. A tool whose id starts with it is not indexed.
+ */
+const SKILL_KEY = "\u0000skill:";
+
+/** What search needs from the skill-activation session (R22b): the discoverable skills and which are active. */
+export interface SkillSearchSource {
+  discoverable(): readonly SkillDefinition[];
+  isActive(id: string): boolean;
+  readonly activeCount: number;
+  /** The activation meta-tool's name, for the search tool's description. */
+  readonly activationName: string;
+}
+
+/** A skill hit as the model reads it. It is NOT loaded: the model calls the activation tool. */
+export interface SkillSearchHit {
+  kind: "skill";
+  id: string;
+  description: string;
+}
 
 /** Opt-in tool search for `agentLoop$`. Absent: the run is byte-identical to a run without this feature. */
 export interface ToolSearchConfig {
@@ -99,6 +122,8 @@ interface Recorded {
   query: string;
   results: string[];
   loaded: string[];
+  /** R22b: skill ids found (absent in a record from before skill discovery, or when it is off). */
+  skills?: string[];
 }
 
 export class ToolSearchError extends Error {
@@ -143,7 +168,10 @@ function positiveInt(name: string, v: number | undefined, def: number, ceiling: 
 export class ToolSearchSession {
   readonly name: string;
   /** The meta-tool's definition, as the model is offered it. */
-  readonly definition: ToolDefinition;
+  definition: ToolDefinition;
+  private skillSource: SkillSearchSource | undefined;
+  /** Discoverable skills by id (R22b); empty unless skill discovery is attached. */
+  private readonly skillById = new Map<string, SkillDefinition>();
   private readonly byId = new Map<string, ToolDefinition>();
   private readonly searchable = new Set<string>();
   private readonly loadedIds = new Set<string>();
@@ -218,6 +246,7 @@ export class ToolSearchSession {
         this.initial.push(t);
       }
     }
+    this.customRanker = cfg.ranker !== undefined;
     this.ranker = cfg.ranker ?? this.lazyBm25(cfg);
     this.definition = {
       _tag: "ToolDefinition",
@@ -232,30 +261,56 @@ export class ToolSearchSession {
     } as unknown as ToolDefinition;
   }
 
+  /** Whether the host supplied its own ranker (which cannot rank skills). */
+  readonly customRanker: boolean;
+
+  /**
+   * R22b — make the activation catalog's skills searchable. Called once, right after construction,
+   * before any search; the (lazy) index then covers tools AND skills. The meta-tool's description
+   * gains one sentence; without this call nothing about the session changes.
+   */
+  attachSkills(src: SkillSearchSource): void {
+    this.skillSource = src;
+    for (const s of src.discoverable()) this.skillById.set(s.id, s);
+    this.definition = {
+      ...this.definition,
+      description: `${this.definition.description} It also finds skills (returned under \`skills\`): a skill hit loads nothing by itself; pass its id to \`${src.activationName}\` to get its instructions.`,
+    } as ToolDefinition;
+  }
+
   /** The default ranker: BM25F over the searchable set, BUILT on the first search (an unused tool costs nothing). */
   private lazyBm25(cfg: ToolSearchConfig): ToolRanker {
     let built: Bm25ToolRanker | undefined;
     const build = (): Bm25ToolRanker =>
-      new Bm25ToolRanker(
-        [...this.searchable].map((id) => {
-          const t = this.byId.get(id) as ToolDefinition;
-          const host = cfg.annotations?.[id];
-          // Trusted vocabulary: the host's annotations and the tool author's own — the last ONLY for
-          // a first-party tool. A remote tool's self-declared tags/aliases are the server's claims:
-          // they count as description-level text, and only if the operator vouched for that text
-          // (`trustJsonSchemaText`). An un-vouched tool contributes its id and the host's annotations.
-          const own = isThirdParty(t) ? undefined : t;
-          const remote =
-            isThirdParty(t) && vouched(t) ? [...(t.tags ?? []), ...(t.aliases ?? [])] : [];
-          return {
-            id,
-            // An un-vouched description is not ranked on: it is attacker text.
-            ...(vouched(t) && { description: [t.description, ...remote].join(" ") }),
-            tags: [...(host?.tags ?? []), ...(own?.tags ?? [])],
-            aliases: [...(host?.aliases ?? []), ...(own?.aliases ?? [])],
-          };
-        })
-      );
+      new Bm25ToolRanker([
+        ...[...this.searchable]
+          .filter((id) => this.skillById.size === 0 || !id.startsWith(SKILL_KEY))
+          .map((id) => {
+            const t = this.byId.get(id) as ToolDefinition;
+            const host = cfg.annotations?.[id];
+            // Trusted vocabulary: the host's annotations and the tool author's own — the last ONLY for
+            // a first-party tool. A remote tool's self-declared tags/aliases are the server's claims:
+            // they count as description-level text, and only if the operator vouched for that text
+            // (`trustJsonSchemaText`). An un-vouched tool contributes its id and the host's annotations.
+            const own = isThirdParty(t) ? undefined : t;
+            const remote =
+              isThirdParty(t) && vouched(t) ? [...(t.tags ?? []), ...(t.aliases ?? [])] : [];
+            return {
+              id,
+              // An un-vouched description is not ranked on: it is attacker text.
+              ...(vouched(t) && { description: [t.description, ...remote].join(" ") }),
+              tags: [...(host?.tags ?? []), ...(own?.tags ?? [])],
+              aliases: [...(host?.aliases ?? []), ...(own?.aliases ?? [])],
+            };
+          }),
+        // Skills: host-registry author text, so vouched by construction; ranked with the same fields.
+        ...[...this.skillById.values()].map((s) => ({
+          id: SKILL_KEY + s.id,
+          description: String(s.description),
+          tags: s.tags ?? [],
+          aliases: s.aliases ?? [],
+        })),
+      ]);
     return {
       kind: "bm25f",
       rank: (query, limit) => {
@@ -331,28 +386,37 @@ export class ToolSearchSession {
       recorded = await ctx.decide<Recorded>(
         decisionKey,
         async () => {
-          // Over-ask by what cannot be shown (already loaded, namespace-hidden) so filtering does not
-          // starve the page; if a shared ranker over a WIDER catalog still leaves it short, widen
-          // (bounded rounds / hits) while the ranker has more to give.
+          // Over-ask by what cannot be shown (already loaded, namespace-hidden, active skills) so
+          // filtering does not starve the page; if a shared ranker over a WIDER catalog still leaves
+          // it short, widen (bounded rounds / hits) while the ranker has more to give.
           let ask = Math.min(
-            want + this.loadedIds.size + (this.byId.size - this.searchable.size),
+            want +
+              this.loadedIds.size +
+              (this.byId.size - this.searchable.size) +
+              (this.skillSource?.activeCount ?? 0),
             MAX_RANK_ASK
           );
-          let results: string[] = [];
+          let adm: { tools: string[]; skills: string[] } = { tools: [], skills: [] };
           for (let round = 0; round < MAX_RANK_ROUNDS; round++) {
             const ranked = await this.ranker.rank(query, ask);
-            results = this.admit(
+            adm = this.admitRanked(
               ranked.map((h) => h.id),
               want
             );
-            if (results.length >= want || ranked.length < ask || ask >= MAX_RANK_ASK) break;
+            if (
+              adm.tools.length + adm.skills.length >= want ||
+              ranked.length < ask ||
+              ask >= MAX_RANK_ASK
+            )
+              break;
             ask = Math.min(ask * 2, MAX_RANK_ASK);
           }
           return {
             ranker: this.ranker.kind,
             query: query.slice(0, MAX_RECORDED_QUERY),
-            results,
-            loaded: this.plan(results),
+            results: adm.tools,
+            loaded: this.plan(adm.tools),
+            ...(this.skillSource !== undefined && { skills: adm.skills }),
           };
         },
         { source: SOURCE_TOOL_SEARCH }
@@ -379,6 +443,13 @@ export class ToolSearchSession {
     // A record that is not the expected shape is an empty (refused) one.
     const rec = recorded !== null && typeof recorded === "object" ? recorded : undefined;
     const results = this.admit(Array.isArray(rec?.results) ? rec.results : [], want);
+    // R22b: skill hits share the page budget with tool hits (tools first on a replay), and are
+    // re-admitted against the LIVE discoverable set (a forged id, an upfront-selected or an already
+    // active skill is dropped). They load nothing.
+    const skillIds = this.admitSkills(
+      this.skillSource !== undefined && Array.isArray(rec?.skills) ? rec.skills : [],
+      want - results.length
+    );
     const planned = this.plan(results);
     const recordedLoaded = new Set<unknown>(Array.isArray(rec?.loaded) ? rec.loaded : []);
     const toLoad = planned.filter((id) => recordedLoaded.has(id));
@@ -400,10 +471,29 @@ export class ToolSearchSession {
       };
     });
     const output: Record<string, unknown> = { tools: hits };
+    if (this.skillSource !== undefined) {
+      output.skills = skillIds.map(
+        (id): SkillSearchHit => ({
+          kind: "skill",
+          id,
+          description: firstLineOf(
+            String((this.skillById.get(id) as SkillDefinition).description),
+            MAX_RESULT_DESCRIPTION
+          ),
+        })
+      );
+    }
     if (hits.some((h) => !h.loaded)) {
       output.note = "The tool list is full: matches with loaded=false cannot be called.";
     }
-    if (hits.length === 0) output.note = "No matching tools.";
+    if (hits.length === 0) {
+      output.note =
+        this.skillSource !== undefined && skillIds.length > 0
+          ? `Only skills matched: pass an id to \`${this.skillSource.activationName}\` to load it.`
+          : this.skillSource !== undefined
+            ? "No matching tools or skills."
+            : "No matching tools.";
+    }
     // Any third-party tool in the result puts attacker-influenced bytes (its name, its vouched text)
     // in front of the model: fence the whole result as data (ADR 0085), same as an MCP tool's own output.
     const third = results.find((id) => isThirdParty(this.byId.get(id) as ToolDefinition));
@@ -414,6 +504,52 @@ export class ToolSearchSession {
     };
   }
 
+  private isSkillKey(k: string): boolean {
+    return this.skillById.size > 0 && k.startsWith(SKILL_KEY);
+  }
+
+  /** Ranked index keys -> tool ids and skill ids, in ranked order, at most `want` in total. */
+  private admitRanked(
+    keys: readonly string[],
+    want: number
+  ): { tools: string[]; skills: string[] } {
+    const tools: string[] = [];
+    const skills: string[] = [];
+    const seen = new Set<string>();
+    for (const k of keys) {
+      if (typeof k !== "string" || seen.has(k)) continue;
+      seen.add(k);
+      if (this.isSkillKey(k)) {
+        const id = k.slice(SKILL_KEY.length);
+        if (!this.skillAllowed(id)) continue;
+        skills.push(id);
+      } else {
+        if (!this.searchable.has(k) || this.loadedIds.has(k)) continue;
+        tools.push(k);
+      }
+      if (tools.length + skills.length >= want) break;
+    }
+    return { tools, skills };
+  }
+
+  /** Discoverable and not already active. */
+  private skillAllowed(id: string): boolean {
+    return this.skillById.has(id) && this.skillSource?.isActive(id) !== true;
+  }
+
+  /** Candidate skill ids -> the ones this run may be shown: discoverable, inactive, deduped, <= `max`. */
+  private admitSkills(ids: readonly unknown[], max: number): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const id of ids) {
+      if (out.length >= max) break;
+      if (typeof id !== "string" || seen.has(id)) continue;
+      seen.add(id);
+      if (this.skillAllowed(id)) out.push(id);
+    }
+    return out;
+  }
+
   /** Candidate ids -> the ones this run may be shown: offered, searchable, not loaded, deduped, <= `want`. */
   private admit(ids: readonly string[], want: number): string[] {
     const out: string[] = [];
@@ -421,7 +557,7 @@ export class ToolSearchSession {
     for (const id of ids) {
       if (typeof id !== "string" || seen.has(id)) continue;
       seen.add(id);
-      if (!this.searchable.has(id) || this.loadedIds.has(id)) continue;
+      if (this.isSkillKey(id) || !this.searchable.has(id) || this.loadedIds.has(id)) continue;
       out.push(id);
       if (out.length >= want) break;
     }
