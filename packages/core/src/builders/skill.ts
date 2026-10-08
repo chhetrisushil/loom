@@ -11,6 +11,8 @@ export interface SkillConfig {
   name: string;
   description: string;
   tags?: string[];
+  /** R22 (ADR 0125) — user phrasings for tool search. */
+  aliases?: string[];
   instructions: InstructionsSpec;
   tools?: ToolDefinition[];
 }
@@ -26,6 +28,7 @@ export function skill$(config: SkillConfig): SkillDefinition {
     description: config.description,
     instructions: config.instructions,
     ...(config.tags !== undefined && { tags: config.tags }),
+    ...(config.aliases !== undefined && { aliases: config.aliases }),
     ...(config.tools !== undefined && { tools: config.tools }),
   };
 }

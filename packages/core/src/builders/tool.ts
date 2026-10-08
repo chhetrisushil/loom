@@ -48,6 +48,10 @@ export interface ToolConfig<TIn, TOut> {
    * Omit to keep today's behaviour on both paths.
    */
   mode?: EffectMode;
+  /** R22 (ADR 0125) — declared tags for tool search. */
+  tags?: readonly string[];
+  /** R22 (ADR 0125) — user phrasings for tool search ("bill the customer"); see `ToolDefinition.aliases`. */
+  aliases?: readonly string[];
 }
 
 export function tool$<TIn = unknown, TOut = unknown>(
@@ -69,5 +73,7 @@ export function tool$<TIn = unknown, TOut = unknown>(
     ...(config.idempotent !== undefined && { idempotent: config.idempotent }),
     ...(config.errors !== undefined && { errors: config.errors }),
     ...(config.mode !== undefined && { mode: config.mode }),
+    ...(config.tags !== undefined && { tags: config.tags }),
+    ...(config.aliases !== undefined && { aliases: config.aliases }),
   };
 }

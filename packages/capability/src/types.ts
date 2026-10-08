@@ -27,6 +27,8 @@ export interface CapabilityDefinition<TIn = unknown, TOut = unknown> {
    * echoes the payload unwrapped downstream loses the taint; opting in is the author's promise not to.
    */
   acceptsTainted?: boolean;
+  /** R22 (ADR 0125) — user phrasings ("bill the customer") for tool/capability search; ranked above the intent text. */
+  aliases?: string[];
 }
 
 // ── Capability invoke authorization (M7) ─────────────────────────────────────

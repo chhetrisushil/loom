@@ -275,6 +275,20 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "ADR 0124 (R18). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every existing SPI unchanged; the new optional embedding SPI is versioned (EMBEDDING_PROVIDER_SPI_VERSION 1.0.0) with two conformance kits. Canary arms are evaluated per arm (the recorded propensity is the acting policy's own); there is no rollout controller, no durable ANN index and no version stamp on the effect-ring model paths.",
   },
   {
+    id: "tool-search",
+    title: "Tool Search",
+    package: "@loom/agent",
+    level: "L2",
+    summary:
+      "`agentLoop$({ toolSearch })` offers an opt-in `search_tools` meta-tool instead of a large menu: each search is ONE recorded decision (`<loop>#turn:<i>:tool:<j>:search`, source `agent-tool-search`, so a replay re-ranks nothing and reproduces the menu), results are only tools the run is already authorized for, and matches are appended to the menu (stable prefix). Ranking is a deterministic, bounded BM25F inverted index (name > aliases/tags > description) behind a pluggable `ToolRanker`; trusted author/host `aliases` and `tags` close the vocabulary gap, a remote tool's own are never trusted, an un-vouched third-party description is neither ranked nor shown, and a result naming a third-party tool is tainted.",
+    evidence: {
+      conformanceTest: "packages/agent/src/agentLoopToolSearch.test.ts",
+      usedIn:
+        "packages/agent/src/toolSearch.test.ts - the ranker: bounds, determinism, manipulation resistance, aliases",
+    },
+    note: "ADR 0125 (R22, lexical path). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged. Default OFF (ids unchanged); not worth enabling below ~30 tools. Searching never widens authority: the loaded tool still passes the R4 menu gate, the approval hook and the effect ring. The semantic ranker (R18 embedding SPI) is a follow-up behind `ToolRanker`.",
+  },
+  {
     id: "conversation-sse",
     title: "Conversation SSE Gateway",
     package: "@loom/plugin-conversation-sse",
