@@ -2433,6 +2433,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../../packages/replay-vm

@@ -7,3 +7,39 @@ export {
   type ScoreResult,
   type Scorer,
 } from "./eval";
+// R18 (ADR 0124) — the LLM evaluation harness.
+export {
+  CassetteMissError,
+  CassetteProvider,
+  compareReports,
+  formatSuiteReport,
+  reportDigest,
+  runEvalSuite,
+  stubProvider,
+  type CaseResult,
+  type CaseRun,
+  type CassetteData,
+  type EvalCase,
+  type EvalSuiteOptions,
+  type EvalSuiteReport,
+  type GradeResult,
+  type Grader,
+  type GraderOutcome,
+  type GraderSpec,
+  type Regression,
+  type Subject,
+} from "./suite";
+export {
+  canonicalString,
+  exactMatch,
+  jsonSchema,
+  judgePrompt,
+  llmJudge,
+  parseVerdict,
+  regexMatch,
+  type JudgeDecide,
+  type JudgeScope,
+  type LlmJudgeOptions,
+  type SafeParseSchema,
+} from "./graders";
+export { flowSubject, type FlowSubjectOptions } from "./subject";
