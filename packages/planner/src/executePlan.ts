@@ -254,7 +254,7 @@ export async function executePlan(
     if (hasTaint && cap.acceptsTainted !== true) {
       return fail({
         kind: "args-invalid",
-        message: `an argument is tainted (untrusted) and "${cap.id}" does not accept tainted input`,
+        message: `an argument is tainted (untrusted, or too large to inspect) and "${cap.id}" does not accept tainted input`,
       });
     }
     const chk = validateToolInput(cap.inputSchema, hasTaint ? unwrapTaint(args) : args);

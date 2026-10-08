@@ -9,6 +9,7 @@ import {
   RefResolutionError,
   assertValidPlanGraph,
   checkPrecondition,
+  containsTaint,
   resolveArgs,
   resolveRef,
   validatePlanGraph,
@@ -325,5 +326,26 @@ describe("fix round 1 - taint through paths, own properties (R16)", () => {
     expect(() => resolveRef("a.toString", o)).toThrow(RefResolutionError);
     expect(() => resolveRef("arr.length", o)).toThrow(RefResolutionError);
     expect(() => resolveRef("arr.map", o)).toThrow(RefResolutionError);
+  });
+});
+
+describe("fix round 2 - the taint walk fails closed at its bounds (R16)", () => {
+  it("P2: a wrapper after a >100 000-node blob is still seen (the cut part never hides taint)", () => {
+    const outputs = new Map<string, unknown>([
+      ["a", { raw: new Array(100_001).fill(0), content: tainted("evil", "a2a") }],
+    ]);
+    expect(containsTaint(resolveArgs({ x: { $from: "a" } } as never, outputs))).toBe(true);
+  });
+
+  it("P2: a wrapper deeper than the depth bound is still seen", () => {
+    let deep: unknown = tainted("evil", "a2a");
+    for (let i = 0; i < 70; i++) deep = { n: deep };
+    const outputs = new Map<string, unknown>([["a", deep]]);
+    expect(containsTaint(resolveArgs({ x: { $from: "a" } } as never, outputs))).toBe(true);
+  });
+
+  it("an in-bounds value with no wrapper is still untainted", () => {
+    const outputs = new Map<string, unknown>([["a", { rows: [1, 2, { k: "v" }] }]]);
+    expect(containsTaint(resolveArgs({ x: { $from: "a" } } as never, outputs))).toBe(false);
   });
 });

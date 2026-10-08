@@ -471,7 +471,8 @@ export function containsTaint(v: unknown): boolean {
 /**
  * A copy of `v` with every taint wrapper replaced by its payload, and whether any was found. Bounded
  * (depth 64, 100 000 nodes) so a hostile output cannot drive it; past a bound the subtree is cut to
- * `"[truncated]"`. Used for schema checks of an opted-in capability and for prompt text, which must
+ * `"[truncated]"` AND the value is reported tainted (a wrapper in the cut part would be unseen, so the
+ * check fails closed). Used for schema checks of an opted-in capability and for prompt text, which must
  * show the fenced payload and never the wrapper's JSON.
  */
 export function unwrapTaint(v: unknown): unknown {
@@ -482,7 +483,11 @@ function walkTaint(root: unknown): { value: unknown; tainted: boolean } {
   let found = false;
   let nodes = 0;
   const go = (v: unknown, depth: number): unknown => {
-    if (++nodes > 100_000 || depth > 64) return "[truncated]";
+    if (++nodes > 100_000 || depth > 64) {
+      // Fail CLOSED: the cut part may hold a wrapper we never saw, so treat the whole value as tainted.
+      found = true;
+      return "[truncated]";
+    }
     if (isTainted(v)) {
       found = true;
       return go((v as { value: unknown }).value, depth + 1);

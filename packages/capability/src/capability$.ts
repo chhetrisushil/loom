@@ -13,7 +13,7 @@ export interface CapabilityConfig<TIn, TOut> {
   version?: string;
   /** Ids of capabilities this one depends on (M7). */
   dependencies?: string[];
-  /** R16 — accepts tainted values bound by a plan's `$from` (see `CapabilityDefinition.acceptsTainted`). */
+  /** R16 — accepts tainted values bound by a plan's `$from` (see `CapabilityDefinition.acceptsTainted`). The opt-in is a promise: nothing re-taints this capability's OUTPUT. */
   acceptsTainted?: boolean;
 }
 

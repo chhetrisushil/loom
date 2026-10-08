@@ -1,7 +1,7 @@
 {
   "name": "@loom/planner",
   "version": "0.0.1",
-  "description": "Planner runtime for Loom \u2014 turns a goal into an ordered capability plan",
+  "description": "Planner runtime for Loom — turns a goal into an ordered capability plan",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

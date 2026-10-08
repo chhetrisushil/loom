@@ -23,7 +23,8 @@ export interface CapabilityDefinition<TIn = unknown, TOut = unknown> {
    * R16 (ADR 0123) — this capability's input may receive TAINTED values (ADR 0085) bound by a plan's
    * `$from` (e.g. an MCP tool's output). Default `false`: a plan step that would pass one is refused
    * (`args-invalid`). When `true`, the schema is checked against the payload and the tool receives the
-   * wrapper, so the taint travels with the value.
+   * wrapper, so the taint travels with the value. Residual: nothing re-taints this capability's OUTPUT, so one that
+   * echoes the payload unwrapped downstream loses the taint; opting in is the author's promise not to.
    */
   acceptsTainted?: boolean;
 }
