@@ -24,7 +24,13 @@ export const bob: PrincipalChain = { actor: "bob", tenant: "t2" };
 export const colleague: PrincipalChain = { actor: "carol", tenant: "t1" };
 export const dave: PrincipalChain = { actor: "dave", tenant: "t3" };
 export const SECRET = "TOP-SECRET-PAYLOAD";
-const SHARED_KEY = "sse-shared-key";
+const KEY = "sse-envelope-key";
+const SERVICE: PrincipalChain = { actor: "conversation-service", tenant: "svc" };
+/** The reference policy, OWNER-scoped for everything a conversation's log is protected by. */
+const ownerPolicy = () =>
+  executionAccessPolicy({
+    rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" },
+  });
 
 /** Bearer tokens -> principals: the stand-in for a real verifier. */
 export const TOKENS: Record<string, PrincipalChain> = {
@@ -105,8 +111,12 @@ export interface BootOptions {
   config?: Partial<ConversationConfig>;
   server?: Partial<ConversationSseOptions>;
   hub?: ConversationHub;
-  /** The runtime's execution authorizer (default: the reference policy). */
+  /** The runtime's execution authorizer (default: the reference policy, owner-scoped). */
   policy?: ExecutionAuthorizer;
+  /** Options passed through to createConversations. */
+  conversations?: Record<string, unknown>;
+  /** Acknowledge a custom/looser policy as owner-scoped (tests that loosen it on purpose). */
+  ackPolicy?: boolean;
   /** SHARED mode: tools `kb` (public) and `secret-db` (restricted); per-asker grants; alice and dave are cleared for "restricted". */
   shared?: boolean;
   /** Run the conversations over a runtime with NO execution authorizer (for the insecure-mode tests). */
@@ -150,7 +160,8 @@ export async function boot(opts: BootOptions = {}) {
       ? {
           authorizer: new GrantTable(
             {
-              alice: ["conversation.turn", "summarize", "model", "kb", "secret-db"],
+              "conversation-service": ["conversation.turn", "summarize"],
+              alice: ["model", "kb", "secret-db", "summarize"],
               bob: ["model", "kb", "summarize"],
               dave: ["model", "kb", "secret-db", "summarize"],
             },
@@ -175,6 +186,7 @@ export async function boot(opts: BootOptions = {}) {
     new ToolEffect(async () => ({ summary: "earlier turns, summarized" }))
   );
   const eventStore = new InMemoryAsyncEventStore();
+  const policy = ownerPolicy();
   const runtime = new WorkflowRuntime({
     eventStore,
     snapshotStore: new InMemoryAsyncSnapshotStore(),
@@ -184,11 +196,12 @@ export async function boot(opts: BootOptions = {}) {
     continueAsNewEnabled: true,
     divergence: "fail",
     ...(opts.openRuntime !== true && {
-      executionAuthorizer: opts.policy ?? executionAccessPolicy(),
+      executionAuthorizer: opts.policy ?? policy,
       executionAuthz: { requirePrincipal: true },
     }),
   });
   const flow = conversation$({
+    key: KEY,
     agent: {
       definition: agent$({
         id: "chat",
@@ -201,7 +214,7 @@ export async function boot(opts: BootOptions = {}) {
     bargeIn: inboxBargeIn(eventStore),
     ...(opts.shared === true && {
       shared: {
-        key: SHARED_KEY,
+        servicePrincipal: SERVICE,
         directory: logParticipants(eventStore),
         cleared: (viewer: Identity, classes: readonly string[]) =>
           classes.every(
@@ -221,6 +234,11 @@ export async function boot(opts: BootOptions = {}) {
     eventStore,
     flow,
     ...(opts.shared === true && { effects }),
+    ...(opts.openRuntime !== true && opts.policy === undefined ? { policy } : {}),
+    ...((opts.openRuntime === true || opts.ackPolicy === true) && {
+      runtimePolicyIsOwnerScoped: true,
+    }),
+    ...opts.conversations,
   });
   const tokens = opts.tokens ?? TOKENS;
   const server = createConversationSseServer({

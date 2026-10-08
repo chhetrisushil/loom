@@ -405,6 +405,7 @@ describe("stream lifetime", () => {
     const base = executionAccessPolicy();
     const revoked = { on: false };
     const b = await up({
+      ackPolicy: true,
       policy: {
         authorize: (r) =>
           revoked.on && r.op === "query"

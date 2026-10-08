@@ -1,4 +1,5 @@
 import type { AgentLoopConfig } from "@loom/agent";
+import type { PrincipalChain } from "@loom/effect-runtime";
 import type { Identity, ParticipantDirectory } from "./access";
 import type { BargeInSource } from "./bargeIn";
 import type { TokenCounter } from "./budget";
@@ -20,14 +21,27 @@ export const USER_ORIGIN = "conversation:user";
 export const SUMMARY_ORIGIN = "conversation:summary";
 
 /** What travels on the inbox topic. */
+/** The body of a signed envelope (the signature covers every field). */
+export interface SignedBody {
+  conversationId: string;
+  kind: "user" | "close";
+  /** The sender-bound idempotency key of the message (also its kernel messageId in shared mode). */
+  id: string;
+  /** Issue time, epoch ms. */
+  iat: number;
+  text?: string;
+  /** Who is speaking. Owner mode: the owner. Shared mode: the asker (or, for a close, the closer). */
+  asker?: Identity;
+}
+
 export type TurnEnvelope =
   /**
    * `id` is the client idempotency key: the kernel's dedupe identity of the message (sender + messageId,
    * see `senderKey`). It lets the barge-in watcher tell a sender's own retry from a new message.
    * `asker` / `sig` appear only in shared mode (host-signed, see `sign`).
    */
-  | { kind: "user"; text: string; id?: string; asker?: Identity; sig?: string }
-  | { kind: "close"; id?: string; by?: Identity; sig?: string };
+  | { kind: "user"; text: string; id?: string; asker?: Identity; iat?: number }
+  | { kind: "close"; id?: string; asker?: Identity; iat?: number };
 
 export type MessageStatus = "complete" | "interrupted" | "failed" | "rejected" | "restricted";
 
@@ -87,8 +101,20 @@ export interface BudgetConfig {
 }
 
 export interface SharedConfig {
-  /** Secret the host signs inbox envelopes with. The body accepts an asker only from a signed envelope. */
-  key: string;
+  /**
+   * The principal the COORDINATING execution is started under. Required, and no end-user identity may
+   * equal it. The coordinator's log holds every restricted reply and every signed envelope, so it must be
+   * owned by something no participant is: the owner-scoped runtime policy then refuses everyone else a
+   * `query` of it (ADR 0122 D10). Its authority is only to run the turn effect and the summarizer.
+   */
+  servicePrincipal: PrincipalChain;
+  /**
+   * Maps an asker to the memory scope their turns recall from and write back to. REQUIRED when
+   * `agent.memory` is set, and a constant `agent.memoryScope` is refused: a shared scope would hand one
+   * participant's remembered content to every other. The scope is also a data class of the answer
+   * (`memory:<scope>`), so an answer that drew on it is filtered like any other.
+   */
+  memoryScope?: (asker: Identity) => string;
   /** Where the participant set lives (`logParticipants(eventStore)` is the standard one). */
   directory: ParticipantDirectory;
   /**
@@ -106,6 +132,16 @@ export interface SharedConfig {
 }
 
 export interface ConversationConfig {
+  /**
+   * Secret the host signs every inbox envelope with (HMAC). REQUIRED, both modes: the body acts only on a
+   * message the host's client signed for THIS conversation, naming the asker and an issue time, and never
+   * twice; whatever else the runtime's policy lets into the inbox is recorded as rejected and ignored.
+   */
+  key: string;
+  /** How old (ms) a signed envelope may be when it is dequeued. Default 1 hour. */
+  maxEnvelopeAgeMs?: number;
+  /** Rejected envelopes recorded as transcript entries per conversation before further ones are only COUNTED. Default 50. */
+  maxInvalidRecords?: number;
   /**
    * The agent that answers each turn: any `agentLoop$` config. `signal`, `loopId` and
    * `requireApproval` are owned by the conversation (a parked approval cannot coexist with the
@@ -160,8 +196,10 @@ export interface ConversationCarry {
   ord: number;
   /** The identity that started the conversation (the client stamps it; the owner check reads it). */
   owner?: Identity;
-  /** Client idempotency keys of the most recent turns (bounded): what the barge-in watcher recognises as a retry. */
+  /** Signed ids of the most recent envelopes (bounded): the replay set, and what the barge-in watcher recognises as a retry. */
   ids?: string[];
+  /** Rejected envelopes seen so far (recorded up to `maxInvalidRecords`, then only counted). */
+  dropped?: number;
   summary?: string;
   turns: CarriedTurn[];
   /** A message already consumed from the inbox but not yet handled (the rotation point sits between the two). */

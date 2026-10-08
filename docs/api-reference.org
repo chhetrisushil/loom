@@ -1976,6 +1976,7 @@ function conversation$(config: ConversationConfig, options?: { id?: string; name
 function conversationRunner(config: ConversationConfig): FlowRunner<...>   // the body, for your own flow
 
 interface ConversationConfig {
+  key: string;                                       // HMAC secret: every inbox envelope is host-signed, both modes
   agent: Omit<AgentLoopConfig, "signal" | "loopId" | "requireApproval">;   // any agentLoop$ config
   budget?: {
     contextWindow: number;                 // tokens
@@ -2014,7 +2015,8 @@ interface Conversations {
 }
 
 interface SharedConfig {
-  key: string;                                         // HMAC key for host-signed inbox envelopes
+  servicePrincipal: PrincipalChain;                    // OWNS the coordinating execution; no end-user identity may equal it
+  memoryScope?(asker: Identity): string;               // required if agent.memory is set; a constant agent.memoryScope is refused
   directory: ParticipantDirectory;                     // logParticipants(eventStore)
   cleared(viewer: Identity, classes: readonly string[]): boolean | Promise<boolean>;   // REQUIRED; fail closed
   classOf?(toolName: string): string | undefined;     // undefined -> the label "unclassified"
@@ -2057,7 +2059,7 @@ class ConversationHub {
 type LiveEvent = { type: "delta"; conversationId; turn; text } | { type: "reset"; conversationId; turn }
 #+end_src
 
-=ConversationConfig= also takes =shared?: SharedConfig= and =onError?(errorId, err, { conversationId, turn })= (the host's log of the real error behind a failed turn). =BudgetConfig= takes =maxSummaryTokens?= (default a quarter of the window).
+=ConversationConfig= REQUIRES =key= (the HMAC secret every inbox envelope is signed with, both modes) and takes =maxEnvelopeAgeMs?= (1 h) and =maxInvalidRecords?= (50). =createConversations= REFUSES a runtime whose policy is not owner-scoped for query / send / cancel / resume / actAsOwner: pass =policy= (the =executionAccessPolicy(...)= object; it exposes read-only =scopes=) or =runtimePolicyIsOwnerScoped: true=; it also takes =principalFor=, =maxQueuedPerAsker= (8) and, for a shared conversation, =effects=. =ConversationConfig= also takes =shared?: SharedConfig= and =onError?(errorId, err, { conversationId, turn })= (the host's log of the real error behind a failed turn). =BudgetConfig= takes =maxSummaryTokens?= (default a quarter of the window).
 
 Errors: =ConversationNotFoundError=, =InvalidTurnError=, =InvalidCursorError=, =SubscriberLimitError=; authorization failures are the runtime's own (=ExecutionDeniedError=). Message statuses: a user turn is =complete= or =rejected= (=malformed=, =too-long=, =prompt-too-large=); a reply is =complete=, =interrupted= (the partial, possibly empty) or =failed=. User text is untrusted: render it as text.
 

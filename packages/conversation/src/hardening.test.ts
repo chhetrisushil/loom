@@ -3,9 +3,10 @@ import { flow$ } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { Latch, alice, boot, lastUserText, messages, until } from "./__fixtures__/harness";
+import { Latch, boot, lastUserText, messages, until } from "./__fixtures__/harness";
+import { isNew } from "./bargeIn";
 import { carryOf } from "./conversation";
-import { identityOf, inboxBargeIn, pendingInbox, senderKey } from "./index";
+import { inboxBargeIn, pendingInbox, senderKey } from "./index";
 
 const perChar = { perMessage: 0, count: (t: string) => t.length };
 
@@ -206,46 +207,26 @@ describe("P3-10 the start input is read as untrusted JSON", () => {
 });
 
 describe("P3-8 a retry is the SAME sender's same id, not anyone's", () => {
-  it("another sender replaying a running turn's id interrupts; the sender's own retry does not", async () => {
-    // no policy: the point is the watcher's identity rule, so two senders share one conversation here
-    const started = new Latch();
-    const b = boot({
-      secure: true,
-      policy: { authorize: () => ({ allowed: true }) },
-      reply: async (req, nth) => {
-        if (nth === 1) {
-          started.release();
-          await new Promise<never>((_, rej) =>
-            req.signal?.addEventListener("abort", () => rej(new Error("aborted")))
-          );
-        }
-        return { content: `re: ${lastUserText(req)}`, stopReason: "end_turn" };
-      },
-    });
-    const { conversationId: id } = await b.conv.start({ principal: alice });
-    await b.conv.sendTurn(id, "question", { principal: alice, messageId: "m-1" });
-    await started.promise;
-    // alice's own retry: not an interruption (give the watcher time to have seen it: the next assertion is on state)
-    await b.conv.sendTurn(id, "question", { principal: alice, messageId: "m-1" });
-    // a different sender replaying the SAME messageId through the raw runtime, with a forged payload id
-    const forged = senderKey({ tenant: "t1", actor: "alice" }, "m-1");
-    await b.runtime.send(
-      id,
-      {
-        topic: "conversation:turn",
-        payload: { kind: "user", text: "takeover", id: forged },
-        messageId: "m-1",
-      },
-      { principal: { actor: "eve", tenant: "t1" } }
+  const known = (id: string) => id === senderKey({ tenant: "t1", actor: "alice" }, "m-1");
+  const stored = (sender: { tenant?: string; actor?: string }, payloadId: string) => ({
+    topic: "conversation:turn",
+    messageId: "m-1",
+    sender,
+    payload: { kind: "user", text: "x", id: payloadId },
+  });
+  it("the sender's own retry is known; another sender replaying the id (or forging the payload id) is NEW", () => {
+    const aliceId = senderKey({ tenant: "t1", actor: "alice" }, "m-1");
+    expect(isNew(stored({ tenant: "t1", actor: "alice" }, aliceId), { isKnown: known })).toBe(
+      false
     );
-    const all = await messages(b, id, 4, alice);
-    expect(all.map((m) => [m.role, m.status, m.text])).toEqual([
-      ["user", "complete", "question"],
-      ["assistant", "interrupted", ""],
-      ["user", "complete", "takeover"],
-      ["assistant", "complete", "re: takeover"],
-    ]);
-    expect(identityOf(alice)).toBeDefined();
+    // eve sends the same messageId and copies alice's payload id: the id does not match HER dedupe identity
+    expect(isNew(stored({ tenant: "t1", actor: "eve" }, aliceId), { isKnown: known })).toBe(true);
+    // a payload id that was never the kernel's identity for this message is ignored
+    expect(
+      isNew(stored({ tenant: "t1", actor: "alice" }, "made-up"), { isKnown: () => true })
+    ).toBe(true);
+    // a different topic never interrupts
+    expect(isNew({ ...stored({}, aliceId), topic: "other" }, { isKnown: () => false })).toBe(false);
   });
 });
 

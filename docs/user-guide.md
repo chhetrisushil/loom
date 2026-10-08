@@ -695,6 +695,7 @@ const hub = new ConversationHub();
 effects.register("model", createAgentModelEffect(hub.wrapProvider(provider), { stream: true, onDelta: hub.deltaSink() }));
 
 const chat = conversation$({
+  key: process.env.CONVERSATION_KEY!,                       // signs every inbox envelope; the body acts only on the host's
   agent: { definition: agent$({ id: "assistant", name: "Assistant", tools }), modelToolId: "model" },
   budget: { contextWindow: 200_000, summarizerToolId: "summarize" },
   bargeIn: inboxBargeIn(eventStore),
@@ -702,7 +703,7 @@ const chat = conversation$({
 });
 runtime.registerFlow(chat.definition, chat.runner);
 
-const conversations = createConversations({ runtime, eventStore, flow: chat });
+const conversations = createConversations({ runtime, eventStore, flow: chat, policy });   // policy: the owner-scoped executionAccessPolicy
 const { conversationId } = await conversations.start({ principal });
 await conversations.sendTurn(conversationId, "Plan a trip", { principal, messageId });   // retry-safe
 const latest = await conversations.history(conversationId, { principal, direction: "backward", limit: 20 });
@@ -719,20 +720,25 @@ const latest = await conversations.history(conversationId, { principal, directio
 import { conversation$, createConversations, logParticipants } from "@loom/conversation";
 
 const chat = conversation$({
+  key: process.env.CONVERSATION_KEY!,                         // signs EVERY inbox envelope (both modes): the body acts only on the host's
   agent: { definition, modelToolId: "model" },
   shared: {
-    key: process.env.CONVERSATION_KEY!,                       // signs inbox envelopes: the body trusts an asker only from the host
+    servicePrincipal: { actor: "conversation-service", tenant: "platform" },   // owns the coordinating execution; nobody is this
+    memoryScope: (asker) => `chat:${asker.tenant}:${asker.actor}`,             // required if the agent has a memory
     directory: logParticipants(eventStore),                  // the participant set, an append-only log
     classOf: (tool) => TOOL_CLASSES[tool],                   // undefined = "unclassified" (a label of its own)
     cleared: (viewer, classes) => classes.every((c) => policy.mayRead(viewer, c)),   // fail closed: false for anything unknown
     manageParticipants: (who) => responderLeads.has(who.actor),   // beside the owner
   },
 });
-const conversations = createConversations({ runtime, eventStore, flow: chat, effects });   // registers the turn effect
+const conversations = createConversations({
+  runtime, eventStore, flow: chat, effects,                  // registers the turn effect
+  policy,                                                    // the executionAccessPolicy(...) the runtime was built with: it must be OWNER-scoped
+});                                                          // for query / send / cancel / resume, or construction refuses
 await conversations.addParticipant(id, { actor: "bob", tenant: "acme" }, { principal: owner });
 ```
 
-The owner's authority only coordinates (grant it the `conversation.turn` effect); the turn execution starts as the asker. Turns queue first-come; a participant's follow-up interrupts only their own turn. Removing a participant is effective on their next request and ends their open streams at the next re-authorization. `requireApproval` stays unsupported (the future rule is in ADR 0122 D10.8).
+The service principal only coordinates (grant it the `conversation.turn` effect and the summarizer); each turn execution starts as the asker. Build the runtime with `executionAccessPolicy({ rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" } })`: the coordinator's log holds the unfiltered transcript, so a policy that lets a tenant peer read it defeats the filtering (construction refuses it). A sender who presents a delegation is refused unless you supply `principalFor`. Turns queue first-come; a participant's follow-up interrupts only their own turn. Removing a participant is effective on their next request and ends their open streams at the next re-authorization. `requireApproval` stays unsupported (the future rule is in ADR 0122 D10.8).
 
 For a browser, put `@loom/plugin-conversation-sse` in front: authenticated JSON routes plus an SSE stream whose event ids are the history cursors, so `EventSource`'s automatic `Last-Event-ID` reconnect resumes from the log. Live tokens (`delta`, `partial`) are transient and per process; only the durable `message` events are resumable.
 

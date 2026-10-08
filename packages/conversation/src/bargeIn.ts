@@ -75,7 +75,7 @@ const ownerModeId = (m: StoredInboxMessage): string | undefined => {
 };
 
 /** Whether `m` is a NEW message by the handlers' rules (on the topic, accepted, not a known retry). */
-function isNew(
+export function isNew(
   m: StoredInboxMessage,
   h: Pick<BargeInHandlers, "isKnown" | "accept" | "idOf">
 ): boolean {
@@ -99,10 +99,25 @@ export async function pendingInbox(
   ownerId: string,
   h: Pick<BargeInHandlers, "isKnown" | "accept" | "idOf"> = { isKnown: () => false }
 ): Promise<boolean> {
+  const waiting = await pendingMessages(store, conversationId, ownerId, PEEK_LIMIT);
+  return waiting?.some((m) => isNew(m, h)) === true;
+}
+
+/**
+ * The messages waiting in the inbox past the owner's consumed cursor (at most `limit`), or `undefined`
+ * when the cursor cannot be established. The owner's log is read BACKWARDS in blocks until a consumption
+ * is found, bounded by {@link MAX_LOOKBACK}.
+ */
+export async function pendingMessages(
+  store: EventStore,
+  conversationId: string,
+  ownerId: string,
+  limit: number
+): Promise<StoredInboxMessage[] | undefined> {
   const newest = await headOf(store, inboxStreamId(conversationId));
-  if (newest === null) return false;
+  if (newest === null) return [];
   const tip = await headOf(store, ownerId);
-  if (tip === null) return false;
+  if (tip === null) return undefined;
   let consumed = -1;
   let upper = tip;
   while (upper >= 0 && tip - upper < MAX_LOOKBACK && consumed < 0) {
@@ -115,14 +130,9 @@ export async function pendingInbox(
     }
     upper = lo - 1;
   }
-  if (consumed < 0 || newest <= consumed) return false;
-  const waiting = await createInboxSource(store)(
-    conversationId,
-    CONVERSATION_TOPIC,
-    consumed,
-    PEEK_LIMIT
-  );
-  return waiting.some((m) => isNew(m, h));
+  if (consumed < 0) return undefined;
+  if (newest <= consumed) return [];
+  return createInboxSource(store)(conversationId, CONVERSATION_TOPIC, consumed, limit);
 }
 
 /**

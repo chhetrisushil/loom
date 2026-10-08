@@ -20,6 +20,7 @@ export type { TurnInput, TurnResult } from "./turn";
 export {
   ConversationNotFoundError,
   InvalidTurnError,
+  QueueFullError,
   createConversations,
 } from "./conversations";
 export type {

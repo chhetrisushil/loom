@@ -448,6 +448,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@loom/memory':
+        specifier: workspace:*
+        version: link:../memory
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime

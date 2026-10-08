@@ -1,6 +1,14 @@
 import type { LlmRequest, LlmStreamChunk } from "@loom/llm";
 import { describe, expect, it } from "vitest";
-import { Latch, boot, cloneStreams, lastUserText, messages, until } from "./__fixtures__/harness";
+import {
+  Latch,
+  boot,
+  cloneStreams,
+  lastUserText,
+  messages,
+  signRaw,
+  until,
+} from "./__fixtures__/harness";
 import { type BargeInSource, inboxBargeIn } from "./index";
 
 const never = (req: LlmRequest): Promise<never> =>
@@ -234,7 +242,7 @@ describe("barge-in", () => {
       rt2.registerFlow(b.flow.definition, b.flow.runner);
       await rt2.send(id, {
         topic: "conversation:turn",
-        payload: { kind: "user", text: "third", id: "t3" },
+        payload: signRaw(id, { kind: "user", text: "third", id: "t3" }),
       });
       await until(async () => (await b.conv.history(id)).entries.length >= 6);
       const all = (await b.conv.history(id)).entries;
