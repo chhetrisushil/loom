@@ -1367,13 +1367,19 @@ describe("P3-2 / P3-3 / P3-4 — recorded responses", () => {
       })
     );
     const ts = trajectories<string>(await store.read("e1"));
-    expect(ts[0]?.steps.map((s) => s.decisionId)).toContain("choose");
-    expect(ts[0]?.steps.every((s) => s.refs !== undefined && s.refs.model?.id === "claude")).toBe(
-      true
-    );
-    const byModel = sliceByVersion(ts, "model");
-    expect([...byModel.keys()]).toEqual(["claude\u0000sha256:bbb"]);
-    expect([...sliceByVersion(ts, "prompt").keys()]).toEqual(["triage\u0000sha256:aaa"]);
+    const steps = ts[0]?.steps ?? [];
+    // the decision AFTER the model response is attributed to it; the route decision taken BEFORE
+    // any response is not (a later response says nothing about what produced an earlier decision)
+    expect(steps.find((s) => s.decisionId === "choose")?.refs?.model?.id).toBe("claude");
+    expect(steps.find((s) => s.decisionId.includes(":route"))?.refs).toBeUndefined();
+    expect([...sliceByVersion(ts, "model").keys()].sort()).toEqual([
+      "(unversioned)",
+      "claude\u0000sha256:bbb",
+    ]);
+    expect([...sliceByVersion(ts, "prompt").keys()].sort()).toEqual([
+      "(unversioned)",
+      "triage\u0000sha256:aaa",
+    ]);
   });
 
   it("an oversized response is cut deterministically, and that is what a replay serves", async () => {

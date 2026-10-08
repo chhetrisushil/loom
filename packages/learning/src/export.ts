@@ -94,6 +94,8 @@ export interface ExportStats {
     preferenceGroupsDropped: number;
     /** A record that could not be built (too deep, stack overflow): skipped alone, the export goes on. */
     recordError: number;
+    /** A step whose context was too large to scan for shred placeholders and taint: skipped in every mode. */
+    scanOverflow: number;
   };
   /** Preference pairs not emitted because `maxRecords` was reached (pairs are not resumable). */
   preferencesTruncated?: boolean;
@@ -118,6 +120,7 @@ export function newExportStats(): ExportStats {
       emptyOrMismatched: 0,
       preferenceGroupsDropped: 0,
       recordError: 0,
+      scanOverflow: 0,
     },
     truncated: false,
   };
@@ -134,20 +137,31 @@ function encodePosition(cursor: string | undefined, skip: number): string {
 }
 function decodePosition(raw: string | undefined): { cursor: string | undefined; skip: number } {
   if (raw === undefined) return { cursor: undefined, skip: 0 };
-  if (!raw.startsWith("lx1:")) return { cursor: raw, skip: 0 }; // a bare source cursor
-  try {
-    const v = JSON.parse(raw.slice(4)) as { c?: unknown; s?: unknown };
-    if (
-      (typeof v.c === "string" || v.c === null) &&
-      Number.isSafeInteger(v.s) &&
-      (v.s as number) >= 0
-    ) {
-      return { cursor: v.c ?? undefined, skip: v.s as number };
+  // Our envelope is recognised STRICTLY (exactly `{c, s}` with a string-or-null `c` and a
+  // non-negative integer `s`); anything else - including a source cursor that merely begins with
+  // `lx1:` - is the source's own cursor and is passed through untouched. The residual ambiguity is
+  // a source whose cursors are themselves valid `lx1:{"c":...,"s":...}` envelopes; none should be.
+  if (raw.startsWith("lx1:")) {
+    try {
+      const v = JSON.parse(raw.slice(4)) as Record<string, unknown>;
+      const keys = Object.keys(v);
+      if (
+        v !== null &&
+        typeof v === "object" &&
+        keys.length === 2 &&
+        "c" in v &&
+        "s" in v &&
+        (typeof v.c === "string" || v.c === null) &&
+        Number.isSafeInteger(v.s) &&
+        (v.s as number) >= 0
+      ) {
+        return { cursor: (v.c as string | null) ?? undefined, skip: v.s as number };
+      }
+    } catch {
+      /* a bare cursor that happens to start with the prefix */
     }
-  } catch {
-    /* fall through */
   }
-  throw new Error("exportJsonl: malformed resume cursor");
+  return { cursor: raw, skip: 0 };
 }
 
 interface Scan {
@@ -322,6 +336,13 @@ export async function* exportJsonl(
           const kept: { step: TrajectoryStep; origins: string[] }[] = [];
           for (const s of t.steps) {
             const sc = stepScan(s);
+            if (sc.overflow) {
+              // The walk gave up, so a shred placeholder or taint past its bound cannot be ruled
+              // out. Erasure has no "keep" option and a mark could not say what is unmarked: the
+              // step is skipped in EVERY mode.
+              stats.skipped.scanOverflow += 1;
+              continue;
+            }
             if (sc.shredded) {
               stats.skipped.shreddedStep += 1;
               continue;

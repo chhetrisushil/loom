@@ -391,3 +391,61 @@ describe("PolicyRegistry hardening (R18 fix round 1)", () => {
     expect(Object.hasOwn(Object.prototype, "wasIncumbent")).toBe(false);
   });
 });
+
+describe("thresholds are a floor (R18 fix round 2)", () => {
+  const strict = async () => {
+    const reg = new PolicyRegistry({
+      kv: new InMemoryPolicyKv(),
+      scope: "t",
+      thresholds: { minLift: 0.5 }, // the fixture report's lift is 0.2
+    });
+    for (const v of ["1", "2"]) {
+      await reg.register({ id: "router", version: v, contentHash: H(v), now: 1 });
+    }
+    await reg.bootstrap({ id: "router", version: "1", now: 2 });
+    return reg;
+  };
+  const go = (reg: PolicyRegistry, thresholds?: object) =>
+    reg.promote({
+      id: "router",
+      version: "2",
+      report: report("router", "2"),
+      mode: "full",
+      now: 3,
+      ...(thresholds !== undefined && { thresholds }),
+    });
+
+  it("a weaker or empty per-call override cannot loosen the registry's thresholds", async () => {
+    const reg = await strict();
+    await expect(go(reg)).rejects.toThrow(PromotionRefusedError);
+    await expect(go(reg, {})).rejects.toThrow(PromotionRefusedError);
+    await expect(go(reg, { minLift: 0 })).rejects.toThrow(PromotionRefusedError);
+    expect((await reg.resolve("router"))?.incumbent).toBe("1");
+  });
+
+  it("a stricter per-call override can still refuse what the registry's floor allows", async () => {
+    const reg = new PolicyRegistry({ kv: new InMemoryPolicyKv(), scope: "t" });
+    for (const v of ["1", "2"]) {
+      await reg.register({ id: "router", version: v, contentHash: H(v), now: 1 });
+    }
+    await reg.bootstrap({ id: "router", version: "1", now: 2 });
+    await expect(go(reg, { minLift: 0.5 })).rejects.toThrow(PromotionRefusedError);
+    expect((await go(reg, { minLift: 0.1 })).incumbent).toBe("2");
+  });
+
+  it("with no registry thresholds the gate defaults are still the floor", async () => {
+    const reg = new PolicyRegistry({ kv: new InMemoryPolicyKv(), scope: "t" });
+    await reg.register({ id: "router", version: "2", contentHash: H("2"), now: 1 });
+    const thin = { ...report("router", "2"), evaluated: 10 };
+    await expect(
+      reg.promote({
+        id: "router",
+        version: "2",
+        report: thin,
+        thresholds: { minSteps: 1 },
+        mode: "full",
+        now: 3,
+      })
+    ).rejects.toThrow(PromotionRefusedError);
+  });
+});

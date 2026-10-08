@@ -181,7 +181,7 @@ export interface PromoteInput {
   version: string;
   /** The evaluation that justified it. Its `policy` must name exactly `{id, version}`. */
   report: EvalReport;
-  /** Overrides the registry's thresholds for this promotion (and only ever stricter by convention). */
+  /** Tightens the registry's thresholds for this promotion. The registry's own (or the gate defaults) remain a floor: both gates must pass. */
   thresholds?: PromotionThresholds;
   mode: RolloutMode;
   /** Required for `canary`, in (0,1). */
@@ -359,11 +359,16 @@ export class PolicyRegistry {
         throw new PolicyRegistryError("canary needs canaryFraction in (0,1)");
       }
     }
-    const verdict = promotionGate(input.report, input.thresholds ?? this.thresholds ?? {});
-    if (!verdict.ok) {
+    // The registry's thresholds (or the gate defaults) are a FLOOR: a per-call override can only
+    // tighten it. Both gates must pass, so `thresholds: {}` cannot weaken a registry configured
+    // with `{ minLift: 0.5 }`, while a stricter override can still refuse what the floor allows.
+    const floor = promotionGate(input.report, this.thresholds ?? {});
+    const verdict =
+      input.thresholds === undefined ? floor : promotionGate(input.report, input.thresholds);
+    if (!floor.ok || !verdict.ok) {
       throw new PromotionRefusedError(
         `refusing to promote ${input.id}@${input.version}: the promotion gate did not pass`,
-        verdict.reasons
+        [...floor.reasons.filter(() => !floor.ok), ...verdict.reasons.filter(() => !verdict.ok)]
       );
     }
     return this.mutate(input.id, (doc) => {
