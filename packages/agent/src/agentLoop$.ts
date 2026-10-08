@@ -336,6 +336,12 @@ export interface AgentLoopConfig {
    * without re-deciding. Unknown / already-active / over-cap / oversized / tainted-instruction calls
    * are typed error results and record nothing. Skills are host-registered author text; the upfront
    * `skills` selection is unchanged and combinable. Absent (the default) the run is unchanged.
+   *
+   * R22b (ADR 0125 D12): `discovery: "search" | "both"` (needs `toolSearch`) makes the whole skill
+   * catalog findable through `search_tools` (hits under `skills`, `{ kind: "skill", id, description }`,
+   * recorded in the same `agent-tool-search` decision, never loaded by the search; an already-active
+   * skill is not a hit) so a registry larger than the index cap stays reachable; `"search"` also
+   * replaces the prompt index with one fixed line. The default `"index"` is unchanged.
    */
   skillActivation?: SkillActivationConfig;
   /** Memory tier to recall from. Default `"working"`. */
@@ -714,6 +720,9 @@ export async function agentLoop$(
         ...(config.toolSearch?.catalog ?? []).map((t) => t.id),
         ...(search !== undefined ? [search.name] : []),
       ],
+      ...(search !== undefined && {
+        search: { name: search.name, customRanker: search.customRanker },
+      }),
     });
     // The two meta-tools share one menu: a skill that brings a tool named like the search meta-tool
     // would put two entries of the same name on the menu once activated.
@@ -724,6 +733,8 @@ export async function agentLoop$(
     }
     if (a.hasOffers) {
       activation = a;
+      // R22b: skills found through search (a no-op for the default `discovery: "index"`).
+      if (a.discovery !== "index") search?.attachSkills(a);
       system = [system, a.indexText()].filter((x) => x != null && x !== "").join("\n\n");
     }
   }

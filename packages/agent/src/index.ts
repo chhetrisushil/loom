@@ -53,4 +53,8 @@ export type { SearchableTool, ToolHit, ToolRanker } from "./toolSearch";
 export { SOURCE_SKILL_ACTIVATION, SkillActivationError } from "./skillActivation";
 export type { SkillActivationConfig } from "./skillActivation";
 export { SOURCE_TOOL_SEARCH, ToolSearchError, ToolSearchSession } from "./toolSearchSession";
-export type { ToolSearchConfig, ToolSearchHit } from "./toolSearchSession";
+export type {
+  SkillSearchHit,
+  ToolSearchConfig,
+  ToolSearchHit,
+} from "./toolSearchSession";
