@@ -248,7 +248,7 @@ const ops = {
     g.revision++;
     if (input.status === "active" && input.holder !== undefined && input.holder.length > 0) {
       g.holder = input.holder.slice(0, GOAL_LIMITS.maxOwnerChars);
-    } else delete g.holder;
+    } else Reflect.deleteProperty(g, "holder");
     if (input.note !== undefined) g.note = String(input.note).slice(0, GOAL_LIMITS.maxNoteChars);
     if (input.lastRun !== undefined) g.lastRun = input.lastRun;
     return g;
