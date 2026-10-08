@@ -1,6 +1,8 @@
+import { isTainted, taintOf, tainted } from "@loom/classify";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import { SuspendError, TypedFailure, fail, fnv1a64, loadInstructions } from "@loom/core";
 import type { Effect } from "@loom/effect-runtime";
+import { ToolEffect } from "@loom/effect-runtime";
 import type {
   LlmContent,
   LlmContentPartInput,
@@ -10,16 +12,9 @@ import type {
   LlmToolResultPartInput,
   LlmToolSpecInput,
 } from "@loom/llm";
-import {
-  LLM_INTERRUPTED,
-  MAX_INLINE_TOTAL_BYTES,
-  assertRequestSupported,
-  assistantMessageOf,
-  resolveRequestContent,
-} from "@loom/llm";
-import type { LlmRequest } from "@loom/llm";
+import { LLM_INTERRUPTED, MAX_INLINE_TOTAL_BYTES, assistantMessageOf } from "@loom/llm";
 import type { TieredMemory } from "@loom/memory";
-import type { ModelInvoker, ReasoningRuntime } from "@loom/reasoning";
+import type { ModelInvoker, ReasonOptions, ReasoningRuntime } from "@loom/reasoning";
 import { ExecutionCancelledError, approvalViewDigest } from "@loom/workflow-runtime";
 import type { BranchContext, ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
@@ -54,8 +49,9 @@ import type { AgentInput, AgentOutput, AgentStep } from "./types";
 // re-invoked. This is the idiom `interpreterLoop.test.ts` crash-injects at every
 // position; `agentLoopCrash.test.ts` does the same for this loop.
 //
-// `agentStep$` stays. It is the cheap opaque form for an agent that wants none of
-// the above, and it costs one frame instead of 2N.
+// `agentStep$` (and `AgentRunner`) remain for existing callers but are DEPRECATED since R10 (ADR 0121):
+// this loop is the canonical one. `agentStep$` is still the cheap opaque form (one frame instead of 2N)
+// for an agent that wants none of the above, and nothing is removed by this change.
 
 /** The payload the model effect receives. `createAgentModelEffect` builds one that accepts it. */
 export interface AgentModelCall {
@@ -149,10 +145,12 @@ export interface AgentLoopConfig {
    * (`SafetyViolationError`, `KillSwitchEngagedError`, `QuotaExceededError`), a cancellation and a
    * replay divergence. Those are the runtime's, not the tool's.
    *
-   * REPLAY: an untyped failure is recorded as `STEP_FAILED` and a re-run executes that call again
-   * (the kernel's at-least-once rule for a failed step). A tool that must fail EXACTLY ONCE across
-   * resumes throws a `TypedFailure` on a channel declared in its `errors`; that outcome is served
-   * from the log.
+   * REPLAY: in `"feedback"` mode each call's OUTCOME (`ok` or the bounded error text) is a recorded
+   * decision (`<loop>#turn:<i>:tool:<j>:outcome`, wrapping the `ctx.execute`), so a resume serves
+   * what the model already consumed and never re-runs a failed tool (an untyped failure is
+   * otherwise re-run live by the kernel's at-least-once rule for a failed step). `"fail"` records
+   * nothing extra. A tool of `kind: "human"` is not wrapped (its answer is consumed by the step
+   * itself).
    */
   toolErrors?: "feedback" | "fail";
   /**
@@ -172,13 +170,20 @@ export interface AgentLoopConfig {
   parallelTools?: boolean | number;
   /**
    * R10 — a signal that stops THIS run without cancelling the execution (a user barge-in, a host
-   * shutting a turn down). Checked before every model call and before every tool call; once
-   * aborted, no further model or tool call is issued and the run fails on
-   * {@link AGENT_INTERRUPTED} with what it had produced ({@link InterruptedAgentRun}: the partial
+   * shutting a turn down). Checked before every turn, before the turn's tool calls and before each
+   * call's approval and run; once aborted, no further model or tool call is issued and the run fails
+   * on {@link AGENT_INTERRUPTED} with what it had produced ({@link InterruptedAgentRun}: the partial
    * text, the iterations begun, the tool calls that completed). It is also handed to a routed
-   * model call that makes its own provider request. A signal is not journaled: the interruption is
-   * live-only. An execution `cancel` needs no signal here: the kernel stops it at the next
-   * `ctx.execute` and aborts the effect in flight; the two compose.
+   * model call that makes its own provider request.
+   *
+   * REPLAY. A signal is not data, so each checkpoint's answer is a RECORDED decision
+   * (`<loop>#abort:<site>`, `source: "agent-abort"`): a replay reproduces the interruption at the
+   * same point, so a host that catches `AGENT_INTERRUPTED` and carries on takes the same branch on
+   * a resume. The cost is a few small decisions per turn, written ONLY when a signal is configured.
+   * (An error a provider throws mid-generation because the signal fired is converted live and is
+   * not recorded; its model call was never journaled either, so a replay re-asks it.) An execution
+   * `cancel` needs no signal here: the kernel stops it at the next `ctx.execute` and aborts the
+   * effect in flight; the two compose.
    */
   signal?: AbortSignal;
   /**
@@ -242,11 +247,33 @@ export interface AgentLoopConfig {
    *
    * The write is a side effect in a body that re-runs on resume, so it is IDEMPOTENT: each entry
    * carries a deterministic id (execution, loop and a hash of the prompt / of prompt + answer) and
-   * is skipped if the scope already holds it, so a crash between the write and the run's completion
-   * does not duplicate it. A run that is interrupted or fails writes nothing. A tier that
-   * summarizes may fold an entry's id away; the residual is one repeated entry, not a lost one.
+   * is first `forget`-ten by id (a keyed remove, not a scope read), so a crash between the write and
+   * the run's completion does not duplicate it. A run that is interrupted or fails writes nothing.
+   * A tier that summarizes may fold an entry's id away; the residual is one repeated entry, not a
+   * lost one. PROVENANCE: if any tool result in the run was tainted (ADR 0085), the assistant entry
+   * is stored tainted with that origin, so a later recall puts it in a fenced `user` message, never
+   * an instruction (assistant / system) position.
    */
-  writeBack?: boolean | { tier?: string; scope?: string };
+  writeBack?:
+    | boolean
+    | {
+        tier?: string;
+        scope?: string;
+        /**
+         * Make the write a journaled `ctx.execute` against this effect (register
+         * {@link memoryWriteBackEffect} under it): K2 authorization, tenant / authority checks and
+         * the kill switch apply, and a replay serves the recorded write. Without it the write is a
+         * direct call on the `TieredMemory` you passed (outside the ring); `requireEffectRing`
+         * refuses that.
+         */
+        toolId?: string;
+        /**
+         * Skip the write while this returns `true` (evaluated live, never journaled): the hook for a
+         * forked or simulated execution, which must not write the real memory. The kernel gives a
+         * body no way to tell it is a fork, so the host that forks passes it.
+         */
+        unless?: () => boolean;
+      };
   /** Memory tier to recall from. Default `"working"`. */
   memoryTier?: string;
   /** Scope key. Default the execution id, so a run remembers its own conversation. */
@@ -471,6 +498,15 @@ export async function agentLoop$(
         "agentLoop$ requireEffectRing: `reasoning` calls its routes' providers directly, outside authorization/metering/the kill switch. Set `reasoningToolId` (see registerReasoningRoutes) or drop `reasoning` for `modelToolId`."
       );
     }
+    if (
+      config.writeBack !== undefined &&
+      config.writeBack !== false &&
+      (typeof config.writeBack !== "object" || config.writeBack.toolId === undefined)
+    ) {
+      throw new Error(
+        "agentLoop$ requireEffectRing: `writeBack` writes the TieredMemory directly, outside authorization. Set `writeBack.toolId` (see memoryWriteBackEffect)."
+      );
+    }
     if (config.skillSelector !== undefined && config.skillSelector.effectBacked !== true) {
       throw new Error(
         "agentLoop$ requireEffectRing: this `skillSelector` calls a provider directly, outside authorization/metering/the kill switch. Use llmSkillSelector({ toolId }) or deterministicSkillSelector()."
@@ -592,6 +628,9 @@ export async function agentLoop$(
       UTF8.encode(response.content || "(tool calls)").length,
     ]);
   const mediaTools = new Set(toolDefs.filter((t) => t.returnsMedia === true).map((t) => t.id));
+  // A `kind: "human"` step consumes its resume answer in call order; a turn holding one keeps the
+  // original sequential shape whatever `parallelTools` says (see `runToolCalls`).
+  const humanTools = new Set(toolDefs.filter((t) => t.kind === "human").map((t) => t.id));
 
   if (config.memory !== undefined) {
     const tier = config.memoryTier ?? "working";
@@ -604,6 +643,14 @@ export async function agentLoop$(
       decisionKey: `${idPrefix}#recall`,
     });
     for (const entry of recalled) {
+      if (isTainted(entry.content)) {
+        // Written back from a run that saw untrusted content: it stays untrusted. A fenced `user`
+        // message, whatever role it was stored under (the guard refuses taint in assistant position).
+        pushMessage({ role: "user", content: entry.content as LlmContent }, [
+          textBytes(entry.content as LlmContent),
+        ]);
+        continue;
+      }
       textMessage({
         role: entry.role === "assistant" ? "assistant" : "user",
         content: String(entry.content),
@@ -637,9 +684,21 @@ export async function agentLoop$(
       "agent run interrupted"
     );
   };
+  /**
+   * Whether the caller's signal had fired at this checkpoint. With a signal configured the answer is
+   * a RECORDED decision (one id per site, so concurrent branches never share a counter), served on
+   * replay; with none, nothing is read or written.
+   */
+  const aborted = async (c: ExecutionContext, site: string): Promise<boolean> => {
+    const signal = config.signal;
+    if (signal === undefined) return false;
+    return c.decide<boolean>(`${idPrefix}#abort:${site}`, () => signal.aborted, {
+      source: SOURCE_ABORT,
+    });
+  };
   /** No further model or tool call is issued once the caller's signal has fired. */
-  const checkAbort = (): void => {
-    if (config.signal?.aborted === true) interrupted();
+  const checkAbort = async (c: ExecutionContext, site: string): Promise<void> => {
+    if (await aborted(c, site)) interrupted();
   };
   /** The signal a DIRECT provider request carries: the caller's, bounded by the turn deadline. */
   const modelCallSignal = (): AbortSignal | undefined => {
@@ -654,7 +713,11 @@ export async function agentLoop$(
   interface Outcome {
     output: unknown;
     isError: boolean;
+    /** A parallel branch that reached its checkpoint after the stop: it never ran. */
+    notRun?: true;
   }
+  /** Provenance of the run so far: the origin of the first tainted tool result, if any. */
+  let sawTaintFrom: string | undefined;
 
   /**
    * Everything that can settle a call WITHOUT running it: the oversize refusal, the approval gate,
@@ -667,7 +730,7 @@ export async function agentLoop$(
     j: number,
     tooBig: boolean
   ): Promise<Outcome | undefined> => {
-    checkAbort();
+    await checkAbort(ctx, `t${turn}:gate:${j}`);
     let output: unknown;
     let isError = false;
     if (tooBig) {
@@ -737,34 +800,65 @@ export async function agentLoop$(
   /** Set once any call hits an error that must reach the runtime: siblings' noise is then not feedback. */
   let fatalSeen = false;
 
-  /** Run one call as a durable frame on `c` (the context, or a `parallel` branch's). */
+  /**
+   * Run one call as a durable frame on `c` (the context, or a `parallel` branch's).
+   *
+   * Feedback mode wraps the `execute` in a decision that records its OUTCOME, so a resume serves what
+   * the model already consumed instead of re-running a failed tool; the step's output itself is read
+   * back from its own (completed) frame, never duplicated into the decision.
+   */
   const runTool = async (
     c: ExecutionContext,
     toolCall: LlmToolCall,
     turn: number,
-    j: number
+    j: number,
+    inBranch: boolean
   ): Promise<Outcome> => {
-    checkAbort();
+    // A branch that wakes after the stop does not throw (that would fail the scope and drop the
+    // work its siblings completed): it reports "not run" and the interruption is raised after.
+    if (await aborted(c, `t${turn}:run:${j}`)) {
+      if (inBranch) return { output: undefined, isError: false, notRun: true };
+      interrupted();
+    }
+    const id = `${idPrefix}#turn:${turn}:tool:${j}`;
+    const task = {
+      _tag: "TaskDefinition",
+      kind: "tool",
+      id,
+      toolId: toolCall.name,
+      ...(config.toolTimeoutMs !== undefined && { timeoutMs: config.toolTimeoutMs }),
+    } as const;
+    const fatal = (err: unknown): boolean =>
+      fatalSeen || config.toolErrors === "fail" || isTerminalToolError(err);
     try {
-      const output = await c.execute(
-        {
-          _tag: "TaskDefinition",
-          kind: "tool",
-          id: `${idPrefix}#turn:${turn}:tool:${j}`,
-          toolId: toolCall.name,
-          ...(config.toolTimeoutMs !== undefined && { timeoutMs: config.toolTimeoutMs }),
+      if (config.toolErrors === "fail" || humanTools.has(toolCall.name)) {
+        return { output: await c.execute(task, toolCall.input), isError: false };
+      }
+      const recorded = await c.decide<{ ok: true } | { error: string }>(
+        `${id}:outcome`,
+        async () => {
+          try {
+            await c.execute(task, toolCall.input);
+            return { ok: true as const };
+          } catch (err) {
+            // Authority, safety, park, cancel and divergence are the runtime's: not recorded.
+            if (fatal(err)) throw err;
+            return { error: boundedError(err) };
+          }
         },
-        toolCall.input
+        { source: SOURCE_OUTCOME }
       );
-      return { output, isError: false };
+      if ("error" in recorded) return { output: { error: recorded.error }, isError: true };
+      // Served from the completed frame (no second run).
+      return { output: await c.execute(task, toolCall.input), isError: false };
     } catch (err) {
       // R10 — a failing tool is feedback, not a failed run. Authority, safety, park, cancel and
       // divergence are the runtime's (see `isTerminalToolError`); `toolErrors: "fail"` opts out.
-      if (fatalSeen || config.toolErrors === "fail" || isTerminalToolError(err)) {
+      if (fatal(err)) {
         fatalSeen = true;
         throw err;
       }
-      return { output: { error: String(err) }, isError: true };
+      return { output: { error: boundedError(err) }, isError: true };
     }
   };
 
@@ -776,6 +870,9 @@ export async function agentLoop$(
   ): Promise<void> => {
     const results: LlmToolResultPartInput[] = [];
     const record = (toolCall: LlmToolCall, { output, isError }: Outcome): void => {
+      if (sawTaintFrom === undefined && isTainted(output)) {
+        sawTaintFrom = taintOf(output)?.origin ?? "unknown";
+      }
       toolCallLog.push({
         iteration: iterations,
         toolName: toolCall.name,
@@ -791,12 +888,12 @@ export async function agentLoop$(
       results.push(part);
     };
 
-    if (parallelTools === false) {
+    if (parallelTools === false || calls.some((c) => humanTools.has(c.name))) {
       // The original shape, call by call: gate_j, run_j, gate_{j+1}, ...
       for (const [j, toolCall] of calls.entries()) {
         const settled =
           (await settleBeforeRun(toolCall, turn, j, oversized.has(j))) ??
-          (await runTool(ctx, toolCall, turn, j));
+          (await runTool(ctx, toolCall, turn, j, false));
         record(toolCall, settled);
       }
     } else {
@@ -811,16 +908,25 @@ export async function agentLoop$(
       }
       if (toRun.length === 1) {
         const j = toRun[0] as number;
-        outcomes[j] = await runTool(ctx, calls[j] as LlmToolCall, turn, j);
+        outcomes[j] = await runTool(ctx, calls[j] as LlmToolCall, turn, j, false);
       } else if (toRun.length > 1) {
-        checkAbort();
+        await checkAbort(ctx, `t${turn}:scope`);
         const ran = await ctx.parallel<Outcome[]>(
           toRun.map(
-            (j) => (b: BranchContext) => runTool(b, calls[j] as LlmToolCall, turn, j)
+            (j) => (b: BranchContext) => runTool(b, calls[j] as LlmToolCall, turn, j, true)
           ) as never,
           typeof parallelTools === "number" ? { limit: parallelTools } : {}
         );
         for (const [k, j] of toRun.entries()) outcomes[j] = ran[k] as Outcome;
+        if (ran.some((o) => o.notRun === true)) {
+          // The stop landed while the scope ran: carry out every call that completed (the ones that
+          // never started are simply absent), then raise the interruption outside the scope.
+          for (const [j, toolCall] of calls.entries()) {
+            const o = outcomes[j];
+            if (o !== undefined && o.notRun !== true) record(toolCall, o);
+          }
+          interrupted();
+        }
       }
       // Fed back in the model's order, whichever call finished first.
       for (const [j, toolCall] of calls.entries()) record(toolCall, outcomes[j] as Outcome);
@@ -834,7 +940,7 @@ export async function agentLoop$(
 
   try {
     while (iterations < maxIterations) {
-      checkAbort();
+      await checkAbort(ctx, `t${iterations}:turn`);
       const turn = iterations;
       iterations++;
 
@@ -926,38 +1032,11 @@ export async function agentLoop$(
         // the same sequence of calls and finds each frame / decision under the same id.
         let callSeq = 0;
         const reasoningToolId = config.reasoningToolId;
-        const invoke: ModelInvoker =
+        // R9 — each model call as a journaled effect frame, when a tool id is configured.
+        const invoke: ModelInvoker | undefined =
           reasoningToolId === undefined
-            ? // R10 — no effect id to journal a frame under, so the RESPONSE is journaled as a
-              // decision: a replay serves the recorded answer and the provider is not called, so a
-              // completed turn is never re-asked (and cannot answer differently and move the
-              // `#turn:<i>:tool:<j>` ids under the log). Still OUTSIDE the ring (no authorization,
-              // metering, kill switch): `reasoningToolId` is how a host gets those.
-              (route, request) =>
-                ctx.decide<LlmResponse>(
-                  `${idPrefix}#turn:${turn}:response:${callSeq++}`,
-                  async () => {
-                    assertRequestSupported(
-                      request as unknown as LlmRequest,
-                      route.provider.capabilities
-                    );
-                    const signal = modelCallSignal();
-                    const resolved = await resolveRequestContent(
-                      request as unknown as LlmRequest,
-                      undefined,
-                      {
-                        ...(signal !== undefined && { signal }),
-                        context: { executionId: ctx.executionId },
-                      }
-                    );
-                    return route.provider.complete({
-                      ...resolved,
-                      ...(signal !== undefined && { signal }),
-                    });
-                  }
-                )
-            : // R9 — each model call as a journaled effect frame.
-              (route, request) =>
+            ? undefined
+            : (route, request) =>
                 ctx.execute(
                   {
                     _tag: "TaskDefinition",
@@ -971,20 +1050,38 @@ export async function agentLoop$(
                   },
                   request satisfies AgentModelCall
                 ) as Promise<LlmResponse>;
+        // R10 — no effect id to journal a frame under, so the RESPONSE is journaled as a decision:
+        // a replay serves the recorded answer and the provider is not called, so a completed turn is
+        // never re-asked (and cannot answer differently and move the `#turn:<i>:tool:<j>` ids under
+        // the log). The runtime still guards the request, checks modalities and keeps its response
+        // cache; only the network part (`run`) is wrapped. Bounded (`boundResponse`) and stamped so
+        // `@loom/learning` does not read it as a policy choice. Still OUTSIDE the ring: no
+        // authorization, metering or kill switch; `reasoningToolId` is how a host gets those.
+        const wrapCall: ReasonOptions["wrapCall"] | undefined =
+          reasoningToolId === undefined
+            ? (_route, run) =>
+                ctx.decide<LlmResponse>(
+                  `${idPrefix}#turn:${turn}:response:${callSeq++}`,
+                  async () => boundResponse(await run()),
+                  { source: SOURCE_RESPONSE }
+                )
+            : undefined;
+        const callSignal = modelCallSignal();
         const routed = await config.reasoning.reason(
           { ...turnRequest, strategy: "agent" },
           {
             decide: ctx.decide,
             decisionKey: `${idPrefix}#turn:${turn}`,
-            invoke,
-            ...(config.signal !== undefined && { signal: config.signal }),
+            ...(invoke !== undefined && { invoke }),
+            ...(wrapCall !== undefined && { wrapCall }),
+            ...(callSignal !== undefined && { signal: callSignal }),
           }
         );
         lastContent = routed.content;
         if (routed.stopReason === "end_turn" || !routed.toolCalls?.length) break;
         const screened = screenToolCalls(routed.toolCalls);
         assistantTurn({ content: routed.content, toolCalls: screened.calls });
-        checkAbort();
+        await checkAbort(ctx, `t${turn}:tools`);
         await runToolCalls(screened.calls, turn, screened.oversized);
         continue;
       }
@@ -1014,7 +1111,7 @@ export async function agentLoop$(
       const screened = screenToolCalls(response.toolCalls);
       assistantTurn({ content: response.content, toolCalls: screened.calls });
 
-      checkAbort();
+      await checkAbort(ctx, `t${turn}:tools`);
       await runToolCalls(screened.calls, turn, screened.oversized);
     }
   } catch (err) {
@@ -1030,48 +1127,127 @@ export async function agentLoop$(
     throw err;
   }
 
-  if (config.writeBack !== undefined && config.writeBack !== false && config.memory !== undefined) {
-    await writeBackTurn(config.memory, {
-      tier:
-        (typeof config.writeBack === "object" ? config.writeBack.tier : undefined) ??
-        config.memoryTier ??
-        "working",
-      scope:
-        (typeof config.writeBack === "object" ? config.writeBack.scope : undefined) ??
-        config.memoryScope ??
-        ctx.executionId,
-      key: `${ctx.executionId}:${idPrefix}`,
-      prompt: input.prompt,
-      answer: lastContent,
-    });
+  const wb = config.writeBack;
+  if (wb !== undefined && wb !== false && config.memory !== undefined) {
+    const o = typeof wb === "object" ? wb : {};
+    if (o.unless?.() !== true) {
+      const req = writeBackRequest({
+        tier: o.tier ?? config.memoryTier ?? "working",
+        scope: o.scope ?? config.memoryScope ?? ctx.executionId,
+        key: `${ctx.executionId}:${idPrefix}`,
+        prompt: input.prompt,
+        answer: lastContent,
+        ...(sawTaintFrom !== undefined && { taintOrigin: sawTaintFrom }),
+      });
+      if (o.toolId !== undefined) {
+        await ctx.execute(
+          {
+            _tag: "TaskDefinition",
+            kind: "memory",
+            id: `${idPrefix}#writeback`,
+            toolId: o.toolId,
+          },
+          req
+        );
+      } else {
+        await applyWriteBack(config.memory, req);
+      }
+    }
   }
 
   return { content: lastContent, toolCallLog, iterations };
 }
 
+const SOURCE_RESPONSE = "agent-response";
+const SOURCE_OUTCOME = "agent-outcome";
+const SOURCE_ABORT = "agent-abort";
+
+/** Cap on a recorded error text: a tool's failure message is third-party bytes in the log. */
+const MAX_ERROR_CHARS = 2000;
+function boundedError(err: unknown): string {
+  const text = String(err);
+  return text.length <= MAX_ERROR_CHARS ? text : `${text.slice(0, MAX_ERROR_CHARS)}[truncated]`;
+}
+
 /**
- * R10 — remember a finished run's prompt and answer, idempotently. The entry ids are deterministic
- * (a hash of the prompt, and of prompt + answer), and an entry the scope already holds is skipped,
- * so a re-run after a crash between the write and the run's completion writes nothing twice.
+ * Cap on a response recorded as a decision (JSON characters). The effect path claim-checks a large
+ * result (ADR 0054); a decision is inline in the log and in the folded state, so a runaway
+ * generation is bounded here, deterministically (the bounded value is what is recorded and what a
+ * replay serves): the text is cut with a marker. A response whose NON-text part (tool calls) is
+ * itself over the cap is refused, because truncating a tool call would run a different call.
  */
-async function writeBackTurn(
-  memory: TieredMemory,
-  w: { tier: string; scope: string; key: string; prompt: string; answer: string }
-): Promise<void> {
-  const present = new Set<string>();
-  for (const e of await memory.recall(w.tier, w.scope)) if (e.id !== undefined) present.add(e.id);
-  const promptHash = fnv1a64(w.prompt);
-  const entries = [
-    { id: `${w.key}:user:${promptHash}`, role: "user", content: w.prompt },
-    {
-      id: `${w.key}:assistant:${fnv1a64(`${w.prompt}\u0000${w.answer}`)}`,
-      role: "assistant",
-      content: w.answer,
-    },
-  ];
-  for (const entry of entries) {
-    if (!present.has(entry.id)) await memory.remember(w.tier, w.scope, entry);
+export const MAX_RECORDED_RESPONSE_CHARS = 256 * 1024;
+export function boundResponse(res: LlmResponse): LlmResponse {
+  const size = (r: LlmResponse): number => JSON.stringify(r).length;
+  if (size(res) <= MAX_RECORDED_RESPONSE_CHARS) return res;
+  const marker = `\n[truncated: the response exceeded ${MAX_RECORDED_RESPONSE_CHARS} characters]`;
+  const withoutText = size({ ...res, content: marker });
+  if (withoutText > MAX_RECORDED_RESPONSE_CHARS) {
+    throw new Error(
+      `agentLoop$: a model response's tool calls exceed ${MAX_RECORDED_RESPONSE_CHARS} characters and cannot be recorded; refusing rather than truncating a call`
+    );
   }
+  let keep = Math.min(res.content.length, MAX_RECORDED_RESPONSE_CHARS - withoutText);
+  let out = { ...res, content: res.content.slice(0, keep) + marker };
+  while (size(out) > MAX_RECORDED_RESPONSE_CHARS && keep > 0) {
+    keep = Math.floor(keep / 2); // JSON escaping can expand text; bounded halving
+    out = { ...res, content: res.content.slice(0, keep) + marker };
+  }
+  return out;
+}
+
+interface WriteBackRequest {
+  tier: string;
+  scope: string;
+  entries: { id: string; role: string; content: unknown }[];
+}
+
+/**
+ * R10 — a finished run's prompt and answer as memory entries with deterministic ids (a hash of the
+ * prompt, and of prompt + answer). The answer is stored TAINTED when the run saw untrusted tool
+ * output, so a recall never places it in an instruction position.
+ */
+function writeBackRequest(w: {
+  tier: string;
+  scope: string;
+  key: string;
+  prompt: string;
+  answer: string;
+  taintOrigin?: string;
+}): WriteBackRequest {
+  return {
+    tier: w.tier,
+    scope: w.scope,
+    entries: [
+      { id: `${w.key}:user:${fnv1a64(w.prompt)}`, role: "user", content: w.prompt },
+      {
+        id: `${w.key}:assistant:${fnv1a64(`${w.prompt}\u0000${w.answer}`)}`,
+        role: "assistant",
+        content: w.taintOrigin === undefined ? w.answer : tainted(w.answer, w.taintOrigin),
+      },
+    ],
+  };
+}
+
+/** Idempotent: a keyed `forget` of the ids, then the append, so a re-run writes nothing twice. */
+async function applyWriteBack(memory: TieredMemory, req: WriteBackRequest): Promise<void> {
+  await memory.forget(
+    req.tier,
+    req.scope,
+    req.entries.map((e) => e.id)
+  );
+  for (const entry of req.entries) await memory.remember(req.tier, req.scope, entry);
+}
+
+/**
+ * R10 — the effect `writeBack.toolId` resolves to: register it on the `EffectRuntime` and the
+ * write-back is authorized, metered and kill-switched like any other effect, and journaled.
+ */
+export function memoryWriteBackEffect(memory: TieredMemory): ToolEffect {
+  return new ToolEffect(async (input) => {
+    await applyWriteBack(memory, input as WriteBackRequest);
+    return { written: (input as WriteBackRequest).entries.length };
+  });
 }
 
 /** The minimal registration surface of an `EffectRuntime` (`app.effectRuntime`). */

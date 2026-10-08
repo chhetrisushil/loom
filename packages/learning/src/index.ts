@@ -1,6 +1,6 @@
 export { decideWithPolicy } from "./decideWithPolicy";
 export type { DecideCapable, DecideWithPolicyOptions } from "./decideWithPolicy";
-export { trajectories, steps, stableKey } from "./trajectories";
+export { trajectories, steps, stableKey, RECORDED_FACT_SOURCES } from "./trajectories";
 export { evidenceEvents } from "./evidence";
 export { evaluatePolicy, formatEvalReport } from "./evaluate";
 export type { EvaluateOptions } from "./evaluate";

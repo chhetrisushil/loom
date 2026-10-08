@@ -147,11 +147,6 @@ export class ReasoningRuntime {
         ...(guarded.temperature !== undefined && { temperature: guarded.temperature }),
       });
     }
-    const cacheKey = this.cache !== undefined ? this.keyFor(route.id, req) : undefined;
-    if (cacheKey !== undefined) {
-      const hit = this.cache?.get(cacheKey);
-      if (hit !== undefined) return hit;
-    }
     // R2 — the prompt boundary, on the reasoning path. This is the single site where
     // this runtime hands a request to a provider, so it is the one place the check
     // belongs. `ReasoningRequest` types its content as `string`, but a `string`
@@ -168,17 +163,27 @@ export class ReasoningRuntime {
     });
     // R5 — a third-party provider may not check its own modalities; this runtime does.
     assertRequestSupported(guarded, route.provider.capabilities);
-    // R5 — refs become bytes only now: after the capability check (a refusal must precede any
-    // fetch) and after the cache lookup above, whose key is the request as written.
-    const res = await route.provider.complete(
-      await resolveRequestContent(guarded, opts.resolveContent, {
-        ...(signal !== undefined && { signal }),
-        // Absent only when there is no resolver; a ref then fails before any fetch.
-        context: opts.resolveContext ?? { executionId: "" },
-      })
-    );
-    if (cacheKey !== undefined) this.cache?.set(cacheKey, res);
-    return res;
+    // The cache key is the request AS WRITTEN (addresses, not bytes); computed before the host's
+    // wrapper so a journaled call and an unjournaled one share the same entries.
+    const cacheKey = this.cache !== undefined ? this.keyFor(route.id, req) : undefined;
+    const run = async (): Promise<LlmResponse> => {
+      if (cacheKey !== undefined) {
+        const hit = this.cache?.get(cacheKey);
+        if (hit !== undefined) return hit;
+      }
+      // R5 — refs become bytes only now: after the capability check (a refusal must precede any
+      // fetch) and after the cache lookup, whose key is the request as written.
+      const res = await route.provider.complete(
+        await resolveRequestContent(guarded, opts.resolveContent, {
+          ...(signal !== undefined && { signal }),
+          // Absent only when there is no resolver; a ref then fails before any fetch.
+          context: opts.resolveContext ?? { executionId: "" },
+        })
+      );
+      if (cacheKey !== undefined) this.cache?.set(cacheKey, res);
+      return res;
+    };
+    return opts.wrapCall !== undefined ? opts.wrapCall(route, run) : run();
   }
 
   private keyFor(modelId: string, req: ReasoningRequest): string {

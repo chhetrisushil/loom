@@ -1,52 +1,85 @@
 import { SuspendError } from "@loom/core";
 import { CapabilityDeniedError, EffectModeViolationError } from "@loom/effect-runtime";
-import {
-  DecideScopeClosedError,
-  ExecutionCancelledError,
-  FlowDivergenceError,
-} from "@loom/workflow-runtime";
 
 /**
- * Error classes matched by `name`, which each sets explicitly: the kernel's control flow of a
- * `parallel` scope or a continuation (not exported as values), and the middleware's safety / budget
- * stops (`@loom/middleware` is a dev-only dependency here; `KillSwitchEngagedError` inherits the
- * `SafetyViolationError` name). None is a tool's own failure; all must reach the runtime untouched.
+ * Error classes that are NOT a tool's own failure and must reach the runtime untouched, matched by
+ * name along the whole prototype chain (so `KillSwitchEngagedError`, which sets its own `name`, is
+ * caught through its `SafetyViolationError` parent and also listed itself).
+ *
+ * This is a DENYLIST on purpose: a failing tool is feedback by default, and a class that is not
+ * listed is fed back. The fitness test (`toolFailure.test.ts`) enumerates every exported error class
+ * of the 1P packages a tool can surface one from and pins its classification, so a NEW class fails
+ * that test until someone decides which side it is on.
  */
-const KERNEL_CONTROL_NAMES: ReadonlySet<string> = new Set([
+export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
+  // a park, and the kernel's control flow (several are not exported as values)
+  "SuspendError",
   "ScopeAbortedError",
   "ScopeServedError",
   "ContinueAsNewSignal",
+  "ContinueAsNewRefusedError",
+  "ContinueAsNewUnavailableError",
+  // authority: fed back, the model reads "not allowed" and probes a neighbouring tool
+  "CapabilityDeniedError",
+  "CapabilityInvokeDeniedError",
+  "EffectModeViolationError",
+  "ExecutionDeniedError",
+  "ApprovalRejectedError",
+  // safety and budget: not something the model can fix; fed back it spins to maxIterations
   "SafetyViolationError",
+  "KillSwitchEngagedError",
   "QuotaExceededError",
+  "RateLimitExceededError",
+  // the run is being stopped, or no longer matches its log
+  "ExecutionCancelledError",
+  "DecideScopeClosedError",
+  "ParallelScopeFailedError",
+  "FlowDivergenceError",
+  "FlowReplayDivergenceError",
+  "FlowCodeMismatchError",
+  "StartFencedOutError",
+  "PrincipalUnrestorableError",
+  "StorageWriteError",
 ]);
 
-/**
- * R10 — may a tool's failure be handed back to the model as an `isError` result, or must it
- * reach the runtime?
- *
- * A failing tool is FEEDBACK by default: a timing-out API or a malformed argument is information
- * the model can act on. Five things are not tool failures and must never be swallowed:
- *
- * - **a park** (`SuspendError`: a `human` effect, an in-doubt verdict) — swallowing it loses the
- *   suspension;
- * - **an authority error** (`CapabilityDeniedError`, `EffectModeViolationError`, R4) — fed back,
- *   the model reads "not authorized" and probes a neighbouring tool;
- * - **a safety / budget stop** (`SafetyViolationError` incl. the kill switch, `QuotaExceededError`)
- *   — not something the model can fix, and feeding it back lets it spin to `maxIterations`;
- * - **a cancellation** (`ExecutionCancelledError`, a parallel scope's abort, a closed decide
- *   scope) — the run is being stopped;
- * - **a divergence** (`FlowDivergenceError`) — a body that no longer matches its log.
- */
-export function isTerminalToolError(err: unknown): boolean {
+const MAX_CAUSE_DEPTH = 5;
+
+function isTerminalOne(err: unknown): boolean {
   if (
     err instanceof SuspendError ||
     err instanceof CapabilityDeniedError ||
-    err instanceof EffectModeViolationError ||
-    err instanceof ExecutionCancelledError ||
-    err instanceof DecideScopeClosedError ||
-    err instanceof FlowDivergenceError
+    err instanceof EffectModeViolationError
   ) {
     return true;
   }
-  return err instanceof Error && KERNEL_CONTROL_NAMES.has(err.name);
+  if (typeof err !== "object" || err === null) return false;
+  // A class that declares itself non-retryable is a decision, not a fault (the middleware's own rule).
+  if ((err as { retryable?: unknown }).retryable === false) return true;
+  if (TERMINAL_ERROR_NAMES.has((err as { name?: string }).name ?? "")) return true;
+  for (let p = Object.getPrototypeOf(err); p !== null; p = Object.getPrototypeOf(p)) {
+    const ctor = (p as { constructor?: { name?: string } }).constructor;
+    if (ctor?.name !== undefined && TERMINAL_ERROR_NAMES.has(ctor.name)) return true;
+  }
+  return false;
+}
+
+/**
+ * R10 — may a tool's failure be handed back to the model as an `isError` result, or must it reach
+ * the runtime?
+ *
+ * A failing tool is FEEDBACK by default: a timing-out API or a malformed argument is information the
+ * model can act on. These are not tool failures: a park, an authority error, a safety or budget stop
+ * (kill switch, quota, rate limit, anything declaring `retryable === false`), a cancellation, a
+ * divergence, a continuation. The `cause` chain is walked (bounded), so a wrapper that re-throws
+ * `new Error("tool failed", { cause: denial })` is still the denial.
+ */
+export function isTerminalToolError(err: unknown): boolean {
+  let e: unknown = err;
+  for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth++) {
+    if (isTerminalOne(e)) return true;
+    if (typeof e !== "object" || e === null) return false;
+    e = (e as { cause?: unknown }).cause;
+    if (e === undefined) return false;
+  }
+  return false;
 }

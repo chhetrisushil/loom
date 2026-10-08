@@ -17,6 +17,17 @@ import type {
 // cannot do for itself — deciding WHICH decisions a terminal outcome should be
 // blamed on.
 
+/**
+ * `DECISION_RECORDED.source` values written by `@loom/agent` for replay bookkeeping (R10, ADR 0121):
+ * the decision seam is how a nondeterministic VALUE becomes a recorded fact, but these are not
+ * choices among alternatives, so they carry no reward and are excluded from trajectories.
+ */
+export const RECORDED_FACT_SOURCES: ReadonlySet<string> = new Set([
+  "agent-response",
+  "agent-outcome",
+  "agent-abort",
+]);
+
 const TERMINAL: Record<string, Trajectory["outcome"]> = {
   EXECUTION_COMPLETED: "completed",
   EXECUTION_FAILED: "failed",
@@ -98,7 +109,10 @@ export function trajectories<A = unknown>(
   const terminalRewardOf = opts.terminalReward ?? ((outcome) => defaultTerminalReward(outcome));
 
   const all = events as EventEnvelope[];
-  const decisions = decisionRecords(all);
+  // R10 — recorded FACTS that share the decision log with real choices (a model response, a tool
+  // outcome, an abort checkpoint) are not actions of any policy: counting them would dilute the
+  // terminal-credit discount and pollute the fallback action sets.
+  const decisions = decisionRecords(all).filter((d) => !RECORDED_FACT_SOURCES.has(d.source ?? ""));
   const outcomes = outcomeRecords(all);
   const fallbackActions = actionSets(decisions);
 

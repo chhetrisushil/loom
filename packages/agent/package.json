@@ -30,6 +30,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@loom/capability": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/middleware": "workspace:*",
     "@loom/replay-vm": "workspace:*",
