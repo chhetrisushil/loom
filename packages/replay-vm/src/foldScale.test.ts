@@ -536,7 +536,14 @@ describe("no caller-visible mutation (R1a)", () => {
 
 // ── scale ────────────────────────────────────────────────────────────────────
 
+// The ratio checks below compare single-digit-millisecond timings, so on a shared CI runner (turbo runs
+// other packages' suites concurrently) one GC pause or descheduling can multiply a sample. The guard is
+// against QUADRATIC behaviour, which costs seconds at 20k events (it was ~42 s), so the baseline is
+// floored at RATIO_FLOOR_MS: below that, timer and scheduler noise dominate and the ratio means nothing,
+// while a quadratic regression still blows far past `RATIO_FLOOR_MS * 10`. Absolute bounds stay as well.
+const RATIO_FLOOR_MS = 25;
 const best = (runs: number, fn: () => void): number => {
+  fn(); // warm-up: JIT and allocation shape, never measured
   let min = Number.POSITIVE_INFINITY;
   for (let i = 0; i < runs; i++) {
     const t = performance.now();
@@ -577,10 +584,10 @@ describe(
       const small = decisionEvents(5_000);
       const large = decisionEvents(20_000);
       const t5 = Math.max(
-        best(3, () => foldEvents(small, ID)),
-        5
+        best(5, () => foldEvents(small, ID)),
+        RATIO_FLOOR_MS
       );
-      const t20 = best(3, () => foldEvents(large, ID));
+      const t20 = best(5, () => foldEvents(large, ID));
       expect(t20 / t5).toBeLessThan(10); // O(n^2) gives 16x; O(n) gives ~4x
     });
 
@@ -590,7 +597,7 @@ describe(
           const vm = new ReplayVM([], ID);
           for (const e of stepEvents(n)) vm.applyEvent(e);
         });
-      const t5 = Math.max(run(5_000), 5);
+      const t5 = Math.max(run(5_000), RATIO_FLOOR_MS);
       const t20 = run(20_000);
       expect(t20).toBeLessThan(5_000); // was ~42 000 ms for 20k
       expect(t20 / t5).toBeLessThan(10);
@@ -602,7 +609,7 @@ describe(
           const vm = new ReplayVM([], ID);
           for (const e of decisionEvents(n)) vm.applyEvent(e);
         });
-      const t5 = Math.max(run(5_000), 5);
+      const t5 = Math.max(run(5_000), RATIO_FLOOR_MS);
       const t20 = run(20_000);
       expect(t20).toBeLessThan(5_000);
       expect(t20 / t5).toBeLessThan(10);
