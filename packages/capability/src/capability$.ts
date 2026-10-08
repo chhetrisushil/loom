@@ -13,6 +13,8 @@ export interface CapabilityConfig<TIn, TOut> {
   version?: string;
   /** Ids of capabilities this one depends on (M7). */
   dependencies?: string[];
+  /** R16 — accepts tainted values bound by a plan's `$from` (see `CapabilityDefinition.acceptsTainted`). */
+  acceptsTainted?: boolean;
 }
 
 // Wraps a RegisteredFlow as an intent-addressable capability.
@@ -29,5 +31,6 @@ export function capability$<TIn = unknown, TOut = unknown>(
     flow: config.flow,
     ...(config.version !== undefined && { version: config.version }),
     ...(config.dependencies !== undefined && { dependencies: config.dependencies }),
+    ...(config.acceptsTainted === true && { acceptsTainted: true }),
   };
 }

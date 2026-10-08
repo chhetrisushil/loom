@@ -33,12 +33,6 @@
     },
     {
       "path": "../effect-runtime"
-    },
-    {
-      "path": "../event-runtime"
-    },
-    {
-      "path": "../snapshot-runtime"
     }
   ]
 }

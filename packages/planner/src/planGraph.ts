@@ -1,6 +1,7 @@
 import { validateToolInput } from "@loom/agent";
 import type { CapabilityCatalog } from "@loom/capability";
 import { isTainted, taintOf, tainted } from "@loom/classify";
+import type { Taint, TaintedValue } from "@loom/classify";
 
 // ── R16 (ADR 0123) — a plan is a DAG of steps with arguments and bindings ──────────────────────
 //
@@ -52,7 +53,8 @@ export interface PlanNode {
 }
 
 export interface PlanGraph {
-  goal: string;
+  /** A tainted goal stays tainted: it is never unwrapped into the plan. */
+  goal: string | TaintedValue<string>;
   nodes: PlanNode[];
 }
 
@@ -120,7 +122,9 @@ export class PlanValidationError extends Error {
 }
 
 export const NODE_ID = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
-const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+// `__loomTainted` is the taint wrapper's own key: a model-authored object carrying it would FORGE a
+// wrapper (or a path segment would address one), so it is refused wherever a model chooses a name.
+const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype", "__loomTainted"]);
 const MAX_PATH_SEGMENTS = 16;
 const MAX_SEGMENT_CHARS = 64;
 
@@ -421,17 +425,28 @@ export class RefResolutionError extends Error {
 
 /**
  * Read `ref` from the executor's recorded outputs. Only OWN properties are followed (a path of
- * `constructor` or `__proto__` was refused at validation and is refused again here). A tainted
- * output stays tainted: the path is followed inside it and the result re-wrapped with the same origin.
+ * `constructor` or `__proto__` was refused at validation and is refused again here).
+ *
+ * TAINT (ADR 0085). A path addresses the PAYLOAD, never the wrapper: at every step a tainted value is
+ * stepped into implicitly (`a.doc.title` reads `title` of the payload of the wrapper at `a.doc`), the
+ * wrapper's own keys are not addressable, and the result carries the FIRST (outermost) taint seen on
+ * the way - whether the wrapper sat at the root, in the middle of the path, or is the value itself.
  */
 export function resolveRef(ref: string, outputs: ReadonlyMap<string, unknown>): unknown {
   const parsed = parseRef(ref);
   if (parsed === undefined) throw new RefResolutionError(ref, "not a legal reference");
   if (!outputs.has(parsed.step))
     throw new RefResolutionError(ref, `step "${parsed.step}" has no output`);
-  const root = outputs.get(parsed.step);
-  const taint = isTainted(root) ? taintOf(root) : undefined;
-  let cur: unknown = taint !== undefined ? (root as { value: unknown }).value : root;
+  let taint: Taint | undefined;
+  const open = (v: unknown): unknown => {
+    let cur = v;
+    while (isTainted(cur)) {
+      taint ??= taintOf(cur);
+      cur = (cur as { value: unknown }).value;
+    }
+    return cur;
+  };
+  let cur: unknown = open(outputs.get(parsed.step));
   for (const seg of parsed.path) {
     if (Array.isArray(cur)) {
       if (!/^(0|[1-9][0-9]*)$/.test(seg) || Number(seg) >= cur.length) {
@@ -443,8 +458,52 @@ export function resolveRef(ref: string, outputs: ReadonlyMap<string, unknown>): 
     } else {
       throw new RefResolutionError(ref, `no property "${seg}"`);
     }
+    cur = open(cur);
   }
-  return taint !== undefined && !isTainted(cur) ? tainted(cur, taint.origin) : cur;
+  return taint !== undefined ? tainted(cur, taint.origin) : cur;
+}
+
+/** Whether a value contains a taint wrapper anywhere (bounded walk). */
+export function containsTaint(v: unknown): boolean {
+  return walkTaint(v).tainted;
+}
+
+/**
+ * A copy of `v` with every taint wrapper replaced by its payload, and whether any was found. Bounded
+ * (depth 64, 100 000 nodes) so a hostile output cannot drive it; past a bound the subtree is cut to
+ * `"[truncated]"`. Used for schema checks of an opted-in capability and for prompt text, which must
+ * show the fenced payload and never the wrapper's JSON.
+ */
+export function unwrapTaint(v: unknown): unknown {
+  return walkTaint(v).value;
+}
+
+function walkTaint(root: unknown): { value: unknown; tainted: boolean } {
+  let found = false;
+  let nodes = 0;
+  const go = (v: unknown, depth: number): unknown => {
+    if (++nodes > 100_000 || depth > 64) return "[truncated]";
+    if (isTainted(v)) {
+      found = true;
+      return go((v as { value: unknown }).value, depth + 1);
+    }
+    if (Array.isArray(v)) return v.map((c) => go(c, depth + 1));
+    if (typeof v === "object" && v !== null) {
+      const o: Record<string, unknown> = {};
+      for (const k of Object.keys(v)) {
+        Object.defineProperty(o, k, {
+          value: go((v as Record<string, unknown>)[k], depth + 1),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
+      return o;
+    }
+    return v;
+  };
+  const value = go(root, 0);
+  return { value, tainted: found };
 }
 
 /** Substitute every `{ $from }` in `args` (iteratively). The model's other values pass through unchanged. */
@@ -501,7 +560,7 @@ export function checkPrecondition(
     if (p.test === "exists") return `${p.ref} does not exist`;
     return e instanceof Error ? e.message : "unresolvable";
   }
-  const raw = isTainted(v) ? (v as { value: unknown }).value : v;
+  const raw = unwrapTaint(v);
   const test = p.test ?? "exists";
   if (test === "exists") return raw === undefined || raw === null ? `${p.ref} is empty` : undefined;
   if (test === "truthy") return raw ? undefined : `${p.ref} is not truthy`;

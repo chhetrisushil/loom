@@ -982,7 +982,7 @@ const runner: FlowRunner = async (ctx) => {
     catalog,
     limit: 4,                                    // independent steps run together (ctx.parallel waves)
     onFailure: "continue-independent",
-    replan: { max: 2, revise: makeReviser({ catalog, model }) },   // keeps completed steps; never re-runs them
+    replan: { max: 2, revise: makeReviser({ model }) },   // keeps completed steps; never re-runs them
   });
   return run;                                    // { status, outputs, failures, skipped, replans }
 };

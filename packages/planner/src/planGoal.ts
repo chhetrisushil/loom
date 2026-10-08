@@ -11,6 +11,7 @@ import type {
   LlmResponse,
 } from "@loom/llm";
 import type { DecideScope, ExecutionContext } from "@loom/workflow-runtime";
+import { claimId } from "./claim";
 import {
   DEFAULT_PLAN_LIMITS,
   type PlanGraph,
@@ -128,7 +129,7 @@ const NODE_KEYS = [
 /** Extract the plan object from a model reply. Returns a reason string on failure. */
 export function parsePlanReply(
   content: string,
-  goal: string,
+  goal: PlanGraph["goal"],
   limits: PlanLimits,
   maxChars: number
 ): { ok: true; plan: PlanGraph } | { ok: false; why: string } {
@@ -200,7 +201,7 @@ export async function askForPlan(
     model: PlanModel;
     system: string;
     opening: LlmMessageInput[];
-    goalText: string;
+    goal: PlanGraph["goal"];
     limits: PlanLimits;
     maxAttempts: number;
     maxReplyChars: number;
@@ -218,7 +219,7 @@ export async function askForPlan(
     // A throw here (authz, quota, kill switch, cancellation, a provider fault) is the run's, not a
     // retry: it propagates and nothing is recorded.
     const reply: LlmResponse = await args.model(scope, { system: args.system, messages });
-    const parsed = parsePlanReply(reply.content, args.goalText, args.limits, args.maxReplyChars);
+    const parsed = parsePlanReply(reply.content, args.goal, args.limits, args.maxReplyChars);
     let feedback: string;
     if (!parsed.ok) {
       last = { reason: "unparseable", issues: [], detail: parsed.why };
@@ -234,7 +235,9 @@ export async function askForPlan(
       last = { reason: "invalid", issues };
       feedback = issueText(issues);
     }
-    // The rejection echoes model-authored fragments (ids, capability names): data, fenced.
+    // The model's own answer goes back as an assistant turn (roles alternate; bounded), then the
+    // rejection, which echoes model-authored fragments (ids, capability names): data, fenced.
+    messages.push({ role: "assistant", content: reply.content.slice(0, 4000) });
     messages.push({
       role: "user",
       content: [
@@ -265,6 +268,7 @@ export async function planGoal(
   }
   const goalText = textOfGoal(input.goal);
   const planId = input.planId ?? "plan";
+  claimId(ctx, "plan", planId);
   const decision = await ctx.decide<PlanDecision>(
     `${planId}:plan`,
     async (scope) => {
@@ -281,7 +285,7 @@ export async function planGoal(
         model: input.model,
         system: systemPrompt(input.catalog, limits),
         opening,
-        goalText,
+        goal: input.goal,
         limits,
         maxAttempts,
         maxReplyChars: input.maxReplyChars ?? 128 * 1024,
@@ -291,12 +295,19 @@ export async function planGoal(
         },
       });
       if (r.ok || input.fallback === undefined) return r;
-      const fb = input.fallback(goalText);
+      const fb = { ...input.fallback(goalText), goal: input.goal };
       const v = validatePlanGraph(fb, { catalog: input.catalog, limits });
       if (!v.ok) return { ...r, issues: v.issues, detail: "the fallback plan is invalid too" };
       return { ok: true, plan: fb, attempts: r.attempts, source: "fallback" };
     },
-    { source: "planner.plan", rationale: `plan for goal (${goalText.slice(0, 120)})` }
+    {
+      source: "planner.plan",
+      // A tainted goal is not echoed into the (plain) rationale.
+      rationale:
+        typeof input.goal === "string"
+          ? `plan for goal (${goalText.slice(0, 120)})`
+          : "plan for a tainted goal",
+    }
   );
   if (!decision.ok) {
     throw new PlanFailedError(decision.reason, decision.attempts, decision.issues, decision.detail);

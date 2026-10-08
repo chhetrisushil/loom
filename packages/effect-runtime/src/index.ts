@@ -30,6 +30,8 @@ export {
   attenuateDelegation,
   delegationDigest,
   principalBlocked,
+  principalIdentityKey,
+  identityKeyOf,
 } from "./authz";
 export { PolicyAuthorizer } from "./policy";
 export type { PolicyRules, PolicyMatchRule, PolicyAuthorizerOptions } from "./policy";

@@ -10,6 +10,8 @@ export {
   parseRef,
   resolveArgs,
   resolveRef,
+  containsTaint,
+  unwrapTaint,
   validatePlanGraph,
 } from "./planGraph";
 export type {
@@ -34,6 +36,7 @@ export {
   providerPlanModel,
 } from "./planGoal";
 export type { PlanFailureReason, PlanGoalInput, PlanModel } from "./planGoal";
+export { IdReusedError } from "./claim";
 export { executePlan, makeReviser } from "./executePlan";
 export type {
   ExecutePlanConfig,
@@ -59,6 +62,7 @@ export type {
   CreateGoalInput,
   Goal,
   GoalFilter,
+  GoalWriteOptions,
   GoalKvStore,
   GoalStatus,
   GoalStore,

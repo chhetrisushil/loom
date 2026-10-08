@@ -396,3 +396,29 @@ export interface EffectRuntimeOptions {
   /** ADR 0119 — where a swallowed delta-sink throw is reported. Defaults to `console.warn`. */
   onWarn?: (message: string) => void;
 }
+
+/**
+ * R16 / R17 — THE identity key: `[tenant, actor, onBehalfOf]`, one string, shared by everything that
+ * scopes state to "who" (a conversation's owner, a goal's owner). Two principals are the same identity
+ * iff all three fields are equal (an absent field equals only an absent field), so a delegate acting
+ * `onBehalfOf` someone is a DIFFERENT identity from that someone. A credential (a delegation token)
+ * is not part of identity. Keep one definition: two keys for one idea is how a scope check drifts.
+ */
+export function identityKeyOf(i: { tenant?: string; actor: string; onBehalfOf?: string }): string {
+  return JSON.stringify([i.tenant ?? null, i.actor, i.onBehalfOf ?? null]);
+}
+
+/**
+ * The identity key of a principal, or `undefined` when it names no actor (it can own nothing) or the
+ * kernel marked it unusable ({@link principalBlocked}: shredded, delegation or record unresolved).
+ */
+export function principalIdentityKey(principal: PrincipalChain | undefined): string | undefined {
+  if (principal === undefined || principalBlocked(principal) !== undefined) return undefined;
+  const actor = principal.actor;
+  if (typeof actor !== "string" || actor.trim() === "") return undefined;
+  return identityKeyOf({
+    actor,
+    ...(typeof principal.tenant === "string" && { tenant: principal.tenant }),
+    ...(typeof principal.onBehalfOf === "string" && { onBehalfOf: principal.onBehalfOf }),
+  });
+}

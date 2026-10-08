@@ -32,7 +32,16 @@ export interface Goal {
   /** Short free text recorded with the last status change (bounded). */
   note?: string;
   /** What the last pursuit of this goal ended in, written by {@link runGoal}. */
-  lastRun?: { status: "completed" | "failed" | "stopped"; replans: number };
+  lastRun?: { status: "completed" | "failed" | "stopped"; replans: number; error?: string };
+}
+
+/** Per-call options for a store write. */
+export interface GoalWriteOptions {
+  /**
+   * A write carrying a key already applied returns the ORIGINAL result and changes nothing, so an
+   * effect re-driven after a crash (the same `EffectContext.idempotencyKey`) is not applied twice.
+   */
+  idempotencyKey?: string;
 }
 
 export interface CreateGoalInput {
@@ -95,16 +104,16 @@ export class GoalLimitError extends Error {
 }
 
 export interface GoalStore {
-  create(owner: string, input: CreateGoalInput): Promise<Goal>;
+  create(owner: string, input: CreateGoalInput, opts?: GoalWriteOptions): Promise<Goal>;
   get(owner: string, id: string): Promise<Goal>;
   list(owner: string, filter?: GoalFilter): Promise<Goal[]>;
-  setStatus(owner: string, input: SetStatusInput): Promise<Goal>;
+  setStatus(owner: string, input: SetStatusInput, opts?: GoalWriteOptions): Promise<Goal>;
   /**
    * Recompute `id`'s status from its children and walk up through its ancestors: all children done
    * ⇒ done; any child active ⇒ active; every child terminal with a failure ⇒ failed; abandoned
    * children are ignored (all abandoned ⇒ abandoned). A goal with no children is left alone.
    */
-  rollup(owner: string, id: string): Promise<Goal>;
+  rollup(owner: string, id: string, opts?: GoalWriteOptions): Promise<Goal>;
 }
 
 export const GOAL_LIMITS = Object.freeze({
@@ -132,6 +141,22 @@ export function canTransition(from: GoalStatus, to: GoalStatus): boolean {
 interface OwnerDoc {
   seq: number;
   goals: Goal[];
+  /** The last {@link MAX_APPLIED} idempotency keys and their results. */
+  applied?: Array<{ key: string; result: Goal }>;
+}
+
+const MAX_APPLIED = 64;
+
+/** Apply `fn` unless `key` was already applied, in which case return the original result. */
+function once(doc: OwnerDoc, key: string | undefined, fn: () => Goal): Goal {
+  if (key === undefined) return fn();
+  const hit = doc.applied?.find((a) => a.key === key);
+  if (hit !== undefined) return structuredClone(hit.result);
+  const g = fn();
+  const applied = (doc.applied ??= []);
+  applied.push({ key: key.slice(0, 200), result: structuredClone(g) });
+  if (applied.length > MAX_APPLIED) applied.shift();
+  return g;
 }
 
 function checkOwner(owner: unknown): string {
@@ -206,6 +231,7 @@ const ops = {
     }
     if (!canTransition(g.status, input.status))
       throw new GoalTransitionError(g.status, input.status);
+    if (input.lastRun !== undefined) checkLastRun(input.lastRun);
     g.status = input.status;
     g.revision++;
     if (input.note !== undefined) g.note = String(input.note).slice(0, GOAL_LIMITS.maxNoteChars);
@@ -244,41 +270,56 @@ const ops = {
   },
 };
 
+function checkLastRun(r: unknown): void {
+  const o = r as Goal["lastRun"] | null;
+  const bad = (why: string): never => {
+    throw new GoalLimitError(`lastRun ${why}`);
+  };
+  if (typeof o !== "object" || o === null) return bad("must be an object");
+  if (!["completed", "failed", "stopped"].includes(o.status)) bad("has an unknown status");
+  if (!Number.isInteger(o.replans) || o.replans < 0 || o.replans > 1_000_000)
+    bad("replans is out of range");
+  if (
+    o.error !== undefined &&
+    (typeof o.error !== "string" || o.error.length > GOAL_LIMITS.maxNoteChars)
+  ) {
+    bad("error must be a short string");
+  }
+  if (Object.keys(o).some((k) => !["status", "replans", "error"].includes(k)))
+    bad("has unknown fields");
+}
+
 const clone = <T>(v: T): T => structuredClone(v);
 
 export class InMemoryGoalStore implements GoalStore {
   private readonly docs = new Map<string, OwnerDoc>();
-  private doc(owner: string): OwnerDoc {
-    const o = checkOwner(owner);
-    const existing = this.docs.get(o);
-    if (existing !== undefined) return existing;
-    const created: OwnerDoc = { seq: 0, goals: [] };
-    this.docs.set(o, created);
-    return created;
+  /** A read never creates an owner's document. */
+  private peek(owner: string): OwnerDoc {
+    return this.docs.get(checkOwner(owner)) ?? { seq: 0, goals: [] };
   }
-  async create(owner: string, input: CreateGoalInput): Promise<Goal> {
-    return clone(ops.create(this.doc(owner), owner, input));
+  private write<T>(owner: string, fn: (doc: OwnerDoc) => T): T {
+    // Mutate a copy so a refused write leaves the stored document untouched.
+    const copy = clone(this.peek(owner));
+    const out = fn(copy);
+    this.docs.set(owner, copy);
+    return clone(out);
+  }
+  async create(owner: string, input: CreateGoalInput, opts?: GoalWriteOptions): Promise<Goal> {
+    return this.write(owner, (d) =>
+      once(d, opts?.idempotencyKey, () => ops.create(d, owner, input))
+    );
   }
   async get(owner: string, id: string): Promise<Goal> {
-    return clone(ops.get(this.doc(owner), id));
+    return clone(ops.get(this.peek(owner), id));
   }
   async list(owner: string, filter?: GoalFilter): Promise<Goal[]> {
-    return clone(ops.list(this.doc(owner), filter));
+    return clone(ops.list(this.peek(owner), filter));
   }
-  async setStatus(owner: string, input: SetStatusInput): Promise<Goal> {
-    // Mutate a copy so a refused transition leaves the stored document untouched.
-    const d = this.doc(owner);
-    const copy = clone(d);
-    const g = ops.setStatus(copy, input);
-    this.docs.set(owner, copy);
-    return clone(g);
+  async setStatus(owner: string, input: SetStatusInput, opts?: GoalWriteOptions): Promise<Goal> {
+    return this.write(owner, (d) => once(d, opts?.idempotencyKey, () => ops.setStatus(d, input)));
   }
-  async rollup(owner: string, id: string): Promise<Goal> {
-    const d = this.doc(owner);
-    const copy = clone(d);
-    const g = ops.rollup(copy, id);
-    this.docs.set(owner, copy);
-    return clone(g);
+  async rollup(owner: string, id: string, opts?: GoalWriteOptions): Promise<Goal> {
+    return this.write(owner, (d) => once(d, opts?.idempotencyKey, () => ops.rollup(d, id)));
   }
 }
 
@@ -343,8 +384,10 @@ export class DurableGoalStore implements GoalStore {
     throw new GoalConflictError("too many concurrent writers");
   }
 
-  create(owner: string, input: CreateGoalInput): Promise<Goal> {
-    return this.mutate(owner, (d) => ops.create(d, owner, input));
+  create(owner: string, input: CreateGoalInput, opts?: GoalWriteOptions): Promise<Goal> {
+    return this.mutate(owner, (d) =>
+      once(d, opts?.idempotencyKey, () => ops.create(d, owner, input))
+    );
   }
   async get(owner: string, id: string): Promise<Goal> {
     return clone(ops.get((await this.load(owner)).doc, id));
@@ -352,10 +395,10 @@ export class DurableGoalStore implements GoalStore {
   async list(owner: string, filter?: GoalFilter): Promise<Goal[]> {
     return clone(ops.list((await this.load(owner)).doc, filter));
   }
-  setStatus(owner: string, input: SetStatusInput): Promise<Goal> {
-    return this.mutate(owner, (d) => ops.setStatus(d, input));
+  setStatus(owner: string, input: SetStatusInput, opts?: GoalWriteOptions): Promise<Goal> {
+    return this.mutate(owner, (d) => once(d, opts?.idempotencyKey, () => ops.setStatus(d, input)));
   }
-  rollup(owner: string, id: string): Promise<Goal> {
-    return this.mutate(owner, (d) => ops.rollup(d, id));
+  rollup(owner: string, id: string, opts?: GoalWriteOptions): Promise<Goal> {
+    return this.mutate(owner, (d) => once(d, opts?.idempotencyKey, () => ops.rollup(d, id)));
   }
 }

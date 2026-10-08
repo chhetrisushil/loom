@@ -1,8 +1,10 @@
 import { isTerminalToolError, validateToolInput } from "@loom/agent";
 import type { CapabilityCatalog } from "@loom/capability";
-import { tainted } from "@loom/classify";
+import { isTainted, tainted } from "@loom/classify";
+import type { TaintedValue } from "@loom/classify";
 import type { LlmContentPartInput } from "@loom/llm";
 import type { BranchContext, ExecutionContext } from "@loom/workflow-runtime";
+import { claimId } from "./claim";
 import { PlanFailedError, type PlanModel, askForPlan, plannerSystemPrompt } from "./planGoal";
 import {
   DEFAULT_PLAN_LIMITS,
@@ -12,8 +14,10 @@ import {
   RefResolutionError,
   assertValidPlanGraph,
   checkPrecondition,
+  containsTaint,
   dependentsOf,
   resolveArgs,
+  unwrapTaint,
   validatePlanGraph,
 } from "./planGraph";
 
@@ -52,7 +56,13 @@ export interface PlanStepCall {
 
 /** What a failed round hands the reviser. */
 export interface ReplanRequest {
-  goal: string;
+  /** The goal as planned (a tainted goal stays tainted). */
+  goal: string | TaintedValue<string>;
+  /** The plan's id: namespaces the revision's decision (`<planId>:replan:<round>`). */
+  planId: string;
+  /** The catalog and the (resolved) limits the executor validates a revision against: use the same. */
+  catalog: CapabilityCatalog;
+  limits: PlanLimits;
   /** 1-based round number. */
   round: number;
   /** Completed steps and their outputs: NOT to be re-run; referenceable via `$from`. */
@@ -173,6 +183,7 @@ export async function executePlan(
 
   assertValidPlanGraph(plan, { catalog: config.catalog, limits: config.limits ?? {} });
 
+  claimId(ctx, "exec", planId);
   const outputs = new Map<string, unknown>();
   const failures = new Map<string, StepFailure>();
   const usedIds = new Set<string>();
@@ -237,7 +248,16 @@ export async function executePlan(
     if (cap === undefined) {
       return fail({ kind: "args-invalid", message: `no capability "${node.capabilityId}"` });
     }
-    const chk = validateToolInput(cap.inputSchema, args);
+    // ADR 0085: a tainted value is refused by default. A capability that opts in (`acceptsTainted`) has
+    // its schema checked against the PAYLOAD and receives the wrapper, so the taint travels with it.
+    const hasTaint = containsTaint(args);
+    if (hasTaint && cap.acceptsTainted !== true) {
+      return fail({
+        kind: "args-invalid",
+        message: `an argument is tainted (untrusted) and "${cap.id}" does not accept tainted input`,
+      });
+    }
+    const chk = validateToolInput(cap.inputSchema, hasTaint ? unwrapTaint(args) : args);
     if (!chk.ok) {
       return fail({
         kind: "args-invalid",
@@ -249,11 +269,14 @@ export async function executePlan(
     }
 
     const call: PlanStepCall = { node, args, stepId, ctx: b };
+    // Live: the decider runs the step once and keeps its output. Served from the log: the decider did
+    // not run, so the step's output is read back from its completed frame (one more `invoke`).
+    let live: { output: unknown } | undefined;
     const recorded = await b.decide<{ ok: true } | { failed: StepFailure }>(
       `${stepId}:outcome`,
       async () => {
         try {
-          await invoke(call);
+          live = { output: await invoke(call) };
           return { ok: true as const };
         } catch (e) {
           // Authority, safety, park, cancel and divergence are the runtime's: not recorded as a
@@ -265,8 +288,7 @@ export async function executePlan(
       { source: "planner.step" }
     );
     if ("failed" in recorded) return fail(recorded.failed);
-    // Served from the completed frame: not a second run.
-    return { id: node.id, ok: true, output: await invoke(call) };
+    return { id: node.id, ok: true, output: live !== undefined ? live.output : await invoke(call) };
   };
 
   for (;;) {
@@ -317,6 +339,9 @@ export async function executePlan(
       try {
         revised = await config.replan.revise(ctx, {
           goal: plan.goal,
+          planId,
+          catalog: config.catalog,
+          limits,
           round: replans,
           completed: Object.fromEntries(outputs),
           failures: Object.fromEntries(failures),
@@ -374,18 +399,16 @@ export async function executePlan(
 }
 
 export interface MakeReviserConfig {
-  catalog: CapabilityCatalog;
   model: PlanModel;
-  planId?: string;
   maxAttempts?: number;
-  limits?: Partial<PlanLimits>;
   maxReplyChars?: number;
 }
 
 const summarise = (v: unknown): string => {
   let s: string;
   try {
-    s = JSON.stringify(v) ?? "undefined";
+    // The fenced payload, never the wrapper's JSON.
+    s = JSON.stringify(unwrapTaint(v)) ?? "undefined";
   } catch {
     s = "[unserialisable]";
   }
@@ -393,24 +416,26 @@ const summarise = (v: unknown): string => {
 };
 
 /**
- * The model-backed reviser for {@link ExecutePlanConfig.replan}. One recorded decision per round
- * (`<planId>:replan:<n>`): the model is consulted once, a replay serves the revision. The failure
- * context — step outputs, error messages, the old plan's rationale text — is TOOL- and
- * MODEL-AUTHORED, so it enters the prompt as tainted `user` content (ADR 0085), never the system
- * prompt; the prompt boundary fences it.
+ * The model-backed reviser for {@link ExecutePlanConfig.replan}. One recorded decision per round,
+ * named from the REQUEST's plan (`<req.planId>:replan:<n>`), so one reviser can serve any number of
+ * plans in an execution without one adopting another's revision. The catalog and limits are the
+ * request's too: the revision is validated against exactly what the executor enforces, and a
+ * rejection is fed back to the model (bounded retries). Everything the failure context contains is
+ * tool- or model-authored (a step's output, an error message, the old plan's rationale), so each item
+ * is a tainted part of the `user` message, fenced by the prompt boundary and labelled with its origin
+ * (`plan:failure:<id>`, `plan:output:<id>`, ...); nothing of it enters the system prompt.
  */
 export function makeReviser(
   cfg: MakeReviserConfig
 ): NonNullable<ExecutePlanConfig["replan"]>["revise"] {
-  const limits: PlanLimits = { ...DEFAULT_PLAN_LIMITS, ...cfg.limits };
-  const planId = cfg.planId ?? "plan";
   return async (ctx, req) => {
+    const { catalog, limits } = req;
     const decision = await ctx.decide(
-      `${planId}:replan:${req.round}`,
+      `${req.planId}:replan:${req.round}`,
       async (scope) => {
         const parts: LlmContentPartInput[] = [
           { type: "text", text: "Goal:" },
-          { type: "text", text: tainted(req.goal, "plan:goal") },
+          { type: "text", text: isTainted(req.goal) ? req.goal : tainted(req.goal, "plan:goal") },
           {
             type: "text",
             text: `Round ${req.round}. Replace every step that has not completed. Do not repeat completed steps; reference their outputs with {"$from":"<stepId>.<path>"} and list them in dependsOn. Do not reuse any step id already used: ${[...req.usedIds].slice(0, 64).join(", ")}.`,
@@ -443,15 +468,15 @@ export function makeReviser(
         const external = new Set(Object.keys(req.completed));
         return askForPlan(scope, {
           model: cfg.model,
-          system: plannerSystemPrompt(cfg.catalog, limits),
+          system: plannerSystemPrompt(catalog, limits),
           opening: [{ role: "user", content: parts }],
-          goalText: req.goal,
+          goal: req.goal,
           limits,
           maxAttempts: cfg.maxAttempts ?? 3,
           maxReplyChars: cfg.maxReplyChars ?? 128 * 1024,
           validate: (plan) => {
             const v = validatePlanGraph(plan, {
-              catalog: cfg.catalog,
+              catalog,
               limits,
               external,
               reserved: req.usedIds,

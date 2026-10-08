@@ -1,16 +1,21 @@
 import type { CapabilityCatalog } from "@loom/capability";
+import { tainted } from "@loom/classify";
 import {
   type Effect,
   type EffectContext,
   type PrincipalChain,
   ToolEffect,
+  principalBlocked,
+  principalIdentityKey,
 } from "@loom/effect-runtime";
 import type { ExecutionContext } from "@loom/workflow-runtime";
+import { claimId } from "./claim";
 import { type ExecutePlanConfig, type PlanRun, executePlan } from "./executePlan";
 import {
   type CreateGoalInput,
   type Goal,
   GoalAccessDeniedError,
+  GoalConflictError,
   type GoalFilter,
   type GoalStore,
   GoalTransitionError,
@@ -29,17 +34,19 @@ export const GOAL_TOOL_IDS = {
 } as const;
 
 /**
- * The goal owner of an execution: its authenticated principal (ADR 0111), tenant-qualified.
- * Fails closed — no actor, no owner; a delegation the kernel could not restore is refused too.
+ * The goal owner of an execution: its authenticated principal's identity key (`[tenant, actor,
+ * onBehalfOf]` - the SAME key a conversation's owner uses, so a delegate acting `onBehalfOf` someone is
+ * a different owner from that someone). Fails closed: no actor, or a principal the kernel marked
+ * unusable (shredded, delegation or record unresolved), has no owner.
  */
 export function ownerOfPrincipal(p: PrincipalChain | undefined): string {
-  if (p === undefined || typeof p.actor !== "string" || p.actor.length === 0) {
+  const blocked = principalBlocked(p);
+  if (blocked !== undefined) throw new GoalAccessDeniedError(blocked);
+  const key = principalIdentityKey(p);
+  if (key === undefined) {
     throw new GoalAccessDeniedError("the execution has no authenticated principal");
   }
-  if (p.delegationUnresolved !== undefined) {
-    throw new GoalAccessDeniedError("the principal's delegation could not be restored");
-  }
-  return JSON.stringify([p.tenant ?? "", p.actor]);
+  return key;
 }
 
 export interface GoalEffectsOptions {
@@ -60,19 +67,27 @@ export function goalEffects(
   options: GoalEffectsOptions = {}
 ): Record<(typeof GOAL_TOOL_IDS)[keyof typeof GOAL_TOOL_IDS], Effect> {
   const owner = options.ownerOf ?? ((c: EffectContext) => ownerOfPrincipal(c.principal));
+  // Idempotent on the effect's idempotencyKey: a crash between the write and its record re-drives the
+  // effect with the same key and the store returns the original result instead of parking the
+  // execution at EFFECT_INDOUBT or applying the write twice.
+  const w = (c: EffectContext) => ({
+    ...(c.idempotencyKey !== undefined && { idempotencyKey: c.idempotencyKey }),
+  });
   return {
-    [GOAL_TOOL_IDS.create]: new ToolEffect((i: CreateGoalInput, c) => store.create(owner(c), i), {
-      idempotent: false,
-    }),
+    [GOAL_TOOL_IDS.create]: new ToolEffect(
+      (i: CreateGoalInput, c) => store.create(owner(c), i, w(c)),
+      { idempotent: true }
+    ),
     [GOAL_TOOL_IDS.get]: new ToolEffect((i: { id: string }, c) => store.get(owner(c), i.id)),
     [GOAL_TOOL_IDS.list]: new ToolEffect((i: GoalFilter | undefined, c) => store.list(owner(c), i)),
     [GOAL_TOOL_IDS.setStatus]: new ToolEffect(
-      (i: SetStatusInput, c) => store.setStatus(owner(c), i),
-      { idempotent: false }
+      (i: SetStatusInput, c) => store.setStatus(owner(c), i, w(c)),
+      { idempotent: true }
     ),
-    [GOAL_TOOL_IDS.rollup]: new ToolEffect((i: { id: string }, c) => store.rollup(owner(c), i.id), {
-      idempotent: false,
-    }),
+    [GOAL_TOOL_IDS.rollup]: new ToolEffect(
+      (i: { id: string }, c) => store.rollup(owner(c), i.id, w(c)),
+      { idempotent: true }
+    ),
   } as never;
 }
 
@@ -103,6 +118,9 @@ export function goalsClient(
   options: { prefix?: string } = {}
 ): GoalsClient {
   const prefix = options.prefix ?? "goals";
+  // Step ids are `<prefix>:<op>:<n>` with `n` counted per client: two clients on one prefix would mint
+  // the same ids and the second would be served the first's recorded result (a lost write).
+  claimId(ctx, "goals-client", prefix);
   let n = 0;
   const call = <T>(op: keyof typeof GOAL_TOOL_IDS, input: unknown): Promise<T> =>
     ctx.execute(
@@ -137,10 +155,19 @@ export interface RunGoalResult {
 
 /**
  * Pursue a stored goal: mark it active, plan for its title, execute, and write the outcome back
- * (done / failed, or open again if a reflection stopped the run), rolling the parent up. A planning
- * failure marks the goal failed (with the reason) and is re-thrown. `done` and `abandoned` goals are
- * refused. Plan and step ids are namespaced `goal-<id>-r<revision>` so a retried goal never collides
- * with its earlier recorded attempt.
+ * (`done` / `failed`, or `open` again if a reflection stopped the run), then roll the PARENT up (the
+ * goal's own result is what this returns; it is never recomputed from its children).
+ *
+ * - One pursuer at a time: the `active` transition is a compare-and-set on the revision read, and a
+ *   goal that is already `active` is refused (`GoalConflictError`) - whoever set it owns the pursuit.
+ *   A goal left `active` by a process that died for good is released by `setStatus(open)`.
+ * - Never stuck `active`: a planning failure marks the goal `failed` with the reason; any other
+ *   error that ends the pursuit (a denial, a cancellation, a divergence) puts it back to `open` with
+ *   `lastRun.error` (best effort - the write may itself be refused) and is re-thrown. A PARK
+ *   (`SuspendError`) leaves it `active`: the execution resumes and carries on.
+ * - `done` and `abandoned` goals are refused. Plan and step ids are `goal-<id>-r<revision>`, so a
+ *   retried goal never collides with its earlier recorded attempt. The title is untrusted text: it
+ *   reaches the planner as a tainted goal.
  */
 export async function runGoal(
   ctx: ExecutionContext,
@@ -152,26 +179,43 @@ export async function runGoal(
   if (goal.status === "done" || goal.status === "abandoned") {
     throw new GoalTransitionError(goal.status, "active");
   }
-  if (goal.status !== "active") {
-    goal = await goals.setStatus({ id: goalId, status: "active", expectedRevision: goal.revision });
+  if (goal.status === "active") {
+    throw new GoalConflictError(`goal "${goalId}" is already being pursued`);
   }
+  goal = await goals.setStatus({ id: goalId, status: "active", expectedRevision: goal.revision });
   const planId = `goal-${goalId}-r${goal.revision}`;
+  const parentId = goal.parentId;
   const finish = async (input: Omit<SetStatusInput, "id">): Promise<Goal> => {
     const g = await goals.setStatus({ id: goalId, ...input });
-    return goal.parentId !== undefined ? goals.rollup(goalId) : g;
+    if (parentId !== undefined) await goals.rollup(parentId);
+    return g;
   };
   let run: PlanRun;
   try {
     const plan = await planGoal(ctx, {
       ...config.plan,
       catalog: config.catalog,
-      goal: goal.title,
+      goal: tainted(goal.title, "goal:title"),
       planId,
     });
     run = await executePlan(ctx, plan, { ...config.execute, catalog: config.catalog, planId });
   } catch (e) {
     if (e instanceof PlanFailedError) {
       await finish({ status: "failed", note: e.message });
+    } else if ((e as Error)?.name !== "SuspendError") {
+      try {
+        await finish({
+          status: "open",
+          note: "pursuit ended by an error",
+          lastRun: {
+            status: "failed",
+            replans: 0,
+            error: `${(e as Error)?.name ?? "Error"}: ${(e as Error)?.message ?? ""}`.slice(0, 300),
+          },
+        });
+      } catch {
+        // The execution is ending; if the write is refused too, the goal stays as it was.
+      }
     }
     throw e;
   }
