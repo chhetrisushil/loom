@@ -263,6 +263,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "ADR 0123 (R16). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged. Reuses ctx.decide / DecideScope (ADR 0119), ctx.parallel scopes (R6), the R10 outcome-as-decision pattern for a failing step, R4's input validation and JSON schemas, ADR 0085 taint for everything tool- or model-authored that reaches a prompt, and ADR 0111's durable principal as the goal owner. Waves are barriers on purpose: the schedule is then a pure function of recorded outcomes, which R7's divergence detector needs. `executeGraph` (distributed fan-out of executions) is deliberately unchanged. L2: the suites are the evidence (replay with divergence \"fail\" makes no model call and re-runs nothing; a replan never re-runs or redeclares a completed step; cyclic / unknown-capability / dangling-ref / schema-invalid plans never execute; another principal cannot read, change or detect a goal); no example consumes it yet - the `plan-and-replan` loom-examples example named in the ADR is the L3 step.",
   },
   {
+    id: "learning-lifecycle",
+    title: "Learning Lifecycle",
+    package: "@loom/learning",
+    level: "L2",
+    summary:
+      "The lifecycle of a learned policy past the verdict: a principal-scoped `PolicyRegistry` over any CAS store (immutable content-hashed versions, `promote` only with a passing `promotionGate` verdict for that exact version, shadow / canary / full, one-write rollback), `decideWithRollout` (shadow never acts; canary is a deterministic sha256(salt, unit) split; the decision's policy stamp records who acted and what the other arm chose, so replay is identical), content-addressed prompt/model versions in `policy.refs`, doubly-robust evaluation with seeded cluster-bootstrap intervals and a CI-lower-bound gate, and a scoped, taint- and erasure-aware, bounded, deterministic JSONL trajectory/preference export. Beside it: an optional `EmbeddingProvider`/`VectorIndex` SPI with a semantic `EmbeddingMemoryStore` (`@loom/memory`) and an LLM evaluation harness with cassette providers and graders (`@loom/eval`).",
+    evidence: {
+      conformanceTest: "packages/learning/src/rollout.test.ts",
+    },
+    note: "ADR 0124 (R18). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every existing SPI unchanged; the new optional embedding SPI is versioned (EMBEDDING_PROVIDER_SPI_VERSION 1.0.0) with two conformance kits. Canary arms are evaluated per arm (the recorded propensity is the acting policy's own); there is no rollout controller, no durable ANN index and no version stamp on the effect-ring model paths.",
+  },
+  {
     id: "conversation-sse",
     title: "Conversation SSE Gateway",
     package: "@loom/plugin-conversation-sse",

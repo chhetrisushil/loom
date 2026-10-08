@@ -2327,6 +2327,54 @@ one-method `Policy` SPI (`select(context, actions)`); a policy reaches a run thr
 `decideWithPolicy` → `ctx.decide`, so a learned choice is still recorded and replayable. Run it from
 the CLI with `loom learn report` / `loom learn eval`.
 
+### The learning lifecycle: registry, rollout, versions, intervals, export (R18, ADR 0124)
+
+A verdict is not a deployment. `PolicyRegistry` (`@loom/learning`) is the state behind "which version is live":
+
+```ts
+import { PolicyRegistry, decideWithRollout, promptVersion, evaluatePolicy, promotionGate } from "@loom/learning";
+
+const registry = new PolicyRegistry({ kv: durableStateStore, scope: principal.tenant }); // CAS store; scope from the AUTHENTICATED caller
+await registry.register({ id: "router", version: "7", contentHash, now });
+await registry.bootstrap({ id: "router", version: "6", now });                           // first incumbent, no verdict needed
+
+// Judge the candidate with an interval, not a point estimate; the gate can require its lower bound.
+const report = evaluatePolicy(trajectories(events, { unitOf }), candidate, {
+  doublyRobust: true,
+  bootstrap: { resamples: 2000, seed: 1 },
+});
+const verdict = promotionGate(report, { minSteps: 1000, minUnits: 20, minLiftLowerBound: 0 });
+
+await registry.promote({ id: "router", version: "7", report, verdict, mode: "shadow", now }); // never acts
+await registry.promote({ id: "router", version: "7", report, verdict, mode: "canary", canaryFraction: 0.05, now });
+await registry.rollback({ id: "router", now });                                                // one write, no redeploy
+
+// In the flow: the registry decides who acts; the decision records it.
+const route = await decideWithRollout(ctx, "route", { source: registry, policyId: "router", resolve }, userId,
+  { tokens }, ROUTES, { refs: { prompt: promptVersion("triage", template) } });
+```
+
+- **Shadow never acts**: the incumbent's choice is the decision; the candidate's choice and propensity are recorded beside it.
+- **Canary is a deterministic split** of `userId` (`sha256(salt, unit)`), recorded as `policy.rollout.bucket`; a replay serves the
+  recorded decision whatever the registry says by then. Raising the fraction keeps earlier units on the candidate.
+- **Evaluate per arm**: the recorded propensity is the acting policy's own; `sliceByVersion(trajs, "policy" | "prompt" | "model")`
+  groups steps by what produced them.
+- `promote` refuses without a passing verdict **for that exact version**; a registry is scoped to one tenant/principal and refuses a
+  document that names another.
+
+**Export for training.** `exportJsonl({ source, tenant, taint: "exclude" | "mark" })` streams trajectories and (best vs worst
+chosen) preference pairs as canonical JSONL, one tenant only, over a cursor, never loading a log it was not asked for. Tainted
+content (ADR 0085) is dropped or marked; crypto-shredded steps and executions are always excluded.
+
+**Embeddings.** `new EmbeddingMemoryStore({ store, provider, minScore })` (`@loom/memory`) turns any `MemoryStore` into a semantic
+one for `recallRelevant` and `KnowledgeBase`; `provider` is any `EmbeddingProvider` (check yours with
+`runEmbeddingProviderConformance`). Embeddings are recomputed, never recorded: `recallRelevant` records which entries came back, so
+a replay touches neither the model nor the index. `HashingEmbeddingProvider` is the offline, lexical reference.
+
+**Evaluating answers, not just flows.** `@loom/eval`'s `runEvalSuite` runs cases through a subject with graders (`exactMatch`,
+`regexMatch`, `jsonSchema`, `llmJudge` — the judge goes through the decide scope) over a `CassetteProvider` (replay never calls a
+model), and `compareReports` turns a prompt change into a list of regressions.
+
 Off-policy evaluation is gated by **exploration volume**, not log length: usable effective sample
 size scales with explore-rate × window, so a thin exploration budget over a long window yields few
 counterfactual steps and the gate correctly refuses — which reads like "the candidate lost" but is

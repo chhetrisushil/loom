@@ -1316,6 +1316,31 @@ describe("P3-2 / P3-3 / P3-4 — recorded responses", () => {
     expect((rec?.payload as { source: string }).source).toBe("agent-response");
   });
 
+  it("R18: prompt/model versions ride in the response decision's policy stamp, and are absent when not configured", async () => {
+    const versions = {
+      prompt: { id: "triage", version: "sha256:aaa" },
+      model: { id: "claude", version: "sha256:bbb" },
+    };
+    const stamped = new InMemoryAsyncEventStore();
+    await runToEnd(
+      boot({ store: stamped, reasoning: "direct", provider: script([]), config: { versions } })
+    );
+    const rec = (await stamped.read("e1")).find(
+      (e) => (e.payload as { decisionId?: string }).decisionId === "dba#turn:0:response:0"
+    );
+    expect((rec?.payload as { policy: unknown }).policy).toEqual({
+      id: "agent-llm",
+      version: "sha256:bbb",
+      refs: versions,
+    });
+    const plain = new InMemoryAsyncEventStore();
+    await runToEnd(boot({ store: plain, reasoning: "direct", provider: script([]) }));
+    const bare = (await plain.read("e1")).find(
+      (e) => (e.payload as { decisionId?: string }).decisionId === "dba#turn:0:response:0"
+    );
+    expect(bare?.payload).not.toHaveProperty("policy");
+  });
+
   it("an oversized response is cut deterministically, and that is what a replay serves", async () => {
     const store = new InMemoryAsyncEventStore();
     const big = "y".repeat(MAX_RECORDED_RESPONSE_CHARS * 2);
