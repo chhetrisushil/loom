@@ -1958,12 +1958,53 @@ class IntentRuntime {
   run(intentText: string, input: unknown): Promise<ExecutionHandle>
 }
 class PlannerRuntime {
-  constructor(config: { catalog: CapabilityCatalog; provider?: LlmProvider; reasoning?: ReasoningRuntime; maxSteps?: number; scheduler?: Scheduler })  // (2.0) reasoning
-  plan(goal: string): Promise<{ goal: string; steps: Array<{ capabilityId: string; rationale? }> }>
+  constructor(config: { catalog: CapabilityCatalog; provider?: LlmProvider; reasoning?: ReasoningRuntime; maxSteps?: number; scheduler?: Scheduler;
+                        strict?: boolean })       // (R16) strict: throw PlanFailedError instead of the silent heuristic fallback
+  plan(goal: string): Promise<{ goal: string; steps: Array<{ capabilityId: string; rationale? }> }>   // flat, NOT journaled (unchanged)
+  planGraph(ctx: Pick<ExecutionContext, "decide">, input: Omit<PlanGoalInput, "catalog">): Promise<PlanGraph>   // (R16) = planGoal over this catalog
 }
 #+end_src
 
 Both work fully offline (deterministic keyword routing), with an ~LlmProvider~, or — preferred (2.0) — with a ~ReasoningRuntime~ (routing/elevation).
+
+*** Planning depth (R16, ADR 0123) — plan DAGs, replanning, goals
+
+~@loom/planner~ also exports a journaled, validated, executable plan. Kernel untouched; everything is ~ctx.decide~, ~ctx.parallel~ and ~ctx.execute~.
+
+#+begin_src typescript
+interface PlanNode { id: string; capabilityId: string; args?: { [k: string]: Json };   // args may hold { "$from": "<stepId>[.path]" }
+                     dependsOn?: string[]; preconditions?: { ref: string; test?: "exists" | "truthy" | "equals"; value?: scalar }[]; rationale?: string }
+interface PlanGraph { goal: string; nodes: PlanNode[] }
+function validatePlanGraph(plan: unknown, opts: { catalog; limits?: Partial<PlanLimits>; external?: ReadonlySet<string>; reserved?: ReadonlySet<string> }):
+  { ok: true; order: string[] } | { ok: false; issues: PlanIssue[]; truncated: boolean }        // cycles, unknown caps, dangling refs, schema-invalid args, bounds
+function assertValidPlanGraph(plan, opts): string[]                                           // throws PlanValidationError
+function resolveRef(ref: string, outputs: ReadonlyMap<string, unknown>): unknown; function resolveArgs(args, outputs): Record<string, unknown>
+function checkPrecondition(p: PlanPrecondition, outputs): string | undefined
+
+// Journaled planning: the model runs INSIDE ctx.decide (`<planId>:plan`); replay makes no model call. No silent fallback.
+function planGoal(ctx: Pick<ExecutionContext, "decide">, input: { goal: string | TaintedValue<string>; catalog: CapabilityCatalog; model: PlanModel;
+                  planId?: string; maxAttempts?: number /* 3 */; limits?: Partial<PlanLimits>; fallback?: (goal: string) => PlanGraph }): Promise<PlanGraph>   // throws PlanFailedError
+type PlanModel = (scope: DecideScope, request: LlmRequestInput) => Promise<LlmResponse>
+function effectPlanModel(toolId: string): PlanModel; function providerPlanModel(provider: LlmProvider): PlanModel; function heuristicFallback(catalog, maxSteps?): (goal) => PlanGraph
+
+// The executor: waves of ready nodes through ctx.parallel (Kahn, O(V+E)); outputs bound into dependents; failures typed.
+function executePlan(ctx: ExecutionContext, plan: PlanGraph, config: {
+  catalog: CapabilityCatalog; planId?: string; limit?: number /* 4 */; onFailure?: "fail-fast" | "continue-independent";
+  invoke?: (call: { node; args; stepId; ctx: BranchContext }) => Promise<unknown>;       // must be a durable frame; default: tool task toolId = capabilityId
+  replan?: { max: number; revise: (ctx, req: ReplanRequest) => Promise<PlanGraph>; maxTotalNodes?: number };
+  reflect?: (ctx, wave: { round; completed: string[]; failed: string[] }) => Promise<"continue" | "replan" | "stop" | undefined>;
+}): Promise<{ status: "completed" | "failed" | "stopped"; outputs; failures: Record<string, StepFailure>; skipped: string[]; replans: number; nodes: PlanNode[]; reason?: string }>
+function makeReviser(cfg: { catalog; model: PlanModel; planId?; maxAttempts?; limits? }): (ctx, req) => Promise<PlanGraph>   // `<planId>:replan:<n>` decisions; failure context tainted
+
+// Goals: principal-scoped, durable, a status machine. The owner is NEVER an input.
+interface Goal { id; owner; parentId?; title; status: "open" | "active" | "done" | "failed" | "abandoned"; revision; seq; note?; lastRun? }
+interface GoalStore { create(owner, { id, title, parentId? }); get(owner, id); list(owner, filter?); setStatus(owner, { id, status, note?, expectedRevision?, lastRun? }); rollup(owner, id) }
+class InMemoryGoalStore implements GoalStore; class DurableGoalStore implements GoalStore { constructor(kv: GoalKvStore /* DurableStateStore satisfies it */) }
+function registerGoalEffects(registry, store): void; function goalsClient(ctx, { prefix? }): { create; get; list; setStatus; rollup }     // owner = ctx principal
+function runGoal(ctx, goals, goalId, { catalog, plan: { model, ... }, execute? }): Promise<{ run?: PlanRun; goal: Goal }>
+#+end_src
+
+A failed step is recorded as a decision (~<step>:outcome~), so a resume serves it instead of re-running the capability; a replan replaces every node that has not completed, may reference completed outputs, and may not reuse any earlier id.
 
 ** ~@loom/conversation~ — a durable dialogue as one chained execution
 

@@ -7,10 +7,38 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
-    { "path": "../core" },
-    { "path": "../llm" },
-    { "path": "../reasoning" },
-    { "path": "../capability" },
-    { "path": "../scheduler" }
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../llm"
+    },
+    {
+      "path": "../reasoning"
+    },
+    {
+      "path": "../capability"
+    },
+    {
+      "path": "../scheduler"
+    },
+    {
+      "path": "../agent"
+    },
+    {
+      "path": "../classify"
+    },
+    {
+      "path": "../workflow-runtime"
+    },
+    {
+      "path": "../effect-runtime"
+    },
+    {
+      "path": "../event-runtime"
+    },
+    {
+      "path": "../snapshot-runtime"
+    }
   ]
 }

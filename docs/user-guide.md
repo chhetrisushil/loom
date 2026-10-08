@@ -961,6 +961,37 @@ for (const s of plan.steps) {
 }
 ```
 
+### Plans with arguments, dependencies, replanning and goals (R16)
+
+`planner.plan(goal)` returns a flat, un-journaled list and, with a model configured, silently falls back to a keyword heuristic when the model's answer is unusable (`new PlannerRuntime({ strict: true })` turns that into a `PlanFailedError`). For anything that must survive a restart, use the plan graph ([ADR 0123](adr/0123-planning-depth-plan-graphs-replanning-and-goals.md)):
+
+```ts
+import { planGoal, executePlan, makeReviser, effectPlanModel } from "@loom/planner";
+
+effects.register("plan-model", createAgentModelEffect(provider));      // the model call goes through the effect ring
+const model = effectPlanModel("plan-model");
+
+const runner: FlowRunner = async (ctx) => {
+  // One recorded decision. A replay serves the plan and makes zero model calls. Unparseable or invalid
+  // output is fed back (3 attempts) and then throws PlanFailedError - there is no silent fallback.
+  const plan = await planGoal(ctx, { goal: "triage the incident", catalog, model });
+
+  // Steps are { id, capabilityId, args, dependsOn, preconditions }; an argument may bind an upstream output
+  // with { "$from": "metrics.p99" } - resolved at execution, never typed by the model.
+  const run = await executePlan(ctx, plan, {
+    catalog,
+    limit: 4,                                    // independent steps run together (ctx.parallel waves)
+    onFailure: "continue-independent",
+    replan: { max: 2, revise: makeReviser({ catalog, model }) },   // keeps completed steps; never re-runs them
+  });
+  return run;                                    // { status, outputs, failures, skipped, replans }
+};
+```
+
+Arguments are checked against each capability's input schema before anything runs; arguments that contain `$from` are checked once they resolve, and a step whose arguments or preconditions fail is a typed failure that does not run the capability. A step's failure is recorded, so a resume does not re-run it. Failure text and step outputs reach the reviser only as fenced, untrusted `user` content.
+
+Long-horizon goals live in a store, not in an execution: `registerGoalEffects(effects, new DurableGoalStore(durableStateStore))`, then in a flow `const goals = goalsClient(ctx); await goals.create({ id: "g1", title }); await runGoal(ctx, goals, "g1", { catalog, plan: { model } })`. Goals belong to the execution's authenticated principal (ADR 0111); another principal cannot read, change or detect them. `ctx.continueAsNew` carries the goal id, the store holds the goal. Planning-depth migration notes: `plan()` and `dispatchPlan` keep working unchanged; moving a flow to `planGoal` is a body change (ADR 0113).
+
 `@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. The default backing store is in-memory, so an agent that restarts remembers nothing — pass `memoryStore: new SqliteMemoryStore(".loom/events.db")` (or `new PostgresMemoryStore(url)`) to point memory at the same database as the event log, so one backup captures both.
 
 Recall comes in two shapes, and the difference matters more than the API surface suggests:

@@ -90,4 +90,16 @@ describe("PlannerRuntime", () => {
     const plan = await planner.plan("metrics analysis root cause");
     expect(plan.steps.length).toBeLessThanOrEqual(1);
   });
+
+  it("R16: default behaviour is unchanged (silent heuristic fallback on unparseable output); strict fails closed", async () => {
+    const provider: LlmProvider = {
+      complete: async () => ({ content: "no idea", stopReason: "end_turn" }),
+    };
+    const loose = new PlannerRuntime({ catalog: makeCatalog(), provider });
+    const plan = await loose.plan("collect metrics");
+    expect(plan.steps.length).toBeGreaterThan(0); // the old fallback, preserved for existing callers
+
+    const strict = new PlannerRuntime({ catalog: makeCatalog(), provider, strict: true });
+    await expect(strict.plan("collect metrics")).rejects.toMatchObject({ name: "PlanFailedError" });
+  });
 });
