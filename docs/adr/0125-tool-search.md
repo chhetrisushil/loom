@@ -137,8 +137,8 @@ large registry the D11 index (`maxIndexBytes`) cuts off the tail, and a skill pa
   learning substrate is untouched).
 - **One index, built lazily.** The same BM25F index (same fields and weights: id/name 3, aliases 2, tags 2, description 1) holds
   tools and skills. Skills are host-registry author text, hence vouched. A skill's key is `"\0skill:" + id`: a skill and a tool
-  with the same id (even a tool literally named `skill:x`) never collide, and a tool whose id starts with that NUL prefix is not
-  indexed while skills are on. The top-k heap is unchanged.
+  with the same id (even a tool literally named `skill:x`) never collide, and a tool whose id starts with that NUL prefix is a
+  `ToolSearchError` config error while skills are on (it would otherwise be silently unsearchable). The top-k heap is unchanged.
 - **Hit shape (pick).** Tool hits keep their EXACT shape under `tools` (no `kind` added: it would change the output of existing
   configs). Skill hits are a SEPARATE array, present only when discovery is on: `skills: [{ kind: "skill", id, description }]`
   (description = first line, 160 chars). A search NEVER loads or activates a skill, or its tools, or its instructions: the model
@@ -151,13 +151,18 @@ large registry the D11 index (`maxIndexBytes`) cuts off the tail, and a skill pa
   record from a default run is unchanged. On replay (and live) the record is re-admitted against the LIVE discoverable set: a
   forged id, a skill selected upfront since, an already-active skill, a non-array or garbage entries are dropped, and the total
   stays within `maxPerSearch` (tools first). The meta-tool descriptions of both tools gain one sentence when discovery is on.
+- **Search is a convenience, not authorization.** `activate_skill` accepts ANY catalog skill (minus upfront-selected) by id,
+  whether or not a search returned it; the offered set is the catalog, so "found with search" is never a precondition. `"both"` with
+  a tiny `maxIndexBytes` is allowed (search covers everything, the index just lists fewer); `"search"` ignores `maxIndexBytes`.
 - **Config errors:** `discovery` not one of the three; `"search"`/`"both"` without `toolSearch`; with a host `toolSearch.ranker`
   (a custom ranker cannot rank skills yet: an unrankable skill catalog would be a silent no-op).
 - **Residuals.** (1) A custom `ranker` plus skill discovery is refused; indexing skills in a semantic ranker is a follow-up behind
   `ToolRanker` (the `\0skill:` key is the contract). (2) The discoverable set is not byte-bounded in the prompt (it is not in the
   prompt) but the lazy index is O(registry); a registry of tens of thousands of skills pays that once on the first search. (3) A
   search result lists skills the `"both"` index already shows; that is intentional, not deduplicated. (4) `skillActivation.maxIndex`
-  no longer bounds reachability in `"search"`/`"both"`.
+  no longer bounds reachability in `"search"`/`"both"`. (5) Future custom-ranker contract: a custom ranker ranks TOOLS only;
+  skills are ranked separately by the built-in BM25F and appended after the tool hits (scores from different rankers are never
+  mixed). v1 refuses the combination.
 
 ## Review round 1 (2026-10-09)
 

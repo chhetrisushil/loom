@@ -382,20 +382,40 @@ describe("R22b - hits: shape, collisions, caps, active skills", () => {
     expect(rec.results.length + rec.skills.length).toBe(2);
   });
 
-  it("a tool id that would equal a skill's index key is not indexed (the skill still wins its key)", async () => {
+  it("a catalog tool id that starts with the reserved skill-key prefix is a config error when discovery is on", async () => {
     const b = boot({
       skills: [mkSkill("x", "X-RULES", [], { description: "marsupial handling" })],
       activation: { discovery: "search" },
       config: { toolSearch: { catalog: [mk("\u0000skill:x", "quokka wrangling")] } },
-      provider: script([[SEARCH("quokka wrangling")], [SEARCH("marsupial handling")]]),
+      provider: script([]),
+    });
+    const h = await b.runtime.start(flowDef, {}, { executionId: "e1" });
+    const r = await h.waitForCompletion().then(
+      (x) => x,
+      (e: Error) => e
+    );
+    expect(String((r as { error?: unknown }).error ?? r)).toMatch(/reserved skill-search key/);
+    // NEGATIVE: the same id is fine with discovery off ("index"): nothing reserved there
+    const ok = boot({
+      skills: [mkSkill("x", "X-RULES")],
+      config: { toolSearch: { catalog: [mk("\u0000skill:x", "quokka wrangling")] } },
+      provider: script([]),
+    });
+    expect((await runToEnd(ok)).status).toBe("completed");
+  });
+
+  it("active skills that outrank the inactive ones do not starve the page (the ranker over-asks by them)", async () => {
+    const actives = Array.from({ length: 10 }, (_, i) =>
+      mkSkill(`act${i}`, "T", [], { description: "wombat habitat" })
+    );
+    const b = boot({
+      skills: [...actives, mkSkill("zz_inactive", "T", [], { description: "habitat" })],
+      activation: { discovery: "search", maxActive: 12 },
+      config: tcfg({ maxPerSearch: 1 }),
+      provider: script([actives.map((a, i) => ACT(a.id, `a${i}`)), [SEARCH("wombat habitat")]]),
     });
     await runToEnd(b);
-    // the colliding tool's text must not stand in for the skill's...
-    const [first] = resultsOf(b.requests[1] as LlmRequest);
-    expect(first?.result.skills).toEqual([]);
-    expect(first?.result.tools).toEqual([]);
-    // ...and the skill is ranked on its own text
-    expect(lastResults(b)[0]?.result.skills?.map((s) => s.id)).toEqual(["x"]);
+    expect(lastResults(b)[0]?.result.skills?.map((s) => s.id)).toEqual(["zz_inactive"]);
   });
 
   it("an already-active skill is not a hit", async () => {
@@ -502,6 +522,29 @@ describe("R22b - replay re-admits skill hits against the live set", () => {
       { config: tcfg({ maxPerSearch: 2 }) }
     );
     expect(resultsOf(second.requests[0] as LlmRequest)[0]?.result.skills).toHaveLength(2);
+  });
+
+  it("forged tool results plus skills share ONE page: the total stays within maxPerSearch", async () => {
+    const second = await replayWithRecord(
+      (r) => ({ ...r, results: ["t1", "t2"], skills: ["zz_refund", "filler0000"] }),
+      {
+        config: {
+          toolSearch: {
+            maxPerSearch: 2,
+            catalog: [mk("catalog_tool", "unrelated thing"), mk("t1"), mk("t2")],
+          },
+        },
+      }
+    );
+    const res = resultsOf(second.requests[0] as LlmRequest)[0]?.result;
+    expect(res?.tools).toHaveLength(2);
+    expect(res?.skills).toEqual([]);
+  });
+
+  it("a forged skill-key id in `results` is not admitted as a tool", async () => {
+    const second = await replayWithRecord((r) => ({ ...r, results: ["\u0000skill:zz_refund"] }));
+    const res = resultsOf(second.requests[0] as LlmRequest)[0]?.result;
+    expect(res?.tools).toEqual([]);
   });
 });
 

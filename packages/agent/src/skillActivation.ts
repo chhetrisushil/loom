@@ -66,7 +66,10 @@ export interface SkillActivationConfig {
    * loaded with `activate_skill`. `"both"`: the index stays AND search covers skills (so a skill past
    * the index cut is still reachable). `"search"` / `"both"` require `toolSearch` and its built-in ranker.
    * Searchable skills = the whole catalog minus the upfront-selected ones, NOT limited by
-   * `maxIndex` / `maxIndexBytes`.
+   * `maxIndex` / `maxIndexBytes`. Search is a CONVENIENCE for finding ids, not an authorization step:
+   * `activate_skill` accepts ANY catalog skill (minus upfront-selected) by id, whether or not a search
+   * returned it; authorization is the catalog. `"both"` with a tiny `maxIndexBytes` is allowed (search
+   * covers everything); `"search"` ignores `maxIndexBytes` (there is no index).
    */
   discovery?: "index" | "search" | "both";
 }
@@ -256,7 +259,7 @@ export class SkillActivationSession {
     const lead =
       discovery === "index"
         ? "Activate one of the listed skills by `name`."
-        : `Activate a skill by \`name\` (one that is listed, or one found with \`${this.searchName}\`).`;
+        : `Activate a skill by \`name\` (any catalog skill by id; \`${this.searchName}\` helps find ids but is not required).`;
     this.definition = {
       _tag: "ToolDefinition",
       id: this.name,
