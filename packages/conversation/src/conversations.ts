@@ -3,12 +3,14 @@ import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import { type EventStore, readRangeOf } from "@loom/event-runtime";
 import type { SendResult, WorkflowRuntime } from "@loom/workflow-runtime";
 import {
+  ENVELOPE_DOMAIN,
   type Identity,
   identityKey,
   identityOf,
   parseIdentity,
   sameIdentity,
   senderKey,
+  verifySignature,
 } from "./access";
 import { type BargeInSource, inboxBargeIn, pendingMessages } from "./bargeIn";
 import { type ConversationFlow, signedEnvelope } from "./conversation";
@@ -97,7 +99,7 @@ export class QueueFullError extends Error {
   }
 }
 
-const POLICED_OPS = ["query", "send", "cancel", "resume", "actAsOwner"] as const;
+const POLICED_OPS = ["query", "send", "cancel", "resume", "actAsOwner", "annotate"] as const;
 
 function assertOwnerScopedPolicy(deps: ConversationsDeps): void {
   if (deps.runtimePolicyIsOwnerScoped === true) return;
@@ -227,6 +229,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         turnFlow: flow.sharedTurn.flow,
         signals: flow.sharedTurn.signals,
         key,
+        ...(flow.config.previousKeys !== undefined && { previousKeys: flow.config.previousKeys }),
         eventStore,
         ...(flow.config.onError !== undefined && { onError: flow.config.onError }),
         bargeIn: deps.bargeIn ?? inboxBargeIn(eventStore),
@@ -386,7 +389,15 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     );
     const k = identityKey(asker);
     return (waiting ?? []).filter((m) => {
-      const a = parseIdentity((m.payload as { asker?: unknown } | null)?.asker);
+      // Only envelopes the host SIGNED for this conversation count: a garbage-signature message naming
+      // someone as its asker must not fill that person's quota (a targeted denial of service).
+      const p = m.payload as Record<string, unknown> | null;
+      if (p === null || typeof p !== "object") return false;
+      const { sig, ...body } = p;
+      if (body.conversationId !== conversationId) return false;
+      if (!verifySignature([key, ...(flow.config.previousKeys ?? [])], body, sig, ENVELOPE_DOMAIN))
+        return false;
+      const a = parseIdentity(body.asker);
       return a !== undefined && identityKey(a) === k;
     }).length;
   }
@@ -497,7 +508,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const out: HistoryEntry[] = [];
       for (const e of entries) {
         if (!e.classes?.length) {
-          out.push(e);
+          out.push(stripTurnExecution(e, viewer));
           continue;
         }
         // Your own answer is yours; anything else needs clearance for EVERY class, fail closed.
@@ -511,7 +522,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
           }
           ok = c;
         }
-        out.push(ok ? stripClasses(e) : restricted(e));
+        out.push(ok ? stripClasses(e, viewer) : restricted(e));
       }
       return out;
     },
@@ -562,7 +573,14 @@ export function createConversations(deps: ConversationsDeps): Conversations {
 }
 
 /** A visible entry still tells the viewer WHICH classes it touched? No: labels may themselves be sensitive. */
-function stripClasses(e: HistoryEntry): HistoryEntry {
+function stripClasses(e: HistoryEntry, viewer: Identity | undefined): HistoryEntry {
   const { classes: _classes, ...rest } = e;
+  return stripTurnExecution(rest, viewer);
+}
+
+/** The turn execution's id is the ASKER's: another viewer is not handed a handle on it. */
+function stripTurnExecution(e: HistoryEntry, viewer: Identity | undefined): HistoryEntry {
+  if (e.turnExecutionId === undefined || sameIdentity(e.asker, viewer)) return e;
+  const { turnExecutionId: _t, ...rest } = e;
   return rest;
 }

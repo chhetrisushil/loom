@@ -85,15 +85,34 @@ function canonical(v: unknown): string {
   );
 }
 
-export function sign(key: string, body: Record<string, unknown>): string {
-  return createHmac("sha256", key).update(canonical(body)).digest("hex");
+/** The domain every inbox envelope is signed under, so a MAC made for another purpose with the same key is not one. */
+export const ENVELOPE_DOMAIN = "loom/conversation/envelope/v1";
+
+/**
+ * HMAC-SHA-256 of the canonical body under `key`, separated by `domain` (empty = none: the turn-id derivation
+ * keeps its original input so ids of in-flight turn executions do not move).
+ */
+export function sign(key: string, body: Record<string, unknown>, domain = ""): string {
+  const input = domain === "" ? canonical(body) : `${domain}\u0000${canonical(body)}`;
+  return createHmac("sha256", key).update(input).digest("hex");
 }
 
-export function verifySignature(key: string, body: Record<string, unknown>, sig: unknown): boolean {
+/** Verify against `key` and, for a rotation window, any of `previous`. */
+export function verifySignature(
+  key: string | readonly string[],
+  body: Record<string, unknown>,
+  sig: unknown,
+  domain = ""
+): boolean {
   if (typeof sig !== "string" || sig.length !== 64) return false;
-  const want = Buffer.from(sign(key, body), "hex");
   const got = Buffer.from(sig, "hex");
-  return got.length === want.length && timingSafeEqual(got, want);
+  let ok = false;
+  for (const k of typeof key === "string" ? [key] : key) {
+    const want = Buffer.from(sign(k, body, domain), "hex");
+    // no early exit: the time taken does not say which key matched
+    if (got.length === want.length && timingSafeEqual(got, want)) ok = true;
+  }
+  return ok;
 }
 
 // ── Participants ─────────────────────────────────────────────────────────────────────────────────────

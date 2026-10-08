@@ -13,7 +13,7 @@
 - Consumers: **loom-ui U8** (the chat / input vocabulary: turn list, streaming deltas, status, interrupt) and the
   **`chat-agent` example** in `loom-examples` (specified in the PR; this repo does not edit that one); shared mode: an
   AI-mode incident surface whose chat several responders share.
-- Revision: fix round 2 (shared-mode review, not approved) — host-signed bound envelopes in both modes (D8), owner-scoped
+- Revision: fix round 3 (replay-set floor, signed-only queue count, annotate policed, domain-separated envelopes, key rotation). Fix round 2 (shared-mode review, not approved) — host-signed bound envelopes in both modes (D8), owner-scoped
   runtime policy required (D8), service-owned coordinator, unguessable verified turn ids, delegation, per-asker memory,
   classified questions, strict clearance (D10). Fix round 1 (Opus review of PR #518, not approved) — owner-only default (D8), shared mode (D10), bounded
   backward reads (D3), edge hardening (D6), summary/identity/peek fixes (D2, D5).
@@ -390,13 +390,29 @@ signed envelope.
 - **The kernel `messageId` is not part of the check.** The body sees the payload, not the delivered message's `messageId`
   (`ctx.receive` returns the payload only), so "the signed `messageId` equals the delivered one" cannot be enforced there. What
   closes the replay door instead is the signed `id` (which IS the `messageId` the client sends in shared mode) consumed at
-  most once within the replay window, plus the conversation binding and the freshness window. A replay set of 1 024 ids is a
-  bound: more than 1 024 distinct envelopes inside `maxEnvelopeAgeMs` could push an old id out of the set while its `iat` is
-  still fresh. Keep `maxEnvelopeAgeMs` short where that volume is possible.
+  most once within the replay window, plus the conversation binding and the freshness window. The replay set is bounded (the last 1 024 ids), so an id can be evicted; what keeps an evicted envelope dead is a
+  **high-water mark of evicted issue times** carried with the set (and across rotations): an envelope issued at or before the
+  newest evicted one is refused as `stale`. Flooding the set (non-participant voices enter it before the membership check)
+  can therefore only RAISE the floor, never reopen a captured envelope; a legitimate envelope issued before the floor and
+  still queued is refused too, which is the price of the bound. The floor is also what covers the unenforced
+  delivered-`messageId` equality above.
+- **The `policy` argument is a self-attestation.** `createConversations({ policy })` reads the resolved scopes of the object
+  you pass; nothing proves it is the object the runtime was built with, and `runtimePolicyIsOwnerScoped: true` is an
+  unverified assertion by construction. The check catches the honest mistake, not a host that lies. Two properties of the
+  reference policy matter to what it protects: owner scope compares **tenant and actor, not `onBehalfOf`**, and the service
+  principal's actor must be **unmintable by `authenticate()`** (no end-user token may resolve to the service identity, or
+  that user owns every coordinator). `annotate` is policed with the other ops; `start` is `any` by design (an asker starts
+  their own turn execution), so a coordinator or participant-log id cannot be pre-empted by policy and relies on the
+  verification above.
+- **Key rotation.** Deploy `key: new, previousKeys: [old]` (verification accepts both, signing uses the new one), wait out
+  `maxEnvelopeAgeMs`, then drop `previousKeys`. Envelopes are signed under a domain (`loom/conversation/envelope/v1`), so a
+  MAC the same key made for another purpose is not an envelope. Turn execution ids are derived from `key` alone and keep their
+  original input (so ids of in-flight turns did not move when envelopes gained a domain): a turn that is MID-FLIGHT when the
+  key changes is started afresh under its new id, so rotate while conversations are quiet.
 - **Placeholder metadata.** A restricted entry still tells a viewer that an entry EXISTS, its position (`turn`, `cursor`),
   its role, its timestamp and who asked (the asker is on the unrestricted user message beside it anyway, unless the question
   is itself restricted, in which case it is a placeholder too). It does not tell them the text, the tools, the class labels,
-  the reason or the turn execution. A host that must hide even the existence of an answer needs per-viewer cursors, which this
+  the reason or the turn execution; a visible entry carries `turnExecutionId` only for its own asker. A host that must hide even the existence of an answer needs per-viewer cursors, which this
   does not offer.
 - **Clock.** Freshness reads the clock once, in a recorded decision; a host with badly skewed clocks across client and
   coordinator nodes will see `stale` rejections (a 60 s forward skew is tolerated).

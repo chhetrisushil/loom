@@ -11,6 +11,7 @@ import { TypedFailure, flow$, fnv1a64 } from "@loom/core";
 import type { ExecutionContext, FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { z } from "zod";
 import {
+  ENVELOPE_DOMAIN,
   type Identity,
   identityKey,
   identityOf,
@@ -96,12 +97,12 @@ export type EnvelopeRefusal = "malformed" | "unauthenticated";
  */
 export function parseSignedEnvelope(
   value: unknown,
-  key: string,
+  keys: string | readonly string[],
   conversationId: string
 ): { env?: TurnEnvelope; reason?: EnvelopeRefusal } {
   if (typeof value !== "object" || value === null) return { reason: "malformed" };
   const { sig, ...body } = value as Record<string, unknown>;
-  if (!verifySignature(key, body, sig)) return { reason: "unauthenticated" };
+  if (!verifySignature(keys, body, sig, ENVELOPE_DOMAIN)) return { reason: "unauthenticated" };
   if (body.conversationId !== conversationId) return { reason: "unauthenticated" };
   const id = body.id;
   const iat = body.iat;
@@ -125,7 +126,7 @@ export function signedEnvelope(
   key: string,
   body: Record<string, unknown>
 ): Record<string, unknown> {
-  return { ...body, sig: sign(key, body) };
+  return { ...body, sig: sign(key, body, ENVELOPE_DOMAIN) };
 }
 
 const clip = (s: string, max: number): string => (s.length <= max ? s : `${s.slice(0, max)}…`);
@@ -172,6 +173,17 @@ export function carryOf(
     });
   }
   const owner = parseIdentity(c.owner);
+  const rawIds = Array.isArray(c.ids) ? c.ids : [];
+  const rawIats = Array.isArray(c.iats) ? c.iats : [];
+  const iatOfId = new Map<string, number>();
+  const idsKept: string[] = [];
+  rawIds.forEach((x, i) => {
+    if (typeof x !== "string" || x.length > 256) return;
+    idsKept.push(x);
+    const t = rawIats[i];
+    iatOfId.set(x, typeof t === "number" && Number.isFinite(t) ? t : 0);
+  });
+  idsKept.splice(0, Math.max(0, idsKept.length - MAX_RECENT_IDS));
   const carry: ConversationCarry = {
     v: 1,
     seq: safeInt(c.seq),
@@ -179,9 +191,9 @@ export function carryOf(
     dropped: safeInt(c.dropped),
     ...(owner !== undefined && { owner }),
     ...(typeof c.summary === "string" && { summary: clip(c.summary, lim.summaryChars) }),
-    ids: (Array.isArray(c.ids) ? c.ids : [])
-      .filter((x): x is string => typeof x === "string" && x.length <= 256)
-      .slice(-MAX_RECENT_IDS),
+    ids: idsKept,
+    iats: idsKept.map((id) => iatOfId.get(id) ?? 0),
+    floor: typeof c.floor === "number" && Number.isFinite(c.floor) && c.floor >= 0 ? c.floor : 0,
     turns: turns.slice(-lim.turns),
     ...(c.pending !== undefined && { pending: c.pending }),
   };
@@ -329,12 +341,25 @@ export function conversationRunner(
     const owner = carry.owner;
     /** Idempotency keys of recent turns, oldest first: what a barge-in watcher must NOT treat as new. */
     const ids: string[] = (carry.ids ?? []).slice(-MAX_RECENT_IDS);
+    /** The issue time of each remembered id (parallel to `ids`). */
+    const iats: number[] = ids.map((_, i) => carry.iats?.[i] ?? 0);
+    /**
+     * HIGH-WATER MARK of evicted issue times. The replay set is bounded, so an id can fall out of it; the
+     * guarantee that a captured envelope cannot be replayed after that is THIS floor: anything issued at or
+     * before the newest evicted envelope is refused as stale, whatever the set still remembers. (An attacker
+     * who floods the set can only raise the floor, never reopen an old envelope.)
+     */
+    let floor = carry.floor ?? 0;
     const known = new Set(ids);
-    const remember = (id: string | undefined): void => {
+    const remember = (id: string | undefined, iat = 0): void => {
       if (id === undefined || known.has(id)) return;
       known.add(id);
       ids.push(id);
-      if (ids.length > MAX_RECENT_IDS) known.delete(ids.shift() as string);
+      iats.push(iat);
+      if (ids.length > MAX_RECENT_IDS) {
+        known.delete(ids.shift() as string);
+        floor = Math.max(floor, iats.shift() as number);
+      }
     };
     let rotateDue = false;
     const turnsCounter = continueEvery(rotateEvery);
@@ -411,7 +436,11 @@ export function conversationRunner(
       // This is the ONLY place the execution parks.
       const raw: unknown = pending !== undefined ? pending : await ctx.receive(CONVERSATION_TOPIC);
       pending = undefined;
-      const parsed = parseSignedEnvelope(unwrapTainted(raw), config.key, conversationId);
+      const parsed = parseSignedEnvelope(
+        unwrapTainted(raw),
+        [config.key, ...(config.previousKeys ?? [])],
+        conversationId
+      );
       const env = parsed.env;
 
       // Rotation sits BETWEEN consuming a message and starting its turn: no wait is outstanding
@@ -425,6 +454,8 @@ export function conversationRunner(
               seq,
               ord,
               ids,
+              iats,
+              floor,
               dropped: droppedCount,
               ...(owner !== undefined && { owner }),
               ...(summary !== undefined && { summary }),
@@ -445,6 +476,7 @@ export function conversationRunner(
       if (env !== undefined && invalid === undefined) {
         const id = env.id as string;
         if (known.has(id)) invalid = "replayed";
+        else if ((env.iat as number) <= floor) invalid = "stale";
         else if (
           sharedCfg === undefined
             ? !(sameIdentity(env.asker, owner) || (env.asker === undefined && owner === undefined))
@@ -463,7 +495,7 @@ export function conversationRunner(
             { source: "conversation-access" }
           );
           if (!fresh) invalid = "stale";
-          else remember(id);
+          else remember(id, iat);
         }
       }
       if (invalid !== undefined) {
