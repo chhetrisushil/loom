@@ -106,6 +106,8 @@ interface Opts {
   provider: (r: LlmRequest) => LlmResponse;
   config?: Partial<AgentLoopConfig>;
   store?: InMemoryAsyncEventStore;
+  /** Awaited inside every registered tool's effect (to observe concurrency). */
+  onRun?: (id: string) => Promise<void>;
 }
 
 function boot(o: Opts) {
@@ -128,6 +130,7 @@ function boot(o: Opts) {
       t.id,
       new ToolEffect(async (input) => {
         toolRuns.push(t.id);
+        await o.onRun?.(t.id);
         return { ran: t.id, input };
       })
     );
@@ -279,7 +282,7 @@ describe("R22 D11 - activate a skill mid-loop", () => {
   });
 });
 
-describe("R22 D11 - refusals are typed results and record nothing", () => {
+describe("R22 D11 - refusals are typed results (an instructions refusal records its verdict, the rest record nothing)", () => {
   const run = async (o: Partial<Opts> & { calls: LlmToolCall[][] }) => {
     const b = boot({ skills: SKILLS(), provider: script(o.calls), ...o });
     await runToEnd(b);
@@ -297,11 +300,20 @@ describe("R22 D11 - refusals are typed results and record nothing", () => {
     expect(await activations(b)).toEqual([]);
   });
 
-  it("already active", async () => {
-    const b = await run({ calls: [[ACT("alpha")], [ACT("alpha")]] });
-    expect(resultsOf(b.requests[1] as LlmRequest)[0]?.isError).toBe(false);
-    expect(codes(b, 2)).toEqual(["already_active"]);
+  it("already active re-delivers the instructions (P3-6): nothing recorded, no tools, not counted", async () => {
+    const b = await run({
+      skills: SKILLS(),
+      activation: { maxActive: 1 },
+      calls: [[ACT("billing")], [ACT("billing")], [ACT("billing")]],
+    });
+    const again = resultsOf(b.requests[2] as LlmRequest)[0];
+    expect(again?.isError).toBe(false);
+    expect(again?.result.instructions).toBe("BILLING-RULES");
+    expect(again?.result.tools).toBeUndefined();
+    // Repeated with maxActive 1: re-delivery never trips skill_limit_reached.
+    expect(resultsOf(b.requests[3] as LlmRequest)[0]?.result.instructions).toBe("BILLING-RULES");
     expect(await activations(b)).toHaveLength(1);
+    expect(toolNames(b.requests[3] as LlmRequest)).toEqual(["activate_skill", "audit_tool"]);
   });
 
   it("over maxActive", async () => {
@@ -320,7 +332,9 @@ describe("R22 D11 - refusals are typed results and record nothing", () => {
       calls: [[ACT("big")]],
     });
     expect(codes(b, 1)).toEqual(["instructions_too_large"]);
-    expect(await activations(b)).toEqual([]);
+    expect((await activations(b)).map((d) => d.value)).toEqual([
+      { skill: "big", refused: "instructions_too_large" },
+    ]);
     const ok = await run({
       skills: [mkSkill("big", "é".repeat(50))],
       activation: { maxInstructionBytes: 100 },
@@ -340,7 +354,10 @@ describe("R22 D11 - refusals are typed results and record nothing", () => {
     } as SkillDefinition;
     const b = await run({ skills: [t, n], calls: [[ACT("evil", "1"), ACT("num", "2")]] });
     expect(codes(b, 1)).toEqual(["instructions_refused", "instructions_refused"]);
-    expect(await activations(b)).toEqual([]);
+    expect((await activations(b)).map((d) => d.value)).toEqual([
+      { skill: "evil", refused: "instructions_refused" },
+      { skill: "num", refused: "instructions_refused" },
+    ]);
   });
 });
 
@@ -474,5 +491,236 @@ describe("R22 D11 - default off, config errors", () => {
     await expect(bad({ activation: { maxIndex: 501 } })).rejects.toThrow(/maxIndex/);
     await expect(bad({ activation: { toolName: "bad name" } })).rejects.toThrow(/toolName/);
     await expect(bad({ config: { skills: undefined as never } })).rejects.toThrow(/registry/);
+  });
+});
+
+// ═══ Review round 1 ═══════════════════════════════════════════════════════════════════════════
+
+/** In-flight tracker: `peak` is the highest number of tool effects running at once. */
+const concurrency = () => {
+  const c = { inFlight: 0, peak: 0 };
+  const onRun = async (): Promise<void> => {
+    c.inFlight++;
+    c.peak = Math.max(c.peak, c.inFlight);
+    await new Promise<void>((r) => setImmediate(r));
+    await new Promise<void>((r) => setImmediate(r));
+    c.inFlight--;
+  };
+  return { c, onRun };
+};
+
+describe("R22 review P2-1 - a human tool the settle phase brings keeps the turn sequential", () => {
+  const human = tool$({
+    id: "ask_human",
+    name: "ask_human",
+    description: "ask a person",
+    kind: "human",
+    inputSchema: z.object({}).passthrough(),
+    outputSchema: z.object({}).passthrough(),
+  });
+  const turn = [ACT("rev", "a"), call("b", "t0"), call("c", "ask_human"), call("d", "t2")];
+
+  it("skill path: [activate_skill, t0, ask_human, t2] never overlaps", async () => {
+    const { c, onRun } = concurrency();
+    const b = boot({
+      skills: [mkSkill("rev", "REV", [human])],
+      agentTools: [mk("t0"), mk("t2")],
+      config: { parallelTools: true },
+      onRun,
+      provider: script([turn]),
+    });
+    expect((await runToEnd(b)).status).toBe("completed");
+    expect(b.toolRuns).toEqual(["t0", "ask_human", "t2"]); // call order
+    expect(c.peak).toBe(1);
+  });
+
+  it("NEGATIVE: the same turn WITHOUT a human tool still runs in parallel", async () => {
+    const { c, onRun } = concurrency();
+    const b = boot({
+      skills: [mkSkill("rev", "REV", [mk("plain")])],
+      agentTools: [mk("t0"), mk("t2")],
+      config: { parallelTools: true },
+      onRun,
+      provider: script([[ACT("rev", "a"), call("b", "t0"), call("c", "plain"), call("d", "t2")]]),
+    });
+    await runToEnd(b);
+    expect(c.peak).toBe(3);
+  });
+});
+
+describe("R22 review P3-2 - the search meta-tool's name against offered skills' tools", () => {
+  it("a skill bringing a tool named like the search meta-tool is a config error", async () => {
+    const b = boot({
+      skills: [mkSkill("s", "x", [mk("search_tools")])],
+      config: { toolSearch: {} },
+      provider: script([]),
+    });
+    await expect(runToEnd(b)).rejects.toThrow(/search_tools.*collides|collides/);
+  });
+  it("NEGATIVE: no collision, no error", async () => {
+    const b = boot({
+      skills: [mkSkill("s", "x", [mk("other")])],
+      config: { toolSearch: {} },
+      provider: script([]),
+    });
+    expect((await runToEnd(b)).status).toBe("completed");
+  });
+});
+
+describe("R22 review P3-3 - the index is byte-bounded and one line per skill", () => {
+  const indexOf = (b: Booted) => {
+    const sys = systemOf(b.requests[0] as LlmRequest);
+    return sys.slice(sys.indexOf("Skills you can activate"));
+  };
+
+  it("caps id and tag characters; an id that cannot be shown whole on one line is not offered", async () => {
+    const longId = "x".repeat(65);
+    const b = boot({
+      skills: [
+        mkSkill("ok", "fine", [], { tags: ["t".repeat(100), "a\u2028b\rc"] }),
+        mkSkill(longId, "too long"),
+        mkSkill("bad\nid", "newline id"),
+      ],
+      provider: script([[ACT(longId, "1"), ACT("bad\nid", "2")]]),
+    });
+    await runToEnd(b);
+    const idx = indexOf(b);
+    expect(idx).not.toContain(longId);
+    expect(idx).not.toContain("bad");
+    const line = idx.split("\n").find((l) => l.startsWith("- ok:")) as string;
+    expect(line).toContain(`[${"t".repeat(32)}…, a`);
+    expect(idx).not.toMatch(/[\r\u2028\u2029]/);
+    expect(resultsOf(b.requests[1] as LlmRequest).map((r) => r.result.error?.code)).toEqual([
+      "unknown_skill",
+      "unknown_skill",
+    ]);
+  });
+
+  it("every line separator ends a description's first line", async () => {
+    const b = boot({
+      skills: [
+        mkSkill("a", "x", [], { description: "first\u2028INJECTED" }),
+        mkSkill("b", "x", [], { description: "first\rINJECTED" }),
+        mkSkill("c", "x", [], { description: "first\u2029INJECTED" }),
+      ],
+      provider: script([]),
+    });
+    await runToEnd(b);
+    expect(indexOf(b)).not.toContain("INJECTED");
+  });
+
+  it("a total byte cap truncates deterministically with a +N more marker; skills past it cannot be activated", async () => {
+    const many = Array.from({ length: 400 }, (_, i) =>
+      mkSkill(`skill_${String(i).padStart(3, "0")}`, "x", [], { description: "d".repeat(190) })
+    );
+    const mkRun = () =>
+      boot({
+        skills: many,
+        activation: { maxIndex: 500, maxIndexBytes: 4096 },
+        provider: script([[ACT("skill_399")]]),
+      });
+    const a = mkRun();
+    await runToEnd(a);
+    const idx = indexOf(a);
+    expect(new TextEncoder().encode(idx).length).toBeLessThanOrEqual(4096);
+    expect(idx).toMatch(/\(\+\d+ more skills not listed\)/);
+    expect(idx).toContain("- skill_000:");
+    expect(idx).not.toContain("- skill_399:");
+    expect(resultsOf(a.requests[1] as LlmRequest)[0]?.result.error?.code).toBe("unknown_skill");
+    const b = mkRun();
+    await runToEnd(b);
+    expect(indexOf(b)).toBe(idx); // deterministic
+  });
+
+  it("the default cap holds for a pathological registry (105 KB before)", async () => {
+    const many = Array.from({ length: 500 }, (_, i) =>
+      mkSkill(`${"s".repeat(40)}${i}`, "x", [], {
+        description: "d".repeat(500),
+        tags: Array.from({ length: 20 }, () => "g".repeat(200)),
+      })
+    );
+    const b = boot({ skills: many, activation: { maxIndex: 500 }, provider: script([]) });
+    await runToEnd(b);
+    expect(new TextEncoder().encode(indexOf(b)).length).toBeLessThanOrEqual(8 * 1024);
+  });
+
+  it("maxIndexBytes is validated", async () => {
+    const b = boot({ skills: SKILLS(), activation: { maxIndexBytes: 0 }, provider: script([]) });
+    await expect(runToEnd(b)).rejects.toThrow(/maxIndexBytes/);
+  });
+});
+
+describe("R22 review P3-4 - a refusal does not echo an unbounded model-supplied name", () => {
+  it("unknown_skill caps the echoed name", async () => {
+    const huge = "n".repeat(50_000);
+    const b = boot({ skills: SKILLS(), provider: script([[ACT(huge)]]) });
+    await runToEnd(b);
+    const [r] = resultsOf(b.requests[1] as LlmRequest);
+    expect(r?.result.error?.code).toBe("unknown_skill");
+    expect(JSON.stringify(r?.result).length).toBeLessThan(500);
+  });
+});
+
+describe("R22 review P3-5 - once a decision is recorded, a replay honours it", () => {
+  /** Run `first`, then resume the log cut before turn 1 against a registry holding `second`. */
+  async function resume(first: SkillDefinition[], second: SkillDefinition[], max: number) {
+    const act: SkillActivationConfig = { maxInstructionBytes: max };
+    const steps = [[ACT("rev")]];
+    const store = new InMemoryAsyncEventStore();
+    const a = boot({ store, skills: first, activation: act, provider: script(steps) });
+    await runToEnd(a);
+    const full = await store.read("e1");
+    const cutoff = full.findIndex((e) =>
+      String((e.payload as { stepId?: string }).stepId ?? "").startsWith("dba#turn:1")
+    );
+    const prefix = full.slice(0, cutoff);
+    const crashed = new InMemoryAsyncEventStore();
+    for (const e of prefix) await crashed.append(e);
+    const folded = new ReplayVM(prefix, {
+      executionId: "e1",
+      workflowId: "ask",
+      workflowVersion: "1.0.0",
+    }).getState();
+    const b = boot({ store: crashed, skills: second, activation: act, provider: script(steps) });
+    const st = await (await b.runtime.restoreFromState(folded)).waitForCompletion();
+    expect(st.status).toBe("completed");
+    expect(b.warnings.filter((w) => /diverge/i.test(w))).toEqual([]);
+    return { b, before: decisions(prefix), after: decisions(await crashed.read("e1")) };
+  }
+  const tool = mk("rev_tool");
+
+  it("a skill that GREW past the cap after the activation was recorded: the activation stands, the tools join, the instructions are reported unavailable, nothing new is recorded", async () => {
+    const { b, before, after } = await resume(
+      [mkSkill("rev", "short", [tool])],
+      [mkSkill("rev", "x".repeat(500), [tool])],
+      100
+    );
+    expect(after).toEqual(before);
+    const [r] = resultsOf(b.requests[0] as LlmRequest);
+    expect(r?.isError).toBe(true);
+    expect(r?.result.error?.code).toBe("instructions_unavailable");
+    expect(toolNames(b.requests[0] as LlmRequest)).toEqual(["activate_skill", "rev_tool"]);
+  });
+
+  it("a skill that SHRANK after a recorded refusal: the refusal is reproduced, no new decision, no tools", async () => {
+    const { b, before, after } = await resume(
+      [mkSkill("rev", "x".repeat(500), [tool])],
+      [mkSkill("rev", "short", [tool])],
+      100
+    );
+    expect(before.filter((d) => d.source === SOURCE_SKILL_ACTIVATION).map((d) => d.value)).toEqual([
+      { skill: "rev", refused: "instructions_too_large" },
+    ]);
+    expect(after).toEqual(before);
+    const [r] = resultsOf(b.requests[0] as LlmRequest);
+    expect(r?.result.error?.code).toBe("instructions_too_large");
+    expect(toolNames(b.requests[0] as LlmRequest)).toEqual(["activate_skill"]);
+  });
+
+  it("NEGATIVE: an unchanged registry replays the same activation with its instructions", async () => {
+    const same = [mkSkill("rev", "short", [tool])];
+    const { b, before, after } = await resume(same, same, 100);
+    expect(after).toEqual(before);
+    expect(resultsOf(b.requests[0] as LlmRequest)[0]?.result.instructions).toBe("short");
   });
 });

@@ -674,6 +674,12 @@ describe("trajectories — recorded facts are not actions (R10)", () => {
         { results: ["t"] },
         { source: "agent-tool-search" }
       ),
+      decision(
+        "x",
+        "agent#turn:0:tool:1:skill",
+        { skill: "billing" },
+        { source: "agent-skill-activation" }
+      ),
       ev("x", "EXECUTION_COMPLETED", {}),
     ];
     const [t] = trajectories<string>(log);

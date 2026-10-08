@@ -5,6 +5,7 @@ import {
   MAX_LABEL_CHARS,
   type SearchableTool,
   TOOL_SEARCH_MAX_QUERY_TERMS,
+  firstLineOf,
   normalizeLabels,
   tokenizeToolText,
   toolQueryTerms,
@@ -186,5 +187,32 @@ describe("R22 aliases and tags: the vocabulary-gap fix", () => {
       },
     ]);
     expect(r2.rank("lateword", 1)).toEqual([]);
+  });
+});
+
+describe("R22 review P3-9 - rank() validates its limit", () => {
+  const r = new Bm25ToolRanker([
+    { id: "alpha_tool", description: "alpha" },
+    { id: "beta_tool", description: "alpha beta" },
+    { id: "gamma_tool", description: "alpha gamma" },
+  ]);
+  it("NaN is a typed (Range) error, not an arbitrary result", () => {
+    expect(() => r.rank("alpha", Number.NaN)).toThrow(RangeError);
+  });
+  it("negative clamps to none, a fraction floors, infinity clamps to the index size", () => {
+    expect(r.rank("alpha", -3)).toEqual([]);
+    expect(r.rank("alpha", 0.9)).toEqual([]);
+    expect(r.rank("alpha", 2.7)).toHaveLength(2);
+    expect(r.rank("alpha", Number.POSITIVE_INFINITY)).toHaveLength(3);
+  });
+});
+
+describe("firstLineOf", () => {
+  it("every line separator ends the line, and the result is capped", () => {
+    for (const sep of ["\n", "\r", "\r\n", "\u2028", "\u2029", "\u0085", "\v", "\f"]) {
+      expect(firstLineOf(`one${sep}two`, 50)).toBe("one");
+    }
+    expect(firstLineOf("abcdef", 3)).toBe("abc…");
+    expect(firstLineOf("", 3)).toBe("");
   });
 });

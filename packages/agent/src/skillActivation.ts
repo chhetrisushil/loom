@@ -3,7 +3,8 @@ import { type SkillDefinition, type ToolDefinition, loadInstructions } from "@lo
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import { z } from "zod";
 import type { SkillRegistry } from "./SkillRegistry";
-import { toolSpecFor, validateToolInput } from "./toolSchema";
+import { cap, toolSpecFor, validateToolInput } from "./toolSchema";
+import { firstLineOf } from "./toolSearch";
 
 // ── R22 (ADR 0125 D11) — mid-loop skill activation ──────────────────────────────
 //
@@ -28,6 +29,13 @@ export const MAX_INSTRUCTION_BYTES_CEILING = 1024 * 1024;
 /** Characters of a description shown in the index (first line only). */
 const MAX_INDEX_DESCRIPTION = 200;
 const MAX_INDEX_TAGS = 8;
+/** Characters of a skill id / one tag shown in the index. A longer or unprintable id is not offered at all. */
+const MAX_INDEX_ID_CHARS = 64;
+const MAX_INDEX_TAG_CHARS = 32;
+export const DEFAULT_MAX_INDEX_BYTES = 8 * 1024;
+export const MAX_INDEX_BYTES_CEILING = 128 * 1024;
+/** An id that could break the one-skill-per-line index (control, format or line-separator characters). */
+const UNLISTABLE_ID = /[\p{C}\u2028\u2029]/u;
 
 /** Opt-in mid-loop skill activation for `agentLoop$`. Absent: the run is byte-identical to one without it. */
 export interface SkillActivationConfig {
@@ -43,6 +51,11 @@ export interface SkillActivationConfig {
   maxIndex?: number;
   /** UTF-8 bytes of one skill's instructions; a larger one is refused. Default 32 KiB, at most 1 MiB. */
   maxInstructionBytes?: number;
+  /**
+   * UTF-8 bytes of the whole index in the system prompt. Skills past it (in id order) are summarised
+   * as "+N more" and cannot be activated. Default 8 KiB, at most 128 KiB.
+   */
+  maxIndexBytes?: number;
   /** The meta-tool's name. Default `"activate_skill"`; it must not collide with any tool. */
   toolName?: string;
 }
@@ -59,6 +72,12 @@ const activateInput = z.object({ name: z.string() });
 
 interface Recorded {
   skill: string;
+  /**
+   * Set when the live attempt was REFUSED on the skill's instructions (`instructions_refused` /
+   * `instructions_too_large`). The verdict is recorded, so a replay reproduces it whatever the
+   * registry holds now (ADR 0125 D11, review round 1).
+   */
+  refused?: string;
 }
 
 function positiveInt(name: string, v: number | undefined, def: number, ceiling: number): number {
@@ -71,11 +90,10 @@ function positiveInt(name: string, v: number | undefined, def: number, ceiling: 
   return n;
 }
 
-const firstLine = (s: string): string => {
-  const line = s.split("\n", 1)[0] as string;
-  return line.length > MAX_INDEX_DESCRIPTION ? `${line.slice(0, MAX_INDEX_DESCRIPTION)}…` : line;
-};
+const REFUSAL_CODES = new Set(["instructions_refused", "instructions_too_large"]);
 const UTF8 = new TextEncoder();
+/** Bytes held back for the "+N more" line. */
+const MORE_RESERVE = 48;
 const byId = (a: SkillDefinition, b: SkillDefinition): number =>
   a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 
@@ -92,6 +110,9 @@ export class SkillActivationSession {
   /** The offered skills, by id, in index (id) order. Only these can be activated. */
   private readonly offered = new Map<string, SkillDefinition>();
   private readonly active = new Set<string>();
+  /** The index lines (one per offered skill, id order) and how many skills the byte cap left out. */
+  private readonly lines: string[] = [];
+  private omitted = 0;
   private readonly maxActive: number;
   private readonly maxInstructionBytes: number;
 
@@ -120,6 +141,12 @@ export class SkillActivationSession {
       DEFAULT_MAX_INSTRUCTION_BYTES,
       MAX_INSTRUCTION_BYTES_CEILING
     );
+    const maxIndexBytes = positiveInt(
+      "maxIndexBytes",
+      cfg.maxIndexBytes,
+      DEFAULT_MAX_INDEX_BYTES,
+      MAX_INDEX_BYTES_CEILING
+    );
     if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(this.name)) {
       throw new SkillActivationError("skillActivation.toolName must match [A-Za-z0-9_.:-]{1,64}");
     }
@@ -140,10 +167,25 @@ export class SkillActivationSession {
     for (const s of source) {
       if (seen.has(s.id)) continue; // first wins
       seen.add(s.id);
-      if (!opts.selected.has(s.id)) candidates.push(s);
+      if (opts.selected.has(s.id)) continue;
+      // An id the index cannot show whole and on one line cannot be named by the model: not offered.
+      if (s.id.length > MAX_INDEX_ID_CHARS || UNLISTABLE_ID.test(s.id)) continue;
+      candidates.push(s);
     }
     candidates.sort(byId);
-    for (const s of candidates.slice(0, maxIndex)) this.offered.set(s.id, s);
+    // The index is bounded three ways: skills (maxIndex), characters per field, total bytes. What
+    // does not fit is not offered (so it cannot be activated blind) and is counted in a "+N more" line.
+    const listed = candidates.slice(0, maxIndex);
+    let bytes = UTF8.encode(this.header()).length + MORE_RESERVE;
+    for (const s of listed) {
+      const line = this.lineFor(s);
+      const n = UTF8.encode(line).length + 1;
+      if (bytes + n > maxIndexBytes) break;
+      bytes += n;
+      this.offered.set(s.id, s);
+      this.lines.push(line);
+    }
+    this.omitted = candidates.length - this.offered.size;
     const reserved = new Set(opts.reservedNames);
     for (const s of this.offered.values()) for (const t of s.tools ?? []) reserved.add(t.id);
     if (reserved.has(this.name)) {
@@ -156,7 +198,7 @@ export class SkillActivationSession {
       id: this.name,
       name: this.name,
       description:
-        "Activate one of the listed skills by `name`. The result is the skill's instructions, and the tools it brings can be called from the next step on.",
+        "Activate one of the listed skills by `name`. The result is the skill's instructions, and the tools it brings can be called from the next step on. Activating an already-active skill returns its instructions again.",
       kind: "tool",
       inputSchema: activateInput.describe("activate_skill input"),
       outputSchema: z.unknown(),
@@ -181,18 +223,36 @@ export class SkillActivationSession {
     return [...this.active];
   }
 
-  /** The index, as appended to the turn-0 system prompt. Deterministic: id order, bounded. */
+  /** Ids of every tool the offered skills bring (the meta-tools' names must not collide with them). */
+  offeredToolIds(): Set<string> {
+    const ids = new Set<string>();
+    for (const s of this.offered.values()) for (const t of s.tools ?? []) ids.add(t.id);
+    return ids;
+  }
+
+  private header(): string {
+    return `Skills you can activate with the \`${this.name}\` tool (pass the id as \`name\`; the result is the skill's instructions):`;
+  }
+
+  private lineFor(s: SkillDefinition): string {
+    const tags = (s.tags ?? [])
+      .filter((x): x is string => typeof x === "string")
+      .slice(0, MAX_INDEX_TAGS)
+      .map((x) => firstLineOf(x.trim(), MAX_INDEX_TAG_CHARS))
+      .filter((x) => x !== "");
+    return `- ${s.id}: ${firstLineOf(String(s.description), MAX_INDEX_DESCRIPTION)}${tags.length > 0 ? ` [${tags.join(", ")}]` : ""}`;
+  }
+
+  /** The index, as appended to the turn-0 system prompt. Deterministic: id order, bounded in bytes. */
   indexText(): string {
-    const lines = [...this.offered.values()].map((s) => {
-      const tags = (s.tags ?? []).slice(0, MAX_INDEX_TAGS);
-      return `- ${s.id}: ${firstLine(s.description)}${tags.length > 0 ? ` [${tags.join(", ")}]` : ""}`;
-    });
-    return `Skills you can activate with the \`${this.name}\` tool (pass the id as \`name\`; the result is the skill's instructions):\n${lines.join("\n")}`;
+    const more = this.omitted > 0 ? [`- (+${this.omitted} more skills not listed)`] : [];
+    return [this.header(), ...this.lines, ...more].join("\n");
   }
 
   /**
    * Run one `activate_skill` call. Returns the tool_result `output`, whether it is an error, and the
-   * skill's tools (the caller appends them to the menu, deduped). A refusal records nothing.
+   * skill's tools (the caller appends them to the menu, deduped). A refusal on the skill's instructions
+   * records its verdict; the other refusals (unknown, over the cap) record nothing.
    */
   async run(
     ctx: Pick<ExecutionContext, "decide">,
@@ -206,10 +266,23 @@ export class SkillActivationSession {
     const { name } = input as z.infer<typeof activateInput>;
     const skill = this.offered.get(name);
     if (skill === undefined) {
-      return error("unknown_skill", `"${name}" is not a skill you can activate.`);
+      return error("unknown_skill", `"${cap(name)}" is not a skill you can activate.`);
     }
     if (this.active.has(name)) {
-      return error("already_active", `Skill "${name}" is already active.`);
+      // Re-delivery, not re-activation: the instructions are returned AGAIN (after compaction folded
+      // the first result into a summary they would otherwise be unrecoverable). Nothing is recorded,
+      // no tools are added and it does not count against `maxActive`.
+      const again = await this.deliverable(skill);
+      if (!again.ok) return error(again.code, again.message);
+      return {
+        output: {
+          skill: name,
+          instructions: again.text,
+          note: "Already active; instructions repeated.",
+        },
+        isError: false,
+        newlyLoaded: [],
+      };
     }
     if (this.active.size >= this.maxActive) {
       return error(
@@ -217,39 +290,87 @@ export class SkillActivationSession {
         `At most ${this.maxActive} skills can be activated per run.`
       );
     }
-    // Loaded BEFORE the decision, so a refusal records nothing. Host-registry author text is
-    // trusted, but a value that arrives tainted (ADR 0085) must never become instructions.
-    const text: unknown = await loadInstructions(skill.instructions);
-    if (typeof text !== "string" || isTainted(text)) {
-      return error(
-        "instructions_refused",
-        `Skill "${name}" has instructions that cannot be delivered.`
-      );
-    }
-    if (UTF8.encode(text).length > this.maxInstructionBytes) {
-      return error(
-        "instructions_too_large",
-        `Skill "${name}" has instructions over the ${this.maxInstructionBytes}-byte limit.`
-      );
-    }
-    const recorded = await ctx.decide<Recorded>(decisionKey, async () => ({ skill: name }), {
-      source: SOURCE_SKILL_ACTIVATION,
-    });
+    // The instructions verdict is part of the RECORDED decision: a live refusal records
+    // `{ skill, refused }`, so a replay reproduces it whatever the registry holds by then; a live
+    // acceptance records `{ skill }` and a replay honours it even if the text has since changed.
+    const live: { text?: string } = {};
+    const recorded = await ctx.decide<Recorded>(
+      decisionKey,
+      async () => {
+        const d = await this.deliverable(skill);
+        if (!d.ok) return { skill: name, refused: d.code };
+        live.text = d.text;
+        return { skill: name };
+      },
+      { source: SOURCE_SKILL_ACTIVATION }
+    );
     // Live and replayed alike the record is re-intersected with what THIS run may activate: a stale
     // or tampered record can refuse, and can never activate anything but the offered skill asked for.
     if (recorded === null || typeof recorded !== "object" || recorded.skill !== name) {
-      return error("unknown_skill", `"${name}" is not a skill you can activate.`);
+      return error("unknown_skill", `"${cap(name)}" is not a skill you can activate.`);
     }
+    if (recorded.refused !== undefined) {
+      const code = REFUSAL_CODES.has(recorded.refused) ? recorded.refused : "instructions_refused";
+      return error(code, this.refusalMessage(code, name));
+    }
+    // The activation stands. On a replay the text is loaded now; if it no longer passes the checks
+    // the tools still join the menu (consistent with the record) and the result says why there are
+    // no instructions.
+    const d =
+      live.text !== undefined
+        ? ({ ok: true, text: live.text } as const)
+        : await this.deliverable(skill);
     this.active.add(name);
+    const tools = skill.tools ?? [];
+    if (!d.ok) {
+      return {
+        output: {
+          error: {
+            code: "instructions_unavailable",
+            message: `Skill "${cap(name)}" was activated, but its instructions can no longer be delivered (they changed since the activation was recorded).`,
+          },
+          ...(tools.length > 0 && { tools: tools.map((t) => t.id) }),
+        },
+        isError: true,
+        newlyLoaded: tools,
+      };
+    }
     return {
       output: {
         skill: name,
-        instructions: text,
-        ...(skill.tools !== undefined &&
-          skill.tools.length > 0 && { tools: skill.tools.map((t) => t.id) }),
+        instructions: d.text,
+        ...(tools.length > 0 && { tools: tools.map((t) => t.id) }),
       },
       isError: false,
-      newlyLoaded: skill.tools ?? [],
+      newlyLoaded: tools,
     };
+  }
+
+  private refusalMessage(code: string, name: string): string {
+    return code === "instructions_too_large"
+      ? `Skill "${cap(name)}" has instructions over the ${this.maxInstructionBytes}-byte limit.`
+      : `Skill "${cap(name)}" has instructions that cannot be delivered.`;
+  }
+
+  /** Load the skill's instructions and check them: a string, not tainted (ADR 0085), within the byte cap. */
+  private async deliverable(
+    skill: SkillDefinition
+  ): Promise<{ ok: true; text: string } | { ok: false; code: string; message: string }> {
+    const text: unknown = await loadInstructions(skill.instructions);
+    if (typeof text !== "string" || isTainted(text)) {
+      return {
+        ok: false,
+        code: "instructions_refused",
+        message: this.refusalMessage("instructions_refused", skill.id),
+      };
+    }
+    if (UTF8.encode(text).length > this.maxInstructionBytes) {
+      return {
+        ok: false,
+        code: "instructions_too_large",
+        message: this.refusalMessage("instructions_too_large", skill.id),
+      };
+    }
+    return { ok: true, text };
   }
 }

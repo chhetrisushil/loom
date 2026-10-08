@@ -1,9 +1,9 @@
-import { tainted } from "@loom/classify";
+import { isTainted, tainted } from "@loom/classify";
 import type { ToolDefinition } from "@loom/core";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import { z } from "zod";
-import { toolSpecFor, validateToolInput } from "./toolSchema";
-import { Bm25ToolRanker, type ToolRanker } from "./toolSearch";
+import { WITHHELD_DESCRIPTION, toolSpecFor, validateToolInput } from "./toolSchema";
+import { Bm25ToolRanker, type ToolRanker, firstLineOf } from "./toolSearch";
 
 // ── R22 (ADR 0125) — tool search: the loop half ─────────────────────────────────
 //
@@ -26,6 +26,13 @@ export const MAX_SEARCHES_CEILING = 200;
 const MAX_RESULT_DESCRIPTION = 160;
 /** Characters of the query recorded in the decision. */
 const MAX_RECORDED_QUERY = 200;
+/**
+ * A ranker that returns ids this run may not use (a shared ranker over a wider catalog, namespace-hidden
+ * tools) can leave a page short after filtering: the ask is widened (doubled) up to this many rounds
+ * and this many hits, so one search stays bounded work.
+ */
+const MAX_RANK_ROUNDS = 4;
+const MAX_RANK_ASK = 1000;
 
 /** Opt-in tool search for `agentLoop$`. Absent: the run is byte-identical to a run without this feature. */
 export interface ToolSearchConfig {
@@ -101,13 +108,26 @@ export class ToolSearchError extends Error {
   }
 }
 
-const isThirdParty = (t: ToolDefinition): boolean => t.jsonInputSchema !== undefined;
-/** A description reaches the index/the model only if it is first-party or the operator vouched for it. */
-const vouched = (t: ToolDefinition): boolean => !isThirdParty(t) || t.trustJsonSchemaText === true;
-const firstLine = (s: string): string => {
-  const line = s.split("\n", 1)[0] as string;
-  return line.length > MAX_RESULT_DESCRIPTION ? `${line.slice(0, MAX_RESULT_DESCRIPTION)}…` : line;
-};
+/**
+ * Built from a REMOTE declaration (ADR 0125 D7): the plugin marked it (`origin: "remote"`), or it
+ * carries a remote JSON Schema (MCP), or it is an A2A peer. Fails closed: ANY of the three suffices,
+ * so a plugin that forgets the marker is still treated as remote.
+ */
+const isRemote = (t: ToolDefinition): boolean =>
+  t.origin === "remote" || t.jsonInputSchema !== undefined || t.kind === "a2a";
+/** Its own bytes are not the host's: remote, or a description that arrived tainted (ADR 0085). */
+const isThirdParty = (t: ToolDefinition): boolean => isRemote(t) || isTainted(t.description);
+/**
+ * A description reaches the index / the model only if it is first-party, or a remote one the
+ * operator vouched for (`trustJsonSchemaText`). A TAINTED description is never vouched for.
+ */
+const vouched = (t: ToolDefinition): boolean =>
+  !isTainted(t.description) && (!isRemote(t) || t.trustJsonSchemaText === true);
+/** The one line a result shows for a tool; an un-vouched description is withheld, never echoed. */
+const hitDescription = (t: ToolDefinition): string =>
+  vouched(t)
+    ? firstLineOf(toolSpecFor(t).description, MAX_RESULT_DESCRIPTION)
+    : WITHHELD_DESCRIPTION;
 
 function positiveInt(name: string, v: number | undefined, def: number, ceiling: number): number {
   const n = v ?? def;
@@ -197,39 +217,51 @@ export class ToolSearchSession {
         this.initial.push(t);
       }
     }
-    this.ranker =
-      cfg.ranker ??
-      new Bm25ToolRanker(
-        [...this.searchable].map((id) => {
-          const t = this.byId.get(id) as ToolDefinition;
-          const host = cfg.annotations?.[id];
-          // Trusted vocabulary: the host's annotations and the tool author's own — the
-          // last ONLY for a first-party tool. A remote tool's self-declared tags/aliases are the
-          // server's claims: they count as description-level text, and only if the operator vouched
-          // for that text (`trustJsonSchemaText`).
-          const own = isThirdParty(t) ? undefined : t;
-          const remote =
-            isThirdParty(t) && vouched(t) ? [...(t.tags ?? []), ...(t.aliases ?? [])] : [];
-          return {
-            id,
-            // An un-vouched third-party description is not ranked on: it is attacker text.
-            ...(vouched(t) && { description: [t.description, ...remote].join(" ") }),
-            tags: [...(host?.tags ?? []), ...(own?.tags ?? [])],
-            aliases: [...(host?.aliases ?? []), ...(own?.aliases ?? [])],
-          };
-        })
-      );
+    this.ranker = cfg.ranker ?? this.lazyBm25(cfg);
     this.definition = {
       _tag: "ToolDefinition",
       id: this.name,
       name: this.name,
       description:
         "Search the available tools by what you need to do and add the best matches to your tool list. " +
-        "Call it with a short natural-language `query`; the tools it returns can be called from the next step on.",
+        "Call it with a short natural-language `query`; the tools it returns are on your tool list as soon as the result comes back.",
       kind: "tool",
       inputSchema: searchInput.describe("search_tools input"),
       outputSchema: z.unknown(),
     } as unknown as ToolDefinition;
+  }
+
+  /** The default ranker: BM25F over the searchable set, BUILT on the first search (an unused tool costs nothing). */
+  private lazyBm25(cfg: ToolSearchConfig): ToolRanker {
+    let built: Bm25ToolRanker | undefined;
+    const build = (): Bm25ToolRanker =>
+      new Bm25ToolRanker(
+        [...this.searchable].map((id) => {
+          const t = this.byId.get(id) as ToolDefinition;
+          const host = cfg.annotations?.[id];
+          // Trusted vocabulary: the host's annotations and the tool author's own — the last ONLY for
+          // a first-party tool. A remote tool's self-declared tags/aliases are the server's claims:
+          // they count as description-level text, and only if the operator vouched for that text
+          // (`trustJsonSchemaText`). An un-vouched tool contributes its id and the host's annotations.
+          const own = isThirdParty(t) ? undefined : t;
+          const remote =
+            isThirdParty(t) && vouched(t) ? [...(t.tags ?? []), ...(t.aliases ?? [])] : [];
+          return {
+            id,
+            // An un-vouched description is not ranked on: it is attacker text.
+            ...(vouched(t) && { description: [t.description, ...remote].join(" ") }),
+            tags: [...(host?.tags ?? []), ...(own?.tags ?? [])],
+            aliases: [...(host?.aliases ?? []), ...(own?.aliases ?? [])],
+          };
+        })
+      );
+    return {
+      kind: "bm25f",
+      rank: (query, limit) => {
+        built = built ?? build();
+        return built.rank(query, limit);
+      },
+    };
   }
 
   get metaSpec(): ReturnType<typeof toolSpecFor> {
@@ -250,7 +282,7 @@ export class ToolSearchSession {
     for (const t of tools) this.loadedIds.add(t.id);
   }
 
-  /** Tools the host marked always-on contribute to the menu budget. */
+  /** Size of a tool's model-facing spec, counted against `maxMenuChars` (always-loaded tools are NOT counted). */
   private specChars(t: ToolDefinition): number {
     return JSON.stringify(toolSpecFor(t)).length;
   }
@@ -296,12 +328,23 @@ export class ToolSearchSession {
     const recorded = await ctx.decide<Recorded>(
       decisionKey,
       async () => {
-        // Over-ask by what is already loaded so loaded hits can be dropped without starving the page.
-        const ranked = await this.ranker.rank(query, want + this.loadedIds.size);
-        const results = this.admit(
-          ranked.map((h) => h.id),
-          want
+        // Over-ask by what cannot be shown (already loaded, namespace-hidden) so filtering does not
+        // starve the page; if a shared ranker over a WIDER catalog still leaves it short, widen
+        // (bounded rounds / hits) while the ranker has more to give.
+        let ask = Math.min(
+          want + this.loadedIds.size + (this.byId.size - this.searchable.size),
+          MAX_RANK_ASK
         );
+        let results: string[] = [];
+        for (let round = 0; round < MAX_RANK_ROUNDS; round++) {
+          const ranked = await this.ranker.rank(query, ask);
+          results = this.admit(
+            ranked.map((h) => h.id),
+            want
+          );
+          if (results.length >= want || ranked.length < ask || ask >= MAX_RANK_ASK) break;
+          ask = Math.min(ask * 2, MAX_RANK_ASK);
+        }
         return {
           ranker: this.ranker.kind,
           query: query.slice(0, MAX_RECORDED_QUERY),
@@ -312,11 +355,14 @@ export class ToolSearchSession {
       { source: SOURCE_TOOL_SEARCH }
     );
 
-    // Live and replayed alike: the record is re-intersected with what THIS run may use, so a stale or
-    // tampered record can narrow the menu and can never widen it (or exceed the caps).
-    const results = this.admit(recorded.results, want);
-    const planned = new Set(this.plan(results));
-    const toLoad = recorded.loaded.filter((id) => planned.has(id));
+    // Live and replayed alike: the record is re-intersected with what THIS run may use, so a stale,
+    // garbage or tampered record can narrow the menu and can never widen it (or exceed the caps).
+    // A record that is not the expected shape is an empty (refused) one.
+    const rec = recorded !== null && typeof recorded === "object" ? recorded : undefined;
+    const results = this.admit(Array.isArray(rec?.results) ? rec.results : [], want);
+    const planned = this.plan(results);
+    const recordedLoaded = new Set<unknown>(Array.isArray(rec?.loaded) ? rec.loaded : []);
+    const toLoad = planned.filter((id) => recordedLoaded.has(id));
     const newlyLoaded: ToolDefinition[] = [];
     for (const id of toLoad) {
       const t = this.byId.get(id) as ToolDefinition;
@@ -330,7 +376,7 @@ export class ToolSearchSession {
       const t = this.byId.get(id) as ToolDefinition;
       return {
         name: id,
-        description: firstLine(toolSpecFor(t).description),
+        description: hitDescription(t),
         loaded: loadedNow.has(id),
       };
     });
@@ -370,6 +416,9 @@ export class ToolSearchSession {
     let chars = this.menuChars;
     for (const id of results) {
       if (count >= this.maxLoaded) break;
+      // A tainted description can never be shown to the model (guardRequest refuses it in the tool
+      // spec): the hit is LISTED (withheld, loaded=false) but the tool is not put on the menu.
+      if (isTainted((this.byId.get(id) as ToolDefinition).description)) continue;
       if (this.maxMenuChars !== undefined) {
         const c = this.specChars(this.byId.get(id) as ToolDefinition);
         if (chars + c > this.maxMenuChars) break;

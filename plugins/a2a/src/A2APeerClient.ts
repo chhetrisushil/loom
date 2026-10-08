@@ -159,6 +159,8 @@ export class A2APeerClient<TTaint extends boolean = false> {
       name: card.name,
       description: describe(card),
       kind: "a2a",
+      // R22 (ADR 0125 D7) — built from a REMOTE agent card: tool search must not rank or show its text.
+      origin: "remote",
       inputSchema: peerInputSchema,
       outputSchema: peerOutputSchema as unknown as z.ZodType<A2APeerOutputFor<TTaint>>,
     });
