@@ -270,11 +270,20 @@ export class ToolSearchSession {
    * gains one sentence; without this call nothing about the session changes.
    */
   attachSkills(src: SkillSearchSource): void {
+    // A catalog tool whose id starts with the skill key prefix would be silently unsearchable; refuse
+    // it loudly, like a toolName collision.
+    for (const id of [...this.byId.keys(), ...this.loadedIds]) {
+      if (id.startsWith(SKILL_KEY)) {
+        throw new ToolSearchError(
+          `toolSearch tool id ${JSON.stringify(id)} collides with the reserved skill-search key prefix while skill discovery is on`
+        );
+      }
+    }
     this.skillSource = src;
     for (const s of src.discoverable()) this.skillById.set(s.id, s);
     this.definition = {
       ...this.definition,
-      description: `${this.definition.description} It also finds skills (returned under \`skills\`): a skill hit loads nothing by itself; pass its id to \`${src.activationName}\` to get its instructions.`,
+      description: `${this.definition.description} It also finds skills (returned under \`skills\`): a skill hit loads nothing by itself; pass its id to \`${src.activationName}\` to get its instructions (search only helps find ids; activation is not gated on it).`,
     } as ToolDefinition;
   }
 
