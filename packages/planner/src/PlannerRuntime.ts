@@ -3,6 +3,9 @@ import type { LlmProvider } from "@loom/llm";
 import type { ReasoningRuntime } from "@loom/reasoning";
 import { Priority } from "@loom/scheduler";
 import type { Scheduler } from "@loom/scheduler";
+import type { ExecutionContext } from "@loom/workflow-runtime";
+import { PlanFailedError, type PlanGoalInput, planGoal } from "./planGoal";
+import type { PlanGraph } from "./planGraph";
 
 export interface PlanStep {
   capabilityId: string;
@@ -29,6 +32,14 @@ export interface PlannerRuntimeConfig {
   // priority so it yields to live agent/workflow work under a concurrency cap.
   // No effect on output — planning is offline-safe and order-independent.
   scheduler?: Scheduler;
+  /**
+   * R16 — fail closed instead of falling back. Default `false` (the original behaviour: an
+   * unparseable or empty model answer silently becomes the keyword heuristic's plan). With
+   * `strict: true`, `plan()` throws {@link PlanFailedError} when a configured model yields no
+   * usable steps — the fallback is then never taken. Prefer {@link PlannerRuntime.planGraph},
+   * which is journaled and has no silent fallback at all.
+   */
+  strict?: boolean;
 }
 
 // The proposal's Planner Runtime: given a goal, selects and orders the
@@ -37,14 +48,33 @@ export interface PlannerRuntimeConfig {
 export class PlannerRuntime {
   constructor(private readonly config: PlannerRuntimeConfig) {}
 
+  /**
+   * The original flat plan: an ordered list of capability ids. NOT journaled, no arguments, no edges.
+   * Kept unchanged for existing callers (`dispatchPlan`); new code should use {@link planGraph}.
+   */
   async plan(goal: string): Promise<Plan> {
     const maxSteps = this.config.maxSteps ?? 5;
 
     if (this.config.reasoning !== undefined || this.config.provider !== undefined) {
       const llmPlan = await this.planWithLlm(goal, maxSteps);
       if (llmPlan.steps.length > 0) return llmPlan;
+      if (this.config.strict === true) {
+        throw new PlanFailedError("unparseable", 1, [], "the model returned no usable steps");
+      }
     }
     return this.planWithHeuristic(goal, maxSteps);
+  }
+
+  /**
+   * R16 — plan a goal as a validated DAG with arguments and `$from` bindings, journaled through
+   * `ctx.decide` (one model call, served on replay; typed failure, no silent fallback). Execute it
+   * with `executePlan`. Uses this runtime's catalog.
+   */
+  planGraph(
+    ctx: Pick<ExecutionContext, "decide">,
+    input: Omit<PlanGoalInput, "catalog">
+  ): Promise<PlanGraph> {
+    return planGoal(ctx, { ...input, catalog: this.config.catalog });
   }
 
   private planWithHeuristic(goal: string, maxSteps: number): Plan {

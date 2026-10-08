@@ -1,7 +1,7 @@
 {
   "name": "@loom/planner",
   "version": "0.0.1",
-  "description": "Planner runtime for Loom — turns a goal into an ordered capability plan",
+  "description": "Planner runtime for Loom \u2014 turns a goal into an ordered capability plan",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -19,17 +19,22 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@loom/agent": "workspace:*",
     "@loom/capability": "workspace:*",
+    "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
     "@loom/llm": "workspace:*",
     "@loom/reasoning": "workspace:*",
-    "@loom/scheduler": "workspace:*"
+    "@loom/scheduler": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
-    "@loom/workflow-runtime": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8",
-    "zod": "^3.23.8"
+    "vitest": "^2.1.8"
   }
 }
