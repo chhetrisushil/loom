@@ -133,15 +133,24 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/isolate':
+        specifier: workspace:*
+        version: link:../isolate
       '@loom/middleware':
         specifier: workspace:*
         version: link:../middleware
+      '@loom/orchestration':
+        specifier: workspace:*
+        version: link:../orchestration
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../replay-vm
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime
+      '@loom/worker-runtime':
+        specifier: workspace:*
+        version: link:../worker-runtime
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

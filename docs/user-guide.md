@@ -606,7 +606,7 @@ agentLoop$(ctx, {
   signal: turn.signal,           // stop THIS run (barge-in): no further model or tool call, AGENT_INTERRUPTED
   turnTimeoutMs: 60_000,         // the model frame's kernel deadline
   toolTimeoutMs: 15_000,         // a tool that exceeds it is an isError result
-  memory, writeBack: true,       // persist prompt + answer to memory, idempotently
+  memory, writeBack: { toolId: "memwrite" },  // persist prompt + answer; or { unless } / { allowDirect: true }
 }, input);
 ```
 
