@@ -127,7 +127,7 @@ selector and with `toolSearch`.
 **D12 — Skills discoverable through search (R22b, user ruling 2026-10-09: "add skills to search_tools as R22 follow-up").** With a
 large registry the D11 index (`maxIndexBytes`) cuts off the tail, and a skill past the cut cannot be activated. New option
 `skillActivation.discovery: "index" | "search" | "both"` (default `"index"`: byte-identical to D11). `"search"` / `"both"` REQUIRE
-`toolSearch` (and its built-in ranker): anything else is a config error.
+`toolSearch`: anything else is a config error. (A host `toolSearch.ranker` was refused in v1; D13 lifts that.)
 - **`"search"`** replaces the prompt index with one fixed line (no skill text reaches the prompt at all) saying skills are found
   with `search_tools` and loaded with `activate_skill`. **`"both"`** keeps the index (its `+N more` marker adds "find them with
   `search_tools`") and search also covers skills. An index that fits nothing is only a config error in `"index"` mode.
@@ -154,15 +154,39 @@ large registry the D11 index (`maxIndexBytes`) cuts off the tail, and a skill pa
 - **Search is a convenience, not authorization.** `activate_skill` accepts ANY catalog skill (minus upfront-selected) by id,
   whether or not a search returned it; the offered set is the catalog, so "found with search" is never a precondition. `"both"` with
   a tiny `maxIndexBytes` is allowed (search covers everything, the index just lists fewer); `"search"` ignores `maxIndexBytes`.
-- **Config errors:** `discovery` not one of the three; `"search"`/`"both"` without `toolSearch`; with a host `toolSearch.ranker`
-  (a custom ranker cannot rank skills yet: an unrankable skill catalog would be a silent no-op).
-- **Residuals.** (1) A custom `ranker` plus skill discovery is refused; indexing skills in a semantic ranker is a follow-up behind
-  `ToolRanker` (the `\0skill:` key is the contract). (2) The discoverable set is not byte-bounded in the prompt (it is not in the
+- **Config errors:** `discovery` not one of the three; `"search"`/`"both"` without `toolSearch`. (v1 also refused a host
+  `toolSearch.ranker`; that refusal is removed by D13.)
+- **Residuals.** (1) ~~A custom `ranker` plus skill discovery is refused~~ — closed by D13 (a custom ranker ranks tools only;
+  the `\0skill:` key stays internal to the built-in single index). (2) The discoverable set is not byte-bounded in the prompt (it is not in the
   prompt) but the lazy index is O(registry); a registry of tens of thousands of skills pays that once on the first search. (3) A
   search result lists skills the `"both"` index already shows; that is intentional, not deduplicated. (4) `skillActivation.maxIndex`
-  no longer bounds reachability in `"search"`/`"both"`. (5) Future custom-ranker contract: a custom ranker ranks TOOLS only;
-  skills are ranked separately by the built-in BM25F and appended after the tool hits (scores from different rankers are never
-  mixed). v1 refuses the combination.
+  no longer bounds reachability in `"search"`/`"both"`. (5) ~~Future custom-ranker contract~~ — implemented by D13.
+
+**D13 — A custom tool ranker with skill discovery (R22c, user ruling 2026-10-09: "implement custom ranker follow-up").** The v1
+refusal of `toolSearch.ranker` with `discovery: "search" | "both"` is removed. Contract:
+- **A custom `toolSearch.ranker` ranks TOOLS only** (the unchanged `ToolRanker` interface). It is never given a skill doc, and no
+  `\0skill:` key ever reaches it; a skill-looking key it returns is not a tool id and is dropped.
+- **Skills are ranked separately**, never in the tool ranker's index: by the built-in BM25F over skill docs only (same fields and
+  weights, built lazily, RAW skill ids), or by the optional `skillActivation.skillRanker?: ToolRanker` (same interface; it sees skill
+  docs only and returns raw skill ids, the key prefix stays internal). Results are re-admitted against the live discoverable,
+  inactive set. `skillRanker` requires `discovery: "search" | "both"` (config error otherwise). **Two-ranker mode** is on iff a
+  custom `toolSearch.ranker` OR a `skillRanker` is present; with neither, the R22b single combined BM25F index is used and the path
+  is byte-identical to before (same results, same record, no `skillRanker` key).
+- **Page composition (pick): interleave by rank position, tool first** (t1, s1, t2, s2, ...) until `maxPerSearch`/`limit`; a kind
+  that runs out hands its unused share to the other. Positions are integers, so there are no ties, and scores from different
+  rankers are never compared or mixed. Rejected: "tools then skills" (starves skills whenever the tool ranker fills the page),
+  and score blending (the scales are unrelated).
+- **Over-ask and widening are per ranker**, each bounded (`MAX_RANK_ASK`, at most 4 rounds): the tool ranker is asked for the page
+  plus loaded tools plus namespace-hidden tools, the skill ranker for the page plus active skills; each widens only while its own
+  admitted list is short of the page and it has more to give.
+- **Failures.** Either ranker throwing (non-terminal) is `search_unavailable`, a fixed reason, nothing recorded; terminal errors
+  (R10) propagate. The tool ranker runs first; if it throws the skill ranker is not called.
+- **Recording and replay.** Same shape (`results`, `loaded`, `skills`); two-ranker mode additionally writes `skillRanker: <kind>`
+  next to `ranker` (the learning substrate sees which ranker produced each side). Replay calls NEITHER ranker and re-admits against
+  the live sets, tools first up to `maxPerSearch`. A live page has at most `maxPerSearch` entries in total, so an untampered
+  interleaved page is never truncated differently on replay (tested under `divergence: "fail"`).
+- **Residual.** A sloppy skill ranker that ignores `limit` makes `admitSkills` iterate its whole output (host-controlled, like the
+  tool ranker).
 
 ## Review round 1 (2026-10-09)
 
