@@ -127,7 +127,7 @@ All optional, all separate.
 | `@loom/memory` | scoped, TTL/size-bounded agent memory |
 | `@loom/knowledge` | document corpora over memory, with provenance |
 | `@loom/reasoning` | model routing, confidence elevation, critique |
-| `@loom/learning` | trajectories, off-policy eval, promotion gate |
+| `@loom/learning` | trajectories, off-policy eval (SNIPS, doubly-robust, bootstrap CIs), promotion gate, policy registry (shadow/canary/rollback), JSONL export |
 | `@loom/intent` · `planner` · `capability` | NL → capability → ordered plan |
 
 > **Off-policy eval needs exploration, not history.** Usable evidence ≈ explore-rate ×

@@ -16,7 +16,7 @@ import { LLM_INTERRUPTED, MAX_INLINE_TOTAL_BYTES, assistantMessageOf } from "@lo
 import type { TieredMemory } from "@loom/memory";
 import type { ModelInvoker, ReasonOptions, ReasoningRuntime } from "@loom/reasoning";
 import { ExecutionCancelledError, approvalViewDigest } from "@loom/workflow-runtime";
-import type { BranchContext, ExecutionContext } from "@loom/workflow-runtime";
+import type { BranchContext, DecideOptions, ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { createAgentModelEffect } from "./createAgentModelEffect";
@@ -112,6 +112,19 @@ export interface AgentLoopConfig {
    * {@link requireEffectRing} turns the unguarded default into a refusal.
    */
   reasoning?: ReasoningRuntime;
+  /**
+   * R18 (ADR 0124) — the prompt template and model configuration in force, as content-addressed
+   * references (`promptVersion` / `modelVersion` from `@loom/learning`). Recorded in the `policy`
+   * stamp of each journaled model-response decision (`policy.refs`), so an evaluation can slice
+   * trajectories by prompt or model version. Additive and descriptive: a decision's `choice` is the
+   * only replay input, so a log with or without it replays identically. Applies to the direct
+   * `reasoning` path (where the response is a decision); the effect-ring paths record the call as
+   * an effect frame and carry the version on the effect input instead.
+   */
+  versions?: {
+    prompt?: { id: string; version: string };
+    model?: { id: string; version: string };
+  };
   /**
    * R9 — route each `reasoning` model call through the effect ring. Either one effect id for
    * every route, or a function from the route id to the effect id registered for it (see
@@ -1192,7 +1205,16 @@ export async function agentLoop$(
                       throw err;
                     }
                   },
-                  { source: SOURCE_RESPONSE }
+                  {
+                    source: SOURCE_RESPONSE,
+                    ...(config.versions !== undefined && {
+                      policy: {
+                        id: "agent-llm",
+                        version: config.versions.model?.version ?? "unversioned",
+                        refs: config.versions,
+                      } as NonNullable<DecideOptions["policy"]>,
+                    }),
+                  }
                 );
                 if (isInterrupt(recorded)) return interruptedWith(recorded.partial);
                 return recorded;
