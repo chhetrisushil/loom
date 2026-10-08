@@ -14,7 +14,8 @@ import { SkillRegistry } from "./SkillRegistry";
 import { type AgentLoopConfig, agentLoop$ } from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
 import { SOURCE_SKILL_ACTIVATION, type SkillActivationConfig } from "./skillActivation";
-import { SOURCE_TOOL_SEARCH } from "./toolSearchSession";
+import type { ToolRanker } from "./toolSearch";
+import { SOURCE_TOOL_SEARCH, interleave } from "./toolSearchSession";
 
 // ── R22b (ADR 0125 D12) — skills discoverable through `search_tools` ───────────────
 //
@@ -557,7 +558,7 @@ describe("R22b - config errors and unchanged failure path", () => {
       (e: Error) => e
     );
   };
-  it("search/both need toolSearch; bad values; a custom ranker", async () => {
+  it("search/both need toolSearch; bad values; skillRanker needs search discovery", async () => {
     for (const discovery of ["search", "both"] as const) {
       const r = await flowErr({
         skills: SKILLS(),
@@ -575,11 +576,18 @@ describe("R22b - config errors and unchanged failure path", () => {
     expect(String((bad as { error?: unknown }).error ?? bad)).toMatch(/discovery must be/);
     const rk = await flowErr({
       skills: SKILLS(),
-      activation: { discovery: "search" },
-      config: tcfg({ ranker: { kind: "x", rank: () => [] } }),
+      activation: { skillRanker: { kind: "x", rank: () => [] } },
+      config: tcfg(),
       provider: script([]),
     });
-    expect(String((rk as { error?: unknown }).error ?? rk)).toMatch(/built-in ranker/);
+    expect(String((rk as { error?: unknown }).error ?? rk)).toMatch(/skillRanker needs discovery/);
+    const rk2 = await flowErr({
+      skills: SKILLS(),
+      activation: { discovery: "search", skillRanker: {} as never },
+      config: tcfg(),
+      provider: script([]),
+    });
+    expect(String((rk2 as { error?: unknown }).error ?? rk2)).toMatch(/must be a ToolRanker/);
   });
 
   it("a skill whose tool is named like the search meta-tool is still a config error in search mode", async () => {
@@ -610,5 +618,382 @@ describe("R22b - config errors and unchanged failure path", () => {
     expect(res?.result.error?.code).toBe("search_unavailable");
     expect(JSON.stringify(res)).not.toContain("secret");
     expect(await searches(b)).toHaveLength(0);
+  });
+});
+
+// ── R22c (ADR 0125 D13) — a custom tool ranker with skill discovery ─────────────────
+
+describe("R22c - interleave (the page rule)", () => {
+  it.each([
+    [["t1", "t2", "t3"], ["s1", "s2", "s3"], 4, ["t1", "t2"], ["s1", "s2"]],
+    [["t1", "t2", "t3"], ["s1", "s2", "s3"], 5, ["t1", "t2", "t3"], ["s1", "s2"]],
+    [["t1"], ["s1", "s2", "s3"], 4, ["t1"], ["s1", "s2", "s3"]],
+    [["t1", "t2", "t3"], ["s1"], 4, ["t1", "t2", "t3"], ["s1"]],
+    [[], ["s1", "s2"], 5, [], ["s1", "s2"]],
+    [["t1", "t2"], [], 5, ["t1", "t2"], []],
+    [["t1", "t2"], ["s1", "s2"], 1, ["t1"], []],
+    [["t1", "t2"], ["s1", "s2"], 0, [], []],
+  ])("%j / %j want %i", (t, s, want, ot, os) => {
+    expect(interleave(t, s, want)).toEqual({ first: ot, second: os });
+  });
+});
+
+describe("R22c - custom tool ranker + skill discovery", () => {
+  const TOOLS = ["pay_a", "pay_b", "pay_c", "pay_d"].map((id) => mk(id, `${id} payments`));
+  const SK = () => [
+    mkSkill("refund_one", "R1", [], { description: "refund customer chargeback handling" }),
+    mkSkill("refund_two", "R2", [], { description: "refund customer money back policy" }),
+    mkSkill("refund_three", "R3", [], { description: "refund customer escalation" }),
+    mkSkill("unrelated", "U", [], { description: "weather forecast" }),
+  ];
+  /** A spy tool ranker: records every (query, limit) and every returned/seen id. */
+  const spyTools = (ids: string[], hostile: string[] = []) => {
+    const calls: { query: string; limit: number }[] = [];
+    const ranker: ToolRanker = {
+      kind: "spy-tools",
+      rank: (query, limit) => {
+        calls.push({ query, limit });
+        return [...hostile, ...ids].slice(0, limit).map((id, i) => ({ id, score: 100 - i }));
+      },
+    };
+    return { ranker, calls };
+  };
+  const spySkills = (ids: string[]) => {
+    const calls: { query: string; limit: number }[] = [];
+    const ranker: ToolRanker = {
+      kind: "spy-skills",
+      rank: (query, limit) => {
+        calls.push({ query, limit });
+        return ids.slice(0, limit).map((id, i) => ({ id, score: 100 - i }));
+      },
+    };
+    return { ranker, calls };
+  };
+  const setup = (
+    tools: ReturnType<typeof spyTools>,
+    extra: Partial<Opts> = {},
+    toolSearch: Partial<AgentLoopConfig["toolSearch"] & object> = {},
+    activation: SkillActivationConfig = { discovery: "search" }
+  ): Opts => ({
+    skills: SK(),
+    activation,
+    config: { toolSearch: { catalog: TOOLS, ranker: tools.ranker, ...toolSearch } },
+    provider: script([[SEARCH("refund payments")]]),
+    ...extra,
+  });
+
+  it.each(["search", "both"] as const)(
+    "%s: tool hits come from the custom ranker, skill hits from built-in BM25F over skills only",
+    async (discovery) => {
+      const t = spyTools(["pay_b", "pay_a"], ["\u0000skill:refund_two"]);
+      const b = boot(setup(t, {}, {}, { discovery }));
+      expect((await runToEnd(b)).status).toBe("completed");
+      const [res] = lastResults(b);
+      expect(res?.result.tools?.map((x) => x.name)).toEqual(["pay_b", "pay_a"]);
+      // the hostile skill key from the tool ranker is dropped as a tool; skills come from BM25F
+      expect(res?.result.skills?.map((x) => x.id)).toEqual(
+        expect.arrayContaining(["refund_one", "refund_two", "refund_three"])
+      );
+      expect(res?.result.skills?.map((x) => x.id)).not.toContain("unrelated");
+      const [rec] = await searches(b);
+      const v = rec?.value as Record<string, unknown>;
+      expect(v.ranker).toBe("spy-tools");
+      expect(v.skillRanker).toBe("bm25f");
+      expect(v.results).toEqual(["pay_b", "pay_a"]);
+    }
+  );
+
+  it("the custom ranker only ever sees the query and a limit; the skill ranker only raw skill ids", async () => {
+    const t = spyTools(["pay_a"]);
+    const sk = spySkills(["refund_two", "pay_a", "\u0000skill:refund_one", "ghost"]);
+    const b = boot(setup(t, {}, {}, { discovery: "search", skillRanker: sk.ranker }));
+    await runToEnd(b);
+    const [res] = lastResults(b);
+    // the skill ranker's non-skill / prefixed / unknown ids are dropped
+    expect(res?.result.skills?.map((x) => x.id)).toEqual(["refund_two"]);
+    expect(res?.result.tools?.map((x) => x.name)).toEqual(["pay_a"]);
+    expect(t.calls.length).toBeGreaterThan(0);
+    expect(sk.calls.length).toBeGreaterThan(0);
+    const rec = (await searches(b))[0]?.value as Record<string, unknown>;
+    expect(rec.skillRanker).toBe("spy-skills");
+  });
+
+  it("skillRanker alone (built-in tool ranker): tools never contain skills, skills come from the host ranker", async () => {
+    const sk = spySkills(["refund_three"]);
+    const b = boot({
+      skills: SK(),
+      activation: { discovery: "both", skillRanker: sk.ranker },
+      config: { toolSearch: { catalog: TOOLS } },
+      provider: script([[SEARCH("payments")]]),
+    });
+    await runToEnd(b);
+    const [res] = lastResults(b);
+    expect(res?.result.skills?.map((x) => x.id)).toEqual(["refund_three"]);
+    expect(res?.result.tools?.length).toBeGreaterThan(0);
+    const rec = (await searches(b))[0]?.value as Record<string, unknown>;
+    expect(rec.ranker).toBe("bm25f");
+    expect(rec.skillRanker).toBe("spy-skills");
+  });
+
+  it("the page interleaves tool-first by rank position, up to maxPerSearch (no score mixing)", async () => {
+    const t = spyTools(["pay_a", "pay_b", "pay_c"]);
+    const sk = spySkills(["refund_one", "refund_two", "refund_three"]);
+    const b = boot(
+      setup(t, {}, { maxPerSearch: 4 }, { discovery: "search", skillRanker: sk.ranker })
+    );
+    await runToEnd(b);
+    const [res] = lastResults(b);
+    expect(res?.result.tools?.map((x) => x.name)).toEqual(["pay_a", "pay_b"]);
+    expect(res?.result.skills?.map((x) => x.id)).toEqual(["refund_one", "refund_two"]);
+  });
+
+  it.each([
+    ["tools exhausted", ["pay_a"], ["refund_one", "refund_two", "refund_three"], 1, 3],
+    ["skills exhausted", ["pay_a", "pay_b", "pay_c"], ["refund_one"], 3, 1],
+    ["no skills", ["pay_a", "pay_b"], [], 2, 0],
+    ["no tools", [], ["refund_one", "refund_two"], 0, 2],
+  ])("one kind exhausted: %s hands its share to the other", async (_n, ts, ss, nt, ns) => {
+    const t = spyTools(ts);
+    const sk = spySkills(ss);
+    const b = boot(
+      setup(t, {}, { maxPerSearch: 4 }, { discovery: "search", skillRanker: sk.ranker })
+    );
+    await runToEnd(b);
+    const [res] = lastResults(b);
+    expect(res?.result.tools).toHaveLength(nt);
+    expect(res?.result.skills).toHaveLength(ns);
+  });
+
+  it("a tool ranker that throws is search_unavailable, nothing recorded, no text leaked", async () => {
+    const sk = spySkills(["refund_one"]);
+    const b = boot(
+      setup(
+        {
+          ranker: {
+            kind: "boom",
+            rank: () => {
+              throw new Error("SECRET-tools");
+            },
+          },
+          calls: [],
+        },
+        {},
+        {},
+        { discovery: "search", skillRanker: sk.ranker }
+      )
+    );
+    expect((await runToEnd(b)).status).toBe("completed");
+    const [res] = lastResults(b);
+    expect(res?.result.error?.code).toBe("search_unavailable");
+    expect(JSON.stringify(res)).not.toContain("SECRET");
+    expect(await searches(b)).toHaveLength(0);
+  });
+
+  it("a skill ranker that throws is search_unavailable, nothing recorded", async () => {
+    const t = spyTools(["pay_a"]);
+    const b = boot(
+      setup(
+        t,
+        {},
+        {},
+        {
+          discovery: "search",
+          skillRanker: {
+            kind: "boom",
+            rank: () => {
+              throw new Error("SECRET-skills");
+            },
+          },
+        }
+      )
+    );
+    expect((await runToEnd(b)).status).toBe("completed");
+    const [res] = lastResults(b);
+    expect(res?.result.error?.code).toBe("search_unavailable");
+    expect(JSON.stringify(res)).not.toContain("SECRET");
+    expect(await searches(b)).toHaveLength(0);
+  });
+
+  it("a terminal error from either ranker still propagates", async () => {
+    const quota = Object.assign(new Error("quota"), { name: "QuotaExceededError" });
+    const boom: ToolRanker = {
+      kind: "boom",
+      rank: () => {
+        throw quota;
+      },
+    };
+    const t = spyTools(["pay_a"]);
+    await expect(
+      runToEnd(boot(setup({ ranker: boom, calls: [] }, {}, {}, { discovery: "search" })))
+    ).rejects.toThrow(/quota/);
+    await expect(
+      runToEnd(boot(setup(t, {}, {}, { discovery: "search", skillRanker: boom })))
+    ).rejects.toThrow(/quota/);
+  });
+
+  it("over-ask: each ranker is asked for the page plus ITS OWN hidden count (tools: loaded + hidden; skills: active)", async () => {
+    const t = spyTools(["pay_a", "pay_b"]);
+    const sk = spySkills(["refund_one", "refund_two", "refund_three"]);
+    const b = boot(
+      setup(
+        t,
+        {
+          agentTools: [mk("on_menu")],
+          provider: script([[ACT("refund_one")], [SEARCH("refund payments")]]),
+        },
+        {
+          maxPerSearch: 2,
+          namespaces: ["pay_"],
+          catalog: [...TOOLS, mk("hidden_1"), mk("hidden_2")],
+        },
+        { discovery: "search", skillRanker: sk.ranker }
+      )
+    );
+    await runToEnd(b);
+    // tools: want 2 + loaded 1 (agent tool on_menu) + hidden 2; skills: want 2 + 1 active
+    expect(t.calls[0]?.limit).toBe(5);
+    expect(sk.calls[0]?.limit).toBe(3);
+    const [res] = lastResults(b);
+    // active refund_one is not a hit
+    expect(res?.result.skills?.map((x) => x.id)).not.toContain("refund_one");
+  });
+
+  it("widening is per ranker and bounded: a ranker whose head is unusable is re-asked with a doubled limit", async () => {
+    const t = spyTools(["pay_a"], ["g1", "g2", "g3"]);
+    const sk = spySkills(["g1", "g2", "g3", "refund_one"]);
+    const b = boot(
+      setup(
+        t,
+        { provider: script([[SEARCH("x")]]) },
+        { maxPerSearch: 1 },
+        { discovery: "search", skillRanker: sk.ranker }
+      )
+    );
+    await runToEnd(b);
+    expect(t.calls.map((c) => c.limit)).toEqual([1, 2, 4]);
+    expect(sk.calls.map((c) => c.limit)).toEqual([1, 2, 4]);
+    const [res] = lastResults(b);
+    expect(res?.result.tools?.map((x) => x.name)).toEqual(["pay_a"]);
+    // want 1 -> the tool takes the single slot
+    expect(res?.result.skills).toEqual([]);
+  });
+
+  it("widening stops after the bounded number of rounds", async () => {
+    const ghosts = Array.from({ length: 200 }, (_, i) => `g${i}`);
+    const t = spyTools(ghosts);
+    const b = boot(
+      setup(t, { provider: script([[SEARCH("x")]]) }, { maxPerSearch: 1 }, { discovery: "search" })
+    );
+    await runToEnd(b);
+    expect(t.calls.map((c) => c.limit)).toEqual([1, 2, 4, 8]);
+  });
+
+  describe("replay", () => {
+    async function replayDual(
+      forge: (rec: Record<string, unknown>) => Record<string, unknown> = (r) => r,
+      want = 4
+    ) {
+      const t1 = spyTools(["pay_a", "pay_b", "pay_c"]);
+      const s1 = spySkills(["refund_one", "refund_two", "refund_three"]);
+      const mkOpts = (store: InMemoryAsyncEventStore, t: typeof t1, s: typeof s1): Opts =>
+        setup(t, { store }, { maxPerSearch: want }, { discovery: "search", skillRanker: s.ranker });
+      const store = new InMemoryAsyncEventStore();
+      const first = boot(mkOpts(store, t1, s1));
+      await runToEnd(first);
+      const live = resultsOf(first.requests[1] as LlmRequest)[0]?.result;
+      const full = await store.read("e1");
+      const cutoff = full.findIndex((e) =>
+        String((e.payload as { stepId?: string }).stepId ?? "").startsWith("dba#turn:1")
+      );
+      const prefix = full.slice(0, cutoff).map((e) => {
+        const p = e.payload as { decisionId?: string; choice?: Record<string, unknown> };
+        return p.decisionId === "dba#turn:0:tool:0:search"
+          ? ({ ...e, payload: { ...p, choice: forge(p.choice ?? {}) } } as EventEnvelope)
+          : e;
+      });
+      const crashed = new InMemoryAsyncEventStore();
+      for (const e of prefix) await crashed.append(e);
+      const folded = new ReplayVM(prefix, {
+        executionId: "e1",
+        workflowId: "ask",
+        workflowVersion: "1.0.0",
+      }).getState();
+      const t2 = spyTools(["never"]);
+      const s2 = spySkills(["never"]);
+      const second = boot(mkOpts(crashed, t2, s2));
+      await (await second.runtime.restoreFromState(folded)).waitForCompletion();
+      return {
+        live,
+        replayed: resultsOf(second.requests[0] as LlmRequest)[0]?.result,
+        second,
+        t2,
+        s2,
+      };
+    }
+
+    it("an untampered interleaved page replays identically (divergence: fail), calling neither ranker", async () => {
+      const { live, replayed, second, t2, s2 } = await replayDual();
+      expect(live?.tools).toHaveLength(2);
+      expect(live?.skills).toHaveLength(2);
+      expect(replayed).toEqual(live);
+      expect(t2.calls).toEqual([]);
+      expect(s2.calls).toEqual([]);
+      expect(second.warnings).toEqual([]);
+    });
+
+    it("an odd-sized interleaved page (tool-led 3 + 2) replays identically too", async () => {
+      const { live, replayed } = await replayDual((r) => r, 5);
+      expect(live?.tools).toHaveLength(3);
+      expect(live?.skills).toHaveLength(2);
+      expect(replayed).toEqual(live);
+    });
+
+    it("a forged record is re-admitted: unknown ids dropped, the page capped, still no ranker call", async () => {
+      const { replayed, t2, s2 } = await replayDual(
+        (r) => ({
+          ...r,
+          results: ["ghost", "pay_a", "pay_b", "pay_c", "pay_d"],
+          skills: ["refund_one", "refund_two"],
+        }),
+        4
+      );
+      expect(replayed?.tools?.map((x) => x.name)).toEqual(["pay_a", "pay_b", "pay_c", "pay_d"]);
+      expect(replayed?.skills).toEqual([]);
+      expect(t2.calls).toEqual([]);
+      expect(s2.calls).toEqual([]);
+    });
+  });
+
+  it("with two rankers the tool index holds NO skill docs: strongly matching skills cannot crowd a tool out", async () => {
+    const many = Array.from({ length: 10 }, (_, i) =>
+      mkSkill(`rs${i}`, "X", [], { description: "refund chargeback" })
+    );
+    const b = boot({
+      skills: many,
+      activation: { discovery: "search", skillRanker: spySkills([]).ranker },
+      config: {
+        toolSearch: {
+          catalog: [mk("weak_tool", "refund"), mk("other", "unrelated")],
+          maxPerSearch: 1,
+        },
+      },
+      provider: script([[SEARCH("refund chargeback")]]),
+    });
+    await runToEnd(b);
+    expect(lastResults(b)[0]?.result.tools?.map((x) => x.name)).toEqual(["weak_tool"]);
+  });
+
+  it("the single-ranker path is unchanged: no skillRanker in the record, one combined index", async () => {
+    const b = boot({
+      skills: SK(),
+      activation: { discovery: "search" },
+      config: { toolSearch: { catalog: TOOLS } },
+      provider: script([[SEARCH("refund")]]),
+    });
+    await runToEnd(b);
+    const rec = (await searches(b))[0]?.value as Record<string, unknown>;
+    expect(rec.ranker).toBe("bm25f");
+    expect(Object.keys(rec)).not.toContain("skillRanker");
+    expect(lastResults(b)[0]?.result.skills?.map((x) => x.id)).toContain("refund_one");
   });
 });

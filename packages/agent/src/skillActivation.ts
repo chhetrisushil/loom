@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { SkillRegistry } from "./SkillRegistry";
 import { isTerminalToolError } from "./toolFailure";
 import { cap, toolSpecFor, validateToolInput } from "./toolSchema";
-import { firstLineOf } from "./toolSearch";
+import { type ToolRanker, firstLineOf } from "./toolSearch";
 
 // ── R22 (ADR 0125 D11) — mid-loop skill activation ──────────────────────────────
 //
@@ -64,7 +64,7 @@ export interface SkillActivationConfig {
    * byte-identical to a run without this option. `"search"`: the index is replaced by one short fixed
    * line; skills are found with `search_tools` (hits under `skills`, never loaded by the search) and
    * loaded with `activate_skill`. `"both"`: the index stays AND search covers skills (so a skill past
-   * the index cut is still reachable). `"search"` / `"both"` require `toolSearch` and its built-in ranker.
+   * the index cut is still reachable). `"search"` / `"both"` require `toolSearch`.
    * Searchable skills = the whole catalog minus the upfront-selected ones, NOT limited by
    * `maxIndex` / `maxIndexBytes`. Search is a CONVENIENCE for finding ids, not an authorization step:
    * `activate_skill` accepts ANY catalog skill (minus upfront-selected) by id, whether or not a search
@@ -72,13 +72,21 @@ export interface SkillActivationConfig {
    * covers everything); `"search"` ignores `maxIndexBytes` (there is no index).
    */
   discovery?: "index" | "search" | "both";
+  /**
+   * R22c (ADR 0125 D13) — rank SKILLS with the host's own ranker. It sees skill docs only: its
+   * `rank(query, limit)` returns RAW skill ids (the internal key prefix never reaches it). Needs
+   * `discovery: "search" | "both"`. A custom `toolSearch.ranker` ranks tools only and never sees
+   * skills; when either custom ranker is present, tools and skills are ranked separately (the skill
+   * side defaults to built-in BM25F over skill docs) and a search page interleaves them by rank
+   * position, tool first, up to `maxPerSearch` (scores are never mixed). Neither ranker is called on
+   * replay. A ranker failure is `search_unavailable` with nothing recorded.
+   */
+  skillRanker?: ToolRanker;
 }
 
 /** What the activation session needs to know about the loop's `toolSearch` (R22b). */
 export interface SearchWiring {
   readonly name: string;
-  /** A host-supplied `toolSearch.ranker` cannot rank skills: discovery by search refuses it. */
-  readonly customRanker: boolean;
 }
 
 export class SkillActivationError extends Error {
@@ -137,6 +145,8 @@ export class SkillActivationSession {
   private readonly discoverableList: SkillDefinition[] = [];
   readonly discovery: "index" | "search" | "both";
   private readonly searchName: string | undefined;
+  /** R22c: the host skill ranker, when configured (the {@link SkillSearchSource} contract). */
+  readonly skillRanker: ToolRanker | undefined;
   private readonly active = new Set<string>();
   /** The index lines (one per offered skill, id order) and how many skills the byte cap left out. */
   private readonly lines: string[] = [];
@@ -170,13 +180,16 @@ export class SkillActivationSession {
           `skillActivation.discovery "${discovery}" needs \`toolSearch\` (skills are found through search_tools)`
         );
       }
-      if (opts.search.customRanker) {
-        throw new SkillActivationError(
-          `skillActivation.discovery "${discovery}" needs the built-in ranker: remove toolSearch.ranker (a custom ranker cannot rank skills yet)`
-        );
+      if (cfg.skillRanker !== undefined && typeof cfg.skillRanker.rank !== "function") {
+        throw new SkillActivationError("skillActivation.skillRanker must be a ToolRanker");
       }
       this.searchName = opts.search.name;
+    } else if (cfg.skillRanker !== undefined) {
+      throw new SkillActivationError(
+        'skillActivation.skillRanker needs discovery "search" or "both"'
+      );
     }
+    this.skillRanker = cfg.skillRanker;
     this.discovery = discovery;
     this.maxActive = positiveInt(
       "maxActive",

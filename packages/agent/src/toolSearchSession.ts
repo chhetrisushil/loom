@@ -49,6 +49,12 @@ export interface SkillSearchSource {
   readonly activeCount: number;
   /** The activation meta-tool's name, for the search tool's description. */
   readonly activationName: string;
+  /**
+   * R22c (ADR 0125 D13) — an optional host ranker over the SKILL docs only (ids are raw skill ids).
+   * Present, or a custom `toolSearch.ranker` present: the session ranks tools and skills with two
+   * separate rankers and composes the page by rank position, never by mixing scores.
+   */
+  readonly skillRanker?: ToolRanker | undefined;
 }
 
 /** A skill hit as the model reads it. It is NOT loaded: the model calls the activation tool. */
@@ -100,6 +106,10 @@ export interface ToolSearchConfig {
    * A prebuilt ranker may be shared across runs (build once for a large catalog); its results are
    * intersected with the allowed set, and RECORDED, so even a non-deterministic ranker (semantic,
    * R18) replays identically.
+   *
+   * R22c (ADR 0125 D13): a custom ranker ranks TOOLS only. It is never given a skill doc or key; when
+   * skill discovery is on, skills are ranked separately (built-in BM25F over skill docs, or
+   * `skillActivation.skillRanker`) and the page interleaves the two by rank position.
    */
   ranker?: ToolRanker;
 }
@@ -124,6 +134,8 @@ interface Recorded {
   loaded: string[];
   /** R22b: skill ids found (absent in a record from before skill discovery, or when it is off). */
   skills?: string[];
+  /** R22c: the skill ranker's kind, present only when tools and skills were ranked separately. */
+  skillRanker?: string;
 }
 
 export class ToolSearchError extends Error {
@@ -170,6 +182,12 @@ export class ToolSearchSession {
   /** The meta-tool's definition, as the model is offered it. */
   definition: ToolDefinition;
   private skillSource: SkillSearchSource | undefined;
+  /**
+   * R22c: tools and skills are ranked by TWO rankers (a custom tool ranker and/or a skill ranker);
+   * false = the R22b single combined BM25F index (byte-identical to before).
+   */
+  private dual = false;
+  private skillRanker: ToolRanker | undefined;
   /** Discoverable skills by id (R22b); empty unless skill discovery is attached. */
   private readonly skillById = new Map<string, SkillDefinition>();
   private readonly byId = new Map<string, ToolDefinition>();
@@ -261,7 +279,7 @@ export class ToolSearchSession {
     } as unknown as ToolDefinition;
   }
 
-  /** Whether the host supplied its own ranker (which cannot rank skills). */
+  /** Whether the host supplied its own (tool-only) ranker. */
   readonly customRanker: boolean;
 
   /**
@@ -281,6 +299,8 @@ export class ToolSearchSession {
     }
     this.skillSource = src;
     for (const s of src.discoverable()) this.skillById.set(s.id, s);
+    this.dual = this.customRanker || src.skillRanker !== undefined;
+    if (this.dual) this.skillRanker = src.skillRanker ?? this.lazySkillBm25();
     this.definition = {
       ...this.definition,
       description: `${this.definition.description} It also finds skills (returned under \`skills\`): a skill hit loads nothing by itself; pass its id to \`${src.activationName}\` to get its instructions (search only helps find ids; activation is not gated on it).`,
@@ -293,7 +313,7 @@ export class ToolSearchSession {
     const build = (): Bm25ToolRanker =>
       new Bm25ToolRanker([
         ...[...this.searchable]
-          .filter((id) => this.skillById.size === 0 || !id.startsWith(SKILL_KEY))
+          .filter((id) => !this.combined || !id.startsWith(SKILL_KEY))
           .map((id) => {
             const t = this.byId.get(id) as ToolDefinition;
             const host = cfg.annotations?.[id];
@@ -313,17 +333,46 @@ export class ToolSearchSession {
             };
           }),
         // Skills: host-registry author text, so vouched by construction; ranked with the same fields.
-        ...[...this.skillById.values()].map((s) => ({
-          id: SKILL_KEY + s.id,
-          description: String(s.description),
-          tags: s.tags ?? [],
-          aliases: s.aliases ?? [],
-        })),
+        // Only in the combined (single-index) mode: with two rankers the tool index has no skills.
+        ...(this.combined
+          ? [...this.skillById.values()].map((s) => ({
+              id: SKILL_KEY + s.id,
+              description: String(s.description),
+              tags: s.tags ?? [],
+              aliases: s.aliases ?? [],
+            }))
+          : []),
       ]);
     return {
       kind: "bm25f",
       rank: (query, limit) => {
         built = built ?? build();
+        return built.rank(query, limit);
+      },
+    };
+  }
+
+  /** Skills share the tool index (R22b single-ranker mode). */
+  private get combined(): boolean {
+    return this.skillById.size > 0 && !this.dual;
+  }
+
+  /** R22c: the default skill ranker, BM25F over the skill docs ONLY (raw skill ids), built on first use. */
+  private lazySkillBm25(): ToolRanker {
+    let built: Bm25ToolRanker | undefined;
+    return {
+      kind: "bm25f",
+      rank: (query, limit) => {
+        built =
+          built ??
+          new Bm25ToolRanker(
+            [...this.skillById.values()].map((s) => ({
+              id: s.id,
+              description: String(s.description),
+              tags: s.tags ?? [],
+              aliases: s.aliases ?? [],
+            }))
+          );
         return built.rank(query, limit);
       },
     };
@@ -398,6 +447,7 @@ export class ToolSearchSession {
           // Over-ask by what cannot be shown (already loaded, namespace-hidden, active skills) so
           // filtering does not starve the page; if a shared ranker over a WIDER catalog still leaves
           // it short, widen (bounded rounds / hits) while the ranker has more to give.
+          if (this.dual) return this.searchDual(query, want);
           let ask = Math.min(
             want +
               this.loadedIds.size +
@@ -514,7 +564,59 @@ export class ToolSearchSession {
   }
 
   private isSkillKey(k: string): boolean {
-    return this.skillById.size > 0 && k.startsWith(SKILL_KEY);
+    return this.combined && k.startsWith(SKILL_KEY);
+  }
+
+  /**
+   * R22c (ADR 0125 D13) — one search with two rankers. The tool ranker sees tool docs only, the skill
+   * ranker skill docs only (raw ids); each is over-asked and widened on its OWN, bounded, and a
+   * ranker's output is admitted as its own kind only (a skill-looking key from the tool ranker is not
+   * a tool id and is dropped). The page is composed by rank POSITION, tool first (t1, s1, t2, s2, ...)
+   * up to `want`; a kind that runs out hands its unused share to the other. Scores are never compared.
+   */
+  private async searchDual(query: string, want: number): Promise<Recorded> {
+    const tools = await this.rankKind(
+      this.ranker,
+      query,
+      want + this.loadedIds.size + (this.byId.size - this.searchable.size),
+      want,
+      (ids) => this.admit(ids, want)
+    );
+    const skills = await this.rankKind(
+      this.skillRanker as ToolRanker,
+      query,
+      want + (this.skillSource?.activeCount ?? 0),
+      want,
+      (ids) => this.admitSkills(ids, want)
+    );
+    const page = interleave(tools, skills, want);
+    return {
+      ranker: this.ranker.kind,
+      query: query.slice(0, MAX_RECORDED_QUERY),
+      results: page.first,
+      loaded: this.plan(page.first),
+      skills: page.second,
+      skillRanker: (this.skillRanker as ToolRanker).kind,
+    };
+  }
+
+  /** Rank with `ranker`, over-asking `ask0` and widening (doubling) while the admitted list is short and the ranker has more. */
+  private async rankKind(
+    ranker: ToolRanker,
+    query: string,
+    ask0: number,
+    want: number,
+    admitIds: (ids: string[]) => string[]
+  ): Promise<string[]> {
+    let ask = Math.min(ask0, MAX_RANK_ASK);
+    let out: string[] = [];
+    for (let round = 0; round < MAX_RANK_ROUNDS; round++) {
+      const ranked = await ranker.rank(query, ask);
+      out = admitIds(ranked.map((h) => h.id));
+      if (out.length >= want || ranked.length < ask || ask >= MAX_RANK_ASK) break;
+      ask = Math.min(ask * 2, MAX_RANK_ASK);
+    }
+    return out;
   }
 
   /** Ranked index keys -> tool ids and skill ids, in ranked order, at most `want` in total. */
@@ -593,4 +695,26 @@ export class ToolSearchSession {
     }
     return out;
   }
+}
+
+/**
+ * R22c — the page rule for two independently ranked lists: alternate by rank position, `first` leading
+ * (a1, b1, a2, b2, ...), until `want` are taken; when one list is exhausted the other fills the rest.
+ * Positions are integers, so there are no ties and no score is ever compared.
+ */
+export function interleave(
+  first: readonly string[],
+  second: readonly string[],
+  want: number
+): { first: string[]; second: string[] } {
+  const a: string[] = [];
+  const b: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (a.length + b.length < want && (i < first.length || j < second.length)) {
+    if (i < first.length && (a.length <= b.length || j >= second.length))
+      a.push(first[i++] as string);
+    else b.push(second[j++] as string);
+  }
+  return { first: a, second: b };
 }

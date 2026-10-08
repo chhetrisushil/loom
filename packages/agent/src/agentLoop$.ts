@@ -721,7 +721,7 @@ export async function agentLoop$(
         ...(search !== undefined ? [search.name] : []),
       ],
       ...(search !== undefined && {
-        search: { name: search.name, customRanker: search.customRanker },
+        search: { name: search.name },
       }),
     });
     // The two meta-tools share one menu: a skill that brings a tool named like the search meta-tool
