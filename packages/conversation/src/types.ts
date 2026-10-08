@@ -138,6 +138,13 @@ export interface ConversationConfig {
    * twice; whatever else the runtime's policy lets into the inbox is recorded as rejected and ignored.
    */
   key: string;
+  /**
+   * Keys still ACCEPTED when verifying an envelope (signing always uses `key`): the rotation window. Rotate by
+   * deploying `key: new, previousKeys: [old]`, wait out `maxEnvelopeAgeMs`, then drop the old one. Turn
+   * execution ids are derived from `key` alone, so a turn that is mid-flight at the moment of rotation is
+   * started afresh under its new id (rotate while the conversations are quiet).
+   */
+  previousKeys?: readonly string[];
   /** How old (ms) a signed envelope may be when it is dequeued. Default 1 hour. */
   maxEnvelopeAgeMs?: number;
   /** Rejected envelopes recorded as transcript entries per conversation before further ones are only COUNTED. Default 50. */
@@ -198,6 +205,10 @@ export interface ConversationCarry {
   owner?: Identity;
   /** Signed ids of the most recent envelopes (bounded): the replay set, and what the barge-in watcher recognises as a retry. */
   ids?: string[];
+  /** The issue time of each id in `ids`. */
+  iats?: number[];
+  /** High-water mark of evicted issue times: an envelope issued at or before it is stale. */
+  floor?: number;
   /** Rejected envelopes seen so far (recorded up to `maxInvalidRecords`, then only counted). */
   dropped?: number;
   summary?: string;

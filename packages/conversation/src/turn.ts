@@ -13,6 +13,7 @@ import { readRangeOf } from "@loom/event-runtime";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { z } from "zod";
 import {
+  ENVELOPE_DOMAIN,
   type Identity,
   identityKey,
   identityOf,
@@ -152,6 +153,8 @@ export interface TurnEffectDeps {
   turnFlow: RegisteredFlow<TurnInput, Omit<TurnResult, "turnExecutionId">>;
   signals: Map<string, AbortSignal>;
   key: string;
+  /** Keys still accepted for VERIFICATION during a rotation window. */
+  previousKeys?: readonly string[];
   bargeIn?: BargeInSource;
   /** The principal a turn runs as for an asker identity. Default: the identity itself (tenant, actor, onBehalfOf). */
   principalFor?: (asker: Identity) => PrincipalChain | Promise<PrincipalChain>;
@@ -195,7 +198,12 @@ export function sharedTurnEffect(
                 asker !== undefined &&
                 identityKey(asker) === askerKey &&
                 p.conversationId === input.conversationId &&
-                verifySignature(deps.key, body, sig)
+                verifySignature(
+                  [deps.key, ...(deps.previousKeys ?? [])],
+                  body,
+                  sig,
+                  ENVELOPE_DOMAIN
+                )
               );
             },
             idOf: (m) => {
