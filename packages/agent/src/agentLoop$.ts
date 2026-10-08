@@ -26,7 +26,7 @@ import { type SkillActivationConfig, SkillActivationSession } from "./skillActiv
 import { isTerminalToolError } from "./toolFailure";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
-import { type ToolSearchConfig, ToolSearchSession } from "./toolSearchSession";
+import { type ToolSearchConfig, ToolSearchError, ToolSearchSession } from "./toolSearchSession";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 // ── R1 — the agent loop as a RUNNER BODY, not a step handler ─────────────────
@@ -715,6 +715,13 @@ export async function agentLoop$(
         ...(search !== undefined ? [search.name] : []),
       ],
     });
+    // The two meta-tools share one menu: a skill that brings a tool named like the search meta-tool
+    // would put two entries of the same name on the menu once activated.
+    if (search !== undefined && a.offeredToolIds().has(search.name)) {
+      throw new ToolSearchError(
+        `toolSearch.searchToolName "${search.name}" collides with a tool an offered skill brings`
+      );
+    }
     if (a.hasOffers) {
       activation = a;
       system = [system, a.indexText()].filter((x) => x != null && x !== "").join("\n\n");
@@ -1121,6 +1128,14 @@ export async function agentLoop$(
       if (toRun.length === 1) {
         const j = toRun[0] as number;
         outcomes[j] = await runTool(ctx, calls[j] as LlmToolCall, turn, j, false);
+      } else if (toRun.some((j) => humanTools.has((calls[j] as LlmToolCall).name))) {
+        // R22 — the settle phase above can GROW the menu (a search / skill activation bringing a
+        // `kind: "human"` tool), so the choice made before it read a stale `humanTools`. A turn that
+        // holds a human call stays sequential, in call order (R10 P3-7): its resume answer is
+        // consumed in call order.
+        for (const j of toRun) {
+          outcomes[j] = await runTool(ctx, calls[j] as LlmToolCall, turn, j, false);
+        }
       } else if (toRun.length > 1) {
         await checkAbort(ctx, `t${turn}:scope`);
         const ran = await ctx.parallel<Outcome[]>(

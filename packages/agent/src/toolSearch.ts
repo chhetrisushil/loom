@@ -146,6 +146,15 @@ export function toolQueryTerms(query: string): string[] {
   return [...seen];
 }
 
+/**
+ * The first line of `s`, capped at `max` characters. EVERY line separator ends the line (`\n`, `\r`,
+ * VT, FF, NEL, U+2028, U+2029), so text cannot smuggle a second "line" into a one-line listing.
+ */
+export function firstLineOf(s: string, max: number): string {
+  const line = s.split(/[\n\r\v\f\u0085\u2028\u2029]/, 1)[0] as string;
+  return line.length > max ? `${line.slice(0, max)}…` : line;
+}
+
 const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 // ── The index ──────────────────────────────────────────────────────────────────
@@ -229,6 +238,11 @@ export class Bm25ToolRanker implements ToolRanker {
   }
 
   rank(query: string, limit: number): readonly ToolHit[] {
+    // NaN is a caller bug, not "no results": refuse it loudly. Negative / fractional / infinite
+    // limits clamp (to 0, down, and to the index size).
+    if (typeof limit !== "number" || Number.isNaN(limit)) {
+      throw new RangeError(`Bm25ToolRanker.rank: limit must be a number (got ${String(limit)})`);
+    }
     const k = Math.max(0, Math.min(Math.floor(limit), this.n));
     if (k === 0) return [];
     const scores = new Map<number, number>();

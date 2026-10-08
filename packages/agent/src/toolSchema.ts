@@ -37,7 +37,8 @@ const MAX_ECHO_CHARS = 200;
 const MAX_INPUT_DEPTH = 64;
 const MAX_INPUT_NODES = 100_000;
 
-const cap = (s: string, n = MAX_ECHO_CHARS): string => (s.length > n ? `${s.slice(0, n)}…` : s);
+export const cap = (s: string, n = MAX_ECHO_CHARS): string =>
+  s.length > n ? `${s.slice(0, n)}…` : s;
 
 type Json = Record<string, unknown>;
 // biome-ignore lint/suspicious/noExplicitAny: reading Zod 3 internals (`_def`) that have no public type

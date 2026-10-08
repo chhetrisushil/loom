@@ -111,17 +111,64 @@ selector and with `toolSearch`.
   loaded, so search never re-offers them.
 - **Recorded.** Each activation is one `ctx.decide` `<loop>#turn:<i>:tool:<j>:skill`, `source: "agent-skill-activation"`, value
   `{ skill }`; a replay re-applies it without re-deciding, and the record is re-checked against the call (a tampered record can
-  refuse, never activate another skill). Unknown / already-active / over-`maxActive` / oversized / tainted-or-non-string
-  instructions are typed error results (`unknown_skill`, `already_active`, `skill_limit_reached`, `instructions_too_large`,
-  `instructions_refused`, `invalid_tool_input`) and record nothing: the instructions load BEFORE the decision.
+  refuse, never activate another skill). Unknown / over-`maxActive` / `invalid_tool_input` are typed error results that record
+  nothing; an instructions refusal (`instructions_too_large`, `instructions_refused`) is a typed error that records its verdict
+  (see Review round 1); an already-active skill is re-delivered.
 - **Trust.** Skills are HOST-registered author text. The catalog is never built from a remote/untrusted declaration; instructions
   that arrive tainted (ADR 0085) are refused, never delivered.
 - **Config errors are loud:** the meta-tool name colliding with any menu tool, the search tool, a `toolSearch.catalog` tool or any
   offered skill's tool; a non-positive/over-ceiling cap; `"registry"` without a `skills` registry.
 - **Residuals.** The activation result is an ordinary tool_result, so compaction may fold it into its summary; the skill's
-  instructions then survive only as the summary's paraphrase, but its tools stay on the menu (append-only). A run re-loads an
+  instructions then survive only as the summary's paraphrase, but its tools stay on the menu (append-only) and activating the skill
+  again re-delivers them (Review round 1). A run re-loads an
   activated skill's instructions on replay from the CURRENT registry, as upfront skills already are. Skill tools are not counted
   against `toolSearch.maxLoaded`.
+
+## Review round 1 (2026-10-09)
+
+The first adversarial review (verdict: not approved as drafted; design holds) found the following; all are fixed.
+
+- **Human tools and the settle phase (P2).** The parallel-versus-sequential choice read `humanTools` before the settle phase, but a
+  search or an activation in that phase can grow the menu with a `kind: "human"` tool. After the settle loop the turn now runs
+  sequentially, in call order, if any call still to run is a human tool (R10 P3-7). Old logs are unaffected: only R22 paths reach it.
+- **Replay re-intersection (P2).** The recorded search is re-intersected with what THIS run may use on every path; the record is
+  untrusted input, so a non-array `results` / `loaded`, a null or non-object record, repeated ids, hidden / unknown / already
+  loaded ids, and more ids than the caps are all clipped, never widened. `loaded` is intersected with the freshly planned page, in
+  page order.
+- **D7 amended: what "third party" means.** A tool is un-vouched if the plugin that built it says so (`ToolDefinition.origin:
+  "remote"`, additive and advisory, set by the MCP and A2A plugins wherever they build a tool from a remote declaration), OR it
+  carries a `jsonInputSchema`, OR it is `kind: "a2a"` (fail closed: a plugin that forgets the marker is still treated as remote). An
+  un-vouched tool's description is not ranked or shown, its own tags / aliases are ignored (host `annotations` still apply), and a
+  result naming it is tainted; `trustJsonSchemaText` vouches for the text as before. A description that is itself TAINTED is never
+  vouched for: it is listed withheld, not indexed, and the tool is not put on the menu (the prompt boundary would refuse its spec).
+  Residual: the menu spec of a loaded A2A tool still carries the peer's description via `toolSpecFor` (unchanged R4b behaviour for a
+  tool with no `jsonInputSchema`); only search's own ranking and results are covered here.
+- **D11 amended: refusals and replay.** The instructions verdict is now part of the RECORDED decision: a live refusal records
+  `{ skill, refused: "instructions_refused" | "instructions_too_large" }` (it used to record nothing), so a replay reproduces the
+  refusal whatever the registry holds by then, and an accepted activation records `{ skill }` and STANDS on replay even if the
+  reloaded text no longer passes the checks: its tools join the menu (consistent with the record) and the result is the typed
+  error `instructions_unavailable`. Once a decision is recorded, replay honours it in both directions (a skill that grew, a skill
+  that shrank), appends nothing, and cannot diverge. Residual: on replay the instructions delivered are the CURRENT registry text,
+  which may differ from what the original run's model saw; the model's recorded responses do not change.
+- **Re-activating an active skill re-delivers it.** After compaction folds the activation result into a summary the instructions
+  would otherwise be unrecoverable. The result is `{ skill, instructions, note }`; nothing is recorded, no tools are added, and it
+  is not counted against `maxActive`. (`already_active` is no longer an error.) The instructions are re-checked (tainted /
+  oversized refuse as typed errors).
+- **The index is bounded in bytes.** `maxIndexBytes` (default 8 KiB, ceiling 128 KiB); ids over 64 characters or containing
+  control / format / line-separator characters are not offered (the model could not name them from the index); tags are capped at 32
+  characters; the first line of a description ends at ANY line separator (`\n`, `\r`, VT, FF, NEL, U+2028, U+2029). Skills past the
+  cap are not offered and are summarised as `- (+N more skills not listed)`. Deterministic (id order). `unknown_skill` caps the
+  echoed name like the menu check does.
+- **Name collisions.** The search meta-tool's name is checked against offered skills' tools (a config error), like the activation
+  tool's.
+- **Selection is relevance, not authorization.** The `"registry"` default makes EVERY registry skill reachable by the model (its
+  tools still pass the menu gate, approval hook and effect ring when called). Restrict the reachable set with an explicit
+  `catalog` array.
+- **Ranking details.** `Bm25ToolRanker.rank` throws a `RangeError` for a NaN limit and clamps negative / fractional / infinite ones;
+  the default index is built on the first search; the ask over-asks by the hidden (namespace-filtered) count as well as the loaded
+  count and, if a shared ranker over a wider catalog still leaves the page short, widens (doubling, at most 4 rounds and 1000 hits).
+  `maxMenuChars` counts only tools a search loaded (`alwaysLoaded` tools do not count against it). `agent-skill-activation` is a
+  recorded-fact source for `@loom/learning`.
 
 ## Alternatives rejected
 

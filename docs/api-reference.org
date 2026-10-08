@@ -1739,9 +1739,11 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 //   tool$/skill$/capability$ gain `aliases` (tool$ also `tags`): trusted author vocabulary; a remote (jsonInputSchema) tool's own are NOT trusted
 // agentLoop$ config (R22 D11, ADR 0125): skillActivation?: SkillActivationConfig — mid-loop `activate_skill({ name })`; default OFF
 //   interface SkillActivationConfig { catalog?: "registry" | SkillDefinition[]   // host-registered skills; upfront-selected ones are not offered
-//                                     maxActive?: 5 (<=50); maxIndex?: 50 (<=500); maxInstructionBytes?: 32768 (<=1 MiB); toolName?: "activate_skill" }
+//                                     maxActive?: 5 (<=50); maxIndex?: 50 (<=500); maxIndexBytes?: 8192 (<=128 KiB); maxInstructionBytes?: 32768 (<=1 MiB); toolName?: "activate_skill" }
 //   index of unselected skills in the turn-0 system prompt; the skill's instructions are the TOOL RESULT; its tools join the menu (deduped)
-//   each activation = ONE recorded decision `<agent>#turn:<i>:tool:<j>:skill` (source "agent-skill-activation"); refusals are typed error results, nothing recorded
+//   each activation = ONE recorded decision `<agent>#turn:<i>:tool:<j>:skill` (source "agent-skill-activation"); an instructions refusal records its verdict `{ skill, refused }` (replay reproduces it); other refusals are typed error results, nothing recorded; re-activating an active skill re-delivers its instructions
+//   "registry" makes EVERY registry skill reachable (relevance, not authorization): pass an explicit catalog to restrict
+// ToolDefinition.origin?: "remote" — set by the MCP and A2A plugins; tool search treats origin remote / jsonInputSchema / kind a2a as un-vouched
 class SkillActivationError; const SOURCE_SKILL_ACTIVATION = "agent-skill-activation"; ToolSearchSession.noteLoaded(tools)
 interface ToolRanker { kind: string; rank(query: string, limit: number): readonly { id: string; score: number }[] | Promise<...> }
 class Bm25ToolRanker implements ToolRanker { constructor(tools: { id; description?; tags?; aliases? }[]); size: number }   // BM25F: name 3, aliases 2, tags 2, description 1

@@ -329,6 +329,7 @@ export class McpClient {
       // arguments. It is third-party: agent loops bound/sanitise it and, unless
       // `trustDescriptions` was passed, strip its text and this tool's description.
       jsonInputSchema: mcpTool.inputSchema,
+      origin: "remote",
       ...(trustDescriptions && { trustJsonSchemaText: true }),
     });
 

@@ -178,6 +178,16 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
    * boundary check reads it.
    */
   mode?: EffectMode;
+  /**
+   * R22 (ADR 0125 D7, review round 1) — where this definition came from. `"remote"` marks a tool
+   * built from a REMOTE declaration (an MCP server's tool list, an A2A agent card): its name,
+   * description and self-declared tags/aliases are the remote's claims. Tool search treats such a
+   * tool as un-vouched (description not ranked or shown, own tags/aliases ignored, result tainted)
+   * unless the operator set `trustJsonSchemaText`. Additive and advisory: absent keeps the old
+   * meaning (first-party), but tool search ALSO fails closed on `jsonInputSchema` and
+   * `kind: "a2a"`, so a plugin that forgets the marker is still treated as remote.
+   */
+  origin?: "remote";
   /** R22 (ADR 0125) — declared tags for tool search; see {@link ToolDefinition.aliases} for trust. */
   tags?: readonly string[];
   /**

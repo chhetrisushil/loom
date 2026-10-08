@@ -155,6 +155,8 @@ describe("A2APeerClient", () => {
 
     expect(tool.id).toBe("echo-agent");
     expect(tool.kind).toBe("a2a");
+    // Built from a REMOTE agent card: tool search must treat it as un-vouched (ADR 0125 D7).
+    expect(tool.origin).toBe("remote");
     expect(tool.description).toContain("Echo");
     expect(effectRuntime.has("echo-agent")).toBe(true);
   });
