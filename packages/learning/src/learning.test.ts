@@ -668,6 +668,12 @@ describe("trajectories — recorded facts are not actions (R10)", () => {
       decision("x", "agent#turn:0:response:0", { content: "hi" }, { source: "agent-response" }),
       decision("x", "agent#turn:0:tool:0:outcome", { ok: true }, { source: "agent-outcome" }),
       decision("x", "agent#abort:t0:turn", false, { source: "agent-abort" }),
+      decision(
+        "x",
+        "agent#turn:0:tool:0:search",
+        { results: ["t"] },
+        { source: "agent-tool-search" }
+      ),
       ev("x", "EXECUTION_COMPLETED", {}),
     ];
     const [t] = trajectories<string>(log);

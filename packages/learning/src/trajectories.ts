@@ -26,6 +26,8 @@ export const RECORDED_FACT_SOURCES: ReadonlySet<string> = new Set([
   "agent-response",
   "agent-outcome",
   "agent-abort",
+  // R22 (ADR 0125): a `search_tools` result (query -> ranked tool ids) is a recorded fact, not a choice.
+  "agent-tool-search",
   // R17 (ADR 0122): `@loom/conversation` records its token-budget fit the same way.
   "conversation-budget",
   "conversation-record",

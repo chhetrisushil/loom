@@ -1728,6 +1728,19 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 // agentLoop$ config (R9): reasoningToolId?: string | ((routeId) => string)   — each `reasoning` model call becomes a journaled
 //   ctx.execute frame `<agent>#turn:<i>:call:<n>` (authz, metering, kill switch, guardRequest, recorded on replay);
 //   requireEffectRing?: boolean — refuse `reasoning` without reasoningToolId and a non-effect-backed skillSelector.
+// agentLoop$ config (R22, ADR 0125): toolSearch?: ToolSearchConfig — an opt-in `search_tools` meta-tool; default OFF, not worth it below ~30 tools
+//   interface ToolSearchConfig { catalog?: ToolDefinition[]       // extra tools the HOST offers (the only way to widen the searchable set)
+//                                alwaysLoaded?: string[]           // on the menu from turn 0
+//                                namespaces?: string[]             // id-prefix allowlist of searchable tools
+//                                annotations?: { [toolId]: { tags?: string[]; aliases?: string[] } }   // trusted host vocabulary (use for MCP/A2A tools)
+//                                maxPerSearch?: 5 (<=50); maxLoaded?: 20 (<=200); maxSearches?: 25 (<=200); maxMenuChars?: number
+//                                searchToolName?: "search_tools"; ranker?: ToolRanker }
+//   each search = ONE recorded decision `<agent>#turn:<i>:tool:<j>:search` (source "agent-tool-search"; replay re-ranks nothing); menu is append-only
+//   tool$/skill$/capability$ gain `aliases` (tool$ also `tags`): trusted author vocabulary; a remote (jsonInputSchema) tool's own are NOT trusted
+interface ToolRanker { kind: string; rank(query: string, limit: number): readonly { id: string; score: number }[] | Promise<...> }
+class Bm25ToolRanker implements ToolRanker { constructor(tools: { id; description?; tags?; aliases? }[]); size: number }   // BM25F: name 3, aliases 2, tags 2, description 1
+function tokenizeToolText(text, maxTokens): string[]; function toolQueryTerms(query): string[]; function normalizeLabels(labels?, maxCount?, maxChars?): string[]
+class ToolSearchSession; const SOURCE_TOOL_SEARCH = "agent-tool-search"; class ToolSearchError
 function registerReasoningRoutes(effects: { register(id, effect) }, reasoning: ReasoningRuntime, o?: { prefix?: string; stream?: boolean }): (routeId: string) => string
 #+end_src
 

@@ -15,6 +15,8 @@ export interface CapabilityConfig<TIn, TOut> {
   dependencies?: string[];
   /** R16 — accepts tainted values bound by a plan's `$from` (see `CapabilityDefinition.acceptsTainted`). The opt-in is a promise: nothing re-taints this capability's OUTPUT. */
   acceptsTainted?: boolean;
+  /** R22 (ADR 0125) — user phrasings for search. */
+  aliases?: string[];
 }
 
 // Wraps a RegisteredFlow as an intent-addressable capability.
@@ -32,5 +34,6 @@ export function capability$<TIn = unknown, TOut = unknown>(
     ...(config.version !== undefined && { version: config.version }),
     ...(config.dependencies !== undefined && { dependencies: config.dependencies }),
     ...(config.acceptsTainted === true && { acceptsTainted: true }),
+    ...(config.aliases !== undefined && { aliases: config.aliases }),
   };
 }

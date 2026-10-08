@@ -25,6 +25,7 @@ import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
 import { isTerminalToolError } from "./toolFailure";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
+import { type ToolSearchConfig, ToolSearchSession } from "./toolSearchSession";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
 
 // ── R1 — the agent loop as a RUNNER BODY, not a step handler ─────────────────
@@ -309,6 +310,21 @@ export interface AgentLoopConfig {
          */
         allowDirect?: boolean;
       };
+  /**
+   * R22 (ADR 0125) — opt-in tool search. Instead of putting every tool on the menu, offer the model
+   * a `search_tools` meta-tool: it searches the tools this run is ALREADY allowed to use (the agent's
+   * own, the selected skills', plus {@link ToolSearchConfig.catalog}), and the best matches are added
+   * to the menu for the following turns (append-only, so the prompt prefix stays cacheable).
+   *
+   * Authority is unchanged: a loaded tool still passes the R4 menu gate, the approval hook and the
+   * effect ring when called; nothing outside the offered set can be found or loaded; a tool's
+   * un-vouched third-party description is neither ranked on nor shown, and a result that names a
+   * third-party tool is tainted (ADR 0085). Each search is a recorded decision
+   * (`<loop>#turn:<i>:tool:<j>:search`, `source: "agent-tool-search"`), so a replay re-ranks
+   * nothing and reproduces the menu. Absent (the default) the run is unchanged, ids included. Not
+   * worth enabling below ~30 tools: the menu is cheaper than the extra round trip.
+   */
+  toolSearch?: ToolSearchConfig;
   /** Memory tier to recall from. Default `"working"`. */
   memoryTier?: string;
   /** Scope key. Default the execution id, so a run remembers its own conversation. */
@@ -614,6 +630,10 @@ export async function agentLoop$(
   // its result is journaled, and replay serves the recorded value.
 
   const skillTools: ToolDefinition[] = [];
+  const skillToolVocab = new Map<
+    string,
+    { tags?: readonly string[]; aliases?: readonly string[] }
+  >();
   const skillInstructions: string[] = [];
   if (config.skills !== undefined && config.skills.all().length > 0) {
     const selector = config.skillSelector ?? deterministicSkillSelector();
@@ -640,7 +660,17 @@ export async function agentLoop$(
       const skill = registry.get(id);
       if (skill === undefined) continue;
       skillInstructions.push(await loadInstructions(skill.instructions));
-      if (skill.tools !== undefined) skillTools.push(...skill.tools);
+      if (skill.tools !== undefined) {
+        skillTools.push(...skill.tools);
+        if (skill.tags !== undefined || skill.aliases !== undefined) {
+          for (const t of skill.tools) {
+            skillToolVocab.set(t.id, {
+              ...(skill.tags !== undefined && { tags: skill.tags }),
+              ...(skill.aliases !== undefined && { aliases: skill.aliases }),
+            });
+          }
+        }
+      }
     }
   }
 
@@ -661,9 +691,30 @@ export async function agentLoop$(
       toolDefs.push(t);
     }
   }
+  // R22 — with tool search the offered tools are the SEARCHABLE set; the menu starts as `alwaysLoaded`
+  // and grows by recorded searches. The session is built from the same authorization inputs as the
+  // menu always was (agent tools + selected skills' tools), plus what the host explicitly offers.
+  let search: ToolSearchSession | undefined;
+  if (config.toolSearch !== undefined) {
+    const universe = [...toolDefs];
+    const universeIds = new Set(universe.map((t) => t.id));
+    for (const t of config.toolSearch.catalog ?? []) {
+      if (!universeIds.has(t.id)) {
+        universeIds.add(t.id);
+        universe.push(t);
+      }
+    }
+    search = new ToolSearchSession(config.toolSearch, universe, skillToolVocab);
+    toolDefs.length = 0;
+    toolDefs.push(...search.initial);
+  }
   const tools = toolSpecsFor(toolDefs);
+  if (search !== undefined) {
+    // The meta-tool leads, and the menu only ever grows at the END: stable prefix, cache-friendly.
+    tools.unshift({ ...search.metaSpec, description: search.metaSpec.description as LlmContent });
+  }
   // R4 — the same definitions the model was shown are the only ones that may run.
-  const menu = buildToolMenu(toolDefs);
+  let menu = buildToolMenu(toolDefs);
 
   const messages: LlmMessageInput[] = [];
   // The virtual (pre-R5-shaped) transcript behind compaction's triggers: `oldSizes` holds one byte
@@ -693,6 +744,17 @@ export async function agentLoop$(
   // A `kind: "human"` step consumes its resume answer in call order; a turn holding one keeps the
   // original sequential shape whatever `parallelTools` says (see `runToolCalls`).
   const humanTools = new Set(toolDefs.filter((t) => t.kind === "human").map((t) => t.id));
+  /** R22 — append tools a search loaded: spec at the END of the list, menu gate and tool classes updated. */
+  const growMenu = (added: readonly ToolDefinition[]): void => {
+    if (added.length === 0) return;
+    toolDefs.push(...added);
+    tools.push(...toolSpecsFor(added));
+    menu = buildToolMenu(toolDefs);
+    for (const t of added) {
+      if (t.returnsMedia === true) mediaTools.add(t.id);
+      if (t.kind === "human") humanTools.add(t.id);
+    }
+  };
 
   if (config.memory !== undefined) {
     const tier = config.memoryTier ?? "working";
@@ -836,6 +898,15 @@ export async function agentLoop$(
 
     // Mid-loop HITL. The gate is BEFORE the effect, so a declined call never
     // runs — the point of asking.
+    // R22 — the meta-tool is the loop's own: no effect, no approval (it changes what may be asked,
+    // not what runs; every tool it loads is still gated when called). Handled here, in the
+    // sequential settle phase, so menu growth is ordered by the model's call order on every path.
+    if (!tooBig && search?.isSearchCall(toolCall.name) === true) {
+      const r = await search.run(ctx, `${idPrefix}#turn:${turn}:tool:${j}:search`, toolCall.input);
+      growMenu(r.newlyLoaded);
+      return { output: r.output, isError: r.isError };
+    }
+
     if (!tooBig && config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
       // The key carries `idPrefix` (the loop's definition id), so two loops in one flow do not
       // share `#turn:0:tool:0` — a shared key would let one loop's approval read as the other's.

@@ -178,6 +178,18 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
    * boundary check reads it.
    */
   mode?: EffectMode;
+  /** R22 (ADR 0125) — declared tags for tool search; see {@link ToolDefinition.aliases} for trust. */
+  tags?: readonly string[];
+  /**
+   * R22 (ADR 0125) — words a USER might say for this tool that its id and description do not
+   * ("bill the customer", "charge"), ranked by tool search above the description. Author-declared,
+   * so trusted for a first-party tool. For a tool that carries a `jsonInputSchema` (a remote MCP /
+   * A2A manifest) these are the server's own claims and are NEVER indexed as trusted: they count only
+   * as description-level text and only when `trustJsonSchemaText` is set. Map a remote tool's
+   * vocabulary host-side with `toolSearch.annotations` instead. Bounded and normalized (NFKC,
+   * case-folded, deduplicated) at index time.
+   */
+  aliases?: readonly string[];
 }
 
 /**
@@ -433,6 +445,8 @@ export interface SkillDefinition {
   name: string;
   description: string; // cheap metadata — always available for selection
   tags?: string[];
+  /** R22 (ADR 0125) — user phrasings for this skill, applied to its tools by tool search. */
+  aliases?: string[];
   instructions: InstructionsSpec; // lazy-loaded body (progressive disclosure)
   tools?: ToolDefinition[]; // optional tool subset the skill brings
 }
