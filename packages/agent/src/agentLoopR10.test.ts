@@ -1357,10 +1357,20 @@ describe("P3-2 / P3-3 / P3-4 — recorded responses", () => {
       },
       set: (k, v) => void store.set(k, v),
     };
-    const a = boot({ reasoning: "direct", reasoningCache: cache, provider: script([]) });
+    const a = boot({
+      reasoning: "direct",
+      reasoningCache: cache,
+      provider: script([]),
+      config: { cacheScope: "shared" },
+    });
     await runToEnd(a);
     expect(a.modelCalls.n).toBe(1);
-    const b = boot({ reasoning: "direct", reasoningCache: cache, provider: script([]) });
+    const b = boot({
+      reasoning: "direct",
+      reasoningCache: cache,
+      provider: script([]),
+      config: { cacheScope: "shared" },
+    });
     await runToEnd(b);
     expect(b.modelCalls.n).toBe(0); // served by the cache
     expect(gets.length).toBeGreaterThan(1);
@@ -1687,5 +1697,47 @@ describe("P3-4 — the loop forwards cacheScope", () => {
     expect(await run("tenant-a")).toBe(1);
     expect(await run("tenant-b")).toBe(1); // a miss: not tenant A's answer
     expect(await run("tenant-a")).toBe(0); // its own entry hits
+  });
+});
+
+describe("P3 (round 3) — a response cache requires an explicit cacheScope", () => {
+  const cache = (): ReasoningCache => {
+    const store = new Map<string, LlmResponse>();
+    return { get: (k) => store.get(k), set: (k, v) => void store.set(k, v) };
+  };
+
+  it("cache without cacheScope: AgentLoopConfigError, no model call, no shared answer", async () => {
+    const c = cache();
+    const b = boot({ reasoning: "direct", reasoningCache: c, provider: script([]) });
+    const state = await runToEnd(b).catch(() => settled(b));
+    expect(state?.status).toBe("failed");
+    expect(b.modelCalls.n).toBe(0);
+  });
+
+  it("distinct scopes miss; the same explicit scope hits (sharing is a decision)", async () => {
+    const c = cache();
+    const run = async (scope: string) => {
+      const b = boot({
+        reasoning: "direct",
+        reasoningCache: c,
+        provider: script([]),
+        config: { cacheScope: scope },
+      });
+      await runToEnd(b);
+      return b.modelCalls.n;
+    };
+    expect(await run("a")).toBe(1);
+    expect(await run("b")).toBe(1);
+    expect(await run("a")).toBe(0);
+    expect(await run("shared")).toBe(1);
+    expect(await run("shared")).toBe(0);
+  });
+
+  it("no cache configured: no cacheScope needed; the ring path (which bypasses the cache) neither", async () => {
+    expect((await runToEnd(boot({ reasoning: "direct", provider: script([]) }))).status).toBe(
+      "completed"
+    );
+    const ring = boot({ reasoning: "ring", reasoningCache: cache(), provider: script([]) });
+    expect((await runToEnd(ring)).status).toBe("completed");
   });
 });
