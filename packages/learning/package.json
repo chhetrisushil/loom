@@ -1,7 +1,7 @@
 {
   "name": "@loom/learning",
   "version": "0.0.1",
-  "description": "The learning substrate for Loom — mine the durable log into trajectories, evaluate a candidate policy against real production traffic before shipping it, and gate promotion on the result. Read-only over the log; the learning algorithm itself is third-party.",
+  "description": "The learning substrate for Loom \u2014 mine the durable log into trajectories, evaluate a candidate policy against real production traffic before shipping it, and gate promotion on the result. Read-only over the log; the learning algorithm itself is third-party.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@loom/analytics": "workspace:*",
+    "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*"
   },
   "devDependencies": {
