@@ -1,4 +1,5 @@
 import type { AgentLoopConfig } from "@loom/agent";
+import type { Identity, ParticipantDirectory } from "./access";
 import type { BargeInSource } from "./bargeIn";
 import type { TokenCounter } from "./budget";
 import type { ConversationHub } from "./hub";
@@ -20,10 +21,15 @@ export const SUMMARY_ORIGIN = "conversation:summary";
 
 /** What travels on the inbox topic. */
 export type TurnEnvelope =
-  /** `id` is the client idempotency key (the `messageId` it was sent under); it lets the barge-in watcher tell a retry from a new message. */
-  { kind: "user"; text: string; id?: string } | { kind: "close"; id?: string };
+  /**
+   * `id` is the client idempotency key: the kernel's dedupe identity of the message (sender + messageId,
+   * see `senderKey`). It lets the barge-in watcher tell a sender's own retry from a new message.
+   * `asker` / `sig` appear only in shared mode (host-signed, see `sign`).
+   */
+  | { kind: "user"; text: string; id?: string; asker?: Identity; sig?: string }
+  | { kind: "close"; id?: string; by?: Identity; sig?: string };
 
-export type MessageStatus = "complete" | "interrupted" | "failed" | "rejected";
+export type MessageStatus = "complete" | "interrupted" | "failed" | "rejected" | "restricted";
 
 /** The payload of a {@link MESSAGE_EVENT}: the unit `history` returns. */
 export interface MessageRecord {
@@ -39,6 +45,18 @@ export interface MessageRecord {
    */
   status: MessageStatus;
   reason?: string;
+  /** Shared mode: who asked (a user message) / whose turn this answers (a reply). Attribution, never an authority. */
+  asker?: Identity;
+  /**
+   * Shared mode: the data classes this entry touched (the declared class of every tool the turn called,
+   * plus the classes of every earlier entry that fed its context). Absent / empty = unrestricted. A viewer
+   * sees the entry only if the host's `cleared` policy clears EVERY class.
+   */
+  classes?: string[];
+  /** A failed turn: a correlation id for the host's `onError` log. The error text itself never reaches a user. */
+  errorId?: string;
+  /** Shared mode: the execution that ran the turn (as the asker). */
+  turnExecutionId?: string;
 }
 
 /** A message plus where it sits in the log: the cursor a client resumes from. */
@@ -64,6 +82,27 @@ export interface BudgetConfig {
    * from the PROMPT (they stay in `history`).
    */
   summarizerToolId?: string;
+  /** The rolling summary is cut to this many tokens (by the counter) so it can never crowd out the prompt. Default `floor(contextWindow / 4)`. */
+  maxSummaryTokens?: number;
+}
+
+export interface SharedConfig {
+  /** Secret the host signs inbox envelopes with. The body accepts an asker only from a signed envelope. */
+  key: string;
+  /** Where the participant set lives (`logParticipants(eventStore)` is the standard one). */
+  directory: ParticipantDirectory;
+  /**
+   * Whether `viewer` is cleared to read an entry that touched `classes`. REQUIRED, and called with a
+   * non-empty list only. Fail closed: return `false` for a class you do not recognise; `"unclassified"` is
+   * the label of a tool `classOf` does not know.
+   */
+  cleared: (viewer: Identity, classes: readonly string[]) => boolean | Promise<boolean>;
+  /** The declared data class of a tool, by tool name. `undefined` = unclassified (a label of its own). */
+  classOf?: (toolName: string) => string | undefined;
+  /** Who may add / remove participants and close, beside the owner. Default: the owner only. */
+  manageParticipants?: (manager: Identity, conversationId: string) => boolean | Promise<boolean>;
+  /** The effect id the coordinator runs a turn through. Default `conversation.turn`. */
+  turnEffectId?: string;
 }
 
 export interface ConversationConfig {
@@ -89,6 +128,13 @@ export interface ConversationConfig {
    * Without it the conversation QUEUES: a message sent mid-turn waits for the turn to finish.
    */
   bargeIn?: BargeInSource;
+  /** The host's log of the real error behind a failed turn (the user only ever sees a fixed reason and `errorId`). */
+  onError?: (errorId: string, err: unknown, info: { conversationId: string; turn: number }) => void;
+  /**
+   * SHARED MODE (ADR 0122 D10): an explicit participant set, each turn run as its ASKER, classified,
+   * filtered per viewer. Absent: owner-only (the default).
+   */
+  shared?: SharedConfig;
   /** Where live model deltas go (see {@link ConversationHub.deltaSink}); only its turn bookkeeping is touched here. */
   hub?: ConversationHub;
 }
@@ -96,6 +142,8 @@ export interface ConversationConfig {
 /** One turn as the flow holds it between prompts. */
 export interface CarriedTurn {
   n: number;
+  asker?: Identity;
+  classes?: string[];
   user: string;
   assistant?: string;
   status: MessageStatus;
@@ -110,6 +158,8 @@ export interface ConversationCarry {
   seq: number;
   /** Messages consumed so far, accepted or not: the id space of the recorded facts. */
   ord: number;
+  /** The identity that started the conversation (the client stamps it; the owner check reads it). */
+  owner?: Identity;
   /** Client idempotency keys of the most recent turns (bounded): what the barge-in watcher recognises as a retry. */
   ids?: string[];
   summary?: string;

@@ -1,9 +1,22 @@
 export { followConversation } from "./feed";
 export type { FeedItem, FollowDeps, FollowOptions } from "./feed";
 export { inboxBargeIn, pendingInbox } from "./bargeIn";
-export type { BargeInSource } from "./bargeIn";
+export type { BargeInHandlers, BargeInSource, StoredInboxMessage } from "./bargeIn";
 export { conversation$, conversationRunner } from "./conversation";
-export type { ConversationFlowOptions } from "./conversation";
+export type { ConversationFlow, ConversationFlowOptions } from "./conversation";
+export {
+  MAX_PARTICIPANTS,
+  ParticipantLimitError,
+  identityKey,
+  identityOf,
+  logParticipants,
+  parseIdentity,
+  sameIdentity,
+  senderKey,
+} from "./access";
+export type { Identity, ParticipantChange, ParticipantDirectory } from "./access";
+export { registerSharedTurnEffect, sharedTurnEffect, turnExecutionId } from "./turn";
+export type { TurnInput, TurnResult } from "./turn";
 export {
   ConversationNotFoundError,
   InvalidTurnError,
@@ -20,7 +33,9 @@ export type {
 export {
   ContextBudgetError,
   fitToWindow,
+  fitWithSummaryFallback,
   heuristicTokenCounter,
+  truncateToTokens,
 } from "./budget";
 export type { BudgetRequest, BudgetTurn, BudgetVerdict, TokenCounter } from "./budget";
 export {
@@ -49,5 +64,6 @@ export type {
   HistoryEntry,
   MessageRecord,
   MessageStatus,
+  SharedConfig,
   TurnEnvelope,
 } from "./types";

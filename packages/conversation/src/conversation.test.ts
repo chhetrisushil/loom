@@ -116,20 +116,25 @@ describe("conversation: turns", () => {
     await expect(b.conv.sendTurn(id, "")).rejects.toThrow(/invalid turn/);
   });
 
-  it("a provider failure fails THAT turn, not the conversation", async () => {
+  it("a provider failure fails THAT turn, not the conversation; the user sees a fixed reason, never the error text", async () => {
+    const seen: { id: string; message: string }[] = [];
     const b = boot({
-      reply: (req, nth) => {
-        if (nth === 1) throw new Error("upstream 503");
+      config: { onError: (id, err) => seen.push({ id, message: (err as Error).message }) },
+      reply: (_req, nth) => {
+        if (nth === 1) throw new Error("upstream 503 at db.internal:5432 password=hunter2");
         return { content: "ok", stopReason: "end_turn" };
       },
     });
     const { conversationId: id } = await b.conv.start();
     await b.conv.sendTurn(id, "one");
     const first = await messages(b, id, 2);
-    expect(first[1]).toMatchObject({ role: "assistant", status: "failed" });
-    expect(first[1]?.reason).toContain("upstream 503");
+    expect(first[1]).toMatchObject({ role: "assistant", status: "failed", reason: "model-error" });
+    expect(JSON.stringify(first)).not.toMatch(/hunter2|db\.internal|503/); // nothing of the error reaches the transcript
+    expect(first[1]?.errorId).toBe(seen[0]?.id);
+    expect(seen[0]?.message).toContain("hunter2"); // the HOST gets the real error, once
     await b.conv.sendTurn(id, "two");
     expect((await messages(b, id, 4))[3]).toMatchObject({ text: "ok", status: "complete" });
+    expect(seen).toHaveLength(1); // not re-reported on the replay a wake performs
   });
 
   it("close ends the conversation; a later send is refused", async () => {

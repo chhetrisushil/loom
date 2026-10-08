@@ -1,11 +1,15 @@
-import { ExecutionDeniedError, executionAccessPolicy } from "@loom/workflow-runtime";
+import { ExecutionDeniedError } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { alice, bob, boot, mallory, messages } from "./__fixtures__/harness";
 import { ConversationNotFoundError } from "./index";
 
-describe("conversation authorization", () => {
-  async function owned(policy = executionAccessPolicy()) {
-    const b = boot({ secure: true, policy });
+// OWNER-ONLY is the default (ADR 0122 D8): the identity that started a conversation is the only one that
+// may send to it, close it, read it or stream it; every other caller gets the SAME not-found as for a
+// conversation that does not exist.
+
+describe("conversation authorization: owner-only by default", () => {
+  async function owned(extra: Parameters<typeof boot>[0] = {}) {
+    const b = boot({ secure: true, ...extra });
     const { conversationId: id } = await b.conv.start({ principal: alice });
     await b.conv.sendTurn(id, "hello", { principal: alice });
     await messages(b, id, 2, alice);
@@ -13,8 +17,19 @@ describe("conversation authorization", () => {
   }
   const logSize = async (b: Awaited<ReturnType<typeof owned>>["b"], id: string) =>
     (await b.eventStore.read(id)).length + (await b.eventStore.read(`__loom_inbox__:${id}`)).length;
+  const everyOp = (
+    b: Awaited<ReturnType<typeof owned>>["b"],
+    id: string,
+    who: typeof alice | undefined
+  ) => [
+    b.conv.sendTurn(id, "pwned", who && { principal: who }),
+    b.conv.close(id, who && { principal: who }),
+    b.conv.history(id, who && { principal: who }),
+    b.conv.status(id, who && { principal: who }),
+    b.conv.authorizeRead(id, who && { principal: who }),
+  ];
 
-  it("the owner converses; the turn runs under the owner's authority (the model effect is granted to the flow)", async () => {
+  it("the owner converses; the turn runs under the owner's authority", async () => {
     const { b, id } = await owned();
     expect((await b.conv.history(id, { principal: alice })).entries.map((m) => m.text)).toEqual([
       "hello",
@@ -23,62 +38,73 @@ describe("conversation authorization", () => {
     expect(await b.conv.status(id, { principal: alice })).toMatchObject({ state: "open" });
   });
 
-  it("a stranger (other tenant) cannot send, read, close or even see the conversation; nothing is written", async () => {
+  it("a stranger in another tenant is refused everywhere, as 'not found', and nothing is written", async () => {
     const { b, id } = await owned();
     const before = await logSize(b, id);
-    await expect(b.conv.sendTurn(id, "pwned", { principal: mallory })).rejects.toBeInstanceOf(
-      ExecutionDeniedError
-    );
-    await expect(b.conv.close(id, { principal: mallory })).rejects.toBeInstanceOf(
-      ExecutionDeniedError
-    );
-    await expect(b.conv.history(id, { principal: mallory })).rejects.toBeInstanceOf(
-      ExecutionDeniedError
-    );
-    await expect(b.conv.status(id, { principal: mallory })).rejects.toBeInstanceOf(
-      ExecutionDeniedError
-    );
-    await expect(b.conv.authorizeRead(id, { principal: mallory })).rejects.toBeInstanceOf(
-      ExecutionDeniedError
-    );
+    for (const p of await Promise.allSettled(everyOp(b, id, mallory))) {
+      expect(p.status).toBe("rejected");
+      expect((p as PromiseRejectedResult).reason).toBeInstanceOf(ConversationNotFoundError);
+    }
     expect(await logSize(b, id)).toBe(before);
     expect(b.calls.n).toBe(1);
   });
 
-  it("a conversation that does not exist is NotFound, distinct from a refusal (the transport maps both to one answer)", async () => {
+  it("a SAME-TENANT colleague is refused too, although the runtime's own default policy would admit the tenant", async () => {
     const { b, id } = await owned();
-    await expect(b.conv.history(id, { principal: mallory })).rejects.toBeInstanceOf(
-      ExecutionDeniedError
-    );
+    const colleague = { ...bob, tenant: alice.tenant }; // bob, in alice's tenant
+    const before = await logSize(b, id);
+    for (const p of await Promise.allSettled(everyOp(b, id, colleague))) {
+      expect((p as PromiseRejectedResult).reason).toBeInstanceOf(ConversationNotFoundError);
+    }
+    expect(await logSize(b, id)).toBe(before);
+    // ...and it really is the client's check: the runtime alone lets that colleague send
     await expect(
-      b.conv.history("no-such-conversation", { principal: alice })
-    ).rejects.toBeInstanceOf(ConversationNotFoundError);
+      b.runtime.send(
+        id,
+        { topic: "conversation:turn", payload: { kind: "user", text: "raw" } },
+        { principal: colleague }
+      )
+    ).resolves.toBeDefined();
+  });
+
+  it("a delegate acting on behalf of the owner is a DIFFERENT identity and does not become the owner", async () => {
+    const { b, id } = await owned();
+    const delegate = { ...alice, onBehalfOf: "someone-else" };
+    for (const p of await Promise.allSettled(everyOp(b, id, delegate))) {
+      expect((p as PromiseRejectedResult).reason).toBeInstanceOf(ConversationNotFoundError);
+    }
+  });
+
+  it("identity is tenant AND actor: the same actor name in another tenant is not the owner", async () => {
+    const { b, id } = await owned();
+    const namesake = { actor: alice.actor, tenant: "t-other" };
+    await expect(b.conv.history(id, { principal: namesake })).rejects.toBeInstanceOf(
+      ConversationNotFoundError
+    );
+  });
+
+  it("a real conversation and an unknown one give the caller the SAME answer", async () => {
+    const { b, id } = await owned();
+    const real = await b.conv.history(id, { principal: mallory }).catch((e: Error) => e);
+    const unknown = await b.conv
+      .history("no-such-conversation", { principal: mallory })
+      .catch((e: Error) => e);
+    expect(real).toBeInstanceOf(ConversationNotFoundError);
+    expect(unknown).toBeInstanceOf(ConversationNotFoundError);
+    expect(real.message.replace(id, "X")).toBe(
+      unknown.message.replace("no-such-conversation", "X")
+    );
     await expect(b.conv.sendTurn("no~such", "x", { principal: alice })).rejects.toBeInstanceOf(
       ConversationNotFoundError
     );
   });
 
-  it("an unauthenticated caller is refused when the runtime fails closed", async () => {
+  it("an unauthenticated caller is refused (starting needs a principal under a fail-closed runtime)", async () => {
     const { b, id } = await owned();
-    await expect(b.conv.sendTurn(id, "anon")).rejects.toBeInstanceOf(ExecutionDeniedError);
-    await expect(b.conv.history(id)).rejects.toBeInstanceOf(ExecutionDeniedError);
+    for (const p of await Promise.allSettled(everyOp(b, id, undefined))) {
+      expect((p as PromiseRejectedResult).reason).toBeInstanceOf(ConversationNotFoundError);
+    }
     await expect(b.conv.start({})).rejects.toBeInstanceOf(ExecutionDeniedError);
-  });
-
-  it("the default policy lets a same-tenant colleague in; an owner-only policy does not", async () => {
-    const open = await owned();
-    await open.b.conv.sendTurn(open.id, "from bob", { principal: bob });
-    expect((await messages(open.b, open.id, 4, alice)).at(-1)?.text).toBe("re: from bob");
-
-    const strict = await owned(executionAccessPolicy({ rules: { send: "owner", query: "owner" } }));
-    await expect(
-      strict.b.conv.sendTurn(strict.id, "from bob", { principal: bob })
-    ).rejects.toBeInstanceOf(ExecutionDeniedError);
-    await expect(strict.b.conv.history(strict.id, { principal: bob })).rejects.toBeInstanceOf(
-      ExecutionDeniedError
-    );
-    await strict.b.conv.sendTurn(strict.id, "from alice", { principal: alice });
-    expect((await messages(strict.b, strict.id, 4, alice)).at(-1)?.text).toBe("re: from alice");
   });
 
   it("a conversation keeps its owner across rotations: a stranger is refused at the head too", async () => {
@@ -90,12 +116,26 @@ describe("conversation authorization", () => {
     }
     expect((await b.conv.status(id, { principal: alice })).generation).toBeGreaterThan(0);
     await expect(b.conv.sendTurn(id, "x", { principal: mallory })).rejects.toBeInstanceOf(
-      ExecutionDeniedError
-    );
-    await expect(b.conv.history(id, { principal: mallory })).rejects.toBeInstanceOf(
-      ExecutionDeniedError
+      ConversationNotFoundError
     );
     await b.conv.sendTurn(id, "q4", { principal: alice });
     expect((await messages(b, id, 8, alice)).at(-1)?.text).toBe("re: q4");
+  });
+
+  it("a forged owner stamp cannot widen access: when the kernel's recorded identity disagrees, nobody matches", async () => {
+    const b = boot({ secure: true });
+    // started through the runtime directly by alice, stamping MALLORY as the owner
+    const h = await b.runtime.start(
+      b.flow as never,
+      { v: 1, seq: 0, ord: 0, turns: [], owner: { actor: "mallory", tenant: "t2" } } as never,
+      { executionId: "forged", principal: alice }
+    );
+    void h;
+    await expect(b.conv.history("forged", { principal: mallory })).rejects.toBeInstanceOf(
+      ConversationNotFoundError
+    );
+    await expect(b.conv.history("forged", { principal: alice })).rejects.toBeInstanceOf(
+      ConversationNotFoundError
+    );
   });
 });

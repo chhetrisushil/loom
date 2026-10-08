@@ -59,6 +59,28 @@ describe("barge-in", () => {
     expect(ctx).toContain("tell me a long story");
   });
 
+  it("a RETRY of the running turn's message is not a barge-in (the conformance case for the idempotency key)", async () => {
+    const gate = new Latch();
+    const b = boot({
+      reply: async (req) => {
+        await Promise.race([gate.promise, never(req)]);
+        return { content: `re: ${lastUserText(req)}`, stopReason: "end_turn" };
+      },
+    });
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "slow question", { messageId: "q-1" });
+    await until(() => b.calls.n === 1);
+    await b.conv.sendTurn(id, "slow question", { messageId: "q-1" });
+    gate.release();
+    const all = await messages(b, id, 2);
+    expect(all[1]).toMatchObject({
+      role: "assistant",
+      status: "complete",
+      text: "re: slow question",
+    });
+    expect(b.calls.n).toBe(1);
+  });
+
   it("keeps the streamed partial text of the interrupted reply", async () => {
     const started = new Latch();
     const b = boot({

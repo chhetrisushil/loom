@@ -1,5 +1,5 @@
 import { createAgentModelEffect } from "@loom/agent";
-import { agent$ } from "@loom/core";
+import { agent$, tool$ } from "@loom/core";
 import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
@@ -8,12 +8,16 @@ import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamChunk } from "@loom
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
 import type { ExecutionAuthorizer, WorkflowRuntimeDeps } from "@loom/workflow-runtime";
+import { z } from "zod";
 import {
   type ConversationConfig,
   ConversationHub,
+  type Identity,
+  type SharedConfig,
   conversation$,
   createConversations,
   inboxBargeIn,
+  logParticipants,
 } from "../index";
 
 /** The user text of a request's last message, with the prompt-boundary fence stripped. */
@@ -61,6 +65,52 @@ export interface BootOptions {
   /** A streaming provider: yields the chunks of a reply (the terminal `done` chunk included). */
   chunks?: (request: LlmRequest, nth: number) => AsyncIterable<LlmStreamChunk>;
   extraEffects?: (e: EffectRuntime) => void;
+  /**
+   * SHARED mode (ADR 0122 D10). Implies `secure`. The agent gets two tools, `kb` (class "public") and
+   * `secret-db` (class "restricted"); K2 grants are per ASKER (alice: both, bob: kb only, carol: kb only);
+   * a viewer is cleared for "restricted" only if they are alice or dave.
+   */
+  shared?: Partial<SharedConfig> | true;
+}
+
+export const SHARED_KEY = "test-shared-key";
+export const carol: PrincipalChain = { actor: "carol", tenant: "t2" };
+export const dave: PrincipalChain = { actor: "dave", tenant: "t3" };
+export const SECRET = "TOP-SECRET-PAYLOAD";
+
+const kb = tool$({
+  id: "kb",
+  name: "kb",
+  description: "public knowledge base",
+  kind: "tool",
+  inputSchema: z.object({}).passthrough(),
+  outputSchema: z.any(),
+});
+const secretDb = tool$({
+  id: "secret-db",
+  name: "secret-db",
+  description: "restricted database",
+  kind: "tool",
+  inputSchema: z.object({}).passthrough(),
+  outputSchema: z.any(),
+});
+
+/** The default shared-mode model: calls a tool when the user text asks, then answers with what it got. */
+export function sharedScript(request: LlmRequest): LlmResponse {
+  const last = request.messages[request.messages.length - 1];
+  const parts = Array.isArray(last?.content) ? last.content : [];
+  const results = parts.filter((p) => (p as { type?: string }).type === "tool_result");
+  if (results.length > 0) {
+    return {
+      content: `answer: ${JSON.stringify(results.map((r) => (r as { content: unknown }).content))}`,
+      stopReason: "end_turn",
+    };
+  }
+  const text = lastUserText(request);
+  const name = text.includes("secret") ? "secret-db" : text.includes("kb") ? "kb" : undefined;
+  return name === undefined
+    ? { content: `re: ${text}`, stopReason: "end_turn" }
+    : { content: "", toolCalls: [{ id: `c-${name}`, name, input: {} }], stopReason: "tool_use" };
 }
 
 export const alice: PrincipalChain = { actor: "alice", tenant: "t1" };
@@ -75,10 +125,13 @@ export function boot(opts: BootOptions = {}) {
       calls.n++;
       requests.push(request);
       return (
-        (await opts.reply?.(request, calls.n)) ?? {
-          content: `re: ${lastUserText(request)}`,
-          stopReason: "end_turn",
-        }
+        (await opts.reply?.(request, calls.n)) ??
+        (opts.shared !== undefined
+          ? sharedScript(request)
+          : {
+              content: `re: ${lastUserText(request)}`,
+              stopReason: "end_turn",
+            })
       );
     },
   };
@@ -91,10 +144,32 @@ export function boot(opts: BootOptions = {}) {
     };
   }
   const hub = opts.hub ?? new ConversationHub();
+  const sharedOpts =
+    opts.shared === undefined ? undefined : opts.shared === true ? {} : opts.shared;
+  const secure = opts.secure === true || sharedOpts !== undefined;
   const effects = new EffectRuntime(
     [],
-    opts.secure ? { authorizer: new GrantTable({ conversation: ["model", "summarize"] }) } : {}
+    sharedOpts !== undefined
+      ? {
+          authorizer: new GrantTable(
+            {
+              // the OWNER's authority: it only coordinates, so it may run turns and summarize
+              alice: ["conversation.turn", "summarize", "audit", "model", "kb", "secret-db"],
+              bob: ["model", "kb", "summarize"],
+              carol: ["model", "kb", "summarize"],
+              dave: ["model", "kb", "secret-db", "summarize"],
+            },
+            { principal: (req) => req.principal?.actor ?? req.workflowId }
+          ),
+        }
+      : secure
+        ? { authorizer: new GrantTable({ conversation: ["model", "summarize"] }) }
+        : {}
   );
+  if (sharedOpts !== undefined) {
+    effects.register("kb", new ToolEffect(async () => ({ fact: "public-fact" })));
+    effects.register("secret-db", new ToolEffect(async () => ({ secret: SECRET })));
+  }
   effects.register(
     "model",
     createAgentModelEffect(hub.wrapProvider(provider), {
@@ -121,7 +196,7 @@ export function boot(opts: BootOptions = {}) {
       timerStore,
       continueAsNewEnabled: true,
       divergence: "fail",
-      ...(opts.secure && {
+      ...(secure && {
         executionAuthorizer: opts.policy ?? executionAccessPolicy(),
         executionAuthz: { requirePrincipal: true },
       }),
@@ -129,18 +204,50 @@ export function boot(opts: BootOptions = {}) {
       ...extra,
     });
   const runtime = mk();
+  const sharedConfig: SharedConfig | undefined =
+    sharedOpts === undefined
+      ? undefined
+      : {
+          key: SHARED_KEY,
+          directory: logParticipants(eventStore),
+          cleared: (viewer: Identity, classes: readonly string[]) =>
+            classes.every(
+              (c) =>
+                c === "public" ||
+                (c === "restricted" && (viewer.actor === "alice" || viewer.actor === "dave"))
+            ),
+          classOf: (tool: string) =>
+            tool === "kb" ? "public" : tool === "secret-db" ? "restricted" : undefined,
+          ...sharedOpts,
+        };
   const flow = conversation$(
     {
-      agent: { definition: agent$({ id: "chat", name: "Chat", tools: [] }), modelToolId: "model" },
+      agent: {
+        definition: agent$({ id: "chat", name: "Chat", tools: sharedConfig ? [kb, secretDb] : [] }),
+        modelToolId: "model",
+      },
       hub,
       bargeIn: inboxBargeIn(eventStore),
+      ...(sharedConfig && { shared: sharedConfig }),
       ...opts.config,
     } as ConversationConfig,
     { id: "conversation" }
   );
   runtime.registerFlow(flow.definition, flow.runner);
-  const conv = createConversations({ runtime, eventStore, flow });
-  return { runtime, eventStore, conv, requests, calls, hub, flow, effects, mk, snapshotStore };
+  const conv = createConversations({ runtime, eventStore, flow, ...(sharedConfig && { effects }) });
+  return {
+    runtime,
+    eventStore,
+    conv,
+    requests,
+    calls,
+    hub,
+    flow,
+    effects,
+    mk,
+    snapshotStore,
+    shared: sharedConfig,
+  };
 }
 
 /** Copy the streams of `ids` into a fresh store: a process that died with exactly these events durable. */

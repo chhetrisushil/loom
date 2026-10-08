@@ -11,7 +11,10 @@
   [ADR 0085](0085-untrusted-content-integrity-axis.md) (a user's words are untrusted data), [ADR 0083](0083-second-consumer-rule.md)
   (relaxed for Part R, but the consumers are still named below), R12 (the authenticated-ingress pattern).
 - Consumers: **loom-ui U8** (the chat / input vocabulary: turn list, streaming deltas, status, interrupt) and the
-  **`chat-agent` example** in `loom-examples` (specified in the PR; this repo does not edit that one).
+  **`chat-agent` example** in `loom-examples` (specified in the PR; this repo does not edit that one); shared mode: an
+  AI-mode incident surface whose chat several responders share.
+- Revision: fix round 1 (Opus review of PR #518, not approved) — owner-only default (D8), shared mode (D10), bounded
+  backward reads (D3), edge hardening (D6), summary/identity/peek fixes (D2, D5).
 - Placement: **two 1P packages, kernel untouched.** `@loom/conversation` (new) and `@loom/plugin-conversation-sse` (new
   plugin), plus three additive seams on `@loom/agent`. `KERNEL_ABI`, `EVENT_SCHEMA` and every SPI are unchanged; no
   syscall, no event kind, no payload field. Every behaviour is built from `runtime.start`, `runtime.send`,
@@ -53,9 +56,9 @@ not proposed: the signal has to come from outside the flow body (D2), which `age
 - `createConversations({ runtime, eventStore, flow })` is the client: `start({ principal })`, `sendTurn(id, text,
   { messageId?, principal })`, `close`, `history(id, { limit, cursor, direction, maxScan, principal })`, `status`,
   `authorizeRead`. Each is an existing authorized runtime call: `start` is `runtime.start` under the caller's principal
-  (the conversation OWNS that authority, ADR 0111), `sendTurn` / `close` are `runtime.send` (the `send` op, judged against
-  the chain head's owner), `history` / `status` are a `query` (`followToHead`). There is no ACL in this package to drift
-  from the runtime's.
+  (the conversation OWNS that authority, ADR 0111), `sendTurn` / `close` are `runtime.send`, `history` / `status` are a
+  `query` (`followToHead`). Who may call is decided first by the client against the recorded owner (D8; owner-only by
+  default) and the runtime's own policy still applies underneath.
 - The inbox topic carries `{ kind: "user", text, id }` or `{ kind: "close", id }`. `sendTurn` stamps `id` with the
   `messageId`, so a retry (same `messageId`) is **delivered once** by the kernel's dedupe, within the kernel's window.
   Malformed, empty or oversized (`maxTurnChars`, default 32 000) envelopes sent by anything that bypasses the client are
@@ -84,8 +87,18 @@ not proposed: the signal has to come from outside the flow body (D2), which `age
 - **A retry is not a barge-in.** The kernel delivers a duplicate `messageId` once, but a subscription sees every append,
   so the first cut let a client's retry of the turn being answered interrupt it (a test caught it). The flow remembers the
   idempotency keys of the last 256 turns (including the running one, carried across rotations); the source ignores a
-  message whose key is known. A foreign sender that bypasses the client carries no key, so its duplicate does interrupt:
-  documented, and the reason to send through the client.
+  message whose key is known. The key is the **kernel's own dedupe identity**, `sha256([tenant, actor, onBehalfOf,
+  messageId])` of the sender the runtime recorded (`senderKey`), and the watcher honours a payload `id` only when it equals
+  that key for THIS stored message: a different sender replaying someone's id is a new message and interrupts (P3-8). A
+  foreign sender that bypasses the client carries no key, so its duplicate does interrupt: documented, and the reason to send
+  through the client.
+- **The peek is not a fixed lookback.** `pendingInbox` finds the owner's consumed cursor by reading the owner's log
+  BACKWARDS in blocks (up to 8 192 events) until it finds a `MESSAGE_CONSUMED`, so a turn with any amount of tool traffic,
+  or a recovery re-running one, is compared against the right cursor (the first cut looked at the last 64 events and could
+  miss a barge-in, P3-7).
+- **Roles alternate.** A turn with no reply text (interrupted before any, failed) is given a placeholder assistant message
+  (`(interrupted)`, `(no reply: the request failed)`) and the summary a short acknowledgement, so a provider that rejects
+  consecutive same-role messages is never sent two (P3-9).
 - **Cutting the generation.** `ConversationHub.wrapProvider(provider)` merges the turn's signal into every request's
   `signal` and, for a streaming provider, accumulates the text it forwards and raises `LLM_INTERRUPTED` itself, so the
   partial survives whether the provider honoured the signal or kept yielding (the kernel's own capture watches the
@@ -117,6 +130,10 @@ not proposed: the signal has to come from outside the flow body (D2), which `age
   messages. Forward (oldest first) and backward (newest first) are both supported; backward is how a UI loads the latest
   page. A cursor is `<generation>.<sequence>`, a position **inside the conversation's own chain**, so a cursor taken from
   another conversation reads nothing of it. A malformed cursor is `InvalidCursorError`, never "start over".
+  **A cursor is untrusted input, clamped to what exists** (P1-a): a generation past the head means "from the end" (found by
+  the same O(log G) probe), a sequence past a generation's tip is clamped to the tip, and **every generation hop counts
+  against `maxScan`**, so one call is O(`maxScan`) store operations whatever the cursor says (`?direction=backward&cursor=
+  999999999.0` was ~2e9 store calls before). A read also takes a `signal`: the gateway aborts it when the client goes away.
 - The head generation is found by galloping and bisecting over `headOf` (generations are consecutive), O(log G) point
   reads, not a walk. Rotation does not truncate history: every generation's log stays (until retention reclaims it).
 - `source: "conversation-record"` and `"conversation-budget"` are added to `@loom/learning`'s `RECORDED_FACT_SOURCES`:
@@ -155,7 +172,11 @@ not proposed: the signal has to come from outside the flow body (D2), which `age
   are folded into a rolling summary through `ctx.execute` against that effect, **using the same `{ messages } → { summary }`
   contract as `agentLoop$` `compaction.toolId`, so one summarizer effect serves both**. The summary is model output over
   untrusted text, so it rides in a *fenced* `user` message (origin `conversation:summary`), never the system prompt.
-  `maxWindowTurns` (default 64) bounds the carried window whether or not a budget is configured.
+  `maxWindowTurns` (default 64) bounds the carried window whether or not a budget is configured. **The summary can never
+  wedge the conversation** (P3-1): it is cut to `maxSummaryTokens` (default a quarter of the window) by a recorded decision
+  that counts with the counter, and a fit that fails only because the summary is too big retries without it
+  (`dropSummary`) rather than rejecting every later turn. The start input is read as untrusted JSON (`carryOf`: shape,
+  counts, text sizes and bytes all bounded, P3-10).
 - **Integration with `agentLoop$` compaction, not duplication.** The two answer different questions and compose: the
   conversation budget decides which *turns* enter a run; `config.agent.compaction` (messages / bytes) keeps passing
   through and bounds the transcript *inside* a run, where tool results grow.
@@ -178,9 +199,9 @@ never a message, and resuming is the same code path as following.
 - **Authentication.** Every route needs `authenticate(req)` to return a principal with a non-empty `actor`, derived from
   connection facts only. The server refuses to be created without it unless `insecure: true` (warned; refused under
   `strict`). It binds `127.0.0.1` by default. `OPTIONS` carries no credentials and is answered for allowed origins only.
-- **Authorization is the runtime's**, per conversation (`send` and `query` against the recorded owner, ADR 0111); there is
-  no second ACL here. The default reference policy admits the owner's tenant; an owner-only policy is one rule
-  (`rules: { send: "owner", query: "owner" }`) and is tested.
+- **Authorization is `@loom/conversation`'s**, per conversation and **owner-only by default** (D8), or the explicit
+  participant set of a shared conversation (D10); the gateway holds no second ACL, it maps the client's refusal to the one
+  404. The runtime's own policy still applies underneath in owner-only mode.
 - **Existence is hidden.** A conversation the caller may not touch and one that does not exist both answer
   `404 {"error":"not found"}`, on every route including the stream. Authorization runs BEFORE any limit that could answer
   429 (a stranger probing a busy conversation learns nothing from the limit; tested).
@@ -201,6 +222,14 @@ never a message, and resuming is the same code path as following.
   revoked token, a changed principal or a policy that stops admitting the caller ends the stream (both tested, and the
   second by reverting the guard).
 - **Errors.** A 500 is a fixed body plus an `errorId`; the real error goes to `onError`.
+- **Edge hardening (fix round 1).** `strict` defaults from the runtime (`requiresPrincipal`) as the A2A server does; the
+  server refuses to front a runtime with no fail-closed execution authorizer unless `allowNoRuntimeAuthz`; an unauthenticated
+  (`insecure`) server answers only loopback `Host` names (DNS rebinding), and `allowedHosts` does the same for an
+  authenticated one; **`Host` never proves same-origin**: a request with an `Origin` must name one of `allowedOrigins`
+  exactly; CORS headers ride error responses too (a browser cannot read a 4xx without them) and
+  `access-control-allow-credentials` is sent to listed origins only when `allowCredentials` is set; `requestTimeout` /
+  `headersTimeout` / `maxConnections` are set on the HTTP server; POSTs are rate-limited per principal (default 120 per
+  minute); a connection dropped during authorization releases its slot at once (P2-1).
 
 **D7 — Live deltas: transient, attributed, caught up.**
 
@@ -214,21 +243,104 @@ a client that attaches or reconnects mid-reply gets a `partial`; the final durab
 partial. The hub is per process: a deployment that runs the model effect on another node (a remote worker) delivers no
 live deltas on this node and falls back to the durable record.
 
-**D8 — Trust and authority.**
+**D8 — Trust and authority: OWNER-ONLY by default.**
 
-- A turn runs as the conversation owner: the execution's recorded principal, inherited by every generation. The sender's
-  authority is only the authority to *send*. Close is a `send` too, so whoever may send may close (see the questions).
+- **The default is the owner and nobody else.** Only the identity that started a conversation may send to it, close it,
+  read its history or status, or stream it. *Identity* is the bounded subset of ADR 0111: `{ tenant?, actor, onBehalfOf? }`,
+  equal iff **all three** fields are equal (an absent field equals only an absent field). A delegate acting `onBehalfOf` the
+  owner is a different identity and is NOT the owner: delegation narrows authority, it never widens who owns. A credential
+  (a delegation token) is not part of identity. A principal with no `actor` cannot own or join anything.
+- **Why this is the default, stated as an escalation.** The first cut left authorization to the runtime's reference policy,
+  whose default `send` / `query` scope is *the owner's tenant*. In a conversation that is an escalation, not a read: a
+  `send` is a prompt to an agent that runs with the **owner's authority** (tools, memory, quotas, approvals), so any
+  same-tenant principal could drive the owner's agent as the owner and read the transcript (review finding P1-b). Owner-only
+  closes that. Sharing is the explicit shared mode (D10), which does not run anyone's prompt with anyone else's authority.
+- **How it is enforced, and why it is not the kernel's job.** `createConversations` reads the recorded owner once per
+  conversation from sequence 0 of generation 0 (immutable and start-once): the identity the client stamped into the start
+  input, **cross-checked** against the identity the kernel recorded for the starting principal when that is stored verbatim; a
+  disagreement is an UNKNOWN owner and nobody matches. Every operation is judged here first, and every refusal is the same
+  `ConversationNotFoundError` as for a conversation that does not exist (the gateway maps it to the one 404). The runtime's
+  own policy still applies underneath. No kernel change: the owner is data the client writes at the one moment only the
+  starter can write it.
+- **`close` is owner-only** (a manager, in shared mode): it falls out of the above.
+- A turn runs as the conversation owner in owner-only mode: the execution's recorded principal, inherited by every
+  generation. The sender is the owner, so the sender's authority and the turn's are the same.
 - A user turn is untrusted data. It enters the transcript tainted with origin `conversation:user` (`AgentInput.promptOrigin`
   and `AgentHistoryMessage.origin`), fenced at the prompt boundary, refused in any instruction position. The system prompt
   is the operator's. A tainted `assistant` history message is refused by the boundary (tested), so a user cannot forge the
-  model's earlier turns.
+  model's earlier turns. The summarizer is handed the user's words tainted too, and the previous summary tainted
+  `conversation:summary` (it is model output over untrusted text); only the model's own words go in plain.
 - The transcript stores the raw text; the taint is applied where it enters a prompt, as for every inbox payload.
+- **A failed turn tells the user nothing about the failure.** The record carries a fixed `reason` (`model-error`,
+  `denied`, `turn-failed`, `cancelled`) and an `errorId`; the real error goes only to the host's `onError(errorId, err,
+  { conversationId, turn })`, once (it runs in the record's live decider, so a wake's replay does not report it again).
+  A provider error can carry hostnames, request ids or credentials; the first cut recorded `${name}: ${message}` into a
+  transcript every viewer reads (P2-2).
 
 **D9 — Three additive seams on `@loom/agent`.** `AgentLoopConfig.loopId` (the id prefix of a loop's frames, decisions and
 gates; default the definition id; two loops in one execution must not share it, and the test pins what happens when they
 do), `AgentInput.history` (earlier messages before the prompt, oldest first, caller-sized) and `AgentInput.promptOrigin`
 (the prompt is third-party content). All default to today's behaviour byte for byte; `agentHistory.test.ts` pins both
 the new behaviour and the unchanged request.
+
+**D10 — Shared mode: participants, each turn run as its ASKER, classified, filtered per viewer.**
+
+Motivating workload: an incident surface whose AI chat is shared by several responders. `conversation$({ shared })` +
+`createConversations({ effects })`; owner-only (D8) stays the default and is unchanged.
+
+1. **Participants, not tenant.** The set is explicit and managed by the owner or a host-supplied `manageParticipants(manager,
+   conversationId)`; the owner is always a participant and cannot be removed; at most 100. Changes are events: the standard
+   `ParticipantDirectory` (`logParticipants(eventStore)`) is an append-only side stream `conversation-participants:<id>`
+   (one `PARTICIPANT_CHANGED` per change, with who made it), never the conversation's own log (a sender must not append to
+   the owner's log, ADR 0110 D1). It is read on EVERY request, so a removal takes effect on the next one; an open SSE stream
+   re-authorizes every `reauthMs` and ends. A non-participant gets the uniform 404 for send / history / status / stream /
+   close / participants. Because participants are not the owner, the client performs the runtime calls with the runtime's
+   system grant after its own check (it is the one place that knows the set).
+2. **Each turn runs as the ASKER.** The conversation execution (the owner's authority) only COORDINATES: it dequeues a turn,
+   runs one effect (`conversation.turn`, granted to the owner) and records the transcript. The effect starts a SEPARATE turn
+   execution with the asker's principal (ADR 0111) under a deterministic id `turn:<conversation>:o<ord>` (start-once; a
+   crashed run finds and continues the same execution; a cancel of the coordinator cancels it) and waits for its output.
+   Every tool call, memory write-back, quota and capability check inside it is the asker's: a participant with fewer grants
+   cannot reach a tool the owner can, and the denial is raised inside THEIR turn and recorded as `failed / denied` for them.
+   The asker's principal is rebuilt from the signed identity (`principalFor` lets a host mint a delegation instead);
+   `agent.writeBack` must go through an effect (`toolId`) in shared mode, never a direct write. Tested with per-asker K2 grants.
+3. **Each answer is classified by what it touched.** `classes` = the declared class of every tool the turn called
+   (`shared.classOf(toolName)`; a tool it does not know is the label `unclassified`) UNION the classes of every entry that
+   fed its context. The record carries them; the decision is recorded, so replay never re-asks the host. (The core has no
+   per-tool class declaration, so the host supplies the map; `@loom/classify`'s `DataClass` is a handling class for fields
+   and is not reused as the label vocabulary, which is open and the host's.)
+4. **Per-viewer filtering.** `shared.cleared(viewer, classes)` (REQUIRED) is called with a non-empty class list and must
+   clear EVERY class; fail closed, so a host returns `false` for a label it does not recognise. An entry the viewer is not
+   cleared for becomes a bare `{ turn, role, status: "restricted", cursor, ..., asker }` placeholder: never its text, the
+   tool names, the class labels, the turn execution id or the reason. Attribution stays (the asker is on the unrestricted
+   user message beside it anyway; decided fail-closed on everything else). The asker always sees their own answer.
+   Applied in `history`, in the SSE stream (resume included), and to live deltas: **a turn's class is not known until it
+   ends (it depends on the tools called), so its deltas and the `partial` catch-up go to the ASKER alone**; everyone else
+   gets the durable entry (or the placeholder) on completion.
+5. **Per-asker model context.** The history fed to a turn contains only the entries the ASKER is cleared for, decided in a
+   recorded verdict (`conv#o<ord>:visible`); a turn is excluded WHOLE (question and answer) when its answer is restricted.
+   **The rolling summary is built only from unrestricted turns** (a summary reaches every participant's prompt, so it must
+   carry nothing any participant cannot see): a restricted turn that is evicted is dropped, not summarized. In shared mode
+   the window is evicted by age only (`maxWindowTurns`); the token budget fits each asker's own slice.
+6. **Queued turns, no cross-user barge-in.** Turns are served FIFO from the inbox, each attributed. A participant's follow-up
+   interrupts only THEIR OWN running turn (the effect's watcher accepts only a message signed for the same asker); owner-only
+   mode keeps its barge-in. A participant removed while their message was queued is rejected when it is dequeued
+   (`not-a-participant`, a recorded verdict).
+7. **Attribution.** Every record carries the asking principal's identity; history, the stream and the placeholders expose it.
+8. **Approvals stay refused.** `requireApproval` throws at construction. The future rule, so nobody has to rediscover it:
+   an approval is a gate the APPROVER must be authorized for and that is bound to what they saw (ADR 0117 `viewDigest`); in a
+   shared conversation the approver is a participant cleared for the call's class, the gate lives in the asker's turn
+   execution (never the coordinator), and no participant can answer another's.
+
+*Envelope integrity.* The coordinator's inbox is writable by anyone the runtime admits to `send`, and in shared mode the
+sender the kernel records is the host, so the asker is named inside the message and the body accepts it only from an
+envelope **signed with the host's key** (`shared.key`, HMAC-SHA-256): a colleague who can raw-`send` cannot speak as another
+participant (tested; an unsigned or wrongly signed message is recorded `rejected / unauthenticated` and never answered).
+
+*Known limits.* The signature binds the asker to the text, not the text to a time (replay is the kernel's dedupe window and
+the per-asker idempotency key). `cleared` is called per entry per request (cached per class set within one call); a very
+large window with many distinct class sets pays that. Rolling summaries are one per conversation, so a participant cleared
+for more than the shared summary contains gets no richer summary (their own recent turns still carry the detail).
 
 ## Consequences
 
@@ -251,21 +363,18 @@ the new behaviour and the unchanged request.
 
 ## Questions for the user
 
-1. **Should `close` be owner-only?** Close is a `send`, judged by the `send` rule (default scope: the owner's tenant), so
-   a tenant colleague who may send may also end the conversation. The body cannot see who sent a message (the sender is in
-   `MESSAGE_CONSUMED`, not in the `receive` value). The simplest fail-closed alternative is a separate `ExecutionOp`
-   (kernel) or an `ownerOnlyClose` check in the transport; neither is done.
-2. **Should a conversation support `requireApproval`?** A parked approval gate (`ctx.suspend`) and the barge-in watcher
-   do not compose today, so `conversation$` refuses the option and a tool that needs a human must be gated by the effect
-   authorizer instead. Supporting it means deciding what a user message means while an approval is pending (answer? queue?
-   cancel the approval?), which is a product decision.
-3. **Queue vs interrupt as the default.** With a `bargeIn` source the default is interrupt (the spec's reading of a user
-   turn while running); without one it queues. Per-message `mode: "queue"` was not built.
-4. **WebSocket.** Not built (above). Say if a consumer needs it.
+All four are resolved (user decisions, 2026-10-08):
+
+1. **`close`** is owner-only by default (a manager in shared mode): a consequence of D8, no separate rule.
+2. **`requireApproval`** stays refused; the rule for a future version is written in D10.8.
+3. **Queue vs interrupt** stays a *per-conversation* choice (a `bargeIn` source or none; shared mode queues across
+   participants by construction). A per-message `mode` is deliberately never added: a sender must not choose whether their
+   message may interrupt someone else's turn.
+4. **WebSocket** is not built.
 
 ## Verification
 
-`@loom/conversation`: 49 tests in 8 files; `@loom/plugin-conversation-sse`: 33 in 4; `@loom/agent`: 6 new
-(`agentHistory.test.ts`). Each key guard was reverted and the test that pins it failed: the retry-vs-barge-in key
+See the PR for the per-suite counts. Fix round 1 added `hardening.test.ts`, `shared.test.ts` (package), `edge.test.ts`,
+`shared.test.ts` (plugin) and `compactionTaint.test.ts` (agent). Each key guard was reverted and the test that pins it failed: the retry-vs-barge-in key
 (twice), the turn-signal merge, the carry trim, the budget eviction, the prompt taint, the subscription release, the
 authorization-before-limit order, the Origin check, the denial mapping and the revocation re-check.

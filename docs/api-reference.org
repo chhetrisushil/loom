@@ -2002,7 +2002,26 @@ interface Conversations {
   status(id, o?): Promise<{ conversationId; executionId; generation; state: "open"|"closed"|"failed"|"cancelled"; running: boolean; turns: number }>;
   authorizeRead(id, o?): Promise<{ generation: number }>;                                 // the gate a transport runs once per connection
   readonly reader: ConversationReader;
+  readonly mode: "owner" | "shared";
+  readonly requiresPrincipal: boolean;
+  // Owner-only by default: any caller who is not the owner (tenant+actor+onBehalfOf) gets ConversationNotFoundError.
+  // SHARED mode (conversation$({ shared })): participants + per-viewer filtering:
+  participants(id, o?): Promise<Identity[]>;                 // owner / manager
+  addParticipant(id, who: Identity, o?): Promise<void>;
+  removeParticipant(id, who: Identity, o?): Promise<void>;   // the owner cannot be removed
+  filterEntries(entries: HistoryEntry[], principal?): Promise<HistoryEntry[]>;   // restricted -> bare placeholder (status "restricted")
+  viewerKey(principal?): string | undefined;
 }
+
+interface SharedConfig {
+  key: string;                                         // HMAC key for host-signed inbox envelopes
+  directory: ParticipantDirectory;                     // logParticipants(eventStore)
+  cleared(viewer: Identity, classes: readonly string[]): boolean | Promise<boolean>;   // REQUIRED; fail closed
+  classOf?(toolName: string): string | undefined;     // undefined -> the label "unclassified"
+  manageParticipants?(manager: Identity, conversationId: string): boolean | Promise<boolean>;
+  turnEffectId?: string;                               // default "conversation.turn": grant it to the OWNER
+}
+interface Identity { tenant?: string; actor: string; onBehalfOf?: string }
 
 // What history returns: one entry per message, with the cursor to resume from.
 interface HistoryEntry { turn: number; role: "user"|"assistant"; text: string;
@@ -2038,6 +2057,8 @@ class ConversationHub {
 type LiveEvent = { type: "delta"; conversationId; turn; text } | { type: "reset"; conversationId; turn }
 #+end_src
 
+=ConversationConfig= also takes =shared?: SharedConfig= and =onError?(errorId, err, { conversationId, turn })= (the host's log of the real error behind a failed turn). =BudgetConfig= takes =maxSummaryTokens?= (default a quarter of the window).
+
 Errors: =ConversationNotFoundError=, =InvalidTurnError=, =InvalidCursorError=, =SubscriberLimitError=; authorization failures are the runtime's own (=ExecutionDeniedError=). Message statuses: a user turn is =complete= or =rejected= (=malformed=, =too-long=, =prompt-too-large=); a reply is =complete=, =interrupted= (the partial, possibly empty) or =failed=. User text is untrusted: render it as text.
 
 ** ~@loom/plugin-conversation-sse~ — the end-user gateway
@@ -2053,10 +2074,14 @@ function createConversationSseServer(o: {
   maxPendingBytes?: number /* 1 MiB */; maxBodyBytes?: number /* 64 KiB */;
   heartbeatMs?: number /* 15_000 */; maxStreamMs?: number /* 15 min */; reauthMs?: number /* 30_000 */; pollMs?: number /* 2_000 */;
   onError?: (errorId: string, err: unknown) => void;
-}): { start(): Promise<void>; stop(): Promise<void>; readonly url: string; readonly connections: number }
+  // edge hardening (ADR 0122 D6): strict defaults from the runtime; allowNoRuntimeAuthz?: boolean (refused by default);
+  // allowedHosts?: string[] (insecure servers: loopback only); allowCredentials?: boolean (CORS, listed origins only);
+  // rateLimit?: { max?: number /* 120 */; windowMs?: number /* 60_000 */ } (POSTs, per principal); now?: () => number;
+  // requestTimeoutMs?: number /* 30_000 */; headersTimeoutMs?: number /* 15_000 */; maxSockets?: number /* 4096 */;
+}): { start(): Promise<void>; stop(): Promise<void>; readonly url: string; readonly connections: number; readonly http: http.Server }
 #+end_src
 
-Routes: =POST /conversations= (the server mints the id), =GET /conversations/:id=, =POST /conversations/:id/turns= (={ text, messageId? }=), =POST /conversations/:id/close=, =GET /conversations/:id/history?limit&cursor&direction=, =GET /conversations/:id/events= (SSE; =Last-Event-ID= or =?cursor=). SSE events: =status=, =partial=, =message= (SSE =id= = the history cursor), =delta=, =reset=, =closed=, =reconnect=, =error=. Every refusal for a conversation the caller may not touch is the same =404=. See ADR 0122 D6 for the security model.
+Shared mode adds =GET /conversations/:id/participants=, =POST …/participants= and =POST …/participants/remove=. Routes: =POST /conversations= (the server mints the id), =GET /conversations/:id=, =POST /conversations/:id/turns= (={ text, messageId? }=), =POST /conversations/:id/close=, =GET /conversations/:id/history?limit&cursor&direction=, =GET /conversations/:id/events= (SSE; =Last-Event-ID= or =?cursor=). SSE events: =status=, =partial=, =message= (SSE =id= = the history cursor), =delta=, =reset=, =closed=, =reconnect=, =error=. Every refusal for a conversation the caller may not touch is the same =404=. See ADR 0122 D6 for the security model.
 
 ** ~@loom/memory~ — agent memory
 
