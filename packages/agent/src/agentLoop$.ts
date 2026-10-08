@@ -124,7 +124,9 @@ export interface AgentLoopConfig {
   /**
    * R10 — partition the Reasoning Runtime's response cache (`ReasonOptions.cacheScope`). A runner body
    * cannot read its own principal, so a multi-tenant host that configures a cache passes the tenant id
-   * here; unset, identical prompts share cache entries. Ignored without `reasoning`.
+   * here. REQUIRED when the runtime has a response cache and calls go direct (no `reasoningToolId`):
+   * `agentLoop$` throws {@link AgentLoopConfigError} otherwise. Use a per-tenant value; a constant
+   * value means every run that uses it shares cache entries. Ignored without `reasoning`.
    */
   cacheScope?: string;
   /**
@@ -553,6 +555,18 @@ export async function agentLoop$(
   if (config.writeBack !== undefined && config.writeBack !== false && config.memory === undefined) {
     // A write-back with nowhere to write reads as persistence it isn't.
     throw new Error("agentLoop$ writeBack requires `memory`");
+  }
+  if (
+    config.reasoning?.hasResponseCache === true &&
+    config.reasoningToolId === undefined &&
+    config.cacheScope === undefined
+  ) {
+    // The direct path consults the runtime's response cache, keyed on the request as written. A runner
+    // body cannot read its principal, so without a scope two tenants asking the same thing would share
+    // an answer. Fail closed: sharing must be a decision.
+    throw new AgentLoopConfigError(
+      "agentLoop$: the ReasoningRuntime has a response cache, so `cacheScope` is required (use a per-tenant value; a constant value means every run using it shares entries)"
+    );
   }
   const parallelTools = config.parallelTools ?? false;
   if (

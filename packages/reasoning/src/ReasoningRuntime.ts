@@ -61,6 +61,11 @@ export class ReasoningRuntime {
     }
   }
 
+  /** Whether a response cache is configured (a host that shares it across tenants must scope it). */
+  get hasResponseCache(): boolean {
+    return this.cache !== undefined;
+  }
+
   get availableRoutes(): ReadonlyArray<ModelRoute> {
     return this.routes;
   }
