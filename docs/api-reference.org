@@ -1994,7 +1994,9 @@ function executePlan(ctx: ExecutionContext, plan: PlanGraph, config: {
   replan?: { max: number; revise: (ctx, req: ReplanRequest) => Promise<PlanGraph>; maxTotalNodes?: number };
   reflect?: (ctx, wave: { round; completed: string[]; failed: string[] }) => Promise<"continue" | "replan" | "stop" | undefined>;
 }): Promise<{ status: "completed" | "failed" | "stopped"; outputs; failures: Record<string, StepFailure>; skipped: string[]; replans: number; nodes: PlanNode[]; reason?: string }>
-function makeReviser(cfg: { catalog; model: PlanModel; planId?; maxAttempts?; limits? }): (ctx, req) => Promise<PlanGraph>   // `<planId>:replan:<n>` decisions; failure context tainted
+function makeReviser(cfg: { model: PlanModel; maxAttempts?; maxReplyChars? }): (ctx, req) => Promise<PlanGraph>   // decision `<req.planId>:replan:<n>`; catalog + limits come from the request; failure context tainted
+class IdReusedError extends Error   // a planId (planGoal / executePlan) or goalsClient prefix used twice in one execution is refused
+// capability$({ ..., acceptsTainted: true }) lets a plan bind a tainted value (schema checked on the payload; the tool gets the wrapper); default: refused
 
 // Goals: principal-scoped, durable, a status machine. The owner is NEVER an input.
 interface Goal { id; owner; parentId?; title; status: "open" | "active" | "done" | "failed" | "abandoned"; revision; seq; note?; lastRun? }

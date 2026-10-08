@@ -2,7 +2,7 @@ import { createAgentModelEffect } from "@loom/agent";
 import { CapabilityCatalog, capability$ } from "@loom/capability";
 import { flow$, handler$, step$ } from "@loom/core";
 import type { FlowDefinition } from "@loom/core";
-import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import { CapabilityDeniedError, EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import type { LlmProvider } from "@loom/llm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
@@ -10,7 +10,13 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { ExecutionContext, FlowRunner } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { goalsClient, ownerOfPrincipal, registerGoalEffects, runGoal } from "./goalEffects";
+import {
+  goalEffects,
+  goalsClient,
+  ownerOfPrincipal,
+  registerGoalEffects,
+  runGoal,
+} from "./goalEffects";
 import {
   DurableGoalStore,
   GoalAccessDeniedError,
@@ -333,5 +339,313 @@ describe("goal effects + runGoal (R16)", () => {
     const g = await store.get(ownerOfPrincipal({ actor: "alice" }), "g1");
     expect(g.status).toBe("failed");
     expect(g.note).toContain("planning failed");
+  });
+});
+
+describe("fix round 1 - goals (R16)", () => {
+  it("P1: a delegate acting onBehalfOf u1 and one acting onBehalfOf u2 are different owners", () => {
+    const a = ownerOfPrincipal({ actor: "assistant", onBehalfOf: "u1" });
+    const b = ownerOfPrincipal({ actor: "assistant", onBehalfOf: "u2" });
+    const none = ownerOfPrincipal({ actor: "assistant" });
+    expect(new Set([a, b, none]).size).toBe(3);
+  });
+
+  it("P1: the goal owner key is the conversation identity key (one definition)", async () => {
+    const { identityKey } = await import("../../conversation/src/access");
+    const p = { tenant: "t", actor: "assistant", onBehalfOf: "u1" };
+    expect(ownerOfPrincipal(p)).toBe(
+      identityKey({ tenant: "t", actor: "assistant", onBehalfOf: "u1" })
+    );
+  });
+
+  it("P1: shredded and unresolved principals have no owner", () => {
+    expect(() => ownerOfPrincipal({ actor: "a", principalShredded: true })).toThrow(
+      GoalAccessDeniedError
+    );
+    expect(() => ownerOfPrincipal({ actor: "a", principalUnresolved: "ref" })).toThrow(
+      GoalAccessDeniedError
+    );
+  });
+
+  it("P1 (through the effects): a goal made as onBehalfOf u1 is invisible to onBehalfOf u2", async () => {
+    const store = new InMemoryGoalStore();
+    const fx = goalEffects(store);
+    const ctxFor = (onBehalfOf: string) =>
+      ({
+        principal: { actor: "assistant", onBehalfOf },
+        executionId: "e",
+        stepId: "s",
+        workflowId: "w",
+        attempt: 1,
+        emit() {},
+      }) as never;
+    await fx["goals.create"]?.execute({ id: "g", title: "t" }, ctxFor("u1"));
+    expect(await fx["goals.list"]?.execute({}, ctxFor("u1"))).toHaveLength(1);
+    expect(await fx["goals.list"]?.execute({}, ctxFor("u2"))).toEqual([]);
+    await expect(
+      fx["goals.setStatus"]?.execute({ id: "g", status: "active" }, ctxFor("u2"))
+    ).rejects.toThrow(GoalNotFoundError);
+  });
+
+  it("P3: reading never creates an owner document (InMemory)", async () => {
+    const s = new InMemoryGoalStore();
+    await s.list("ghost");
+    await expect(s.get("ghost", "g")).rejects.toThrow(GoalNotFoundError);
+    expect((s as unknown as { docs: Map<string, unknown> }).docs.size).toBe(0);
+  });
+
+  it("P3: setStatus.lastRun is validated (shape and size)", async () => {
+    for (const s of [new InMemoryGoalStore(), new DurableGoalStore(kv())]) {
+      await s.create("a", { id: "g", title: "t" });
+      for (const bad of [
+        { status: "nope", replans: 0 },
+        { status: "failed", replans: -1 },
+        { status: "failed", replans: 1.5 },
+        { status: "failed", replans: 0, error: "x".repeat(400) },
+        { status: "failed", replans: 0, extra: "x" },
+        "string",
+      ]) {
+        await expect(
+          s.setStatus("a", { id: "g", status: "active", lastRun: bad as never })
+        ).rejects.toThrow(/lastRun/);
+      }
+      expect((await s.get("a", "g")).status).toBe("open");
+      await s.setStatus("a", {
+        id: "g",
+        status: "active",
+        lastRun: { status: "failed", replans: 2, error: "e" },
+      });
+    }
+  });
+
+  it("P3: a write re-driven with the same idempotencyKey is applied once", async () => {
+    for (const s of [new InMemoryGoalStore(), new DurableGoalStore(kv())]) {
+      const a = await s.create("a", { id: "g", title: "t" }, { idempotencyKey: "k1" });
+      const again = await s.create("a", { id: "g", title: "t" }, { idempotencyKey: "k1" });
+      expect(again).toEqual(a);
+      const st = await s.setStatus("a", { id: "g", status: "active" }, { idempotencyKey: "k2" });
+      const st2 = await s.setStatus("a", { id: "g", status: "active" }, { idempotencyKey: "k2" });
+      expect(st2).toEqual(st);
+      expect((await s.get("a", "g")).revision).toBe(2);
+      // without a key the duplicate is still a conflict
+      await expect(s.create("a", { id: "g", title: "t" })).rejects.toThrow(GoalConflictError);
+    }
+  });
+
+  it("survivor: at most 1000 goals per owner", async () => {
+    for (const s of [new InMemoryGoalStore(), new DurableGoalStore(kv())]) {
+      for (let i = 0; i < 1000; i++) await s.create("a", { id: `g${i}`, title: "t" });
+      await expect(s.create("a", { id: "one-more", title: "t" })).rejects.toThrow(/more than 1000/);
+      await s.create("b", { id: "ok", title: "t" }); // another owner is unaffected
+    }
+  }, 60_000);
+
+  it("the goal effects are declared idempotent (a crash mid-write is re-driven, not parked in-doubt)", () => {
+    const fx = goalEffects(new InMemoryGoalStore());
+    for (const id of ["goals.create", "goals.setStatus", "goals.rollup"] as const) {
+      expect((fx[id] as { idempotent?: boolean }).idempotent).toBe(true);
+    }
+  });
+});
+
+describe("fix round 1 - runGoal / goalsClient through a runtime (R16)", () => {
+  const sink = (id: string, v: number) => ({ id, capabilityId: "work", args: { n: v } });
+  const run = async (
+    store: GoalStore,
+    replies: string[],
+    body: (
+      ctx: ExecutionContext,
+      deps: { goals: ReturnType<typeof goalsClient> }
+    ) => Promise<unknown>,
+    opts: { work?: () => unknown; principal?: object } = {}
+  ) => {
+    let i = 0;
+    let out: unknown;
+    let err: unknown;
+    const provider: LlmProvider = {
+      async complete() {
+        return {
+          content: replies[Math.min(i++, replies.length - 1)] ?? "",
+          stopReason: "end_turn",
+        };
+      },
+    };
+    const effects = new EffectRuntime();
+    effects.register("plan-model", createAgentModelEffect(provider));
+    effects.register("work", new ToolEffect(async () => (opts.work ?? (() => ({ ok: 1 })))()));
+    registerGoalEffects(effects, store);
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+    });
+    const runner: FlowRunner<unknown, unknown> = async (ctx) => {
+      try {
+        out = await body(ctx, { goals: goalsClient(ctx) });
+      } catch (e) {
+        err = e;
+      }
+      return {};
+    };
+    runtime.registerFlow(FLOW, runner);
+    const h = await runtime.start(
+      FLOW,
+      {},
+      { principal: (opts.principal ?? { actor: "alice" }) as never }
+    );
+    await h.waitForCompletion();
+    return {
+      out: out as never,
+      err,
+      owner: ownerOfPrincipal((opts.principal ?? { actor: "alice" }) as never),
+    };
+  };
+  const cfg = { catalog: cat, plan: { model: effectPlanModel("plan-model") } };
+  const plan1 = JSON.stringify({ nodes: [sink("w1", 1)] });
+
+  it("P2-3: two goalsClient instances on one prefix are refused (no silently lost write)", async () => {
+    const store = new InMemoryGoalStore();
+    const r = await run(store, [plan1], async (ctx, { goals }) => {
+      await goals.create({ id: "g1", title: "t" });
+      goalsClient(ctx); // a second client on the default prefix
+      return "unreachable";
+    });
+    expect((r.err as Error).name).toBe("IdReusedError");
+    // A distinct prefix is fine and writes both.
+    const r2 = await run(new InMemoryGoalStore(), [plan1], async (ctx, { goals }) => {
+      const other = goalsClient(ctx, { prefix: "goals2" });
+      await goals.create({ id: "a", title: "t" });
+      await other.create({ id: "b", title: "t" });
+      return (await goals.list()).map((g) => g.id) as never;
+    });
+    expect(r2.out).toEqual(["a", "b"]);
+  });
+
+  it("P2-2: two runGoal calls with replanning in one execution each adopt their own revision", async () => {
+    const store = new InMemoryGoalStore();
+    let n = 0;
+    const flaky = JSON.stringify({
+      nodes: [{ id: "bad", capabilityId: "flaky", args: { key: "k" } }],
+    });
+    const fix = (v: number) => JSON.stringify({ nodes: [sink(`fix${v}`, v)] });
+    const c2 = new CapabilityCatalog();
+    for (const c of cat.all()) c2.register(c);
+    c2.register(
+      capability$({
+        id: "flaky",
+        intent: "flaky",
+        tags: [],
+        inputSchema: z.any(),
+        flow: cat.get("work")!.flow,
+      })
+    );
+    const seen: unknown[] = [];
+    let i = 0;
+    const replies = [flaky, fix(1), flaky, fix(2)];
+    const provider: LlmProvider = {
+      async complete() {
+        return { content: replies[i++] ?? "", stopReason: "end_turn" };
+      },
+    };
+    const effects = new EffectRuntime();
+    effects.register("plan-model", createAgentModelEffect(provider));
+    effects.register(
+      "work",
+      new ToolEffect(async (x: unknown) => {
+        seen.push(x);
+        return {};
+      })
+    );
+    effects.register(
+      "flaky",
+      new ToolEffect(async () => {
+        n++;
+        throw new Error("boom");
+      })
+    );
+    registerGoalEffects(effects, store);
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+    });
+    const { makeReviser } = await import("./executePlan");
+    let res: unknown;
+    const runner: FlowRunner<unknown, unknown> = async (ctx) => {
+      const goals = goalsClient(ctx);
+      await goals.create({ id: "g1", title: "one" });
+      await goals.create({ id: "g2", title: "two" });
+      const model = effectPlanModel("plan-model");
+      const revise = makeReviser({ model });
+      const exec = { replan: { max: 1, revise } };
+      const a = await runGoal(ctx, goals, "g1", { catalog: c2, plan: { model }, execute: exec });
+      const b = await runGoal(ctx, goals, "g2", { catalog: c2, plan: { model }, execute: exec });
+      res = [a.goal.status, b.goal.status];
+      return {};
+    };
+    runtime.registerFlow(FLOW, runner);
+    const h = await runtime.start(FLOW, {}, { principal: { actor: "alice" } });
+    await h.waitForCompletion();
+    expect(res).toEqual(["done", "done"]);
+    expect(seen).toEqual([{ n: 1 }, { n: 2 }]);
+    expect(n).toBe(2);
+  });
+
+  it("P3: a goal that is already active is refused (one pursuer), and an error never leaves it stuck active", async () => {
+    const store = new InMemoryGoalStore();
+    const r = await run(store, [plan1], async (ctx, { goals }) => {
+      await goals.create({ id: "g1", title: "t" });
+      await goals.setStatus({ id: "g1", status: "active" });
+      return runGoal(ctx, goals, "g1", cfg);
+    });
+    expect((r.err as Error).name).toBe("GoalConflictError");
+    expect((await store.get(r.owner, "g1")).status).toBe("active"); // untouched: it is someone else's pursuit
+
+    const s2 = new InMemoryGoalStore();
+    const denied = await run(
+      s2,
+      [plan1],
+      async (ctx, { goals }) => {
+        await goals.create({ id: "g1", title: "t" });
+        return runGoal(ctx, goals, "g1", cfg);
+      },
+      {
+        work: () => {
+          throw new CapabilityDeniedError("work", "nope");
+        },
+      }
+    );
+    expect((denied.err as Error).name).toMatch(/Denied|StepError/);
+    const g = await s2.get(denied.owner, "g1");
+    expect(g.status).toBe("open");
+    expect(g.lastRun?.error).toBeDefined();
+  });
+
+  it("P3: a pursued goal that has children is not recomputed from them (its own outcome is returned)", async () => {
+    const store = new InMemoryGoalStore();
+    const r = await run(store, [plan1], async (ctx, { goals }) => {
+      await goals.create({ id: "p", title: "parent" });
+      await goals.create({ id: "mid", title: "mid", parentId: "p" });
+      await goals.create({ id: "kid", title: "kid", parentId: "mid" });
+      await goals.setStatus({ id: "kid", status: "done" });
+      const out = await runGoal(ctx, goals, "mid", {
+        ...cfg,
+        execute: { reflect: async () => "stop" },
+      });
+      return out.goal.status as never;
+    });
+    expect(r.out).toBe("open"); // stopped by reflection; the finished child does not turn it `done`
+  });
+
+  it("P3: runGoal's result is its own, not recomputed by a self-rollup", async () => {
+    const store = new InMemoryGoalStore();
+    const r = await run(store, [plan1], async (ctx, { goals }) => {
+      await goals.create({ id: "p", title: "parent" });
+      await goals.create({ id: "c", title: "child", parentId: "p" });
+      await goals.create({ id: "c2", title: "sibling", parentId: "p" });
+      const out = await runGoal(ctx, goals, "c", cfg);
+      return { child: out.goal.status, parent: (await goals.get("p")).status } as never;
+    });
+    expect(r.out).toEqual({ child: "done", parent: "open" });
   });
 });

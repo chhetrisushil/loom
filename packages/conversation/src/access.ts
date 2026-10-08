@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import type { PrincipalChain } from "@loom/effect-runtime";
+import { type PrincipalChain, identityKeyOf } from "@loom/effect-runtime";
 import { DuplicateSequenceError, type EventStore, headOf, readRangeOf } from "@loom/event-runtime";
 
 // ── Who a conversation belongs to, and who else may take part (ADR 0122 D8, D10) ────────────────────
@@ -30,7 +30,7 @@ export function identityOf(principal: PrincipalChain | undefined): Identity | un
 
 /** A stable key for an identity. */
 export function identityKey(i: Identity): string {
-  return JSON.stringify([i.tenant ?? null, i.actor, i.onBehalfOf ?? null]);
+  return identityKeyOf(i);
 }
 
 export function sameIdentity(a: Identity | undefined, b: Identity | undefined): boolean {

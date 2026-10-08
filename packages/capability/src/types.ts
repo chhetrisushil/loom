@@ -19,6 +19,13 @@ export interface CapabilityDefinition<TIn = unknown, TOut = unknown> {
   version?: string;
   /** Ids of capabilities this one depends on (M7); resolved by CapabilityCatalog. */
   dependencies?: string[];
+  /**
+   * R16 (ADR 0123) — this capability's input may receive TAINTED values (ADR 0085) bound by a plan's
+   * `$from` (e.g. an MCP tool's output). Default `false`: a plan step that would pass one is refused
+   * (`args-invalid`). When `true`, the schema is checked against the payload and the tool receives the
+   * wrapper, so the taint travels with the value.
+   */
+  acceptsTainted?: boolean;
 }
 
 // ── Capability invoke authorization (M7) ─────────────────────────────────────

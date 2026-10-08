@@ -119,7 +119,7 @@ completed outputs, the failures, the nodes that did not run, and every id used s
 - is validated like any plan, within a total node budget (`maxTotalNodes`, default 4 × `maxNodes`);
 - that is empty means "give up": the run ends `failed` with the reason.
 
-`makeReviser({ catalog, model })` is the model-backed reviser: one recorded decision per round (`<planId>:replan:<n>`), with the same
+`makeReviser({ model })` is the model-backed reviser: one recorded decision per round, named from the request's plan (`<req.planId>:replan:<n>`; the catalog and the resolved limits also come from the request, so a revision is validated against exactly what the executor enforces), with the same
 bounded ask-validate-retry loop. Everything the failure context contains is **tool- or model-authored** (a step's output, an error
 message, the old plan's rationale), so each item is a tainted part of the `user` message, fenced by the prompt boundary and labelled
 with its origin (`plan:failure:<id>`, `plan:output:<id>`, …); nothing of it enters the system prompt. `reflect(ctx, wave)` is an
@@ -170,6 +170,25 @@ A flow that moves from `plan()` to `planGoal()` is a body change like any other 
 - **No automatic goal decomposition.** A model may be asked to propose subgoals, but creating them is an explicit `goals.create`.
 - **Arguments that contain references are validated at execution, not at plan time** (D1). A schema cannot be checked against a
   value that does not exist yet; the alternative (a placeholder per type) would pass or refuse for the wrong reasons.
+
+### D8 — Fix round 1 (Opus review of PR #520)
+
+- **Owner = the shared identity key.** `principalIdentityKey` / `identityKeyOf` (`@loom/effect-runtime`, next to `principalBlocked`) is
+  `[tenant, actor, onBehalfOf]`; goals and `@loom/conversation` both use it, so a delegate acting `onBehalfOf` u1 is not u2's
+  owner. A shredded or unresolved principal has no owner.
+- **An id namespace is claimed once per execution context** (`planGoal` / `executePlan` `planId`, `goalsClient` prefix): a second
+  claim throws `IdReusedError` instead of being served the first call's recorded result.
+- **Taint through paths.** A `$from` path addresses the payload; a tainted value met anywhere on the path is stepped into and the
+  result keeps the outermost taint. `__loomTainted` is not a legal path segment or args key. A tainted argument is refused by default;
+  `capability$({ acceptsTainted: true })` checks the schema on the payload and hands the tool the wrapper. Prompts show the fenced
+  payload, never the wrapper JSON; a tainted goal stays tainted in `PlanGraph.goal`.
+- **Crash window.** A step's capability runs once on success (its output is captured inside the outcome decision). If the process
+  dies after the capability ran but before the outcome decision is journaled, the step re-runs once on resume: at-least-once, the
+  same window as `agentLoop$`; mark a non-idempotent capability `idempotent: false` so recovery parks it instead.
+- **Goals.** `runGoal` takes the `active` transition by compare-and-set and refuses an already-active goal; any error that ends the
+  pursuit (other than a park) returns it to `open` with `lastRun.error`; the parent is rolled up, the goal's own result is not
+  recomputed. Goal writes are idempotent on the effect's `idempotencyKey`. Plan retries send the model's previous answer back as an
+  assistant turn.
 
 ## Consequences
 
