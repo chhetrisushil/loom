@@ -188,6 +188,14 @@ The first adversarial review (verdict: not approved as drafted; design holds) fo
   `parallelTools`), so a search followed by a call to a tool it loads, in the same turn, works and is deterministic.
 - `search_tools` is not approval-gated and is not metered as an effect. It is bounded by `maxSearches`, and it costs one decision.
 - The semantic ranker (R18) is a follow-up behind `ToolRanker`.
+- **Polish round (2026-10-09).** A ranker that throws, or a `loadInstructions` that throws, is feedback (typed
+  `search_unavailable` / `instructions_unavailable`, a fixed reason, nothing recorded) unless the error is terminal under R10
+  (cancellation, kill switch, quota, a park), which still propagates. Because the decider threw, `ctx.decide` marks the segment
+  unsettled (as for any throwing decider). `maxIndexBytes` too small for even one skill is a config error.
+- Residual: the A2A menu spec still carries the peer's description (pre-existing, R4b).
+- Residual: re-delivering an already-active skill re-reads the LIVE instructions and records nothing, so a replay may deliver
+  newer text than the first run did (the activation itself still replays from its record).
+- Residual (host-controlled): a custom `ranker` that ignores `limit` makes `admit` iterate its whole output.
 
 ## Questions for the user
 

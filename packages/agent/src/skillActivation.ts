@@ -3,6 +3,7 @@ import { type SkillDefinition, type ToolDefinition, loadInstructions } from "@lo
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import { z } from "zod";
 import type { SkillRegistry } from "./SkillRegistry";
+import { isTerminalToolError } from "./toolFailure";
 import { cap, toolSpecFor, validateToolInput } from "./toolSchema";
 import { firstLineOf } from "./toolSearch";
 
@@ -89,6 +90,9 @@ function positiveInt(name: string, v: number | undefined, def: number, ceiling: 
   }
   return n;
 }
+
+/** Thrown inside the decider when the instructions could not be LOADED live: nothing is recorded. */
+class InstructionsUnavailable extends Error {}
 
 const REFUSAL_CODES = new Set(["instructions_refused", "instructions_too_large"]);
 const UTF8 = new TextEncoder();
@@ -186,6 +190,11 @@ export class SkillActivationSession {
       this.lines.push(line);
     }
     this.omitted = candidates.length - this.offered.size;
+    if (candidates.length > 0 && this.offered.size === 0) {
+      throw new SkillActivationError(
+        `skillActivation.maxIndexBytes (${maxIndexBytes}) is too small: not even one skill fits the index (the header alone needs ${bytes} bytes)`
+      );
+    }
     const reserved = new Set(opts.reservedNames);
     for (const s of this.offered.values()) for (const t of s.tools ?? []) reserved.add(t.id);
     if (reserved.has(this.name)) {
@@ -294,16 +303,30 @@ export class SkillActivationSession {
     // `{ skill, refused }`, so a replay reproduces it whatever the registry holds by then; a live
     // acceptance records `{ skill }` and a replay honours it even if the text has since changed.
     const live: { text?: string } = {};
-    const recorded = await ctx.decide<Recorded>(
-      decisionKey,
-      async () => {
-        const d = await this.deliverable(skill);
-        if (!d.ok) return { skill: name, refused: d.code };
-        live.text = d.text;
-        return { skill: name };
-      },
-      { source: SOURCE_SKILL_ACTIVATION }
-    );
+    let recorded: Recorded;
+    try {
+      recorded = await ctx.decide<Recorded>(
+        decisionKey,
+        async () => {
+          const d = await this.deliverable(skill);
+          // A load FAILURE is not a verdict on the text: throw so nothing is recorded (a later
+          // attempt can succeed). The throw is caught below; a terminal error never reaches here.
+          if (!d.ok && d.code === "instructions_unavailable") throw new InstructionsUnavailable();
+          if (!d.ok) return { skill: name, refused: d.code };
+          live.text = d.text;
+          return { skill: name };
+        },
+        { source: SOURCE_SKILL_ACTIVATION }
+      );
+    } catch (err) {
+      if (err instanceof InstructionsUnavailable) {
+        return error(
+          "instructions_unavailable",
+          this.refusalMessage("instructions_unavailable", name)
+        );
+      }
+      throw err;
+    }
     // Live and replayed alike the record is re-intersected with what THIS run may activate: a stale
     // or tampered record can refuse, and can never activate anything but the offered skill asked for.
     if (recorded === null || typeof recorded !== "object" || recorded.skill !== name) {
@@ -347,6 +370,9 @@ export class SkillActivationSession {
   }
 
   private refusalMessage(code: string, name: string): string {
+    if (code === "instructions_unavailable") {
+      return `Skill "${cap(name)}" has instructions that could not be loaded right now.`;
+    }
     return code === "instructions_too_large"
       ? `Skill "${cap(name)}" has instructions over the ${this.maxInstructionBytes}-byte limit.`
       : `Skill "${cap(name)}" has instructions that cannot be delivered.`;
@@ -356,7 +382,19 @@ export class SkillActivationSession {
   private async deliverable(
     skill: SkillDefinition
   ): Promise<{ ok: true; text: string } | { ok: false; code: string; message: string }> {
-    const text: unknown = await loadInstructions(skill.instructions);
+    let text: unknown;
+    try {
+      text = await loadInstructions(skill.instructions);
+    } catch (err) {
+      // R10: a failing load is feedback (a fixed reason, never the error text) unless it is terminal
+      // (cancellation, kill switch, quota, a park...), which must reach the runtime.
+      if (isTerminalToolError(err)) throw err;
+      return {
+        ok: false,
+        code: "instructions_unavailable",
+        message: this.refusalMessage("instructions_unavailable", skill.id),
+      };
+    }
     if (typeof text !== "string" || isTainted(text)) {
       return {
         ok: false,

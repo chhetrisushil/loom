@@ -1127,3 +1127,36 @@ describe("R22 review P3-9 - ranking asks enough, and only when used", () => {
     expect(reads).toBeGreaterThan(0);
   });
 });
+
+describe("R22 polish P3-a - a failing ranker is feedback, a terminal error is not", () => {
+  const boom = (err: unknown): ToolRanker => ({
+    kind: "boom",
+    rank: () => {
+      throw err;
+    },
+  });
+
+  it("a throwing ranker returns search_unavailable, records nothing and does not leak its text", async () => {
+    const b = boot({
+      search: { ranker: boom(new Error("SECRET-boom")) },
+      provider: script([[SEARCH("slow queries")]]),
+    });
+    await runToEnd(b);
+    const content = text(resultsOf(b.requests[1] as LlmRequest)[0]?.content);
+    expect(content).toContain("search_unavailable");
+    expect(content).not.toContain("SECRET-boom");
+    const searches = decisions(await b.store.read("e1")).filter(
+      (d) => d.source === SOURCE_TOOL_SEARCH
+    );
+    expect(searches).toEqual([]);
+  });
+
+  it("a terminal error from the ranker still propagates", async () => {
+    const quota = Object.assign(new Error("quota"), { name: "QuotaExceededError" });
+    const b = boot({
+      search: { ranker: boom(quota) },
+      provider: script([[SEARCH("slow queries")]]),
+    });
+    await expect(runToEnd(b)).rejects.toThrow(/quota/);
+  });
+});

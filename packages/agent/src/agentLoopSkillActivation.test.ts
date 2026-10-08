@@ -724,3 +724,41 @@ describe("R22 review P3-5 - once a decision is recorded, a replay honours it", (
     expect(resultsOf(b.requests[0] as LlmRequest)[0]?.result.instructions).toBe("short");
   });
 });
+
+describe("R22 polish P3-a/b - an unloadable skill is feedback; an index that fits nothing is a config error", () => {
+  const failing = (err: unknown): SkillDefinition =>
+    ({
+      ...mkSkill("flaky", "x"),
+      instructions: async () => {
+        throw err;
+      },
+    }) as SkillDefinition;
+
+  it("loadInstructions throwing returns instructions_unavailable and records nothing", async () => {
+    const b = boot({
+      skills: [failing(new Error("SECRET-io"))],
+      provider: script([[ACT("flaky")]]),
+    });
+    await runToEnd(b);
+    const [r] = resultsOf(b.requests[1] as LlmRequest);
+    expect(r?.isError).toBe(true);
+    expect(r?.result.error?.code).toBe("instructions_unavailable");
+    expect(JSON.stringify(r?.result)).not.toContain("SECRET-io");
+    expect(await activations(b)).toEqual([]);
+  });
+
+  it("a terminal error from loadInstructions still propagates", async () => {
+    const quota = Object.assign(new Error("quota"), { name: "QuotaExceededError" });
+    const b = boot({ skills: [failing(quota)], provider: script([[ACT("flaky")]]) });
+    await expect(runToEnd(b)).rejects.toThrow(/quota/);
+  });
+
+  it("maxIndexBytes too small for any skill throws a config error", async () => {
+    const b = boot({
+      skills: SKILLS(),
+      activation: { maxIndexBytes: 100 },
+      provider: script([]),
+    });
+    await expect(runToEnd(b)).rejects.toThrow(/maxIndexBytes/);
+  });
+});

@@ -215,4 +215,12 @@ describe("firstLineOf", () => {
     expect(firstLineOf("abcdef", 3)).toBe("abc…");
     expect(firstLineOf("", 3)).toBe("");
   });
+
+  it("never splits a surrogate pair at the cap and strips control characters", () => {
+    const out = firstLineOf("😀😀😀😀", 3);
+    expect(out).toBe("😀😀😀…");
+    expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(out)).toBe(false);
+    expect(firstLineOf("a\u001b[31mb\u0000c\u200dd", 50)).toBe("a[31mbcd");
+    expect(firstLineOf("a\tb", 50)).toBe("a b");
+  });
 });

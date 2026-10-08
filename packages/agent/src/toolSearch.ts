@@ -151,8 +151,12 @@ export function toolQueryTerms(query: string): string[] {
  * VT, FF, NEL, U+2028, U+2029), so text cannot smuggle a second "line" into a one-line listing.
  */
 export function firstLineOf(s: string, max: number): string {
-  const line = s.split(/[\n\r\v\f\u0085\u2028\u2029]/, 1)[0] as string;
-  return line.length > max ? `${line.slice(0, max)}…` : line;
+  const line = (s.split(/[\n\r\v\f\u0085\u2028\u2029]/, 1)[0] as string)
+    .replace(/\t/g, " ")
+    .replace(/\p{C}/gu, "");
+  if (line.length <= max) return line;
+  // Cut on a code point, never inside a surrogate pair.
+  return `${Array.from(line).slice(0, max).join("")}…`;
 }
 
 const byCodeUnit = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
