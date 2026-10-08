@@ -27,6 +27,48 @@ export interface PolicyStamp {
    * policy logs `1`; an exploring one logs its actual sampling probability.
    */
   propensity?: number;
+  /**
+   * R18 (ADR 0124) - the prompt template and model configuration that were in force when this
+   * decision was made, as content-addressed references (see `promptVersion` / `modelVersion`).
+   * Recorded verbatim in the decision's `policy` stamp (the fold keeps the object whole), so an
+   * evaluation can slice by prompt or model version. Descriptive: never a replay input.
+   */
+  refs?: { prompt?: VersionRef; model?: VersionRef };
+  /**
+   * R18 (ADR 0124) - set when a `PolicyRegistry` rollout chose which policy acted: the mode, the
+   * traffic bucket, and (shadow/canary) what the OTHER candidate would have chosen. Recorded in
+   * the decision so a replay is identical and off-policy evaluation can use the shadow arm.
+   */
+  rollout?: RolloutStamp;
+}
+
+/** A content-addressed reference to a prompt template or a model configuration. */
+export interface VersionRef {
+  /** Human-meaningful name, e.g. `"triage-system"` or `"claude-sonnet"`. */
+  id: string;
+  /** `sha256:<hex>` of the canonical form of the content - the version IS the content. */
+  version: string;
+}
+
+/** What a rollout recorded about who acted and who merely watched. */
+export interface RolloutStamp {
+  registry: string;
+  mode: "full" | "canary" | "shadow";
+  /** The stable traffic bucket in [0,1) derived from the unit key; absent for `full`. */
+  bucket?: number;
+  /** Canary only: the probability of the arm that acted (`f` or `1 - f`). */
+  armProbability?: number;
+  /** The policy that ACTED. */
+  acted: { id: string; version: string };
+  /** The other arm: the candidate (canary: when the incumbent acted; shadow: always). */
+  shadow?: {
+    id: string;
+    version: string;
+    action: unknown;
+    propensity?: number;
+    /** Set when the shadow policy threw: it never affects the acting arm. */
+    error?: string;
+  };
 }
 
 /** What a policy returns: the action, and the probability it assigned to picking it. */
@@ -182,6 +224,39 @@ export interface EvalReport {
   unitEffectiveSampleSize?: number;
   /** Largest single unit's share of total importance weight, in [0,1]. */
   maxUnitWeightShare?: number;
+  /**
+   * R18 - the doubly-robust estimate, present when `EvaluateOptions.doublyRobust` is set. It is
+   * the direct-method prediction plus an importance-weighted correction of that prediction's
+   * residual, so it is lower-variance than SNIPS when the reward model is decent and still
+   * consistent when only the logged propensities are right.
+   */
+  doublyRobust?: {
+    value: number;
+    /** `value - loggedValue`. */
+    lift: number;
+    /** Steps the estimate averages over (those with a usable propensity). */
+    steps: number;
+    /** `"fitted"`: leave-one-out per-action mean reward; `"supplied"`: the caller's model. */
+    rewardModel: "fitted" | "supplied";
+  };
+  /** R18 - bootstrap intervals, present when `EvaluateOptions.bootstrap` is set. */
+  intervals?: { snips?: EstimateInterval; dr?: EstimateInterval };
   /** Everything that makes this report weaker than it looks. Never empty by default. */
   warnings: string[];
+}
+
+/** A percentile-bootstrap interval, resampled by whole cluster (unit, else execution). */
+export interface EstimateInterval {
+  estimator: "snips" | "dr";
+  /** Two-sided coverage, e.g. 0.95. */
+  level: number;
+  resamples: number;
+  seed: number;
+  /** What was resampled: users/tenants when trajectories carry a `unit`, else executions. */
+  clusters: "unit" | "execution";
+  clusterCount: number;
+  /** Interval for the candidate's value. */
+  value: { lower: number; upper: number };
+  /** Interval for `value - loggedValue`, resampling both together. */
+  lift: { lower: number; upper: number };
 }

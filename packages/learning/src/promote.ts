@@ -41,6 +41,19 @@ export interface PromotionThresholds {
    * rather than passing it vacuously.
    */
   minUnits?: number;
+  /**
+   * R18 - require the bootstrap CONFIDENCE INTERVAL on lift to clear this lower bound (typically
+   * 0: "the candidate is better than the incumbent at the interval's confidence level"). A point
+   * estimate that is positive on thin evidence passes `minLift` and fails this. The report must
+   * carry an interval (`evaluatePolicy(..., { bootstrap })`) - a report without one FAILS this
+   * gate rather than passing it vacuously.
+   */
+  minLiftLowerBound?: number;
+  /**
+   * Which interval `minLiftLowerBound` reads. Default: the doubly-robust one when the report has
+   * it, else SNIPS.
+   */
+  intervalEstimator?: "snips" | "dr";
 }
 
 export interface PromotionVerdict {
@@ -117,6 +130,24 @@ export function promotionGate(
           `effective unit sample size ${report.unitEffectiveSampleSize.toFixed(1)} is below the required ${thresholds.minUnits} — the pool is wide but the evidence is not`
         );
       }
+    }
+  }
+  if (thresholds.minLiftLowerBound !== undefined) {
+    const want = thresholds.intervalEstimator;
+    const iv =
+      want !== undefined
+        ? report.intervals?.[want]
+        : (report.intervals?.dr ?? report.intervals?.snips);
+    if (iv === undefined) {
+      reasons.push(
+        `minLiftLowerBound was set but the evaluation carries no ${want ?? ""}${want ? " " : ""}confidence interval - pass \`bootstrap\` to evaluatePolicy`
+      );
+    } else if (!Number.isFinite(iv.lift.lower)) {
+      reasons.push("the lift confidence interval is not finite - the evidence is poisoned");
+    } else if (iv.lift.lower < thresholds.minLiftLowerBound) {
+      reasons.push(
+        `${iv.estimator} lift lower bound ${iv.lift.lower.toFixed(4)} (${(iv.level * 100).toFixed(0)}% CI) is below the required ${thresholds.minLiftLowerBound}`
+      );
     }
   }
   if (report.agreement > maxAgreement) {

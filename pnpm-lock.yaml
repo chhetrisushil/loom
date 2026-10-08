@@ -712,6 +712,9 @@ importers:
       '@loom/analytics':
         specifier: workspace:*
         version: link:../analytics
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
       '@loom/core':
         specifier: workspace:*
         version: link:../core

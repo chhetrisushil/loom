@@ -1,4 +1,4 @@
-import type { Policy, PolicyChoice, PolicyContext } from "./types";
+import type { Policy, PolicyChoice, PolicyContext, PolicyStamp } from "./types";
 
 // ── The one-line entry point (ADR 0080) ──────────────────────────────────────
 //
@@ -20,7 +20,7 @@ export interface DecideCapable {
       alternatives?: unknown;
       confidence?: number;
       context?: Record<string, unknown>;
-      policy?: { id: string; version: string; propensity?: number };
+      policy?: PolicyStamp;
     }
   ): Promise<T>;
 }
@@ -29,6 +29,12 @@ export interface DecideWithPolicyOptions {
   /** Extra provenance, passed straight through to `ctx.decide`. */
   rationale?: unknown;
   source?: string;
+  /**
+   * R18 - the prompt template and model configuration in force, as content-addressed refs
+   * (`promptVersion` / `modelVersion`). Recorded in `policy.refs`; additive and never read by
+   * replay, so a log written without it replays as before.
+   */
+  refs?: PolicyStamp["refs"];
 }
 
 /**
@@ -91,6 +97,7 @@ export async function decideWithPolicy<A>(
         id: policy.id,
         version: policy.version,
         ...(chosen?.propensity !== undefined && { propensity: chosen.propensity }),
+        ...(opts.refs !== undefined && { refs: opts.refs }),
       },
       alternatives: actions,
       ...(opts.rationale !== undefined && { rationale: opts.rationale }),

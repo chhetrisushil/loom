@@ -1,5 +1,13 @@
+import { quantileSorted, seededRandom } from "./stats";
 import { stableKey } from "./trajectories";
-import type { EvalReport, Policy, Trajectory, TrajectoryStep } from "./types";
+import type {
+  EstimateInterval,
+  EvalReport,
+  Policy,
+  PolicyContext,
+  Trajectory,
+  TrajectoryStep,
+} from "./types";
 
 // ── Off-policy evaluation (ADR 0080) ─────────────────────────────────────────
 //
@@ -26,13 +34,36 @@ export interface EvaluateOptions {
    * inventing a propensity fabricates the very quantity the estimate rests on.
    */
   assumePropensity?: number;
+  /**
+   * R18 - also compute the doubly-robust estimate (`report.doublyRobust`). `true` fits a
+   * leave-one-out per-action mean reward from the log itself; pass `{ rewardModel }` to supply a
+   * better `q(context, action)`. SNIPS is still computed and `estimatedValue` is unchanged.
+   */
+  doublyRobust?: boolean | { rewardModel: RewardModel };
+  /**
+   * R18 - percentile-bootstrap confidence intervals (`report.intervals`), resampling whole units
+   * (or executions when no `unit` was attributed) so correlated steps are not treated as
+   * independent. Seeded, so the same inputs give the same interval. Off by default.
+   */
+  bootstrap?: { resamples?: number; level?: number; seed?: number };
 }
 
-/** How the candidate would have chosen, replayed against one historical step. */
-function agreesWith<A>(step: TrajectoryStep<A>, policy: Policy<A>): boolean | undefined {
-  if (step.context === undefined || step.actions.length === 0) return undefined;
-  const chosen = policy.select(step.context, step.actions);
-  return stableKey(chosen.action) === stableKey(step.action);
+/** `q(context, action)`: the expected reward of taking `action` in `context`. */
+export type RewardModel = (context: PolicyContext, action: unknown) => number | undefined;
+
+/** Hard ceiling on bootstrap resamples: the cost is resamples x clusters. */
+export const MAX_BOOTSTRAP_RESAMPLES = 20_000;
+
+interface Row {
+  cluster: string;
+  reward: number;
+  /** Clipped importance weight; undefined when there is no usable propensity. */
+  weight?: number;
+  agrees: boolean;
+  actionKey: string;
+  candidateKey: string;
+  candidate: unknown;
+  context: PolicyContext;
 }
 
 /**
@@ -73,6 +104,9 @@ export function evaluatePolicy<A>(
   // per-unit exploration budget usable; it is also how one heavy unit quietly
   // becomes the whole estimate, so every unit's contribution is tracked.
   const perUnit = new Map<string, { weightedReward: number; weightSum: number }>();
+  const wantRows = opts.doublyRobust !== undefined && opts.doublyRobust !== false;
+  const wantBoot = opts.bootstrap !== undefined;
+  const rows: Row[] = [];
 
   for (const t of trajectories) {
     for (const step of t.steps) {
@@ -95,10 +129,27 @@ export function evaluatePolicy<A>(
       evaluated += 1;
       rewardSum += step.reward;
 
-      const agrees = agreesWith(step, policy) === true;
+      const chosen = policy.select(step.context, step.actions);
+      const candidateKey = stableKey(chosen.action);
+      const actionKey = stableKey(step.action);
+      const agrees = candidateKey === actionKey;
       if (agrees) agreed += 1;
 
       const p = step.policy?.propensity ?? opts.assumePropensity;
+      const usable = p !== undefined && p > 0;
+      if (wantRows || wantBoot) {
+        const raw = usable ? 1 / (p as number) : undefined;
+        rows.push({
+          cluster: t.unit ?? `\u0000exec:${t.executionId}`,
+          reward: step.reward,
+          ...(raw !== undefined && { weight: Math.min(raw, clip) }),
+          agrees,
+          actionKey,
+          candidateKey,
+          candidate: chosen.action,
+          context: step.context,
+        });
+      }
       if (p === undefined || !(p > 0)) continue;
       withPropensity += 1;
       if (p >= 1) deterministicLogging += 1;
@@ -158,6 +209,16 @@ export function evaluatePolicy<A>(
     const squares = contributing.reduce((acc, u) => acc + u.weightSum * u.weightSum, 0);
     unitEffectiveSampleSize = (total * total) / squares;
     maxUnitWeightShare = Math.max(...contributing.map((u) => u.weightSum)) / total;
+  }
+
+  const loggedForExtras = evaluated === 0 ? 0 : rewardSum / evaluated;
+  let doublyRobust: EvalReport["doublyRobust"];
+  let intervals: EvalReport["intervals"];
+  if (wantRows || wantBoot) {
+    const extras = estimateExtras(rows, opts, loggedForExtras, perUnit.size > 0);
+    doublyRobust = extras.doublyRobust;
+    intervals = extras.intervals;
+    for (const w of extras.warnings) warnings.push(w);
   }
 
   if (evaluated === 0) {
@@ -236,6 +297,197 @@ export function evaluatePolicy<A>(
     ...(unitEstimatedValue !== undefined && { unitEstimatedValue }),
     ...(unitEffectiveSampleSize !== undefined && { unitEffectiveSampleSize }),
     ...(maxUnitWeightShare !== undefined && { maxUnitWeightShare }),
+    ...(doublyRobust !== undefined && { doublyRobust }),
+    ...(intervals !== undefined && { intervals }),
+    warnings,
+  };
+}
+
+interface ClusterAgg {
+  /** SNIPS numerator / denominator over agreeing steps with a propensity. */
+  wr: number;
+  w: number;
+  /** Logged reward sum and count over ALL evaluated steps. */
+  r: number;
+  n: number;
+  /** Doubly-robust per-step contributions and their count. */
+  dr: number;
+  m: number;
+}
+
+/**
+ * The R18 additions, computed from the buffered rows so the single-pass SNIPS path above is
+ * untouched: the doubly-robust point estimate and the cluster-bootstrap intervals.
+ */
+function estimateExtras(
+  rows: readonly Row[],
+  opts: EvaluateOptions,
+  loggedValue: number,
+  hasUnits: boolean
+): {
+  doublyRobust?: EvalReport["doublyRobust"];
+  intervals?: EvalReport["intervals"];
+  warnings: string[];
+} {
+  const warnings: string[] = [];
+  const dr = opts.doublyRobust;
+  const wantDr = dr !== undefined && dr !== false;
+  const supplied = typeof dr === "object" && dr !== null ? dr.rewardModel : undefined;
+
+  // The fitted reward model: per-action sum and count over the rows with a usable propensity (the
+  // same population the estimate averages over), used leave-one-out so a row never predicts itself.
+  const sum = new Map<string, number>();
+  const cnt = new Map<string, number>();
+  let gSum = 0;
+  let gCnt = 0;
+  if (wantDr && supplied === undefined) {
+    for (const r of rows) {
+      if (r.weight === undefined) continue;
+      sum.set(r.actionKey, (sum.get(r.actionKey) ?? 0) + r.reward);
+      cnt.set(r.actionKey, (cnt.get(r.actionKey) ?? 0) + 1);
+      gSum += r.reward;
+      gCnt += 1;
+    }
+  }
+  const fitted = (r: Row, key: string): number => {
+    const own = key === r.actionKey;
+    const c = (cnt.get(key) ?? 0) - (own ? 1 : 0);
+    if (c > 0) return ((sum.get(key) ?? 0) - (own ? r.reward : 0)) / c;
+    const gc = gCnt - 1;
+    return gc > 0 ? (gSum - r.reward) / gc : 0;
+  };
+  const q = (r: Row, key: string, action: unknown): number => {
+    if (supplied !== undefined) {
+      const v = supplied(r.context, action);
+      if (v !== undefined && Number.isFinite(v)) return v;
+      return 0;
+    }
+    return fitted(r, key);
+  };
+
+  const clusters = new Map<string, ClusterAgg>();
+  let drTotal = 0;
+  let drSteps = 0;
+  for (const r of rows) {
+    let c = clusters.get(r.cluster);
+    if (c === undefined) {
+      c = { wr: 0, w: 0, r: 0, n: 0, dr: 0, m: 0 };
+      clusters.set(r.cluster, c);
+    }
+    c.r += r.reward;
+    c.n += 1;
+    if (r.weight === undefined) continue;
+    if (r.agrees) {
+      c.wr += r.weight * r.reward;
+      c.w += r.weight;
+    }
+    if (wantDr) {
+      const direct = q(r, r.candidateKey, r.candidate);
+      const correction = r.agrees ? r.weight * (r.reward - q(r, r.actionKey, r.candidate)) : 0;
+      const d = direct + correction;
+      c.dr += d;
+      c.m += 1;
+      drTotal += d;
+      drSteps += 1;
+    }
+  }
+
+  let doublyRobust: EvalReport["doublyRobust"];
+  if (wantDr) {
+    if (drSteps === 0) {
+      warnings.push(
+        "doubly-robust estimate requested but no step had a usable propensity - none computed"
+      );
+    } else if (!Number.isFinite(drTotal)) {
+      throw new Error(
+        "evaluatePolicy: the doubly-robust estimate is non-finite (a poisoned reward or reward model); no estimate can be trusted."
+      );
+    } else {
+      const value = drTotal / drSteps;
+      doublyRobust = {
+        value,
+        lift: value - loggedValue,
+        steps: drSteps,
+        rewardModel: supplied === undefined ? "fitted" : "supplied",
+      };
+    }
+  }
+
+  let intervals: EvalReport["intervals"];
+  const boot = opts.bootstrap;
+  if (boot !== undefined) {
+    const resamples = boot.resamples ?? 1000;
+    const level = boot.level ?? 0.95;
+    const seed = boot.seed ?? 1;
+    if (!Number.isInteger(resamples) || resamples < 100 || resamples > MAX_BOOTSTRAP_RESAMPLES) {
+      throw new Error(
+        `evaluatePolicy: bootstrap.resamples must be an integer in [100, ${MAX_BOOTSTRAP_RESAMPLES}], got ${resamples}`
+      );
+    }
+    if (!(level > 0 && level < 1)) {
+      throw new Error(`evaluatePolicy: bootstrap.level must be in (0,1), got ${level}`);
+    }
+    const aggs = [...clusters.values()];
+    const make = (kind: "snips" | "dr"): EstimateInterval | undefined => {
+      const usable = aggs.filter((a) => (kind === "snips" ? a.w > 0 : a.m > 0));
+      if (usable.length === 0 || (kind === "dr" && !wantDr)) return undefined;
+      const rand = seededRandom(seed);
+      const values: number[] = [];
+      const lifts: number[] = [];
+      const c = aggs.length;
+      for (let b = 0; b < resamples; b++) {
+        let wr = 0;
+        let w = 0;
+        let r = 0;
+        let n = 0;
+        let d = 0;
+        let m = 0;
+        for (let i = 0; i < c; i++) {
+          const a = aggs[Math.floor(rand() * c)] as ClusterAgg;
+          wr += a.wr;
+          w += a.w;
+          r += a.r;
+          n += a.n;
+          d += a.dr;
+          m += a.m;
+        }
+        const denom = kind === "snips" ? w : m;
+        if (!(denom > 0) || n === 0) continue; // a resample with no evidence for the estimate
+        const value = kind === "snips" ? wr / w : d / m;
+        values.push(value);
+        lifts.push(value - r / n);
+      }
+      if (values.length < resamples / 2) return undefined;
+      values.sort((x, y) => x - y);
+      lifts.sort((x, y) => x - y);
+      const lo = (1 - level) / 2;
+      return {
+        estimator: kind,
+        level,
+        resamples: values.length,
+        seed,
+        clusters: hasUnits ? "unit" : "execution",
+        clusterCount: c,
+        value: { lower: quantileSorted(values, lo), upper: quantileSorted(values, 1 - lo) },
+        lift: { lower: quantileSorted(lifts, lo), upper: quantileSorted(lifts, 1 - lo) },
+      };
+    };
+    const snips = make("snips");
+    const drI = make("dr");
+    if (snips !== undefined || drI !== undefined) {
+      intervals = { ...(snips !== undefined && { snips }), ...(drI !== undefined && { dr: drI }) };
+      if (aggs.length < 10) {
+        warnings.push(
+          `the bootstrap resamples only ${aggs.length} cluster(s) - an interval over so few is not trustworthy`
+        );
+      }
+    } else {
+      warnings.push("bootstrap requested but there was no weighted evidence to resample");
+    }
+  }
+  return {
+    ...(doublyRobust !== undefined && { doublyRobust }),
+    ...(intervals !== undefined && { intervals }),
     warnings,
   };
 }
@@ -256,6 +508,18 @@ export function formatEvalReport(report: EvalReport): string {
     lines.push(`  lift                ${lift >= 0 ? "+" : ""}${lift.toFixed(4)}`);
   } else {
     lines.push(`  estimated value     — (${report.estimator})`);
+  }
+  if (report.doublyRobust !== undefined) {
+    const d = report.doublyRobust;
+    lines.push(
+      `  doubly-robust value ${d.value.toFixed(4)} (lift ${d.lift >= 0 ? "+" : ""}${d.lift.toFixed(4)}, ${d.rewardModel} reward model)`
+    );
+  }
+  for (const iv of [report.intervals?.snips, report.intervals?.dr]) {
+    if (iv === undefined) continue;
+    lines.push(
+      `  ${iv.estimator} ${(iv.level * 100).toFixed(0)}% CI    lift [${iv.lift.lower.toFixed(4)}, ${iv.lift.upper.toFixed(4)}], value [${iv.value.lower.toFixed(4)}, ${iv.value.upper.toFixed(4)}] (${iv.resamples} resamples over ${iv.clusterCount} ${iv.clusters}s)`
+    );
   }
   if (report.effectiveSampleSize !== undefined) {
     lines.push(`  effective samples   ${report.effectiveSampleSize.toFixed(1)}`);
