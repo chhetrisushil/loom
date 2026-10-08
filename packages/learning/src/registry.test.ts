@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { type PromotionVerdict, promotionGate } from "./promote";
 import {
   InMemoryPolicyKv,
   PolicyAccessDeniedError,
@@ -28,7 +27,6 @@ function report(id: string, version: string): EvalReport {
     warnings: [],
   };
 }
-const OK: PromotionVerdict = { ok: true, reasons: [] };
 
 async function seeded(kv = new InMemoryPolicyKv(), scope = "tenant-a") {
   const reg = new PolicyRegistry({ kv, scope });
@@ -60,27 +58,30 @@ describe("PolicyRegistry (R18)", () => {
     );
   });
 
-  it("promote needs a PASSING verdict for exactly that version", async () => {
+  it("promote runs the gate ITSELF over the report, for exactly that version", async () => {
     const { reg } = await seeded();
-    const bad = promotionGate(report("router", "2"), { minLift: 0.5 });
-    expect(bad.ok).toBe(false);
+    // thin evidence: the registry's own gate refuses it
+    const thin = { ...report("router", "2"), evaluated: 10 };
+    await expect(
+      reg.promote({ id: "router", version: "2", report: thin, mode: "full", now: 20 })
+    ).rejects.toThrow(PromotionRefusedError);
+    // and so do stricter thresholds (per call or per registry)
     await expect(
       reg.promote({
         id: "router",
         version: "2",
         report: report("router", "2"),
-        verdict: bad,
+        thresholds: { minLift: 0.5 },
         mode: "full",
         now: 20,
       })
     ).rejects.toThrow(PromotionRefusedError);
-    // a good verdict for ANOTHER version does not transfer
+    // a good report for ANOTHER version does not transfer
     await expect(
       reg.promote({
         id: "router",
         version: "2",
         report: report("router", "3"),
-        verdict: OK,
         mode: "full",
         now: 20,
       })
@@ -91,7 +92,6 @@ describe("PolicyRegistry (R18)", () => {
         id: "router",
         version: "7",
         report: report("router", "7"),
-        verdict: OK,
         mode: "full",
         now: 20,
       })
@@ -107,7 +107,6 @@ describe("PolicyRegistry (R18)", () => {
       id: "router",
       version: "2",
       report: report("router", "2"),
-      verdict: OK,
       mode: "canary",
       canaryFraction: 0.1,
       now: 20,
@@ -123,7 +122,6 @@ describe("PolicyRegistry (R18)", () => {
       id: "router",
       version: "3",
       report: report("router", "3"),
-      verdict: OK,
       mode: "shadow",
       now: 21,
     });
@@ -132,7 +130,6 @@ describe("PolicyRegistry (R18)", () => {
       id: "router",
       version: "3",
       report: report("router", "3"),
-      verdict: OK,
       mode: "full",
       now: 22,
     });
@@ -148,7 +145,6 @@ describe("PolicyRegistry (R18)", () => {
           id: "router",
           version: "2",
           report: report("router", "2"),
-          verdict: OK,
           mode: "canary",
           ...(f !== undefined && { canaryFraction: f }),
           now: 1,
@@ -162,7 +158,6 @@ describe("PolicyRegistry (R18)", () => {
         id: "p",
         version: "1",
         report: report("p", "1"),
-        verdict: OK,
         mode: "shadow",
         now: 1,
       })
@@ -175,7 +170,6 @@ describe("PolicyRegistry (R18)", () => {
       id: "router",
       version: "2",
       report: report("router", "2"),
-      verdict: OK,
       mode: "full",
       now: 20,
     });
@@ -183,7 +177,6 @@ describe("PolicyRegistry (R18)", () => {
       id: "router",
       version: "3",
       report: report("router", "3"),
-      verdict: OK,
       mode: "full",
       now: 21,
     });
@@ -197,7 +190,6 @@ describe("PolicyRegistry (R18)", () => {
       id: "router",
       version: "3",
       report: report("router", "3"),
-      verdict: OK,
       mode: "canary",
       canaryFraction: 0.5,
       now: 31,
@@ -223,7 +215,6 @@ describe("PolicyRegistry (R18)", () => {
       id: "router",
       version: "2",
       report: report("router", "2"),
-      verdict: OK,
       mode: "canary",
       canaryFraction: 0.05,
       now: 20,
@@ -245,7 +236,6 @@ describe("PolicyRegistry (R18)", () => {
       id: "router",
       version: "2",
       report: report("router", "2"),
-      verdict: OK,
       mode: "full",
       now: 20,
     });
@@ -304,5 +294,100 @@ describe("PolicyRegistry (R18)", () => {
     const reg = new PolicyRegistry({ kv, scope: "t" });
     await expect(reg.resolve("../x")).rejects.toThrow(/policy id/);
     await expect(reg.resolve("a b")).rejects.toThrow(/policy id/);
+  });
+});
+
+describe("PolicyRegistry hardening (R18 fix round 1)", () => {
+  const promoteFull = (reg: PolicyRegistry, v: string, now = 20) =>
+    reg.promote({ id: "router", version: v, report: report("router", v), mode: "full", now });
+
+  it("a caller-supplied verdict is refused: a loose {ok:true} is not evidence of anything", async () => {
+    const { reg } = await seeded();
+    const thin = { ...report("router", "2"), evaluated: 0 };
+    await expect(
+      reg.promote({
+        id: "router",
+        version: "2",
+        report: thin,
+        verdict: { ok: true, reasons: [] },
+        mode: "full",
+        now: 1,
+      } as never)
+    ).rejects.toThrow(/no longer accepts a verdict/);
+    expect((await reg.resolve("router"))?.incumbent).toBe("1");
+  });
+
+  it("registry-level thresholds apply to every promotion", async () => {
+    const kv = new InMemoryPolicyKv();
+    const reg = new PolicyRegistry({ kv, scope: "t", thresholds: { minSteps: 100000 } });
+    await reg.register({ id: "router", version: "1", contentHash: H("1"), now: 1 });
+    await expect(promoteFull(reg, "1")).rejects.toThrow(PromotionRefusedError);
+  });
+
+  it("rollback({to}) cannot make a never-promoted version live", async () => {
+    const { reg } = await seeded();
+    await expect(reg.rollback({ id: "router", to: "3", now: 5 })).rejects.toThrow(
+      /never the incumbent/
+    );
+    expect((await reg.resolve("router"))?.incumbent).toBe("1");
+    expect((await reg.version("router", "3"))?.evidence).toBeUndefined();
+    // a version that WAS live is a legitimate target
+    await promoteFull(reg, "2");
+    expect((await reg.rollback({ id: "router", to: "1", now: 6 })).incumbent).toBe("1");
+    // a version that was only a canary candidate was never live either
+    await reg.promote({
+      id: "router",
+      version: "3",
+      report: report("router", "3"),
+      mode: "canary",
+      canaryFraction: 0.1,
+      now: 7,
+    });
+    await expect(reg.rollback({ id: "router", to: "3", now: 8 })).rejects.toThrow(
+      /never the incumbent/
+    );
+  });
+
+  it("the default rollback target survives more history than the ring holds", async () => {
+    const { reg } = await seeded();
+    await promoteFull(reg, "2", 20);
+    for (let i = 0; i < 250; i++) {
+      await reg.ramp({ id: "router", canaryFraction: 0.5, now: i }).catch(() => undefined);
+      await reg.register({ id: "router", version: `x${i}`, contentHash: H(`x${i}`), now: i });
+    }
+    expect((await reg.history("router")).length).toBeLessThanOrEqual(200);
+    expect((await reg.rollback({ id: "router", now: 999 })).incumbent).toBe("1");
+    // a second default rollback does not flip back to the version just rolled away from
+    await expect(reg.rollback({ id: "router", now: 1000 })).rejects.toThrow(/no previous version/);
+  });
+
+  it("prototype-chain names are refused everywhere and nothing pollutes Object.prototype", async () => {
+    const { reg } = await seeded();
+    for (const bad of ["constructor", "__proto__", "toString", "hasOwnProperty", "valueOf"]) {
+      await expect(
+        reg.register({ id: "router", version: bad, contentHash: H(bad), now: 1 })
+      ).rejects.toThrow(/reserved|must match/);
+      await expect(reg.bootstrap({ id: "router", version: bad, now: 1 })).rejects.toThrow(
+        /reserved|must match/
+      );
+      await expect(
+        reg.promote({
+          id: "router",
+          version: bad,
+          report: report("router", bad),
+          mode: "shadow",
+          now: 1,
+        })
+      ).rejects.toThrow(/reserved|must match/);
+      await expect(reg.rollback({ id: "router", to: bad, now: 1 })).rejects.toThrow(
+        /reserved|must match/
+      );
+      await expect(reg.version("router", bad)).rejects.toThrow(/reserved|must match/);
+    }
+    await expect(
+      reg.register({ id: "constructor", version: "1", contentHash: H("1"), now: 1 })
+    ).rejects.toThrow(/reserved|must match/);
+    expect(Object.hasOwn(Object.prototype, "evidence")).toBe(false);
+    expect(Object.hasOwn(Object.prototype, "wasIncumbent")).toBe(false);
   });
 });

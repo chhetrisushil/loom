@@ -104,6 +104,22 @@ export function evidenceEvents(
     });
   }
   out.push(...pass);
+  // R18 (fix round 1) - crypto-shredding is recorded as `variables._shredded`, and compaction folds
+  // the PAYLOAD_SHREDDED event away. Without a marker here a shredded-then-compacted execution would
+  // read as an ordinary one and its folded plaintext would be exported. Synthesize the marker so
+  // every consumer that honours erasure (`exportJsonl`) sees it.
+  const shredded = state.variables._shredded as { subjectId?: string; at?: number } | undefined;
+  if (shredded !== undefined && !pass.some((e) => e.eventType === "PAYLOAD_SHREDDED")) {
+    out.push({
+      id: `${executionId}-shredded`,
+      workflowId,
+      executionId,
+      eventType: "PAYLOAD_SHREDDED",
+      sequence: Math.max(state.sequence, 1),
+      timestamp: shredded.at ?? state.updatedAt,
+      payload: shredded.subjectId !== undefined ? { subjectId: shredded.subjectId } : {},
+    });
+  }
   const terminal = TERMINAL_OF_STATUS[state.status];
   if (terminal !== undefined && !pass.some((e) => e.eventType === terminal)) {
     out.push({

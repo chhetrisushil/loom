@@ -169,3 +169,61 @@ describe("evaluatePolicy - doubly robust and bootstrap intervals (R18)", () => {
     expect(report.warnings.join(" ")).toMatch(/doubly-robust estimate requested/);
   });
 });
+
+describe("interval gate hardening (R18 fix round 1)", () => {
+  it("a bootstrap over ONE cluster is a point, and the CI gate refuses it", () => {
+    const steps = [];
+    for (let i = 0; i < 2000; i++) {
+      const a = i % 2 === 0 ? "A" : "B";
+      steps.push({
+        decisionId: `d${i}`,
+        executionId: "only",
+        sequence: i,
+        timestamp: i,
+        action: a,
+        context: { i },
+        policy: { id: "log", version: "1", propensity: 0.5 },
+        actions: ACTIONS,
+        reward: a === "B" ? (i % 4 === 1 ? 1 : 0.6) : 0.5,
+        rewardSource: "direct" as const,
+      });
+    }
+    const report = evaluatePolicy([{ executionId: "only", steps, outcome: "completed" }], alwaysB, {
+      bootstrap: { resamples: 200, seed: 7 },
+    });
+    expect(report.intervals?.snips?.clusterCount).toBe(1);
+    const verdict = promotionGate(report, { minLiftLowerBound: 0, minEffectiveSamples: 10 });
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reasons.join(" ")).toMatch(/only 1 cluster/);
+    // the floor is configurable
+    expect(
+      promotionGate(report, { minLiftLowerBound: 0, minEffectiveSamples: 10, minClusters: 1 }).ok
+    ).toBe(true);
+  });
+
+  it("the interval's lift is measured on the rows the estimate averages over", () => {
+    // Half the steps carry no propensity (and a wildly different reward): they must not leak into
+    // the logged mean that the lift subtracts.
+    const traj = log(40, 20, 3);
+    const polluted: Trajectory<string>[] = traj.map((t) => ({
+      ...t,
+      steps: [
+        ...t.steps,
+        ...t.steps.map((s, i) => {
+          const { policy: _p, ...rest } = s;
+          return { ...rest, decisionId: `np${i}`, reward: 100 };
+        }),
+      ],
+    }));
+    const clean = evaluatePolicy(traj, alwaysB, {
+      doublyRobust: true,
+      bootstrap: { resamples: 200 },
+    });
+    const mixed = evaluatePolicy(polluted, alwaysB, {
+      doublyRobust: true,
+      bootstrap: { resamples: 200 },
+    });
+    expect(mixed.doublyRobust?.lift).toBeCloseTo(clean.doublyRobust?.lift as number, 10);
+    expect(mixed.intervals?.snips?.lift).toEqual(clean.intervals?.snips?.lift);
+  });
+});

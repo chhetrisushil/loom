@@ -2278,17 +2278,17 @@ function policyManifest(policy: Policy<string>): PolicyManifest
 // evaluation — SNIPS unchanged; opt-in doubly-robust and seeded cluster-bootstrap intervals
 evaluatePolicy(trajs, candidate, { doublyRobust: true | { rewardModel }, bootstrap: { resamples?, level?, seed? } }): EvalReport
 //   report.doublyRobust?: { value, lift, steps, rewardModel }   report.intervals?: { snips?, dr? }  (EstimateInterval: value/lift {lower, upper})
-promotionGate(report, { minLiftLowerBound?: number, intervalEstimator?: "snips" | "dr" })   // a report with no interval FAILS this
+promotionGate(report, { minLiftLowerBound?: number, intervalEstimator?: "snips" | "dr", minClusters? /* default 20 */ })   // no interval, or too few clusters, FAILS this
 
 // registry — CAS store (DurableStateStore satisfies PolicyKvStore), fixed to one authenticated scope
-class PolicyRegistry { constructor(o: { kv: PolicyKvStore; scope: string });
+class PolicyRegistry { constructor(o: { kv: PolicyKvStore; scope: string; thresholds?: PromotionThresholds });
   register({ id, version, contentHash, now }); bootstrap({ id, version, now });
-  promote({ id, version, report, verdict, mode: "full" | "canary" | "shadow", canaryFraction?, now });  // throws PromotionRefusedError unless verdict.ok for that exact version
-  ramp({ id, canaryFraction, now }); rollback({ id, to?, now, note? });
+  promote({ id, version, report, thresholds?, mode: "full" | "canary" | "shadow", canaryFraction?, now });  // the registry runs promotionGate itself; a supplied verdict is refused
+  ramp({ id, canaryFraction, now }); rollback({ id, to?, now, note? });  // `to` must be a version that was once the incumbent
   resolve(id): RolloutState | undefined; version(id, v); versions(id); history(id) }
-decideWithRollout(ctx, decisionId, { source, policyId, resolve }, unitKey, context, actions, { refs? }): Promise<A>
+decideWithRollout(ctx, decisionId, { source, policyId, resolve }, unitKey, context, actions, { refs?, bucketSecret? }): Promise<A>
 //   records policy: { id, version, propensity?, refs?, rollout: { registry, mode, bucket?, armProbability?, acted, shadow? } }
-rolloutBucket(salt, unitKey): number  // [0,1)
+rolloutBucket(salt, unitKey, secret?): number  // [0,1)
 
 // versions
 promptVersion(id, template): VersionRef; modelVersion(id, config): VersionRef; contentHash(value); sliceByVersion(trajs, "prompt" | "model" | "policy")

@@ -58,6 +58,8 @@ export interface RolloutStamp {
   bucket?: number;
   /** Canary only: the probability of the arm that acted (`f` or `1 - f`). */
   armProbability?: number;
+  /** Canary only: the unit fell in the candidate's slice but the candidate had no code, so the incumbent acted. */
+  fellBack?: true;
   /** The policy that ACTED. */
   acted: { id: string; version: string };
   /** The other arm: the candidate (canary: when the incumbent acted; shadow: always). */
@@ -110,6 +112,11 @@ export interface TrajectoryStep<A = unknown> {
   context?: PolicyContext;
   /** Which policy chose, and with what propensity (ADR 0079). */
   policy?: PolicyStamp;
+  /**
+   * R18 - the prompt/model versions in force: the decision's own `policy.refs`, else those the
+   * run's `agentLoop$` stamped on its model-response decisions (recorded facts, which are not steps).
+   */
+  refs?: { prompt?: VersionRef; model?: VersionRef };
   /**
    * The action set the policy chose FROM, recovered from the decision's
    * `alternatives` (ADR 0030 D1) or, failing that, from every choice observed for

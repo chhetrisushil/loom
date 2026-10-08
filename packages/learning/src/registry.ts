@@ -1,4 +1,9 @@
-import { type PolicyManifest, type PromotionVerdict, policyManifest } from "./promote";
+import {
+  type PolicyManifest,
+  type PromotionThresholds,
+  policyManifest,
+  promotionGate,
+} from "./promote";
 import type { EvalReport } from "./types";
 
 // ── The policy registry: versions, promotion, rollout, rollback (R18, ADR 0124) ──
@@ -34,6 +39,12 @@ export interface RegisteredVersion {
   registeredAt: number;
   /** The manifest that justified its last promotion, if it has been promoted. */
   evidence?: PolicyManifest;
+  /**
+   * True once this version has been installed as the incumbent (by `bootstrap` or a promotion to
+   * `full`). `rollback({ to })` only restores such a version: a rollback is a return to something
+   * that was live, never a way to make an unevaluated version live.
+   */
+  wasIncumbent?: boolean;
 }
 
 /** Who is live for one policy id, and who is being tried. */
@@ -46,6 +57,8 @@ export interface RolloutState {
   candidate?: string;
   /** Fraction of units routed to the candidate in `canary`, in (0,1). */
   canaryFraction?: number;
+  /** The incumbent this one replaced (the default rollback target); kept on the state, not the history ring. */
+  previousIncumbent?: string;
   /** Stable bucketing salt: ramping the fraction up keeps earlier units on the candidate. */
   salt: string;
   /** Changes on every mutation; lets a caller cache a resolution cheaply. */
@@ -128,7 +141,17 @@ function checkName(kind: string, v: string): string {
   if (typeof v !== "string" || !NAME.test(v)) {
     throw new PolicyRegistryError(`${kind} must match ${NAME} (got ${JSON.stringify(v)})`);
   }
+  // `constructor`, `__proto__`, `toString`... are names every object "has": a lookup keyed by them
+  // answers from the prototype chain, and an assignment keyed by `__proto__` rewrites it.
+  if (v in Object.prototype) {
+    throw new PolicyRegistryError(`${kind} ${JSON.stringify(v)} is reserved`);
+  }
   return v;
+}
+
+/** An own-property lookup: never answers from the prototype chain. */
+function own(doc: PolicyDoc, version: string): RegisteredVersion | undefined {
+  return Object.hasOwn(doc.versions, version) ? doc.versions[version] : undefined;
 }
 function clone<T>(v: T): T {
   return structuredClone(v);
@@ -143,6 +166,14 @@ export interface PolicyRegistryOptions {
    * names a different scope is refused.
    */
   scope: string;
+  /**
+   * The gate every promotion is judged by. The registry runs `promotionGate(report, thresholds)`
+   * ITSELF: a caller-supplied verdict is not accepted, because a verdict is only evidence of the
+   * report it was computed from and nothing binds a loose `{ ok: true }` to it. The report is still
+   * caller-supplied evidence (the registry cannot re-run the evaluation); the point is that the
+   * gate's judgement of it is the registry's own.
+   */
+  thresholds?: PromotionThresholds;
 }
 
 export interface PromoteInput {
@@ -150,8 +181,8 @@ export interface PromoteInput {
   version: string;
   /** The evaluation that justified it. Its `policy` must name exactly `{id, version}`. */
   report: EvalReport;
-  /** `promotionGate(report, ...)`. Must be `ok`. */
-  verdict: PromotionVerdict;
+  /** Overrides the registry's thresholds for this promotion (and only ever stricter by convention). */
+  thresholds?: PromotionThresholds;
   mode: RolloutMode;
   /** Required for `canary`, in (0,1). */
   canaryFraction?: number;
@@ -162,8 +193,10 @@ export interface PromoteInput {
 export class PolicyRegistry {
   private readonly kv: PolicyKvStore;
   private readonly scope: string;
+  private readonly thresholds: PromotionThresholds | undefined;
 
   constructor(opts: PolicyRegistryOptions) {
+    this.thresholds = opts.thresholds;
     this.kv = opts.kv;
     this.scope = checkName("scope", opts.scope);
   }
@@ -233,12 +266,13 @@ export class PolicyRegistry {
     contentHash: string;
     now: number;
   }): Promise<RegisteredVersion> {
+    checkName("policy id", input.id);
     checkName("version", input.version);
     if (!/^sha256:[0-9a-f]{64}$/.test(input.contentHash)) {
       throw new PolicyRegistryError("contentHash must be `sha256:<64 hex>` (use contentHash())");
     }
     return this.mutate(input.id, (doc) => {
-      const existing = doc.versions[input.version];
+      const existing = own(doc, input.version);
       if (existing !== undefined) {
         if (existing.contentHash !== input.contentHash) {
           throw new PolicyVersionConflictError(
@@ -266,8 +300,10 @@ export class PolicyRegistry {
    * yet. Refused once an incumbent exists - changing a live policy takes `promote` or `rollback`.
    */
   async bootstrap(input: { id: string; version: string; now: number }): Promise<RolloutState> {
+    checkName("version", input.version);
     return this.mutate(input.id, (doc) => {
-      if (doc.versions[input.version] === undefined) {
+      const v = own(doc, input.version);
+      if (v === undefined) {
         throw new PolicyNotFoundError(`version ${input.version} of ${input.id} is not registered`);
       }
       if (doc.rollout?.incumbent !== undefined) {
@@ -275,6 +311,7 @@ export class PolicyRegistry {
           `${input.id} already has an incumbent (${doc.rollout.incumbent}); use promote or rollback`
         );
       }
+      v.wasIncumbent = true;
       doc.rollout = {
         id: input.id,
         mode: "full",
@@ -294,19 +331,21 @@ export class PolicyRegistry {
   }
 
   /**
-   * Make a registered version live in `mode`. Needs an `ok` verdict whose report names exactly
-   * this `{id, version}` - a verdict for a different version, or a failing one, is refused:
-   * promotion is the single door a candidate walks through.
+   * Make a registered version live in `mode`. The registry runs `promotionGate` over the report
+   * ITSELF (its own thresholds, or the call's) and the report must name exactly this `{id, version}`:
+   * a failing gate is refused, and a caller-supplied verdict is not accepted at all. Promotion is the
+   * single door a candidate walks through. The report is caller-supplied evidence: the registry
+   * cannot re-run the evaluation, so who may call `promote` is an authorization question.
    *
    * - `full`: the version becomes THE incumbent (the previous one is kept for `rollback`).
    * - `canary`: a stable fraction of units is routed to it; everyone else keeps the incumbent.
    * - `shadow`: it is evaluated and logged beside the incumbent but NEVER acts.
    */
   async promote(input: PromoteInput): Promise<RolloutState> {
-    if (!input.verdict.ok) {
+    checkName("version", input.version);
+    if ((input as { verdict?: unknown }).verdict !== undefined) {
       throw new PromotionRefusedError(
-        `refusing to promote ${input.id}@${input.version}: the verdict did not pass`,
-        input.verdict.reasons
+        "promote no longer accepts a verdict: the registry derives it from the report (pass `thresholds` instead)"
       );
     }
     if (input.report.policy.id !== input.id || input.report.policy.version !== input.version) {
@@ -320,8 +359,15 @@ export class PolicyRegistry {
         throw new PolicyRegistryError("canary needs canaryFraction in (0,1)");
       }
     }
+    const verdict = promotionGate(input.report, input.thresholds ?? this.thresholds ?? {});
+    if (!verdict.ok) {
+      throw new PromotionRefusedError(
+        `refusing to promote ${input.id}@${input.version}: the promotion gate did not pass`,
+        verdict.reasons
+      );
+    }
     return this.mutate(input.id, (doc) => {
-      const v = doc.versions[input.version];
+      const v = own(doc, input.version);
       if (v === undefined) {
         throw new PolicyNotFoundError(`version ${input.version} of ${input.id} is not registered`);
       }
@@ -334,17 +380,25 @@ export class PolicyRegistry {
       if (cur?.incumbent === input.version && input.mode !== "full") {
         throw new PolicyRegistryError(`${input.version} is already the incumbent of ${input.id}`);
       }
-      v.evidence = policyManifest(input.report, input.verdict, {
+      v.evidence = policyManifest(input.report, verdict, {
         promotedAt: input.now,
         ...(input.mode === "canary" && { canary: input.canaryFraction as number }),
       });
       const from = cur?.incumbent;
+      if (input.mode === "full") v.wasIncumbent = true;
+      const previous =
+        input.mode === "full"
+          ? from !== input.version
+            ? from
+            : cur?.previousIncumbent
+          : cur?.previousIncumbent;
       doc.rollout = {
         id: input.id,
         mode: input.mode,
         ...(input.mode === "full"
           ? { incumbent: input.version }
           : { incumbent: cur?.incumbent as string, candidate: input.version }),
+        ...(previous !== undefined && { previousIncumbent: previous }),
         ...(input.mode === "canary" && { canaryFraction: input.canaryFraction as number }),
         salt: `${input.id}:${input.version}`,
         revision: 0,
@@ -382,9 +436,14 @@ export class PolicyRegistry {
   }
 
   /**
-   * Instant rollback: a single CAS write that makes `to` (default: the version that was the
-   * incumbent before the last promotion to `full`) the incumbent in `full` mode and drops any
-   * candidate. No redeploy, no retraining - the next decision resolves to the old version.
+   * Instant rollback: a single CAS write that makes `to` (default: the incumbent this one replaced,
+   * or, with a canary/shadow in flight, the incumbent already in place) the incumbent in `full`
+   * mode and drops any candidate. No redeploy, no retraining - the next decision resolves to the
+   * old version.
+   *
+   * A rollback is a return to something that WAS live: `to` must be a version that was once the
+   * incumbent (bootstrapped or promoted to `full`, so a gate judged it). Making a version live that
+   * never was is `promote`, which needs a passing gate.
    */
   async rollback(input: {
     id: string;
@@ -392,32 +451,37 @@ export class PolicyRegistry {
     now: number;
     note?: string;
   }): Promise<RolloutState> {
+    if (input.to !== undefined) checkName("version", input.to);
     return this.mutate(input.id, (doc) => {
       const cur = doc.rollout;
       if (cur === null) throw new PolicyNotFoundError(`${input.id} has no rollout state`);
-      let target = input.to;
-      if (target === undefined) {
-        // Walk back to the most recent DIFFERENT incumbent. A canary/shadow rollback restores
-        // the incumbent already in place (candidate dropped).
-        if (cur.candidate !== undefined) target = cur.incumbent;
-        else {
-          for (let i = doc.history.length - 1; i >= 0; i--) {
-            const h = doc.history[i] as RolloutHistoryEntry;
-            if (h.action === "promote" && h.mode === "full" && h.to === cur.incumbent) {
-              target = h.from;
-              break;
-            }
-          }
-        }
-      }
+      const target =
+        input.to ?? (cur.candidate !== undefined ? cur.incumbent : cur.previousIncumbent);
       if (target === undefined) {
         throw new PolicyNotFoundError(`${input.id} has no previous version to roll back to`);
       }
-      if (doc.versions[target] === undefined) {
+      const v = own(doc, target);
+      if (v === undefined) {
         throw new PolicyNotFoundError(`version ${target} of ${input.id} is not registered`);
       }
+      if (v.wasIncumbent !== true) {
+        throw new PromotionRefusedError(
+          `refusing to roll ${input.id} back to ${target}: it was never the incumbent. Promote it through the gate instead`
+        );
+      }
       const from = cur.incumbent;
-      doc.rollout = { id: input.id, mode: "full", incumbent: target, salt: cur.salt, revision: 0 };
+      doc.rollout = {
+        id: input.id,
+        mode: "full",
+        incumbent: target,
+        // Rolling back from a full incumbent forgets the rollback target (a second default
+        // rollback must not flip back to the version just rolled away from); rolling back a canary
+        // keeps the incumbent's own predecessor.
+        ...(cur.candidate !== undefined &&
+          cur.previousIncumbent !== undefined && { previousIncumbent: cur.previousIncumbent }),
+        salt: cur.salt,
+        revision: 0,
+      };
       PolicyRegistry.note(doc, {
         at: input.now,
         action: "rollback",
@@ -438,7 +502,8 @@ export class PolicyRegistry {
 
   async version(id: string, version: string): Promise<RegisteredVersion | undefined> {
     const { doc } = await this.load(id);
-    const v = doc.versions[version];
+    checkName("version", version);
+    const v = own(doc, version);
     return v === undefined ? undefined : clone(v);
   }
 

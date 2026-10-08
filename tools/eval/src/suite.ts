@@ -176,6 +176,15 @@ export async function runEvalSuite<I = unknown, O = unknown>(
   if (opts.graders.length === 0) throw new Error("runEvalSuite: at least one grader is required");
   const passScore = opts.passScore ?? 1;
   const specs = opts.graders.map(normalize);
+  for (const s of specs) {
+    const w = s.weight ?? 1;
+    // A negative weight would invert a grader (a failure raising the score); NaN poisons every case.
+    if (!Number.isFinite(w) || w < 0) {
+      throw new Error(
+        `runEvalSuite: grader "${s.grader.name}" has an invalid weight ${w} (finite, >= 0)`
+      );
+    }
+  }
   const concurrency = Math.max(1, Math.floor(opts.concurrency ?? 1));
 
   const results = new Array<CaseResult>(opts.cases.length);
@@ -189,8 +198,11 @@ export async function runEvalSuite<I = unknown, O = unknown>(
   };
   await Promise.all(Array.from({ length: Math.min(concurrency, opts.cases.length) }, worker));
 
-  const byTag: EvalSuiteReport["summary"]["byTag"] = {};
-  const byGrader: EvalSuiteReport["summary"]["byGrader"] = {};
+  // Tags and grader names are caller text: accumulate in Maps and build the report objects with
+  // `Object.fromEntries`, which defines own properties, so a tag named `__proto__` is a key like
+  // any other and cannot rewrite a prototype.
+  const byTag = new Map<string, { total: number; passed: number; meanScore: number }>();
+  const byGrader = new Map<string, { evaluated: number; passed: number; meanScore: number }>();
   let passed = 0;
   let failed = 0;
   let errored = 0;
@@ -201,18 +213,18 @@ export async function runEvalSuite<I = unknown, O = unknown>(
     else if (r.status === "failed") failed += 1;
     else errored += 1;
     for (const tag of r.tags) {
-      const t = byTag[tag] ?? { total: 0, passed: 0, meanScore: 0 };
+      const t = byTag.get(tag) ?? { total: 0, passed: 0, meanScore: 0 };
       t.meanScore = (t.meanScore * t.total + r.score) / (t.total + 1);
       t.total += 1;
       if (r.status === "passed") t.passed += 1;
-      byTag[tag] = t;
+      byTag.set(tag, t);
     }
     for (const g of r.graders) {
-      const s = byGrader[g.grader] ?? { evaluated: 0, passed: 0, meanScore: 0 };
+      const s = byGrader.get(g.grader) ?? { evaluated: 0, passed: 0, meanScore: 0 };
       s.meanScore = (s.meanScore * s.evaluated + g.score) / (s.evaluated + 1);
       s.evaluated += 1;
       if (g.pass) s.passed += 1;
-      byGrader[g.grader] = s;
+      byGrader.set(g.grader, s);
     }
   }
   const total = results.length;
@@ -227,8 +239,8 @@ export async function runEvalSuite<I = unknown, O = unknown>(
       errored,
       meanScore: total === 0 ? 0 : sum / total,
       passRate: total === 0 ? 0 : passed / total,
-      byTag,
-      byGrader,
+      byTag: Object.fromEntries(byTag),
+      byGrader: Object.fromEntries(byGrader),
     },
   };
 }

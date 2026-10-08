@@ -116,6 +116,21 @@ export function trajectories<A = unknown>(
   // outcome, an abort checkpoint) are not actions of any policy: counting them would dilute the
   // terminal-credit discount and pollute the fallback action sets.
   const decisions = decisionRecords(all).filter((d) => !RECORDED_FACT_SOURCES.has(d.source ?? ""));
+  // R18 - `agentLoop$({ versions })` stamps the prompt/model refs on its journaled model-response
+  // decisions, which are recorded FACTS and filtered out above. Index them per execution so the
+  // steps of a run can still be sliced by what produced them.
+  const factRefs = new Map<
+    string,
+    { sequence: number; refs: NonNullable<PolicyStamp["refs"]> }[]
+  >();
+  for (const d of decisionRecords(all)) {
+    if (d.source !== "agent-response") continue;
+    const refs = (d.policy as PolicyStamp | undefined)?.refs;
+    if (refs === undefined) continue;
+    const list = factRefs.get(d.executionId);
+    if (list === undefined) factRefs.set(d.executionId, [{ sequence: d.sequence, refs }]);
+    else list.push({ sequence: d.sequence, refs });
+  }
   const outcomes = outcomeRecords(all);
   const fallbackActions = actionSets(decisions);
 
@@ -187,6 +202,14 @@ export function trajectories<A = unknown>(
         rewardSource = "none";
       }
 
+      const stamped = (d.policy as PolicyStamp | undefined)?.refs;
+      const runRefs = factRefs.get(executionId);
+      let refs = stamped;
+      if (refs === undefined && runRefs !== undefined) {
+        // The nearest response at or before this step, else the first of the run.
+        refs = runRefs[0]?.refs;
+        for (const r of runRefs) if (r.sequence <= d.sequence) refs = r.refs;
+      }
       const alternatives = Array.isArray(d.alternatives) ? (d.alternatives as A[]) : undefined;
       return {
         decisionId: d.decisionId,
@@ -196,6 +219,7 @@ export function trajectories<A = unknown>(
         action: d.choice as A,
         ...(d.context !== undefined && { context: d.context as PolicyContext }),
         ...(d.policy !== undefined && { policy: d.policy as PolicyStamp }),
+        ...(refs !== undefined && { refs }),
         actions: alternatives ?? ((fallbackActions.get(d.decisionId) ?? []) as A[]),
         ...(reward !== undefined && { reward }),
         rewardSource,

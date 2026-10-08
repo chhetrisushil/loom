@@ -8,6 +8,7 @@ import { InMemoryMemoryStore, TieredMemory } from "@loom/memory";
 import { ReasoningRuntime } from "@loom/reasoning";
 import type { ReasoningCache } from "@loom/reasoning";
 const taintOrigin = (v: unknown): string | undefined => taintOf(v)?.origin;
+import { sliceByVersion, trajectories } from "@loom/learning";
 import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, answerApproval } from "@loom/workflow-runtime";
@@ -1339,6 +1340,40 @@ describe("P3-2 / P3-3 / P3-4 — recorded responses", () => {
       (e) => (e.payload as { decisionId?: string }).decisionId === "dba#turn:0:response:0"
     );
     expect(bare?.payload).not.toHaveProperty("policy");
+  });
+
+  it("R18: the stamped versions are READABLE - agentLoop log -> trajectories -> sliceByVersion", async () => {
+    const versions = {
+      prompt: { id: "triage", version: "sha256:aaa" },
+      model: { id: "claude", version: "sha256:bbb" },
+    };
+    const store = new InMemoryAsyncEventStore();
+    await runToEnd(
+      boot({
+        store,
+        reasoning: "direct",
+        provider: script([]),
+        config: { versions },
+        wrap: async (ctx, run) => {
+          const out = await run();
+          // a real policy choice in the same run (the response decision is a recorded fact, not a step)
+          await ctx.decide("choose", () => "a", {
+            context: { q: 1 },
+            alternatives: ["a", "b"],
+            policy: { id: "p", version: "1", propensity: 0.5 },
+          });
+          return out;
+        },
+      })
+    );
+    const ts = trajectories<string>(await store.read("e1"));
+    expect(ts[0]?.steps.map((s) => s.decisionId)).toContain("choose");
+    expect(ts[0]?.steps.every((s) => s.refs !== undefined && s.refs.model?.id === "claude")).toBe(
+      true
+    );
+    const byModel = sliceByVersion(ts, "model");
+    expect([...byModel.keys()]).toEqual(["claude\u0000sha256:bbb"]);
+    expect([...sliceByVersion(ts, "prompt").keys()]).toEqual(["triage\u0000sha256:aaa"]);
   });
 
   it("an oversized response is cut deterministically, and that is what a replay serves", async () => {

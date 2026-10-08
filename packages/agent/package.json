@@ -33,6 +33,7 @@
     "@loom/capability": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/isolate": "workspace:*",
+    "@loom/learning": "workspace:*",
     "@loom/middleware": "workspace:*",
     "@loom/orchestration": "workspace:*",
     "@loom/replay-vm": "workspace:*",

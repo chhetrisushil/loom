@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import type { DecideCapable } from "./decideWithPolicy";
 import type { RolloutState } from "./registry";
 import type { Policy, PolicyChoice, PolicyContext, PolicyStamp, RolloutStamp } from "./types";
@@ -41,6 +41,14 @@ export interface DecideWithRolloutOptions {
   source?: string;
   /** Prompt/model versions in force, recorded in `policy.refs` (see `promptVersion`). */
   refs?: { prompt?: VersionRef; model?: VersionRef };
+  /**
+   * A server-held secret mixed into the bucket (HMAC). WITHOUT it the split is a public function of
+   * the salt (`<id>:<version>`, visible in the registry) and the unit key, so anyone who can choose
+   * their own `unitKey` can pick the arm they land in. Either way `unitKey` MUST be assigned by the
+   * server (a user id from the authenticated principal), never taken from request text; the secret
+   * is the second line of defence, not a substitute.
+   */
+  bucketSecret?: string;
 }
 
 const BUCKET_BITS = 48;
@@ -50,8 +58,11 @@ const BUCKET_BITS = 48;
  * 48 bits of SHA-256, so the fraction is resolved far finer than any rollout needs and the
  * result is identical on every platform.
  */
-export function rolloutBucket(salt: string, unitKey: string): number {
-  const digest = createHash("sha256").update(`${salt}\u0000${unitKey}`).digest();
+export function rolloutBucket(salt: string, unitKey: string, secret?: string): number {
+  const digest =
+    secret === undefined
+      ? createHash("sha256").update(`${salt}\u0000${unitKey}`).digest()
+      : createHmac("sha256", secret).update(`${salt}\u0000${unitKey}`).digest();
   const hi = digest.readUIntBE(0, 6);
   return hi / 2 ** BUCKET_BITS;
 }
@@ -104,10 +115,22 @@ export async function decideWithRollout<A>(
         `no code for incumbent ${rollout.policyId}@${state.incumbent} in this process`
       );
     }
-    const candidate =
+    // The stamp names the code that RAN. A resolver that hands back other code than the registry
+    // named would record a version that did not act, and every evaluation sliced by it would lie.
+    if (incumbent.version !== state.incumbent) {
+      throw new Error(
+        `resolver returned ${incumbent.id}@${incumbent.version} for incumbent ${rollout.policyId}@${state.incumbent}`
+      );
+    }
+    let candidate =
       state.candidate === undefined
         ? undefined
         : rollout.resolve(rollout.policyId, state.candidate);
+    let candidateMismatch: string | undefined;
+    if (candidate !== undefined && candidate.version !== state.candidate) {
+      candidateMismatch = `resolver returned ${candidate.id}@${candidate.version} for candidate ${rollout.policyId}@${state.candidate}`;
+      candidate = undefined;
+    }
 
     let mode: RolloutStamp["mode"] = "full";
     let bucket: number | undefined;
@@ -115,7 +138,7 @@ export async function decideWithRollout<A>(
     let armProbability = 1;
     if (state.mode === "canary" && state.candidate !== undefined) {
       mode = "canary";
-      bucket = rolloutBucket(state.salt, unitKey);
+      bucket = rolloutBucket(state.salt, unitKey, opts.bucketSecret);
       const f = state.canaryFraction ?? 0;
       useCandidate = bucket < f;
       armProbability = useCandidate ? f : 1 - f;
@@ -127,9 +150,16 @@ export async function decideWithRollout<A>(
     let otherPolicy = candidate;
     let otherVersion = state.candidate;
     let candidateMissing: string | undefined;
+    let fellBack = false;
     if (useCandidate) {
       if (candidate === undefined) {
-        candidateMissing = `no code for candidate ${rollout.policyId}@${state.candidate} in this process`;
+        candidateMissing =
+          candidateMismatch ??
+          `no code for candidate ${rollout.policyId}@${state.candidate} in this process`;
+        // The incumbent acts instead: the stamp's arm probability is the INCUMBENT arm's, with the
+        // fallback flagged, never the candidate slice the unit's bucket fell in.
+        armProbability = 1 - (state.canaryFraction ?? 0);
+        fellBack = true;
       } else {
         actingPolicy = candidate;
         otherPolicy = incumbent;
@@ -184,6 +214,7 @@ export async function decideWithRollout<A>(
         acted: { id: actingPolicy.id, version: actingPolicy.version },
         ...(shadow !== undefined && { shadow }),
         ...(mode === "canary" && { armProbability }),
+        ...(fellBack && { fellBack: true }),
       },
     };
   } catch (err) {

@@ -136,6 +136,9 @@ importers:
       '@loom/isolate':
         specifier: workspace:*
         version: link:../isolate
+      '@loom/learning':
+        specifier: workspace:*
+        version: link:../learning
       '@loom/middleware':
         specifier: workspace:*
         version: link:../middleware
@@ -2430,6 +2433,9 @@ importers:
 
   tools/eval:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../../packages/classify
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
