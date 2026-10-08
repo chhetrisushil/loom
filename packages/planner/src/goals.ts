@@ -153,7 +153,8 @@ function once(doc: OwnerDoc, key: string | undefined, fn: () => Goal): Goal {
   const hit = doc.applied?.find((a) => a.key === key);
   if (hit !== undefined) return structuredClone(hit.result);
   const g = fn();
-  const applied = (doc.applied ??= []);
+  if (doc.applied === undefined) doc.applied = [];
+  const applied = doc.applied;
   applied.push({ key: key.slice(0, 200), result: structuredClone(g) });
   if (applied.length > MAX_APPLIED) applied.shift();
   return g;
@@ -271,11 +272,12 @@ const ops = {
 };
 
 function checkLastRun(r: unknown): void {
-  const o = r as Goal["lastRun"] | null;
+  if (typeof r !== "object" || r === null) throw new GoalLimitError("lastRun must be an object");
+  const o = r as NonNullable<Goal["lastRun"]>;
   const bad = (why: string): never => {
     throw new GoalLimitError(`lastRun ${why}`);
   };
-  if (typeof o !== "object" || o === null) return bad("must be an object");
+  if (typeof o !== "object" || o === null) bad("must be an object");
   if (!["completed", "failed", "stopped"].includes(o.status)) bad("has an unknown status");
   if (!Number.isInteger(o.replans) || o.replans < 0 || o.replans > 1_000_000)
     bad("replans is out of range");

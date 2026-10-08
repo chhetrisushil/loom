@@ -26,7 +26,10 @@ export class IdReusedError extends Error {
 
 export function claimId(ctx: object, kind: string, id: string): void {
   let set = claims.get(ctx);
-  if (set === undefined) claims.set(ctx, (set = new Set()));
+  if (set === undefined) {
+    set = new Set();
+    claims.set(ctx, set);
+  }
   const key = `${kind}\0${id}`;
   if (set.has(key)) throw new IdReusedError(kind, id);
   set.add(key);
