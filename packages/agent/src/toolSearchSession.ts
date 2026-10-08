@@ -2,6 +2,7 @@ import { isTainted, tainted } from "@loom/classify";
 import type { ToolDefinition } from "@loom/core";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import { z } from "zod";
+import { isTerminalToolError } from "./toolFailure";
 import { WITHHELD_DESCRIPTION, toolSpecFor, validateToolInput } from "./toolSchema";
 import { Bm25ToolRanker, type ToolRanker, firstLineOf } from "./toolSearch";
 
@@ -325,35 +326,53 @@ export class ToolSearchSession {
     const { query, limit } = input as z.infer<typeof searchInput>;
     const want = Math.min(limit ?? this.maxPerSearch, this.maxPerSearch);
 
-    const recorded = await ctx.decide<Recorded>(
-      decisionKey,
-      async () => {
-        // Over-ask by what cannot be shown (already loaded, namespace-hidden) so filtering does not
-        // starve the page; if a shared ranker over a WIDER catalog still leaves it short, widen
-        // (bounded rounds / hits) while the ranker has more to give.
-        let ask = Math.min(
-          want + this.loadedIds.size + (this.byId.size - this.searchable.size),
-          MAX_RANK_ASK
-        );
-        let results: string[] = [];
-        for (let round = 0; round < MAX_RANK_ROUNDS; round++) {
-          const ranked = await this.ranker.rank(query, ask);
-          results = this.admit(
-            ranked.map((h) => h.id),
-            want
+    let recorded: Recorded;
+    try {
+      recorded = await ctx.decide<Recorded>(
+        decisionKey,
+        async () => {
+          // Over-ask by what cannot be shown (already loaded, namespace-hidden) so filtering does not
+          // starve the page; if a shared ranker over a WIDER catalog still leaves it short, widen
+          // (bounded rounds / hits) while the ranker has more to give.
+          let ask = Math.min(
+            want + this.loadedIds.size + (this.byId.size - this.searchable.size),
+            MAX_RANK_ASK
           );
-          if (results.length >= want || ranked.length < ask || ask >= MAX_RANK_ASK) break;
-          ask = Math.min(ask * 2, MAX_RANK_ASK);
-        }
-        return {
-          ranker: this.ranker.kind,
-          query: query.slice(0, MAX_RECORDED_QUERY),
-          results,
-          loaded: this.plan(results),
-        };
-      },
-      { source: SOURCE_TOOL_SEARCH }
-    );
+          let results: string[] = [];
+          for (let round = 0; round < MAX_RANK_ROUNDS; round++) {
+            const ranked = await this.ranker.rank(query, ask);
+            results = this.admit(
+              ranked.map((h) => h.id),
+              want
+            );
+            if (results.length >= want || ranked.length < ask || ask >= MAX_RANK_ASK) break;
+            ask = Math.min(ask * 2, MAX_RANK_ASK);
+          }
+          return {
+            ranker: this.ranker.kind,
+            query: query.slice(0, MAX_RECORDED_QUERY),
+            results,
+            loaded: this.plan(results),
+          };
+        },
+        { source: SOURCE_TOOL_SEARCH }
+      );
+    } catch (err) {
+      // R10: a failing ranker is feedback, not a dead run. The decider threw, so NOTHING was
+      // recorded; the reason is fixed (the error text is host/ranker bytes, never shown to the model).
+      // A terminal error (cancellation, kill switch, quota, a park...) still reaches the runtime.
+      if (isTerminalToolError(err)) throw err;
+      return {
+        output: {
+          error: {
+            code: "search_unavailable",
+            message: "Tool search is unavailable right now.",
+          },
+        },
+        isError: true,
+        newlyLoaded: [],
+      };
+    }
 
     // Live and replayed alike: the record is re-intersected with what THIS run may use, so a stale,
     // garbage or tampered record can narrow the menu and can never widen it (or exceed the caps).
