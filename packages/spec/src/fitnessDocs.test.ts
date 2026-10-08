@@ -28,7 +28,8 @@ const DOC = "docs/spec/fitness-functions.md";
 const FITNESS_TESTS: readonly string[] = [
   "packages/workflow-runtime/src/abi.test.ts",
   "packages/replay-vm/src/eventSchema.test.ts",
-  "packages/verify/src/g2ratio.test.ts",
+  "packages/verify/src/g2ratio.perf.test.ts",
+  "packages/spec/src/testTiming.test.ts",
   "packages/verify/src/ruleDocs.test.ts",
   "packages/spec/src/spec.test.ts",
   "packages/spec/src/layering.test.ts",

@@ -353,7 +353,7 @@ checks — not reviewer memory:
   in-memory + SQLite reference impls.
 - **Replay-unchanged:** golden-log replay (`@loom/eval`) + deploy-simulation (`@loom/deploy-sim`).
 - **Zero-overhead (G2):** behavioural disabled-path tests + a relative-ratio bench gate
-  (`packages/verify/src/g2ratio.test.ts`).
+  (`packages/verify/src/g2ratio.perf.test.ts`, perf suite).
 - **Maturity is self-checking:** `@loom/spec` `spec.test.ts` fails if a capability's badge claims
   evidence (a version constant / conformance test / bench) it does not have.
 

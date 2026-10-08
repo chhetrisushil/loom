@@ -1,0 +1,68 @@
+name: Flake hunt
+
+# A flaky test is one that passes on the PR and fails later on main. CI runs each suite once per
+# push, so a 1-in-20 flake slips through review and surfaces days later as an unrelated red build.
+# This runs the WHOLE blocking suite several times on a schedule (and on demand) so a flake shows up
+# here first, with the failing attempt named, before it lands on someone's PR. It also runs the
+# non-blocking perf suite, so a real perf regression is noticed even though it never gates a merge.
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # nightly, off the hour
+  workflow_dispatch:
+    inputs:
+      repeats:
+        description: "How many times to run the full suite"
+        required: false
+        default: "3"
+
+concurrency:
+  group: flake-hunt
+  cancel-in-progress: false
+
+jobs:
+  hunt:
+    name: full suite × N
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: loomtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LOOM_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/loomtest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Run the blocking suite repeatedly (no turbo cache)
+        run: |
+          n="${{ github.event.inputs.repeats || '3' }}"
+          failed=0
+          for i in $(seq 1 "$n"); do
+            echo "::group::attempt $i of $n"
+            if ! pnpm turbo test --force --continue; then
+              echo "::error::attempt $i of $n failed — see the log above for the flaky test"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"
+      - name: Perf suite (informative)
+        if: always()
+        continue-on-error: true
+        run: pnpm test:perf

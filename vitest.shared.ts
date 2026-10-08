@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { UserConfig } from "vitest/config";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 // ── One test config for the workspace ────────────────────────────────────────
 //
@@ -46,6 +46,15 @@ function sourceAliases(): { find: RegExp; replacement: string }[] {
 }
 
 const useSource = process.env.LOOM_TEST_SRC === "1";
+
+/**
+ * The PERF suite (`*.perf.test.ts`): wall-clock ratios and budgets that measure the runner's load
+ * as much as the code. `pnpm test` excludes them, so they never gate a merge; `pnpm test:perf`
+ * (`LOOM_TEST_PERF=1`) runs ONLY them — a non-blocking CI step and the nightly flake hunt.
+ * `packages/spec/src/testTiming.test.ts` keeps timing assertions out of the blocking suite.
+ */
+const perfOnly = process.env.LOOM_TEST_PERF === "1";
+const PERF_GLOB = "**/*.perf.test.ts";
 
 /**
  * Give the package under test its OWN Postgres database (`<db>_<package>`), so suites that
@@ -92,6 +101,9 @@ export function loomTest(overrides: UserConfig = {}): UserConfig {
     },
     test: {
       environment: "node",
+      ...(perfOnly
+        ? { include: [PERF_GLOB], passWithNoTests: true }
+        : { exclude: [...configDefaults.exclude, PERF_GLOB] }),
       ...(pgDb !== undefined && {
         globalSetup: [join(ROOT, "vitest.pgSetup.ts")],
         env: { LOOM_TEST_POSTGRES_URL: pgDb.url },

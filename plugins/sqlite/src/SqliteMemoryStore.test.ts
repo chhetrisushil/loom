@@ -121,12 +121,11 @@ describe("SqliteMemoryStore query bounds", () => {
     }
     const repeated = Array.from({ length: 20_000 }, () => "latency").join(" ");
 
-    const started = performance.now();
+    const started = Date.now();
     const hits = await store.search("k", repeated, { limit: 5 });
-    const elapsed = performance.now() - started;
 
     expect(hits).toHaveLength(5);
-    expect(elapsed).toBeLessThan(5_000);
+    expect(Date.now() - started).toBeLessThan(10_000); // timing-bound: the unbounded query took 32.7 s
   });
 
   it("does not match on a term past the cap", async () => {

@@ -221,7 +221,7 @@ if (PG_URL === undefined) {
         await reg.close();
         await pool.end();
         expect(page.map((r) => r.name)).toEqual(["A1", "B", "a-b", "a_b", "ab"]);
-        expect(waited).toBeLessThan(5_000);
+        expect(waited).toBeLessThan(10_000); // timing-bound: an ignored 200 ms lock_timeout hangs until ROLLBACK
         expect(warnings).toHaveLength(1);
         expect(warnings[0]).toMatch(/55P03/);
         await holder.query("ROLLBACK");

@@ -12,7 +12,7 @@
       // "passed" from a run with no database is replayed verbatim for a run that
       // has one — turbo reports FULL TURBO and the Postgres suites never execute.
       // Same for LOOM_TEST_SRC, where the cached run resolved the other tree.
-      "env": ["LOOM_TEST_POSTGRES_URL", "LOOM_TEST_SRC"]
+      "env": ["LOOM_TEST_POSTGRES_URL", "LOOM_TEST_SRC", "LOOM_TEST_PERF"]
     },
     "bench": {
       "dependsOn": ["^build"],

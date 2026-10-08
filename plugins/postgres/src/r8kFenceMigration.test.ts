@@ -159,7 +159,7 @@ if (PG_URL === undefined) {
       const t0 = Date.now();
       // pre-fix: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` waits for ACCESS EXCLUSIVE behind it
       await migrate(q, { lockTimeoutMs: 20_000 });
-      expect(Date.now() - t0).toBeLessThan(5_000);
+      expect(Date.now() - t0).toBeLessThan(10_000); // timing-bound: a blocked migration waits the 20 s lockTimeout
       await rc.query("ROLLBACK");
       rc.release();
       await reader.end();
@@ -181,7 +181,7 @@ if (PG_URL === undefined) {
       await expect(migrate(q, { lockTimeoutMs: 400 })).rejects.toThrow(
         /lock timeout|lock_timeout|lock/i
       );
-      expect(Date.now() - t0).toBeLessThan(5_000);
+      expect(Date.now() - t0).toBeLessThan(10_000); // timing-bound: an ignored lock_timeout hangs until the reader is released
       await rc.query("ROLLBACK");
       rc.release();
       await reader.end();
