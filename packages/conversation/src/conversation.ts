@@ -691,7 +691,7 @@ export function conversationRunner(
       // The question is classified by what it was ASKED AGAINST: the classes of every entry in the context
       // it was built on (known before the turn), so a question that quotes restricted content is filtered
       // like the answer is.
-      const contextClasses = union(...promptTurns.map((t) => t.classes));
+      const contextClasses = union(...promptTurns.map((t) => t.classes), edited?.classes);
       const userOrd = await record(
         "user",
         {
@@ -699,7 +699,7 @@ export function conversationRunner(
           role: "user",
           text: verified.text,
           status: "complete",
-          ...(edited?.ord !== undefined && { editOf: edited.ord }),
+          ...(edited?.ord !== undefined && { editOf: edited.ord, editOfTurn: edited.n }),
           ...(attributed !== undefined && { asker: attributed }),
           ...(contextClasses.length > 0 && { classes: contextClasses }),
         },

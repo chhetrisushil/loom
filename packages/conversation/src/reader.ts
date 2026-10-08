@@ -101,6 +101,7 @@ function recordOf(ev: EventEnvelope): MessageRecord | undefined {
     turn: p.turn,
     ...(isOrd(p.ord) && { ord: p.ord }),
     ...(isOrd(p.editOf) && { editOf: p.editOf }),
+    ...(isOrd(p.editOfTurn) && { editOfTurn: p.editOfTurn }),
     role: p.role,
     text: p.text,
     status: p.status,

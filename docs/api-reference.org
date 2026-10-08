@@ -2069,7 +2069,7 @@ interface SharedConfig {
 interface Identity { tenant?: string; actor: string; onBehalfOf?: string }
 
 // What history returns: one entry per message, with the cursor to resume from.
-interface HistoryEntry { turn: number /* 0 = a rejected record, no turn */; ord?: number /* unique per record; absent before R17b */; editOf?: number /* ord of the user turn this edits */; role: "user"|"assistant"; text: string;
+interface HistoryEntry { turn: number /* 0 = a rejected record, no turn */; ord?: number /* unique per record; absent before R17b */; editOf?: number /* ord of the user turn this edits */; editOfTurn?: number /* its turn number, display */; role: "user"|"assistant"; text: string;
   status: "complete"|"interrupted"|"failed"|"rejected"; reason?: string;
   cursor: string /* "<generation>.<sequence>" */; executionId: string; at?: number }
 interface ReadOptions { limit?: number /* 50, max 500 */; maxScan?: number /* 2000 */; cursor?: string; direction?: "forward"|"backward" }

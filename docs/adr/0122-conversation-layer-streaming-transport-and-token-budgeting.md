@@ -487,6 +487,12 @@ Found by the loom-ui U8 review. No kernel change; the recorded facts keep their 
   model prompt gets the marker as data inside the same tainted, fenced user text:
   `[This message edits the user's earlier message "<quote, 500 chars>".]`. The quote is the same asker's own earlier
   words, so no other participant's content can be pulled in by it. The turn effect (shared mode) receives that same text.
+- **Fix round 1.** (a) The edited turn's classes are unioned into the new user record's classes (and so the reply's
+  `classes` decision): the quote enters the prompt even when the budget evicted that turn from the visible window, so
+  its classification must follow it. (b) A record with `editOf` also carries `editOfTurn` (the edited turn's number,
+  display only); `editOf` (the ord) stays canonical. (c) `status().turns` pages backward (at most 50 pages of 100
+  records) until a record with `turn > 0` is found, so a long run of rejections cannot zero it. (d) Tested: an edit of a
+  turn carried across `continueAsNew`.
 - **Wire.** `Conversations.sendTurn(id, text, { editOf })`; `POST /turns { text, messageId?, editOf? }` (a non-integer
   is a 400); history entries and SSE `message` frames carry `ord` and (for an edit) `editOf`.
 

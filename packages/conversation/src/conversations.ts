@@ -200,6 +200,8 @@ function rawSender(p: PrincipalChain | undefined): {
   };
 }
 
+/** Pages of 100 records `status` walks back at most to find the newest accepted turn. */
+const STATUS_MAX_PAGES = 50;
 const OWNER_CACHE_MAX = 1024;
 
 export function createConversations(deps: ConversationsDeps): Conversations {
@@ -504,9 +506,18 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const { h } = await head(conversationId, options?.principal);
       const generation = generationOf(h.executionId);
       // A rejected record belongs to no turn (`turn: 0`): the turn count is the newest ACCEPTED record's
-      // number, looked for in a bounded window of the newest records.
-      const last = await reader.read(conversationId, { direction: "backward", limit: 100 });
+      // number, looked for by paging backward (bounded: STATUS_MAX_PAGES pages of 100 records).
+      let last = await reader.read(conversationId, { direction: "backward", limit: 100 });
       const newest = last.entries[0];
+      let accepted = last.entries.find((e) => e.turn > 0)?.turn;
+      for (let page = 1; accepted === undefined && !last.done && page < STATUS_MAX_PAGES; page++) {
+        last = await reader.read(conversationId, {
+          direction: "backward",
+          limit: 100,
+          ...(last.nextCursor !== undefined && { cursor: last.nextCursor }),
+        });
+        accepted = last.entries.find((e) => e.turn > 0)?.turn;
+      }
       const st = h.state.status;
       const state: ConversationState =
         st === "completed"
@@ -522,7 +533,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         generation,
         state,
         running: state === "open" && newest?.role === "user" && newest.status === "complete",
-        turns: last.entries.find((e) => e.turn > 0)?.turn ?? 0,
+        turns: accepted ?? 0,
       };
     },
     async filterEntries(entries, principal) {

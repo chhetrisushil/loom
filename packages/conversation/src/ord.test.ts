@@ -252,3 +252,78 @@ describe("editOf: a signed, validated edit of an earlier turn", () => {
     expect(JSON.stringify(hidden)).not.toContain("TOP-SECRET");
   });
 });
+
+describe("R17b fix round 1", () => {
+  it("P1: an edit of a turn the budget dropped from the prompt still inherits its classes (no restricted quote in an unrestricted reply)", async () => {
+    const perChar = { perMessage: 0, count: (t: string) => t.length };
+    const { conversationId: id, b } = await (async () => {
+      const b = boot({
+        shared: true,
+        config: { budget: { contextWindow: 400, reserveOutputTokens: 0, counter: perChar } },
+      });
+      const { conversationId } = await b.conv.start({ principal: alice });
+      await b.conv.addParticipant(conversationId, asId(carol), { principal: alice });
+      return { conversationId, b };
+    })();
+    await b.conv.sendTurn(id, "use the secret db", { principal: alice });
+    await messages(b, id, 2, alice);
+    await b.conv.sendTurn(id, "repeat TOP-SECRET-PAYLOAD", { principal: alice });
+    const xs = await messages(b, id, 4, alice);
+    const x = xs[2]?.ord as number;
+    await b.conv.sendTurn(id, `fix ${"z".repeat(240)}`, { principal: alice, editOf: x });
+    const all = await messages(b, id, 6, alice);
+    expect(all[4]).toMatchObject({ editOf: x, editOfTurn: 2 });
+    const asCarol = (await b.conv.history(id, { principal: carol })).entries;
+    expect(JSON.stringify(asCarol)).not.toContain("TOP-SECRET");
+    expect(asCarol.slice(2).every((e) => e.status === "restricted" || e.role === "user")).toBe(
+      true
+    );
+    expect(asCarol[5]?.status).toBe("restricted");
+    expect(asCarol[4]?.editOfTurn).toBeUndefined(); // hidden or not, a placeholder never carries it
+  });
+
+  it("P2: an edit records editOfTurn (the edited turn's number) beside editOf (its ord)", async () => {
+    const b = boot();
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "one");
+    await messages(b, id, 2);
+    await b.conv.sendTurn(id, "two");
+    const xs = await messages(b, id, 4);
+    await b.conv.sendTurn(id, "two, better", { editOf: xs[2]?.ord as number });
+    const all = await messages(b, id, 6);
+    expect(all[4]).toMatchObject({ editOf: xs[2]?.ord, editOfTurn: 2, turn: 3 });
+    expect(all[0]?.editOfTurn).toBeUndefined();
+  });
+
+  it("P3-1: status().turns survives more than 100 trailing rejections", async () => {
+    const b = boot({ config: { maxTurnChars: 20 } });
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "ok");
+    await messages(b, id, 2);
+    for (let i = 0; i < 101; i++) {
+      await b.runtime.send(id, {
+        topic: CONVERSATION_TOPIC,
+        payload: signRaw(id, { kind: "user", text: "x".repeat(21) }),
+      });
+    }
+    await until(
+      async () =>
+        (await b.conv.history(id, { direction: "backward", limit: 1 })).entries[0]?.ord === 103,
+      "103 records"
+    );
+    expect((await b.conv.status(id)).turns).toBe(1);
+  });
+
+  it("P3-2: an edit of a turn carried across continue-as-new works", async () => {
+    const b = boot({ config: { rotateEveryTurns: 1 } });
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "first");
+    const first = await messages(b, id, 2);
+    await b.conv.sendTurn(id, "second");
+    await messages(b, id, 4);
+    await b.conv.sendTurn(id, "first, again", { editOf: first[0]?.ord as number });
+    const all = await messages(b, id, 6);
+    expect(new Set(all.map((m) => m.executionId)).size).toBeGreaterThan(2);
+    expect(all[4]).toMatchObject({ status: "complete", editOf: first[0]?.ord, editOfTurn: 1 });
+  });
+});
