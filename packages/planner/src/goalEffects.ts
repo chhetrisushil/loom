@@ -146,6 +146,13 @@ export interface RunGoalConfig {
   /** Planning options (model, limits, fallback, …). `goal` and `planId` are set from the goal. */
   plan: Omit<PlanGoalInput, "goal" | "planId" | "catalog">;
   execute?: Omit<ExecutePlanConfig, "catalog" | "planId">;
+  /**
+   * Host liveness probe for the execution recorded as a goal's `holder`. A goal found `active` is
+   * taken over ONLY when it names a holder (other than this execution) and this resolves `false`.
+   * Absent, throwing, or `true` ⇒ the pursuit is someone else's and `GoalConflictError` is raised.
+   * Called inside `ctx.decide`, so the answer is recorded and a replay does not re-ask.
+   */
+  isExecutionLive?: (executionId: string) => boolean | Promise<boolean>;
 }
 
 export interface RunGoalResult {
@@ -160,7 +167,9 @@ export interface RunGoalResult {
  *
  * - One pursuer at a time: the `active` transition is a compare-and-set on the revision read, and a
  *   goal that is already `active` is refused (`GoalConflictError`) - whoever set it owns the pursuit.
- *   A goal left `active` by a process that died for good is released by `setStatus(open)`.
+ *   The pursuing execution is recorded as `holder`. A goal stranded `active` by a holder that died is
+ *   taken over only when the host's `isExecutionLive(holder)` says it is gone (a throwing or absent
+ *   probe never takes over); otherwise `setStatus(open)` releases it by hand.
  * - Never stuck `active`: a planning failure marks the goal `failed` with the reason; any other
  *   error that ends the pursuit (a denial, a cancellation, a divergence) puts it back to `open` with
  *   `lastRun.error` (best effort - the write may itself be refused) and is re-thrown. A PARK
@@ -180,9 +189,35 @@ export async function runGoal(
     throw new GoalTransitionError(goal.status, "active");
   }
   if (goal.status === "active") {
-    throw new GoalConflictError(`goal "${goalId}" is already being pursued`);
+    const holder = goal.holder;
+    const probe = config.isExecutionLive;
+    const dead =
+      holder !== undefined &&
+      holder !== ctx.executionId &&
+      probe !== undefined &&
+      !(await ctx.decide<boolean>(
+        `goal-takeover-${goalId}-r${goal.revision}`,
+        async () => {
+          try {
+            return await probe(holder);
+          } catch {
+            return true; // cannot tell ⇒ assume live: never steal a pursuit on a failed lookup
+          }
+        },
+        { source: "planner.goal" }
+      ));
+    if (!dead) {
+      throw new GoalConflictError(
+        `goal "${goalId}" is already being pursued${holder !== undefined ? ` by execution "${holder}"` : ""}`
+      );
+    }
   }
-  goal = await goals.setStatus({ id: goalId, status: "active", expectedRevision: goal.revision });
+  goal = await goals.setStatus({
+    id: goalId,
+    status: "active",
+    expectedRevision: goal.revision,
+    holder: ctx.executionId,
+  });
   const planId = `goal-${goalId}-r${goal.revision}`;
   const parentId = goal.parentId;
   const finish = async (input: Omit<SetStatusInput, "id">): Promise<Goal> => {

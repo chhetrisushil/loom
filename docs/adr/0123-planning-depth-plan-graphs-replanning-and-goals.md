@@ -189,6 +189,18 @@ A flow that moves from `plan()` to `planGoal()` is a body change like any other 
   pursuit (other than a park) returns it to `open` with `lastRun.error`; the parent is rolled up, the goal's own result is not
   recomputed. Goal writes are idempotent on the effect's `idempotencyKey`. Plan retries send the model's previous answer back as an
   assistant turn.
+- **Goal holder and takeover.** `runGoal` records the pursuing `executionId` as `Goal.holder` when it goes `active` and clears it on
+  any other status. An `active` goal is taken over only if the host supplies `isExecutionLive` and it reports the recorded holder
+  (not this execution) gone; the probe runs inside `ctx.decide`, so the answer is journaled and a replay does not re-ask. An absent
+  or throwing probe, or a live holder, keeps `GoalConflictError` (naming the holder). No lease/clock: a wall-clock lease is not
+  replay-safe in a flow, and the kernel exposes no execution-status read to a flow, so liveness is the host's to answer.
+- **Idempotency ledger residual.** Each owner keeps the last 64 idempotency keys. A write re-driven after more than 64 later writes
+  by the same owner is applied again; only an unconditional `setStatus` can matter (a set-to-value, so the worst case is a stale
+  status), and `create` is protected by its unique id.
+- **Taint bounds fail closed.** The taint walk is bounded (100 000 nodes, depth 64). Past a bound it reports the value tainted, so a
+  non-opted capability is refused (`args-invalid`) rather than handed a wrapper the walk never saw.
+- **Opt-in is a promise.** A capability with `acceptsTainted` receives the wrapper, but nothing re-taints its OUTPUT: if it echoes
+  the payload unwrapped into a later step, the taint is lost. Opting in is the capability author's promise to keep the value fenced.
 
 ## Consequences
 
@@ -197,8 +209,8 @@ A flow that moves from `plan()` to `planGoal()` is a body change like any other 
 - A replan costs one recorded decision; a replay re-does nothing (tested: zero model calls, zero capability runs, byte-identical
   result, under `divergence: "fail"`).
 - The wave barrier trades some overlap for determinism.
-- A capability that accepts a tainted value must declare it in its schema (the wrapper is validated as-is; it is not unwrapped to
-  satisfy a schema, which would launder it).
+- A capability that accepts a tainted value must declare it in its schema (the schema is checked on the payload, via `unwrapTaint`,
+  so a `z.string()` field accepts a wrapped string; the tool still receives the wrapper, so the value is never laundered).
 
 ## Questions for the user
 

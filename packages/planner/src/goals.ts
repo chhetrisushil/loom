@@ -31,6 +31,12 @@ export interface Goal {
   seq: number;
   /** Short free text recorded with the last status change (bounded). */
   note?: string;
+  /**
+   * The execution pursuing this goal, recorded by {@link runGoal} when it goes `active` and cleared
+   * on any other status. Lets a later pursuer ask the host whether that execution is still alive
+   * before taking a stranded goal over. Bounded; never an authority (it only names, it grants nothing).
+   */
+  holder?: string;
   /** What the last pursuit of this goal ended in, written by {@link runGoal}. */
   lastRun?: { status: "completed" | "failed" | "stopped"; replans: number; error?: string };
 }
@@ -64,6 +70,8 @@ export interface SetStatusInput {
   note?: string;
   expectedRevision?: number;
   lastRun?: Goal["lastRun"];
+  /** The pursuing execution id, kept only while the new status is `active` (see {@link Goal.holder}). */
+  holder?: string;
 }
 
 export class GoalNotFoundError extends Error {
@@ -233,8 +241,14 @@ const ops = {
     if (!canTransition(g.status, input.status))
       throw new GoalTransitionError(g.status, input.status);
     if (input.lastRun !== undefined) checkLastRun(input.lastRun);
+    if (input.holder !== undefined && typeof input.holder !== "string") {
+      throw new GoalLimitError("holder must be a string");
+    }
     g.status = input.status;
     g.revision++;
+    if (input.status === "active" && input.holder !== undefined && input.holder.length > 0) {
+      g.holder = input.holder.slice(0, GOAL_LIMITS.maxOwnerChars);
+    } else delete g.holder;
     if (input.note !== undefined) g.note = String(input.note).slice(0, GOAL_LIMITS.maxNoteChars);
     if (input.lastRun !== undefined) g.lastRun = input.lastRun;
     return g;

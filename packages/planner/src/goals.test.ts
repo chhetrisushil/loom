@@ -649,3 +649,188 @@ describe("fix round 1 - runGoal / goalsClient through a runtime (R16)", () => {
     expect(r.out).toEqual({ child: "done", parent: "open" });
   });
 });
+
+describe.each(stores)("%s - idempotency ledger (R16 fix round 2)", (_n, make) => {
+  it("P3-2: the ledger is bounded - an evicted key re-applies, a recent key is served", async () => {
+    const s = make();
+    await s.create("a", { id: "g", title: "t" });
+    for (let i = 0; i < 70; i++) {
+      await s.setStatus(
+        "a",
+        { id: "g", status: "open", note: `n${i}` },
+        { idempotencyKey: `k${i}` }
+      );
+    }
+    const before = (await s.get("a", "g")).revision; // 1 + 70
+    expect(before).toBe(71);
+    // A recent key returns the ORIGINAL result and changes nothing.
+    const recent = await s.setStatus(
+      "a",
+      { id: "g", status: "open", note: "x" },
+      { idempotencyKey: "k69" }
+    );
+    expect(recent.revision).toBe(71);
+    expect((await s.get("a", "g")).revision).toBe(71);
+    // The oldest key fell off the 64-entry ledger: replayed after >64 later writes, it applies again
+    // (the documented residual: a set-to-value, so the worst case is a stale status, never a double create).
+    await s.setStatus("a", { id: "g", status: "open", note: "again" }, { idempotencyKey: "k0" });
+    expect((await s.get("a", "g")).revision).toBe(72);
+  });
+});
+
+describe("DurableGoalStore - ledger size (R16 fix round 2)", () => {
+  it("P3-2: the stored ledger never exceeds 64 entries", async () => {
+    const k = kv();
+    const s = new DurableGoalStore(k);
+    await s.create("a", { id: "g", title: "t" });
+    for (let i = 0; i < 100; i++) {
+      await s.setStatus("a", { id: "g", status: "open" }, { idempotencyKey: `k${i}` });
+    }
+    const doc = [...k.data.values()][0]?.payload as { applied: unknown[] };
+    expect(doc.applied.length).toBe(64);
+  });
+});
+
+describe("fix round 2 - runGoal pursuit (R16)", () => {
+  const sink = (id: string, v: number) => ({ id, capabilityId: "work", args: { n: v } });
+  const plan1 = JSON.stringify({ nodes: [sink("w1", 1)] });
+  const cfg0 = { catalog: cat, plan: { model: effectPlanModel("plan-model") } };
+  const owner = ownerOfPrincipal({ actor: "alice" } as never);
+
+  /** One flow run over `store`; `work` runs as the plan's capability. */
+  const go = async (
+    store: GoalStore,
+    body: (ctx: ExecutionContext, goals: ReturnType<typeof goalsClient>) => Promise<unknown>,
+    work: () => unknown = () => ({ ok: 1 })
+  ) => {
+    let out: unknown;
+    let err: unknown;
+    let executionId = "";
+    const provider: LlmProvider = {
+      async complete() {
+        return { content: plan1, stopReason: "end_turn" };
+      },
+    };
+    const effects = new EffectRuntime();
+    effects.register("plan-model", createAgentModelEffect(provider));
+    effects.register("work", new ToolEffect(async () => work()));
+    registerGoalEffects(effects, store);
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+    });
+    const runner: FlowRunner<unknown, unknown> = async (ctx) => {
+      executionId = ctx.executionId;
+      try {
+        out = await body(ctx, goalsClient(ctx));
+      } catch (e) {
+        err = e;
+      }
+      return {};
+    };
+    runtime.registerFlow(FLOW, runner);
+    const h = await runtime.start(FLOW, {}, { principal: { actor: "alice" } as never });
+    await h.waitForCompletion();
+    return { out: out as never, err, executionId };
+  };
+
+  it("P3-1: the active transition is a compare-and-set on the revision read", async () => {
+    let armed = false;
+    class Racing extends InMemoryGoalStore {
+      override async get(o: string, id: string) {
+        const g = await super.get(o, id);
+        if (armed) {
+          armed = false; // a concurrent writer lands between runGoal's get and its setStatus
+          await super.setStatus(o, { id, status: "open", note: "raced" });
+        }
+        return g;
+      }
+    }
+    const store = new Racing();
+    const r = await go(store, async (ctx, goals) => {
+      await goals.create({ id: "g1", title: "t" });
+      armed = true;
+      return runGoal(ctx, goals, "g1", cfg0);
+    });
+    expect((r.err as Error).name).toBe("GoalConflictError");
+    const g = await store.get(owner, "g1");
+    expect(g.status).toBe("open"); // never flipped to active by the loser
+    expect(g.note).toBe("raced");
+  });
+
+  it("P3-5: the pursuing execution is recorded while active and cleared when the pursuit ends", async () => {
+    const store = new InMemoryGoalStore();
+    let during: string | undefined;
+    const r = await go(
+      store,
+      async (ctx, goals) => {
+        await goals.create({ id: "g1", title: "t" });
+        return runGoal(ctx, goals, "g1", cfg0);
+      },
+      async () => {
+        during = (await store.get(owner, "g1")).holder;
+        return { ok: 1 };
+      }
+    );
+    expect(r.err).toBeUndefined();
+    expect(during).toBe(r.executionId);
+    expect((await store.get(owner, "g1")).holder).toBeUndefined();
+  });
+
+  it("P3-5: a goal left active by a holder that is no longer live is taken over", async () => {
+    const store = new InMemoryGoalStore();
+    const asked: string[] = [];
+    const r = await go(store, async (ctx, goals) => {
+      await goals.create({ id: "g1", title: "t" });
+      await goals.setStatus({ id: "g1", status: "active", holder: "dead-exec" });
+      const out = await runGoal(ctx, goals, "g1", {
+        ...cfg0,
+        isExecutionLive: async (id) => {
+          asked.push(id);
+          return false;
+        },
+      });
+      return out.goal.status as never;
+    });
+    expect(r.err).toBeUndefined();
+    expect(r.out).toBe("done");
+    expect(asked).toEqual(["dead-exec"]);
+    expect((await store.get(owner, "g1")).holder).toBeUndefined();
+  });
+
+  it("P3-5: a live holder is refused, naming it, and the goal is untouched", async () => {
+    const store = new InMemoryGoalStore();
+    const r = await go(store, async (ctx, goals) => {
+      await goals.create({ id: "g1", title: "t" });
+      await goals.setStatus({ id: "g1", status: "active", holder: "live-exec" });
+      return runGoal(ctx, goals, "g1", { ...cfg0, isExecutionLive: async () => true });
+    });
+    expect((r.err as Error).name).toBe("GoalConflictError");
+    expect((r.err as Error).message).toContain("live-exec");
+    const g = await store.get(owner, "g1");
+    expect(g.status).toBe("active");
+    expect(g.holder).toBe("live-exec");
+  });
+
+  it("P3-5: no liveness hook, or a hook that throws, never takes over", async () => {
+    for (const hook of [
+      undefined,
+      async () => {
+        throw new Error("lookup down");
+      },
+    ]) {
+      const store = new InMemoryGoalStore();
+      const r = await go(store, async (ctx, goals) => {
+        await goals.create({ id: "g1", title: "t" });
+        await goals.setStatus({ id: "g1", status: "active", holder: "x-exec" });
+        return runGoal(ctx, goals, "g1", {
+          ...cfg0,
+          ...(hook !== undefined && { isExecutionLive: hook }),
+        });
+      });
+      expect((r.err as Error).name).toBe("GoalConflictError");
+      expect((await store.get(owner, "g1")).status).toBe("active");
+    }
+  });
+});
