@@ -76,7 +76,7 @@ describe("P1-1 a signed envelope cannot be replayed", () => {
       { principal: peer }
     );
     await b.conv.sendTurn(id, "legit after", { principal: carol });
-    await messages(b, id, 5, carol);
+    await messages(b, id, 6, carol);
     expect(await rejections(b, id)).toEqual(["replayed", "replayed"]);
     expect(b.calls.n).toBe(callsBefore + 1); // only carol's own message reached the model
     const users = (await b.conv.reader.read(id, { limit: 100 })).entries.filter(
@@ -124,7 +124,7 @@ describe("P1-1 a signed envelope cannot be replayed", () => {
       { principal: peer }
     );
     await b.conv.sendTurn(id, "fine", { principal: carol });
-    await messages(b, id, 3, carol);
+    await messages(b, id, 5, carol); // three rejections, then carol's question and her answer
     expect(await rejections(b, id)).toEqual(["unauthenticated", "unauthenticated", "stale"]);
     expect(b.calls.n).toBe(2); // dave's message in the OTHER conversation, and carol's here
   });
