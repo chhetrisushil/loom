@@ -203,6 +203,7 @@ describe("shared mode: classification and per-viewer filtering", () => {
     expect(asCarol[0]).toMatchObject({ role: "user", text: "use the secret db" }); // the question is not restricted
     expect(asCarol[1]).toEqual({
       turn: 1,
+      ord: 2, // an ordinal is not content: the placeholder keeps it
       role: "assistant",
       text: "",
       status: "restricted",

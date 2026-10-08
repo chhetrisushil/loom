@@ -30,6 +30,8 @@ export interface SignedBody {
   /** Issue time, epoch ms. */
   iat: number;
   text?: string;
+  /** A user turn that EDITS an earlier one: the `ord` of that earlier user record. Signed with the rest. */
+  editOf?: number;
   /** Who is speaking. Owner mode: the owner. Shared mode: the asker (or, for a close, the closer). */
   asker?: Identity;
 }
@@ -40,7 +42,15 @@ export type TurnEnvelope =
    * see `senderKey`). It lets the barge-in watcher tell a sender's own retry from a new message.
    * `asker` / `sig` appear only in shared mode (host-signed, see `sign`).
    */
-  | { kind: "user"; text: string; id?: string; asker?: Identity; iat?: number }
+  | {
+      kind: "user";
+      text: string;
+      id?: string;
+      asker?: Identity;
+      iat?: number;
+      /** The `ord` of the user record this turn edits (validated by the body, ADR 0122 amendment R17b). */
+      editOf?: number;
+    }
   | { kind: "close"; id?: string; asker?: Identity; iat?: number };
 
 export type MessageStatus = "complete" | "interrupted" | "failed" | "rejected" | "restricted";
@@ -48,8 +58,20 @@ export type MessageStatus = "complete" | "interrupted" | "failed" | "rejected" |
 /** The payload of a {@link MESSAGE_EVENT}: the unit `history` returns. */
 export interface MessageRecord {
   kind?: "message";
-  /** The turn number, 1-based, global across the chain's generations. */
+  /**
+   * The turn number, 1-based, global across the chain's generations. A REJECTED user record belongs to no
+   * turn and carries `0` (it used to carry the NEXT turn's number, which the next accepted turn then
+   * reused: use `ord` to tell records apart).
+   */
   turn: number;
+  /**
+   * A unique, monotonically increasing ordinal of this record within the conversation (1-based), carried
+   * across continue-as-new rotations. Not content: a restricted placeholder keeps it. ABSENT on records
+   * written before R17b (ADR 0122 amendment); uniqueness holds among the records that carry one.
+   */
+  ord?: number;
+  /** A user turn that edits an earlier user turn: that turn's `ord`. The edit is still a NEW turn (append-only). */
+  editOf?: number;
   role: "user" | "assistant";
   /** The message. Untrusted when `role === "user"`: render it as TEXT, never as markup. */
   text: string;
@@ -187,6 +209,8 @@ export interface CarriedTurn {
   n: number;
   asker?: Identity;
   classes?: string[];
+  /** The `ord` of the turn's user record (absent for turns carried from before R17b). */
+  ord?: number;
   user: string;
   assistant?: string;
   status: MessageStatus;
@@ -201,6 +225,8 @@ export interface ConversationCarry {
   seq: number;
   /** Messages consumed so far, accepted or not: the id space of the recorded facts. */
   ord: number;
+  /** Transcript records written so far: the source of each record's unique `ord` (absent in carries from before R17b). */
+  rec?: number;
   /** The identity that started the conversation (the client stamps it; the owner check reads it). */
   owner?: Identity;
   /** Signed ids of the most recent envelopes (bounded): the replay set, and what the barge-in watcher recognises as a retry. */

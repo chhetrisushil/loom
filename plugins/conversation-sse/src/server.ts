@@ -30,7 +30,7 @@ import { SseSink, frame } from "./sse";
 //
 //   POST /conversations                          start one (the SERVER mints the id)
 //   GET  /conversations/:id                      status
-//   POST /conversations/:id/turns                send a turn   { text, messageId? }
+//   POST /conversations/:id/turns                send a turn   { text, messageId?, editOf? }
 //   POST /conversations/:id/close                close it
 //   GET  /conversations/:id/history              a bounded page   ?limit&cursor&direction
 //   GET  /conversations/:id/events               the SSE stream   Last-Event-ID | ?cursor
@@ -575,6 +575,7 @@ export function createConversationSseServer(
         const body = (await readJson(req, maxBody)) as {
           text?: unknown;
           messageId?: unknown;
+          editOf?: unknown;
         } | null;
         if (typeof body?.text !== "string") throw new BadRequestError("`text` must be a string");
         if (
@@ -587,8 +588,17 @@ export function createConversationSseServer(
             "`messageId` must be a non-empty string of at most 200 characters"
           );
         }
+        if (
+          body.editOf !== undefined &&
+          (typeof body.editOf !== "number" || !Number.isSafeInteger(body.editOf) || body.editOf < 1)
+        ) {
+          throw new BadRequestError(
+            "`editOf` must be a positive integer (the ord of an earlier turn)"
+          );
+        }
         const sent = await conversations.sendTurn(id, body.text, {
           ...call,
+          ...(typeof body.editOf === "number" && { editOf: body.editOf }),
           ...(typeof body.messageId === "string" && { messageId: body.messageId }),
         });
         sendJson(res, 202, { messageId: sent.messageId, inboxSeq: sent.inboxSeq }, cors);

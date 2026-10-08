@@ -77,6 +77,7 @@ const MAX_RECENT_IDS = 1024;
 const MAX_KNOWN_FOR_WATCH = 256;
 const MAX_CLOCK_SKEW_MS = 60_000;
 const MAX_CLASSES = 16;
+const EDIT_QUOTE_CHARS = 500;
 const MAX_CLASS_LEN = 64;
 const STATUSES = new Set<MessageStatus>(["complete", "interrupted", "failed", "rejected"]);
 
@@ -116,7 +117,22 @@ export function parseSignedEnvelope(
   const who = asker === undefined ? {} : { asker };
   if (body.kind === "close") return { env: { kind: "close", id, iat, ...who } };
   if (body.kind === "user" && typeof body.text === "string") {
-    return { env: { kind: "user", text: body.text, id, iat, ...who } };
+    let editOf: number | undefined;
+    if (body.editOf !== undefined) {
+      if (typeof body.editOf !== "number" || !Number.isSafeInteger(body.editOf) || body.editOf < 1)
+        return { reason: "malformed" };
+      editOf = body.editOf;
+    }
+    return {
+      env: {
+        kind: "user",
+        text: body.text,
+        id,
+        iat,
+        ...who,
+        ...(editOf !== undefined && { editOf }),
+      },
+    };
   }
   return { reason: "malformed" };
 }
@@ -162,6 +178,7 @@ export function carryOf(
       : undefined;
     turns.push({
       n: safeInt(o.n),
+      ...(typeof o.ord === "number" && Number.isSafeInteger(o.ord) && o.ord >= 1 && { ord: o.ord }),
       user: clip(o.user, lim.turnChars),
       ...(typeof o.assistant === "string" && { assistant: clip(o.assistant, lim.replyChars) }),
       status: o.status as MessageStatus,
@@ -188,6 +205,7 @@ export function carryOf(
     v: 1,
     seq: safeInt(c.seq),
     ord: safeInt(c.ord),
+    ...(safeInt(c.rec) > 0 && { rec: safeInt(c.rec) }),
     dropped: safeInt(c.dropped),
     ...(owner !== undefined && { owner }),
     ...(typeof c.summary === "string" && { summary: clip(c.summary, lim.summaryChars) }),
@@ -335,6 +353,8 @@ export function conversationRunner(
     let droppedCount = carry.dropped ?? 0;
     /** Messages consumed so far (accepted or not): the id space of every recorded fact, never reused. */
     let ord = carry.ord;
+    /** Transcript records written so far (the unique `ord` of each record; carried across rotations). */
+    let rec = carry.rec ?? 0;
     let summary = carry.summary;
     let turns: CarriedTurn[] = carry.turns.slice();
     let pending: unknown = carry.pending;
@@ -370,21 +390,26 @@ export function conversationRunner(
      */
     const record = async (
       id: string,
-      rec: MessageRecord,
+      message: MessageRecord,
       live?: () => Promise<void>
-    ): Promise<void> => {
+    ): Promise<number> => {
+      // The record's own ordinal, counted whether the fact is new or served from the log: the body is
+      // deterministic, so a replay counts the same. The value only matters when the fact is NEW.
+      const recOrd = ++rec;
       await ctx.decide(
         `conv#o${ord}:${id}`,
         async () => {
           await live?.();
-          return rec;
+          return { ...message, ord: recOrd };
         },
         { source: RECORD_SOURCE }
       );
+      return recOrd;
     };
-    const reject = (reason: string, asker?: Identity): Promise<void> =>
+    // A rejected message is not a turn: `turn: 0`, so it can never share a number with an accepted turn.
+    const reject = (reason: string, asker?: Identity): Promise<unknown> =>
       record("user", {
-        turn: seq + 1,
+        turn: 0,
         role: "user",
         text: "",
         status: "rejected",
@@ -453,6 +478,7 @@ export function conversationRunner(
               v: 1,
               seq,
               ord,
+              rec,
               ids,
               iats,
               floor,
@@ -544,6 +570,29 @@ export function conversationRunner(
         }
       }
 
+      // EDIT: the signed `editOf` names an earlier user record. It must be a turn of this conversation that
+      // was ACCEPTED (only accepted turns are in the window) and is the ASKER's own (owner mode: the owner's
+      // voice is the only one admitted, so every turn in it is the owner's). Anything else is refused with
+      // a fixed reason and nothing is obeyed; the reason does not say which of the cases it was.
+      let edited: CarriedTurn | undefined;
+      if (verified.editOf !== undefined) {
+        edited = turns.find(
+          (t) =>
+            t.ord === verified.editOf && (sharedCfg === undefined || sameIdentity(t.asker, asker))
+        );
+        if (edited === undefined) {
+          await reject("edit-invalid", attributed);
+          continue;
+        }
+      }
+      // The model sees the edit as DATA inside the (tainted, fenced) user text, never as an instruction.
+      const promptText =
+        edited === undefined
+          ? verified.text
+          : `[This message edits the user's earlier message ${JSON.stringify(
+              clip(edited.user, EDIT_QUOTE_CHARS)
+            )}.]\n\n${verified.text}`;
+
       const ctl = new AbortController();
 
       // The turns the asker's prompt may draw on. OWNER: all of them. SHARED: only the entries the ASKER
@@ -592,7 +641,7 @@ export function conversationRunner(
               }),
               ...(systemForCount !== "" && { system: systemForCount }),
               ...(summary !== undefined && { summary }),
-              prompt: verified.text,
+              prompt: promptText,
               turns: view.map((t) => ({
                 user: t.user,
                 ...(t.assistant !== undefined && { assistant: t.assistant }),
@@ -643,13 +692,14 @@ export function conversationRunner(
       // it was built on (known before the turn), so a question that quotes restricted content is filtered
       // like the answer is.
       const contextClasses = union(...promptTurns.map((t) => t.classes));
-      await record(
+      const userOrd = await record(
         "user",
         {
           turn: n,
           role: "user",
           text: verified.text,
           status: "complete",
+          ...(edited?.ord !== undefined && { editOf: edited.ord }),
           ...(attributed !== undefined && { asker: attributed }),
           ...(contextClasses.length > 0 && { classes: contextClasses }),
         },
@@ -686,7 +736,7 @@ export function conversationRunner(
               turn: n,
               ord,
               asker,
-              text: verified.text,
+              text: promptText,
               ...(verified.id !== undefined && { id: verified.id }),
               history: historyOf(summaryForTurn(), promptTurns),
               known: [...known].slice(-MAX_KNOWN_FOR_WATCH),
@@ -712,7 +762,7 @@ export function conversationRunner(
                 ctx,
                 { ...config.agent, loopId: `conv#o${ord}`, signal: ctl.signal },
                 {
-                  prompt: verified.text,
+                  prompt: promptText,
                   promptOrigin: USER_ORIGIN,
                   history: historyOf(summaryForTurn(), turns),
                 }
@@ -777,6 +827,7 @@ export function conversationRunner(
       );
       turns.push({
         n,
+        ord: userOrd,
         user: verified.text,
         assistant: reply,
         status,

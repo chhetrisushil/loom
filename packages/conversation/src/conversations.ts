@@ -130,6 +130,13 @@ export interface SendTurnOptions extends CallOptions {
    * send, exactly-once consume, within the kernel's dedupe window); minted when omitted.
    */
   messageId?: string;
+  /**
+   * This turn EDITS an earlier user turn of yours: that turn's `ord` (from `history`). Signed into the
+   * envelope and validated by the conversation: it must be an accepted user turn of the same asker still in
+   * the prompt window, else the turn is recorded as rejected (`edit-invalid`) and not obeyed. The edit is a
+   * NEW turn (the log is append-only); the model is told it replaces the earlier message.
+   */
+  editOf?: number;
 }
 
 export type ConversationState = "open" | "closed" | "failed" | "cancelled";
@@ -402,8 +409,10 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     }).length;
   }
 
+  // A placeholder keeps `ord` (an ordinal is not content) and never `editOf` or any text.
   const restricted = (e: HistoryEntry): HistoryEntry => ({
     turn: e.turn,
+    ...(e.ord !== undefined && { ord: e.ord }),
     role: e.role,
     text: "",
     status: "restricted",
@@ -457,7 +466,20 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     async sendTurn(conversationId, text, options) {
       if (typeof text !== "string" || text.trim() === "") throw new InvalidTurnError("empty text");
       if (text.length > maxTurnChars) throw new InvalidTurnError(`over ${maxTurnChars} characters`);
-      return send(conversationId, { kind: "user", text }, "member", options);
+      if (
+        options?.editOf !== undefined &&
+        (!Number.isSafeInteger(options.editOf) || options.editOf < 1)
+      ) {
+        throw new InvalidTurnError(
+          "editOf must be a positive integer (the ord of an earlier turn)"
+        );
+      }
+      return send(
+        conversationId,
+        { kind: "user", text, ...(options?.editOf !== undefined && { editOf: options.editOf }) },
+        "member",
+        options
+      );
     },
     close(conversationId, options) {
       // Closing ends everyone's conversation: the owner (or, shared, a manager).
@@ -481,7 +503,9 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     async status(conversationId, options) {
       const { h } = await head(conversationId, options?.principal);
       const generation = generationOf(h.executionId);
-      const last = await reader.read(conversationId, { direction: "backward", limit: 1 });
+      // A rejected record belongs to no turn (`turn: 0`): the turn count is the newest ACCEPTED record's
+      // number, looked for in a bounded window of the newest records.
+      const last = await reader.read(conversationId, { direction: "backward", limit: 100 });
       const newest = last.entries[0];
       const st = h.state.status;
       const state: ConversationState =
@@ -498,7 +522,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         generation,
         state,
         running: state === "open" && newest?.role === "user" && newest.status === "complete",
-        turns: newest?.turn ?? 0,
+        turns: last.entries.find((e) => e.turn > 0)?.turn ?? 0,
       };
     },
     async filterEntries(entries, principal) {

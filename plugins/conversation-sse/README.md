@@ -15,7 +15,7 @@ await server.start();   // 127.0.0.1 by default
 
 ```
 POST /conversations                  -> 201 { conversationId }       (the server mints the id)
-POST /conversations/:id/turns        { text, messageId? } -> 202      (a barge-in if a turn is running)
+POST /conversations/:id/turns        { text, messageId?, editOf? } -> 202  (a barge-in if a turn is running; editOf = ord of your earlier turn)
 POST /conversations/:id/close
 GET  /conversations/:id              -> status
 GET  /conversations/:id/history      ?limit&cursor&direction

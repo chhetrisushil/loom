@@ -81,6 +81,9 @@ function factOf(ev: EventEnvelope): unknown {
   return d !== null && typeof d === "object" && d.source === RECORD_SOURCE ? d.choice : undefined;
 }
 
+const isOrd = (v: unknown): v is number =>
+  typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
+
 function recordOf(ev: EventEnvelope): MessageRecord | undefined {
   const p = factOf(ev) as Partial<MessageRecord> | null | undefined;
   if (p === undefined) return undefined;
@@ -96,6 +99,8 @@ function recordOf(ev: EventEnvelope): MessageRecord | undefined {
   }
   return {
     turn: p.turn,
+    ...(isOrd(p.ord) && { ord: p.ord }),
+    ...(isOrd(p.editOf) && { editOf: p.editOf }),
     role: p.role,
     text: p.text,
     status: p.status,
