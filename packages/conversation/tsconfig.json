@@ -1,0 +1,19 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/__fixtures__", "**/*.test.ts"],
+  "references": [
+    { "path": "../agent" },
+    { "path": "../classify" },
+    { "path": "../core" },
+    { "path": "../effect-runtime" },
+    { "path": "../event-runtime" },
+    { "path": "../llm" },
+    { "path": "../workflow-runtime" }
+  ]
+}

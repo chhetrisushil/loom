@@ -26,6 +26,9 @@ export const RECORDED_FACT_SOURCES: ReadonlySet<string> = new Set([
   "agent-response",
   "agent-outcome",
   "agent-abort",
+  // R17 (ADR 0122): `@loom/conversation` records its token-budget fit the same way.
+  "conversation-budget",
+  "conversation-record",
 ]);
 
 const TERMINAL: Record<string, Trajectory["outcome"]> = {

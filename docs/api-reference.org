@@ -14,7 +14,7 @@ New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[f
 5.  [[#effects][Effects]] (~@loom/effect-runtime~) — ~Effect~, ~EffectRuntime~, middleware, the four effect kinds, K2 capability ring + K12 delegation
 6.  [[#kernel-hardening][Kernel hardening & security]] — the K1–K12 / T1–T2 ring map + ~@loom/isolate~ (K7), ~@loom/plugin-crypto~ (K10), ~@loom/wire-abi~ (T2)
 7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/agent-surface~, ~@loom/plugin-a2ui~, ~@loom/plugin-mcp-app~, ~@loom/blueprint-runtime~, ~@loom/plugin-renderer-react~, ~@loom/plugin-renderer-terminal~
-8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/plugin-mcp~, ~@loom/plugin-a2a~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
+8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/plugin-mcp~, ~@loom/plugin-a2a~, ~@loom/conversation~, ~@loom/plugin-conversation-sse~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
 9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~), ~@loom/plugin-worker-remote~, ~@loom/plugin-worker-server~, ~@loom/plugin-cloudrun~, ~@loom/plugin-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
 10. [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/appgen-model~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
 11. [[#errors][Errors]]
@@ -1703,7 +1703,10 @@ class AgentRunner {
   run(input: AgentInput, ctx: EffectContext): Promise<AgentOutput>
   asEffect(): LlmEffect<AgentInput, AgentOutput>
 }
-interface AgentInput  { prompt: string; context?: unknown; memoryScope?: string; }
+interface AgentInput  { prompt: string; context?: unknown; memoryScope?: string;
+                       history?: AgentHistoryMessage[];  // (R17, ADR 0122) earlier turns BEFORE the prompt, oldest first; caller-sized
+                       promptOrigin?: string; }           // (R17) the prompt is third-party content: tainted with this origin, fenced at the prompt boundary; not with `context`
+interface AgentHistoryMessage { role: "user"|"assistant"; content: string; origin?: string /* taint origin; a tainted assistant message is refused */ }
 interface AgentOutput { content: string; toolCallLog: AgentStep[]; iterations: number; }
 
 /** @deprecated R10 — use agentLoop$ (ADR 0121). */
@@ -1716,6 +1719,7 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 // agentLoop$ config (R10, ADR 0121 — THE canonical loop; AgentRunner and agentStep$ are @deprecated):
 //   toolErrors?: "feedback" | "fail"   — default feedback: a failing tool is an isError tool_result (authority/safety/quota/cancel/park never are)
 //   parallelTools?: boolean | number   — one turn's calls through ctx.parallel; ids `<agent>#turn:<i>:tool:<j>` unchanged; approvals first, in order
+//   loopId?: string                    — (R17) the id prefix of this loop's frames/decisions/gates; default definition.id. Two loops in one execution must not share it
 //   signal?: AbortSignal               — stop THIS run: no further model/tool call; fails on AGENT_INTERRUPTED with InterruptedAgentRun
 //   turnTimeoutMs?, toolTimeoutMs?     — frame `timeoutMs` (model failure fails the run; a tool timeout is an isError result)
 //   writeBack?: false | { tier?, scope?, toolId?, unless?, allowDirect? } (needs one of toolId / unless / allowDirect: AgentLoopConfigError) — with `memory`: remember prompt + answer on finish; keyed idempotent; toolId = journaled effect (memoryWriteBackEffect); tainted answer if the run saw taint
@@ -1960,6 +1964,99 @@ class PlannerRuntime {
 #+end_src
 
 Both work fully offline (deterministic keyword routing), with an ~LlmProvider~, or — preferred (2.0) — with a ~ReasoningRuntime~ (routing/elevation).
+
+** ~@loom/conversation~ — a durable dialogue as one chained execution
+
+A conversation is ONE chained execution (ADR 0109): user turns arrive on the inbox (ADR 0110), each is answered by =agentLoop$=, every message is recorded as a decision, and a long dialogue rotates by =continueAsNew=. Needs =kernel.features.inbox= and =kernel.features.continueAsNew=. Kernel untouched (ADR 0122).
+
+#+begin_src typescript
+// The flow: register it, then drive it with createConversations.
+function conversation$(config: ConversationConfig, options?: { id?: string; name?: string; version?: string }):
+  RegisteredFlow<ConversationCarry | Record<string, never>, ConversationResult>
+function conversationRunner(config: ConversationConfig): FlowRunner<...>   // the body, for your own flow
+
+interface ConversationConfig {
+  agent: Omit<AgentLoopConfig, "signal" | "loopId" | "requireApproval">;   // any agentLoop$ config
+  budget?: {
+    contextWindow: number;                 // tokens
+    reserveOutputTokens?: number;          // default min(4096, window/4)
+    counter?: TokenCounter;                // default heuristicTokenCounter()
+    summarizerToolId?: string;             // { messages } -> { summary }: the same contract as agentLoop$ compaction.toolId
+  };
+  bargeIn?: BargeInSource;                 // inboxBargeIn(eventStore); absent = the conversation QUEUES
+  hub?: ConversationHub;
+  rotateEveryTurns?: number;               // default 100
+  maxTurnChars?: number;                   // default 32_000 (longer is recorded as rejected)
+  maxReplyChars?: number;                  // default 64_000
+  maxWindowTurns?: number;                 // default 64
+  maxCarryBytes?: number;                  // default 256 KiB
+}
+
+// The client. Every method is an existing authorized runtime call.
+function createConversations(deps: { runtime: WorkflowRuntime; eventStore: EventStore; flow: RegisteredFlow; maxTurnChars?: number }): Conversations
+interface Conversations {
+  start(o?: { principal?; conversationId? }): Promise<{ conversationId: string }>;        // runtime.start (owner = caller)
+  sendTurn(id, text, o?: { principal?; messageId? }): Promise<SendResult>;               // runtime.send; a retry with the same messageId is delivered once
+  close(id, o?): Promise<SendResult>;
+  history(id, o?: ReadOptions & { principal? }): Promise<ReadResult>;                    // bounded; both directions; cursor
+  status(id, o?): Promise<{ conversationId; executionId; generation; state: "open"|"closed"|"failed"|"cancelled"; running: boolean; turns: number }>;
+  authorizeRead(id, o?): Promise<{ generation: number }>;                                 // the gate a transport runs once per connection
+  readonly reader: ConversationReader;
+}
+
+// What history returns: one entry per message, with the cursor to resume from.
+interface HistoryEntry { turn: number; role: "user"|"assistant"; text: string;
+  status: "complete"|"interrupted"|"failed"|"rejected"; reason?: string;
+  cursor: string /* "<generation>.<sequence>" */; executionId: string; at?: number }
+interface ReadOptions { limit?: number /* 50, max 500 */; maxScan?: number /* 2000 */; cursor?: string; direction?: "forward"|"backward" }
+interface ReadResult { entries: HistoryEntry[]; nextCursor?: string; done: boolean; closed?: boolean }
+
+// Following the log: bounded reads, the store's subscribe only wakes it.
+function followConversation(deps: { reader; eventStore }, id: string, o?: { cursor?; signal?; pollMs?; pageLimit?; maxScan? }):
+  AsyncGenerator<{ type: "message"; entry: HistoryEntry } | { type: "closed" }>
+function createConversationReader(store: EventStore): ConversationReader      // NO authorization: authorize before calling
+function findHeadGeneration(store, conversationId, hint?): Promise<number | undefined>   // O(log G)
+
+// Barge-in: the signal comes from outside the body, and is read only through agentLoop$'s recorded checkpoints.
+type BargeInSource = (conversationId, ownerId, h: { onMessage(): void; isKnown(id: string): boolean }) => Promise<() => void> | (() => void)
+function inboxBargeIn(eventStore: EventStore): BargeInSource
+
+// Token budgeting: a pure fit; conversation$ records the verdict as a decision.
+interface TokenCounter { count(text: string): number | Promise<number>; readonly perMessage?: number }
+function heuristicTokenCounter(o?: { asciiCharsPerToken?: number }): TokenCounter     // ASCII 1/4 token, other code points 1 token
+function fitToWindow(req: BudgetRequest): Promise<{ ok: true; keep: number; counted: [number, number][]; tokens: number }
+                                                | { ok: false; reason: "prompt-too-large"; tokens: number; available: number }>
+
+// The live (transient) channel.
+class ConversationHub {
+  constructor(o?: { maxSubscribersPerConversation?: number /* 64 */; maxPartialChars?: number /* 65_536 */ });
+  wrapProvider(provider: LlmProvider): LlmProvider;                  // a barge-in cuts the generation; the partial survives
+  deltaSink(): (delta: string) => void;                              // createAgentModelEffect(..., { stream: true, onDelta })
+  subscribe(conversationId, listener: (e: LiveEvent) => void): () => void;   // throws SubscriberLimitError
+  partialOf(conversationId): { turn: number; text: string } | undefined;
+}
+type LiveEvent = { type: "delta"; conversationId; turn; text } | { type: "reset"; conversationId; turn }
+#+end_src
+
+Errors: =ConversationNotFoundError=, =InvalidTurnError=, =InvalidCursorError=, =SubscriberLimitError=; authorization failures are the runtime's own (=ExecutionDeniedError=). Message statuses: a user turn is =complete= or =rejected= (=malformed=, =too-long=, =prompt-too-large=); a reply is =complete=, =interrupted= (the partial, possibly empty) or =failed=. User text is untrusted: render it as text.
+
+** ~@loom/plugin-conversation-sse~ — the end-user gateway
+
+#+begin_src typescript
+function createConversationSseServer(o: {
+  conversations: Conversations; hub: ConversationHub; eventStore: EventStore;
+  authenticate?: (req) => PrincipalChain | undefined | Promise<...>;   // required unless insecure; the principal needs an `actor`
+  insecure?: boolean; strict?: boolean; warn?: (m: string) => void;
+  port?: number; host?: string /* "127.0.0.1" */; basePath?: string /* "/conversations" */;
+  allowedOrigins?: readonly string[];
+  maxConnections?: number /* 256 */; maxConnectionsPerPrincipal?: number /* 8 */;
+  maxPendingBytes?: number /* 1 MiB */; maxBodyBytes?: number /* 64 KiB */;
+  heartbeatMs?: number /* 15_000 */; maxStreamMs?: number /* 15 min */; reauthMs?: number /* 30_000 */; pollMs?: number /* 2_000 */;
+  onError?: (errorId: string, err: unknown) => void;
+}): { start(): Promise<void>; stop(): Promise<void>; readonly url: string; readonly connections: number }
+#+end_src
+
+Routes: =POST /conversations= (the server mints the id), =GET /conversations/:id=, =POST /conversations/:id/turns= (={ text, messageId? }=), =POST /conversations/:id/close=, =GET /conversations/:id/history?limit&cursor&direction=, =GET /conversations/:id/events= (SSE; =Last-Event-ID= or =?cursor=). SSE events: =status=, =partial=, =message= (SSE =id= = the history cursor), =delta=, =reset=, =closed=, =reconnect=, =error=. Every refusal for a conversation the caller may not touch is the same =404=. See ADR 0122 D6 for the security model.
 
 ** ~@loom/memory~ — agent memory
 

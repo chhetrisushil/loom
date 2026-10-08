@@ -421,6 +421,46 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  packages/conversation:
+    dependencies:
+      '@loom/agent':
+        specifier: workspace:*
+        version: link:../agent
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../classify
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../event-runtime
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../llm
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../workflow-runtime
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../snapshot-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   packages/core:
     dependencies:
       ulid:
@@ -1575,6 +1615,43 @@ importers:
       zod:
         specifier: ^3.23.8
         version: 3.25.76
+
+  plugins/conversation-sse:
+    dependencies:
+      '@loom/conversation':
+        specifier: workspace:*
+        version: link:../../packages/conversation
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../../packages/effect-runtime
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../../packages/event-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../../packages/workflow-runtime
+    devDependencies:
+      '@loom/agent':
+        specifier: workspace:*
+        version: link:../../packages/agent
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../../packages/snapshot-runtime
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
   plugins/crypto:
     dependencies:

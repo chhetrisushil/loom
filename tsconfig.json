@@ -118,6 +118,9 @@
       "path": "plugins/mcp-app"
     },
     {
+      "path": "plugins/conversation-sse"
+    },
+    {
       "path": "plugins/a2a"
     },
     {
@@ -170,6 +173,9 @@
     },
     {
       "path": "packages/live-query"
+    },
+    {
+      "path": "packages/conversation"
     },
     {
       "path": "packages/orchestration"

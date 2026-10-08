@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "src/__fixtures__", "**/*.test.ts"],
+  "references": [
+    { "path": "../../packages/conversation" },
+    { "path": "../../packages/core" },
+    { "path": "../../packages/effect-runtime" },
+    { "path": "../../packages/event-runtime" },
+    { "path": "../../packages/workflow-runtime" }
+  ]
+}
