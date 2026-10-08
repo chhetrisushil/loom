@@ -1,5 +1,5 @@
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
-import { loadInstructions } from "@loom/core";
+import { SuspendError, TypedFailure, fail, fnv1a64, loadInstructions } from "@loom/core";
 import type { Effect } from "@loom/effect-runtime";
 import type {
   LlmContent,
@@ -10,15 +10,24 @@ import type {
   LlmToolResultPartInput,
   LlmToolSpecInput,
 } from "@loom/llm";
-import { MAX_INLINE_TOTAL_BYTES, assistantMessageOf } from "@loom/llm";
+import {
+  LLM_INTERRUPTED,
+  MAX_INLINE_TOTAL_BYTES,
+  assertRequestSupported,
+  assistantMessageOf,
+  resolveRequestContent,
+} from "@loom/llm";
+import type { LlmRequest } from "@loom/llm";
 import type { TieredMemory } from "@loom/memory";
 import type { ModelInvoker, ReasoningRuntime } from "@loom/reasoning";
-import { approvalViewDigest } from "@loom/workflow-runtime";
-import type { ExecutionContext } from "@loom/workflow-runtime";
+import { ExecutionCancelledError, approvalViewDigest } from "@loom/workflow-runtime";
+import type { BranchContext, ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";
 import { createAgentModelEffect } from "./createAgentModelEffect";
+import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
 import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
+import { isTerminalToolError } from "./toolFailure";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import type { AgentInput, AgentOutput, AgentStep } from "./types";
@@ -96,8 +105,10 @@ export interface AgentLoopConfig {
    *
    * **The ring, and how to get it (R9).** By default the Reasoning Runtime's routes call their
    * providers DIRECTLY: `guardRequest` still runs (R2 guards `ReasoningRuntime.call`), but K2
-   * authorization, metering and quotas, the kill switch and K9 in-doubt do not apply, and the
-   * model call is not journaled (a resumed run re-calls the model). Set
+   * authorization, metering and quotas, the kill switch and K9 in-doubt do not apply. Since R10
+   * the response is nonetheless JOURNALED as a decision (`<agent>#turn:<i>:response:<n>`), so a
+   * resumed run serves the recorded answer and makes no model call for a completed turn (an
+   * execution recorded before R10 has no such decision and re-asks that turn once, as it always did). Set
    * {@link reasoningToolId} and each route's call is instead resolved through the
    * `EffectRuntime` as a durable frame (`#turn:<i>:call:<n>`), which brings all of those and a
    * recorded response; {@link registerReasoningRoutes} registers one effect per route. The
@@ -126,6 +137,61 @@ export interface AgentLoopConfig {
   requireEffectRing?: boolean;
   systemPrompt?: string;
   maxIterations?: number;
+  /**
+   * R10 — what a FAILING tool does to the run. `"feedback"` (default): the failure becomes an
+   * `isError` `tool_result` (`{ error }`) the model reads and can recover from, exactly as
+   * {@link AgentRunner} always did; the run continues. `"fail"`: the failure propagates and fails
+   * the execution (the pre-R10 behaviour; under {@link parallelTools} it also aborts the sibling
+   * calls, a fail-fast scope).
+   *
+   * Never fed back, in either mode: a park (`SuspendError`), an authority error
+   * (`CapabilityDeniedError`, `EffectModeViolationError`; R4), a safety or budget stop
+   * (`SafetyViolationError`, `KillSwitchEngagedError`, `QuotaExceededError`), a cancellation and a
+   * replay divergence. Those are the runtime's, not the tool's.
+   *
+   * REPLAY: an untyped failure is recorded as `STEP_FAILED` and a re-run executes that call again
+   * (the kernel's at-least-once rule for a failed step). A tool that must fail EXACTLY ONCE across
+   * resumes throws a `TypedFailure` on a channel declared in its `errors`; that outcome is served
+   * from the log.
+   */
+  toolErrors?: "feedback" | "fail";
+  /**
+   * R10 — run the tool calls of ONE model turn concurrently through `ctx.parallel`. `false`
+   * (default) keeps the strictly sequential gate, run, gate, run order (and the exact frame
+   * sequence of every earlier version, so in-flight executions resume unchanged). `true` runs
+   * them all at once; a number bounds the concurrency.
+   *
+   * Step ids are unchanged (`<loop>#turn:<i>:tool:<j>`, `j` the index in the model's response, a
+   * pure function of the recorded response), results are fed back in the model's order whichever
+   * call finishes first, and one call's failure is that call's `isError` result, not the scope's
+   * (see {@link toolErrors}). Approvals ({@link requireApproval}) are collected sequentially, in
+   * call order, BEFORE any call of the turn starts, so a turn parked on an approval has run none of
+   * its calls. Needs `kernel.features.scopes` for cancellation scoping; without it `ctx.parallel`
+   * is the pre-R6 bounded `Promise.all` and everything else holds.
+   */
+  parallelTools?: boolean | number;
+  /**
+   * R10 — a signal that stops THIS run without cancelling the execution (a user barge-in, a host
+   * shutting a turn down). Checked before every model call and before every tool call; once
+   * aborted, no further model or tool call is issued and the run fails on
+   * {@link AGENT_INTERRUPTED} with what it had produced ({@link InterruptedAgentRun}: the partial
+   * text, the iterations begun, the tool calls that completed). It is also handed to a routed
+   * model call that makes its own provider request. A signal is not journaled: the interruption is
+   * live-only. An execution `cancel` needs no signal here: the kernel stops it at the next
+   * `ctx.execute` and aborts the effect in flight; the two compose.
+   */
+  signal?: AbortSignal;
+  /**
+   * R10 — a per-turn deadline for the MODEL call, in milliseconds. On the effect path
+   * (`modelToolId`, or `reasoning` + `reasoningToolId`) it is the frame's kernel `timeoutMs`
+   * (anchored to the first logged start, so a crash-recovery re-run resumes the countdown); on the
+   * direct `reasoning` path it aborts the provider request. A model call that times out fails the
+   * run (there is nothing to continue with); a tool call that does (`toolTimeoutMs`) is an
+   * `isError` result.
+   */
+  turnTimeoutMs?: number;
+  /** R10 — a per-call deadline for each TOOL call, in milliseconds (the frame's kernel `timeoutMs`). */
+  toolTimeoutMs?: number;
   /**
    * Park the execution for approval before a tool call the policy declines.
    * Returning `false` suspends on {@link approvalGate}; the resume payload
@@ -167,6 +233,20 @@ export interface AgentLoopConfig {
    * prompt.
    */
   memory?: TieredMemory;
+  /**
+   * R10 — persist the run's outcome to {@link memory} when it finishes: the user's prompt and the
+   * final answer, as `user` / `assistant` entries in the same tier and scope the next run recalls
+   * from, so a conversation carried across executions (or across `continueAsNew` generations)
+   * remembers itself. `true` uses {@link memoryTier} / {@link memoryScope}; the object form
+   * overrides either. Requires {@link memory}.
+   *
+   * The write is a side effect in a body that re-runs on resume, so it is IDEMPOTENT: each entry
+   * carries a deterministic id (execution, loop and a hash of the prompt / of prompt + answer) and
+   * is skipped if the scope already holds it, so a crash between the write and the run's completion
+   * does not duplicate it. A run that is interrupted or fails writes nothing. A tier that
+   * summarizes may fold an entry's id away; the residual is one repeated entry, not a lost one.
+   */
+  writeBack?: boolean | { tier?: string; scope?: string };
   /** Memory tier to recall from. Default `"working"`. */
   memoryTier?: string;
   /** Scope key. Default the execution id, so a run remembers its own conversation. */
@@ -236,7 +316,7 @@ function warnReasoningOutsideRing(): void {
   const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
     .process;
   proc?.emitWarning?.(
-    "agentLoop$: `reasoning` is used without `reasoningToolId`, so its routed model calls bypass authorization, metering, the kill switch and the journal. Set `reasoningToolId` (see registerReasoningRoutes) or `requireEffectRing: true`.",
+    "agentLoop$: `reasoning` is used without `reasoningToolId`, so its routed model calls bypass authorization, metering and the kill switch (the response is still journaled, as a decision, so a resume does not re-call the model). Set `reasoningToolId` (see registerReasoningRoutes) or `requireEffectRing: true`.",
     { code: "LOOM_AGENT_RING" }
   );
 }
@@ -405,6 +485,27 @@ export async function agentLoop$(
     // A compaction block that can never trigger reads as coverage it isn't.
     throw new Error("agentLoop$ compaction requires `afterMessages` or `afterBytes`");
   }
+  if (config.writeBack !== undefined && config.writeBack !== false && config.memory === undefined) {
+    // A write-back with nowhere to write reads as persistence it isn't.
+    throw new Error("agentLoop$ writeBack requires `memory`");
+  }
+  const parallelTools = config.parallelTools ?? false;
+  if (
+    typeof parallelTools === "number" &&
+    (!Number.isSafeInteger(parallelTools) || parallelTools < 1)
+  ) {
+    throw new RangeError(
+      `agentLoop$ parallelTools must be true, false or a positive integer (got ${String(parallelTools)})`
+    );
+  }
+  for (const [name, v] of [
+    ["turnTimeoutMs", config.turnTimeoutMs],
+    ["toolTimeoutMs", config.toolTimeoutMs],
+  ] as const) {
+    if (v !== undefined && (!Number.isFinite(v) || v <= 0)) {
+      throw new RangeError(`agentLoop$ ${name} must be a positive number (got ${String(v)})`);
+    }
+  }
   const maxIterations = config.maxIterations ?? 10;
   const gate = config.approvalGate ?? DEFAULT_GATE;
   const idPrefix = config.definition.id;
@@ -521,91 +622,160 @@ export async function agentLoop$(
   let iterations = 0;
   let lastContent = "";
 
-  /** Execute one turn's tool calls: gate, run, record, feed back. Shared by both paths. */
+  // ── R10 — stopping, and what a stop carries out ─────────────────────────────
+  // The interruption can arrive from several places (a checkpoint, a model call the provider
+  // aborted mid-generation, a tool that took too long), and the work already done is worth the
+  // same in all of them, so the capture wraps the whole loop rather than each site.
+  const interrupted = (err?: unknown): never => {
+    const partial =
+      err instanceof TypedFailure && err.channel === LLM_INTERRUPTED
+        ? ((err.payload as { content?: string }).content ?? "")
+        : "";
+    fail(
+      AGENT_INTERRUPTED,
+      { content: partial, iterations, toolCallLog } satisfies InterruptedAgentRun,
+      "agent run interrupted"
+    );
+  };
+  /** No further model or tool call is issued once the caller's signal has fired. */
+  const checkAbort = (): void => {
+    if (config.signal?.aborted === true) interrupted();
+  };
+  /** The signal a DIRECT provider request carries: the caller's, bounded by the turn deadline. */
+  const modelCallSignal = (): AbortSignal | undefined => {
+    const signals: AbortSignal[] = [];
+    if (config.signal !== undefined) signals.push(config.signal);
+    if (config.turnTimeoutMs !== undefined) signals.push(AbortSignal.timeout(config.turnTimeoutMs));
+    if (signals.length === 0) return undefined;
+    return signals.length === 1 ? (signals[0] as AbortSignal) : AbortSignal.any(signals);
+  };
+
+  /** A call's outcome as the model will see it: `output` undefined means "not settled yet, run it". */
+  interface Outcome {
+    output: unknown;
+    isError: boolean;
+  }
+
+  /**
+   * Everything that can settle a call WITHOUT running it: the oversize refusal, the approval gate,
+   * the menu / input check. Pure of the recorded model response plus the approval verdicts, so a
+   * replay reproduces it. Returns `undefined` when the call must run.
+   */
+  const settleBeforeRun = async (
+    toolCall: LlmToolCall,
+    turn: number,
+    j: number,
+    tooBig: boolean
+  ): Promise<Outcome | undefined> => {
+    checkAbort();
+    let output: unknown;
+    let isError = false;
+    if (tooBig) {
+      output = OVERSIZED_INPUT_REFUSAL;
+      isError = true;
+    }
+
+    // Mid-loop HITL. The gate is BEFORE the effect, so a declined call never
+    // runs — the point of asking.
+    if (!tooBig && config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
+      // The key carries `idPrefix` (the loop's definition id), so two loops in one flow do not
+      // share `#turn:0:tool:0` — a shared key would let one loop's approval read as the other's.
+      const gateKey = `${ctx.executionId}#${idPrefix}#turn:${turn}:tool:${j}`;
+      // R13 — bind the approval to the exact call parked here (tool + args + position). Tool
+      // input is MODEL output: one nested past the canonicalizer's depth cap cannot be digested,
+      // and that is not a reason to fail the run — it is a call nobody can be shown, so it is
+      // refused and the refusal is fed back to the model like any other.
+      let viewDigest: string | undefined;
+      let undigestible = false;
+      if (config.bindApproval !== false) {
+        try {
+          viewDigest = approvalViewDigest(gateKey, toolCall.name, toolCall.input);
+        } catch {
+          undigestible = true;
+        }
+      }
+      if (undigestible) {
+        isError = true;
+        output = {
+          refused: true,
+          reason: "the tool input could not be put in front of an approver (too deeply nested)",
+        };
+      } else {
+        const verdict = await ctx.suspend<{ approved?: boolean; reason?: string }>({
+          on: gate,
+          correlationKey: gateKey,
+          ...(viewDigest !== undefined && { viewDigest }),
+        });
+        if (verdict?.approved !== true) {
+          // A refusal is a fact the model should see and settle on, not an error:
+          // it asked to do something a human declined, which is information.
+          isError = true;
+          output = {
+            refused: true,
+            ...(verdict?.reason !== undefined && { reason: verdict.reason }),
+          };
+        }
+      }
+    }
+
+    // R4 — menu + input gate. It sits AFTER the approval gate on purpose: moving it
+    // before would change which calls reach `ctx.suspend`, so a resume's
+    // passthrough ordering (gate keyed by turn/index) would no longer line up
+    // with logs recorded earlier. A refusal is a RESULT fed back to the model (it can
+    // recover), computed purely from the recorded model output and the static
+    // menu, so replay reproduces it with nothing appended to the log.
+    if (output === undefined) {
+      const refusal = menu.check(toolCall.name, toolCall.input);
+      if (refusal !== undefined) {
+        output = refusal;
+        isError = true;
+      }
+    }
+    return output === undefined ? undefined : { output, isError };
+  };
+
+  /** Set once any call hits an error that must reach the runtime: siblings' noise is then not feedback. */
+  let fatalSeen = false;
+
+  /** Run one call as a durable frame on `c` (the context, or a `parallel` branch's). */
+  const runTool = async (
+    c: ExecutionContext,
+    toolCall: LlmToolCall,
+    turn: number,
+    j: number
+  ): Promise<Outcome> => {
+    checkAbort();
+    try {
+      const output = await c.execute(
+        {
+          _tag: "TaskDefinition",
+          kind: "tool",
+          id: `${idPrefix}#turn:${turn}:tool:${j}`,
+          toolId: toolCall.name,
+          ...(config.toolTimeoutMs !== undefined && { timeoutMs: config.toolTimeoutMs }),
+        },
+        toolCall.input
+      );
+      return { output, isError: false };
+    } catch (err) {
+      // R10 — a failing tool is feedback, not a failed run. Authority, safety, park, cancel and
+      // divergence are the runtime's (see `isTerminalToolError`); `toolErrors: "fail"` opts out.
+      if (fatalSeen || config.toolErrors === "fail" || isTerminalToolError(err)) {
+        fatalSeen = true;
+        throw err;
+      }
+      return { output: { error: String(err) }, isError: true };
+    }
+  };
+
+  /** Execute one turn's tool calls: gate, run, record, feed back. Shared by both model paths. */
   const runToolCalls = async (
     calls: readonly LlmToolCall[],
     turn: number,
     oversized: ReadonlySet<number>
   ): Promise<void> => {
     const results: LlmToolResultPartInput[] = [];
-    for (const [j, toolCall] of calls.entries()) {
-      let output: unknown;
-      let isError = false;
-      const tooBig = oversized.has(j);
-      if (tooBig) {
-        output = OVERSIZED_INPUT_REFUSAL;
-        isError = true;
-      }
-
-      // Mid-loop HITL. The gate is BEFORE the effect, so a declined call never
-      // runs — the point of asking.
-      if (!tooBig && config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
-        // The key carries `idPrefix` (the loop's definition id), so two loops in one flow do not
-        // share `#turn:0:tool:0` — a shared key would let one loop's approval read as the other's.
-        const gateKey = `${ctx.executionId}#${idPrefix}#turn:${turn}:tool:${j}`;
-        // R13 — bind the approval to the exact call parked here (tool + args + position). Tool
-        // input is MODEL output: one nested past the canonicalizer's depth cap cannot be digested,
-        // and that is not a reason to fail the run — it is a call nobody can be shown, so it is
-        // refused and the refusal is fed back to the model like any other.
-        let viewDigest: string | undefined;
-        let undigestible = false;
-        if (config.bindApproval !== false) {
-          try {
-            viewDigest = approvalViewDigest(gateKey, toolCall.name, toolCall.input);
-          } catch {
-            undigestible = true;
-          }
-        }
-        if (undigestible) {
-          isError = true;
-          output = {
-            refused: true,
-            reason: "the tool input could not be put in front of an approver (too deeply nested)",
-          };
-        } else {
-          const verdict = await ctx.suspend<{ approved?: boolean; reason?: string }>({
-            on: gate,
-            correlationKey: gateKey,
-            ...(viewDigest !== undefined && { viewDigest }),
-          });
-          if (verdict?.approved !== true) {
-            // A refusal is a fact the model should see and settle on, not an error:
-            // it asked to do something a human declined, which is information.
-            isError = true;
-            output = {
-              refused: true,
-              ...(verdict?.reason !== undefined && { reason: verdict.reason }),
-            };
-          }
-        }
-      }
-
-      // R4 — menu + input gate. It sits AFTER the approval gate on purpose: moving it
-      // before would change which calls reach `ctx.suspend`, so a resume's
-      // passthrough ordering (gate keyed by turn/index) would no longer line up
-      // with logs recorded earlier. A refusal is a RESULT fed back to the model (it can
-      // recover), computed purely from the recorded model output and the static
-      // menu, so replay reproduces it with nothing appended to the log.
-      if (output === undefined) {
-        const refusal = menu.check(toolCall.name, toolCall.input);
-        if (refusal !== undefined) {
-          output = refusal;
-          isError = true;
-        }
-      }
-
-      if (output === undefined) {
-        output = await ctx.execute(
-          {
-            _tag: "TaskDefinition",
-            kind: "tool",
-            id: `${idPrefix}#turn:${turn}:tool:${j}`,
-            toolId: toolCall.name,
-          },
-          toolCall.input
-        );
-      }
-
+    const record = (toolCall: LlmToolCall, { output, isError }: Outcome): void => {
       toolCallLog.push({
         iteration: iterations,
         toolName: toolCall.name,
@@ -619,6 +789,41 @@ export async function agentLoop$(
       });
       inlineUsed += inlineBytesIn(part);
       results.push(part);
+    };
+
+    if (parallelTools === false) {
+      // The original shape, call by call: gate_j, run_j, gate_{j+1}, ...
+      for (const [j, toolCall] of calls.entries()) {
+        const settled =
+          (await settleBeforeRun(toolCall, turn, j, oversized.has(j))) ??
+          (await runTool(ctx, toolCall, turn, j));
+        record(toolCall, settled);
+      }
+    } else {
+      // Approvals first, sequentially and in call order: a turn parked on an approval has run
+      // none of its calls, and a resume re-asks the gates in the same order.
+      const outcomes: Array<Outcome | undefined> = [];
+      const toRun: number[] = [];
+      for (const [j, toolCall] of calls.entries()) {
+        const settled = await settleBeforeRun(toolCall, turn, j, oversized.has(j));
+        outcomes.push(settled);
+        if (settled === undefined) toRun.push(j);
+      }
+      if (toRun.length === 1) {
+        const j = toRun[0] as number;
+        outcomes[j] = await runTool(ctx, calls[j] as LlmToolCall, turn, j);
+      } else if (toRun.length > 1) {
+        checkAbort();
+        const ran = await ctx.parallel<Outcome[]>(
+          toRun.map(
+            (j) => (b: BranchContext) => runTool(b, calls[j] as LlmToolCall, turn, j)
+          ) as never,
+          typeof parallelTools === "number" ? { limit: parallelTools } : {}
+        );
+        for (const [k, j] of toRun.entries()) outcomes[j] = ran[k] as Outcome;
+      }
+      // Fed back in the model's order, whichever call finished first.
+      for (const [j, toolCall] of calls.entries()) record(toolCall, outcomes[j] as Outcome);
     }
     // R5 — ONE user message answers all of the turn's calls, after the assistant message that
     // made them (providers require that adjacency). Pushed only once every call has run, so a
@@ -627,159 +832,246 @@ export async function agentLoop$(
       pushMessage({ role: "user", content: results }, results.map(resultBytes));
   };
 
-  while (iterations < maxIterations) {
-    const turn = iterations;
-    iterations++;
+  try {
+    while (iterations < maxIterations) {
+      checkAbort();
+      const turn = iterations;
+      iterations++;
 
-    // Compact BEFORE the turn's model call, so the summary is what gets asked
-    // — compacting after would journal a transcript the model never saw.
-    const compaction = config.compaction;
-    if (compaction !== undefined) {
-      const overMessages =
-        compaction.afterMessages !== undefined && oldSizes.length > compaction.afterMessages;
-      const overBytes =
-        compaction.afterBytes !== undefined && transcriptBytes > compaction.afterBytes;
+      // Compact BEFORE the turn's model call, so the summary is what gets asked
+      // — compacting after would journal a transcript the model never saw.
+      const compaction = config.compaction;
+      if (compaction !== undefined) {
+        const overMessages =
+          compaction.afterMessages !== undefined && oldSizes.length > compaction.afterMessages;
+        const overBytes =
+          compaction.afterBytes !== undefined && transcriptBytes > compaction.afterBytes;
 
-      if (overMessages || overBytes) {
-        const keepRecent = compaction.keepRecent ?? 4;
-        // The byte trigger sizes its own kept suffix (longest run ≤ half the
-        // budget); the message trigger keeps the original fixed count — G2. Both over the VIRTUAL
-        // transcript, so they match what the old body decided.
-        const keepOld = overBytes
-          ? keptSuffixByBytes(oldSizes, compaction.afterBytes as number, keepRecent)
-          : keepRecent;
+        if (overMessages || overBytes) {
+          const keepRecent = compaction.keepRecent ?? 4;
+          // The byte trigger sizes its own kept suffix (longest run ≤ half the
+          // budget); the message trigger keeps the original fixed count — G2. Both over the VIRTUAL
+          // transcript, so they match what the old body decided.
+          const keepOld = overBytes
+            ? keptSuffixByBytes(oldSizes, compaction.afterBytes as number, keepRecent)
+            : keepRecent;
 
-        if (oldSizes.length - keepOld > 0) {
-          // The smallest physical suffix standing for at least `keepOld` virtual messages...
-          let keepPhys = 0;
-          for (let covered = 0; covered < keepOld && keepPhys < messages.length; ) {
-            keepPhys++;
-            covered += physOld[messages.length - keepPhys] as number;
-          }
-          // ...never starting on a `tool_result` message: its `tool_use` would be folded away and the
-          // provider rejects an orphan result. Pull the assistant turn in.
-          while (
-            keepPhys > 0 &&
-            keepPhys < messages.length &&
-            isToolResultMessage(messages[messages.length - keepPhys] as LlmMessageInput)
-          ) {
-            keepPhys++;
-          }
-          const foldLength = messages.length - keepPhys;
-
-          if (foldLength > 0) {
-            const fold = messages.slice(0, foldLength);
-            const recent = messages.slice(foldLength);
-            const { summary } = (await ctx.execute(
-              {
-                _tag: "TaskDefinition",
-                kind: "memory",
-                id: `${idPrefix}#turn:${turn}:compact`,
-                toolId: compaction.toolId,
-              },
-              { messages: fold }
-            )) as { summary: string };
-            const summaryText = `Summary of earlier turns: ${summary}`;
-            // Rebuild the virtual transcript exactly as the old body would hold it: the summary plus
-            // its `keepOld` newest messages. Physical messages pulled in beyond that (the alignment's
-            // assistant turn) stand for none of them.
-            const keptSizes = keepOld > 0 ? oldSizes.slice(oldSizes.length - keepOld) : [];
-            let remaining = keepOld;
-            const newPhysOld: number[] = new Array(recent.length).fill(0);
-            for (let k = recent.length - 1; k >= 0 && remaining > 0; k--) {
-              const take = Math.min(physOld[foldLength + k] as number, remaining);
-              newPhysOld[k] = take;
-              remaining -= take;
+          if (oldSizes.length - keepOld > 0) {
+            // The smallest physical suffix standing for at least `keepOld` virtual messages...
+            let keepPhys = 0;
+            for (let covered = 0; covered < keepOld && keepPhys < messages.length; ) {
+              keepPhys++;
+              covered += physOld[messages.length - keepPhys] as number;
             }
-            const summarySize = UTF8.encode(summaryText).length;
-            messages.length = 0;
-            messages.push({ role: "user", content: summaryText }, ...recent);
-            physOld = [1, ...newPhysOld];
-            oldSizes = [summarySize, ...keptSizes];
-            transcriptBytes = oldSizes.reduce((n, b) => n + b, 0);
-            inlineUsed = inlineBytesOf(messages);
-          }
-        }
-        // Else the kept suffix already covers the whole transcript — one
-        // message alone is over `afterBytes` — so compaction is skipped for
-        // this turn rather than paying a summary call that folds nothing.
-      }
-    }
+            // ...never starting on a `tool_result` message: its `tool_use` would be folded away and the
+            // provider rejects an orphan result. Pull the assistant turn in.
+            while (
+              keepPhys > 0 &&
+              keepPhys < messages.length &&
+              isToolResultMessage(messages[messages.length - keepPhys] as LlmMessageInput)
+            ) {
+              keepPhys++;
+            }
+            const foldLength = messages.length - keepPhys;
 
-    const turnRequest = {
-      messages,
-      ...(tools.length > 0 && { tools }),
-      ...(system !== undefined && { system }),
-    } satisfies AgentModelCall;
-
-    // Routed turn: the route and each elevation are recorded through the REAL
-    // decision seam, so a replay takes the route that ran.
-    if (config.reasoning !== undefined) {
-      // R9 — each model call as a journaled effect frame, when a tool id is configured.
-      // `callSeq` is per turn; the route + elevation decisions are recorded, so a replay makes
-      // the same sequence of calls and finds each frame under the same id.
-      let callSeq = 0;
-      const reasoningToolId = config.reasoningToolId;
-      const invoke: ModelInvoker | undefined =
-        reasoningToolId === undefined
-          ? undefined
-          : (route, request) =>
-              ctx.execute(
+            if (foldLength > 0) {
+              const fold = messages.slice(0, foldLength);
+              const recent = messages.slice(foldLength);
+              const { summary } = (await ctx.execute(
                 {
                   _tag: "TaskDefinition",
-                  kind: "llm",
-                  id: `${idPrefix}#turn:${turn}:call:${callSeq++}`,
-                  toolId:
-                    typeof reasoningToolId === "string"
-                      ? reasoningToolId
-                      : reasoningToolId(route.id),
+                  kind: "memory",
+                  id: `${idPrefix}#turn:${turn}:compact`,
+                  toolId: compaction.toolId,
                 },
-                request satisfies AgentModelCall
-              ) as Promise<LlmResponse>;
-      const routed = await config.reasoning.reason(
-        { ...turnRequest, strategy: "agent" },
-        {
-          decide: ctx.decide,
-          decisionKey: `${idPrefix}#turn:${turn}`,
-          ...(invoke !== undefined && { invoke }),
+                { messages: fold }
+              )) as { summary: string };
+              const summaryText = `Summary of earlier turns: ${summary}`;
+              // Rebuild the virtual transcript exactly as the old body would hold it: the summary plus
+              // its `keepOld` newest messages. Physical messages pulled in beyond that (the alignment's
+              // assistant turn) stand for none of them.
+              const keptSizes = keepOld > 0 ? oldSizes.slice(oldSizes.length - keepOld) : [];
+              let remaining = keepOld;
+              const newPhysOld: number[] = new Array(recent.length).fill(0);
+              for (let k = recent.length - 1; k >= 0 && remaining > 0; k--) {
+                const take = Math.min(physOld[foldLength + k] as number, remaining);
+                newPhysOld[k] = take;
+                remaining -= take;
+              }
+              const summarySize = UTF8.encode(summaryText).length;
+              messages.length = 0;
+              messages.push({ role: "user", content: summaryText }, ...recent);
+              physOld = [1, ...newPhysOld];
+              oldSizes = [summarySize, ...keptSizes];
+              transcriptBytes = oldSizes.reduce((n, b) => n + b, 0);
+              inlineUsed = inlineBytesOf(messages);
+            }
+          }
+          // Else the kept suffix already covers the whole transcript — one
+          // message alone is over `afterBytes` — so compaction is skipped for
+          // this turn rather than paying a summary call that folds nothing.
         }
-      );
-      lastContent = routed.content;
-      if (routed.stopReason === "end_turn" || !routed.toolCalls?.length) break;
-      const screened = screenToolCalls(routed.toolCalls);
-      assistantTurn({ content: routed.content, toolCalls: screened.calls });
-      await runToolCalls(screened.calls, turn, screened.oversized);
-      continue;
-    }
+      }
 
-    // One durable frame per turn. On recovery this is served from the log for
-    // every turn that completed — the crash at turn 39 costs turn 39, not 1..39.
-    const response = (await ctx.execute(
-      {
-        _tag: "TaskDefinition",
-        kind: "llm",
-        id: `${idPrefix}#turn:${turn}`,
-        // Non-null by the constructor guard: one of `modelToolId` / `reasoning`
-        // is required, and the reasoning path returned above.
-        toolId: config.modelToolId as string,
-      },
-      {
+      const turnRequest = {
         messages,
         ...(tools.length > 0 && { tools }),
         ...(system !== undefined && { system }),
-      } satisfies AgentModelCall
-    )) as LlmResponse;
+      } satisfies AgentModelCall;
 
-    lastContent = response.content;
-    if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
+      // Routed turn: the route and each elevation are recorded through the REAL
+      // decision seam, so a replay takes the route that ran.
+      if (config.reasoning !== undefined) {
+        // `callSeq` is per turn; the route + elevation decisions are recorded, so a replay makes
+        // the same sequence of calls and finds each frame / decision under the same id.
+        let callSeq = 0;
+        const reasoningToolId = config.reasoningToolId;
+        const invoke: ModelInvoker =
+          reasoningToolId === undefined
+            ? // R10 — no effect id to journal a frame under, so the RESPONSE is journaled as a
+              // decision: a replay serves the recorded answer and the provider is not called, so a
+              // completed turn is never re-asked (and cannot answer differently and move the
+              // `#turn:<i>:tool:<j>` ids under the log). Still OUTSIDE the ring (no authorization,
+              // metering, kill switch): `reasoningToolId` is how a host gets those.
+              (route, request) =>
+                ctx.decide<LlmResponse>(
+                  `${idPrefix}#turn:${turn}:response:${callSeq++}`,
+                  async () => {
+                    assertRequestSupported(
+                      request as unknown as LlmRequest,
+                      route.provider.capabilities
+                    );
+                    const signal = modelCallSignal();
+                    const resolved = await resolveRequestContent(
+                      request as unknown as LlmRequest,
+                      undefined,
+                      {
+                        ...(signal !== undefined && { signal }),
+                        context: { executionId: ctx.executionId },
+                      }
+                    );
+                    return route.provider.complete({
+                      ...resolved,
+                      ...(signal !== undefined && { signal }),
+                    });
+                  }
+                )
+            : // R9 — each model call as a journaled effect frame.
+              (route, request) =>
+                ctx.execute(
+                  {
+                    _tag: "TaskDefinition",
+                    kind: "llm",
+                    id: `${idPrefix}#turn:${turn}:call:${callSeq++}`,
+                    toolId:
+                      typeof reasoningToolId === "string"
+                        ? reasoningToolId
+                        : reasoningToolId(route.id),
+                    ...(config.turnTimeoutMs !== undefined && { timeoutMs: config.turnTimeoutMs }),
+                  },
+                  request satisfies AgentModelCall
+                ) as Promise<LlmResponse>;
+        const routed = await config.reasoning.reason(
+          { ...turnRequest, strategy: "agent" },
+          {
+            decide: ctx.decide,
+            decisionKey: `${idPrefix}#turn:${turn}`,
+            invoke,
+            ...(config.signal !== undefined && { signal: config.signal }),
+          }
+        );
+        lastContent = routed.content;
+        if (routed.stopReason === "end_turn" || !routed.toolCalls?.length) break;
+        const screened = screenToolCalls(routed.toolCalls);
+        assistantTurn({ content: routed.content, toolCalls: screened.calls });
+        checkAbort();
+        await runToolCalls(screened.calls, turn, screened.oversized);
+        continue;
+      }
 
-    const screened = screenToolCalls(response.toolCalls);
-    assistantTurn({ content: response.content, toolCalls: screened.calls });
+      // One durable frame per turn. On recovery this is served from the log for
+      // every turn that completed — the crash at turn 39 costs turn 39, not 1..39.
+      const response = (await ctx.execute(
+        {
+          _tag: "TaskDefinition",
+          kind: "llm",
+          id: `${idPrefix}#turn:${turn}`,
+          // Non-null by the constructor guard: one of `modelToolId` / `reasoning`
+          // is required, and the reasoning path returned above.
+          toolId: config.modelToolId as string,
+          ...(config.turnTimeoutMs !== undefined && { timeoutMs: config.turnTimeoutMs }),
+        },
+        {
+          messages,
+          ...(tools.length > 0 && { tools }),
+          ...(system !== undefined && { system }),
+        } satisfies AgentModelCall
+      )) as LlmResponse;
 
-    await runToolCalls(screened.calls, turn, screened.oversized);
+      lastContent = response.content;
+      if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
+
+      const screened = screenToolCalls(response.toolCalls);
+      assistantTurn({ content: response.content, toolCalls: screened.calls });
+
+      checkAbort();
+      await runToolCalls(screened.calls, turn, screened.oversized);
+    }
+  } catch (err) {
+    // Only a STOP is an interruption. A park, an authority / safety error, a kernel cancel and a
+    // divergence propagate untouched: the run is not "stopped by the caller", the runtime owns it.
+    if (
+      config.signal?.aborted === true &&
+      !isTerminalToolError(err) &&
+      !(err instanceof TypedFailure && err.channel === AGENT_INTERRUPTED)
+    ) {
+      interrupted(err);
+    }
+    throw err;
+  }
+
+  if (config.writeBack !== undefined && config.writeBack !== false && config.memory !== undefined) {
+    await writeBackTurn(config.memory, {
+      tier:
+        (typeof config.writeBack === "object" ? config.writeBack.tier : undefined) ??
+        config.memoryTier ??
+        "working",
+      scope:
+        (typeof config.writeBack === "object" ? config.writeBack.scope : undefined) ??
+        config.memoryScope ??
+        ctx.executionId,
+      key: `${ctx.executionId}:${idPrefix}`,
+      prompt: input.prompt,
+      answer: lastContent,
+    });
   }
 
   return { content: lastContent, toolCallLog, iterations };
+}
+
+/**
+ * R10 — remember a finished run's prompt and answer, idempotently. The entry ids are deterministic
+ * (a hash of the prompt, and of prompt + answer), and an entry the scope already holds is skipped,
+ * so a re-run after a crash between the write and the run's completion writes nothing twice.
+ */
+async function writeBackTurn(
+  memory: TieredMemory,
+  w: { tier: string; scope: string; key: string; prompt: string; answer: string }
+): Promise<void> {
+  const present = new Set<string>();
+  for (const e of await memory.recall(w.tier, w.scope)) if (e.id !== undefined) present.add(e.id);
+  const promptHash = fnv1a64(w.prompt);
+  const entries = [
+    { id: `${w.key}:user:${promptHash}`, role: "user", content: w.prompt },
+    {
+      id: `${w.key}:assistant:${fnv1a64(`${w.prompt}\u0000${w.answer}`)}`,
+      role: "assistant",
+      content: w.answer,
+    },
+  ];
+  for (const entry of entries) {
+    if (!present.has(entry.id)) await memory.remember(w.tier, w.scope, entry);
+  }
 }
 
 /** The minimal registration surface of an `EffectRuntime` (`app.effectRuntime`). */

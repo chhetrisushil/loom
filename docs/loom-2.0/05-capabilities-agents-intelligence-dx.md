@@ -158,7 +158,7 @@ sequenceDiagram
 > model call resolves through the `EffectRuntime` (so K2, metering and K9 in-doubt apply to it), and
 > the loop can `suspend` mid-flight for human approval. See
 > [ADR 0087](../adr/0087-durable-agent-loop.md) and the
-> [user guide](../user-guide.md#running-the-loop-agentstep-or-agentloop) for the trade-off.
+> [user guide](../user-guide.md#running-the-loop-agentloop) for the trade-off.
 
 ### 2.1 `AgentConfig`
 
