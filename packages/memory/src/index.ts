@@ -19,3 +19,20 @@ export type {
   TieredMemoryConfig,
   TierPolicy,
 } from "./TieredMemory";
+export {
+  EMBEDDING_PROVIDER_SPI_VERSION,
+  EmbeddingError,
+  EmbeddingMemoryStore,
+  EmbeddingModelMismatchError,
+  HashingEmbeddingProvider,
+  InMemoryVectorIndex,
+  MemoryIndexTooLargeError,
+  cosine,
+} from "./embedding";
+export type {
+  EmbedOptions,
+  EmbeddingMemoryStoreOptions,
+  EmbeddingProvider,
+  VectorHit,
+  VectorIndex,
+} from "./embedding";

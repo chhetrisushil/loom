@@ -26,6 +26,13 @@ import { checkDeclaredMediaOnWire } from "./mediaWire";
 import { checkToolCallStreamParity } from "./toolCallParity";
 
 export {
+  runEmbeddingProviderConformance,
+  runVectorIndexConformance,
+  type EmbeddingProviderLike,
+  type VectorIndexLike,
+} from "./embedding.js";
+
+export {
   runEventStoreDecoratorConformance,
   runSnapshotStoreDecoratorConformance,
   type DecoratorConformanceOptions,
