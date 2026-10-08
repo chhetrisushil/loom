@@ -230,3 +230,66 @@ describe("live deltas are the ASKER's until the turn is classified", () => {
     expect(aliceS.events.some((e) => e.event === "delta")).toBe(true);
   });
 });
+
+describe("round 2: the gateway", () => {
+  it("refuses a runtime whose policy lets a tenant peer query or send (the transcript would be readable around the filter)", async () => {
+    const { executionAccessPolicy } = await import("@loom/workflow-runtime");
+    await expect(
+      boot({
+        shared: true,
+        policy: executionAccessPolicy(),
+        conversations: { policy: executionAccessPolicy() },
+      })
+    ).rejects.toThrow(/"query" as "tenant"/);
+    await expect(
+      boot({
+        shared: true,
+        policy: executionAccessPolicy({
+          rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" },
+        }),
+        ackPolicy: false,
+      })
+    ).rejects.toThrow(/owner-scoped/);
+  });
+
+  it("membership is judged for EVERY delivered message: a participant removed a moment ago is not handed the next entry", async () => {
+    const b = await up({ server: { reauthMs: 3_600_000 } }); // the periodic re-authorization will not rescue this
+    const id = await room(b);
+    const bobS = await openSse(`${b.url}/conversations/${id}/events`, bearer("tok-bob"));
+    expect(bobS.status).toBe(200);
+    expect(
+      (
+        await post(`${b.url}/conversations/${id}/participants/remove`, "tok-alice", {
+          actor: "bob",
+          tenant: "t2",
+        })
+      ).status
+    ).toBe(202);
+    await say(b, id, "tok-alice", "something bob must not see");
+    await bobS.waitFor((e) => e.event === "error");
+    await bobS.ended;
+    expect(JSON.stringify(bobS.events)).not.toContain("something bob must not see");
+  });
+
+  it("a participant who floods the queue is refused with 429; the others are not", async () => {
+    const gate = new Latch();
+    const started = new Latch();
+    const b = await up({
+      conversations: { maxQueuedPerAsker: 1 },
+      reply: async (req) => {
+        if (lastUserText(req) === "hold") {
+          started.release();
+          await gate.promise;
+        }
+        return sharedScript(req);
+      },
+    });
+    const id = await room(b);
+    await say(b, id, "tok-alice", "hold");
+    await started.promise;
+    expect((await say(b, id, "tok-bob", "one")).status).toBe(202);
+    expect((await say(b, id, "tok-bob", "two")).status).toBe(429);
+    expect((await say(b, id, "tok-dave", "mine")).status).toBe(202);
+    gate.release();
+  });
+});

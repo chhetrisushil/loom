@@ -1,6 +1,6 @@
 import { agent$ } from "@loom/core";
 import { describe, expect, it } from "vitest";
-import { boot, lastUserText, messages, until } from "./__fixtures__/harness";
+import { TEST_KEY, boot, lastUserText, messages, signRaw, until } from "./__fixtures__/harness";
 import { type TokenCounter, conversation$, fitToWindow, heuristicTokenCounter } from "./index";
 
 /** 1 token per character: exact arithmetic for the tests. */
@@ -165,6 +165,7 @@ describe("conversation budgeting", () => {
     // recorded verdicts win, and the cached per-turn counts mean old turns are not counted again at all.
     const rt2 = b.mk();
     const flow2 = conversation$({
+      key: TEST_KEY,
       agent: { definition: agent$({ id: "chat", name: "Chat", tools: [] }), modelToolId: "model" },
       budget: {
         contextWindow: 300,
@@ -181,7 +182,7 @@ describe("conversation budgeting", () => {
     rt2.registerFlow(flow2.definition, flow2.runner);
     await rt2.send(id, {
       topic: "conversation:turn",
-      payload: { kind: "user", text: "m4", id: "x4" },
+      payload: signRaw(id, { kind: "user", text: "m4", id: "x4" }),
     });
     await until(async () => (await b.conv.history(id, { limit: 100 })).entries.length >= 8);
     const all = (await b.conv.history(id, { limit: 100 })).entries;

@@ -10,9 +10,9 @@ import {
   sameIdentity,
   senderKey,
 } from "./access";
-import { type BargeInSource, inboxBargeIn } from "./bargeIn";
+import { type BargeInSource, inboxBargeIn, pendingMessages } from "./bargeIn";
 import { type ConversationFlow, signedEnvelope } from "./conversation";
-import { generationOf, isValidConversationId } from "./ids";
+import { generationId, generationOf, isValidConversationId } from "./ids";
 import {
   type ConversationReader,
   type ReadOptions,
@@ -60,8 +60,61 @@ export interface ConversationsDeps {
   effects?: EffectRuntime;
   /** Shared mode: what notices a participant's own follow-up while their turn runs. Default `inboxBargeIn(eventStore)`. */
   bargeIn?: BargeInSource;
-  /** Shared mode: the principal a turn runs as for an asker identity. Default: the identity itself. */
+  /**
+   * Shared mode: the principal a turn runs as for an asker identity. Default: the identity itself (tenant,
+   * actor, onBehalfOf), which carries NO delegation token. A sender who presents a delegation (an attenuated
+   * grant) is therefore REFUSED unless this is supplied: rebuilding their principal from identity alone
+   * would give the turn the actor's full grants. A host that supplies it maps the identity to the narrowed
+   * principal (re-issuing the delegation from its own grant table, ADR 0111 D4).
+   */
   principalFor?: (asker: Identity) => PrincipalChain | Promise<PrincipalChain>;
+  /**
+   * The execution policy the runtime was built with (`executionAccessPolicy(...)`, the SAME object). The
+   * conversation's log holds the unfiltered transcript, so a runtime that lets a tenant peer `query`,
+   * `send` to, `cancel` or `resume` another principal's execution defeats every per-viewer rule here: it is
+   * REFUSED at construction unless `query`, `send`, `cancel`, `resume` and `actAsOwner` are `owner`-scoped
+   * (or denied).
+   */
+  policy?: { readonly scopes?: Readonly<Record<string, string>> };
+  /**
+   * Acknowledge that the runtime's policy is owner-scoped for those ops although it cannot be inspected
+   * (a custom `ExecutionAuthorizer`, or no authorizer in a development process). The host asserts it; this
+   * layer cannot check it. The body still acts only on envelopes signed by the host (D10), which is what
+   * remains if the assertion is false.
+   */
+  runtimePolicyIsOwnerScoped?: boolean;
+  /** Shared mode: turns one asker may have waiting in the inbox before `sendTurn` refuses. Default 8. */
+  maxQueuedPerAsker?: number;
+  /** The clock envelopes are stamped with (tests). */
+  now?: () => number;
+}
+
+export class QueueFullError extends Error {
+  readonly code = "QUEUE_FULL";
+  constructor() {
+    super("too many of your turns are already waiting");
+    this.name = "QueueFullError";
+  }
+}
+
+const POLICED_OPS = ["query", "send", "cancel", "resume", "actAsOwner"] as const;
+
+function assertOwnerScopedPolicy(deps: ConversationsDeps): void {
+  if (deps.runtimePolicyIsOwnerScoped === true) return;
+  const scopes = deps.policy?.scopes;
+  if (scopes === undefined) {
+    throw new Error(
+      "createConversations: cannot establish that the runtime's execution policy is owner-scoped. Pass `policy` (the `executionAccessPolicy(...)` object the runtime was built with) or acknowledge it with `runtimePolicyIsOwnerScoped: true`. A conversation's log holds the unfiltered transcript; a policy that lets a tenant peer query, send to, cancel or resume it defeats every access rule."
+    );
+  }
+  for (const op of POLICED_OPS) {
+    const scope = scopes[op];
+    if (scope !== "owner" && scope !== "deny") {
+      throw new Error(
+        `createConversations: the runtime's policy scopes "${op}" as "${String(scope)}"; it must be "owner" or "deny" (rules: { ${POLICED_OPS.map((o) => `${o}: "owner"`).join(", ")} })`
+      );
+    }
+  }
 }
 
 export interface CallOptions {
@@ -116,6 +169,8 @@ export interface Conversations {
   ): Promise<HistoryEntry[]>;
   /** SHARED mode: the viewer's identity key (to match against a live event's `asker`), or undefined. */
   viewerKey(principal?: PrincipalChain): string | undefined;
+  /** Whether `principal` may (still) read the conversation: a cheap membership check, for a stream to run per delivered message. */
+  isParticipant(conversationId: string, principal?: PrincipalChain): Promise<boolean>;
   /** SHARED mode: the participant set. Owner / manager only. */
   participants(conversationId: string, options?: CallOptions): Promise<Identity[]>;
   addParticipant(conversationId: string, who: Identity, options?: CallOptions): Promise<void>;
@@ -139,11 +194,19 @@ function rawSender(p: PrincipalChain | undefined): {
 const OWNER_CACHE_MAX = 1024;
 
 export function createConversations(deps: ConversationsDeps): Conversations {
+  assertOwnerScopedPolicy(deps);
   const { runtime, eventStore, flow } = deps;
+  const key = flow.config.key;
+  const now = deps.now ?? Date.now;
+  const maxQueued = deps.maxQueuedPerAsker ?? 8;
   const maxTurnChars = deps.maxTurnChars ?? 32_000;
   const reader = createConversationReader(eventStore);
   const mode = flow.mode;
   const shared = flow.config.shared;
+  const service = shared === undefined ? undefined : identityOf(shared.servicePrincipal);
+  /** No end-user identity may be the service principal that owns the coordinating executions. */
+  const isService = (i: Identity | undefined): boolean =>
+    service !== undefined && sameIdentity(i, service);
   let registered = false;
   const ensureRegistered = (): void => {
     if (registered) return;
@@ -163,7 +226,9 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         runtime,
         turnFlow: flow.sharedTurn.flow,
         signals: flow.sharedTurn.signals,
-        key: shared.key,
+        key,
+        eventStore,
+        ...(flow.config.onError !== undefined && { onError: flow.config.onError }),
         bargeIn: deps.bargeIn ?? inboxBargeIn(eventStore),
         ...(deps.principalFor !== undefined && { principalFor: deps.principalFor }),
       });
@@ -177,8 +242,9 @@ export function createConversations(deps: ConversationsDeps): Conversations {
   // the identity the client stamped into the start input, cross-checked against the identity the
   // kernel recorded for the starting principal when that is stored verbatim. A disagreement is an
   // UNKNOWN owner, which nobody matches.
-  const owners = new Map<string, Identity | null>();
-  async function ownerOf(conversationId: string): Promise<Identity | undefined> {
+  const CONFLICT = "conflict" as const;
+  const owners = new Map<string, Identity | null | typeof CONFLICT>();
+  async function ownerOf(conversationId: string): Promise<Identity | undefined | typeof CONFLICT> {
     const cached = owners.get(conversationId);
     if (cached !== undefined) return cached ?? undefined;
     const first = (await readRangeOf(eventStore, conversationId, 0, 0))[0];
@@ -189,9 +255,14 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     } | null;
     const stamped = parseIdentity(payload?.input?.owner);
     const recorded = parseIdentity(payload?.principal?.identity);
-    let owner: Identity | undefined;
-    if (stamped !== undefined && recorded !== undefined) {
-      owner = sameIdentity(stamped, recorded) ? stamped : undefined;
+    let owner: Identity | undefined | typeof CONFLICT;
+    if (shared !== undefined) {
+      // SHARED: the coordinator is owned by the SERVICE principal, and the human owner is the stamp. Anything
+      // else (a coordinator someone started as themselves, claiming another owner) is a conflict.
+      owner =
+        recorded !== undefined && isService(recorded) && stamped !== undefined ? stamped : CONFLICT;
+    } else if (stamped !== undefined && recorded !== undefined) {
+      owner = sameIdentity(stamped, recorded) ? stamped : CONFLICT;
     } else owner = stamped ?? recorded;
     if (owners.size >= OWNER_CACHE_MAX) owners.delete(owners.keys().next().value as string);
     owners.set(conversationId, owner ?? null);
@@ -211,8 +282,12 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     need: "member" | "manage"
   ): Promise<Access> {
     if (!isValidConversationId(conversationId)) throw new ConversationNotFoundError(conversationId);
-    const owner = await ownerOf(conversationId);
+    const recorded = await ownerOf(conversationId);
+    // A conflicting owner record is its own state: it matches NOBODY, the anonymous caller included.
+    if (recorded === CONFLICT) throw new ConversationNotFoundError(conversationId);
+    const owner = recorded;
     const viewer = identityOf(principal);
+    if (isService(viewer)) throw new ConversationNotFoundError(conversationId);
     // A conversation with no recorded owner (started with no principal) is "owned" by the anonymous.
     const isOwner = owner === undefined ? principal === undefined : sameIdentity(viewer, owner);
     const access = { owner, viewer, isOwner };
@@ -256,22 +331,35 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     const messageId = o?.messageId ?? randomUUID();
     let id: string;
     let kernelId: string;
-    let payload: TurnEnvelope | Record<string, unknown>;
     if (mode === "shared") {
       if (viewer === undefined) throw new ConversationNotFoundError(conversationId);
+      // A sender presenting a delegation (an attenuated grant) cannot be run faithfully from their identity
+      // alone: the turn would get the actor's FULL grants. Refused unless the host maps identity to a
+      // principal itself.
+      if (o?.principal?.delegation !== undefined && deps.principalFor === undefined) {
+        throw new InvalidTurnError(
+          "a delegated sender cannot be run as themselves in a shared conversation unless the host supplies `principalFor`"
+        );
+      }
+      if (body.kind === "user" && (await queuedFor(conversationId, viewer)) >= maxQueued) {
+        throw new QueueFullError();
+      }
       // The kernel sees the HOST as the sender, so its dedupe key is made per-asker here.
       id = senderKey(viewer, messageId);
       kernelId = id;
-      payload = signedEnvelope(shared!.key, {
-        ...body,
-        id,
-        ...(body.kind === "close" ? { by: viewer } : { asker: viewer }),
-      });
     } else {
       id = senderKey(rawSender(o?.principal), messageId);
       kernelId = messageId;
-      payload = { ...body, id };
     }
+    // The signature covers the conversation, the sender's voice, the text, the id and the issue time: none
+    // of it can be lifted into another message, conversation or time (the body also refuses a replayed id).
+    const payload = signedEnvelope(key, {
+      ...body,
+      conversationId,
+      id,
+      iat: now(),
+      ...(viewer !== undefined && { asker: viewer }),
+    });
     try {
       return await runtime.send(
         conversationId,
@@ -285,6 +373,22 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       }
       throw err;
     }
+  }
+
+  /** How many of `asker`'s turns are waiting in the inbox (best effort across processes; small overshoot is possible). */
+  async function queuedFor(conversationId: string, asker: Identity): Promise<number> {
+    const g = (await reader.headGeneration(conversationId)) ?? 0;
+    const waiting = await pendingMessages(
+      eventStore,
+      conversationId,
+      generationId(conversationId, g),
+      maxQueued + 16
+    );
+    const k = identityKey(asker);
+    return (waiting ?? []).filter((m) => {
+      const a = parseIdentity((m.payload as { asker?: unknown } | null)?.asker);
+      return a !== undefined && identityKey(a) === k;
+    }).length;
   }
 
   const restricted = (e: HistoryEntry): HistoryEntry => ({
@@ -320,14 +424,20 @@ export function createConversations(deps: ConversationsDeps): Conversations {
           "a shared conversation needs an identified owner (a principal with an actor)"
         );
       }
+      if (isService(owner))
+        throw new InvalidTurnError("that identity is reserved for the service principal");
       // Start-once for a chosen id (ADR 0103): a duplicate start rejects, nothing re-runs. The owner is
-      // stamped into the input: sequence 0 is immutable, which is what makes it a record.
+      // stamped into the input: sequence 0 is immutable, which is what makes it a record. In SHARED mode the
+      // coordinating execution is owned by the SERVICE principal, so no participant (the human owner
+      // included) can `query` its unfiltered log through the runtime.
       await runtime.start(
         flow as never,
         { v: 1, seq: 0, ord: 0, turns: [], ...(owner !== undefined && { owner }) } as never,
         {
           executionId: conversationId,
-          ...(options.principal !== undefined && { principal: options.principal }),
+          ...(shared !== undefined
+            ? { principal: shared.servicePrincipal }
+            : options.principal !== undefined && { principal: options.principal }),
         }
       );
       if (owner !== undefined) owners.set(conversationId, owner);
@@ -405,6 +515,15 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       }
       return out;
     },
+    async isParticipant(conversationId, principal) {
+      try {
+        await authorize(conversationId, principal, "member");
+        return true;
+      } catch (err) {
+        if (err instanceof ConversationNotFoundError) return false;
+        throw err;
+      }
+    },
     viewerKey(principal) {
       const v = identityOf(principal);
       return v === undefined ? undefined : identityKey(v);
@@ -418,6 +537,8 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const identity = parseIdentity(who);
       if (identity === undefined || viewer === undefined)
         throw new InvalidTurnError("a participant needs an actor");
+      if (isService(identity))
+        throw new InvalidTurnError("that identity is reserved for the service principal");
       if (sameIdentity(identity, owner)) return; // the owner is always a participant
       await (shared as NonNullable<typeof shared>).directory.apply(conversationId, {
         op: "add",

@@ -13,7 +13,9 @@
 - Consumers: **loom-ui U8** (the chat / input vocabulary: turn list, streaming deltas, status, interrupt) and the
   **`chat-agent` example** in `loom-examples` (specified in the PR; this repo does not edit that one); shared mode: an
   AI-mode incident surface whose chat several responders share.
-- Revision: fix round 1 (Opus review of PR #518, not approved) — owner-only default (D8), shared mode (D10), bounded
+- Revision: fix round 2 (shared-mode review, not approved) — host-signed bound envelopes in both modes (D8), owner-scoped
+  runtime policy required (D8), service-owned coordinator, unguessable verified turn ids, delegation, per-asker memory,
+  classified questions, strict clearance (D10). Fix round 1 (Opus review of PR #518, not approved) — owner-only default (D8), shared mode (D10), bounded
   backward reads (D3), edge hardening (D6), summary/identity/peek fixes (D2, D5).
 - Placement: **two 1P packages, kernel untouched.** `@loom/conversation` (new) and `@loom/plugin-conversation-sse` (new
   plugin), plus three additive seams on `@loom/agent`. `KERNEL_ABI`, `EVENT_SCHEMA` and every SPI are unchanged; no
@@ -263,6 +265,28 @@ live deltas on this node and falls back to the durable record.
   own policy still applies underneath. No kernel change: the owner is data the client writes at the one moment only the
   starter can write it.
 - **`close` is owner-only** (a manager, in shared mode): it falls out of the above.
+- **Every message is a host-signed envelope, in BOTH modes (fix round 2).** The inbox is writable by whatever the
+  runtime's policy admits, and what arrives is data, not authority. The client signs (HMAC-SHA-256 under `config.key`,
+  required) a body of `{ conversationId, kind, id, iat, text, asker }`; the conversation body acts on a message only if the
+  signature verifies, `conversationId` is THIS conversation, the voice (`asker`) is the recorded owner (owner-only) or a
+  named participant (shared), the `id` has not been consumed before, and `iat` is within `maxEnvelopeAgeMs` of the clock
+  (read once, in a recorded decision, so replay never re-reads it). Anything else is recorded as `rejected`
+  (`unauthenticated` / `malformed` / `replayed` / `stale`) up to `maxInvalidRecords`, then only counted (a recorded counter
+  every 100). The `id` is the sender-bound idempotency key, which is also the kernel `messageId` in shared mode; the replay
+  set is the last 1 024 ids, carried across rotations. The reviewer's first-cut hole (a peer copied another participant's
+  signed envelope with a new `messageId` and the turn ran as them) is closed by the replay set plus the freshness window;
+  an unsigned or foreign message in an owner-only conversation (a same-tenant colleague raw-`send`ing "speaking as the
+  owner") is rejected, not obeyed.
+- **Raw runtime access is a second door, and the policy must close it (fix round 2).** The conversation's log holds the
+  unfiltered transcript and every signed envelope; the runtime's `query`, `send`, `cancel`, `resume` and `fork` are the
+  doors around everything above. `createConversations` therefore REFUSES, at construction, a runtime whose execution policy
+  is not `owner`-scoped (or `deny`) for `query`, `send`, `cancel`, `resume` and `actAsOwner`: pass the
+  `executionAccessPolicy({ rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" } })` object you built the
+  runtime with (`policy`; the reference policy now exposes its resolved `scopes`, read-only, 1P), or acknowledge a policy it
+  cannot inspect with `runtimePolicyIsOwnerScoped: true`. The gateway inherits the check. **Residual, stated plainly:** an
+  acknowledged-but-looser policy (or one that is changed after construction) lets a tenant peer read the coordinator's log
+  around every filter; the signed-envelope rules above still keep a peer from DRIVING the conversation, but nothing in this
+  layer can stop a peer the runtime lets `query` from reading it.
 - A turn runs as the conversation owner in owner-only mode: the execution's recorded principal, inherited by every
   generation. The sender is the owner, so the sender's authority and the turn's are the same.
 - A user turn is untrusted data. It enters the transcript tainted with origin `conversation:user` (`AgentInput.promptOrigin`
@@ -295,15 +319,32 @@ Motivating workload: an incident surface whose AI chat is shared by several resp
    the owner's log, ADR 0110 D1). It is read on EVERY request, so a removal takes effect on the next one; an open SSE stream
    re-authorizes every `reauthMs` and ends. A non-participant gets the uniform 404 for send / history / status / stream /
    close / participants. Because participants are not the owner, the client performs the runtime calls with the runtime's
-   system grant after its own check (it is the one place that knows the set).
+   system grant after its own check (it is the one place that knows the set). **The coordinating execution is owned by a
+   HOST-SUPPLIED SERVICE PRINCIPAL** (`shared.servicePrincipal`, required) and is started under it; the human owner is only the
+   stamp. No end-user identity may equal the service identity (refused at start, as a participant and as a viewer), and a
+   coordinator started under anyone else, claiming an owner, matches nobody (a conflicting owner record is its own state and
+   refuses everyone, the anonymous caller included). With the owner-scoped policy above, no participant, the human owner
+   included, can `query` the coordinator's unfiltered log: the service's grants are `conversation.turn` and the summarizer.
+   Turn executions are owned by their asker.
 2. **Each turn runs as the ASKER.** The conversation execution (the owner's authority) only COORDINATES: it dequeues a turn,
    runs one effect (`conversation.turn`, granted to the owner) and records the transcript. The effect starts a SEPARATE turn
-   execution with the asker's principal (ADR 0111) under a deterministic id `turn:<conversation>:o<ord>` (start-once; a
-   crashed run finds and continues the same execution; a cancel of the coordinator cancels it) and waits for its output.
+   execution with the asker's principal (ADR 0111) under a deterministic, UNGUESSABLE id `turn:<conversation>:o<ord>:<HMAC(key, conversation|ord)[:24]>`
+   (start-once; a cancel of the coordinator cancels it) and waits for its output. A crashed run finds the execution and
+   continues it ONLY after verifying that it is ours: the turn flow, started as THIS asker (the principal the kernel
+   recorded), on this conversation, ordinal, turn, message id and text. Anything else is refused, never adopted: the turn
+   fails with the fixed reason `turn-failed` and the host's `onError` gets the cause (the first cut adopted whatever lived
+   at the predictable id: a forged answer, or a refusal to run). **Delegation is not dropped silently:** the turn's
+   principal is rebuilt from the signed identity, which carries NO delegation token, so a sender presenting one is REFUSED
+   unless the host supplies `principalFor(asker)` to map the identity to the narrowed principal (re-issuing the grant from its
+   own table, ADR 0111 D4); a token is never written to the log.
    Every tool call, memory write-back, quota and capability check inside it is the asker's: a participant with fewer grants
    cannot reach a tool the owner can, and the denial is raised inside THEIR turn and recorded as `failed / denied` for them.
    The asker's principal is rebuilt from the signed identity (`principalFor` lets a host mint a delegation instead);
    `agent.writeBack` must go through an effect (`toolId`) in shared mode, never a direct write. Tested with per-asker K2 grants.
+   **Memory is per asker:** when the agent has a `memory`, `shared.memoryScope(asker)` is REQUIRED, a constant
+   `agent.memoryScope` or `writeBack.scope` is refused at construction, `writeBack` must go through an effect, and the scope
+   is also a data class of the answer (`memory:<scope>`), so an answer that drew on someone's memory is filtered like any
+   other (defence in depth for the recall, which is a recorded decision the classification cannot otherwise see).
 3. **Each answer is classified by what it touched.** `classes` = the declared class of every tool the turn called
    (`shared.classOf(toolName)`; a tool it does not know is the label `unclassified`) UNION the classes of every entry that
    fed its context. The record carries them; the decision is recorded, so replay never re-asks the host. (The core has no
@@ -314,33 +355,58 @@ Motivating workload: an incident surface whose AI chat is shared by several resp
    cleared for becomes a bare `{ turn, role, status: "restricted", cursor, ..., asker }` placeholder: never its text, the
    tool names, the class labels, the turn execution id or the reason. Attribution stays (the asker is on the unrestricted
    user message beside it anyway; decided fail-closed on everything else). The asker always sees their own answer.
-   Applied in `history`, in the SSE stream (resume included), and to live deltas: **a turn's class is not known until it
+   A QUESTION is classified like its answer: the user record is stamped with the classes of the context the turn was
+   built on (known before it runs), so a question that quotes restricted content is filtered the same way. `cleared` must
+   return exactly `true` (a truthy non-boolean is NOT clearance), in the history, stream and context paths alike.
+   Applied in `history`, in the SSE stream (resume included, and membership is re-checked for every delivered entry, not
+   only at the periodic re-authorization), and to live deltas: **a turn's class is not known until it
    ends (it depends on the tools called), so its deltas and the `partial` catch-up go to the ASKER alone**; everyone else
    gets the durable entry (or the placeholder) on completion.
 5. **Per-asker model context.** The history fed to a turn contains only the entries the ASKER is cleared for, decided in a
    recorded verdict (`conv#o<ord>:visible`); a turn is excluded WHOLE (question and answer) when its answer is restricted.
    **The rolling summary is built only from unrestricted turns** (a summary reaches every participant's prompt, so it must
    carry nothing any participant cannot see): a restricted turn that is evicted is dropped, not summarized. In shared mode
-   the window is evicted by age only (`maxWindowTurns`); the token budget fits each asker's own slice.
+   the window is evicted by age only (`maxWindowTurns`); the token budget fits each asker's own slice, and a summary too big
+   for ONE asker's slice is left out of THAT turn only (it is everyone's, so it is not dropped for all).
 6. **Queued turns, no cross-user barge-in.** Turns are served FIFO from the inbox, each attributed. A participant's follow-up
    interrupts only THEIR OWN running turn (the effect's watcher accepts only a message signed for the same asker); owner-only
    mode keeps its barge-in. A participant removed while their message was queued is rejected when it is dequeued
-   (`not-a-participant`, a recorded verdict).
+   (`not-a-participant`, a recorded verdict). **Fairness is a cap, not a scheduler:** the global order is the inbox's FIFO
+   (the kernel delivers one topic in order; a round-robin would need a topic per asker and a dynamic `select`), and each
+   asker may have at most `maxQueuedPerAsker` (default 8) turns waiting, counted from the inbox past the owner's consumed
+   cursor, so no participant can queue more than that ahead of the others. The count is best effort across processes (a
+   small overshoot is possible).
 7. **Attribution.** Every record carries the asking principal's identity; history, the stream and the placeholders expose it.
 8. **Approvals stay refused.** `requireApproval` throws at construction. The future rule, so nobody has to rediscover it:
    an approval is a gate the APPROVER must be authorized for and that is bound to what they saw (ADR 0117 `viewDigest`); in a
    shared conversation the approver is a participant cleared for the call's class, the gate lives in the asker's turn
    execution (never the coordinator), and no participant can answer another's.
 
-*Envelope integrity.* The coordinator's inbox is writable by anyone the runtime admits to `send`, and in shared mode the
-sender the kernel records is the host, so the asker is named inside the message and the body accepts it only from an
-envelope **signed with the host's key** (`shared.key`, HMAC-SHA-256): a colleague who can raw-`send` cannot speak as another
-participant (tested; an unsigned or wrongly signed message is recorded `rejected / unauthenticated` and never answered).
+*Envelope integrity.* See D8: both modes accept only host-signed, conversation-bound, fresh, never-replayed envelopes. In
+shared mode the sender the kernel records is the host (the client uses the system grant), so the asker is named inside the
+signed envelope.
 
-*Known limits.* The signature binds the asker to the text, not the text to a time (replay is the kernel's dedupe window and
-the per-asker idempotency key). `cleared` is called per entry per request (cached per class set within one call); a very
-large window with many distinct class sets pays that. Rolling summaries are one per conversation, so a participant cleared
-for more than the shared summary contains gets no richer summary (their own recent turns still carry the detail).
+*Known limits.*
+- **The kernel `messageId` is not part of the check.** The body sees the payload, not the delivered message's `messageId`
+  (`ctx.receive` returns the payload only), so "the signed `messageId` equals the delivered one" cannot be enforced there. What
+  closes the replay door instead is the signed `id` (which IS the `messageId` the client sends in shared mode) consumed at
+  most once within the replay window, plus the conversation binding and the freshness window. A replay set of 1 024 ids is a
+  bound: more than 1 024 distinct envelopes inside `maxEnvelopeAgeMs` could push an old id out of the set while its `iat` is
+  still fresh. Keep `maxEnvelopeAgeMs` short where that volume is possible.
+- **Placeholder metadata.** A restricted entry still tells a viewer that an entry EXISTS, its position (`turn`, `cursor`),
+  its role, its timestamp and who asked (the asker is on the unrestricted user message beside it anyway, unless the question
+  is itself restricted, in which case it is a placeholder too). It does not tell them the text, the tools, the class labels,
+  the reason or the turn execution. A host that must hide even the existence of an answer needs per-viewer cursors, which this
+  does not offer.
+- **Clock.** Freshness reads the clock once, in a recorded decision; a host with badly skewed clocks across client and
+  coordinator nodes will see `stale` rejections (a 60 s forward skew is tolerated).
+- **A looser policy** breaks the per-viewer filtering (D8); the construction check and the acknowledgement option are the
+  guard, not a proof.
+- `cleared` is called per entry per request (cached per class set within one call). Rolling summaries are one per
+  conversation: a participant cleared for more than the shared summary contains gets no richer summary (their own recent
+  turns carry the detail).
+- Who may START a shared conversation is not decided here (any authenticated caller the gateway admits becomes an owner);
+  put a policy in front of `start` if that matters.
 
 ## Consequences
 

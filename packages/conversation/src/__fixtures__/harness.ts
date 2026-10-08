@@ -9,6 +9,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
 import type { ExecutionAuthorizer, WorkflowRuntimeDeps } from "@loom/workflow-runtime";
 import { z } from "zod";
+import { signedEnvelope } from "../conversation";
 import {
   type ConversationConfig,
   ConversationHub,
@@ -61,6 +62,10 @@ export interface BootOptions {
   secure?: boolean;
   /** The execution authorizer when `secure` (default: the reference policy, tenant scope). */
   policy?: ExecutionAuthorizer;
+  /** Assert the (custom) policy is owner-scoped although it cannot be inspected: for tests that loosen it on purpose. */
+  ackPolicy?: boolean;
+  /** Pass the createConversations options through (e.g. `principalFor`, `maxQueuedPerAsker`). */
+  conversations?: Record<string, unknown>;
   hub?: ConversationHub;
   /** A streaming provider: yields the chunks of a reply (the terminal `done` chunk included). */
   chunks?: (request: LlmRequest, nth: number) => AsyncIterable<LlmStreamChunk>;
@@ -73,12 +78,18 @@ export interface BootOptions {
   shared?: Partial<SharedConfig> | true;
 }
 
-export const SHARED_KEY = "test-shared-key";
+export const TEST_KEY = "test-envelope-key";
+export const SERVICE: PrincipalChain = { actor: "conversation-service", tenant: "svc" };
+/** The reference policy, OWNER-scoped for everything a conversation's log must be protected by. */
+export const ownerScoped = () =>
+  executionAccessPolicy({
+    rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" },
+  });
 export const carol: PrincipalChain = { actor: "carol", tenant: "t2" };
 export const dave: PrincipalChain = { actor: "dave", tenant: "t3" };
 export const SECRET = "TOP-SECRET-PAYLOAD";
 
-const kb = tool$({
+export const kb = tool$({
   id: "kb",
   name: "kb",
   description: "public knowledge base",
@@ -86,7 +97,7 @@ const kb = tool$({
   inputSchema: z.object({}).passthrough(),
   outputSchema: z.any(),
 });
-const secretDb = tool$({
+export const secretDb = tool$({
   id: "secret-db",
   name: "secret-db",
   description: "restricted database",
@@ -153,11 +164,13 @@ export function boot(opts: BootOptions = {}) {
       ? {
           authorizer: new GrantTable(
             {
-              // the OWNER's authority: it only coordinates, so it may run turns and summarize
-              alice: ["conversation.turn", "summarize", "audit", "model", "kb", "secret-db"],
-              bob: ["model", "kb", "summarize"],
-              carol: ["model", "kb", "summarize"],
-              dave: ["model", "kb", "secret-db", "summarize"],
+              // the SERVICE principal owns the coordinator: it only coordinates (runs turns, summarizes)
+              "conversation-service": ["conversation.turn", "summarize", "audit"],
+              alice: ["model", "kb", "secret-db", "summarize", "audit", "memwrite"],
+              bob: ["model", "kb", "summarize", "memwrite"],
+              carol: ["model", "kb", "summarize", "memwrite"],
+              dave: ["model", "kb", "secret-db", "summarize", "memwrite"],
+              "limited-bot": ["model", "kb"],
             },
             { principal: (req) => req.principal?.actor ?? req.workflowId }
           ),
@@ -187,6 +200,7 @@ export function boot(opts: BootOptions = {}) {
   const eventStore = opts.store ?? new InMemoryAsyncEventStore();
   const snapshotStore = new InMemoryAsyncSnapshotStore();
   const timerStore = new InMemoryTimerStore();
+  const ownerPolicy = ownerScoped();
   const mk = (extra: Partial<WorkflowRuntimeDeps> = {}) =>
     new WorkflowRuntime({
       eventStore,
@@ -197,7 +211,7 @@ export function boot(opts: BootOptions = {}) {
       continueAsNewEnabled: true,
       divergence: "fail",
       ...(secure && {
-        executionAuthorizer: opts.policy ?? executionAccessPolicy(),
+        executionAuthorizer: opts.policy ?? ownerPolicy,
         executionAuthz: { requirePrincipal: true },
       }),
       ...opts.runtime,
@@ -208,7 +222,7 @@ export function boot(opts: BootOptions = {}) {
     sharedOpts === undefined
       ? undefined
       : {
-          key: SHARED_KEY,
+          servicePrincipal: SERVICE,
           directory: logParticipants(eventStore),
           cleared: (viewer: Identity, classes: readonly string[]) =>
             classes.every(
@@ -226,6 +240,7 @@ export function boot(opts: BootOptions = {}) {
         definition: agent$({ id: "chat", name: "Chat", tools: sharedConfig ? [kb, secretDb] : [] }),
         modelToolId: "model",
       },
+      key: TEST_KEY,
       hub,
       bargeIn: inboxBargeIn(eventStore),
       ...(sharedConfig && { shared: sharedConfig }),
@@ -234,7 +249,15 @@ export function boot(opts: BootOptions = {}) {
     { id: "conversation" }
   );
   runtime.registerFlow(flow.definition, flow.runner);
-  const conv = createConversations({ runtime, eventStore, flow, ...(sharedConfig && { effects }) });
+  const conv = createConversations({
+    runtime,
+    eventStore,
+    flow,
+    ...(sharedConfig && { effects }),
+    ...(secure && opts.policy === undefined ? { policy: ownerPolicy } : {}),
+    ...((!secure || opts.ackPolicy === true) && { runtimePolicyIsOwnerScoped: true }),
+    ...opts.conversations,
+  });
   return {
     runtime,
     eventStore,
@@ -275,4 +298,17 @@ export async function messages(b: Booted, id: string, n: number, principal?: Pri
     return out.entries.length >= n;
   }, `${n} messages`);
   return out.entries;
+}
+
+/** A message signed the way the host's client signs it, for tests that write to the inbox raw. */
+export function signRaw(
+  conversationId: string,
+  body: { kind: "user" | "close"; text?: string; id?: string; asker?: Identity; iat?: number }
+): Record<string, unknown> {
+  return signedEnvelope(TEST_KEY, {
+    id: `raw-${Math.random().toString(36).slice(2)}`,
+    iat: Date.now(),
+    ...body,
+    conversationId,
+  });
 }

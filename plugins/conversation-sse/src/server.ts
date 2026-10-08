@@ -8,6 +8,7 @@ import {
   InvalidCursorError,
   InvalidTurnError,
   ParticipantLimitError,
+  QueueFullError,
   SubscriberLimitError,
   followConversation,
   isValidConversationId,
@@ -339,7 +340,11 @@ export function createConversationSseServer(
     }
     if (err instanceof InboxClosedError)
       return new HttpError(409, { error: "conversation is closed" });
-    if (err instanceof InboxFullError || err instanceof SubscriberLimitError) {
+    if (
+      err instanceof InboxFullError ||
+      err instanceof SubscriberLimitError ||
+      err instanceof QueueFullError
+    ) {
       return new HttpError(429, { error: "too many requests" }, { "retry-after": "1" });
     }
     const exposed = exposeError(err, randomUUID);
@@ -473,6 +478,12 @@ export function createConversationSseServer(
           ...(options.pollMs !== undefined && { pollMs: options.pollMs }),
         }
       )) {
+        // Membership is judged for EVERY delivered message, not only at the periodic re-authorization: a
+        // participant removed a moment ago must not be handed the next entry in the interval.
+        if (!(await conversations.isParticipant(id, principal))) {
+          sink.send(frame("error", { error: "unauthorized" }));
+          break;
+        }
         if (item.type === "message") {
           // The per-viewer filter: a restricted entry reaches this viewer as a bare placeholder.
           const [entry] = await conversations.filterEntries([item.entry], principal);

@@ -13,6 +13,7 @@ import { z } from "zod";
 import {
   type Identity,
   identityKey,
+  identityOf,
   parseIdentity,
   sameIdentity,
   sign,
@@ -71,7 +72,9 @@ const DEFAULTS = {
   maxCarryBytes: 256 * 1024,
   maxSummaryChars: 16_000,
 } as const;
-const MAX_RECENT_IDS = 256;
+const MAX_RECENT_IDS = 1024;
+const MAX_KNOWN_FOR_WATCH = 256;
+const MAX_CLOCK_SKEW_MS = 60_000;
 const MAX_CLASSES = 16;
 const MAX_CLASS_LEN = 64;
 const STATUSES = new Set<MessageStatus>(["complete", "interrupted", "failed", "rejected"]);
@@ -84,32 +87,35 @@ function positive(name: string, v: number): void {
   }
 }
 
-/** The owner-mode envelope: unsigned (anything that may `send` is the owner, or the runtime refused it). */
-export function parseEnvelope(value: unknown): TurnEnvelope | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  const o = value as Record<string, unknown>;
-  const id = typeof o.id === "string" && o.id.length <= 256 ? { id: o.id } : {};
-  if (o.kind === "close") return { kind: "close", ...id };
-  if (o.kind === "user" && typeof o.text === "string") return { kind: "user", text: o.text, ...id };
-  return undefined;
-}
+export type EnvelopeRefusal = "malformed" | "unauthenticated";
 
-/** The shared-mode envelope: valid only if signed by the host, and then the asker is as signed. */
+/**
+ * Both modes: an envelope is acted on only if the host's client SIGNED it, for THIS conversation, with an
+ * issue time and an id (the replay set's key). The signature covers every field, so none can be lifted
+ * from one message into another.
+ */
 export function parseSignedEnvelope(
   value: unknown,
-  key: string
-): { env?: TurnEnvelope; reason?: "malformed" | "unauthenticated" } {
+  key: string,
+  conversationId: string
+): { env?: TurnEnvelope; reason?: EnvelopeRefusal } {
   if (typeof value !== "object" || value === null) return { reason: "malformed" };
   const { sig, ...body } = value as Record<string, unknown>;
   if (!verifySignature(key, body, sig)) return { reason: "unauthenticated" };
-  const id = typeof body.id === "string" && body.id.length <= 256 ? { id: body.id } : {};
-  if (body.kind === "close") {
-    const by = parseIdentity(body.by);
-    return by === undefined ? { reason: "malformed" } : { env: { kind: "close", by, ...id } };
+  if (body.conversationId !== conversationId) return { reason: "unauthenticated" };
+  const id = body.id;
+  const iat = body.iat;
+  if (typeof id !== "string" || id.length === 0 || id.length > 256) return { reason: "malformed" };
+  if (typeof iat !== "number" || !Number.isFinite(iat)) return { reason: "malformed" };
+  let asker: Identity | undefined;
+  if (body.asker !== undefined) {
+    asker = parseIdentity(body.asker);
+    if (asker === undefined) return { reason: "malformed" };
   }
-  const asker = parseIdentity(body.asker);
-  if (body.kind === "user" && typeof body.text === "string" && asker !== undefined) {
-    return { env: { kind: "user", text: body.text, asker, ...id } };
+  const who = asker === undefined ? {} : { asker };
+  if (body.kind === "close") return { env: { kind: "close", id, iat, ...who } };
+  if (body.kind === "user" && typeof body.text === "string") {
+    return { env: { kind: "user", text: body.text, id, iat, ...who } };
   }
   return { reason: "malformed" };
 }
@@ -170,6 +176,7 @@ export function carryOf(
     v: 1,
     seq: safeInt(c.seq),
     ord: safeInt(c.ord),
+    dropped: safeInt(c.dropped),
     ...(owner !== undefined && { owner }),
     ...(typeof c.summary === "string" && { summary: clip(c.summary, lim.summaryChars) }),
     ids: (Array.isArray(c.ids) ? c.ids : [])
@@ -235,6 +242,13 @@ export function conversationRunner(
   const maxReplyChars = config.maxReplyChars ?? DEFAULTS.maxReplyChars;
   const maxWindowTurns = config.maxWindowTurns ?? DEFAULTS.maxWindowTurns;
   const maxCarryBytes = config.maxCarryBytes ?? DEFAULTS.maxCarryBytes;
+  const maxEnvelopeAge = config.maxEnvelopeAgeMs ?? 60 * 60_000;
+  const maxInvalid = config.maxInvalidRecords ?? 50;
+  if (typeof config.key !== "string" || config.key.length < 8) {
+    throw new Error(
+      "conversation$: `key` (the host's envelope-signing secret, at least 8 characters) is required"
+    );
+  }
   positive("rotateEveryTurns", rotateEvery);
   positive("maxTurnChars", maxTurnChars);
   positive("maxReplyChars", maxReplyChars);
@@ -265,6 +279,27 @@ export function conversationRunner(
     if (typeof sharedCfg.cleared !== "function") {
       throw new Error("conversation$ (shared): `shared.cleared` is required (fail closed)");
     }
+    if (identityOf(sharedCfg.servicePrincipal) === undefined) {
+      throw new Error(
+        "conversation$ (shared): `shared.servicePrincipal` (a principal with an actor) is required: it owns the coordinating execution"
+      );
+    }
+    const a = config.agent;
+    if (a.memoryScope !== undefined) {
+      throw new Error(
+        "conversation$ (shared): a constant `agent.memoryScope` would hand one participant's memory to every other; give `shared.memoryScope(asker)` instead"
+      );
+    }
+    if (typeof wb === "object" && wb !== null && wb.scope !== undefined) {
+      throw new Error(
+        "conversation$ (shared): `agent.writeBack.scope` must come from `shared.memoryScope(asker)`"
+      );
+    }
+    if (a.memory !== undefined && typeof sharedCfg.memoryScope !== "function") {
+      throw new Error(
+        "conversation$ (shared): `agent.memory` needs `shared.memoryScope(asker)` (a per-asker scope)"
+      );
+    }
   }
   const counter = budget?.counter ?? heuristicTokenCounter();
   const maxSummaryTokens =
@@ -284,6 +319,8 @@ export function conversationRunner(
       bytes: maxCarryBytes,
     });
     let seq = carry.seq;
+    /** Rejected envelopes so far: recorded up to `maxInvalidRecords`, then only counted. */
+    let droppedCount = carry.dropped ?? 0;
     /** Messages consumed so far (accepted or not): the id space of every recorded fact, never reused. */
     let ord = carry.ord;
     let summary = carry.summary;
@@ -374,19 +411,8 @@ export function conversationRunner(
       // This is the ONLY place the execution parks.
       const raw: unknown = pending !== undefined ? pending : await ctx.receive(CONVERSATION_TOPIC);
       pending = undefined;
-      const parsed =
-        sharedCfg === undefined
-          ? { env: parseEnvelope(unwrapTainted(raw)) }
-          : parseSignedEnvelope(unwrapTainted(raw), sharedCfg.key);
+      const parsed = parseSignedEnvelope(unwrapTainted(raw), config.key, conversationId);
       const env = parsed.env;
-      const badReason = (parsed as { reason?: string }).reason ?? "malformed";
-
-      if (env?.kind === "close") {
-        await ctx.decide("conv#closed", () => ({ kind: "closed", turns: seq }), {
-          source: RECORD_SOURCE,
-        });
-        return { conversationId, turns: seq, closed: true };
-      }
 
       // Rotation sits BETWEEN consuming a message and starting its turn: no wait is outstanding
       // here, which `continueAsNew` requires. The consumed message rides
@@ -399,6 +425,7 @@ export function conversationRunner(
               seq,
               ord,
               ids,
+              dropped: droppedCount,
               ...(owner !== undefined && { owner }),
               ...(summary !== undefined && { summary }),
               turns,
@@ -410,14 +437,62 @@ export function conversationRunner(
       }
 
       ord++;
-      remember(env?.id);
-      if (env === undefined || env.kind !== "user" || env.text.trim() === "") {
-        await reject(env === undefined ? badReason : "malformed");
+
+      // ── is this message ONE THE HOST SIGNED, for this conversation, from the right voice, once, and still fresh? ──
+      // The inbox is writable by whatever the runtime's policy admits, so nothing in it is trusted until it
+      // passes here. A refusal is a recorded entry (up to `maxInvalidRecords`), after that only counted.
+      let invalid: string | undefined = parsed.reason;
+      if (env !== undefined && invalid === undefined) {
+        const id = env.id as string;
+        if (known.has(id)) invalid = "replayed";
+        else if (
+          sharedCfg === undefined
+            ? !(sameIdentity(env.asker, owner) || (env.asker === undefined && owner === undefined))
+            : env.asker === undefined
+        ) {
+          // owner mode: only the OWNER's voice; shared: some asker is named (membership is judged below)
+          invalid = "unauthenticated";
+        } else {
+          const iat = env.iat as number;
+          const fresh = await ctx.decide<boolean>(
+            `conv#o${ord}:fresh`,
+            () => {
+              const age = Date.now() - iat;
+              return age <= maxEnvelopeAge && age >= -MAX_CLOCK_SKEW_MS;
+            },
+            { source: "conversation-access" }
+          );
+          if (!fresh) invalid = "stale";
+          else remember(id);
+        }
+      }
+      if (invalid !== undefined) {
+        droppedCount++;
+        if (droppedCount <= maxInvalid) await reject(invalid);
+        else if (droppedCount % 100 === 0) {
+          const count = droppedCount;
+          await ctx.decide(`conv#o${ord}:dropped`, () => ({ kind: "dropped", count }), {
+            source: RECORD_SOURCE,
+          });
+        }
         continue;
       }
-      const asker = env.asker;
-      if (env.text.length > maxTurnChars) {
-        await reject("too-long", asker);
+      const verified = env as TurnEnvelope;
+
+      if (verified.kind === "close") {
+        await ctx.decide("conv#closed", () => ({ kind: "closed", turns: seq }), {
+          source: RECORD_SOURCE,
+        });
+        return { conversationId, turns: seq, closed: true };
+      }
+      if (verified.text.trim() === "") {
+        await reject("malformed");
+        continue;
+      }
+      const asker = verified.asker;
+      const attributed = sharedCfg !== undefined ? asker : undefined;
+      if (verified.text.length > maxTurnChars) {
+        await reject("too-long", attributed);
         continue;
       }
 
@@ -469,6 +544,8 @@ export function conversationRunner(
       const overflow = Math.max(0, turns.length - maxWindowTurns);
       let dropCount = sharedCfg === undefined ? overflow : 0;
       let promptTurns: CarriedTurn[] = turns;
+      let skipSummary = false;
+      const summaryForTurn = (): string | undefined => (skipSummary ? undefined : summary);
       if (sharedCfg !== undefined)
         promptTurns = visibleTurns.slice(Math.max(0, visibleTurns.length - maxWindowTurns));
       if (budget !== undefined) {
@@ -483,7 +560,7 @@ export function conversationRunner(
               }),
               ...(systemForCount !== "" && { system: systemForCount }),
               ...(summary !== undefined && { summary }),
-              prompt: env.text,
+              prompt: verified.text,
               turns: view.map((t) => ({
                 user: t.user,
                 ...(t.assistant !== undefined && { assistant: t.assistant }),
@@ -498,7 +575,11 @@ export function conversationRunner(
           await reject("prompt-too-large", asker);
           continue;
         }
-        if (verdict.dropSummary === true) summary = undefined;
+        if (verdict.dropSummary === true) {
+          // OWNER: the summary is only this one user's, drop it. SHARED: it is everyone's, so only THIS turn goes without.
+          if (sharedCfg === undefined) summary = undefined;
+          else skipSummary = true;
+        }
         for (const [i, tokens] of verdict.counted) {
           const t = view[i];
           if (t !== undefined) t.tokens = tokens;
@@ -526,14 +607,19 @@ export function conversationRunner(
         }
         return watching;
       };
+      // The question is classified by what it was ASKED AGAINST: the classes of every entry in the context
+      // it was built on (known before the turn), so a question that quotes restricted content is filtered
+      // like the answer is.
+      const contextClasses = union(...promptTurns.map((t) => t.classes));
       await record(
         "user",
         {
           turn: n,
           role: "user",
-          text: env.text,
+          text: verified.text,
           status: "complete",
-          ...(asker !== undefined && { asker }),
+          ...(attributed !== undefined && { asker: attributed }),
+          ...(contextClasses.length > 0 && { classes: contextClasses }),
         },
         async () => {
           await ensureWatch();
@@ -553,7 +639,7 @@ export function conversationRunner(
       let failure: unknown;
       let toolNames: string[] = [];
       let turnExecutionId: string | undefined;
-      const contextClasses = union(...promptTurns.map((t) => t.classes));
+      let memoryScope: string | undefined;
       try {
         if (sharedCfg !== undefined && asker !== undefined) {
           const out = (await ctx.execute(
@@ -568,10 +654,10 @@ export function conversationRunner(
               turn: n,
               ord,
               asker,
-              text: env.text,
-              ...(env.id !== undefined && { id: env.id }),
-              history: historyOf(summary, promptTurns),
-              known: [...known],
+              text: verified.text,
+              ...(verified.id !== undefined && { id: verified.id }),
+              history: historyOf(summaryForTurn(), promptTurns),
+              known: [...known].slice(-MAX_KNOWN_FOR_WATCH),
               ownerExecutionId: ctx.executionId,
             }
           )) as TurnResult;
@@ -579,6 +665,7 @@ export function conversationRunner(
           reply = clip(out.content ?? "", maxReplyChars);
           toolNames = out.tools ?? [];
           turnExecutionId = out.turnExecutionId;
+          memoryScope = out.memoryScope;
           if (out.status === "failed") {
             reason = out.reason ?? "turn-failed";
             errorId = out.errorId;
@@ -593,9 +680,9 @@ export function conversationRunner(
                 ctx,
                 { ...config.agent, loopId: `conv#o${ord}`, signal: ctl.signal },
                 {
-                  prompt: env.text,
+                  prompt: verified.text,
                   promptOrigin: USER_ORIGIN,
-                  history: historyOf(summary, turns),
+                  history: historyOf(summaryForTurn(), turns),
                 }
               ),
             ensureWatch
@@ -630,7 +717,9 @@ export function conversationRunner(
           () =>
             union(
               contextClasses,
-              toolNames.map((name) => sharedCfg.classOf?.(name) ?? "unclassified")
+              toolNames.map((name) => sharedCfg.classOf?.(name) ?? "unclassified"),
+              // recalled / written memory is a data class of its own: whoever the scope belongs to
+              memoryScope === undefined ? [] : [`memory:${memoryScope}`]
             ),
           { source: "conversation-access" }
         );
@@ -644,7 +733,7 @@ export function conversationRunner(
           status,
           ...(reason !== undefined && { reason }),
           ...(errorId !== undefined && { errorId }),
-          ...(asker !== undefined && { asker }),
+          ...(attributed !== undefined && { asker: attributed }),
           ...(classes.length > 0 && { classes }),
           ...(turnExecutionId !== undefined && { turnExecutionId }),
         },
@@ -656,10 +745,10 @@ export function conversationRunner(
       );
       turns.push({
         n,
-        user: env.text,
+        user: verified.text,
         assistant: reply,
         status,
-        ...(asker !== undefined && { asker }),
+        ...(attributed !== undefined && { asker: attributed }),
         ...(classes.length > 0 && { classes }),
       });
       if (sharedCfg !== undefined && turns.length > maxWindowTurns) {

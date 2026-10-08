@@ -428,7 +428,7 @@ describe("shared mode: replay", () => {
       [1, "assistant", "restricted"],
       [2, "user", "complete"],
       [2, "assistant", "failed"],
-      [3, "user", "complete"],
+      [3, "user", "restricted"], // dave's question was built on alice's restricted answer
       [3, "assistant", "restricted"],
     ]);
     expect(all[7]).toMatchObject({ status: "complete", asker: asIdentity(carol) });
@@ -458,7 +458,7 @@ describe("shared mode: rotation and approvals", () => {
       ConversationNotFoundError
     );
     const asCarol = (await b.conv.history(id, { principal: carol, limit: 100 })).entries;
-    expect(asCarol.filter((e) => e.status === "restricted").map((e) => e.turn)).toEqual([1, 3]);
+    expect(asCarol.filter((e) => e.status === "restricted").map((e) => e.turn)).toEqual([1, 3, 3]);
   });
 
   it("approvals stay refused: a parked approval gate cannot coexist with a conversation", () => {

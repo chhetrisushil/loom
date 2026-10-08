@@ -16,6 +16,7 @@ effects.register("model", createAgentModelEffect(hub.wrapProvider(provider), {
 }));
 
 const chat = conversation$({
+  key: process.env.CONVERSATION_KEY!,   // signs every inbox envelope: the body acts only on what the host's client signed
   agent: { definition: agent$({ id: "assistant", name: "Assistant", tools: [] }), modelToolId: "model" },
   budget: { contextWindow: 200_000, summarizerToolId: "summarize" },   // token-aware; evicted turns are summarized
   bargeIn: inboxBargeIn(eventStore),                                   // a new message interrupts the running turn
@@ -23,7 +24,7 @@ const chat = conversation$({
 });
 runtime.registerFlow(chat.definition, chat.runner);   // runtime needs kernel.features.inbox + continueAsNew
 
-const conversations = createConversations({ runtime, eventStore, flow: chat });
+const conversations = createConversations({ runtime, eventStore, flow: chat, policy });   // policy: the owner-scoped executionAccessPolicy the runtime uses
 const { conversationId } = await conversations.start({ principal });
 await conversations.sendTurn(conversationId, "Plan my trip", { principal });   // a retry with the same messageId is delivered once
 await conversations.sendTurn(conversationId, "Actually, make it two days", { principal });  // barges in
@@ -40,6 +41,8 @@ const page = await conversations.history(conversationId, { principal, direction:
 - **Shared mode** (`conversation$({ shared })`, ADR 0122 D10) for a chat several people use: an explicit participant set (not a tenant), each turn run as its **asker** in its own execution (their grants, their quotas), each answer classified by the tools it touched and filtered per viewer (a bare placeholder for whoever is not cleared, in history, on the stream and in the model's context), a summary built only from unrestricted turns, FIFO queueing, and a participant may interrupt only their own turn.
 
 ## Read these before relying on it
+
+- **The runtime policy must be owner-scoped** for `query`, `send`, `cancel` and `resume` (`executionAccessPolicy({ rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" } })`): the conversation's log holds the unfiltered transcript. `createConversations` refuses anything looser unless you acknowledge it. Every inbox message is also a host-signed, conversation-bound, single-use, fresh envelope, so what the policy lets through is still not obeyed unless the host signed it.
 
 - A registered `ctx.receive` is **not** woken while a step is in flight (ADR 0110): barge-in cannot be built from the inbox primitives, which is why the signal comes from a store subscription outside the flow body (ADR 0122 D2).
 - A tool call already in flight when a barge-in lands completes; the loop stops before issuing the next call. Wrap the provider with `hub.wrapProvider` to cut the *generation* itself.

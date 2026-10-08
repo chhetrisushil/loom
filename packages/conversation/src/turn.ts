@@ -8,9 +8,19 @@ import {
 import { TypedFailure, flow$, fnv1a64 } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
 import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
+import type { EventStore } from "@loom/event-runtime";
+import { readRangeOf } from "@loom/event-runtime";
 import type { RegisteredFlow, WorkflowRuntime } from "@loom/workflow-runtime";
 import { z } from "zod";
-import { type Identity, identityKey, parseIdentity, verifySignature } from "./access";
+import {
+  type Identity,
+  identityKey,
+  identityOf,
+  parseIdentity,
+  sameIdentity,
+  sign,
+  verifySignature,
+} from "./access";
 import type { BargeInSource, StoredInboxMessage } from "./bargeIn";
 import { withTurnScope } from "./hub";
 import { type ConversationConfig, USER_ORIGIN } from "./types";
@@ -45,13 +55,19 @@ export interface TurnResult {
   /** A fixed, user-safe reason for `failed`. */
   reason?: "denied" | "model-error" | "turn-failed" | "cancelled";
   errorId?: string;
+  /** The memory scope this turn recalled from / wrote to, when the agent has a memory. */
+  memoryScope?: string;
   /** The execution that ran the turn. */
   turnExecutionId: string;
 }
 
-/** The turn execution's id: deterministic, so a recovery adopts the same execution. */
-export const turnExecutionId = (conversationId: string, ord: number): string =>
-  `turn:${conversationId}:o${ord}`;
+/**
+ * The turn execution's id: deterministic (a recovery finds the same execution) and UNGUESSABLE: the tail is
+ * an HMAC of the conversation and ordinal under the host's key. A predictable id let anyone who can start an
+ * execution plant one first and have the conversation adopt it (a forged answer, or a refusal to run).
+ */
+export const turnExecutionId = (conversationId: string, ord: number, key: string): string =>
+  `turn:${conversationId}:o${ord}:${sign(key, { conversationId, ord, purpose: "turn-id" }).slice(0, 24)}`;
 
 const DENIED = /Denied|Forbidden|Unauthori[sz]ed/;
 
@@ -75,16 +91,28 @@ export function sharedTurnFlow(
   ): Promise<Omit<TurnResult, "turnExecutionId">> => {
     const signal = signals.get(ctx.executionId);
     const errorId = `err-${fnv1a64(ctx.executionId)}`;
+    // Memory is PER ASKER: the scope comes from the asker, never from a constant the host wrote once.
+    const scope = config.shared?.memoryScope?.(input.asker);
+    const wb = config.agent.writeBack;
     try {
       const out = await agentLoop$(
         ctx,
-        { ...config.agent, loopId: "turn", ...(signal !== undefined && { signal }) },
+        {
+          ...config.agent,
+          loopId: "turn",
+          ...(signal !== undefined && { signal }),
+          ...(scope !== undefined && { memoryScope: scope }),
+          ...(scope !== undefined &&
+            typeof wb === "object" &&
+            wb !== null && { writeBack: { ...wb, scope } }),
+        },
         { prompt: input.text, promptOrigin: USER_ORIGIN, history: input.history }
       );
       return {
         status: "complete",
         content: out.content,
         tools: out.toolCallLog.map((s) => s.toolName),
+        ...(config.agent.memory !== undefined && scope !== undefined && { memoryScope: scope }),
       };
     } catch (e) {
       if (e instanceof TypedFailure && e.channel === AGENT_INTERRUPTED) {
@@ -93,6 +121,7 @@ export function sharedTurnFlow(
           status: "interrupted",
           content: run.content ?? "",
           tools: (run.toolCallLog ?? []).map((s) => s.toolName),
+          ...(config.agent.memory !== undefined && scope !== undefined && { memoryScope: scope }),
         };
       }
       if (isTerminalToolError(e)) {
@@ -116,6 +145,10 @@ export function sharedTurnFlow(
 
 export interface TurnEffectDeps {
   runtime: WorkflowRuntime;
+  /** Where the turn execution's recorded start is verified before it is adopted. */
+  eventStore: EventStore;
+  /** The host's log of the real error behind a failed turn. */
+  onError?: ConversationConfig["onError"];
   turnFlow: RegisteredFlow<TurnInput, Omit<TurnResult, "turnExecutionId">>;
   signals: Map<string, AbortSignal>;
   key: string;
@@ -136,7 +169,7 @@ export function sharedTurnEffect(
   const { runtime } = deps;
   return new ToolEffect<TurnInput & { ownerExecutionId: string }, TurnResult>(
     async (input, ctx) => {
-      const turnId = turnExecutionId(input.conversationId, input.ord);
+      const turnId = turnExecutionId(input.conversationId, input.ord, deps.key);
       const ctl = new AbortController();
       deps.signals.set(turnId, ctl.signal);
       const sys = runtime.systemOptions();
@@ -152,7 +185,7 @@ export function sharedTurnEffect(
           unwatch = await deps.bargeIn(input.conversationId, input.ownerExecutionId, {
             onMessage: () => ctl.abort(),
             isKnown: (id) => input.known.includes(id) || id === input.id,
-            // Only the SAME asker's own signed message interrupts their turn.
+            // Only the SAME asker's own signed message, for THIS conversation, interrupts their turn.
             accept: (m: StoredInboxMessage) => {
               const p = m.payload as Record<string, unknown> | null;
               if (p === null || typeof p !== "object" || p.kind !== "user") return false;
@@ -161,6 +194,7 @@ export function sharedTurnEffect(
               return (
                 asker !== undefined &&
                 identityKey(asker) === askerKey &&
+                p.conversationId === input.conversationId &&
                 verifySignature(deps.key, body, sig)
               );
             },
@@ -180,7 +214,7 @@ export function sharedTurnEffect(
           input.turn,
           ctl.signal,
           async (): Promise<TurnResult> => {
-            const out = await runTurnExecution(runtime, deps.turnFlow, turnId, input, principal);
+            const out = await runTurnExecution(deps, turnId, input, principal);
             return { ...out, turnExecutionId: turnId };
           },
           undefined,
@@ -197,23 +231,62 @@ export function sharedTurnEffect(
   );
 }
 
+/**
+ * An execution already living under the turn's id is ADOPTED only if it is provably the one this turn
+ * would have started: our flow, started as THIS asker (the principal the kernel recorded), on THIS
+ * conversation, ordinal, message and text. Anything else is refused, never continued: continuing it would
+ * serve whatever its starter wanted as the participant's answer.
+ */
+async function adoptable(
+  deps: TurnEffectDeps,
+  turnId: string,
+  input: TurnInput,
+  principal: PrincipalChain
+): Promise<boolean> {
+  const first = (await readRangeOf(deps.eventStore, turnId, 0, 0))[0];
+  if (first === undefined) return false;
+  if (first.workflowId !== deps.turnFlow.definition.id) return false;
+  const payload = first.payload as {
+    input?: Partial<TurnInput>;
+    principal?: { identity?: unknown };
+  } | null;
+  const recorded = parseIdentity(payload?.principal?.identity);
+  const expected = identityOf(principal);
+  if (recorded === undefined || expected === undefined || !sameIdentity(recorded, expected))
+    return false;
+  const started = payload?.input;
+  const a = started?.asker === undefined ? undefined : parseIdentity(started.asker);
+  return (
+    started?.conversationId === input.conversationId &&
+    started.ord === input.ord &&
+    started.turn === input.turn &&
+    started.text === input.text &&
+    started.id === input.id &&
+    a !== undefined &&
+    sameIdentity(a, input.asker)
+  );
+}
+
 async function runTurnExecution(
-  runtime: WorkflowRuntime,
-  turnFlow: RegisteredFlow<TurnInput, Omit<TurnResult, "turnExecutionId">>,
+  deps: TurnEffectDeps,
   turnId: string,
   input: TurnInput,
   principal: PrincipalChain
 ): Promise<Omit<TurnResult, "turnExecutionId">> {
+  const { runtime, turnFlow } = deps;
   const sys = runtime.systemOptions();
+  const errorId = `err-${fnv1a64(turnId)}`;
   const failed = (
-    reason: NonNullable<TurnResult["reason"]>
-  ): Omit<TurnResult, "turnExecutionId"> => ({
-    status: "failed",
-    content: "",
-    tools: [],
-    reason,
-    errorId: `err-${fnv1a64(turnId)}`,
-  });
+    reason: NonNullable<TurnResult["reason"]>,
+    cause?: unknown
+  ): Omit<TurnResult, "turnExecutionId"> => {
+    // The user sees the fixed reason; the host gets the cause (the first cut swallowed it).
+    deps.onError?.(errorId, cause ?? new Error(`turn execution ${reason}`), {
+      conversationId: input.conversationId,
+      turn: input.turn,
+    });
+    return { status: "failed", content: "", tools: [], reason, errorId };
+  };
   try {
     let state = await runtime.loadState(turnId, sys);
     if (state === null) {
@@ -225,22 +298,31 @@ async function runTurnExecution(
           ord: input.ord,
           asker: input.asker,
           text: input.text,
+          ...(input.id !== undefined && { id: input.id }),
           history: input.history,
           known: [],
         },
         { executionId: turnId, principal }
       );
       state = await handle.waitForCompletion();
-    } else if (!TERMINAL.has(state.status)) {
-      // The process died mid-turn: continue THE SAME execution (its log, its principal).
-      state = await (await runtime.restoreFromState(state)).waitForCompletion();
+    } else {
+      if (!(await adoptable(deps, turnId, input, principal))) {
+        return failed(
+          "turn-failed",
+          new Error(`refused to adopt a foreign execution at "${turnId}"`)
+        );
+      }
+      if (!TERMINAL.has(state.status)) {
+        // The process died mid-turn: continue THE SAME execution (its log, its principal).
+        state = await (await runtime.restoreFromState(state)).waitForCompletion();
+      }
     }
     if (state.status === "completed") {
       return state.variables._output as Omit<TurnResult, "turnExecutionId">;
     }
     return failed(state.status === "cancelled" ? "cancelled" : "turn-failed");
-  } catch {
-    return failed("turn-failed");
+  } catch (err) {
+    return failed("turn-failed", err);
   }
 }
 

@@ -114,3 +114,19 @@ describe("executionAccessPolicy", () => {
     expect(p.authorize(req("start", { actor: "x" }, "c", "wf")).allowed).toBe(false);
   });
 });
+
+describe("scopes (read-only)", () => {
+  it("exposes the resolved scope of every op, defaults merged with the rules", () => {
+    const p = executionAccessPolicy({ rules: { query: "owner", send: "deny" } });
+    expect(p.scopes).toMatchObject({
+      start: "any",
+      resume: "tenant",
+      cancel: "tenant",
+      query: "owner",
+      send: "deny",
+      actAsOwner: "deny",
+      annotate: "owner",
+    });
+    expect(Object.isFrozen(p.scopes)).toBe(true);
+  });
+});

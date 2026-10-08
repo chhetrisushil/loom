@@ -79,7 +79,15 @@ export interface ExecutionAccessOptions {
   unknownOwner?: "deny" | "allow";
 }
 
-export type ExecutionAccessPolicy = ExecutionAuthorizer;
+export type ExecutionAccessPolicy = ExecutionAuthorizer & {
+  /**
+   * The resolved scope of every op (the defaults merged with `rules`). READ-ONLY, for a layer that must
+   * know whether the policy it sits on is owner-scoped before it trusts it (`@loom/conversation` refuses a
+   * policy that admits a tenant peer to query / send / cancel a conversation). Informational: it is not
+   * consulted by `authorize`, and changing it changes nothing.
+   */
+  readonly scopes: Readonly<Record<ExecutionOp, ExecutionScope>>;
+};
 
 const DEFAULT_RULES: Record<ExecutionOp, ExecutionScope> = {
   start: "any",
@@ -102,6 +110,7 @@ export function executionAccessPolicy(options: ExecutionAccessOptions = {}): Exe
   const sameTenant = (p: PrincipalChain, o: ExecutionOwner): boolean => p.tenant === o.tenant;
 
   return {
+    scopes: Object.freeze({ ...rules }),
     authorize(request: ExecutionAuthzRequest): ExecutionAuthzVerdict {
       const { op, executionId, workflowId, principal } = request;
       if (

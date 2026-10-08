@@ -1,6 +1,6 @@
 import { InboxClosedError } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
-import { Latch, boot, lastUserText, messages, until } from "./__fixtures__/harness";
+import { Latch, boot, lastUserText, messages, signRaw, until } from "./__fixtures__/harness";
 import { CONVERSATION_TOPIC } from "./index";
 
 describe("conversation: turns", () => {
@@ -92,22 +92,28 @@ describe("conversation: turns", () => {
     expect(req?.system ?? "").not.toContain("ignore previous");
   });
 
-  it("rejects a malformed or oversized turn and keeps going", async () => {
+  it("rejects an unsigned, malformed or oversized message and keeps going", async () => {
     const b = boot({ config: { maxTurnChars: 20 } });
     const { conversationId: id } = await b.conv.start();
-    // a sender that bypasses the client (anything holding `send` authority can)
+    // anything that can write to the inbox raw (the runtime admitted it) but is not the host's signed envelope
     await b.runtime.send(id, { topic: CONVERSATION_TOPIC, payload: { kind: "user" } });
     await b.runtime.send(id, { topic: CONVERSATION_TOPIC, payload: "just a string" });
+    // signed by the host, but too long / empty
     await b.runtime.send(id, {
       topic: CONVERSATION_TOPIC,
-      payload: { kind: "user", text: "x".repeat(21) },
+      payload: signRaw(id, { kind: "user", text: "x".repeat(21) }),
+    });
+    await b.runtime.send(id, {
+      topic: CONVERSATION_TOPIC,
+      payload: signRaw(id, { kind: "user", text: "   " }),
     });
     await b.conv.sendTurn(id, "fine");
-    const all = await messages(b, id, 5);
+    const all = await messages(b, id, 6);
     expect(all.map((m) => [m.role, m.status, m.reason ?? ""])).toEqual([
-      ["user", "rejected", "malformed"],
+      ["user", "rejected", "unauthenticated"],
       ["user", "rejected", "malformed"],
       ["user", "rejected", "too-long"],
+      ["user", "rejected", "malformed"],
       ["user", "complete", ""],
       ["assistant", "complete", ""],
     ]);

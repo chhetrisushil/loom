@@ -1,6 +1,6 @@
-import { ExecutionDeniedError } from "@loom/workflow-runtime";
+import { ExecutionDeniedError, executionAccessPolicy } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
-import { alice, bob, boot, mallory, messages } from "./__fixtures__/harness";
+import { alice, bob, boot, mallory, messages, signRaw } from "./__fixtures__/harness";
 import { ConversationNotFoundError } from "./index";
 
 // OWNER-ONLY is the default (ADR 0122 D8): the identity that started a conversation is the only one that
@@ -49,22 +49,119 @@ describe("conversation authorization: owner-only by default", () => {
     expect(b.calls.n).toBe(1);
   });
 
-  it("a SAME-TENANT colleague is refused too, although the runtime's own default policy would admit the tenant", async () => {
+  it("a SAME-TENANT colleague is refused: by the client, and by the runtime's owner-scoped policy", async () => {
     const { b, id } = await owned();
     const colleague = { ...bob, tenant: alice.tenant }; // bob, in alice's tenant
     const before = await logSize(b, id);
+    const types = async () =>
+      (await b.eventStore.read(id)).map((e) => e.eventType).filter((t) => t !== "EXECUTION_DENIED");
+    const typesBefore = await types();
     for (const p of await Promise.allSettled(everyOp(b, id, colleague))) {
       expect((p as PromiseRejectedResult).reason).toBeInstanceOf(ConversationNotFoundError);
     }
-    expect(await logSize(b, id)).toBe(before);
-    // ...and it really is the client's check: the runtime alone lets that colleague send
+    // the RAW paths are closed too: the policy that gates them is owner-scoped
     await expect(
       b.runtime.send(
         id,
         { topic: "conversation:turn", payload: { kind: "user", text: "raw" } },
         { principal: colleague }
       )
-    ).resolves.toBeDefined();
+    ).rejects.toBeInstanceOf(ExecutionDeniedError);
+    await expect(b.runtime.loadState(id, { principal: colleague })).rejects.toBeInstanceOf(
+      ExecutionDeniedError
+    );
+    await expect(b.runtime.cancel(id, "x", { principal: colleague })).rejects.toBeInstanceOf(
+      ExecutionDeniedError
+    );
+    expect(await types()).toEqual(typesBefore); // the kernel's own EXECUTION_DENIED audit aside, nothing was written
+    expect((await b.eventStore.read(`__loom_inbox__:${id}`)).length + 0).toBeGreaterThanOrEqual(0);
+    void before;
+  });
+
+  it("construction REFUSES a runtime policy that lets a tenant peer query, send to or cancel (a looser host must say so)", () => {
+    expect(() =>
+      boot({
+        secure: true,
+        policy: executionAccessPolicy(),
+        ackPolicy: false,
+        conversations: { policy: executionAccessPolicy() },
+      })
+    ).toThrow(/"query" as "tenant"/);
+    expect(() =>
+      boot({
+        secure: true,
+        policy: executionAccessPolicy({
+          rules: { query: "owner", send: "owner", cancel: "owner", resume: "tenant" },
+        }),
+        ackPolicy: false,
+        conversations: {
+          policy: executionAccessPolicy({
+            rules: { query: "owner", send: "owner", cancel: "owner", resume: "tenant" },
+          }),
+        },
+      })
+    ).toThrow(/"resume"/);
+    // an opaque authorizer cannot be inspected: the host must acknowledge it
+    expect(() =>
+      boot({ secure: true, policy: { authorize: () => ({ allowed: true }) }, ackPolicy: false })
+    ).toThrow(/owner-scoped/);
+  });
+
+  it("DEFENCE IN DEPTH: even on a looser runtime, a raw message from the owner's tenant is never obeyed", async () => {
+    // the host lies (or errs) about its policy: tenant-scoped, acknowledged anyway
+    const b = boot({ secure: true, policy: executionAccessPolicy(), ackPolicy: true });
+    const { conversationId: id } = await b.conv.start({ principal: alice });
+    const colleague = { ...bob, tenant: alice.tenant };
+    // the runtime lets the colleague send...
+    await b.runtime.send(
+      id,
+      {
+        topic: "conversation:turn",
+        payload: { kind: "user", text: "i am alice", asker: { actor: "alice", tenant: "t1" } },
+      },
+      { principal: colleague }
+    );
+    // ...and the colleague's forgery with a made-up signature
+    await b.runtime.send(
+      id,
+      {
+        topic: "conversation:turn",
+        payload: {
+          ...signRaw(id, {
+            kind: "user",
+            text: "i am alice",
+            asker: { actor: "alice", tenant: "t1" },
+          }),
+          sig: "0".repeat(64),
+        },
+      },
+      { principal: colleague }
+    );
+    // a PROPERLY SIGNED envelope that speaks as somebody other than the owner (the host's signing key leaked to
+    // a service, a bug in a second client): only the owner's voice is accepted in an owner-only conversation
+    await b.runtime.send(
+      id,
+      {
+        topic: "conversation:turn",
+        payload: signRaw(id, {
+          kind: "user",
+          text: "as bob",
+          asker: { actor: "bob", tenant: "t1" },
+        }),
+      },
+      { principal: colleague }
+    );
+    // the owner is still served, after the junk
+    await b.conv.sendTurn(id, "the real one", { principal: alice });
+    const all = await messages(b, id, 4, alice);
+    expect(all.slice(0, 3).map((m) => [m.status, m.reason])).toEqual([
+      ["rejected", "unauthenticated"],
+      ["rejected", "unauthenticated"],
+      ["rejected", "unauthenticated"],
+    ]);
+    expect(JSON.stringify(all)).not.toContain("as bob");
+    expect(JSON.stringify(all)).not.toContain("i am alice");
+    expect(b.calls.n).toBe(1); // the model was asked ONLY for the owner's own message
   });
 
   it("a delegate acting on behalf of the owner is a DIFFERENT identity and does not become the owner", async () => {

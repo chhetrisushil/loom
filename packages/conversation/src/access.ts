@@ -125,9 +125,14 @@ export class ParticipantLimitError extends Error {
   }
 }
 
-function fold(events: readonly { payload: unknown }[]): Identity[] {
+function fold(
+  events: readonly { eventType?: string; workflowId?: string; payload: unknown }[]
+): Identity[] {
   const set = new Map<string, Identity>();
   for (const e of events) {
+    // Anyone who can start an execution under this stream's id can write ITS first event; only our own
+    // change events count, whoever else has written there.
+    if (e.eventType !== "PARTICIPANT_CHANGED" || e.workflowId !== MEMBERS_WORKFLOW) continue;
     const p = e.payload as { op?: unknown; identity?: unknown } | null;
     const identity = parseIdentity(p?.identity);
     if (identity === undefined) continue;
