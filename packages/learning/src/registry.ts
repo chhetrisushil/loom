@@ -332,7 +332,8 @@ export class PolicyRegistry {
 
   /**
    * Make a registered version live in `mode`. The registry runs `promotionGate` over the report
-   * ITSELF (its own thresholds, or the call's) and the report must name exactly this `{id, version}`:
+   * ITSELF (the registry's thresholds, or the gate defaults, are a FLOOR; a call's `thresholds` can only
+   * tighten it: both gates must pass) and the report must name exactly this `{id, version}`:
    * a failing gate is refused, and a caller-supplied verdict is not accepted at all. Promotion is the
    * single door a candidate walks through. The report is caller-supplied evidence: the registry
    * cannot re-run the evaluation, so who may call `promote` is an authorization question.

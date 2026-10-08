@@ -344,6 +344,20 @@ describe("EmbeddingMemoryStore hardening (R18 fix round 1)", () => {
     expect((await s.search("k", "topic3")).map((e) => e.id)).toContain("d3");
   });
 
+  it("replace on a hydrated key re-embeds an entry whose text changed under the same id", async () => {
+    const s = new EmbeddingMemoryStore({
+      store: new InMemoryMemoryStore(),
+      provider: new HashingEmbeddingProvider({ dimensions: 1024 }),
+      minScore: 0.3,
+    });
+    await s.append("k", E("a", "old zulu whiskey"));
+    await s.append("k", E("b", "steady note"));
+    await s.search("k", "zulu"); // hydrate
+    await s.replace("k", [E("a", "new yankee xray"), E("b", "steady note")]);
+    expect((await s.search("k", "yankee xray")).map((e) => e.id)).toEqual(["a"]);
+    expect(await s.search("k", "zulu whiskey")).toEqual([]);
+  });
+
   it("id-less entries are hashed once per entry object, not once per search", async () => {
     const s = new EmbeddingMemoryStore({
       store: new InMemoryMemoryStore(),
@@ -395,6 +409,38 @@ describe("hydration under a sustained writer (R18 fix round 2)", () => {
     expect((await s.search("k", "racing 2 beta")).map((e) => e.id)).toContain("w2");
     // 20 first pass + 3 racing entries on the retry + the queries; a retry that re-embedded the corpus costs 20 more
     expect(texts).toBeLessThanOrEqual(20 + 3 + 2);
+  });
+
+  it("a retry re-embeds an entry whose text changed under the same id", async () => {
+    const provider = new HashingEmbeddingProvider({ dimensions: 128 });
+    let reads = 0;
+    const inner = {
+      // the first snapshot holds d0's OLD text; every later snapshot holds it rewritten
+      read: async (_k: string) => {
+        reads += 1;
+        const snapshot =
+          reads === 1
+            ? [E("d0", "old zulu whiskey")]
+            : [E("d0", "new yankee xray"), E("w1", "racing tango")];
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+        return snapshot;
+      },
+      append: async () => {
+        await new Promise((r) => setImmediate(r));
+      },
+      clear: async () => {},
+    };
+    const s = new EmbeddingMemoryStore({ store: inner, provider, minScore: 0.2 });
+    // a write racing the first read forces a retry, which sees d0 with new text (the append yields
+    // once before it counts as a write, so it starts and ends inside the slow read)
+    const pA = s.append("k", E("w1", "racing tango"));
+    const pS = s.search("k", "zulu");
+    await Promise.all([pA, pS]);
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect((await s.search("k", "yankee xray")).map((e) => e.id)).toContain("d0");
+    expect(await s.search("k", "zulu whiskey")).toEqual([]);
   });
 
   it("a write that starts AND finishes inside the hydration read is still searchable", async () => {
