@@ -329,6 +329,11 @@ export interface EmbeddingMemoryStoreOptions {
 
 const keyMemo = new WeakMap<MemoryEntry, string>();
 
+/** A fixed-size tag of an entry's searchable text: what `indexed` compares, never the text itself. */
+function textTag(text: string): string {
+  return createHash("sha256").update(text).digest("base64url");
+}
+
 function entryKey(e: MemoryEntry): string {
   if (e.id !== undefined) return `id:${e.id}`;
   // No identity: derive one from the searchable text + timestamp + role. Equal entries share a key
@@ -374,7 +379,8 @@ export class EmbeddingMemoryStore implements MemoryStore {
   private readonly hydrated = new Set<string>();
   private readonly hydrating = new Map<string, Promise<void>>();
   /** What the index holds per hydrated key (entry keys), so `replace` can be incremental. */
-  private readonly indexed = new Map<string, Set<string>>();
+  /** Per key: entry key -> tag of the text its vector embeds (so a rewritten text is re-embedded). */
+  private readonly indexed = new Map<string, Map<string, string>>();
   private readonly writes = new Map<string, { started: number; inflight: number }>();
   /** Entries skipped from the index because their embedding was a zero vector. */
   skippedZeroVectors = 0;
@@ -480,7 +486,7 @@ export class EmbeddingMemoryStore implements MemoryStore {
           }
           const vecs = ids.map((k) => (cache.get(k) as { vec: number[] }).vec);
           await this.index.clear(key);
-          const held = new Set<string>();
+          const held = new Map<string, string>();
           for (let i = 0; i < ids.length; i++) {
             const v = vecs[i] as number[];
             if (isZero(v)) {
@@ -488,7 +494,7 @@ export class EmbeddingMemoryStore implements MemoryStore {
               continue;
             }
             await this.index.add(key, ids[i] as string, v);
-            held.add(ids[i] as string);
+            held.set(ids[i] as string, textTag(unique.get(ids[i] as string) as string));
           }
           this.indexed.set(key, held);
           if (before.inflight === 0 && w.inflight === 0 && before.started === w.started) {
@@ -512,13 +518,14 @@ export class EmbeddingMemoryStore implements MemoryStore {
     await this.write(key, async () => {
       if (this.hydrated.has(key)) {
         // Embed FIRST: if the model is down, nothing is appended and nothing diverges.
-        const [vec] = await this.embedAll([searchableText(entry)]);
+        const text = searchableText(entry);
+        const [vec] = await this.embedAll([text]);
         await this.store.append(key, entry);
         const k = entryKey(entry);
         if (isZero(vec as number[])) this.skippedZeroVectors += 1;
         else {
           await this.index.add(key, k, vec as number[]);
-          this.indexed.get(key)?.add(k);
+          this.indexed.get(key)?.set(k, textTag(text));
         }
         return;
       }
@@ -592,12 +599,15 @@ export class EmbeddingMemoryStore implements MemoryStore {
         const k = entryKey(e);
         if (!want.has(k)) want.set(k, searchableText(e));
       }
-      const held = this.indexed.get(key) ?? new Set<string>();
-      const fresh = [...want.keys()].filter((k) => !held.has(k));
+      const held = this.indexed.get(key) ?? new Map<string, string>();
+      // New entries AND entries whose text changed under the same key: an id rewritten in place
+      // must not keep ranking by its old text.
+      const fresh = [...want.keys()].filter((k) => held.get(k) !== textTag(want.get(k) as string));
       // Embed first: a model failure leaves the store and the index as they were.
       const vecs = await this.embedAll(fresh.map((k) => want.get(k) as string));
       await this.replaceInner(key, entries);
-      const gone = [...held].filter((k) => !want.has(k));
+      const rewritten = new Set(fresh);
+      const gone = [...held.keys()].filter((k) => !want.has(k) || rewritten.has(k));
       if (gone.length > 0) await this.index.remove(key, gone);
       for (const k of gone) held.delete(k);
       for (let i = 0; i < fresh.length; i++) {
@@ -607,7 +617,7 @@ export class EmbeddingMemoryStore implements MemoryStore {
           continue;
         }
         await this.index.add(key, fresh[i] as string, v);
-        held.add(fresh[i] as string);
+        held.set(fresh[i] as string, textTag(want.get(fresh[i] as string) as string));
       }
       this.indexed.set(key, held);
     });

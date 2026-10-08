@@ -191,7 +191,7 @@ In `@loom/memory`: `EmbeddingProvider { modelId, dimensions, maxBatchSize?, embe
 - **Writes racing a hydration are not lost (fix round 1).** Every write is counted; a hydration whose snapshot may have missed one is
   redone, and if the key cannot settle it is left unhydrated so the next search rebuilds. A zero-vector embedding is skipped and
   counted (`skippedZeroVectors`), not a failure of every search on the key; the query is cut to `maxQueryChars` (8192) before the
-  provider; `replace` on a hydrated key embeds only entries the index does not hold (eviction rewrites a list through it); hashing of
+  provider; `replace` on a hydrated key embeds only entries the index does not hold, or holds under different text (the index keeps a tag of each vector's text, so an id rewritten in place is re-embedded) (eviction rewrites a list through it); hashing of
   id-less entries is memoized per entry object. Each search still re-reads the key from the store - one pass - because that is what
   guarantees a hit is an entry the store still holds even after another writer removed it behind the wrapper.
 - A hydration retry keeps the vectors it already computed (per text), so a sustained writer costs the new entries, not another pass over
