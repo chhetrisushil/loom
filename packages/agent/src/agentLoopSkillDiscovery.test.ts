@@ -888,10 +888,29 @@ describe("R22c - custom tool ranker + skill discovery", () => {
     expect(t.calls.map((c) => c.limit)).toEqual([1, 2, 4, 8]);
   });
 
+  // nothing discoverable means no activation offers, so skill search is never attached: pin that the
+  // host skill ranker is then never asked
+  it("a skillRanker is never asked when nothing is discoverable (every skill selected upfront)", async () => {
+    const t = spyTools(["pay_a"]);
+    const s = spySkills(["refund_one"]);
+    const b = boot(
+      setup(
+        t,
+        { selected: ["refund_one", "refund_two", "refund_three", "unrelated"] },
+        {},
+        { discovery: "search", skillRanker: s.ranker }
+      )
+    );
+    expect((await runToEnd(b)).status).toBe("completed");
+    expect(s.calls).toEqual([]);
+    expect(lastResults(b)[0]?.result.tools?.map((x) => x.name)).toEqual(["pay_a"]);
+  });
+
   describe("replay", () => {
     async function replayDual(
       forge: (rec: Record<string, unknown>) => Record<string, unknown> = (r) => r,
-      want = 4
+      want = 4,
+      plainReplay = false
     ) {
       const t1 = spyTools(["pay_a", "pay_b", "pay_c"]);
       const s1 = spySkills(["refund_one", "refund_two", "refund_three"]);
@@ -920,7 +939,16 @@ describe("R22c - custom tool ranker + skill discovery", () => {
       }).getState();
       const t2 = spyTools(["never"]);
       const s2 = spySkills(["never"]);
-      const second = boot(mkOpts(crashed, t2, s2));
+      // plainReplay: the replaying host no longer configures either custom ranker
+      const second = boot(
+        plainReplay
+          ? {
+              ...mkOpts(crashed, t2, s2),
+              activation: { discovery: "search" },
+              config: { toolSearch: { catalog: TOOLS } },
+            }
+          : mkOpts(crashed, t2, s2)
+      );
       await (await second.runtime.restoreFromState(folded)).waitForCompletion();
       return {
         live,
@@ -946,6 +974,15 @@ describe("R22c - custom tool ranker + skill discovery", () => {
       expect(live?.tools).toHaveLength(3);
       expect(live?.skills).toHaveLength(2);
       expect(replayed).toEqual(live);
+    });
+
+    it("a two-ranker record replays identically under a config with NO custom ranker", async () => {
+      const { live, replayed, second, t2, s2 } = await replayDual((r) => r, 4, true);
+      expect(live?.skills).toHaveLength(2);
+      expect(replayed).toEqual(live);
+      expect(t2.calls).toEqual([]);
+      expect(s2.calls).toEqual([]);
+      expect(second.warnings).toEqual([]);
     });
 
     it("a forged record is re-admitted: unknown ids dropped, the page capped, still no ranker call", async () => {
