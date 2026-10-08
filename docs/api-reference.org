@@ -2040,7 +2040,7 @@ interface ConversationConfig {
 function createConversations(deps: { runtime: WorkflowRuntime; eventStore: EventStore; flow: RegisteredFlow; maxTurnChars?: number }): Conversations
 interface Conversations {
   start(o?: { principal?; conversationId? }): Promise<{ conversationId: string }>;        // runtime.start (owner = caller)
-  sendTurn(id, text, o?: { principal?; messageId? }): Promise<SendResult>;               // runtime.send; a retry with the same messageId is delivered once
+  sendTurn(id, text, o?: { principal?; messageId?; editOf? }): Promise<SendResult>;               // runtime.send; a retry with the same messageId is delivered once
   close(id, o?): Promise<SendResult>;
   history(id, o?: ReadOptions & { principal? }): Promise<ReadResult>;                    // bounded; both directions; cursor
   status(id, o?): Promise<{ conversationId; executionId; generation; state: "open"|"closed"|"failed"|"cancelled"; running: boolean; turns: number }>;
@@ -2069,7 +2069,7 @@ interface SharedConfig {
 interface Identity { tenant?: string; actor: string; onBehalfOf?: string }
 
 // What history returns: one entry per message, with the cursor to resume from.
-interface HistoryEntry { turn: number; role: "user"|"assistant"; text: string;
+interface HistoryEntry { turn: number /* 0 = a rejected record, no turn */; ord?: number /* unique per record; absent before R17b */; editOf?: number /* ord of the user turn this edits */; role: "user"|"assistant"; text: string;
   status: "complete"|"interrupted"|"failed"|"rejected"; reason?: string;
   cursor: string /* "<generation>.<sequence>" */; executionId: string; at?: number }
 interface ReadOptions { limit?: number /* 50, max 500 */; maxScan?: number /* 2000 */; cursor?: string; direction?: "forward"|"backward" }
@@ -2126,7 +2126,7 @@ function createConversationSseServer(o: {
 }): { start(): Promise<void>; stop(): Promise<void>; readonly url: string; readonly connections: number; readonly http: http.Server }
 #+end_src
 
-Shared mode adds =GET /conversations/:id/participants=, =POST …/participants= and =POST …/participants/remove=. Routes: =POST /conversations= (the server mints the id), =GET /conversations/:id=, =POST /conversations/:id/turns= (={ text, messageId? }=), =POST /conversations/:id/close=, =GET /conversations/:id/history?limit&cursor&direction=, =GET /conversations/:id/events= (SSE; =Last-Event-ID= or =?cursor=). SSE events: =status=, =partial=, =message= (SSE =id= = the history cursor), =delta=, =reset=, =closed=, =reconnect=, =error=. Every refusal for a conversation the caller may not touch is the same =404=. See ADR 0122 D6 for the security model.
+Shared mode adds =GET /conversations/:id/participants=, =POST …/participants= and =POST …/participants/remove=. Routes: =POST /conversations= (the server mints the id), =GET /conversations/:id=, =POST /conversations/:id/turns= (={ text, messageId?, editOf? }=), =POST /conversations/:id/close=, =GET /conversations/:id/history?limit&cursor&direction=, =GET /conversations/:id/events= (SSE; =Last-Event-ID= or =?cursor=). SSE events: =status=, =partial=, =message= (SSE =id= = the history cursor), =delta=, =reset=, =closed=, =reconnect=, =error=. Every refusal for a conversation the caller may not touch is the same =404=. See ADR 0122 D6 for the security model.
 
 ** ~@loom/memory~ — agent memory
 

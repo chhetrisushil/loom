@@ -224,3 +224,45 @@ describe("gateway: resume from Last-Event-ID", () => {
     }
   });
 });
+
+describe("gateway: record ord and editOf (R17 follow-up)", () => {
+  it("frames and history carry a unique ord; a signed editOf round-trips; a bad editOf is a 400", async () => {
+    const b = await up();
+    const id = await startConv(b);
+    const sse = track(
+      await openSse(`${b.url}/conversations/${id}/events`, { authorization: "Bearer tok-alice" })
+    );
+    await post(`${b.url}/conversations/${id}/turns`, "tok-alice", { text: "first" });
+    await sse.waitFor((e) => (e.data as { text?: string }).text === "re: first");
+    const hist = await get(`${b.url}/conversations/${id}/history`, "tok-alice");
+    const firstOrd = hist.body.entries[0].ord as number;
+    expect(hist.body.entries.map((m: { ord: number }) => m.ord)).toEqual([1, 2]);
+    for (const bad of [0, -1, 1.5, "1", null]) {
+      const r = await post(`${b.url}/conversations/${id}/turns`, "tok-alice", {
+        text: "x",
+        editOf: bad,
+      });
+      expect(r.status).toBe(400);
+    }
+    expect(
+      (
+        await post(`${b.url}/conversations/${id}/turns`, "tok-alice", {
+          text: "second",
+          editOf: firstOrd,
+        })
+      ).status
+    ).toBe(202);
+    await sse.waitFor(
+      (e) =>
+        e.event === "message" &&
+        (e.data as { role: string; turn: number }).role === "assistant" &&
+        (e.data as { turn: number }).turn === 2
+    );
+    const msgs = sse.events
+      .filter((e) => e.event === "message")
+      .map((e) => e.data as Record<string, unknown>);
+    expect(msgs.map((m) => m.ord)).toEqual([1, 2, 3, 4]);
+    expect(msgs[2]).toMatchObject({ text: "second", editOf: firstOrd, turn: 2 });
+    expect(msgs[0]?.editOf).toBeUndefined();
+  });
+});

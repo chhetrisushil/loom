@@ -454,6 +454,42 @@ All four are resolved (user decisions, 2026-10-08):
    message may interrupt someone else's turn.
 4. **WebSocket** is not built.
 
+## Amendment R17b: a unique record `ord`, rejected records that are no turn, and a signed `editOf`
+
+Found by the loom-ui U8 review. No kernel change; the recorded facts keep their decision ids (`conv#o<n>:user` /
+`:reply`), so a log written before this amendment replays byte-identically under divergence "fail".
+
+- **The bug.** `reject()` recorded `turn: seq + 1` without incrementing `seq`, so every rejected record shared its
+  number with the next accepted turn (four rejected and one accepted message were all "turn 1"). A consumer had nothing
+  unique to key a record on.
+- **A rejected record is no turn: `turn: 0`.** The fail-safe choice: the field stays a number (no consumer's types
+  or `recordOf` validation break), `0` can never equal an accepted turn (1-based), and `status().turns` now reads the
+  newest accepted record's number instead of the newest record's (which for a trailing rejection was off by one). Old
+  rejected records keep the number they were written with.
+- **`ord`.** Every `MessageRecord` carries `ord`: 1-based, unique per conversation, monotonic, from a counter (`rec`)
+  that is part of the carry, so it survives rotation exactly like `seq` and `ord` (the message counter, which numbers
+  the decision ids and is NOT unique per record: a turn's user message and its reply share it). The counter ticks on
+  every record call whether the fact is new or served from the log, and the body is deterministic, so a replay counts
+  the same. A restricted placeholder keeps `ord` (an ordinal is not content) and never `editOf`. **Compat:** records written
+  before this amendment have no `ord` (the reader omits it; it is not derived); uniqueness holds among records that
+  carry one. `dropped` / `closed` facts are not transcript records and carry none.
+- **`editOf`.** A `user` envelope may carry `editOf`, a positive integer: the `ord` of an earlier user record. It is part
+  of the signed body (the domain-separated signature is unchanged), so adding or changing it after signing is
+  `unauthenticated`; a signed non-integer is `malformed`. The body validates it from its own replayed state, with no
+  new decision: the referenced record must be an ACCEPTED USER turn (only those are in the carried window, so an
+  assistant record, a rejected record and an unknown ord are all absent) and, in shared mode, the ASKER's own
+  (`sameIdentity`, i.e. `principalIdentityKey`); owner mode admits only the owner's voice, so every turn is theirs. Any
+  failure is one rejected record with the fixed reason `edit-invalid` (it does not say which case, echoes no
+  reference, and sends nothing to the model). Limit: the turn must still be in the carried window
+  (`maxWindowTurns`, plus the one pending eviction); an older one is refused (fail closed) rather than looked up in the
+  log.
+- **Semantics.** An edit is still a NEW turn (append-only): the record shows what the user typed, with `editOf` set. The
+  model prompt gets the marker as data inside the same tainted, fenced user text:
+  `[This message edits the user's earlier message "<quote, 500 chars>".]`. The quote is the same asker's own earlier
+  words, so no other participant's content can be pulled in by it. The turn effect (shared mode) receives that same text.
+- **Wire.** `Conversations.sendTurn(id, text, { editOf })`; `POST /turns { text, messageId?, editOf? }` (a non-integer
+  is a 400); history entries and SSE `message` frames carry `ord` and (for an edit) `editOf`.
+
 ## Verification
 
 See the PR for the per-suite counts. Fix round 1 added `hardening.test.ts`, `shared.test.ts` (package), `edge.test.ts`,
