@@ -54,6 +54,14 @@ export interface PromotionThresholds {
    * it, else SNIPS.
    */
   intervalEstimator?: "snips" | "dr";
+  /**
+   * Minimum number of resampled CLUSTERS (units, else executions) behind the interval, applied
+   * whenever `minLiftLowerBound` is set. Default 20. A bootstrap over one or two clusters resamples
+   * the same few values, so its interval collapses to a point and "the lower bound clears zero" is
+   * then true of any positive estimate: the interval only means something when there is something
+   * to resample.
+   */
+  minClusters?: number;
 }
 
 export interface PromotionVerdict {
@@ -144,6 +152,10 @@ export function promotionGate(
       );
     } else if (!Number.isFinite(iv.lift.lower)) {
       reasons.push("the lift confidence interval is not finite - the evidence is poisoned");
+    } else if (iv.clusterCount < (thresholds.minClusters ?? 20)) {
+      reasons.push(
+        `the lift confidence interval resamples only ${iv.clusterCount} cluster(s) (need ${thresholds.minClusters ?? 20}): too few to bootstrap`
+      );
     } else if (iv.lift.lower < thresholds.minLiftLowerBound) {
       reasons.push(
         `${iv.estimator} lift lower bound ${iv.lift.lower.toFixed(4)} (${(iv.level * 100).toFixed(0)}% CI) is below the required ${thresholds.minLiftLowerBound}`

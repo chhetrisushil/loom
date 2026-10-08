@@ -2334,7 +2334,8 @@ A verdict is not a deployment. `PolicyRegistry` (`@loom/learning`) is the state 
 ```ts
 import { PolicyRegistry, decideWithRollout, promptVersion, evaluatePolicy, promotionGate } from "@loom/learning";
 
-const registry = new PolicyRegistry({ kv: durableStateStore, scope: principal.tenant }); // CAS store; scope from the AUTHENTICATED caller
+const registry = new PolicyRegistry({ kv: durableStateStore, scope: principal.tenant,   // CAS store; scope from the AUTHENTICATED caller
+  thresholds: { minSteps: 1000, minUnits: 20, minLiftLowerBound: 0 } });                // the registry runs the gate itself
 await registry.register({ id: "router", version: "7", contentHash, now });
 await registry.bootstrap({ id: "router", version: "6", now });                           // first incumbent, no verdict needed
 
@@ -2343,19 +2344,20 @@ const report = evaluatePolicy(trajectories(events, { unitOf }), candidate, {
   doublyRobust: true,
   bootstrap: { resamples: 2000, seed: 1 },
 });
-const verdict = promotionGate(report, { minSteps: 1000, minUnits: 20, minLiftLowerBound: 0 });
+// (promotionGate(report, ...) previews the verdict; promote() re-derives it - a caller-supplied verdict is refused)
 
-await registry.promote({ id: "router", version: "7", report, verdict, mode: "shadow", now }); // never acts
-await registry.promote({ id: "router", version: "7", report, verdict, mode: "canary", canaryFraction: 0.05, now });
-await registry.rollback({ id: "router", now });                                                // one write, no redeploy
+await registry.promote({ id: "router", version: "7", report, mode: "shadow", now }); // never acts
+await registry.promote({ id: "router", version: "7", report, mode: "canary", canaryFraction: 0.05, now });
+await registry.rollback({ id: "router", now });  // one write, no redeploy; only back to a version that was once live
 
 // In the flow: the registry decides who acts; the decision records it.
 const route = await decideWithRollout(ctx, "route", { source: registry, policyId: "router", resolve }, userId,
-  { tokens }, ROUTES, { refs: { prompt: promptVersion("triage", template) } });
+  { tokens }, ROUTES, { refs: { prompt: promptVersion("triage", template) }, bucketSecret });
 ```
 
 - **Shadow never acts**: the incumbent's choice is the decision; the candidate's choice and propensity are recorded beside it.
-- **Canary is a deterministic split** of `userId` (`sha256(salt, unit)`), recorded as `policy.rollout.bucket`; a replay serves the
+- **Canary is a deterministic split** of `userId` (`sha256(salt, unit)`, keyed with `bucketSecret` if given; the unit key must be
+  server-assigned), recorded as `policy.rollout.bucket`; a replay serves the
   recorded decision whatever the registry says by then. Raising the fraction keeps earlier units on the candidate.
 - **Evaluate per arm**: the recorded propensity is the acting policy's own; `sliceByVersion(trajs, "policy" | "prompt" | "model")`
   groups steps by what produced them.

@@ -368,7 +368,20 @@ function estimateExtras(
   const clusters = new Map<string, ClusterAgg>();
   let drTotal = 0;
   let drSteps = 0;
+  let loggedSum = 0;
+  let loggedN = 0;
   for (const r of rows) {
+    if (r.weight === undefined) continue;
+    loggedSum += r.reward;
+    loggedN += 1;
+  }
+  const loggedOnSame = loggedN === 0 ? loggedValue : loggedSum / loggedN;
+  for (const r of rows) {
+    // The lift compares the estimate with the logged mean over the SAME rows the estimate averages
+    // over (those with a usable propensity); mixing in steps the estimate never saw would make the
+    // "lift" partly a difference between two populations. A cluster with no such row is not a
+    // cluster of evidence either, so it is not counted.
+    if (r.weight === undefined) continue;
     let c = clusters.get(r.cluster);
     if (c === undefined) {
       c = { wr: 0, w: 0, r: 0, n: 0, dr: 0, m: 0 };
@@ -376,7 +389,6 @@ function estimateExtras(
     }
     c.r += r.reward;
     c.n += 1;
-    if (r.weight === undefined) continue;
     if (r.agrees) {
       c.wr += r.weight * r.reward;
       c.w += r.weight;
@@ -406,7 +418,7 @@ function estimateExtras(
       const value = drTotal / drSteps;
       doublyRobust = {
         value,
-        lift: value - loggedValue,
+        lift: value - loggedOnSame,
         steps: drSteps,
         rewardModel: supplied === undefined ? "fitted" : "supplied",
       };

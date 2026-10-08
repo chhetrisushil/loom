@@ -251,3 +251,107 @@ describe("embedding seam (R18)", () => {
     expect(calls.length).toBe(before);
   });
 });
+
+describe("EmbeddingMemoryStore hardening (R18 fix round 1)", () => {
+  const E = (id: string, content: string) => ({ id, role: "user", content, timestamp: 1 });
+
+  it("an append racing the first search's hydration is still searchable (store that returns copies)", async () => {
+    const raw = new InMemoryMemoryStore();
+    await raw.append("k", E("a", "alpha bravo"));
+    const inner = {
+      read: async (k: string) => structuredClone(await raw.read(k)),
+      append: async (k: string, e: Parameters<typeof raw.append>[1]) => {
+        await new Promise((r) => setImmediate(r));
+        return raw.append(k, e);
+      },
+      clear: (k: string) => raw.clear(k),
+    };
+    const s = new EmbeddingMemoryStore({
+      store: inner,
+      provider: new HashingEmbeddingProvider({ dimensions: 256 }),
+      minScore: 0.2,
+    });
+    const pA = s.append("k", E("z", "zebra quokka"));
+    const pS = s.search("k", "alpha");
+    await Promise.all([pA, pS]);
+    expect((await s.read("k")).map((e) => e.id)).toContain("z");
+    expect((await s.search("k", "zebra quokka")).map((e) => e.id)).toEqual(["z"]);
+  });
+
+  it("a zero-vector entry is skipped and counted, not a failure of every search on its key", async () => {
+    const base = new HashingEmbeddingProvider({ dimensions: 64 });
+    const provider: EmbeddingProvider = {
+      modelId: "zeroes-on-empty",
+      dimensions: 64,
+      async embed(texts) {
+        const v = await base.embed(texts);
+        return v.map((x, i) => ((texts[i] ?? "").trim() === "" ? new Array(64).fill(0) : x));
+      },
+    };
+    const inner = new InMemoryMemoryStore();
+    await inner.append("k", E("a", "alpha"));
+    await inner.append("k", E("b", "   "));
+    const s = new EmbeddingMemoryStore({ store: inner, provider, minScore: 0.2 });
+    expect((await s.search("k", "alpha")).map((e) => e.id)).toEqual(["a"]);
+    expect(s.skippedZeroVectors).toBe(1);
+    await s.append("k", E("c", "  "));
+    expect(s.skippedZeroVectors).toBe(2);
+  });
+
+  it("the query is bounded before it reaches the provider", async () => {
+    let longest = 0;
+    const base = new HashingEmbeddingProvider({ dimensions: 64 });
+    const provider: EmbeddingProvider = {
+      modelId: "spy",
+      dimensions: 64,
+      async embed(texts) {
+        for (const t of texts) longest = Math.max(longest, t.length);
+        return base.embed(texts);
+      },
+    };
+    const inner = new InMemoryMemoryStore();
+    await inner.append("k", E("a", "alpha"));
+    const s = new EmbeddingMemoryStore({ store: inner, provider, minScore: 0.2 });
+    await s.search("k", "alpha ".repeat(500_000));
+    expect(longest).toBeLessThanOrEqual(8192);
+    const small = new EmbeddingMemoryStore({
+      store: inner,
+      provider,
+      minScore: 0.2,
+      maxQueryChars: 100,
+    });
+    longest = 0;
+    await small.search("k", "alpha ".repeat(1000));
+    expect(longest).toBeLessThanOrEqual(100);
+  });
+
+  it("replace on a hydrated key is incremental: only new entries are embedded", async () => {
+    const { p, calls } = counting(new HashingEmbeddingProvider({ dimensions: 1024 }));
+    const s = new EmbeddingMemoryStore({
+      store: new InMemoryMemoryStore(),
+      provider: p,
+      minScore: 0.3,
+    });
+    for (let i = 0; i < 6; i++) await s.append("k", E(`d${i}`, `doc ${i} about topic${i}`));
+    await s.search("k", "topic1"); // hydrate
+    calls.length = 0;
+    // eviction rewrites the list: drop the first two, add one
+    const kept = (await s.read("k")).slice(2);
+    await s.replace("k", [...kept, E("n", "brand new note about topic77")]);
+    expect(calls.flat()).toEqual(["brand new note about topic77"]);
+    expect((await s.search("k", "topic77")).map((e) => e.id)).toEqual(["n"]);
+    expect(await s.search("k", "topic0")).toEqual([]); // the evicted entry is gone from the index too
+    expect((await s.search("k", "topic3")).map((e) => e.id)).toContain("d3");
+  });
+
+  it("id-less entries are hashed once per entry object, not once per search", async () => {
+    const s = new EmbeddingMemoryStore({
+      store: new InMemoryMemoryStore(),
+      provider: new HashingEmbeddingProvider({ dimensions: 128 }),
+      minScore: 0.1,
+    });
+    for (let i = 0; i < 20; i++) await s.append("k", { content: `note ${i} gamma`, timestamp: i });
+    expect((await s.search("k", "gamma", { limit: 3 })).length).toBe(3);
+    expect((await s.search("k", "note 4 gamma", { limit: 1 })).length).toBe(1);
+  });
+});

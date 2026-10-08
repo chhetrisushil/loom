@@ -320,24 +320,48 @@ export interface EmbeddingMemoryStoreOptions {
   maxEntriesPerKey?: number;
   /** Texts per `embed` call while hydrating. Default min(provider.maxBatchSize ?? 64, 64). */
   batchSize?: number;
+  /**
+   * A query longer than this many characters is cut before it reaches the provider (a question is
+   * an input, and an unbounded one is unbounded work bought from a text box). Default 8192.
+   */
+  maxQueryChars?: number;
 }
+
+const keyMemo = new WeakMap<MemoryEntry, string>();
 
 function entryKey(e: MemoryEntry): string {
   if (e.id !== undefined) return `id:${e.id}`;
   // No identity: derive one from the searchable text + timestamp + role. Equal entries share a key
-  // and a vector, which is exactly right (same text, same vector).
-  return `h:${createHash("sha256")
+  // and a vector, which is exactly right (same text, same vector). Memoized per entry object, so a
+  // store that hands back the same objects is hashed once, not once per search.
+  const memo = keyMemo.get(e);
+  if (memo !== undefined) return memo;
+  const k = `h:${createHash("sha256")
     .update(`${e.role ?? ""}\u0000${e.timestamp}\u0000${searchableText(e)}`)
     .digest("hex")}`;
+  keyMemo.set(e, k);
+  return k;
 }
+
+const isZero = (v: readonly number[]): boolean => !(norm(v) > 0);
+const MAX_HYDRATE_ATTEMPTS = 4;
 
 /**
  * Any {@link MemoryStore} plus an {@link EmbeddingProvider}: `search` ranks by cosine similarity
  * and is bounded by the relevance floor. The index is hydrated lazily on a key's first search
- * (embedding its entries in batches) and kept current by `append` / `remove` afterwards; `clear`
- * and `replace` drop the key's index and the next search rebuilds it. If embedding fails during an
- * `append` to an already-indexed key, the append is NOT made - the store and its index never
- * disagree silently.
+ * (embedding its entries in batches) and kept current by `append` / `remove` / `replace`
+ * afterwards; `clear` drops it. If embedding fails during an `append` to an already-indexed key,
+ * the append is NOT made - the store and its index never disagree silently.
+ *
+ * Writes that race a hydration are never lost: every write is counted, and a hydration whose
+ * snapshot could have missed one (a write in flight, or begun, while it read) is redone; if it
+ * cannot settle the key is left unhydrated, so the next search rebuilds it instead of trusting a
+ * stale index.
+ *
+ * Every search re-reads the key from the system of record (one pass, memoized hashing) so a hit is
+ * always an entry the store still holds, even if another writer removed it behind this wrapper's
+ * back. An entry whose embedding is a zero vector has no direction and is skipped and counted
+ * ({@link skippedZeroVectors}) rather than failing every search on its key.
  */
 export class EmbeddingMemoryStore implements MemoryStore {
   private readonly store: MemoryStore;
@@ -346,8 +370,14 @@ export class EmbeddingMemoryStore implements MemoryStore {
   private readonly minScore: number;
   private readonly maxEntries: number;
   private readonly batch: number;
+  private readonly maxQuery: number;
   private readonly hydrated = new Set<string>();
   private readonly hydrating = new Map<string, Promise<void>>();
+  /** What the index holds per hydrated key (entry keys), so `replace` can be incremental. */
+  private readonly indexed = new Map<string, Set<string>>();
+  private readonly writes = new Map<string, { started: number; inflight: number }>();
+  /** Entries skipped from the index because their embedding was a zero vector. */
+  skippedZeroVectors = 0;
 
   constructor(opts: EmbeddingMemoryStoreOptions) {
     if (!(opts.minScore >= -1 && opts.minScore <= 1)) {
@@ -357,6 +387,7 @@ export class EmbeddingMemoryStore implements MemoryStore {
     this.provider = opts.provider;
     this.minScore = opts.minScore;
     this.maxEntries = opts.maxEntriesPerKey ?? 20_000;
+    this.maxQuery = opts.maxQueryChars ?? 8192;
     this.batch = Math.max(1, Math.min(opts.batchSize ?? 64, opts.provider.maxBatchSize ?? 64));
     this.index =
       opts.index ??
@@ -392,27 +423,70 @@ export class EmbeddingMemoryStore implements MemoryStore {
     return out;
   }
 
+  private mark(key: string): { started: number; inflight: number } {
+    let w = this.writes.get(key);
+    if (w === undefined) {
+      w = { started: 0, inflight: 0 };
+      this.writes.set(key, w);
+    }
+    return w;
+  }
+
+  /** Run a write, counting it so a concurrent hydration can tell its snapshot may be stale. */
+  private async write<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const w = this.mark(key);
+    w.started += 1;
+    w.inflight += 1;
+    try {
+      return await fn();
+    } finally {
+      w.inflight -= 1;
+      w.started += 1;
+    }
+  }
+
   private ensureHydrated(key: string): Promise<void> {
     if (this.hydrated.has(key)) return Promise.resolve();
     let p = this.hydrating.get(key);
     if (p === undefined) {
       p = (async () => {
-        const entries = await this.store.read(key);
-        if (entries.length > this.maxEntries) {
-          throw new MemoryIndexTooLargeError(
-            `key "${key}" has ${entries.length} entries, over the index limit of ${this.maxEntries}; shard the scope or raise maxEntriesPerKey`
-          );
+        for (let attempt = 0; attempt < MAX_HYDRATE_ATTEMPTS; attempt++) {
+          const w = this.mark(key);
+          const before = { started: w.started, inflight: w.inflight };
+          const entries = await this.store.read(key);
+          if (entries.length > this.maxEntries) {
+            throw new MemoryIndexTooLargeError(
+              `key "${key}" has ${entries.length} entries, over the index limit of ${this.maxEntries}; shard the scope or raise maxEntriesPerKey`
+            );
+          }
+          // Dedupe by entry key so identical entries are embedded once.
+          const unique = new Map<string, string>();
+          for (const e of entries) {
+            const k = entryKey(e);
+            if (!unique.has(k)) unique.set(k, searchableText(e));
+          }
+          const ids = [...unique.keys()];
+          const vecs = await this.embedAll([...unique.values()]);
+          await this.index.clear(key);
+          const held = new Set<string>();
+          for (let i = 0; i < ids.length; i++) {
+            const v = vecs[i] as number[];
+            if (isZero(v)) {
+              this.skippedZeroVectors += 1;
+              continue;
+            }
+            await this.index.add(key, ids[i] as string, v);
+            held.add(ids[i] as string);
+          }
+          this.indexed.set(key, held);
+          if (before.inflight === 0 && w.inflight === 0 && before.started === w.started) {
+            this.hydrated.add(key);
+            return;
+          }
+          // A write raced the snapshot: it may be missing from what was just indexed. Go again.
         }
-        // Dedupe by entry key so identical entries are embedded once.
-        const unique = new Map<string, string>();
-        for (const e of entries)
-          if (!unique.has(entryKey(e))) unique.set(entryKey(e), searchableText(e));
-        const ids = [...unique.keys()];
-        const vecs = await this.embedAll([...unique.values()]);
-        await this.index.clear(key);
-        for (let i = 0; i < ids.length; i++)
-          await this.index.add(key, ids[i] as string, vecs[i] as number[]);
-        this.hydrated.add(key);
+        // Could not settle under constant writes: serve this search from what was built, but do
+        // NOT trust it - leave the key unhydrated so the next search rebuilds.
       })().finally(() => this.hydrating.delete(key));
       this.hydrating.set(key, p);
     }
@@ -420,16 +494,24 @@ export class EmbeddingMemoryStore implements MemoryStore {
   }
 
   async append(key: string, entry: MemoryEntry): Promise<void> {
-    // An in-flight hydration may or may not have read this entry: let it finish, then index it.
+    // An in-flight hydration may or may not have read this entry: let it finish first. (Outside the
+    // write count, or the hydration would see this very append as a racing writer and never settle.)
     await this.hydrating.get(key)?.catch(() => undefined);
-    if (this.hydrated.has(key)) {
-      // Embed FIRST: if the model is down, nothing is appended and nothing diverges.
-      const [vec] = await this.embedAll([searchableText(entry)]);
+    await this.write(key, async () => {
+      if (this.hydrated.has(key)) {
+        // Embed FIRST: if the model is down, nothing is appended and nothing diverges.
+        const [vec] = await this.embedAll([searchableText(entry)]);
+        await this.store.append(key, entry);
+        const k = entryKey(entry);
+        if (isZero(vec as number[])) this.skippedZeroVectors += 1;
+        else {
+          await this.index.add(key, k, vec as number[]);
+          this.indexed.get(key)?.add(k);
+        }
+        return;
+      }
       await this.store.append(key, entry);
-      await this.index.add(key, entryKey(entry), vec as number[]);
-      return;
-    }
-    await this.store.append(key, entry);
+    });
   }
 
   read(key: string): Promise<MemoryEntry[]> {
@@ -437,27 +519,34 @@ export class EmbeddingMemoryStore implements MemoryStore {
   }
 
   async clear(key: string): Promise<void> {
-    await this.store.clear(key);
-    await this.index.clear(key);
-    this.hydrated.delete(key);
+    await this.hydrating.get(key)?.catch(() => undefined);
+    await this.write(key, async () => {
+      await this.store.clear(key);
+      await this.index.clear(key);
+      this.hydrated.delete(key);
+      this.indexed.delete(key);
+    });
   }
 
   async remove(key: string, ids: readonly string[]): Promise<void> {
     await this.hydrating.get(key)?.catch(() => undefined);
-    if (this.store.remove !== undefined) {
-      await this.store.remove(key, ids);
-    } else {
-      const doomed = new Set(ids);
-      const kept = (await this.store.read(key)).filter(
-        (e) => e.id === undefined || !doomed.has(e.id)
-      );
-      await this.replaceInner(key, kept);
-    }
-    if (this.hydrated.has(key))
-      await this.index.remove(
-        key,
-        ids.map((id) => `id:${id}`)
-      );
+    await this.write(key, async () => {
+      if (this.store.remove !== undefined) {
+        await this.store.remove(key, ids);
+      } else {
+        const doomed = new Set(ids);
+        const kept = (await this.store.read(key)).filter(
+          (e) => e.id === undefined || !doomed.has(e.id)
+        );
+        await this.replaceInner(key, kept);
+      }
+      if (this.hydrated.has(key)) {
+        const keys = ids.map((id) => `id:${id}`);
+        await this.index.remove(key, keys);
+        const held = this.indexed.get(key);
+        for (const k of keys) held?.delete(k);
+      }
+    });
   }
 
   private async replaceInner(key: string, entries: readonly MemoryEntry[]): Promise<void> {
@@ -468,10 +557,48 @@ export class EmbeddingMemoryStore implements MemoryStore {
     }
   }
 
+  /**
+   * Replace a key's list. On a hydrated key this is INCREMENTAL: only entries the index does not
+   * already hold are embedded and only ones that left are removed - TTL/size eviction rewrites a
+   * list through here on the routine path, and re-embedding the whole corpus each time would make
+   * eviction the most expensive thing the store does.
+   */
   async replace(key: string, entries: readonly MemoryEntry[]): Promise<void> {
-    await this.replaceInner(key, entries);
-    await this.index.clear(key);
-    this.hydrated.delete(key);
+    await this.hydrating.get(key)?.catch(() => undefined);
+    await this.write(key, async () => {
+      if (!this.hydrated.has(key)) {
+        await this.replaceInner(key, entries);
+        return;
+      }
+      if (entries.length > this.maxEntries) {
+        throw new MemoryIndexTooLargeError(
+          `key "${key}" would hold ${entries.length} entries, over the index limit of ${this.maxEntries}`
+        );
+      }
+      const want = new Map<string, string>();
+      for (const e of entries) {
+        const k = entryKey(e);
+        if (!want.has(k)) want.set(k, searchableText(e));
+      }
+      const held = this.indexed.get(key) ?? new Set<string>();
+      const fresh = [...want.keys()].filter((k) => !held.has(k));
+      // Embed first: a model failure leaves the store and the index as they were.
+      const vecs = await this.embedAll(fresh.map((k) => want.get(k) as string));
+      await this.replaceInner(key, entries);
+      const gone = [...held].filter((k) => !want.has(k));
+      if (gone.length > 0) await this.index.remove(key, gone);
+      for (const k of gone) held.delete(k);
+      for (let i = 0; i < fresh.length; i++) {
+        const v = vecs[i] as number[];
+        if (isZero(v)) {
+          this.skippedZeroVectors += 1;
+          continue;
+        }
+        await this.index.add(key, fresh[i] as string, v);
+        held.add(fresh[i] as string);
+      }
+      this.indexed.set(key, held);
+    });
   }
 
   async close(): Promise<void> {
@@ -480,9 +607,11 @@ export class EmbeddingMemoryStore implements MemoryStore {
 
   async search(key: string, query: string, opts: MemorySearchOptions = {}): Promise<MemoryEntry[]> {
     const limit = clampSearchLimit(opts.limit);
-    if (limit === 0 || tokenize(query).length === 0) return [];
+    const bounded = query.length > this.maxQuery ? query.slice(0, this.maxQuery) : query;
+    if (limit === 0 || tokenize(bounded).length === 0) return [];
     await this.ensureHydrated(key);
-    const [qv] = await this.embedAll([query]);
+    const [qv] = await this.embedAll([bounded]);
+    if (isZero(qv as number[])) return [];
     const hits = await this.index.search(key, qv as number[], limit, this.minScore);
     if (hits.length === 0) return [];
     // Results are a SUBSET of read(key): map ids back through the system of record, so an

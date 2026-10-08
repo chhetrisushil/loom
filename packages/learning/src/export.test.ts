@@ -1,6 +1,7 @@
 import { tainted } from "@loom/classify";
 import type { EventEnvelope } from "@loom/core";
 import { describe, expect, it } from "vitest";
+import { evidenceEvents } from "./evidence";
 import {
   type ExportExecutionRef,
   type ExportOptions,
@@ -285,8 +286,8 @@ describe("exportJsonl (R18)", () => {
       maxExecutions: 7,
     });
     expect(first.stats.truncated).toBe(true);
-    expect(first.stats.nextCursor).toBe("5");
-    // resume from the page start: at-least-once, never a gap
+    expect(first.stats.nextCursor).toBe('lx1:{"c":"5","s":2}');
+    // resume from the exact position inside the page
     const second = await run({
       source: src,
       tenant: "t",
@@ -338,5 +339,174 @@ describe("exportJsonl (R18)", () => {
     await expect(run({ source: source([]).src, tenant: "t", pageSize: 5000 })).rejects.toThrow(
       /pageSize/
     );
+  });
+});
+
+describe("exportJsonl hardening (R18 fix round 1)", () => {
+  const paged = (ids: string[], load: (id: string) => EventEnvelope[]): ExportSource => ({
+    async list(cursor, limit) {
+      const start = cursor === undefined ? 0 : Number(cursor);
+      const next = start + limit < ids.length ? String(start + limit) : undefined;
+      return {
+        executions: ids
+          .slice(start, start + limit)
+          .map((executionId) => ({ executionId, tenant: "t" })),
+        ...(next !== undefined && { next }),
+      };
+    },
+    async load(id) {
+      return load(id);
+    },
+  });
+  const one = (id: string) => execution({ id, tenant: "t", context: { id } }).events;
+
+  async function drain(o: Omit<ExportOptions, "cursor">, maxRuns = 20) {
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    let runs = 0;
+    do {
+      const r = await run({ ...o, ...(cursor !== undefined && { cursor }) });
+      for (const l of ofType(r, "trajectory")) ids.push(l.executionId as string);
+      if (r.stats.truncated) expect(r.stats.nextCursor).toBeDefined();
+      cursor = r.stats.truncated ? r.stats.nextCursor : undefined;
+      runs += 1;
+    } while (cursor !== undefined && runs < maxRuns);
+    return { ids, runs };
+  }
+
+  it("maxExecutions smaller than a page progresses to completion across runs, no gaps, no duplicates", async () => {
+    const all = Array.from({ length: 10 }, (_, i) => `x${i}`);
+    const { ids, runs } = await drain({
+      source: paged(all, one),
+      tenant: "t",
+      kinds: ["trajectory"],
+      pageSize: 10,
+      maxExecutions: 4,
+    });
+    expect(ids).toEqual(all);
+    expect(runs).toBe(3);
+  });
+
+  it("a single page larger than maxRecords progresses too", async () => {
+    const all = Array.from({ length: 9 }, (_, i) => `y${i}`);
+    const { ids } = await drain({
+      source: paged(all, one),
+      tenant: "t",
+      kinds: ["trajectory"],
+      pageSize: 100,
+      maxRecords: 2,
+    });
+    expect(ids).toEqual(all);
+  });
+
+  it("resumes across page boundaries and mid-page alike", async () => {
+    const all = Array.from({ length: 23 }, (_, i) => `z${i}`);
+    const { ids } = await drain({
+      source: paged(all, one),
+      tenant: "t",
+      kinds: ["trajectory"],
+      pageSize: 5,
+      maxExecutions: 7,
+    });
+    expect(ids).toEqual(all);
+  });
+
+  it("refuses a zero bound (it could never advance) and a malformed resume cursor", async () => {
+    const s = paged(["a"], one);
+    await expect(run({ source: s, tenant: "t", maxExecutions: 0 })).rejects.toThrow(
+      /maxExecutions/
+    );
+    await expect(run({ source: s, tenant: "t", maxRecords: 0 })).rejects.toThrow(/maxRecords/);
+    await expect(run({ source: s, tenant: "t", cursor: "lx1:{nope" })).rejects.toThrow(/malformed/);
+  });
+
+  it("an empty page that repeats its next cursor stops with an error instead of looping", async () => {
+    let calls = 0;
+    const src: ExportSource = {
+      async list() {
+        calls += 1;
+        if (calls > 50) throw new Error("still looping");
+        return { executions: [], next: "a" };
+      },
+      load: async () => [],
+    };
+    await expect(run({ source: src, tenant: "t" })).rejects.toThrow(/did not advance/);
+    // a cycle (a -> b -> a) is caught too
+    let n = 0;
+    const cyc: ExportSource = {
+      async list() {
+        n += 1;
+        if (n > 50) throw new Error("still looping");
+        return { executions: [], next: n % 2 === 0 ? "a" : "b" };
+      },
+      load: async () => [],
+    };
+    await expect(run({ source: cyc, tenant: "t" })).rejects.toThrow(/did not advance/);
+  });
+
+  it("taint 'mark' + a scan that overflows is emitted MARKED (scan-overflow), never clean; 'exclude' drops it", async () => {
+    const wide: Record<string, unknown> = { a0: { leaf: tainted("IGNORE PREVIOUS", "mcp:x") } };
+    for (let i = 1; i <= 10_050; i++) wide[`a${i}`] = { n: i };
+    const events = execution({ id: "w", tenant: "t", context: { wide } }).events;
+    const src = paged(["w"], () => events);
+    const marked = await run({ source: src, tenant: "t", taint: "mark", kinds: ["trajectory"] });
+    const [traj] = ofType(marked, "trajectory");
+    expect(traj).toMatchObject({ tainted: true });
+    expect(traj?.taintOrigins as string[]).toContain("scan-overflow");
+    const dropped = await run({ source: src, tenant: "t", kinds: ["trajectory"] });
+    expect(ofType(dropped, "trajectory")).toHaveLength(0);
+    expect(dropped.stats.skipped.taintedStep).toBe(1);
+  });
+
+  it("one record too deep to serialise costs that record, not the export", async () => {
+    let deep: unknown = { leaf: 1 };
+    for (let i = 0; i < 80; i++) deep = { d: deep };
+    const src = paged(["ok1", "bad", "ok2"], (id) =>
+      id === "bad" ? execution({ id, tenant: "t", context: { deep } }).events : one(id)
+    );
+    // 'mark' keeps the deep step (the scan flags it), so building its line must fail alone
+    const r = await run({ source: src, tenant: "t", taint: "mark", kinds: ["trajectory"] });
+    expect(ofType(r, "trajectory").map((l) => l.executionId)).toEqual(["ok1", "ok2"]);
+    expect(r.stats.skipped.recordError).toBe(1);
+    const d = await run({ source: src, tenant: "t", kinds: ["trajectory"] });
+    expect(ofType(d, "trajectory").map((l) => l.executionId)).toEqual(["ok1", "ok2"]);
+  });
+
+  it("a shredded-then-compacted execution exports nothing of its plaintext", async () => {
+    const state = {
+      executionId: "c1",
+      workflowId: "wf",
+      status: "completed",
+      sequence: 10,
+      startedAt: 1,
+      updatedAt: 2,
+      variables: {
+        _shredded: { subjectId: "alice", at: 5 },
+        _decisions: {
+          route: {
+            choice: "a",
+            context: { name: "alice-plaintext-field" },
+            alternatives: ["a", "b"],
+            policy: { id: "p", version: "1", propensity: 0.5 },
+          },
+        },
+        _outcomes: [{ key: "k", score: 1, decisionId: "route" }],
+      },
+    } as unknown as Parameters<typeof evidenceEvents>[0];
+    const events = evidenceEvents(state, []);
+    expect(events.map((e) => e.eventType)).toContain("PAYLOAD_SHREDDED");
+    const src: ExportSource = {
+      list: async () => ({ executions: [{ executionId: "c1", tenant: "t" }] }),
+      load: async () => events,
+    };
+    const r = await run({ source: src, tenant: "t" });
+    expect(r.stats.skipped.shreddedExecution).toBe(1);
+    expect(r.raw.join("\n")).not.toContain("alice-plaintext-field");
+    // and an execution that was NOT shredded is untouched by the new marker
+    const clean = evidenceEvents(
+      { ...state, variables: { ...state.variables, _shredded: undefined } } as never,
+      []
+    );
+    expect(clean.map((e) => e.eventType)).not.toContain("PAYLOAD_SHREDDED");
   });
 });

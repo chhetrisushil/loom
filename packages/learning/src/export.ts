@@ -92,7 +92,11 @@ export interface ExportStats {
     lineTooLong: number;
     emptyOrMismatched: number;
     preferenceGroupsDropped: number;
+    /** A record that could not be built (too deep, stack overflow): skipped alone, the export goes on. */
+    recordError: number;
   };
+  /** Preference pairs not emitted because `maxRecords` was reached (pairs are not resumable). */
+  preferencesTruncated?: boolean;
   /** Set when a bound stopped the run early; pass it back as `cursor` to continue. */
   nextCursor?: string;
   truncated: boolean;
@@ -113,6 +117,7 @@ export function newExportStats(): ExportStats {
       lineTooLong: 0,
       emptyOrMismatched: 0,
       preferenceGroupsDropped: 0,
+      recordError: 0,
     },
     truncated: false,
   };
@@ -121,6 +126,29 @@ export function newExportStats(): ExportStats {
 export const EXPORT_FORMAT = "loom-learning-export/1";
 const MAX_SCAN_NODES = 10_000;
 const MAX_SCAN_DEPTH = 64;
+const MAX_PAGES = 100_000;
+
+/** A resume position: the source's cursor for a page, plus how many of its executions are done. */
+function encodePosition(cursor: string | undefined, skip: number): string {
+  return `lx1:${JSON.stringify({ c: cursor ?? null, s: skip })}`;
+}
+function decodePosition(raw: string | undefined): { cursor: string | undefined; skip: number } {
+  if (raw === undefined) return { cursor: undefined, skip: 0 };
+  if (!raw.startsWith("lx1:")) return { cursor: raw, skip: 0 }; // a bare source cursor
+  try {
+    const v = JSON.parse(raw.slice(4)) as { c?: unknown; s?: unknown };
+    if (
+      (typeof v.c === "string" || v.c === null) &&
+      Number.isSafeInteger(v.s) &&
+      (v.s as number) >= 0
+    ) {
+      return { cursor: v.c ?? undefined, skip: v.s as number };
+    }
+  } catch {
+    /* fall through */
+  }
+  throw new Error("exportJsonl: malformed resume cursor");
+}
 
 interface Scan {
   shredded: boolean;
@@ -158,6 +186,12 @@ function stepScan(s: TrajectoryStep): Scan {
   scan(s.action, out);
   scan(s.actions, out);
   scan(s.policy, out);
+  if (out.overflow) {
+    // The walk gave up: whatever it did not reach is unknown, so the step is treated as tainted
+    // (excluded by default, flagged - never emitted unmarked - when the caller keeps tainted steps).
+    out.tainted = true;
+    out.origins.add("scan-overflow");
+  }
   return out;
 }
 
@@ -203,6 +237,14 @@ export async function* exportJsonl(
   const maxLine = opts.maxLineBytes ?? 1024 * 1024;
   const maxGroups = opts.maxPreferenceGroups ?? 50_000;
   const minMargin = opts.minMargin ?? 0;
+  for (const [name, v] of [
+    ["maxExecutions", maxExecutions],
+    ["maxRecords", maxRecords],
+  ] as const) {
+    // A bound of zero could never make progress, and a resumable export must always advance.
+    if (!Number.isInteger(v) || v < 1)
+      throw new Error(`exportJsonl: ${name} must be an integer >= 1`);
+  }
 
   const emit = (record: Record<string, unknown>): string | undefined => {
     const line = canonicalJson(record);
@@ -223,19 +265,27 @@ export async function* exportJsonl(
   });
 
   const groups = new Map<string, Group>();
-  let cursor = opts.cursor;
+  const start = decodePosition(opts.cursor);
+  let pageCursor = start.cursor;
+  let skip = start.skip;
   let done = false;
   let records = 0;
+  const seenCursors = new Set<string>();
 
   outer: while (!done) {
-    const page = await opts.source.list(cursor, pageSize);
+    const page = await opts.source.list(pageCursor, pageSize);
     if (page.executions.length > pageSize) {
       throw new Error("exportJsonl: the source returned more executions than the page limit");
     }
-    for (const ref of page.executions) {
+    for (let idx = 0; idx < page.executions.length; idx++) {
+      if (idx < skip) continue; // already exported by the run that produced this position
+      const ref = page.executions[idx] as ExportExecutionRef;
       if (stats.executionsListed >= maxExecutions || records >= maxRecords) {
+        // A resumable position INSIDE the page: (the page's own cursor, how many to skip). Resuming
+        // from the page start alone would re-export the same rows forever whenever a bound is
+        // smaller than a page.
         stats.truncated = true;
-        if (cursor !== undefined) stats.nextCursor = cursor;
+        stats.nextCursor = encodePosition(pageCursor, idx);
         break outer;
       }
       stats.executionsListed += 1;
@@ -261,42 +311,59 @@ export async function* exportJsonl(
         stats.skipped.shreddedExecution += 1;
         continue;
       }
-      const ts = trajectories(events, opts.trajectory ?? {});
-      let exportedHere = false;
-      for (const t of ts) {
-        const kept: { step: TrajectoryStep; origins: string[] }[] = [];
-        for (const s of t.steps) {
-          const sc = stepScan(s);
-          if (sc.shredded) {
-            stats.skipped.shreddedStep += 1;
-            continue;
+      // One pathological record (a context nested past the canonical-JSON bound, a value that
+      // overflows the stack) must cost that record, not the export. Lines are collected and yielded
+      // after the guarded section so a consumer's own throw is never swallowed here.
+      const lines: string[] = [];
+      try {
+        const ts = trajectories(events, opts.trajectory ?? {});
+        let exportedHere = false;
+        for (const t of ts) {
+          const kept: { step: TrajectoryStep; origins: string[] }[] = [];
+          for (const s of t.steps) {
+            const sc = stepScan(s);
+            if (sc.shredded) {
+              stats.skipped.shreddedStep += 1;
+              continue;
+            }
+            if (sc.tainted && taintMode === "exclude") {
+              stats.skipped.taintedStep += 1;
+              continue;
+            }
+            kept.push({ step: s, origins: [...sc.origins].sort() });
           }
-          if ((sc.tainted || sc.overflow) && taintMode === "exclude") {
-            stats.skipped.taintedStep += 1;
-            continue;
+          if (kept.length === 0) continue;
+          if (kinds.has("trajectory")) {
+            const line = emit(trajectoryRecord(t, kept, includeContext));
+            if (line !== undefined) {
+              exportedHere = true;
+              records += 1;
+              stats.records.trajectory += 1;
+              lines.push(line);
+            }
           }
-          kept.push({ step: s, origins: [...sc.origins].sort() });
-        }
-        if (kept.length === 0) continue;
-        if (kinds.has("trajectory")) {
-          const line = emit(trajectoryRecord(t, kept, includeContext));
-          if (line !== undefined) {
-            exportedHere = true;
-            records += 1;
-            stats.records.trajectory += 1;
-            yield line;
+          if (kinds.has("preference")) {
+            for (const k of kept) indexPreference(groups, k.step, k.origins, maxGroups, stats);
           }
         }
-        if (kinds.has("preference")) {
-          for (const k of kept) indexPreference(groups, k.step, k.origins, maxGroups, stats);
-        }
+        if (exportedHere || kinds.has("preference")) stats.executionsExported += 1;
+      } catch {
+        stats.skipped.recordError += 1;
+        lines.length = 0;
       }
-      if (exportedHere || kinds.has("preference")) stats.executionsExported += 1;
+      for (const l of lines) yield l;
     }
-    cursor = page.next;
-    if (page.next === undefined) done = true;
-    else if (page.next === opts.cursor && page.executions.length === 0) {
-      throw new Error("exportJsonl: the source's cursor did not advance");
+    skip = 0;
+    if (page.next === undefined) {
+      done = true;
+    } else {
+      // The next cursor must be one we have not been to: an empty page that repeats it (or a
+      // source whose cursors cycle) would otherwise loop forever.
+      if (page.next === pageCursor || seenCursors.has(page.next) || seenCursors.size >= MAX_PAGES) {
+        throw new Error("exportJsonl: the source's cursor did not advance");
+      }
+      if (pageCursor !== undefined) seenCursors.add(pageCursor);
+      pageCursor = page.next;
     }
   }
 
@@ -306,19 +373,25 @@ export async function* exportJsonl(
       if (!(margin > minMargin)) continue;
       if (stableKey(g.best.step.action) === stableKey(g.worst.step.action)) continue;
       if (records >= maxRecords) {
-        stats.truncated = true;
+        stats.preferencesTruncated = true;
         break;
       }
-      const line = emit({
-        type: "preference",
-        ...(includeContext && { prompt: g.prompt }),
-        chosen: g.best.step.action,
-        rejected: g.worst.step.action,
-        margin,
-        chosenRef: ref(g.best.step),
-        rejectedRef: ref(g.worst.step),
-        ...(g.tainted.size > 0 && { tainted: true, taintOrigins: [...g.tainted].sort() }),
-      });
+      let line: string | undefined;
+      try {
+        line = emit({
+          type: "preference",
+          ...(includeContext && { prompt: g.prompt }),
+          chosen: g.best.step.action,
+          rejected: g.worst.step.action,
+          margin,
+          chosenRef: ref(g.best.step),
+          rejectedRef: ref(g.worst.step),
+          ...(g.tainted.size > 0 && { tainted: true, taintOrigins: [...g.tainted].sort() }),
+        });
+      } catch {
+        stats.skipped.recordError += 1;
+        continue;
+      }
       if (line !== undefined) {
         records += 1;
         stats.records.preference += 1;
@@ -356,6 +429,7 @@ function trajectoryRecord(
       action: s.action,
       actions: s.actions,
       ...(s.policy !== undefined && { policy: s.policy }),
+      ...(s.refs !== undefined && { refs: s.refs }),
       ...(s.reward !== undefined && { reward: s.reward }),
       rewardSource: s.rewardSource,
       ...(o.length > 0 && { tainted: true, taintOrigins: o }),

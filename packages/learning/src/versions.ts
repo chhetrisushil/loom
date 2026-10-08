@@ -95,8 +95,8 @@ export function sliceByVersion<A>(
           ? s.policy !== undefined
             ? { id: s.policy.id, version: s.policy.version }
             : undefined
-          : s.policy?.refs?.[by];
-      const key = ref === undefined ? "(unversioned)" : `${ref.id}@${ref.version}`;
+          : s.refs?.[by];
+      const key = ref === undefined ? "(unversioned)" : `${ref.id}\u0000${ref.version}`;
       const list = groups.get(key);
       if (list === undefined) groups.set(key, [s]);
       else list.push(s);

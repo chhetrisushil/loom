@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { decideWithPolicy } from "./decideWithPolicy";
 import { evaluatePolicy } from "./evaluate";
-import { promotionGate } from "./promote";
 import { InMemoryPolicyKv, PolicyRegistry } from "./registry";
 import { type PolicyResolver, decideWithRollout, rolloutBucket } from "./rollout";
 import { trajectories } from "./trajectories";
@@ -47,7 +46,6 @@ async function liveRegistry() {
   await reg.bootstrap({ id: "router", version: "1", now: 2 });
   return reg;
 }
-const verdict = (version: string) => promotionGate(okReport(version), { minSteps: 10 });
 
 /** A ctx whose `decide` serves a recorded decision and otherwise records - the kernel's rule. */
 function fakeCtx() {
@@ -125,7 +123,6 @@ describe("decideWithRollout (R18)", () => {
       id: "router",
       version: "2",
       report: okReport("2"),
-      verdict: verdict("2"),
       mode: "shadow",
       now: 5,
     });
@@ -149,7 +146,6 @@ describe("decideWithRollout (R18)", () => {
       id: "router",
       version: "2",
       report: okReport("2"),
-      verdict: verdict("2"),
       mode: "shadow",
       now: 5,
     });
@@ -185,7 +181,6 @@ describe("decideWithRollout (R18)", () => {
       id: "router",
       version: "2",
       report: okReport("2"),
-      verdict: verdict("2"),
       mode: "canary",
       canaryFraction: 0.3,
       now: 5,
@@ -224,7 +219,6 @@ describe("decideWithRollout (R18)", () => {
       id: "router",
       version: "2",
       report: okReport("2"),
-      verdict: verdict("2"),
       mode: "canary",
       canaryFraction: 0.999,
       now: 5,
@@ -279,7 +273,6 @@ describe("decideWithRollout (R18)", () => {
       id: "router",
       version: "2",
       report: okReport("2"),
-      verdict: verdict("2"),
       mode: "full",
       now: 5,
     });
@@ -321,7 +314,6 @@ describe("rollout through the kernel", () => {
       id: "router",
       version: "2",
       report: okReport("2"),
-      verdict: verdict("2"),
       mode: "canary",
       canaryFraction: 0.999,
       now: 5,
@@ -395,8 +387,8 @@ describe("rollout through the kernel", () => {
     });
     const ts = [mk(1, "1", "a"), mk(2, "2", "a"), mk(3, "2", "b")];
     const byPolicy = sliceByVersion(ts, "policy");
-    expect([...byPolicy.keys()].sort()).toEqual(["router@1", "router@2"]);
-    expect(byPolicy.get("router@2")).toHaveLength(2);
+    expect([...byPolicy.keys()].sort()).toEqual(["router\u00001", "router\u00002"]);
+    expect(byPolicy.get("router\u00002")).toHaveLength(2);
     const byPrompt = sliceByVersion(ts, "prompt");
     expect(byPrompt.size).toBe(2);
     expect(
@@ -410,6 +402,93 @@ describe("rollout through the kernel", () => {
         "model"
       ).has("(unversioned)")
     ).toBe(true);
-    expect(evaluatePolicy(byPolicy.get("router@2") ?? [], policy("3", "opus")).evaluated).toBe(0); // no context
+    expect(evaluatePolicy(byPolicy.get("router\u00002") ?? [], policy("3", "opus")).evaluated).toBe(
+      0
+    ); // no context
+  });
+});
+
+describe("rollout hardening (R18 fix round 1)", () => {
+  const src = (reg: PolicyRegistry, resolveFn: PolicyResolver<string> = resolve) => ({
+    source: reg,
+    policyId: "router",
+    resolve: resolveFn,
+  });
+  const canaryAt = async (f: number) => {
+    const reg = await liveRegistry();
+    await reg.promote({
+      id: "router",
+      version: "2",
+      report: okReport("2"),
+      mode: "canary",
+      canaryFraction: f,
+      now: 5,
+    });
+    return reg;
+  };
+
+  it("a canary whose candidate has no code records the INCUMBENT arm's probability and flags the fallback", async () => {
+    const reg = await canaryAt(0.99);
+    const { ctx, recorded } = fakeCtx();
+    const onlyOne: PolicyResolver<string> = (_i, v) => (v === "1" ? IMPLS["1"] : undefined);
+    await decideWithRollout(ctx, "d", src(reg, onlyOne), "unit-1", {}, ACTIONS);
+    const s = stampOf(recorded, "d");
+    expect(s.version).toBe("1");
+    expect(s.rollout?.armProbability).toBeCloseTo(0.01);
+    expect(s.rollout?.fellBack).toBe(true);
+  });
+
+  it("refuses a resolver that returns other code than the registry named", async () => {
+    const reg = await liveRegistry();
+    await reg.promote({ id: "router", version: "2", report: okReport("2"), mode: "full", now: 5 });
+    const stale: PolicyResolver<string> = () => IMPLS["1"]; // says v1 while the registry says v2
+    const { ctx, recorded } = fakeCtx();
+    await expect(decideWithRollout(ctx, "d", src(reg, stale), "u", {}, ACTIONS)).rejects.toThrow(
+      /resolver returned router@1 for incumbent router@2/
+    );
+    expect(recorded.size).toBe(0);
+  });
+
+  it("a mismatched CANDIDATE is treated as unavailable (incumbent acts, reason recorded)", async () => {
+    const reg = await canaryAt(0.999);
+    const wrongCandidate: PolicyResolver<string> = () => IMPLS["1"];
+    const { ctx, recorded } = fakeCtx();
+    await decideWithRollout(ctx, "d", src(reg, wrongCandidate), "u", {}, ACTIONS);
+    const s = stampOf(recorded, "d");
+    expect(s.version).toBe("1");
+    expect((s.rollout?.shadow as { error: string }).error).toMatch(/resolver returned/);
+  });
+
+  it("a server-held bucketSecret makes the split unpredictable from the public salt", () => {
+    const open = rolloutBucket("router:2", "alice");
+    const keyed = rolloutBucket("router:2", "alice", "s3cret");
+    expect(keyed).not.toBe(open);
+    expect(rolloutBucket("router:2", "alice", "s3cret")).toBe(keyed);
+    expect(rolloutBucket("router:2", "alice", "other")).not.toBe(keyed);
+  });
+
+  it("the secret reaches the recorded bucket", async () => {
+    const reg = await canaryAt(0.5);
+    const { ctx, recorded } = fakeCtx();
+    await decideWithRollout(ctx, "d", src(reg), "alice", {}, ACTIONS, { bucketSecret: "k" });
+    expect(stampOf(recorded, "d").rollout?.bucket).toBe(rolloutBucket("router:2", "alice", "k"));
+  });
+
+  it("sliceByVersion keys cannot collide across ids containing '@'", () => {
+    const step = (id: string, version: string) => ({
+      decisionId: "d",
+      executionId: "e",
+      sequence: 1,
+      timestamp: 1,
+      action: "a",
+      actions: ["a"],
+      rewardSource: "none" as const,
+      policy: { id, version },
+    });
+    const m = sliceByVersion(
+      [{ executionId: "e", outcome: "completed", steps: [step("x@1", "2"), step("x", "1@2")] }],
+      "policy"
+    );
+    expect(m.size).toBe(2);
   });
 });
