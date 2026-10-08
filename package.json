@@ -16,7 +16,8 @@
     "present": "npx @marp-team/marp-cli@latest -s docs/presentation/",
     "link:global": "cd tools/cli && npm link && cd ../compiler && npm link && cd ../create-loom-app && npm link",
     "unlink:global": "npm rm --global @loom/cli @loom/compiler @loom/create-loom-app",
-    "test:src": "LOOM_TEST_SRC=1 turbo test"
+    "test:src": "LOOM_TEST_SRC=1 turbo test",
+    "test:perf": "LOOM_TEST_PERF=1 turbo test --force"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",

@@ -377,7 +377,7 @@ if (PG_URL === undefined) {
           await pool.end();
         }
         expect(sawSnapshotsWait).toBe(true);
-        expect(Date.now() - started).toBeLessThan(8_000);
+        expect(Date.now() - started).toBeLessThan(15_000); // timing-bound: a missing lock_timeout blocks indefinitely
         expect(warnings).toEqual([]);
       } finally {
         if (release !== undefined) clearTimeout(release);

@@ -303,20 +303,15 @@ describe("WorkflowRuntime — cancellation", () => {
     // Let the effect start and register its abort listener.
     await new Promise((r) => setTimeout(r, 5));
 
-    const start = performance.now();
     handle.cancel(new Error("user cancelled"));
     await expect(handle.waitForCompletion()).rejects.toThrow("user cancelled");
-    const elapsed = performance.now() - start;
 
     expect(observedAbort).toBe(true);
     expect(handle.getState().status).toBe("cancelled");
     expect(events).toContain("EXECUTION_CANCELLED");
     expect(events).not.toContain("EXECUTION_FAILED");
-    // Cancellation must NOT block on the effect: `slowFn` never self-resolves, so the run
-    // completing at all already proves the abort propagated. The bound just asserts it's prompt
-    // — generous (matching the other cancellation tests) so it doesn't flake on SQLite-write +
-    // GC + scheduling jitter under load, which the tight single-digit-ms bound did.
-    expect(elapsed).toBeLessThan(1000);
+    // Cancellation must NOT block on the effect: `slowFn` never self-resolves, so the run completing
+    // at all (within the test timeout) is the proof the abort propagated — no wall-clock bound.
 
     eventStore.close();
     snapshotStore.close();

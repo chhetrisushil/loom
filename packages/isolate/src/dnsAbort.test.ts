@@ -36,11 +36,10 @@ describe("DNS lookup is bound by the fetch deadline", () => {
     });
     const sent: unknown[] = [];
     const child = { send: (m: unknown) => sent.push(m) };
-    const t0 = Date.now();
     const ctx = { executionId: "e", stepId: "s", workflowId: "w", attempt: 1, emit: vi.fn() };
     // biome-ignore lint/suspicious/noExplicitAny: reaching the private broker path under test
     await (effect as any).handleFetch(child, 0, "http://stalled.test/", undefined, ctx);
-    expect(Date.now() - t0).toBeLessThan(2000);
+    // the lookup is stalled until finishLookup(), so returning at all proves the 100 ms fetch timeout fired
     expect((sent[0] as { code?: string }).code).toBe("FETCH_TIMEOUT");
     // The tool was answered, but getaddrinfo is still occupying a thread: the slot stays held.
     // biome-ignore lint/suspicious/noExplicitAny: slot counter under test

@@ -136,29 +136,34 @@ describe("ADR 0109 D3 — the carry", () => {
       }
       return unwrapTainted(await ctx.receive("q"));
     });
-    f.definition.deadlineMs = 500;
+    // Windows are wide on purpose: the assertion below needs "the chain deadline has passed but a
+    // FRESH deadline from the late successor's start has not", and a narrow window (it was 130 ms)
+    // closes under CI load before the test can act.
+    const DEADLINE = 2_000;
+    const LATE = 1_500;
+    f.definition.deadlineMs = DEADLINE;
     h.rt.registerFlow(f.definition, f.runner);
     await settle(await h.rt.start(f, {}, { executionId: "dl" }));
     const start0 = (await h.eventStore.read("dl"))[0]?.timestamp as number;
-    await new Promise((r) => setTimeout(r, 150)); // a real delay: the successor starts LATE
+    await new Promise((r) => setTimeout(r, LATE)); // a real delay: the successor starts LATE
     await h.rt.send("dl", { topic: "go", payload: 1 });
     await until(async () => (await status(h, "dl~1")) === "suspended");
     const first = (await h.eventStore.read("dl~1"))[0];
     const carried = (first?.payload as { continuedFrom: { carried: { chainDeadline: number } } })
       .continuedFrom.carried;
-    expect(carried.chainDeadline).toBe(start0 + 500); // fixed at generation 0, not at the rotation
+    expect(carried.chainDeadline).toBe(start0 + DEADLINE); // fixed at generation 0, not at the rotation
     // A parked execution holds no deadline timer (it re-arms on resume, "resuming past the deadline
     // cancels immediately"), so resume the successor once the CHAIN's deadline has passed but a
-    // FRESH 500 ms (start1 + 500, start1 >= start0 + 150) has not.
-    await until(() => Date.now() > start0 + 500 + 20, 3000);
-    expect(Date.now()).toBeLessThan((first?.timestamp as number) + 500);
+    // FRESH one (start1 + DEADLINE, start1 >= start0 + LATE) has not.
+    await until(() => Date.now() > start0 + DEADLINE + 20, 6000);
+    expect(Date.now()).toBeLessThan((first?.timestamp as number) + DEADLINE); // timing-bound: precondition, a ~1.5 s window (LATE) after the chain deadline
     await h.rt.send("dl~1", { topic: "q", payload: "too late" });
     await until(async () => (await status(h, "dl~1")) === "cancelled", 3000);
     const cancelled = (await eventsOf(h.eventStore, "dl~1", "EXECUTION_CANCELLED"))[0];
     expect((cancelled?.payload as { reason?: string }).reason).toMatch(/deadline/);
     // a cancel is terminal: the flow's own return does not follow it
     expect(await kinds(h.eventStore, "dl~1")).not.toContain("EXECUTION_COMPLETED");
-  });
+  }, 20_000);
 
   it("an execution resumed past its deadline never rotates: the chain cannot outlive it", async () => {
     const h = build(on);

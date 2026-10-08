@@ -58,6 +58,19 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
 
 ## Working in this repo
 
+- **Writing tests — CI is concurrent and shared; a flaky test is a bug.** (Enforced by
+  `packages/spec/src/testTiming.test.ts`; flakes are hunted nightly by `.github/workflows/flake-hunt.yml`.)
+  - Wait on a CONDITION (`until(...)`, `eventually(...)`), never a fixed `sleep`/`tick(n)` before
+    asserting a background effect — and wait for the WHOLE exchange (e.g. the predecessor's commit,
+    not just the successor's park) before reading its results.
+  - Never gate on wall-clock noise: no `performance.now()` and no timing ratios in a `*.test.ts`. Put
+    perf ratios/budgets in a `*.perf.test.ts` (excluded from `pnpm test`; `pnpm test:perf`, non-blocking
+    in CI). Prefer deterministic evidence — call counts, rows scanned, round trips. When the slow path is
+    a hang, completing within the test timeout IS the proof; otherwise justify an elapsed upper bound
+    with `// timing-bound: <what the slow path costs>` and keep it ≥ 5 s.
+  - A precondition that depends on elapsed time needs a WIDE window (seconds, not ~100 ms), and a test
+    that intentionally waits must raise its own timeout (vitest's default is 5 s).
+
 - Package manager: `pnpm@9.14.4` (pinned; use `corepack`). Build: `pnpm build`
   (turbo). Test: `pnpm test`. Lint: `pnpm lint` (biome).
 - **A package's tests import its siblings' built `dist`**, which is what a consumer

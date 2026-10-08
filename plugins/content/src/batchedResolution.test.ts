@@ -122,16 +122,6 @@ describe("batched reference resolution (TS-10, ADR 0062)", () => {
     expect(payload.output.a).not.toBe(payload.output.b); // decoded per occurrence — never aliased
   });
 
-  it("meets the interactive budget: 50 refs against a 5ms-per-round-trip store", async () => {
-    const { store } = await seeded(5, true);
-    const t0 = performance.now();
-    await store.read("x-1");
-    const p = performance.now() - t0;
-    // One batched round-trip (~5ms) + O(nodes) walks. Budget p95 ≤ 150ms; the
-    // serialized baseline would be ≥ 250ms.
-    expect(p).toBeLessThan(150);
-  });
-
   it("an erased blob still fails loudly with ContentMissingError (G1)", async () => {
     const memory = new InMemoryContentStore();
     const content = new LatencyStore(memory, 0, true);

@@ -719,9 +719,8 @@ describe("R8 — restart-safe superviseChildren", () => {
             : (load as (...a: unknown[]) => unknown)(id, ...rest)) as typeof rt.loadState;
       },
     });
-    const t0 = Date.now();
+    // loadState of P never settles, so recover() returning at all proves the 100 ms loadTimeout fired
     const summary = await up.sup.recover();
-    expect(Date.now() - t0).toBeLessThan(2000); // the parent keeps running for 3s
     expect(summary.resumed).toBe(0);
     expect(up.errors).toEqual([]);
     hang = false;
