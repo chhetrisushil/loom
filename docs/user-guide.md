@@ -647,7 +647,7 @@ Use `reasoning` **or** `modelToolId`, not both. The Reasoning Runtime routes and
 
 ### Large tool menus: `toolSearch` ([ADR 0125](adr/0125-tool-search.md))
 
-With a few hundred tools (an MCP server catalogue) a full menu costs tokens every turn and degrades tool choice. `toolSearch` offers the model a `search_tools` meta-tool instead: it searches the tools this run is already allowed to use and adds the best matches to its menu for the following turns. **It is not worth enabling below about 30 tools** (the menu is cheaper than the extra round trip), and it is off by default.
+With a few hundred tools (an MCP server catalogue) a full menu costs tokens every turn and degrades tool choice. `toolSearch` offers the model a `search_tools` meta-tool instead: it searches the host-offered `catalog` (the agent's own `definition.tools` and the selected skills' tools stay on the menu from turn 0) and adds the best matches to its menu for the following turns. **It is not worth enabling below about 30 tools** (the menu is cheaper than the extra round trip), and it is off by default.
 
 ```ts
 import { agentLoop$ } from "@loom/agent";
@@ -660,10 +660,12 @@ const chargeInvoice = tool$({
 });
 
 agentLoop$(ctx, {
-  definition: agent$({ id: "ops", name: "Ops", tools: [chargeInvoice, /* ...200 more... */] }),
+  definition: agent$({ id: "ops", name: "Ops", tools: [lookupCustomer] }), // always on the menu
+  skills, // a selected skill's tools are auto-loaded too
   modelToolId: "model",
   toolSearch: {
-    alwaysLoaded: ["lookup_customer"],          // on the menu from turn 0
+    catalog: [chargeInvoice, /* ...200 more... */], // the searchable set
+    alwaysLoaded: ["charge_invoice"],           // a catalog entry on the menu from turn 0
     namespaces: ["mcp:ops:", "billing_"],       // optional host allowlist of searchable id prefixes
     annotations: { "mcp:ops:run_sql": { aliases: ["query the database"] } }, // host vocabulary for MCP tools
     maxPerSearch: 5, maxLoaded: 20,
@@ -673,8 +675,8 @@ agentLoop$(ctx, {
 
 What you get and what you do not:
 
-- **Authority is unchanged.** Only the agent's tools, the selected skills' tools and `toolSearch.catalog` can ever be found; a loaded tool still passes the menu gate, input validation, `requireApproval` and the effect ring. A tool outside that set is never returned or callable.
-- **Replay-safe.** Each search is one recorded decision (`<loop>#turn:<i>:tool:<j>:search`), so a resume ranks nothing and reproduces the same menu. The menu is append-only (`search_tools`, then `alwaysLoaded`, then loaded tools in search order), which keeps the prompt prefix cacheable.
+- **Authority is unchanged.** Only `toolSearch.catalog` can ever be found or loaded by a search (the agent's own tools and the selected skills' tools are already on the menu); a loaded tool still passes the menu gate, input validation, `requireApproval` and the effect ring. A tool outside that set is never returned or callable.
+- **Replay-safe.** Each search is one recorded decision (`<loop>#turn:<i>:tool:<j>:search`), so a resume ranks nothing and reproduces the same menu. The menu is append-only (`search_tools`, then `definition.tools`, the selected skills' tools and `alwaysLoaded`, then searched tools in search order), which keeps the prompt prefix cacheable.
 - **Bounded.** Query 512 characters / 16 distinct terms; `maxPerSearch`, `maxLoaded`, `maxSearches`, optional `maxMenuChars`. `fitToWindow` does not count tools: reserve for `alwaysLoaded` plus `maxLoaded` specs.
 - **Close the vocabulary gap with aliases, not a bigger description.** Ranking is lexical BM25F (name > aliases = tags > description). Users say "bill the customer"; the tool is `charge_invoice`: give it `aliases`. For an MCP/A2A tool use `toolSearch.annotations` (host-written, trusted); a remote server's own tags and aliases are never trusted vocabulary, its description is not ranked on unless you set `trustJsonSchemaText`, and a result that names a third-party tool is tainted. This is the recommended fix before semantic ranking.
 - **Plug in your own ranker** (`toolSearch.ranker`, a `ToolRanker`), e.g. an embedding model: its answer is recorded, so it replays identically. `Bm25ToolRanker` is exported for other consumers (the loom-ui planner can rank capabilities with it: `description: intent`).

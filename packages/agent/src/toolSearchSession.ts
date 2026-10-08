@@ -30,12 +30,13 @@ const MAX_RECORDED_QUERY = 200;
 /** Opt-in tool search for `agentLoop$`. Absent: the run is byte-identical to a run without this feature. */
 export interface ToolSearchConfig {
   /**
-   * Extra tools the HOST offers for search, beyond `definition.tools` and the selected skills'
-   * tools. Offering a tool here is the authorization: nothing outside this set, the agent's own
-   * tools and the skill registry's tools can ever be found or loaded.
+   * The tools the HOST offers for search: the searchable set, and the ONLY set a search can load.
+   * The agent's own `definition.tools` and the selected skills' tools are already on the menu from
+   * turn 0 (user ruling, ADR 0125 D3), so they are not searched; offering a tool here is the
+   * authorization. An id already on the menu is ignored here (the menu's definition wins).
    */
   catalog?: readonly ToolDefinition[];
-  /** Ids on the menu from turn 0 (they must be searchable tools). Default none: only `search_tools`. */
+  /** Catalog ids added to the menu up front, after `definition.tools` and the selected skills' tools. */
   alwaysLoaded?: readonly string[];
   /**
    * An allowlist of searchable id PREFIXES (`"mcp:github:"`). Only matching tools are found;
@@ -138,11 +139,8 @@ export class ToolSearchSession {
 
   constructor(
     cfg: ToolSearchConfig,
-    universe: readonly ToolDefinition[],
-    skillVocab: ReadonlyMap<
-      string,
-      { tags?: readonly string[]; aliases?: readonly string[] }
-    > = new Map()
+    /** Tools already on the menu (definition.tools + selected skills' tools), in menu order. */
+    preloaded: readonly ToolDefinition[]
   ) {
     this.name = cfg.searchToolName ?? DEFAULT_SEARCH_TOOL_NAME;
     this.maxPerSearch = positiveInt(
@@ -173,8 +171,11 @@ export class ToolSearchSession {
     if (!/^[A-Za-z0-9_.:-]{1,64}$/.test(this.name)) {
       throw new ToolSearchError("toolSearch.searchToolName must match [A-Za-z0-9_.:-]{1,64}");
     }
-    for (const t of universe) if (!this.byId.has(t.id)) this.byId.set(t.id, t);
-    if (this.byId.has(this.name)) {
+    for (const t of preloaded) this.loadedIds.add(t.id);
+    for (const t of cfg.catalog ?? []) {
+      if (!this.loadedIds.has(t.id) && !this.byId.has(t.id)) this.byId.set(t.id, t);
+    }
+    if (this.byId.has(this.name) || this.loadedIds.has(this.name)) {
       throw new ToolSearchError(
         `toolSearch.searchToolName "${this.name}" collides with a searchable tool`
       );
@@ -188,7 +189,7 @@ export class ToolSearchSession {
       const t = this.byId.get(id);
       if (t === undefined) {
         throw new ToolSearchError(
-          `toolSearch.alwaysLoaded names "${id}", which is not an offered tool`
+          `toolSearch.alwaysLoaded names "${id}", which is not a \`catalog\` tool`
         );
       }
       if (!this.loadedIds.has(id)) {
@@ -202,8 +203,7 @@ export class ToolSearchSession {
         [...this.searchable].map((id) => {
           const t = this.byId.get(id) as ToolDefinition;
           const host = cfg.annotations?.[id];
-          const sk = skillVocab.get(id);
-          // Trusted vocabulary: the host's annotations, the skill's, and the tool author's own — the
+          // Trusted vocabulary: the host's annotations and the tool author's own — the
           // last ONLY for a first-party tool. A remote tool's self-declared tags/aliases are the
           // server's claims: they count as description-level text, and only if the operator vouched
           // for that text (`trustJsonSchemaText`).
@@ -214,8 +214,8 @@ export class ToolSearchSession {
             id,
             // An un-vouched third-party description is not ranked on: it is attacker text.
             ...(vouched(t) && { description: [t.description, ...remote].join(" ") }),
-            tags: [...(host?.tags ?? []), ...(sk?.tags ?? []), ...(own?.tags ?? [])],
-            aliases: [...(host?.aliases ?? []), ...(sk?.aliases ?? []), ...(own?.aliases ?? [])],
+            tags: [...(host?.tags ?? []), ...(own?.tags ?? [])],
+            aliases: [...(host?.aliases ?? []), ...(own?.aliases ?? [])],
           };
         })
       );
