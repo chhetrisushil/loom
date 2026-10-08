@@ -681,6 +681,22 @@ What you get and what you do not:
 - **Close the vocabulary gap with aliases, not a bigger description.** Ranking is lexical BM25F (name > aliases = tags > description). Users say "bill the customer"; the tool is `charge_invoice`: give it `aliases`. For an MCP/A2A tool use `toolSearch.annotations` (host-written, trusted); a remote server's own tags and aliases are never trusted vocabulary, its description is not ranked on unless you set `trustJsonSchemaText`, and a result that names a third-party tool is tainted. This is the recommended fix before semantic ranking.
 - **Plug in your own ranker** (`toolSearch.ranker`, a `ToolRanker`), e.g. an embedding model: its answer is recorded, so it replays identically. `Bm25ToolRanker` is exported for other consumers (the loom-ui planner can rank capabilities with it: `description: intent`).
 
+### Activating skills mid-loop: `skillActivation` ([ADR 0125](adr/0125-tool-search.md) D11)
+
+`skills` + `skillSelector` pick skills ONCE, before the first model call; an unselected skill can never show up later. `skillActivation` adds progressive discovery: the model sees a cheap index (`id: description [tags]`) of the skills that were not selected and calls `activate_skill({ name })` when it needs one. It is off by default.
+
+```ts
+agentLoop$(ctx, {
+  definition, modelToolId: "model", skills: registry,
+  skillActivation: { maxActive: 3 },   // catalog defaults to the `skills` registry; or pass SkillDefinition[]
+});
+```
+
+- **The instructions come back as the tool result**, not as a system message: the turn-0 prompt (and its prompt cache) never changes. The skill's tools join the menu from the next step (deduped, append-only), so they are callable without a search; `toolSearch` will not offer them again.
+- **Bounded and deterministic.** The index lists the first `maxIndex` (50) skills by id; only listed skills can be activated; `maxActive` (5) per run; `maxInstructionBytes` (32 KiB) per skill.
+- **Recorded.** Each activation is a decision `<loop>#turn:<i>:tool:<j>:skill` (`source: "agent-skill-activation"`), so a resume re-applies it without re-deciding. An unknown, already-active, over-cap, oversized or tainted-instruction call is an error result (`unknown_skill`, `already_active`, `skill_limit_reached`, `instructions_too_large`, `instructions_refused`) that records nothing.
+- **Skills are host author text.** Register them yourself; never build the catalog from a remote declaration. Compaction may fold an activation result into its summary; the skill's tools stay on the menu.
+
 ### Bounding what the log carries
 
 `compaction` folds older turns into a summary once the transcript passes a threshold. It runs through `ctx.execute` against an effect you register, deliberately: a summary is lossy and nondeterministic, so it has to be a *recorded fact* or a replay would rebuild a different transcript than the one that ran.

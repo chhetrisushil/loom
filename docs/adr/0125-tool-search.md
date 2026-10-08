@@ -95,7 +95,38 @@ turns and prompt, not tools, so a host that uses it reserves for the worst case:
 capabilities too: map `CapabilityDefinition` `{ id, intent, tags, aliases }` onto it (`description: intent`). The planner can build
 one index per catalogue and call `rank(query, k)` inside its own `ctx.decide`. This repo does not edit loom-ui.
 
+**D11 — Mid-loop skill activation (user ruling 2026-10-09).** Upfront selection (`#skills`) can never disclose a skill it did not
+pick. `agentLoop$({ skillActivation: { catalog?: "registry" | SkillDefinition[], maxActive (5, <=50), maxIndex (50, <=500),
+maxInstructionBytes (32 KiB, <=1 MiB), toolName ("activate_skill") } })` closes that: the turn-0 system prompt gains a bounded index
+of the skills NOT selected up front (`- id: first line of description [tags]`, id order, the first `maxIndex`; only listed skills
+can be activated) and the model gets an `activate_skill({ name })` meta-tool, listed after `search_tools` and before the menu.
+Default OFF and byte-identical; when nothing is left to activate the tool and index are omitted. It combines with the upfront
+selector and with `toolSearch`.
+- **Instructions are the tool RESULT** (the Anthropic Agent Skills pattern), not a mid-conversation system message: a provider may
+  drop `role: "system"` messages when `request.system` is set, no provider is modified, and the turn-0 prompt is never rewritten
+  so the cached prefix stays stable. The result is `{ skill, instructions, tools? }`; it is NOT tainted (host-registry author
+  text) and is bounded by `maxInstructionBytes`. It follows the provider adjacency rules like any tool result.
+- **The skill's tools** are appended to the menu after the activation (deduped against the menu by id; the menu only grows). They
+  pass the same menu gate, approval hook, principal/effect-ring checks as any tool. `ToolSearchSession.noteLoaded` marks them
+  loaded, so search never re-offers them.
+- **Recorded.** Each activation is one `ctx.decide` `<loop>#turn:<i>:tool:<j>:skill`, `source: "agent-skill-activation"`, value
+  `{ skill }`; a replay re-applies it without re-deciding, and the record is re-checked against the call (a tampered record can
+  refuse, never activate another skill). Unknown / already-active / over-`maxActive` / oversized / tainted-or-non-string
+  instructions are typed error results (`unknown_skill`, `already_active`, `skill_limit_reached`, `instructions_too_large`,
+  `instructions_refused`, `invalid_tool_input`) and record nothing: the instructions load BEFORE the decision.
+- **Trust.** Skills are HOST-registered author text. The catalog is never built from a remote/untrusted declaration; instructions
+  that arrive tainted (ADR 0085) are refused, never delivered.
+- **Config errors are loud:** the meta-tool name colliding with any menu tool, the search tool, a `toolSearch.catalog` tool or any
+  offered skill's tool; a non-positive/over-ceiling cap; `"registry"` without a `skills` registry.
+- **Residuals.** The activation result is an ordinary tool_result, so compaction may fold it into its summary; the skill's
+  instructions then survive only as the summary's paraphrase, but its tools stay on the menu (append-only). A run re-loads an
+  activated skill's instructions on replay from the CURRENT registry, as upfront skills already are. Skill tools are not counted
+  against `toolSearch.maxLoaded`.
+
 ## Alternatives rejected
+
+- *Rewriting the system prompt on activation, or a mid-conversation system message* (D11): breaks the cached prefix and is dropped by
+  providers that take a separate `system`.
 
 - *Search that returns schemas without loading* (the model then needs a second "load" call): one more turn per discovery.
 - *Replacing the menu each turn with the latest results*: breaks the cached prefix and lets a tool vanish between a plan and its use.

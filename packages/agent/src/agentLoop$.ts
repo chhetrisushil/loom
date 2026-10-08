@@ -22,6 +22,7 @@ import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector"
 import { createAgentModelEffect } from "./createAgentModelEffect";
 import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
 import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
+import { type SkillActivationConfig, SkillActivationSession } from "./skillActivation";
 import { isTerminalToolError } from "./toolFailure";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
@@ -325,6 +326,18 @@ export interface AgentLoopConfig {
    * worth enabling below ~30 tools: the menu is cheaper than the extra round trip.
    */
   toolSearch?: ToolSearchConfig;
+  /**
+   * R22 (ADR 0125 D11) — opt-in mid-loop skill activation. The system prompt gets a cheap, bounded
+   * index (id, description, tags) of the skills NOT selected up front, and the model gets an
+   * `activate_skill({ name })` meta-tool. The skill's instructions come back AS THE RESULT of that
+   * call (the turn-0 prompt is never rewritten, so its cache prefix is stable) and its tools join the
+   * menu from the next step (deduped; the menu only grows). Each activation is a recorded decision
+   * (`<loop>#turn:<i>:tool:<j>:skill`, `source: "agent-skill-activation"`), so a replay re-applies it
+   * without re-deciding. Unknown / already-active / over-cap / oversized / tainted-instruction calls
+   * are typed error results and record nothing. Skills are host-registered author text; the upfront
+   * `skills` selection is unchanged and combinable. Absent (the default) the run is unchanged.
+   */
+  skillActivation?: SkillActivationConfig;
   /** Memory tier to recall from. Default `"working"`. */
   memoryTier?: string;
   /** Scope key. Default the execution id, so a run remembers its own conversation. */
@@ -630,6 +643,7 @@ export async function agentLoop$(
   // its result is journaled, and replay serves the recorded value.
 
   const skillTools: ToolDefinition[] = [];
+  const selectedSkillIds = new Set<string>();
   const skillInstructions: string[] = [];
   if (config.skills !== undefined && config.skills.all().length > 0) {
     const selector = config.skillSelector ?? deterministicSkillSelector();
@@ -653,6 +667,7 @@ export async function agentLoop$(
         : selector.select(input, registry)
     );
     for (const id of selected) {
+      selectedSkillIds.add(id);
       const skill = registry.get(id);
       if (skill === undefined) continue;
       skillInstructions.push(await loadInstructions(skill.instructions));
@@ -662,7 +677,7 @@ export async function agentLoop$(
     }
   }
 
-  const system =
+  let system =
     skillInstructions.length > 0
       ? [config.systemPrompt, ...skillInstructions]
           .filter((s) => s != null && s !== "")
@@ -687,7 +702,31 @@ export async function agentLoop$(
     search = new ToolSearchSession(config.toolSearch, toolDefs);
     toolDefs.push(...search.initial);
   }
+  // R22 D11 — skill activation: the index joins the turn-0 system prompt (fixed for the run), the
+  // meta-tool joins the leading specs. Omitted entirely when nothing is left to activate.
+  let activation: SkillActivationSession | undefined;
+  if (config.skillActivation !== undefined) {
+    const a = new SkillActivationSession(config.skillActivation, {
+      registry: config.skills,
+      selected: selectedSkillIds,
+      reservedNames: [
+        ...toolDefs.map((t) => t.id),
+        ...(config.toolSearch?.catalog ?? []).map((t) => t.id),
+        ...(search !== undefined ? [search.name] : []),
+      ],
+    });
+    if (a.hasOffers) {
+      activation = a;
+      system = [system, a.indexText()].filter((x) => x != null && x !== "").join("\n\n");
+    }
+  }
   const tools = toolSpecsFor(toolDefs);
+  if (activation !== undefined) {
+    tools.unshift({
+      ...activation.metaSpec,
+      description: activation.metaSpec.description as LlmContent,
+    });
+  }
   if (search !== undefined) {
     // The meta-tool leads, and the menu only ever grows at the END: stable prefix, cache-friendly.
     tools.unshift({ ...search.metaSpec, description: search.metaSpec.description as LlmContent });
@@ -723,8 +762,16 @@ export async function agentLoop$(
   // A `kind: "human"` step consumes its resume answer in call order; a turn holding one keeps the
   // original sequential shape whatever `parallelTools` says (see `runToolCalls`).
   const humanTools = new Set(toolDefs.filter((t) => t.kind === "human").map((t) => t.id));
+  const menuIds = new Set(toolDefs.map((t) => t.id));
   /** R22 — append tools a search loaded: spec at the END of the list, menu gate and tool classes updated. */
-  const growMenu = (added: readonly ToolDefinition[]): void => {
+  const growMenu = (incoming: readonly ToolDefinition[]): void => {
+    // Deduped against the menu (a skill may bring a tool already there); only genuinely new ids grow it.
+    const added: ToolDefinition[] = [];
+    for (const t of incoming) {
+      if (menuIds.has(t.id)) continue;
+      menuIds.add(t.id);
+      added.push(t);
+    }
     if (added.length === 0) return;
     toolDefs.push(...added);
     tools.push(...toolSpecsFor(added));
@@ -883,6 +930,18 @@ export async function agentLoop$(
     if (!tooBig && search?.isSearchCall(toolCall.name) === true) {
       const r = await search.run(ctx, `${idPrefix}#turn:${turn}:tool:${j}:search`, toolCall.input);
       growMenu(r.newlyLoaded);
+      return { output: r.output, isError: r.isError };
+    }
+    // R22 D11 — activating a skill: instructions are the RESULT; its tools join the menu. Like the
+    // search it needs no approval (it grants no authority: every loaded tool is gated when called).
+    if (!tooBig && activation?.isActivationCall(toolCall.name) === true) {
+      const r = await activation.run(
+        ctx,
+        `${idPrefix}#turn:${turn}:tool:${j}:skill`,
+        toolCall.input
+      );
+      growMenu(r.newlyLoaded);
+      search?.noteLoaded(r.newlyLoaded);
       return { output: r.output, isError: r.isError };
     }
 
