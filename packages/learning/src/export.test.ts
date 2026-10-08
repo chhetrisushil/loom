@@ -171,7 +171,7 @@ describe("exportJsonl (R18)", () => {
     const { src } = source([{ id: "deep", tenant: "t", context: deep }]);
     const r = await run({ source: src, tenant: "t" });
     expect(ofType(r, "trajectory")).toHaveLength(0);
-    expect(r.stats.skipped.taintedStep).toBe(1);
+    expect(r.stats.skipped.scanOverflow).toBe(1);
   });
 
   it("forms preference pairs across executions: best vs worst of the same decision in the same context", async () => {
@@ -417,7 +417,47 @@ describe("exportJsonl hardening (R18 fix round 1)", () => {
       /maxExecutions/
     );
     await expect(run({ source: s, tenant: "t", maxRecords: 0 })).rejects.toThrow(/maxRecords/);
-    await expect(run({ source: s, tenant: "t", cursor: "lx1:{nope" })).rejects.toThrow(/malformed/);
+    // anything that is not OUR strict envelope is the source's own cursor, passed through untouched
+    for (const bare of [
+      "lx1:{nope",
+      'lx1:{"c":null,"s":-1}',
+      'lx1:{"c":null,"s":1.5}',
+      'lx1:{"c":null,"s":1,"x":2}',
+      "lx1:null",
+    ]) {
+      const seen: (string | undefined)[] = [];
+      const probe: ExportSource = {
+        async list(cursor) {
+          seen.push(cursor);
+          return { executions: [{ executionId: "a", tenant: "t" }] };
+        },
+        load: async () => one("a"),
+      };
+      await run({ source: probe, tenant: "t", cursor: bare });
+      expect(seen).toEqual([bare]);
+    }
+    // a real envelope is unwrapped: the source sees the page cursor, and `skip` executions are skipped
+    const seen: (string | undefined)[] = [];
+    const probe: ExportSource = {
+      async list(cursor) {
+        seen.push(cursor);
+        return {
+          executions: [
+            { executionId: "a", tenant: "t" },
+            { executionId: "b", tenant: "t" },
+          ],
+        };
+      },
+      load: async (id) => one(id),
+    };
+    const r = await run({
+      source: probe,
+      tenant: "t",
+      kinds: ["trajectory"],
+      cursor: 'lx1:{"c":"p7","s":1}',
+    });
+    expect(seen).toEqual(["p7"]);
+    expect(ofType(r, "trajectory").map((l) => l.executionId)).toEqual(["b"]);
   });
 
   it("an empty page that repeats its next cursor stops with an error instead of looping", async () => {
@@ -444,23 +484,23 @@ describe("exportJsonl hardening (R18 fix round 1)", () => {
     await expect(run({ source: cyc, tenant: "t" })).rejects.toThrow(/did not advance/);
   });
 
-  it("taint 'mark' + a scan that overflows is emitted MARKED (scan-overflow), never clean; 'exclude' drops it", async () => {
+  it("a scan that overflows is skipped in EVERY mode: it may hide a shred placeholder or taint", async () => {
     const wide: Record<string, unknown> = { a0: { leaf: tainted("IGNORE PREVIOUS", "mcp:x") } };
     for (let i = 1; i <= 10_050; i++) wide[`a${i}`] = { n: i };
+    wide.z = { $shredded: true };
     const events = execution({ id: "w", tenant: "t", context: { wide } }).events;
     const src = paged(["w"], () => events);
-    const marked = await run({ source: src, tenant: "t", taint: "mark", kinds: ["trajectory"] });
-    const [traj] = ofType(marked, "trajectory");
-    expect(traj).toMatchObject({ tainted: true });
-    expect(traj?.taintOrigins as string[]).toContain("scan-overflow");
-    const dropped = await run({ source: src, tenant: "t", kinds: ["trajectory"] });
-    expect(ofType(dropped, "trajectory")).toHaveLength(0);
-    expect(dropped.stats.skipped.taintedStep).toBe(1);
+    for (const taint of ["mark", "exclude"] as const) {
+      const r = await run({ source: src, tenant: "t", taint, kinds: ["trajectory"] });
+      expect(ofType(r, "trajectory")).toHaveLength(0);
+      expect(r.stats.skipped.scanOverflow).toBe(1);
+      expect(r.raw.join("\n")).not.toContain("IGNORE PREVIOUS");
+    }
   });
 
   it("one record too deep to serialise costs that record, not the export", async () => {
     let deep: unknown = { leaf: 1 };
-    for (let i = 0; i < 80; i++) deep = { d: deep };
+    for (let i = 0; i < 60; i++) deep = { d: deep }; // inside the scan bound, past the record's
     const src = paged(["ok1", "bad", "ok2"], (id) =>
       id === "bad" ? execution({ id, tenant: "t", context: { deep } }).events : one(id)
     );

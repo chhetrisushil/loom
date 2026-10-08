@@ -49,8 +49,9 @@ the pattern of ADR 0123's `DurableGoalStore`: load, pure change, `save(expectedR
   `PolicyVersionConflictError`; the same content is idempotent. A version that could change meaning would invalidate every
   evaluation that named it.
 - **Promotion is the one door, and the registry runs the gate itself.** `promote({id, version, report, thresholds?, mode, ...})`
-  calls `promotionGate(report, thresholds)` (the call's, else the registry's constructor `thresholds`, else the gate defaults) and
-  the report's `policy` must name exactly that `{id, version}`; a failing gate is `PromotionRefusedError`, and a caller-supplied
+  runs `promotionGate` with the registry's constructor `thresholds` (else the gate defaults) as a FLOOR and, when the call passes
+  `thresholds`, with those too - both must pass, so a per-call override can only tighten (round 2: `thresholds: {}` used to replace a
+  stricter registry setting) - and the report's `policy` must name exactly that `{id, version}`; a failing gate is `PromotionRefusedError`, and a caller-supplied
   `verdict` is refused outright (fix round 1: a loose `{ ok: true }` is bound to nothing, so a verdict computed elsewhere, or hand
   built, could be paired with any report). The report itself remains caller-supplied evidence - the registry cannot re-run an
   evaluation - so who may call `promote` is an authorization question for the application. The re-derived verdict (`policyManifest`)
@@ -146,7 +147,8 @@ context across executions, with a reward margin), and a summary.
   fork and coordinator executions to the right tenant is the source's responsibility.
 - **Taint (ADR 0085).** A step whose context, action, alternatives or policy carry tainted content is dropped by default;
   `taint: "mark"` keeps it with `tainted: true` and the origins. The scan is bounded and an overflow fails closed: the step is
-  treated as tainted with the origin `scan-overflow` (dropped by default, and flagged - never emitted unmarked - in `mark` mode).
+  skipped in EVERY mode (`skipped.scanOverflow`): a walk that gave up cannot rule out a shred placeholder, erasure has no "keep" option,
+  and a taint mark could not say what it left unmarked. (Round 1 marked overflowed steps in `mark` mode; round 2 skips them.)
 - **Erasure.** A step carrying a `{ $shredded }` placeholder and any execution whose log records `PAYLOAD_SHREDDED` are excluded.
   There is no option to include them. Compaction folds that event away into `variables._shredded`, so `evidenceEvents(state, log)`
   synthesizes a `PAYLOAD_SHREDDED` marker whenever the state carries `_shredded` (fix round 1; without it a shredded-then-compacted
@@ -192,6 +194,8 @@ In `@loom/memory`: `EmbeddingProvider { modelId, dimensions, maxBatchSize?, embe
   provider; `replace` on a hydrated key embeds only entries the index does not hold (eviction rewrites a list through it); hashing of
   id-less entries is memoized per entry object. Each search still re-reads the key from the store - one pass - because that is what
   guarantees a hit is an entry the store still holds even after another writer removed it behind the wrapper.
+- A hydration retry keeps the vectors it already computed (per text), so a sustained writer costs the new entries, not another pass over
+  the corpus. The write counters also cover a write that begins AND ends inside the hydration's read (a test pins it).
 - A real-model embedding client is a later plugin, not part of this ADR.
 
 ### D7 — An LLM eval harness in `tools/eval`
@@ -247,7 +251,11 @@ its plaintext, and a resumed export could livelock (D5); a one-cluster bootstrap
 racing hydration (D6); the LLM judge's fence was forgeable, `__proto__` tags polluted the report and agent-loop versions were
 unreadable (D3, D7). P3: canary fallback arm probability, resolver version mismatch, public canary salt, `sliceByVersion` key
 collisions, per-record export errors, zero-vector/query-bound/replace costs in the embedding store, `jsonSchema` item bound, grader
-weights, judge key collisions, lift row population, cassette replay never calling an inner provider. Each has a failing-first test and
+weights, judge key collisions, lift row population, cassette replay never calling an inner provider. Round 2 (Sonnet re-review): per-call `thresholds` can only tighten the registry floor; `TrajectoryStep.refs` uses the nearest PRECEDING
+response only (none when none precedes; linear); hydration retries do not re-embed; overflowed scans are skipped everywhere; a bare source
+cursor that begins with `lx1:` is passed through unless it is exactly our `{c,s}` envelope (a source must not emit cursors that are
+themselves valid envelopes). Note: `rollback` keeps the rollout `salt` (it is not reset), so the buckets of a later canary of the same
+version are unchanged. Each has a failing-first test and
 a revert-checked guard; the details are in D1 to D7 above.
 
 Decisions taken in review: canary arms stay per-arm (no `Policy.probability`); every mode change needs a fresh gate over its report

@@ -689,3 +689,46 @@ describe("trajectories — recorded facts are not actions (R10)", () => {
     expect(trajectories<string>(log)[0]?.steps).toHaveLength(2);
   });
 });
+
+describe("trajectory step refs come from the nearest PRECEDING response (R18 fix round 2)", () => {
+  it("a step before every response has none; early/mid/late steps get the response that precedes them", () => {
+    seq = 0;
+    const refsA = { model: { id: "m", version: "A" } };
+    const refsB = { model: { id: "m", version: "B" } };
+    const resp = (id: string, refs: unknown) =>
+      decision("x", id, "r", {
+        source: "agent-response",
+        policy: { id: "agent-llm", version: "v", refs },
+      });
+    const log = [
+      decision("x", "early", "a", { context: { n: 1 }, alternatives: ["a", "b"] }),
+      resp("resp1", refsA),
+      decision("x", "mid", "a", { context: { n: 2 }, alternatives: ["a", "b"] }),
+      resp("resp2", refsB),
+      decision("x", "late", "a", { context: { n: 3 }, alternatives: ["a", "b"] }),
+      ev("x", "EXECUTION_COMPLETED", {}),
+    ];
+    const by = Object.fromEntries(
+      (trajectories(log)[0]?.steps ?? []).map((s) => [s.decisionId, s.refs?.model?.version])
+    );
+    expect(by).toEqual({ early: undefined, mid: "A", late: "B" });
+  });
+
+  it("scales linearly: many steps and responses in one execution", () => {
+    seq = 0;
+    const log = [];
+    for (let i = 0; i < 3000; i++) {
+      log.push(
+        decision("y", `r${i}`, "r", {
+          source: "agent-response",
+          policy: { id: "agent-llm", version: "v", refs: { model: { id: "m", version: `v${i}` } } },
+        })
+      );
+      log.push(decision("y", `s${i}`, "a", { context: { i }, alternatives: ["a"] }));
+    }
+    const steps = trajectories(log)[0]?.steps ?? [];
+    expect(steps).toHaveLength(3000);
+    expect(steps[2999]?.refs?.model?.version).toBe("v2999");
+    expect(steps[0]?.refs?.model?.version).toBe("v0");
+  });
+});

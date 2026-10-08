@@ -131,6 +131,8 @@ export function trajectories<A = unknown>(
     if (list === undefined) factRefs.set(d.executionId, [{ sequence: d.sequence, refs }]);
     else list.push({ sequence: d.sequence, refs });
   }
+  for (const list of factRefs.values()) list.sort((a, b) => a.sequence - b.sequence);
+  const respPtr = new Map<string, number>();
   const outcomes = outcomeRecords(all);
   const fallbackActions = actionSets(decisions);
 
@@ -206,9 +208,18 @@ export function trajectories<A = unknown>(
       const runRefs = factRefs.get(executionId);
       let refs = stamped;
       if (refs === undefined && runRefs !== undefined) {
-        // The nearest response at or before this step, else the first of the run.
-        refs = runRefs[0]?.refs;
-        for (const r of runRefs) if (r.sequence <= d.sequence) refs = r.refs;
+        // The nearest response at or BEFORE this step, and none when no response precedes it: a
+        // later response says nothing about the version that produced an earlier decision.
+        // Steps are visited in sequence order and responses are sorted, so one forward pointer
+        // makes the whole execution linear.
+        let p = respPtr.get(executionId) ?? -1;
+        while (
+          p + 1 < runRefs.length &&
+          (runRefs[p + 1] as { sequence: number }).sequence <= d.sequence
+        )
+          p++;
+        respPtr.set(executionId, p);
+        if (p >= 0) refs = (runRefs[p] as { refs: NonNullable<PolicyStamp["refs"]> }).refs;
       }
       const alternatives = Array.isArray(d.alternatives) ? (d.alternatives as A[]) : undefined;
       return {

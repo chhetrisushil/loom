@@ -355,3 +355,77 @@ describe("EmbeddingMemoryStore hardening (R18 fix round 1)", () => {
     expect((await s.search("k", "note 4 gamma", { limit: 1 })).length).toBe(1);
   });
 });
+
+describe("hydration under a sustained writer (R18 fix round 2)", () => {
+  const E = (id: string, content: string) => ({ id, role: "user", content, timestamp: 1 });
+
+  it("a retry embeds only entries it has not seen: the corpus is not embedded twice", async () => {
+    const base = new HashingEmbeddingProvider({ dimensions: 128 });
+    let texts = 0;
+    const provider: EmbeddingProvider = {
+      modelId: base.modelId,
+      dimensions: 128,
+      maxBatchSize: 64,
+      async embed(t) {
+        texts += t.length;
+        return base.embed(t);
+      },
+    };
+    const raw = new InMemoryMemoryStore();
+    for (let i = 0; i < 20; i++) await raw.append("k", E(`d${i}`, `doc ${i} alpha`));
+    const inner = {
+      // slow reads that return a snapshot taken at call time
+      read: async (k: string) => {
+        const snapshot = structuredClone(await raw.read(k));
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+        return snapshot;
+      },
+      append: async (k: string, e: Parameters<typeof raw.append>[1]) => {
+        await new Promise((r) => setImmediate(r));
+        return raw.append(k, e);
+      },
+      clear: (k: string) => raw.clear(k),
+    };
+    const s = new EmbeddingMemoryStore({ store: inner, provider, minScore: 0.2 });
+    // three writes that begin while the first snapshot is being read: that attempt is stale and is redone
+    const writes = [1, 2, 3].map((n) => s.append("k", E(`w${n}`, `racing ${n} beta`)));
+    await Promise.all([s.search("k", "alpha"), ...writes]);
+    expect((await s.search("k", "racing 2 beta")).map((e) => e.id)).toContain("w2");
+    // 20 first pass + 3 racing entries on the retry + the queries; a retry that re-embedded the corpus costs 20 more
+    expect(texts).toBeLessThanOrEqual(20 + 3 + 2);
+  });
+
+  it("a write that starts AND finishes inside the hydration read is still searchable", async () => {
+    const raw = new InMemoryMemoryStore();
+    await raw.append("k", E("a", "alpha bravo"));
+    const inner = {
+      // a slow read that hands back a snapshot taken BEFORE the append; the append (fast) both
+      // starts and completes while the read is still pending, so by the time the hydration looks no
+      // write is in flight - only one that has come and gone
+      read: async (k: string) => {
+        const snapshot = structuredClone(await raw.read(k));
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+        await new Promise((r) => setImmediate(r));
+        return snapshot;
+      },
+      append: async (k: string, e: Parameters<typeof raw.append>[1]) => {
+        await new Promise((r) => setImmediate(r)); // lands after the snapshot, before the read returns
+        return raw.append(k, e);
+      },
+      clear: (k: string) => raw.clear(k),
+    };
+    const store = new EmbeddingMemoryStore({
+      store: inner,
+      provider: new HashingEmbeddingProvider({ dimensions: 256 }),
+      minScore: 0.2,
+    });
+    const pA = store.append("k", E("z", "zebra quokka")); // yields once before it counts as a write
+    const pS = store.search("k", "alpha");
+    await Promise.all([pA, pS]);
+    expect((await store.read("k")).map((e) => e.id)).toContain("z");
+    expect((await store.search("k", "zebra quokka")).map((e) => e.id)).toEqual(["z"]);
+  });
+});

@@ -450,6 +450,9 @@ export class EmbeddingMemoryStore implements MemoryStore {
     let p = this.hydrating.get(key);
     if (p === undefined) {
       p = (async () => {
+        // Vectors computed so far, kept ACROSS retries: a retry (a write raced the snapshot) embeds
+        // only entries it has not seen, never the whole corpus again.
+        const cache = new Map<string, { text: string; vec: number[] }>();
         for (let attempt = 0; attempt < MAX_HYDRATE_ATTEMPTS; attempt++) {
           const w = this.mark(key);
           const before = { started: w.started, inflight: w.inflight };
@@ -466,7 +469,16 @@ export class EmbeddingMemoryStore implements MemoryStore {
             if (!unique.has(k)) unique.set(k, searchableText(e));
           }
           const ids = [...unique.keys()];
-          const vecs = await this.embedAll([...unique.values()]);
+          // Reuse a cached vector only for the SAME text (an id can be rewritten between attempts).
+          const missing = ids.filter((k) => cache.get(k)?.text !== unique.get(k));
+          const fresh = await this.embedAll(missing.map((k) => unique.get(k) as string));
+          for (let i = 0; i < missing.length; i++) {
+            cache.set(missing[i] as string, {
+              text: unique.get(missing[i] as string) as string,
+              vec: fresh[i] as number[],
+            });
+          }
+          const vecs = ids.map((k) => (cache.get(k) as { vec: number[] }).vec);
           await this.index.clear(key);
           const held = new Set<string>();
           for (let i = 0; i < ids.length; i++) {
