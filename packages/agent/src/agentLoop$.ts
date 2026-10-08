@@ -312,8 +312,8 @@ export interface AgentLoopConfig {
       };
   /**
    * R22 (ADR 0125) — opt-in tool search. Instead of putting every tool on the menu, offer the model
-   * a `search_tools` meta-tool: it searches the tools this run is ALREADY allowed to use (the agent's
-   * own, the selected skills', plus {@link ToolSearchConfig.catalog}), and the best matches are added
+   * a `search_tools` meta-tool: it searches the host's {@link ToolSearchConfig.catalog} (the agent's
+   * own tools and the selected skills' tools stay on the menu from turn 0), and the best matches are added
    * to the menu for the following turns (append-only, so the prompt prefix stays cacheable).
    *
    * Authority is unchanged: a loaded tool still passes the R4 menu gate, the approval hook and the
@@ -630,10 +630,6 @@ export async function agentLoop$(
   // its result is journaled, and replay serves the recorded value.
 
   const skillTools: ToolDefinition[] = [];
-  const skillToolVocab = new Map<
-    string,
-    { tags?: readonly string[]; aliases?: readonly string[] }
-  >();
   const skillInstructions: string[] = [];
   if (config.skills !== undefined && config.skills.all().length > 0) {
     const selector = config.skillSelector ?? deterministicSkillSelector();
@@ -662,14 +658,6 @@ export async function agentLoop$(
       skillInstructions.push(await loadInstructions(skill.instructions));
       if (skill.tools !== undefined) {
         skillTools.push(...skill.tools);
-        if (skill.tags !== undefined || skill.aliases !== undefined) {
-          for (const t of skill.tools) {
-            skillToolVocab.set(t.id, {
-              ...(skill.tags !== undefined && { tags: skill.tags }),
-              ...(skill.aliases !== undefined && { aliases: skill.aliases }),
-            });
-          }
-        }
       }
     }
   }
@@ -691,21 +679,12 @@ export async function agentLoop$(
       toolDefs.push(t);
     }
   }
-  // R22 — with tool search the offered tools are the SEARCHABLE set; the menu starts as `alwaysLoaded`
-  // and grows by recorded searches. The session is built from the same authorization inputs as the
-  // menu always was (agent tools + selected skills' tools), plus what the host explicitly offers.
+  // R22 — with tool search the menu STARTS as definition.tools + the selected skills' tools (user
+  // ruling: they stay on the menu as without toolSearch) + `alwaysLoaded` catalog entries, and grows
+  // by recorded searches over the host `catalog` only.
   let search: ToolSearchSession | undefined;
   if (config.toolSearch !== undefined) {
-    const universe = [...toolDefs];
-    const universeIds = new Set(universe.map((t) => t.id));
-    for (const t of config.toolSearch.catalog ?? []) {
-      if (!universeIds.has(t.id)) {
-        universeIds.add(t.id);
-        universe.push(t);
-      }
-    }
-    search = new ToolSearchSession(config.toolSearch, universe, skillToolVocab);
-    toolDefs.length = 0;
+    search = new ToolSearchSession(config.toolSearch, toolDefs);
     toolDefs.push(...search.initial);
   }
   const tools = toolSpecsFor(toolDefs);

@@ -30,12 +30,15 @@ trip. Default stays upfront skill selection.
 
 **D2 — The meta-tool.** The model is offered `search_tools({ query: string, limit?: integer })` (name configurable). When it calls
 it, the loop runs the search and returns `{ tools: [{ name, description, loaded }], note? }`: one-line descriptions, bounded.
-The matches are ADDED to the menu for subsequent turns. The menu is **append-only**: `search_tools` first, then `alwaysLoaded`,
-then loaded tools in search order, so the prompt prefix is stable (cache-friendly) and no tool ever leaves mid-run.
+The matches are ADDED to the menu for subsequent turns. The menu is **append-only**: `search_tools` first, then the agent's `definition.tools`, the selected skills' tools and
+`alwaysLoaded` catalog entries (D3), then searched tools in search order, so the prompt prefix is stable (cache-friendly) and no tool ever leaves mid-run.
 
 **D3 — The authority model is unchanged, and searching cannot widen it.**
-The searchable universe is exactly the authorization inputs the menu always had (the agent's `definition.tools` plus the selected
-skills' tools) plus `toolSearch.catalog`, tools the host explicitly offers. A tool outside it is never returned and never callable:
+**User ruling A:** the agent's own `definition.tools` stay ON the menu from turn 0, exactly as without `toolSearch`; only the
+host `toolSearch.catalog` (anything outside `definition.tools`) is searchable and loadable, and `alwaysLoaded` adds catalog
+entries up front. **User ruling B:** the tools of the skills selected up front (the `#skills` decision) are AUTO-LOADED onto the
+menu after selection, not search-only. A search never returns or re-loads a tool already on the menu (a catalog entry sharing an
+id with one is ignored: the menu's definition wins). The searchable universe is therefore `toolSearch.catalog` alone. A tool outside it is never returned and never callable:
 the ranker's output is intersected with the universe (a buggy or hostile ranker cannot widen it), and the recorded decision is
 re-intersected on replay (a stale or tampered record can narrow the menu, never widen it). A host `namespaces` allowlist
 (id prefixes) narrows the searchable set further. Loading a tool changes what the model may *ask*; every call still passes the
@@ -110,6 +113,4 @@ one index per catalogue and call `rank(query, k)` inside its own `ctx.decide`. T
 
 ## Questions for the user
 
-1. `alwaysLoaded` defaults to none (only `search_tools` on turn 0). Is "agent's own tools are searchable too" the right default, or
-   should `definition.tools` stay on the menu and only `catalog` be searchable? Chosen: everything searchable (fail-closed on menu size).
-2. A selected skill's tools are searchable, not auto-loaded. Auto-load them?
+None open on menu composition: both questions the first draft raised were ruled by the user (D3, rulings A and B).

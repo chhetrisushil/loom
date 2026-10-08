@@ -1729,7 +1729,7 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 //   ctx.execute frame `<agent>#turn:<i>:call:<n>` (authz, metering, kill switch, guardRequest, recorded on replay);
 //   requireEffectRing?: boolean — refuse `reasoning` without reasoningToolId and a non-effect-backed skillSelector.
 // agentLoop$ config (R22, ADR 0125): toolSearch?: ToolSearchConfig — an opt-in `search_tools` meta-tool; default OFF, not worth it below ~30 tools
-//   interface ToolSearchConfig { catalog?: ToolDefinition[]       // extra tools the HOST offers (the only way to widen the searchable set)
+//   interface ToolSearchConfig { catalog?: ToolDefinition[]       // the searchable set the HOST offers; definition.tools + selected skills' tools are ALREADY on the menu
 //                                alwaysLoaded?: string[]           // on the menu from turn 0
 //                                namespaces?: string[]             // id-prefix allowlist of searchable tools
 //                                annotations?: { [toolId]: { tags?: string[]; aliases?: string[] } }   // trusted host vocabulary (use for MCP/A2A tools)

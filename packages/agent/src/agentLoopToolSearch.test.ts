@@ -89,7 +89,10 @@ const script =
   };
 
 interface Opts {
+  /** With toolSearch: the searchable host catalog (merged with `catalog`). Without it: the agent's tools. */
   offered?: ToolDefinition[];
+  /** With toolSearch: the agent's own `definition.tools` (on the menu from turn 0). */
+  agentTools?: ToolDefinition[];
   /** Registered with the effect runtime but NOT offered to the agent. */
   hidden?: ToolDefinition[];
   catalog?: ToolDefinition[];
@@ -116,8 +119,11 @@ function boot(o: Opts) {
     o.grants === undefined ? {} : { authorizer: new GrantTable({ ask: [...o.grants, "model"] }) }
   );
   effects.register("model", createAgentModelEffect(provider));
-  const offered = o.offered ?? [...NEEDED, ...FILLER];
-  for (const t of [...offered, ...(o.hidden ?? []), ...(o.catalog ?? [])]) {
+  const all = o.offered ?? [...NEEDED, ...FILLER];
+  const searching = o.search !== false;
+  const agentTools = searching ? (o.agentTools ?? []) : all;
+  const catalog = searching ? [...all, ...(o.catalog ?? [])] : [];
+  for (const t of [...agentTools, ...catalog, ...(o.hidden ?? [])]) {
     effects.register(
       t.id,
       new ToolEffect(async (input) => {
@@ -137,11 +143,11 @@ function boot(o: Opts) {
     scopes: true,
   });
   const config: AgentLoopConfig = {
-    definition: agent$({ id: "dba", name: "DBA", tools: offered }),
+    definition: agent$({ id: "dba", name: "DBA", tools: agentTools }),
     modelToolId: "model",
     maxIterations: 8,
     ...(o.search !== false && {
-      toolSearch: { ...(o.catalog && { catalog: o.catalog }), ...o.search },
+      toolSearch: { catalog, ...o.search },
     }),
     ...o.config,
   };
@@ -465,25 +471,26 @@ describe("R22 — aliases and tags: author-declared vs remote-declared vs host-a
     ).toEqual([]);
   });
 
-  it("a selected skill's aliases apply to the tools it brings", async () => {
+  it("a selected skill's tools are AUTO-LOADED on the menu (not searched)", async () => {
     const t = mk("charge_invoice", "Create a payment request");
     const registry = new SkillRegistry().register(
       skill$({
         id: "billing",
         name: "billing",
         description: "billing",
-        aliases: ["bill the customer"],
         instructions: instructions$("x"),
         tools: [t],
       })
     );
     const b = boot({
       offered: [mk("send_email", "email")],
+      hidden: [t],
       config: { skills: registry, skillSelector: { select: async () => ["billing"] } },
-      provider: script([[SEARCH("bill the customer")]]),
+      provider: script([[call("x", "charge_invoice")]]),
     });
     await runToEnd(b);
-    expect(text(resultsOf(b.requests[1] as LlmRequest)[0]?.content)).toContain("charge_invoice");
+    expect(toolNames(b.requests[0] as LlmRequest)).toEqual(["search_tools", "charge_invoice"]);
+    expect(b.toolRuns).toEqual(["charge_invoice"]);
   });
 });
 
@@ -658,6 +665,96 @@ describe("R22 — caps", () => {
       );
       expect(s === "failed" || s === "threw").toBe(true);
     }
+  });
+});
+
+describe("R22 — the agent's own tools and selected skills stay on the menu (user rulings)", () => {
+  const own = mk("own_tool", "an agent tool about slow queries");
+  const sk = mk("skill_tool", "a skill tool about slow queries");
+  const registry = () =>
+    new SkillRegistry().register(
+      skill$({
+        id: "s",
+        name: "s",
+        description: "s",
+        instructions: instructions$("x"),
+        tools: [sk],
+      })
+    );
+  const cfg = { skills: registry(), skillSelector: { select: async () => ["s"] } };
+
+  it("turn-0 menu = search_tools + definition.tools + selected skills' tools + alwaysLoaded catalog entries, in that order", async () => {
+    const b = boot({
+      agentTools: [own],
+      hidden: [sk],
+      config: cfg,
+      search: { alwaysLoaded: ["db_kill_session"] },
+      provider: script([]),
+    });
+    await runToEnd(b);
+    expect(toolNames(b.requests[0] as LlmRequest)).toEqual([
+      "search_tools",
+      "own_tool",
+      "skill_tool",
+      "db_kill_session",
+    ]);
+  });
+
+  it("the agent's own tools are callable without a search", async () => {
+    const b = boot({ agentTools: [own], provider: script([[call("x", "own_tool")]]) });
+    await runToEnd(b);
+    expect(b.toolRuns).toEqual(["own_tool"]);
+  });
+
+  it("a search never returns or re-loads a tool already on the menu", async () => {
+    const dup = mk("db_slow_queries", "the agent's own copy about slow queries");
+    const b = boot({
+      agentTools: [own, dup],
+      config: cfg,
+      provider: script([[SEARCH("slow queries")]]),
+    });
+    await runToEnd(b);
+    const names = resultJson<{ tools: { name: string }[] }>(
+      resultsOf(b.requests[1] as LlmRequest)[0]?.content
+    ).tools.map((t) => t.name);
+    for (const n of ["own_tool", "skill_tool", "db_slow_queries"]) expect(names).not.toContain(n);
+    const menu = toolNames(b.requests[1] as LlmRequest);
+    expect(new Set(menu).size).toBe(menu.length); // no duplicate spec
+    expect(menu.slice(0, 4)).toEqual(["search_tools", "own_tool", "db_slow_queries", "skill_tool"]);
+  });
+
+  it("alwaysLoaded must name a catalog tool: an agent tool id is a config error", async () => {
+    const b = boot({
+      agentTools: [own],
+      search: { alwaysLoaded: ["own_tool"] },
+      provider: script([]),
+    });
+    const st = await b.runtime.start(flowDef, {}, { executionId: "e1" }).then(
+      (h) =>
+        h.waitForCompletion().then(
+          (x) => x.status,
+          () => "threw"
+        ),
+      () => "threw"
+    );
+    expect(st === "failed" || st === "threw").toBe(true);
+  });
+
+  it("a meta-tool name that collides with an agent tool is a config error", async () => {
+    const b = boot({
+      agentTools: [own],
+      search: { searchToolName: "own_tool" },
+      provider: script([]),
+    });
+    const st = await b.runtime.start(flowDef, {}, { executionId: "e1" }).then(
+      (h) =>
+        h.waitForCompletion().then(
+          (x) => x.status,
+          () => "threw"
+        ),
+      () => "threw"
+    );
+    expect(st === "failed" || st === "threw").toBe(true);
   });
 });
 
