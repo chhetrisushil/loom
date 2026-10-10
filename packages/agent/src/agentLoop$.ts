@@ -203,7 +203,7 @@ export interface AgentLoopConfig {
    * Step ids are unchanged (`<loop>#turn:<i>:tool:<j>`, `j` the index in the model's response, a
    * pure function of the recorded response), results are fed back in the model's order whichever
    * call finishes first, and one call's failure is that call's `isError` result, not the scope's
-   * (see {@link toolErrors}). Approvals ({@link requireApproval}) are collected sequentially, in
+   * (see {@link toolErrors}). Approvals ({@link needsApproval}) are collected sequentially, in
    * call order, BEFORE any call of the turn starts, so a turn parked on an approval has run none of
    * its calls. Needs `kernel.features.scopes` for cancellation scoping; without it `ctx.parallel`
    * is the pre-R6 bounded `Promise.all` and everything else holds.

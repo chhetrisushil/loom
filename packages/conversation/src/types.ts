@@ -174,8 +174,8 @@ export interface ConversationConfig {
   /** Rejected envelopes recorded as transcript entries per conversation before further ones are only COUNTED. Default 50. */
   maxInvalidRecords?: number;
   /**
-   * The agent that answers each turn: any `agentLoop$` config. `signal`, `loopId` and
-   * `requireApproval` are owned by the conversation (a parked approval cannot coexist with the
+   * The agent that answers each turn: any `agentLoop$` config. `signal`, `loopId`, `needsApproval`
+   * and its deprecated alias `requireApproval` are owned by the conversation (a parked approval cannot coexist with the
    * barge-in watcher, ADR 0122 D2) and refused here.
    */
   agent: Omit<AgentLoopConfig, "signal" | "loopId" | "requireApproval" | "needsApproval">;
