@@ -3544,6 +3544,24 @@ export class WorkflowRuntime {
     } catch {
       throw new InboxMessageRefusedError(head.id, "the payload has no JSON form");
     }
+    // ADR 0110 D9 — a payload that is the erasure marker `{ $shredded: true }` is how the runtime
+    // tells a flow "this message was erased" (an inbox read whose key is gone yields it). A sender
+    // must not be able to forge it, and a marker-shaped payload has no other use, so it is refused
+    // (the marker carries no EVENT_SCHEMA field a flow could check instead).
+    if (json !== undefined && json.includes('"$shredded"')) {
+      const sent = JSON.parse(json) as unknown;
+      if (
+        typeof sent === "object" &&
+        sent !== null &&
+        !Array.isArray(sent) &&
+        (sent as { $shredded?: unknown }).$shredded === true
+      ) {
+        throw new InboxMessageRefusedError(
+          head.id,
+          'the payload is shaped like the erasure marker ({ "$shredded": true }), which only the runtime may deliver'
+        );
+      }
+    }
     // Bytes, not UTF-16 code units: the limit protects the store and the owner's log.
     const size = json === undefined ? 0 : Buffer.byteLength(json, "utf8");
     if (size > this.inboxMaxPayloadBytes) {
