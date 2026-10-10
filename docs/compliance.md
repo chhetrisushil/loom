@@ -146,7 +146,10 @@ the call to shred once the running owner parks. Because the owners are terminal 
 coordinator's terminal-head purge also deletes their reserved inbox streams, which removes
 plaintext inbox payloads written before crypto was enabled (see the migration edge below).
 `EraseCoordinator` needs its `cancel` option for this (`defineConfig` wires it); without it the call
-throws.
+throws. An execution STARTED for the subject while an erasure runs is not covered by it: after the key
+is destroyed its sealed writes fail loudly (the key store never mints a destroyed subject's key
+again), so quiesce new work for the subject before erasing. The journaled cancel records only
+`reason: "erased"` (no actor), like any cancel; keep the erasure request itself as the audit record.
 
 An owner that was shredded some OTHER way (a direct `shredSubject` call on a parked owner) can still
 be cancelled: `cancel` needs no sealed field (status, tip and workflow id are plaintext), so it

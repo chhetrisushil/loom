@@ -244,3 +244,30 @@ describe("registerSensitive (R3k, ADR 0111 D1)", () => {
     });
   });
 });
+
+describe("EncryptingSnapshotStore refuses the blank subject", () => {
+  it('throws on save when subjectOf resolves to "", writes nothing and mints no key', async () => {
+    let saved = 0;
+    const inner = {
+      save: async () => {
+        saved++;
+      },
+      loadLatest: async () => null,
+    };
+    const keys = new InMemoryKeyStore();
+    const store = new EncryptingSnapshotStore(inner as never, keys, {
+      sensitive: ["variables.secret"],
+      subjectOf: () => "",
+    });
+    await expect(
+      store.save({
+        executionId: "e1",
+        workflowId: "wf",
+        sequence: 1,
+        state: { variables: { secret: "s" } },
+      } as never)
+    ).rejects.toThrow(/refuses to seal/);
+    expect(saved).toBe(0);
+    expect(await keys.get("")).toBeNull();
+  });
+});
