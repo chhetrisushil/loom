@@ -253,6 +253,27 @@ if (PG_URL === undefined) {
       }
     });
 
+    it("the SECURITY DEFINER function pins search_path with pg_temp LAST and grants PUBLIC nothing", async () => {
+      const s1 = await mkSchema("acl");
+      const p1 = poolFor(s1);
+      try {
+        await migrate(p1);
+        const r = await p1.query(
+          `SELECT p.prosecdef, p.proconfig, p.proacl::text AS acl,
+                  has_function_privilege('public', p.oid, 'EXECUTE') AS public_exec
+             FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = $1 AND p.proname = 'events_assign_incarnation'`,
+          [s1]
+        );
+        expect(r.rows).toHaveLength(1);
+        expect(r.rows[0].prosecdef).toBe(true);
+        expect(r.rows[0].proconfig).toEqual(["search_path=pg_catalog, pg_temp"]);
+        expect(r.rows[0].public_exec).toBe(false);
+      } finally {
+        await p1.end();
+      }
+    });
+
     describe("P2-3: re-owned tables (an application role)", () => {
       const setup = async (name: string): Promise<{ s: string; app: Pool }> => {
         const s = await mkSchema(name);
