@@ -76,6 +76,10 @@ describe("SkillRegistry.find", () => {
     for (const q of ["Rechnung prüfen", "請求書を作成 abc", "run_query x1 ab", "ＩＮＣ café", ""]) {
       expect(a(q)).toEqual(b(q));
     }
+    // Byte-identical sources: a sample of queries cannot catch a drift in a branch it never takes.
+    const { readFileSync } = await import("node:fs");
+    const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+    expect(src("./lexicalTerms.ts")).toBe(src("../../capability/src/lexicalTerms.ts"));
   });
 
   // The score counts terms the haystack CONTAINS, so a repeated term is a second substring

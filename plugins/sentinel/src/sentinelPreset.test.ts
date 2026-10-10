@@ -14,10 +14,11 @@ import { sentinelPreset } from "./sentinelPreset";
 const stateSchema = z.object({ wakes: z.number() });
 type State = z.infer<typeof stateSchema>;
 
-function makePreset() {
+function makePreset(timeZone?: string) {
   return sentinelPreset<State>({
     id: "pg-sentinel",
     cron: "0 */6 * * *",
+    ...(timeZone !== undefined && { timeZone }),
     state: { schema: stateSchema },
     stateStore: new InMemoryDurableStateStore(),
     contentStore: new InMemoryContentStore(),
@@ -39,6 +40,11 @@ describe("sentinelPreset (DX-1) — assembles the shipped pieces, adds nothing",
     const t = Date.UTC(2026, 6, 15);
     expect(preset.occurrenceId(t)).toBe(`pg-sentinel@${t}`);
     expect(preset.occurrenceOf(preset.occurrenceId(t))).toBe(t);
+  });
+
+  it("passes timeZone through to the schedule (default: none, i.e. UTC)", () => {
+    expect(makePreset().schedule.timeZone).toBeUndefined();
+    expect(makePreset("Europe/Berlin").schedule.timeZone).toBe("Europe/Berlin");
   });
 
   it("one wake end-to-end: carry state loads/saves, big reads go by reference, findings pin", async () => {
