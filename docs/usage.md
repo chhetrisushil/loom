@@ -466,6 +466,15 @@ stream's head; a repeat is a no-op. Each discarded message's id joins the dedupe
 is treated as a duplicate (up to the window's 1024 newest ids). A discard that races a delivery wins: the discarded
 message is never delivered.
 
+**Let a cold topic expire: `kernel.inbox.messageTtlMs` (ADR 0110 D10a, off by default).** A number (every topic) or
+`{ default?, topics: { cold: 60_000 } }`. A message still unconsumed that long after it was sent is discarded by the
+same journaled fact an operator discard writes (`reason: "expired"`, recorded as the runtime, not an operator), so it
+replays and the pinned stream is released with no operator involved. The clock is read when a pass runs, from the
+message's envelope timestamp, never inside the fold; passes are `TimerStore` rows fired by the app's `TimerService`
+(so wire `timers`), one batch of at most 1 024 per wake, and only a parked owner takes the fact (a running one keeps
+the row). A delivery racing an expiry never delivers the expired message and never delivers twice. Configure every
+node alike.
+
 ### Keep a long conversation bounded: `ctx.continueAsNew` (ADR 0109)
 
 A flow that loops on a message (`while (true) { msg = await ctx.receive(...); ... }`) re-runs its body from the

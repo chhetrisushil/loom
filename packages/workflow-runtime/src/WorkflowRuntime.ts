@@ -64,12 +64,14 @@ import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import {
   DEFAULT_INBOX_MAX_BACKLOG,
   DEFAULT_INBOX_MAX_PAYLOAD_BYTES,
-  DISCARD_WAIT_ID,
   INBOX_STREAM_PREFIX,
+  INBOX_TTL_ACTOR,
   INBOX_WAKE_AT,
+  type InboxTtlConfig,
   MAX_MESSAGE_ID_LENGTH,
   WAITS_PARK_ON,
   appendInboxMessage,
+  assertTtlConfig,
   chainIdOf,
   chainIdOfFirst,
   createInboxSource,
@@ -77,14 +79,16 @@ import {
   cursorsOf,
   dedupeKeyOf,
   deleteInbox,
-  discardKeyOf,
+  discardFacts,
   ensureInboxFloor,
   inboxStreamId,
   maxCursor,
+  scanExpired,
   scanInbox,
   staleInboxBatch,
   topicProblem,
   trimInbox,
+  ttlOfTopic,
 } from "./inbox";
 import { WaitsPark, isKernelHumanPark } from "./kernelPark";
 import { COMPUTE_TARGET_KEY } from "./placement";
@@ -142,6 +146,7 @@ import type {
   FlowRunner,
   ForkOptions,
   ForkResult,
+  InboxExpiryResult,
   InboxSource,
   LineageGrant,
   RecordOutcomeInput,
@@ -333,6 +338,16 @@ export interface WorkflowRuntimeDeps {
   meterCeilings?: Readonly<Record<string, number>>;
   /** ADR 0110 D1 — the largest JSON payload `send` accepts, in bytes. Default 65 536. */
   inboxMaxPayloadBytes?: number;
+  /**
+   * ADR 0110 amendment, D10a — expire UNCONSUMED inbox messages after this many milliseconds
+   * (a number for every topic, or `{ default?, topics? }`). OFF by default: with no TTL configured
+   * nothing below changes. An expiry is a journaled discard (`MESSAGE_CONSUMED` with the reserved
+   * discard wait, `reason: "expired"`, recorded as the runtime, not an operator), so it replays; it
+   * is decided from the injected clock against the message's envelope timestamp, never inside the
+   * fold, and it is driven by `TimerService` rows (written by `send`, re-armed by each pass, swept
+   * by `recoverAbandoned`). Needs a `timerStore`, and every node of a fleet must configure it alike.
+   */
+  inboxMessageTtlMs?: InboxTtlConfig;
   /**
    * ADR 0112 D2 — error classes a fail-fast scope may REHYDRATE by name (composition-time,
    * deterministic): the scope journals the failing error's `name` and message, and the first run
@@ -786,6 +801,10 @@ class StaleInboxBatch extends Error {
 const RETRY = Symbol("notify-retry");
 const RETRY_FENCED = Symbol("notify-retry-fenced");
 const NOTIFY_ATTEMPTS = 4;
+/** ADR 0110 D10a — most messages one expiry pass discards (the rest are armed for the very next tick). */
+const INBOX_EXPIRY_BATCH = 1024;
+/** ADR 0110 D10a — expiry rows land on whole multiples of this, so messages expiring together share a pass. */
+const INBOX_EXPIRY_GRANULARITY_MS = 1000;
 /** Messages one notify read asks for. */
 const NOTIFY_PAGE = 64;
 /** The most MESSAGE_CONSUMED facts one atomic batch carries. */
@@ -843,6 +862,9 @@ export class WorkflowRuntime {
   private readonly inboxMaxBacklog: number;
   private readonly inboxMaxPayloadBytes: number;
   private readonly inboxMaxRetained: number;
+  private readonly inboxTtl: InboxTtlConfig | undefined;
+  /** Per chain, the instant of the expiry row this process last wrote (a pending one is not re-written per send). */
+  private readonly inboxExpiryRows = new Map<string, number>();
   private readonly meterCeilings: Readonly<Record<string, number>> | undefined;
   /**
    * Chains already warned about a pinned inbox, with the inbox sequence of the pin warned about
@@ -933,6 +955,8 @@ export class WorkflowRuntime {
     assertPositiveInt("inboxMaxBacklog", deps.inboxMaxBacklog);
     assertPositiveInt("inboxMaxRetained", deps.inboxMaxRetained);
     assertPositiveInt("inboxMaxPayloadBytes", deps.inboxMaxPayloadBytes);
+    assertTtlConfig(deps.inboxMessageTtlMs);
+    this.inboxTtl = deps.inboxMessageTtlMs;
     assertMeterCeilings(deps.meterCeilings);
     this.meterCeilings = deps.meterCeilings === undefined ? undefined : { ...deps.meterCeilings };
     this.inboxMaxBacklog = deps.inboxMaxBacklog ?? DEFAULT_INBOX_MAX_BACKLOG;
@@ -3676,6 +3700,12 @@ export class WorkflowRuntime {
       }
       void this.notifyInbox(live.id).catch((err: unknown) => this.onStorageError?.(live.id, err));
     }
+    // ADR 0110 D10a — a topic with a TTL gets an expiry row (coalesced per chain), whether or not the
+    // owner is parked: the pass that fires it decides, and a running owner is simply retried.
+    const ttl = this.inboxTtlOn ? ttlOfTopic(this.inboxTtl, message.topic) : undefined;
+    if (ttl !== undefined) {
+      await this.scheduleInboxExpiry(live.id, chainId, this.now() + ttl, live.workflowId);
+    }
     return { messageId, inboxSeq, executionId: live.id };
   }
 
@@ -3844,30 +3874,10 @@ export class WorkflowRuntime {
     // the window the oldest ids are forgotten, as they are for any consumed message. The LAST fact
     // carries the whole discard (`inboxSeq: through`, the count, the reason); with nothing of this
     // topic to skip, one fact under a fixed key still advances the cursor.
-    const facts: Array<{ eventType: string; payload: unknown }> = [];
-    const summary = {
+    const facts = discardFacts(topic, skippedKeys, through, operator, {
       skipped,
       ...(input.reason !== undefined && { reason: input.reason }),
-    };
-    const fact = (messageId: string, inboxSeq: number, extra: object) => ({
-      eventType: "MESSAGE_CONSUMED",
-      payload: {
-        // A fixed id no wait can have: the fold records ONE answer under it, ever (first wins).
-        waitId: DISCARD_WAIT_ID,
-        topic,
-        messageId,
-        inboxSeq,
-        sender: operator,
-        payload: null,
-        discarded: true,
-        ...extra,
-      },
     });
-    skippedKeys.forEach((k, i) => {
-      const lastOne = i === skippedKeys.length - 1;
-      facts.push(lastOne ? fact(k.key, through, summary) : fact(k.key, k.seq, {}));
-    });
-    if (facts.length === 0) facts.push(fact(discardKeyOf(topic, through), through, summary));
     const outcome = await this.advanceInbox(head.id, state, parkSeq as number, undefined, facts);
     if (outcome === "gone") {
       refuse("not-parked", "the owner resumed while the discard was in flight.");
@@ -3887,6 +3897,123 @@ export class WorkflowRuntime {
       skipped,
       cursor: cursorFor(cursorsOf(after.variables), topic),
     };
+  }
+
+  /** Whether a message TTL is configured on a runtime with the inbox on (D10a; the `TimerService` then runs expiry passes). */
+  get inboxTtlOn(): boolean {
+    return this.inboxEnabled && this.inboxTtl !== undefined;
+  }
+
+  /**
+   * ADR 0110 amendment, D10a — write the durable row that wakes an expiry pass at `at`. Rounded UP to
+   * a whole second so a stream of messages expiring within it shares one pass, and not re-written
+   * while this process knows a pending row for the chain. Best effort; never throws.
+   */
+  private async scheduleInboxExpiry(
+    executionId: string,
+    chainId: string,
+    at: number,
+    workflowId?: string
+  ): Promise<void> {
+    if (this.timerStore === undefined) {
+      if (workflowId !== undefined) this.warnNoTimerStore(workflowId, "an inbox message TTL");
+      return;
+    }
+    const wakeAt = Math.max(
+      0,
+      Math.ceil(at / INBOX_EXPIRY_GRANULARITY_MS) * INBOX_EXPIRY_GRANULARITY_MS
+    );
+    const pending = this.inboxExpiryRows.get(chainId);
+    if (pending !== undefined && pending > this.now() && pending <= wakeAt) return;
+    try {
+      await this.timerStore.schedule({ executionId, wakeAt });
+      rememberBounded(this.inboxExpiryRows, chainId, wakeAt);
+    } catch (err) {
+      this.onStorageError?.(executionId, err);
+    }
+  }
+
+  /**
+   * ADR 0110 amendment, D10a — one EXPIRY PASS for the chain `executionId` belongs to: journal a
+   * discard of every unconsumed message whose topic TTL has run out (`MESSAGE_CONSUMED`, the reserved
+   * discard wait, `reason: "expired"`, `sender` = the runtime, so it replays and the fold is
+   * unchanged), then arm the next pass. Driven by `TimerService` rows; also callable by a sweep.
+   *
+   * - The age is read from the injected clock against the message's envelope timestamp, here, never in
+   *   the fold. Per topic only a prefix of the unconsumed messages is expired (see `scanExpired`).
+   * - It takes the SAME fenced path as an operator discard (`advanceInbox` under the park's
+   *   conditional fence), so it cannot race a delivery: a notifier's batch built from the old cursors
+   *   is refused by `staleInboxBatch`, and a delivery that won leaves nothing to expire. A message
+   *   delivered before its expiry pass ran was simply delivered in time.
+   * - Authorized as the RUNTIME (it is the kernel acting on its own configuration), not as an operator:
+   *   no principal, no `ExecutionOp`; the fact's `sender` is {@link INBOX_TTL_ACTOR}.
+   * - Bounded per wake: at most {@link INBOX_EXPIRY_BATCH} messages, and when more are due the next
+   *   pass is armed for now. Only a PARKED owner accepts the fact: a running one answers
+   *   `not-parked` (the caller keeps the row and retries).
+   * - Off (`"off"`) unless a TTL is configured with the inbox on.
+   */
+  async expireInbox(executionId: string): Promise<InboxExpiryResult> {
+    if (!this.inboxTtlOn) return { status: "off", expired: 0 };
+    const head = await this.sendTarget(executionId);
+    if (head === null || head.status === "hop-limit") return { status: "closed", expired: 0 };
+    const state = await this.foldState(head.id);
+    if (
+      state === null ||
+      state.status === "completed" ||
+      state.status === "failed" ||
+      state.status === "cancelled"
+    ) {
+      return { status: "closed", expired: 0 };
+    }
+    if (state.status !== "suspended") return { status: "not-parked", expired: 0 };
+    const chainId = chainIdOf(state, head.id);
+    const now = this.now();
+    const scan = await scanExpired(this.eventStore, chainId, cursorsOf(state.variables), {
+      from: (this.inboxFloors.get(chainId) ?? -1) + 1,
+      now,
+      ttlOf: (topic) => ttlOfTopic(this.inboxTtl, topic),
+      maxExpired: INBOX_EXPIRY_BATCH,
+    });
+    const rearm = async (): Promise<void> => {
+      if (scan.more) await this.scheduleInboxExpiry(head.id, chainId, now + 1);
+      else if (scan.nextAt !== undefined) {
+        await this.scheduleInboxExpiry(head.id, chainId, scan.nextAt);
+      }
+    };
+    if (scan.expired.length === 0) {
+      await rearm();
+      return { status: "done", expired: 0, executionId: head.id };
+    }
+    const parkSeq = await this.locatePark(head.id, state, { events: undefined, complete: false });
+    if (parkSeq === undefined) return { status: "not-parked", expired: 0 };
+    const byTopic = new Map<string, Array<{ key: string; seq: number }>>();
+    for (const m of scan.expired) {
+      const list = byTopic.get(m.topic) ?? [];
+      list.push({ key: m.key, seq: m.seq });
+      byTopic.set(m.topic, list);
+    }
+    const sender = { actor: INBOX_TTL_ACTOR };
+    const facts: Array<{ eventType: string; payload: unknown }> = [];
+    for (const [topic, list] of byTopic) {
+      const through = (list[list.length - 1] as { seq: number }).seq;
+      facts.push(
+        ...discardFacts(topic, list, through, sender, {
+          skipped: list.length,
+          reason: "expired",
+          expired: true,
+        })
+      );
+    }
+    const outcome = await this.advanceInbox(head.id, state, parkSeq, undefined, facts);
+    if (outcome === "gone") return { status: "not-parked", expired: 0 };
+    if (outcome === "contended") return { status: "contended", expired: 0 };
+    const after = (await this.foldState(head.id)) ?? state;
+    this.inboxFull.delete(chainId);
+    this.inboxCounted.delete(chainId);
+    this.inboxTrimmed.delete(chainId);
+    await this.maybeTrimInbox(chainId, after);
+    await rearm();
+    return { status: "done", expired: scan.expired.length, executionId: head.id };
   }
 
   /**

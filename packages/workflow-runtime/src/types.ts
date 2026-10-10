@@ -1232,6 +1232,19 @@ export interface DiscardInboxOptions {
   system?: SystemGrant;
 }
 
+/**
+ * What {@link WorkflowRuntime.expireInbox} reports (ADR 0110 amendment, D10a): `done` (a pass ran;
+ * `expired` messages were discarded), `not-parked` (the owner is running: keep the row and retry),
+ * `contended` (the owner's fence kept moving: retry), `closed` (the chain is finished or unknown:
+ * retire the row) or `off` (no TTL is configured).
+ */
+export interface InboxExpiryResult {
+  status: "done" | "not-parked" | "contended" | "closed" | "off";
+  expired: number;
+  /** The chain head the pass ran against (`done` only). */
+  executionId?: string;
+}
+
 export interface DiscardInboxResult {
   /** The execution the discard was journaled in (the chain's head). */
   executionId: string;

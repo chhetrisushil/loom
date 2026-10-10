@@ -1,6 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import {
   type ExecutionEnumerable,
+  INBOX_STREAM_PREFIX,
   type LeaseStore,
   isReservedStream,
   iterateExecutionIds,
@@ -161,6 +162,8 @@ export interface RecoverAbandonedSummary {
    * sender or owner never completed). Present only when at least one was woken.
    */
   inboxWoken?: number;
+  /** Messages the sweep expired by TTL (ADR 0110 D10a). */
+  inboxExpired?: number;
   /** ADR 0110 D1 — inbox streams of a terminal owner that this pass deleted (crash orphans). */
   inboxReclaimed?: number;
 }
@@ -226,6 +229,16 @@ export async function recoverAbandoned(
       // sender's append and its re-read): reclaim it.
       if (options.dryRun !== true && (await runtime.reclaimInbox(executionId))) {
         summary.inboxReclaimed = (summary.inboxReclaimed ?? 0) + 1;
+      } else if (options.dryRun !== true && runtime.inboxTtlOn) {
+        // ADR 0110 D10a — the safety net for a lost expiry row (a sender that died between its append
+        // and its row): one pass re-arms it. A chain id that maps to no execution (a fork's) is skipped.
+        try {
+          const chainId = executionId.slice(INBOX_STREAM_PREFIX.length);
+          const r = await runtime.expireInbox(chainId);
+          if (r.expired > 0) summary.inboxExpired = (summary.inboxExpired ?? 0) + r.expired;
+        } catch (err) {
+          options.onError?.(executionId, err);
+        }
       }
       continue;
     }

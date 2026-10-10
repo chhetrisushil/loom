@@ -414,3 +414,142 @@ export function staleInboxBatch(
   }
   return false;
 }
+
+// ── ADR 0110 amendment, D10a — journaled TTL expiry ──────────────────────────────────────────
+
+/** The identity recorded as the `sender` of an expiry fact: the runtime itself, never an operator. */
+export const INBOX_TTL_ACTOR = "__loom_inbox_ttl__";
+
+/** What `messageTtlMs` accepts: one TTL for every topic, or per-topic with an optional default. */
+export type InboxTtlConfig =
+  | number
+  | { default?: number; topics?: Readonly<Record<string, number>> };
+
+/** The TTL (ms) of `topic`, or `undefined` when it never expires. Own-property lookup (a topic is caller data). */
+export function ttlOfTopic(config: InboxTtlConfig | undefined, topic: string): number | undefined {
+  if (config === undefined) return undefined;
+  if (typeof config === "number") return config;
+  const topics = config.topics;
+  if (topics !== undefined && Object.hasOwn(topics, topic)) return topics[topic];
+  return config.default;
+}
+
+/** Validate a TTL config at composition: every TTL a positive safe integer. */
+export function assertTtlConfig(config: InboxTtlConfig | undefined): void {
+  if (config === undefined) return;
+  const check = (name: string, v: unknown): void => {
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1) {
+      throw new Error(
+        `inbox messageTtlMs${name} must be a positive integer number of milliseconds (got ${String(v)}): it expires unconsumed inbox messages (ADR 0110 D10a)`
+      );
+    }
+  };
+  if (typeof config === "number") {
+    check("", config);
+    return;
+  }
+  if (config.default !== undefined) check(".default", config.default);
+  for (const [t, v] of Object.entries(config.topics ?? {})) check(`.topics["${t}"]`, v);
+}
+
+/** One expired, still-unconsumed message found by {@link scanExpired}. */
+export interface ExpiredMessage {
+  topic: string;
+  seq: number;
+  /** Its dedupe key ({@link dedupeKeyOf}): a resend of the id is a duplicate after the discard. */
+  key: string;
+}
+
+/**
+ * Find the unconsumed messages whose TTL has run out at `now`, oldest first, at most `maxExpired`.
+ * Per topic only a PREFIX of the unconsumed messages is reported (the first unexpired message of a
+ * topic closes it): a discard advances a topic's cursor THROUGH a sequence, so it can only skip a
+ * prefix, and a sender with a skewed clock must not be able to get a younger message dropped ahead of
+ * an older one. The scan starts above `from` (the known consumed floor) and runs to the head, so its
+ * cost follows the retained stream, which `inboxMaxRetained` bounds. `nextAt` is the earliest instant
+ * a message still unexpired will expire (the next wake), `more` says `maxExpired` cut the list short.
+ * The decision reads the injected clock the caller passes in `now`; nothing here is ever folded.
+ */
+export async function scanExpired(
+  store: EventStore,
+  chainId: string,
+  cursors: Record<string, number>,
+  opts: {
+    from: number;
+    now: number;
+    ttlOf: (topic: string) => number | undefined;
+    maxExpired: number;
+  }
+): Promise<{ expired: ExpiredMessage[]; nextAt: number | undefined; more: boolean }> {
+  const stream = inboxStreamId(chainId);
+  const expired: ExpiredMessage[] = [];
+  const closed = new Set<string>();
+  let nextAt: number | undefined;
+  let more = false;
+  const head = await headOf(store, stream);
+  if (head === null) return { expired, nextAt, more };
+  const visit = (events: readonly EventEnvelope[]): boolean => {
+    for (const e of events) {
+      const m = asMessage(e);
+      if (m === undefined || e.sequence <= cursorFor(cursors, m.topic)) continue;
+      const ttl = opts.ttlOf(m.topic);
+      if (ttl === undefined || closed.has(m.topic)) continue;
+      const expiresAt = e.timestamp + ttl;
+      if (expiresAt > opts.now) {
+        closed.add(m.topic);
+        if (nextAt === undefined || expiresAt < nextAt) nextAt = expiresAt;
+        continue;
+      }
+      if (expired.length >= opts.maxExpired) {
+        more = true;
+        return true;
+      }
+      expired.push({ topic: m.topic, seq: e.sequence, key: dedupeKeyOf(m) });
+    }
+    return false;
+  };
+  let lo = Math.max(0, opts.from);
+  while (lo <= head) {
+    const page = await readRangeOf(store, stream, lo, Math.min(head, lo + READ_CHUNK - 1));
+    if (page.length === 0) {
+      visit(await store.readFrom(stream, lo));
+      break;
+    }
+    if (visit(page)) break;
+    lo = (page[page.length - 1] as EventEnvelope).sequence + 1;
+  }
+  return { expired, nextAt, more };
+}
+
+/**
+ * The `MESSAGE_CONSUMED` facts of one topic's discard (D8 and D10a share them): one per skipped
+ * message (its own dedupe key, no payload), the last carrying the whole discard; with nothing to skip,
+ * one fact under a fixed key still advances the cursor. The fold is untouched: the reserved
+ * {@link DISCARD_WAIT_ID} records one answer ever, and the extra fields ride in the payload.
+ */
+export function discardFacts(
+  topic: string,
+  skipped: ReadonlyArray<{ key: string; seq: number }>,
+  through: number,
+  sender: InboxMessage["sender"],
+  summary: object
+): Array<{ eventType: string; payload: unknown }> {
+  const fact = (messageId: string, inboxSeq: number, extra: object) => ({
+    eventType: "MESSAGE_CONSUMED",
+    payload: {
+      // A fixed id no wait can have: the fold records ONE answer under it, ever (first wins).
+      waitId: DISCARD_WAIT_ID,
+      topic,
+      messageId,
+      inboxSeq,
+      sender,
+      payload: null,
+      discarded: true,
+      ...extra,
+    },
+  });
+  if (skipped.length === 0) return [fact(discardKeyOf(topic, through), through, summary)];
+  return skipped.map((k, i) =>
+    i === skipped.length - 1 ? fact(k.key, through, summary) : fact(k.key, k.seq, {})
+  );
+}

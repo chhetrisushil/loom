@@ -571,6 +571,25 @@ export class TimerService {
       const stillWaiting =
         armWaitId !== undefined ||
         (state !== null && state.status === "suspended" && state.suspendedOn?.wakeAt === wakeAt);
+      // ADR 0110 amendment, D10a — a row that is no timer of the park may be an inbox EXPIRY row
+      // (written by `send` for a topic with a TTL, re-armed by each pass): run the pass. A running
+      // owner cannot take the discard yet, so the row is KEPT and retried (bounded delay, never
+      // dropped, never reported as exhausted: a long turn is not a failure). A finished chain, or a
+      // node with no TTL configured, falls through to the ordinary "obsolete: retire" below.
+      if (!stillWaiting && this.runtime.inboxTtlOn) {
+        const r = await this.runtime.expireInbox(executionId);
+        if (r.status === "not-parked" || r.status === "contended") {
+          const attempt = Math.min(
+            (this.wakeBackoff.get(executionId)?.attempt ?? 0) + 1,
+            this.maxRedriveAttempts
+          );
+          this.wakeBackoff.set(executionId, {
+            attempt,
+            nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
+          });
+          return;
+        }
+      }
       if (stillWaiting && state !== null) {
         const resumeEvent: { eventType: string; payload: unknown; waitId?: string } = {
           eventType: TIMER_FIRED,

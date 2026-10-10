@@ -59,3 +59,33 @@ describe("kernel.inbox.maxRetained", () => {
     expect(loose).toMatch(/retains 8\+/);
   });
 });
+
+// ADR 0110 amendment, D10a — `kernel.inbox.messageTtlMs` reaches the runtime; unset leaves expiry off.
+describe("kernel.inbox.messageTtlMs", () => {
+  const mk = (messageTtlMs?: number | { default?: number; topics?: Record<string, number> }) =>
+    defineConfig({
+      storage: { kind: "memory" },
+      autostart: false,
+      kernel: {
+        features: { inbox: true },
+        ...(messageTtlMs !== undefined && { inbox: { messageTtlMs } }),
+      },
+    });
+
+  it("is off by default and on when configured", async () => {
+    const off = mk();
+    expect(off.runtime.inboxTtlOn).toBe(false);
+    expect(await off.runtime.expireInbox("nope")).toEqual({ status: "off", expired: 0 });
+    await off.close();
+    for (const ttl of [60_000, { topics: { cold: 1_000 } }]) {
+      const on = mk(ttl);
+      expect(on.runtime.inboxTtlOn).toBe(true);
+      await on.close();
+    }
+  });
+
+  it("refuses a TTL that is not a positive integer", () => {
+    expect(() => mk(0)).toThrow(/messageTtlMs/);
+    expect(() => mk({ topics: { a: -1 } })).toThrow(/messageTtlMs/);
+  });
+});
