@@ -1,5 +1,10 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { type EventStore, INBOX_STREAM_PREFIX, chainIdOfFirst } from "@loom/event-runtime";
+import {
+  type EventStore,
+  type InboxStreams,
+  chainIdOfFirst,
+  inboxStreamsOfChain,
+} from "@loom/event-runtime";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
 import { DEFAULT_TENANT, type SubjectIndex } from "./SubjectIndex";
@@ -218,7 +223,7 @@ export class EraseCoordinator {
   /**
    * ADR 0110 follow-up — erasure reaches payloads still in flight in a RESERVED inbox stream.
    *
-   * A chain's inbox (`__loom_inbox__:<chainId>`) holds undelivered messages for its owner. The
+   * A chain's inbox (`__loom_inbox__:<chainId>`, and with per-topic streams `…#<hash>` and `…#reg`) holds undelivered messages for its owner. The
    * runtime deletes it when the chain's head turns terminal, but a crash between a sender's append
    * and its re-read can leave an orphan, and until it is reclaimed it holds the subject's data.
    * Once the subject is erased (every execution of it terminal, so nothing can consume) the stream
@@ -231,18 +236,25 @@ export class EraseCoordinator {
    * cannot be deleted (a consumer then receives the `{ $shredded: true }` marker, never the raw
    * value).
    */
-  private async purgeInboxStreams(chains: readonly string[]): Promise<void> {
+  private async purgeInboxStreams(chains: readonly InboxStreams[]): Promise<void> {
     const remove = this.options.eventStore.deleteExecution?.bind(this.options.eventStore);
     if (remove === undefined) return;
-    for (const chain of chains) await remove(`${INBOX_STREAM_PREFIX}${chain}`);
+    for (const { legacy, registry, topics } of chains) {
+      // ADR 0110 D10b — EVERY stream of the chain: its per-topic streams, the legacy one and, last,
+      // the registry that names the topic streams (a crash midway leaves them findable).
+      for (const stream of topics) await remove(stream);
+      await remove(legacy);
+      if (registry !== undefined) await remove(registry);
+    }
   }
 
   /**
-   * The chains whose HEAD is among `executions`: terminal and not `continued` (a continued
-   * execution's successor owns the chain's inbox and is judged on its own events). Folded while
-   * the logs are still readable, so a decrypting store has not yet lost its key.
+   * The inbox streams of the chains whose HEAD is among `executions`: terminal and not `continued`
+   * (a continued execution's successor owns the chain's inbox and is judged on its own events).
+   * Folded, and each chain's registry read, while the logs are still readable, so a decrypting store
+   * has not yet lost its key.
    */
-  private async finishedChains(executions: readonly string[]): Promise<string[]> {
+  private async finishedChains(executions: readonly string[]): Promise<InboxStreams[]> {
     if (this.options.eventStore.deleteExecution === undefined) return [];
     const chains = new Set<string>();
     for (const executionId of executions) {
@@ -251,7 +263,10 @@ export class EraseCoordinator {
       if (!TERMINAL_STATUS.has(folded.status) || folded.status === "continued") continue;
       chains.add(chainIdOfFirst(folded.first, executionId));
     }
-    return [...chains];
+    const streams: InboxStreams[] = [];
+    const view = { read: (id: string) => this.readErasedOk(id) };
+    for (const chain of chains) streams.push(await inboxStreamsOfChain(view, chain));
+    return streams;
   }
 
   /** Subjects with a deferred erasure still awaiting completion (sorted, deduped across tenants). */

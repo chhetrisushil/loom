@@ -1,3 +1,4 @@
+import { INBOX_TOPIC_SEQ_BASE, inboxTopicStreamId } from "@loom/event-runtime";
 import type { LlmRequest, LlmStreamChunk } from "@loom/llm";
 import { describe, expect, it } from "vitest";
 import {
@@ -9,7 +10,7 @@ import {
   signRaw,
   until,
 } from "./__fixtures__/harness";
-import { type BargeInSource, inboxBargeIn } from "./index";
+import { type BargeInSource, CONVERSATION_TOPIC, inboxBargeIn } from "./index";
 
 const never = (req: LlmRequest): Promise<never> =>
   new Promise((_, rej) => {
@@ -303,5 +304,58 @@ describe("barge-in", () => {
         ["assistant", "complete", "re: never mind"],
       ]);
     });
+  });
+});
+
+// ADR 0110 amendment, D10b — the same conversation on per-topic inbox streams: the barge-in source
+// subscribes to the topic's own stream (and still to the legacy one), so a new turn still interrupts.
+describe("barge-in on per-topic inbox streams", () => {
+  it("a new turn interrupts the running turn when the conversation topic has its own stream", async () => {
+    const p = longFirst();
+    const b = boot({ reply: p.reply, runtime: { inboxTopicStreams: true } });
+    await b.runtime.enableInboxTopicStreams({ principal: { actor: "ops" } });
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "tell me a long story");
+    await p.started.promise;
+    await b.conv.sendTurn(id, "actually, stop"); // lands on the running turn
+    const all = await messages(b, id, 4);
+    expect(all.map((m) => [m.turn, m.role, m.status, m.text])).toEqual([
+      [1, "user", "complete", "tell me a long story"],
+      [1, "assistant", "interrupted", ""],
+      [2, "user", "complete", "actually, stop"],
+      [2, "assistant", "complete", "re: actually, stop"],
+    ]);
+    expect(p.seen.aborted).toBe(true);
+    // the messages really travelled in the topic's own stream, above the legacy sequence space
+    const stream = await b.eventStore.read(inboxTopicStreamId(id, CONVERSATION_TOPIC));
+    expect(stream.length).toBeGreaterThan(0);
+    expect(stream[0]?.sequence).toBeGreaterThanOrEqual(INBOX_TOPIC_SEQ_BASE);
+  });
+
+  it("a message already waiting in the topic stream is found when a source subscribes late", async () => {
+    const gate = new Latch();
+    const b = boot({
+      // The first generation ignores the abort and holds the owner mid-turn, so message 2 stays unconsumed.
+      reply: async (req, nth) => {
+        if (nth === 1) await gate.promise;
+        return { content: `re: ${lastUserText(req)}`, stopReason: "end_turn" };
+      },
+      runtime: { inboxTopicStreams: true },
+    });
+    await b.runtime.enableInboxTopicStreams({ principal: { actor: "ops" } });
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "first");
+    await until(() => b.calls.n === 1);
+    await b.conv.sendTurn(id, "second"); // waits in the topic's stream past the owner's cursor
+    let fired = false;
+    const stop = await inboxBargeIn(b.eventStore)(id, id, {
+      onMessage: () => {
+        fired = true;
+      },
+      isKnown: () => false,
+    });
+    expect(fired).toBe(true);
+    stop();
+    gate.release();
   });
 });

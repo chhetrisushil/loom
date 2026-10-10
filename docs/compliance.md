@@ -163,8 +163,9 @@ idempotent: liveness is judged on that redacted view.
 ### A message still in flight in an inbox (ADR 0110)
 
 A durable inbox (`kernel.features.inbox`) holds a message in a reserved stream
-(`__loom_inbox__:<chainId>`) until its owner consumes it, so an erasure must reach the stream
-as well as the owner's log. It does, twice:
+(`__loom_inbox__:<chainId>`, and with per-topic streams one `…#<hash>` stream per topic plus a
+`…#reg` registry, ADR 0110 D10b) until its owner consumes it, so an erasure must reach the streams
+as well as the owner's log. It does, twice (every stream of the chain, the registry last, on both halves):
 
 - **Cryptographically.** With `security.crypto` composed, `defineConfig` registers the inbox
   payload path, and the encrypting store seals a stream's payload under the OWNER's subject (the

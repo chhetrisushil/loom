@@ -3,9 +3,14 @@ import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
+  INBOX_LAYOUT_STREAM,
   INBOX_STREAM_PREFIX,
+  INBOX_TOPIC_SEQ_BASE,
   chainIdOfFirst,
   headOf,
+  inboxRegistryStreamId,
+  inboxStreamsOfChain,
+  inboxTopicStreamId,
   readRangeOf,
 } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
@@ -18,7 +23,13 @@ import type { InboxMessage, InboxSource } from "./types";
 // journals consumption into its OWN log as `MESSAGE_CONSUMED`. The owner's log is therefore never
 // appended to by a sender, which is what removes the sequence race the audit measured.
 
-export { INBOX_STREAM_PREFIX };
+export {
+  INBOX_LAYOUT_STREAM,
+  INBOX_STREAM_PREFIX,
+  INBOX_TOPIC_SEQ_BASE,
+  inboxRegistryStreamId,
+  inboxTopicStreamId,
+};
 /** The stream's event kind. Not an `EVENT_SCHEMA` kind: it exists only in the control stream. */
 export const INBOX_MESSAGE_KIND = "INBOX_MESSAGE";
 const INBOX_WORKFLOW_ID = "__loom_inbox__";
@@ -125,29 +136,57 @@ const READ_CHUNK = 128;
  */
 export function createInboxSource(store: EventStore): InboxSource {
   return async (chainId, topic, afterSeq, limit) => {
-    const stream = inboxStreamId(chainId);
-    const out: InboxMessage[] = [];
-    const take = (events: readonly EventEnvelope[]): void => {
-      for (const e of events) {
-        if (e.sequence <= afterSeq || out.length >= limit) continue;
-        const m = asMessage(e);
-        if (m !== undefined && m.topic === topic) out.push(m);
-      }
-    };
-    const head = await headOf(store, stream);
-    if (head === null) return out;
-    let lo = Math.max(0, afterSeq + 1);
-    while (lo <= head && out.length < limit) {
-      const page = await readRangeOf(store, stream, lo, Math.min(head, lo + READ_CHUNK - 1));
-      if (page.length === 0) {
-        take(await store.readFrom(stream, lo)); // a trimmed gap: everything retained from here
-        break;
-      }
-      take(page);
-      lo = (page[page.length - 1] as EventEnvelope).sequence + 1;
-    }
-    return out;
+    // The topic's own stream FIRST, then the legacy one (ADR 0110 D10b). A topic-stream message is
+    // visible only after its fleet switch, which happened after every legacy message that precedes
+    // it, so reading the later stream first can never miss an earlier legacy message that the
+    // second read would then find. The cursors are one number space and the topic streams sit above
+    // INBOX_TOPIC_SEQ_BASE, so legacy messages (below it) come first in the result.
+    const fromTopic = await readTopicMessages(
+      store,
+      inboxTopicStreamId(chainId, topic),
+      topic,
+      Math.max(afterSeq, INBOX_TOPIC_SEQ_BASE - 1),
+      limit
+    );
+    // A cursor already in the topic range is past every legacy message: skip the legacy read.
+    const fromLegacy =
+      afterSeq >= INBOX_TOPIC_SEQ_BASE
+        ? []
+        : await readTopicMessages(store, inboxStreamId(chainId), topic, afterSeq, limit);
+    return fromLegacy.length === 0
+      ? fromTopic.slice(0, limit)
+      : [...fromLegacy, ...fromTopic].slice(0, limit);
   };
+}
+
+async function readTopicMessages(
+  store: EventStore,
+  stream: string,
+  topic: string,
+  afterSeq: number,
+  limit: number
+): Promise<InboxMessage[]> {
+  const out: InboxMessage[] = [];
+  const take = (events: readonly EventEnvelope[]): void => {
+    for (const e of events) {
+      if (e.sequence <= afterSeq || out.length >= limit) continue;
+      const m = asMessage(e);
+      if (m !== undefined && m.topic === topic) out.push(m);
+    }
+  };
+  const head = await headOf(store, stream);
+  if (head === null) return out;
+  let lo = Math.max(0, afterSeq + 1);
+  while (lo <= head && out.length < limit) {
+    const page = await readRangeOf(store, stream, lo, Math.min(head, lo + READ_CHUNK - 1));
+    if (page.length === 0) {
+      take(await store.readFrom(stream, lo)); // a trimmed gap: everything retained from here
+      break;
+    }
+    take(page);
+    lo = (page[page.length - 1] as EventEnvelope).sequence + 1;
+  }
+  return out;
 }
 
 /** Per store, per chain: the in-process queue that serializes this process's own sends. */
@@ -163,33 +202,38 @@ export function appendInboxMessage(
   store: EventStore,
   chainId: string,
   message: StoredMessage,
-  now: () => number | Promise<number>
+  now: () => number | Promise<number>,
+  /** ADR 0110 D10b: write the message into its TOPIC's stream (sequences from INBOX_TOPIC_SEQ_BASE). */
+  perTopic = false
 ): Promise<number> {
   let queues = sendQueues.get(store);
   if (queues === undefined) {
     queues = new Map();
     sendQueues.set(store, queues);
   }
-  const prior = queues.get(chainId) ?? Promise.resolve();
-  const run = prior.catch(() => undefined).then(() => appendOnce(store, chainId, message, now));
+  const stream = perTopic ? inboxTopicStreamId(chainId, message.topic) : inboxStreamId(chainId);
+  const prior = queues.get(stream) ?? Promise.resolve();
+  const run = prior
+    .catch(() => undefined)
+    .then(() => appendOnce(store, stream, perTopic ? INBOX_TOPIC_SEQ_BASE : 0, message, now));
   const tail = run.catch(() => undefined);
-  queues.set(chainId, tail);
+  queues.set(stream, tail);
   void tail.then(() => {
-    if (queues.get(chainId) === tail) queues.delete(chainId);
+    if (queues.get(stream) === tail) queues.delete(stream);
   });
   return run;
 }
 
 async function appendOnce(
   store: EventStore,
-  chainId: string,
+  stream: string,
+  firstSequence: number,
   message: StoredMessage,
   now: () => number | Promise<number>
 ): Promise<number> {
-  const stream = inboxStreamId(chainId);
   for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt++) {
     const head = await headOf(store, stream);
-    const sequence = head === null ? 0 : head + 1;
+    const sequence = head === null ? firstSequence : Math.max(head + 1, firstSequence);
     const envelope: EventEnvelope = {
       id: `${stream}-${sequence}`,
       workflowId: INBOX_WORKFLOW_ID,
@@ -213,7 +257,7 @@ async function appendOnce(
     }
   }
   throw new Error(
-    `inbox "${chainId}": could not allocate a sequence after ${APPEND_ATTEMPTS} attempts`
+    `inbox stream "${stream}": could not allocate a sequence after ${APPEND_ATTEMPTS} attempts`
   );
 }
 
@@ -262,8 +306,17 @@ export async function ensureInboxFloor(
   floor: number,
   now: () => number
 ): Promise<void> {
+  await ensureStreamFloor(store, inboxStreamId(chainId), floor, now);
+}
+
+/** {@link ensureInboxFloor} for any inbox stream (the legacy one or a topic's). */
+export async function ensureStreamFloor(
+  store: EventStore,
+  stream: string,
+  floor: number,
+  now: () => number
+): Promise<void> {
   if (!Number.isSafeInteger(floor) || floor < 0) return;
-  const stream = inboxStreamId(chainId);
   const head = await headOf(store, stream);
   if (head !== null && head >= floor) return;
   try {
@@ -282,10 +335,36 @@ export async function ensureInboxFloor(
   }
 }
 
-/** The largest cursor of `cursors` (the highest inbox sequence this owner has consumed), or -1. */
+/**
+ * Seed every stream a chain's inherited cursors need (a FORK, or a RE-OPEN, ADR 0110 D1/D10b): the
+ * legacy stream at the highest legacy-range cursor, and each topic stream whose cursor is in the
+ * topic range at that cursor (registering the topic so the chain's streams stay enumerable). A new
+ * topic stream is otherwise seeded lazily at its first send, and starts above every legacy sequence.
+ */
+export async function seedInboxFloors(
+  store: EventStore,
+  chainId: string,
+  cursors: Record<string, number>,
+  now: () => number
+): Promise<void> {
+  await ensureInboxFloor(store, chainId, maxCursor(cursors), now);
+  for (const [topic, cursor] of Object.entries(cursors)) {
+    if (typeof cursor !== "number" || cursor < INBOX_TOPIC_SEQ_BASE) continue;
+    await registerInboxTopic(store, chainId, topic, Number.POSITIVE_INFINITY, now);
+    await ensureStreamFloor(store, inboxTopicStreamId(chainId, topic), cursor, now);
+  }
+}
+
+/**
+ * The largest LEGACY-stream cursor of `cursors` (the highest sequence this owner has consumed from the
+ * single inbox stream), or -1. A cursor in the topic range (>= INBOX_TOPIC_SEQ_BASE) belongs to a
+ * topic's own stream and says nothing about the legacy one.
+ */
 export function maxCursor(cursors: Record<string, number>): number {
   let max = -1;
-  for (const v of Object.values(cursors)) if (typeof v === "number" && v > max) max = v;
+  for (const v of Object.values(cursors)) {
+    if (typeof v === "number" && v < INBOX_TOPIC_SEQ_BASE && v > max) max = v;
+  }
   return max;
 }
 
@@ -302,7 +381,7 @@ export async function scanInbox(
   store: EventStore,
   chainId: string,
   cursors: Record<string, number>,
-  opts: { from?: number; stopAtFirst?: boolean; limit?: number } = {}
+  opts: { from?: number; stopAtFirst?: boolean; limit?: number; stream?: string } = {}
 ): Promise<{
   unconsumed: number;
   oldest: number | undefined;
@@ -310,7 +389,7 @@ export async function scanInbox(
   oldestTopic: string | undefined;
   head: number | null;
 }> {
-  const stream = inboxStreamId(chainId);
+  const stream = opts.stream ?? inboxStreamId(chainId);
   const head = await headOf(store, stream);
   if (head === null) return { unconsumed: 0, oldest: undefined, oldestTopic: undefined, head };
   let unconsumed = 0;
@@ -378,9 +457,127 @@ export async function trimInbox(
   return through;
 }
 
-/** Delete the whole stream (the chain was reclaimed). Idempotent. */
+/**
+ * Delete every inbox stream of the chain (it was reclaimed): the topic streams, the legacy stream and,
+ * LAST, the registry that names the topic streams (a crash midway leaves them findable). Idempotent.
+ */
 export async function deleteInbox(store: EventStore, chainId: string): Promise<void> {
-  await store.deleteExecution?.(inboxStreamId(chainId));
+  if (store.deleteExecution === undefined) return;
+  const { legacy, registry, topics } = await inboxStreamsOfChain(store, chainId);
+  for (const stream of topics) await store.deleteExecution(stream);
+  await store.deleteExecution(legacy);
+  if (registry !== undefined) await store.deleteExecution(registry);
+}
+
+/** Delete the consumed prefix of one TOPIC's stream (every entry up to the cursor, never the head). */
+export async function trimTopicStream(
+  store: EventStore,
+  stream: string,
+  cursor: number,
+  floor = INBOX_TOPIC_SEQ_BASE - 1
+): Promise<number | undefined> {
+  const truncate = store.truncatePrefixKeeping
+    ? (id: string, through: number) => store.truncatePrefixKeeping?.(id, through, [])
+    : store.truncatePrefix
+      ? (id: string, through: number) => store.truncatePrefix?.(id, through)
+      : undefined;
+  if (truncate === undefined) return undefined;
+  const head = await headOf(store, stream);
+  if (head === null) return undefined;
+  const through = Math.min(cursor, head - 1);
+  if (through < INBOX_TOPIC_SEQ_BASE || through <= floor) return undefined;
+  await truncate(stream, through);
+  return through;
+}
+
+// ── ADR 0110 amendment, D10b — the topic registry and the fleet switch ───────────────────────
+
+/** The kind of a registry entry: one per topic that has a stream. Not a message, never delivered. */
+export const INBOX_TOPIC_KIND = "INBOX_TOPIC";
+/** The kind of the fleet-switch entry in {@link INBOX_LAYOUT_STREAM}. */
+export const INBOX_LAYOUT_KIND = "INBOX_LAYOUT";
+
+/** The topics registered for a chain, in registration order (deduped). */
+export async function readRegisteredTopics(store: EventStore, chainId: string): Promise<string[]> {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const e of await store.read(inboxRegistryStreamId(chainId))) {
+    const topic = (e.payload as { topic?: unknown } | null)?.topic;
+    if (e.eventType !== INBOX_TOPIC_KIND || typeof topic !== "string" || seen.has(topic)) continue;
+    seen.add(topic);
+    out.push(topic);
+  }
+  return out;
+}
+
+/**
+ * Make sure `topic` is in the chain's registry BEFORE its first message is written (every stream with
+ * a message is therefore enumerable). `"full"` when the chain already has `maxTopics` other topics.
+ * Concurrent first sends of a topic may both append an entry; readers dedupe.
+ */
+export async function registerInboxTopic(
+  store: EventStore,
+  chainId: string,
+  topic: string,
+  maxTopics: number,
+  now: () => number
+): Promise<"registered" | "present" | "full"> {
+  const registry = inboxRegistryStreamId(chainId);
+  for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt++) {
+    const topics = await readRegisteredTopics(store, chainId);
+    if (topics.includes(topic)) return "present";
+    if (topics.length >= maxTopics) return "full";
+    const head = await headOf(store, registry);
+    const sequence = head === null ? 0 : head + 1;
+    try {
+      await store.append({
+        id: `${registry}-${sequence}`,
+        workflowId: INBOX_WORKFLOW_ID,
+        executionId: registry,
+        eventType: INBOX_TOPIC_KIND,
+        sequence,
+        timestamp: now(),
+        payload: { topic },
+      });
+      return "registered";
+    } catch (err) {
+      if (err instanceof DuplicateSequenceError || err instanceof DuplicateEnvelopeIdError)
+        continue;
+      throw err;
+    }
+  }
+  throw new Error(
+    `inbox registry "${registry}": could not register a topic after ${APPEND_ATTEMPTS} attempts`
+  );
+}
+
+/** Has the fleet switched to per-topic writing? (A point read; the answer is monotone, so cache `true`.) */
+export async function inboxLayoutActive(store: EventStore): Promise<boolean> {
+  return (await headOf(store, INBOX_LAYOUT_STREAM)) !== null;
+}
+
+/** Write the fleet switch. Idempotent; returns whether THIS call wrote it. */
+export async function activateInboxLayout(
+  store: EventStore,
+  now: () => number,
+  by: { tenant?: string; actor?: string; onBehalfOf?: string }
+): Promise<boolean> {
+  try {
+    await store.append({
+      id: `${INBOX_LAYOUT_STREAM}-0`,
+      workflowId: INBOX_WORKFLOW_ID,
+      executionId: INBOX_LAYOUT_STREAM,
+      eventType: INBOX_LAYOUT_KIND,
+      sequence: 0,
+      timestamp: now(),
+      payload: { layout: "per-topic", by },
+    });
+    return true;
+  } catch (err) {
+    if (err instanceof DuplicateSequenceError || err instanceof DuplicateEnvelopeIdError)
+      return false;
+    throw err;
+  }
 }
 
 /** The first retained sequence at or above `from` (a probe for tests and bounded reads). */
@@ -486,49 +683,61 @@ export async function scanExpired(
     now: number;
     ttlOf: (topic: string) => number | undefined;
     maxExpired: number;
+    /** ADR 0110 D10b: the chain's registered topics, each of which also has its own stream to scan. */
+    topics?: readonly string[];
   }
 ): Promise<{ expired: ExpiredMessage[]; nextAt: number | undefined; more: boolean }> {
-  const stream = inboxStreamId(chainId);
   const expired: ExpiredMessage[] = [];
   const closed = new Set<string>();
   let nextAt: number | undefined;
   let more = false;
-  const head = await headOf(store, stream);
-  if (head === null) return { expired, nextAt, more };
-  const visit = (events: readonly EventEnvelope[]): boolean => {
-    for (const e of events) {
-      const m = asMessage(e);
-      if (m === undefined || e.sequence <= cursorFor(cursors, m.topic)) continue;
-      const ttl = opts.ttlOf(m.topic);
-      if (ttl === undefined || closed.has(m.topic)) continue;
-      // A stamp AHEAD of the judge's clock (a sender whose clock runs fast, or a different clock than
-      // the judge's) is suspect: it is never expired before `now` has passed the stamp itself, and
-      // then only after its full TTL (`stamp + ttl`), so it is never dropped early. It stays "young"
-      // exactly until the judge's clock passes `stamp + ttl`, not forever; and while it is young it
-      // closes its topic (a prefix scan), so older messages behind it wait.
-      const expiresAt = e.timestamp + ttl;
-      if (e.timestamp > opts.now || expiresAt > opts.now) {
-        closed.add(m.topic);
-        if (nextAt === undefined || expiresAt < nextAt) nextAt = expiresAt;
-        continue;
+  const scanStream = async (stream: string, from: number): Promise<void> => {
+    const head = await headOf(store, stream);
+    if (head === null) return;
+    const visit = (events: readonly EventEnvelope[]): boolean => {
+      for (const e of events) {
+        const m = asMessage(e);
+        if (m === undefined || e.sequence <= cursorFor(cursors, m.topic)) continue;
+        const ttl = opts.ttlOf(m.topic);
+        if (ttl === undefined || closed.has(m.topic)) continue;
+        // A stamp AHEAD of the judge's clock (a sender whose clock runs fast, or a different clock than
+        // the judge's) is suspect: it is never expired before `now` has passed the stamp itself, and
+        // then only after its full TTL (`stamp + ttl`), so it is never dropped early. It stays "young"
+        // exactly until the judge's clock passes `stamp + ttl`, not forever; and while it is young it
+        // closes its topic (a prefix scan), so older messages behind it wait.
+        const expiresAt = e.timestamp + ttl;
+        if (e.timestamp > opts.now || expiresAt > opts.now) {
+          closed.add(m.topic);
+          if (nextAt === undefined || expiresAt < nextAt) nextAt = expiresAt;
+          continue;
+        }
+        if (expired.length >= opts.maxExpired) {
+          more = true;
+          return true;
+        }
+        expired.push({ topic: m.topic, seq: e.sequence, key: dedupeKeyOf(m) });
       }
-      if (expired.length >= opts.maxExpired) {
-        more = true;
-        return true;
+      return false;
+    };
+    let lo = Math.max(0, from);
+    while (lo <= head) {
+      const page = await readRangeOf(store, stream, lo, Math.min(head, lo + READ_CHUNK - 1));
+      if (page.length === 0) {
+        visit(await store.readFrom(stream, lo));
+        return;
       }
-      expired.push({ topic: m.topic, seq: e.sequence, key: dedupeKeyOf(m) });
+      if (visit(page)) return;
+      lo = (page[page.length - 1] as EventEnvelope).sequence + 1;
     }
-    return false;
   };
-  let lo = Math.max(0, opts.from);
-  while (lo <= head) {
-    const page = await readRangeOf(store, stream, lo, Math.min(head, lo + READ_CHUNK - 1));
-    if (page.length === 0) {
-      visit(await store.readFrom(stream, lo));
-      break;
-    }
-    if (visit(page)) break;
-    lo = (page[page.length - 1] as EventEnvelope).sequence + 1;
+  // The legacy stream first (its sequences are below every topic stream's), then each topic's own.
+  await scanStream(inboxStreamId(chainId), opts.from);
+  for (const topic of opts.topics ?? []) {
+    if (more || opts.ttlOf(topic) === undefined) continue;
+    await scanStream(
+      inboxTopicStreamId(chainId, topic),
+      Math.max(INBOX_TOPIC_SEQ_BASE, cursorFor(cursors, topic) + 1)
+    );
   }
   return { expired, nextAt, more };
 }

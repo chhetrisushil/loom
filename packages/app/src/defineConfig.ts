@@ -634,6 +634,17 @@ export interface LoomConfig {
        */
       inbox?: boolean;
       /**
+       * ADR 0110 amendment, D10b — this node may write PER-TOPIC inbox streams (one stream per topic,
+       * so a cold topic no longer pins a hot one and the bounds are per topic), once the FLEET has
+       * opted in with `app.runtime.enableInboxTopicStreams({ principal })`. OFF by default: the node
+       * writes the single legacy stream exactly as before. Every D10-aware node READS both layouts
+       * whatever this says, so: (1) deploy a D10 build to EVERY node, (2) turn this on for EVERY node
+       * (it changes nothing yet), (3) call `enableInboxTopicStreams` once. A pre-D10 node cannot read
+       * a topic stream; a node with this off keeps writing the legacy stream after step 3 and its
+       * messages can be skipped, so never run step 3 while one exists, and never turn this off after.
+       */
+      inboxTopicStreams?: boolean;
+      /**
        * ADR 0109 (R1b) — `ctx.continueAsNew`: end an execution and start its successor with a carry,
        * so a long-lived conversational / multi-party agent keeps a bounded fold and snapshot. OFF by
        * default because a pre-1.23.0 node ignores `EXECUTION_CONTINUED` and the `continued` status:
@@ -684,6 +695,8 @@ export interface LoomConfig {
        * expiry row as obsolete, and expiry is then lost until a `recoverAbandoned` sweep).
        */
       messageTtlMs?: number | { default?: number; topics?: Readonly<Record<string, number>> };
+      /** ADR 0110 D10b — topics one chain may have per-topic streams for (its registry's size). Default 64. */
+      maxTopics?: number;
     };
     /**
      * ADR 0115 (R15) — per-dimension override of the sanity ceiling on one `RESOURCE_METERED`
@@ -1283,6 +1296,10 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     }),
     ...(config.kernel?.features?.inbox === true && {
       inboxEnabled: true,
+      ...(config.kernel.features.inboxTopicStreams === true && { inboxTopicStreams: true }),
+      ...(config.kernel.inbox?.maxTopics !== undefined && {
+        inboxMaxTopics: config.kernel.inbox.maxTopics,
+      }),
       ...(config.kernel.inbox?.maxBacklog !== undefined && {
         inboxMaxBacklog: config.kernel.inbox.maxBacklog,
       }),

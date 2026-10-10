@@ -83,11 +83,14 @@ export {
   DEFAULT_INBOX_MAX_PAYLOAD_BYTES,
   MAX_MESSAGE_ID_LENGTH,
   INBOX_STREAM_PREFIX,
+  INBOX_TOPIC_SEQ_BASE,
   INBOX_WAKE_AT,
   INBOX_TTL_ACTOR,
   type InboxTtlConfig,
   createInboxSource,
+  inboxRegistryStreamId,
   inboxStreamId,
+  inboxTopicStreamId,
 } from "./inbox";
 export {
   orphanCensus,
