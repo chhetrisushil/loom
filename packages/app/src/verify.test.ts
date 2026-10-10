@@ -967,6 +967,7 @@ describe("step arguments, ctx.parallel and constant-id factories reach the rules
 
   it("mcpInvoke$ with a templated step id is checked as the mcp.invoke effect (L37)", () => {
     const src = `
+      import { mcpInvoke$ } from "@loom/plugin-mcp";
       const runner = async (ctx, step) => { await ctx.run(mcpInvoke$(\`tool:\${step.id}\`), {}); };
     `;
     const report = check(src, fullGrants);
