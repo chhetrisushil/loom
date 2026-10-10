@@ -54,6 +54,16 @@ pnpm --filter @loom/db-observability start
 
 ### Agentic composition
 
+- **`tool-search-mcp-menu`** — a large tool menu that never enters the prompt (ADR 0125).
+  A real `@loom/plugin-mcp` server serves 64 tools; the agent starts with a 3-tool menu
+  (`search_tools`, `activate_skill`, its own tool) and loads only what a search returns.
+  Remote tools (`origin: "remote"`) have their descriptions withheld (one of them carries an
+  injection) and search results naming them arrive tainted; host `annotations` close the
+  vocabulary gap ("bill the customer" finds `charge_invoice`); skills are discovered through
+  search (`skillActivation.discovery: "search"`) and their instructions arrive as the
+  `activate_skill` tool result; a custom ranker runs two-ranker mode; and a crash/resume
+  replays every page from the log with zero ranker calls and no repeated MCP call.
+
 - **`agent-swarm`** — a dynamic agent swarm wired from user intent (release-audit):
   record-plan → `PLAN_COMPOSED`, then a parallel `executeGraph` fan-out. Offline.
 - **`db-command-center`** (+ **`-server`**, **`-wc`**) — an intent → planner → A2A
@@ -83,6 +93,15 @@ pnpm --filter @loom/db-observability start
   look scored while being attributable to nothing. Delivered quality goes 0.53 → 0.83 on
   identical tickets. Headless, deterministic (seeded PRNG). **Needs the `../loom-plugins`
   checkout too**, for `loom-plugin-linucb`.
+- **`planner-learning`** — the learning lifecycle (ADR 0124) for a **loom-ui planner**.
+  Viewers vote on what the server recorded showing them (U11: `SignalIngestor` with
+  `seenLogExposure`, so an unexposed vote is refused; one bounded vote per viewer in a
+  `VoteLedger`; tenant-aware), `settleRewards` records one late reward per planner decision,
+  and a candidate layout policy goes through the `PolicyRegistry` via `decideWithRollout`:
+  offline gate, SHADOW (scored, never served), CANARY (a stable slice), SNIPS + bootstrap +
+  `promotionGate`, then promote or `rollback`. v2 passes offline and in shadow, the world
+  drifts at canary, the gate refuses and it rolls back; v3 is promoted. Replay serves the
+  recorded decision with no new decision, no model call and no `policy.select`.
 
 ### Knowledge & memory
 
