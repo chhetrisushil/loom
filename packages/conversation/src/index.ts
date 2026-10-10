@@ -2,7 +2,7 @@ export { followConversation } from "./feed";
 export type { FeedItem, FollowDeps, FollowOptions } from "./feed";
 export { inboxBargeIn, pendingInbox } from "./bargeIn";
 export type { BargeInHandlers, BargeInSource, StoredInboxMessage } from "./bargeIn";
-export { signInboxEnvelope } from "./signEnvelope";
+export { InvalidEnvelopeError, signInboxEnvelope } from "./signEnvelope";
 export type { InboxEnvelopeBody } from "./signEnvelope";
 export { conversation$, conversationRunner } from "./conversation";
 export type { ConversationFlow, ConversationFlowOptions } from "./conversation";

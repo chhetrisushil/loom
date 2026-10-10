@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { SECRET, alice, boot, carol, dave, mallory, messages, until } from "./__fixtures__/harness";
-import { ConversationNotFoundError } from "./index";
+import {
+  SECRET,
+  TEST_KEY,
+  alice,
+  boot,
+  carol,
+  dave,
+  mallory,
+  messages,
+  until,
+} from "./__fixtures__/harness";
+import { CONVERSATION_TOPIC, ConversationNotFoundError, signInboxEnvelope } from "./index";
 
 const asIdentity = (p: { actor?: string; tenant?: string }) => ({
   actor: p.actor as string,
@@ -120,6 +130,65 @@ describe("shared mode: participants, not tenants", () => {
     ]);
     expect(JSON.stringify(all)).not.toContain("i am alice");
     expect(b.calls.n).toBe(1);
+  });
+});
+
+describe("shared mode: a signed close is authorized by the BODY, not only the client", () => {
+  // The envelope key is a bridge's authority, not a user's: a key holder must not be able to end everyone's
+  // conversation by naming a non-participant (or a plain participant) as the closer.
+  const closeAs = (
+    b: ReturnType<typeof boot>,
+    id: string,
+    asker: { actor: string; tenant?: string }
+  ) =>
+    b.runtime.send(
+      id,
+      {
+        topic: CONVERSATION_TOPIC,
+        payload: signInboxEnvelope(TEST_KEY, {
+          conversationId: id,
+          kind: "close",
+          id: `close-${asker.actor}`,
+          iat: Date.now(),
+          asker,
+        }),
+      },
+      b.runtime.systemOptions()
+    );
+
+  it("a non-participant's signed close is refused and the conversation stays open", async () => {
+    const { b, id } = await sharedConv();
+    await closeAs(b, id, asIdentity(mallory));
+    // barrier: a legitimate turn after it proves the refusal was processed and the conversation still serves
+    await b.conv.sendTurn(id, "still open?", { principal: carol });
+    const all = await messages(b, id, 3, carol);
+    expect(all.slice(0, 1).map((m) => [m.status, m.reason])).toEqual([
+      ["rejected", "unauthenticated"],
+    ]);
+    expect(all[2]?.status).toBe("complete");
+    expect((await b.conv.status(id, { principal: alice })).state).not.toBe("closed");
+  });
+
+  it("a plain participant's signed close is refused too (the client's 'manage' rule: owner or host manager)", async () => {
+    const { b, id } = await sharedConv();
+    await closeAs(b, id, asIdentity(carol));
+    await b.conv.sendTurn(id, "still open?", { principal: carol });
+    const all = await messages(b, id, 3, carol);
+    expect(all[0]).toMatchObject({ status: "rejected", reason: "unauthenticated" });
+    expect((await b.conv.status(id, { principal: alice })).state).not.toBe("closed");
+  });
+
+  it("the owner's and a host manager's closes are accepted", async () => {
+    const owner = await sharedConv();
+    await closeAs(owner.b, owner.id, asIdentity(alice));
+    await until(
+      async () => (await owner.b.conv.status(owner.id, { principal: alice })).state === "closed"
+    );
+    const mgr = await sharedConv({ shared: { manageParticipants: (m) => m.actor === "dave" } });
+    await closeAs(mgr.b, mgr.id, asIdentity(dave));
+    await until(
+      async () => (await mgr.b.conv.status(mgr.id, { principal: alice })).state === "closed"
+    );
   });
 });
 

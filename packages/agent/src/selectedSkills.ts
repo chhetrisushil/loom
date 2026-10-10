@@ -30,19 +30,26 @@ export interface SelectedSkills extends LoopSkills {
  * `events` may hold one execution's log or several; pass `{ loopId }` to read one loop. The top-level
  * `upfront` / `activated` are the (deduplicated, order-preserving) union over the loops considered;
  * `byLoop` keeps them apart. Two executions that share a loop id are merged, so pass one execution's
- * events when you need them apart. Ids are what was RECORDED: a selector may name a skill the registry
- * has since dropped, and the loop skipped it at run time.
+ * events when you need them apart. Ids are what was RECORDED: `upfront` is what the selector NAMED, which
+ * can include ids the registry did not have (the loop skipped those at run time), so it is not "which
+ * skills ran" for an unknown id. `activated` lists accepted activations only.
+ *
+ * A decision with NO `source` whose id ends in `#skills` is treated as `agentLoop$`'s up-front selection
+ * (that is how the loop records it). A decision recorded with any other `source`, including one an app
+ * made itself with `ctx.decide`, is never read as a selection. `byLoop` is an ordinary object.
  */
 export function selectedSkillsOf(
   events: readonly EventEnvelope[],
   options: { loopId?: string } = {}
 ): SelectedSkills {
-  const byLoop: Record<string, LoopSkills> = Object.create(null) as Record<string, LoopSkills>;
+  // A Map while collecting, so a loop id such as `__proto__` is just a key; `Object.fromEntries` then
+  // makes them own properties of an ordinary object (no null prototype to surprise `hasOwnProperty`).
+  const loops = new Map<string, LoopSkills>();
   const loop = (id: string): LoopSkills => {
-    let l = byLoop[id];
+    let l = loops.get(id);
     if (l === undefined) {
       l = { upfront: [], activated: [] };
-      byLoop[id] = l;
+      loops.set(id, l);
     }
     return l;
   };
@@ -67,8 +74,8 @@ export function selectedSkillsOf(
       for (const s of p.choice) if (typeof s === "string") push(loop(loopId).upfront, s);
     }
   }
-  const out: SelectedSkills = { upfront: [], activated: [], byLoop };
-  for (const l of Object.values(byLoop)) {
+  const out: SelectedSkills = { upfront: [], activated: [], byLoop: Object.fromEntries(loops) };
+  for (const l of loops.values()) {
     for (const s of l.upfront) push(out.upfront, s);
     for (const s of l.activated) push(out.activated, s);
   }
