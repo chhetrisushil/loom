@@ -12,6 +12,7 @@ import {
   ReclaimOrphansSnapshotAckError,
   ReclaimOrphansTouchError,
   pinByEventKinds,
+  resetSnapshotUnwrappedWarning,
   sweepUnpinnedContent,
 } from "./gc";
 import {
@@ -1260,19 +1261,9 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         expect(report?.snapshotStoresUnbranded).toBe(0);
       });
 
-      it("a MIX in an erasing pass warns once, still erases; a dryRun does not warn", async () => {
-        const { content, base } = await seeded();
-        const stores = [wrapped(content), rawStore()];
-        const w = await warnings(async () => {
-          const r = await sweepUnpinnedContent({
-            ...base,
-            snapshotStores: stores,
-            reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
-          });
-          expect(r.orphansReclaimed).toHaveLength(1);
-        });
-        expect(w).toHaveLength(1);
-        expect(w[0]).toMatch(/1 of 2 snapshot stores/);
+      it("a MIX in an erasing pass warns ONCE per process, still erases; a dryRun does not warn", async () => {
+        resetSnapshotUnwrappedWarning();
+        // dryRun first, while the warning is still armed, so "does not warn" is not vacuous
         const dry = await seeded();
         const wDry = await warnings(async () => {
           await sweepUnpinnedContent({
@@ -1283,6 +1274,21 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
           });
         });
         expect(wDry).toEqual([]);
+        const sweepMix = async () => {
+          const { content, base } = await seeded();
+          const r = await sweepUnpinnedContent({
+            ...base,
+            snapshotStores: [wrapped(content), rawStore()],
+            reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
+          });
+          expect(r.orphansReclaimed).toHaveLength(1);
+        };
+        const w = await warnings(async () => {
+          await sweepMix();
+          await sweepMix(); // a second mixed sweep does not warn again
+        });
+        expect(w).toHaveLength(1);
+        expect(w[0]).toMatch(/1 of 2 snapshot stores/);
       });
     });
 
