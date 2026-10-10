@@ -83,6 +83,9 @@ export interface DecideScope {
  * the two cannot drift. `rationale`/`source` are provenance; the rest are the ADR 0030
  * D1 materialization fields — DESCRIPTIVE metadata recorded alongside the choice but
  * never read back on replay (getDecision returns just `choice`), so P9 is untouched.
+ *
+ * Read at COMMIT, after the decider settles (except `estimatedCost`, validated up front), so a
+ * decider may fill fields in; see {@link ExecutionContext.decide}.
  */
 export interface DecideOptions {
   rationale?: unknown;
@@ -197,6 +200,12 @@ export interface ExecutionContext extends ExecutionContextExtensions {
   // knows those recorded frames will never be asked for. A decider MUST AWAIT every step it runs:
   // one it detaches and finishes after returning is not in the record, and the replay-divergence
   // detector will then report that step as skipped when the decision is served.
+  //
+  // `opts` is read when DECISION_RECORDED is committed, AFTER the decider settles (only
+  // `estimatedCost` is validated before it runs), so a decider may fill in fields of the object
+  // it was handed, e.g. a `policy` stamp that needs the propensity of the policy it consulted
+  // (`@loom/learning`'s decideWithPolicy / decideWithRollout rely on this). A served decision
+  // reads no `opts` at all. Pinned by DecisionSeam.test.ts ("opts are read at commit").
   decide<T = unknown>(
     decisionId: string,
     decider: (scope: DecideScope) => T | Promise<T>,
