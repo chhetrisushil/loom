@@ -88,8 +88,22 @@ if (pgDb !== undefined) {
 }
 
 /** The shared base. Pass overrides for the few packages that need them. */
-export function loomTest(overrides: UserConfig = {}): UserConfig {
-  const { test: testOverrides, resolve: resolveOverrides, ...rest } = overrides;
+export function loomTest(
+  overrides: UserConfig & {
+    /**
+     * Give each TEST FILE its own Postgres database (`vitest.pgFileSetup.ts`), so a slow `migrate()`
+     * (database-wide advisory lock) in one file cannot block a sibling file. Needs
+     * `LOOM_TEST_POSTGRES_URL`; `LOOM_TEST_PG_SHARED=1` still opts out.
+     */
+    pgDatabasePerFile?: boolean;
+  } = {}
+): UserConfig {
+  const {
+    test: testOverrides,
+    resolve: resolveOverrides,
+    pgDatabasePerFile = false,
+    ...rest
+  } = overrides;
   return defineConfig({
     ...rest,
     resolve: {
@@ -110,6 +124,7 @@ export function loomTest(overrides: UserConfig = {}): UserConfig {
       ...(pgDb !== undefined && {
         globalSetup: [join(ROOT, "vitest.pgSetup.ts")],
         env: { LOOM_TEST_POSTGRES_URL: pgDb.url },
+        ...(pgDatabasePerFile && { setupFiles: [join(ROOT, "vitest.pgFileSetup.ts")] }),
       }),
       ...testOverrides,
     },

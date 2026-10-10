@@ -1,3 +1,3 @@
 import { loomTest } from "../../vitest.shared";
 
-export default loomTest();
+export default loomTest({ pgDatabasePerFile: true });
