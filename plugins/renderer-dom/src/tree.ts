@@ -241,6 +241,9 @@ function patchWidget(e: WidgetEntry, widget: Widget, ctx: Ctx): void {
     unindex(e, ctx);
     e.widget = widget;
     index(e, ctx);
+    // A reused key (duplicate-id bump) can now hold a different id: keep the host's attributes true.
+    e.host.setAttribute("data-widget-id", widget.id);
+    e.host.setAttribute("data-widget-kind", widget.kind);
   }
   refreshWidget(e, ctx, changed);
 }
