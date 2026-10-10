@@ -5,7 +5,6 @@ import { tagRouter } from "./router";
 import type {
   ConfidenceSignal,
   DecideFn,
-  ModelInvoker,
   ModelRoute,
   ReasonOptions,
   ReasoningCache,

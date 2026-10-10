@@ -5,13 +5,7 @@ import { collectStream } from "./assembleStream";
 import type { StreamProgress } from "./assembleStream";
 import { assertRequestSupported } from "./capabilities";
 import { type ContentResolver, resolveRequestContent } from "./resolveContent";
-import type {
-  LlmProvider,
-  LlmRequest,
-  LlmRequestInput,
-  LlmResponse,
-  LlmStreamChunk,
-} from "./types";
+import type { LlmProvider, LlmRequest, LlmRequestInput, LlmResponse } from "./types";
 import { guardRequest } from "./untrusted";
 
 export interface CreateLlmEffectOptions<TIn, TOut> {

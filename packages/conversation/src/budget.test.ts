@@ -2,7 +2,7 @@ import { tainted } from "@loom/classify";
 import { agent$ } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
 import { describe, expect, it } from "vitest";
-import { TEST_KEY, boot, lastUserText, messages, signRaw, until } from "./__fixtures__/harness";
+import { TEST_KEY, boot, messages, signRaw, until } from "./__fixtures__/harness";
 import {
   type TokenCounter,
   conversation$,

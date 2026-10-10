@@ -1,6 +1,6 @@
 import { isTainted, taintOf, tainted } from "@loom/classify";
 import type { AgentDefinition, ExecutableTask, ToolDefinition } from "@loom/core";
-import { SuspendError, TypedFailure, fail, fnv1a64, loadInstructions } from "@loom/core";
+import { TypedFailure, fail, fnv1a64, loadInstructions } from "@loom/core";
 import type { Effect } from "@loom/effect-runtime";
 import { ToolEffect } from "@loom/effect-runtime";
 import type {
@@ -15,7 +15,7 @@ import type {
 import { LLM_INTERRUPTED, MAX_INLINE_TOTAL_BYTES, assistantMessageOf } from "@loom/llm";
 import type { TieredMemory } from "@loom/memory";
 import type { ModelInvoker, ReasonOptions, ReasoningRuntime } from "@loom/reasoning";
-import { ExecutionCancelledError, approvalViewDigest } from "@loom/workflow-runtime";
+import { approvalViewDigest } from "@loom/workflow-runtime";
 import type { BranchContext, DecideOptions, ExecutionContext } from "@loom/workflow-runtime";
 import type { SkillRegistry } from "./SkillRegistry";
 import { type SkillSelector, deterministicSkillSelector } from "./SkillSelector";

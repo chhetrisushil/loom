@@ -2,12 +2,10 @@ import type {
   ContentResolveContext,
   ContentResolver,
   LlmContent,
-  LlmMessage,
   LlmMessageInput,
   LlmProvider,
   LlmResponse,
   LlmToolCall,
-  LlmToolSpec,
   LlmToolSpecInput,
 } from "@loom/llm";
 

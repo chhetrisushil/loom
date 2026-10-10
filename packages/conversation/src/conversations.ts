@@ -22,7 +22,7 @@ import {
   createConversationReader,
 } from "./reader";
 import { registerSharedTurnEffect } from "./turn";
-import { CONVERSATION_TOPIC, type HistoryEntry, type TurnEnvelope } from "./types";
+import { CONVERSATION_TOPIC, type HistoryEntry } from "./types";
 
 // ── The client API of a conversation (ADR 0122 D1, D8, D10) ──────────────────────────────────────
 //

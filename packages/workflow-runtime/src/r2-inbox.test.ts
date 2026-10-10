@@ -2,17 +2,7 @@ import { isTainted, taintOf, unwrapTainted } from "@loom/classify";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
-import {
-  Latch,
-  build,
-  eventsOf,
-  flow,
-  kinds,
-  settle,
-  slow,
-  tick,
-  until,
-} from "./__tests__/r2Harness";
+import { Latch, build, eventsOf, flow, kinds, slow, tick, until } from "./__tests__/r2Harness";
 import { INBOX_WAKE_AT, dedupeKeyOf, inboxStreamId } from "./inbox";
 import { InboxClosedError, InboxMessageRefusedError, ResumeRefusedError } from "./types";
 

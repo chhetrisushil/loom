@@ -1,15 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  Latch,
-  build,
-  echo,
-  eventsOf,
-  flow,
-  kinds,
-  settle,
-  slow,
-  until,
-} from "./__tests__/r2Harness";
+import { Latch, build, eventsOf, flow, kinds, settle, slow, until } from "./__tests__/r2Harness";
 import {
   ContinuationConflictError,
   ContinueAsNewRefusedError,

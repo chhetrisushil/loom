@@ -1,4 +1,4 @@
-import { isTainted, tainted, unwrapTainted } from "@loom/classify";
+import { isTainted, unwrapTainted } from "@loom/classify";
 import type { EventEnvelope, FlowDefinition, SkillDefinition, ToolDefinition } from "@loom/core";
 import { agent$, instructions$, skill$, tool$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";

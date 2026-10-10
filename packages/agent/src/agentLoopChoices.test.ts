@@ -6,7 +6,7 @@ import type { LlmProvider, LlmRequest, LlmResponse } from "@loom/llm";
 import { TieredMemory } from "@loom/memory";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
-import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import type { FlowRunner } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { SkillRegistry } from "./SkillRegistry";

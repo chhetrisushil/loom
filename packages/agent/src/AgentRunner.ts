@@ -1,4 +1,4 @@
-import { isTainted, taintOf, tainted, unwrapTainted } from "@loom/classify";
+import { tainted, unwrapTainted } from "@loom/classify";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
 import { TypedFailure, fail, loadInstructions } from "@loom/core";
 import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";

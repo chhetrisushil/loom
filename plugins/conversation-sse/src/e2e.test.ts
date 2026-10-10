@@ -1,14 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  Latch,
-  type SseConn,
-  boot,
-  get,
-  lastUserText,
-  openSse,
-  post,
-  until,
-} from "./__fixtures__/harness";
+import { Latch, boot, get, lastUserText, openSse, post, until } from "./__fixtures__/harness";
 
 // The whole feature at once, over real HTTP on loopback: a multi-turn conversation with a barge-in,
 // rotation (continue-as-new), token budgeting and an SSE client that drops and resumes.

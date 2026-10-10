@@ -9,7 +9,6 @@ import {
 } from "@loom/blueprint-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { act, render, screen } from "@testing-library/react";
-import React from "react";
 import { describe, expect, it } from "vitest";
 import { BlueprintRenderer } from "../BlueprintRenderer";
 import type { WidgetRenderer } from "../RendererRegistry";

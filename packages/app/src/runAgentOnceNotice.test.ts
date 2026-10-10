@@ -28,7 +28,12 @@ describe("runAgentOnce permissive notice", () => {
   it("prints nothing for a strict profile, and does not burn the once", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const run = await fresh();
-    await run({ agent, provider: provider as never, input: "hi", config: { security: { strict: false } } });
+    await run({
+      agent,
+      provider: provider as never,
+      input: "hi",
+      config: { security: { strict: false } },
+    });
     expect(notices(warn)).toBe(0);
     await run({ agent, provider: provider as never, input: "hi" });
     expect(notices(warn)).toBe(1);

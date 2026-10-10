@@ -13,7 +13,6 @@ import { z } from "zod";
 import {
   ENVELOPE_DOMAIN,
   type Identity,
-  identityKey,
   identityOf,
   parseIdentity,
   sameIdentity,
