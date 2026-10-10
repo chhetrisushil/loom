@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { Pool, type PoolConfig } from "pg";
 
 /**
@@ -84,11 +85,18 @@ export function toClientConfig(config: PgConfig): string | PoolConfig | undefine
   return config as PoolConfig;
 }
 
-// A process-unique id used to tag NOTIFY messages so a store ignores the events it
+// A globally unique id used to tag NOTIFY messages so a store ignores the events it
 // published itself (it already delivered those to local subscribers synchronously).
-// Avoids Math.random (a counter + pid is enough and keeps library code deterministic).
+//
+// It must be unique across HOSTS and processes, not just within one: replicas in separate
+// containers commonly all run as pid 1 and build stores in the same order, so a `pid-counter`
+// id collides ("1-1" on every replica) and each replica mistakes the others' appends for its
+// own, silently dropping cross-node delivery. A per-process random prefix (generated once)
+// plus a per-store counter is unique across processes; the counter keeps ids unique within one.
+let processTag: string | undefined;
 let counter = 0;
 export function nextSenderId(): string {
+  processTag ??= randomBytes(8).toString("hex");
   counter += 1;
-  return `${process.pid}-${counter}`;
+  return `${processTag}-${counter}`;
 }
