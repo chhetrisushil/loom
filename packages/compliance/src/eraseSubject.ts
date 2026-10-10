@@ -71,6 +71,39 @@ export interface EraseSubjectResult {
   erased: string[];
   /** Live executions blocking completion (a parked request completes when these terminate). */
   pending: string[];
+  /**
+   * `parked: "shred"` only — the executions that were PARKED (suspended, waiting for an approval, a
+   * message or a timer) when their subject was shredded. They are not finished: see
+   * {@link EraseSubjectOptions.parked} for what one experiences when it resumes.
+   */
+  parkedShredded?: string[];
+}
+
+export interface EraseSubjectOptions {
+  /**
+   * What to do with a subject whose executions are not all terminal.
+   *
+   * - `"defer"` (**default**): any execution that is not terminal (a `suspended` one included) is
+   *   LIVE: the request is recorded durably (`ERASURE_PENDING`) and completes when the last one
+   *   terminates. A flow parked forever (a chat agent on `receive`) therefore blocks erasure
+   *   forever; the result is an honest `parked` naming it.
+   * - `"shred"` (opt-in): shred NOW when every non-terminal execution is PARKED (`suspended`).
+   *   An execution that is `running` (or `pending`) still defers: its fold is in flight and would
+   *   read the key as it is destroyed, which is the one hard rule (R4.5). The window between the
+   *   check and the key's destruction is the shredder's to close: a parked execution that a timer,
+   *   a send or a resume wakes in it becomes a running one whose reads fail (below).
+   *
+   * What a shredded parked owner experiences when it later resumes. Its sealed fields read as
+   * erased: with the default `onShredded: "throw"` a read of its log throws `PayloadShreddedError`
+   * the moment it touches a sealed event (a principal identity, a sealed step output or consumed
+   * payload), so the resume REJECTS with that typed error and appends nothing; a log that holds
+   * nothing sealed reads normally, and an inbox message of the subject still in flight reaches it
+   * as the `{ $shredded: true }` marker. A parked owner is therefore best CANCELLED once its
+   * subject is erased (an erased subject's execution cannot continue meaningfully). Inbox
+   * payloads written before crypto was enabled are plaintext and survive the shred: cancel the
+   * owner (a terminal head's stream is deleted by the erasure) or purge the stream yourself.
+   */
+  parked?: "defer" | "shred";
 }
 
 /**
@@ -98,20 +131,33 @@ export class EraseCoordinator {
   /** Request erasure of a subject within a tenant. Shreds now if all executions are terminal, else parks. */
   async eraseSubject(
     subjectId: string,
-    tenant: string = DEFAULT_TENANT
+    tenant: string = DEFAULT_TENANT,
+    options: EraseSubjectOptions = {}
   ): Promise<EraseSubjectResult> {
     const executions = this.options.index.executionsOf(subjectId, tenant);
     if (executions.length === 0) {
       return { subjectId, outcome: "unknown", erased: [], pending: [] };
     }
-    const live = await this.liveExecutions(executions);
+    const shredParked = options.parked === "shred";
+    const nonTerminal = await this.liveExecutions(executions);
+    // `defer`: every non-terminal execution blocks. `shred`: only a RUNNING one does.
+    const live = shredParked
+      ? nonTerminal.filter((x) => x.status !== "suspended").map((x) => x.id)
+      : nonTerminal.map((x) => x.id);
     if (live.length === 0) {
+      const parkedOwners = shredParked ? nonTerminal.map((x) => x.id) : [];
       // Resolved BEFORE the key is destroyed: a decrypting store cannot read these logs afterwards.
       const chains = await this.finishedChains(executions);
       await this.options.shred(subjectId, executions);
       await this.purgeInboxStreams(chains);
       this.parked.delete(parkKey(tenant, subjectId));
-      return { subjectId, outcome: "erased", erased: executions, pending: [] };
+      return {
+        subjectId,
+        outcome: "erased",
+        erased: executions,
+        pending: [],
+        ...(shredParked && { parkedShredded: parkedOwners }),
+      };
     }
     // R4.5 — a live fold is in flight; record the request durably and defer.
     if (!this.parked.has(parkKey(tenant, subjectId))) {
@@ -180,13 +226,16 @@ export class EraseCoordinator {
     return [...new Set([...this.parked].map(subjectOfKey))].sort();
   }
 
-  /** The subset of `executions` that are not yet terminal (a live fold reading the key). */
-  private async liveExecutions(executions: readonly string[]): Promise<string[]> {
-    const live: string[] = [];
+  /** The subset of `executions` that are not yet terminal (a live fold reading the key), with status. */
+  private async liveExecutions(
+    executions: readonly string[]
+  ): Promise<Array<{ id: string; status: ExecutionState["status"] }>> {
+    const live: Array<{ id: string; status: ExecutionState["status"] }> = [];
     for (const executionId of executions) {
       const folded = await this.foldExecution(executionId);
       if (folded === undefined) continue; // deleted by retention — nothing to protect
-      if (!TERMINAL_STATUS.has(folded.status)) live.push(executionId);
+      if (!TERMINAL_STATUS.has(folded.status))
+        live.push({ id: executionId, status: folded.status });
     }
     return live;
   }
