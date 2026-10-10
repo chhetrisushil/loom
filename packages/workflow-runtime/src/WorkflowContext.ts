@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { tainted } from "@loom/classify";
 import { BUILTIN_METER_DIMENSIONS, SuspendError, TypedFailure, fnv1a64 } from "@loom/core";
 import type { ExecutableTask, StepDefinition, SuspendWait } from "@loom/core";
@@ -8,6 +7,7 @@ import type { ReplayVM } from "@loom/replay-vm";
 import { linkSignals, parallelLimit } from "@loom/scheduler";
 import type { DecisionInner } from "./DivergenceGuard";
 import type { ExecutionJournal } from "./ExecutionJournal";
+import { createContextStore } from "./contextStore";
 import {
   CarryTooLargeError,
   ContinueAsNewRefusedError,
@@ -233,7 +233,7 @@ function scopeIsParked(scope: Scope | undefined): boolean {
  * Work detached through a callback that does not propagate async context (an event emitter bound
  * outside the branch, a thread pool) falls back to the ROOT scope.
  */
-const scopeStore = new AsyncLocalStorage<{ owner: object; scope: Scope }>();
+const scopeStore = createContextStore<{ owner: object; scope: Scope }>();
 
 function flattenRuns(m: Map<string, Array<[number, number]>>): Array<[string, number, number]> {
   const out: Array<[string, number, number]> = [];
@@ -357,7 +357,7 @@ interface InnerSteps {
   /** Total length of the ids held (a byte cap beside the count cap). */
   bytes: number;
 }
-const deciderStore = new AsyncLocalStorage<{ owner: object; inner: InnerSteps }>();
+const deciderStore = createContextStore<{ owner: object; inner: InnerSteps }>();
 /**
  * A decision record lists its inner steps only up to this many; past it the record carries
  * `innerStepsOverflow` and a served decision also exempts the frames first started during it.

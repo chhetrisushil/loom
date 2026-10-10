@@ -2562,8 +2562,14 @@ they enter a browser bundle. Know which, and why:
   `node:async_hooks` `AsyncLocalStorage` for step/decide scope. These are security- and
   semantics-critical, so they are deliberately NOT replaced with hand-rolled code: run the durable
   runtime on the server and keep a browser to rendering and the A2A/SSE wire. A browser that
-  executes flows itself has to alias those built-ins to its own implementations (WebCrypto,
-  an `AsyncLocalStorage` shim) and accepts that responsibility.
+  executes flows itself has to alias the crypto built-ins to its own implementations (WebCrypto)
+  and accepts that responsibility.
+  `AsyncLocalStorage` is created lazily on first use, so **loading** `@loom/workflow-runtime` in a
+  browser bundle (where the bundler externalizes `node:async_hooks` to an empty module) no longer
+  throws at import. Without a real `AsyncLocalStorage` the step/decide scope falls back to a
+  synchronous stack: it is visible only to code running synchronously inside the scope, not across
+  an `await`, so async context propagation is unavailable in a browser (work after an `await`
+  falls back to the root scope). Node, Deno and Bun are unchanged.
 
 The warning is therefore expected when `@loom/workflow-runtime` or `@loom/effect-runtime` is bundled
 for a browser; it is not a defect in the packages that appear browser-safe above.
