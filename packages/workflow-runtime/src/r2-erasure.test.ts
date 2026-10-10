@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inboxBackends } from "./__tests__/r2Backends";
 import { build, eventsOf, flow, until } from "./__tests__/r2Harness";
 import { inboxStreamId } from "./inbox";
+import { InboxMessageRefusedError } from "./types";
 
 // ADR 0110 follow-up — erasure reaches a payload still in flight in the inbox stream.
 //
@@ -20,7 +21,8 @@ import { inboxStreamId } from "./inbox";
 // log never consults the stream or the key again.
 
 const SECRET = "123-45-6789";
-const SENSITIVE = { INBOX_MESSAGE: ["payload"] };
+// What `defineConfig` registers when crypto and the inbox are on (P3-2: the consumed copy too).
+const SENSITIVE = { INBOX_MESSAGE: ["payload"], MESSAGE_CONSUMED: ["payload"] };
 /** `alice-*` executions belong to the subject "alice"; any other execution is its own subject. */
 const subjectOf = (e: { executionId: string }): string =>
   e.executionId.startsWith("alice-") ? "alice" : e.executionId;
@@ -94,6 +96,84 @@ for (const backend of inboxBackends("erase")) {
       expect(isShredded((consumed[0]?.payload as { payload: unknown }).payload)).toBe(true);
       const again = await h.sibling().loadState(e, h.rt.systemOptions());
       expect(again?.variables._output).toEqual(out);
+    });
+
+    it("P3-2: a consumed payload is sealed in the owner's log too, and the flow still receives it", async () => {
+      const { h, rawText } = sealed();
+      // (returns a derived value: the flow's own output is not what this test is about)
+      const f = flow("w", async (ctx) => {
+        await ctx.suspend({ on: "Go" });
+        const y = unwrapTainted(await ctx.receive<{ ssn: string }>("y"));
+        return y.ssn.length;
+      });
+      h.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
+      await h.rt.send(e, { topic: "y", payload: { ssn: SECRET }, messageId: "m1" });
+      await h.rt.resume(e, { eventType: "Go", payload: null });
+      await finished(h, e);
+      expect((await h.rt.loadState(e))?.variables._output).toBe(SECRET.length);
+      // ...and the state the store hands the fold still has the payload (it is opened on read)
+      const consumed = await eventsOf(h.eventStore, e, "MESSAGE_CONSUMED");
+      expect((consumed[0]?.payload as { payload: unknown }).payload).toEqual({ ssn: SECRET });
+      expect(await rawText(inboxStreamId(e))).not.toContain(SECRET);
+      expect(await rawText(e)).not.toContain(SECRET);
+      // A fresh runtime over the same sealed log folds the same answer (replay is unchanged).
+      const again = await h.sibling().loadState(e, h.rt.systemOptions());
+      expect(again?.variables._output).toBe(SECRET.length);
+    });
+
+    it("P3-2: a log written BEFORE the path was sealed (plaintext consumption) still replays beside sealed ones", async () => {
+      const raw = backend.make();
+      const keys: KeyStore = new InMemoryKeyStore();
+      const unsealed = new EncryptingEventStore(raw.eventStore, keys, { sensitive: {}, subjectOf });
+      const before = build({}, { ...raw, eventStore: unsealed });
+      const f = flow("w", async (ctx) => {
+        const a = unwrapTainted(await ctx.receive<string>("a"));
+        const b = unwrapTainted(await ctx.receive<string>("b"));
+        return [a, b.length];
+      });
+      before.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await before.rt.start(f, {}, { executionId: e })).waitForSuspend();
+      await before.rt.send(e, { topic: "a", payload: "plain-a", messageId: "a1" });
+      await until(async () => (await eventsOf(raw.eventStore, e, "MESSAGE_CONSUMED")).length === 1);
+      // crypto is now turned on (a redeploy): the next consumption is sealed
+      const sealedStore = new EncryptingEventStore(raw.eventStore, keys, {
+        sensitive: SENSITIVE,
+        subjectOf,
+      });
+      const after = build({}, { ...raw, eventStore: sealedStore });
+      after.rt.registerFlow(f.definition, f.runner);
+      await after.rt.send(e, { topic: "b", payload: SECRET, messageId: "b1" });
+      await until(async () => (await after.rt.loadState(e))?.status === "completed", 8000);
+      expect((await after.rt.loadState(e))?.variables._output).toEqual(["plain-a", SECRET.length]);
+      const rawLog = JSON.stringify(await raw.eventStore.read(e));
+      expect(rawLog).toContain("plain-a"); // the old one stays as it was written
+      expect(rawLog).not.toContain(SECRET);
+    });
+
+    it("P3-5: a sender cannot forge the erasure marker", async () => {
+      const { h, raw } = sealed();
+      const f = parkedThenReceive();
+      h.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
+      for (const forged of [{ $shredded: true }, { $shredded: true, note: "x" }]) {
+        await expect(
+          h.rt.send(e, { topic: "y", payload: forged, messageId: "forged" })
+        ).rejects.toBeInstanceOf(InboxMessageRefusedError);
+      }
+      expect(await raw.eventStore.read(inboxStreamId(e))).toHaveLength(0);
+      // Look-alikes that are not the marker are ordinary payloads.
+      for (const [i, ok] of [
+        { $shredded: false },
+        { x: { $shredded: true } },
+        [{ $shredded: true }],
+      ].entries()) {
+        await h.rt.send(e, { topic: "y", payload: ok, messageId: `ok${i}` });
+      }
+      expect(await raw.eventStore.read(inboxStreamId(e))).toHaveLength(3);
     });
 
     it("after the erasure a send is refused loudly and appends nothing (the key is never resurrected)", async () => {

@@ -49,6 +49,11 @@ export function isShredded(value: unknown): value is { $shredded: true } {
   );
 }
 
+/** Exactly the marker, with nothing smuggled beside `$shredded` (that would be data worth sealing). */
+function isExactMarker(value: unknown): boolean {
+  return isShredded(value) && !Array.isArray(value) && Object.keys(value as object).length === 1;
+}
+
 /**
  * K10.2 — wraps any {@link EventStore}, encrypting marked payload fields under a
  * per-subject key on append and decrypting them on read. Erasure is by key
@@ -122,6 +127,7 @@ export class EncryptingEventStore implements EventStore {
           envelopes.map(async (envelope) => {
             const paths = pathsFor(this.sensitive, envelope.eventType);
             if (paths === undefined || paths.length === 0) return envelope; // unmarked (A4)
+            if (!this.sealsAnything(envelope, paths)) return envelope;
             const subject = await this.subjectFor(envelope);
             let key = keyFor.get(subject);
             if (key === undefined) {
@@ -145,7 +151,7 @@ export class EncryptingEventStore implements EventStore {
         if (event === null) return inner.appendIfUnchanged!(executionId, null, expect);
         const paths = pathsFor(this.sensitive, event.eventType);
         const sealed =
-          paths === undefined || paths.length === 0
+          paths === undefined || paths.length === 0 || !this.sealsAnything(event, paths)
             ? event
             : this.encrypt(event, paths, await this.keys.getOrCreate(await this.subjectFor(event)));
         return inner.appendIfUnchanged!(executionId, sealed, expect);
@@ -225,13 +231,33 @@ export class EncryptingEventStore implements EventStore {
     return this.subjectOf({ executionId: chain, workflowId: await this.ownerWorkflowId(chain) });
   }
 
+  /**
+   * Does any marked path of this payload hold a value worth sealing? A path that holds only the
+   * {@link SHREDDED} marker (a consumer journaling "this message was erased", ADR 0110 D9) carries
+   * no data, and sealing it would need a key the erasure destroyed: the owner's log would refuse
+   * the very record that says so. Such an envelope is stored verbatim.
+   */
+  private sealsAnything(envelope: EventEnvelope, paths: readonly string[]): boolean {
+    let any = false;
+    mapPaths(envelope.payload, paths, (v) => {
+      if (!isExactMarker(v)) any = true;
+      return v;
+    });
+    return any;
+  }
+
   private encrypt(envelope: EventEnvelope, paths: readonly string[], key: Buffer): EventEnvelope {
-    return { ...envelope, payload: mapPaths(envelope.payload, paths, (v) => encryptValue(key, v)) };
+    return {
+      ...envelope,
+      payload: mapPaths(envelope.payload, paths, (v) =>
+        isExactMarker(v) ? v : encryptValue(key, v)
+      ),
+    };
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
     const paths = pathsFor(this.sensitive, envelope.eventType);
-    if (paths === undefined || paths.length === 0) {
+    if (paths === undefined || paths.length === 0 || !this.sealsAnything(envelope, paths)) {
       return this.inner.append(envelope); // unmarked → verbatim (A4)
     }
     const key = await this.keys.getOrCreate(await this.subjectFor(envelope));
