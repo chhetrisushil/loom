@@ -24,7 +24,7 @@ export interface RunAgentOnceOptions {
    */
   provider?: Provider;
   /** Register the agent's tool effects (and anything else the loop calls) on the app's `EffectRuntime`. */
-  registerEffects?: (effects: EffectRuntime) => void;
+  registerEffects?: (effects: EffectRuntime) => void | Promise<void>;
   /** The prompt, or the full {@link AgentInput}. */
   input: string | AgentInput;
   /** `agentLoop$` options (system prompt, skills, `needsApproval`, `maxIterations`, ...). Validated by `agentLoop$` itself. */
@@ -117,7 +117,7 @@ export async function runAgentOnce(options: RunAgentOnceOptions): Promise<RunAge
     ],
   });
   try {
-    options.registerEffects?.(app.effectRuntime);
+    await options.registerEffects?.(app.effectRuntime);
     if (options.provider !== undefined) {
       // Two sources for one effect id would silently let the later registration win: refuse instead.
       if (app.effectRuntime.has(modelToolId)) {
