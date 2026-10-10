@@ -5,6 +5,7 @@ import type { ExecutionContext } from "@loom/workflow-runtime";
 import { z } from "zod";
 import type { SkillRegistry } from "./SkillRegistry";
 import { isTerminalToolError } from "./toolFailure";
+import { toolResultContent } from "./toolResultContent";
 import { cap, toolSpecFor, validateToolInput } from "./toolSchema";
 import { type ToolRanker, firstLineOf } from "./toolSearch";
 
@@ -114,7 +115,21 @@ interface Recorded {
    * current text with it and delivers nothing on a mismatch.
    */
   digest?: string;
+  /**
+   * ADR 0125 D14 (review round 1) — the UTF-8 length of the delivered instructions AS SERIALIZED (the
+   * JSON string, quotes and escapes included: the form they take in the `tool_result`). Additive and
+   * optional. When a replay (or re-delivery) cannot deliver the same text, the loop's byte-triggered
+   * compaction still MEASURES the activation result at this recorded size, so the trigger fires on
+   * the turns the live run's did and the log's `#turn:t:compact` frames keep matching.
+   */
+  bytes?: number;
 }
+
+const UTF8 = new TextEncoder();
+/** UTF-8 length of `text` as the JSON string the `tool_result` carries. */
+const wireBytes = (text: string): number => UTF8.encode(JSON.stringify(text)).length;
+/** A stand-in string whose JSON form has exactly `bytes` UTF-8 bytes (ASCII, no escapes). */
+const standIn = (bytes: number): string => "x".repeat(Math.max(0, bytes - 2));
 
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
 
@@ -144,7 +159,6 @@ function positiveInt(name: string, v: number | undefined, def: number, ceiling: 
 class InstructionsUnavailable extends Error {}
 
 const REFUSAL_CODES = new Set(["instructions_refused", "instructions_too_large"]);
-const UTF8 = new TextEncoder();
 /** Bytes held back for the "+N more" line. */
 const MORE_RESERVE = 48;
 const byId = (a: SkillDefinition, b: SkillDefinition): number =>
@@ -171,6 +185,8 @@ export class SkillActivationSession {
   private readonly active = new Set<string>();
   /** D14 — the digest each ACTIVE skill's instructions were pinned to (absent: an old record). Bounded by `maxActive`. */
   private readonly digests = new Map<string, string>();
+  /** D14 — the recorded wire size of each pinned skill's delivered instructions (absent: an old record). */
+  private readonly sizes = new Map<string, number>();
   private readonly warned = new Set<string>();
   /** The index lines (one per offered skill, id order) and how many skills the byte cap left out. */
   private readonly lines: string[] = [];
@@ -390,7 +406,16 @@ export class SkillActivationSession {
     ctx: Pick<ExecutionContext, "decide">,
     decisionKey: string,
     input: unknown
-  ): Promise<{ output: unknown; isError: boolean; newlyLoaded: ToolDefinition[] }> {
+  ): Promise<{
+    output: unknown;
+    isError: boolean;
+    newlyLoaded: ToolDefinition[];
+    /**
+     * The size compaction's byte trigger counts for this result when it is NOT the result the live
+     * run saw (D14: a replay / re-delivery whose text changed). Absent: measure the result itself.
+     */
+    virtualBytes?: number;
+  }> {
     const v = validateToolInput(activateInput, input);
     if (!v.ok) {
       return error("invalid_tool_input", `Input for tool "${this.name}" must be { name: string }.`);
@@ -405,11 +430,32 @@ export class SkillActivationSession {
       // the first result into a summary they would otherwise be unrecoverable). Nothing is recorded,
       // no tools are added and it does not count against `maxActive`.
       const again = await this.deliverable(skill);
-      if (!again.ok) return error(again.code, again.message);
       const pinned = this.digests.get(name);
+      // The size the successful re-delivery would have had (known only for a pinned record that
+      // carries `bytes`): an error here still counts as that for the compaction trigger.
+      const recordedSize = this.sizes.get(name);
+      const virtualBytes =
+        recordedSize === undefined
+          ? undefined
+          : UTF8.encode(
+              toolResultContent(this.name, {
+                skill: name,
+                instructions: standIn(recordedSize),
+                note: "Already active; instructions repeated.",
+              }) as string
+            ).length;
+      if (!again.ok) {
+        return {
+          ...error(again.code, again.message),
+          ...(virtualBytes !== undefined && { virtualBytes }),
+        };
+      }
       if (pinned !== undefined && sha256(again.text) !== pinned) {
         warnChanged(name, this.warned);
-        return error("instructions_changed", this.refusalMessage("instructions_changed", name));
+        return {
+          ...error("instructions_changed", this.refusalMessage("instructions_changed", name)),
+          ...(virtualBytes !== undefined && { virtualBytes }),
+        };
       }
       return {
         output: {
@@ -442,7 +488,7 @@ export class SkillActivationSession {
           if (!d.ok && d.code === "instructions_unavailable") throw new InstructionsUnavailable();
           if (!d.ok) return { skill: name, refused: d.code };
           live.text = d.text;
-          return { skill: name, digest: sha256(d.text) };
+          return { skill: name, digest: sha256(d.text), bytes: wireBytes(d.text) };
         },
         { source: SOURCE_SKILL_ACTIVATION }
       );
@@ -476,7 +522,26 @@ export class SkillActivationSession {
     // with junk, is an old record: today's behaviour, byte for byte).
     const pinned = typeof recorded.digest === "string" ? recorded.digest : undefined;
     if (pinned !== undefined) this.digests.set(name, pinned);
+    const recordedBytes =
+      typeof recorded.bytes === "number" &&
+      Number.isSafeInteger(recorded.bytes) &&
+      recorded.bytes >= 2 &&
+      recorded.bytes <= 6 * this.maxInstructionBytes + 2
+        ? recorded.bytes
+        : undefined;
+    if (pinned !== undefined && recordedBytes !== undefined) this.sizes.set(name, recordedBytes);
     const tools = skill.tools ?? [];
+    // What the live run's result weighed, when this replay cannot reproduce it (see `Recorded.bytes`).
+    const virtualBytes =
+      pinned !== undefined && recordedBytes !== undefined
+        ? UTF8.encode(
+            toolResultContent(this.name, {
+              skill: name,
+              instructions: standIn(recordedBytes),
+              ...(tools.length > 0 && { tools: tools.map((t) => t.id) }),
+            }) as string
+          ).length
+        : undefined;
     if (d.ok && live.text === undefined && pinned !== undefined && sha256(d.text) !== pinned) {
       // A replay whose current text is not what the recorded run delivered: deliver nothing new.
       warnChanged(name, this.warned);
@@ -490,6 +555,7 @@ export class SkillActivationSession {
         },
         isError: true,
         newlyLoaded: tools,
+        ...(virtualBytes !== undefined && { virtualBytes }),
       };
     }
     if (!d.ok) {
@@ -503,6 +569,7 @@ export class SkillActivationSession {
         },
         isError: true,
         newlyLoaded: tools,
+        ...(virtualBytes !== undefined && { virtualBytes }),
       };
     }
     return {

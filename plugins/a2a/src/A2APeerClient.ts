@@ -52,6 +52,14 @@ export interface A2APeerConfig<TTaint extends boolean = false> {
    * before and compiles unchanged.
    */
   taintResults?: TTaint;
+  /**
+   * Vouch for the peer's AgentCard text (ADR 0125 D14; the equivalent of MCP's `trustDescriptions`).
+   * Default false: an agent loop shows the model only a neutral placeholder for this peer's
+   * description, because the card is written by whoever operates the peer. Set it only for a peer you
+   * operate or trust; its card text then reaches the model as instructions, unguarded (a one-time
+   * `LOOM_AGENT_TRUSTED_TOOL_TEXT` warning says so).
+   */
+  trustDescriptions?: boolean;
 }
 
 /** Friendly input accepted by a peer tool — a plain prompt plus optional context. */
@@ -161,6 +169,7 @@ export class A2APeerClient<TTaint extends boolean = false> {
       kind: "a2a",
       // R22 (ADR 0125 D7) — built from a REMOTE agent card: tool search must not rank or show its text.
       origin: "remote",
+      ...(this.config.trustDescriptions === true && { trustJsonSchemaText: true }),
       inputSchema: peerInputSchema,
       outputSchema: peerOutputSchema as unknown as z.ZodType<A2APeerOutputFor<TTaint>>,
     });
