@@ -17,3 +17,23 @@ export class PayloadShreddedError extends Error {
     Object.setPrototypeOf(this, PayloadShreddedError.prototype);
   }
 }
+
+/**
+ * A chain's inbox stream (ADR 0110 D9) holds ciphertext that the subject's key, which EXISTS, cannot
+ * open: corruption, a tampered row, or a `subjectOf` that no longer resolves the stream to the
+ * subject it was sealed under. It is deliberately not {@link PayloadShreddedError} and never reads
+ * as the erasure marker, so a defect cannot pass for an erasure.
+ */
+export class PayloadUndecryptableError extends Error {
+  constructor(
+    readonly subjectId: string,
+    readonly executionId?: string,
+    override readonly cause?: unknown
+  ) {
+    super(
+      `payload for subject "${subjectId}"${executionId ? ` (stream "${executionId}")` : ""} could not be decrypted although the key exists: the stored ciphertext is corrupt, or the subject the stream resolves to has changed since it was sealed`
+    );
+    this.name = "PayloadUndecryptableError";
+    Object.setPrototypeOf(this, PayloadUndecryptableError.prototype);
+  }
+}

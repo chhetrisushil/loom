@@ -2,11 +2,16 @@ import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
-import { PayloadShreddedError } from "./errors";
+import { PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import { InMemoryKeyStore } from "./keystore";
 
 // ADR 0110 follow-up — a chain's inbox stream (`__loom_inbox__:<chainId>`) is sealed under the
 // OWNER's subject and is never read loudly after a shred.
+
+const until = async (pred: () => boolean): Promise<void> => {
+  for (let i = 0; i < 4000 && !pred(); i++) await new Promise((r) => setTimeout(r, 5));
+  if (!pred()) throw new Error("until: timed out");
+};
 
 const SECRET = "123-45-6789";
 const subjectOf = (e: { executionId: string }): string =>
@@ -68,17 +73,94 @@ describe("EncryptingEventStore — a chain's inbox stream", () => {
     }
   });
 
-  it("a payload no key opens (a key re-minted after the shred) is the marker, never an error or ciphertext", async () => {
+  it("P3-7: a key that EXISTS but cannot open the ciphertext is a typed error, never the erasure marker", async () => {
     const { inner, store } = setup();
     await store.append(msg("__loom_inbox__:alice-1", 0, SECRET));
-    // A KeyStore that minted a FRESH key for the destroyed subject would hand the reader a key that
-    // cannot open the older ciphertext.
+    // A KeyStore that minted a FRESH key for the subject (or a subjectOf that drifted) hands the
+    // reader a key that cannot open the older ciphertext: that is a defect, not an erasure.
     const reminted = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
       sensitive: { INBOX_MESSAGE: ["payload"] },
       subjectOf,
     });
-    const [read] = await reminted.read("__loom_inbox__:alice-1");
-    expect(isShredded((read?.payload as { payload: unknown }).payload)).toBe(true);
+    await reminted.keys.getOrCreate("alice");
+    for (const read of [
+      () => reminted.read("__loom_inbox__:alice-1"),
+      () => reminted.readFrom("__loom_inbox__:alice-1", 0),
+      () => reminted.readRange!("__loom_inbox__:alice-1", 0, 0),
+    ]) {
+      const err = await read().then(
+        () => undefined,
+        (e: unknown) => e
+      );
+      expect(err).toBeInstanceOf(PayloadUndecryptableError);
+      expect(err).not.toBeInstanceOf(PayloadShreddedError);
+    }
+  });
+
+  it("P3-7: a tampered row is the same typed error", async () => {
+    const { inner, store } = setup();
+    await store.append(msg("__loom_inbox__:alice-1", 0, SECRET));
+    const [row] = await inner.read("__loom_inbox__:alice-1");
+    const sealedPayload = row?.payload as { payload: { data: string } };
+    sealedPayload.payload.data = Buffer.from("tampered tampered!").toString("base64");
+    await expect(store.read("__loom_inbox__:alice-1")).rejects.toBeInstanceOf(
+      PayloadUndecryptableError
+    );
+  });
+
+  it("P3-7: subscribe hands the marker, not ciphertext, once the key is destroyed", async () => {
+    const { keys, store } = setup();
+    const seen: EventEnvelope[] = [];
+    await store.subscribe("__loom_inbox__:alice-1", (e) => seen.push(e));
+    await store.append(msg("__loom_inbox__:alice-1", 0, SECRET));
+    await until(() => seen.length === 1);
+    expect((seen[0]?.payload as { payload: unknown }).payload).toBe(SECRET);
+    await keys.destroy("alice");
+    // (the in-memory inner store publishes the SEALED envelope; a second append after a shred is
+    // refused by the key store, so replay the sealed one through the inner store directly)
+    const sealedRow = await (store as unknown as { inner: InMemoryAsyncEventStore }).inner.read(
+      "__loom_inbox__:alice-1"
+    );
+    expect(JSON.stringify(sealedRow)).not.toContain(SECRET);
+    const late: EventEnvelope[] = [];
+    const inner2 = new InMemoryAsyncEventStore();
+    const store2 = new EncryptingEventStore(inner2, keys, {
+      sensitive: { INBOX_MESSAGE: ["payload"] },
+      subjectOf,
+    });
+    await store2.subscribe("__loom_inbox__:alice-1", (e) => late.push(e));
+    await inner2.append(sealedRow[0] as EventEnvelope);
+    await until(() => late.length === 1);
+    expect(isShredded((late[0]?.payload as { payload: unknown }).payload)).toBe(true);
+    expect(JSON.stringify(late)).not.toContain("loomEnc");
+  });
+
+  it("P3-6: subjectOf is asked with the OWNER's workflow id, not the stream's reserved one", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const asked: Array<{ executionId: string; workflowId: string }> = [];
+    const store = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
+      sensitive: { INBOX_MESSAGE: ["payload"] },
+      subjectOf: (e) => {
+        asked.push({ executionId: e.executionId, workflowId: e.workflowId });
+        return e.workflowId === "billing" ? "acct" : e.executionId;
+      },
+    });
+    await inner.append({
+      id: "o-0",
+      workflowId: "billing",
+      executionId: "owner-1",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: {},
+    });
+    await store.append(msg("__loom_inbox__:owner-1", 0, SECRET));
+    expect(asked.at(-1)).toEqual({ executionId: "owner-1", workflowId: "billing" });
+    expect(await store.keys.get("acct")).not.toBeNull();
+    // Unresolvable owner (no log yet): the empty string, documented, never the reserved id.
+    await store.append(msg("__loom_inbox__:ghost-1", 0, SECRET));
+    expect(asked.at(-1)).toEqual({ executionId: "ghost-1", workflowId: "" });
+    expect(asked.some((a) => a.workflowId === "__loom_inbox__")).toBe(false);
   });
 
   it("every other stream still fails loudly after a shred (the authoritative fold must not diverge)", async () => {
