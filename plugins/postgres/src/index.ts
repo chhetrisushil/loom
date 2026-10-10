@@ -1,4 +1,8 @@
-export { PostgresEventStore } from "./PostgresEventStore";
+export {
+  ExecutionIdTooLongError,
+  MAX_EXECUTION_ID_BYTES,
+  PostgresEventStore,
+} from "./PostgresEventStore";
 export { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 export { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 export { migrate as migratePostgresStores, backfillParkFences, NOTIFY_CHANNEL } from "./schema";

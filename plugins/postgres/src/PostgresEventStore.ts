@@ -19,6 +19,36 @@ import { Client, type Notification } from "pg";
 import { type PgConfig, type PoolLike, nextSenderId, toClientConfig, toPool } from "./pool";
 import { ANSWERING_KINDS_SQL, KERNEL_KINDS_SQL, NOTIFY_CHANNEL, migrate } from "./schema";
 
+/**
+ * The longest `executionId` this store accepts, in UTF-8 bytes. Every append folds a
+ * `pg_notify` whose payload (`[sender, executionId, sequence, schema]` as JSON) Postgres caps at
+ * 8000 bytes, and a failed NOTIFY fails the append itself. 1024 bytes leaves room for the worst
+ * case: every byte a JSON control escape (6x) is 6144 bytes, plus the 63-byte schema and the
+ * sender and sequence. The kernel puts no length rule on ids; real ones are UUIDs or short slugs.
+ */
+export const MAX_EXECUTION_ID_BYTES = 1024;
+
+/** An `executionId` longer than {@link MAX_EXECUTION_ID_BYTES} UTF-8 bytes; nothing was written. */
+export class ExecutionIdTooLongError extends RangeError {
+  constructor(
+    readonly executionId: string,
+    readonly bytes: number
+  ) {
+    super(
+      `executionId is ${bytes} bytes, over the ${MAX_EXECUTION_ID_BYTES}-byte limit of PostgresEventStore (the cross-node NOTIFY payload is capped at 8000 bytes); nothing was written`
+    );
+    this.name = "ExecutionIdTooLongError";
+    Object.setPrototypeOf(this, ExecutionIdTooLongError.prototype);
+  }
+}
+
+function assertExecutionIdLength(executionId: string): void {
+  // A string of N UTF-16 units is at most 3N bytes: skip the byte count when it cannot exceed.
+  if (executionId.length * 3 <= MAX_EXECUTION_ID_BYTES) return;
+  const bytes = Buffer.byteLength(executionId, "utf8");
+  if (bytes > MAX_EXECUTION_ID_BYTES) throw new ExecutionIdTooLongError(executionId, bytes);
+}
+
 export interface PostgresEventStoreOptions {
   /**
    * How many NOTIFY channels to spread executions over (ADR 0074 D4 — interest-filtered
@@ -198,6 +228,7 @@ export class PostgresEventStore implements EventStore {
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
+    assertExecutionIdLength(envelope.executionId);
     await this.ready;
     await this.resolveNamespace();
     // K9.4 — fence-guarded insert, atomic in one statement: the row lands only if
@@ -301,6 +332,7 @@ export class PostgresEventStore implements EventStore {
    */
   async appendBatch(envelopes: readonly EventEnvelope[]): Promise<void> {
     if (envelopes.length === 0) return;
+    for (const e of envelopes) assertExecutionIdLength(e.executionId);
     await this.ready;
     await this.resolveNamespace();
     const rows = envelopes.map((e) => ({
@@ -648,6 +680,7 @@ export class PostgresEventStore implements EventStore {
     event: EventEnvelope | null,
     expect?: TipObservation
   ): Promise<AppendIfUnchangedResult> {
+    if (event !== null) assertExecutionIdLength(executionId);
     await this.ready;
     await this.resolveNamespace();
     if (event !== null && (expect === undefined || event.executionId !== executionId)) {
