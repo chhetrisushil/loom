@@ -1,3 +1,5 @@
+import type { EventEnvelope } from "@loom/core";
+
 /**
  * K10.2 — a read touched payload encrypted under a subject key that has been
  * DESTROYED (crypto-shredded). Replay of a shredded execution MUST fail
@@ -8,7 +10,13 @@
 export class PayloadShreddedError extends Error {
   constructor(
     readonly subjectId: string,
-    readonly executionId?: string
+    readonly executionId?: string,
+    /**
+     * The events the failed read returned, each sealed field replaced by `{ $shredded: true }`.
+     * For lifecycle operations that need no sealed field (cancelling an erased owner) and for
+     * operator tooling; NEVER the basis of a resume (the placeholder is not the original value).
+     */
+    readonly redacted?: readonly EventEnvelope[]
   ) {
     super(
       `payload for subject "${subjectId}"${executionId ? ` (execution "${executionId}")` : ""} was crypto-shredded: the encryption key is destroyed, so the sensitive fields are unrecoverable and replay cannot proceed`
@@ -35,5 +43,24 @@ export class PayloadUndecryptableError extends Error {
     );
     this.name = "PayloadUndecryptableError";
     Object.setPrototypeOf(this, PayloadUndecryptableError.prototype);
+  }
+}
+
+/**
+ * A write to a chain's inbox stream needed the OWNER's workflow id (a `subjectOf` keyed on it) and
+ * it could not be resolved (a transient read failure, the owner has no log yet, no ranged read).
+ * The write FAILS and is retryable; it is never sealed under a guessed subject.
+ */
+export class OwnerUnresolvedError extends Error {
+  constructor(
+    readonly chainId: string,
+    why: string,
+    override readonly cause?: unknown
+  ) {
+    super(
+      `cannot resolve the owner of inbox chain "${chainId}" (${why}): refusing to seal its payload under a guessed erasure subject. Retry.`
+    );
+    this.name = "OwnerUnresolvedError";
+    Object.setPrototypeOf(this, OwnerUnresolvedError.prototype);
   }
 }

@@ -7,7 +7,7 @@ import {
   installOptional,
 } from "@loom/event-runtime";
 import { decryptValue, encryptValue, hasEnvelope, mapPaths } from "./crypto";
-import { PayloadShreddedError, PayloadUndecryptableError } from "./errors";
+import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import type { KeyStore } from "./keystore";
 
 export interface EncryptingEventStoreOptions {
@@ -47,6 +47,15 @@ export function isShredded(value: unknown): value is { $shredded: true } {
     value !== null &&
     (value as { $shredded?: unknown }).$shredded === true
   );
+}
+
+/**
+ * Split a marked path list into the paths where the erasure marker is stored verbatim and the
+ * rest (sealed always). Only `MESSAGE_CONSUMED.payload` is exempt (ADR 0110 D9).
+ */
+function splitExempt(eventType: string, paths: readonly string[]): [string[], string[]] {
+  if (eventType !== "MESSAGE_CONSUMED") return [[], [...paths]];
+  return [paths.filter((p) => p === "payload"), paths.filter((p) => p !== "payload")];
 }
 
 /** Exactly the marker, with nothing smuggled beside `$shredded` (that would be data worth sealing). */
@@ -128,7 +137,7 @@ export class EncryptingEventStore implements EventStore {
             const paths = pathsFor(this.sensitive, envelope.eventType);
             if (paths === undefined || paths.length === 0) return envelope; // unmarked (A4)
             if (!this.sealsAnything(envelope, paths)) return envelope;
-            const subject = await this.subjectFor(envelope);
+            const subject = await this.sealSubjectFor(envelope);
             let key = keyFor.get(subject);
             if (key === undefined) {
               key = this.keys.getOrCreate(subject);
@@ -153,7 +162,11 @@ export class EncryptingEventStore implements EventStore {
         const sealed =
           paths === undefined || paths.length === 0 || !this.sealsAnything(event, paths)
             ? event
-            : this.encrypt(event, paths, await this.keys.getOrCreate(await this.subjectFor(event)));
+            : this.encrypt(
+                event,
+                paths,
+                await this.keys.getOrCreate(await this.sealSubjectFor(event))
+              );
         return inner.appendIfUnchanged!(executionId, sealed, expect);
       },
       // copyPrefix copies CIPHERTEXT verbatim in the inner store — a fork must
@@ -192,18 +205,24 @@ export class EncryptingEventStore implements EventStore {
 
   /**
    * The workflow id of a chain's OWNER (its generation-0 execution), read from the owner's first
-   * event (the envelope's `workflowId` is plaintext). `""` when it cannot be resolved (no ranged
-   * read on the inner store, or the owner has no log yet): a `subjectOf` that keys on the workflow
-   * must then fall back on the execution id, which is the chain id.
+   * event (the envelope's `workflowId` is plaintext). It is NEVER guessed: when it cannot be
+   * resolved (no ranged read on the inner store, the owner has no log yet, or the read failed)
+   * the result is the {@link Error} to throw if (and only if) the `subjectOf` actually reads the
+   * workflow id. A fallback such as `""` would seal every unresolved chain under one shared,
+   * guessable subject that erasing the real subject misses.
    */
-  private async ownerWorkflowId(chainId: string): Promise<string> {
+  private async ownerWorkflowId(chainId: string): Promise<string | Error> {
     const cached = this.ownerWorkflow.get(chainId);
     if (cached !== undefined) return cached;
-    if (this.inner.readRange === undefined) return "";
+    if (this.inner.readRange === undefined) {
+      return new OwnerUnresolvedError(chainId, "the inner store has no ranged read");
+    }
     try {
       const first = (await this.inner.readRange(chainId, 0, 0))[0];
       const wf = first?.workflowId;
-      if (typeof wf !== "string" || wf.length === 0) return "";
+      if (typeof wf !== "string" || wf.length === 0) {
+        return new OwnerUnresolvedError(chainId, "the owner has no log (yet)");
+      }
       if (this.ownerWorkflow.size >= OWNER_WORKFLOW_CACHE) {
         // Oldest entry out (Map preserves insertion order): O(1), bounded.
         const oldest = this.ownerWorkflow.keys().next().value;
@@ -211,8 +230,8 @@ export class EncryptingEventStore implements EventStore {
       }
       this.ownerWorkflow.set(chainId, wf);
       return wf;
-    } catch {
-      return "";
+    } catch (cause) {
+      return new OwnerUnresolvedError(chainId, "reading the owner's first event failed", cause);
     }
   }
 
@@ -221,38 +240,68 @@ export class EncryptingEventStore implements EventStore {
    * (`__loom_inbox__:<chainId>`, ADR 0110) is not an execution anyone's `subjectOf` knows, so it
    * resolves to the subject of its OWNER: `subjectOf` is asked about the chain's id, which is its
    * generation-0 execution (or a fork's fresh one), with the OWNER's workflow id (never the
-   * stream's reserved `__loom_inbox__`; `""` if it cannot be resolved). In-flight payloads are then
+   * stream's reserved `__loom_inbox__`). The workflow id is handed over lazily: a `subjectOf`
+   * that reads it while it is unresolved THROWS {@link OwnerUnresolvedError} (the write fails and
+   * is retryable); one that keys on the execution id never notices. In-flight payloads are then
    * sealed under, and shredded with, the same key as the owner's own log. Any other stream is
    * unchanged.
    */
   private async subjectFor(e: Pick<EventEnvelope, "executionId" | "workflowId">): Promise<string> {
     const chain = inboxChainOf(e.executionId);
     if (chain === undefined) return this.subjectOf(e);
-    return this.subjectOf({ executionId: chain, workflowId: await this.ownerWorkflowId(chain) });
+    const wf = await this.ownerWorkflowId(chain);
+    return this.subjectOf({
+      executionId: chain,
+      get workflowId(): string {
+        if (wf instanceof Error) throw wf;
+        return wf;
+      },
+    });
+  }
+
+  /** {@link subjectFor} for a WRITE: the blank subject is refused, never sealed under. */
+  private async sealSubjectFor(
+    e: Pick<EventEnvelope, "executionId" | "workflowId">
+  ): Promise<string> {
+    const subject = await this.subjectFor(e);
+    if (subject === "") {
+      throw new TypeError(
+        `EncryptingEventStore: the subject for "${e.executionId}" resolved to "" and the crypto layer refuses to seal under it (every such record would share one guessable key that erasing the real subject misses). Fix \`subjectOf\`.`
+      );
+    }
+    return subject;
   }
 
   /**
-   * Does any marked path of this payload hold a value worth sealing? A path that holds only the
-   * {@link SHREDDED} marker (a consumer journaling "this message was erased", ADR 0110 D9) carries
-   * no data, and sealing it would need a key the erasure destroyed: the owner's log would refuse
-   * the very record that says so. Such an envelope is stored verbatim.
+   * Does any marked path of this payload hold a value worth sealing? The ONE exception is the
+   * consumption of an erased inbox message (ADR 0110 D9): `MESSAGE_CONSUMED.payload` holding
+   * exactly the {@link SHREDDED} marker carries no data, and sealing it would need a key the
+   * erasure destroyed (the owner's log would refuse the very record that says so), so it is
+   * stored verbatim. The exception is scoped to that one path: the same bytes anywhere else
+   * (a `STEP_COMPLETED` output of a live subject, say) are DATA an app wrote and are sealed like
+   * any value, never stored plaintext to read as "erased".
    */
   private sealsAnything(envelope: EventEnvelope, paths: readonly string[]): boolean {
     let any = false;
-    mapPaths(envelope.payload, paths, (v) => {
+    const [exempt, rest] = splitExempt(envelope.eventType, paths);
+    mapPaths(envelope.payload, exempt, (v) => {
       if (!isExactMarker(v)) any = true;
       return v;
+    });
+    if (any) return true;
+    mapPaths(envelope.payload, rest, () => {
+      any = true;
+      return undefined;
     });
     return any;
   }
 
   private encrypt(envelope: EventEnvelope, paths: readonly string[], key: Buffer): EventEnvelope {
-    return {
-      ...envelope,
-      payload: mapPaths(envelope.payload, paths, (v) =>
-        isExactMarker(v) ? v : encryptValue(key, v)
-      ),
-    };
+    const [exempt, rest] = splitExempt(envelope.eventType, paths);
+    const first = mapPaths(envelope.payload, exempt, (v) =>
+      isExactMarker(v) ? v : encryptValue(key, v)
+    );
+    return { ...envelope, payload: mapPaths(first, rest, (v) => encryptValue(key, v)) };
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
@@ -260,7 +309,7 @@ export class EncryptingEventStore implements EventStore {
     if (paths === undefined || paths.length === 0 || !this.sealsAnything(envelope, paths)) {
       return this.inner.append(envelope); // unmarked → verbatim (A4)
     }
-    const key = await this.keys.getOrCreate(await this.subjectFor(envelope));
+    const key = await this.keys.getOrCreate(await this.sealSubjectFor(envelope));
     return this.inner.append(this.encrypt(envelope, paths, key));
   }
 
@@ -284,13 +333,16 @@ export class EncryptingEventStore implements EventStore {
       // The key is gone — either never created (impossible if envelopes exist) or DESTROYED.
       // Default: fail loudly (K10.2) — the tombstone is already in the log. Tolerant mode
       // (K10-R4): hand OFF-log consumers a { $shredded } placeholder instead of throwing.
-      if (this.onShredded === "throw" && !inbox)
-        throw new PayloadShreddedError(subjectId, executionId);
-      return events.map((e, i) => {
+      const redacted = events.map((e, i) => {
         const paths = pathsFor(this.sensitive, e.eventType);
         if (paths === undefined || !encrypted[i]) return e;
         return { ...e, payload: mapPaths(e.payload, paths, () => SHREDDED) };
       });
+      // The error carries the REDACTED view, so a lifecycle op that needs no sealed field (an
+      // operator `cancel` of an erased owner) can fold it; an authoritative fold still fails.
+      if (this.onShredded === "throw" && !inbox)
+        throw new PayloadShreddedError(subjectId, executionId, redacted);
+      return redacted;
     }
     return events.map((e, i) => {
       const paths = pathsFor(this.sensitive, e.eventType);

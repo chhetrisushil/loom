@@ -475,32 +475,58 @@ describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)",
 describe("EraseCoordinator and PARKED owners (review P2-2)", () => {
   const suspend = (id: string, seq: number) =>
     ev(id, seq, "EXECUTION_SUSPENDED", { condition: { on: "Go" } });
-  const make = async (parkedIds: string[], runningIds: string[] = []) => {
+  const streamOf = (chain: string): string => `__loom_inbox__:${chain}`;
+  const inboxMsg = (chain: string): EventEnvelope => ({
+    id: `${streamOf(chain)}-0`,
+    workflowId: "__loom_inbox__",
+    executionId: streamOf(chain),
+    eventType: "INBOX_MESSAGE",
+    sequence: 0,
+    timestamp: 1,
+    payload: { topic: "t", messageId: "m", payload: "ssn-123", sender: {} },
+  });
+  /** A runtime-free cancel: appends the terminal event the way `runtime.cancel` journals it. */
+  const make = async (
+    parkedIds: string[],
+    runningIds: string[] = [],
+    cancelImpl?: (store: InMemoryAsyncEventStore, id: string) => Promise<boolean>
+  ) => {
     const store = new InMemoryAsyncEventStore();
     for (const id of [...parkedIds, ...runningIds]) await seedStarted(store, id, "pat");
     for (const id of parkedIds) await store.append(suspend(id, 1));
     const events = (
       await Promise.all([...parkedIds, ...runningIds].map((id) => store.read(id)))
     ).flat();
-    const shred = vi.fn(async () => {});
+    const order: string[] = [];
+    const shred = vi.fn(async () => {
+      order.push("shred");
+    });
+    const cancel = vi.fn(async (id: string, reason: string) => {
+      order.push(`cancel ${id} ${reason}`);
+      if (cancelImpl !== undefined) return cancelImpl(store, id);
+      await store.append(ev(id, 2, "EXECUTION_CANCELLED", { reason }));
+      return true;
+    });
     const coord = new EraseCoordinator({
       index: SubjectIndex.fromEvents(events, subjectOf),
       eventStore: store,
       shred,
+      cancel,
     });
-    return { store, shred, coord };
+    return { store, shred, cancel, order, coord };
   };
 
   it("by default a suspended owner is LIVE: the erasure is parked (honestly) and nothing is shredded", async () => {
-    const { shred, coord } = await make(["p1"]);
+    const { shred, cancel, coord } = await make(["p1"]);
     const r = await coord.eraseSubject("pat");
     expect(r).toMatchObject({ outcome: "parked", erased: [], pending: ["p1"] });
     expect(shred).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
     expect(coord.pendingSubjects()).toEqual(["pat"]);
   });
 
-  it('{ parked: "shred" } shreds a subject whose non-terminal owners are all PARKED, and names them', async () => {
-    const { shred, coord } = await make(["p1", "p2"]);
+  it('{ parked: "shred" } CANCELS every parked owner (reason "erased") BEFORE shredding, and names them', async () => {
+    const { shred, order, store, coord } = await make(["p1", "p2"]);
     const r = await coord.eraseSubject("pat", undefined, { parked: "shred" });
     expect(r).toMatchObject({
       outcome: "erased",
@@ -509,26 +535,93 @@ describe("EraseCoordinator and PARKED owners (review P2-2)", () => {
       parkedShredded: ["p1", "p2"],
     });
     expect(shred).toHaveBeenCalledWith("pat", ["p1", "p2"]);
+    expect(order).toEqual(["cancel p1 erased", "cancel p2 erased", "shred"]);
+    for (const id of ["p1", "p2"]) {
+      expect((await store.read(id)).at(-1)?.eventType).toBe("EXECUTION_CANCELLED");
+    }
   });
 
-  it('{ parked: "shred" } NEVER shreds past a RUNNING owner: it defers on exactly that one', async () => {
-    const { shred, coord } = await make(["p1"], ["r1"]);
+  it('{ parked: "shred" } NEVER shreds past a RUNNING owner: it defers on exactly that one and cancels nothing', async () => {
+    const { shred, cancel, coord } = await make(["p1"], ["r1"]);
     const r = await coord.eraseSubject("pat", undefined, { parked: "shred" });
     expect(r).toMatchObject({ outcome: "parked", erased: [], pending: ["r1"] });
     expect(shred).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('{ parked: "shred" } DEFERS (no shred) when a cancel fails, or the owner woke up and is not terminal', async () => {
+    const failing = await make(["p1"], [], async () => {
+      throw new Error("fence lost");
+    });
+    expect(await failing.coord.eraseSubject("pat", undefined, { parked: "shred" })).toMatchObject({
+      outcome: "parked",
+      pending: ["p1"],
+    });
+    expect(failing.shred).not.toHaveBeenCalled();
+
+    // the cancel "succeeds" but the owner has since resumed (still non-terminal)
+    const woke = await make(["p1"], [], async (store, id) => {
+      await store.append(ev(id, 2, "EXECUTION_RESUMED", {}));
+      return true;
+    });
+    expect(await woke.coord.eraseSubject("pat", undefined, { parked: "shred" })).toMatchObject({
+      outcome: "parked",
+    });
+    expect(woke.shred).not.toHaveBeenCalled();
+  });
+
+  it('{ parked: "shred" } without a `cancel` hook throws and shreds nothing', async () => {
+    const { store, shred } = await make(["p1"]);
+    const coord = new EraseCoordinator({
+      index: SubjectIndex.fromEvents(await store.read("p1"), subjectOf),
+      eventStore: store,
+      shred,
+    });
+    await expect(coord.eraseSubject("pat", undefined, { parked: "shred" })).rejects.toThrow(
+      /pass `cancel`/
+    );
+    expect(shred).not.toHaveBeenCalled();
+  });
+
+  it("the cancelled owners are TERMINAL heads, so their reserved inbox streams are purged too (plaintext-before-crypto edge)", async () => {
+    const { store, coord } = await make(["p1"]);
+    await store.append(inboxMsg("p1"));
+    expect(await store.read(streamOf("p1"))).toHaveLength(1);
+    await coord.eraseSubject("pat", undefined, { parked: "shred" });
+    expect(await store.read(streamOf("p1"))).toEqual([]);
   });
 
   it('{ parked: "defer" } is the default spelled out; a terminal-only subject is unaffected by the option', async () => {
-    const { store, shred, coord } = await make([], []);
+    const { store, shred, cancel } = await make([], []);
     await seedStarted(store, "t1", "pat");
     await store.append(ev("t1", 1, "EXECUTION_COMPLETED", {}));
     const c2 = new EraseCoordinator({
       index: SubjectIndex.fromEvents(await store.read("t1"), subjectOf),
       eventStore: store,
       shred,
+      cancel,
     });
     const r = await c2.eraseSubject("pat", undefined, { parked: "shred" });
     expect(r).toMatchObject({ outcome: "erased", parkedShredded: [] });
-    void coord;
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it("a re-run over an ALREADY-shredded log judges it by the redacted view the typed error carries (idempotent)", async () => {
+    const { store, shred } = await make([]);
+    await seedStarted(store, "t1", "pat");
+    await store.append(ev("t1", 1, "EXECUTION_COMPLETED", {}));
+    const shreddedStore = Object.create(store) as InMemoryAsyncEventStore;
+    shreddedStore.read = async (id: string) => {
+      const err = new Error("shredded") as Error & { redacted?: unknown };
+      err.name = "PayloadShreddedError";
+      err.redacted = await store.read(id);
+      throw err;
+    };
+    const coord = new EraseCoordinator({
+      index: SubjectIndex.fromEvents(await store.read("t1"), subjectOf),
+      eventStore: shreddedStore,
+      shred,
+    });
+    expect((await coord.eraseSubject("pat")).outcome).toBe("erased");
   });
 });

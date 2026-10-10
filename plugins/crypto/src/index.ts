@@ -1,5 +1,5 @@
 export { InMemoryKeyStore, type KeyStore } from "./keystore";
-export { PayloadShreddedError, PayloadUndecryptableError } from "./errors";
+export { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 export {
   EncryptingEventStore,
   type EncryptingEventStoreOptions,
