@@ -125,7 +125,8 @@ export function pinByEventKinds(
     (await eventStore.read(executionId)).some((event) => pinnedKinds.has(event.eventType));
 }
 
-export interface ContentSweepOptions {
+/** Everything but the `dryRun` / `reclaimOrphans` pair, which {@link ContentSweepOptions} ties together. */
+export interface ContentSweepBase {
   /**
    * Every log store whose events may cite content — the live store AND any
    * archive stores. All must be enumerable (`listExecutionsPage()` preferred —
@@ -172,8 +173,10 @@ export interface ContentSweepOptions {
   snapshotStores?: readonly SnapshotLookup[];
   /**
    * The blob store. With `deleteIfUntouchedSince` (SPI 1.3.0) every erase is conditional on
-   * the blob's touch time, which closes the re-cite race (ADR 0055 D5); without it the sweep
-   * falls back to `delete` and reports `raceSafe: false`. `listPage` enables `reclaimOrphans`.
+   * the blob's touch time, which closes the re-cite race for a re-cite THROUGH `put` (ADR 0055
+   * D5); without it the sweep falls back to `delete` and reports `raceSafe: false`. KNOWN GAP:
+   * a citation copied WITHOUT a `put` (a fork's `copyPrefix`, a ref already inside a payload that
+   * an `append` keeps) does not bump the touch time and is not protected; see `reclaimOrphans`. `listPage` enables `reclaimOrphans`.
    */
   contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage" | "touchClock">;
   /** Event kinds whose cited refs are pinned — retained as long as the citing fact exists. */
@@ -213,19 +216,49 @@ export interface ContentSweepOptions {
    * prefix), once untouched for the TTL. Requires the store's `listPage` and
    * `deleteIfUntouchedSince`; refuses otherwise.
    *
-   * ACKNOWLEDGEMENT REQUIRED (ADR 0055 amendment, fail-closed): pass `{ completeScan: true }`.
-   * A bare `true` (or any other value) throws {@link ReclaimOrphansAckError} before anything is
-   * read or erased, `dryRun` included. The flag is your assertion that `eventStores`,
-   * `snapshotStores` and `roots` together cover EVERY place that cites content.
+   * ACKNOWLEDGEMENT REQUIRED (ADR 0055 amendment, fail-closed): to ERASE, pass
+   * `{ completeScan: true }`. A bare `true` (or any other value) throws
+   * {@link ReclaimOrphansAckError} before anything is read or erased. A `dryRun` erases nothing
+   * and is how you check completeness, so under `dryRun: true` any truthy value (`true` included)
+   * is accepted; see {@link ContentSweepOptions} for the typing. The acknowledgement is your
+   * assertion that `eventStores`, `snapshotStores` and `roots` together cover EVERY place that
+   * cites content, scanned in the right ORDER: each live store BEFORE its archive (ADR 0055
+   * "Scan order"). `[archive, live]` can miss an execution that retention moves mid-sweep, and
+   * its blobs then look like orphans.
    *
    * HAZARD the sweep cannot detect, which is why the assertion exists: a citing store that was
    * NOT passed in `eventStores` or `snapshotStores`. Every blob only that store cites is an
    * orphan to this pass, and it is erased while still cited. Pass every archive
    * (`retention.archive`) and each archive's snapshot store, and every app table through `roots`.
    * Run with `dryRun: true` first and read the list.
+   *
+   * KNOWN GAP (concurrency, NOT fixed): D5's conditional delete only protects a re-cite that
+   * calls `put` (the touch time is bumped by `put`/`putStream` alone). A citation copied WITHOUT
+   * a `put` can still be erased: `ContentResolvingEventStore.copyPrefix` (a fork) copies refs
+   * verbatim, and an `append` keeps refs already inside its payload (recalled memory,
+   * `scriptRef`, refs passed between steps). Scenario: a blob older than the TTL is cited only
+   * by `p-parent`; mid-sweep `p-parent` is forked into `a-child`, whose id the listing has
+   * already passed, and `p-parent` is then deleted. The orphan pass erases the blob and replay
+   * of `a-child` throws `ContentMissingError`. Operational rule: do NOT run an orphan sweep
+   * concurrently with forks or deletes of the executions it scans; quiesce them first. Closing
+   * it needs a ContentStore SPI change (a touch without a put), which is a separate decision.
    */
-  reclaimOrphans?: ReclaimOrphansAck;
+  reclaimOrphans?: ReclaimOrphansAck | boolean;
 }
+
+/**
+ * Sweep options. `reclaimOrphans` and `dryRun` are tied by a union so the type says what the
+ * runtime enforces: a sweep that can ERASE (`dryRun` absent or `false`) accepts only the
+ * acknowledgement object (or `false`), so a bare `true` is a compile error there; a
+ * `dryRun: true` sweep also accepts a plain `true`, because it erases nothing and is how a host
+ * checks completeness. (A `dryRun` typed as a plain `boolean` falls in the first arm, which is
+ * the safe one.)
+ */
+export type ContentSweepOptions = Omit<ContentSweepBase, "dryRun" | "reclaimOrphans"> &
+  (
+    | { dryRun?: false; reclaimOrphans?: ReclaimOrphansAck | false }
+    | { dryRun: true; reclaimOrphans?: ReclaimOrphansAck | boolean }
+  );
 
 /**
  * The caller's assertion that a `reclaimOrphans` sweep sees every citing store. The literal
@@ -236,11 +269,24 @@ export interface ReclaimOrphansAck {
   completeScan: true;
 }
 
+/** A safe description of a rejected value: BigInt and circular values make `JSON.stringify` throw. */
+function describeReceived(received: unknown): string {
+  try {
+    return JSON.stringify(received) ?? String(received);
+  } catch {
+    try {
+      return `an unserializable ${typeof received} (${Object.prototype.toString.call(received)})`;
+    } catch {
+      return `an unserializable ${typeof received}`;
+    }
+  }
+}
+
 /** `reclaimOrphans` was set without `{ completeScan: true }`. Nothing was read or erased. */
 export class ReclaimOrphansAckError extends TypeError {
   constructor(received: unknown) {
     super(
-      `sweepUnpinnedContent: reclaimOrphans must be { completeScan: true } (received ${JSON.stringify(received) ?? String(received)}). Orphan reclamation erases every blob that no scanned log, snapshot or root cites, so a citing store you forgot to pass loses its blobs while they are still cited. Set { completeScan: true } only when eventStores, snapshotStores and roots cover ALL of them (every retention archive and its snapshot store included). Migration: reclaimOrphans: true -> reclaimOrphans: { completeScan: true }.`
+      `sweepUnpinnedContent: reclaimOrphans must be { completeScan: true } to erase (received ${describeReceived(received)}). Orphan reclamation erases every blob that no scanned log, snapshot or root cites, so a citing store you forgot to pass loses its blobs while they are still cited. Set { completeScan: true } only when eventStores, snapshotStores and roots cover ALL of them (every retention archive and its snapshot store included), AND scanned in order: each live store BEFORE its archive, or an execution retention moves mid-sweep can be missed by both. A dryRun does not need the acknowledgement. Migration: reclaimOrphans: true -> reclaimOrphans: { completeScan: true }.`
     );
     this.name = "ReclaimOrphansAckError";
   }
@@ -302,7 +348,9 @@ export interface ContentSweepReport {
  * Race-safe (ADR 0055 D5) when the store has `deleteIfUntouchedSince`: every erase is
  * conditional on the blob being untouched since `now − olderThanMs`, so a `put` that re-cites
  * old bytes between the scan and its own append keeps the blob. That holds while a flow's
- * put→append window is shorter than the TTL. `roots` (D7) pins addresses held outside the
+ * put→append window is shorter than the TTL, and ONLY for a re-cite through `put`: a citation
+ * copied without one (a fork's `copyPrefix`, a ref kept inside an `append` payload) is a KNOWN
+ * GAP, see `reclaimOrphans`. `roots` (D7) pins addresses held outside the
  * log; `reclaimOrphans` (D6) also erases stored blobs nothing scanned cites. Cost:
  * O(events + blobs), all membership tests are Set/Map lookups.
  */
@@ -312,10 +360,14 @@ export async function sweepUnpinnedContent(
   const store = options.contentStore;
   const requested = options.reclaimOrphans as unknown;
   if (requested !== undefined && requested !== false) {
+    // A dry run erases nothing, so it needs no acknowledgement (any truthy value turns the
+    // orphan pass on); the sweep that would ERASE must carry it.
     if (
-      typeof requested !== "object" ||
-      requested === null ||
-      (requested as { completeScan?: unknown }).completeScan !== true
+      options.dryRun === true
+        ? !requested
+        : typeof requested !== "object" ||
+          requested === null ||
+          (requested as { completeScan?: unknown }).completeScan !== true
     ) {
       throw new ReclaimOrphansAckError(requested);
     }

@@ -739,37 +739,71 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     expect(content.size).toBe(0);
   });
 
-  it("reclaimOrphans needs the completeScan acknowledgement: a bare `true` (or any other shape) throws before anything is read or erased", async () => {
+  it("reclaimOrphans needs the completeScan acknowledgement to ERASE: a bare `true` (or any other shape) throws before ANY store is touched", async () => {
     const { content } = clockedStore(OLD);
     const blob = await content.put(bytes("cited only by a store the host forgot to pass"));
-    let read = 0;
+    const calls: string[] = [];
     const live = new InMemoryAsyncEventStore();
-    const spy = {
+    const eventSpy = {
       read: (id: string) => {
-        read++;
+        calls.push("event.read");
         return live.read(id);
       },
-      listExecutionsPage: (o?: Parameters<typeof live.listExecutionsPage>[0]) =>
-        live.listExecutionsPage(o),
+      listExecutionsPage: (o?: Parameters<typeof live.listExecutionsPage>[0]) => {
+        calls.push("event.listExecutionsPage");
+        return live.listExecutionsPage(o);
+      },
     } as unknown as ContentSweepOptions["eventStores"][number];
+    const contentSpy = {
+      delete: (r: { __loomContent: string }) => {
+        calls.push("content.delete");
+        return content.delete(r);
+      },
+      deleteIfUntouchedSince: (r: { __loomContent: string }, c: number) => {
+        calls.push("content.deleteIfUntouchedSince");
+        return content.deleteIfUntouchedSince(r, c);
+      },
+      listPage: (o?: Parameters<NonNullable<typeof content.listPage>>[0]) => {
+        calls.push("content.listPage");
+        return content.listPage(o);
+      },
+      touchClock: () => {
+        calls.push("content.touchClock");
+        return content.touchClock();
+      },
+    };
+    const snapSpy = {
+      loadLatest: async () => {
+        calls.push("snapshot.loadLatest");
+        return null;
+      },
+      loadLatestBefore: async () => {
+        calls.push("snapshot.loadLatestBefore");
+        return null;
+      },
+    };
     const base = {
-      eventStores: [spy],
-      snapshotStores: [NO_SNAPSHOTS],
-      contentStore: content,
+      eventStores: [eventSpy],
+      snapshotStores: [snapSpy],
+      contentStore: contentSpy,
       pinnedEventTypes: [],
       olderThanMs: TTL,
       now: NOW,
+      roots: () => {
+        calls.push("roots");
+        return (async function* () {})();
+      },
     };
     for (const bad of [true, {}, { completeScan: false }, { completeScan: "yes" }, 1, null]) {
       const attempt = sweepUnpinnedContent({ ...base, reclaimOrphans: bad as never });
       await expect(attempt).rejects.toBeInstanceOf(ReclaimOrphansAckError);
       await expect(attempt).rejects.toThrow(/completeScan: true/);
+      // An explicit dryRun: false is no exemption either.
+      await expect(
+        sweepUnpinnedContent({ ...base, dryRun: false, reclaimOrphans: bad as never })
+      ).rejects.toBeInstanceOf(ReclaimOrphansAckError);
     }
-    // dryRun is no exemption: the plan it prints is the plan --apply would run.
-    await expect(
-      sweepUnpinnedContent({ ...base, dryRun: true, reclaimOrphans: true as never })
-    ).rejects.toBeInstanceOf(ReclaimOrphansAckError);
-    expect(read).toBe(0);
+    expect(calls).toEqual([]); // nothing read, listed, clocked, enumerated or erased
     expect(await content.get(blob)).not.toBeNull();
     // Off (absent or false) is not an error, and erases no orphan.
     for (const off of [undefined, false]) {
@@ -777,6 +811,87 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect(r.orphansReclaimed).toEqual([]);
     }
     expect(await content.get(blob)).not.toBeNull();
+  });
+
+  it("a dryRun needs no acknowledgement: `reclaimOrphans: true` reports the orphans and erases nothing", async () => {
+    const { clock, content } = clockedStore(OLD);
+    const blob = await content.put(bytes("an orphan the host wants to see before acknowledging"));
+    clock.now = NOW;
+    const base = {
+      eventStores: [new InMemoryAsyncEventStore()],
+      snapshotStores: [NO_SNAPSHOTS],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+      dryRun: true as const,
+    };
+    // Typed: the `dryRun: true` arm of ContentSweepOptions accepts a plain boolean.
+    const dry = await sweepUnpinnedContent({ ...base, reclaimOrphans: true });
+    expect(dry.orphansReclaimed).toEqual([blob.__loomContent]);
+    expect(await content.get(blob)).not.toBeNull();
+    // A falsy value in a dry run is still not "on" and still not silently accepted as a shape.
+    await expect(
+      sweepUnpinnedContent({ ...base, reclaimOrphans: 0 as never })
+    ).rejects.toBeInstanceOf(ReclaimOrphansAckError);
+    // The acknowledgement object is accepted in a dry run too.
+    const acked = await sweepUnpinnedContent({ ...base, reclaimOrphans: { completeScan: true } });
+    expect(acked.orphansReclaimed).toEqual([blob.__loomContent]);
+  });
+
+  it("ReclaimOrphansAckError describes a BigInt or circular value instead of throwing a bare TypeError from JSON.stringify", async () => {
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    for (const bad of [10n, circular, { completeScan: 10n }]) {
+      const err = new ReclaimOrphansAckError(bad);
+      expect(err).toBeInstanceOf(ReclaimOrphansAckError);
+      expect(err.message).toMatch(/must be \{ completeScan: true \}/);
+      expect(err.message).toMatch(/live store BEFORE its archive/);
+    }
+    const { content } = clockedStore(OLD);
+    await expect(
+      sweepUnpinnedContent({
+        eventStores: [new InMemoryAsyncEventStore()],
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: TTL,
+        now: NOW,
+        reclaimOrphans: circular as never,
+      })
+    ).rejects.toBeInstanceOf(ReclaimOrphansAckError);
+  });
+
+  it("KNOWN GAP (ADR 0055 D6): a citation copied WITHOUT a put (a fork) mid-sweep does not bump the touch time, so the orphan pass ERASES a blob the fork still cites", async () => {
+    // Pins the documented gap: D5's conditional delete only sees `put`. A future SPI fix (a
+    // touch on the fork path) should flip these assertions deliberately.
+    const { clock, content } = clockedStore(OLD);
+    const ref = await content.put(bytes("recalled memory, cited only by p-parent"));
+    clock.now = NOW;
+    const raw = new InMemoryAsyncEventStore();
+    await raw.append(evt("a-child", 0, "EXECUTION_STARTED", { input: {} }, OLD));
+    await raw.append(evt("a-child", 1, "STEP_COMPLETED", { output: 1 }, OLD));
+    await raw.append(evt("p-parent", 0, "EXECUTION_STARTED", { input: {} }, OLD));
+    await raw.append(evt("p-parent", 1, "STEP_COMPLETED", { output: ref }, OLD));
+    // The listing has passed a-child (it sorts first); reading it triggers the concurrent
+    // work: a-child is replaced by a verbatim fork of p-parent, then p-parent is deleted.
+    const store = racing(raw, "a-child", async () => {
+      await raw.deleteExecution("a-child");
+      await raw.copyPrefix("p-parent", "a-child", 1, {});
+      await raw.deleteExecution("p-parent");
+    });
+    const result = await sweepUnpinnedContent({
+      eventStores: [store],
+      snapshotStores: [NO_SNAPSHOTS],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+      reclaimOrphans: { completeScan: true },
+    });
+    expect(result.orphansReclaimed).toEqual([ref.__loomContent]);
+    expect(await content.get(ref)).toBeNull(); // erased while a-child still cites it
+    const resolving = new ContentResolvingEventStore(raw, content, { externalize: {} });
+    await expect(resolving.read("a-child")).rejects.toBeInstanceOf(ContentMissingError);
   });
 
   it("the two-store hazard: acknowledging a complete scan is the caller's assertion; omitting a store that cites a blob erases it, which is why the assertion is required", async () => {
