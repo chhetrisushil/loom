@@ -173,6 +173,14 @@ describe("A2APeerClient", () => {
     expect(vouched.trustJsonSchemaText).toBe(true);
   });
 
+  it("the peer tool is remote-origin but its static input schema is loom-authored (schemaOrigin local)", async () => {
+    server = await startEchoServer();
+    const def = (await new A2APeerClient({ url: server.url }).map()).definition;
+    expect(def.origin).toBe("remote");
+    expect(def.schemaOrigin).toBe("local");
+    expect(def.jsonInputSchema).toBeUndefined();
+  });
+
   it("round-trips a call through the peer tool", async () => {
     server = await startEchoServer();
     const effectRuntime = new EffectRuntime();

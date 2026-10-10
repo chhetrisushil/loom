@@ -210,7 +210,7 @@ function withDescription(schema: ZodTypeAny, inner: Json): Json {
 export function toolInputJsonSchema(
   schema: ZodTypeAny | undefined,
   jsonInputSchema?: Readonly<Record<string, unknown>>,
-  opts: { trustText?: boolean; toolId?: string } = {}
+  opts: { trustText?: boolean; keepZodText?: boolean; toolId?: string } = {}
 ): Record<string, unknown> {
   // R4b — a declared JSON Schema (MCP) wins over the Zod schema, which for such
   // a tool is a placeholder `z.unknown()`. Third-party bytes: bounded, sanitised,
@@ -226,7 +226,7 @@ export function toolInputJsonSchema(
   // A REMOTE tool with a Zod schema (an A2A peer, a plugin marking `origin: "remote"`) carries its
   // `.describe()` prose to the model the same way a JSON Schema's would: strip it unless vouched
   // (`trustText` explicitly false; first-party callers leave it unset and keep their text).
-  if (opts.trustText === false)
+  if (opts.trustText === false && opts.keepZodText !== true)
     j = sanitizeJsonSchema(j, { keepText: false }) ?? { type: "object" };
   // Providers require an object root. A non-object root is not describable.
   if (j.type !== undefined && j.type !== "object") return { type: "object" };
@@ -297,6 +297,7 @@ export function toolSpecFor(t: {
   trustJsonSchemaText?: boolean;
   origin?: string;
   kind?: string;
+  schemaOrigin?: string;
 }): { name: string; description: string; inputSchema: Record<string, unknown> } {
   const thirdParty = isRemoteTool(t);
   const trusted = !thirdParty || t.trustJsonSchemaText === true;
@@ -316,6 +317,10 @@ export function toolSpecFor(t: {
         : WITHHELD_DESCRIPTION,
     inputSchema: toolInputJsonSchema(t.inputSchema, t.jsonInputSchema, {
       trustText: trusted,
+      // A Zod schema loom or the host AUTHORED (an A2A peer's static schema) keeps its `.describe()` text
+      // even on a remote tool; only the opt-in `schemaOrigin: "local"` does, and never beside a
+      // `jsonInputSchema` (remote bytes, handled before this flag is read). Fail closed otherwise.
+      keepZodText: t.schemaOrigin === "local",
       toolId: t.id,
     }),
   };

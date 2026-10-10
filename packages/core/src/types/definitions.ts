@@ -188,6 +188,13 @@ export interface ToolDefinition<TIn = unknown, TOut = unknown> {
    * `kind: "a2a"`, so a plugin that forgets the marker is still treated as remote.
    */
   origin?: "remote";
+  /**
+   * R22d (ADR 0125 D14) — set `"local"` when this tool's Zod `inputSchema` was authored by loom or the host
+   * (an A2A peer's static schema), not derived from remote data. A remote tool otherwise has its Zod
+   * `.describe()` text stripped from the model-facing spec unless vouched; `"local"` keeps it. Ignored for a
+   * tool with a `jsonInputSchema` (always remote text). Opt-in, so a plugin that forgets it fails closed.
+   */
+  schemaOrigin?: "local";
   /** R22 (ADR 0125) — declared tags for tool search; see {@link ToolDefinition.aliases} for trust. */
   tags?: readonly string[];
   /**
