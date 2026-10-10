@@ -23,6 +23,7 @@ import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
 import { checkContentStoreTouchContract, settle } from "./contentTouchContract";
 import { checkDeclaredMediaOnWire } from "./mediaWire";
+import { checkPartsReadAsText } from "./partsTextRead";
 import { checkToolCallStreamParity } from "./toolCallParity";
 
 export {
@@ -1806,6 +1807,11 @@ export function runWorkerRuntimeConformance(
  *   when `completed.stopReason` is `"tool_use"`, the streamed `stopReason` MUST equal it.
  * - Omitting `toolRequest` on a provider that has `stream` is a FAILING case — an
  *   absent input is a refusal, not a pass (the vacuous-check rule).
+ * - Parts messages. `LlmMessage.content` is `string | LlmContentPart[]`, and reading it raw
+ *   (`m.content` joined, interpolated, or put in an untyped `JSON.stringify`) type-checks while
+ *   turning a parts message into "[object Object]". The kit sends a text-only parts message and
+ *   fails a provider that string-coerces it, or whose HTTP body contains "[object Object]" or
+ *   lacks the parts' text. Read content with `textOf(content)` or a `typeof` branch.
  * - A text-only provider that genuinely cannot call tools opts out explicitly with
  *   `{ toolRequest: null }`, which is then visible in that provider's own test file
  *   rather than silently inherited from an unset default.
@@ -1856,6 +1862,10 @@ export function runLlmProviderConformance(
 
     it("a provider that DECLARES image support puts the image on the wire (R5)", async () => {
       await checkDeclaredMediaOnWire(factory());
+    });
+
+    it("reads a parts message as text, never as a raw coerced value (R5)", async () => {
+      await checkPartsReadAsText(factory());
     });
 
     it("stream (when supported) yields chunks ending with done:true", async () => {
