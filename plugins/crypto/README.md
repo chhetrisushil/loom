@@ -57,11 +57,19 @@ await shredSubject(keys, innerEvents, executionId, { reason: "gdpr-erasure", sna
   `security.crypto` and `kernel.features.inbox` are both on) seals an unconsumed
   payload under the owner's key and a shred makes it unreadable. A read of an inbox
   stream NEVER throws `PayloadShreddedError`, whatever `onShredded` says: it is read
-  by senders (backlog scan) and the trim, and a payload nobody can open reaches the
-  consumer as the `{ $shredded: true }` marker, never as ciphertext or the raw value.
+  by senders (backlog scan) and the trim, and a payload whose key is DESTROYED reaches
+  the consumer (and a `subscribe` handler) as the `{ $shredded: true }` marker, never
+  as ciphertext or the raw value. Only a destroyed key reads as erased: ciphertext
+  that an EXISTING key cannot open (corruption, a tampered row, a `subjectOf` that
+  drifted) throws `PayloadUndecryptableError`, so a defect cannot pass for an erasure.
   After the subject is shredded a new `send` is refused by the key store (a
-  destroyed key is never recreated). `MESSAGE_CONSUMED.payload` in the owner's log is
-  yours to declare sensitive, like any event.
+  destroyed key is never recreated; a `KeyStore` must not re-mint one). `subjectOf` is
+  asked with the OWNER's workflow id (`""` if it cannot be resolved). `defineConfig`
+  also registers `MESSAGE_CONSUMED.payload` (the consumed copy in the owner's log; new
+  writes only, an older plaintext consumption still reads), and a record whose sensitive
+  path holds exactly the marker is stored verbatim, so a shredded owner can still
+  journal an erased delivery. Plaintext written BEFORE crypto was enabled passes through
+  unsealed and survives a shred (see docs/compliance.md).
 - **Real encryption** — AES-256-GCM with a per-value random IV and an auth tag;
   a wrong key fails, not silently mis-decrypts.
 

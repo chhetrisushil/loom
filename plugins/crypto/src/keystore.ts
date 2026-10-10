@@ -24,6 +24,10 @@ export interface KeyStore {
    * Destroy a subject's key — irreversible erasure of everything encrypted under it. MUST be
    * idempotent: destroying an absent or already-destroyed key is a no-op (a retried
    * `shredSubject` destroys again before writing its missing tombstones).
+   *
+   * After a destroy, `getOrCreate` MUST NOT mint a new key for the subject (throw, as
+   * {@link InMemoryKeyStore} does). A re-minted key cannot open the older ciphertext, and an
+   * inbox read then raises `PayloadUndecryptableError` instead of reading as erased.
    */
   destroy(subjectId: string): Promise<void>;
   /**
