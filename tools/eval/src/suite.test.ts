@@ -14,6 +14,7 @@ import {
   llmJudge,
   parseVerdict,
   regexMatch,
+  renderRequest,
 } from "./graders";
 import { flowSubject } from "./subject";
 import {
@@ -517,5 +518,29 @@ describe("eval hardening (R18 fix round 1)", () => {
     const dflt = new CassetteProvider({ inner });
     await expect(dflt.complete(req("q"))).rejects.toThrow(CassetteMissError);
     expect(called).toBe(0);
+  });
+});
+
+describe("renderRequest (R5 content parts)", () => {
+  it("renders a parts message as its text, not as a JSON array", () => {
+    const prompt = renderRequest({
+      system: "SYS",
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "PART-ONE" },
+            { type: "text", text: "PART-TWO" },
+          ],
+        },
+        { role: "user", content: "plain string" },
+      ],
+    });
+    expect(prompt).toContain("PART-ONE");
+    expect(prompt).toContain("PART-TWO");
+    expect(prompt).toContain("plain string");
+    expect(prompt).not.toContain('"type"');
+    expect(prompt).not.toContain("[{");
+    expect(prompt).not.toContain("[object Object]");
   });
 });
