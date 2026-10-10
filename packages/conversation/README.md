@@ -52,6 +52,26 @@ The text is **untrusted data**: summarize or quote it, never put it in a system 
 - **Trust.** A turn runs as the conversation owner, and **only the owner may talk to it**: the identity that started it (tenant, actor and `onBehalfOf` all equal) may send, close, read and stream; anyone else, a same-tenant colleague included, gets the same not-found as for a conversation that does not exist. A user's words are untrusted data: tainted `conversation:user`, fenced at the prompt boundary, never in the system prompt. A failed turn records a fixed reason and an `errorId`; the real error goes to `onError`.
 - **Shared mode** (`conversation$({ shared })`, ADR 0122 D10) for a chat several people use: an explicit participant set (not a tenant), each turn run as its **asker** in its own execution (their grants, their quotas), each answer classified by the tools it touched and filtered per viewer (a bare placeholder for whoever is not cleared, in history, on the stream and in the model's context), a summary built only from unrestricted turns, FIFO queueing, and a participant may interrupt only their own turn.
 
+## Signing an inbox envelope yourself (`signInboxEnvelope`)
+
+`sendTurn` builds and signs the envelope for you. A test, or a trusted server-side bridge that writes to the inbox itself, can sign one with the conversation's key:
+
+```ts
+import { CONVERSATION_TOPIC, signInboxEnvelope } from "@loom/conversation";
+
+await runtime.send(conversationId, {
+  topic: CONVERSATION_TOPIC,
+  payload: signInboxEnvelope(process.env.CONVERSATION_KEY!, {
+    conversationId, kind: "user", text: "hello", id: crypto.randomUUID(), iat: Date.now(),
+    asker: { actor: "alice", tenant: "t1" },
+  }),
+});
+```
+
+- It needs the conversation's envelope key (`key`). Whoever holds the key can mint envelopes: keep it server-side, never in a browser, and rotate it with `previousKeys`.
+- Signing authorizes nothing by itself. The body still refuses an envelope for another conversation, a replayed `id`, a stale `iat`, and (owner mode) any voice but the owner's or (shared mode) any asker who is not a participant; the runtime's access policy still decides who may `send`.
+- Use it in tests and trusted bridges. Applications call `sendTurn`.
+
 ## Read these before relying on it
 
 - **The runtime policy must be owner-scoped** for `query`, `send`, `cancel` and `resume` (`executionAccessPolicy({ rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" } })`): the conversation's log holds the unfiltered transcript. `createConversations` refuses anything looser unless you acknowledge it. Every inbox message is also a host-signed, conversation-bound, single-use, fresh envelope, so what the policy lets through is still not obeyed unless the host signed it.

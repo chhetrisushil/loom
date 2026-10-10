@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+### Added
+
+Three additive APIs, each approved by the maintainer on 2026-10-10 (F4). Kernel untouched; no existing signature changes.
+
+- **`signInboxEnvelope(key, body)` (`@loom/conversation`).** Builds a host-signed inbox envelope, so a test or a TRUSTED bridge can write to a conversation's inbox (`runtime.send(id, { topic: CONVERSATION_TOPIC, payload })`) without capturing a real one. It is the same signer `sendTurn` uses (domain-separated HMAC). It needs the conversation's envelope key and authorizes nothing by itself: the participant check, the replay set, the staleness floor and the runtime's access policy all still apply. Also exports `InboxEnvelopeBody`. Second consumer: the `incident-shared-chat` example (had to capture an envelope) and any host bridge/test.
+- **`selectedSkillsOf(events, { loopId? })` (`@loom/agent`).** A pure reader over a log that returns `{ upfront, activated, byLoop }`: the skills `agentLoop$` selected before turn 0 and the ones the model activated mid-loop with `activate_skill` (a refused activation is not listed). Replaces scanning `DECISION_RECORDED` for a `decisionId` ending in `#skills`, which is internal naming. Consumers: `loom-examples` `agent-network` and `a2a-mesh`, which print the selection, and audit/replay tooling.
+- **`runAgentOnce(options)` (`@loom/app`).** Runs `agentLoop$` once, to completion, in a throwaway in-memory `defineConfig` app and a one-off flow, returning `{ output, status, executionId, events }`. For scripts and tests only (production uses flows on durable storage). It takes no shortcut: the model call is an effect in the ring, `config.security` (strict profile, authorizer, kill switch) applies, and a `loop` config `agentLoop$` refuses rejects with `agentLoop$`'s own error. Lives in `@loom/app` because `@loom/app` already depends on `@loom/agent` (the reverse would be a cycle). Consumers: `loom-examples` `a2a-mesh` and `agent-network`, which hand-build a flow plus app around `AgentRunner` today.
+
 ## [Unreleased]
 
 ### Added

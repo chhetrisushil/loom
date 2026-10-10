@@ -215,6 +215,25 @@ function executionFromState(state: ExecutionState, opts?: { parent?: string; chi
 :CUSTOM_ID: app
 :END:
 
+** ~runAgentOnce~ (@loom/app)
+
+Scripts and tests only; production runs ~agentLoop$~ in a registered flow on durable storage. Builds a throwaway in-memory ~defineConfig~ app plus a one-off flow, runs ~agentLoop$~ to completion (or to a park) and returns the result and the events. It goes through ~defineConfig~ (so ~config.security~ applies), registers the model as a ring effect, and rejects with ~agentLoop$~'s own error for a config it refuses.
+
+#+begin_src typescript
+function runAgentOnce(options: RunAgentOnceOptions): Promise<RunAgentOnceResult>
+
+interface RunAgentOnceOptions {
+  agent: AgentDefinition;
+  provider?: LlmProvider;                               // registered as the effect `loop.modelToolId` (default "model")
+  registerEffects?: (effects: EffectRuntime) => void;   // tool effects (or the model effect, when no provider)
+  input: string | AgentInput;
+  loop?: Omit<AgentLoopConfig, "definition">;
+  config?: Omit<LoomConfig, "storage" | "flows" | "flowModules">;
+  executionId?: string;
+}
+interface RunAgentOnceResult { output?: AgentOutput; status: ExecutionStatus; executionId: string; events: EventEnvelope[] }   // output absent when suspended
+#+end_src
+
 ** ~defineConfig~ (@loom/app)
 
 The composition root: turns one static config into the same runtime + transport you would otherwise hand-assemble.
@@ -1785,6 +1804,13 @@ Emits ~SKILLS_SELECTED~ / ~AGENT_TOOL_CALL~ / ~AGENT_COMPLETED~ events via ~ctx.
 
 *Tool menu (every loop: ~AgentRunner~, ~agentStep$~, ~agentLoop$~).* The model sees each tool's real argument structure: ~LlmToolSpec.inputSchema~ is the JSON Schema of the tool's Zod ~inputSchema~ (~toolInputJsonSchema~; a hand-written converter that degrades to ={}= for what it cannot express). A tool call the model returns is executed only if its name is on the agent's menu (the definition's tools plus the selected skills' tools) AND its input passes the tool's ~inputSchema~. Otherwise nothing runs and the model receives a structured result =\{ error: { code: "tool_not_on_menu" | "invalid_tool_input", message, issues? } }= (issues capped at 5, 200 chars each) so it can recover; the refusal is a pure function of the model output and the static menu and nothing is appended. *Replay:* an in-flight ~agentLoop$~ execution whose log (written before R4) recorded an off-menu or invalid-input call replays a refusal in its place, so its ~toolCallLog~ and later transcript diverge; drain in-flight ~agentLoop$~ executions before upgrading (~agentStep$~ / ~AgentRunner~ are single-step and unaffected). The gate sits after the ~needsApproval~ gate (moving it would break resume ordering); the policy receives ~onMenu~ as a third argument so a host can return =false= (or, on the deprecated ~requireApproval~, =true=) to skip prompting a human for a call that will be refused anyway. A tool with no ~inputSchema~ (untyped callers) is not input-validated. Validation is a SHAPE check, not sanitisation: unknown keys pass unless the schema is ~.strict()~, and transformed / coerced / preprocessed values are checked but the RAW input is what runs. Schemas used as tool inputs must be pure: an impure refinement makes refusals nondeterministic on replay. A schema fault (async or throwing refinement) or an input deeper than 64 levels / 100k nodes is a refusal (~invalid_tool_input~, fixed message), never a throw; echoed tool names and paths are capped at 200 chars. The converter omits what it cannot state without being tighter than the validator: ~default~ values, ~pattern~ for regexes with flags, a non-coercing ~z.date()~, bigint literals, recursive lazies past their first expansion; a non-object root is sent as a bare ={type: object}= (non-object tool inputs are validated but not described). *Third-party JSON Schema (R4b).* ~ToolDefinition.jsonInputSchema~ (set by ~@loom/plugin-mcp~ from the server's ~inputSchema~) is sent in place of the Zod-derived schema, after ~sanitizeJsonSchema~: keyword allowlist, depth 16 / 1000 nodes / 64KB, remote ~$ref~ dropped, cyclic or oversized refused (a bare ={type: object}= and a ~LOOM_AGENT_TOOL_SCHEMA~ warning per tool; the run continues). The text that remains is constrained, not just capped: property and ~$defs~ keys must match ~^[A-Za-z0-9_.-]{1,64}$~ (else the entry is dropped), ~enum~/~const~ strings are at most 64 chars without control/zero-width/bidi characters, ~format~ is from the standard list, ~pattern~ must compile, a ~$ref~ must name a kept ~$defs~ entry, and a 4096-character total budget refuses the whole schema. ~description~/~title~ text, and the tool's own description (replaced by a fixed "Third-party tool; description withheld"), are stripped unless the operator opts in (~registerInto({ trustDescriptions: true })~ / ~trustJsonSchemaText~, capped at 1000 chars, warns once per tool): they are instructions to a model and a plain string carries no taint for ~guardRequest~ to refuse (ADR 0085). ~@loom/plugin-mcp~ skips tools whose name is not ~^[A-Za-z0-9_-]{1,64}$~. An MCP tool shape-checks its own call (object, ~required~, top-level property types) INSIDE its effect and returns the refusal as the recorded result, so replay never re-evaluates a live schema; deeper validation is the server's. Exported: ~buildToolMenu~, ~toolInputJsonSchema~, ~toolSpecFor~, ~sanitizeJsonSchema~, ~validateToolInput~.
 
+#+begin_src typescript
+// F4 — which skills did agentLoop$ select? A pure reader over events (a live log, a replay, an audit export).
+function selectedSkillsOf(events: readonly EventEnvelope[], options?: { loopId?: string }): SelectedSkills
+interface LoopSkills { upfront: string[]; activated: string[] }   // upfront: selected before turn 0; activated: accepted activate_skill calls, in order
+interface SelectedSkills extends LoopSkills { byLoop: Record<string, LoopSkills> }   // top level = deduped union over the loops considered
+#+end_src
+
 ** ~@loom/plugin-mcp~ — Model Context Protocol (client + server)
 
 *** Client
@@ -2068,6 +2094,11 @@ function conversation$(config: ConversationConfig, options?: { id?: string; name
   RegisteredFlow<ConversationCarry | Record<string, never>, ConversationResult>
 function conversationRunner(config: ConversationConfig): FlowRunner<...>   // the body, for your own flow
 function summarizerText(content: unknown): string   // reads a summarizer/compaction message: unwraps tainted() at every level (top, text parts, tool_result content); result is UNTRUSTED data; re-wrap with tainted() before any LLM call; content nested > 16 levels becomes SUMMARIZER_TEXT_TRUNCATED (exported), never silently dropped
+
+// F4: build a host-signed inbox envelope (tests / trusted bridges). Needs the conversation's `key`; authorizes nothing by itself
+// (participant, replay, staleness and the runtime access policy all still apply). The same signer sendTurn uses.
+function signInboxEnvelope(key: string, body: InboxEnvelopeBody): Record<string, unknown>
+interface InboxEnvelopeBody { conversationId: string; kind: "user" | "close"; id: string; iat: number; text?: string; asker?: Identity; editOf?: number }
 
 interface ConversationConfig {
   key: string;                                       // HMAC secret: every inbox envelope is host-signed, both modes

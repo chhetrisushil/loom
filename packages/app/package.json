@@ -37,7 +37,8 @@
     "@loom/telemetry": "workspace:*",
     "@loom/verify": "workspace:*",
     "@loom/worker-runtime-local": "workspace:*",
-    "@loom/workflow-runtime": "workspace:*"
+    "@loom/workflow-runtime": "workspace:*",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@loom/llm": "workspace:*",
@@ -45,7 +46,6 @@
     "@loom/scaffold": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
-    "vitest": "^2.1.8",
-    "zod": "^3.23.8"
+    "vitest": "^2.1.8"
   }
 }
