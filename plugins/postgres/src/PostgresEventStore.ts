@@ -212,7 +212,7 @@ export class PostgresEventStore implements EventStore {
     const fenceRead = isAnsweringKind(envelope)
       ? "(SELECT fence FROM fences WHERE execution_id = $3 FOR SHARE)"
       : "(SELECT fence FROM fences WHERE execution_id = $3)";
-    // Cross-process delivery tag: a JSON-encoded [senderId, executionId, sequence], so our
+    // Cross-process delivery tag: a JSON-encoded [senderId, executionId, sequence, namespace], so our
     // own listener ignores what we deliver locally. The pg_notify is folded into the insert
     // as a CTE so it fires in the SAME round-trip and ONLY when a row actually landed —
     // halving DB round-trips on the hottest write path. On a fence rejection the CTE inserts
@@ -845,10 +845,12 @@ export class PostgresEventStore implements EventStore {
   }
 
   /**
-   * Cross-process delivery tag: JSON `[senderId, executionId, sequence, namespace]`. The
-   * sender lets our own listener skip what we already delivered locally; the namespace (the
-   * events table's schema) lets a listener in ANOTHER schema of the same database skip it.
-   * Appended last, so a pre-namespace reader that destructures three elements still works.
+   * Resolves the events table's schema name, lazily (by the first operation that needs it),
+   * with ONE lookup promise per store; the promise is cleared on failure so the next caller
+   * retries. Identity is the schema NAME, not the namespace OID (OIDs change on dump/restore).
+   * Caveat: after `ALTER SCHEMA ... RENAME` while nodes run, nodes that restart compute the
+   * new name and the two groups drop each other's cross-node deliveries until ALL nodes
+   * restart. Restart every node after a schema rename.
    */
   private resolveNamespace(): Promise<string | undefined> {
     if (this.namespaceLookup === undefined) {
@@ -866,6 +868,12 @@ export class PostgresEventStore implements EventStore {
     return this.namespaceLookup;
   }
 
+  /**
+   * Cross-process delivery tag: JSON `[senderId, executionId, sequence, namespace]`. The
+   * sender lets our own listener skip what we already delivered locally; the namespace (the
+   * events table's schema) lets a listener in ANOTHER schema of the same database skip it.
+   * Appended last, so a pre-namespace reader that destructures three elements still works.
+   */
   private notifyTag(executionId: string, sequence: number): string {
     return JSON.stringify([this.senderId, executionId, sequence, this.namespace ?? null]);
   }
