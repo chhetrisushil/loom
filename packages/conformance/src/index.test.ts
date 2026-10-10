@@ -52,6 +52,7 @@ import {
   runTimerStoreConformance,
 } from "./index";
 import { checkDeclaredMediaOnWire } from "./mediaWire";
+import { checkPartsReadAsText } from "./partsTextRead";
 import { checkToolCallStreamParity } from "./toolCallParity";
 
 /** A minimal in-memory WorkerRuntime for the dispatcher conformance self-test. */
@@ -573,5 +574,54 @@ describe("checkDeclaredMediaOnWire (R5)", () => {
     await expect(
       checkDeclaredMediaOnWire({ complete: async () => ({ content: "", stopReason: "end_turn" }) })
     ).resolves.toBeUndefined();
+  });
+});
+
+// --- checkPartsReadAsText: a parts message must be read as text, unit-tested directly. ---
+describe("checkPartsReadAsText (R5)", () => {
+  const httpProvider = (render: (r: LlmRequest) => unknown): LlmProvider => ({
+    async complete(r) {
+      await fetch("https://example.invalid/", { method: "POST", body: JSON.stringify(render(r)) });
+      return { content: "", stopReason: "end_turn" };
+    },
+  });
+
+  it("passes a provider that reads content through textOf", async () => {
+    const good = httpProvider((r) => ({
+      messages: r.messages.map((m) => ({ text: textOf(m.content) })),
+    }));
+    await expect(checkPartsReadAsText(good)).resolves.toBeUndefined();
+  });
+
+  it("passes a provider that branches on typeof", async () => {
+    const good = httpProvider((r) => ({
+      messages: r.messages.map((m) => ({
+        parts:
+          typeof m.content === "string"
+            ? [{ text: m.content }]
+            : m.content.map((p) => (p.type === "text" ? { text: p.text } : {})),
+      })),
+    }));
+    await expect(checkPartsReadAsText(good)).resolves.toBeUndefined();
+  });
+
+  it("FAILS a naive provider that joins raw content (string coercion)", async () => {
+    const naive: LlmProvider = {
+      async complete(r) {
+        const prompt = r.messages.map((m) => m.content).join(" ");
+        return { content: prompt, stopReason: "end_turn" };
+      },
+    };
+    await expect(checkPartsReadAsText(naive)).rejects.toThrow(/read LlmMessage\.content raw/);
+  });
+
+  it("FAILS a naive provider that interpolates raw content into the wire body", async () => {
+    const naive = httpProvider((r) => ({ prompt: `${r.messages[0]?.content}` }));
+    await expect(checkPartsReadAsText(naive)).rejects.toThrow(/read LlmMessage\.content raw/);
+  });
+
+  it("FAILS an HTTP provider whose body drops the text parts (wire check)", async () => {
+    const dropping = httpProvider(() => ({ messages: [{ text: "" }] }));
+    await expect(checkPartsReadAsText(dropping)).rejects.toThrow(/does not carry a text part/);
   });
 });

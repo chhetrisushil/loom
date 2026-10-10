@@ -1724,8 +1724,17 @@ output is never interpreted as media (it stays fenced text), and an untrusted me
 (`untrusted: { origin }`) may not name a stored ref; it is bracketed by the same `<untrusted-input>` fence as
 text and refused outside a `user` message. `onToolDelta` / `onToolReset` stream a tool call's input as it is
 generated; on a retry `onToolReset` fires so you discard the failed attempt's fragments (this channel is
-outside the delta validators). Anything that reads
-`message.content` as a string should use `textOf(content)`.
+outside the delta validators).
+
+> **Warning: never read `message.content` raw.** `LlmMessage.content` is `string | LlmContentPart[]`, and
+> `msgs.map((m) => m.content).join(" ")`, `` `${m.content}` `` and `{ text: m.content }` handed to an untyped
+> `JSON.stringify` all still type-check, then turn a parts message into `"[object Object]"` or a JSON array. Read it
+> with `textOf(content)` (text) or `toParts(content)` (structure), or branch on `typeof content === "string"`.
+> Provider-author checklist: (1) read content only through `textOf` / `toParts` / a `typeof` branch; (2) map every
+> part type you declare in `capabilities`, and refuse the rest; (3) run `runLlmProviderConformance` from
+> `@loom/conformance`, whose parts case fails a provider that string-coerces a parts message. Loom's own source is
+> held to this by a type-aware fitness test (`packages/spec/src/rawMessageContent.test.ts`); a third-party package
+> has the conformance case and this checklist.
 
 ### Pre-warming (latency, advisory)
 

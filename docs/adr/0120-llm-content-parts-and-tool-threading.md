@@ -179,6 +179,15 @@ compaction, the principal reaching the resolver, the 100k-node cap, a shrinking 
 `returnsMedia` tool); capability defaults became an allowlist (decision 6); the resolve context is required; `ref.size` is
 validated; an over-cap tool call no longer bricks the run (decision 7).
 
+### Guard against raw reads
+
+`content: string | LlmContentPart[]` type-checks under `.join`, template strings and untyped `JSON.stringify`, so a parts
+message silently became `"[object Object]"` (found by hand in loom-demo and several loom-examples providers). Guards:
+a type-aware fitness test (`packages/spec/src/rawMessageContent.test.ts`) over loom's own source, a
+`runLlmProviderConformance` case that sends a text-parts message and fails a provider that string-coerces it, and a
+user-guide warning plus provider-author checklist. A type-level brand was rejected (it breaks `textOf`'s own `string`
+branch and every legitimate narrowing), and biome has no type-aware rules.
+
 ## Questions for the user
 
 None open.

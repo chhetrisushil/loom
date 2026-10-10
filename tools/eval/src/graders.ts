@@ -1,5 +1,5 @@
 import { tainted } from "@loom/classify";
-import { UNTRUSTED_CONTENT_SYSTEM_NOTE, guardRequest } from "@loom/llm";
+import { UNTRUSTED_CONTENT_SYSTEM_NOTE, guardRequest, textOf as messageText } from "@loom/llm";
 import type { LlmRequest } from "@loom/llm";
 import type { Grader } from "./suite";
 
@@ -372,8 +372,10 @@ export function judgeRequest(
 }
 
 function renderRequest(r: LlmRequest): string {
-  const text = (c: unknown): string => (typeof c === "string" ? c : JSON.stringify(c));
-  return [r.system ?? "", ...r.messages.map((m) => text(m.content))].filter(Boolean).join("\n\n");
+  // messageText (@loom/llm textOf), not JSON.stringify: a parts message must render as its text, not as a JSON array.
+  return [r.system ?? "", ...r.messages.map((m) => messageText(m.content))]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /** The judge prompt as one string (the rendered {@link judgeRequest}). */
