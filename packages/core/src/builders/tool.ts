@@ -50,6 +50,13 @@ export interface ToolConfig<TIn, TOut> {
   mode?: EffectMode;
   /** R22 (ADR 0125 D7) — see {@link ToolDefinition.origin}. Plugins that build tools from remote declarations set `"remote"`. */
   origin?: "remote";
+  /**
+   * R22d (ADR 0125 D14) — set `"local"` when this tool's Zod `inputSchema` was authored by loom or the host
+   * (an A2A peer's static schema), not derived from remote data. A remote tool otherwise has its Zod
+   * `.describe()` text stripped from the model-facing spec unless vouched; `"local"` keeps it. Ignored for a
+   * tool with a `jsonInputSchema` (always remote text). Opt-in, so a plugin that forgets it fails closed.
+   */
+  schemaOrigin?: "local";
   /** R22 (ADR 0125) — declared tags for tool search. */
   tags?: readonly string[];
   /** R22 (ADR 0125) — user phrasings for tool search ("bill the customer"); see `ToolDefinition.aliases`. */
@@ -76,6 +83,7 @@ export function tool$<TIn = unknown, TOut = unknown>(
     ...(config.errors !== undefined && { errors: config.errors }),
     ...(config.mode !== undefined && { mode: config.mode }),
     ...(config.origin !== undefined && { origin: config.origin }),
+    ...(config.schemaOrigin !== undefined && { schemaOrigin: config.schemaOrigin }),
     ...(config.tags !== undefined && { tags: config.tags }),
     ...(config.aliases !== undefined && { aliases: config.aliases }),
   };

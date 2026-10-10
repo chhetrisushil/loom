@@ -273,6 +273,13 @@ The re-review (one P2, one P3). Both fixed.
 - **P3 (doc): the Zod `.describe()` strip also applies to A2A's static `peerInputSchema`** (D14.1 / round 1). That schema carries no
   `.describe()` text today, so nothing changes for it; if a future revision adds descriptions to it they will be withheld unless the
   peer is vouched for with `trustDescriptions`. Recorded as a residual, not a defect.
+  **Closed by (R22f):** the strip now follows where the SCHEMA came from, not the tool's origin. `ToolDefinition.schemaOrigin?: "local"`
+  (additive, advisory, OPT-IN) marks a Zod `inputSchema` loom or the host authored; `toolSpecFor` then keeps its `.describe()` text
+  even on an un-vouched remote tool, while the DESCRIPTION is still withheld. `A2APeerClient` sets it on its static `peerInputSchema`.
+  Fail-closed by construction: absent flag keeps the strip (a plugin building Zod from remote data and forgetting a marker cannot leak),
+  and the flag is ignored beside a `jsonInputSchema` (MCP bytes always strip unless vouched). No first-party plugin builds Zod from
+  remote data (MCP uses `jsonInputSchema`; sandbox is not a tool source), so no other plugin changed. The existing test's remote Zod
+  `.describe()` still strips (it carries no flag).
 
 **D15 — Ranker vocabulary and a query stoplist (R22e, user ruling 2026-10-10: "give the custom ranker the vocabulary rather than make it rebuild it").** Additive; a config with no factory and no `stopwords` changes only in result ORDER (below).
 - **1. One source of the trust policy.** The doc-building of the built-in index is extracted into exported pure functions,

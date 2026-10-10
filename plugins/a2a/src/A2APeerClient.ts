@@ -170,6 +170,8 @@ export class A2APeerClient<TTaint extends boolean = false> {
       // R22 (ADR 0125 D7) — built from a REMOTE agent card: tool search must not rank or show its text.
       origin: "remote",
       ...(this.config.trustDescriptions === true && { trustJsonSchemaText: true }),
+      // loom's own static schema (not the card's): its `.describe()` text is loom-authored, so it is kept.
+      schemaOrigin: "local",
       inputSchema: peerInputSchema,
       outputSchema: peerOutputSchema as unknown as z.ZodType<A2APeerOutputFor<TTaint>>,
     });

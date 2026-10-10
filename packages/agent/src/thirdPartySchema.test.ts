@@ -404,6 +404,27 @@ describe("R22d (ADR 0125 D14) - toolSpecFor withholds an un-vouched REMOTE descr
     expect(spec({})).toContain("IGNORE"); // first-party untouched
   });
 
+  it("R22d residual: a loom-authored Zod schema (schemaOrigin 'local') keeps its .describe() text on an A2A peer; a remote-derived one still strips", () => {
+    const authored = z.object({ q: z.string().describe("LOOM-AUTHORED HINT") });
+    const spec = (extra: Record<string, unknown>) =>
+      toolSpecFor(mcpTool({ inputSchema: authored, ...extra }));
+    // an A2A-shaped tool built like A2APeerClient.map(): remote origin, un-vouched, local static schema
+    const peer = spec({ kind: "a2a", origin: "remote", schemaOrigin: "local" });
+    expect(JSON.stringify(peer.inputSchema)).toContain("LOOM-AUTHORED HINT");
+    expect(peer.description).toBe(WITHHELD_DESCRIPTION); // the remote DESCRIPTION is still withheld
+    // fail closed: no flag => stripped (a plugin that builds Zod from remote data and forgets it)
+    expect(JSON.stringify(spec({ kind: "a2a", origin: "remote" }).inputSchema)).not.toContain(
+      "LOOM-AUTHORED"
+    );
+    // the flag never rescues remote JSON-schema text (MCP): jsonInputSchema is always remote bytes
+    const mcp = spec({ jsonInputSchema: mcpSchema, origin: "remote", schemaOrigin: "local" });
+    expect(JSON.stringify(mcp.inputSchema)).not.toContain("IGNORE");
+    // a vouched tool keeps it with or without the flag
+    expect(
+      JSON.stringify(spec({ origin: "remote", trustJsonSchemaText: true }).inputSchema)
+    ).toContain("LOOM-AUTHORED");
+  });
+
   it("review: the trusted-text warning is worded for any remote tool, not only a JSON schema", () => {
     resetToolSchemaWarning();
     const seen: string[] = [];

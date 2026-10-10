@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A2A peer tools keep loom-authored schema text ([ADR 0125](docs/adr/0125-tool-search.md) D14 residual, R22f; `@loom/core`, `@loom/agent`, `@loom/plugin-a2a`; kernel untouched).** The model-facing spec of an un-vouched remote tool stripped ALL Zod `.describe()` text, including text loom itself authored on `A2APeerClient`'s static `peerInputSchema`. Additive, opt-in `ToolDefinition.schemaOrigin?: "local"` marks a loom/host-authored Zod schema; `toolSpecFor` then keeps its `.describe()` text while the remote DESCRIPTION stays withheld. `A2APeerClient` sets it. Fail-closed: an unmarked remote tool still strips, and the flag never applies beside a `jsonInputSchema` (MCP unchanged). No behaviour change today (the peer schema carries no `.describe()`).
 - **`PromotionRefusedError.reasons` listed each reason twice** when the registry floor and the per-call thresholds failed the same check; the reasons are now de-duplicated, in first-seen order (`@loom/learning`).
 
 ### Added
