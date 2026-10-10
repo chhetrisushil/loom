@@ -86,7 +86,24 @@ function shown(
   return value === undefined ? "loading" : "ready";
 }
 
+/** Draw a widget; any failure (a throwing `check`, a malformed `source`) becomes the error placeholder, never the message. */
 function drawWidget(e: WidgetEntry, ctx: Ctx): void {
+  try {
+    drawWidgetUnsafe(e, ctx);
+  } catch {
+    for (const a of [
+      "data-binding-state",
+      "data-source-type",
+      "data-source-version",
+      "data-degraded",
+      "title",
+    ])
+      e.host.removeAttribute(a);
+    e.host.replaceChildren(placeholder(ctx, "error", e.widget.kind));
+  }
+}
+
+function drawWidgetUnsafe(e: WidgetEntry, ctx: Ctx): void {
   const { widget, value, status } = e;
   const doc = ctx.doc;
   const noValue = status?.state === "error" || status?.state === "empty";
@@ -125,7 +142,10 @@ function drawWidget(e: WidgetEntry, ctx: Ctx): void {
   set("data-binding-state", state);
   set("data-source-type", widget.source?.type);
   set("data-source-version", widget.source?.version);
-  const chain = widget.source?.degradedFrom?.map((d) => `${d.type}@${d.version}`).join(" › ");
+  const degraded = widget.source?.degradedFrom;
+  if (degraded !== undefined && !Array.isArray(degraded))
+    throw new TypeError("renderer-dom: source.degradedFrom is not an array");
+  const chain = degraded?.map((d) => `${d.type}@${d.version}`).join(" › ");
   set("data-degraded", chain || undefined);
   set(
     "title",
@@ -340,6 +360,7 @@ function reconcileChildren(c: ContainerEntry, layout: Layout, ctx: Ctx): void {
   const old = new Map(c.children.map((e) => [e.key, e]));
   const next: Entry[] = [];
   const seen = new Map<string, number>();
+  const usedKeys = new Set<string>();
   let ordinal = 0;
   const slots = slotsOf(layout);
   const placed: Array<Slot | undefined> = [];
@@ -352,9 +373,13 @@ function reconcileChildren(c: ContainerEntry, layout: Layout, ctx: Ctx): void {
         ? `c:${(node as { id: string }).id}`
         : `c#${ordinal++}:${node.type}`;
     else continue; // malformed node: skipped, like the identity walk skips it
-    const n = seen.get(base) ?? 0;
+    // A duplicate id gets its own key and never aliases another: bump until the key is unused
+    // (`a`,`a`,`a~1` must not both land on `w:a~1`), so every key in this pass is unique.
+    let n = seen.get(base) ?? 0;
+    let key = n === 0 ? base : `${base}~${n}`;
+    while (usedKeys.has(key)) key = `${base}~${++n}`;
     seen.set(base, n + 1);
-    const key = n === 0 ? base : `${base}~${n}`; // a duplicate id gets its own key; it never aliases the first
+    usedKeys.add(key);
 
     const prior = old.get(key);
     let entry: Entry;

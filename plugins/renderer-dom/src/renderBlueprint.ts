@@ -41,6 +41,15 @@ export interface DomUpdateReport {
   readonly identity: IdentityReport;
   /** Widget ids that were present before and after but had to be disposed and mounted again (kind change, or moved to another container). */
   readonly remounted: readonly string[];
+  /**
+   * How the call ended. `updated`: landed normally. `recovered`: the in-place reconcile failed,
+   * so the old tree was disposed and `next` was mounted fresh (no old content survives).
+   * `failed`: even the fresh mount failed; the surface is empty. `busy`: re-entrant call, ignored.
+   * `disposed`: the handle is disposed, ignored. Anything but `updated` carries `error`, and for
+   * `recovered` / `failed` the `identity` is `ok: false` with no comparison to offer.
+   */
+  readonly outcome: "updated" | "recovered" | "failed" | "busy" | "disposed";
+  readonly error?: string;
 }
 
 export interface DomHandle {
@@ -75,6 +84,8 @@ interface Surface {
   readonly element: HTMLElement;
   readonly ctx: Ctx;
   root: ContainerEntry | undefined;
+  /** Dispose everything and empty the slot, so no old content survives. */
+  reset(): void;
   /** Re-apply `blueprint` (title, unregistered-projection notes, tree) onto `element`. */
   apply(blueprint: Blueprint, unregistered: readonly string[]): void;
 }
@@ -95,6 +106,12 @@ function createSurface(
     element,
     ctx,
     root: undefined,
+    reset() {
+      disposeRoot(surface.root, ctx);
+      surface.root = undefined;
+      ctx.byProjection.clear();
+      slot.replaceChildren();
+    },
     apply(bp, unregistered) {
       element.setAttribute("data-blueprint-id", bp.id);
       if (heading && heading.textContent !== bp.title) heading.textContent = bp.title;
@@ -183,8 +200,15 @@ export function mountBlueprint(
         runtime.subscribe(id, executionId, (state) => {
           if (disposed) return;
           stateMap.set(id, state);
-          for (const w of [...(surface.ctx.byProjection.get(id) ?? [])])
-            refreshWidget(w, surface.ctx);
+          // A throw here would escape into the projection runtime and starve its other
+          // subscribers; refreshWidget draws the error placeholder itself, this is the backstop.
+          for (const w of [...(surface.ctx.byProjection.get(id) ?? [])]) {
+            try {
+              refreshWidget(w, surface.ctx);
+            } catch {
+              /* drawn as a placeholder or left as is; never thrown into the runtime */
+            }
+          }
         })
       );
     }
@@ -199,25 +223,64 @@ export function mountBlueprint(
     element: surface.element,
     update(next) {
       const empty: IdentityReport = { ok: true, findings: [], added: [], compared: 0 };
-      if (disposed || updating) return { identity: empty, remounted: [] };
+      const failedId: IdentityReport = { ok: false, findings: [], added: [], compared: 0 };
+      if (disposed)
+        return { identity: empty, remounted: [], outcome: "disposed", error: "handle is disposed" };
+      if (updating)
+        return {
+          identity: empty,
+          remounted: [],
+          outcome: "busy",
+          error: "update re-entered while another update was running",
+        };
       updating = true;
       surface.ctx.disposed.clear();
       surface.ctx.mounted.clear();
+      let outcome: DomUpdateReport["outcome"] = "updated";
+      let error: string | undefined;
+      let identity = empty;
       try {
-        let identity = empty;
         try {
           identity = preservesBlueprintNodes(current, next);
         } catch {
           // a malformed revision yields no comparison, not a throw
         }
-        const missing = readStates(next, runtime, executionId, stateMap);
-        surface.apply(next, missing);
-        sync(next);
+        try {
+          const missing = readStates(next, runtime, executionId, stateMap);
+          surface.apply(next, missing);
+        } catch {
+          // Never keep the old surface under a report that looks like success: drop it and
+          // mount `next` fresh (or leave the slot empty).
+          outcome = "recovered";
+          error = "reconcile failed; the surface was rebuilt from the revision";
+          identity = failedId;
+          try {
+            surface.reset();
+            surface.ctx.disposed.clear();
+            surface.ctx.mounted.clear();
+            surface.apply(next, readStates(next, runtime, executionId, stateMap));
+          } catch {
+            outcome = "failed";
+            error = "reconcile and fresh mount failed; the surface is empty";
+            try {
+              surface.reset();
+            } catch {
+              /* nothing left to do */
+            }
+          }
+        }
+        try {
+          sync(next);
+        } catch {
+          if (outcome === "updated") {
+            outcome = "failed";
+            error = "subscription sync failed";
+            identity = failedId;
+          }
+        }
         current = next;
         const remounted = [...surface.ctx.disposed].filter((id) => surface.ctx.mounted.has(id));
-        return { identity, remounted };
-      } catch {
-        return { identity: empty, remounted: [] };
+        return { identity, remounted, outcome, ...(error !== undefined && { error }) };
       } finally {
         updating = false;
       }
