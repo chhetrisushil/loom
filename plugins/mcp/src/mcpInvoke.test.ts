@@ -60,7 +60,9 @@ function startFakeMcpServer(): Promise<FakeServer> {
     });
   });
   return new Promise((resolve) => {
-    server.listen(0, () => {
+    // Bind the address the client dials. A wildcard `listen(0)` can be handed a port another
+    // process holds on 127.0.0.1 (macOS), and the fetch below would reach THAT server.
+    server.listen(0, "127.0.0.1", () => {
       const addr = server.address();
       const port = addr !== null && typeof addr === "object" ? addr.port : 0;
       resolve({
