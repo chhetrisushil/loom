@@ -22,6 +22,7 @@
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/verify": "workspace:*",
     "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {

@@ -1,4 +1,5 @@
 import { createHash, createHmac } from "node:crypto";
+import { declareReach } from "@loom/verify";
 import type { DecideCapable, DecideRecordOpts } from "./decideWithPolicy";
 import type { RolloutState } from "./registry";
 import type { Policy, PolicyChoice, PolicyContext, RolloutStamp } from "./types";
@@ -232,3 +233,7 @@ export async function decideWithRollout<A>(
     recordOpts
   );
 }
+
+// L34 - declared reach (ADR 0086): one `ctx.decide`, the decider reads the registry and runs a pure
+// `policy.select`. No tool.
+declareReach(decideWithRollout, { run: [], transient: [] });

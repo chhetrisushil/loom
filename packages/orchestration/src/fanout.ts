@@ -1,4 +1,5 @@
 import type { StepDefinition } from "@loom/core";
+import { declareReach } from "@loom/verify";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 
 // ── ADR 0061 D4 — runtime-sized deterministic fan-out (the DE-1 residue) ──────
@@ -39,3 +40,8 @@ export async function fanout$<TIn, TOut>(
     options.limit !== undefined ? { limit: options.limit } : undefined
   ) as Promise<TOut[]>;
 }
+
+// L34 - declared reach (ADR 0086). `fanout$` runs ITS CALLER's step (argument 1) through `ctx.parallel`,
+// so a fixed tool list would be wrong for every caller: `stepArgs: [1]` tells the verifier to read the
+// step at each hand-off site instead. It reaches nothing else.
+declareReach(fanout$, { run: [], transient: [], stepArgs: [1] });

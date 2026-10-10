@@ -22,7 +22,8 @@
     "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/llm": "workspace:*",
-    "@loom/memory": "workspace:*"
+    "@loom/memory": "workspace:*",
+    "@loom/verify": "workspace:*"
   },
   "devDependencies": {
     "@loom/plugin-sqlite": "workspace:*",

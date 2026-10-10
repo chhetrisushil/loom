@@ -187,6 +187,35 @@ describe("compiler — runner reach in the manifest (L36)", () => {
   });
 });
 
+describe("compiler - imported constants and factories in the manifest (L37)", () => {
+  it("transformFile follows a relative import so a flow's llmStep$(id, LLM_X) resolves", async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "loom-transform-"));
+    try {
+      mkdirSync(join(dir, "llm"));
+      writeFileSync(
+        join(dir, "llm", "effects.ts"),
+        'export const LLM_X = "llm.x";\nexport function llmStep$(id: string, toolId: string) { return step$({ id, toolId }); }\n'
+      );
+      const src = [
+        'import { flow$ } from "@loom/core";',
+        'import { LLM_X, llmStep$ } from "./llm/effects";',
+        "const runner = async (ctx, n) => ctx.run(llmStep$(`x@a${n}`, LLM_X), {});",
+        'export const f = { definition: flow$({ id: "wf", version: "1.0.0", steps: [] }), runner } as RegisteredFlow;',
+      ].join("\n");
+      const state = emptyState();
+      transformFile(src, join(dir, "flow.ts"), state);
+      const reach = buildManifest(state, "dist").flows.wf?.runnerReach;
+      expect(reach?.steps.map((x) => x.toolId)).toEqual(["llm.x"]);
+      expect(reach?.unresolved).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("compiler — builder detection robustness (inline / nested)", () => {
   it("detects inline step$(...) inside a flow's steps array (with handler extraction)", () => {
     const src = [

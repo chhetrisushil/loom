@@ -10,6 +10,7 @@ import {
   iterateExecutionIds,
   readRangeOf,
 } from "@loom/event-runtime";
+import { declareReach } from "@loom/verify";
 import {
   ChainHopLimitError,
   ResumeContendedError,
@@ -408,6 +409,14 @@ export async function awaitAll<TOut = unknown>(
   return settled.map((r) => (r as { status: "completed"; output: TOut }).output);
 }
 
+// L34 - declared reach (ADR 0086). Spawning and awaiting a child runs NO tool in the parent: the
+// spawn is one `ctx.decide` (a pure decider) and the wait is one `ctx.suspend` on CHILD_DONE. The
+// child's own effects are its own flow's reach, verified there. The suspend inside is NOT expressible
+// in a declaration (a library's own `ctx.suspend` is invisible to suspension-safety, ADR 0086).
+for (const f of [awaitChild, awaitChildren, awaitAll]) {
+  declareReach(f, { run: [], transient: [] });
+}
+
 type SpawnCtx = Pick<ExecutionContext, "executionId" | "decide" | "suspend">;
 
 /**
@@ -422,7 +431,7 @@ export function boundOrchestration(limits: SpawnLimits): {
   awaitChildren: typeof awaitChildren;
   awaitAll: typeof awaitAll;
 } {
-  return {
+  const bound = {
     awaitChild: (ctx: SpawnCtx, spec) => {
       const breach = limitBreach(
         limits,
@@ -464,6 +473,11 @@ export function boundOrchestration(limits: SpawnLimits): {
     awaitChildren: typeof awaitChildren;
     awaitAll: typeof awaitAll;
   };
+  // The bound variants reach exactly what the originals do (L34).
+  for (const f of [bound.awaitChild, bound.awaitChildren, bound.awaitAll]) {
+    declareReach(f, { run: [], transient: [] });
+  }
+  return bound;
 }
 
 export interface SupervisorDeps {

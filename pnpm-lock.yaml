@@ -206,6 +206,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../core
+      '@loom/verify':
+        specifier: workspace:*
+        version: link:../verify
     devDependencies:
       '@types/node':
         specifier: ^22.0.0
@@ -696,6 +699,9 @@ importers:
       '@loom/memory':
         specifier: workspace:*
         version: link:../memory
+      '@loom/verify':
+        specifier: workspace:*
+        version: link:../verify
     devDependencies:
       '@loom/plugin-sqlite':
         specifier: workspace:*
@@ -721,6 +727,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../core
+      '@loom/verify':
+        specifier: workspace:*
+        version: link:../verify
     devDependencies:
       '@loom/effect-runtime':
         specifier: workspace:*
@@ -870,6 +879,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/verify':
+        specifier: workspace:*
+        version: link:../verify
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../workflow-runtime

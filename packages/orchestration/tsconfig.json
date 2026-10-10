@@ -10,6 +10,7 @@
     { "path": "../core" },
     { "path": "../effect-runtime" },
     { "path": "../event-runtime" },
+    { "path": "../verify" },
     { "path": "../workflow-runtime" }
   ]
 }

@@ -1,3 +1,4 @@
+import { declareReach } from "@loom/verify";
 import type { Policy, PolicyChoice, PolicyContext, PolicyStamp } from "./types";
 
 // ── The one-line entry point (ADR 0080) ──────────────────────────────────────
@@ -105,3 +106,8 @@ export async function decideWithPolicy<A>(
     recordOpts
   );
 }
+
+// L34 - declared reach (ADR 0086). The whole call is one `ctx.decide`; the decider only runs
+// `policy.select`, a pure function of (context, actions), and is never handed a scope. It reaches no
+// tool.
+declareReach(decideWithPolicy, { run: [], transient: [] });

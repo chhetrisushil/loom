@@ -6,5 +6,10 @@
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/*.test.ts", "**/*.bench.ts"],
-  "references": [{ "path": "../analytics" }, { "path": "../classify" }, { "path": "../core" }]
+  "references": [
+    { "path": "../analytics" },
+    { "path": "../classify" },
+    { "path": "../core" },
+    { "path": "../verify" }
+  ]
 }

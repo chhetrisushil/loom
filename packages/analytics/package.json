@@ -20,7 +20,8 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@loom/core": "workspace:*"
+    "@loom/core": "workspace:*",
+    "@loom/verify": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

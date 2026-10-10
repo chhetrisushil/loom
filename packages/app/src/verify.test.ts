@@ -455,7 +455,7 @@ describe("runner-body reach reaches the rules", () => {
       authorizer: fullGrants,
       runnerReachByFlow: {
         gated: analyzeRunnerReach(`
-          const r = async (ctx) => { await ctx.run(mcpInvoke$("hydrate#0"), {}); };
+          const r = async (ctx) => { await ctx.run(mintStep("hydrate#0"), {}); };
         `),
       },
     });
@@ -894,5 +894,85 @@ describe("declared reach for ctx.decide handed to a library, and empty declarati
       );
     expect(warnsOf(input({ run: [], transient: [] }))).toEqual([]);
     expect(warnsOf(input({}))).toHaveLength(1);
+  });
+});
+
+// ── L34 / L35 / L37: pass-through steps, ctx.parallel and constant-id factories ──
+
+describe("step arguments, ctx.parallel and constant-id factories reach the rules (L34/L35/L37)", () => {
+  const build = (authorizer: GrantTable) =>
+    defineConfig({
+      storage: { kind: "memory" },
+      flows: [undeclaredFlow()],
+      security: { authorizer },
+    });
+  const errors = (report: ReturnType<typeof verify>) =>
+    report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "error");
+  const warns = (report: ReturnType<typeof verify>) =>
+    report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "warn");
+  const fanout$ = declareReach(function fanout$() {}, { run: [], transient: [], stepArgs: [1] });
+  const check = (source: string, authorizer: GrantTable, reachDeclarations?: object) => {
+    const { runtime } = build(authorizer);
+    return verify(
+      resolveVerifyInput(runtime, {
+        authorizer,
+        runnerReachByFlow: { gated: analyzeRunnerReach(source, "gated") },
+        ...(reachDeclarations !== undefined && { reachDeclarations }),
+      })
+    );
+  };
+
+  it("a step handed to a stepArgs-declared fanout$ is checked against the grants", () => {
+    const src = `
+      const hydrate = step$({ id: "hydrate", toolId: "remediation-tool" });
+      const runner = async (ctx, items) => { await fanout$(ctx, hydrate, items, { limit: 2 }); };
+    `;
+    const bad = check(src, partialGrants, { fanout$ });
+    expect(errors(bad)).toHaveLength(1);
+    expect(errors(bad)[0]?.message).toContain("remediation-tool");
+    expect(warns(bad)).toEqual([]);
+    const ok = check(src, fullGrants, { fanout$ });
+    expect(errors(ok)).toEqual([]);
+    expect(warns(ok)).toEqual([]);
+  });
+
+  it("CONTROL: the same hand-off with no declaration is an unresolved warn, not clean", () => {
+    const src = `
+      const hydrate = step$({ id: "hydrate", toolId: "remediation-tool" });
+      const runner = async (ctx, items) => { await fanout$(ctx, hydrate, items); };
+    `;
+    const report = check(src, fullGrants);
+    expect(warns(report)).toHaveLength(1);
+    expect(warns(report)[0]?.message).toContain("ctx handed to fanout$");
+  });
+
+  it("a stepArgs position that does not resolve is reported, never 'reaches nothing'", () => {
+    const report = check(
+      "const runner = async (ctx, step, items) => { await fanout$(ctx, step, items); };",
+      fullGrants,
+      { fanout$ }
+    );
+    expect(warns(report)).toHaveLength(1);
+    expect(warns(report)[0]?.message).toContain("argument 1");
+  });
+
+  it("steps in ctx.parallel's pair list are checked (they were invisible before L35)", () => {
+    const src = `
+      const rem = step$({ id: "rem", toolId: "remediation-tool" });
+      const runner = async (ctx) => { await ctx.parallel([[rem, 1]]); };
+    `;
+    expect(errors(check(src, partialGrants))).toHaveLength(1);
+    expect(errors(check(src, fullGrants))).toEqual([]);
+  });
+
+  it("mcpInvoke$ with a templated step id is checked as the mcp.invoke effect (L37)", () => {
+    const src = `
+      const runner = async (ctx, step) => { await ctx.run(mcpInvoke$(\`tool:\${step.id}\`), {}); };
+    `;
+    const report = check(src, fullGrants);
+    expect(errors(report)).toHaveLength(1);
+    expect(errors(report)[0]?.message).toContain("mcp.invoke");
+    const granted = new GrantTable({ gated: ["metrics-tool", "remediation-tool", "mcp.invoke"] });
+    expect(errors(check(src, granted))).toEqual([]);
   });
 });

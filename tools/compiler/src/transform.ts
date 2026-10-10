@@ -1,6 +1,7 @@
 import MagicString from "magic-string";
 import ts from "typescript";
 import { shortHash } from "./hash";
+import { createImportResolver } from "./importResolve";
 import { type LoopStepIdentityFinding, analyzeLoopIdentityNode } from "./loopIdentity";
 import { type NonDeterministicCall, analyzeNode } from "./nondeterminism";
 import { type RunnerReach, analyzeReachNode } from "./runnerReach";
@@ -331,9 +332,14 @@ function collectFlows(
     nonDetCalls ??= analyzeNode(sourceFile, undefined, { skipMemoized: true });
     return nonDetCalls;
   };
+  const importResolver = createImportResolver(sourceFile, absolutePath);
   let reach: RunnerReach | undefined;
   const analyzeReach = (): RunnerReach => {
-    reach ??= analyzeReachNode(sourceFile);
+    reach ??= analyzeReachNode(
+      sourceFile,
+      undefined,
+      importResolver !== undefined ? { importResolver } : {}
+    );
     return reach;
   };
 

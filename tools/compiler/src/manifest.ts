@@ -44,6 +44,8 @@ export interface ManifestFlow {
       root?: string;
       via: "ctx" | "decide";
       member?: string;
+      /** L34 — the hand-off's arguments that resolve to a step, by position. */
+      args?: Array<{ index: number; step: { stepId?: string; toolId: string } }>;
       location?: string;
     }>;
   };
