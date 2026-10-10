@@ -8,14 +8,19 @@ import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, answerApproval } from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { SkillRegistry } from "./SkillRegistry";
 import { type AgentLoopConfig, agentLoop$ } from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
 import type { ToolRanker, ToolSearchDoc } from "./toolSearch";
 import { Bm25ToolRanker } from "./toolSearch";
-import { SOURCE_TOOL_SEARCH, type ToolSearchConfig, toolSearchDocs } from "./toolSearchSession";
+import {
+  SOURCE_TOOL_SEARCH,
+  type ToolSearchConfig,
+  skillSearchDocs,
+  toolSearchDocs,
+} from "./toolSearchSession";
 
 // ── R22 (ADR 0125) — `agentLoop$({ toolSearch })` ─────────────────────────────────
 //
@@ -1400,5 +1405,287 @@ describe("R22e (ADR 0125 D15) - a ranker factory receives the sanitized vocabula
         direct.rank(q, 10).map((h) => h.id)
       );
     }
+  });
+});
+
+describe("R22e (ADR 0125 D15) review - the trust policy, pinned against a hand-written table", () => {
+  const OPENAPI = { type: "object", properties: {} } as const;
+  const fp = mk("fp_tool", "FP-DESC", { tags: ["fp-tag"], aliases: ["fp-alias"] });
+  const unvouched = mk("mcp_unv", "UNV-DESC", {
+    jsonInputSchema: OPENAPI,
+    tags: ["unv-tag"],
+    aliases: ["unv-alias"],
+  });
+  const vouchedRemote = mk("mcp_v", "V-DESC", {
+    jsonInputSchema: OPENAPI,
+    trustJsonSchemaText: true,
+    tags: ["v-tag"],
+    aliases: ["v-alias"],
+  });
+  const taintedDesc = mk("tainted_t", tainted("T-DESC", "web") as unknown as string, {
+    tags: ["t-tag"],
+    aliases: ["t-alias"],
+  });
+  const a2a = mk("peer_a", "A2A-DESC", { kind: "a2a", tags: ["a-tag"], aliases: ["a-alias"] });
+  const annotated = mk("ann_tool", "ANN-DESC", { tags: ["own-t"], aliases: ["own-a"] });
+  const annotations = {
+    ann_tool: { tags: ["host-t"], aliases: ["host-a"] },
+    mcp_unv: { tags: ["host-unv-t"], aliases: ["host-unv-a"] },
+  };
+
+  it("matches the expected docs, class by class", () => {
+    const docs = toolSearchDocs([fp, unvouched, vouchedRemote, taintedDesc, a2a, annotated], {
+      annotations,
+    });
+    const by = (id: string) => docs.find((d) => d.id === id) as ToolSearchDoc;
+    // first-party: everything, own tags/aliases and the description.
+    expect(by("fp_tool")).toEqual({
+      id: "fp_tool",
+      description: "FP-DESC",
+      tags: ["fp-tag"],
+      aliases: ["fp-alias"],
+    });
+    // remote, not vouched: no description, none of its own words; the HOST's annotations are kept.
+    expect(by("mcp_unv")).toEqual({
+      id: "mcp_unv",
+      tags: ["host-unv-t"],
+      aliases: ["host-unv-a"],
+    });
+    expect(by("mcp_unv")).not.toHaveProperty("description");
+    // remote, vouched: its own tags/aliases count only as description-level text.
+    expect(by("mcp_v")).toEqual({
+      id: "mcp_v",
+      description: "V-DESC v-tag v-alias",
+      tags: [],
+      aliases: [],
+    });
+    // tainted description: never vouched, no own vocabulary.
+    expect(by("tainted_t")).toEqual({ id: "tainted_t", tags: [], aliases: [] });
+    expect(by("tainted_t")).not.toHaveProperty("description");
+    // A2A (remote by kind), not vouched.
+    expect(by("peer_a")).toEqual({ id: "peer_a", tags: [], aliases: [] });
+    expect(by("peer_a")).not.toHaveProperty("description");
+    // host-annotated first-party: host words first, then its own.
+    expect(by("ann_tool")).toEqual({
+      id: "ann_tool",
+      description: "ANN-DESC",
+      tags: ["host-t", "own-t"],
+      aliases: ["host-a", "own-a"],
+    });
+    expect(docs.map((d) => d.id)).toEqual([
+      "fp_tool",
+      "mcp_unv",
+      "mcp_v",
+      "tainted_t",
+      "peer_a",
+      "ann_tool",
+    ]);
+  });
+
+  it("docs are frozen, copied: a factory cannot mutate them, the catalog or later searches", async () => {
+    const own1 = mk("charge_invoice", "Create a payment request", {
+      aliases: ["own-alias"],
+      tags: ["own-tag"],
+    });
+    const attempts: string[] = [];
+    const frozen: boolean[] = [];
+    const factory = (docs: readonly ToolSearchDoc[]): ToolRanker => {
+      frozen.push(Object.isFrozen(docs), Object.isFrozen(docs[0]), Object.isFrozen(docs[0]?.tags));
+      const tryIt = (label: string, f: () => void) => {
+        try {
+          f();
+          attempts.push(`${label}: mutated`);
+        } catch {
+          /* frozen: expected */
+        }
+      };
+      tryIt("outer", () => (docs as ToolSearchDoc[]).push({ id: "x", tags: [], aliases: [] }));
+      tryIt("tags", () => (docs[0]?.tags as string[]).push("HOSTILE"));
+      tryIt("aliases", () => (docs[0]?.aliases as string[]).push("HOSTILE"));
+      tryIt("id", () => {
+        (docs[0] as { id: string }).id = "HOSTILE";
+      });
+      return { kind: "fx", rank: () => [{ id: "charge_invoice", score: 1 }] };
+    };
+    const b = boot({
+      offered: [own1],
+      search: { ranker: factory },
+      provider: script([[SEARCH("x", "s1")], [SEARCH("y", "s2")]]),
+    });
+    await runToEnd(b);
+    expect(attempts).toEqual([]);
+    expect(frozen).toEqual([true, true, true]);
+    expect(own1.tags).toEqual(["own-tag"]);
+    expect(own1.aliases).toEqual(["own-alias"]);
+    // The first search finds it; the second (same catalog, still unmutated) is just as healthy.
+    expect(text(resultsOf(b.requests[1] as LlmRequest)[0]?.content)).toContain("charge_invoice");
+    expect(text(resultsOf(b.requests[2] as LlmRequest)[0]?.content)).not.toContain(
+      "search_unavailable"
+    );
+  });
+
+  it("skill docs copy tags/aliases (never the live arrays) and are frozen", () => {
+    const sk = skill$({
+      id: "s1",
+      name: "s1",
+      description: "d",
+      instructions: instructions$("x"),
+      tags: ["a"],
+      aliases: ["b"],
+    });
+    const [doc] = skillSearchDocs([sk]) as ToolSearchDoc[];
+    expect(doc?.tags).not.toBe(sk.tags);
+    expect(doc?.aliases).not.toBe(sk.aliases);
+    expect(Object.isFrozen(doc)).toBe(true);
+    expect(Object.isFrozen(doc?.tags)).toBe(true);
+    expect(() => (doc?.tags as string[]).push("HOSTILE")).toThrow(TypeError);
+    expect(sk.tags).toEqual(["a"]);
+    expect(sk.aliases).toEqual(["b"]);
+  });
+});
+
+describe("R22e (ADR 0125 D15) review - factory-shape traps are loud", () => {
+  const own1 = mk("charge_invoice", "Create a payment request");
+  const warnings = () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    return {
+      spy,
+      codes: () =>
+        spy.mock.calls
+          .map((c) => (c[1] as { code?: string } | undefined)?.code)
+          .filter((c) => c === "LOOM_AGENT_RANKER_FACTORY"),
+    };
+  };
+
+  it("an async factory is search_unavailable for the model and ONE LOOM_AGENT_RANKER_FACTORY warning per run", async () => {
+    const w = warnings();
+    try {
+      const b = boot({
+        offered: [own1],
+        search: {
+          ranker: (async () => ({ kind: "fx", rank: () => [] })) as never,
+        },
+        provider: script([[SEARCH("x", "s1")], [SEARCH("y", "s2")], [SEARCH("z", "s3")]]),
+      });
+      await runToEnd(b);
+      for (const i of [1, 2, 3]) {
+        expect(text(resultsOf(b.requests[i] as LlmRequest)[0]?.content)).toContain(
+          "search_unavailable"
+        );
+      }
+      expect(w.codes()).toEqual(["LOOM_AGENT_RANKER_FACTORY"]);
+      const msg = String(
+        w.spy.mock.calls.find(
+          (c) => (c[1] as { code?: string })?.code === "LOOM_AGENT_RANKER_FACTORY"
+        )?.[0]
+      );
+      expect(msg).toMatch(/Promise/);
+    } finally {
+      w.spy.mockRestore();
+    }
+  });
+
+  it("an async factory that REJECTS leaves no unhandled rejection (vitest fails the run on one)", async () => {
+    const w = warnings();
+    try {
+      const b = boot({
+        offered: [own1],
+        search: {
+          ranker: (async () => {
+            throw new Error("late");
+          }) as never,
+        },
+        provider: script([[SEARCH("x")]]),
+      });
+      await runToEnd(b);
+      await new Promise((r) => setTimeout(r, 0));
+      expect(w.codes()).toHaveLength(1);
+    } finally {
+      w.spy.mockRestore();
+    }
+  });
+
+  it("NEGATIVE: a sync factory, a throwing sync factory and a non-thenable non-ranker emit no such warning", async () => {
+    const w = warnings();
+    try {
+      for (const ranker of [
+        () => ({ kind: "fx", rank: () => [] }),
+        () => {
+          throw new Error("x");
+        },
+        () => ({}),
+      ]) {
+        const b = boot({
+          offered: [own1],
+          search: { ranker: ranker as never },
+          provider: script([[SEARCH("x")]]),
+        });
+        await runToEnd(b);
+      }
+      expect(w.codes()).toEqual([]);
+    } finally {
+      w.spy.mockRestore();
+    }
+  });
+
+  it("a factory result without a string `kind` is a non-ranker (search_unavailable)", async () => {
+    const b = boot({
+      offered: [own1],
+      search: { ranker: (() => ({ rank: () => [] })) as never },
+      provider: script([[SEARCH("x")]]),
+    });
+    await runToEnd(b);
+    expect(text(resultsOf(b.requests[1] as LlmRequest)[0]?.content)).toContain(
+      "search_unavailable"
+    );
+    expect(
+      decisions(await b.store.read("e1")).filter((d) => d.source === SOURCE_TOOL_SEARCH)
+    ).toEqual([]);
+  });
+
+  it("a CLASS passed as `ranker` is a config error (it would be called without `new`)", async () => {
+    class MyRanker {
+      readonly kind = "c";
+      rank() {
+        return [];
+      }
+    }
+    const b = boot({
+      offered: [own1],
+      search: { ranker: MyRanker as never },
+      provider: script([[SEARCH("x")]]),
+    });
+    await expect(runToEnd(b)).rejects.toThrow(/toolSearch\.ranker is a class/);
+    // An ES5-style constructor with a prototype `rank` is caught too.
+    function Legacy() {}
+    Legacy.prototype.rank = () => [];
+    const b2 = boot({
+      offered: [own1],
+      search: { ranker: Legacy as never },
+      provider: script([[SEARCH("x")]]),
+    });
+    await expect(runToEnd(b2)).rejects.toThrow(/is a class/);
+  });
+
+  it("the object form is validated at config time: a `rank` function and a string `kind`", async () => {
+    const noRank = boot({
+      offered: [own1],
+      search: { ranker: { kind: "x" } as never },
+      provider: script([[SEARCH("x")]]),
+    });
+    await expect(runToEnd(noRank)).rejects.toThrow(/toolSearch\.ranker.*rank/);
+    const noKind = boot({
+      offered: [own1],
+      search: { ranker: { rank: () => [] } as never },
+      provider: script([[SEARCH("x")]]),
+    });
+    await expect(runToEnd(noKind)).rejects.toThrow(/string `kind`/);
+    // NEGATIVE: a plain well-formed factory and object ranker are accepted.
+    const ok = boot({
+      offered: [own1],
+      search: { ranker: { kind: "o", rank: () => [{ id: "charge_invoice", score: 1 }] } },
+      provider: script([[SEARCH("x")]]),
+    });
+    expect((await runToEnd(ok)).status).toBe("completed");
   });
 });

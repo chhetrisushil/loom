@@ -7,7 +7,12 @@ import type { SkillRegistry } from "./SkillRegistry";
 import { isTerminalToolError } from "./toolFailure";
 import { toolResultContent } from "./toolResultContent";
 import { cap, toolSpecFor, validateToolInput } from "./toolSchema";
-import { type ToolRanker, type ToolRankerFactory, firstLineOf } from "./toolSearch";
+import {
+  type ToolRanker,
+  type ToolRankerFactory,
+  firstLineOf,
+  rankerConfigProblem,
+} from "./toolSearch";
 
 // ── R22 (ADR 0125 D11) — mid-loop skill activation ──────────────────────────────
 //
@@ -231,14 +236,9 @@ export class SkillActivationSession {
           `skillActivation.discovery "${discovery}" needs \`toolSearch\` (skills are found through search_tools)`
         );
       }
-      if (
-        cfg.skillRanker !== undefined &&
-        typeof cfg.skillRanker !== "function" &&
-        typeof cfg.skillRanker.rank !== "function"
-      ) {
-        throw new SkillActivationError(
-          "skillActivation.skillRanker must be a ToolRanker or a ToolRankerFactory"
-        );
+      if (cfg.skillRanker !== undefined) {
+        const problem = rankerConfigProblem("skillActivation.skillRanker", cfg.skillRanker);
+        if (problem !== undefined) throw new SkillActivationError(problem);
       }
       this.searchName = opts.search.name;
     } else if (cfg.skillRanker !== undefined) {

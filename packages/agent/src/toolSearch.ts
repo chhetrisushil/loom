@@ -103,6 +103,38 @@ export interface ToolSearchDoc {
  */
 export type ToolRankerFactory = (docs: readonly ToolSearchDoc[]) => ToolRanker;
 
+/**
+ * R22e (ADR 0125 D15) — a config-time problem with a `ranker` / `skillRanker` value, or `undefined`
+ * when it is fine. An object must have a `rank` function and a string `kind`; a function is a
+ * {@link ToolRankerFactory}, and a CLASS passed as one is refused (it would be called without
+ * `new`, fail at the first search, and read as `search_unavailable` forever).
+ */
+export function rankerConfigProblem(label: string, r: unknown): string | undefined {
+  if (typeof r === "function") {
+    const looksLikeClass =
+      /^class\b/.test(Function.prototype.toString.call(r)) ||
+      typeof (r as { prototype?: { rank?: unknown } }).prototype?.rank === "function";
+    return looksLikeClass
+      ? `${label} is a class; pass a ToolRanker instance (\`new X(...)\`) or a factory function \`(docs) => ranker\``
+      : undefined;
+  }
+  if (r === null || typeof r !== "object") {
+    return `${label} must be a ToolRanker or a ToolRankerFactory`;
+  }
+  const o = r as { rank?: unknown; kind?: unknown };
+  if (typeof o.rank !== "function")
+    return `${label} must be a ToolRanker or a ToolRankerFactory: an object with a \`rank\` function`;
+  if (typeof o.kind !== "string") return `${label} must be a ToolRanker with a string \`kind\``;
+  return undefined;
+}
+
+/** Whether a factory returned a usable ranker: an object with a `rank` function and a string `kind`. */
+export const isBuiltRanker = (r: unknown): r is ToolRanker =>
+  r !== null &&
+  typeof r === "object" &&
+  typeof (r as ToolRanker).rank === "function" &&
+  typeof (r as ToolRanker).kind === "string";
+
 // ── Bounds ─────────────────────────────────────────────────────────────────────
 
 /** Query characters read (the rest is dropped before any regex runs). */
@@ -167,12 +199,21 @@ export const DEFAULT_STOPWORDS: readonly string[] = Object.freeze([
   "can",
   "please",
 ]);
-const DEFAULT_STOPWORD_SET: ReadonlySet<string> = new Set(DEFAULT_STOPWORDS);
+/**
+ * The default list in the form a query term takes: through the SAME tokenizer as host lists (a raw
+ * `Set` would never match "this" -> "thi", "does" -> "doe", "these" -> "thes", "those" -> "thos"
+ * after the plural fold). No cap check: the default list is ours.
+ */
+const DEFAULT_STOPWORD_SET: ReadonlySet<string> = new Set(
+  DEFAULT_STOPWORDS.flatMap((w) => tokenizeToolText(w, 4))
+);
 
 /**
  * A host stoplist as a Set of tokenizer-form terms: each entry is normalized like a label (NFKC,
  * case-folded) and tokenized like a query, so `"The"` and `"tools"` match what a query produces.
  * `undefined` = the default list; `[]` disables. More than {@link MAX_STOPWORDS} entries throws.
+ * A multi-word entry (`"out of"`) is tokenized like a query, so it becomes SEPARATE stopwords
+ * (`out`, `of`), not a phrase.
  */
 export function resolveStopwords(list: readonly string[] | undefined): ReadonlySet<string> {
   if (list === undefined) return DEFAULT_STOPWORD_SET;

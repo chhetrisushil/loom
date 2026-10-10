@@ -277,8 +277,10 @@ The re-review (one P2, one P3). Both fixed.
 **D15 — Ranker vocabulary and a query stoplist (R22e, user ruling 2026-10-10: "give the custom ranker the vocabulary rather than make it rebuild it").** Additive; a config with no factory and no `stopwords` changes only in result ORDER (below).
 - **1. One source of the trust policy.** The doc-building of the built-in index is extracted into exported pure functions,
   `toolSearchDocs(tools, { annotations })` and `skillSearchDocs(skills)`, returning `ToolSearchDoc[]` (`{ id, description?, tags, aliases }`).
-  They are exactly what the built-in BM25F indexes (the built-in path calls them; a test pins that the built-in ranking equals
-  `Bm25ToolRanker(toolSearchDocs(...))`). The D7 rules live there and only there: host annotations always; a first-party tool's own
+  They are exactly what the built-in BM25F indexes (the built-in path calls them; the policy itself is pinned by a test that diffs
+  `toolSearchDocs` against a HAND-WRITTEN table of docs, one row per class: first-party, remote un-vouched, remote vouched, tainted,
+  A2A, host-annotated; a built-in-equals-`Bm25ToolRanker(toolSearchDocs(...))` check alone would be self-referential, both sides
+  calling the same function). The D7 rules live there and only there: host annotations always; a first-party tool's own
   tags/aliases/description; a remote tool's description and self-declared tags/aliases only as description-level text and only if
   vouched (`trustJsonSchemaText`); a tainted or un-vouched description never. (The per-tool `trustJsonSchemaText` flag is the
   vouching input, so there is no separate option for it.) A host that wrote its own doc-builder would be re-implementing this
@@ -287,7 +289,7 @@ The re-review (one P2, one P3). Both fixed.
   `ToolRankerFactory = (docs: readonly ToolSearchDoc[]) => ToolRanker` (sync), told apart by `typeof === "function"`. It is
   called at most once per run, lazily on the first search that reaches that ranker, with the docs of THIS run's searchable tools
   (catalog filtered by `namespaces`; never a `\0skill:` key) or of the discoverable skills (raw ids). Recording is unchanged
-  (`ranker: <kind>` of the BUILT ranker; before a build it reads `"custom"`, never recorded), and replay never calls it (tested).
+  (`ranker: <kind>` of the BUILT ranker; before a build it reads `"custom"`, which is never recorded because a ranker without a string `kind` is refused, see Review round 1), and replay never calls it (tested).
   A factory that throws or returns a non-ranker is `search_unavailable` (fixed reason, nothing recorded); terminal errors propagate.
   **A failed factory is not cached**: the next search calls it again. A transient failure (a model still loading) should not
   disable search for the rest of the run, and the retry cost is bounded by `maxSearches`; the failure is never recorded, so replay is unaffected.
@@ -305,6 +307,35 @@ The re-review (one P2, one P3). Both fixed.
   `new Bm25ToolRanker(tools, { stopwords })`. A custom ranker is unaffected.
 - **Behaviour change.** Live result ORDER (and, for queries that matched only through a stopword, the result set) can differ from
   before for the built-in ranker; set `stopwords: []` for the old behaviour. Replay never ranks, so existing logs are unaffected.
+
+### D15 - Review round 1 (R22e, 2026-10-10)
+
+The first adversarial review (Opus; not approved as drafted). All fixed.
+
+- **P2: two `DEFAULT_STOPWORDS` entries never matched.** The default set was built from the raw strings, but a query term goes through
+  `tokenizeToolText`, which folds a trailing plural `s` of a token longer than three characters: "this" became "thi", "does" became
+  "doe" (and "these"/"those" became "thes"/"thos"), so none was ever dropped. The default set is now built through the SAME tokenizer
+  as a host list (without the cap check). Tests: every default entry, tokenized, is in the set; the default and the explicit
+  `[...DEFAULT_STOPWORDS]` give the same set; "does this tool refund" reduces to `tool`, `refund`. Revert-checked (raw set fails all three).
+- **P3: the "one source" parity test was self-referential** (both sides called `toolSearchDocs`). Replaced by a diff of the output
+  against a hand-written expected table, one row per class: first-party, remote un-vouched, remote vouched, tainted, A2A,
+  host-annotated. Revert-checked with the mutation `const own = t` (fails the table and the older vocabulary tests). D15.1 reworded.
+- **P3: docs were shared with the live definitions.** `skillSearchDocs` handed out the skill's own `tags` / `aliases` arrays, so a
+  hostile factory could mutate the registry. Both builders now copy and FREEZE every doc, its label arrays and the outer array
+  (`readonly ToolSearchDoc[]`); a mutating factory throws inside itself (a `search_unavailable` at worst) and cannot reach the
+  registry or later searches. Tests for tools and skills; revert-checked.
+- **P3: factory-shape traps.** (a) A factory that returns a thenable (an `async` factory) now emits ONE `process.emitWarning` per run,
+  code `LOOM_AGENT_RANKER_FACTORY`, naming the shape error (shared by the tool and skill factories); the model still gets only the
+  fixed `search_unavailable`, and a rejecting promise is handled so it cannot become an unhandled rejection. (b) A class passed as
+  `ranker` / `skillRanker` (detected by `/^class\b/` on `Function.prototype.toString`, or a `prototype.rank`) is a config error. (c) The
+  object form of `toolSearch.ranker` is validated at config time like `skillActivation.skillRanker`: it needs a `rank` function.
+- **P3: `"custom"` kind wording. Chosen: validate.** A ranker (object form, or what a factory returns) must have a string `kind`; the
+  object form is a config error without one and a factory result without one is a non-ranker (`search_unavailable`). So the
+  `"custom"` placeholder (read before a factory has built) is never recorded for ANY host, JS included; the earlier wording ("never
+  recorded") held only for a typed host.
+- **P3 (doc): a multi-word stopword entry splits** into separate stopwords (`"out of"` becomes `out` and `of`); it is not a phrase.
+- **P3 (doc): the default list drops "can" / "or" / "it" from mixed queries.** The index is unchanged and an all-stopword query keeps
+  its terms, so only a MIXED query is affected; a domain where those words carry intent sets `stopwords: []` or its own list (user guide).
 
 ## Review round 1 (2026-10-09)
 
