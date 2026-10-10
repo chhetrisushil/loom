@@ -72,7 +72,15 @@ export class EncryptingSnapshotStore implements SnapshotStore {
 
   async save(snapshot: Snapshot): Promise<void> {
     if (this.sensitive.length === 0) return this.inner.save(snapshot);
-    const key = await this.keys.getOrCreate(this.subjectOf(snapshot));
+    const subject = this.subjectOf(snapshot);
+    if (subject === "") {
+      // As EncryptingEventStore: every such snapshot would share one guessable key that erasing the
+      // real subject misses. Refuse rather than seal.
+      throw new TypeError(
+        `EncryptingSnapshotStore: the subject for "${snapshot.executionId}" resolved to "" and the crypto layer refuses to seal under it. Fix \`subjectOf\`.`
+      );
+    }
+    const key = await this.keys.getOrCreate(subject);
     const state = mapPaths(snapshot.state, this.sensitive, (v) => encryptValue(key, v));
     return this.inner.save({ ...snapshot, state: state as ExecutionState });
   }
