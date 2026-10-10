@@ -124,6 +124,21 @@ export class SqliteContentStore implements ContentStore {
    * transaction so a batch is all-or-nothing. `max()` keeps the time monotonic; an unknown
    * address matches no row (no insert), and is reported back as missing.
    */
+  /** One prepared `UPDATE` per distinct chunk size (at most {@link TOUCH_CHUNK} of them): a full chunk is prepared once, not per call. */
+  private readonly touchStatements = new Map<number, Database.Statement>();
+
+  private touchStatement(size: number): Database.Statement {
+    let statement = this.touchStatements.get(size);
+    if (statement === undefined) {
+      statement = this.db.prepare(
+        `UPDATE content_blobs SET touched_at = max(touched_at, ?)
+         WHERE address IN (${Array.from({ length: size }, () => "?").join(",")}) RETURNING address`
+      );
+      this.touchStatements.set(size, statement);
+    }
+    return statement;
+  }
+
   async touch(addresses: readonly string[]): Promise<string[]> {
     const unique = [...new Set(addresses)];
     if (unique.length === 0) return [];
@@ -132,12 +147,9 @@ export class SqliteContentStore implements ContentStore {
     this.db.transaction(() => {
       for (let i = 0; i < unique.length; i += TOUCH_CHUNK) {
         const chunk = unique.slice(i, i + TOUCH_CHUNK);
-        const rows = this.db
-          .prepare(
-            `UPDATE content_blobs SET touched_at = max(touched_at, ?)
-             WHERE address IN (${chunk.map(() => "?").join(",")}) RETURNING address`
-          )
-          .all(touchedAt, ...chunk) as { address: string }[];
+        const rows = this.touchStatement(chunk.length).all(touchedAt, ...chunk) as {
+          address: string;
+        }[];
         for (const row of rows) present.add(row.address);
       }
     })();

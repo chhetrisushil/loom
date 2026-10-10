@@ -25,10 +25,17 @@ export {
   ContentResolvingEventStore,
   type ContentResolvingEventStoreOptions,
 } from "./ContentResolvingEventStore";
+export {
+  ContentTouchingSnapshotStore,
+  type ContentTouchingSnapshotStoreOptions,
+} from "./ContentTouchingSnapshotStore";
+export type { TouchErrorHook, TouchReport } from "./touchAround";
 export { ContentMissingError } from "./errors";
 export { externalizePathsFromSteps } from "./derive";
 export {
   ReclaimOrphansAckError,
+  MIN_ORPHAN_ERASE_MARGIN_MS,
+  ReclaimOrphansMarginError,
   ReclaimOrphansTouchError,
   pinByEventKinds,
   sweepUnpinnedContent,

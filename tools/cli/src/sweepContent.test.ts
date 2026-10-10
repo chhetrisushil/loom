@@ -184,6 +184,33 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     expect(await stillThere(contentDb, orphan)).toBe(false);
   });
 
+  it("refuses --orphans --apply with a TTL below the guard margin (--ttl 0 included); the dry run still reports", async () => {
+    const { db, snap, contentDb, orphan } = await orphanSeed();
+    for (const ttlMs of [0, 59_999]) {
+      await expect(
+        cmdSweepContent({
+          db,
+          snap,
+          content: contentDb,
+          ttlMs,
+          apply: true,
+          orphans: true,
+          noArchive: true,
+        })
+      ).rejects.toThrow(/guard margin of at least 60000ms/);
+    }
+    expect(await stillThere(contentDb, orphan)).toBe(true);
+    const dry = await cmdSweepContent({
+      db,
+      snap,
+      content: contentDb,
+      ttlMs: 0,
+      apply: false,
+      orphans: true,
+    });
+    expect(dry).toContain("would-reclaim orphans");
+  });
+
   it("refuses --orphans --apply with no archive unless --no-archive says there is none", async () => {
     const { db, snap, contentDb, orphan } = await orphanSeed();
     await expect(

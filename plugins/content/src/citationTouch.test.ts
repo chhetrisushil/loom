@@ -1,10 +1,15 @@
+import { runSnapshotStoreDecoratorConformance } from "@loom/conformance";
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import {
+  ContentMissingError,
   ContentResolvingEventStore,
   type ContentStore,
+  ContentTouchingSnapshotStore,
   InMemoryContentStore,
+  type TouchReport,
   encodeValue,
 } from "./index";
 
@@ -158,3 +163,160 @@ describe("ContentResolvingEventStore touches citations that arrive without a put
     expect((await raw.read("e")).length).toBe(2);
   });
 });
+
+describe("onTouchError reports what the touches could not do (ADR 0055 D6 amendment 2)", () => {
+  function hooked(content: InMemoryContentStore) {
+    const raw = new InMemoryAsyncEventStore();
+    const reports: Array<{ err: unknown; info: TouchReport }> = [];
+    const resolving = new ContentResolvingEventStore(raw, content, {
+      externalize: {},
+      onTouchError: (err, info) => reports.push({ err, info }),
+    });
+    return { raw, resolving, reports };
+  }
+
+  it("an after-touch that throws is reported (phase, operation, execution, addresses) and the durable write still succeeds", async () => {
+    const { content } = setup();
+    const ref = await content.put(encodeValue("r"));
+    const { raw, resolving, reports } = hooked(content);
+    const real = content.touch.bind(content);
+    let n = 0;
+    content.touch = async (a) => {
+      if (++n === 2) throw new Error("store down");
+      return real(a);
+    };
+    await resolving.append(evt("e", 0, { output: ref }));
+    expect((await raw.read("e")).length).toBe(1);
+    expect(reports).toHaveLength(1);
+    expect((reports[0]!.err as Error).message).toBe("store down");
+    expect(reports[0]!.info).toEqual({
+      phase: "after",
+      operation: "append",
+      executionId: "e",
+      addresses: [ref.__loomContent],
+      missing: [],
+    });
+  });
+
+  it("a cited bare ref the store reports MISSING is reported as a ContentMissingError, from either touch, on every write path", async () => {
+    const { content } = setup();
+    const ghost = { __loomContent: `sha256:${"b".repeat(64)}` };
+    const { raw, resolving, reports } = hooked(content);
+    await resolving.append(evt("a", 0, { output: ghost }));
+    expect(reports.map((r) => r.info.phase)).toEqual(["before", "after"]); // gone at both touches
+    expect(reports[0]!.err).toBeInstanceOf(ContentMissingError);
+    expect((reports[0]!.err as ContentMissingError).contentAddress).toBe(ghost.__loomContent);
+    expect(reports[0]!.info.missing).toEqual([ghost.__loomContent]);
+    reports.length = 0;
+    await resolving.appendBatch!([evt("b", 0, { output: ghost })]);
+    await raw.append(evt("p", 0, { output: ghost }));
+    await resolving.copyPrefix!("p", "f", 0, {});
+    expect(reports.map((r) => r.info.operation)).toEqual([
+      "appendBatch",
+      "appendBatch",
+      "copyPrefix",
+      "copyPrefix",
+    ]);
+  });
+
+  it("a missing claim-check envelope ref is NOT reported (it may be reclaimed on a TTL by design), nor is anything when all blobs are present", async () => {
+    const { content } = setup();
+    const present = await content.put(encodeValue("p"));
+    const { resolving, reports } = hooked(content);
+    const gone = {
+      __loomClaimCheck: true,
+      ref: { __loomContent: `sha256:${"c".repeat(64)}` },
+      size: 1,
+    };
+    await resolving.append(evt("e", 0, { output: gone }));
+    await resolving.append(evt("e", 1, { output: present }));
+    expect(reports).toEqual([]);
+  });
+
+  it("a throwing observer cannot fail or change a write; a before-touch failure still rejects and is not reported", async () => {
+    const { content, raw } = setup();
+    const ghost = { __loomContent: `sha256:${"d".repeat(64)}` };
+    const resolving = new ContentResolvingEventStore(raw, content, {
+      externalize: {},
+      onTouchError: () => {
+        throw new Error("logger broke");
+      },
+    });
+    await resolving.append(evt("e", 0, { output: ghost }));
+    expect((await raw.read("e")).length).toBe(1);
+    content.touch = async () => {
+      throw new Error("before fails");
+    };
+    await expect(resolving.append(evt("e", 1, { output: ghost }))).rejects.toThrow(/before fails/);
+    expect((await raw.read("e")).length).toBe(1);
+  });
+});
+
+describe("ContentTouchingSnapshotStore (the fork's seed snapshot is a citation path)", () => {
+  const snapshot = (executionId: string, sequence: number, state: unknown) =>
+    ({
+      id: `${executionId}-${sequence}`,
+      executionId,
+      workflowId: "wf",
+      sequence,
+      state,
+      createdAt: OLD,
+    }) as never;
+
+  it("touches the cited addresses of a saved state (R5 media source and claim-check envelope included), before and after, then stores it unchanged", async () => {
+    const { clock, content } = setup();
+    const media = await content.put(encodeValue("media"));
+    const offloaded = await content.put(encodeValue("offloaded"));
+    const inner = new InMemoryAsyncSnapshotStore();
+    const store = new ContentTouchingSnapshotStore(inner, content);
+    clock.now = NOW;
+    const state = {
+      frames: {
+        s: {
+          output: {
+            clip: { kind: "ref", ref: { address: media.__loomContent } },
+            rows: { __loomClaimCheck: true, ref: offloaded, size: 1 },
+          },
+        },
+      },
+    };
+    await store.save(snapshot("c", 3, state));
+    expect(await touchedAt(content, media.__loomContent)).toBe(NOW);
+    expect(await touchedAt(content, offloaded.__loomContent)).toBe(NOW);
+    expect((await store.loadLatest("c"))?.state).toEqual(state);
+    expect((await store.loadAt("c", 3))?.sequence).toBe(3);
+    await store.deleteExecution!("c");
+    expect(await store.loadLatest("c")).toBeNull();
+  });
+
+  it("a before-touch failure aborts the save; an after-touch failure is reported and the save stands; a ref-free state costs no touch", async () => {
+    const { content } = setup();
+    const ref = await content.put(encodeValue("r"));
+    const inner = new InMemoryAsyncSnapshotStore();
+    const reports: TouchReport[] = [];
+    const store = new ContentTouchingSnapshotStore(inner, content, {
+      onTouchError: (_e, info) => reports.push(info),
+    });
+    let calls = 0;
+    const real = content.touch.bind(content);
+    content.touch = async (a) => {
+      calls++;
+      if (calls === 1) throw new Error("no touch");
+      if (calls === 3) throw new Error("no touch after"); // 2 = the next save's before-touch
+      return real(a);
+    };
+    await expect(store.save(snapshot("c", 1, { x: ref }))).rejects.toThrow(/no touch/);
+    expect(await inner.loadLatest("c")).toBeNull();
+    await store.save(snapshot("c", 2, { x: ref }));
+    expect((await inner.loadLatest("c"))?.sequence).toBe(2);
+    expect(reports.map((r) => [r.phase, r.operation])).toEqual([["after", "snapshotSave"]]);
+    calls = 0;
+    await store.save(snapshot("c", 3, { plain: 1 }));
+    expect(calls).toBe(0);
+  });
+});
+
+runSnapshotStoreDecoratorConformance(
+  "ContentTouchingSnapshotStore",
+  (inner) => new ContentTouchingSnapshotStore(inner, new InMemoryContentStore())
+);

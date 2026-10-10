@@ -21,7 +21,11 @@ import type { Projection, ProjectionRuntime } from "@loom/projection-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage, WorkerRuntime } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
-import { checkContentStoreTouchContract, settle } from "./contentTouchContract";
+import {
+  checkContentStoreTouchContract,
+  checkTouchNeverMovesBackwards,
+  settle,
+} from "./contentTouchContract";
 import { checkDeclaredMediaOnWire } from "./mediaWire";
 import { checkPartsReadAsText } from "./partsTextRead";
 import { checkToolCallStreamParity } from "./toolCallParity";
@@ -2433,6 +2437,11 @@ export function runContentStoreConformance(
       expect(await touchedAt(store, ref.__loomContent)).toBe(2_000);
       expect(await store.deleteIfUntouchedSince(ref, 1_500)).toBe(false);
       if (store.touchClock !== undefined) expect(await store.touchClock()).toBe(1_000);
+    });
+
+    it("touch takes the maximum too: a touch under a clock that stepped back never lowers a touch time (when a clocked factory is given)", async () => {
+      if (options.clocked === undefined) return;
+      await checkTouchNeverMovesBackwards(options.clocked);
     });
 
     it("listPage covers every blob exactly once across pages, even while the pages are being deleted (when supported)", async () => {

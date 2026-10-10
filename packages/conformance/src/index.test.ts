@@ -37,7 +37,10 @@ import type {
   WorkerRuntime,
 } from "@loom/worker-runtime";
 import { describe, expect, it } from "vitest";
-import { checkContentStoreTouchContract } from "./contentTouchContract";
+import {
+  checkContentStoreTouchContract,
+  checkTouchNeverMovesBackwards,
+} from "./contentTouchContract";
 import {
   optionalSurfaceProblems,
   runEventStoreDecoratorConformance,
@@ -503,16 +506,18 @@ describe("checkContentStoreTouchContract", () => {
   function fixture(opts: {
     bump: boolean;
     methods?: readonly string[];
-    touch?: "ok" | "noop" | "inserts";
+    touch?: "ok" | "noop" | "inserts" | "overwrites";
+    now?: () => number;
   }) {
+    const clockNow = opts.now ?? Date.now;
     const blobs = new Map<string, { bytes: Uint8Array; touchedAt: number }>();
     const key = (b: Uint8Array) => Buffer.from(b).toString("hex");
     const store: Record<string, unknown> = {
       put: async (bytes: Uint8Array) => {
         const address = key(bytes);
         const existing = blobs.get(address);
-        if (existing === undefined) blobs.set(address, { bytes, touchedAt: Date.now() });
-        else if (opts.bump) existing.touchedAt = Math.max(existing.touchedAt, Date.now());
+        if (existing === undefined) blobs.set(address, { bytes, touchedAt: clockNow() });
+        else if (opts.bump) existing.touchedAt = Math.max(existing.touchedAt, clockNow());
         return { __loomContent: address };
       },
       get: async (ref: { __loomContent: string }) => blobs.get(ref.__loomContent)?.bytes ?? null,
@@ -526,7 +531,7 @@ describe("checkContentStoreTouchContract", () => {
       listPage: async () => ({
         entries: [...blobs].map(([address, b]) => ({ address, touchedAt: b.touchedAt })),
       }),
-      touchClock: async () => Date.now(),
+      touchClock: async () => clockNow(),
     };
     if (opts.touch !== undefined) {
       store.touch = async (addresses: readonly string[]) => {
@@ -536,7 +541,8 @@ describe("checkContentStoreTouchContract", () => {
           if (b === undefined) {
             missing.push(a);
             if (opts.touch === "inserts") blobs.set(a, { bytes: new Uint8Array(), touchedAt: 0 });
-          } else if (opts.touch !== "noop") b.touchedAt = Math.max(b.touchedAt, Date.now());
+          } else if (opts.touch === "overwrites") b.touchedAt = clockNow();
+          else if (opts.touch !== "noop") b.touchedAt = Math.max(b.touchedAt, clockNow());
         }
         return [...new Set(missing)];
       };
@@ -567,6 +573,30 @@ describe("checkContentStoreTouchContract", () => {
     await expect(
       checkContentStoreTouchContract(fixture({ bump: true, touch: "inserts" }))
     ).rejects.toThrow(/created a blob/);
+  });
+
+  it("SPI 1.4.0 touch: FAILS a store that has touch but none of the 1.3.0 set, or only part of it", async () => {
+    await expect(
+      checkContentStoreTouchContract(fixture({ bump: true, touch: "ok", methods: [] }))
+    ).rejects.toThrow(/touch needs the whole SPI 1.3.0 set/);
+    await expect(
+      checkContentStoreTouchContract(
+        fixture({ bump: true, touch: "ok", methods: ["deleteIfUntouchedSince", "listPage"] })
+      )
+    ).rejects.toThrow(/touch, SPI 1.4.0, needs them all/);
+  });
+
+  it("SPI 1.4.0 touch takes the maximum: passes max(), FAILS a touch that overwrites under a clock that stepped back", async () => {
+    const clocked = (touch: "ok" | "overwrites") => (now: () => number) =>
+      fixture({ bump: true, touch, now });
+    await expect(checkTouchNeverMovesBackwards(clocked("ok"))).resolves.toBeUndefined();
+    await expect(checkTouchNeverMovesBackwards(clocked("overwrites"))).rejects.toThrow(
+      /moved the touch time backwards/
+    );
+    // A store with no touch has nothing to check.
+    await expect(
+      checkTouchNeverMovesBackwards((now) => fixture({ bump: true, now }))
+    ).resolves.toBeUndefined();
   });
 
   it("FAILS a partial SPI 1.3.0 set, and passes a store with none of it", async () => {

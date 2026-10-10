@@ -761,7 +761,14 @@ function encodeValue(value: unknown): Uint8Array; function decodeValue(bytes: Ui
 function isContentRef(value: unknown): value is ContentRef
 // adds every ref in `value` to `into` (first per address wins; a claim-check envelope is a leaf); true iff it found one
 function collectContentRefs(value: unknown, into: Map<string, ContentRef>): boolean
-class ContentResolvingEventStore implements EventStore {}   // externalize on write, resolve on read
+class ContentResolvingEventStore implements EventStore {}   // externalize on write, resolve on read;
+//   options: { externalize, onTouchError?: (err, info: TouchReport) => void } — SPI 1.4.0 touch around ref-carrying
+//   writes: BEFORE (a failure aborts the write), AFTER (best-effort; a failure is reported here, not raised);
+//   either touch finding a cited BARE ref missing is reported here as ContentMissingError (data loss already happened)
+class ContentTouchingSnapshotStore implements SnapshotStore {}   // (inner, content, { onTouchError? }) touches the
+//   citations of every SAVED state: the fork seed of a compacted parent is a citation path ContentResolvingEventStore
+//   cannot see. Wrap OUTSIDE an EncryptingSnapshotStore.
+const MIN_ORPHAN_ERASE_MARGIN_MS: 60000 // ReclaimOrphansMarginError below this (see reclaimOrphans)
 class CachingContentStore implements ContentStore {}        // forwards every optional the inner store has
 // GC: a ref is reachable only from the log (and from `roots`), so a sweep needs to know what PINS one
 function sweepUnpinnedContent(options: ContentSweepOptions): Promise<ContentSweepReport>
@@ -776,6 +783,10 @@ interface ContentSweepOptions {
   reclaimOrphans?: { completeScan: true }  // D6: erasing REQUIRES the ack (bare `true` throws ReclaimOrphansAckError;
                                         // a dryRun may pass `true`); live stores BEFORE archives.
                                         // erasing also REQUIRES contentStore.touch (SPI 1.4.0) or it throws ReclaimOrphansTouchError (dryRun exempt)
+                                        // The guarantee is D5's: touch-before protects a write shorter than the margin
+                                        // (store-now − cutoff); touch-after is best-effort. An ERASING pass refuses
+                                        // olderThanMs <= 0 or a margin < MIN_ORPHAN_ERASE_MARGIN_MS (60 s) with
+                                        // ReclaimOrphansMarginError (dryRun exempt)
                                         // needs listPage + deleteIfUntouchedSince, and
                                         // snapshotStores when a scanned store can truncatePrefix
 }

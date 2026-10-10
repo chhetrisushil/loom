@@ -168,10 +168,20 @@ export interface ContentSweepBase {
    * made mid-sweep makes `deleteIfUntouchedSince` refuse. To ERASE, the content store MUST
    * implement `touch` or the sweep throws {@link ReclaimOrphansTouchError} (a `dryRun` need not).
    * The log must be written through a `ContentResolvingEventStore` over that store: a writer
-   * that copies refs some other way is outside the guarantee. Residual window: a touch lands a
-   * round trip before/after the write it guards, so a sweep whose whole mark-to-erase interval
-   * fits inside that single round trip can still lose; any real sweep (a full scan plus a listing)
-   * is far longer.
+   * that copies refs some other way is outside the guarantee.
+   *
+   * THE GUARANTEE IS D5'S, NOT THE TOUCH'S. The cutoff is `touchClock() - olderThanMs`. The
+   * touch BEFORE a write is what makes a sweep whose cutoff is later refuse; so the race is
+   * closed while a write's touch-to-commit window is shorter than the margin
+   * `store-now - cutoff` (the TTL, or the distance of an explicit `touchedBefore` from the
+   * store's clock). The touch AFTER the write is a best-effort extension of that window (it
+   * is not retried and an error is reported through `onTouchError`, not raised); do not
+   * count on it. With a zero or tiny margin the window is unbounded: a fork whose before-touch
+   * is older than the cutoff and which commits after the scan has passed the child is erased
+   * under. So an ERASING orphan pass refuses `olderThanMs <= 0` and any cutoff closer to the
+   * store's clock than {@link MIN_ORPHAN_ERASE_MARGIN_MS} with {@link ReclaimOrphansMarginError};
+   * a `dryRun` is unaffected. Pick a margin well above your longest write (a fork's copy of a
+   * long prefix included).
    */
   reclaimOrphans?: ReclaimOrphansAck | boolean;
 }
@@ -236,6 +246,31 @@ export class ReclaimOrphansTouchError extends TypeError {
       "sweepUnpinnedContent: reclaimOrphans needs a content store with touch() (ContentStore SPI 1.4.0) to ERASE. Without it a fork (copyPrefix) or an append that carries an existing ref cannot mark the blob re-cited, so an orphan sweep racing a fork or a delete can erase a blob a live log still cites. Add touch() to the store (SqliteContentStore and InMemoryContentStore have it; a CachingContentStore forwards it), or run with dryRun: true."
     );
     this.name = "ReclaimOrphansTouchError";
+  }
+}
+
+/**
+ * The smallest margin, in ms, between the content store's clock and the guard cutoff that an
+ * ERASING orphan pass accepts (ADR 0055 D6 amendment 2). A write's touch-to-commit window must
+ * be shorter than the margin for the touch to protect it; 60 s is far above an append and
+ * above a fork's prefix copy at any realistic size, and an operator who needs a bigger one
+ * simply passes a larger TTL.
+ */
+export const MIN_ORPHAN_ERASE_MARGIN_MS = 60_000;
+
+/**
+ * An ERASING `reclaimOrphans` pass was configured with a zero/negative `olderThanMs`, or a
+ * cutoff (`touchedBefore`) closer to the content store's clock than
+ * {@link MIN_ORPHAN_ERASE_MARGIN_MS}. Nothing was read or erased. With no margin the
+ * touch-before-write has no window to protect: a write can touch, the sweep read a later cutoff,
+ * and the write commit after the scan, so a blob a live log cites is erased.
+ */
+export class ReclaimOrphansMarginError extends TypeError {
+  constructor(readonly marginMs: number) {
+    super(
+      `sweepUnpinnedContent: an erasing reclaimOrphans pass needs a guard margin of at least ${MIN_ORPHAN_ERASE_MARGIN_MS}ms between the content store's clock and the cutoff (received ${marginMs}ms: olderThanMs, or touchedBefore's distance from the store's clock). The touch that protects a fork or an append only covers a write whose touch-to-commit window is shorter than that margin; with olderThanMs <= 0 the window is unbounded. Raise olderThanMs / lower touchedBefore, or run with dryRun: true.`
+    );
+    this.name = "ReclaimOrphansMarginError";
   }
 }
 
@@ -361,6 +396,17 @@ export async function sweepUnpinnedContent(
     }
   }
   const dryRun = options.dryRun === true;
+  if (orphans && !dryRun) {
+    // The touch protects a write only while its touch-to-commit window is shorter than the
+    // margin between the store's clock and the cutoff (module note; ADR 0055 D6 amendment 2).
+    if (!(options.olderThanMs > 0)) throw new ReclaimOrphansMarginError(options.olderThanMs);
+    if (store.touchClock !== undefined) {
+      const margin = (await store.touchClock()) - cutoff;
+      if (!(margin >= MIN_ORPHAN_ERASE_MARGIN_MS)) throw new ReclaimOrphansMarginError(margin);
+    } else if (options.olderThanMs < MIN_ORPHAN_ERASE_MARGIN_MS) {
+      throw new ReclaimOrphansMarginError(options.olderThanMs);
+    }
+  }
   /** Erase one address; `true` iff it is gone because of this sweep (or would be). */
   const erase = async (address: string): Promise<boolean> => {
     if (dryRun) return true;
