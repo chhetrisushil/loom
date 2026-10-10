@@ -4,7 +4,9 @@ import {
   type RendererRegistry,
   type Widget,
   type WidgetAction,
+  type WidgetValueCheck,
   asCell,
+  describeWidgetStatus,
   isLayoutId,
   isWidget,
   resolveWidgetStatus,
@@ -24,10 +26,7 @@ import { h } from "./safeDom";
 // or swept. Nothing in this file touches `innerHTML`; all markup goes through `h`.
 
 /** A caller-supplied value-contract check (the slot between `error`/`empty` and `stale`). */
-export type WidgetValueCheck = (
-  widget: Widget,
-  value: unknown
-) => { code: string; message: string } | undefined;
+export type { WidgetValueCheck };
 
 export interface Ctx {
   readonly doc: Document;
@@ -69,23 +68,6 @@ const elementOf = (e: Entry): HTMLElement => (e.kind === "widget" ? e.host : e.o
 
 // ── Widget frame: the canonical binding-status matrix ─────────────────────────
 
-type Shown = "error" | "empty" | "stale" | "pending" | "loading" | "ready";
-
-function shown(
-  widget: Widget,
-  value: unknown,
-  status: BindingStatus | undefined,
-  contract: boolean
-): Shown | undefined {
-  if (widget.binding?.status === undefined) return undefined; // no channel declared
-  if (status?.state === "error") return "error";
-  if (status?.state === "empty") return "empty";
-  if (contract) return "error";
-  if (status?.state === "stale") return "stale";
-  if (status?.state === "pending") return value === undefined ? "loading" : "pending";
-  return value === undefined ? "loading" : "ready";
-}
-
 /** Draw a widget; any failure (a throwing `check`, a malformed `source`) becomes the error placeholder, never the message. */
 function drawWidget(e: WidgetEntry, ctx: Ctx): void {
   try {
@@ -106,35 +88,26 @@ function drawWidget(e: WidgetEntry, ctx: Ctx): void {
 function drawWidgetUnsafe(e: WidgetEntry, ctx: Ctx): void {
   const { widget, value, status } = e;
   const doc = ctx.doc;
-  const noValue = status?.state === "error" || status?.state === "empty";
-  const hasChannel = widget.binding?.status !== undefined;
-  const contract = hasChannel && !noValue ? ctx.check?.(widget, value) : undefined;
-  const state = shown(widget, value, status, contract !== undefined);
+  // The decision is shared with the React and terminal renderers (`describeWidgetStatus`); this
+  // file owns only the markup. A malformed widget throws into `drawWidget`'s error placeholder.
+  const d = describeWidgetStatus(widget, value, status, ctx.check);
+  if (d.tag === "invalid") throw new TypeError(`renderer-dom: ${d.reason}`);
+  const state = d.tag === "inert" ? undefined : d.tag;
   const label = widget.title ?? widget.kind;
-  const message = contract ? contract.message : status?.finding?.message;
 
   const children: Node[] = [];
   const marker = (tag: string, name: string, text: string, attrs: Record<string, string> = {}) =>
     children.push(h(doc, tag, { "data-binding-marker": name, ...attrs }, text));
-  if (state === "error")
-    marker("div", "error", `✗ ${label}: ${message ?? "error"}`, { role: "alert" });
-  if (state === "empty")
-    marker("div", "empty", `○ ${label}: ${message ?? "no data"}`, { role: "status" });
+  if (state === "error") marker("div", "error", `✗ ${label}: ${d.message}`, { role: "alert" });
+  if (state === "empty") marker("div", "empty", `○ ${label}: ${d.message}`, { role: "status" });
   if (state === "stale" && value === undefined)
-    marker("div", "stale", `~ ${label}: ${message ?? "stale"} — no value`);
+    marker("div", "stale", `~ ${label}: ${d.message} — no value`);
   if (state === "stale" && value !== undefined)
-    children.push(h(doc, "span", { "data-binding-marker": "stale", title: message }, "~"));
+    children.push(h(doc, "span", { "data-binding-marker": "stale", title: d.finding }, "~"));
   if (state === "pending") marker("span", "pending", "⋯");
   if (state === "loading") marker("div", "loading", "…");
 
-  if (
-    state === undefined ||
-    state === "ready" ||
-    state === "pending" ||
-    (state === "stale" && value !== undefined)
-  ) {
-    children.push(drawBody(e, ctx));
-  }
+  if (d.showBody) children.push(drawBody(e, ctx));
   e.host.replaceChildren(...children);
 
   const set = (name: string, v: string | undefined) =>
@@ -142,11 +115,8 @@ function drawWidgetUnsafe(e: WidgetEntry, ctx: Ctx): void {
   set("data-binding-state", state);
   set("data-source-type", widget.source?.type);
   set("data-source-version", widget.source?.version);
-  const degraded = widget.source?.degradedFrom;
-  if (degraded !== undefined && !Array.isArray(degraded))
-    throw new TypeError("renderer-dom: source.degradedFrom is not an array");
-  const chain = degraded?.map((d) => `${d.type}@${d.version}`).join(" › ");
-  set("data-degraded", chain || undefined);
+  const chain = d.degradedChain;
+  set("data-degraded", chain);
   set(
     "title",
     chain

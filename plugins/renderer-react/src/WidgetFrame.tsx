@@ -1,4 +1,9 @@
-import type { BindingStatus, Widget } from "@loom/blueprint-runtime";
+import {
+  type BindingStatus,
+  type Widget,
+  type WidgetValueCheck,
+  describeWidgetStatus,
+} from "@loom/blueprint-runtime";
 import type React from "react";
 
 // ── WidgetFrame ────────────────────────────────────────────────────────────────
@@ -16,38 +21,13 @@ import type React from "react";
 // value)` the CALLER supplies. loom never validates a value; a framework's own kind contract
 // plugs in there and renders as the error row when it fails.
 
-type Shown = "error" | "empty" | "stale" | "pending" | "loading" | "ready";
-
-function shown(
-  hasChannel: boolean,
-  status: BindingStatus | undefined,
-  value: unknown
-): Shown | undefined {
-  if (!hasChannel) return undefined; // no channel declared → 1.0.0 behaviour, frame is inert
-  if (status?.state === "error") return "error";
-  // The upstream answered with no subject to show. Not an error; a value beside it is ignored.
-  if (status?.state === "empty") return "empty";
-  if (status?.state === "stale") return "stale";
-  if (status?.state === "pending") return value === undefined ? "loading" : "pending";
-  // `status` undefined (not yet written, or malformed) is treated the same as
-  // no status: a value that already exists is shown as "ready" rather than
-  // hidden behind a spinner just because its status write hasn't landed.
-  return value === undefined ? "loading" : "ready";
-}
-
-const chain = (w: Widget) =>
-  w.source?.degradedFrom?.map((d) => `${d.type}@${d.version}`).join(" › ");
-
 /**
  * A caller-supplied value-contract check — the documented slot the matrix leaves between
  * `error` and `stale` (design §5). loom validates nothing about a bound VALUE itself: what a
  * `Trend` or an `Investigation` must look like is a framework's catalogue vocabulary, not the
  * IR's. A framework plugs its own `checkKindValue` in here; a finding renders as the error row.
  */
-export type WidgetValueCheck = (
-  widget: Widget,
-  value: unknown
-) => { code: string; message: string } | undefined;
+export type { WidgetValueCheck };
 
 export const WidgetFrame: React.FC<{
   widget: Widget;
@@ -67,11 +47,17 @@ export const WidgetFrame: React.FC<{
     // Nothing to report — no wrapper, no attributes, no DOM node added.
     return children;
   }
-  const noValue = status?.state === "error" || status?.state === "empty";
-  const contract = hasChannel && !noValue ? check?.(widget, value) : undefined;
-  const state = contract ? "error" : shown(hasChannel, status, value);
-  const errorMessage = contract ? contract.message : (status?.finding?.message ?? "error");
-  const degraded = chain(widget);
+  const d = describeWidgetStatus(widget, value, status, check);
+  if (d.tag === "invalid") {
+    // A malformed `source` is the error placeholder, never a throw and never the cause.
+    return (
+      <div data-widget-frame={widget.id} data-placeholder="error">
+        {`[Renderer for ${widget.kind} failed]`}
+      </div>
+    );
+  }
+  const state = d.tag === "inert" ? undefined : d.tag;
+  const degraded = d.degradedChain;
   const title = widget.title ?? widget.kind;
   return (
     <div
@@ -88,33 +74,29 @@ export const WidgetFrame: React.FC<{
     >
       {state === "error" && (
         <div role="alert" data-binding-marker="error">
-          ✗ {title}: {errorMessage}
+          ✗ {title}: {d.message}
         </div>
       )}
       {state === "empty" && (
         // A polite live region: announced like a status, never as an alert — it is not an error.
         // biome-ignore lint/a11y/useSemanticElements: <output> is a calculation result, and its implicit live-region support varies by screen reader; an explicit role="status" on a div is the reliably announced form
         <div role="status" data-binding-marker="empty">
-          ○ {title}: {status?.finding?.message ?? "no data"}
+          ○ {title}: {d.message}
         </div>
       )}
       {state === "stale" && value === undefined && (
         <div data-binding-marker="stale">
-          ~ {title}: {status?.finding?.message ?? "stale"} — no value
+          ~ {title}: {d.message} — no value
         </div>
       )}
       {state === "stale" && value !== undefined && (
-        <span data-binding-marker="stale" title={status?.finding?.message}>
+        <span data-binding-marker="stale" title={d.finding}>
           ~
         </span>
       )}
       {state === "pending" && <span data-binding-marker="pending">⋯</span>}
       {state === "loading" && <div data-binding-marker="loading">…</div>}
-      {(state === undefined ||
-        state === "ready" ||
-        (state === "stale" && value !== undefined) ||
-        state === "pending") &&
-        children}
+      {d.showBody && children}
     </div>
   );
 };

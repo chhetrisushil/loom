@@ -42,6 +42,12 @@ export { blueprintPins, checkBlueprintPins } from "./pins";
 export type { PinFinding, PinFindingCode, PinReport, VersionPins } from "@loom/core";
 export { RendererRegistry } from "./RendererRegistry";
 export { traverseBlueprint, resolveWidgetValue, resolvePath } from "./traverseBlueprint";
+export { describeWidgetStatus } from "./widgetStatus";
+export type {
+  WidgetShownState,
+  WidgetStatusDescriptor,
+  WidgetValueCheck,
+} from "./widgetStatus";
 export { traverseBlueprintAsync } from "./traverseBlueprintAsync";
 export type {
   AsyncTraversalOptions,
