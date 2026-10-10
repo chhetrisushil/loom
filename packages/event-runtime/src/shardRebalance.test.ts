@@ -279,3 +279,48 @@ describe("ShardedEventStore — rebalancing", () => {
     await store.close();
   });
 });
+
+describe("ShardedEventStore anchors (ADR 0129)", () => {
+  const observe = async (store: ShardedEventStore, id: string) => {
+    const r = await store.appendIfUnchanged!(id, null);
+    if (r.appended || r.head === null) throw new Error("expected an observation");
+    return { head: r.head, fence: r.fence, anchor: r.anchor as string };
+  };
+
+  it("per-shard counters both start at 1, yet the anchors differ by shard and say so in a documented format", async () => {
+    const store = new ShardedEventStore(shards(2), {
+      shardOf: (id) => (id.startsWith("a") ? 0 : 1),
+    });
+    await store.append(evt("a-1", 0));
+    await store.append(evt("b-1", 0));
+    const a = await observe(store, "a-1");
+    const b = await observe(store, "b-1");
+    expect(a.anchor).toBe("s0/1");
+    expect(b.anchor).toBe("s1/1"); // the inner stores BOTH issued "1"
+    // can collide with neither a bare incarnation nor a legacy `<timestamp>:<id>` marker
+    expect(a.anchor).not.toMatch(/^\d/);
+  });
+
+  it("an id re-created on ANOTHER shard (equal head, equal inner counter) is a different incarnation -> `moved`", async () => {
+    let home = 0;
+    const store = new ShardedEventStore(shards(2), { shardOf: () => home });
+    await store.append(evt("x", 0));
+    await store.append(evt("x", 1));
+    const seen = await observe(store, "x"); // incarnation 1 on shard 0
+    await store.deleteExecution!("x");
+    home = 1;
+    await store.append(evt("x", 0));
+    await store.append(evt("x", 1)); // incarnation 1 on shard 1: same id, head, token, inner anchor
+    expect(await store.appendIfUnchanged!("x", { ...evt("x", 2), id: "late" }, seen)).toMatchObject(
+      {
+        appended: false,
+        reason: "moved",
+      }
+    );
+    expect((await store.read("x")).map((e) => e.sequence)).toEqual([0, 1]);
+    // the observation of the new shard's incarnation is honoured
+    expect(await store.appendIfUnchanged!("x", evt("x", 2), await observe(store, "x"))).toEqual({
+      appended: true,
+    });
+  });
+});

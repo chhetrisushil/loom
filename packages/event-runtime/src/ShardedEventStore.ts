@@ -106,6 +106,21 @@ function commonOptional(shards: readonly EventStore[]): EventStore {
   return surface as unknown as EventStore;
 }
 
+/**
+ * ADR 0129 — an incarnation counter is per shard, so the same number can be issued by two shards
+ * (a migrating bucket re-creates an id on another shard). The anchor this store hands out is
+ * therefore `s<shardIndex>/<inner anchor>`: it starts with a letter, so it can collide neither
+ * with a bare incarnation (digits) nor with the legacy `<timestamp>:<id>` marker (digits first),
+ * and an observation taken on one shard never equals the anchor of another.
+ */
+const shardAnchor = (shard: number, inner: string): string => `s${shard}/${inner}`;
+/** The inner anchor if `anchor` was issued by `shard`; otherwise the string unchanged, which no
+ * inner store can have issued (it starts with `s`), so the shard answers `moved`. */
+const unshardAnchor = (anchor: string, shard: number): string => {
+  const prefix = `s${shard}/`;
+  return anchor.startsWith(prefix) ? anchor.slice(prefix.length) : anchor;
+};
+
 export class ShardedEventStore implements EventStore {
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
@@ -143,8 +158,18 @@ export class ShardedEventStore implements EventStore {
       readRange: async (id, from, to) => (await this.route(id)).readRange!(id, from, to),
       acquireFence: async (id) => (await this.route(id)).acquireFence!(id),
       acquireFenceIf: async (id, expect) => (await this.route(id)).acquireFenceIf!(id, expect),
-      appendIfUnchanged: async (id, event, expect) =>
-        (await this.route(id)).appendIfUnchanged!(id, event, expect),
+      appendIfUnchanged: async (id, event, expect) => {
+        const i = await this.routeIndex(id);
+        const shard = this.shards[i] as EventStore;
+        const result = await shard.appendIfUnchanged!(
+          id,
+          event,
+          expect === undefined ? undefined : { ...expect, anchor: unshardAnchor(expect.anchor, i) }
+        );
+        return "anchor" in result && typeof result.anchor === "string"
+          ? { ...result, anchor: shardAnchor(i, result.anchor) }
+          : result;
+      },
       deleteExecution: async (id) => {
         await (await this.route(id)).deleteExecution!(id);
         this.placementCache.delete(id);
