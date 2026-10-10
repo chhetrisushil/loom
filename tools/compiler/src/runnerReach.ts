@@ -223,7 +223,8 @@ function calleeMethodName(call: ts.CallExpression): string | undefined {
 function stepBindingEscapes(
   sourceFile: ts.SourceFile,
   name: string,
-  ctxNames: ReadonlySet<string>
+  ctxNames: ReadonlySet<string>,
+  isLoomFlowBuilder: (callee: ts.Expression) => boolean = () => false
 ): boolean {
   let escapes = false;
   const strip = (n: ts.Node): ts.Node => {
@@ -348,6 +349,26 @@ function stepBindingEscapes(
             };
             scan(sourceFile);
             ok = clean;
+          } else if (
+            host !== undefined &&
+            ts.isPropertyAssignment(host) &&
+            host.initializer === outer &&
+            propName(host.name) === "steps" &&
+            ts.isObjectLiteralExpression(strip(host.parent)) &&
+            (() => {
+              const lit = strip(host.parent);
+              const call = lit.parent;
+              return (
+                call !== undefined &&
+                ts.isCallExpression(call) &&
+                call.arguments[0] === lit &&
+                isLoomFlowBuilder(call.expression)
+              );
+            })()
+          ) {
+            // `flow$({ steps: [s] })` DECLARES the step: loom's own `flow$` (imported unshadowed from
+            // @loom/core / @loom/sdk) keeps the list and the runtime only reads it.
+            ok = true;
           } else {
             ok =
               host !== undefined &&
@@ -1213,6 +1234,12 @@ export function analyzeReachNode(
    * Resolve a `ctx.run` / `ctx.parallel` / hand-off step target to a tool, or `undefined` when it
    * cannot be (reported unresolved by the caller - never silently dropped).
    */
+  const isLoomFlowBuilder = (callee: ts.Expression): boolean => {
+    const c = unwrap(callee);
+    if (!ts.isIdentifier(c) || !unshadowed(c.text)) return false;
+    const imp = imports.get(c.text);
+    return imp?.imported === "flow$" && (imp.spec === "@loom/core" || imp.spec === "@loom/sdk");
+  };
   const escapeCache = new Map<string, boolean>();
   const resolveTarget = (target: ts.Expression, depth = 0): RunnerStepRef | undefined => {
     const t = unwrap(target);
@@ -1221,7 +1248,7 @@ export function analyzeReachNode(
       // its declaration says (ADR 0086 amendment 2026-10-10): not followed, never guessed.
       let escapes = escapeCache.get(t.text);
       if (escapes === undefined) {
-        escapes = stepBindingEscapes(sourceFile, t.text, ctxNames);
+        escapes = stepBindingEscapes(sourceFile, t.text, ctxNames, isLoomFlowBuilder);
         escapeCache.set(t.text, escapes);
       }
       if (escapes) return undefined;
