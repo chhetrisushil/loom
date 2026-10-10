@@ -1,4 +1,11 @@
 import type { EventEnvelope } from "@loom/core";
+import {
+  CustomDimensionTracker,
+  type CustomDimensionsReport,
+  type CustomTotals,
+  type DimensionUnits,
+  newCustomTotals,
+} from "./customDimensions";
 
 // ── Event intelligence (Loom 2.0 M9) ─────────────────────────────────────────
 //
@@ -17,13 +24,25 @@ export interface ExecutionAnalytics {
   status?: "completed" | "failed" | "cancelled" | "continued";
 }
 
-/** Cost over the BUILT-IN dimensions only (custom metering dimensions are not summed, ADR 0115). */
+/**
+ * Cost over the metered dimensions. `tokens`/`costUsd`/`ms` are the built-ins; open dimensions
+ * (`RESOURCE_METERED.custom`, ADR 0115) are summed in `custom`, absent when none was metered.
+ */
 export interface CostAnalytics {
   tokens: number;
   costUsd: number;
   ms: number;
   meteredCalls: number;
   quotaExceeded: boolean;
+  /** Custom dimension → total; names past the per-report cap sum under `"(other)"`. */
+  custom?: CustomTotals;
+  /** Units, overflow count and warnings for `custom` (present with it). */
+  customReport?: CustomDimensionsReport;
+}
+
+export interface AnalyzeOptions {
+  /** Unit labels by custom dimension name (`{ gpu_seconds: "s" }`); carried into `customReport.units`. */
+  dimensionUnits?: DimensionUnits | undefined;
 }
 
 export interface ReasoningAnalytics {
@@ -96,11 +115,17 @@ export function executionAnalytics(events: EventEnvelope[]): ExecutionAnalytics 
   return a;
 }
 
-export function costAnalytics(events: EventEnvelope[]): CostAnalytics {
+export function costAnalytics(events: EventEnvelope[], options?: AnalyzeOptions): CostAnalytics {
   const a: CostAnalytics = { tokens: 0, costUsd: 0, ms: 0, meteredCalls: 0, quotaExceeded: false };
+  const dims = new CustomDimensionTracker(options?.dimensionUnits);
+  let custom: CustomTotals | undefined;
   for (const e of events) {
     if (e.eventType === "RESOURCE_METERED") {
-      const p = e.payload as { tokens?: number; costUsd?: number; ms?: number };
+      const p = e.payload as { tokens?: number; costUsd?: number; ms?: number; custom?: unknown };
+      if (p.custom !== undefined) {
+        custom ??= newCustomTotals();
+        dims.addPayload(p.custom, custom);
+      }
       a.tokens += p.tokens ?? 0;
       a.costUsd += p.costUsd ?? 0;
       a.ms += p.ms ?? 0;
@@ -109,7 +134,19 @@ export function costAnalytics(events: EventEnvelope[]): CostAnalytics {
       a.quotaExceeded = true;
     }
   }
+  attachCustom(a, custom, dims);
   return a;
+}
+
+function attachCustom(
+  a: CostAnalytics,
+  custom: CustomTotals | undefined,
+  dims: CustomDimensionTracker
+): void {
+  const report = dims.report();
+  if (custom === undefined || report === undefined) return;
+  a.custom = custom;
+  a.customReport = report;
 }
 
 export function reasoningAnalytics(events: EventEnvelope[]): ReasoningAnalytics {
@@ -159,7 +196,7 @@ export function failureAnalytics(events: EventEnvelope[]): FailureAnalytics {
  * compacted execution (its decisions and outcomes live in the checkpoint, ADR 0106/0116) is
  * under-counted unless the events are rebuilt first: `evidenceEvents(state, log)` from `@loom/learning`.
  */
-export function analyze(events: EventEnvelope[]): Analytics {
+export function analyze(events: EventEnvelope[], options?: AnalyzeOptions): Analytics {
   // Single pass over the log building all four lenses at once. The standalone
   // `executionAnalytics`/`costAnalytics`/… helpers above are kept for callers that
   // want one lens; `analyze` deliberately does NOT call them (that would be four
@@ -188,6 +225,8 @@ export function analyze(events: EventEnvelope[]): Analytics {
   const failedSteps: string[] = [];
   const deniedTools: string[] = [];
   let quotaExceeded = 0;
+  const dims = new CustomDimensionTracker(options?.dimensionUnits);
+  let custom: CustomTotals | undefined;
 
   for (const e of events) {
     switch (e.eventType) {
@@ -225,7 +264,11 @@ export function analyze(events: EventEnvelope[]): Analytics {
         if (e.metadata?.kernel === true) execution.status = "continued";
         break;
       case "RESOURCE_METERED": {
-        const p = e.payload as { tokens?: number; costUsd?: number; ms?: number };
+        const p = e.payload as { tokens?: number; costUsd?: number; ms?: number; custom?: unknown };
+        if (p.custom !== undefined) {
+          custom ??= newCustomTotals();
+          dims.addPayload(p.custom, custom);
+        }
         cost.tokens += p.tokens ?? 0;
         cost.costUsd += p.costUsd ?? 0;
         cost.ms += p.ms ?? 0;
@@ -255,6 +298,7 @@ export function analyze(events: EventEnvelope[]): Analytics {
     }
   }
 
+  attachCustom(cost, custom, dims);
   return {
     execution,
     cost,

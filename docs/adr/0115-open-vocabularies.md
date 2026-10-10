@@ -136,9 +136,16 @@ bad keys folds to the same state on two replicas); fold equality on every existi
   A metering `pricing` function that returns a bad custom name throws from `ctx.emit` after the effect ran, as a
   built-in ceiling breach does. Summed custom totals can exceed 2^53 (a single increment is capped at 1e15 and
   the fold is deterministic), so treat a very large total as approximate.
-- **Not done.** No unit or price registry (as designed). `analytics` does not yet surface custom
-  dimensions: its per-step attribution and its `total` cover the BUILT-IN dimensions (tokens, costUsd, ms)
-  only. Custom dimensions in analytics are a listed follow-up.
+- **Not done.** No unit or price registry (as designed).
+- **Analytics (follow-up, done).** `@loom/analytics` attributes `RESOURCE_METERED.custom` like the built-ins:
+  `analyze(...).cost.custom` / `costAnalytics` (per execution) and `resourceGraph` / `introspect`
+  (`total.custom`, `byStep[].custom`; `loom introspect` prints them), in the same single pass. Absent when
+  nothing custom was metered, so built-in output is unchanged. Bounded per report: at most 32 distinct names
+  (first seen, log order), the rest summed under `"(other)"` with `customReport.otherNames` and a warning (the
+  overflow-name set is itself capped at 1024, then `otherNamesCapped`). Names and values the fold skips are
+  skipped. Units are not in the log (no registry), so a caller passes `dimensionUnits` (`analyze`,
+  `costAnalytics`, `introspect`) and they appear in `customReport.units`. Analytics has no per-flow or
+  per-tenant axis for the built-ins either, so none is added for custom ones.
 
 ## Update 2026-10-11 — the deprecated `A2AEffect` copy is removed
 

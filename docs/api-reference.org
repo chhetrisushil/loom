@@ -2600,7 +2600,8 @@ Pure, *read-only* analyzers over the log (never a writer), plus an advisory runt
 #+begin_src typescript
 function analyze(events: EventEnvelope[]): Analytics;   // { execution, cost, reasoning, failure }
 function executionAnalytics(events): { steps; completed; failed; cancelledSteps; suspended; resumes; status? }
-function costAnalytics(events):      { tokens; costUsd; ms; meteredCalls; quotaExceeded }
+function costAnalytics(events, { dimensionUnits? }?): { tokens; costUsd; ms; meteredCalls; quotaExceeded; custom?; customReport? }
+// custom = ADR 0115 open dimensions summed (<=32 names per report, rest under "(other)"); also resourceGraph().total.custom / byStep[].custom
 function reasoningAnalytics(events): { decisions; routes: Record<string, number>; elevations; bySource: Record<string, number> }
 function failureAnalytics(events):   { failures; denials; quotaExceeded; failedSteps: string[]; deniedTools: string[] }
 

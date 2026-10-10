@@ -1,4 +1,11 @@
 import type { EventEnvelope } from "@loom/core";
+import {
+  CustomDimensionTracker,
+  type CustomDimensionsReport,
+  type CustomTotals,
+  type DimensionUnits,
+  newCustomTotals,
+} from "./customDimensions";
 import { type DecisionGraph, decisionGraph } from "./decisions";
 
 // ── Runtime introspection facade (ADR 0031) ──────────────────────────────────
@@ -55,16 +62,21 @@ export interface ResourceNode {
   tokens: number;
   costUsd: number;
   ms: number;
+  /** Custom dimension totals for this step; absent when the step metered none (ADR 0115). */
+  custom?: CustomTotals;
 }
 
 export interface ResourceGraph {
   executionId: string;
   /**
-   * Totals over the BUILT-IN dimensions only (tokens, costUsd, ms). Custom metering dimensions
-   * (`RESOURCE_METERED.custom`, ADR 0115) are not attributed here; that is a listed follow-up.
+   * Totals over tokens, costUsd and ms, plus `custom`: the open metering dimensions
+   * (`RESOURCE_METERED.custom`, ADR 0115) summed across the execution (absent when none was
+   * metered). At most 32 distinct names per graph; the rest sum under `"(other)"`.
    */
-  total: { tokens: number; costUsd: number; ms: number };
+  total: { tokens: number; costUsd: number; ms: number; custom?: CustomTotals };
   byStep: ResourceNode[];
+  /** Units, overflow count and warnings for the custom dimensions (present with them). */
+  customReport?: CustomDimensionsReport;
 }
 
 export interface PlacementGraph {
@@ -89,6 +101,8 @@ export interface IntrospectOptions {
   flowTools?: Record<string, readonly string[]>;
   /** principal → granted effect ids or `"*"` (e.g. `GrantTable.view()`). */
   grants?: Record<string, readonly string[] | "*">;
+  /** Unit labels by custom metering dimension (`{ gpu_seconds: "s" }`), shown beside its totals. */
+  dimensionUnits?: DimensionUnits | undefined;
 }
 
 export interface RuntimeIntrospection {
@@ -229,13 +243,19 @@ export function taskGraph(events: EventEnvelope[], executionId?: string): TaskGr
  * Resource usage attributed to the step that was running when each RESOURCE_METERED
  * event landed (the log doesn't carry a stepId on the meter event, so we attribute to
  * the most recent STEP_STARTED — steps with no active step go to "(execution)").
- * Attribution and totals cover the BUILT-IN dimensions only; custom dimensions are not included.
+ * Custom (open) dimensions are attributed the same way, in the same single pass, bounded at 32
+ * distinct names per graph with an `"(other)"` bucket.
  */
-export function resourceGraph(events: EventEnvelope[], executionId?: string): ResourceGraph {
+export function resourceGraph(
+  events: EventEnvelope[],
+  executionId?: string,
+  options?: { dimensionUnits?: DimensionUnits | undefined }
+): ResourceGraph {
   const { id, scoped } = scope(events, executionId);
-  const total = { tokens: 0, costUsd: 0, ms: 0 };
+  const total: ResourceGraph["total"] = { tokens: 0, costUsd: 0, ms: 0 };
   const byStep = new Map<string, ResourceNode>();
   let currentStep = "(execution)";
+  const dims = new CustomDimensionTracker(options?.dimensionUnits);
 
   for (const e of scoped) {
     if (e.eventType === "STEP_STARTED") {
@@ -248,8 +268,16 @@ export function resourceGraph(events: EventEnvelope[], executionId?: string): Re
     ) {
       currentStep = "(execution)";
     } else if (e.eventType === "RESOURCE_METERED") {
-      const p = e.payload as { tokens?: number; costUsd?: number; ms?: number };
+      const p = e.payload as { tokens?: number; costUsd?: number; ms?: number; custom?: unknown };
       const node = byStep.get(currentStep) ?? { stepId: currentStep, tokens: 0, costUsd: 0, ms: 0 };
+      if (p.custom !== undefined) {
+        const stepCustom = node.custom ?? newCustomTotals();
+        const totalCustom = total.custom ?? newCustomTotals();
+        if (dims.addPayload(p.custom, stepCustom, totalCustom)) {
+          node.custom = stepCustom;
+          total.custom = totalCustom;
+        }
+      }
       node.tokens += p.tokens ?? 0;
       node.costUsd += p.costUsd ?? 0;
       node.ms += p.ms ?? 0;
@@ -259,7 +287,10 @@ export function resourceGraph(events: EventEnvelope[], executionId?: string): Re
       total.ms += p.ms ?? 0;
     }
   }
-  return { executionId: id, total, byStep: [...byStep.values()] };
+  const graph: ResourceGraph = { executionId: id, total, byStep: [...byStep.values()] };
+  const customReport = dims.report();
+  if (customReport !== undefined) graph.customReport = customReport;
+  return graph;
 }
 
 /** Static flow→tool (invokes) + principal→tool (grants) dependency graph, from app projections. */
@@ -306,7 +337,7 @@ export function introspect(
     decisions: decisionGraph(
       executionId ? events.filter((e) => e.executionId === executionId) : events
     ),
-    resources: resourceGraph(events, executionId),
+    resources: resourceGraph(events, executionId, { dimensionUnits: opts?.dimensionUnits }),
     ...(opts?.targets !== undefined && { placement: { targets: [...opts.targets] } }),
     ...(hasDeps && { dependencies: dependencyGraph(opts ?? {}) }),
   };
@@ -359,10 +390,22 @@ export function formatIntrospection(x: RuntimeIntrospection, graph?: string): st
   if (wantAll || graph === "resources") {
     const r = x.resources;
     lines.push("resources:");
-    lines.push(`  total: ${r.total.tokens} tok · $${r.total.costUsd} · ${r.total.ms}ms`);
+    const units = r.customReport?.units;
+    const fmtCustom = (c: CustomTotals | undefined): string =>
+      c === undefined
+        ? ""
+        : Object.entries(c)
+            .map(([k, v]) => ` · ${v}${units?.[k] !== undefined ? ` ${units[k]}` : ""} ${k}`)
+            .join("");
+    lines.push(
+      `  total: ${r.total.tokens} tok · $${r.total.costUsd} · ${r.total.ms}ms${fmtCustom(r.total.custom)}`
+    );
     for (const n of r.byStep) {
-      lines.push(`  ${n.stepId}: ${n.tokens} tok · $${n.costUsd} · ${n.ms}ms`);
+      lines.push(
+        `  ${n.stepId}: ${n.tokens} tok · $${n.costUsd} · ${n.ms}ms${fmtCustom(n.custom)}`
+      );
     }
+    for (const w of r.customReport?.warnings ?? []) lines.push(`  warning: ${w}`);
   }
   return lines.join("\n");
 }
