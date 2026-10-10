@@ -2412,7 +2412,8 @@ const route = await decideWithRollout(ctx, "route", { source: registry, policyId
 - **Shadow never acts**: the incumbent's choice is the decision; the candidate's choice and propensity are recorded beside it.
 - **Canary is a deterministic split** of `userId` (`sha256(salt, unit)`, keyed with `bucketSecret` if given; the unit key must be
   server-assigned), recorded as `policy.rollout.bucket`; a replay serves the
-  recorded decision whatever the registry says by then. Raising the fraction keeps earlier units on the candidate.
+  recorded decision whatever the registry says by then, and consults neither the registry nor any policy's `select` (they run
+  inside the decider, which a replay skips). Raising the fraction keeps earlier units on the candidate.
 - **Evaluate per arm**: the recorded propensity is the acting policy's own; `sliceByVersion(trajs, "policy" | "prompt" | "model")`
   groups steps by what produced them.
 - `promote` refuses without a passing verdict **for that exact version**; a registry is scoped to one tenant/principal and refuses a

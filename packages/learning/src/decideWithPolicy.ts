@@ -25,6 +25,9 @@ export interface DecideCapable {
   ): Promise<T>;
 }
 
+/** The options object `decideWithPolicy`/`decideWithRollout` hand `ctx.decide` (policy filled in by the decider). */
+export type DecideRecordOpts = NonNullable<Parameters<DecideCapable["decide"]>[2]>;
+
 export interface DecideWithPolicyOptions {
   /** Extra provenance, passed straight through to `ctx.decide`. */
   rationale?: unknown;
@@ -56,14 +59,13 @@ export interface DecideWithPolicyOptions {
  *   { intent, tokens, tenant }, routes);
  * ```
  *
- * **Why `select` is called before `decide`:** the kernel takes `DecideOptions` by
- * value, so the propensity has to exist before the call. That means on replay the
- * policy is consulted and its answer thrown away — `select` must stay pure and
- * cheap, as the SPI requires. Critically, a policy that has since changed and now
- * THROWS on an old context must not break the replay of an old execution, so the
- * failure is deferred into the decider: `decide` short-circuits from the log and
- * never runs it. On a first run there is no recorded choice, the decider runs, and
- * the error surfaces as it should.
+ * **`select` runs inside the decider (R18 follow-up):** a replay serves the recorded choice
+ * and never consults the policy, so a model-backed or side-effecting policy is not run for an
+ * answer that would be thrown away, and a policy that has since changed and now THROWS on an old
+ * context cannot break the replay of an old execution. The propensity must be in the record, but
+ * `ctx.decide` takes its options by value, so the options object is handed over first and the
+ * stamp is set on it by the decider; the kernel reads the options when it commits the record,
+ * after the decider settled. On a first run the error from a throwing policy surfaces as it should.
  */
 export async function decideWithPolicy<A>(
   ctx: DecideCapable,
@@ -77,31 +79,29 @@ export async function decideWithPolicy<A>(
     throw new Error(`decideWithPolicy("${decisionId}"): no actions to choose from`);
   }
 
-  let chosen: PolicyChoice<A> | undefined;
-  let failure: unknown;
-  try {
-    chosen = policy.select(context, actions);
-  } catch (err) {
-    failure = err;
-  }
+  // The stamp (propensity) cannot be known before the policy has chosen, and `ctx.decide` takes
+  // its options by value. So the options object is handed over now and COMPLETED inside the
+  // decider: the kernel reads `opts` only when it commits the record, after the decider settled.
+  // A served (replayed) decision never runs the decider, so the policy is never consulted.
+  const recordOpts: DecideRecordOpts = {
+    context,
+    alternatives: actions,
+    ...(opts.rationale !== undefined && { rationale: opts.rationale }),
+    ...(opts.source !== undefined && { source: opts.source }),
+  };
 
   return ctx.decide<A>(
     decisionId,
     () => {
-      if (chosen === undefined) throw failure;
-      return chosen.action;
-    },
-    {
-      context,
-      policy: {
+      const chosen: PolicyChoice<A> = policy.select(context, actions);
+      recordOpts.policy = {
         id: policy.id,
         version: policy.version,
-        ...(chosen?.propensity !== undefined && { propensity: chosen.propensity }),
+        ...(chosen.propensity !== undefined && { propensity: chosen.propensity }),
         ...(opts.refs !== undefined && { refs: opts.refs }),
-      },
-      alternatives: actions,
-      ...(opts.rationale !== undefined && { rationale: opts.rationale }),
-      ...(opts.source !== undefined && { source: opts.source }),
-    }
+      };
+      return chosen.action;
+    },
+    recordOpts
   );
 }

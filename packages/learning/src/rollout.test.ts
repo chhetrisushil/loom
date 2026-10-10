@@ -325,11 +325,31 @@ describe("rollout through the kernel", () => {
       effectRuntime: new EffectRuntime(),
     });
     const seen: string[] = [];
+    // R18 follow-up: a replay must consult NOTHING - not the registry, not the resolver, not any
+    // policy's `select` (shadow arm included).
+    let selects = 0;
+    let reads = 0;
+    const counting: PolicyResolver<string> = (id, v) => {
+      const p = resolve(id, v) as Policy<string>;
+      return {
+        ...p,
+        select: (c, a) => {
+          selects += 1;
+          return p.select(c, a);
+        },
+      };
+    };
+    const source = {
+      resolve: (id: string) => {
+        reads += 1;
+        return reg.resolve(id);
+      },
+    };
     const runner: FlowRunner<unknown, unknown> = async (ctx) => {
       const a = await decideWithRollout(
         ctx,
         "route",
-        { source: reg, policyId: "router", resolve },
+        { source, policyId: "router", resolve: counting },
         "user-1",
         { q: 1 },
         ACTIONS,
@@ -343,11 +363,13 @@ describe("rollout through the kernel", () => {
     const h = await runtime.start(FLOW, {});
     await h.waitForSuspend();
     expect(seen).toEqual(["opus"]);
+    expect({ selects, reads }).toEqual({ selects: 2, reads: 1 }); // the live run: acting arm + the canary's other arm
 
     await reg.rollback({ id: "router", now: 9 }); // registry now says "1 for everyone"
     const r = await runtime.resume(h.executionId, { eventType: "go", payload: {} });
     await r.waitForCompletion();
     expect(seen).toEqual(["opus", "opus"]);
+    expect({ selects, reads }).toEqual({ selects: 2, reads: 1 }); // the replay consulted nothing
 
     const log = await eventStore.read(h.executionId);
     const decisions = log.filter((e) => e.eventType === "DECISION_RECORDED");

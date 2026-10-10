@@ -467,6 +467,24 @@ describe("decideWithPolicy", () => {
     ).resolves.toBe("opus");
     expect(ctx.emitted).toHaveLength(1); // nothing new was recorded
   });
+
+  it("a replay never calls select at all (R18 follow-up)", async () => {
+    const ctx = fakeCtx();
+    let calls = 0;
+    const counted: Policy<string> = {
+      id: "p",
+      version: "1",
+      select: () => {
+        calls += 1;
+        return { action: "opus", propensity: 0.7 };
+      },
+    };
+    await decideWithPolicy(ctx, "route", counted, { tokens: 10 }, ["gemma", "opus"]);
+    expect(calls).toBe(1);
+    await decideWithPolicy(ctx, "route", counted, { tokens: 10 }, ["gemma", "opus"]);
+    await decideWithPolicy(ctx, "route", counted, { tokens: 10 }, ["gemma", "opus"]);
+    expect(calls).toBe(1); // served from the log: the policy was not consulted
+  });
 });
 
 describe("pooled evaluation across units", () => {

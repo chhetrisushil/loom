@@ -369,7 +369,14 @@ export class PolicyRegistry {
     if (!floor.ok || !verdict.ok) {
       throw new PromotionRefusedError(
         `refusing to promote ${input.id}@${input.version}: the promotion gate did not pass`,
-        [...floor.reasons.filter(() => !floor.ok), ...verdict.reasons.filter(() => !verdict.ok)]
+        // Both gates ran over one report, so a threshold they share fails with the SAME reason in
+        // each; list every reason once, in the order first seen.
+        [
+          ...new Set([
+            ...floor.reasons.filter(() => !floor.ok),
+            ...verdict.reasons.filter(() => !verdict.ok),
+          ]),
+        ]
       );
     }
     return this.mutate(input.id, (doc) => {

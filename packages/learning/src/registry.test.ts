@@ -415,6 +415,23 @@ describe("thresholds are a floor (R18 fix round 2)", () => {
       ...(thresholds !== undefined && { thresholds }),
     });
 
+  it("a refusal lists each reason exactly once, even when both gates fail the same one", async () => {
+    const reg = await strict();
+    for (const override of [undefined, { minLift: 0.5 }, { minLift: 0.5, minEvaluated: 1 }]) {
+      const err = await go(reg, override).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(PromotionRefusedError);
+      const reasons = (err as PromotionRefusedError).reasons;
+      expect(reasons.length).toBeGreaterThan(0);
+      expect(new Set(reasons).size).toBe(reasons.length);
+    }
+    // a DIFFERENT reason from the per-call gate is kept, after the floor's, in order
+    const both = (await go(reg, { minLift: 0.9 }).catch(
+      (e: unknown) => e
+    )) as PromotionRefusedError;
+    expect(both.reasons).toHaveLength(2);
+    expect(both.reasons[0]).not.toBe(both.reasons[1]);
+  });
+
   it("a weaker or empty per-call override cannot loosen the registry's thresholds", async () => {
     const reg = await strict();
     await expect(go(reg)).rejects.toThrow(PromotionRefusedError);

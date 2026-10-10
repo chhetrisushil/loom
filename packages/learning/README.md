@@ -174,10 +174,12 @@ evidence of one snapshot of what was learned. Implementations live outside this 
 [`../loom-plugins`](https://github.com/chhetrisushil/loom-plugins) for a LinUCB contextual
 bandit built against this interface.
 
-`select` must be pure and cheap: it is called before `ctx.decide`, so on replay it runs and
-its answer is discarded. A policy that later starts throwing on an old context will **not**
-break the replay of an old execution — the failure is deferred into the decider, which replay
-never calls.
+`select` runs INSIDE the decider passed to `ctx.decide` (and so do `decideWithRollout`'s registry
+read, resolver and shadow-arm `select`): a replay serves the recorded choice and consults none
+of them, so a model-backed or side-effecting policy is not run for an answer that would be
+thrown away, and a policy that later starts throwing on an old context will **not** break the
+replay of an old execution. On a first run a throwing policy surfaces as the error. `select`
+should still be cheap and free of side effects you cannot repeat: it runs once per live decision.
 
 ---
 
