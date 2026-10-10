@@ -5,7 +5,17 @@ export {
   reasoningAnalytics,
   failureAnalytics,
 } from "./analyze";
+export {
+  MAX_CUSTOM_DIMENSIONS,
+  OTHER_DIMENSION,
+} from "./customDimensions";
 export type {
+  CustomDimensionsReport,
+  CustomTotals,
+  DimensionUnits,
+} from "./customDimensions";
+export type {
+  AnalyzeOptions,
   Analytics,
   ExecutionAnalytics,
   CostAnalytics,
