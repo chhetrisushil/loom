@@ -1177,6 +1177,61 @@ describe("R22d D14 review - compaction's byte trigger survives a changed skill t
     }
   });
 
+  it("a TAMPERED `resultBytes` (below `bytes`, fractional, non-number, over the cap) is ignored: the replay behaves exactly as for a record without it", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const extra = mk(`rev_tool_extra_${"z".repeat(48)}`);
+      const rewrite =
+        (value: (bytes: number) => unknown, drop = false) =>
+        (e: EventEnvelope): EventEnvelope => {
+          const p = e.payload as { source?: string; choice?: Record<string, unknown> };
+          if (p.source !== SOURCE_SKILL_ACTIVATION) return e;
+          const { resultBytes: _drop, ...rest } = p.choice ?? {};
+          const choice = drop ? rest : { ...rest, resultBytes: value(rest.bytes as number) };
+          return { ...e, payload: { ...p, choice } } as unknown as EventEnvelope;
+        };
+      // What a replay does with NO resultBytes, per threshold (frames, or the divergence).
+      const outcome = async (mutate: (e: EventEnvelope) => EventEnvelope, afterBytes: number) => {
+        try {
+          const r = await resumeCompacted(`${BASE}Y-changed`, undefined, mutate, {
+            afterBytes,
+            firstTools: [tool, extra],
+            secondTools: [tool],
+            requireCompact: false,
+          });
+          return JSON.stringify(r.ids.filter((x) => /compact/.test(x)));
+        } catch (err) {
+          if (/not asked for|diverge/i.test(String(err))) return "diverged";
+          throw err;
+        }
+      };
+      const tampers: [string, (bytes: number) => unknown][] = [
+        ["below bytes", (b) => b - 1],
+        ["fractional", (b) => b + 64.5],
+        ["a string", (b) => String(b + 64)],
+        ["over the cap", () => 1e12],
+      ];
+      let differsFromHonest = 0;
+      for (let afterBytes = 3000; afterBytes <= 3400; afterBytes += 8) {
+        const stripped = await outcome(
+          rewrite(() => undefined, true),
+          afterBytes
+        );
+        const honest = await outcome((e) => e, afterBytes);
+        if (stripped !== honest) differsFromHonest++;
+        for (const [label, value] of tampers)
+          expect(
+            await outcome(rewrite(value), afterBytes),
+            `${label} afterBytes=${afterBytes}`
+          ).toBe(stripped);
+      }
+      // The sweep is not vacuous: somewhere in it an honest resultBytes changes the outcome.
+      expect(differsFromHonest).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("NEGATIVE: an OLD record (no `bytes`) keeps today's behaviour - the residual: an edit still diverges", async () => {
     const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     try {
