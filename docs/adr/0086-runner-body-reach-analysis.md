@@ -282,6 +282,19 @@ EVENT_SCHEMA and the syscall table are unchanged.
      declared anywhere else in the module is never resolved through the local declaration either — the
      module-wide scan cannot tell which one a use refers to, so `import { mk } …; function w() { const mk
      = … }; ctx.run(mk("a"))` is unresolved, not the local `mk`.
+  7. A step binding (`const s = step$({ toolId })` or `const s = { toolId }`) is followed only if `s` cannot
+     change after its declaration: its only uses are the declaration, an argument of a ctx method call
+     (`ctx.run(s)`, `ctx.parallel`) or of a ctx hand-off (`lib(ctx, s)`), an array element (a parallel
+     tuple), a spread copy and a property read. A property assignment / `delete` / `++` through it, a
+     call that receives it (`Object.assign(s, …)`, `mutate(s)`), a method call on it, an alias or any
+     other use, anywhere in the module, leaves the target unresolved (`s.toolId = "t.y"` after
+     `{ toolId: "t.x" }` used to resolve to `t.x`). Reuse (`ctx.run(s, a)` twice, inside a loop) stays
+     resolved.
+  8. A step with NO `toolId` dispatches its own id (the runtime resolves `step.toolId ?? step.id`), so
+     `step$({ id: SCAN_ID, … })` reaches the effect `SCAN_ID`, with `SCAN_ID` resolved by the constant /
+     relative-import rules above. Only for `step$` itself (an unshadowed import from `@loom/core` or
+     `@loom/sdk`, any alias) and an object with no `toolId` key, no spread and no computed key; a wrapper
+     (`mk$`), a local `step$`, or an unresolved id stays unresolved.
   A factory with several returns, a spread argument, a non-constant effect argument or a
   duplicated/reassigned constant stays unresolved.
   Consequence worth knowing: a flow that used `mcpInvoke$` now reaches `mcp.invoke` for capability-compat,
