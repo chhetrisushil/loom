@@ -80,6 +80,9 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
     with `// timing-bound: <what the slow path costs>` and keep it ≥ 5 s.
   - A precondition that depends on elapsed time needs a WIDE window (seconds, not ~100 ms), and a test
     that intentionally waits must raise its own timeout (vitest's default is 5 s).
+  - A test server binds the host its client dials: `server.listen(0, "127.0.0.1", cb)`, never a bare
+    `listen(0)`. On macOS a wildcard bind can share a port with another process's 127.0.0.1 listener,
+    and the client then talks to that stranger (enforced by `packages/spec/src/testServerBinding.test.ts`).
 
 - Package manager: `pnpm@9.14.4` (pinned; use `corepack`). Build: `pnpm build`
   (turbo). Test: `pnpm test`. Lint: `pnpm lint` (biome).
