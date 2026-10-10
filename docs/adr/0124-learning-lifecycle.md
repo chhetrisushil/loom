@@ -268,8 +268,10 @@ the stamp needs the acting policy's propensity), so on replay they ran and their
 a hazard for model-backed or side-effecting policies, and ADR 0080's "`select` must be cheap" was the only mitigation.
 
 Now `decideWithPolicy` and `decideWithRollout` hand `ctx.decide` an options object whose `policy` stamp is set BY THE DECIDER, after
-the registry read, the resolver and every `select` (acting and other arm) have run. This relies on a kernel property that already
-held: `decideIn` reads `opts` when it commits `DECISION_RECORDED`, after the decider settled. A served decision returns before the
+the registry read, the resolver and every `select` (acting and other arm) have run. This relies on a kernel property that held
+but was unwritten until this change: `decideIn` reads `opts` when it commits `DECISION_RECORDED`, after the decider settled (only
+`estimatedCost` is validated before). It is now a documented contract of `ExecutionContext.decide` / `DecideOptions`, pinned in the
+kernel by `DecisionSeam.test.ts` ("opts are read at commit") and in this package by `recordGolden.test.ts`. A served decision returns before the
 decider, so a replay reads no registry state, calls no resolver and no `select`; it serves the recorded choice, propensity and
 `policy.rollout` (including the version that acted) unchanged. Consequences:
 

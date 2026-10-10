@@ -190,3 +190,76 @@ describe("ADR 0079 — context + policy on the decision seam", () => {
     expect((final.variables._output as { model: string }).model).toBe("model-1");
   });
 });
+
+// ADR 0124 follow-up — `@loom/learning` fills the `policy` stamp from INSIDE the decider (so a
+// replay consults no policy). That relies on `opts` being read at commit, after the decider
+// settles, and on a served decision reading no `opts` at all. Pin both here, in the kernel, so a
+// refactor that snapshots `opts` up front fails in this package rather than as a learning bug.
+describe("ADR 0124 — opts are read at commit", () => {
+  it("records fields the decider set on the opts object; a served decision reads no opts", async () => {
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const effectRuntime = new EffectRuntime();
+    effectRuntime.register(
+      "finalize-tool",
+      new ToolEffect(vi.fn().mockResolvedValue({ done: true }))
+    );
+
+    let deciderCalls = 0;
+    let optsReads = 0;
+    const runner: FlowRunner<{ id: string }, { model: string }> = async (ctx) => {
+      const fields: Record<string, unknown> = {};
+      // Counts every property read, so a served decision touching opts is visible.
+      const opts = new Proxy(fields, {
+        get(target, key) {
+          optsReads++;
+          return target[key as string];
+        },
+      }) as { policy?: unknown; context?: unknown; rationale?: unknown };
+      const model = await ctx.decide(
+        "route",
+        () => {
+          deciderCalls++;
+          fields.policy = { id: "p", version: "7", propensity: 0.25 };
+          fields.context = { tokens: 10 };
+          fields.rationale = "set by the decider";
+          return "opus";
+        },
+        opts
+      );
+      await ctx.suspend({ on: "Approved" });
+      await ctx.run(finalizeStep, { model });
+      return { model };
+    };
+
+    const runtime1 = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime });
+    runtime1.registerFlow(makeFlow(runner).definition, runner);
+    const handle = await runtime1.start(makeFlow(runner), { id: "x" });
+    await handle.waitForSuspend();
+
+    const recorded = (await eventStore.read(handle.executionId)).find(
+      (e) => e.eventType === "DECISION_RECORDED"
+    )?.payload as Record<string, unknown>;
+    expect(recorded).toMatchObject({
+      decisionId: "route",
+      choice: "opus",
+      policy: { id: "p", version: "7", propensity: 0.25 },
+      context: { tokens: 10 },
+      rationale: "set by the decider",
+    });
+    expect(deciderCalls).toBe(1);
+
+    // Resume on a fresh runtime: the decision is served — no decider call, no opts read.
+    optsReads = 0;
+    const runtime2 = new WorkflowRuntime({ eventStore, snapshotStore, effectRuntime });
+    runtime2.registerFlow(makeFlow(runner).definition, runner);
+    const resumed = await runtime2.resume(handle.executionId, {
+      eventType: "Approved",
+      payload: {},
+    });
+    const final = await resumed.waitForCompletion();
+    expect(final.status).toBe("completed");
+    expect(deciderCalls).toBe(1);
+    expect(optsReads).toBe(0);
+  });
+});
