@@ -127,6 +127,7 @@ export class ShardedEventStore implements EventStore {
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
+  readonly storeNow?: NonNullable<EventStore["storeNow"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
@@ -170,6 +171,8 @@ export class ShardedEventStore implements EventStore {
           ? { ...result, anchor: shardAnchor(i, result.anchor) }
           : result;
       },
+      // One clock for the fleet: every shard has it (commonOptional), read from the first shard.
+      storeNow: "forward",
       deleteExecution: async (id) => {
         await (await this.route(id)).deleteExecution!(id);
         this.placementCache.delete(id);

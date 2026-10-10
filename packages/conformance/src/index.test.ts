@@ -43,12 +43,14 @@ import {
   checkTouchNeverMovesBackwards,
 } from "./contentTouchContract";
 import {
+  ReferenceEventStore,
   optionalSurfaceProblems,
   runEventStoreDecoratorConformance,
   runSnapshotStoreDecoratorConformance,
 } from "./decorators";
 import {
   type ContentStoreLike,
+  eventStoreNowProblem,
   incarnationAnchorProblem,
   leaseExpiredDefaultProblem,
   leaseStoreNowProblem,
@@ -240,7 +242,7 @@ runSnapshotStoreDecoratorConformance(
 // exists to catch. `optionalSurfaceProblems` is the check the kit's own `it` asserts empty.
 describe("the decorator kit rejects a decorator that drops an optional method", () => {
   /** Hand-forwards everything EXCEPT appendBatch — the pre-L1 TenantScopedEventStore shape. */
-  const droppingDecorator = (inner: InstanceType<typeof InMemoryAsyncEventStore>) => ({
+  const droppingDecorator = (inner: ReferenceEventStore) => ({
     append: inner.append.bind(inner),
     read: inner.read.bind(inner),
     readFrom: inner.readFrom.bind(inner),
@@ -251,6 +253,7 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
     acquireFence: inner.acquireFence.bind(inner),
     acquireFenceIf: inner.acquireFenceIf.bind(inner),
     appendIfUnchanged: inner.appendIfUnchanged.bind(inner),
+    storeNow: inner.storeNow.bind(inner),
     copyPrefix: inner.copyPrefix.bind(inner),
     deleteExecution: inner.deleteExecution.bind(inner),
     truncatePrefix: inner.truncatePrefix.bind(inner),
@@ -260,7 +263,7 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
   });
 
   it("fails it, naming the method", () => {
-    const store = droppingDecorator(new InMemoryAsyncEventStore());
+    const store = droppingDecorator(new ReferenceEventStore());
     const problems = optionalSurfaceProblems("Dropper", store, OPTIONAL_EVENT_STORE_METHODS);
     expect(problems).toEqual([expect.stringContaining("Dropper silently drops appendBatch")]);
     // …which is what the kit's `it` asserts is empty — so the kit fails for this decorator.
@@ -268,7 +271,7 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
   });
 
   it("accepts the same omission once it is refused with a reason — and not with an empty one", () => {
-    const store = droppingDecorator(new InMemoryAsyncEventStore());
+    const store = droppingDecorator(new ReferenceEventStore());
     expect(
       optionalSurfaceProblems("Dropper", store, OPTIONAL_EVENT_STORE_METHODS, {
         appendBatch: "cannot batch: each envelope needs its own round-trip",
@@ -280,7 +283,7 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
   });
 
   it("rejects a stale refusal — declared refused, still exposed", () => {
-    const store = new InMemoryAsyncEventStore();
+    const store = new ReferenceEventStore();
     expect(
       optionalSurfaceProblems("Liar", store, OPTIONAL_EVENT_STORE_METHODS, { head: "no tips" })
     ).toEqual([expect.stringContaining("declares head refused")]);
@@ -354,6 +357,38 @@ describe("leaseStoreNowProblem discriminates", () => {
   it("passes a correct store, and skips one without storeNow", async () => {
     expect(await leaseStoreNowProblem(() => new HonestStoreNow())).toBeUndefined();
     expect(await leaseStoreNowProblem(() => new InMemoryLeaseStore())).toBeUndefined();
+  });
+});
+// EventStore.storeNow() (SPI 2.4.0) must be a sane epoch-ms clock; a counter, seconds or a clock that runs
+// backwards must FAIL, an honest one PASS, and a store without it is skipped.
+describe("eventStoreNowProblem discriminates", () => {
+  const withNow = (now: () => number) =>
+    class extends InMemoryAsyncEventStore {
+      storeNow(): Promise<number> {
+        return Promise.resolve(now());
+      }
+    };
+  it("fails seconds-not-ms, a backwards clock and a non-integer", async () => {
+    const Secs = withNow(() => Math.floor(Date.now() / 1000));
+    expect(await eventStoreNowProblem(() => new Secs())).toMatch(/not epoch milliseconds/);
+    let t = 1_000_000_000_000_000;
+    const Back = withNow(() => {
+      t -= 1;
+      return t;
+    });
+    expect(
+      await eventStoreNowProblem(
+        () => new Back(),
+        () => t
+      )
+    ).toMatch(/backwards/);
+    const Frac = withNow(() => Date.now() + 0.5);
+    expect(await eventStoreNowProblem(() => new Frac())).toMatch(/non-negative integer/);
+  });
+  it("passes an honest clock, and skips a store without storeNow", async () => {
+    const Honest = withNow(() => Date.now());
+    expect(await eventStoreNowProblem(() => new Honest())).toBeUndefined();
+    expect(await eventStoreNowProblem(() => new InMemoryAsyncEventStore())).toBeUndefined();
   });
 });
 runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher", {

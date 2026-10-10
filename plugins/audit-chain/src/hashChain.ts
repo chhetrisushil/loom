@@ -375,6 +375,7 @@ export function hashChainedEventStore(
       else lastHash.delete(executionId);
       return result;
     },
+    storeNow: "forward",
     copyPrefix: "forward",
     deleteExecution: async (executionId: string): Promise<void> => {
       lastHash.delete(executionId); // drop the cache entry with the log

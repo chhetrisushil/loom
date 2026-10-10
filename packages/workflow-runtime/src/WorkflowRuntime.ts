@@ -3649,7 +3649,9 @@ export class WorkflowRuntime {
         payload: message.payload ?? null,
         sender: ownerOfChain(options?.principal) ?? {},
       },
-      this.now
+      // With a TTL on, the envelope is stamped on the STORE's clock when it has one (every node of a
+      // fleet then ages a message on one clock); off, or on a single-process store, the runtime clock.
+      this.inboxTtlOn ? () => this.ttlClock() : this.now
     );
     // The wake decision is made from a read taken AFTER the append (ADR 0110 D5, the lost-wakeup
     // protocol). The owner parks durably and THEN re-reads the stream; this sender appends and THEN
@@ -3905,6 +3907,16 @@ export class WorkflowRuntime {
   }
 
   /**
+   * ADR 0110 amendment, D10a - the clock a message is stamped and aged on: the event store's own
+   * (`storeNow`, EventStore SPI 2.4.0; Postgres = database time) when it has one, else the injected
+   * runtime clock (a single-process store has only one clock anyway). Sender and judge both read it.
+   */
+  private async ttlClock(): Promise<number> {
+    const storeNow = this.eventStore.storeNow;
+    return storeNow === undefined ? this.now() : storeNow.call(this.eventStore);
+  }
+
+  /**
    * ADR 0110 amendment, D10a — write the durable row that wakes an expiry pass at `at`. Rounded UP to
    * a whole second so a stream of messages expiring within it shares one pass, and not re-written
    * while this process knows a pending row for the chain. Best effort; never throws.
@@ -3939,8 +3951,8 @@ export class WorkflowRuntime {
    * discard wait, `reason: "expired"`, `sender` = the runtime, so it replays and the fold is
    * unchanged), then arm the next pass. Driven by `TimerService` rows; also callable by a sweep.
    *
-   * - The age is read from the injected clock against the message's envelope timestamp, here, never in
-   *   the fold. Per topic only a prefix of the unconsumed messages is expired (see `scanExpired`).
+   * - The age is read from the store's clock (else the injected one, see `ttlClock`) against the
+   *   message's envelope timestamp, here, never in the fold. Per topic only a prefix of the unconsumed messages is expired (see `scanExpired`).
    * - It takes the SAME fenced path as an operator discard (`advanceInbox` under the park's
    *   conditional fence), so it cannot race a delivery: a notifier's batch built from the old cursors
    *   is refused by `staleInboxBatch`, and a delivery that won leaves nothing to expire. A message
@@ -3965,27 +3977,37 @@ export class WorkflowRuntime {
     ) {
       return { status: "closed", expired: 0 };
     }
-    if (state.status !== "suspended") return { status: "not-parked", expired: 0 };
     const chainId = chainIdOf(state, head.id);
-    const now = this.now();
+    const now = await this.ttlClock();
     const scan = await scanExpired(this.eventStore, chainId, cursorsOf(state.variables), {
       from: (this.inboxFloors.get(chainId) ?? -1) + 1,
       now,
       ttlOf: (topic) => ttlOfTopic(this.inboxTtl, topic),
       maxExpired: INBOX_EXPIRY_BATCH,
     });
+    // Something this chain's TTL still has to do: a message to expire now, or one to expire later.
+    const pending = scan.expired.length > 0 || scan.nextAt !== undefined || scan.more;
+    // A running owner cannot take the discard yet (only a PARKED one accepts the fact). The caller
+    // keeps the row only when there IS something pending; otherwise there is nothing to wait for.
+    if (state.status !== "suspended") return { status: "not-parked", expired: 0, pending };
+    // The judge's clock (`now`) is the store's; a row is scheduled on the runtime's, so the delay is
+    // carried over (never the absolute instant) and a skewed host cannot make a row due too soon.
     const rearm = async (): Promise<void> => {
-      if (scan.more) await this.scheduleInboxExpiry(head.id, chainId, now + 1);
+      if (scan.more) await this.scheduleInboxExpiry(head.id, chainId, this.now() + 1);
       else if (scan.nextAt !== undefined) {
-        await this.scheduleInboxExpiry(head.id, chainId, scan.nextAt);
+        await this.scheduleInboxExpiry(
+          head.id,
+          chainId,
+          this.now() + Math.max(1, scan.nextAt - now)
+        );
       }
     };
     if (scan.expired.length === 0) {
       await rearm();
-      return { status: "done", expired: 0, executionId: head.id };
+      return { status: "done", expired: 0, executionId: head.id, pending };
     }
     const parkSeq = await this.locatePark(head.id, state, { events: undefined, complete: false });
-    if (parkSeq === undefined) return { status: "not-parked", expired: 0 };
+    if (parkSeq === undefined) return { status: "not-parked", expired: 0, pending: true };
     const byTopic = new Map<string, Array<{ key: string; seq: number }>>();
     for (const m of scan.expired) {
       const list = byTopic.get(m.topic) ?? [];
@@ -4005,15 +4027,15 @@ export class WorkflowRuntime {
       );
     }
     const outcome = await this.advanceInbox(head.id, state, parkSeq, undefined, facts);
-    if (outcome === "gone") return { status: "not-parked", expired: 0 };
-    if (outcome === "contended") return { status: "contended", expired: 0 };
+    if (outcome === "gone") return { status: "not-parked", expired: 0, pending: true };
+    if (outcome === "contended") return { status: "contended", expired: 0, pending: true };
     const after = (await this.foldState(head.id)) ?? state;
     this.inboxFull.delete(chainId);
     this.inboxCounted.delete(chainId);
     this.inboxTrimmed.delete(chainId);
     await this.maybeTrimInbox(chainId, after);
     await rearm();
-    return { status: "done", expired: scan.expired.length, executionId: head.id };
+    return { status: "done", expired: scan.expired.length, executionId: head.id, pending };
   }
 
   /**

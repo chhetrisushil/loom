@@ -469,11 +469,16 @@ message is never delivered.
 **Let a cold topic expire: `kernel.inbox.messageTtlMs` (ADR 0110 D10a, off by default).** A number (every topic) or
 `{ default?, topics: { cold: 60_000 } }`. A message still unconsumed that long after it was sent is discarded by the
 same journaled fact an operator discard writes (`reason: "expired"`, recorded as the runtime, not an operator), so it
-replays and the pinned stream is released with no operator involved. The clock is read when a pass runs, from the
-message's envelope timestamp, never inside the fold; passes are `TimerStore` rows fired by the app's `TimerService`
-(so wire `timers`), one batch of at most 1 024 per wake, and only a parked owner takes the fact (a running one keeps
-the row). A delivery racing an expiry never delivers the expired message and never delivers twice. Configure every
-node alike.
+replays and the pinned stream is released with no operator involved. The smallest TTL is 60 000 ms (a smaller one is
+refused at `defineConfig`): a message is aged against a clock another node may have stamped. When the event store
+has `storeNow()` (EventStore SPI 2.4.0; Postgres reports database time) sender and judge both use it, so nodes agree;
+over a store with no common clock the TTL must be far larger than your fleet's clock skew. The age is judged when a
+pass runs, never inside the fold; passes are `TimerStore` rows fired by the app's `TimerService` (so wire `timers`),
+one batch of at most 1 024 per wake, and only a parked owner takes the fact (a running one re-arms a later row, it
+never blocks other timers). A young message at a topic's head holds older ones behind it back, so a pin can outlive
+the TTL. A delivery racing an expiry never delivers the expired message and never delivers twice. Enable the TTL on
+every node of a fleet before relying on it: a node without it retires an expiry row, and expiry is then lost until a
+`recoverAbandoned` sweep.
 
 ### Keep a long conversation bounded: `ctx.continueAsNew` (ADR 0109)
 

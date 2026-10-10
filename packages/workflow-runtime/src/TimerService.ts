@@ -274,6 +274,8 @@ export class TimerService {
    * live holder's token.
    */
   private readonly wakeBackoff = new Map<string, { attempt: number; nextTryAt: number }>();
+  /** Retries per chain of a D10a expiry row whose owner was running (bounded like `wakeBackoff`). */
+  private readonly expiryBackoff = new Map<string, number>();
   private readonly now: () => number;
 
   private readonly dispatcher: TimerDispatcher | undefined;
@@ -517,6 +519,30 @@ export class TimerService {
     if (last.handle !== undefined) await settle(last.handle);
   }
 
+  /**
+   * ADR 0110 D10a - write the NEXT expiry row of a chain whose owner could not take the pass yet
+   * (running, or its fence contended). Never reported as exhausted: a long turn is not a failure.
+   * The delay grows with this process's retries of the chain, capped like any re-drive, and the
+   * per-chain counter is bounded (oldest evicted). `after` is the row being retired: the new one is
+   * strictly later, since a row at the same `(executionId, wakeAt)` would be the SAME row.
+   */
+  private async rearmExpiry(executionId: string, after: number): Promise<void> {
+    const attempt = (this.expiryBackoff.get(executionId) ?? 0) + 1;
+    this.expiryBackoff.delete(executionId); // re-insert at the end: eviction order = recency
+    if (this.expiryBackoff.size >= MAX_WAKE_BACKOFFS) {
+      const oldest = this.expiryBackoff.keys().next().value;
+      if (oldest !== undefined) this.expiryBackoff.delete(oldest);
+    }
+    this.expiryBackoff.set(executionId, attempt);
+    await this.store.schedule({
+      executionId,
+      wakeAt: Math.max(
+        this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
+        after + 1
+      ),
+    });
+  }
+
   private async fire(
     executionId: string,
     wakeAt: number,
@@ -573,22 +599,19 @@ export class TimerService {
         (state !== null && state.status === "suspended" && state.suspendedOn?.wakeAt === wakeAt);
       // ADR 0110 amendment, D10a — a row that is no timer of the park may be an inbox EXPIRY row
       // (written by `send` for a topic with a TTL, re-armed by each pass): run the pass. A running
-      // owner cannot take the discard yet, so the row is KEPT and retried (bounded delay, never
-      // dropped, never reported as exhausted: a long turn is not a failure). A finished chain, or a
-      // node with no TTL configured, falls through to the ordinary "obsolete: retire" below.
+      // owner cannot take the discard yet, so a row with something still to expire is RE-ARMED
+      // DURABLY (the next row at a later instant, then this one retired - like a re-drive), never
+      // left at the head of `due()` where it would starve every real timer behind it. A row with
+      // nothing TTL'd pending (an obsolete plain timer of a now-running owner, say) is retired the
+      // ordinary way below, as is a finished chain or a node with no TTL configured.
       if (!stillWaiting && this.runtime.inboxTtlOn) {
         const r = await this.runtime.expireInbox(executionId);
-        if (r.status === "not-parked" || r.status === "contended") {
-          const attempt = Math.min(
-            (this.wakeBackoff.get(executionId)?.attempt ?? 0) + 1,
-            this.maxRedriveAttempts
-          );
-          this.wakeBackoff.set(executionId, {
-            attempt,
-            nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
-          });
+        if ((r.status === "not-parked" || r.status === "contended") && r.pending === true) {
+          await this.rearmExpiry(executionId, wakeAt);
+          await this.store.complete(executionId, wakeAt);
           return;
         }
+        this.expiryBackoff.delete(executionId);
       }
       if (stillWaiting && state !== null) {
         const resumeEvent: { eventType: string; payload: unknown; waitId?: string } = {
@@ -686,6 +709,16 @@ export class TimerService {
       }
       // Fired — or obsolete (resumed by other means, terminal, unknown): retire it.
       this.wakeBackoff.delete(executionId);
+      // ADR 0110 D10a - an expiry row and a real timer on the SAME instant are one row (keyed by
+      // `(executionId, wakeAt)`, expiry rows land on whole seconds, as does `ctx.sleepUntil(W)`).
+      // Retiring it here would silently drop the expiry, so a fired timer also runs the pass for its
+      // chain: it re-arms any later expiry itself. Before the retire, so a failure leaves the row.
+      if (stillWaiting && this.runtime.inboxTtlOn) {
+        const r = await this.runtime.expireInbox(executionId);
+        if ((r.status === "not-parked" || r.status === "contended") && r.pending === true) {
+          await this.rearmExpiry(executionId, wakeAt);
+        }
+      }
       await this.store.complete(executionId, wakeAt);
     } catch (err) {
       // Leave the timer in place; the next poll retries (at-least-once).

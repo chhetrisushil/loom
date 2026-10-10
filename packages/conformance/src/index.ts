@@ -599,6 +599,10 @@ export function runEventStoreConformance(
       await store.close();
     });
 
+    it("storeNow() (optional, SPI 2.4.0) is a sane, non-decreasing epoch-ms clock; skipped if absent", async () => {
+      expect(await eventStoreNowProblem(factory)).toBeUndefined();
+    });
+
     // ── SPI 2.2.0 (ADR 0116 amendment) — appendIfUnchanged: exists AND same head AND same token ──
     // Runs only where the store offers the method. The token is COMPARED, never presented.
     const obs = async (store: EventStore, id: string) => {
@@ -1256,6 +1260,38 @@ export async function leaseExpiredDefaultProblem(
     }
     const one = (await store.expired(undefined, 1)).map((l) => l.executionId);
     if (one.join() !== "dead") return `expired(undefined, 1) got [${one.join()}], want [dead]`;
+    return undefined;
+  } finally {
+    await store.close();
+  }
+}
+
+/**
+ * The optional `EventStore.storeNow()` check (EventStore SPI 2.4.0, ADR 0110 amendment D10a), as a
+ * function so the kit's own tests can prove it discriminates: the value must be a finite, non-negative
+ * integer of epoch milliseconds, non-decreasing across sequential calls, and within a day of the
+ * host's own clock (a store reporting seconds, or a counter, is not a clock). Returns `undefined` when
+ * the store conforms or does not implement `storeNow`. Closes the store.
+ */
+export async function eventStoreNowProblem(
+  factory: () => EventStore,
+  hostNow: () => number = Date.now
+): Promise<string | undefined> {
+  const store = factory();
+  try {
+    if (store.storeNow === undefined) return undefined;
+    const a = await store.storeNow();
+    const b = await store.storeNow();
+    for (const v of [a, b]) {
+      if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) {
+        return `storeNow() must be a non-negative integer of epoch ms (got ${String(v)})`;
+      }
+    }
+    if (b < a) return `storeNow() went backwards between sequential calls (${a} then ${b})`;
+    const skew = Math.abs(b - hostNow());
+    if (skew > 24 * 3_600_000) {
+      return `storeNow() ${b} is ${skew} ms from the host clock: not epoch milliseconds`;
+    }
     return undefined;
   } finally {
     await store.close();

@@ -77,15 +77,19 @@ describe("kernel.inbox.messageTtlMs", () => {
     expect(off.runtime.inboxTtlOn).toBe(false);
     expect(await off.runtime.expireInbox("nope")).toEqual({ status: "off", expired: 0 });
     await off.close();
-    for (const ttl of [60_000, { topics: { cold: 1_000 } }]) {
+    for (const ttl of [60_000, { topics: { cold: 120_000 } }]) {
       const on = mk(ttl);
       expect(on.runtime.inboxTtlOn).toBe(true);
       await on.close();
     }
   });
 
-  it("refuses a TTL that is not a positive integer", () => {
+  it("refuses a TTL that is not an integer of at least the 60 s floor", () => {
     expect(() => mk(0)).toThrow(/messageTtlMs/);
     expect(() => mk({ topics: { a: -1 } })).toThrow(/messageTtlMs/);
+    // Below the floor: a TTL near the fleet's clock skew could expire a fresh message.
+    expect(() => mk(59_999)).toThrow(/at least 60000/);
+    expect(() => mk({ default: 1_000 })).toThrow(/at least 60000/);
+    expect(() => mk({ topics: { a: 5_000 } })).toThrow(/at least 60000/);
   });
 });
