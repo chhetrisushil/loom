@@ -29,6 +29,7 @@ export class CachingContentStore implements ContentStore {
   readonly deleteIfUntouchedSince?: NonNullable<ContentStore["deleteIfUntouchedSince"]>;
   readonly listPage?: NonNullable<ContentStore["listPage"]>;
   readonly touchClock?: NonNullable<ContentStore["touchClock"]>;
+  readonly touch?: NonNullable<ContentStore["touch"]>;
 
   constructor(
     private readonly inner: ContentStore,
@@ -56,12 +57,16 @@ export class CachingContentStore implements ContentStore {
     if (inner.touchClock !== undefined) {
       this.touchClock = () => inner.touchClock!();
     }
+    // SPI 1.4.0: the touch time is the inner store's; the byte cache is untouched by it.
+    if (inner.touch !== undefined) {
+      this.touch = (addresses) => inner.touch!(addresses);
+    }
     this.getMany = async (refs) => {
       const results = new Array<Uint8Array | null>(refs.length);
       const missIndexes: number[] = [];
       const missRefs: ContentRef[] = [];
       refs.forEach((ref, i) => {
-        const hit = this.touch(ref.__loomContent);
+        const hit = this.lruTouch(ref.__loomContent);
         if (hit !== undefined) {
           results[i] = hit;
         } else {
@@ -94,7 +99,7 @@ export class CachingContentStore implements ContentStore {
   }
 
   async get(ref: ContentRef): Promise<Uint8Array | null> {
-    const hit = this.touch(ref.__loomContent);
+    const hit = this.lruTouch(ref.__loomContent);
     if (hit !== undefined) return hit;
     const bytes = await this.inner.get(ref);
     if (bytes !== null) {
@@ -119,7 +124,7 @@ export class CachingContentStore implements ContentStore {
   }
 
   /** Cache hit with LRU touch (delete+set moves the key to the Map's tail). */
-  private touch(address: string): Uint8Array | undefined {
+  private lruTouch(address: string): Uint8Array | undefined {
     const hit = this.cache.get(address);
     if (hit !== undefined) {
       this.cache.delete(address);

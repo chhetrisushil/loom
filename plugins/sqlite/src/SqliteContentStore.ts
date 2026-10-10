@@ -8,6 +8,9 @@ import {
 } from "@loom/plugin-content";
 import Database from "better-sqlite3";
 
+/** Bind variables per `touch` UPDATE (SQLite builds cap at 999 on old versions). */
+const TOUCH_CHUNK = 500;
+
 /**
  * SQLite-backed {@link ContentStore} (the first durable content backend —
  * ADR 0046 deferred one "until a real requirement lands"; the db-copilot's
@@ -17,7 +20,7 @@ import Database from "better-sqlite3";
  * (hash-while-spooling). Point it at its own file — blob I/O must not contend
  * with event-append latency (TS-7 discipline).
  *
- * SPI 1.3.0 (ADR 0055 D5/D6): every blob carries `touched_at`, bumped by EVERY put (a dedup'd
+ * SPI 1.4.0 adds `touch` (a batched `UPDATE … RETURNING`). SPI 1.3.0 (ADR 0055 D5/D6): every blob carries `touched_at`, bumped by EVERY put (a dedup'd
  * put is a re-citation), so `deleteIfUntouchedSince` is one conditional `DELETE` and
  * `listPage` is a keyset scan on the `address` primary key. A pre-1.3.0 file is migrated on
  * open: the column is added and existing blobs are backfilled to the migration time
@@ -113,6 +116,32 @@ export class SqliteContentStore implements ContentStore {
 
   async touchClock(): Promise<number> {
     return this.now();
+  }
+
+  /**
+   * SPI 1.4.0: bump `touched_at` for existing blobs without a put. One `UPDATE … WHERE address
+   * IN (…) RETURNING address` per chunk (bounded bind-variable count), all inside one
+   * transaction so a batch is all-or-nothing. `max()` keeps the time monotonic; an unknown
+   * address matches no row (no insert), and is reported back as missing.
+   */
+  async touch(addresses: readonly string[]): Promise<string[]> {
+    const unique = [...new Set(addresses)];
+    if (unique.length === 0) return [];
+    const touchedAt = this.now();
+    const present = new Set<string>();
+    this.db.transaction(() => {
+      for (let i = 0; i < unique.length; i += TOUCH_CHUNK) {
+        const chunk = unique.slice(i, i + TOUCH_CHUNK);
+        const rows = this.db
+          .prepare(
+            `UPDATE content_blobs SET touched_at = max(touched_at, ?)
+             WHERE address IN (${chunk.map(() => "?").join(",")}) RETURNING address`
+          )
+          .all(touchedAt, ...chunk) as { address: string }[];
+        for (const row of rows) present.add(row.address);
+      }
+    })();
+    return unique.filter((a) => !present.has(a));
   }
 
   async listPage(opts: ContentListPageOptions = {}): Promise<ContentListPage> {

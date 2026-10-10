@@ -1,6 +1,7 @@
 import type { EventStore, ExecutionEnumerable } from "@loom/event-runtime";
 import { iterateExecutionIds } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
+import { visitCitedAddresses } from "./citations";
 
 // ── K10.6 (ADR 0055) — pinned mark-and-sweep for claim-checked content ────────
 //
@@ -21,82 +22,6 @@ import type { ContentStore } from "./ContentStore";
 // so erasing one bricks the execution (resume, replay, fork, export). The raw
 // log cannot say which bare refs a resolving store will resolve, so every bare
 // ref is retained while any scanned event cites it.
-
-/**
- * The structural claim-check test, identical to `isClaimCheck` in `@loom/middleware`
- * (kept structural so this plugin takes no middleware dependency): the flag AND a string
- * `ref.__loomContent`. An app object that merely carries the flag is app data.
- */
-function envelopeRef(value: object): string | undefined {
-  if ((value as { __loomClaimCheck?: unknown }).__loomClaimCheck !== true) return undefined;
-  const address = (value as { ref?: { __loomContent?: unknown } | null }).ref?.__loomContent;
-  return typeof address === "string" ? address : undefined;
-}
-
-/** The address of an R5 media source `{ kind: "ref", ref: { address: string } }`, if `value` is one. */
-function mediaSourceAddress(value: object): string | undefined {
-  if ((value as { kind?: unknown }).kind !== "ref") return undefined;
-  const address = (value as { ref?: { address?: unknown } | null }).ref?.address;
-  return typeof address === "string" ? address : undefined;
-}
-
-/**
- * Collect content addresses out of an event payload. Any object carrying a
- * string `__loomContent` is a ref leaf — this covers bare ADR 0046
- * `ContentRef`s (e.g. a finding's `evidence` list, an externalized field) AND
- * the `ref` of an ADR 0054 claim-check envelope. `inEnvelope` is true ONLY for
- * an envelope's own `ref` — the offloaded value, the one citation whose erasure
- * is replay-invisible (ADR 0055 D4). Every other envelope field (`digest` above
- * all: orchestration branches on it) is recorded, replay-visible data and is
- * walked in the envelope's own context like any other payload.
- *
- * Because the enveloped context never descends (the `ref` is a leaf), one
- * WeakSet cycle guard suffices: an object aliased at a bare site and as an
- * envelope's `ref` is still visited bare, since the envelope reports its ref
- * directly rather than through the guard.
- *
- * Iterative with cycle detection: the sweep is a retention job over
- * app-controlled payloads, so a pathologically deep (or, from an in-memory
- * store, cyclic) value must not stack-overflow the pass (audit W8).
- */
-function collectContentRefs(
-  value: unknown,
-  visit: (address: string, inEnvelope: boolean) => void
-): void {
-  const stack: unknown[] = [value];
-  const seen = new WeakSet<object>();
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (typeof current !== "object" || current === null) continue;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    const address = (current as { __loomContent?: unknown }).__loomContent;
-    if (typeof address === "string") {
-      visit(address, false);
-      continue;
-    }
-    if (Array.isArray(current)) {
-      for (const item of current) stack.push(item);
-      continue;
-    }
-    // R5 (ADR 0120) — an LLM media source `{ kind: "ref", ref: { address } }` cites a blob by its
-    // address WITHOUT the `__loomContent` marker (deliberately: the resolving store would
-    // JSON-decode that marker). It is as load-bearing as a bare ref — a live model call resolves
-    // it, and erasing it makes the next call fail — so the mark phase must see it, or the sweep
-    // would reclaim media the transcript still cites.
-    const mediaAddress = mediaSourceAddress(current);
-    if (mediaAddress !== undefined) {
-      visit(mediaAddress, false);
-      continue;
-    }
-    const offloaded = envelopeRef(current);
-    if (offloaded !== undefined) visit(offloaded, true);
-    for (const [key, item] of Object.entries(current)) {
-      if (offloaded !== undefined && key === "ref") continue;
-      stack.push(item);
-    }
-  }
-}
 
 /**
  * The highest sequence missing below the log's tip, or -1 when it is contiguous from 0. The
@@ -174,11 +99,14 @@ export interface ContentSweepBase {
   /**
    * The blob store. With `deleteIfUntouchedSince` (SPI 1.3.0) every erase is conditional on
    * the blob's touch time, which closes the re-cite race for a re-cite THROUGH `put` (ADR 0055
-   * D5); without it the sweep falls back to `delete` and reports `raceSafe: false`. KNOWN GAP:
-   * a citation copied WITHOUT a `put` (a fork's `copyPrefix`, a ref already inside a payload that
-   * an `append` keeps) does not bump the touch time and is not protected; see `reclaimOrphans`. `listPage` enables `reclaimOrphans`.
+   * D5); without it the sweep falls back to `delete` and reports `raceSafe: false`. A citation
+   * copied WITHOUT a `put` (a fork's `copyPrefix`, a ref an `append` keeps) is protected by SPI
+   * 1.4.0 `touch`, which `reclaimOrphans` requires; see `reclaimOrphans`. `listPage` enables it.
    */
-  contentStore: Pick<ContentStore, "delete" | "deleteIfUntouchedSince" | "listPage" | "touchClock">;
+  contentStore: Pick<
+    ContentStore,
+    "delete" | "deleteIfUntouchedSince" | "listPage" | "touchClock" | "touch"
+  >;
   /** Event kinds whose cited refs are pinned — retained as long as the citing fact exists. */
   pinnedEventTypes: Iterable<string>;
   /** Reclaim an unpinned ref only when its latest citation is older than this. */
@@ -232,16 +160,18 @@ export interface ContentSweepBase {
    * (`retention.archive`) and each archive's snapshot store, and every app table through `roots`.
    * Run with `dryRun: true` first and read the list.
    *
-   * KNOWN GAP (concurrency, NOT fixed): D5's conditional delete only protects a re-cite that
-   * calls `put` (the touch time is bumped by `put`/`putStream` alone). A citation copied WITHOUT
-   * a `put` can still be erased: `ContentResolvingEventStore.copyPrefix` (a fork) copies refs
-   * verbatim, and an `append` keeps refs already inside its payload (recalled memory,
-   * `scriptRef`, refs passed between steps). Scenario: a blob older than the TTL is cited only
-   * by `p-parent`; mid-sweep `p-parent` is forked into `a-child`, whose id the listing has
-   * already passed, and `p-parent` is then deleted. The orphan pass erases the blob and replay
-   * of `a-child` throws `ContentMissingError`. Operational rule: do NOT run an orphan sweep
-   * concurrently with forks or deletes of the executions it scans; quiesce them first. Closing
-   * it needs a ContentStore SPI change (a touch without a put), which is a separate decision.
+   * CONCURRENCY (ADR 0055 D6 amendment 2): D5's conditional delete only sees a touch. A `put`
+   * touches; a citation that enters a log WITHOUT one does not by itself:
+   * `ContentResolvingEventStore.copyPrefix` (a fork) copies refs verbatim, and an `append`
+   * keeps refs already inside its payload (recalled memory, `scriptRef`, refs passed between
+   * steps). SPI 1.4.0 `touch` closes that: those two paths touch the refs they carry, so a fork
+   * made mid-sweep makes `deleteIfUntouchedSince` refuse. To ERASE, the content store MUST
+   * implement `touch` or the sweep throws {@link ReclaimOrphansTouchError} (a `dryRun` need not).
+   * The log must be written through a `ContentResolvingEventStore` over that store: a writer
+   * that copies refs some other way is outside the guarantee. Residual window: a touch lands a
+   * round trip before/after the write it guards, so a sweep whose whole mark-to-erase interval
+   * fits inside that single round trip can still lose; any real sweep (a full scan plus a listing)
+   * is far longer.
    */
   reclaimOrphans?: ReclaimOrphansAck | boolean;
 }
@@ -289,6 +219,23 @@ export class ReclaimOrphansAckError extends TypeError {
       `sweepUnpinnedContent: reclaimOrphans must be { completeScan: true } to erase (received ${describeReceived(received)}). Orphan reclamation erases every blob that no scanned log, snapshot or root cites, so a citing store you forgot to pass loses its blobs while they are still cited. Set { completeScan: true } only when eventStores, snapshotStores and roots cover ALL of them (every retention archive and its snapshot store included), AND scanned in order: each live store BEFORE its archive, or an execution retention moves mid-sweep can be missed by both. A dryRun does not need the acknowledgement. Migration: reclaimOrphans: true -> reclaimOrphans: { completeScan: true }.`
     );
     this.name = "ReclaimOrphansAckError";
+  }
+}
+
+/**
+ * `reclaimOrphans` was asked to ERASE through a content store without SPI 1.4.0 `touch`.
+ * Nothing was read or erased. Without `touch`, a citation that enters a log with no `put` (a
+ * fork's `copyPrefix`, a ref an `append` carries) cannot make the conditional delete refuse, so
+ * an orphan sweep concurrent with a fork or a delete can erase a blob a live log still cites
+ * (replay then throws `ContentMissingError`). This is a deletion safety boundary: it refuses
+ * rather than documenting the hazard. A `dryRun` is unaffected.
+ */
+export class ReclaimOrphansTouchError extends TypeError {
+  constructor() {
+    super(
+      "sweepUnpinnedContent: reclaimOrphans needs a content store with touch() (ContentStore SPI 1.4.0) to ERASE. Without it a fork (copyPrefix) or an append that carries an existing ref cannot mark the blob re-cited, so an orphan sweep racing a fork or a delete can erase a blob a live log still cites. Add touch() to the store (SqliteContentStore and InMemoryContentStore have it; a CachingContentStore forwards it), or run with dryRun: true."
+    );
+    this.name = "ReclaimOrphansTouchError";
   }
 }
 
@@ -348,9 +295,9 @@ export interface ContentSweepReport {
  * Race-safe (ADR 0055 D5) when the store has `deleteIfUntouchedSince`: every erase is
  * conditional on the blob being untouched since `now − olderThanMs`, so a `put` that re-cites
  * old bytes between the scan and its own append keeps the blob. That holds while a flow's
- * put→append window is shorter than the TTL, and ONLY for a re-cite through `put`: a citation
- * copied without one (a fork's `copyPrefix`, a ref kept inside an `append` payload) is a KNOWN
- * GAP, see `reclaimOrphans`. `roots` (D7) pins addresses held outside the
+ * put→append window is shorter than the TTL. A citation copied without a `put` (a fork's
+ * `copyPrefix`, a ref kept inside an `append` payload) is covered by SPI 1.4.0 `touch`, which
+ * `reclaimOrphans` requires; see `reclaimOrphans`. `roots` (D7) pins addresses held outside the
  * log; `reclaimOrphans` (D6) also erases stored blobs nothing scanned cites. Cost:
  * O(events + blobs), all membership tests are Set/Map lookups.
  */
@@ -382,6 +329,9 @@ export async function sweepUnpinnedContent(
     throw new TypeError(
       "sweepUnpinnedContent: reclaimOrphans needs a content store with deleteIfUntouchedSince() (ContentStore SPI 1.3.0) — a plain delete of a listed orphan loses a blob re-put since the listing"
     );
+  }
+  if (orphans && options.dryRun !== true && store.touch === undefined) {
+    throw new ReclaimOrphansTouchError();
   }
   if (
     orphans &&
@@ -440,7 +390,7 @@ export async function sweepUnpinnedContent(
       executionsScanned++;
       const events = await eventStore.read(executionId);
       for (const event of events) {
-        collectContentRefs(event.payload, (address, inEnvelope) => {
+        visitCitedAddresses(event.payload, (address, inEnvelope) => {
           const prior = lastCited.get(address);
           if (prior === undefined || event.timestamp > prior) {
             lastCited.set(address, event.timestamp);
@@ -465,7 +415,7 @@ export async function sweepUnpinnedContent(
         continue;
       }
       const pin = (snapshot: { state: unknown }): void =>
-        collectContentRefs(snapshot.state, (address) => {
+        visitCitedAddresses(snapshot.state, (address) => {
           if (!lastCited.has(address)) lastCited.set(address, Number.POSITIVE_INFINITY);
           pinned.add(address);
         });

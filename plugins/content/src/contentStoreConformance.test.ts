@@ -28,6 +28,7 @@ describe("CachingContentStore forwards the SPI 1.3.0 optionals", () => {
     expect(typeof full.deleteIfUntouchedSince).toBe("function");
     expect(typeof full.listPage).toBe("function");
     expect(typeof full.touchClock).toBe("function");
+    expect(typeof full.touch).toBe("function"); // SPI 1.4.0
 
     const bare = {
       put: async () => ({ __loomContent: "sha256:x", size: 0 }),
@@ -38,6 +39,7 @@ describe("CachingContentStore forwards the SPI 1.3.0 optionals", () => {
     expect(minimal.deleteIfUntouchedSince).toBeUndefined();
     expect(minimal.listPage).toBeUndefined();
     expect(minimal.touchClock).toBeUndefined();
+    expect(minimal.touch).toBeUndefined();
   });
 
   it("a conditional delete that erases also evicts — erasure is never served from cache", async () => {

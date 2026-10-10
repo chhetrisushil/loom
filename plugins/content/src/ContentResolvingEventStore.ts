@@ -4,8 +4,10 @@ import {
   type EventStore,
   type OptionalEventStoreMethod,
   installOptional,
+  readRangeOf,
 } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
+import { visitCitedAddresses } from "./citations";
 import {
   type ContentRef,
   collectContentRefs,
@@ -93,7 +95,11 @@ export class ContentResolvingEventStore implements EventStore {
       // what a failed `append` orphans today (and the sweep reclaims it). `Promise.all`
       // keeps array order, the SPI's per-execution order.
       appendBatch: async (envelopes) =>
-        inner.appendBatch!(await Promise.all(envelopes.map((e) => this.externalizeEnvelope(e)))),
+        this.touching(
+          envelopes.map((e) => e.payload),
+          async () =>
+            inner.appendBatch!(await Promise.all(envelopes.map((e) => this.externalizeEnvelope(e))))
+        ),
       // A tip is a sequence number — no payload to resolve, so it forwards unchanged.
       head: "forward",
       readRange: (executionId, from, to) =>
@@ -130,11 +136,25 @@ export class ContentResolvingEventStore implements EventStore {
                 };
           }
         }
-        return inner.appendIfUnchanged!(executionId, await this.externalizeEnvelope(event), expect);
+        return this.touching([event.payload], async () =>
+          inner.appendIfUnchanged!(executionId, await this.externalizeEnvelope(event), expect)
+        );
       },
       // Refs are content-addressed: copying them verbatim makes the fork share the parent's
       // blobs (dedup for free) — no decrypt/re-wrap step (contrast the crypto plugin's keys).
-      copyPrefix: "forward",
+      // But a verbatim copy is a citation with NO `put`, invisible to the orphan sweep's
+      // conditional delete, so over a store with SPI 1.4.0 `touch` the copied range's refs are
+      // touched around the copy (ADR 0055 D6 amendment 2). The range is read raw (unresolved).
+      copyPrefix:
+        content.touch === undefined
+          ? "forward"
+          : async (fromExecutionId, toExecutionId, throughSequence, metadata) => {
+              const copied = await readRangeOf(inner, fromExecutionId, 0, throughSequence);
+              return this.touching(
+                copied.map((e) => e.payload),
+                () => inner.copyPrefix!(fromExecutionId, toExecutionId, throughSequence, metadata)
+              );
+            },
       // Forwarded so a content-wrapped store keeps its retention/compaction capabilities.
       // These reclaim EVENTS only; blob reclamation is separate (see the class note).
       deleteExecution: "forward",
@@ -155,7 +175,43 @@ export class ContentResolvingEventStore implements EventStore {
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
-    return this.inner.append(await this.externalizeEnvelope(envelope));
+    return this.touching([envelope.payload], async () =>
+      this.inner.append(await this.externalizeEnvelope(envelope))
+    );
+  }
+
+  /**
+   * SPI 1.4.0 (ADR 0055 D6 amendment 2) — a ref that reaches a log WITHOUT a `put` (one an
+   * incoming payload already carries: a recalled memory value, a `scriptRef`, a ref handed
+   * between steps) is a citation the orphan sweep's conditional delete cannot see. So, when the
+   * content store can `touch`, the payloads' cited addresses are touched BEFORE the write (a
+   * failure aborts it, nothing landed) and again AFTER it (best-effort: the write is durable, so
+   * its outcome must not be turned into a failure). Before covers a sweep that starts after the
+   * touch; after covers a sweep whose mark pass had already read this log, so the touch lands
+   * later than its cutoff. Refs externalized by THIS write are not in the INPUT payloads (their
+   * `put` is the touch). Cost: with no `touch` on the store, nothing (the closure is the write);
+   * otherwise one iterative cycle-safe walk of the input payload (no recursion; the same walker
+   * the sweep's mark phase uses), and a round trip only when a ref was found.
+   */
+  private async touching<T>(payloads: readonly unknown[], write: () => Promise<T>): Promise<T> {
+    const touch = this.content.touch;
+    if (touch === undefined) return write();
+    const cited = new Set<string>();
+    for (const payload of payloads) {
+      if (typeof payload === "object" && payload !== null) {
+        visitCitedAddresses(payload, (address) => cited.add(address));
+      }
+    }
+    if (cited.size === 0) return write();
+    const addresses = [...cited];
+    await touch.call(this.content, addresses);
+    const result = await write();
+    try {
+      await touch.call(this.content, addresses);
+    } catch {
+      /* best-effort: see above */
+    }
+    return result;
   }
 
   private async externalizeValue(value: unknown): Promise<ContentRef> {

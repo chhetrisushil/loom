@@ -2260,6 +2260,11 @@ export interface ContentStoreLike {
   }>;
   /** OPTIONAL (SPI 1.3.0, ADR 0055 D5): now, on the clock touch times are stamped with. */
   touchClock?(): Promise<number>;
+  /**
+   * OPTIONAL (SPI 1.4.0, ADR 0055 D6 amendment 2): bump touch times WITHOUT a put (max, never
+   * backwards); unknown addresses are a no-op, resolved as the list of missing ones.
+   */
+  touch?(addresses: readonly string[]): Promise<string[]>;
 }
 
 // (the SPI 1.3.0 touch-contract check lives in ./contentTouchContract — internal, see there)
