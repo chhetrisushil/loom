@@ -89,6 +89,44 @@ export function isReservedStream(executionId: string): boolean {
 }
 
 /**
+ * The reserved control stream a chain's durable inbox lives in (ADR 0110 D1):
+ * `__loom_inbox__:<chainId>`. Defined here, beside {@link isReservedStream}, so a store decorator
+ * (the crypto plugin's `EncryptingEventStore`) and the compliance erasure can recognise it without
+ * depending on the workflow runtime.
+ */
+export const INBOX_STREAM_PREFIX = "__loom_inbox__:";
+
+/**
+ * The chain an execution belongs to, read from its sequence 0 alone (the fold's own rule: a valid `forkChain` stamp wins,
+ * else the start payload's `chainId`, else the execution itself) — so `send` needs no fold.
+ */
+export function chainIdOfFirst(first: EventEnvelope, executionId: string): string {
+  const valid = (v: unknown): string | undefined => {
+    if (v === null || typeof v !== "object") return undefined;
+    const { chainId, generation } = v as { chainId?: unknown; generation?: unknown };
+    return typeof chainId === "string" &&
+      chainId.length > 0 &&
+      Number.isSafeInteger(generation) &&
+      (generation as number) >= 0
+      ? chainId
+      : undefined;
+  };
+  return valid(first.metadata?.forkChain) ?? valid(first.payload) ?? executionId;
+}
+
+/**
+ * The chain id an inbox stream belongs to, or `undefined` when `executionId` is not an inbox
+ * stream (or names an empty chain). A chain's id is its generation-0 execution id (or a fork's
+ * fresh one), so a decorator that maps executions to erasure subjects can map the chain's stream
+ * to the same subject as its owner.
+ */
+export function inboxChainOf(executionId: string): string | undefined {
+  if (!executionId.startsWith(INBOX_STREAM_PREFIX)) return undefined;
+  const chain = executionId.slice(INBOX_STREAM_PREFIX.length);
+  return chain.length > 0 ? chain : undefined;
+}
+
+/**
  * Durable, append-only event log. Async-first so any backend plugs in —
  * synchronous stores (SQLite, in-memory) satisfy this trivially by marking
  * methods `async`; async/network stores (Postgres, Redis, DynamoDB) return

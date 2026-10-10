@@ -124,6 +124,31 @@ The **one hard rule** (T3-R4.5): never shred a fold that is still in flight. Era
 
 This is honest deferral: the request is recorded and named, never silently dropped.
 
+### A message still in flight in an inbox (ADR 0110)
+
+A durable inbox (`kernel.features.inbox`) holds a message in a reserved stream
+(`__loom_inbox__:<chainId>`) until its owner consumes it, so an erasure must reach the stream
+as well as the owner's log. It does, twice:
+
+- **Cryptographically.** With `security.crypto` composed, `defineConfig` registers the inbox
+  payload path, and the encrypting store seals a stream's payload under the OWNER's subject (the
+  chain id is the generation-0 execution id, so your `subjectOf` already knows it). `shredSubject`
+  therefore makes an unconsumed payload unreadable; a consumer that reaches it afterwards gets the
+  `{ $shredded: true }` marker (journaled in the owner's log like any delivery, so a replay of that
+  log is identical), never the raw value. Inbox reads never throw `PayloadShreddedError`: a
+  sender's backlog scan and the trim must keep working. Once the key is destroyed a `send` is
+  refused (a destroyed key is never recreated).
+- **Physically.** When the erasure runs (every execution of the subject terminal), the
+  coordinator deletes the inbox stream of each execution that is the HEAD of its chain (terminal
+  and not `continued`), read BEFORE the key is destroyed. The runtime already deletes a finished
+  chain's stream; this reaches the orphan a crash between a sender's append and its re-read leaves,
+  which the runtime cannot map back to an owner for a fork's chain. A store without
+  `deleteExecution` skips this half; the key still erases the payload.
+
+The sender recorded on a message (`tenant`, `actor`, `onBehalfOf`) is the SENDER's identity, not
+the owner's, and is not sealed by the inbox path: declare `INBOX_MESSAGE` / `MESSAGE_CONSUMED`
+`sender.*` paths sensitive yourself if the sender is a data subject.
+
 ### Erasure does not reach a derived read model
 
 A shred erases the **log**. It says nothing about anything built *from* the log, and a

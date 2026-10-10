@@ -3,6 +3,8 @@ import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
+  INBOX_STREAM_PREFIX,
+  chainIdOfFirst,
   headOf,
   readRangeOf,
 } from "@loom/event-runtime";
@@ -16,7 +18,7 @@ import type { InboxMessage, InboxSource } from "./types";
 // journals consumption into its OWN log as `MESSAGE_CONSUMED`. The owner's log is therefore never
 // appended to by a sender, which is what removes the sequence race the audit measured.
 
-export const INBOX_STREAM_PREFIX = "__loom_inbox__:";
+export { INBOX_STREAM_PREFIX };
 /** The stream's event kind. Not an `EVENT_SCHEMA` kind: it exists only in the control stream. */
 export const INBOX_MESSAGE_KIND = "INBOX_MESSAGE";
 const INBOX_WORKFLOW_ID = "__loom_inbox__";
@@ -50,23 +52,7 @@ export function chainIdOf(state: ExecutionState, executionId: string): string {
     : executionId;
 }
 
-/**
- * {@link chainIdOf} read from sequence 0 alone (the fold's own rule: a valid `forkChain` stamp wins,
- * else the start payload's `chainId`, else the execution itself) — so `send` needs no fold.
- */
-export function chainIdOfFirst(first: EventEnvelope, executionId: string): string {
-  const valid = (v: unknown): string | undefined => {
-    if (v === null || typeof v !== "object") return undefined;
-    const { chainId, generation } = v as { chainId?: unknown; generation?: unknown };
-    return typeof chainId === "string" &&
-      chainId.length > 0 &&
-      Number.isSafeInteger(generation) &&
-      (generation as number) >= 0
-      ? chainId
-      : undefined;
-  };
-  return valid(first.metadata?.forkChain) ?? valid(first.payload) ?? executionId;
-}
+export { chainIdOfFirst };
 
 export function inboxStreamId(chainId: string): string {
   return `${INBOX_STREAM_PREFIX}${chainId}`;
@@ -239,6 +225,24 @@ export function cursorsOf(variables: Record<string, unknown>): Record<string, nu
 
 export function cursorFor(cursors: Record<string, number>, topic: string): number {
   return Object.hasOwn(cursors, topic) ? (cursors[topic] as number) : -1;
+}
+
+/**
+ * The `waitId` of an operator discard's `MESSAGE_CONSUMED` (ADR 0110 amendment, D8). No `ctx` wait can
+ * carry it (those are `<scopePath>#<ordinal>`), and the fold's first-answer-wins rule means a chain's
+ * log records ONE answer under it however many discards run, so discards add no unbounded state.
+ */
+export const DISCARD_WAIT_ID = "__loom_discard__";
+
+/**
+ * The dedupe key of a discard fact: the lowercase hex SHA-256 of `["discard", topic, throughSeq]`.
+ * Fixed size like {@link dedupeKeyOf}'s, and the same discard repeated is a duplicate (the cursor
+ * advance is idempotent anyway).
+ */
+export function discardKeyOf(topic: string, throughSeq: number): string {
+  return createHash("sha256")
+    .update(JSON.stringify(["discard", topic, throughSeq]))
+    .digest("hex");
 }
 
 /** The kind of the marker a fork writes so its allocation starts above every inherited cursor. */

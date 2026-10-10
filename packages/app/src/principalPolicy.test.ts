@@ -1,6 +1,6 @@
 import { step$ } from "@loom/core";
 import { GrantTable, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import {
   type FlowRunner,
@@ -142,6 +142,35 @@ describe("security.strict / compliance: the identity subset is never written ver
       "principal.identity.onBehalfOf",
     ]);
     void app.close();
+  });
+
+  it("with the inbox on, crypto also seals an in-flight message payload (ADR 0110); with it off, nothing extra", () => {
+    const withInbox = registry();
+    const a = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      security: {
+        ...strictSecurity,
+        crypto: { events: withInbox.events, snapshots: withInbox.snapshots },
+      },
+      kernel: { features: { inbox: true } },
+      timers: { store: new InMemoryTimerStore() },
+      observability: { onWarn: () => {} },
+    });
+    expect(withInbox.calls).toContainEqual({ eventType: "INBOX_MESSAGE", paths: ["payload"] });
+    void a.close();
+    const without = registry();
+    const b = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      security: {
+        ...strictSecurity,
+        crypto: { events: without.events, snapshots: without.snapshots },
+      },
+      observability: { onWarn: () => {} },
+    });
+    expect(without.calls.some((c) => c.eventType === "INBOX_MESSAGE")).toBe(false);
+    void b.close();
   });
 
   it("outside strict/compliance the verbatim subset is the zero-config default", async () => {

@@ -3,6 +3,7 @@ import {
   type DecoratorPlan,
   type EventStore,
   type OptionalEventStoreMethod,
+  inboxChainOf,
   installOptional,
 } from "@loom/event-runtime";
 import { decryptValue, encryptValue, hasEnvelope, mapPaths } from "./crypto";
@@ -19,7 +20,9 @@ export interface EncryptingEventStoreOptions {
   /**
    * The erasure SUBJECT for an execution (the key id). Default: the executionId
    * (per-execution keys). Return a shared subject to erase several executions —
-   * and their forks — together (A2 fork lineage; see README).
+   * and their forks — together (A2 fork lineage; see README). A chain's inbox stream
+   * (`__loom_inbox__:<chainId>`, ADR 0110) is resolved by calling this with the CHAIN id, i.e. the
+   * subject of the chain's generation-0 execution, so an in-flight payload is erased with its owner.
    */
   subjectOf?: (envelope: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
   /**
@@ -117,7 +120,7 @@ export class EncryptingEventStore implements EventStore {
           envelopes.map(async (envelope) => {
             const paths = pathsFor(this.sensitive, envelope.eventType);
             if (paths === undefined || paths.length === 0) return envelope; // unmarked (A4)
-            const subject = this.subjectOf(envelope);
+            const subject = this.subjectFor(envelope);
             let key = keyFor.get(subject);
             if (key === undefined) {
               key = this.keys.getOrCreate(subject);
@@ -142,7 +145,7 @@ export class EncryptingEventStore implements EventStore {
         const sealed =
           paths === undefined || paths.length === 0
             ? event
-            : this.encrypt(event, paths, await this.keys.getOrCreate(this.subjectOf(event)));
+            : this.encrypt(event, paths, await this.keys.getOrCreate(this.subjectFor(event)));
         return inner.appendIfUnchanged!(executionId, sealed, expect);
       },
       // copyPrefix copies CIPHERTEXT verbatim in the inner store — a fork must
@@ -176,6 +179,20 @@ export class EncryptingEventStore implements EventStore {
     this.sensitive[eventType] = [...new Set([...existing, ...paths])];
   }
 
+  /**
+   * The erasure subject an envelope's sensitive fields are sealed under. A chain's inbox stream
+   * (`__loom_inbox__:<chainId>`, ADR 0110) is not an execution anyone's `subjectOf` knows, so it
+   * resolves to the subject of its OWNER: `subjectOf` is asked about the chain's id, which is its
+   * generation-0 execution (or a fork's fresh one). In-flight payloads are then sealed under, and
+   * shredded with, the same key as the owner's own log. Any other stream is unchanged.
+   */
+  private subjectFor(e: Pick<EventEnvelope, "executionId" | "workflowId">): string {
+    const chain = inboxChainOf(e.executionId);
+    return this.subjectOf(
+      chain === undefined ? e : { executionId: chain, workflowId: e.workflowId }
+    );
+  }
+
   private encrypt(envelope: EventEnvelope, paths: readonly string[], key: Buffer): EventEnvelope {
     return { ...envelope, payload: mapPaths(envelope.payload, paths, (v) => encryptValue(key, v)) };
   }
@@ -185,7 +202,7 @@ export class EncryptingEventStore implements EventStore {
     if (paths === undefined || paths.length === 0) {
       return this.inner.append(envelope); // unmarked → verbatim (A4)
     }
-    const key = await this.keys.getOrCreate(this.subjectOf(envelope));
+    const key = await this.keys.getOrCreate(this.subjectFor(envelope));
     return this.inner.append(this.encrypt(envelope, paths, key));
   }
 
@@ -195,13 +212,19 @@ export class EncryptingEventStore implements EventStore {
     // the map). Fast path: no marked event carries ciphertext → verbatim.
     const encrypted = events.map((e) => hasEnvelope(e.payload));
     if (!encrypted.some(Boolean)) return events;
-    const subjectId = this.subjectOf({ executionId, workflowId: events[0]?.workflowId ?? "" });
+    const subjectId = this.subjectFor({ executionId, workflowId: events[0]?.workflowId ?? "" });
     const key = await this.keys.get(subjectId);
+    // ADR 0110 — a chain's inbox stream is NEVER read loudly. Its readers are senders (backlog
+    // scan), the trim and the consumer, none of which is an authoritative fold: a destroyed key
+    // must not break `send` for the whole chain, and a payload nobody can open must reach a
+    // consumer as the {@link SHREDDED} marker, never as ciphertext and never as the raw value.
+    const inbox = inboxChainOf(executionId) !== undefined;
     if (key === null) {
       // The key is gone — either never created (impossible if envelopes exist) or DESTROYED.
       // Default: fail loudly (K10.2) — the tombstone is already in the log. Tolerant mode
       // (K10-R4): hand OFF-log consumers a { $shredded } placeholder instead of throwing.
-      if (this.onShredded === "throw") throw new PayloadShreddedError(subjectId, executionId);
+      if (this.onShredded === "throw" && !inbox)
+        throw new PayloadShreddedError(subjectId, executionId);
       return events.map((e, i) => {
         const paths = pathsFor(this.sensitive, e.eventType);
         if (paths === undefined || !encrypted[i]) return e;
@@ -211,7 +234,19 @@ export class EncryptingEventStore implements EventStore {
     return events.map((e, i) => {
       const paths = pathsFor(this.sensitive, e.eventType);
       if (paths === undefined || !encrypted[i]) return e;
-      return { ...e, payload: mapPaths(e.payload, paths, (v) => decryptValue(key, v)) };
+      return {
+        ...e,
+        payload: mapPaths(e.payload, paths, (v) => {
+          if (!inbox) return decryptValue(key, v);
+          // A key re-minted after a shred (a send that followed it) cannot open the older
+          // ciphertext: that payload is erased, whatever the reason it cannot be read.
+          try {
+            return decryptValue(key, v);
+          } catch {
+            return SHREDDED;
+          }
+        }),
+      };
     });
   }
 
@@ -245,7 +280,7 @@ export class EncryptingEventStore implements EventStore {
       // failed blob fetch: deliver the event with its sensitive fields still enveloped
       // rather than drop the subscriber — or the node.
       void this.keys
-        .get(this.subjectOf(event))
+        .get(this.subjectFor(event))
         .then((key) => {
           handler(
             key === null

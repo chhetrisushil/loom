@@ -60,7 +60,10 @@ export interface ExecutionAccessOptions {
    * `actAsOwner: "deny"` (a fork acts as the forker unless this is opened, ADR 0111 D7), and
    * `send: "tenant"` (ADR 0110 D1: a message steers an agent, so the sender is judged against the
    * chain head's owner like a resume), `annotate: "owner"` (ADR 0116: a late reward steers policy learning, so only the
-   * recorded owner may write one; a tenant-wide reward pipeline opts in with `annotate: "tenant"`).
+   * recorded owner may write one; a tenant-wide reward pipeline opts in with `annotate: "tenant"`),
+   * `discard: "deny"` (ADR 0110 amendment: an operator's skip of unconsumed inbox messages destroys
+   * messages a sender was told were accepted, so it is closed until the integrator opens it for its
+   * operators: `discard: "tenant"` for a tenant's operators, `"any"` for a platform operator).
    */
   rules?: Partial<Record<ExecutionOp, ExecutionScope>>;
   /** When set, only these workflow ids may be started/resumed/cancelled/queried; others are denied. */
@@ -97,6 +100,7 @@ const DEFAULT_RULES: Record<ExecutionOp, ExecutionScope> = {
   actAsOwner: "deny",
   send: "tenant",
   annotate: "owner",
+  discard: "deny",
 };
 
 const deny = (reason: string): ExecutionAuthzVerdict => ({ allowed: false, reason });

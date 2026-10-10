@@ -1,0 +1,141 @@
+import { unwrapTainted } from "@loom/classify";
+import {
+  EncryptingEventStore,
+  InMemoryKeyStore,
+  type KeyStore,
+  isShredded,
+  shredSubject,
+} from "@loom/plugin-crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { inboxBackends } from "./__tests__/r2Backends";
+import { build, eventsOf, flow, until } from "./__tests__/r2Harness";
+import { inboxStreamId } from "./inbox";
+
+// ADR 0110 follow-up — erasure reaches a payload still in flight in the inbox stream.
+//
+// The stream is sealed under the OWNER's erasure subject (the crypto plugin resolves
+// `__loom_inbox__:<chainId>` to the subject of the chain's generation-0 execution), so destroying
+// the key makes an unconsumed payload unreadable. A consume after the erasure delivers the
+// `{ $shredded: true }` marker, journaled in the owner's log like any delivery, so a replay of that
+// log never consults the stream or the key again.
+
+const SECRET = "123-45-6789";
+const SENSITIVE = { INBOX_MESSAGE: ["payload"] };
+/** `alice-*` executions belong to the subject "alice"; any other execution is its own subject. */
+const subjectOf = (e: { executionId: string }): string =>
+  e.executionId.startsWith("alice-") ? "alice" : e.executionId;
+
+for (const backend of inboxBackends("erase")) {
+  describe.skipIf(backend.skip === true)(`inbox erasure on ${backend.name}`, () => {
+    beforeAll(() => backend.setup());
+    afterAll(() => backend.teardown());
+    let seq = 0;
+    const id = () => `alice-${backend.name}-${++seq}-${Math.random().toString(36).slice(2, 6)}`;
+
+    function sealed() {
+      const raw = backend.make();
+      const keys: KeyStore = new InMemoryKeyStore();
+      const store = new EncryptingEventStore(raw.eventStore, keys, {
+        sensitive: SENSITIVE,
+        subjectOf,
+      });
+      const h = build({}, { ...raw, eventStore: store });
+      const erase = (executionIds: string[]) =>
+        shredSubject(keys, raw.eventStore, executionIds[0] as string, {
+          subjectId: "alice",
+          executionIds,
+          snapshotStore: raw.snapshotStore,
+        });
+      const rawText = async (stream: string): Promise<string> =>
+        JSON.stringify(await raw.eventStore.read(stream));
+      return { raw, keys, h, erase, rawText };
+    }
+
+    /**
+     * Parked on a gate that is not the topic, so a message sent meanwhile stays IN FLIGHT in the
+     * stream. (Erasure only ever lands on a parked or finished execution: the coordinator's
+     * liveness gate, and the tombstone's append, both forbid a running one.)
+     */
+    const parkedThenReceive = () =>
+      flow("w", async (ctx) => {
+        await ctx.suspend({ on: "Go" });
+        const y = unwrapTainted(await ctx.receive<unknown>("y"));
+        return { y };
+      });
+    const finished = (h: ReturnType<typeof build>, e: string) =>
+      until(async () => (await h.rt.loadState(e))?.status === "completed", 8000);
+
+    it("an in-flight payload is sealed at rest, and a consume after the erasure gets the marker", async () => {
+      const { h, erase, rawText } = sealed();
+      const f = parkedThenReceive();
+      h.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
+      await h.rt.send(e, { topic: "y", payload: { ssn: SECRET }, messageId: "m1" });
+      expect(await rawText(inboxStreamId(e))).not.toContain(SECRET);
+      // ...and is readable through the store while the key lives.
+      const live = await h.eventStore.read(inboxStreamId(e));
+      expect((live[0]?.payload as { payload: unknown }).payload).toEqual({ ssn: SECRET });
+
+      await erase([e]);
+      await h.rt.resume(e, { eventType: "Go", payload: null });
+      await finished(h, e);
+
+      const out = (await h.rt.loadState(e))?.variables._output as { y: unknown };
+      expect(isShredded(out.y)).toBe(true);
+      expect(JSON.stringify(out)).not.toContain(SECRET);
+      expect(await rawText(e)).not.toContain(SECRET);
+      expect(await rawText(inboxStreamId(e))).not.toContain(SECRET);
+
+      // Replay determinism: the consumption is journaled once with the marker as its payload,
+      // and a fresh runtime folds the same answer from the same log without the stream or key.
+      const consumed = await eventsOf(h.eventStore, e, "MESSAGE_CONSUMED");
+      expect(consumed).toHaveLength(1);
+      expect(isShredded((consumed[0]?.payload as { payload: unknown }).payload)).toBe(true);
+      const again = await h.sibling().loadState(e, h.rt.systemOptions());
+      expect(again?.variables._output).toEqual(out);
+    });
+
+    it("after the erasure a send is refused loudly and appends nothing (the key is never resurrected)", async () => {
+      const { h, erase, raw } = sealed();
+      const f = parkedThenReceive();
+      h.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
+      await h.rt.send(e, { topic: "y", payload: SECRET, messageId: "m1" });
+      await erase([e]);
+      const before = (await raw.eventStore.read(inboxStreamId(e))).length;
+      await expect(h.rt.send(e, { topic: "y", payload: "late", messageId: "m2" })).rejects.toThrow(
+        /destroyed/
+      );
+      expect((await raw.eventStore.read(inboxStreamId(e))).length).toBe(before);
+      // The pre-erasure message is still consumable as the marker; the owner is not wedged.
+      await h.rt.resume(e, { eventType: "Go", payload: null });
+      await finished(h, e);
+      expect(isShredded(((await h.rt.loadState(e))?.variables._output as { y: unknown }).y)).toBe(
+        true
+      );
+    });
+
+    it("an unrelated subject's in-flight payload is untouched by the erasure", async () => {
+      const { h, erase } = sealed();
+      const f = parkedThenReceive();
+      h.rt.registerFlow(f.definition, f.runner);
+      const alice = id();
+      const bob = `bob-${backend.name}-${++seq}`;
+      for (const e of [alice, bob]) {
+        await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
+        await h.rt.send(e, { topic: "y", payload: `for-${e}`, messageId: "m1" });
+      }
+      await erase([alice]);
+      for (const e of [alice, bob]) {
+        await h.rt.resume(e, { eventType: "Go", payload: null });
+        await finished(h, e);
+      }
+      const bobOut = (await h.rt.loadState(bob))?.variables._output as { y: unknown };
+      const aliceOut = (await h.rt.loadState(alice))?.variables._output as { y: unknown };
+      expect(bobOut.y).toBe(`for-${bob}`);
+      expect(isShredded(aliceOut.y)).toBe(true);
+    });
+  });
+}

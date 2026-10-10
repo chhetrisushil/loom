@@ -63,6 +63,7 @@ import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import {
   DEFAULT_INBOX_MAX_BACKLOG,
   DEFAULT_INBOX_MAX_PAYLOAD_BYTES,
+  DISCARD_WAIT_ID,
   INBOX_STREAM_PREFIX,
   INBOX_WAKE_AT,
   MAX_MESSAGE_ID_LENGTH,
@@ -75,6 +76,7 @@ import {
   cursorsOf,
   dedupeKeyOf,
   deleteInbox,
+  discardKeyOf,
   ensureInboxFloor,
   inboxStreamId,
   maxCursor,
@@ -113,6 +115,7 @@ import {
   FlowMigrationCheckError,
   FlowReplayDivergenceError,
   InboxClosedError,
+  InboxDiscardRefusedError,
   InboxFullError,
   InboxMessageRefusedError,
   InputValidationError,
@@ -126,6 +129,9 @@ import {
   TIMER_FIRED,
 } from "./types";
 import type {
+  DiscardInboxInput,
+  DiscardInboxOptions,
+  DiscardInboxResult,
   ErrorClassCtor,
   ExecutionAuthorizer,
   ExecutionAuthzRequest,
@@ -2230,7 +2236,9 @@ export class WorkflowRuntime {
     system: SystemGrant | undefined,
     /** What the caller already folded and read: spares a read of the park and a re-fold. */
     held: { vm: ReplayVM; events: readonly EventEnvelope[] | undefined },
-    allowInbox = false
+    allowInbox = false,
+    /** An operator discard answers no wait: only "still parked" is checked, not "resumable by this event". */
+    parkedOnly = false
   ): Promise<{ fence: number | undefined; vm: ReplayVM }> {
     const store = this.eventStore;
     // A store without the conditional keeps today's behaviour (the unconditional acquire and its
@@ -2263,7 +2271,13 @@ export class WorkflowRuntime {
         const heldState = held.vm.getState();
         const tail = await store.readFrom(executionId, heldState.sequence + 1);
         const vm = tail.length === 0 ? held.vm : new ReplayVM(tail, heldState);
-        this.assertResumable(executionId, vm.getState(), resumeEvent, "all", system, allowInbox);
+        if (parkedOnly) {
+          if (vm.getState().status !== "suspended") {
+            throw notSuspended("the execution is no longer parked. Nothing was appended.");
+          }
+        } else {
+          this.assertResumable(executionId, vm.getState(), resumeEvent, "all", system, allowInbox);
+        }
         return { fence: got.fence, vm };
       }
       // Stale: the token moved, or an answering event is past the park. Re-read the park. If it is
@@ -3592,6 +3606,182 @@ export class WorkflowRuntime {
   }
 
   /**
+   * ADR 0110 amendment (D8) — an OPERATOR discards unconsumed inbox messages: advance one topic's
+   * cursor up to `throughSeq`, journaled as a `MESSAGE_CONSUMED` fact in the owner's log so the skip
+   * replays, releases a stream that one unconsumed message pins (`InboxFullError` for the whole
+   * chain), and survives a restart. The message is dropped, not delivered: its payload is never
+   * copied into the log.
+   *
+   * - Authorized as `ExecutionOp` `"discard"` (closed by default in `executionAccessPolicy`) against
+   *   the chain head's recorded owner, before "not found" is revealed. A denial appends nothing; the
+   *   operator's identity subset is recorded on the fact as its `sender`.
+   * - The owner must be PARKED. The fact lands in the owner's own log, which only a parked owner
+   *   accepts without racing its own appends (the very race the separate stream exists to avoid); it
+   *   is written under the park's conditional fence as an ignorable kind, exactly like the
+   *   duplicate-only advance, so the park stays unanswered. A running owner is refused
+   *   (`not-parked`, retryable): it is consuming, and a hot topic is not what pins the stream.
+   * - Bounded to what exists: `throughSeq` may not exceed the stream's head, or a later message would
+   *   take a skipped sequence.
+   * - Idempotent: a cursor already at or past `throughSeq` appends nothing (`skipped: 0`).
+   * - A finished owner is `InboxClosedError` (its stream is already gone).
+   */
+  async discardInbox(
+    executionId: string,
+    input: DiscardInboxInput,
+    options?: DiscardInboxOptions
+  ): Promise<DiscardInboxResult> {
+    this.assertInboxEnabled("runtime.discardInbox");
+    assertNotReserved(executionId);
+    const addressed = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    if (addressed === undefined) {
+      await this.denyMissing("discard", executionId, options?.principal, options?.system);
+      throw new Error(`No execution found for id: ${executionId}`);
+    }
+    const denial = this.authzDenial(
+      "discard",
+      executionId,
+      addressed.workflowId,
+      options?.principal,
+      options?.system,
+      await this.ownerForAuthz(executionId, options?.principal, options?.system, {
+        first: addressed,
+      })
+    );
+    if (denial !== undefined) {
+      // No durable EXECUTION_DENIED, as for `send`: the audit callback fires, the log is untouched.
+      await this.denyOp(
+        "discard",
+        executionId,
+        addressed.workflowId,
+        options?.principal,
+        denial.reason,
+        undefined
+      );
+    }
+    const head = await this.sendTarget(executionId, { first: addressed });
+    if (head === null) throw new Error(`No execution found for id: ${executionId}`);
+    // ...and again against the RESOLVED head's recorded owner before acting on it.
+    if (head.id !== executionId && head.status !== "hop-limit") {
+      const headDenial = this.authzDenial(
+        "discard",
+        head.id,
+        head.workflowId,
+        options?.principal,
+        options?.system,
+        await this.ownerForAuthz(head.id, options?.principal, options?.system, {
+          first: head.first,
+        })
+      );
+      if (headDenial !== undefined) {
+        await this.denyOp(
+          "discard",
+          head.id,
+          head.workflowId,
+          options?.principal,
+          headDenial.reason,
+          undefined
+        );
+      }
+    }
+    if (head.status === "hop-limit") {
+      throw new ChainHopLimitError(
+        executionId,
+        this.maxChainHops,
+        (await head.hopLimitOf?.()) ?? head.id
+      );
+    }
+    const refuse = (reason: "not-parked" | "contended" | "invalid", detail: string): never => {
+      throw new InboxDiscardRefusedError(head.id, reason, detail);
+    };
+    const topic = input.topic;
+    const problem = topicProblem(topic);
+    if (problem !== undefined) refuse("invalid", `${problem}.`);
+    const through = input.throughSeq;
+    if (!Number.isSafeInteger(through) || through < 0) {
+      refuse("invalid", "throughSeq must be a non-negative integer.");
+    }
+    if (
+      input.reason !== undefined &&
+      (typeof input.reason !== "string" || input.reason.length > 256)
+    ) {
+      refuse("invalid", "reason must be a string of at most 256 characters.");
+    }
+    const state = await this.foldState(head.id);
+    if (state === null) throw new Error(`No execution found for id: ${executionId}`);
+    if (state.status === "completed" || state.status === "failed" || state.status === "cancelled") {
+      throw new InboxClosedError(head.id, state.status);
+    }
+    if (state.status === "continued") {
+      throw new InboxClosedError(head.id, "continued with no successor yet");
+    }
+    const chainId = chainIdOf(state, head.id);
+    const cursor = cursorFor(cursorsOf(state.variables), topic);
+    if (through <= cursor) return { executionId: head.id, topic, skipped: 0, cursor };
+    const streamHead = await headOf(this.eventStore, inboxStreamId(chainId));
+    if (streamHead === null || through > streamHead) {
+      refuse(
+        "invalid",
+        `throughSeq ${through} is beyond the stream's head (${streamHead ?? "empty"}): only messages that exist can be discarded.`
+      );
+    }
+    if (state.status !== "suspended") {
+      refuse(
+        "not-parked",
+        `the owner is ${state.status}; a discard is journaled in its log, which only a parked owner accepts. Retry once it parks.`
+      );
+    }
+    // Count what the advance skips (bounded by the backlog cap), for the audit fact and the result.
+    let skipped = 0;
+    for (let after = cursor; ; ) {
+      const page = await this.inboxSource(chainId, topic, after, NOTIFY_PAGE);
+      for (const m of page) if (m.inboxSeq <= through) skipped++;
+      const last = page[page.length - 1];
+      if (page.length < NOTIFY_PAGE || last === undefined || last.inboxSeq >= through) break;
+      after = last.inboxSeq;
+    }
+    const parkSeq = await this.locatePark(head.id, state, { events: undefined, complete: false });
+    if (parkSeq === undefined) {
+      refuse("not-parked", "the owner has no unanswered park to journal under.");
+    }
+    const operator = ownerOfChain(options?.principal) ?? {};
+    const outcome = await this.advanceInbox(head.id, state, parkSeq as number, undefined, [
+      {
+        eventType: "MESSAGE_CONSUMED",
+        payload: {
+          // A fixed id no wait can have: the fold records ONE answer under it, ever (first wins).
+          waitId: DISCARD_WAIT_ID,
+          topic,
+          messageId: discardKeyOf(topic, through),
+          inboxSeq: through,
+          sender: operator,
+          payload: null,
+          discarded: true,
+          skipped,
+          ...(input.reason !== undefined && { reason: input.reason }),
+        },
+      },
+    ]);
+    if (outcome === "gone") {
+      refuse("not-parked", "the owner resumed while the discard was in flight.");
+    }
+    if (outcome === "contended") {
+      refuse("contended", "the owner's fence kept moving.");
+    }
+    // The pin may be gone: forget the cached verdicts and force the trim past its old floor.
+    const after = (await this.foldState(head.id)) ?? state;
+    this.inboxFull.delete(chainId);
+    this.inboxCounted.delete(chainId);
+    this.inboxTrimmed.delete(chainId);
+    await this.maybeTrimInbox(chainId, after);
+    return {
+      executionId: head.id,
+      topic,
+      skipped,
+      cursor: cursorFor(cursorsOf(after.variables), topic),
+    };
+  }
+
+  /**
    * ADR 0116 — attach a LATE reward to a decision of a FINISHED execution. A runtime method, not a
    * syscall: it appends the existing `OUTCOME_RECORDED` (with the kernel-stamped `recordedBy` and
    * `late: true`) and changes no state.
@@ -3878,7 +4068,7 @@ export class WorkflowRuntime {
       if (this.inboxWarned.get(chainId) !== exact.oldest) {
         rememberBounded(this.inboxWarned, chainId, exact.oldest);
         this.onWarn(
-          `inbox of execution "${executionId}" retains ${head - newFloor} entries (${Math.round(((head - newFloor) / this.inboxMaxRetained) * 100)}% of inboxMaxRetained=${this.inboxMaxRetained}) above its oldest unconsumed message: topic "${exact.oldestTopic ?? "?"}" at inbox sequence ${exact.oldest}, which nothing consumes and which pins every later entry. Once the cap is reached \`send\` refuses. Consume that topic (a flow that never receives it needs a receive for it), or see ADR 0110's follow-ups (operator discard, per-topic streams).`
+          `inbox of execution "${executionId}" retains ${head - newFloor} entries (${Math.round(((head - newFloor) / this.inboxMaxRetained) * 100)}% of inboxMaxRetained=${this.inboxMaxRetained}) above its oldest unconsumed message: topic "${exact.oldestTopic ?? "?"}" at inbox sequence ${exact.oldest}, which nothing consumes and which pins every later entry. Once the cap is reached \`send\` refuses. Consume that topic (a flow that never receives it needs a receive for it), or have an operator release it with runtime.discardInbox (ADR 0110).`
         );
       }
     } else {
@@ -3900,7 +4090,7 @@ export class WorkflowRuntime {
       executionId,
       full.unconsumed,
       full.pinnedAt !== undefined
-        ? `the inbox retains ${this.inboxMaxRetained}+ entries above its oldest unconsumed message (inbox sequence ${full.pinnedAt}), which nothing consumes and which pins every entry above it (inboxMaxRetained); nothing was appended. Consume that message, or retry after it is consumed.`
+        ? `the inbox retains ${this.inboxMaxRetained}+ entries above its oldest unconsumed message (inbox sequence ${full.pinnedAt}), which nothing consumes and which pins every entry above it (inboxMaxRetained); nothing was appended. Consume that message, or have an operator release it with runtime.discardInbox; then retry.`
         : undefined
     );
   }
@@ -4279,7 +4469,8 @@ export class WorkflowRuntime {
     executionId: string,
     state: ExecutionState,
     parkSeq: number,
-    wait: SuspendWait,
+    /** The wait whose resume this stands in for; `undefined` for an operator discard (no wait). */
+    wait: SuspendWait | undefined,
     pre: ReadonlyArray<{ eventType: string; payload: unknown }>
   ): Promise<"ok" | "contended" | "gone"> {
     let fenced = await this.parkWasFenced(executionId, parkSeq);
@@ -4288,11 +4479,16 @@ export class WorkflowRuntime {
         const got = fenced
           ? await this.acquireFenceIfParked(
               executionId,
-              { eventType: INBOX_DELIVERY, waitId: wait.waitId, payload: null },
+              {
+                eventType: INBOX_DELIVERY,
+                ...(wait !== undefined && { waitId: wait.waitId }),
+                payload: null,
+              },
               parkSeq,
               this.systemOptions().system,
               { vm: new ReplayVM([], state), events: undefined },
-              true
+              true,
+              wait === undefined
             )
           : {
               fence: undefined,

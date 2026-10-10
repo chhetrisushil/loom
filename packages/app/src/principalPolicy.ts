@@ -100,3 +100,16 @@ export function registerPrincipalPaths(crypto: PrincipalCryptoOptions): void {
   crypto.events.registerSensitive("OUTCOME_RECORDED", OUTCOME_EVENT_PATHS);
   crypto.snapshots?.registerSensitive([...PRINCIPAL_STATE_PATHS, ...OUTCOME_STATE_PATHS]);
 }
+
+/**
+ * ADR 0110 follow-up — the payload of a message still in flight in a chain's inbox stream is the
+ * owner's data, so it is sealed under the owner's erasure subject and shredded with it. The crypto
+ * plugin resolves the reserved stream `__loom_inbox__:<chainId>` to the subject of the chain's
+ * generation-0 execution. Registered only when the inbox is on. `MESSAGE_CONSUMED.payload` (the
+ * copy in the owner's log) stays the app's own declaration, like every other event it chooses to
+ * seal.
+ */
+export const INBOX_EVENT_PATHS = ["payload"] as const;
+export function registerInboxPaths(crypto: PrincipalCryptoOptions): void {
+  crypto.events.registerSensitive("INBOX_MESSAGE", INBOX_EVENT_PATHS);
+}

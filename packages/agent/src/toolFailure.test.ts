@@ -50,6 +50,7 @@ const FEEDBACK = new Set([
   "OutcomeContendedError",
   "OutcomeRefusedError",
   "InboxClosedError",
+  "InboxDiscardRefusedError",
   "InboxFullError",
   "InboxMessageRefusedError",
   "CompactedForkPointError",

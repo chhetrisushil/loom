@@ -298,3 +298,176 @@ describe("EraseCoordinator — tenant isolation (T3-R2.4)", () => {
     expect(shred).toHaveBeenCalledWith("alice", ["a1"]);
   });
 });
+
+describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)", () => {
+  const streamOf = (chain: string): string => `__loom_inbox__:${chain}`;
+  const inboxMsg = (chain: string, sequence = 0): EventEnvelope => ({
+    id: `${streamOf(chain)}-${sequence}`,
+    workflowId: "__loom_inbox__",
+    executionId: streamOf(chain),
+    eventType: "INBOX_MESSAGE",
+    sequence,
+    timestamp: 1,
+    payload: { topic: "t", messageId: "m", payload: "ssn-123", sender: {} },
+  });
+  const setup = async () => {
+    const store = new InMemoryAsyncEventStore();
+    const order: string[] = [];
+    const shred = vi.fn(async () => {
+      order.push("shred");
+    });
+    return { store, shred, order };
+  };
+  const indexOf = async (store: InMemoryAsyncEventStore, ids: string[]) =>
+    SubjectIndex.fromEvents((await Promise.all(ids.map((id) => store.read(id)))).flat(), subjectOf);
+
+  it("an orphan stream of a finished execution is deleted with the erasure, AFTER the shred", async () => {
+    const { store, shred, order } = await setup();
+    await seedStarted(store, "a1", "ann");
+    await store.append(ev("a1", 1, "EXECUTION_COMPLETED", {}));
+    await store.append(inboxMsg("a1")); // a crash orphan: a send landed after the owner's own delete
+    const rawDelete = store.deleteExecution!.bind(store);
+    store.deleteExecution = async (id: string) => {
+      order.push(`delete ${id}`);
+      return rawDelete(id);
+    };
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["a1"]),
+      eventStore: store,
+      shred,
+    });
+    expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
+    expect(await store.read(streamOf("a1"))).toEqual([]);
+    expect(order).toEqual(["shred", `delete ${streamOf("a1")}`]);
+  });
+
+  it("the logs are read BEFORE the key is destroyed: a store that cannot read after the shred still gets its stream purged", async () => {
+    const { store } = await setup();
+    await seedStarted(store, "a1", "ann");
+    await store.append(ev("a1", 1, "EXECUTION_FAILED", {}));
+    await store.append(inboxMsg("a1"));
+    let shredded = false;
+    const decrypting = Object.create(store) as InMemoryAsyncEventStore;
+    decrypting.read = async (id: string) => {
+      if (shredded) throw new Error("PayloadShreddedError: the key is gone");
+      return store.read(id);
+    };
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["a1"]),
+      eventStore: decrypting,
+      shred: async () => {
+        shredded = true;
+      },
+    });
+    expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
+    expect(await store.read(streamOf("a1"))).toEqual([]);
+  });
+
+  it("a fork's own chain is purged by its stamp, not by its execution id", async () => {
+    const { store, shred } = await setup();
+    await store.append({
+      ...ev("f1", 0, "EXECUTION_STARTED", { input: { userId: "ann" } }),
+      metadata: { forkChain: { chainId: "fork-chain", generation: 0 } },
+    });
+    await store.append(ev("f1", 1, "EXECUTION_COMPLETED", {}));
+    await store.append(inboxMsg("fork-chain"));
+    await store.append(inboxMsg("f1")); // not this execution's chain: must survive
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["f1"]),
+      eventStore: store,
+      shred,
+    });
+    await coord.eraseSubject("ann");
+    expect(await store.read(streamOf("fork-chain"))).toEqual([]);
+    expect(await store.read(streamOf("f1"))).toHaveLength(1);
+  });
+
+  it("a later generation is judged by its start's chain id", async () => {
+    const { store, shred } = await setup();
+    await seedStarted(store, "k", "ann");
+    await store.append({
+      ...ev("k", 1, "EXECUTION_CONTINUED", { successorId: "k~1", chainId: "k", generation: 1 }),
+      metadata: { kernel: true },
+    });
+    await store.append(
+      ev("k~1", 0, "EXECUTION_STARTED", { input: { userId: "ann" }, chainId: "k", generation: 1 })
+    );
+    await store.append(ev("k~1", 1, "EXECUTION_COMPLETED", {}));
+    await store.append(inboxMsg("k"));
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["k", "k~1"]),
+      eventStore: store,
+      shred,
+    });
+    expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
+    expect(await store.read(streamOf("k"))).toEqual([]);
+  });
+
+  it("a CONTINUED execution never purges: its successor, which this subject does not own, still owns the stream", async () => {
+    const { store, shred } = await setup();
+    await seedStarted(store, "k", "ann");
+    await store.append({
+      ...ev("k", 1, "EXECUTION_CONTINUED", { successorId: "k~1", chainId: "k", generation: 1 }),
+      metadata: { kernel: true },
+    });
+    await store.append(inboxMsg("k"));
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["k"]),
+      eventStore: store,
+      shred,
+    });
+    expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
+    expect(await store.read(streamOf("k"))).toHaveLength(1);
+  });
+
+  it("another subject's stream is untouched", async () => {
+    const { store, shred } = await setup();
+    await seedStarted(store, "a1", "ann");
+    await store.append(ev("a1", 1, "EXECUTION_COMPLETED", {}));
+    await seedStarted(store, "b1", "bob");
+    await store.append(ev("b1", 1, "EXECUTION_COMPLETED", {}));
+    await store.append(inboxMsg("a1"));
+    await store.append(inboxMsg("b1"));
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["a1", "b1"]),
+      eventStore: store,
+      shred,
+    });
+    await coord.eraseSubject("ann");
+    expect(await store.read(streamOf("a1"))).toEqual([]);
+    expect(await store.read(streamOf("b1"))).toHaveLength(1);
+  });
+
+  it("a LIVE execution parks the erasure and its stream is left alone until it finishes; then the parked erasure purges", async () => {
+    const { store, shred } = await setup();
+    await seedStarted(store, "a1", "ann");
+    await store.append(inboxMsg("a1"));
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["a1"]),
+      eventStore: store,
+      shred,
+    });
+    expect((await coord.eraseSubject("ann")).outcome).toBe("parked");
+    expect(await store.read(streamOf("a1"))).toHaveLength(1);
+    const done = ev("a1", 1, "EXECUTION_COMPLETED", {});
+    await store.append(done);
+    await coord.handleEvent(done);
+    expect(shred).toHaveBeenCalled();
+    expect(await store.read(streamOf("a1"))).toEqual([]);
+  });
+
+  it("a store that cannot delete streams is a no-op (the key is the erasure there)", async () => {
+    const { store, shred } = await setup();
+    await seedStarted(store, "a1", "ann");
+    await store.append(ev("a1", 1, "EXECUTION_COMPLETED", {}));
+    await store.append(inboxMsg("a1"));
+    const readWrite = { read: store.read.bind(store), append: store.append.bind(store) };
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["a1"]),
+      eventStore: readWrite,
+      shred,
+    });
+    expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
+    expect(await store.read(streamOf("a1"))).toHaveLength(1);
+  });
+});
