@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeRunnerReach } from "./runnerReach";
+import { analyzeReachNode, analyzeRunnerReach } from "./runnerReach";
 
 describe("runner-body reach analysis", () => {
   it("resolves a ctx.run target bound to a step$ in the same region", () => {
@@ -767,6 +767,7 @@ describe("constant ids and step factories (L37)", () => {
 
   it("resolves mcpInvoke$ whatever its (templated) step id: the EFFECT is mcp.invoke", () => {
     const r = analyzeRunnerReach(`
+      import { mcpInvoke$ } from "@loom/plugin-mcp";
       const runner = async (ctx, steps) => {
         for (const s of steps) await ctx.run(mcpInvoke$(\`tool:\${s.id}\`), {});
         await ctx.run(mcpInvoke$("remap-sample"), {});
@@ -867,6 +868,7 @@ describe("constant ids and step factories (L37)", () => {
 
   it("sandboxEval$ resolves to its default effect, or to a constant override", () => {
     const r = analyzeRunnerReach(`
+      import { sandboxEval$ } from "@loom/plugin-sandbox";
       const T = "sandbox.custom";
       const runner = async (ctx, i, v) => {
         await ctx.run(sandboxEval$(\`reshape#\${i}\`), {});
@@ -893,6 +895,7 @@ describe("constant ids and step factories (L37)", () => {
 describe("hand-off step arguments (L34)", () => {
   it("records the arguments that resolve to a step, by position", () => {
     const r = analyzeRunnerReach(`
+      import { mcpInvoke$ } from "@loom/plugin-mcp";
       const a = step$({ id: "a", toolId: "tool.a" });
       const runner = async (ctx, items) => {
         await fanout$(ctx, a, items, { limit: 2 });
@@ -975,5 +978,208 @@ describe("imported constants and factories (L37)", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("false resolutions are unresolved, never a guess (L34 fix round)", () => {
+  const unresolvedOnly = (src: string): void => {
+    const r = analyzeRunnerReach(src);
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved.length).toBeGreaterThan(0);
+  };
+
+  it("known factories resolve only from their own package, aliased or via the SDK", () => {
+    const direct = analyzeRunnerReach(`
+      import { mcpInvoke$ as m } from "@loom/plugin-mcp";
+      import { mcpInvoke$ as viaSdk } from "@loom/sdk";
+      import { sandboxEval$ } from "@loom/sdk/sandbox";
+      const runner = async (ctx) => {
+        await ctx.run(m("a")); await ctx.run(viaSdk("b")); await ctx.run(sandboxEval$("c"));
+      };`);
+    expect(direct.steps.map((s) => s.toolId)).toEqual(["mcp.invoke", "mcp.invoke", "sandbox.eval"]);
+    expect(direct.unresolved).toEqual([]);
+  });
+
+  it("P1-a: overloaded local mcpInvoke$ is not the plugin's", () => {
+    unresolvedOnly(`
+      import { step$ } from "@loom/core";
+      function mcpInvoke$(id: string): any;
+      function mcpInvoke$(id: string, x?: number): any { return step$({ id, toolId: "my.tool" }); }
+      const runner = async (ctx) => { await ctx.run(mcpInvoke$("a")); };`);
+  });
+  it("P1-a: a relative wrapper named mcpInvoke$ is not the plugin's", () => {
+    unresolvedOnly(`
+      import { mcpInvoke$ } from "./w";
+      const runner = async (ctx) => { await ctx.run(mcpInvoke$("a")); };`);
+  });
+  it("P1-a: another package's export aliased to mcpInvoke$ is not the plugin's", () => {
+    unresolvedOnly(`
+      import { other as mcpInvoke$ } from "@acme/x";
+      const runner = async (ctx) => { await ctx.run(mcpInvoke$("a")); };`);
+  });
+  it("P1-a: a property call .mcpInvoke$ is not the plugin's", () => {
+    unresolvedOnly(`
+      const runner = async (ctx) => { await ctx.run(mine.mcpInvoke$("a")); };`);
+  });
+  it("P1-a: a parameter named mcpInvoke$ is not the plugin's", () => {
+    unresolvedOnly(`
+      import { mcpInvoke$ as real } from "@loom/plugin-mcp";
+      const runner = async (ctx, mcpInvoke$) => { await ctx.run(mcpInvoke$("a")); };`);
+  });
+  it("P1-a: the plugin's name imported but redeclared elsewhere in the module is unresolved", () => {
+    unresolvedOnly(`
+      import { mcpInvoke$ } from "@loom/plugin-mcp";
+      const other = (mcpInvoke$) => 1;
+      const runner = async (ctx) => { await ctx.run(mcpInvoke$("a")); };`);
+  });
+
+  const withConst = async (
+    src: (file: string) => string
+  ): Promise<{ steps: string[]; unresolved: number }> => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const ts = (await import("typescript")).default;
+    const { createImportResolver } = await import("./importResolve");
+    const dir = mkdtempSync(join(tmpdir(), "loom-reach-fix-"));
+    try {
+      writeFileSync(join(dir, "c.ts"), `export const T = "real.tool";`);
+      const file = join(dir, "flow.ts");
+      const sf = ts.createSourceFile(file, src(file), ts.ScriptTarget.ESNext, true);
+      const r = analyzeReachNode(sf, undefined, { importResolver: createImportResolver(sf, file) });
+      return { steps: r.steps.map((s) => s.toolId), unresolved: r.unresolved.length };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("P1-b: an imported constant is used when unshadowed (control)", async () => {
+    const r = await withConst(
+      () =>
+        `import { T } from "./c"; const runner = async (ctx) => { await ctx.run({ id: "x", toolId: T }); };`
+    );
+    expect(r).toEqual({ steps: ["real.tool"], unresolved: 0 });
+  });
+  it("P1-b: a parameter named like the imported constant", async () => {
+    const r = await withConst(
+      () => `import { T } from "./c";
+        const runner = async (ctx) => { await f(ctx, "dyn"); };
+        async function f(ctx, T: string) { await ctx.run({ id: "x", toolId: T }); }`
+    );
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved).toBeGreaterThan(0);
+  });
+  it("P1-b: a destructured binding named like the imported constant", async () => {
+    const r = await withConst(
+      () => `import { T } from "./c";
+        const runner = async (ctx, o) => { const { T } = o; await ctx.run({ id: "x", toolId: T }); };`
+    );
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved).toBeGreaterThan(0);
+  });
+  it("P1-b: a for-of const named like the imported constant", async () => {
+    const r = await withConst(
+      () => `import { T } from "./c";
+        const runner = async (ctx, o) => { for (const T of o.tools) await ctx.run({ id: "x", toolId: T }); };`
+    );
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved).toBeGreaterThan(0);
+  });
+  it("P1-b: a catch variable named like the imported constant", async () => {
+    const r = await withConst(
+      () => `import { T } from "./c";
+        const runner = async (ctx) => { try { x(); } catch (T) { await ctx.run({ id: "x", toolId: T }); } };`
+    );
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved).toBeGreaterThan(0);
+  });
+
+  const factoryFrom = async (
+    dep: string,
+    use: string
+  ): Promise<{ steps: string[]; unresolved: number }> => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const ts = (await import("typescript")).default;
+    const { createImportResolver } = await import("./importResolve");
+    const dir = mkdtempSync(join(tmpdir(), "loom-reach-fac-"));
+    try {
+      writeFileSync(join(dir, "d.ts"), dep);
+      const file = join(dir, "flow.ts");
+      const src = `import { mk } from "./d"; const runner = async (ctx) => { await ctx.run(${use}); };`;
+      const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true);
+      const r = analyzeReachNode(sf, undefined, { importResolver: createImportResolver(sf, file) });
+      return { steps: r.steps.map((s) => s.toolId), unresolved: r.unresolved.length };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("P1-c: a factory parameter shadowing a module constant is the parameter", async () => {
+    const r = await factoryFrom(
+      `const K = "mod.tool"; export function mk(K: string) { return step$({ toolId: K }); }`,
+      `mk("dyn")`
+    );
+    // The effect id is the ARGUMENT ("dyn"), never the module constant.
+    expect(r.steps).toEqual(["dyn"]);
+    const dynamic = await factoryFrom(
+      `const K = "mod.tool"; export function mk(K: string) { return step$({ toolId: K }); }`,
+      "mk(ctx.input.t)"
+    );
+    expect(dynamic.steps).toEqual([]);
+    expect(dynamic.unresolved).toBeGreaterThan(0);
+  });
+  it("P1-c: a body-declared name shadowing a module constant is unresolved", async () => {
+    const r = await factoryFrom(
+      `const T = "a"; export function mk(id: string) { const T = "z"; return step$({ id, toolId: T }); }`,
+      `mk("x")`
+    );
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved).toBeGreaterThan(0);
+  });
+  it("P1-c: the same-module factory path rejects body-declared identifiers too", () => {
+    unresolvedOnly(`
+      const T = "a";
+      function mk(id) { const T = "z"; return step$({ id, toolId: T }); }
+      const runner = async (ctx) => { await ctx.run(mk("x")); };`);
+    unresolvedOnly(`
+      const K = "mod.tool";
+      function mk(K) { return step$({ toolId: K }); }
+      const runner = async (ctx, d) => { await ctx.run(mk(d)); };`);
+  });
+
+  it("P2-a: a parallel list mutated after binding is unresolved", () => {
+    const r = analyzeRunnerReach(`
+      const a = step$({ id: "a", toolId: "tool.a" });
+      const b = step$({ id: "b", toolId: "tool.b" });
+      const runner = async (ctx) => {
+        const xs = [[a, 1]];
+        xs.push([b, 2]);
+        await ctx.parallel(xs);
+      };`);
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved.map((u) => u.expr)).toEqual(["parallel(xs)"]);
+  });
+
+  it("P2-b: a step binding shadowed by a parameter is not followed", () => {
+    const r = analyzeRunnerReach(`
+      const step = step$({ toolId: "safe.tool" });
+      function g(ctx, step) { fanout$(ctx, step, []); }
+      const runner = async (ctx, s) => { g(ctx, s); };`);
+    expect(JSON.stringify(r.escapes ?? [])).not.toContain("safe.tool");
+  });
+  it("P2-b: two same-named step bindings are ambiguous, not last-wins", () => {
+    const r = analyzeRunnerReach(`
+      function f(ctx) { const step = step$({ toolId: "one.tool" }); fanout$(ctx, step, []); }
+      function g(ctx) { const step = step$({ toolId: "two.tool" }); fanout$(ctx, step, []); }
+      const runner = async (ctx) => { f(ctx); g(ctx); };`);
+    expect(JSON.stringify(r)).not.toMatch(/one\.tool|two\.tool/);
+  });
+
+  it("P2-c: a class named like an outer const shadows it", () => {
+    unresolvedOnly(`
+      const T = "outer.tool";
+      const runner = async (ctx) => { { class T {} await ctx.run({ toolId: T }); } };`);
   });
 });

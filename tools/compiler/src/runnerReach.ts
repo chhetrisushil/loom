@@ -232,6 +232,9 @@ function collectConstInits(root: ts.Node): Map<string, ts.Expression> {
 function scanDeclarations(root: ts.Node): {
   fns: Map<string, FnNode>;
   inits: Map<string, ts.Expression>;
+  /** name -> how many times it is declared ANYWHERE in the region (any scope, any kind). */
+  declared: Map<string, number>;
+  ambiguous: Set<string>;
 } {
   const fns = new Map<string, FnNode>();
   const inits = new Map<string, ts.Expression>();
@@ -244,6 +247,18 @@ function scanDeclarations(root: ts.Node): {
     if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
       declare(node.name.text);
       fns.set(node.name.text, node);
+    } else if (
+      (ts.isClassDeclaration(node) ||
+        ts.isClassExpression(node) ||
+        ts.isEnumDeclaration(node) ||
+        ts.isFunctionExpression(node)) &&
+      node.name !== undefined
+    ) {
+      declare(node.name.text);
+      ambiguous.add(node.name.text);
+    } else if (ts.isModuleDeclaration(node) && ts.isIdentifier(node.name)) {
+      declare(node.name.text);
+      ambiguous.add(node.name.text);
     } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
       declare(node.name.text);
       const isConst = (ts.getCombinedNodeFlags(node) & ts.NodeFlags.Const) !== 0;
@@ -276,8 +291,72 @@ function scanDeclarations(root: ts.Node): {
   for (const name of [...inits.keys()]) {
     if (ambiguous.has(name) || (declared.get(name) ?? 0) > 1) inits.delete(name);
   }
-  return { fns, inits };
+  return { fns, inits, declared, ambiguous };
 }
+
+/** Every name bound by a binding name (identifier or destructuring pattern). */
+function bindingNames(name: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(name)) out.add(name.text);
+  else for (const el of name.elements) if (!ts.isOmittedExpression(el)) bindingNames(el.name, out);
+}
+
+/** Every name declared anywhere inside `node` (parameters, variables, patterns, functions, classes). */
+function namesDeclaredWithin(node: ts.Node): Set<string> {
+  const out = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if ((ts.isVariableDeclaration(n) || ts.isParameter(n) || ts.isBindingElement(n)) && n.name)
+      bindingNames(n.name, out);
+    else if (
+      (ts.isFunctionDeclaration(n) ||
+        ts.isFunctionExpression(n) ||
+        ts.isClassDeclaration(n) ||
+        ts.isClassExpression(n) ||
+        ts.isEnumDeclaration(n)) &&
+      n.name !== undefined
+    )
+      out.add(n.name.text);
+    ts.forEachChild(n, visit);
+  };
+  visit(node);
+  return out;
+}
+
+/** Whether any identifier inside `e` is in `names`. */
+function mentionsAny(e: ts.Node, names: ReadonlySet<string>): boolean {
+  if (ts.isIdentifier(e) && names.has(e.text)) return true;
+  return ts.forEachChild(e, (c) => (mentionsAny(c, names) ? true : undefined)) === true;
+}
+
+/** Import bindings of a module: local name -> module specifier and the imported (exported) name. */
+function importedNames(sf: ts.SourceFile): Map<string, { spec: string; imported: string }> {
+  const out = new Map<string, { spec: string; imported: string }>();
+  for (const st of sf.statements) {
+    if (!ts.isImportDeclaration(st) || !ts.isStringLiteral(st.moduleSpecifier)) continue;
+    const clause = st.importClause;
+    if (clause === undefined || clause.isTypeOnly) continue;
+    const nb = clause.namedBindings;
+    if (nb !== undefined && ts.isNamedImports(nb)) {
+      for (const el of nb.elements) {
+        if (el.isTypeOnly) continue;
+        out.set(el.name.text, {
+          spec: st.moduleSpecifier.text,
+          imported: (el.propertyName ?? el.name).text,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Module specifiers a {@link KNOWN_STEP_FACTORIES} entry may be imported from: its package, and
+ * `@loom/sdk` where the SDK re-exports it (`export * from "@loom/plugin-mcp"`; the sandbox plugin
+ * is only at the `@loom/sdk/sandbox` subpath).
+ */
+const KNOWN_FACTORY_SOURCES: Readonly<Record<string, readonly string[]>> = {
+  mcpInvoke$: ["@loom/plugin-mcp", "@loom/sdk"],
+  sandboxEval$: ["@loom/plugin-sandbox", "@loom/sdk/sandbox"],
+};
 
 /** The string a literal-ish expression denotes (`"x"`, an expression-free template, `"x" as const`). */
 export function stringLiteralValue(e: ts.Expression): string | undefined {
@@ -293,9 +372,14 @@ export function stringLiteralValue(e: ts.Expression): string | undefined {
  */
 export function inferStepFactory(
   fn: ts.Node,
-  str: (e: ts.Expression) => string | undefined
+  rawStr: (e: ts.Expression) => string | undefined
 ): StepFactoryShape | undefined {
   if (!isFn(fn) || fn.body === undefined) return undefined;
+  // Names declared anywhere in the factory (parameters, body locals, nested scopes) shadow a
+  // module constant of the same name, so an expression that mentions one is never constant-folded.
+  const inner = namesDeclaredWithin(fn);
+  const str = (e: ts.Expression): string | undefined =>
+    mentionsAny(e, inner) ? undefined : rawStr(e);
   let returned: ts.Expression | undefined;
   if (!ts.isBlock(fn.body)) returned = fn.body;
   else {
@@ -333,13 +417,12 @@ export function inferStepFactory(
     }
     if (ts.isPropertyAssignment(prop) && propName(prop.name) === "toolId") {
       const v = unwrap(prop.initializer);
-      const fixed = str(v);
-      if (fixed !== undefined) return { fixed };
       if (ts.isIdentifier(v)) {
         const i = paramIndex(v.text);
         if (i !== undefined) return viaParam(i);
       }
-      return undefined;
+      const fixed = str(v);
+      return fixed !== undefined ? { fixed } : undefined;
     }
   }
   return undefined;
@@ -754,9 +837,20 @@ export function analyzeReachNode(
   location?: string,
   options: AnalyzeReachOptions = {}
 ): RunnerReach {
+  const scan = scanDeclarations(root);
+  const functions = scan.fns;
+  const constInits = scan.inits;
+  const sourceFile = ts.isSourceFile(root) ? root : root.getSourceFile();
+  const declaredAnywhere = scan.declared;
+  const imports = importedNames(sourceFile);
+  // A step binding is followed only when its name is declared exactly once, never reassigned: a
+  // shadowing parameter or a second same-named binding in another function makes it ambiguous.
   const bindings = collectBindings(root);
-  const functions = collectFunctions(root);
-  const constInits = collectConstInits(root);
+  for (const name of [...bindings.keys()]) {
+    if ((declaredAnywhere.get(name) ?? 0) !== 1 || scan.ambiguous.has(name)) bindings.delete(name);
+  }
+  /** A name with no declaration anywhere in the module: only then can it be the import binding. */
+  const unshadowed = (name: string): boolean => (declaredAnywhere.get(name) ?? 0) === 0;
   const importer = options.importResolver;
   const steps: RunnerStepRef[] = [];
   const unresolved: UnresolvedReach[] = [];
@@ -793,9 +887,11 @@ export function analyzeReachNode(
       return l !== undefined && r !== undefined ? l + r : undefined;
     }
     if (ts.isIdentifier(u)) {
+      // Also declared somewhere in this module, yet imported: which one the use means is unknown.
+      if (imports.has(u.text) && !unshadowed(u.text)) return undefined;
       const init = constInits.get(u.text);
       if (init !== undefined) return constString(init, depth + 1);
-      return importer?.(u.text)?.value;
+      return unshadowed(u.text) ? importer?.(u.text)?.value : undefined;
     }
     return undefined;
   };
@@ -835,11 +931,21 @@ export function analyzeReachNode(
     let shape: StepFactoryShape | undefined;
     const local = ts.isIdentifier(callee) ? functions.get(name) : undefined;
     if (local !== undefined) shape = inferStepFactory(local, constString);
-    else if (ts.isIdentifier(callee) && constInits.has(name)) shape = undefined;
-    else
-      shape =
-        (ts.isIdentifier(callee) ? importer?.(name)?.factory : undefined) ??
-        KNOWN_STEP_FACTORIES[name];
+    else if (!ts.isIdentifier(callee) || !unshadowed(name)) shape = undefined;
+    else {
+      // A bare, undeclared name: the import binding. A relative wrapper is followed through the
+      // importer; a first-party factory only when imported from its own package (or the SDK).
+      const imp = imports.get(name);
+      shape = importer?.(name)?.factory;
+      if (
+        shape === undefined &&
+        imp !== undefined &&
+        Object.hasOwn(KNOWN_STEP_FACTORIES, imp.imported) &&
+        KNOWN_FACTORY_SOURCES[imp.imported]?.includes(imp.spec) === true
+      ) {
+        shape = KNOWN_STEP_FACTORIES[imp.imported];
+      }
+    }
     if (shape === undefined) return undefined;
     if ("fixed" in shape) return { toolId: shape.fixed };
     const arg = call.arguments[shape.argIndex];
@@ -1181,13 +1287,51 @@ export function analyzeReachNode(
    * spread, or a branch that is neither a tuple nor a function is reported unresolved: the steps
    * it holds cannot be seen, and an empty answer would read as "reaches nothing".
    */
+  function listUsedBeyondParallel(name: string): boolean {
+    let used = false;
+    const walk = (n: ts.Node): void => {
+      if (used) return;
+      if (ts.isIdentifier(n) && n.text === name) {
+        let top: ts.Node = n;
+        while (
+          top.parent !== undefined &&
+          (ts.isParenthesizedExpression(top.parent) ||
+            ts.isAsExpression(top.parent) ||
+            ts.isNonNullExpression(top.parent) ||
+            ts.isSatisfiesExpression(top.parent))
+        )
+          top = top.parent;
+        const p = n.parent;
+        const isDecl = ts.isVariableDeclaration(p) && p.name === n;
+        const isMemberName = ts.isPropertyAccessExpression(p) && p.name === n;
+        const isKey = (ts.isPropertyAssignment(p) || ts.isPropertySignature(p)) && p.name === n;
+        const isParallelArg =
+          top.parent !== undefined &&
+          ts.isCallExpression(top.parent) &&
+          methodCall(top.parent, "parallel") !== undefined &&
+          top.parent.arguments.includes(top as ts.Expression);
+        if (!isDecl && !isMemberName && !isKey && !isParallelArg) used = true;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(sourceFile);
+    return used;
+  }
+
   function visitParallel(call: ts.CallExpression, argOffset = 0): void {
     const arg = call.arguments[argOffset];
     if (arg === undefined) return;
     let list = unwrap(arg);
     if (ts.isIdentifier(list)) {
       const init = constInits.get(list.text);
-      if (init !== undefined) list = unwrap(init);
+      if (init !== undefined) {
+        // A list that is also pushed to / passed on / iterated is not the literal it was bound to.
+        if (listUsedBeyondParallel(list.text)) {
+          unresolved.push({ expr: `parallel(${exprText(arg)})`, kind: "step", ...at });
+          return;
+        }
+        list = unwrap(init);
+      }
     }
     if (!ts.isArrayLiteralExpression(list)) {
       unresolved.push({ expr: `parallel(${exprText(arg)})`, kind: "step", ...at });

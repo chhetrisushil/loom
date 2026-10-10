@@ -125,6 +125,8 @@ describe("stepArgs (L34)", () => {
     expect(readReachDeclaration({ stepArgs: [-1] })).toBeUndefined();
     expect(readReachDeclaration({ stepArgs: ["1"] })).toBeUndefined();
     expect(readReachDeclaration({ stepArgs: 1 })).toBeUndefined();
+    expect(readReachDeclaration({ stepArgs: [1.5] })).toBeUndefined();
+    expect(readReachDeclaration({ stepArgs: [Number.NaN] })).toBeUndefined();
   });
 
   it("passedSteps covers a recorded run tool only under a stepArgs declaration", () => {

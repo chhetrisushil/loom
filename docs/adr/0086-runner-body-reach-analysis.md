@@ -257,9 +257,29 @@ EVENT_SCHEMA and the syscall table are unchanged.
   absent), so ``llmStep$(`reshape@a${attempt}`, LLM_RESHAPE)`` resolves with a templated step id; and two
   first-party factories that live in packages (so cannot be followed through an import):
   `mcpInvoke$` is always the `mcp.invoke` effect (the tool name rides the run-time input) and
-  `sandboxEval$(id, toolId = "sandbox.eval")`. A test pins both ids to their package constants; a local
-  function of the same name shadows the table. A factory with several returns, a spread argument, a
-  non-constant effect argument or a duplicated/reassigned constant stays unresolved.
+  `sandboxEval$(id, toolId = "sandbox.eval")`. A test pins both ids to their package constants.
+  Resolution rules, all of which fall back to UNRESOLVED (a wrong effect id with no warn is the worst
+  failure, so a doubt is never a guess):
+  1. The table applies only to a BARE identifier call whose name is declared nowhere in the module
+     (parameter, local, overload, class, enum, destructuring, catch, for-of: all count) and is an import
+     of `mcpInvoke$` from `@loom/plugin-mcp` / `@loom/sdk`, or of `sandboxEval$` from
+     `@loom/plugin-sandbox` / `@loom/sdk/sandbox`. An alias (`import { mcpInvoke$ as m }`) maps to the
+     table entry. A property call (`x.mcpInvoke$()`), a relative or other-package import of that name, and
+     any shadowed name are unresolved.
+  2. The relative-import resolver is consulted for a constant or factory only when the name is declared
+     nowhere in the module except as the import binding; a same-named parameter or local anywhere makes it
+     unresolved.
+  3. A factory (same-module or imported) folds a constant only if no identifier it mentions is declared
+     anywhere inside the factory (parameters are read as parameters, body locals and nested scopes reject),
+     so `export function mk(K) { return step$({ toolId: K }) }` is its argument, never the module `K`.
+  4. A `const NAME = step$({ toolId })` binding is followed only when `NAME` is declared exactly once in the
+     module and never reassigned; a shadowing parameter or a same-named binding in another function is
+     unresolved (not last-wins).
+  5. A `ctx.parallel` list bound to an identifier is read only if that identifier is used nowhere but its
+     declaration and `ctx.parallel(...)` arguments; a `push`, a pass to a function or any other use makes
+     the list unresolved.
+  A factory with several returns, a spread argument, a non-constant effect argument or a
+  duplicated/reassigned constant stays unresolved.
   Consequence worth knowing: a flow that used `mcpInvoke$` now reaches `mcp.invoke` for capability-compat,
   so an app whose grants omit it gets an ERROR where it used to get an unresolved warn. That is the
   check working.
