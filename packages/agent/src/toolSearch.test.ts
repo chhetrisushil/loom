@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   Bm25ToolRanker,
+  DEFAULT_STOPWORDS,
   MAX_LABELS,
   MAX_LABEL_CHARS,
+  MAX_STOPWORDS,
   type SearchableTool,
   TOOL_SEARCH_MAX_QUERY_TERMS,
   firstLineOf,
@@ -222,5 +224,48 @@ describe("firstLineOf", () => {
     expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(out)).toBe(false);
     expect(firstLineOf("a\u001b[31mb\u0000c\u200dd", 50)).toBe("a[31mbcd");
     expect(firstLineOf("a\tb", 50)).toBe("a b");
+  });
+});
+
+describe("R22e (ADR 0125 D15) - the query stoplist", () => {
+  const TOOLS: SearchableTool[] = [
+    { id: "invoice_create", aliases: ["bill the customer"] },
+    { id: "refund_issue", aliases: ["give the money back"] },
+    { id: "db_slow", aliases: ["why is the database slow"] },
+    { id: "get_the_report" },
+  ];
+
+  it("a stopword in the query no longer matches aliases that merely contain it", () => {
+    expect(ids(new Bm25ToolRanker(TOOLS).rank("bill the customer", 10))).toEqual([
+      "invoice_create",
+    ]);
+  });
+  it("NEGATIVE: stopwords [] restores the old noise hits", () => {
+    const got = ids(new Bm25ToolRanker(TOOLS, { stopwords: [] }).rank("bill the customer", 10));
+    expect(got[0]).toBe("invoice_create");
+    expect(got).toEqual(expect.arrayContaining(["refund_issue", "db_slow", "get_the_report"]));
+  });
+  it("an all-stopword query keeps its terms (never an empty search)", () => {
+    expect(new Bm25ToolRanker(TOOLS).rank("the", 10).length).toBeGreaterThan(0);
+  });
+  it("the index is unchanged: a tool NAMED with a stopword is still found by that name", () => {
+    expect(ids(new Bm25ToolRanker(TOOLS).rank("get the report", 10))[0]).toBe("get_the_report");
+  });
+  it("a host list replaces the default, is normalized like a label, and is bounded", () => {
+    const r = new Bm25ToolRanker(TOOLS, { stopwords: ["BILL"] });
+    // "bill" is now ignored and "the" is not: the old noise returns and invoice_create matches via customer.
+    expect(ids(r.rank("bill the customer", 10))).toEqual(
+      expect.arrayContaining(["invoice_create", "refund_issue"])
+    );
+    expect(DEFAULT_STOPWORDS.length).toBeLessThan(MAX_STOPWORDS);
+    expect(
+      () => new Bm25ToolRanker(TOOLS, { stopwords: Array(MAX_STOPWORDS + 1).fill("x") })
+    ).toThrow(/at most/);
+  });
+  it("stopwords are dropped before the distinct-term cap", () => {
+    const q = `${"the of and ".repeat(10)}${Array.from({ length: 16 }, (_, i) => `w${i}x`).join(" ")}`;
+    const set = new Set(DEFAULT_STOPWORDS);
+    expect(toolQueryTerms(q, set)).toHaveLength(16);
+    expect(toolQueryTerms(q, set)).not.toContain("the");
   });
 });

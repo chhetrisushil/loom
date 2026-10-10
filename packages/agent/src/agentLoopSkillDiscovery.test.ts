@@ -14,7 +14,7 @@ import { SkillRegistry } from "./SkillRegistry";
 import { type AgentLoopConfig, agentLoop$ } from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
 import { SOURCE_SKILL_ACTIVATION, type SkillActivationConfig } from "./skillActivation";
-import type { ToolRanker } from "./toolSearch";
+import type { ToolRanker, ToolSearchDoc } from "./toolSearch";
 import { SOURCE_TOOL_SEARCH, interleave } from "./toolSearchSession";
 
 // ── R22b (ADR 0125 D12) — skills discoverable through `search_tools` ───────────────
@@ -733,6 +733,61 @@ describe("R22c - custom tool ranker + skill discovery", () => {
     const rec = (await searches(b))[0]?.value as Record<string, unknown>;
     expect(rec.ranker).toBe("bm25f");
     expect(rec.skillRanker).toBe("spy-skills");
+  });
+
+  it("R22e: a skillRanker factory gets skill docs only (raw ids), a tool-ranker factory never sees skill keys", async () => {
+    let skillDocs: readonly ToolSearchDoc[] = [];
+    let toolDocs: readonly ToolSearchDoc[] = [];
+    let skillBuilds = 0;
+    const b = boot({
+      skills: SK(),
+      activation: {
+        discovery: "search",
+        skillRanker: (docs) => {
+          skillBuilds++;
+          skillDocs = docs;
+          return { kind: "sk-fx", rank: () => [{ id: "refund_two", score: 1 }] };
+        },
+      },
+      config: {
+        toolSearch: {
+          catalog: TOOLS,
+          ranker: (docs) => {
+            toolDocs = docs;
+            return { kind: "tl-fx", rank: () => [{ id: "pay_a", score: 1 }] };
+          },
+        },
+      },
+      provider: script([[SEARCH("refund payments", "s1")], [SEARCH("again", "s2")]]),
+    });
+    await runToEnd(b);
+    expect(skillBuilds).toBe(1);
+    expect(skillDocs.map((d) => d.id).sort()).toEqual(
+      ["refund_one", "refund_three", "refund_two", "unrelated"].sort()
+    );
+    expect(skillDocs.find((d) => d.id === "refund_two")?.description).toContain("money back");
+    expect(toolDocs.map((d) => d.id).sort()).toEqual(["pay_a", "pay_b", "pay_c", "pay_d"]);
+    expect(JSON.stringify(toolDocs)).not.toContain("skill");
+    const rec = (await searches(b))[0]?.value as Record<string, unknown>;
+    expect(rec.ranker).toBe("tl-fx");
+    expect(rec.skillRanker).toBe("sk-fx");
+  });
+
+  it("R22e: a throwing skillRanker factory is search_unavailable", async () => {
+    const b = boot({
+      skills: SK(),
+      activation: {
+        discovery: "search",
+        skillRanker: () => {
+          throw new Error("nope");
+        },
+      },
+      config: { toolSearch: { catalog: TOOLS } },
+      provider: script([[SEARCH("refund")]]),
+    });
+    await runToEnd(b);
+    expect(JSON.stringify(lastResults(b)[0]?.result)).toContain("search_unavailable");
+    expect(await searches(b)).toEqual([]);
   });
 
   it("the page interleaves tool-first by rank position, up to maxPerSearch (no score mixing)", async () => {

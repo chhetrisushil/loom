@@ -83,6 +83,26 @@ export interface ToolRanker {
   rank(query: string, limit: number): readonly ToolHit[] | Promise<readonly ToolHit[]>;
 }
 
+/**
+ * R22e (ADR 0125 D15) — one document of the search vocabulary: exactly what the built-in BM25F
+ * indexes for a tool (or, for a skill, a skill), after the trust policy has run. Every label list is
+ * already host-trusted text; `description` is present only for text the host vouches for.
+ */
+export interface ToolSearchDoc {
+  readonly id: string;
+  readonly description?: string;
+  readonly tags: readonly string[];
+  readonly aliases: readonly string[];
+}
+
+/**
+ * A ranker built from the sanitized vocabulary (ADR 0125 D15). Called at most once per run, lazily on
+ * the first search that needs it, with the docs of the tools (or skills) this run can search. Sync.
+ * Use it so a custom ranker indexes the SAME trusted text the built-in one does, instead of
+ * rebuilding the vocabulary (and the trust policy) itself.
+ */
+export type ToolRankerFactory = (docs: readonly ToolSearchDoc[]) => ToolRanker;
+
 // ── Bounds ─────────────────────────────────────────────────────────────────────
 
 /** Query characters read (the rest is dropped before any regex runs). */
@@ -99,6 +119,75 @@ const MAX_DESCRIPTION_TOKENS = 128;
 /** Tags read per tool. */
 const MAX_TAGS = 32;
 const MAX_ALIAS_TOKENS = 96;
+
+/** Stopwords accepted from a host (config error past this; each is a Set entry, so lookups stay O(1)). */
+export const MAX_STOPWORDS = 256;
+
+/**
+ * R22e (ADR 0125 D15) — the default query stoplist: closed-class English function words that carry
+ * no tool intent ("bill THE customer"). Applied to QUERY terms only; the index is unchanged, so a
+ * tool named `get_the_x` is still found by name. Deliberately small and conservative: it leaves
+ * negations, question words and verbs ("not", "why", "get") alone. Terms are in tokenizer form.
+ */
+export const DEFAULT_STOPWORDS: readonly string[] = Object.freeze([
+  "the",
+  "an",
+  "and",
+  "or",
+  "of",
+  "to",
+  "in",
+  "on",
+  "at",
+  "by",
+  "for",
+  "with",
+  "from",
+  "as",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "it",
+  "its",
+  "this",
+  "that",
+  "these",
+  "those",
+  "my",
+  "me",
+  "our",
+  "we",
+  "you",
+  "your",
+  "do",
+  "does",
+  "can",
+  "please",
+]);
+const DEFAULT_STOPWORD_SET: ReadonlySet<string> = new Set(DEFAULT_STOPWORDS);
+
+/**
+ * A host stoplist as a Set of tokenizer-form terms: each entry is normalized like a label (NFKC,
+ * case-folded) and tokenized like a query, so `"The"` and `"tools"` match what a query produces.
+ * `undefined` = the default list; `[]` disables. More than {@link MAX_STOPWORDS} entries throws.
+ */
+export function resolveStopwords(list: readonly string[] | undefined): ReadonlySet<string> {
+  if (list === undefined) return DEFAULT_STOPWORD_SET;
+  if (!Array.isArray(list)) throw new RangeError("stopwords must be an array of strings");
+  if (list.length > MAX_STOPWORDS) {
+    throw new RangeError(
+      `stopwords may hold at most ${MAX_STOPWORDS} entries (got ${list.length})`
+    );
+  }
+  const out = new Set<string>();
+  for (const l of normalizeLabels(list, MAX_STOPWORDS, MAX_TOKEN_CHARS)) {
+    for (const t of tokenizeToolText(l, 4)) out.add(t);
+  }
+  return out;
+}
 
 const W_NAME = 3;
 const W_ALIASES = 2;
@@ -133,17 +222,25 @@ export function tokenizeToolText(text: string, maxTokens: number): string[] {
   return out;
 }
 
-/** The query as scored: bounded characters, deduplicated, first-seen order, at most {@link TOOL_SEARCH_MAX_QUERY_TERMS}. */
-export function toolQueryTerms(query: string): string[] {
-  const seen = new Set<string>();
+/**
+ * The query as scored: bounded characters, deduplicated, first-seen order, at most
+ * {@link TOOL_SEARCH_MAX_QUERY_TERMS}. With `stopwords`, those terms are dropped BEFORE the cap (so
+ * they cannot crowd out real terms); if that would leave nothing, the unfiltered terms are kept.
+ */
+export function toolQueryTerms(query: string, stopwords?: ReadonlySet<string>): string[] {
+  const all = new Set<string>();
+  const kept = new Set<string>();
   for (const t of tokenizeToolText(
     query.slice(0, TOOL_SEARCH_MAX_QUERY_CHARS),
     TOOL_SEARCH_MAX_QUERY_TERMS * 4
   )) {
-    seen.add(t);
-    if (seen.size >= TOOL_SEARCH_MAX_QUERY_TERMS) break;
+    if (all.size < TOOL_SEARCH_MAX_QUERY_TERMS) all.add(t);
+    if (stopwords !== undefined && stopwords.size > 0 && !stopwords.has(t)) {
+      if (kept.size < TOOL_SEARCH_MAX_QUERY_TERMS) kept.add(t);
+    }
+    if (all.size >= TOOL_SEARCH_MAX_QUERY_TERMS && kept.size >= TOOL_SEARCH_MAX_QUERY_TERMS) break;
   }
-  return [...seen];
+  return [...(kept.size > 0 ? kept : all)];
 }
 
 /**
@@ -181,7 +278,17 @@ export class Bm25ToolRanker implements ToolRanker {
   private readonly postings = new Map<string, Posting[]>();
   private readonly n: number;
 
-  constructor(tools: readonly SearchableTool[]) {
+  /** Query terms dropped before scoring (ADR 0125 D15). */
+  private readonly stopwords: ReadonlySet<string>;
+
+  constructor(
+    tools: readonly SearchableTool[],
+    opts: {
+      /** Query-only stoplist; default {@link DEFAULT_STOPWORDS}, `[]` disables. */
+      readonly stopwords?: readonly string[];
+    } = {}
+  ) {
+    this.stopwords = resolveStopwords(opts.stopwords);
     // De-duplicate by id (first wins) so a repeated id cannot be ranked twice.
     const seen = new Set<string>();
     const docs: SearchableTool[] = [];
@@ -250,7 +357,7 @@ export class Bm25ToolRanker implements ToolRanker {
     const k = Math.max(0, Math.min(Math.floor(limit), this.n));
     if (k === 0) return [];
     const scores = new Map<number, number>();
-    for (const term of toolQueryTerms(query)) {
+    for (const term of toolQueryTerms(query, this.stopwords)) {
       const list = this.postings.get(term);
       if (list === undefined) continue;
       const df = list.length;

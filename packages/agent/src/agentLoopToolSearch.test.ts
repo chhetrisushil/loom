@@ -13,8 +13,9 @@ import { z } from "zod";
 import { SkillRegistry } from "./SkillRegistry";
 import { type AgentLoopConfig, agentLoop$ } from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
-import type { ToolRanker } from "./toolSearch";
-import { SOURCE_TOOL_SEARCH, type ToolSearchConfig } from "./toolSearchSession";
+import type { ToolRanker, ToolSearchDoc } from "./toolSearch";
+import { Bm25ToolRanker } from "./toolSearch";
+import { SOURCE_TOOL_SEARCH, type ToolSearchConfig, toolSearchDocs } from "./toolSearchSession";
 
 // ── R22 (ADR 0125) — `agentLoop$({ toolSearch })` ─────────────────────────────────
 //
@@ -1211,5 +1212,193 @@ describe("R22d (ADR 0125 D14) - a ranker that ignores `limit` is clamped to what
     expect(asks.length).toBeLessThanOrEqual(4);
     expect(reads.n).toBeLessThanOrEqual(asks.reduce((a, b) => a + b, 0));
     expect(reads.n).toBeLessThan(10_000);
+  });
+});
+
+describe("R22e (ADR 0125 D15) - default stoplist through the loop", () => {
+  const OFFERED = [
+    mk("charge_invoice", "Create a payment request", { aliases: ["bill the customer"] }),
+    mk("refund_issue", "Return a payment", { aliases: ["give the money back"] }),
+    mk("db_slow", "Slow database", { aliases: ["why is the database slow"] }),
+  ];
+  const find = async (query: string, search: ToolSearchConfig = {}) => {
+    const b = boot({ offered: OFFERED, search, provider: script([[SEARCH(query)]]) });
+    await runToEnd(b);
+    return (
+      resultJson<{ tools?: { name: string }[] }>(
+        resultsOf(b.requests[1] as LlmRequest)[0]?.content
+      ).tools?.map((t) => t.name) ?? []
+    );
+  };
+  it("'bill the customer' no longer pulls in aliases that only share 'the'", async () => {
+    expect(await find("bill the customer")).toEqual(["charge_invoice"]);
+  });
+  it("NEGATIVE: stopwords [] restores the noise; an all-stopword query still finds something", async () => {
+    expect(await find("bill the customer", { stopwords: [] })).toHaveLength(3);
+    expect((await find("the")).length).toBeGreaterThan(0);
+  });
+  it("a stoplist past the cap is a loud config error", async () => {
+    const b = boot({
+      offered: OFFERED,
+      search: { stopwords: Array(257).fill("x") },
+      provider: script([[SEARCH("x")]]),
+    });
+    await expect(runToEnd(b)).rejects.toThrow(/stopwords/);
+  });
+});
+
+describe("R22e (ADR 0125 D15) - a ranker factory receives the sanitized vocabulary", () => {
+  const OPENAPI = { type: "object", properties: {} } as const;
+  const remote = mk("mcp_charge", "ATTACKER-DESC", {
+    jsonInputSchema: OPENAPI,
+    aliases: ["ATTACKER-ALIAS"],
+    tags: ["ATTACKER-TAG"],
+  });
+  const own = mk("charge_invoice", "Create a payment request", {
+    aliases: ["own-alias"],
+    tags: ["own-tag"],
+  });
+  const annotations = { mcp_charge: { aliases: ["bill the customer"], tags: ["billing"] } };
+  const recording = () => {
+    const seen: (readonly ToolSearchDoc[])[] = [];
+    const factory = (docs: readonly ToolSearchDoc[]): ToolRanker => {
+      seen.push(docs);
+      return { kind: "fx", rank: () => [{ id: "charge_invoice", score: 1 }] };
+    };
+    return { seen, factory };
+  };
+
+  it("an un-vouched remote tool has no description or own tags/aliases; host annotations ARE present", async () => {
+    const r = recording();
+    const b = boot({
+      offered: [remote, own],
+      search: { ranker: r.factory, annotations },
+      provider: script([[SEARCH("x")]]),
+    });
+    await runToEnd(b);
+    const docs = r.seen[0] as ToolSearchDoc[];
+    const doc = docs.find((d) => d.id === "mcp_charge") as ToolSearchDoc;
+    expect(doc.description).toBeUndefined();
+    expect(doc.tags).toEqual(["billing"]);
+    expect(doc.aliases).toEqual(["bill the customer"]);
+    expect(JSON.stringify(docs)).not.toContain("ATTACKER");
+    const ownDoc = docs.find((d) => d.id === "charge_invoice") as ToolSearchDoc;
+    expect(ownDoc.aliases).toEqual(["own-alias"]);
+    expect(ownDoc.tags).toEqual(["own-tag"]);
+    expect(ownDoc.description).toBe("Create a payment request");
+  });
+
+  it("the factory is called once across several searches, with this run's searchable tools only", async () => {
+    const r = recording();
+    const b = boot({
+      offered: [...NEEDED, own],
+      search: { ranker: r.factory, namespaces: ["db_"] },
+      provider: script([[SEARCH("a")], [SEARCH("b")], [SEARCH("c")]]),
+    });
+    await runToEnd(b);
+    expect(r.seen).toHaveLength(1);
+    expect((r.seen[0] as ToolSearchDoc[]).map((d) => d.id).sort()).toEqual([
+      "db_kill_session",
+      "db_slow_queries",
+      "db_vacuum_table",
+    ]);
+    const rec = (await b.store.read("e1")).filter(
+      (e) => e.eventType === "DECISION_RECORDED"
+    ).length;
+    expect(rec).toBe(3);
+  });
+
+  it("the recorded ranker kind is the built ranker's, and a replay never calls the factory", async () => {
+    const steps = [[SEARCH("x")], [call("a", "charge_invoice")]];
+    const r = recording();
+    const store = new InMemoryAsyncEventStore();
+    const first = boot({
+      store,
+      offered: [own],
+      search: { ranker: r.factory },
+      provider: script(steps),
+    });
+    await runToEnd(first);
+    const rec = decisions(await store.read("e1")).find((d) => d.source === SOURCE_TOOL_SEARCH);
+    expect((rec?.value as { ranker: string }).ranker).toBe("fx");
+    expect(r.seen).toHaveLength(1);
+    const { crashed, folded } = await crashedBefore(store, "dba#turn:1:tool:0");
+    const r2 = recording();
+    const second = boot({
+      store: crashed,
+      offered: [own],
+      search: { ranker: r2.factory },
+      provider: script(steps),
+    });
+    await (await second.runtime.restoreFromState(folded)).waitForCompletion();
+    expect(r2.seen).toHaveLength(0);
+  });
+
+  it("a throwing factory is search_unavailable (nothing recorded, no leak) and is retried on the next search", async () => {
+    let n = 0;
+    const factory = (): ToolRanker => {
+      if (n++ === 0) throw new Error("SECRET-factory");
+      return { kind: "fx", rank: () => [{ id: "charge_invoice", score: 1 }] };
+    };
+    const b = boot({
+      offered: [own],
+      search: { ranker: factory },
+      provider: script([[SEARCH("x", "s1")], [SEARCH("x", "s2")]]),
+    });
+    await runToEnd(b);
+    const first = text(resultsOf(b.requests[1] as LlmRequest)[0]?.content);
+    expect(first).toContain("search_unavailable");
+    expect(first).not.toContain("SECRET-factory");
+    expect(text(resultsOf(b.requests[2] as LlmRequest)[0]?.content)).toContain("charge_invoice");
+    expect(n).toBe(2);
+    expect(
+      decisions(await b.store.read("e1")).filter((d) => d.source === SOURCE_TOOL_SEARCH)
+    ).toHaveLength(1);
+  });
+
+  it("a factory that returns a non-ranker, and a terminal factory error, behave like a ranker's", async () => {
+    const bad = boot({
+      offered: [own],
+      search: { ranker: (() => ({})) as never },
+      provider: script([[SEARCH("x")]]),
+    });
+    await runToEnd(bad);
+    expect(text(resultsOf(bad.requests[1] as LlmRequest)[0]?.content)).toContain(
+      "search_unavailable"
+    );
+    const quota = Object.assign(new Error("quota"), { name: "QuotaExceededError" });
+    const term = boot({
+      offered: [own],
+      search: {
+        ranker: () => {
+          throw quota;
+        },
+      },
+      provider: script([[SEARCH("x")]]),
+    });
+    await expect(runToEnd(term)).rejects.toThrow(/quota/);
+  });
+
+  it("one source: toolSearchDocs is exactly what the built-in BM25F indexes", async () => {
+    const tools = [remote, own, ...NEEDED];
+    const direct = new Bm25ToolRanker(toolSearchDocs(tools, { annotations }));
+    for (const q of [
+      "bill the customer",
+      "billing",
+      "own-alias",
+      "slow queries",
+      "ATTACKER-ALIAS",
+    ]) {
+      const b = boot({
+        offered: tools,
+        search: { annotations, maxPerSearch: 10 },
+        provider: script([[SEARCH(q)]]),
+      });
+      await runToEnd(b);
+      const rec = decisions(await b.store.read("e1")).find((d) => d.source === SOURCE_TOOL_SEARCH);
+      expect((rec?.value as { results: string[] }).results).toEqual(
+        direct.rank(q, 10).map((h) => h.id)
+      );
+    }
   });
 });
