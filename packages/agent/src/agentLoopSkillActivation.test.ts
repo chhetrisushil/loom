@@ -236,7 +236,12 @@ describe("R22 D11 - activate a skill mid-loop", () => {
       {
         decisionId: "dba#turn:0:tool:0:skill",
         source: SOURCE_SKILL_ACTIVATION,
-        value: { skill: "billing", digest: sha("BILLING-RULES"), bytes: 15 },
+        value: {
+          skill: "billing",
+          digest: sha("BILLING-RULES"),
+          bytes: 15,
+          resultBytes: expect.any(Number),
+        },
       },
     ]);
   });
@@ -331,7 +336,7 @@ describe("R22 D11 - refusals are typed results (an instructions refusal records 
     });
     expect(codes(b, 2)).toEqual(["skill_limit_reached"]);
     expect((await activations(b)).map((d) => d.value)).toEqual([
-      { skill: "alpha", digest: sha("ALPHA-RULES"), bytes: 13 },
+      { skill: "alpha", digest: sha("ALPHA-RULES"), bytes: 13, resultBytes: expect.any(Number) },
     ]);
   });
 
@@ -778,10 +783,10 @@ describe("R22 polish P3-a/b - an unloadable skill is feedback; an index that fit
 describe("R22d D14 - the delivered instructions are pinned by a recorded digest", () => {
   const tool = mk("rev_tool");
   /** A skill whose instructions can change under the run (a registry hot-reload). */
-  const live = (initial: string) => {
+  const live = (initial: string, tools: ToolDefinition[] = [tool]) => {
     const box = { text: initial };
     const skill = {
-      ...mkSkill("rev", initial, [tool]),
+      ...mkSkill("rev", initial, tools),
       instructions: async () => ({ default: box.text }),
     } as SkillDefinition;
     return { box, skill };
@@ -826,7 +831,7 @@ describe("R22d D14 - the delivered instructions are pinned by a recorded digest"
     });
     await runToEnd(b);
     expect((await activations(b)).map((d) => d.value)).toEqual([
-      { skill: "rev", digest: sha("RULES-v1"), bytes: 10 },
+      { skill: "rev", digest: sha("RULES-v1"), bytes: 10, resultBytes: expect.any(Number) },
     ]);
   });
 
@@ -964,11 +969,11 @@ describe("R22d D14 - the delivered instructions are pinned by a recorded digest"
 describe("R22d D14 review - compaction's byte trigger survives a changed skill text on replay", () => {
   const tool = mk("rev_tool");
   const BASE = "R".repeat(3000);
-  const compaction = { toolId: "summarize", afterBytes: 2000, keepRecent: 1 };
-  const live = (initial: string) => {
+  const compactionBase = { toolId: "summarize", afterBytes: 2000, keepRecent: 1 };
+  const live = (initial: string, tools: ToolDefinition[] = [tool]) => {
     const box = { text: initial };
     const skill = {
-      ...mkSkill("rev", initial, [tool]),
+      ...mkSkill("rev", initial, tools),
       instructions: async () => ({ default: box.text }),
     } as SkillDefinition;
     return { box, skill };
@@ -977,19 +982,31 @@ describe("R22d D14 review - compaction's byte trigger survives a changed skill t
   async function resumeCompacted(
     second: string,
     steps: LlmToolCall[][] = [[ACT("rev")], [call("t", "rev_tool")]],
-    mapEvent: (e: EventEnvelope) => EventEnvelope = (e) => e
+    mapEvent: (e: EventEnvelope) => EventEnvelope = (e) => e,
+    opts: {
+      afterBytes?: number;
+      firstTools?: ToolDefinition[];
+      secondTools?: ToolDefinition[];
+      requireCompact?: boolean;
+    } = {}
   ) {
+    const compaction = {
+      ...compactionBase,
+      afterBytes: opts.afterBytes ?? compactionBase.afterBytes,
+    };
     const store = new InMemoryAsyncEventStore();
     const first = boot({
       store,
-      skills: [live(`${BASE}X`).skill],
+      skills: [live(`${BASE}X`, opts.firstTools).skill],
       summarizer: true,
       config: { compaction },
       provider: script(steps),
     });
     expect((await runToEnd(first)).status).toBe("completed");
     const full = await store.read("e1");
-    expect(stepIds(full)).toContain("dba#turn:1:compact"); // the live run DID compact
+    if (opts.requireCompact !== false) {
+      expect(stepIds(full)).toContain("dba#turn:1:compact"); // the live run DID compact
+    }
     const cutoff = full.findIndex((e) =>
       String((e.payload as { stepId?: string }).stepId ?? "").startsWith("dba#turn:2")
     );
@@ -1003,13 +1020,19 @@ describe("R22d D14 review - compaction's byte trigger survives a changed skill t
     }).getState();
     const b = boot({
       store: crashed,
-      skills: [live(second).skill],
+      skills: [live(second, opts.secondTools).skill],
       summarizer: true,
       config: { compaction },
       provider: script(steps),
     });
     const st = await (await b.runtime.restoreFromState(folded)).waitForCompletion();
-    return { b, st, ids: stepIds(await crashed.read("e1")) };
+    return {
+      b,
+      st,
+      ids: stepIds(await crashed.read("e1")),
+      liveCompacted: stepIds(full).includes("dba#turn:1:compact"),
+      liveFrames: stepIds(full).filter((x) => /compact/.test(x)),
+    };
   }
 
   it("a ONE-CHARACTER edit (same length) resumes: the recorded compact frame is still asked for", async () => {
@@ -1045,13 +1068,122 @@ describe("R22d D14 review - compaction's byte trigger survives a changed skill t
     }
   });
 
+  it("tools-and-text BOTH changed: the virtual size is the recorded live size - exact across the boundary", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const extra = mk(`rev_tool_extra_${"z".repeat(48)}`); // ~65 bytes of added id in the result
+      let compacted = 0;
+      let skipped = 0;
+      // A deterministic sweep of the threshold across the whole boundary (no timing).
+      for (let afterBytes = 3000; afterBytes <= 3400; afterBytes += 4) {
+        const r = await resumeCompacted(`${BASE}Y-changed`, undefined, undefined, {
+          afterBytes,
+          secondTools: [tool, extra],
+          requireCompact: false,
+        });
+        expect(r.st.status, `afterBytes=${afterBytes}`).toBe("completed");
+        expect(r.b.warnings.filter((w) => /diverge/i.test(w))).toEqual([]);
+        expect(
+          r.ids.filter((x) => /compact/.test(x)),
+          `frames afterBytes=${afterBytes}`
+        ).toEqual(r.liveFrames);
+        if (r.liveCompacted) compacted++;
+        else skipped++;
+      }
+      // The sweep really straddled the live trigger.
+      expect(compacted).toBeGreaterThan(0);
+      expect(skipped).toBeGreaterThan(0);
+      // The other direction: tools REMOVED and text changed (the replay is the shorter list).
+      for (let afterBytes = 3000; afterBytes <= 3400; afterBytes += 4) {
+        const r = await resumeCompacted(`${BASE}Y-changed`, undefined, undefined, {
+          afterBytes,
+          firstTools: [tool, extra],
+          secondTools: [tool],
+          requireCompact: false,
+        });
+        expect(r.st.status, `removed afterBytes=${afterBytes}`).toBe("completed");
+        expect(
+          r.ids.filter((x) => /compact/.test(x)),
+          `removed frames ${afterBytes}`
+        ).toEqual(r.liveFrames);
+        expect(r.b.warnings.filter((w) => /diverge/i.test(w))).toEqual([]);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a tools-only change (same text) resumes too", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const extra = mk(`rev_tool_extra_${"z".repeat(48)}`);
+      for (let afterBytes = 3000; afterBytes <= 3400; afterBytes += 4) {
+        const r = await resumeCompacted(`${BASE}X`, undefined, undefined, {
+          afterBytes,
+          secondTools: [tool, extra],
+          requireCompact: false,
+        });
+        expect(r.st.status, `afterBytes=${afterBytes}`).toBe("completed");
+      }
+      for (let afterBytes = 3000; afterBytes <= 3400; afterBytes += 4) {
+        const r = await resumeCompacted(`${BASE}X`, undefined, undefined, {
+          afterBytes,
+          firstTools: [tool, extra],
+          secondTools: [tool],
+          requireCompact: false,
+        });
+        expect(r.st.status, `removed afterBytes=${afterBytes}`).toBe("completed");
+        expect(
+          r.ids.filter((x) => /compact/.test(x)),
+          `removed frames ${afterBytes}`
+        ).toEqual(r.liveFrames);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("NEGATIVE: an OLD record (`bytes` but no `resultBytes`) keeps round-1 behaviour - the residual: a tool-list change inside the margin makes the replay's compaction differ from the live run's", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const extra = mk(`rev_tool_extra_${"z".repeat(48)}`);
+      const strip = (e: EventEnvelope): EventEnvelope => {
+        const p = e.payload as { source?: string; choice?: Record<string, unknown> };
+        if (p.source !== SOURCE_SKILL_ACTIVATION) return e;
+        const { resultBytes: _drop, ...choice } = p.choice ?? {};
+        return { ...e, payload: { ...p, choice } } as unknown as EventEnvelope;
+      };
+      let diverged = 0;
+      for (let afterBytes = 3000; afterBytes <= 3400; afterBytes += 4) {
+        try {
+          const r = await resumeCompacted(`${BASE}Y-changed`, undefined, strip, {
+            afterBytes,
+            firstTools: [tool, extra],
+            secondTools: [tool],
+            requireCompact: false,
+          });
+          if (
+            JSON.stringify(r.ids.filter((x) => /compact/.test(x))) !== JSON.stringify(r.liveFrames)
+          )
+            diverged++;
+        } catch (err) {
+          if (/not asked for|diverge/i.test(String(err))) diverged++;
+          else throw err;
+        }
+      }
+      expect(diverged).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("NEGATIVE: an OLD record (no `bytes`) keeps today's behaviour - the residual: an edit still diverges", async () => {
     const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     try {
       const strip = (e: EventEnvelope): EventEnvelope => {
         const p = e.payload as { source?: string; choice?: Record<string, unknown> };
         if (p.source !== SOURCE_SKILL_ACTIVATION) return e;
-        const { bytes: _drop, ...choice } = p.choice ?? {};
+        const { bytes: _drop, resultBytes: _drop2, ...choice } = p.choice ?? {};
         return { ...e, payload: { ...p, choice } } as unknown as EventEnvelope;
       };
       await expect(resumeCompacted(`${BASE}Y`, undefined, strip)).rejects.toThrow(/not asked for/);
