@@ -84,6 +84,8 @@ export {
   MAX_MESSAGE_ID_LENGTH,
   INBOX_STREAM_PREFIX,
   INBOX_WAKE_AT,
+  INBOX_TTL_ACTOR,
+  type InboxTtlConfig,
   createInboxSource,
   inboxStreamId,
 } from "./inbox";
@@ -170,6 +172,7 @@ export type {
   DiscardInboxInput,
   DiscardInboxOptions,
   DiscardInboxResult,
+  InboxExpiryResult,
   InboxMessage,
   InboxSource,
   ParallelOptions,

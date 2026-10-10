@@ -672,6 +672,15 @@ export interface LoomConfig {
       maxRetained?: number;
       /** Largest JSON payload `send` accepts, in bytes. Default 65 536. */
       maxPayloadBytes?: number;
+      /**
+       * ADR 0110 amendment, D10a — expire UNCONSUMED messages after this many milliseconds: a number
+       * for every topic, or `{ default?, topics? }` per topic. OFF by default (nothing expires, no
+       * behaviour changes). An expiry is a journaled discard (`reason: "expired"`, recorded as the
+       * runtime, never an operator), so it replays; it is timed from the message's envelope timestamp
+       * by the app's `TimerService` rows, never read inside the fold. Needs `timers`; configure every
+       * node of a fleet alike (a node without it retires an expiry row as obsolete).
+       */
+      messageTtlMs?: number | { default?: number; topics?: Readonly<Record<string, number>> };
     };
     /**
      * ADR 0115 (R15) — per-dimension override of the sanity ceiling on one `RESOURCE_METERED`
@@ -1279,6 +1288,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       }),
       ...(config.kernel.inbox?.maxPayloadBytes !== undefined && {
         inboxMaxPayloadBytes: config.kernel.inbox.maxPayloadBytes,
+      }),
+      ...(config.kernel.inbox?.messageTtlMs !== undefined && {
+        inboxMessageTtlMs: config.kernel.inbox.messageTtlMs,
       }),
     }),
     ...(config.errorClasses !== undefined && { errorClasses: config.errorClasses }),

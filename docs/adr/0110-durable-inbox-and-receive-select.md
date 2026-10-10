@@ -553,7 +553,7 @@ and, with `LOOM_TEST_POSTGRES_URL`, on Postgres.
 
 ## Amendment 2026-10-11 — erasure into the stream, an operator discard, and the per-topic design
 
-- Status: **Accepted** (D8, D9 implemented); **D10 is a design only** (not implemented, see why below).
+- Status: **Accepted** (D8, D9, **D10a implemented**); **D10b (per-topic streams) is a design only** (not implemented in this section, see why below).
 - Closes the logged follow-ups of the 2026-10-07 "Residuals" and "Pinned-stream DoS" bullets.
 - **Wire and ABI: nothing changes.** `EVENT_SCHEMA` stays 1.23.0, `KERNEL_ABI` stays 1.3.0, the `EventStore` SPI is
   untouched, no fold handler changes, no syscall is added. `ExecutionOp` gains one additive member (`"discard"`),
@@ -703,7 +703,7 @@ The 2026-10-07 residual: erasure reached `MESSAGE_CONSUMED` in the owner's log b
   stream yourself; there is no re-seal API, and the coordinator does not delete a PARKED owner's stream (the
   owner still reads it). The opt-in does not change this.
 
-### D10 — per-topic streams with an optional journaled TTL (DESIGN ONLY, not built)
+### D10 — per-topic streams with an optional journaled TTL (D10a implemented; D10b a design, not built)
 
 **Not built, and why.** It needs no `EVENT_SCHEMA` or `KERNEL_ABI` change and can keep existing data readable
 (below), so the gate is not the ABI. It is not built here because it rewrites the stream layout across at least
@@ -720,6 +720,64 @@ entries above the oldest unconsumed message past half of `inboxMaxRetained`, the
 whose pinning message is older than the TTL, and discards as a kernel service principal with `reason: "ttl"` (a discard needs a principal; the system grant alone no longer suffices, D8, so D10a must define that principal).
 Pinned-only, so a slow but healthy consumer is never expired merely for being slow; journaled, so it replays;
 parked-only, so it retries on the next sweep. The message's age is its envelope timestamp.
+
+### D10a — implemented: journaled TTL expiry on today's layout
+
+`kernel.inbox.messageTtlMs` (`WorkflowRuntimeDeps.inboxMessageTtlMs`): a number (every topic) or
+`{ default?, topics? }` (per topic, own-property lookup). **Off by default**: with it unset no row is written,
+`expireInbox` answers `"off"`, `TimerService` and `recoverAbandoned` take no new branch, and behaviour is
+byte-identical. A non-positive or non-integer TTL is refused at composition. **Wire and ABI: nothing changes**
+(`EVENT_SCHEMA` 1.23.0, `KERNEL_ABI` 1.3.0, no fold handler, no store method; the conformance kit is untouched).
+
+- **The fact is D8's.** An expiry is `MESSAGE_CONSUMED` under the reserved `__loom_discard__` wait, `payload: null`,
+  one per skipped message (its id joins the dedupe window, so a sender's retry of an expired id is a duplicate),
+  the last of each topic carrying `inboxSeq: <through>`, `skipped`, `reason: "expired"` and `expired: true`. The
+  fold ignores the extras, so an older node folds the same log identically and a replay needs neither the clock
+  nor the stream (tested: a fresh runtime folds the identical `_inbox` and `_waitAnswers`).
+- **Authorized as the runtime, not an operator.** An expiry is the kernel acting on configuration the integrator
+  wrote, so it takes no principal and no `ExecutionOp` (D8's operator rule stays: `discardInbox` still requires a
+  principal). The fact's `sender` is `{ actor: "__loom_inbox_ttl__" }` (`INBOX_TTL_ACTOR`), which no operator
+  identity can be mistaken for in an audit.
+- **Driven by the durable timer service, never the fold.** `send` of a topic with a TTL writes one `TimerStore` row
+  at `ceil((now + ttl) / 1000) * 1000` (whole seconds, so messages expiring together share a pass), coalesced per
+  chain while a pending one is known. `TimerService.fire` treats a row that is no timer of the park as an expiry row
+  when a TTL is configured and calls `runtime.expireInbox`; `done`/`closed` retire it, `not-parked`/`contended`
+  KEEP it with the existing in-process backoff (capped, never dropped and never reported as exhausted: a long
+  turn is not a failure). The age is `envelope.timestamp + ttl <= now()` against the runtime's injected clock,
+  evaluated in the pass; the fold reads no clock. Each pass re-arms the next (the earliest still-unexpired message,
+  or "now" when it was cut short). `recoverAbandoned` runs one pass per inbox stream as the safety net for a row a
+  crashed sender never wrote (`summary.inboxExpired`; a fork's chain, which maps to no execution, is skipped).
+- **No race with a delivery.** The pass journals through `advanceInbox`: one atomic batch under the park's
+  conditional fence, an *ignorable* kind, so the park stays unanswered. A notifier whose batch was built from the
+  pre-expiry cursors is refused by `staleInboxBatch` (D8's guard) and refolds; a delivery that won first has
+  consumed the message and leaves nothing to expire. So an expired message is never delivered after its fact is
+  durable, and never twice. A message consumed before its pass ran was simply delivered in time (a TTL is a bound
+  on how long a message may wait, not a promise the flow never sees an old one: the live consume path inside a
+  running owner does not consult the clock).
+- **Only a prefix per topic.** A discard advances a topic's cursor THROUGH a sequence, so a pass reports, per topic,
+  the unconsumed messages up to the first unexpired one (a younger message is never dropped ahead of an older one,
+  even with sender clock skew). A topic with no TTL is never touched.
+- **Bounded per wake.** At most 1 024 messages (`INBOX_DEDUPE_CAP`'s size) are discarded per pass in one batch;
+  when more are due the next pass is armed for the very next second. The scan reads the retained stream above the
+  known consumed floor, which `inboxMaxRetained` bounds.
+- **It releases the pin.** After the fact the runtime forgets its cached verdicts and forces the trim (as D8), so a
+  cold topic's expired message stops pinning the hot topic and `send` is accepted again.
+- **Parked only.** Like D8 the fact lands in the owner's own log, so a running owner answers `not-parked` and the row
+  waits. Pinning does not need to be proven first (the original sketch expired only a pinned stream): the integrator
+  opted a topic into a TTL, and a healthy consumer drains a message long before it expires.
+- **Deviation from the sketch, stated.** The sketch had `recoverAbandoned` find the pinned stream. A sweep alone
+  would expire late and only when someone runs it; the timer row makes expiry timely and the sweep a safety net.
+- **Fleet.** A node without the TTL configured retires an expiry row as obsolete (it cannot tell it from a stale
+  timer), so configure every node alike; with no `TimerStore` a warning says expiry then happens only on a sweep.
+
+Tests (`r2-ttl.test.ts`, memory, SQLite, Postgres, injected clocks, no sleeps): expiry discards, journals and
+replays identically and never resumes the owner; TTL off writes no row and delivers the old message; a cold topic's
+expired message stops pinning the hot topic (`InboxFullError` before, accepted after); a notifier paused after its
+scan loses to the expiry (the expired message is never delivered, the log never records a consumption below an
+advanced cursor); a delivery that won leaves nothing to expire; a running owner keeps the row and the discard lands
+once it parks; a pass is bounded (1 024, then the rest); only a topic with a TTL expires; a bad TTL is refused.
+`inboxConfig.test.ts` (app): the setting reaches the runtime. Each was revert-checked (no stale-batch guard, no
+journaling, no `TimerService` branch, a default TTL when unset).
 
 **D10b — per-topic streams.** Layout: `__loom_inbox__:<chainId>#<h>` with `h` the first 16 hex chars of
 `sha256(topic)`; the legacy `__loom_inbox__:<chainId>` stream stays and is read first.
