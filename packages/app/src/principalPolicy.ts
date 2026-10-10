@@ -105,11 +105,21 @@ export function registerPrincipalPaths(crypto: PrincipalCryptoOptions): void {
  * ADR 0110 follow-up — the payload of a message still in flight in a chain's inbox stream is the
  * owner's data, so it is sealed under the owner's erasure subject and shredded with it. The crypto
  * plugin resolves the reserved stream `__loom_inbox__:<chainId>` to the subject of the chain's
- * generation-0 execution. Registered only when the inbox is on. `MESSAGE_CONSUMED.payload` (the
- * copy in the owner's log) stays the app's own declaration, like every other event it chooses to
- * seal.
+ * generation-0 execution. Registered only when the inbox is on.
+ *
+ * `MESSAGE_CONSUMED.payload` (the copy of a CONSUMED message in the owner's own log) is sealed the
+ * same way, so the consumed payload is not left in plaintext in the log after the stream's copy is
+ * gone. New writes only: an event already in a log stays as it was written, and a read of a log
+ * that mixes plaintext and sealed consumptions works (the store opens only what carries an
+ * envelope).
+ *
+ * NOT covered, because the mechanism cannot name it: a snapshot's `variables._waitAnswers` holds
+ * the answered payload under a DYNAMIC key (the `waitId`), and a sensitive path addresses fixed
+ * keys and array elements only. A snapshot taken while an answered wait is still in the fold
+ * therefore holds that payload verbatim; see docs/compliance.md.
  */
 export const INBOX_EVENT_PATHS = ["payload"] as const;
 export function registerInboxPaths(crypto: PrincipalCryptoOptions): void {
   crypto.events.registerSensitive("INBOX_MESSAGE", INBOX_EVENT_PATHS);
+  crypto.events.registerSensitive("MESSAGE_CONSUMED", INBOX_EVENT_PATHS);
 }

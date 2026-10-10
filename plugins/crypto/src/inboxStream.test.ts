@@ -163,6 +163,50 @@ describe("EncryptingEventStore — a chain's inbox stream", () => {
     expect(asked.some((a) => a.workflowId === "__loom_inbox__")).toBe(false);
   });
 
+  it("P3-2: a record that carries only the erasure marker is stored verbatim, so a shredded owner can still journal it", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const keys = new InMemoryKeyStore();
+    const store = new EncryptingEventStore(inner, keys, {
+      sensitive: { MESSAGE_CONSUMED: ["payload"] },
+      subjectOf,
+    });
+    const consumed = (sequence: number, payload: unknown): EventEnvelope => ({
+      id: `alice-9-${sequence}`,
+      workflowId: "w",
+      executionId: "alice-9",
+      eventType: "MESSAGE_CONSUMED",
+      sequence,
+      timestamp: 1,
+      payload: {
+        waitId: "#0",
+        topic: "t",
+        messageId: "m",
+        inboxSeq: sequence,
+        sender: {},
+        payload,
+      },
+    });
+    // plaintext written BEFORE the path was registered stays readable beside sealed new writes
+    const early = new EncryptingEventStore(inner, keys, { sensitive: {}, subjectOf });
+    await early.append(consumed(0, "old plaintext"));
+    await store.append(consumed(1, SECRET));
+    expect(JSON.stringify(await inner.read("alice-9"))).not.toContain(SECRET);
+    expect(JSON.stringify(await inner.read("alice-9"))).toContain("old plaintext");
+    const both = await store.read("alice-9");
+    expect(both.map((e) => (e.payload as { payload: unknown }).payload)).toEqual([
+      "old plaintext",
+      SECRET,
+    ]);
+    await keys.destroy("alice");
+    // the marker alone needs no key; anything else is refused (nothing sealable without one)
+    await store.append(consumed(2, { $shredded: true }));
+    await expect(store.append(consumed(3, "late"))).rejects.toThrow(/destroyed/);
+    // a marker with data smuggled beside it is NOT the marker: it is sealed like any value
+    await expect(store.append(consumed(4, { $shredded: true, ssn: SECRET }))).rejects.toThrow(
+      /destroyed/
+    );
+  });
+
   it("every other stream still fails loudly after a shred (the authoritative fold must not diverge)", async () => {
     const { keys, store } = setup("throw");
     const step: EventEnvelope = {

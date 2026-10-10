@@ -158,6 +158,8 @@ describe("security.strict / compliance: the identity subset is never written ver
       observability: { onWarn: () => {} },
     });
     expect(withInbox.calls).toContainEqual({ eventType: "INBOX_MESSAGE", paths: ["payload"] });
+    // P3-2: the consumed copy in the owner's log is sealed too (new writes).
+    expect(withInbox.calls).toContainEqual({ eventType: "MESSAGE_CONSUMED", paths: ["payload"] });
     void a.close();
     const without = registry();
     const b = defineConfig({
@@ -170,6 +172,7 @@ describe("security.strict / compliance: the identity subset is never written ver
       observability: { onWarn: () => {} },
     });
     expect(without.calls.some((c) => c.eventType === "INBOX_MESSAGE")).toBe(false);
+    expect(without.calls.some((c) => c.eventType === "MESSAGE_CONSUMED")).toBe(false);
     void b.close();
   });
 
