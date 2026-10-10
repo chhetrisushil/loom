@@ -42,7 +42,7 @@ id with one is ignored: the menu's definition wins). The searchable universe is 
 the ranker's output is intersected with the universe (a buggy or hostile ranker cannot widen it), and the recorded decision is
 re-intersected on replay (a stale or tampered record can narrow the menu, never widen it). A host `namespaces` allowlist
 (id prefixes) narrows the searchable set further. Loading a tool changes what the model may *ask*; every call still passes the
-R4 menu gate and input validation, the approval hook (`requireApproval`, consulted for the loaded tool's call with `onMenu: true`),
+R4 menu gate and input validation, the approval hook (`needsApproval`, consulted for the loaded tool's call with `onMenu: true`),
 and the effect ring (K2 authorization, metering, kill switch). `search_tools` itself is the loop's own: it has no effect and is
 not approval-gated.
 

@@ -23,6 +23,7 @@ export type {
   AgentModelCall,
   ApprovalPolicy,
   EffectRegistry,
+  NeedsApprovalPolicy,
 } from "./agentLoop$";
 export { continueEvery } from "./continueEvery";
 export type { TurnCounter } from "./continueEvery";

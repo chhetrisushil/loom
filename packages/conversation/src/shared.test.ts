@@ -471,5 +471,13 @@ describe("shared mode: rotation and approvals", () => {
         },
       })
     ).toThrow(/requireApproval/);
+    expect(() =>
+      boot({
+        shared: true,
+        config: {
+          agent: { definition: undefined as never, modelToolId: "m", needsApproval: () => true },
+        },
+      })
+    ).toThrow(/needsApproval/);
   });
 });

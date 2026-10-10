@@ -67,7 +67,7 @@ effect id gets the whole ring, not just the integrity check.
 
 ### D4 — Approval is a gate before the effect, and a refusal is data
 
-`requireApproval(toolCall, turn)` returning `false` suspends on a gate (default
+`needsApproval(toolCall, turn)` returning `true` (originally `requireApproval` returning `false`; see the ADR 0121 amendment) suspends on a gate (default
 `AgentToolApproval`) BEFORE the effect runs — the point of asking. A resume carrying
 `{ approved: false }` feeds a refusal back to the model as a tool result rather than throwing: a
 human declining is information the agent can settle on, not an error. Pair the gate with

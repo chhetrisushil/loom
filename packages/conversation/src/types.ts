@@ -178,7 +178,7 @@ export interface ConversationConfig {
    * `requireApproval` are owned by the conversation (a parked approval cannot coexist with the
    * barge-in watcher, ADR 0122 D2) and refused here.
    */
-  agent: Omit<AgentLoopConfig, "signal" | "loopId" | "requireApproval">;
+  agent: Omit<AgentLoopConfig, "signal" | "loopId" | "requireApproval" | "needsApproval">;
   budget?: BudgetConfig;
   /** Turns per generation before the conversation continues as new. Default 100. */
   rotateEveryTurns?: number;

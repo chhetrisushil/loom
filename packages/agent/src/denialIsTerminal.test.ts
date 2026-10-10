@@ -141,7 +141,7 @@ describe("AgentRunner shares the hardened classification (R10 Q3)", () => {
     const makers = [
       () =>
         new KillSwitchEngagedError({ scope: "global", key: undefined, reason: "stop" } as never),
-      () => new QuotaExceededError("tokens" as never, 1, 2),
+      () => new QuotaExceededError("tokens 2 >= budget 1"),
       () => new SuspendError({ on: "Gate" }),
     ];
     for (const make of makers) {

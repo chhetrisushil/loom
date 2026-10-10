@@ -94,7 +94,7 @@ function boot(opts: { toolInput?: unknown; second?: boolean } = {}) {
         definition: dbAgent,
         modelToolId: "model",
         // Anything destructive stops for a human.
-        requireApproval: (call) => call.name !== "drop-table",
+        needsApproval: (call) => call.name === "drop-table",
       },
       { prompt: "clean up" }
     );
@@ -105,7 +105,7 @@ function boot(opts: { toolInput?: unknown; second?: boolean } = {}) {
         {
           definition: agent$({ id: "dbb", name: "DBB", tools: [dropTable] }),
           modelToolId: "model",
-          requireApproval: (call) => call.name !== "drop-table",
+          needsApproval: (call) => call.name === "drop-table",
         },
         { prompt: "clean up again" }
       );

@@ -284,9 +284,10 @@ export function conversationRunner(
   positive("maxReplyChars", maxReplyChars);
   positive("maxWindowTurns", maxWindowTurns);
   positive("maxCarryBytes", maxCarryBytes);
-  if ((config.agent as { requireApproval?: unknown }).requireApproval !== undefined) {
+  for (const k of ["requireApproval", "needsApproval"] as const) {
+    if ((config.agent as Record<string, unknown>)[k] === undefined) continue;
     throw new Error(
-      "conversation$: `requireApproval` is not supported (a parked approval cannot coexist with the barge-in watcher); gate tools with the effect authorizer"
+      `conversation$: \`${k}\` is not supported (a parked approval cannot coexist with the barge-in watcher); gate tools with the effect authorizer`
     );
   }
   for (const k of ["signal", "loopId"] as const) {
