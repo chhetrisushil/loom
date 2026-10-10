@@ -179,6 +179,7 @@ describe("loom sweep content (DX-2, K10.6)", () => {
       apply: true,
       orphans: true,
       noArchive: true,
+      snapshotsTouchContent: true,
     });
     expect(applied).toContain("reclaimed orphans (1)");
     expect(await stillThere(contentDb, orphan)).toBe(false);
@@ -196,6 +197,7 @@ describe("loom sweep content (DX-2, K10.6)", () => {
           apply: true,
           orphans: true,
           noArchive: true,
+          snapshotsTouchContent: true,
         })
       ).rejects.toThrow(/guard margin of at least 60000ms/);
     }
@@ -209,6 +211,27 @@ describe("loom sweep content (DX-2, K10.6)", () => {
       orphans: true,
     });
     expect(dry).toContain("would-reclaim orphans");
+  });
+
+  it("refuses --orphans --apply without --snapshots-touch-content, erasing nothing; the dry run and the asserted run work", async () => {
+    const { db, snap, contentDb, orphan } = await orphanSeed();
+    const opts = {
+      db,
+      snap,
+      content: contentDb,
+      ttlMs: 30 * DAY,
+      orphans: true,
+      noArchive: true,
+    };
+    await expect(cmdSweepContent({ ...opts, apply: true })).rejects.toThrow(
+      /--snapshots-touch-content.*ContentTouchingSnapshotStore/s
+    );
+    expect(await stillThere(contentDb, orphan)).toBe(true);
+    const dry = await cmdSweepContent({ ...opts, apply: false });
+    expect(dry).toContain("would-reclaim orphans (1)");
+    const applied = await cmdSweepContent({ ...opts, apply: true, snapshotsTouchContent: true });
+    expect(applied).toContain("reclaimed orphans (1)");
+    expect(await stillThere(contentDb, orphan)).toBe(false);
   });
 
   it("refuses --orphans --apply with no archive unless --no-archive says there is none", async () => {
@@ -233,6 +256,7 @@ describe("loom sweep content (DX-2, K10.6)", () => {
         apply: true,
         orphans: true,
         noArchive: true,
+        snapshotsTouchContent: true,
       });
       order.push("report");
       expect(out).toContain("reclaimed orphans (1)");
@@ -253,6 +277,7 @@ describe("loom sweep content (DX-2, K10.6)", () => {
         apply: true,
         orphans: true,
         noArchive: true,
+        snapshotsTouchContent: true,
       })
     ).rejects.toThrow(/--snap/);
     expect(await stillThere(contentDb, orphan)).toBe(true);

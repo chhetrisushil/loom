@@ -35,7 +35,9 @@ export { externalizePathsFromSteps } from "./derive";
 export {
   ReclaimOrphansAckError,
   MIN_ORPHAN_ERASE_MARGIN_MS,
+  ReclaimOrphansClockError,
   ReclaimOrphansMarginError,
+  ReclaimOrphansSnapshotAckError,
   ReclaimOrphansTouchError,
   pinByEventKinds,
   sweepUnpinnedContent,

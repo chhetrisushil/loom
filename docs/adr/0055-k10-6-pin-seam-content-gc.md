@@ -382,6 +382,24 @@ detect an omitted store, so no further automatic detection is claimed. The `recl
 >    pins a raw `copyPrefix` still losing the blob). Not covered: a fork racing the DELETION of its
 >    own parent between the prefix copy and the seed save (the fork's read of the parent fails then
 >    too).
+> 5. **Unwrapped snapshot stores are caught, not assumed.** `ContentTouchingSnapshotStore` is opt-in
+>    and loom never builds the host's `ContentResolvingEventStore` or snapshot store (the content
+>    plugin wires itself into the effect runtime, not the composition root), so there is no default
+>    wiring to change. An unwrapped host would silently reopen the seed-snapshot race, and the
+>    sweep cannot see how the writing runtime built its snapshot store. Mirroring D6's archive
+>    assertion, an ERASING pass given `snapshotStores` must carry
+>    `reclaimOrphans: { completeScan: true, snapshotsTouchContent: true }` or it throws
+>    `ReclaimOrphansSnapshotAckError` before reading anything (a `dryRun` is exempt). Without
+>    `snapshotStores` the acknowledgement is not needed: such a pass already refuses an event store
+>    that can `truncatePrefix`, and a fork of an UNcompacted parent copies every event through
+>    `copyPrefix` (refs touched), so its seed state cites nothing the copied events do not. The CLI
+>    asks the operator for `--snapshots-touch-content` on `--orphans --apply`. A store with
+>    `deleteIfUntouchedSince` but no `touchClock` is refused when erasing
+>    (`ReclaimOrphansClockError`): without the store's clock the margin of an explicit
+>    `touchedBefore` cannot be measured, so `touchedBefore: Date.now()` would pass any TTL. With no
+>    `onTouchError` hook, a failed after-touch or a missing bare ref emits one
+>    `LOOM_CONTENT_TOUCH` process warning (per process, like loom's other advisories: a failing
+>    store fails every write, and a warning per write or per instance would flood stderr).
 >
 > The former `KNOWN GAP` test now asserts the blob survives and the fork replays, for
 > `InMemoryContentStore` and `SqliteContentStore`; a store without `touch` pins the refusal.

@@ -59,7 +59,7 @@ function formatReport(
 /**
  * `loom sweep content (--config <module> | --db <events.db> [--snap <snap.db>]) --content <content.db>
  *   [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl <ms>]
- *   [--orphans [--no-archive]] [--apply]`
+ *   [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`
  *
  * `--orphans` (ADR 0055 D6) also reclaims blobs nothing scanned cites. Everything that can
  * cite a blob must be scanned, so:
@@ -70,6 +70,11 @@ function formatReport(
  *  - compaction snapshots: a compacted prefix's refs live only in its checkpoint, so
  *    `--orphans` needs the snapshot store (`--snap`; a config always has one), and with
  *    `--archive-db` also the archive's (`--archive-snap`).
+ *
+ *  - seed snapshots: `--orphans --apply` also needs `--snapshots-touch-content`, the operator's
+ *    assertion that the runtime wrapped its snapshot store in `ContentTouchingSnapshotStore`. The
+ *    flag is what the CLI passes as the sweep's `snapshotsTouchContent` acknowledgement; a dry
+ *    run is exempt.
  *
  * Every refusal throws, so the binary exits non-zero.
  *
@@ -95,6 +100,11 @@ export async function cmdSweepContent(
     /** `--no-archive`: the operator asserts retention archives nowhere (ADR 0055 D6). */
     noArchive?: boolean;
     archiveSnap?: string;
+    /**
+     * `--snapshots-touch-content`: the operator asserts that the runtime which WROTE these
+     * snapshot stores wrapped them in `ContentTouchingSnapshotStore` (ADR 0055 D6 amendment 2).
+     */
+    snapshotsTouchContent?: boolean;
   }
 ): Promise<string> {
   const orphans = opts.orphans === true;
@@ -144,6 +154,11 @@ export async function cmdSweepContent(
       "WARNING: --orphans --apply with --no-archive — every blob no scanned event cites will be erased; if any archive holds citations, stop now."
     );
   }
+  if (orphans && opts.apply && opts.snapshotsTouchContent !== true) {
+    return refuse(
+      "loom sweep content --orphans --apply refuses without --snapshots-touch-content: a fork of a compacted parent saves a seed snapshot citing refs that exist nowhere else, and only a snapshot store wrapped in ContentTouchingSnapshotStore (@loom/plugin-content) touches them. The CLI opens raw snapshot stores and cannot tell how the writing runtime built its own, so assert it: pass --snapshots-touch-content once every runtime that writes these snapshots wraps its snapshot store, or run without --apply (a dry run is exempt)."
+    );
+  }
   const content = new SqliteContentStore(opts.content);
   const pins = (opts.pin ?? "")
     .split(",")
@@ -159,7 +174,12 @@ export async function cmdSweepContent(
       olderThanMs: opts.ttlMs,
       now: Date.now(),
       dryRun: !opts.apply,
-      ...(opts.orphans === true && { reclaimOrphans: { completeScan: true } }),
+      ...(opts.orphans === true && {
+        reclaimOrphans: {
+          completeScan: true as const,
+          ...(opts.snapshotsTouchContent === true && { snapshotsTouchContent: true as const }),
+        },
+      }),
     });
     return formatReport(
       report,

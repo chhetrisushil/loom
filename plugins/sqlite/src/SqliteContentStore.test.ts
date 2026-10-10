@@ -168,7 +168,7 @@ describe("SqliteContentStore touch (SPI 1.4.0)", () => {
       pinnedEventTypes: [],
       olderThanMs: 60_000, // the minimum guard margin an erasing orphan pass accepts
       now: NOW,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
     });
     expect(result.orphansReclaimed).toEqual([]);
     expect(await content.get(ref)).not.toBeNull();
@@ -184,7 +184,7 @@ describe("SqliteContentStore touch (SPI 1.4.0)", () => {
       pinnedEventTypes: [],
       olderThanMs: 60_000, // the minimum guard margin an erasing orphan pass accepts
       now: NOW + 100_000,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
     });
     expect(control.orphansReclaimed).toEqual([ref.__loomContent]);
     await content.close();

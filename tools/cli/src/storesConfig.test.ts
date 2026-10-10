@@ -158,6 +158,7 @@ export default defineConfig({
       ttlMs: 30 * 24 * 3_600_000,
       apply: true,
       orphans: true,
+      snapshotsTouchContent: true,
     });
     expect(out).toContain("reclaimed orphans (1)");
     expect(out).toContain(orphan.__loomContent);
