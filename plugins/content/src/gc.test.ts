@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import {
   type ContentSweepOptions,
   ReclaimOrphansAckError,
+  ReclaimOrphansTouchError,
   pinByEventKinds,
   sweepUnpinnedContent,
 } from "./gc";
@@ -14,6 +15,7 @@ import {
   ContentResolvingEventStore,
   InMemoryContentStore,
   contentAddress,
+  encodeValue,
 } from "./index";
 
 /** The ADR 0054 claim-check envelope shape (structural â€” no middleware dep). */
@@ -861,24 +863,29 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     ).rejects.toBeInstanceOf(ReclaimOrphansAckError);
   });
 
-  it("KNOWN GAP (ADR 0055 D6): a citation copied WITHOUT a put (a fork) mid-sweep does not bump the touch time, so the orphan pass ERASES a blob the fork still cites", async () => {
-    // Pins the documented gap: D5's conditional delete only sees `put`. A future SPI fix (a
-    // touch on the fork path) should flip these assertions deliberately.
+  /**
+   * The ADR 0055 D6 amendment 2 scenario: a blob older than the TTL is cited only by
+   * `p-parent`; `a-child` sorts first, so the listing has already passed it when the concurrent
+   * work (the `during` hook, run right after a-child is read) makes a-child cite the blob and
+   * deletes p-parent. The only citation that survives is one the scan cannot see.
+   */
+  async function citedOnlyByAParentThatDies(
+    during: (a: {
+      raw: InMemoryAsyncEventStore;
+      resolving: ContentResolvingEventStore;
+      ref: Awaited<ReturnType<InMemoryContentStore["put"]>>;
+    }) => Promise<void>
+  ) {
     const { clock, content } = clockedStore(OLD);
-    const ref = await content.put(bytes("recalled memory, cited only by p-parent"));
+    const ref = await content.put(encodeValue("recalled memory, cited only by p-parent"));
     clock.now = NOW;
     const raw = new InMemoryAsyncEventStore();
     await raw.append(evt("a-child", 0, "EXECUTION_STARTED", { input: {} }, OLD));
     await raw.append(evt("a-child", 1, "STEP_COMPLETED", { output: 1 }, OLD));
     await raw.append(evt("p-parent", 0, "EXECUTION_STARTED", { input: {} }, OLD));
     await raw.append(evt("p-parent", 1, "STEP_COMPLETED", { output: ref }, OLD));
-    // The listing has passed a-child (it sorts first); reading it triggers the concurrent
-    // work: a-child is replaced by a verbatim fork of p-parent, then p-parent is deleted.
-    const store = racing(raw, "a-child", async () => {
-      await raw.deleteExecution("a-child");
-      await raw.copyPrefix("p-parent", "a-child", 1, {});
-      await raw.deleteExecution("p-parent");
-    });
+    const resolving = new ContentResolvingEventStore(raw, content, { externalize: {} });
+    const store = racing(raw, "a-child", () => during({ raw, resolving, ref }));
     const result = await sweepUnpinnedContent({
       eventStores: [store],
       snapshotStores: [NO_SNAPSHOTS],
@@ -888,10 +895,82 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       now: NOW,
       reclaimOrphans: { completeScan: true },
     });
+    return { result, content, resolving, ref };
+  }
+
+  it("a fork (copyPrefix through ContentResolvingEventStore) mid-sweep touches the refs it copies, so the orphan pass keeps the blob and the fork replays (SPI 1.4.0 touch)", async () => {
+    const { result, content, resolving, ref } = await citedOnlyByAParentThatDies(
+      async ({ raw, resolving }) => {
+        await raw.deleteExecution("a-child");
+        await resolving.copyPrefix!("p-parent", "a-child", 1, {});
+        await raw.deleteExecution("p-parent");
+      }
+    );
+    expect(result.orphansReclaimed).toEqual([]);
+    expect(await content.get(ref)).not.toBeNull();
+    const replayed = await resolving.read("a-child");
+    expect(replayed[1]?.payload).toEqual({ output: "recalled memory, cited only by p-parent" });
+  });
+
+  it("an append that CARRIES an existing ref (no put) mid-sweep touches it, so the orphan pass keeps the blob (SPI 1.4.0 touch)", async () => {
+    const { result, content, resolving, ref } = await citedOnlyByAParentThatDies(
+      async ({ raw, resolving, ref }) => {
+        await resolving.append(evt("a-child", 2, "STEP_COMPLETED", { output: ref }, NOW));
+        await raw.deleteExecution("p-parent");
+      }
+    );
+    expect(result.orphansReclaimed).toEqual([]);
+    expect(await content.get(ref)).not.toBeNull();
+    const replayed = await resolving.read("a-child");
+    expect(replayed[2]?.payload).toEqual({ output: "recalled memory, cited only by p-parent" });
+  });
+
+  it("the gap is real without the fix: a raw copyPrefix that bypasses ContentResolvingEventStore still loses the blob (the guarantee is for logs written through it)", async () => {
+    const { result, content, resolving, ref } = await citedOnlyByAParentThatDies(
+      async ({ raw }) => {
+        await raw.deleteExecution("a-child");
+        await raw.copyPrefix("p-parent", "a-child", 1, {});
+        await raw.deleteExecution("p-parent");
+      }
+    );
     expect(result.orphansReclaimed).toEqual([ref.__loomContent]);
-    expect(await content.get(ref)).toBeNull(); // erased while a-child still cites it
-    const resolving = new ContentResolvingEventStore(raw, content, { externalize: {} });
+    expect(await content.get(ref)).toBeNull();
     await expect(resolving.read("a-child")).rejects.toBeInstanceOf(ContentMissingError);
+  });
+
+  it("reclaimOrphans REFUSES to erase through a store without touch (fail closed), erasing nothing; a dryRun is still allowed", async () => {
+    const { clock, content } = clockedStore(OLD);
+    const blob = await content.put(bytes("an orphan behind a pre-1.4.0 store"));
+    clock.now = NOW;
+    const calls: string[] = [];
+    const preTouch = {
+      delete: (r: { __loomContent: string }) => content.delete(r),
+      deleteIfUntouchedSince: (r: { __loomContent: string }, c: number) => {
+        calls.push("deleteIfUntouchedSince");
+        return content.deleteIfUntouchedSince(r, c);
+      },
+      listPage: (o: Parameters<InMemoryContentStore["listPage"]>[0]) => content.listPage(o),
+      touchClock: () => content.touchClock(),
+    };
+    const base = {
+      eventStores: [new InMemoryAsyncEventStore()],
+      snapshotStores: [NO_SNAPSHOTS],
+      contentStore: preTouch,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+    };
+    const attempt = sweepUnpinnedContent({ ...base, reclaimOrphans: { completeScan: true } });
+    await expect(attempt).rejects.toBeInstanceOf(ReclaimOrphansTouchError);
+    await expect(attempt).rejects.toThrow(/touch\(\) \(ContentStore SPI 1\.4\.0\)/);
+    expect(calls).toEqual([]);
+    expect(await content.get(blob)).not.toBeNull();
+    // Reporting is safe: nothing is erased.
+    const dry = await sweepUnpinnedContent({ ...base, dryRun: true, reclaimOrphans: true });
+    expect(dry.orphansReclaimed).toEqual([blob.__loomContent]);
+    expect(await content.get(blob)).not.toBeNull();
+    // Without orphans the non-orphan sweep never needed touch.
+    await expect(sweepUnpinnedContent(base)).resolves.toBeDefined();
   });
 
   it("the two-store hazard: acknowledging a complete scan is the caller's assertion; omitting a store that cites a blob erases it, which is why the assertion is required", async () => {

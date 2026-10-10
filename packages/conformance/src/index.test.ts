@@ -500,7 +500,11 @@ describe("TenantScopedSnapshotStore rejects a tenant containing the separator (K
 // ── ContentStore SPI 1.3.0: the touch-contract check must FIRE (ADR 0055 D5) ───
 describe("checkContentStoreTouchContract", () => {
   /** A tiny content store; `bump: false` is the INSERT OR IGNORE shape that loses re-cites. */
-  function fixture(opts: { bump: boolean; methods?: readonly string[] }) {
+  function fixture(opts: {
+    bump: boolean;
+    methods?: readonly string[];
+    touch?: "ok" | "noop" | "inserts";
+  }) {
     const blobs = new Map<string, { bytes: Uint8Array; touchedAt: number }>();
     const key = (b: Uint8Array) => Buffer.from(b).toString("hex");
     const store: Record<string, unknown> = {
@@ -524,6 +528,19 @@ describe("checkContentStoreTouchContract", () => {
       }),
       touchClock: async () => Date.now(),
     };
+    if (opts.touch !== undefined) {
+      store.touch = async (addresses: readonly string[]) => {
+        const missing: string[] = [];
+        for (const a of addresses) {
+          const b = blobs.get(a);
+          if (b === undefined) {
+            missing.push(a);
+            if (opts.touch === "inserts") blobs.set(a, { bytes: new Uint8Array(), touchedAt: 0 });
+          } else if (opts.touch !== "noop") b.touchedAt = Math.max(b.touchedAt, Date.now());
+        }
+        return [...new Set(missing)];
+      };
+    }
     for (const m of ["deleteIfUntouchedSince", "listPage", "touchClock"]) {
       if (opts.methods !== undefined && !opts.methods.includes(m)) delete store[m];
     }
@@ -538,6 +555,18 @@ describe("checkContentStoreTouchContract", () => {
     await expect(checkContentStoreTouchContract(fixture({ bump: false }))).rejects.toThrow(
       /did not bump/
     );
+  });
+
+  it("SPI 1.4.0 touch: passes a store that bumps, FAILS one that does not bump or that inserts an unknown address", async () => {
+    await expect(
+      checkContentStoreTouchContract(fixture({ bump: true, touch: "ok" }))
+    ).resolves.toBeUndefined();
+    await expect(
+      checkContentStoreTouchContract(fixture({ bump: true, touch: "noop" }))
+    ).rejects.toThrow(/touch did not bump/);
+    await expect(
+      checkContentStoreTouchContract(fixture({ bump: true, touch: "inserts" }))
+    ).rejects.toThrow(/created a blob/);
   });
 
   it("FAILS a partial SPI 1.3.0 set, and passes a store with none of it", async () => {

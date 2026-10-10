@@ -1,6 +1,6 @@
 import type { ContentStoreLike } from "./index";
 
-// ── ContentStore SPI 1.3.0 touch contract (ADR 0055 D5) — internal to the kit ──
+// ── ContentStore SPI 1.3.0/1.4.0 touch contract (ADR 0055 D5, D6 amendment 2) — internal to the kit ──
 
 const SPI_1_3_METHODS = ["deleteIfUntouchedSince", "listPage", "touchClock"] as const;
 
@@ -40,5 +40,35 @@ export async function checkContentStoreTouchContract(store: ContentStoreLike): P
   if ((await store.get(ref)) === null) {
     throw new Error("ContentStore SPI 1.3.0: a refused deleteIfUntouchedSince erased the blob");
   }
+  if (store.touch !== undefined) await checkTouch(store, ref);
   await store.delete(ref);
+}
+
+/**
+ * SPI 1.4.0 `touch`: bumps the touch time the conditional delete compares (no put involved),
+ * and an unknown address is a reported no-op, never an insert.
+ */
+async function checkTouch(store: ContentStoreLike, ref: { __loomContent: string }): Promise<void> {
+  await settle();
+  const between = await store.touchClock!();
+  await settle();
+  const ghost = `sha256:${"0".repeat(63)}1`;
+  const missing = await store.touch!([ref.__loomContent, ghost, ref.__loomContent]);
+  if (missing.length !== 1 || missing[0] !== ghost) {
+    throw new Error(
+      `ContentStore SPI 1.4.0: touch must resolve with exactly the addresses the store does not hold (expected [${ghost}], got [${missing.join(", ")}])`
+    );
+  }
+  if (await store.deleteIfUntouchedSince!(ref, between + 1)) {
+    throw new Error(
+      "ContentStore SPI 1.4.0: touch did not bump the touch time — deleteIfUntouchedSince erased a blob that was touched after the cutoff"
+    );
+  }
+  if ((await store.get(ref)) === null) {
+    throw new Error("ContentStore SPI 1.4.0: a refused deleteIfUntouchedSince erased the blob");
+  }
+  await store.touch!([]); // an empty batch is legal
+  if ((await store.get({ __loomContent: ghost })) !== null) {
+    throw new Error("ContentStore SPI 1.4.0: touch of an unknown address created a blob");
+  }
 }

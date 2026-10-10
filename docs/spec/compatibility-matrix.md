@@ -22,7 +22,7 @@ mechanism (`checkCompatibility`) exists for the day a deployment's MAJOR diverge
 | LeaseStore SPI | `2.1.0` | `LEASE_STORE_SPI_VERSION` · conformance kit |
 | Dispatcher SPI | `1.2.0` | `DISPATCHER_SPI_VERSION` · conformance kit |
 | MemoryStore SPI | `2.1.0` | `MEMORY_STORE_SPI_VERSION` · conformance kit |
-| ContentStore SPI | `1.3.0` | `CONTENT_STORE_SPI_VERSION` · conformance kit |
+| ContentStore SPI | `1.4.0` | `CONTENT_STORE_SPI_VERSION` · conformance kit |
 | Compiler manifest | `1` | `COMPILER_MANIFEST_VERSION` |
 
 Event types folded by K5: **32** · Kernel syscalls: **14**.

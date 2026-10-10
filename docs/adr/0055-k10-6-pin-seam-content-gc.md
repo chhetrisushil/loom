@@ -304,27 +304,59 @@ live store BEFORE its archive (see "Scan order" in D5), because `[archive, live]
 cover every store and still miss an execution retention moves mid-sweep. The CLI passes it only
 after its own archive/snapshot checks and scans live then archive. Considered and not added: (b) a
 two-phase plan/apply token, because a token would not detect an omitted store, and it does not
-close the concurrency gap below either (the plan is as stale as the scan); D5's
+close the concurrency gap below (Amendment 2) either (the plan is as stale as the scan); D5's
 `deleteIfUntouchedSince` covers a re-cite through `put` against the store-clock cutoff read once
 at the start, nothing more; (c) a grace floor, which exists already (a blob touched within
 `olderThanMs` of the sweep is never an orphan, and an in-flight `put` survives). The sweep cannot
 detect an omitted store, so no further automatic detection is claimed. The `reclaimOrphans: false`
 / absent path is unchanged.
 
-> **KNOWN GAP (not fixed here): a citation copied WITHOUT a `put` is not protected.** D5's
-> conditional delete reads the blob's touch time, and only `put`/`putStream` bump it
-> (`InMemoryContentStore`, `SqliteContentStore`). A re-cite through `put` is therefore safe; a
-> citation that never calls `put` is not: `ContentResolvingEventStore.copyPrefix` (a fork) copies
-> refs verbatim, and an `append` keeps refs already inside its payload (recalled memory,
-> `scriptRef`, refs passed between steps). Scenario: a blob older than the TTL is cited only by
-> `p-parent`. The sweep lists executions in id order. Mid-sweep `p-parent` is forked (copied
-> verbatim) into `a-child`, whose id the listing has already passed, and `p-parent` is then
-> deleted. The scan sees neither citation, the blob is an orphan older than the cutoff, the
-> orphan pass erases it, and `a-child` replay throws `ContentMissingError`. A test pins this
-> (`KNOWN GAP` in `gc.test.ts`); a fix flips it deliberately. **Operational rule: do not run an
-> orphan sweep concurrently with forks or deletes of the executions it scans; quiesce them
-> first.** Closing it needs a ContentStore SPI change (a way to touch without a put, called by
-> the fork path), which is a separate decision.
+> **Amendment 2 (closes the gap #534 recorded): a citation copied WITHOUT a `put` is protected by
+> ContentStore SPI 1.4.0 `touch`.** D5's conditional delete reads the blob's touch time, and only
+> `put`/`putStream` bumped it. A citation that never calls `put` was invisible to it:
+> `ContentResolvingEventStore.copyPrefix` (a fork) copies refs verbatim, and an `append` keeps refs
+> already inside its payload (recalled memory, `scriptRef`, refs passed between steps). Scenario:
+> a blob older than the TTL is cited only by `p-parent`. The sweep lists executions in id order.
+> Mid-sweep `p-parent` is forked into `a-child`, whose id the listing has already passed, and
+> `p-parent` is then deleted. The scan sees neither citation, the blob is an orphan older than the
+> cutoff, the orphan pass erased it, and `a-child` replay threw `ContentMissingError`.
+>
+> Decided (user ruling 2026-10-10, "fix via touch SPI"):
+> 1. **SPI 1.4.0** adds OPTIONAL `touch(addresses: readonly string[]): Promise<string[]>`: bump the
+>    touch time of the listed blobs to the store clock (max, never backwards, like a put), as one
+>    batch. An unknown address is a no-op (never an insert, never a throw); the promise resolves
+>    with the missing addresses so a caller can notice a dangling ref early. `SqliteContentStore`
+>    does it as chunked `UPDATE ... WHERE address IN (...) RETURNING address` in one transaction;
+>    `InMemoryContentStore` as a map walk; `CachingContentStore` forwards it. The conformance kit
+>    checks a store that has it (bumps; unknown address reported and not inserted); 3P stores
+>    that omit it keep compiling.
+> 2. **Callers.** When the content store has `touch`, `ContentResolvingEventStore` touches the
+>    addresses cited by the INPUT payloads of `append`, `appendBatch` and `appendIfUnchanged`
+>    (refs newly externalized by that write are not in the input; their `put` is the touch), and by
+>    the range `copyPrefix` copies (read raw from the inner store; a fork already costs O(range)).
+>    Addresses come from the sweep's own mark-phase walker (`citations.ts`: iterative, cycle-safe,
+>    so it also sees R5 media sources and claim-check envelope refs), deduped, one `touch` per
+>    write. The touch runs BEFORE the write (a failure aborts it with nothing landed) and AFTER it
+>    (best-effort: the write is durable, so its failure is swallowed). Before covers a sweep that
+>    starts after the touch; after covers a sweep whose mark pass had already read this log, since
+>    the guard cutoff is read at the sweep's start and a touch after the write is necessarily later
+>    than it. Hot-path cost: with no `touch` on the store, none; otherwise one iterative walk of the
+>    input payload, and a round trip only when a ref was found. The walk is paid on every event
+>    type, marked or not, because the sweep's mark phase cites refs from any payload.
+> 3. **`reclaimOrphans` fails closed without `touch`.** To ERASE, a content store lacking
+>    `touch` throws `ReclaimOrphansTouchError` before anything is read or erased; a `dryRun` is
+>    exempt. This is a deletion safety boundary, so the old advice ("quiesce forks and deletes")
+>    is not an acceptable default, and the fix for a pre-1.4.0 store is one method. There is no
+>    escape hatch: a host that really can prove quiescence can implement `touch` as a no-op
+>    returning `[]`, which makes that claim explicit in its own code instead of a flag here.
+> 4. **Scope of the guarantee.** It covers logs written through a `ContentResolvingEventStore`
+>    over that store (a writer that copies refs another way is outside it; a test pins a raw
+>    `copyPrefix` still losing the blob). Residual window: a touch lands one round trip before and
+>    after the write it guards, so a sweep whose entire mark-to-erase interval fits inside that
+>    round trip could still lose; a real sweep (a full scan, then a listing) is far longer.
+>
+> The former `KNOWN GAP` test now asserts the blob survives and the fork replays, for
+> `InMemoryContentStore` and `SqliteContentStore`; a store without `touch` pins the refusal.
 
 ### D7 — External root sets
 
@@ -340,7 +372,7 @@ an app's tables, so roots are API-only.
 
 ### Consequences
 
-- `CONTENT_STORE_SPI_VERSION` 1.2.0 → **1.3.0** (additive MINOR). The kernel manifest now
+- `CONTENT_STORE_SPI_VERSION` 1.2.0 → **1.3.0** (additive MINOR); 1.3.0 → **1.4.0** with Amendment 2's optional `touch` (additive MINOR). The kernel manifest now
   carries it, so the compatibility matrix lists it and `checkCompatibility({ contentStoreSpi })`
   checks it.
 - The conformance kit checks the optionals when present. The three methods must come as a

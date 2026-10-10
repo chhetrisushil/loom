@@ -16,8 +16,11 @@ import { type ContentRef, contentAddress } from "./content";
  *  - 1.3.0: optional `deleteIfUntouchedSince` + `listPage` + `touchClock`, implemented all
  *    three or none, and a per-blob touch time that every `put`/`putStream` bumps,
  *    monotonically (ADR 0055 D5/D6 — the race-safe, orphan-reclaiming sweep).
+ *  - 1.4.0: optional `touch` — bump touch times WITHOUT a put, so a citation that enters a log
+ *    without one (a fork's `copyPrefix`, a ref an `append` carries) is visible to the
+ *    conditional delete; `reclaimOrphans` requires it (ADR 0055 D6 amendment 2).
  */
-export const CONTENT_STORE_SPI_VERSION = "1.3.0";
+export const CONTENT_STORE_SPI_VERSION = "1.4.0";
 
 /** One blob as {@link ContentStore.listPage} reports it (SPI 1.3.0). */
 export interface ContentPageEntry {
@@ -119,6 +122,21 @@ export interface ContentStore {
    * orphan-eligible.
    */
   touchClock?(): Promise<number>;
+  /**
+   * OPTIONAL (SPI 1.4.0, ADR 0055 D6 amendment 2) — bump the touch time of every listed blob
+   * to the store clock, as one batch, WITHOUT a `put`. It is how a citation that enters a log
+   * with no `put` (a fork copying refs verbatim, an `append` carrying a ref already in its
+   * payload) tells the conditional delete "this was re-cited now".
+   *
+   * Same semantics as a `put` of bytes the store holds: the time never moves backwards (max).
+   * An address the store does not hold is a NO-OP, never a throw and never an insert; the
+   * promise resolves with those missing addresses (empty when all were present) so a caller
+   * can notice a dangling ref early. Duplicates are legal. An empty list does nothing.
+   *
+   * Implement it with the 1.3.0 set; `sweepUnpinnedContent({ reclaimOrphans })` refuses to
+   * erase through a store that lacks it (the race it closes would otherwise be open).
+   */
+  touch?(addresses: readonly string[]): Promise<string[]>;
 }
 
 /** Options for {@link InMemoryContentStore}. */
@@ -201,6 +219,17 @@ export class InMemoryContentStore implements ContentStore {
 
   async touchClock(): Promise<number> {
     return this.now();
+  }
+
+  async touch(addresses: readonly string[]): Promise<string[]> {
+    const touchedAt = this.now();
+    const missing: string[] = [];
+    for (const address of addresses) {
+      const blob = this.blobs.get(address);
+      if (blob === undefined) missing.push(address);
+      else blob.touchedAt = Math.max(blob.touchedAt, touchedAt); // monotonic, like put
+    }
+    return missing;
   }
 
   async listPage(opts: ContentListPageOptions = {}): Promise<ContentListPage> {
