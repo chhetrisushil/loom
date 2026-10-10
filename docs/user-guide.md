@@ -1044,6 +1044,18 @@ for (const s of plan.steps) {
 
 ### Plans with arguments, dependencies, replanning and goals (R16)
 
+**Non-English prompts and queries (R19).** The keyword scorers behind `CapabilityCatalog.find` and
+`SkillRegistry.find` tokenize Unicode (NFKC, then letters and numbers in any script), so "Rechnung
+prüfen" and "請求書" match. Scripts written without spaces (Han, Hiragana, Katakana, Thai, Lao,
+Khmer, Myanmar) are split into overlapping character bigrams; there is no dictionary segmenter.
+ASCII queries tokenize exactly as before. The fixed English prompt text is overridable, and the
+English text stays the default: `new PlannerRuntime({ prompts: { system, user } })`,
+`new IntentRuntime({ prompts: { system, user } })`, and `planGoal(ctx, { prompts })` /
+`makeReviser({ prompts })` (`PlannerPrompts`: `system`, `maxSteps`, `capabilities`, `goal`,
+`rejected`). A replacement `system` must still ask for the reply shape the parser reads (JSON plan,
+or a bare capability id), and the untrusted-content note is always appended to the plan-graph system
+prompt because it is a security boundary.
+
 `planner.plan(goal)` returns a flat, un-journaled list and, with a model configured, silently falls back to a keyword heuristic when the model's answer is unusable (`new PlannerRuntime({ strict: true })` turns that into a `PlanFailedError`). For anything that must survive a restart, use the plan graph ([ADR 0123](adr/0123-planning-depth-plan-graphs-replanning-and-goals.md)):
 
 ```ts
@@ -1953,7 +1965,7 @@ Firing mirrors K9's delivery contract: at-least-once delivery, idempotent wakes 
 fires while its execution is still suspended on exactly that `wakeAt` — a manual resume just
 retires it), so the effective wake is exactly-once.
 
-**Cron schedules (T1.2).** `schedule$` statically binds a cron expression (5-field, UTC) to a
+**Cron schedules (T1.2).** `schedule$` statically binds a cron expression (5-field, UTC unless `timeZone` is set) to a
 flow; each due occurrence starts with the deterministic executionId
 `{scheduleId}@{occurrenceMs}` — every node computes the same id, so starts are idempotent
 without coordination (durable-state check + the store's uniqueness backstop settles races):
@@ -1974,6 +1986,20 @@ const app = defineConfig({
   },
 });
 ```
+
+**Time zones (R19).** Add `timeZone: "Europe/Berlin"` (any IANA name; default UTC) and the five
+fields are read on that zone's wall clock, computed with `Intl.DateTimeFormat` (no dependency). An
+unknown zone throws when `schedule$` is called (and `parseCron`/`TimerService` re-check it). The zone
+is data on the schedule, not the node's, so every node still computes the same occurrences, and the
+occurrence id stays the UTC epoch ms. A fixed wall time runs once per day it matches, through DST:
+
+- **spring forward** (a matched time inside the skipped hour does not exist): it runs once, shifted
+  forward by the gap. `30 2 * * *` in `America/New_York` on 2026-03-08 runs at 03:30 EDT.
+- **fall back** (a matched time in the repeated hour): it runs once, at its FIRST occurrence.
+  `30 1 * * *` on 2026-11-01 runs at 01:30 EDT and not again at 01:30 EST.
+
+So an hourly or sub-hourly expression (`0 * * * *`) skips the repeated hour's second pass; keep
+fixed-interval schedules in UTC. `sentinelPreset({ timeZone })` passes it through.
 
 Occurrences that passed while no service was running are skipped (no catch-up — a durable
 catch-up policy can layer on later). Cross-node duplicate fires settle at the shared store:

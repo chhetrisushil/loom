@@ -47,6 +47,37 @@ describe("SkillRegistry.find", () => {
     expect(matches.map((m) => m.skill.id)).toEqual(["diagnose-cpu"]);
   });
 
+  it("matches non-ASCII words (R19): German and CJK", () => {
+    const reg = new SkillRegistry();
+    reg.register(
+      skill$({
+        id: "invoice-check",
+        name: "Rechnung",
+        description: "Rechnung prüfen",
+        instructions: instructions$("a"),
+      })
+    );
+    reg.register(
+      skill$({
+        id: "invoice-jp",
+        name: "請求書",
+        description: "請求書を作成する",
+        instructions: instructions$("b"),
+      })
+    );
+    expect(reg.find("Rechnung prüfen")[0]?.skill.id).toBe("invoice-check");
+    expect(reg.find("請求書")[0]?.skill.id).toBe("invoice-jp");
+    expect(reg.find("請")[0]?.skill.id).toBe("invoice-jp");
+  });
+
+  it("tokenizes exactly like CapabilityCatalog (the two copies must not drift)", async () => {
+    const { lexicalTerms: a } = await import("./lexicalTerms");
+    const { lexicalTerms: b } = await import("../../capability/src/lexicalTerms");
+    for (const q of ["Rechnung prüfen", "請求書を作成 abc", "run_query x1 ab", "ＩＮＣ café", ""]) {
+      expect(a(q)).toEqual(b(q));
+    }
+  });
+
   // The score counts terms the haystack CONTAINS, so a repeated term is a second substring
   // search that can only inflate the number — and an unbounded question is O(skills x terms)
   // of them. Both halves are bounded; these assert it where it is observable.

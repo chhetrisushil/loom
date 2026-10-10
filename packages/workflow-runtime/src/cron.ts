@@ -7,8 +7,12 @@
 //   a        a single value
 //   a-b      an inclusive range
 //   a,b,c    lists (of values or ranges)
-// Evaluated in UTC so every node computes identical occurrences (determinism —
-// a schedule's occurrence times must not depend on node timezone).
+// Evaluated in UTC by default so every node computes identical occurrences
+// (determinism — a schedule's occurrence times must not depend on the NODE's
+// timezone). R19: a spec may carry an explicit IANA `timeZone`; the five fields
+// are then read on that zone's wall clock. The zone is DATA on the schedule, not
+// the node's, so every node still computes identical occurrences. See
+// `nextOccurrence` for the DST rules.
 
 interface FieldSpec {
   min: number;
@@ -60,9 +64,76 @@ export interface CronSpec {
   daysOfMonth: Set<number>;
   months: Set<number>;
   daysOfWeek: Set<number>;
+  /** IANA zone the fields are read in (R19). Absent = UTC. */
+  timeZone?: string;
 }
 
-export function parseCron(expr: string): CronSpec {
+const formatters = new Map<string, Intl.DateTimeFormat>();
+
+function formatter(timeZone: string): Intl.DateTimeFormat {
+  let f = formatters.get(timeZone);
+  if (f === undefined) {
+    // Throws RangeError for an unknown zone.
+    f = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+    });
+    formatters.set(timeZone, f);
+  }
+  return f;
+}
+
+/** Throws unless `timeZone` is an IANA zone this runtime knows. */
+export function assertTimeZone(timeZone: string): void {
+  try {
+    if (typeof timeZone !== "string" || timeZone.length === 0) throw new RangeError("empty");
+    formatter(timeZone);
+  } catch {
+    throw new Error(
+      `invalid cron: unknown time zone "${String(timeZone)}" (expected an IANA name such as "Europe/Berlin")`
+    );
+  }
+}
+
+/** The zone's UTC offset at instant `ms`, in ms (local wall time = ms + offset). */
+function offsetMs(timeZone: string, ms: number): number {
+  const second = Math.floor(ms / 1000) * 1000;
+  const p: Record<string, number> = {};
+  for (const part of formatter(timeZone).formatToParts(second)) {
+    if (part.type !== "literal") p[part.type] = Number(part.value);
+  }
+  return (
+    Date.UTC(p.year as number, (p.month as number) - 1, p.day, p.hour, p.minute, p.second) - second
+  );
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * The instant a wall-clock reading (`wall`, expressed as if it were UTC) happens in `timeZone`.
+ * - Ordinary reading: its one instant.
+ * - Repeated reading (fall-back): the FIRST instant, so a schedule runs once.
+ * - Nonexistent reading (spring-forward gap): the instant it WOULD have been under the offset in
+ *   force before the gap, i.e. shifted forward by the gap (02:30 in a 02:00->03:00 gap runs at 03:30).
+ */
+function wallToInstant(timeZone: string, wall: number): number {
+  const before = wall - offsetMs(timeZone, wall - DAY_MS);
+  const after = wall - offsetMs(timeZone, wall + DAY_MS);
+  const okBefore = before + offsetMs(timeZone, before) === wall;
+  const okAfter = after + offsetMs(timeZone, after) === wall;
+  if (okBefore && okAfter) return Math.min(before, after);
+  if (okBefore) return before;
+  if (okAfter) return after;
+  return before;
+}
+
+export function parseCron(expr: string, timeZone?: string): CronSpec {
   const fields = expr.trim().split(/\s+/);
   if (fields.length !== 5) {
     throw new Error(`invalid cron "${expr}": expected 5 fields (min hour dom mon dow)`);
@@ -70,7 +141,15 @@ export function parseCron(expr: string): CronSpec {
   const [minutes, hours, daysOfMonth, months, daysOfWeek] = fields.map((f, i) =>
     parseField(f, FIELDS[i] as FieldSpec, expr)
   ) as [Set<number>, Set<number>, Set<number>, Set<number>, Set<number>];
-  return { minutes, hours, daysOfMonth, months, daysOfWeek };
+  if (timeZone !== undefined) assertTimeZone(timeZone);
+  return {
+    minutes,
+    hours,
+    daysOfMonth,
+    months,
+    daysOfWeek,
+    ...(timeZone !== undefined && timeZone !== "UTC" && { timeZone }),
+  };
 }
 
 const MINUTE_MS = 60_000;
@@ -78,8 +157,15 @@ const MINUTE_MS = 60_000;
 const MAX_SCAN_MINUTES = 5 * 366 * 24 * 60;
 
 /**
- * The first occurrence of `spec` STRICTLY AFTER `afterMs`, in epoch ms (UTC,
- * minute granularity). Pure and deterministic — every node computes the same
+ * The first occurrence of `spec` STRICTLY AFTER `afterMs`, in epoch ms (minute
+ * granularity; the fields are read in UTC, or in `spec.timeZone` when set).
+ *
+ * DST rules for a zoned spec (a fixed WALL-CLOCK schedule runs once per day it matches):
+ * - spring forward - a matched wall time inside the skipped hour does not exist; it runs once,
+ *   shifted forward by the gap (`30 2 * * *` over 02:00->03:00 runs at 03:30).
+ * - fall back - a matched wall time in the repeated hour runs once, at its FIRST occurrence.
+ * Consequence: a sub-hourly or hourly expression (`0 * * * *`) skips the repeated hour's second
+ * pass; use UTC for fixed-interval schedules. Pure and deterministic — every node computes the same
  * occurrence for the same expression and instant.
  *
  * Field-jumping, not minute-stepping: when a coarser field (month/day/hour)
@@ -91,6 +177,26 @@ const MAX_SCAN_MINUTES = 5 * 366 * 24 * 60;
  * polled once a minute past its time) into at most a few thousand.
  */
 export function nextOccurrence(spec: CronSpec, afterMs: number): number {
+  const tz = spec.timeZone;
+  if (tz === undefined) return nextUtcOccurrence(spec, afterMs);
+  // The scan runs on the zone's WALL clock (the UTC field-jumping below, fed wall readings), and each
+  // match is converted back to an instant. Wall readings can map to instants out of order only near a
+  // transition (a gap-shifted reading lands after readings that follow it), so when one is within
+  // 3 h of `afterMs` the scan starts 3 h of wall time earlier and keeps the first instant > afterMs.
+  const here = offsetMs(tz, afterMs);
+  const nearTransition =
+    offsetMs(tz, afterMs - 3 * 3_600_000) !== here ||
+    offsetMs(tz, afterMs + 3 * 3_600_000) !== here;
+  let wall = afterMs + here - (nearTransition ? 3 * 3_600_000 : 0);
+  for (let i = 0; i < 100_000; i++) {
+    wall = nextUtcOccurrence(spec, wall);
+    const instant = wallToInstant(tz, wall);
+    if (instant > afterMs) return instant;
+  }
+  throw new Error("cron expression never matches (scanned 5 years)");
+}
+
+function nextUtcOccurrence(spec: CronSpec, afterMs: number): number {
   const startMs = (Math.floor(afterMs / MINUTE_MS) + 1) * MINUTE_MS;
   const limitMs = startMs + MAX_SCAN_MINUTES * MINUTE_MS;
   let t = startMs;

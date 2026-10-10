@@ -309,7 +309,7 @@ export class TimerService {
     const floor = this.now();
     this.schedules = (options.schedules ?? []).map((def) => ({
       def,
-      spec: parseCron(def.cron),
+      spec: parseCron(def.cron, def.timeZone),
       cursor: floor,
     }));
   }

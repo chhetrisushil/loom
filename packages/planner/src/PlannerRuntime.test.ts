@@ -102,4 +102,30 @@ describe("PlannerRuntime", () => {
     const strict = new PlannerRuntime({ catalog: makeCatalog(), provider, strict: true });
     await expect(strict.plan("collect metrics")).rejects.toMatchObject({ name: "PlanFailedError" });
   });
+
+  it("uses the prompts override (R19) and the English default otherwise", async () => {
+    const seen: { system?: string; user?: string }[] = [];
+    const provider: LlmProvider = {
+      complete: async (req) => {
+        seen.push({ system: req.system, user: String(req.messages[0]?.content) });
+        return { content: '[{"capabilityId":"root-cause"}]', stopReason: "end_turn" };
+      },
+    };
+    await new PlannerRuntime({ catalog: makeCatalog(), provider }).plan("diagnose");
+    expect(seen[0]?.system).toContain("You are a planner");
+    expect(seen[0]?.user).toMatch(/^Goal: diagnose\n\nCapabilities:\n- collect-metrics:/);
+
+    const planner = new PlannerRuntime({
+      catalog: makeCatalog(),
+      provider,
+      prompts: {
+        system: "Du bist ein Planer. Antworte nur mit JSON.",
+        user: ({ goal, menu }) => `Ziel: ${goal}\n\nFähigkeiten:\n${menu}`,
+      },
+    });
+    const plan = await planner.plan("diagnostiziere");
+    expect(plan.steps.map((s) => s.capabilityId)).toEqual(["root-cause"]);
+    expect(seen[1]?.system).toBe("Du bist ein Planer. Antworte nur mit JSON.");
+    expect(seen[1]?.user).toMatch(/^Ziel: diagnostiziere\n\nFähigkeiten:\n- collect-metrics:/);
+  });
 });

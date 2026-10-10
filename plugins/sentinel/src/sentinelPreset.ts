@@ -25,8 +25,10 @@ import type { ZodSchema } from "zod";
 export interface SentinelPresetConfig<TState> {
   /** Schedule id — the agent's stable identity (`chain_id = scheduleId`). */
   id: string;
-  /** 5-field cron, UTC. */
+  /** 5-field cron, in `timeZone` (default UTC). */
   cron: string;
+  /** R19 - IANA zone for the cron fields; default UTC. See `schedule$`. */
+  timeZone?: string;
   /** Flow the schedule starts; defaults to `<id>-flow`. */
   flowId?: string;
   /** Carry-state contract (DS-2/3): current schema + version-to-version migrations. */
@@ -75,7 +77,13 @@ export function sentinelPreset<TState>(
   config: SentinelPresetConfig<TState>
 ): SentinelPreset<TState> {
   const flowId = config.flowId ?? `${config.id}-flow`;
-  const schedule = schedule$({ id: config.id, cron: config.cron, flowId, input: {} });
+  const schedule = schedule$({
+    id: config.id,
+    cron: config.cron,
+    flowId,
+    input: {},
+    ...(config.timeZone !== undefined && { timeZone: config.timeZone }),
+  });
 
   const state = sentinelState<TState>({
     schedule,

@@ -114,4 +114,32 @@ describe("IntentRuntime", () => {
     expect(route?.capability.id).toBe("investigate-incident");
     expect(route?.rationale).toBe("model routed");
   });
+
+  it("uses the prompts override (R19) and the English default otherwise", async () => {
+    const seen: { system?: string; user?: string }[] = [];
+    const provider: LlmProvider = {
+      complete: async (req) => {
+        seen.push({ system: req.system, user: String(req.messages[0]?.content) });
+        return { content: "issue-refund", stopReason: "end_turn" };
+      },
+    };
+    await new IntentRuntime({ catalog: makeCatalog(), provider }).route("Rechnung erstatten");
+    expect(seen[0]?.system).toContain("You route a user's request");
+    expect(seen[0]?.user).toContain("Request: Rechnung erstatten");
+
+    const rt = new IntentRuntime({
+      catalog: makeCatalog(),
+      provider,
+      prompts: {
+        system:
+          "Leite die Anfrage an genau eine Fähigkeit weiter. Antworte NUR mit der ID oder NONE.",
+        user: ({ intentText, menu }) => `Fähigkeiten:\n${menu}\n\nAnfrage: ${intentText}`,
+      },
+    });
+    const route = await rt.route("Rechnung erstatten");
+    expect(route?.capability.id).toBe("issue-refund");
+    expect(seen[1]?.system).toContain("Leite die Anfrage");
+    expect(seen[1]?.user).toContain("Anfrage: Rechnung erstatten");
+    expect(seen[1]?.user).toContain("- issue-refund:");
+  });
 });
