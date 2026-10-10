@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`runAgentOnce({ registerEffects })` may be async (`@loom/app`; additive).** It is awaited before the run starts, so async discovery such as `McpClient.registerInto` / `A2APeerClient.registerInto` (which also exposes the peer to an `AgentRegistry`) can run inside it.
 - **`OversizedInlinePartError.scope` (`@loom/llm`; additive).** The constructor already took `scope: "part" | "request"` but dropped it, so a caller could not tell the per-part cap from the per-request inline total except by `limit` or message text. It is now a `readonly scope` property. Tested for both scopes.
 
 ### Changed

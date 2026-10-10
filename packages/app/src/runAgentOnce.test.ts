@@ -33,6 +33,29 @@ const provider = {
 };
 
 describe("runAgentOnce", () => {
+  it("awaits an async registerEffects (async discovery, e.g. an MCP/A2A registerInto) before starting", async () => {
+    const seen: unknown[] = [];
+    const r = await runAgentOnce({
+      agent,
+      provider: provider as never,
+      registerEffects: async (fx) => {
+        await new Promise<void>((resolve) => setImmediate(resolve)); // discovery yields before registering
+        fx.register(
+          "lookup",
+          new ToolEffect(async (input) => {
+            seen.push(input);
+            return { found: true };
+          })
+        );
+      },
+      input: "find x",
+      config: { observability: { onWarn: () => {} } },
+      loop: { systemPrompt: "BASE" },
+    });
+    expect(r.status).toBe("completed");
+    expect(seen).toEqual([{ q: "x" }]);
+  });
+
   it("runs a scripted agent end to end and returns the output and the events", async () => {
     const seen: unknown[] = [];
     const r = await runAgentOnce({
