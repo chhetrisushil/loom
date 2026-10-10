@@ -100,7 +100,7 @@ for (const backend of inboxBackends("topics")) {
         expect(await raw(h.eventStore, inboxTopicStreamId(e, "cold"))).toHaveLength(1);
         // `hot` is drained (cursor at its head), so it no longer counts as a LIVE topic; its stream
         // (and `cold`'s) are still named by the registry for deletion.
-        expect(await readRegisteredTopics(h.eventStore, e)).toEqual(["cold"]);
+        await until(async () => (await readRegisteredTopics(h.eventStore, e)).join() === "cold");
         expect((await inboxStreamsOfChain(h.eventStore, e)).topics.sort()).toEqual(
           [inboxTopicStreamId(e, "cold"), inboxTopicStreamId(e, "hot")].sort()
         );
@@ -407,7 +407,24 @@ for (const backend of inboxBackends("topics")) {
 
     it("TTL expiry works per topic stream and journals the expiry in the topic range", async () => {
       const clock = { t: 9_000_000 };
-      const h = mk({ now: () => clock.t, inboxMessageTtlMs: { topics: { cold: 60_000 } } });
+      // A hand-driven STORE clock (what a Postgres store reports as database time): sender and judge
+      // age the message on it, the path D10a added.
+      const be = backend.make();
+      const store = new Proxy(be.eventStore, {
+        get(target, prop) {
+          if (prop === "storeNow") return async () => clock.t;
+          const v = Reflect.get(target, prop, target) as unknown;
+          return typeof v === "function" ? (v as (...x: unknown[]) => unknown).bind(target) : v;
+        },
+      });
+      const h = build(
+        {
+          inboxTopicStreams: true,
+          now: () => clock.t,
+          inboxMessageTtlMs: { topics: { cold: 60_000 } },
+        },
+        { ...be, eventStore: store }
+      );
       await enable(h);
       const e = id();
       await parkOn(h, gated("hot", 1), e);
