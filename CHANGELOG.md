@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`@loom/llm` exports `capabilitiesForModel`, `GEMINI_CAPABILITIES`, `GEMINI_MEDIA_MODELS` (additive).** The allowlist helper the shipped providers use, so an app wrapping a Gemini-compatible endpoint no longer duplicates it.
 - **`McpClient.listTools()` makes skipped tools visible (`@loom/plugin-mcp`; additive).** New `ListToolsOptions.onSkippedTool(name, reason)` is called per skipped tool; new `strictToolNames: true` throws the typed `McpToolNamesSkippedError` (`.skipped: { name, reason }[]`) instead of skipping. The default still skips; the process warning (`LOOM_MCP_TOOL_NAME`, still one per skipped tool) now states how many tools the listing skipped and that `anyToolName` exists for tools never shown to a model.
 - **`runAgentOnce({ registerEffects })` may be async (`@loom/app`; additive).** It is awaited before the run starts, so async discovery such as `McpClient.registerInto` / `A2APeerClient.registerInto` (which also exposes the peer to an `AgentRegistry`) can run inside it.
 - **`OversizedInlinePartError.scope` (`@loom/llm`; additive).** The constructor already took `scope: "part" | "request"` but dropped it, so a caller could not tell the per-part cap from the per-request inline total except by `limit` or message text. It is now a `readonly scope` property. Tested for both scopes.

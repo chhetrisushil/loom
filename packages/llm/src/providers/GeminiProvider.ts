@@ -17,14 +17,14 @@ export interface GeminiProviderConfig {
 }
 
 /** `generateContent` takes any inline mime type the model supports; declare the common ones. */
-const GEMINI_CAPABILITIES: LlmCapabilities = {
+export const GEMINI_CAPABILITIES: LlmCapabilities = {
   image: ["image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"],
   audio: ["audio/wav", "audio/mp3", "audio/mpeg", "audio/aac", "audio/ogg", "audio/flac"],
   file: ["application/pdf", "text/plain"],
 };
 
 /** Model families that take media: Gemini 1.5 and later, and the `-latest` aliases (1.0 Pro does not). */
-const GEMINI_MEDIA_MODELS = [/^gemini-(1\.5|[2-9])/, /^gemini-(flash|pro)(-lite)?-latest$/];
+export const GEMINI_MEDIA_MODELS = [/^gemini-(1\.5|[2-9])/, /^gemini-(flash|pro)(-lite)?-latest$/];
 const GEMINI_DEFAULT_URL = "https://generativelanguage.googleapis.com";
 
 /** Gemini returns no call id by default; the ones we synthesise carry this prefix and are never sent back. */
