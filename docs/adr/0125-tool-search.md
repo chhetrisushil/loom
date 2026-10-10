@@ -280,6 +280,12 @@ The re-review (one P2, one P3). Both fixed.
   and the flag is ignored beside a `jsonInputSchema` (MCP bytes always strip unless vouched). No first-party plugin builds Zod from
   remote data (MCP uses `jsonInputSchema`; sandbox is not a tool source), so no other plugin changed. The existing test's remote Zod
   `.describe()` still strips (it carries no flag).
+  **Review (Opus, R22f):** `"local"` skips the WHOLE sanitizer for that schema (as for a first-party tool), not only the text strip:
+  property-key names, enum/const caps, patterns and the attacker-character budget are not applied. It is therefore an AUTHORSHIP
+  claim ("every string in this schema is a literal in my source"), weaker in ceremony than `trustJsonSchemaText` (no warning), and
+  only A2A sets it, on a schema with no card data in it. Note for the record: `guardRequest` checks a tool's `name` and `description`
+  and never walks `inputSchema`, so for schema text this authorship claim (and, for remote JSON Schema, the sanitizer) is the only
+  control; that was already true of every first-party Zod schema.
 
 **D15 — Ranker vocabulary and a query stoplist (R22e, user ruling 2026-10-10: "give the custom ranker the vocabulary rather than make it rebuild it").** Additive; a config with no factory and no `stopwords` changes only in result ORDER (below).
 - **1. One source of the trust policy.** The doc-building of the built-in index is extracted into exported pure functions,
