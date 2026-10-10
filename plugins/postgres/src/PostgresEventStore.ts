@@ -85,6 +85,12 @@ export interface PostgresEventStoreOptions {
    * Like `migrationLockTimeoutMs`, only the first migrator of a pool decides.
    */
   backfillParkFences?: boolean;
+  /** ADR 0129 — receives the one-per-boot WARNING when the incarnation install did not happen. Default `console.warn`. */
+  onWarn?: (message: string) => void;
+  /** ADR 0129 — minimum ms between re-probes for a missing `events.incarnation`. Default 30000. */
+  incarnationRecheckMs?: number;
+  /** Injectable clock (ms) for the re-probe backoff. Default `Date.now`. */
+  clock?: () => number;
 }
 
 /**
@@ -216,6 +222,9 @@ export class PostgresEventStore implements EventStore {
   /** Serializes LISTEN/UNLISTEN, which are async but triggered from a sync callback. */
   private channelWork: Promise<void> = Promise.resolve();
 
+  private readonly incarnationRecheckMs: number;
+  private readonly clock: () => number;
+
   constructor(config: PgConfig, options: PostgresEventStoreOptions = {}) {
     this.connConfig = config;
     this.notifyBuckets = Math.max(1, options.notifyBuckets ?? 16);
@@ -225,7 +234,10 @@ export class PostgresEventStore implements EventStore {
     const { pool, owned } = toPool(config);
     this.pool = pool;
     this.ownsPool = owned;
+    this.incarnationRecheckMs = Math.max(0, options.incarnationRecheckMs ?? 30_000);
+    this.clock = options.clock ?? Date.now;
     this.ready = migrate(this.pool, {
+      ...(options.onWarn !== undefined && { onWarn: options.onWarn }),
       ...(options.migrationLockTimeoutMs !== undefined && {
         lockTimeoutMs: options.migrationLockTimeoutMs,
       }),
@@ -912,17 +924,52 @@ export class PostgresEventStore implements EventStore {
    * new name and the two groups drop each other's cross-node deliveries until ALL nodes
    * restart. Restart every node after a schema rename.
    */
-  private incarnationColumn: Promise<boolean> | undefined;
-  /** ADR 0129 — is `events.incarnation` installed? Asked once per store, after `ready`. */
+  private incarnationInstalled = false;
+  private incarnationProbe: Promise<boolean> | undefined;
+  private incarnationNextProbeAt = 0;
+  /**
+   * ADR 0129 — is `events.incarnation` installed? Only a positive answer is cached for good.
+   * A `false` is re-probed at most once per `incarnationRecheckMs` (another node may install the
+   * column later), and a failed probe is NEVER cached (a transient catalog error fails that one
+   * call, the next one retries) — same discipline as {@link resolveNamespace}.
+   */
   private hasIncarnation(): Promise<boolean> {
-    this.incarnationColumn ??= this.pool
+    if (this.incarnationInstalled) return Promise.resolve(true);
+    if (this.incarnationProbe !== undefined) return this.incarnationProbe;
+    if (this.clock() < this.incarnationNextProbeAt) return Promise.resolve(false);
+    const probe = this.pool
       .query(
-        `SELECT 1 FROM information_schema.columns
-          WHERE table_schema = current_schema() AND table_name = 'events'
-            AND column_name = 'incarnation'`
+        `SELECT 1 FROM pg_attribute
+          WHERE attrelid = to_regclass('events') AND attname = 'incarnation' AND NOT attisdropped`
       )
-      .then((r) => (r.rowCount ?? 0) > 0);
-    return this.incarnationColumn;
+      .then(
+        (r) => {
+          this.incarnationProbe = undefined;
+          const installed = (r.rowCount ?? 0) > 0;
+          if (installed) this.incarnationInstalled = true;
+          else this.incarnationNextProbeAt = this.clock() + this.incarnationRecheckMs;
+          return installed;
+        },
+        (err: unknown) => {
+          this.incarnationProbe = undefined;
+          throw err;
+        }
+      );
+    this.incarnationProbe = probe;
+    return probe;
+  }
+
+  /**
+   * ADR 0129 — the EFFECTIVE capability: `true` when `events.incarnation` and its trigger are
+   * installed, so `appendIfUnchanged` anchors name an incarnation (EventStore SPI 2.3.0).
+   * `false` when the install did not happen (events was locked at boot, a non-owner role, a
+   * dependent view): the store then keeps the legacy `timestamp:id` anchor, i.e. SPI 2.2.0
+   * behaviour, and logged a WARNING at boot. Re-probes (rate-limited), so it turns `true` once
+   * any node installs the column.
+   */
+  async incarnationAnchors(): Promise<boolean> {
+    await this.ready;
+    return this.hasIncarnation();
   }
 
   private resolveNamespace(): Promise<string | undefined> {

@@ -14,6 +14,7 @@ import {
   ShardPlan,
   ShardedEventStore,
   TenantScopedEventStore,
+  creationMarker,
 } from "@loom/event-runtime";
 import type { LlmProvider, LlmRequest } from "@loom/llm";
 import {
@@ -48,6 +49,7 @@ import {
 } from "./decorators";
 import {
   type ContentStoreLike,
+  incarnationAnchorProblem,
   leaseExpiredDefaultProblem,
   leaseStoreNowProblem,
   runBranchRegistryConformance,
@@ -96,6 +98,41 @@ class FakeWorker implements WorkerRuntime {
 // Durable backends (SQLite, Postgres) run the SAME kits in their own packages; that
 // is the point: a third-party backend proves conformance the same way.
 runEventStoreConformance(() => new InMemoryAsyncEventStore(), "InMemoryAsyncEventStore");
+
+// ADR 0129 / SPI 2.3.0 — a store that cannot assign per-incarnation anchors stays at 2.2.0 and says
+// so via `{ eventStoreSpi: "2.2.0" }`. This one derives its anchor from the sequence-0 envelope
+// (the 2.2.0 behaviour), so a delete + byte-identical re-creation does not change it.
+class LegacyAnchorStore extends InMemoryAsyncEventStore {
+  override async appendIfUnchanged(
+    ...[id, event, expect]: Parameters<NonNullable<InMemoryAsyncEventStore["appendIfUnchanged"]>>
+  ): ReturnType<NonNullable<InMemoryAsyncEventStore["appendIfUnchanged"]>> {
+    const zero = (await this.read(id))[0];
+    const legacy = zero === undefined ? undefined : creationMarker(zero);
+    const real = async (): Promise<string> =>
+      ((await super.appendIfUnchanged(id, null)) as { anchor: string }).anchor;
+    // Compare on the legacy marker (equal => substitute the current real anchor), answer in it.
+    const r = await super.appendIfUnchanged(
+      id,
+      event,
+      expect !== undefined && legacy !== undefined && expect.anchor === legacy
+        ? { ...expect, anchor: await real() }
+        : expect
+    );
+    return "anchor" in r && r.anchor !== null && legacy !== undefined
+      ? { ...r, anchor: legacy }
+      : r;
+  }
+}
+describe("conformance kit: the declared EventStore SPI level (ADR 0129)", () => {
+  it("a 2.2.0-only store FAILS the 2.3.0 MUST (so the default would reject it) and a 2.3.0 store passes", async () => {
+    expect(await incarnationAnchorProblem(() => new LegacyAnchorStore())).toMatch(/identical/);
+    expect(await incarnationAnchorProblem(() => new InMemoryAsyncEventStore())).toBeUndefined();
+  });
+  // ...and with the opt-out the SAME store is accepted: the three 2.3.0 cases are skipped.
+  runEventStoreConformance(() => new LegacyAnchorStore(), "LegacyAnchorStore (2.2.0)", {
+    eventStoreSpi: "2.2.0",
+  });
+});
 
 // The kit's acquireFenceIf cases run only when a store offers the method (like `copyPrefix`), which
 // is a vacuous pass for a store that silently lacks it. The reference stores MUST offer it, so the

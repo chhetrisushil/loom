@@ -60,12 +60,15 @@ export interface MigrateOptions {
    * boot continues). Short on purpose: while an ALTER waits, every append/putRef against
    * ITS table queues behind it. Default 2000 ms.
    *
-   * Governs BOTH conversions, but NOT as one shared budget — each reads
-   * `loom.migration_lock_timeout` and applies it to its OWN wait independently. If both
-   * tables are contended, the two waits are sequential (L21's ALTER, then L10's), so a boot
-   * can stall up to **2× lockTimeoutMs** (4000 ms by default) before COMMIT, not once. Each
-   * wait still only blocks writers to the ONE table it is waiting on; the two tables are
-   * never both stalled by the same wait.
+   * Governs all THREE waits (L21 `refs`, L10 `events.execution_id`, and the ADR 0129
+   * `events.incarnation` column + trigger), but NOT as one shared budget — each reads
+   * `loom.migration_lock_timeout` and applies it to its OWN wait independently. The waits are
+   * sequential, so a boot can stall up to **2× lockTimeoutMs** (4000 ms by default) behind
+   * `refs` then `events` for the conversions, and — when `events` is contended throughout —
+   * up to **4× lockTimeoutMs** against it (L10's wait, then the incarnation ALTER and CREATE
+   * TRIGGER; the incarnation step is skipped outright after a transient L10 failure, so that
+   * worst case needs the holder to release in between). Each wait still only blocks writers to
+   * the ONE table it is waiting on.
    *
    * The migration runs ONCE per pool and the first migrator's value wins, so the reliable way
    * to set it is `await migratePostgresStores(pool, { lockTimeoutMs })` BEFORE constructing any
@@ -74,6 +77,11 @@ export interface MigrateOptions {
    * store is the first to migrate its pool (the preset builds the event store first).
    */
   lockTimeoutMs?: number;
+  /**
+   * ADR 0129 — receives the one-per-migration WARNING when the incarnation install did not
+   * happen (events locked, a non-owner role, a dependent view). Default `console.warn`.
+   */
+  onWarn?: (message: string) => void;
   /**
    * ADR 0118 D1 — run the ONE-TIME park-fence backfill during the boot migration. Default `true`.
    *
@@ -98,7 +106,7 @@ export async function migrate(pool: PoolLike, options: MigrateOptions = {}): Pro
       `migrate: lockTimeoutMs must be a positive integer (got ${lockTimeoutMs})`
     );
   }
-  const run = runMigration(pool, lockTimeoutMs, options.backfillParkFences ?? true);
+  const run = runMigration(pool, lockTimeoutMs, options.backfillParkFences ?? true, options.onWarn);
   migrations.set(pool, run);
   // Never cache a rejection: a migration that failed (transient connection loss, a
   // database not yet accepting connections) must be retryable by the next caller.
@@ -112,7 +120,8 @@ export async function migrate(pool: PoolLike, options: MigrateOptions = {}): Pro
 async function runMigration(
   pool: PoolLike,
   lockTimeoutMs: number,
-  backfill: boolean
+  backfill: boolean,
+  onWarn?: (message: string) => void
 ): Promise<void> {
   // A dedicated client, not `pool.query`: the advisory lock and the DDL must run in
   // ONE session and one transaction, which a pooled per-query checkout cannot promise.
@@ -189,7 +198,19 @@ async function runMigration(
     ]);
     // ADR 0129 — last, so the hot `events` table is locked for the shortest remaining stretch.
     await client.query(INCARNATION);
+    // ADR 0129 — a store whose incarnation install did not happen must say so LOUDLY (once per
+    // migration, i.e. per boot per pool), not only as a server-side NOTICE: it keeps the legacy
+    // anchor, which is SPI 2.2.0 behaviour, so it must not be mistaken for a 2.3.0 store.
+    const skipped = await client.query<{ why: string | null }>(
+      "SELECT NULLIF(current_setting('loom.incarnation_skip', true), '') AS why"
+    );
+    const why = skipped.rows[0]?.why;
     await client.query("COMMIT");
+    if (why !== null && why !== undefined) {
+      (onWarn ?? ((m: string) => console.warn(m)))(
+        `loom: @loom/plugin-postgres did NOT install the ADR 0129 store-assigned incarnation (${why}). This store keeps the legacy creation-marker anchor, i.e. EventStore SPI 2.2.0 behaviour (a delete + byte-identical re-creation of an execution id is NOT detected by appendIfUnchanged), until a later boot installs it. PostgresEventStore.incarnationAnchors() reports the effective state.`
+      );
+    }
   } catch (err) {
     // Best-effort rollback; the original error is what the caller needs to see.
     await client.query("ROLLBACK").catch(() => {});
@@ -391,7 +412,13 @@ const L10_COLLATION = `
               SQLSTATE, SQLERRM;
           -- ADR 0129: tell the incarnation step (which runs later in this transaction) that
           -- the events table could not be locked, so it does not queue behind the same holder again.
-          PERFORM set_config('loom.events_lock_failed', 'on', true);
+          -- ONLY for a transient wait failure (lock_not_available 55P03, query_canceled 57014,
+          -- deadlock_detected 40P01): feature_not_supported / dependent_objects_still_exist recur
+          -- on every boot (a view over the column) and say nothing about the lock, so they must
+          -- not make the incarnation install skip forever.
+          IF SQLSTATE IN ('55P03', '57014', '40P01') THEN
+            PERFORM set_config('loom.events_lock_failed', 'on', true);
+          END IF;
         END;
       END IF;
     END
@@ -417,20 +444,34 @@ const L10_COLLATION = `
  * until a later boot installs it.
  */
 const INCARNATION = `
-    CREATE SEQUENCE IF NOT EXISTS events_incarnation_seq;
     DO $incarnation$
     DECLARE
       caller_lock_timeout text := current_setting('lock_timeout');
+      sch text;
+      seq_name text;
+      fn_version constant text := 'loom-incarnation-v2';
     BEGIN
       IF current_setting('loom.events_lock_failed', true) = 'on' THEN
-        RAISE NOTICE 'loom: skipping the ADR 0129 incarnation install, events is locked by another transaction (see the L10 warning)';
+        PERFORM set_config('loom.incarnation_skip', 'events is locked by another transaction (see the L10 warning)', true);
         RETURN;
       END IF;
       BEGIN
+        -- The function is SECURITY DEFINER (with its own pinned search_path): a writer role that
+        -- may INSERT into \`events\` but was never granted USAGE on the sequence must still be
+        -- able to create an execution.
+        -- Everything below names the schema of the \`events\` table explicitly: the trigger runs in
+        -- the INSERTING session, whose search_path may be anything (pg_restore, ETL, another loom
+        -- schema first), so the function bakes a schema-qualified sequence and pins its own path.
+        SELECT n.nspname INTO sch
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE c.oid = 'events'::regclass;
+        seq_name := format('%I.%I', sch, 'events_incarnation_seq');
+        IF to_regclass(seq_name) IS NULL THEN
+          EXECUTE format('CREATE SEQUENCE IF NOT EXISTS %s', seq_name);
+        END IF;
         IF NOT EXISTS (
-          SELECT 1 FROM information_schema.columns
-          WHERE table_schema = current_schema() AND table_name = 'events'
-            AND column_name = 'incarnation'
+          SELECT 1 FROM pg_attribute
+          WHERE attrelid = 'events'::regclass AND attname = 'incarnation' AND NOT attisdropped
         ) THEN
           PERFORM set_config(
             'lock_timeout',
@@ -440,12 +481,20 @@ const INCARNATION = `
           ALTER TABLE events ADD COLUMN IF NOT EXISTS incarnation BIGINT;
           PERFORM set_config('lock_timeout', caller_lock_timeout, true);
         END IF;
-        CREATE OR REPLACE FUNCTION events_assign_incarnation() RETURNS trigger AS $fn$
-        BEGIN
-          NEW.incarnation := nextval('events_incarnation_seq');
-          RETURN NEW;
-        END
-        $fn$ LANGUAGE plpgsql;
+        -- Only (re)created when missing or of an older body, so a boot after the tables were
+        -- re-owned to an application role (which does not own the function) is a no-op.
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_proc p
+          WHERE p.pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = sch)
+            AND p.proname = 'events_assign_incarnation'
+            AND obj_description(p.oid, 'pg_proc') = fn_version
+        ) THEN
+          EXECUTE format(
+            'CREATE OR REPLACE FUNCTION %I.events_assign_incarnation() RETURNS trigger AS $fn$ BEGIN NEW.incarnation := nextval(%L::regclass); RETURN NEW; END $fn$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog',
+            sch, seq_name
+          );
+          EXECUTE format('COMMENT ON FUNCTION %I.events_assign_incarnation() IS %L', sch, fn_version);
+        END IF;
         IF NOT EXISTS (
           SELECT 1 FROM pg_trigger
           WHERE tgrelid = 'events'::regclass AND tgname = 'trg_events_incarnation'
@@ -455,14 +504,18 @@ const INCARNATION = `
             COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
             true
           );
-          CREATE TRIGGER trg_events_incarnation BEFORE INSERT ON events
-            FOR EACH ROW WHEN (NEW.sequence = 0) EXECUTE FUNCTION events_assign_incarnation();
+          EXECUTE format(
+            'CREATE TRIGGER trg_events_incarnation BEFORE INSERT ON events FOR EACH ROW WHEN (NEW.sequence = 0) EXECUTE FUNCTION %I.events_assign_incarnation()',
+            sch
+          );
           PERFORM set_config('lock_timeout', caller_lock_timeout, true);
         END IF;
       EXCEPTION
-        WHEN lock_not_available OR query_canceled OR deadlock_detected THEN
+        WHEN lock_not_available OR query_canceled OR deadlock_detected OR insufficient_privilege
+          OR feature_not_supported OR dependent_objects_still_exist THEN
           RAISE WARNING 'loom: the ADR 0129 incarnation column/trigger on events could not be installed (%: %). This node keeps the legacy creation-marker anchor (SPI 2.2.0 behaviour) until a later boot installs it.',
             SQLSTATE, SQLERRM;
+          PERFORM set_config('loom.incarnation_skip', SQLSTATE || ': ' || SQLERRM, true);
       END;
     END
     $incarnation$;
