@@ -917,6 +917,8 @@ export async function agentLoop$(
     isError: boolean;
     /** A parallel branch that reached its checkpoint after the stop: it never ran. */
     notRun?: true;
+    /** D14 — the size compaction's byte trigger counts for this result, when not its own (a changed skill text on replay). */
+    virtualBytes?: number;
   }
   /** Provenance of the run so far: the origin of the first tainted tool result, if any. */
   let sawTaintFrom: string | undefined;
@@ -960,7 +962,11 @@ export async function agentLoop$(
       );
       growMenu(r.newlyLoaded);
       search?.noteLoaded(r.newlyLoaded);
-      return { output: r.output, isError: r.isError };
+      return {
+        output: r.output,
+        isError: r.isError,
+        ...(r.virtualBytes !== undefined && { virtualBytes: r.virtualBytes }),
+      };
     }
 
     if (!tooBig && config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
@@ -1099,7 +1105,8 @@ export async function agentLoop$(
     oversized: ReadonlySet<number>
   ): Promise<void> => {
     const results: LlmToolResultPartInput[] = [];
-    const record = (toolCall: LlmToolCall, { output, isError }: Outcome): void => {
+    const sizes: number[] = [];
+    const record = (toolCall: LlmToolCall, { output, isError, virtualBytes }: Outcome): void => {
       if (sawTaintFrom === undefined && isTainted(output)) {
         sawTaintFrom = taintOf(output)?.origin ?? "unknown";
       }
@@ -1116,6 +1123,7 @@ export async function agentLoop$(
       });
       inlineUsed += inlineBytesIn(part);
       results.push(part);
+      sizes.push(virtualBytes ?? resultBytes(part));
     };
 
     if (parallelTools === false || calls.some((c) => humanTools.has(c.name))) {
@@ -1172,8 +1180,7 @@ export async function agentLoop$(
     // R5 — ONE user message answers all of the turn's calls, after the assistant message that
     // made them (providers require that adjacency). Pushed only once every call has run, so a
     // park on the approval gate mid-turn leaves the transcript as it was.
-    if (results.length > 0)
-      pushMessage({ role: "user", content: results }, results.map(resultBytes));
+    if (results.length > 0) pushMessage({ role: "user", content: results }, sizes);
   };
 
   /** A model call as a durable frame; with a signal, its interruption is a recorded decision too. */

@@ -161,6 +161,18 @@ describe("A2APeerClient", () => {
     expect(effectRuntime.has("echo-agent")).toBe(true);
   });
 
+  it("trustDescriptions vouches for the card text (mirrors MCP); absent, the definition is un-vouched", async () => {
+    server = await startEchoServer();
+    const plain = (await new A2APeerClient({ url: server.url }).map()).definition;
+    expect(plain.trustJsonSchemaText).toBeUndefined();
+    const off = (await new A2APeerClient({ url: server.url, trustDescriptions: false }).map())
+      .definition;
+    expect(off.trustJsonSchemaText).toBeUndefined();
+    const vouched = (await new A2APeerClient({ url: server.url, trustDescriptions: true }).map())
+      .definition;
+    expect(vouched.trustJsonSchemaText).toBe(true);
+  });
+
   it("round-trips a call through the peer tool", async () => {
     server = await startEchoServer();
     const effectRuntime = new EffectRuntime();

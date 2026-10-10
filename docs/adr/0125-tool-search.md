@@ -196,7 +196,7 @@ refusal of `toolSearch.ranker` with `discovery: "search" | "both"` is removed. C
   to throw a `TypeError` on `.slice`). MCP tools already had a `jsonInputSchema` and are unchanged; the gap was A2A tools (and any
   `origin: "remote"` tool) without one. A tainted description on a FIRST-PARTY tool is deliberately left alone, so the prompt
   boundary still refuses the request loudly (a host bug should fail, not degrade silently). **Behaviour change** for existing
-  A2A users: the model no longer sees the peer's description (vouch with `trustJsonSchemaText`, or describe the tool in the
+  A2A users: the model no longer sees the peer's description (vouch with `trustDescriptions` on the peer config, or describe the tool in the
   system prompt). **Replay:** model responses are journaled by step id and a resume never compares request bytes (the only replay
   checks are the step/decision ordinals and the code fingerprint, ADR 0113), so a log recorded under the old spec resumes
   under the new one; a test pins that.
@@ -219,6 +219,35 @@ refusal of `toolSearch.ranker` with `discovery: "search" | "both"` is removed. C
   model has no copy of what the first run's model read (the registry would need to be content-addressed; out of scope). Upfront
   (`#skills`) selected skills are still loaded from the current registry on replay, as before. A first-party tool with a TAINTED
   description is still refused loudly by the prompt boundary rather than withheld (deliberate, see 1).
+
+### D14 - Review round 1 (R22d, 2026-10-10)
+
+The first adversarial review of R22d (not approved as drafted; design holds). All fixed.
+
+- **P1: a replay that shrinks the transcript moved the byte-triggered compaction.** The trigger is recomputed on replay from the
+  tool-result bytes in the transcript, and the log did not pin those bytes. A one-character skill edit swapped up to 32 KiB of
+  instructions for a short `instructions_changed` error, so a recorded `#turn:t:compact` frame was never asked for
+  (`FlowDivergenceError ... were not asked for`; the same happened on main for any edit that changed the text's LENGTH, an
+  undocumented D11 residual). Fix: the activation record also carries **`bytes`**, the UTF-8 length of the delivered instructions
+  as the `tool_result` serializes them (the JSON string, quotes and escapes included; additive and optional, bounded on read to
+  `6 * maxInstructionBytes + 2`). When a replay or a re-delivery of a skill with a recorded `bytes` returns a result other than the
+  full instructions (`instructions_changed`, `instructions_unavailable`), the loop's compaction accounting (the virtual transcript,
+  `oldSizes` / `transcriptBytes`) counts the size the successful result WOULD have had, rebuilt from the recorded `bytes`, instead of
+  the error's own size. Only the trigger's measure changes; the transcript the model sees is the real one. The trigger therefore
+  fires on the turns the live run's did. Pinned with `divergence: "fail"` for a same-length edit, a length change and a text that
+  became unavailable. **Residual (remaining):** a record without `bytes` (written before this round) keeps the old behaviour, so an
+  edit under a byte-triggered compaction can still diverge on such a log (the test pins that). Also not covered: a skill whose
+  `tools` list changed between runs (the rebuilt size uses the current tool ids), and a live run that itself got an error where a
+  later replay gets the full text.
+- **P3: the `LOOM_AGENT_TRUSTED_TOOL_TEXT` warning** no longer says "third-party JSON schema" (it also fires for a vouched A2A or
+  `origin: "remote"` tool with no schema).
+- **P3: Zod `.describe()` text of an un-vouched remote tool is stripped** from the spec too (it reached the model for an A2A or
+  `origin: "remote"` tool with a Zod `inputSchema`). The converted schema goes through the same sanitiser as a JSON Schema with
+  `keepText: false`; first-party tools are untouched.
+- **P3: A2A can vouch.** `A2APeerConfig.trustDescriptions` (default false) sets `trustJsonSchemaText` on the built definition,
+  mirroring MCP's `trustDescriptions`. D14.1's "vouch with `trustJsonSchemaText`" now reads "vouch with `trustDescriptions`".
+- **P3: test gap.** Re-delivery after a RESUME (the pin comes from the replayed record) is pinned by a test that fails if the pin is
+  set only on the live path.
 
 ## Review round 1 (2026-10-09)
 

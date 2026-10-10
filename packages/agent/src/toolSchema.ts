@@ -222,7 +222,12 @@ export function toolInputJsonSchema(
     return { type: "object" };
   }
   if (schema === undefined) return { type: "object" };
-  const j = convert(schema, 0, { lazies: new Set() });
+  let j = convert(schema, 0, { lazies: new Set() });
+  // A REMOTE tool with a Zod schema (an A2A peer, a plugin marking `origin: "remote"`) carries its
+  // `.describe()` prose to the model the same way a JSON Schema's would: strip it unless vouched
+  // (`trustText` explicitly false; first-party callers leave it unset and keep their text).
+  if (opts.trustText === false)
+    j = sanitizeJsonSchema(j, { keepText: false }) ?? { type: "object" };
   // Providers require an object root. A non-object root is not describable.
   if (j.type !== undefined && j.type !== "object") return { type: "object" };
   if ("const" in j || "enum" in j) return { type: "object" };
@@ -280,7 +285,7 @@ export const isRemoteTool = (t: {
  * What the model may be told about a tool: its description and JSON Schema. A REMOTE tool (see
  * {@link isRemoteTool}: MCP, A2A, or marked `origin: "remote"`) is third-party (ADR 0085): unless it
  * states `trustJsonSchemaText`, its description is replaced by a fixed neutral string and the schema's
- * text is stripped. A trusted description is still capped, and a TAINTED description is never put in
+ * text is stripped: a JSON Schema's prose AND a Zod schema's `.describe()` text (review round 1). A trusted description is still capped, and a TAINTED description is never put in
  * the spec of a remote tool, vouched or not (ADR 0125 D14). A tainted description on a first-party tool
  * is passed through untouched so the prompt boundary refuses the request loudly.
  */
@@ -299,7 +304,7 @@ export function toolSpecFor(t: {
     warnOnce(
       warnedTrust,
       t.id,
-      `Tool "${t.id.slice(0, 64)}" has a third-party JSON schema whose description text is trusted (trustJsonSchemaText / trustDescriptions): it reaches the model as instructions, unguarded.`,
+      `Tool "${t.id.slice(0, 64)}" is a remote (third-party) tool whose description and schema text is trusted (trustJsonSchemaText / trustDescriptions): it reaches the model as instructions, unguarded.`,
       "LOOM_AGENT_TRUSTED_TOOL_TEXT"
     );
   return {

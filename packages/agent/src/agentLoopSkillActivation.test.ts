@@ -111,6 +111,8 @@ interface Opts {
   store?: InMemoryAsyncEventStore;
   /** Awaited inside every registered tool's effect (to observe concurrency). */
   onRun?: (id: string) => Promise<void>;
+  /** Registers a `summarize` effect (for a `compaction: { toolId: "summarize" }` config). */
+  summarizer?: true;
 }
 
 function boot(o: Opts) {
@@ -137,6 +139,9 @@ function boot(o: Opts) {
         return { ran: t.id, input };
       })
     );
+  }
+  if (o.summarizer === true) {
+    effects.register("summarize", new ToolEffect(async () => ({ summary: "folded" })));
   }
   const warnings: string[] = [];
   const store = o.store ?? new InMemoryAsyncEventStore();
@@ -231,7 +236,7 @@ describe("R22 D11 - activate a skill mid-loop", () => {
       {
         decisionId: "dba#turn:0:tool:0:skill",
         source: SOURCE_SKILL_ACTIVATION,
-        value: { skill: "billing", digest: sha("BILLING-RULES") },
+        value: { skill: "billing", digest: sha("BILLING-RULES"), bytes: 15 },
       },
     ]);
   });
@@ -326,7 +331,7 @@ describe("R22 D11 - refusals are typed results (an instructions refusal records 
     });
     expect(codes(b, 2)).toEqual(["skill_limit_reached"]);
     expect((await activations(b)).map((d) => d.value)).toEqual([
-      { skill: "alpha", digest: sha("ALPHA-RULES") },
+      { skill: "alpha", digest: sha("ALPHA-RULES"), bytes: 13 },
     ]);
   });
 
@@ -821,7 +826,7 @@ describe("R22d D14 - the delivered instructions are pinned by a recorded digest"
     });
     await runToEnd(b);
     expect((await activations(b)).map((d) => d.value)).toEqual([
-      { skill: "rev", digest: sha("RULES-v1") },
+      { skill: "rev", digest: sha("RULES-v1"), bytes: 10 },
     ]);
   });
 
@@ -943,6 +948,168 @@ describe("R22d D14 - the delivered instructions are pinned by a recorded digest"
       const [again] = resultsOf(b.requests[2] as LlmRequest);
       expect(again?.result.instructions).toBe("RULES-v1");
       expect(warnings(spy)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+// ── R22d review round 1 - a replay that shrinks the transcript must not move compaction ────────
+//
+// The byte trigger is recomputed on replay from the tool-result bytes in the transcript, and the log
+// does not pin those bytes. A changed skill text replaces up to 32 KiB of instructions with a short
+// error, so a recorded `#turn:t:compact` frame was "not asked for" (a divergence). The activation
+// record now carries the delivered size; a replay that cannot deliver counts THAT size.
+
+describe("R22d D14 review - compaction's byte trigger survives a changed skill text on replay", () => {
+  const tool = mk("rev_tool");
+  const BASE = "R".repeat(3000);
+  const compaction = { toolId: "summarize", afterBytes: 2000, keepRecent: 1 };
+  const live = (initial: string) => {
+    const box = { text: initial };
+    const skill = {
+      ...mkSkill("rev", initial, [tool]),
+      instructions: async () => ({ default: box.text }),
+    } as SkillDefinition;
+    return { box, skill };
+  };
+
+  async function resumeCompacted(
+    second: string,
+    steps: LlmToolCall[][] = [[ACT("rev")], [call("t", "rev_tool")]],
+    mapEvent: (e: EventEnvelope) => EventEnvelope = (e) => e
+  ) {
+    const store = new InMemoryAsyncEventStore();
+    const first = boot({
+      store,
+      skills: [live(`${BASE}X`).skill],
+      summarizer: true,
+      config: { compaction },
+      provider: script(steps),
+    });
+    expect((await runToEnd(first)).status).toBe("completed");
+    const full = await store.read("e1");
+    expect(stepIds(full)).toContain("dba#turn:1:compact"); // the live run DID compact
+    const cutoff = full.findIndex((e) =>
+      String((e.payload as { stepId?: string }).stepId ?? "").startsWith("dba#turn:2")
+    );
+    const prefix = full.slice(0, cutoff).map(mapEvent);
+    const crashed = new InMemoryAsyncEventStore();
+    for (const e of prefix) await crashed.append(e);
+    const folded = new ReplayVM(prefix, {
+      executionId: "e1",
+      workflowId: "ask",
+      workflowVersion: "1.0.0",
+    }).getState();
+    const b = boot({
+      store: crashed,
+      skills: [live(second).skill],
+      summarizer: true,
+      config: { compaction },
+      provider: script(steps),
+    });
+    const st = await (await b.runtime.restoreFromState(folded)).waitForCompletion();
+    return { b, st, ids: stepIds(await crashed.read("e1")) };
+  }
+
+  it("a ONE-CHARACTER edit (same length) resumes: the recorded compact frame is still asked for", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { b, st, ids } = await resumeCompacted(`${BASE}Y`);
+      expect(st.status).toBe("completed");
+      expect(b.warnings.filter((w) => /diverge/i.test(w))).toEqual([]);
+      expect(ids).toContain("dba#turn:1:compact");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a LENGTH change resumes too", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { b, st } = await resumeCompacted(`${BASE}XYZ-longer`);
+      expect(st.status).toBe("completed");
+      expect(b.warnings.filter((w) => /diverge/i.test(w))).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("the skill text becoming UNAVAILABLE (over the cap) on replay resumes too", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { st } = await resumeCompacted("R".repeat(40_000));
+      expect(st.status).toBe("completed");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("NEGATIVE: an OLD record (no `bytes`) keeps today's behaviour - the residual: an edit still diverges", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const strip = (e: EventEnvelope): EventEnvelope => {
+        const p = e.payload as { source?: string; choice?: Record<string, unknown> };
+        if (p.source !== SOURCE_SKILL_ACTIVATION) return e;
+        const { bytes: _drop, ...choice } = p.choice ?? {};
+        return { ...e, payload: { ...p, choice } } as unknown as EventEnvelope;
+      };
+      await expect(resumeCompacted(`${BASE}Y`, undefined, strip)).rejects.toThrow(/not asked for/);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("the activation records the delivered size (JSON-serialized UTF-8 length)", async () => {
+    const t = `${BASE}é"\n`;
+    const b = boot({ skills: [live(t).skill], provider: script([[ACT("rev")]]) });
+    await runToEnd(b);
+    const [d] = await activations(b);
+    expect((d?.value as { bytes: number }).bytes).toBe(
+      new TextEncoder().encode(JSON.stringify(t)).length
+    );
+  });
+
+  it("re-delivery after a RESUME is pinned too: the pin comes from the replayed record", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const steps = [[ACT("rev")], [ACT("rev")]];
+      const store = new InMemoryAsyncEventStore();
+      await runToEnd(boot({ store, skills: [live("RULES-v1").skill], provider: script(steps) }));
+      const full = await store.read("e1");
+      const cutoff = full.findIndex((e) =>
+        String((e.payload as { stepId?: string }).stepId ?? "").startsWith("dba#turn:1")
+      );
+      const prefix = full.slice(0, cutoff);
+      const crashed = new InMemoryAsyncEventStore();
+      for (const e of prefix) await crashed.append(e);
+      const folded = new ReplayVM(prefix, {
+        executionId: "e1",
+        workflowId: "ask",
+        workflowVersion: "1.0.0",
+      }).getState();
+      const a = live("RULES-v1"); // same text at the replayed activation...
+      let mutated = false;
+      const b = boot({
+        store: crashed,
+        skills: [a.skill],
+        provider: (req) => {
+          // ...then it changes before the model re-activates (turn 1's request).
+          if (!mutated && req.messages.filter((m) => m.role === "assistant").length === 1) {
+            a.box.text = "RULES-v2-NEW";
+            mutated = true;
+          }
+          return script(steps)(req);
+        },
+      });
+      const st = await (await b.runtime.restoreFromState(folded)).waitForCompletion();
+      expect(st.status).toBe("completed");
+      const [first] = resultsOf(b.requests[0] as LlmRequest);
+      expect(first?.result.instructions).toBe("RULES-v1"); // replay delivered v1 (pin set from the record)
+      const [again] = resultsOf(b.requests[1] as LlmRequest);
+      expect(again?.isError).toBe(true);
+      expect(again?.result.error?.code).toBe("instructions_changed");
+      expect(JSON.stringify(again?.result)).not.toContain("RULES-v2-NEW");
     } finally {
       spy.mockRestore();
     }
