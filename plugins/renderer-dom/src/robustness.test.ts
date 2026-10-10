@@ -205,6 +205,21 @@ describe("duplicate ids (P2-2)", () => {
     expect(calls).toBe(3);
     handle.dispose();
   });
+
+  it("a reused key that now holds a different id rewrites the host's data-widget-id", () => {
+    const { rt } = setup();
+    const ids = (h: HTMLElement) =>
+      [...h.querySelectorAll("[data-widget-id]")].map((e) => e.getAttribute("data-widget-id"));
+    const mk = (order: string[]) => bp(order.map((id) => MetricCard({ id, binding: bind("v") })));
+    const host = document.createElement("div");
+    const handle = mountBlueprint(host, mk(["a", "a", "a~1"]), {
+      projectionRuntime: rt,
+      executionId: "e",
+    });
+    handle.update(mk(["a", "a~1", "a"]));
+    expect(ids(host)).toEqual(["a", "a~1", "a"]);
+    handle.dispose();
+  });
 });
 
 describe("a throwing check never escapes into the runtime (P2-3)", () => {
