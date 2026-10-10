@@ -44,6 +44,7 @@ export type { LlmCapabilities, MediaTypeSet } from "./capabilities";
 export {
   UnsupportedModalityError,
   assertRequestSupported,
+  capabilitiesForModel,
   mediaTypeAccepted,
   requestMediaParts,
 } from "./capabilities";
@@ -75,7 +76,7 @@ export { AnthropicProvider } from "./providers/AnthropicProvider";
 export type { AnthropicProviderConfig } from "./providers/AnthropicProvider";
 export { OpenAiProvider } from "./providers/OpenAiProvider";
 export type { OpenAiProviderConfig } from "./providers/OpenAiProvider";
-export { GeminiProvider } from "./providers/GeminiProvider";
+export { GEMINI_CAPABILITIES, GEMINI_MEDIA_MODELS, GeminiProvider } from "./providers/GeminiProvider";
 export type { GeminiProviderConfig } from "./providers/GeminiProvider";
 export {
   LLM_INTERRUPTED,

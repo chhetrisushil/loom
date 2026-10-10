@@ -11,6 +11,14 @@ import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import { z } from "zod";
 import { type LoomConfig, defineConfig } from "./defineConfig";
 
+/**
+ * `runAgentOnce` builds a fresh `defineConfig` app per call, so the permissive-defaults notice would print on
+ * every call of a script that loops. After the first print (to the default console sink) later calls
+ * acknowledge it (`security.strict: false`, which only silences the notice). A caller's own `strict` or
+ * `observability.onWarn` is never overridden, and a real app's `defineConfig` is unaffected.
+ */
+let permissiveNoticeShown = false;
+
 /** The model provider `createAgentModelEffect` takes (derived, so `@loom/app` need not depend on `@loom/llm`). */
 type Provider = Parameters<typeof createAgentModelEffect>[0];
 
@@ -92,8 +100,15 @@ export async function runAgentOnce(options: RunAgentOnceOptions): Promise<RunAge
   };
   let output: AgentOutput | undefined;
   let thrown: { error: unknown } | undefined;
+  const cfg = options.config;
+  let security = cfg?.security;
+  if (security?.strict === undefined && cfg?.observability?.onWarn === undefined) {
+    if (permissiveNoticeShown) security = { ...security, strict: false };
+    else permissiveNoticeShown = true;
+  }
   const app = defineConfig({
-    ...options.config,
+    ...cfg,
+    ...(security !== undefined && { security }),
     storage: { kind: "memory" },
     flows: [
       {
