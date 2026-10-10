@@ -769,7 +769,9 @@ interface ContentSweepOptions {
   touchedBefore?: number                // STORE time: guard cutoff (default touchClock() − olderThanMs)
   snapshotStores?: readonly SnapshotLookup[]   // checkpoint + latest snapshot refs are pinned
   roots?: () => AsyncIterable<string>   // D7: addresses held in your own tables, pinned
-  reclaimOrphans?: { completeScan: true }  // D6: REQUIRES the ack (bare `true` throws ReclaimOrphansAckError);
+  reclaimOrphans?: { completeScan: true }  // D6: erasing REQUIRES the ack (bare `true` throws ReclaimOrphansAckError;
+                                        // a dryRun may pass `true`); live stores BEFORE archives.
+                                        // KNOWN GAP: not safe against concurrent forks/deletes of scanned runs
                                         // needs listPage + deleteIfUntouchedSince, and
                                         // snapshotStores when a scanned store can truncatePrefix
 }

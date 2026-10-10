@@ -206,7 +206,7 @@ D4 made this larger, since a bare ref is only released when its execution goes.
 Decided: SPI 1.3.0 adds an optional `listPage({ cursor?, limit?, touchedBefore? })`, which pages
 **keyset on address**. Memory is bounded per page, and deleting entries mid-scan never skips a
 survivor. The page limit must be a positive integer; anything else is a `RangeError`, never "no
-limit" (SQLite reads `LIMIT -1` as unbounded). With `reclaimOrphans: true` (CLI `--orphans`),
+limit" (SQLite reads `LIMIT -1` as unbounded). With `reclaimOrphans` (CLI `--orphans`; amended 2026-10-10: the object form `{ completeScan: true }`, see the end of this section),
 after the TTL pass the sweep streams `listPage({ touchedBefore })`, using D5's store-clock cutoff. It erases,
 conditionally, every address NOT in `lastCited ∪ pinned ∪ loadBearing ∪ roots`. `pinned` and
 `loadBearing` are subsets of `lastCited`, so each decision is two `Set` lookups and the whole
@@ -294,16 +294,37 @@ guard to the CLI and to `dryRun`; a library host calling `sweepUnpinnedContent({
 that omitted an event store or snapshot store silently erased every blob only that store cited
 (the library cannot see a store it was not given). Decided: `reclaimOrphans` is now
 `{ completeScan: true }`. A bare `true`, `{}`, `{ completeScan: false }` or any other value throws
-`ReclaimOrphansAckError` (a `TypeError`) before anything is read or erased, `dryRun` included,
-so the unsafe sweep cannot be reached by accident and a migrating host must read the hazard once.
-The object form is the caller's assertion that `eventStores`, `snapshotStores` and `roots` cover
-every citing store. The CLI passes it only after its own archive/snapshot checks. Considered and
-not added: (b) a two-phase plan/apply token, because the re-cite TOCTOU between plan and delete is
-already closed by D5 (`deleteIfUntouchedSince` against the store-clock cutoff read once at the
-start), and a token would not detect an omitted store either; (c) a grace floor, which exists
-already (a blob touched within `olderThanMs` of the sweep is never an orphan, and an in-flight
-`put` survives). The sweep cannot detect an omitted store, so no further automatic detection is
-claimed. The `reclaimOrphans: false` / absent path is unchanged.
+`ReclaimOrphansAckError` (a `TypeError`) before anything is read or erased, so the unsafe sweep
+cannot be reached by accident and a migrating host must read the hazard once. A `dryRun` is
+EXEMPT: it erases nothing and is how a host checks completeness, so `dryRun: true` accepts a
+plain `true` (the type is a union tying the two: the erasing arm takes only the object or
+`false`, the `dryRun: true` arm also takes a boolean). The object form is the caller's assertion
+that `eventStores`, `snapshotStores` and `roots` cover every citing store, **in scan order**: each
+live store BEFORE its archive (see "Scan order" in D5), because `[archive, live]` can truthfully
+cover every store and still miss an execution retention moves mid-sweep. The CLI passes it only
+after its own archive/snapshot checks and scans live then archive. Considered and not added: (b) a
+two-phase plan/apply token, because a token would not detect an omitted store, and it does not
+close the concurrency gap below either (the plan is as stale as the scan); D5's
+`deleteIfUntouchedSince` covers a re-cite through `put` against the store-clock cutoff read once
+at the start, nothing more; (c) a grace floor, which exists already (a blob touched within
+`olderThanMs` of the sweep is never an orphan, and an in-flight `put` survives). The sweep cannot
+detect an omitted store, so no further automatic detection is claimed. The `reclaimOrphans: false`
+/ absent path is unchanged.
+
+> **KNOWN GAP (not fixed here): a citation copied WITHOUT a `put` is not protected.** D5's
+> conditional delete reads the blob's touch time, and only `put`/`putStream` bump it
+> (`InMemoryContentStore`, `SqliteContentStore`). A re-cite through `put` is therefore safe; a
+> citation that never calls `put` is not: `ContentResolvingEventStore.copyPrefix` (a fork) copies
+> refs verbatim, and an `append` keeps refs already inside its payload (recalled memory,
+> `scriptRef`, refs passed between steps). Scenario: a blob older than the TTL is cited only by
+> `p-parent`. The sweep lists executions in id order. Mid-sweep `p-parent` is forked (copied
+> verbatim) into `a-child`, whose id the listing has already passed, and `p-parent` is then
+> deleted. The scan sees neither citation, the blob is an orphan older than the cutoff, the
+> orphan pass erases it, and `a-child` replay throws `ContentMissingError`. A test pins this
+> (`KNOWN GAP` in `gc.test.ts`); a fix flips it deliberately. **Operational rule: do not run an
+> orphan sweep concurrently with forks or deletes of the executions it scans; quiesce them
+> first.** Closing it needs a ContentStore SPI change (a way to touch without a put, called by
+> the fork path), which is a separate decision.
 
 ### D7 — External root sets
 

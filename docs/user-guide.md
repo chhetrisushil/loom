@@ -2110,9 +2110,9 @@ lifecycle without ever creating a silent third behavior between "replays identic
 refs cited by pinned event kinds survive — across archival, re-derived from the log on every
 sweep (mark-and-sweep, no mutable index). Over a store with ContentStore SPI 1.3.0 (SQLite,
 in-memory) every erase is conditional on the blob's touch time, so a blob re-cited mid-sweep is
-kept. `reclaimOrphans: { completeScan: true }` also reclaims blobs nothing cites any more; the
-acknowledgement is required (a bare `true` throws `ReclaimOrphansAckError`) because you are asserting
-that you passed every archive, every snapshot store and every `roots` source. Run `dryRun` first. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
+kept (for a re-cite through `put`). `reclaimOrphans: { completeScan: true }` also reclaims blobs nothing cites any more; the
+acknowledgement is required to erase (a bare `true` throws `ReclaimOrphansAckError`; a `dryRun` is exempt and is how you check) because you are asserting
+that you passed every archive, every snapshot store and every `roots` source, and in the right ORDER: each live store before its archive. **Known gap:** a citation copied without a `put` (a fork copies refs verbatim; an `append` keeps refs already in its payload) does not bump the touch time, so an orphan sweep that runs while an execution it scans is forked and then deleted can erase a blob the fork still cites (`a-child` replay then throws `ContentMissingError`). Do not run an orphan sweep concurrently with forks or deletes of the executions it scans; quiesce them first. Run `dryRun` first. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
 Give the same kinds to `retention.pinnedEventTypes` so compaction keeps those events in place
 too (ADR 0106): a pinned execution then compacts around its findings. (With no
