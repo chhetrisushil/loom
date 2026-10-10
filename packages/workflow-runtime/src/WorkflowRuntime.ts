@@ -4,13 +4,7 @@ import {
   flowContentHash,
   legacyFlowContentHash,
 } from "@loom/core";
-import type {
-  EventEnvelope,
-  ExecutionState,
-  FlowDefinition,
-  SuspendCondition,
-  SuspendWait,
-} from "@loom/core";
+import type { EventEnvelope, ExecutionState, FlowDefinition, SuspendWait } from "@loom/core";
 import { LazyEffect } from "@loom/effect-runtime";
 import type {
   Effect,
@@ -19,12 +13,7 @@ import type {
   TransientInvokeOptions,
 } from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
-import {
-  DuplicateEnvelopeIdError,
-  DuplicateSequenceError,
-  RESERVED_STREAM_PREFIX,
-  isReservedStream,
-} from "@loom/event-runtime";
+import { RESERVED_STREAM_PREFIX, isReservedStream } from "@loom/event-runtime";
 import { appendBatchOf, headOf, isAnsweringKind, readRangeOf } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
@@ -44,7 +33,7 @@ import { DivergenceGuard, type DivergenceMode } from "./DivergenceGuard";
 import { ExecutionJournal } from "./ExecutionJournal";
 import { highestMissing } from "./LogLifecycle";
 import { WorkflowContextImpl } from "./WorkflowContext";
-import type { InboxBinding, SurfaceFactory } from "./WorkflowContext";
+import type { SurfaceFactory } from "./WorkflowContext";
 import {
   ChainHopLimitError,
   type ChainIdentity,

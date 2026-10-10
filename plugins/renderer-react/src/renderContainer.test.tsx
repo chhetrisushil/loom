@@ -1,6 +1,6 @@
 import { flex, grid, stack } from "@loom/blueprint-runtime";
 import { render } from "@testing-library/react";
-import React, { type ReactElement } from "react";
+import type { ReactElement } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { renderReactContainer } from "./renderContainer";
 

@@ -4,7 +4,7 @@ import type { MemoryEntry, MemoryStore } from "@loom/memory";
 import { describe, expect, it } from "vitest";
 import { KnowledgeBase } from "./KnowledgeBase";
 import type { DecideFn } from "./KnowledgeBase";
-import type { KnowledgeDoc, Passage } from "./types";
+import type { KnowledgeDoc } from "./types";
 
 /** A pass-through `ctx.decide` — enough for everything that is not about the decision seam. */
 const decide: DecideFn = async (_key, compute) => compute();

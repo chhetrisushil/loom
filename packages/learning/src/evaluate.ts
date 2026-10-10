@@ -1,13 +1,6 @@
 import { quantileSorted, seededRandom } from "./stats";
 import { stableKey } from "./trajectories";
-import type {
-  EstimateInterval,
-  EvalReport,
-  Policy,
-  PolicyContext,
-  Trajectory,
-  TrajectoryStep,
-} from "./types";
+import type { EstimateInterval, EvalReport, Policy, PolicyContext, Trajectory } from "./types";
 
 // ── Off-policy evaluation (ADR 0080) ─────────────────────────────────────────
 //

@@ -6,7 +6,9 @@ describe("capabilitiesForModel is public", () => {
     expect(capabilitiesForModel("gemini-2.5-flash", GEMINI_CAPABILITIES, GEMINI_MEDIA_MODELS)).toBe(
       GEMINI_CAPABILITIES
     );
-    expect(capabilitiesForModel("gemini-1.0-pro", GEMINI_CAPABILITIES, GEMINI_MEDIA_MODELS)).toEqual({});
+    expect(
+      capabilitiesForModel("gemini-1.0-pro", GEMINI_CAPABILITIES, GEMINI_MEDIA_MODELS)
+    ).toEqual({});
     expect(GEMINI_CAPABILITIES.image).toContain("image/png");
   });
 });

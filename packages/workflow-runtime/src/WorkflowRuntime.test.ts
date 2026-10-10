@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { testSurface } from "./testSurface";
-import type { FlowRunner, RegisteredFlow, WorkflowContext } from "./types";
+import type { FlowRunner, RegisteredFlow } from "./types";
 
 const inputSchema = z.object({ incidentId: z.string() });
 const outputSchema = z.object({ resolved: z.boolean() });

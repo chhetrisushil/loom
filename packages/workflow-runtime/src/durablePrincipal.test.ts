@@ -3,29 +3,23 @@ import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import {
   type CapabilityAuthorizer,
   type CapabilityRequest,
-  DelegationAuthorizer,
   EffectRuntime,
-  GrantTable,
   type PrincipalChain,
   ToolEffect,
   signDelegation,
 } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
-import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { TimerService } from "./TimerService";
 import { WorkflowRuntime, type WorkflowRuntimeDeps } from "./WorkflowRuntime";
 import { executionAccessPolicy } from "./executionAccessPolicy";
-import { type PrincipalCodec, PrincipalUnrestorableError } from "./principal";
-import { recoverAbandoned } from "./recoverAbandoned";
+import { PrincipalUnrestorableError } from "./principal";
 import type {
   ExecutionAuthorizer,
   ExecutionAuthzRequest,
   FlowRunner,
   RegisteredFlow,
-  ResumeAuthenticator,
 } from "./types";
 
 // ── R3k (ADR 0111) — the execution's principal is durable ─────────────────────
