@@ -280,7 +280,7 @@ compacted or not (a test compares the two) EXCEPT for one input, stated precisel
 decisions the checkpoint absorbed. A checkpoint cannot give back WHEN a decision was made: a decision it
 absorbed gets its ordinal as `sequence` and `state.startedAt` as `timestamp`, the ordinal being the key order of
 the folded `_decisions` map. Only the discounted terminal credit (`discount < 1`) reads that order; the direct
-credit, the default `discount = 1`, per-arm statistics and the policy evaluation are order-free. Compaction keeps nothing extra: late outcomes sit above the terminal event
+credit, the default `discount = 1`, per-arm statistics and the policy evaluation are order-free. *(Resolved by ADR 0128, 2026-10-11 — see the note under Round 4 item 2.)* Compaction keeps nothing extra: late outcomes sit above the terminal event
 (Q3) and stay on the log until the next compaction folds them. `trajectories(await store.read(id))` alone is
 exact only for a log that was never compacted, and the other log-reading lenses of `@loom/analytics`
 (`decisionRecords`, `decisionStore`, the advisory correlation index) see only the events still on the log: a
@@ -331,6 +331,7 @@ its decision (it validates against the folded `_decisions`).
    (Postgres `jsonb`) has already lost the order. So a compacted execution's evidence equals the uncompacted
    one's whenever `discount = 1`, or its absorbed ids are not array-index-like and the store keeps key order.
    Tests pin the exact cases and the documented limit. (Kernel-generated decision ids are never array-index-like.)
+   > **Update 2026-10-11:** this limit is resolved by [ADR 0128](0128-decision-order-through-checkpoints.md) (EVENT_SCHEMA 1.24.0): the fold stamps the envelope `seq` on each `_decisions` entry and `evidenceEvents` orders absorbed decisions by it, exact whatever the id shape or the store. Only a snapshot folded before 1.24.0 still reads in map order.
 3. **`loom learn report|eval` reads checkpoints.** With a snapshot store (`--snap`, or `--config`) each
    execution's evidence is `evidenceEvents(folded state, log)`; without one, a log that looks compacted (a hole
    in its sequences) is counted and named in a warning, never read quietly as "no decisions".

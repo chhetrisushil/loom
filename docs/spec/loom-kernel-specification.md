@@ -180,8 +180,14 @@ load-bearing, plus the global guardrails that gate every additive capability:
   unchanged; `WIRE_ABI_VERSION` stays 1.0.0 (ADR 0026 versions the wire protocol, and added fold
   vectors are not a protocol change; a foreign fold that does not stamp `seq` fails the vector).
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
-  resume `null` into an unparked or in-doubt execution, or hold a `STEP_FAILED`
-  that no status-setting event follows, replay byte-identically.
+  resume `null` into an unparked or in-doubt execution, hold a `STEP_FAILED`
+  that no status-setting event follows, or record any `DECISION_RECORDED` (the folded state now
+  carries `seq`, so its BYTES differ from 1.23.0's), replay byte-identically.
+  In a mixed fleet (a rolling upgrade or rollback interleaving 1.23 and 1.24 nodes) a snapshot may
+  hold stamped and unstamped entries together: a 1.23 node adds a decision without `seq`, or rebuilds
+  a stamped one without it, and the entry stays unstamped (a repeat never invents a `seq`).
+  `evidenceEvents` places each unstamped entry immediately after the stamped entry that precedes it
+  in map order, so such an entry stays beside the decision it followed.
 
 ### 4.1 Typed failure channels (ADR 0060)
 

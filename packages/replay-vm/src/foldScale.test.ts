@@ -232,8 +232,11 @@ function referenceFold(events: EventEnvelope[]): ExecutionState {
             choice: p.choice,
             ...(p.rationale !== undefined && { rationale: p.rationale }),
             ...(p.policy !== undefined && { policy: p.policy }),
-            // ADR 0128 — the FIRST record's envelope sequence is kept by a repeated id.
-            seq: vars._decisions?.[p.decisionId]?.seq ?? e.sequence,
+            // ADR 0128 — the FIRST record's envelope sequence is kept by a repeated id; a repeat of
+            // a LEGACY entry (present, no `seq`) stays without one (undefined drops in the clone).
+            seq: Object.hasOwn(vars._decisions ?? {}, p.decisionId)
+              ? vars._decisions[p.decisionId].seq
+              : e.sequence,
           },
         };
         break;

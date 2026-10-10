@@ -506,6 +506,23 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
       expect(credit(events)?.map((r) => r[0])).toEqual(["d-a", "d-b"]); // map order, as before
     });
 
+    it("a MIXED-FLEET snapshot (a legacy entry among stamped ones) keeps the true order", async () => {
+      const { eventStore, snapshotStore, runtime } = await run(["d1", "d2", "d3"]);
+      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+      const state = (await runtime.loadState("o"))!;
+      const decisions = state.variables._decisions as Record<string, Record<string, unknown>>;
+      // d3 was added (or rebuilt) by a 1.23 node: no `seq`. Map order is the true order.
+      const { seq: _s, ...d3 } = decisions.d3 as Record<string, unknown>;
+      const mixed = { d1: decisions.d1, d2: decisions.d2, d3 };
+      const events = evidenceEvents(
+        { ...state, variables: { ...state.variables, _decisions: mixed } },
+        await eventStore.read("o")
+      );
+      expect(credit(events)?.map((r) => r[0])).toEqual(["d1", "d2", "d3"]);
+      const seqs = events.filter((e) => e.eventType === "DECISION_RECORDED").map((e) => e.sequence);
+      expect(seqs.every((n) => Number.isSafeInteger(n))).toBe(true);
+    });
+
     // The Postgres half: `jsonb` orders object keys by length, then bytes, so a snapshot read back
     // from Postgres lists `route-a` before `route-b` whatever order they were decided in. Without
     // `seq` the discounted credit is swapped; with it, compaction is invisible.
