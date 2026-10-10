@@ -1416,6 +1416,32 @@ export class InboxMessageRefusedError extends Error {
 }
 
 /**
+ * ADR 0110 D10b — `send` refused because the FLEET switched to per-topic inbox streams
+ * (`runtime.enableInboxTopicStreams`) and this node has `kernel.features.inboxTopicStreams` OFF. A
+ * legacy-stream write after the switch would sit below the owner's cursor and be skipped, so the node
+ * refuses instead of losing the message. Turn the flag on for this node (or route the send to one that
+ * has it). `possiblyWritten` is true when the switch was only seen AFTER a legacy copy landed: that
+ * copy may or may not be delivered, so retry with the same `messageId` (the owner's dedupe window
+ * delivers once).
+ */
+export class InboxTopicStreamsRequiredError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly possiblyWritten = false
+  ) {
+    super(
+      `send to execution "${executionId}" refused: the fleet writes per-topic inbox streams (ADR 0110 D10b) and this node has kernel.features.inboxTopicStreams off. ${
+        possiblyWritten
+          ? "A legacy copy may have landed before the switch was seen; retry with the same messageId (it is delivered once)."
+          : "Nothing was appended."
+      }`
+    );
+    this.name = "InboxTopicStreamsRequiredError";
+    Object.setPrototypeOf(this, InboxTopicStreamsRequiredError.prototype);
+  }
+}
+
+/**
  * ADR 0110 D3 — a re-run registered a wait whose `waitId` the log already ANSWERED as a different
  * kind or name: the flow body changed under a recorded answer (an inserted `receive` shifts every
  * later ordinal). Raised instead of handing the answer to the wrong wait. (ADR 0113's detector

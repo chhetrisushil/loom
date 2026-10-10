@@ -10,6 +10,7 @@ import {
   headOf,
   inboxRegistryStreamId,
   inboxStreamsOfChain,
+  inboxStreamsOfChainDeep,
   inboxTopicStreamId,
   readRangeOf,
 } from "@loom/event-runtime";
@@ -461,9 +462,17 @@ export async function trimInbox(
  * Delete every inbox stream of the chain (it was reclaimed): the topic streams, the legacy stream and,
  * LAST, the registry that names the topic streams (a crash midway leaves them findable). Idempotent.
  */
-export async function deleteInbox(store: EventStore, chainId: string): Promise<void> {
+export async function deleteInbox(
+  store: EventStore,
+  chainId: string,
+  /** Also find topic streams the registry does not name (a prefix scan; the orphan sweep's backstop). */
+  deep = false
+): Promise<void> {
   if (store.deleteExecution === undefined) return;
-  const { legacy, registry, topics } = await inboxStreamsOfChain(store, chainId);
+  const { legacy, registry, topics } = await (deep ? inboxStreamsOfChainDeep : inboxStreamsOfChain)(
+    store,
+    chainId
+  );
   for (const stream of topics) await store.deleteExecution(stream);
   await store.deleteExecution(legacy);
   if (registry !== undefined) await store.deleteExecution(registry);
@@ -497,23 +506,65 @@ export const INBOX_TOPIC_KIND = "INBOX_TOPIC";
 /** The kind of the fleet-switch entry in {@link INBOX_LAYOUT_STREAM}. */
 export const INBOX_LAYOUT_KIND = "INBOX_LAYOUT";
 
-/** The topics registered for a chain, in registration order (deduped). */
+/** The kind of a tombstone: the topic's stream is drained, so it no longer counts as a LIVE topic. */
+export const INBOX_TOPIC_RETIRED_KIND = "INBOX_TOPIC_RETIRED";
+
+/**
+ * The LIVE topics registered for a chain, in registration order: a topic added and not retired since.
+ * (A retired topic's stream still exists, one drained entry holding the allocation head; it is found
+ * for deletion by {@link inboxStreamsOfChain}, which names every topic ever added.)
+ */
 export async function readRegisteredTopics(store: EventStore, chainId: string): Promise<string[]> {
-  const out: string[] = [];
-  const seen = new Set<string>();
+  const live = new Map<string, true>();
   for (const e of await store.read(inboxRegistryStreamId(chainId))) {
     const topic = (e.payload as { topic?: unknown } | null)?.topic;
-    if (e.eventType !== INBOX_TOPIC_KIND || typeof topic !== "string" || seen.has(topic)) continue;
-    seen.add(topic);
-    out.push(topic);
+    if (typeof topic !== "string") continue;
+    if (e.eventType === INBOX_TOPIC_KIND) {
+      live.delete(topic); // re-adding moves it to the end; order is registration order
+      live.set(topic, true);
+    } else if (e.eventType === INBOX_TOPIC_RETIRED_KIND) live.delete(topic);
   }
-  return out;
+  return [...live.keys()];
+}
+
+async function appendRegistry(
+  store: EventStore,
+  chainId: string,
+  eventType: string,
+  topic: string,
+  now: () => number
+): Promise<void> {
+  const registry = inboxRegistryStreamId(chainId);
+  for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt++) {
+    const head = await headOf(store, registry);
+    const sequence = head === null ? 0 : head + 1;
+    try {
+      await store.append({
+        id: `${registry}-${sequence}`,
+        workflowId: INBOX_WORKFLOW_ID,
+        executionId: registry,
+        eventType,
+        sequence,
+        timestamp: now(),
+        payload: { topic },
+      });
+      return;
+    } catch (err) {
+      if (err instanceof DuplicateSequenceError || err instanceof DuplicateEnvelopeIdError)
+        continue;
+      throw err;
+    }
+  }
+  throw new Error(
+    `inbox registry "${registry}": could not write an entry after ${APPEND_ATTEMPTS} attempts`
+  );
 }
 
 /**
- * Make sure `topic` is in the chain's registry BEFORE its first message is written (every stream with
- * a message is therefore enumerable). `"full"` when the chain already has `maxTopics` other topics.
- * Concurrent first sends of a topic may both append an entry; readers dedupe.
+ * Make sure `topic` is a LIVE topic of the chain BEFORE its first message is written (every stream with
+ * a message is therefore enumerable). `"full"` when the chain already has `maxTopics` other LIVE
+ * topics (a drained topic does not count, see {@link retireInboxTopic}). Concurrent first sends of a
+ * topic may both append an entry; readers dedupe.
  */
 export async function registerInboxTopic(
   store: EventStore,
@@ -522,33 +573,32 @@ export async function registerInboxTopic(
   maxTopics: number,
   now: () => number
 ): Promise<"registered" | "present" | "full"> {
-  const registry = inboxRegistryStreamId(chainId);
-  for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt++) {
-    const topics = await readRegisteredTopics(store, chainId);
-    if (topics.includes(topic)) return "present";
-    if (topics.length >= maxTopics) return "full";
-    const head = await headOf(store, registry);
-    const sequence = head === null ? 0 : head + 1;
-    try {
-      await store.append({
-        id: `${registry}-${sequence}`,
-        workflowId: INBOX_WORKFLOW_ID,
-        executionId: registry,
-        eventType: INBOX_TOPIC_KIND,
-        sequence,
-        timestamp: now(),
-        payload: { topic },
-      });
-      return "registered";
-    } catch (err) {
-      if (err instanceof DuplicateSequenceError || err instanceof DuplicateEnvelopeIdError)
-        continue;
-      throw err;
-    }
-  }
-  throw new Error(
-    `inbox registry "${registry}": could not register a topic after ${APPEND_ATTEMPTS} attempts`
-  );
+  const topics = await readRegisteredTopics(store, chainId);
+  if (topics.includes(topic)) return "present";
+  if (topics.length >= maxTopics) return "full";
+  await appendRegistry(store, chainId, INBOX_TOPIC_KIND, topic, now);
+  return "registered";
+}
+
+/**
+ * A drained topic stops counting against the topic cap: a tombstone first, then a re-check of the
+ * stream (`pending()`: has a message arrived past the cursor?). A sender appends THEN verifies the
+ * registry; this retirer tombstones THEN re-checks the stream: whichever way they interleave, one of
+ * them sees the other (the same protocol as the lost-wakeup), and the topic is made live again. The
+ * topic re-registers on its next send. Returns whether the topic stayed retired.
+ */
+export async function retireInboxTopic(
+  store: EventStore,
+  chainId: string,
+  topic: string,
+  now: () => number,
+  pending: () => Promise<boolean>
+): Promise<boolean> {
+  if (!(await readRegisteredTopics(store, chainId)).includes(topic)) return false;
+  await appendRegistry(store, chainId, INBOX_TOPIC_RETIRED_KIND, topic, now);
+  if (!(await pending())) return true;
+  await appendRegistry(store, chainId, INBOX_TOPIC_KIND, topic, now);
+  return false;
 }
 
 /** Has the fleet switched to per-topic writing? (A point read; the answer is monotone, so cache `true`.) */

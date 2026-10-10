@@ -387,6 +387,25 @@ describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)",
     ]);
   });
 
+  it("ADR 0110 D10b: a topic stream the registry does NOT name (a sender died before registering) is purged too", async () => {
+    const { store, shred } = await setup();
+    await seedStarted(store, "a1", "ann");
+    await store.append(ev("a1", 1, "EXECUTION_COMPLETED", {}));
+    const ghost = inboxTopicStreamId("a1", "ghost");
+    await store.append({ ...inboxMsg("a1", 2 ** 40), id: `${ghost}-x`, executionId: ghost });
+    // A neighbour chain sharing the id prefix must be left alone.
+    const other = inboxTopicStreamId("a1#x", "t");
+    await store.append({ ...inboxMsg("a1#x", 2 ** 40), id: `${other}-x`, executionId: other });
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["a1"]),
+      eventStore: store,
+      shred,
+    });
+    expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
+    expect(await store.read(ghost)).toEqual([]);
+    expect(await store.read(other)).toHaveLength(1);
+  });
+
   it("the logs are read BEFORE the key is destroyed: a store that cannot read after the shred still gets its stream purged", async () => {
     const { store } = await setup();
     await seedStarted(store, "a1", "ann");

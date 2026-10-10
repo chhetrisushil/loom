@@ -822,15 +822,17 @@ legacy run fold to the same event kinds and output, tested).
   stream, and returns the legacy messages (all below the base) before the topic's. The sketch seeded each topic stream
   at the legacy head instead; that makes a legacy message appended LATER (a straggling writer) collide with, or land
   below the cursor of, a topic-stream message and be skipped forever. Disjoint ranges cannot collide. The reads are
-  ordered topic-then-legacy because a topic-stream message is written only after every legacy message that precedes
-  it is durable: reading the later stream first can never miss an earlier legacy message. A cursor already in the topic
+  ordered topic-then-legacy because, for a flag-on node writing per-topic after the switch, a topic-stream message is written
+  only after every legacy message that node wrote before it is durable: reading the later stream first can never miss an earlier
+  legacy message of such a writer. (A legacy writer that did not see the switch is covered by the dual-write and the refusal below,
+  not by this ordering.) A cursor already in the topic
   range skips the legacy read. Nothing is copied or rewritten; legacy data is read where it lies.
 - **Per-topic bounds.** `send` judges the topic's own stream: `inboxMaxBacklog` and `inboxMaxRetained` apply per
   topic, the full verdict, counts, floors and pin warning are keyed by the stream, and `InboxFullError` is per topic (a
   hot topic is never refused for a cold one). Trim is per stream: a topic whose cursor is in the topic range deletes its
   stream's consumed prefix up to the cursor (a single-topic stream has no cold neighbour to pin it).
 - **Topic cap and registry.** The first send of a topic appends an `INBOX_TOPIC` entry to the chain's registry BEFORE its
-  first message, so every stream with a message is enumerable without `listExecutionsPage`; the topic past `inboxMaxTopics` (the 65th by default) is refused with `InboxMessageRefusedError`, a known topic never is. The sketch put the marker
+  first message, so every stream with a message is enumerable without `listExecutionsPage`; the topic past `inboxMaxTopics` LIVE topics (the 65th by default) is refused with `InboxMessageRefusedError`, a known topic never is. A topic is live from its registry entry until it is drained: when the owner's cursor reaches the stream's head the owner writes an `INBOX_TOPIC_RETIRED` tombstone (then re-checks the stream, and re-adds the topic if a message arrived meanwhile); the next send re-registers it, so a chain cycling through any number of dynamic topics is never refused for the count of topics it has EVER used. A drained topic's stream keeps its head entry (the sequence space stays monotone) and the registry keeps one entry per topic ever used until the chain ends (storage O(topics ever), not capped). Registration is verified AFTER the append: a send re-reads the registry and registers again if the topic is gone (a retirement or a chain retirement deleted it under a stale cache); a retirement of the chain deletes every stream the registry names, a send that observes a terminal owner deletes the stream it wrote by name, and the orphan sweep deletes a handed stream by name plus any unregistered topic stream found by a prefix scan (`inboxStreamsOfChainDeep`, over `listExecutionsPage`, as is erasure). Residual: a retirement that stalls for longer than a whole terminal-reopen-send cycle could delete a registry that a later life then re-created; the next retirement or the sweep's prefix scan still reaches such a stream. The sketch put the marker
   in the legacy stream; the legacy stream is trimmed from the front, so a marker there would be trimmed away. A separate
   registry stream is never trimmed and bounded by the cap. It carries topic NAMES (already present, unsealed, in every
   message and cursor).
@@ -860,16 +862,14 @@ legacy run fold to the same event kinds and output, tested).
 - **Rolling upgrade: a node writes per-topic only once the FLEET opted in.** Two steps, both durable:
   (1) the per-node flag `inboxTopicStreams` (this node reads AND is allowed to write topic streams); (2) a one-way,
   fleet-wide switch, `runtime.enableInboxTopicStreams({ principal })`, which appends one `INBOX_LAYOUT` entry to the
-  reserved stream `__loom_inbox_layout__`. A send writes the topic's own stream iff its node has the flag AND the switch
-  exists (a point read per send until the switch is seen, then cached: it never goes away). Before the switch every node
-  writes the legacy stream exactly as before, flag or not. **Operator procedure:** (a) deploy a D10 build to EVERY node
+  reserved stream `__loom_inbox_layout__`. EVERY D10 build reads the switch (a point read per send until it is seen, then cached: it never goes away). Before the switch every node
+  writes the legacy stream exactly as before, flag or not. After it a node with the flag writes the topic's own stream, and a node with the flag OFF REFUSES the send with the typed `InboxTopicStreamsRequiredError` and writes nothing (a legacy write now would sit below the consumers' cursors and be skipped without a trace). A flag-off send that only sees the switch AFTER its legacy copy landed throws the same error with `possiblyWritten: true` (retry with the same `messageId`; the dedupe window delivers once). **Operator procedure:** (a) deploy a D10 build to EVERY node
   (readers always read both layouts; a pre-D10 node cannot read a topic stream, so a chain whose owner runs there would
   stall); (b) turn `inboxTopicStreams` on for EVERY node (nothing changes yet); (c) call `enableInboxTopicStreams` once;
-  never run (c) while a node without the flag exists, and never turn the flag off afterwards (such a node would keep
-  writing the legacy stream below consumers' cursors, and its messages could be skipped). **A send that straddles the
+  never run (c) while a node without the flag exists, and never turn the flag off afterwards (such a node refuses every send after the switch). A build older than D10 does not read the switch and is covered only by this procedure. **A send that straddles the
   switch is safe:** a flag-on node that read "no switch", wrote the legacy stream and then finds the switch writes the
-  message's topic-stream copy too; the owner's dedupe window (sender + `messageId`) delivers whichever it reaches first
-  exactly once (tested with a send paused between its switch read and its legacy append while another node switches,
+  message's topic-stream copy too; the owner's dedupe window (sender + `messageId`, 1 024 entries shared with every other message) delivers whichever it reaches first
+  exactly once (within the window only: if more than 1 024 other messages are delivered between the two copies, the second is delivered again; accepted for a send that straddles the switch) (tested with a send paused between its switch read and its legacy append while another node switches,
   writes and the owner consumes from the topic stream). The cost on every node: one extra point read per message read (the
   topic stream's head) and, until the switch is seen, one per send.
 - **Not done, deliberately.** A node with the flag OFF does not check the switch (it must be byte-identical), so it cannot
@@ -899,12 +899,12 @@ vector pins the fold. Each was revert-checked: undoing the change fails the test
 
 **Tests (D10b).** `r2-topicStreams.test.ts` (memory, SQLite, Postgres): a cold topic beside a hot one no longer pins it
 (and the single-stream control still does); the backlog bound is per topic; legacy data written before the switch is
-read first and in order after it, and nothing is copied; a mixed fleet (flag on and off) loses and doubles nothing; a send
+read first and in order after it, and nothing is copied; before the switch a mixed fleet (flag on and off) loses and doubles nothing, and after it a flag-off node's send is refused with `InboxTopicStreamsRequiredError` and writes nothing (a build older than D10 is covered only by the operator procedure); a send
 paused across the switch is neither lost nor doubled; flag off and flag on before the switch are byte-identical to
 each other (stream, log kinds, cursors from 0) and the switch needs the flag; the reserved-id rule; the topic cap;
 continue-as-new carries the per-topic cursors; a fork and a re-open land above them; a discard works through a
 topic-range sequence; TTL expiry works per topic stream; the sweep reclaims a finished chain's orphan topic stream and
-its registry; a per-topic run folds to the same shape as a legacy run. Plus `inboxStreams.test.ts` (event-runtime: the
+its registry and an unregistered topic stream by name (and not again on the next pass); a stale 'already registered' cache and a send racing the owner's completion leave no orphan stream; a chain cycling through 100 drained dynamic topics is never refused and a drained topic re-registers; a per-topic run folds to the same shape as a legacy run. Plus `inboxStreams.test.ts` (event-runtime: the
 naming, the chain mapping, the reserved shape, `inboxStreamsOfChain`), `eraseSubject.test.ts` (every stream purged,
 registry last, topic streams first, registry read before the shred), `inboxStream.test.ts` (crypto: a topic stream seals
 under the owner and reads as the marker after a shred), `bargeIn.test.ts` (conversation) and `inboxConfig.test.ts`

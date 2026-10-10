@@ -3,7 +3,7 @@ import {
   type EventStore,
   type InboxStreams,
   chainIdOfFirst,
-  inboxStreamsOfChain,
+  inboxStreamsOfChainDeep,
 } from "@loom/event-runtime";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
@@ -55,7 +55,8 @@ export interface EraseCoordinatorOptions {
    * cannot delete a stream, and a payload still in flight in one is then erased only by the key
    * (the crypto plugin seals inbox payloads under the owner's subject).
    */
-  eventStore: Pick<EventStore, "read" | "append"> & Partial<Pick<EventStore, "deleteExecution">>;
+  eventStore: Pick<EventStore, "read" | "append"> &
+    Partial<Pick<EventStore, "deleteExecution" | "listExecutionsPage">>;
   shred: Shredder;
   /**
    * Cancel one PARKED execution under the coordinator's own authority (a system / compliance
@@ -264,8 +265,16 @@ export class EraseCoordinator {
       chains.add(chainIdOfFirst(folded.first, executionId));
     }
     const streams: InboxStreams[] = [];
-    const view = { read: (id: string) => this.readErasedOk(id) };
-    for (const chain of chains) streams.push(await inboxStreamsOfChain(view, chain));
+    const store = this.options.eventStore;
+    const view = {
+      read: (id: string) => this.readErasedOk(id),
+      // The registry may miss a topic stream (a sender that died before it registered): the prefix
+      // scan is the backstop, so erasure reaches an unregistered stream too.
+      ...(store.listExecutionsPage !== undefined && {
+        listExecutionsPage: store.listExecutionsPage.bind(store),
+      }),
+    };
+    for (const chain of chains) streams.push(await inboxStreamsOfChainDeep(view, chain));
     return streams;
   }
 

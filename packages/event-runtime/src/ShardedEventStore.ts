@@ -9,7 +9,7 @@ import {
   OPTIONAL_EVENT_STORE_METHODS,
   type OptionalEventStoreMethod,
   appendBatchOf,
-  readRangeOf,
+  headOf,
 } from "./types";
 
 export interface ShardedEventStoreOptions {
@@ -85,8 +85,9 @@ export interface MigrationResult {
  *   migrate only executions that are terminal *and* undispatched.
  *
  * Invariants relied on throughout: an execution lives entirely on one shard at any moment,
- * and sequence 0 (the bootstrap anchor) exists for as long as the execution does — which is
- * what makes "which side holds it?" a single indexed point-read.
+ * and a stream that exists has a head — which is what makes "which side holds it?" a single
+ * indexed point-read (the HEAD, not sequence 0: an inbox topic stream or a floor-seeded stream has
+ * no sequence 0).
  */
 /**
  * The optional-capability surface EVERY shard shares: an object carrying each optional
@@ -254,10 +255,14 @@ export class ShardedEventStore implements EventStore {
     // one indexed point-read answers the question. The destination is checked FIRST, so a
     // migrated execution stops consulting the source immediately — and so a crash between
     // copy and delete resolves to the destination, which is the surviving copy.
-    const onTo = await readRangeOf(this.shards[placement.to] as EventStore, executionId, 0, 0);
-    if (onTo.length > 0) return this.remember(executionId, placement.to);
-    const onFrom = await readRangeOf(this.shards[placement.from] as EventStore, executionId, 0, 0);
-    if (onFrom.length > 0) return this.remember(executionId, placement.from);
+    // The probe is the stream HEAD (one indexed MAX(sequence)), not sequence 0: a stream that never
+    // had a sequence 0 (an inbox topic stream starts at 2^40; a legacy inbox stream seeded at a fork
+    // floor starts above 0) is on a shard all the same, and a probe of 0 would route it to the
+    // destination while its data (and the owner's cursor) sit on the source.
+    const onTo = await headOf(this.shards[placement.to] as EventStore, executionId);
+    if (onTo !== null) return this.remember(executionId, placement.to);
+    const onFrom = await headOf(this.shards[placement.from] as EventStore, executionId);
+    if (onFrom !== null) return this.remember(executionId, placement.from);
     // Unknown to both ⇒ it does not exist yet, so it belongs to the destination. Caching
     // that is what makes a new execution's subsequent appends single-lookup.
     return this.remember(executionId, placement.to);

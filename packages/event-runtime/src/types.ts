@@ -224,6 +224,49 @@ export async function inboxStreamsOfChain(
 }
 
 /**
+ * {@link inboxStreamsOfChain} PLUS a prefix scan: the topic streams the registry does not name (a
+ * sender that crashed between its append and its registration, a registry deleted underneath a
+ * sender, a stale "already registered" cache). Reaches them through the store's keyset-paged
+ * enumeration when it has one (`listExecutionsPage`, ids in code point order, so the chain's streams are
+ * one contiguous run after its prefix); a store without it gets the registry's answer alone. It is a
+ * BACKSTOP for erasure and the orphan sweep, not the hot path (the scan is one indexed range query).
+ */
+export async function inboxStreamsOfChainDeep(
+  store: Pick<EventStore, "read"> & Partial<Pick<EventStore, "listExecutionsPage">>,
+  chainId: string
+): Promise<InboxStreams> {
+  const found = await inboxStreamsOfChain(store, chainId);
+  if (store.listExecutionsPage === undefined) return found;
+  const prefix = `${INBOX_STREAM_PREFIX}${chainId}#`;
+  const registry = inboxRegistryStreamId(chainId);
+  const known = new Set(found.topics);
+  let hasRegistry = found.registry !== undefined;
+  let cursor = prefix;
+  for (;;) {
+    const page = await store.listExecutionsPage({ cursor, limit: 200 });
+    let past = false;
+    for (const id of page.executionIds) {
+      if (!id.startsWith(prefix)) {
+        past = true;
+        break;
+      }
+      if (id === registry) hasRegistry = true;
+      else if (TOPIC_STREAM_SUFFIX.test(id) && id.length === prefix.length + 16 && !known.has(id)) {
+        known.add(id);
+        found.topics.push(id);
+      }
+    }
+    if (past || page.nextCursor === undefined || page.nextCursor === cursor) break;
+    cursor = page.nextCursor;
+  }
+  return {
+    legacy: found.legacy,
+    registry: hasRegistry ? registry : undefined,
+    topics: found.topics,
+  };
+}
+
+/**
  * Durable, append-only event log. Async-first so any backend plugs in —
  * synchronous stores (SQLite, in-memory) satisfy this trivially by marking
  * methods `async`; async/network stores (Postgres, Redis, DynamoDB) return
