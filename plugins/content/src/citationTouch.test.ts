@@ -2,7 +2,7 @@ import { runSnapshotStoreDecoratorConformance } from "@loom/conformance";
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ContentMissingError,
   ContentResolvingEventStore,
@@ -249,6 +249,70 @@ describe("onTouchError reports what the touches could not do (ADR 0055 D6 amendm
     };
     await expect(resolving.append(evt("e", 1, { output: ghost }))).rejects.toThrow(/before fails/);
     expect((await raw.read("e")).length).toBe(1);
+  });
+});
+
+describe("touch problems with no onTouchError hook (ADR 0055 D6 amendment 2)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+  });
+
+  it("an async hook that rejects is not an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => unhandled.push(e);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const { content, raw } = setup();
+      const ghost = { __loomContent: `sha256:${"e".repeat(64)}` };
+      const resolving = new ContentResolvingEventStore(raw, content, {
+        externalize: {},
+        onTouchError: (async () => {
+          throw new Error("async logger broke");
+        }) as unknown as () => void,
+      });
+      await resolving.append(evt("e", 0, { output: ghost }));
+      // unhandledRejection fires after the microtask queue drains; one macrotask turn is the condition.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("warns ONCE per process (code LOOM_CONTENT_TOUCH) for a missing bare ref or a failed after-touch", async () => {
+    vi.resetModules();
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const mod = await import("./index");
+    const { InMemoryAsyncEventStore: Mem } = await import("@loom/event-runtime");
+    const content = new mod.InMemoryContentStore({ now: () => OLD });
+    const raw = new Mem();
+    const resolving = new mod.ContentResolvingEventStore(raw, content, { externalize: {} });
+    const ghost = { __loomContent: `sha256:${"f".repeat(64)}` };
+    await resolving.append(evt("e", 0, { output: ghost }));
+    await resolving.append(evt("e", 1, { output: ghost }));
+    const touchWarnings = warn.mock.calls.filter(
+      (c) => (c[1] as { code?: string } | undefined)?.code === "LOOM_CONTENT_TOUCH"
+    );
+    expect(touchWarnings).toHaveLength(1);
+    expect(String(touchWarnings[0]![0])).toMatch(/already gone/);
+  });
+
+  it("a hook, when given, replaces the warning", async () => {
+    vi.resetModules();
+    const warn = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const mod = await import("./index");
+    const { InMemoryAsyncEventStore: Mem } = await import("@loom/event-runtime");
+    const content = new mod.InMemoryContentStore({ now: () => OLD });
+    const seen: unknown[] = [];
+    const resolving = new mod.ContentResolvingEventStore(new Mem(), content, {
+      externalize: {},
+      onTouchError: (e) => seen.push(e),
+    });
+    await resolving.append(evt("e", 0, { output: { __loomContent: `sha256:${"a".repeat(64)}` } }));
+    expect(seen.length).toBeGreaterThan(0);
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

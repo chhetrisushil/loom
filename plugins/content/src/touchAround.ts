@@ -29,10 +29,43 @@ export interface TouchReport {
  */
 export type TouchErrorHook = (err: unknown, info: TouchReport) => void;
 
+let warnedTouch = false;
+/**
+ * No `onTouchError` hook: a failed after-touch or a missing bare ref would be invisible, so say it
+ * ONCE per process (loom's other advisories are per process too, e.g. `LOOM_AGENT_RING`). Per
+ * process, not per instance: a failing content store fails on every write, and one warning per
+ * write or per store instance would flood stderr; the hook is the way to see each occurrence.
+ */
+function warnTouchOnce(err: unknown, info: TouchReport): void {
+  if (warnedTouch) return;
+  warnedTouch = true;
+  const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
+    .process;
+  const what =
+    info.missing.length > 0
+      ? `a cited blob is already gone (${info.missing[0]}); replay of ${info.executionId ?? "that execution"} will throw ContentMissingError`
+      : `the ${info.phase}-write touch failed (${err instanceof Error ? err.message : String(err)})`;
+  proc?.emitWarning?.(
+    `ContentResolvingEventStore/ContentTouchingSnapshotStore (${info.operation}): ${what}. Further touch problems in this process are not repeated; pass onTouchError to observe each one.`,
+    { code: "LOOM_CONTENT_TOUCH" }
+  );
+}
+
 function report(hook: TouchErrorHook | undefined, err: unknown, info: TouchReport): void {
-  if (hook === undefined) return;
   try {
-    hook(err, info);
+    if (hook === undefined) {
+      warnTouchOnce(err, info);
+      return;
+    }
+    const result: unknown = hook(err, info);
+    // An async hook's rejection is not ours to surface, and must not become an unhandled one.
+    if (
+      typeof result === "object" &&
+      result !== null &&
+      typeof (result as { then?: unknown }).then === "function"
+    ) {
+      (result as PromiseLike<unknown>).then(undefined, () => {});
+    }
   } catch {
     /* an observer must never change a write's outcome */
   }

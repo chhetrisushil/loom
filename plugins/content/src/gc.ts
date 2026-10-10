@@ -145,7 +145,7 @@ export interface ContentSweepBase {
    * `deleteIfUntouchedSince`; refuses otherwise.
    *
    * ACKNOWLEDGEMENT REQUIRED (ADR 0055 amendment, fail-closed): to ERASE, pass
-   * `{ completeScan: true }`. A bare `true` (or any other value) throws
+   * `{ completeScan: true }` (plus `snapshotsTouchContent: true` when `snapshotStores` is given, below). A bare `true` (or any other value) throws
    * {@link ReclaimOrphansAckError} before anything is read or erased. A `dryRun` erases nothing
    * and is how you check completeness, so under `dryRun: true` any truthy value (`true` included)
    * is accepted; see {@link ContentSweepOptions} for the typing. The acknowledgement is your
@@ -170,6 +170,17 @@ export interface ContentSweepBase {
    * The log must be written through a `ContentResolvingEventStore` over that store: a writer
    * that copies refs some other way is outside the guarantee.
    *
+   * SNAPSHOTS (second path): a fork of a COMPACTED parent saves a seed snapshot whose state
+   * cites refs that exist nowhere else (the prefix was truncated). `ContentResolvingEventStore`
+   * cannot see it; only a snapshot store wrapped in `ContentTouchingSnapshotStore`
+   * (outside any `EncryptingSnapshotStore`, over the same content store) touches those refs.
+   * loom never builds either store for the host, so the wrapping is the host's and cannot be
+   * detected from here: an ERASING pass given `snapshotStores` must also pass
+   * `{ completeScan: true, snapshotsTouchContent: true }` or it throws
+   * {@link ReclaimOrphansSnapshotAckError}. Without `snapshotStores` it is not needed (such a
+   * pass already refuses a store that can `truncatePrefix`, and a fork of an uncompacted parent
+   * copies every event, so its seed cites nothing the copied events do not). A `dryRun` is exempt.
+   *
    * THE GUARANTEE IS D5'S, NOT THE TOUCH'S. The cutoff is `touchClock() - olderThanMs`. The
    * touch BEFORE a write is what makes a sweep whose cutoff is later refuse; so the race is
    * closed while a write's touch-to-commit window is shorter than the margin
@@ -179,8 +190,9 @@ export interface ContentSweepBase {
    * count on it. With a zero or tiny margin the window is unbounded: a fork whose before-touch
    * is older than the cutoff and which commits after the scan has passed the child is erased
    * under. So an ERASING orphan pass refuses `olderThanMs <= 0` and any cutoff closer to the
-   * store's clock than {@link MIN_ORPHAN_ERASE_MARGIN_MS} with {@link ReclaimOrphansMarginError};
-   * a `dryRun` is unaffected. Pick a margin well above your longest write (a fork's copy of a
+   * store's clock than {@link MIN_ORPHAN_ERASE_MARGIN_MS} with {@link ReclaimOrphansMarginError},
+   * and a store with no `touchClock()` (the margin cannot be measured) with
+   * {@link ReclaimOrphansClockError}; a `dryRun` is unaffected. Pick a margin well above your longest write (a fork's copy of a
    * long prefix included).
    */
   reclaimOrphans?: ReclaimOrphansAck | boolean;
@@ -207,6 +219,14 @@ export type ContentSweepOptions = Omit<ContentSweepBase, "dryRun" | "reclaimOrph
  */
 export interface ReclaimOrphansAck {
   completeScan: true;
+  /**
+   * Required (checked at runtime) whenever an ERASING pass is given `snapshotStores`: the
+   * caller's assertion that every snapshot store the runtime SAVES to is wrapped in
+   * `ContentTouchingSnapshotStore` (outside any `EncryptingSnapshotStore`). Without it a
+   * fork of a compacted parent saves a seed snapshot citing refs that live nowhere else, and
+   * a sweep can erase them under the live child. See {@link ReclaimOrphansSnapshotAckError}.
+   */
+  snapshotsTouchContent?: true;
 }
 
 /** A safe description of a rejected value: BigInt and circular values make `JSON.stringify` throw. */
@@ -229,6 +249,26 @@ export class ReclaimOrphansAckError extends TypeError {
       `sweepUnpinnedContent: reclaimOrphans must be { completeScan: true } to erase (received ${describeReceived(received)}). Orphan reclamation erases every blob that no scanned log, snapshot or root cites, so a citing store you forgot to pass loses its blobs while they are still cited. Set { completeScan: true } only when eventStores, snapshotStores and roots cover ALL of them (every retention archive and its snapshot store included), AND scanned in order: each live store BEFORE its archive, or an execution retention moves mid-sweep can be missed by both. A dryRun does not need the acknowledgement. Migration: reclaimOrphans: true -> reclaimOrphans: { completeScan: true }.`
     );
     this.name = "ReclaimOrphansAckError";
+  }
+}
+
+/**
+ * An ERASING `reclaimOrphans` pass was given `snapshotStores` without
+ * `{ snapshotsTouchContent: true }`. Nothing was read or erased. A compacted parent's prefix refs
+ * live only in snapshot state, and a fork copies that state into its seed snapshot with no `put`
+ * and no event; only a snapshot store wrapped in `ContentTouchingSnapshotStore` touches them.
+ * The sweep cannot see how the writing runtime's snapshot store was built, so, like D6's
+ * archive assertion, the host states it. A `dryRun` is exempt. With no `snapshotStores` the
+ * acknowledgement is not needed: the pass then refuses any store that can `truncatePrefix`, and
+ * a fork of an UNcompacted parent copies every event (refs touched by `copyPrefix`), so its seed
+ * state cites nothing the copied events do not.
+ */
+export class ReclaimOrphansSnapshotAckError extends TypeError {
+  constructor() {
+    super(
+      "sweepUnpinnedContent: an erasing reclaimOrphans pass given snapshotStores needs { completeScan: true, snapshotsTouchContent: true }. A fork of a compacted parent saves a seed snapshot that cites refs found nowhere else; only a snapshot store wrapped in ContentTouchingSnapshotStore (outside any EncryptingSnapshotStore, over the same content store the log uses) touches them, so a sweep racing the fork erases blobs a live child cites (replay then throws ContentMissingError). Wrap every snapshot store the runtime saves to, then pass snapshotsTouchContent: true, or run with dryRun: true."
+    );
+    this.name = "ReclaimOrphansSnapshotAckError";
   }
 }
 
@@ -271,6 +311,22 @@ export class ReclaimOrphansMarginError extends TypeError {
       `sweepUnpinnedContent: an erasing reclaimOrphans pass needs a guard margin of at least ${MIN_ORPHAN_ERASE_MARGIN_MS}ms between the content store's clock and the cutoff (received ${marginMs}ms: olderThanMs, or touchedBefore's distance from the store's clock). The touch that protects a fork or an append only covers a write whose touch-to-commit window is shorter than that margin; with olderThanMs <= 0 the window is unbounded. Raise olderThanMs / lower touchedBefore, or run with dryRun: true.`
     );
     this.name = "ReclaimOrphansMarginError";
+  }
+}
+
+/**
+ * An ERASING `reclaimOrphans` pass over a content store with `deleteIfUntouchedSince` but no
+ * `touchClock()`. Nothing was read or erased. Without the store's clock the sweep cannot measure
+ * the margin between "now" and the cutoff (`touchedBefore` is an unchecked caller value, so
+ * `touchedBefore: Date.now()` would pass any `olderThanMs`), and the touch-to-commit window is
+ * then unbounded. A `dryRun` is exempt.
+ */
+export class ReclaimOrphansClockError extends TypeError {
+  constructor() {
+    super(
+      "sweepUnpinnedContent: an erasing reclaimOrphans pass needs a content store with touchClock() so the guard margin can be measured (a store with deleteIfUntouchedSince but no touchClock cannot prove touchedBefore is far enough behind its clock). Add touchClock() to the store, or run with dryRun: true."
+    );
+    this.name = "ReclaimOrphansClockError";
   }
 }
 
@@ -370,6 +426,17 @@ export async function sweepUnpinnedContent(
   }
   if (
     orphans &&
+    options.dryRun !== true &&
+    options.snapshotStores !== undefined &&
+    (requested as { snapshotsTouchContent?: unknown }).snapshotsTouchContent !== true
+  ) {
+    throw new ReclaimOrphansSnapshotAckError();
+  }
+  if (orphans && options.dryRun !== true && store.touchClock === undefined) {
+    throw new ReclaimOrphansClockError();
+  }
+  if (
+    orphans &&
     options.snapshotStores === undefined &&
     options.eventStores.some(
       (s) => typeof (s as { truncatePrefix?: unknown }).truncatePrefix === "function"
@@ -400,12 +467,8 @@ export async function sweepUnpinnedContent(
     // The touch protects a write only while its touch-to-commit window is shorter than the
     // margin between the store's clock and the cutoff (module note; ADR 0055 D6 amendment 2).
     if (!(options.olderThanMs > 0)) throw new ReclaimOrphansMarginError(options.olderThanMs);
-    if (store.touchClock !== undefined) {
-      const margin = (await store.touchClock()) - cutoff;
-      if (!(margin >= MIN_ORPHAN_ERASE_MARGIN_MS)) throw new ReclaimOrphansMarginError(margin);
-    } else if (options.olderThanMs < MIN_ORPHAN_ERASE_MARGIN_MS) {
-      throw new ReclaimOrphansMarginError(options.olderThanMs);
-    }
+    const margin = (await store.touchClock!()) - cutoff;
+    if (!(margin >= MIN_ORPHAN_ERASE_MARGIN_MS)) throw new ReclaimOrphansMarginError(margin);
   }
   /** Erase one address; `true` iff it is gone because of this sweep (or would be). */
   const erase = async (address: string): Promise<boolean> => {

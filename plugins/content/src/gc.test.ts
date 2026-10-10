@@ -7,7 +7,9 @@ import {
   type ContentSweepOptions,
   MIN_ORPHAN_ERASE_MARGIN_MS,
   ReclaimOrphansAckError,
+  ReclaimOrphansClockError,
   ReclaimOrphansMarginError,
+  ReclaimOrphansSnapshotAckError,
   ReclaimOrphansTouchError,
   pinByEventKinds,
   sweepUnpinnedContent,
@@ -619,7 +621,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
 
     const dry = await sweepUnpinnedContent({
       ...base,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       dryRun: true,
     });
     expect(new Set(dry.orphansReclaimed)).toEqual(
@@ -627,7 +629,10 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     );
     expect(await content.get(ofDeleted)).not.toBeNull(); // dry run deletes nothing
 
-    const swept = await sweepUnpinnedContent({ ...base, reclaimOrphans: { completeScan: true } });
+    const swept = await sweepUnpinnedContent({
+      ...base,
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
+    });
     expect(new Set(swept.orphansReclaimed)).toEqual(
       new Set([ofDeleted.__loomContent, crashed.__loomContent])
     );
@@ -684,7 +689,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       pinnedEventTypes: [],
       olderThanMs: TTL,
       now: NOW,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
     });
     expect(swept.orphansReclaimed).toEqual([unrelated.__loomContent]);
     expect(await content.get(cited)).not.toBeNull();
@@ -715,7 +720,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       olderThanMs: TTL,
       now: NOW,
       roots,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       snapshotStores: [NO_SNAPSHOTS],
     });
     expect(rootReads).toBe(1);
@@ -736,7 +741,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       pinnedEventTypes: [],
       olderThanMs: TTL,
       now: NOW,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
     });
     expect(result.orphansReclaimed).toHaveLength(1_250);
     expect(new Set(result.orphansReclaimed).size).toBe(1_250);
@@ -839,7 +844,10 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       sweepUnpinnedContent({ ...base, reclaimOrphans: 0 as never })
     ).rejects.toBeInstanceOf(ReclaimOrphansAckError);
     // The acknowledgement object is accepted in a dry run too.
-    const acked = await sweepUnpinnedContent({ ...base, reclaimOrphans: { completeScan: true } });
+    const acked = await sweepUnpinnedContent({
+      ...base,
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
+    });
     expect(acked.orphansReclaimed).toEqual([blob.__loomContent]);
   });
 
@@ -895,7 +903,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       pinnedEventTypes: [],
       olderThanMs: TTL,
       now: NOW,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
     });
     return { result, content, resolving, ref };
   }
@@ -1002,7 +1010,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       pinnedEventTypes: [],
       olderThanMs: TTL,
       now: NOW,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
     });
     return { result, content, ref, reports, resolving };
   }
@@ -1048,7 +1056,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         contentStore: content,
         pinnedEventTypes: [],
         now: NOW,
-        reclaimOrphans: { completeScan: true as const },
+        reclaimOrphans: { completeScan: true as const, snapshotsTouchContent: true as const },
       };
       return { clock, content, base, reads: () => reads };
     }
@@ -1094,6 +1102,104 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       });
       expect(ok.orphansReclaimed).toHaveLength(1);
     });
+
+    it("refuses a store with deleteIfUntouchedSince but NO touchClock, even with touchedBefore = now; a dryRun is exempt", async () => {
+      const { clock, content, base } = await seeded();
+      const noClock = {
+        delete: (r: { __loomContent: string }) => content.delete(r),
+        deleteIfUntouchedSince: (r: { __loomContent: string }, c: number) =>
+          content.deleteIfUntouchedSince(r, c),
+        listPage: (o: Parameters<InMemoryContentStore["listPage"]>[0]) => content.listPage(o),
+        touch: (a: readonly string[]) => content.touch(a),
+      };
+      await expect(
+        sweepUnpinnedContent({
+          ...base,
+          contentStore: noClock,
+          olderThanMs: 30 * DAY,
+          touchedBefore: clock.now, // a margin of ~0 that the olderThanMs check alone would pass
+        })
+      ).rejects.toBeInstanceOf(ReclaimOrphansClockError);
+      expect(content.size).toBe(1);
+      const dry = await sweepUnpinnedContent({
+        ...base,
+        contentStore: noClock,
+        olderThanMs: 30 * DAY,
+        touchedBefore: clock.now,
+        dryRun: true,
+        reclaimOrphans: true,
+      });
+      expect(dry.orphansReclaimed).toHaveLength(1);
+      expect(content.size).toBe(1);
+    });
+  });
+
+  describe("snapshot citations need the host's acknowledgement (ADR 0055 D6 amendment 2)", () => {
+    async function seeded() {
+      const { clock, content } = clockedStore(OLD);
+      await content.put(encodeValue("an old orphan"));
+      clock.now = NOW;
+      const base = {
+        eventStores: [new InMemoryAsyncEventStore()],
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: TTL,
+        now: NOW,
+      };
+      return { content, base };
+    }
+
+    it("an erasing pass given snapshotStores without snapshotsTouchContent is refused before anything is read or erased", async () => {
+      const { content, base } = await seeded();
+      let reads = 0;
+      const snapshots = {
+        loadLatest: async () => {
+          reads++;
+          return null;
+        },
+        loadLatestBefore: async () => null,
+      };
+      await expect(
+        sweepUnpinnedContent({
+          ...base,
+          snapshotStores: [snapshots],
+          reclaimOrphans: { completeScan: true },
+        })
+      ).rejects.toBeInstanceOf(ReclaimOrphansSnapshotAckError);
+      expect(reads).toBe(0);
+      expect(content.size).toBe(1);
+      // A dryRun is exempt; the acknowledged pass erases.
+      const dry = await sweepUnpinnedContent({
+        ...base,
+        snapshotStores: [snapshots],
+        dryRun: true,
+        reclaimOrphans: { completeScan: true },
+      });
+      expect(dry.orphansReclaimed).toHaveLength(1);
+      expect(content.size).toBe(1);
+      const acked = await sweepUnpinnedContent({
+        ...base,
+        snapshotStores: [snapshots],
+        reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
+      });
+      expect(acked.orphansReclaimed).toHaveLength(1);
+    });
+
+    it("with NO snapshotStores (an event store that cannot truncatePrefix) the acknowledgement is not needed", async () => {
+      const { base } = await seeded();
+      const inner = base.eventStores[0]!;
+      const noTruncate = {
+        read: (id: string) => inner.read(id),
+        listExecutionsPage: (...a: Parameters<typeof inner.listExecutionsPage>) =>
+          inner.listExecutionsPage(...a),
+      };
+      const erased = await sweepUnpinnedContent({
+        ...base,
+        eventStores: [noTruncate],
+        reclaimOrphans: { completeScan: true },
+      });
+      expect(erased.orphansReclaimed).toHaveLength(1);
+    });
   });
 
   it("reclaimOrphans REFUSES to erase through a store without touch (fail closed), erasing nothing; a dryRun is still allowed", async () => {
@@ -1118,7 +1224,10 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       olderThanMs: TTL,
       now: NOW,
     };
-    const attempt = sweepUnpinnedContent({ ...base, reclaimOrphans: { completeScan: true } });
+    const attempt = sweepUnpinnedContent({
+      ...base,
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
+    });
     await expect(attempt).rejects.toBeInstanceOf(ReclaimOrphansTouchError);
     await expect(attempt).rejects.toThrow(/touch\(\) \(ContentStore SPI 1\.4\.0\)/);
     expect(calls).toEqual([]);
@@ -1145,7 +1254,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       pinnedEventTypes: [],
       olderThanMs: TTL,
       now: NOW,
-      reclaimOrphans: { completeScan: true as const },
+      reclaimOrphans: { completeScan: true as const, snapshotsTouchContent: true as const },
     };
     // Scanning both: kept.
     const both = await sweepUnpinnedContent({
@@ -1168,7 +1277,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       pinnedEventTypes: [],
       olderThanMs: TTL,
       now: NOW,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
     };
     await expect(
       sweepUnpinnedContent({
@@ -1261,7 +1370,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       pinnedEventTypes: [],
       olderThanMs: TTL,
       now: NOW,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
     });
     expect(result.orphansReclaimed).toEqual([]);
     expect(await content.get(unknown)).not.toBeNull();
@@ -1310,7 +1419,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         pinnedEventTypes: ["FINDING_RECORDED"],
         olderThanMs: TTL,
         now: NOW,
-        reclaimOrphans: { completeScan: true },
+        reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       });
       expect(await content.get(evidence)).not.toBeNull();
       expect(result.orphansReclaimed).toEqual([]);
@@ -1328,7 +1437,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
           pinnedEventTypes: ["FINDING_RECORDED"],
           olderThanMs: TTL,
           now: NOW,
-          reclaimOrphans: { completeScan: true },
+          reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
         })
       ).rejects.toThrow(/snapshotStores/);
       expect(await content.get(evidence)).not.toBeNull();
@@ -1359,7 +1468,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
           pinnedEventTypes: [],
           olderThanMs: TTL,
           now: NOW,
-          reclaimOrphans: { completeScan: true },
+          reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
         })
       ).rejects.toThrow(/compact/);
       expect(await content.get(stale)).not.toBeNull(); // the TTL pass did not run either
@@ -1429,7 +1538,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         pinnedEventTypes: [],
         olderThanMs: TTL,
         now: NOW,
-        reclaimOrphans: { completeScan: true },
+        reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       });
       expect(await content.get(prefixOutput)).not.toBeNull();
       // fork() at 3 loads the checkpoint (loadLatestBefore) and folds on: the ref must resolve.
@@ -1468,7 +1577,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
           pinnedEventTypes: [],
           olderThanMs: TTL,
           now: NOW,
-          reclaimOrphans: { completeScan: true },
+          reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
         })
       ).rejects.toThrow(/done/);
       expect(await content.get(output)).not.toBeNull();
@@ -1539,7 +1648,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         pinnedEventTypes: ["FINDING_RECORDED"],
         olderThanMs: TTL,
         now: NOW,
-        reclaimOrphans: { completeScan: true },
+        reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       });
       expect(result.orphansReclaimed).toEqual([]);
       expect(await content.get(prefixOutput)).not.toBeNull();
@@ -1583,7 +1692,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         pinnedEventTypes: ["FINDING_RECORDED"], // NOTE_RECORDED is kept by compaction only
         olderThanMs: TTL,
         now: NOW,
-        reclaimOrphans: { completeScan: true },
+        reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       });
       expect(result.orphansReclaimed).toEqual([]);
       expect(await content.get(output)).not.toBeNull();
@@ -1629,7 +1738,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         pinnedEventTypes: [],
         olderThanMs: TTL,
         now: NOW,
-        reclaimOrphans: { completeScan: true },
+        reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       });
       expect(result.orphansReclaimed).toEqual([]);
       expect(await content.get(seeded)).not.toBeNull();
@@ -1686,7 +1795,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         pinnedEventTypes: [],
         olderThanMs: TTL,
         now: NOW,
-        reclaimOrphans: { completeScan: true },
+        reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       });
       expect(result.orphansReclaimed).toEqual([]);
       expect(await content.get(seeded)).not.toBeNull();

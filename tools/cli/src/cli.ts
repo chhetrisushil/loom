@@ -140,11 +140,12 @@ export const USAGE = `loom — project-local commands for a Loom app
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content <store> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive]] [--apply]  K10.6 pinned blob sweep
+  loom sweep content <store> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
                                                   (--orphans also erases blobs NOTHING scanned
                                                    cites, so it needs the snapshot store and
                                                    every archive; with --apply and no archive
-                                                   it refuses unless --no-archive)
+                                                   it refuses unless --no-archive;
+                                                   it also needs --snapshots-touch-content)
   loom compliance report <store> --subject-path <p> [--tenant-path <p>]  data-subject inventory
   loom inspect <store> [--port N]                 web inspector (timeline + slider)
 
@@ -299,6 +300,7 @@ async function main(argv: string[]): Promise<number> {
           apply: flags.apply === "true",
           orphans: flags.orphans === "true",
           noArchive: flags["no-archive"] === "true",
+          snapshotsTouchContent: flags["snapshots-touch-content"] === "true",
           ...(flags["archive-snap"] !== undefined && { archiveSnap: flags["archive-snap"] }),
         })
       );

@@ -107,7 +107,7 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       pinnedEventTypes: [FINDING], // NOTE is kept by compaction only
       olderThanMs: DAY,
       now: 1_000 + 100 * DAY,
-      reclaimOrphans: { completeScan: true },
+      reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
     });
     expect(result.orphansReclaimed).toEqual([orphan.__loomContent]);
     expect(await content.get(stepBlob)).not.toBeNull();
@@ -208,7 +208,7 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
         pinnedEventTypes: [],
         olderThanMs: DAY,
         now: 100 * DAY,
-        reclaimOrphans: { completeScan: true },
+        reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       });
       return { result, content, blob, runtime };
     }
