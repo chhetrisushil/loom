@@ -472,7 +472,7 @@ same journaled fact an operator discard writes (`reason: "expired"`, recorded as
 replays and the pinned stream is released with no operator involved. The smallest TTL is 60 000 ms (a smaller one is
 refused at `defineConfig`): a message is aged against a clock another node may have stamped. When the event store
 has `storeNow()` (EventStore SPI 2.4.0; Postgres reports database time) sender and judge both use it, so nodes agree;
-over a store with no common clock the TTL must be far larger than your fleet's clock skew. The age is judged when a
+over a store with no common clock the TTL must be far larger than your fleet's clock skew. A backlog stamped before the TTL was enabled (or by a node with it still off) is aged on mixed clocks and may expire early by up to the host/database skew. The age is judged when a
 pass runs, never inside the fold; passes are `TimerStore` rows fired by the app's `TimerService` (so wire `timers`),
 one batch of at most 1 024 per wake, and only a parked owner takes the fact (a running one re-arms a later row, it
 never blocks other timers). A young message at a topic's head holds older ones behind it back, so a pin can outlive
