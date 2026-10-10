@@ -86,6 +86,7 @@ describe("part helpers", () => {
       [{ type: "tool_result", toolUseId: "1", content: t }],
       [{ type: "tool_result", toolUseId: "1", content: [{ type: "text", text: t }] }],
       [t], // off-type: a wrapper used as a part
+      [{ type: "tool_result", toolUseId: "1", content: [t] }], // ...or as an element of a tool_result
     ];
     for (const c of cases) {
       expect(() => textOf(c as never)).toThrow(
