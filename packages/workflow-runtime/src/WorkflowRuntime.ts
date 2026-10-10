@@ -3654,6 +3654,18 @@ export class WorkflowRuntime {
   ): Promise<DiscardInboxResult> {
     this.assertInboxEnabled("runtime.discardInbox");
     assertNotReserved(executionId);
+    // A discard is an OPERATOR action that destroys a message: it names who did it, whether or not
+    // an authorizer is wired or `strict` is on (`authzApplies` lets a principal-less, non-strict
+    // call through, which would make an anonymous discard succeed with an empty `sender` in the
+    // audit fact). Refused before anything is read, so it is no existence oracle either.
+    // Not even the kernel's system grant stands in for the operator.
+    if (options?.principal === undefined) {
+      throw new ExecutionDeniedError(
+        "discard",
+        executionId,
+        "a discard is an operator action and needs an authenticated principal"
+      );
+    }
     const addressed = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
     if (addressed === undefined) {
       await this.denyMissing("discard", executionId, options?.principal, options?.system);
@@ -3767,7 +3779,8 @@ export class WorkflowRuntime {
       if (page.length < NOTIFY_PAGE || last === undefined || last.inboxSeq >= through) break;
       after = last.inboxSeq;
     }
-    if (skippedKeys.length > INBOX_DEDUPE_CAP) skippedKeys.splice(0, skippedKeys.length - INBOX_DEDUPE_CAP);
+    if (skippedKeys.length > INBOX_DEDUPE_CAP)
+      skippedKeys.splice(0, skippedKeys.length - INBOX_DEDUPE_CAP);
     const parkSeq = await this.locatePark(head.id, state, { events: undefined, complete: false });
     if (parkSeq === undefined) {
       refuse("not-parked", "the owner has no unanswered park to journal under.");
@@ -3800,9 +3813,7 @@ export class WorkflowRuntime {
     });
     skippedKeys.forEach((k, i) => {
       const lastOne = i === skippedKeys.length - 1;
-      facts.push(
-        lastOne ? fact(k.key, through, summary) : fact(k.key, k.seq, {})
-      );
+      facts.push(lastOne ? fact(k.key, through, summary) : fact(k.key, k.seq, {}));
     });
     if (facts.length === 0) facts.push(fact(discardKeyOf(topic, through), through, summary));
     const outcome = await this.advanceInbox(head.id, state, parkSeq as number, undefined, facts);

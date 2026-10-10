@@ -13,6 +13,7 @@ import {
 
 // ADR 0110 amendment (D8) — a journaled, authorized operator discard.
 
+const OPERATOR = { actor: "ops", tenant: "t1" };
 const owner = { actor: "alice", tenant: "t1" };
 const ops = { actor: "ops", tenant: "t1" };
 const mallory = { actor: "mallory", tenant: "t2" };
@@ -61,7 +62,11 @@ for (const backend of inboxBackends("discard")) {
       expect(refused).toBeInstanceOf(InboxFullError);
       expect((refused as Error).message).toMatch(/inbox sequence 0/);
 
-      const res = await h.rt.discardInbox(e, { topic: "cold", throughSeq: 0, reason: "stale" });
+      const res = await h.rt.discardInbox(
+        e,
+        { topic: "cold", throughSeq: 0, reason: "stale" },
+        { principal: OPERATOR }
+      );
       expect(res).toMatchObject({ executionId: e, topic: "cold", skipped: 1, cursor: 0 });
 
       // The pin is gone: the stream accepts hot traffic again and its consumed prefix was trimmed.
@@ -106,7 +111,11 @@ for (const backend of inboxBackends("discard")) {
       await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
       await h.rt.send(e, { topic: "t", payload: "old1", messageId: "1" });
       const second = await h.rt.send(e, { topic: "t", payload: "old2", messageId: "2" });
-      const res = await h.rt.discardInbox(e, { topic: "t", throughSeq: second.inboxSeq });
+      const res = await h.rt.discardInbox(
+        e,
+        { topic: "t", throughSeq: second.inboxSeq },
+        { principal: OPERATOR }
+      );
       expect(res.skipped).toBe(2);
       await h.rt.send(e, { topic: "t", payload: "fresh", messageId: "3" });
       await h.rt.resume(e, { eventType: "Go", payload: null });
@@ -128,13 +137,17 @@ for (const backend of inboxBackends("discard")) {
       await h.rt.send(e, { topic: "other", payload: "keep", messageId: "o" });
       const t = await h.rt.send(e, { topic: "t", payload: "drop", messageId: "t1" });
       const before = await kinds(h.eventStore, e);
-      await h.rt.discardInbox(e, { topic: "t", throughSeq: t.inboxSeq });
+      await h.rt.discardInbox(e, { topic: "t", throughSeq: t.inboxSeq }, { principal: OPERATOR });
       const after = await kinds(h.eventStore, e);
       expect(after.slice(0, before.length)).toEqual(before);
       expect(after.slice(before.length)).toEqual(["MESSAGE_CONSUMED"]);
       expect((await h.rt.loadState(e))?.status).toBe("suspended"); // the park is still unanswered
       // Idempotent: the cursor is already there, nothing more is appended.
-      const again = await h.rt.discardInbox(e, { topic: "t", throughSeq: t.inboxSeq });
+      const again = await h.rt.discardInbox(
+        e,
+        { topic: "t", throughSeq: t.inboxSeq },
+        { principal: OPERATOR }
+      );
       expect(again).toMatchObject({ skipped: 0, cursor: t.inboxSeq });
       expect(await kinds(h.eventStore, e)).toEqual(after);
       await h.rt.send(e, { topic: "t", payload: "next", messageId: "t2" });
@@ -165,7 +178,11 @@ for (const backend of inboxBackends("discard")) {
         const discard = (async () => {
           for (;;) {
             try {
-              const r = await h.rt.discardInbox(e, { topic: "cold", throughSeq: cold.inboxSeq });
+              const r = await h.rt.discardInbox(
+                e,
+                { topic: "cold", throughSeq: cold.inboxSeq },
+                { principal: OPERATOR }
+              );
               return r;
             } catch (err) {
               if (!(err instanceof InboxDiscardRefusedError && err.retryable)) throw err;
@@ -194,7 +211,11 @@ for (const backend of inboxBackends("discard")) {
       await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
       for (let i = 0; i < 5; i++) {
         const m = await h.rt.send(e, { topic: `t${i}`, payload: i, messageId: `m${i}` });
-        await h.rt.discardInbox(e, { topic: `t${i}`, throughSeq: m.inboxSeq });
+        await h.rt.discardInbox(
+          e,
+          { topic: `t${i}`, throughSeq: m.inboxSeq },
+          { principal: OPERATOR }
+        );
       }
       const answers = (await h.rt.loadState(e))?.variables._waitAnswers as Record<string, unknown>;
       expect(Object.keys(answers)).toEqual(["__loom_discard__"]);
@@ -213,7 +234,7 @@ for (const backend of inboxBackends("discard")) {
       const m = await h.rt.send(e, { topic: "t", payload: "x", messageId: "1" });
       const before = await kinds(h.eventStore, e);
       const err = await h.rt
-        .discardInbox(e, { topic: "t", throughSeq: m.inboxSeq })
+        .discardInbox(e, { topic: "t", throughSeq: m.inboxSeq }, { principal: OPERATOR })
         .catch((x) => x);
       expect(err).toBeInstanceOf(InboxDiscardRefusedError);
       expect(err.reason).toBe("not-parked");
@@ -243,7 +264,7 @@ for (const backend of inboxBackends("discard")) {
         { topic: "", throughSeq: 0 },
         { topic: "t", throughSeq: 0, reason: "x".repeat(257) },
       ]) {
-        const err = await h.rt.discardInbox(e, bad).catch((x) => x);
+        const err = await h.rt.discardInbox(e, bad, { principal: OPERATOR }).catch((x) => x);
         expect(err, JSON.stringify(bad)).toBeInstanceOf(InboxDiscardRefusedError);
         expect(err.reason).toBe("invalid");
       }
@@ -259,9 +280,9 @@ for (const backend of inboxBackends("discard")) {
       h.rt.registerFlow(f.definition, f.runner);
       const e = id();
       await (await h.rt.start(f, {}, { executionId: e })).waitForCompletion();
-      await expect(h.rt.discardInbox(e, { topic: "t", throughSeq: 0 })).rejects.toBeInstanceOf(
-        InboxClosedError
-      );
+      await expect(
+        h.rt.discardInbox(e, { topic: "t", throughSeq: 0 }, { principal: OPERATOR })
+      ).rejects.toBeInstanceOf(InboxClosedError);
     });
 
     describe("authorization", () => {
@@ -313,6 +334,32 @@ for (const backend of inboxBackends("discard")) {
         await expect(
           h.rt.discardInbox("ghost", { topic: "t", throughSeq: 0 })
         ).rejects.toBeInstanceOf(ExecutionDeniedError);
+      });
+
+      it("P3-3: a principal-less discard is refused whatever the policy or strict, and appends nothing", async () => {
+        for (const wired of [true, false]) {
+          const h = mk(
+            wired
+              ? { executionAuthorizer: executionAccessPolicy({ rules: { discard: "any" } }) }
+              : {}
+          );
+          const f = flow("w", async (ctx) => {
+            await ctx.suspend({ on: "Go" });
+            return "done";
+          });
+          h.rt.registerFlow(f.definition, f.runner);
+          const e = id();
+          await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
+          const m = await h.rt.send(e, { topic: "t", payload: "x", messageId: "1" });
+          const before = await kinds(h.eventStore, e);
+          const err = await h.rt
+            .discardInbox(e, { topic: "t", throughSeq: m.inboxSeq })
+            .catch((x) => x);
+          expect(err).toBeInstanceOf(ExecutionDeniedError);
+          expect(err.message).toMatch(/principal/);
+          expect(await kinds(h.eventStore, e)).toEqual(before);
+          expect(await h.eventStore.read(inboxStreamId(e))).toHaveLength(1);
+        }
       });
 
       it("the authorizer is told the op: discard", async () => {

@@ -8,6 +8,8 @@ import type { InboxSource } from "./types";
 // ADR 0110 amendment (D8), review P2-1 — a discard that lands while a notifier holds a batch it
 // built from the PRE-discard cursors must win: the discarded message is never delivered.
 
+const OPERATOR = { actor: "ops", tenant: "t1" };
+
 for (const backend of inboxBackends("discardrace")) {
   describe.skipIf(backend.skip === true)(`discard racing a delivery on ${backend.name}`, () => {
     beforeAll(() => backend.setup());
@@ -25,7 +27,11 @@ for (const backend of inboxBackends("discardrace")) {
       const e = id();
       await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
       const m1 = await h.rt.send(e, { topic: "t", payload: "old", messageId: "same" });
-      const res = await h.rt.discardInbox(e, { topic: "t", throughSeq: m1.inboxSeq });
+      const res = await h.rt.discardInbox(
+        e,
+        { topic: "t", throughSeq: m1.inboxSeq },
+        { principal: OPERATOR }
+      );
       expect(res.skipped).toBe(1);
       // The sender retries the discarded id: accepted into the stream, but a duplicate for the owner.
       await h.rt.send(e, { topic: "t", payload: "RESENT", messageId: "same" });
@@ -82,13 +88,19 @@ for (const backend of inboxBackends("discardrace")) {
         armed = true;
         const m1 = await h.rt.send(e, { topic: "t", payload: "DISCARDED", messageId: "m1" });
         await pausedAt; // the notifier built its batch from cursor -1
-        const res = await h.rt.discardInbox(e, { topic: "t", throughSeq: m1.inboxSeq });
+        const res = await h.rt.discardInbox(
+          e,
+          { topic: "t", throughSeq: m1.inboxSeq },
+          { principal: OPERATOR }
+        );
         expect(res.skipped).toBe(1);
         release();
         // The notifier must refold, see the cursor, and deliver nothing.
         // (a buggy runtime has already finished the owner on the discarded message: the send is
         // then refused as closed, and the assertions below name the real failure)
-        await h.rt.send(e, { topic: "t", payload: "FRESH", messageId: "m2" }).catch(() => undefined);
+        await h.rt
+          .send(e, { topic: "t", payload: "FRESH", messageId: "m2" })
+          .catch(() => undefined);
         await until(async () => (await h.rt.loadState(e))?.status === "completed", 8000);
         const state = await h.rt.loadState(e);
         expect(state?.variables._output).toBe("FRESH");
