@@ -77,6 +77,28 @@ pnpm --filter @loom/db-observability start
   withheld from the model-facing spec ("Third-party tool; description withheld") unless the
   operator vouches with `new A2APeerClient({ ..., trustDescriptions: true })` (ADR 0125 D14).
 
+- **`agent-loop-triage`** — the canonical `agentLoop$` (ADR 0121) as a support-ticket triage
+  agent: the model is routed through the capability ring (a recorded route, per-route grants),
+  parallel lookups where a flaky tool comes back as `isError` feedback while a terminal quota or
+  authority error still fails the run, per-call outcome decisions so a consumed failure is never
+  re-run on replay (a negative test pins ADR 0121's crash window), a refund parked on approval and
+  resumed in a fresh runtime with no tool re-run, `writeBack` through `memoryWriteBackEffect`
+  recalled by the next ticket (tainted, inside the untrusted fence), a fork guard, and the config
+  errors (bare `writeBack: true`; a response cache without `cacheScope` on the direct path).
+- **`chat-agent`** — the conversation layer (ADR 0122) for one owner: multi-turn chat, barge-in
+  (a new turn aborts the in-flight answer; the partial is kept as interrupted), a tiny token
+  window (rotation plus a rolling summary; the prompt plateaus), a process restart then an SSE
+  reconnect with `Last-Event-ID` that resumes with no gap or duplicate (replay makes no model
+  call), and another tenant getting the same 404 as a missing conversation. The summarizer is
+  handed tainted input.
+- **`incident-shared-chat`** — SHARED mode (ADR 0122 D10) for an incident war-room chat: several
+  participants share one conversation, each turn runs as the person who asked, answers are
+  classified and filtered per viewer (history, SSE stream and model context), turns queue FIFO,
+  inbox envelopes are HMAC-signed (tamper, impersonation, replay and stale envelopes refused), a
+  service-principal coordinator runs under an owner-scoped policy asserted at construction, and
+  a non-participant gets a uniform 404. Three viewers fold the same conversation into three
+  different loom-ui `ChatFeed` transcripts.
+
 ### Compute & backends
 
 - **`compute-cloudrun`** — the same flow on three interchangeable backends
@@ -140,6 +162,14 @@ pnpm --filter @loom/db-observability start
   reports it as `retained` instead of deleting it.
 
 ### UI / generation
+
+- **`media-gallery`** — multi-modal media claim-checked by address (ADR 0120, loom-ui U9/U9b): a
+  `returnsMedia` tool returns a generated image as a ref, so the model sees the bytes but the log
+  holds only addresses; a `ContentResolver(ref, ctx)` authorizes per tenant (under content-addressed
+  dedupe the owner is a SET of tenants); the provider capability allowlist gives an unknown model
+  or a custom baseUrl a text-only fallback; an `x-content-ref` tool argument naming someone else's
+  ref is refused before the tool runs; a loom-ui gallery issues viewer-scoped links; and content
+  GC keeps what any log or app table cites, provided the sweep scans EVERY store (dry run first).
 
 - **`a2ui-dashboard`**, **`angular-command-center`** — renderer/UI surface variants
   over `@loom/agent-surface`.
