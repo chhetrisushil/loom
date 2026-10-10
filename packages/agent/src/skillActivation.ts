@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isTainted } from "@loom/classify";
 import { type SkillDefinition, type ToolDefinition, loadInstructions } from "@loom/core";
 import type { ExecutionContext } from "@loom/workflow-runtime";
@@ -107,7 +108,27 @@ interface Recorded {
    * registry holds now (ADR 0125 D11, review round 1).
    */
   refused?: string;
+  /**
+   * ADR 0125 D14 — sha256 (hex) of the instructions the live run delivered. Additive and optional: a
+   * record without it (older runs) keeps the old behaviour. A replay (and a re-delivery) compares the
+   * current text with it and delivers nothing on a mismatch.
+   */
+  digest?: string;
 }
+
+const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+
+/** Bound for the once-per-skill advisory set (the active set is itself capped by `maxActive`). */
+const warnChanged = (id: string, seen: Set<string>): void => {
+  if (seen.has(id)) return;
+  seen.add(id);
+  const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
+    .process;
+  proc?.emitWarning?.(
+    `Skill "${id.slice(0, 64)}": its instructions changed since the activation was recorded; they were NOT delivered to the model (the recorded activation and its tools stand).`,
+    { code: "LOOM_AGENT_SKILL_CHANGED" }
+  );
+};
 
 function positiveInt(name: string, v: number | undefined, def: number, ceiling: number): number {
   const n = v ?? def;
@@ -148,6 +169,9 @@ export class SkillActivationSession {
   /** R22c: the host skill ranker, when configured (the {@link SkillSearchSource} contract). */
   readonly skillRanker: ToolRanker | undefined;
   private readonly active = new Set<string>();
+  /** D14 — the digest each ACTIVE skill's instructions were pinned to (absent: an old record). Bounded by `maxActive`. */
+  private readonly digests = new Map<string, string>();
+  private readonly warned = new Set<string>();
   /** The index lines (one per offered skill, id order) and how many skills the byte cap left out. */
   private readonly lines: string[] = [];
   private omitted = 0;
@@ -382,6 +406,11 @@ export class SkillActivationSession {
       // no tools are added and it does not count against `maxActive`.
       const again = await this.deliverable(skill);
       if (!again.ok) return error(again.code, again.message);
+      const pinned = this.digests.get(name);
+      if (pinned !== undefined && sha256(again.text) !== pinned) {
+        warnChanged(name, this.warned);
+        return error("instructions_changed", this.refusalMessage("instructions_changed", name));
+      }
       return {
         output: {
           skill: name,
@@ -413,7 +442,7 @@ export class SkillActivationSession {
           if (!d.ok && d.code === "instructions_unavailable") throw new InstructionsUnavailable();
           if (!d.ok) return { skill: name, refused: d.code };
           live.text = d.text;
-          return { skill: name };
+          return { skill: name, digest: sha256(d.text) };
         },
         { source: SOURCE_SKILL_ACTIVATION }
       );
@@ -443,7 +472,26 @@ export class SkillActivationSession {
         ? ({ ok: true, text: live.text } as const)
         : await this.deliverable(skill);
     this.active.add(name);
+    // The digest the instructions are pinned to: only a STRING is honoured (a record without one, or
+    // with junk, is an old record: today's behaviour, byte for byte).
+    const pinned = typeof recorded.digest === "string" ? recorded.digest : undefined;
+    if (pinned !== undefined) this.digests.set(name, pinned);
     const tools = skill.tools ?? [];
+    if (d.ok && live.text === undefined && pinned !== undefined && sha256(d.text) !== pinned) {
+      // A replay whose current text is not what the recorded run delivered: deliver nothing new.
+      warnChanged(name, this.warned);
+      return {
+        output: {
+          error: {
+            code: "instructions_changed",
+            message: this.refusalMessage("instructions_changed", name),
+          },
+          ...(tools.length > 0 && { tools: tools.map((t) => t.id) }),
+        },
+        isError: true,
+        newlyLoaded: tools,
+      };
+    }
     if (!d.ok) {
       return {
         output: {
@@ -471,6 +519,9 @@ export class SkillActivationSession {
   private refusalMessage(code: string, name: string): string {
     if (code === "instructions_unavailable") {
       return `Skill "${cap(name)}" has instructions that could not be loaded right now.`;
+    }
+    if (code === "instructions_changed") {
+      return `Skill "${cap(name)}" is active, but its instructions changed since they were first delivered, so they are not delivered again.`;
     }
     return code === "instructions_too_large"
       ? `Skill "${cap(name)}" has instructions over the ${this.maxInstructionBytes}-byte limit.`

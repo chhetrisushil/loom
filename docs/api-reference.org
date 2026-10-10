@@ -1746,7 +1746,8 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 //   index of unselected skills in the turn-0 system prompt; the skill's instructions are the TOOL RESULT; its tools join the menu (deduped)
 //   each activation = ONE recorded decision `<agent>#turn:<i>:tool:<j>:skill` (source "agent-skill-activation"); an instructions refusal records its verdict `{ skill, refused }` (replay reproduces it); other refusals are typed error results, nothing recorded; re-activating an active skill re-delivers its instructions
 //   "registry" makes EVERY registry skill reachable (relevance, not authorization): pass an explicit catalog to restrict
-// ToolDefinition.origin?: "remote" — set by the MCP and A2A plugins; tool search treats origin remote / jsonInputSchema / kind a2a as un-vouched
+//   R22d D14: an accepted activation records `{ skill, digest }` (sha256 hex of the delivered instructions); a replay / re-delivery whose current text differs returns the typed error `instructions_changed` (tools stay, nothing recorded, process warning LOOM_AGENT_SKILL_CHANGED); rankers are clamped to the `limit` they were asked for
+// ToolDefinition.origin?: "remote" — set by the MCP and A2A plugins; tool search AND toolSpecFor treat origin remote / jsonInputSchema / kind a2a as un-vouched (description withheld in the model-facing spec unless trustJsonSchemaText)
 class SkillActivationError; const SOURCE_SKILL_ACTIVATION = "agent-skill-activation"; ToolSearchSession.noteLoaded(tools)
 interface ToolRanker { kind: string; rank(query: string, limit: number): readonly { id: string; score: number }[] | Promise<...> }
 class Bm25ToolRanker implements ToolRanker { constructor(tools: { id; description?; tags?; aliases? }[]); size: number }   // BM25F: name 3, aliases 2, tags 2, description 1

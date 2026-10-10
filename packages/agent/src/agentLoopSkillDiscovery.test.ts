@@ -1034,3 +1034,61 @@ describe("R22c - custom tool ranker + skill discovery", () => {
     expect(lastResults(b)[0]?.result.skills?.map((x) => x.id)).toContain("refund_one");
   });
 });
+
+describe("R22d (ADR 0125 D14) - a skillRanker / tool ranker that ignores `limit` is clamped (two-ranker mode)", () => {
+  const TOOLS = ["pay_a", "pay_b"].map((id) => mk(id, `${id} payments`));
+  const SK = () => ["refund_one", "refund_two"].map((id) => mkSkill(id, id.toUpperCase()));
+  const flood = (reads: { n: number }, head: string[]) =>
+    Array.from({ length: 10_000 }, (_, i) => ({
+      score: 1,
+      get id() {
+        reads.n++;
+        return head[i] ?? `ghost_${i}`;
+      },
+    }));
+
+  it("skillRanker: reads at most the sum of its asks, and the live page is correct", async () => {
+    const reads = { n: 0 };
+    const asks: number[] = [];
+    const sloppy: ToolRanker = {
+      kind: "sloppy-skills",
+      rank: (_q, limit) => {
+        asks.push(limit);
+        return flood(reads, ["refund_two", "refund_one"]);
+      },
+    };
+    const b = boot({
+      skills: SK(),
+      activation: { discovery: "search", skillRanker: sloppy },
+      config: { toolSearch: { catalog: TOOLS } },
+      provider: script([[SEARCH("refund")]]),
+    });
+    expect((await runToEnd(b)).status).toBe("completed");
+    const [res] = lastResults(b);
+    expect(res?.result.skills?.map((x) => x.id)).toEqual(["refund_two", "refund_one"]);
+    expect(asks.length).toBeGreaterThan(0);
+    expect(reads.n).toBeLessThanOrEqual(asks.reduce((a, b) => a + b, 0));
+  });
+
+  it("custom tool ranker in two-ranker mode: same clamp", async () => {
+    const reads = { n: 0 };
+    const asks: number[] = [];
+    const sloppy: ToolRanker = {
+      kind: "sloppy-tools",
+      rank: (_q, limit) => {
+        asks.push(limit);
+        return flood(reads, ["pay_b"]);
+      },
+    };
+    const b = boot({
+      skills: SK(),
+      activation: { discovery: "search" },
+      config: { toolSearch: { catalog: TOOLS, ranker: sloppy } },
+      provider: script([[SEARCH("pay")]]),
+    });
+    await runToEnd(b);
+    const [res] = lastResults(b);
+    expect(res?.result.tools?.map((x) => x.name)).toEqual(["pay_b"]);
+    expect(reads.n).toBeLessThanOrEqual(asks.reduce((a, b) => a + b, 0));
+  });
+});
