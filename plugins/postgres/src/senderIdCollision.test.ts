@@ -66,9 +66,12 @@ suite("sender id across processes", () => {
   it("delivers across two stores whose processes share a pid, and never echoes to self", async () => {
     const realPid = process.pid;
     Object.defineProperty(process, "pid", { value: 1, configurable: true });
+    const stores: { close(): Promise<void> }[] = [];
     try {
       const a = await storeInFreshProcess();
+      stores.push(a);
       const b = await storeInFreshProcess();
+      stores.push(b);
       const seenByB: number[] = [];
       const seenByA: number[] = [];
       await b.subscribe(EXEC, (e) => seenByB.push(e.sequence));
@@ -77,12 +80,14 @@ suite("sender id across processes", () => {
       await a.append(evt(1));
       await until(() => seenByB.length >= 2);
       expect(seenByB).toEqual([0, 1]);
-      // A's own appends were delivered synchronously once each, not echoed back via NOTIFY.
-      await new Promise((r) => setTimeout(r, 300));
-      expect(seenByA).toEqual([0, 1]);
-      await a.close();
-      await b.close();
+      // No self-echo, proven with a barrier rather than a wait: B appends seq 2, which reaches A
+      // through the same listener AFTER any echo of A's own commits (NOTIFYs arrive in commit
+      // order), so once A has seen 2 an echo would already be in seenByA.
+      await b.append(evt(2));
+      await until(() => seenByA.includes(2));
+      expect(seenByA).toEqual([0, 1, 2]);
     } finally {
+      await Promise.all(stores.map((s) => s.close().catch(() => {})));
       Object.defineProperty(process, "pid", { value: realPid, configurable: true });
     }
   }, 30_000);
