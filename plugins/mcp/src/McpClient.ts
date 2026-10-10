@@ -37,15 +37,58 @@ const MAX_ERROR_TEXT = 2048;
 
 /** Provider-safe tool names (OpenAI/Anthropic/Gemini all accept this set). */
 const TOOL_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
-function emitSkipWarning(name: unknown): void {
-  const shown =
-    typeof name === "string"
-      ? JSON.stringify(name.slice(0, 64).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, "?"))
-      : "(non-string)";
+/** `anyToolName` relaxes the CHARSET only: a name still becomes an effect id, a map key and log text. */
+const ANY_TOOL_NAME_MAX = 256;
+const UNSAFE_CHARS_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const HAS_UNSAFE_CHARS_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/** A name made safe to put in a warning or error: capped, control/format/separator characters scrubbed. */
+function scrubName(name: string): string {
+  return JSON.stringify(name.slice(0, 64).replace(UNSAFE_CHARS_RE, "?"));
+}
+
+/** Why a tool name is refused, or `undefined` when it is acceptable. */
+function toolNameProblem(name: string, anyToolName: boolean): string | undefined {
+  if (!anyToolName) {
+    return TOOL_NAME_RE.test(name) ? undefined : "its name is not ^[A-Za-z0-9_-]{1,64}$";
+  }
+  if (name.length === 0) return "its name is empty";
+  if (name.length > ANY_TOOL_NAME_MAX)
+    return `its name is longer than ${ANY_TOOL_NAME_MAX} characters`;
+  if (HAS_UNSAFE_CHARS_RE.test(name))
+    return "its name contains control, format or separator characters";
+  return undefined;
+}
+
+/** One tool `listTools` refused. `name` is the server's raw string; scrub it before logging. */
+export interface SkippedMcpTool {
+  name: string;
+  reason: string;
+}
+
+/** Thrown by `listTools({ strictToolNames: true })` when the server offered tools it would otherwise skip. */
+export class McpToolNamesSkippedError extends Error {
+  readonly retryable = false;
+  readonly skipped: readonly SkippedMcpTool[];
+  constructor(skipped: readonly SkippedMcpTool[]) {
+    const shown = skipped
+      .slice(0, 10)
+      .map((t) => scrubName(t.name))
+      .join(", ");
+    super(
+      `MCP server offered ${skipped.length} tool(s) with unacceptable names: ${shown}${skipped.length > 10 ? ", ..." : ""} (pass anyToolName: true if the tools are not handed to a model)`
+    );
+    this.name = "McpToolNamesSkippedError";
+    this.skipped = skipped;
+  }
+}
+
+/** One process warning per skipped tool (as before), each stating the listing's total skipped count. */
+function emitSkipWarning(tool: SkippedMcpTool, total: number): void {
   (
     globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } }
   ).process?.emitWarning?.(
-    `MCP tool ${shown} skipped: its name is not ^[A-Za-z0-9_-]{1,64}$ (providers reject it, and a long name is third-party text in the prompt).`,
+    `MCP tool ${scrubName(tool.name)} skipped (${total} tool(s) skipped in this listing): ${tool.reason} (providers reject names outside ^[A-Za-z0-9_-]{1,64}$, and a long name is third-party text in the prompt). If these tools are never shown to a model, pass { anyToolName: true } (it still refuses empty, over-${ANY_TOOL_NAME_MAX}-character and control-character names); pass onSkippedTool or strictToolNames to handle this in code.`,
     { code: "LOOM_MCP_TOOL_NAME" }
   );
 }
@@ -56,9 +99,15 @@ export interface ListToolsOptions {
   /**
    * Keep tools whose name is not provider-safe (`^[A-Za-z0-9_-]{1,64}$`). Default
    * false: the name is the effect id AND what a model is shown. Set it only when
-   * the tools are NOT handed to a model (`mcpInvoke$`, an app view).
+   * the tools are NOT handed to a model (`mcpInvoke$`, an app view). It relaxes the
+   * CHARSET only: a name must still be non-empty, at most 256 characters, and free of
+   * control / format / line- and paragraph-separator characters (`\p{Cc}\p{Cf}\p{Zl}\p{Zp}`).
    */
   anyToolName?: boolean;
+  /** Called once per skipped tool (name as the server sent it; scrub before logging). */
+  onSkippedTool?: (name: string, reason: string) => void;
+  /** Throw {@link McpToolNamesSkippedError} (listing every skipped name) instead of skipping. */
+  strictToolNames?: true;
 }
 
 export class McpClient {
@@ -195,15 +244,22 @@ export class McpClient {
     const result = await this.rpc<{ tools: McpTool[] }>("tools/list");
     const fidelity = options.resultFidelity ?? "value";
     const mapped: MappedMcpTool[] = [];
+    const skipped: SkippedMcpTool[] = [];
     for (const mcpTool of result.tools ?? []) {
       // The name is the effect id AND what the model is shown; providers reject
       // one outside this charset (a 400 on every run), and a long one is prose.
       if (typeof mcpTool?.name !== "string") continue;
-      if (options.anyToolName !== true && !TOOL_NAME_RE.test(mcpTool.name)) {
-        emitSkipWarning(mcpTool?.name);
+      const problem = toolNameProblem(mcpTool.name, options.anyToolName === true);
+      if (problem !== undefined) {
+        skipped.push({ name: mcpTool.name, reason: problem });
+        options.onSkippedTool?.(mcpTool.name, problem);
         continue;
       }
       mapped.push(this.mapTool(mcpTool, fidelity, options.trustDescriptions === true));
+    }
+    if (skipped.length > 0) {
+      if (options.strictToolNames === true) throw new McpToolNamesSkippedError(skipped);
+      for (const t of skipped) emitSkipWarning(t, skipped.length);
     }
     return mapped;
   }

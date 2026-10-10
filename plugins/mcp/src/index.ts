@@ -1,4 +1,10 @@
-export { McpClient, projectToolResult, throwIfToolError } from "./McpClient";
+export {
+  McpClient,
+  McpToolNamesSkippedError,
+  projectToolResult,
+  throwIfToolError,
+} from "./McpClient";
+export type { ListToolsOptions, SkippedMcpTool } from "./McpClient";
 export { createMcpServer, servedEffect } from "./McpServer";
 export type {
   McpAudience,

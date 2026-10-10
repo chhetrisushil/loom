@@ -1,10 +1,12 @@
 import * as http from "node:http";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { afterEach, describe, expect, it } from "vitest";
-import { McpClient } from "./McpClient";
+import { McpClient, McpToolNamesSkippedError } from "./McpClient";
 
 // A tiny fake MCP server that speaks the subset of JSON-RPC McpClient uses.
-function startFakeMcpServer(): Promise<{ url: string; close: () => Promise<void> }> {
+function startFakeMcpServer(
+  toolNames?: string[]
+): Promise<{ url: string; close: () => Promise<void> }> {
   const server = http.createServer((req, res) => {
     const chunks: Uint8Array[] = [];
     req.on("data", (c: Uint8Array) => chunks.push(c));
@@ -19,13 +21,11 @@ function startFakeMcpServer(): Promise<{ url: string; close: () => Promise<void>
         result = { protocolVersion: "2024-11-05", capabilities: {} };
       } else if (body.method === "tools/list") {
         result = {
-          tools: [
-            {
-              name: "search",
-              description: "Search the web",
-              inputSchema: { properties: { q: { type: "string" } } },
-            },
-          ],
+          tools: (toolNames ?? ["search"]).map((name) => ({
+            name,
+            description: "Search the web",
+            inputSchema: { properties: { q: { type: "string" } } },
+          })),
         };
       } else if (body.method === "tools/call") {
         const args = body.params?.arguments as { q?: string };
@@ -92,5 +92,85 @@ describe("McpClient", () => {
 
     const result = (await client.callTool("search", { q: "loom" })) as { hits: string[] };
     expect(result.hits).toEqual(["result for loom"]);
+  });
+
+  describe("skipped tool names are visible", () => {
+    async function client(names: string[]): Promise<McpClient> {
+      fake = await startFakeMcpServer(names);
+      const c = new McpClient({ transport: "http", url: fake.url });
+      await c.connect();
+      return c;
+    }
+    async function captureWarnings<T>(
+      fn: () => Promise<T>
+    ): Promise<{ out: T; warnings: string[] }> {
+      const warnings: string[] = [];
+      const listener = (w: Error & { code?: string }) => {
+        if (w.code === "LOOM_MCP_TOOL_NAME") warnings.push(w.message);
+      };
+      process.on("warning", listener);
+      try {
+        const out = await fn();
+        await new Promise((r) => setImmediate(r)); // emitWarning delivers on nextTick, before this
+        return { out, warnings };
+      } finally {
+        process.off("warning", listener);
+      }
+    }
+
+    it("default: skips, calls onSkippedTool per tool, and warns per tool with the count and anyToolName", async () => {
+      const c = await client(["ok_tool", "db.query", "other.tool"]);
+      const seen: Array<[string, string]> = [];
+      const { out, warnings } = await captureWarnings(() =>
+        c.listTools({ onSkippedTool: (n, r) => seen.push([n, r]) })
+      );
+      expect(out.map((t) => t.definition.id)).toEqual(["ok_tool"]);
+      expect(seen.map(([n]) => n)).toEqual(["db.query", "other.tool"]);
+      expect(seen[0]?.[1]).toContain("^[A-Za-z0-9_-]{1,64}$");
+      expect(warnings).toHaveLength(2);
+      expect(warnings[0]).toContain("2 tool(s) skipped");
+      expect(warnings[0]).toContain("anyToolName");
+    });
+
+    it("strictToolNames throws a typed error listing every skipped name", async () => {
+      const c = await client(["ok_tool", "db.query", "other.tool"]);
+      const err = await c.listTools({ strictToolNames: true }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(McpToolNamesSkippedError);
+      expect((err as McpToolNamesSkippedError).skipped.map((s) => s.name)).toEqual([
+        "db.query",
+        "other.tool",
+      ]);
+      expect((err as Error).message).toContain("db.query");
+    });
+
+    it("strictToolNames does not throw when nothing is skipped", async () => {
+      const c = await client(["a", "b"]);
+      expect(await c.listTools({ strictToolNames: true })).toHaveLength(2);
+    });
+
+    it("anyToolName: a dotted name passes", async () => {
+      const c = await client(["db.query", "a/b:c"]);
+      const { out, warnings } = await captureWarnings(() => c.listTools({ anyToolName: true }));
+      expect(out.map((t) => t.definition.id)).toEqual(["db.query", "a/b:c"]);
+      expect(warnings).toHaveLength(0);
+    });
+
+    it("anyToolName still refuses newline, zero-width, over-256 and empty names, visibly", async () => {
+      const c = await client(["db.query", "has\nnewline", "zero\u200Bwidth", "x".repeat(257), ""]);
+      const seen: string[] = [];
+      const { out, warnings } = await captureWarnings(() =>
+        c.listTools({ anyToolName: true, onSkippedTool: (n) => seen.push(n) })
+      );
+      expect(out.map((t) => t.definition.id)).toEqual(["db.query"]);
+      expect(seen).toHaveLength(4);
+      expect(warnings).toHaveLength(4);
+      expect(warnings[0]).not.toContain("\n");
+      expect(warnings[0]).not.toContain("\u200B");
+    });
+
+    it("anyToolName accepts a 256-character name", async () => {
+      const c = await client(["x".repeat(256)]);
+      expect(await c.listTools({ anyToolName: true })).toHaveLength(1);
+    });
   });
 });
