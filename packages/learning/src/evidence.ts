@@ -16,19 +16,16 @@ import type { EventEnvelope, ExecutionState } from "@loom/core";
 // A log read alone (`trajectories(await store.read(id))`) is exact only for a log that was never
 // compacted.
 //
-// ORDER, precisely. The fold records WHAT each decision was, not WHEN: `_decisions` is a plain
-// object keyed by decisionId, and the fold shapes are frozen (the wire-abi fold vectors and the
-// `_decisions` entry shape are a cross-implementation contract), so no ordinal can be added
-// without a kernel ABI change. The order of a decision whose real event is still in the log is its
-// true `sequence` (exact). The order of a decision the checkpoint ABSORBED is the key order of the
-// folded map, which is insertion order except that (a) JavaScript lists array-index-like keys
-// ("0", "10", "2") first, ascending, and (b) a snapshot read back from a store that normalises
-// JSON (Postgres `jsonb` orders keys by length then bytes) has already lost it. Nothing but the
-// DISCOUNTED terminal credit (`trajectories` `discount < 1`) depends on that order — the
-// direct-outcome credit, the default `discount = 1`, per-arm statistics and the policy evaluation
-// are order-free. So a compacted execution's evidence is identical to the uncompacted one's
-// whenever `discount = 1`, or its absorbed decisionIds are not array-index-like and the snapshot
-// store keeps key order; otherwise the discount is applied in the folded-map order.
+// ORDER, precisely. Since EVENT_SCHEMA 1.24.0 (ADR 0128) the fold stamps `seq` — the envelope
+// sequence of the first record — on each `_decisions` entry, and a decision the checkpoint ABSORBED
+// is rebuilt in `seq` order with `seq` as its `sequence`: EXACT, whatever the id shape and whatever
+// the snapshot store does to key order (Postgres `jsonb` reorders keys). An entry WITHOUT `seq`
+// (folded by a pre-1.24.0 kernel, then compacted) is LEGACY and keeps today's behaviour: folded-map
+// key order — insertion order except that array-index-like keys ("0", "10", "2") list first and a
+// normalising store has already lost it. Legacy entries sort BEFORE stamped ones (they predate
+// every stamped decision of a run that started on the old fold) and take ordinals in map order.
+// Only the DISCOUNTED terminal credit (`discount < 1`) depends on the order; the direct-outcome
+// credit, the default `discount = 1`, per-arm statistics and the policy evaluation are order-free.
 
 const EVIDENCE = new Set(["DECISION_RECORDED", "OUTCOME_RECORDED"]);
 
@@ -42,14 +39,12 @@ const TERMINAL_OF_STATUS: Record<string, string> = {
 /**
  * The events `trajectories` needs for ONE execution, derived from its folded `state`.
  *
- * - `DECISION_RECORDED` / `OUTCOME_RECORDED` are rebuilt from `_decisions` / `_outcomes`, in fold
- *   order (which is log order). A decision whose real event is still in `log` keeps its true
- *   `sequence` and `timestamp`; one the checkpoint absorbed gets its ordinal as `sequence` (always
- *   below every event the log still holds) and `state.startedAt` as `timestamp`, because the fold
- *   does not record when a decision was made. Only the `discount < 1` terminal credit depends on
- *   the order of absorbed decisions, and that order is the folded map's key order — exact unless
- *   an absorbed decisionId is array-index-like ("10") or the snapshot store does not preserve
- *   object key order (see the ORDER note above).
+ * - `DECISION_RECORDED` / `OUTCOME_RECORDED` are rebuilt from `_decisions` / `_outcomes`, in log
+ *   order. A decision whose real event is still in `log` keeps its true `sequence` and `timestamp`;
+ *   one the checkpoint absorbed gets its recorded `seq` as `sequence` (a legacy entry without one,
+ *   a negative ordinal, below every stamped one) and `state.startedAt` as `timestamp`, because the fold
+ *   does not record when a decision was made. Decisions are emitted sorted by that `sequence`, so
+ *   the `discount < 1` terminal credit is exact (see the ORDER note above).
  * - Every other event of `log` passes through unchanged — the terminal event is the one that
  *   matters (compaction never removes it); a log's own `DECISION_RECORDED` / `OUTCOME_RECORDED`
  *   events are dropped, the state being authoritative and complete.
@@ -73,20 +68,39 @@ export function evidenceEvents(
   const decisions = state.variables._decisions as
     | Record<string, Record<string, unknown>>
     | undefined;
-  let ordinal = 0;
+  // ADR 0128 — legacy entries (no `seq`) first, in map order; then stamped ones by `seq`.
+  const legacy: Array<[string, Record<string, unknown>]> = [];
+  const stamped: Array<[string, Record<string, unknown>, number]> = [];
   for (const [decisionId, folded] of Object.entries(decisions ?? {})) {
+    const seq = folded.seq;
+    if (typeof seq === "number" && Number.isSafeInteger(seq))
+      stamped.push([decisionId, folded, seq]);
+    else legacy.push([decisionId, folded]);
+  }
+  stamped.sort((a, b) => a[2] - b[2]);
+  let ordinal = 0;
+  const emitDecision = (
+    decisionId: string,
+    folded: Record<string, unknown>,
+    seq: number | undefined
+  ) => {
     ordinal++;
     const original = real.get(decisionId);
+    const { seq: _seq, ...rest } = folded;
     out.push({
       id: original?.id ?? `${executionId}-decision-${ordinal}`,
       workflowId,
       executionId,
       eventType: "DECISION_RECORDED",
-      sequence: original?.sequence ?? ordinal,
+      sequence: original?.sequence ?? seq ?? ordinal,
       timestamp: original?.timestamp ?? state.startedAt,
-      payload: { ...folded, decisionId },
+      payload: { ...rest, decisionId },
     });
-  }
+  };
+  // A legacy decision's `sequence` is a NEGATIVE ordinal (-n..-1): below every stamped `seq` (>= 1),
+  // so the two kinds never interleave under a sort by `sequence`.
+  for (const [i, [id, folded]] of legacy.entries()) emitDecision(id, folded, i - legacy.length);
+  for (const [id, folded, seq] of stamped) emitDecision(id, folded, seq);
   const outcomes = state.variables._outcomes as Array<Record<string, unknown>> | undefined;
   let n = 0;
   for (const folded of outcomes ?? []) {

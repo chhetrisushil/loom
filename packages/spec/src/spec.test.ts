@@ -302,6 +302,10 @@ const NOT_A_CAPABILITY = new Set([
   // the R8 supervisor, T1 timers, the K10.6 pin seam); the SPI version is already in the
   // compatibility matrix. No new subsystem to grade.
   "0118",
+  // 0128 — one additive field (`seq`) on the folded `_decisions` entry so decision order survives a
+  // checkpoint (EVENT_SCHEMA 1.24.0), read by `@loom/learning`. Completes existing capabilities (ADR
+  // 0106 compaction, ADR 0116 evidence from the fold). No new subsystem to grade.
+  "0128",
   // 0112 — R6: `ctx.parallel` becomes a cancellation scope (fail-fast aborts siblings, the outcome
   // is journaled as `PARALLEL_COMPLETED`), a park drains in-flight steps before it commits, and a
   // 1P cancel cascade in `@loom/orchestration`. It completes existing capabilities (K8

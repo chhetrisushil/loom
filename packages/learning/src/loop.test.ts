@@ -2,10 +2,13 @@ import { attachOutcomes, recordOutcome } from "@loom/analytics";
 import { step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import type { EventStore } from "@loom/event-runtime";
+import { PostgresEventStore, PostgresSnapshotStore } from "@loom/plugin-postgres";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import type { SnapshotStore } from "@loom/snapshot-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { LogLifecycle, WorkflowRuntime } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { decideWithPolicy } from "./decideWithPolicy";
 import { evaluatePolicy } from "./evaluate";
@@ -426,9 +429,15 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
   });
 
   describe("decision ORDER of the evidence (discounted terminal credit)", () => {
-    const run = async (ids: string[]) => {
-      const eventStore = new InMemoryAsyncEventStore();
-      const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const run = async (
+      ids: string[],
+      stores: { eventStore: EventStore; snapshotStore: SnapshotStore } = {
+        eventStore: new InMemoryAsyncEventStore(),
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+      },
+      executionId = "o"
+    ) => {
+      const { eventStore, snapshotStore } = stores;
       const runner: FlowRunner<{ tokens: number }, { route: string }> = async (ctx) => {
         for (const id of ids) await ctx.decide(id, () => id);
         return { route: "done" };
@@ -440,7 +449,7 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
       });
       runtime.registerFlow(makeFlow(runner).definition, runner);
       await (
-        await runtime.start(makeFlow(runner), { tokens: 1 }, { executionId: "o" })
+        await runtime.start(makeFlow(runner), { tokens: 1 }, { executionId })
       ).waitForCompletion();
       return { eventStore, snapshotStore, runtime };
     };
@@ -467,19 +476,66 @@ describe("compaction and learning evidence (ADR 0116 amendment, round 3)", () =>
       ).toEqual(raw);
     });
 
-    // KNOWN LIMIT, stated as the IDEAL: the fold's `decisions` map is a frozen shape (EVENT_SCHEMA /
-    // snapshot ABI) that records no order, so a compacted log can only list absorbed ids in JS
-    // object-key order (array-index-like keys first). `it.fails` passes while that holds and goes
-    // red the day the order is carried through the checkpoint -- then delete the `.fails`.
-    it.fails(
-      "IDEAL (known limit): absorbed array-index-like ids keep their true order",
+    // ADR 0128: the fold stamps `seq` on each decision, so the order survives the checkpoint even
+    // for array-index-like ids (which a plain object lists first, ascending).
+    it("absorbed array-index-like ids keep their true order", async () => {
+      const { eventStore, snapshotStore, runtime } = await run(["b", "10", "2", "a"]);
+      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+      const got = credit(
+        evidenceEvents((await runtime.loadState("o"))!, await eventStore.read("o"))
+      );
+      expect(got?.map((r) => r[0])).toEqual(["b", "10", "2", "a"]);
+    });
+
+    it("a LEGACY snapshot (no seq) is read in folded-map order, with no migration", async () => {
+      const { eventStore, snapshotStore, runtime } = await run(["d-b", "d-a"]);
+      expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
+      const state = (await runtime.loadState("o"))!;
+      const decisions = state.variables._decisions as Record<string, Record<string, unknown>>;
+      expect(decisions["d-b"]?.seq).toBeTypeOf("number");
+      // Strip `seq` as a pre-1.24 fold would have written it, and reverse the map.
+      const legacy = Object.fromEntries(
+        Object.entries(decisions)
+          .reverse()
+          .map(([id, { seq: _seq, ...rest }]) => [id, rest])
+      );
+      const events = evidenceEvents(
+        { ...state, variables: { ...state.variables, _decisions: legacy } },
+        await eventStore.read("o")
+      );
+      expect(credit(events)?.map((r) => r[0])).toEqual(["d-a", "d-b"]); // map order, as before
+    });
+
+    // The Postgres half: `jsonb` orders object keys by length, then bytes, so a snapshot read back
+    // from Postgres lists `route-a` before `route-b` whatever order they were decided in. Without
+    // `seq` the discounted credit is swapped; with it, compaction is invisible.
+    const PG_URL = process.env.LOOM_TEST_POSTGRES_URL;
+    const pgIt = PG_URL ? it : it.skip;
+    const pgStores: Array<{ close(): Promise<void> }> = [];
+    afterAll(async () => {
+      for (const st of pgStores) await st.close();
+    });
+    pgIt(
+      "a compacted run on the REAL Postgres store keeps decision order (jsonb reorders keys)",
       async () => {
-        const { eventStore, snapshotStore, runtime } = await run(["b", "10", "2", "a"]);
-        expect(await new LogLifecycle(eventStore, snapshotStore).compact("o")).not.toBeNull();
-        const got = credit(
-          evidenceEvents((await runtime.loadState("o"))!, await eventStore.read("o"))
+        const eventStore = new PostgresEventStore(PG_URL as string);
+        const snapshotStore = new PostgresSnapshotStore(PG_URL as string);
+        pgStores.push(eventStore, snapshotStore);
+        const executionId = `order-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const { runtime } = await run(
+          ["route-b", "route-a"],
+          { eventStore, snapshotStore },
+          executionId
         );
-        expect(got?.map((r) => r[0])).toEqual(["b", "10", "2", "a"]);
+        const raw = credit(await eventStore.read(executionId));
+        expect(raw?.map((r) => r[0])).toEqual(["route-b", "route-a"]);
+        expect(
+          await new LogLifecycle(eventStore, snapshotStore).compact(executionId)
+        ).not.toBeNull();
+        const state = (await runtime.loadState(executionId))!;
+        // The premise: jsonb really did reorder the folded map.
+        expect(Object.keys(state.variables._decisions as object)).toEqual(["route-a", "route-b"]);
+        expect(credit(evidenceEvents(state, await eventStore.read(executionId)))).toEqual(raw);
       }
     );
   });

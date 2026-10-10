@@ -121,7 +121,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   execution's snapshots, which makes the log authoritative.
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.23.0** — after the
+  the pinned type set MUST change together. The current version is **1.24.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -168,6 +168,17 @@ load-bearing, plus the global guardrails that gate every additive capability:
   recorded when the flow supplies a `codeFingerprint`. `flowHash` may be `sha256:<hex>`
   (a recorded `fnv1a:` value stays valid; new starts record `sha256:` only behind `kernel.features.sha256FlowHash`); two additive optional payload fields within 1.23.0: `DECISION_RECORDED.innerSteps` (kernel-stamped only) and `EXECUTION_MIGRATED.toCodeHash`; a null resume of the reserved gate `__loom_diverged__` is status-only like the in-doubt gate. The replay-divergence detector
   itself is runtime-only; in `fail` mode a refusal writes an ordinary `EXECUTION_SUSPENDED` on the reserved gate.
+  ADR 0128 added 1.24.0, one additive field and no new kind: each folded `_decisions` entry carries
+  `seq`, the envelope `sequence` of the FIRST `DECISION_RECORDED` for that decision id (taken from
+  the envelope, never the payload; a repeated id keeps its first `seq`). It exists so the ORDER
+  decisions were made in survives a checkpoint: the map's key order does not (array-index-like keys
+  sort first; a normalising snapshot store such as Postgres `jsonb` reorders keys). It is descriptive,
+  never a replay input (`getDecision` still returns only `choice`). A snapshot written by a 1.23 fold
+  has no `seq` on its absorbed entries: those are LEGACY, read in folded-map order, and are NOT
+  migrated (`normalizeSnapshotState` never invents a `seq`) — the same documented exception to
+  `fold(snapshot, tail) == fold(events)` as the 1.21.0 shapes. Event bytes and hash chains are
+  unchanged; `WIRE_ABI_VERSION` stays 1.0.0 (ADR 0026 versions the wire protocol, and added fold
+  vectors are not a protocol change; a foreign fold that does not stamp `seq` fails the vector).
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
   resume `null` into an unparked or in-doubt execution, or hold a `STEP_FAILED`
   that no status-setting event follows, replay byte-identically.

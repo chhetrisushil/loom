@@ -1,6 +1,6 @@
 # ADR 0128 — Carry decision order through checkpoints: a recorded sequence on each folded decision
 
-- Status: **Proposed** (2026-10-11) — design only; no runtime change in this PR. Needs the user's decision (see "Decision needed").
+- Status: **Accepted** (2026-10-11) — option A, by the user's decision; implemented (see "Implementation note").
 - Date: 2026-10-11
 - Closes (if accepted): the logged follow-up "carry decision order through checkpoints (needs a fold ordinal — ABI)" ([ADR 0116](0116-late-outcome-attach.md), round 4 item 2).
 - Builds on: [ADR 0106](0106-compaction-integrity.md) (what compaction keeps), [ADR 0116](0116-late-outcome-attach.md) (evidence from the fold, `evidenceEvents`), [ADR 0079](0079-decision-context-and-policy.md) / [ADR 0124](0124-learning-lifecycle.md) (the learning consumers), [ADR 0026](0026-t2-wire-level-kernel-abi.md) (the fold vectors are a cross-implementation contract).
@@ -59,3 +59,13 @@ Kernel only for the one field, because the loss happens inside the fold and the 
 ## Test plan (when accepted)
 
 Fold vectors for first-record `seq`, repeated id, and a vector WITHOUT `seq` (legacy) folding unchanged; `evidenceEvents` equality compacted vs uncompacted for `discount < 1` including array-index ids and a `jsonb` round trip against a throwaway Postgres 17 (the Postgres half has no test today); snapshot-plus-tail equals full fold for a post-1.24 snapshot; a legacy snapshot reads in map order.
+
+## Implementation note (2026-10-11)
+
+User decisions: option A; a repeated `decisionId` KEEPS its first `seq`; the field is `seq`; legacy snapshots are read in map order with no migration; `WIRE_ABI_VERSION` is not bumped.
+
+- **Fold** (`packages/replay-vm/src/eventHandlers.ts`, `DECISION_RECORDED`): stamps `seq: event.sequence` from the envelope. A repeat keeps the first `seq`; a repeat of a legacy entry (no `seq`) stays without one, because its first sequence is unknowable and stamping a later one would misplace it. `EVENT_SCHEMA_VERSION` 1.23.0 -> 1.24.0.
+- **WIRE_ABI_VERSION stays 1.0.0.** ADR 0026 versions the wire protocol (a projection of the syscall ABI that a wire client negotiates on); it sets no rule that the fold vectors are versioned with it, and the 1.23.0 vectors were added with no bump. The vectors are the conformance contract, and a foreign fold that does not stamp `seq` fails them, as intended. Existing `_decisions` expectations in `FOLD_VECTORS` gained `seq`; one new vector pins first-record `seq`, a repeated id, an array-index-like id and a payload-supplied `seq` being ignored.
+- **State hashing:** none. The folded `_decisions` is hashed nowhere (hash chains are over envelopes; `approvalBinding`, content and policy hashes cover other inputs), so no persisted or compared hash changes for an existing execution. Folded STATE bytes change; the goldens that pinned an entry (`decisionD1`, `foldScale` oracle, wire-abi vectors) were updated.
+- **Consumer:** `@loom/learning` `evidenceEvents` rebuilds absorbed decisions sorted by `seq`, with `seq` as the event `sequence` (and drops it from the rebuilt payload). Legacy entries come first, in map order, with negative ordinals so the two kinds never interleave. The `it.fails` tripwire in `loop.test.ts` is now a plain passing test, with a legacy-snapshot test beside it and the Postgres half: a run deciding `route-b` then `route-a` is compacted on the real Postgres stores (`jsonb` lists `route-a` first) and its `discount: 0.5` credit equals the uncompacted one; it fails without the stamp. `@loom/analytics` `replay.ts` only counts `DECISION_RECORDED` events, orders nothing from `_decisions`, so it is not a second consumer and is unchanged.
+- **Docs:** specification section 3 (compatibility), `10-event-schema-reference.md`, compatibility matrix, cheatsheet, `usage-cli.md`, CHANGELOG.
