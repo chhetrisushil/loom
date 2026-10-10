@@ -9,6 +9,7 @@ import {
   TOOL_SEARCH_MAX_QUERY_TERMS,
   firstLineOf,
   normalizeLabels,
+  resolveStopwords,
   tokenizeToolText,
   toolQueryTerms,
 } from "./toolSearch";
@@ -267,5 +268,37 @@ describe("R22e (ADR 0125 D15) - the query stoplist", () => {
     const set = new Set(DEFAULT_STOPWORDS);
     expect(toolQueryTerms(q, set)).toHaveLength(16);
     expect(toolQueryTerms(q, set)).not.toContain("the");
+  });
+});
+
+describe("R22e (ADR 0125 D15) review - the default stoplist is in query-term form", () => {
+  it("every default entry, tokenized like a query, is in the default set (this/does/these/those fold their plural s)", () => {
+    const set = resolveStopwords(undefined);
+    for (const w of DEFAULT_STOPWORDS) {
+      const toks = tokenizeToolText(w, 4);
+      expect(toks.length, w).toBeGreaterThan(0);
+      for (const t of toks) expect(set.has(t), `${w} -> ${t}`).toBe(true);
+    }
+    // The four that a raw Set silently never matched.
+    for (const w of ["this", "does", "these", "those"]) {
+      expect(set.has(tokenizeToolText(w, 1)[0] as string), w).toBe(true);
+    }
+  });
+  it("the default list and the explicit [...DEFAULT_STOPWORDS] give the same set", () => {
+    const a = [...resolveStopwords(undefined)].sort();
+    const b = [...resolveStopwords([...DEFAULT_STOPWORDS])].sort();
+    expect(a).toEqual(b);
+  });
+  it('"does this tool refund" drops both "does" and "this"', () => {
+    expect(toolQueryTerms("does this tool refund", resolveStopwords(undefined))).toEqual([
+      "tool",
+      "refund",
+    ]);
+    // NEGATIVE: with no stoplist they are kept (as their folded forms).
+    expect(toolQueryTerms("does this tool refund")).toEqual(["doe", "thi", "tool", "refund"]);
+  });
+  it("a multi-word entry splits into separate stopwords (it is not a phrase)", () => {
+    const set = resolveStopwords(["out of"]);
+    expect([...set].sort()).toEqual(["of", "out"]);
   });
 });

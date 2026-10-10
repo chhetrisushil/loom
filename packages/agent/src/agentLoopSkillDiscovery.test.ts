@@ -8,7 +8,7 @@ import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { SkillRegistry } from "./SkillRegistry";
 import { type AgentLoopConfig, agentLoop$ } from "./agentLoop$";
@@ -1145,5 +1145,92 @@ describe("R22d (ADR 0125 D14) - a skillRanker / tool ranker that ignores `limit`
     const [res] = lastResults(b);
     expect(res?.result.tools?.map((x) => x.name)).toEqual(["pay_b"]);
     expect(reads.n).toBeLessThanOrEqual(asks.reduce((a, b) => a + b, 0));
+  });
+});
+
+describe("R22e (ADR 0125 D15) review - skill-side factory traps", () => {
+  const T = [mk("pay_a", "pay thing")];
+  it("a factory that mutates the skill docs it received cannot change the registry or later searches", async () => {
+    const skills = [
+      mkSkill("refund_one", "R1", [], { tags: ["t1"], aliases: ["a1"] }),
+      mkSkill("other", "O"),
+    ];
+    const attempts: string[] = [];
+    const b = boot({
+      skills,
+      activation: {
+        discovery: "search",
+        skillRanker: (docs) => {
+          for (const f of [
+            () => (docs[0]?.tags as string[]).push("HOSTILE"),
+            () => (docs[0]?.aliases as string[]).push("HOSTILE"),
+            () => (docs as ToolSearchDoc[]).pop(),
+          ]) {
+            try {
+              f();
+              attempts.push("mutated");
+            } catch {
+              /* frozen */
+            }
+          }
+          return { kind: "sk", rank: () => [{ id: "refund_one", score: 1 }] };
+        },
+      },
+      config: { toolSearch: { catalog: T } },
+      provider: script([[SEARCH("a", "s1")], [SEARCH("b", "s2")]]),
+    });
+    await runToEnd(b);
+    expect(attempts).toEqual([]);
+    expect(skills[0]?.tags).toEqual(["t1"]);
+    expect(skills[0]?.aliases).toEqual(["a1"]);
+    expect(JSON.stringify(lastResults(b)[0]?.result)).toContain("refund_one");
+  });
+
+  it("a CLASS or a rank-less object as skillRanker is a config error", async () => {
+    class SkR {
+      readonly kind = "c";
+      rank() {
+        return [];
+      }
+    }
+    for (const [skillRanker, re] of [
+      [SkR, /skillRanker is a class/],
+      [{ kind: "x" }, /skillRanker.*rank/],
+      [{ rank: () => [] }, /string `kind`/],
+    ] as const) {
+      const b = boot({
+        skills: [mkSkill("s", "S")],
+        activation: { discovery: "search", skillRanker: skillRanker as never },
+        config: { toolSearch: { catalog: T } },
+        provider: script([[SEARCH("x")]]),
+      });
+      const h = await b.runtime.start(flowDef, {}, { executionId: "e1" });
+      const r = await h.waitForCompletion().then(
+        (x) => x,
+        (e: Error) => e
+      );
+      expect(String((r as { error?: unknown }).error ?? r)).toMatch(re);
+    }
+  });
+
+  it("async tool + skill factories in one run: search_unavailable, and ONE LOOM_AGENT_RANKER_FACTORY warning for the run", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const asyncFx = (async () => ({ kind: "x", rank: () => [] })) as never;
+      const b = boot({
+        skills: [mkSkill("s", "S")],
+        activation: { discovery: "search", skillRanker: asyncFx },
+        config: { toolSearch: { catalog: T, ranker: asyncFx } },
+        provider: script([[SEARCH("x", "s1")], [SEARCH("y", "s2")]]),
+      });
+      await runToEnd(b);
+      expect(JSON.stringify(lastResults(b)[0]?.result)).toContain("search_unavailable");
+      const codes = spy.mock.calls
+        .map((c) => (c[1] as { code?: string } | undefined)?.code)
+        .filter((c) => c === "LOOM_AGENT_RANKER_FACTORY");
+      expect(codes).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

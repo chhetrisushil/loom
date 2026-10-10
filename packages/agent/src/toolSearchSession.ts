@@ -10,6 +10,8 @@ import {
   type ToolRankerFactory,
   type ToolSearchDoc,
   firstLineOf,
+  isBuiltRanker,
+  rankerConfigProblem,
   resolveStopwords,
 } from "./toolSearch";
 
@@ -196,31 +198,40 @@ export function toolSearchDocs(
       Record<string, { tags?: readonly string[]; aliases?: readonly string[] }>
     >;
   } = {}
-): ToolSearchDoc[] {
-  return tools.map((t) => {
-    const host = opts.annotations?.[t.id];
-    // Trusted vocabulary: the host's annotations and the tool author's own, the last ONLY for a
-    // first-party tool. A remote tool's self-declared tags/aliases are the server's claims.
-    const own = isThirdParty(t) ? undefined : t;
-    const remote = isThirdParty(t) && vouched(t) ? [...(t.tags ?? []), ...(t.aliases ?? [])] : [];
-    return {
-      id: t.id,
-      // An un-vouched description is not ranked on: it is attacker text.
-      ...(vouched(t) && { description: [t.description, ...remote].join(" ") }),
-      tags: [...(host?.tags ?? []), ...(own?.tags ?? [])],
-      aliases: [...(host?.aliases ?? []), ...(own?.aliases ?? [])],
-    };
-  });
+): readonly ToolSearchDoc[] {
+  return Object.freeze(
+    tools.map((t) => {
+      const host = opts.annotations?.[t.id];
+      // Trusted vocabulary: the host's annotations and the tool author's own, the last ONLY for a
+      // first-party tool. A remote tool's self-declared tags/aliases are the server's claims.
+      const own = isThirdParty(t) ? undefined : t;
+      const remote = isThirdParty(t) && vouched(t) ? [...(t.tags ?? []), ...(t.aliases ?? [])] : [];
+      return Object.freeze({
+        id: t.id,
+        // An un-vouched description is not ranked on: it is attacker text.
+        ...(vouched(t) && { description: [t.description, ...remote].join(" ") }),
+        tags: Object.freeze([...(host?.tags ?? []), ...(own?.tags ?? [])]),
+        aliases: Object.freeze([...(host?.aliases ?? []), ...(own?.aliases ?? [])]),
+      });
+    })
+  );
 }
 
-/** R22e: the search docs of skills (host-registry author text, vouched by construction); raw skill ids. */
-export function skillSearchDocs(skills: Iterable<SkillDefinition>): ToolSearchDoc[] {
-  return [...skills].map((s) => ({
-    id: s.id,
-    description: String(s.description),
-    tags: s.tags ?? [],
-    aliases: s.aliases ?? [],
-  }));
+/**
+ * R22e: the search docs of skills (host-registry author text, vouched by construction); raw skill
+ * ids. Copied and frozen: a factory that mutates what it receives cannot reach the registry.
+ */
+export function skillSearchDocs(skills: Iterable<SkillDefinition>): readonly ToolSearchDoc[] {
+  return Object.freeze(
+    [...skills].map((s) =>
+      Object.freeze({
+        id: s.id,
+        description: String(s.description),
+        tags: Object.freeze([...(s.tags ?? [])]),
+        aliases: Object.freeze([...(s.aliases ?? [])]),
+      })
+    )
+  );
 }
 
 /**
@@ -229,7 +240,11 @@ export function skillSearchDocs(skills: Iterable<SkillDefinition>): ToolSearchDo
  * so the next search tries again (a transient failure, e.g. a model still loading, must not poison
  * the run; the cost is bounded by `maxSearches`). `kind` is the built ranker's, read after `rank`.
  */
-function lazyFactoryRanker(factory: ToolRankerFactory, docs: () => ToolSearchDoc[]): ToolRanker {
+function lazyFactoryRanker(
+  factory: ToolRankerFactory,
+  docs: () => readonly ToolSearchDoc[],
+  warned: { done: boolean }
+): ToolRanker {
   let built: ToolRanker | undefined;
   return {
     get kind() {
@@ -237,8 +252,30 @@ function lazyFactoryRanker(factory: ToolRankerFactory, docs: () => ToolSearchDoc
     },
     rank: (query, limit) => {
       if (built === undefined) {
-        const r = factory(docs());
-        if (r === null || typeof r !== "object" || typeof r.rank !== "function") {
+        const r: unknown = factory(docs());
+        if (!isBuiltRanker(r)) {
+          const thenable =
+            r !== null &&
+            (typeof r === "object" || typeof r === "function") &&
+            typeof (r as { then?: unknown }).then === "function";
+          if (thenable) {
+            // An async factory (or one returning a Promise) is a shape error the host must fix;
+            // the model only ever sees the fixed `search_unavailable`. Loud, once per run.
+            try {
+              (r as PromiseLike<unknown>).then(undefined, () => {});
+            } catch {
+              /* a hostile thenable: nothing to do */
+            }
+            if (!warned.done) {
+              warned.done = true;
+              (
+                globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } }
+              ).process?.emitWarning?.(
+                "A toolSearch / skillRanker ranker factory returned a Promise (an async factory?). Factories must be synchronous and return a ToolRanker; search is unavailable until it does.",
+                { code: "LOOM_AGENT_RANKER_FACTORY" }
+              );
+            }
+          }
           throw new TypeError("a toolSearch ranker factory must return a ToolRanker");
         }
         built = r;
@@ -352,16 +389,23 @@ export class ToolSearchSession {
       throw new ToolSearchError(`toolSearch.${(err as Error).message}`);
     }
     this.stopwords = cfg.stopwords;
+    if (cfg.ranker !== undefined) {
+      const problem = rankerConfigProblem("toolSearch.ranker", cfg.ranker);
+      if (problem !== undefined) throw new ToolSearchError(problem);
+    }
     this.customRanker = cfg.ranker !== undefined;
     this.ranker =
       cfg.ranker === undefined
         ? this.lazyBm25(cfg)
         : typeof cfg.ranker === "function"
-          ? lazyFactoryRanker(cfg.ranker, () =>
-              toolSearchDocs(
-                [...this.searchable].map((id) => this.byId.get(id) as ToolDefinition),
-                { ...(cfg.annotations !== undefined && { annotations: cfg.annotations }) }
-              )
+          ? lazyFactoryRanker(
+              cfg.ranker,
+              () =>
+                toolSearchDocs(
+                  [...this.searchable].map((id) => this.byId.get(id) as ToolDefinition),
+                  { ...(cfg.annotations !== undefined && { annotations: cfg.annotations }) }
+                ),
+              this.factoryWarned
             )
           : cfg.ranker;
     this.definition = {
@@ -376,6 +420,9 @@ export class ToolSearchSession {
       outputSchema: z.unknown(),
     } as unknown as ToolDefinition;
   }
+
+  /** One `LOOM_AGENT_RANKER_FACTORY` warning per run, shared by the tool and skill factories. */
+  private readonly factoryWarned = { done: false };
 
   /** Whether the host supplied its own (tool-only) ranker. */
   readonly customRanker: boolean;
@@ -403,7 +450,11 @@ export class ToolSearchSession {
         src.skillRanker === undefined
           ? this.lazySkillBm25()
           : typeof src.skillRanker === "function"
-            ? lazyFactoryRanker(src.skillRanker, () => skillSearchDocs(this.skillById.values()))
+            ? lazyFactoryRanker(
+                src.skillRanker,
+                () => skillSearchDocs(this.skillById.values()),
+                this.factoryWarned
+              )
             : src.skillRanker;
     }
     this.definition = {
