@@ -590,28 +590,6 @@ function boundOrchestration(limits: SpawnLimits): { awaitChild; awaitChildren; a
 class SpawnLimitExceededError extends Error { limit: "maxDepth" | "maxFanOut"; max; actual; readonly retryable: false }
 #+end_src
 
-** ~@loom/saga~ — compensation without a syscall
-
-#+begin_src typescript
-function createSaga(ctx): Saga
-function withSaga<T>(ctx, body: (saga: Saga) => Promise<T>): Promise<T>
-interface Saga {
-  run<T>(step: StepDefinition<unknown, T>, input: unknown, compensate: (out: T) => Promise<void> | void): Promise<T>
-  compensate(): Promise<void>     // reverse order; each compensator is a replay-guarded ctx.run step
-}
-// ADR 0041 — the plan's `ctx.compensate` syscall and COMPENSATION_* events proved unnecessary
-#+end_src
-
-** ~@loom/fair-scheduler~ — per-tenant fairness
-
-#+begin_src typescript
-function createFairScheduler(options: {
-  weights?: Record<string, number>;        // per-tenant share
-  concurrency: number;                     // total in-flight budget
-}): { submit<T>(tenant: string, task: () => Promise<T>): Promise<T> }
-// deficit round-robin: one noisy tenant cannot starve the others (ADR 0038)
-#+end_src
-
 * Replay & storage
 :PROPERTIES:
 :CUSTOM_ID: replay-storage
@@ -2715,22 +2693,6 @@ class VerificationError extends Error { readonly report: VerificationReport }
 
 The rule table, what each one reads, and which are opt-in live in [[file:usage-cli.md][the CLI guide]] and `packages/verify/README.md`; `ruleDocs.test.ts` fails the build if a rule ships without reaching both.
 
-** ~@loom/replay-inspector~ — a read-only lens over a stored log
-
-Strictly read-only (ADR 0071): it reconstructs, never writes, and never falls back to a current version when a pinned one is unavailable — a plausible wrong answer is the failure a pin exists to prevent.
-
-#+begin_src typescript
-class ReplayInspector {
-  reconstructAt(executionId: string, sequence: number): Promise<InspectedState>
-  reconstructMany(executionId: string, sequences: readonly number[]): Promise<InspectedState[]>
-  reconstructProjections(executionId: string, opts?: ProjectionReconstructOptions): Promise<ProjectionSlice[]>
-  pinOf(executionId: string): Promise<PinStatus>     // pinned | unpinned-legacy | unavailable
-}
-function diffState(a: InspectedState, b: InspectedState, opts?: DiffOptions): DiffResult
-function anchorFor(events: readonly EventEnvelope[], sequence: number): number
-class InspectorBudgetError extends Error {}          // a reconstruction that would exceed its budget
-#+end_src
-
 ** ~@loom/sdk~ — the public barrel
 
 Re-exports the surface most apps import (~200 symbols) so an application depends on one package rather than a dozen. It adds nothing of its own: every entry is documented under its owning package above, and a symbol absent here is absent from the barrel.
@@ -2870,7 +2832,6 @@ class ContentMissingError extends Error          { readonly contentAddress: stri
 class RevisionConflictError extends Error        { readonly key: string; readonly expectedRevision: number; readonly actualRevision: number; }  // @loom/plugin-durable-state
 class StateContractMismatchError extends Error   { readonly contractId: string; readonly storedVersion: number; readonly expectedVersion: number; }  // @loom/plugin-durable-state
 class TemplateDriftError extends Error           { /* pinned MCP Apps template no longer matches */ }         // ADR 0072 — @loom/plugin-mcp-app
-class InspectorBudgetError extends Error         { /* read-only replay exceeded its budget */ }               // ADR 0071 — @loom/replay-inspector
 #+end_src
 
 -----

@@ -130,7 +130,6 @@ Loom's own triage discipline (P10, bias outward) demands.
 | **Retention sweeps** | `deleteExecution` + keyset-paged `listExecutionsPage` for bounded-memory maintenance at year scale | SPI 1.2.0 |
 | **Read models** | Durable cross-execution index so queries stop scanning logs; idempotent rows + per-execution watermarks | `plugins/read-model` (ADR 0058) |
 | **Compute placement** | Route executions to local / remote-HTTP / Cloud Run targets by policy | `PlacementDispatcher` (ADR 0001/0003) |
-| **Fair scheduling** | Per-tenant concurrency fairness; zero-overhead `Infinity` fast path | `packages/fair-scheduler` (ADR 0038) |
 | **Tenant isolation** | Key-prefix scoping, unaddressable across tenants by construction | `TenantScopedEventStore` (K12.5) |
 | **Selector subscriptions** | Wake a surface only when its bound slice changes | `ProjectionRuntime` (ADR 0068) |
 

@@ -140,9 +140,7 @@ All optional, all separate.
 | `@loom/dispatcher` | where an execution runs; placement policy, circuit breaker |
 | `@loom/worker-runtime` | the worker contract — local, remote HTTP, Cloud Run |
 | `@loom/graph-executor` | fan a node set into per-node executions |
-| `@loom/fair-scheduler` | per-tenant fairness; bounded concurrency |
 | `@loom/orchestration` | spawn children, `awaitChild(ren)`, `awaitAll` |
-| `@loom/saga` | `createSaga` / `withSaga` — compensate in reverse |
 
 ## Reading what happened — no writes
 
@@ -152,7 +150,6 @@ All optional, all separate.
 | `@loom/live-query` | `liveQuery` over in-flight state |
 | `@loom/plugin-read-model` | durable cross-execution queries, keyset paging |
 | `@loom/analytics` | `analyze`, cost, failure, reasoning, model ranking |
-| `@loom/replay-inspector` | state at any sequence, off-log |
 
 ## Invariants worth memorising
 

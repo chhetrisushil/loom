@@ -210,7 +210,7 @@ Crucially, on resume the flow function **re-runs from the top**, but every alrea
 
 Replay's substitution is keyed by **step id** (`frames[stepId]`) — not by log position. That single fact is both the freedom and the obligation of dynamic flows ([ADR 0061](adr/0061-step-identity-interpreter-guardrails.md)):
 
-> The sequence of durable-step identities an execution produces must be a **pure function of logged inputs** (flow input, step outputs, decisions, resume payloads). A step invoked more than once with different intent must mint a deterministic distinct id — `` `${id}#${index}` `` for loops, `` `${id}#retry:${n}` `` for deliberate re-tries (saga uses `#compensate:${i}`). Reusing an id returns/substitutes the **first recorded outcome** — completed output and typed failures alike ([ADR 0060](adr/0060-typed-failure-channels.md)).
+> The sequence of durable-step identities an execution produces must be a **pure function of logged inputs** (flow input, step outputs, decisions, resume payloads). A step invoked more than once with different intent must mint a deterministic distinct id — `` `${id}#${index}` `` for loops, `` `${id}#retry:${n}` `` for deliberate re-tries. Reusing an id returns/substitutes the **first recorded outcome** — completed output and typed failures alike ([ADR 0060](adr/0060-typed-failure-channels.md)).
 
 The freedom: a statically compiled **interpreter flow** may issue `ctx.run` inside loops bounded by runtime-loaded data (a blueprint, a runbook) and remain fully replayable — the id sequence re-derives identically from the logged input, crash recovery re-executes only the frames that never completed, and `flowContentHash` (K11.1) is unaffected because dynamic steps are deliberately outside the structural hash (ADR 0113: `replay-check` treats `id#n` as family `id`, and the replay-divergence detector watches the body's id sequence against the log). Dynamic steps bind a static `toolId` to a registered effect; the effect registry, not the compiler manifest, is their load-bearing map.
 
@@ -401,24 +401,14 @@ plan-proposed kernel changes (a `CHILD_COMPLETED` event and a `ctx.compensate` s
   replay modes) drive the real kernel under adversarial schedules; five invariants + `checkProperty`
   search→shrink→`replaySchedule`. Test/dev-only ⇒ zero production overhead by construction.
 - **Multi-tenant isolation** — `@loom/plugin-audit-chain` (fold-invisible hash chain + optional HMAC, tamper
-  detection via `verifyChain`), `@loom/fair-scheduler` (weighted round-robin across tenants behind
-  the concurrency cap; drop-in `Scheduler`), and **execution-lifecycle authorization** (a pluggable
+  detection via `verifyChain`), and **execution-lifecycle authorization** (a pluggable
   `ExecutionAuthorizer` gating start/resume/cancel/query at the trust boundary → durable
   `EXECUTION_DENIED`).
-- **Post-hoc inspection** — `@loom/replay-inspector` ([ADR 0071](adr/0071-read-only-replay-inspector.md)):
-  snapshot-anchored state reconstruction at any log position, transition diffs, and projection
-  slices, all under the version the execution is *pinned* to. Read-only by type
-  (`Pick<EventStore, "read" | "readFrom" | "readRange">` — `append` and even `subscribe` are out
-  of scope), so it cannot perturb what it inspects. Two findings came out of building it: the
-  durable pin is `variables._flowHash`, **not** `ExecutionState.workflowVersion` (which
-  `foldState` seeds from currently-registered code), and projection state has no snapshot
-  representation, so a projection fold always replays from zero.
 - **Coordination primitives** — `@loom/live-query` (loadState + `EventStore.subscribe`),
   `@loom/orchestration` (spawn child workflows and durably await them via decide/suspend/resume + a
   completion-correlating supervisor — `awaitChild` for one, `awaitChildren` for a concurrent
   wait-all `ChildResult[]`, `awaitAll` for all-or-nothing; child failure propagates as a typed
-  `childFailed` that composes up the tree), and `@loom/saga` (register compensators, run them in
-  reverse on failure as replay-safe `ctx.run` steps).
+  `childFailed` that composes up the tree).
 
 ```mermaid
 flowchart TB
@@ -426,14 +416,12 @@ flowchart TB
 
   subgraph Iso["Multi-tenant isolation (Direction C)"]
     AZ["execution-lifecycle authz → EXECUTION_DENIED (only schema touch: 1.12.0)"]
-    FS["@loom/fair-scheduler — per-tenant weighted RR"]
     AC["@loom/plugin-audit-chain — hash chain + HMAC (fold-invisible)"]
   end
 
   subgraph Coord["Coordination primitives (Direction B)"]
     LQ["@loom/live-query — push state on each event"]
     OR["@loom/orchestration — child spawn + await (no new syscall)"]
-    SG["@loom/saga — reverse-order compensation (ctx.run steps)"]
   end
 
   DST["@loom/dst — Deterministic Simulation Testing (test/dev-only)<br/>seeded clock + fault store · invariants · shrink · replay"]
@@ -445,7 +433,7 @@ flowchart TB
   DST -.validates.-> Sys
 ```
 
-DST is the throughline the other two lean on: audit-chain integrity, and saga's no-double-compensation, are each proven by a DST property under seeded crashes. See [ADRs 0036–0041](adr/) and the maturity badges in **[docs/spec/maturity.md](spec/maturity.md)**.
+DST is the throughline the other two lean on: audit-chain integrity is proven by a DST property under seeded crashes. See [ADRs 0036–0041](adr/) and the maturity badges in **[docs/spec/maturity.md](spec/maturity.md)**.
 
 ---
 
@@ -503,10 +491,8 @@ flowchart TB
   dstate["@loom/plugin-durable-state<br/>(carry state as recorded effects)"] --> effects
   rm["@loom/plugin-read-model<br/>(durable cross-execution event index)"] -. "tails onEvent + catch-up" .-> events
   sentinel["@loom/plugin-sentinel<br/>(the pattern as one preset)"] --> dstate
-  fair["@loom/fair-scheduler"] -. "drop-in Scheduler" .-> disp
   lq["@loom/live-query"] --> wrt
   orch["@loom/orchestration"] --> wrt
-  saga["@loom/saga"] --> wrt
   dst["@loom/dst (test/dev)"] -. drives .-> wrt
 ```
 
@@ -519,11 +505,11 @@ flowchart TB
 | **Agentic** | `agent`, `llm`, `reasoning`, `capability`, `intent`, `planner`, `memory`, `knowledge`, `orchestrator`, `plugin-a2a`, `plugin-mcp`, `plugin-mcp-app`, `plugin-sandbox`, `plugin-sentinel` (the perpetual-agent pattern as one preset) |
 | **Compute / distribution** | `dispatcher`, `worker-runtime`, `worker-runtime-local`, `graph-executor`, `scheduler`, `plugin-worker-remote`, `plugin-worker-server`, `plugin-cloudrun` |
 | **Storage backends** | `plugin-sqlite`, `plugin-postgres`, `plugin-durable-state`, `plugin-read-model` |
-| **Governance / verification** | `spec` (the kernel manifest + layering guard), `conformance` (SPI kits), `verify`, `replay-inspector` (ADR 0071) |
+| **Governance / verification** | `spec` (the kernel manifest + layering guard), `conformance` (SPI kits), `verify` |
 | **Kernel hardening / security** | `effect-runtime` (K2 authz + K12 delegation), `middleware` (K3 metering, K6 safety, K10 redaction, K12 nested budgets), `isolate` (K7 data-plane isolation & egress), `plugin-crypto` (K10 encryption & crypto-shredding), `event-runtime`/`snapshot-runtime` (K12 tenant scoping), `wire-abi` (T2), `telemetry` (K10-R6 egress scrubbing) |
 | **Data protection & compliance** | `classify` (K10-R1 `secret`/`sensitive`/`internal`/`externalized` markers + the ADR 0085 `tainted()` integrity axis), `compliance` (T3 subject index + export + erasure, tenant-scoped), `plugin-content` (ADR 0046 content-store seam) — see [data classification](data-classification.md) & [compliance](compliance.md) |
 | **Intelligence / DX** | `analytics`, `learning` (off-policy evaluation + the 3P `Policy` seam, ADR 0080), `appgen` (provider-agnostic planner), `appgen-model` (optional local `.gguf` option), `cli`, `eval`, `deploy-sim`, `testing`, `scaffold`, `compiler`, `bench-throughput`, `telemetry` |
-| **Three-direction arc** | `dst` (simulation testing), `plugin-audit-chain` + `fair-scheduler` + execution-authz in `workflow-runtime` (multi-tenant isolation), `live-query` + `orchestration` + `saga` (coordination) — ADRs 0036–0041 |
+| **Three-direction arc** | `dst` (simulation testing), `plugin-audit-chain` + execution-authz in `workflow-runtime` (multi-tenant isolation), `live-query` + `orchestration` (coordination) — ADRs 0036–0041 |
 
 > **Adapter packages carry the `plugin-` prefix and live in [`plugins/`](../plugins/), not `packages/`** — the 1P/3P separation of [ADR 0043](adr/0043-plugin-packaging-and-1p-3p-separation.md). A CI guard fails the build if a kernel or SPI package takes a dependency on one. See [the plugin guide](plugins.md) for the full first-party inventory.
 

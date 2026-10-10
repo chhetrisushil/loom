@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`@loom/saga`, `@loom/fair-scheduler`, `@loom/replay-inspector` — no consumers (R21 prune).** Each had zero code consumers in loom, loom-ui, genUI, loom-examples, loom-plugins, loom-demo and loom-site outside its own package (inventory in the PR). Their capability-registry rows (`saga`, `fair-scheduler`), maturity table, api-reference sections, architecture/README/cheatsheet mentions and tsconfig references are gone; ADRs 0038/0041/0071 stay as history. The kernel never depended on them (saga was built from `ctx.run`; no syscall or event type changes).
+
 ### Added
 
 - **`McpClient.listTools()` makes skipped tools visible (`@loom/plugin-mcp`; additive).** New `ListToolsOptions.onSkippedTool(name, reason)` is called per skipped tool; new `strictToolNames: true` throws the typed `McpToolNamesSkippedError` (`.skipped: { name, reason }[]`) instead of skipping. The default still skips; the process warning (`LOOM_MCP_TOOL_NAME`, still one per skipped tool) now states how many tools the listing skipped and that `anyToolName` exists for tools never shown to a model.

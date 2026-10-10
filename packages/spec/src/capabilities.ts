@@ -187,19 +187,6 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "Stable + tested, incl. a DST crash/recovery integrity property; no version constant (a composable wrapper, not a wire contract). L2 -> L3 once `mcp-app-release-approval` wired it through `storage: { kind: \"custom\" }`: that app's entire output is a record of who approved a production release, so the K12 authenticator deciding whether an approval is ACCEPTED and `verifyChain` deciding whether the accepted approval is still the one RECORDED are two questions, and only the second is this plugin's. The evidence is the negative case — a test rewrites the approver on the durable event and gets ok: false with brokenAt at that sequence — plus the denominator, since a chain verified over a log with no approval in it passes while proving nothing.",
   },
   {
-    id: "fair-scheduler",
-    title: "Per-Tenant Fair Scheduler",
-    package: "@loom/fair-scheduler",
-    level: "L4",
-    summary:
-      "Drop-in Scheduler with weighted round-robin across tenants behind a concurrency cap; no tenant can starve another. Zero-overhead Infinity fast path.",
-    evidence: {
-      conformanceTest: "packages/fair-scheduler/src/fairScheduler.test.ts",
-      bench: "packages/fair-scheduler/src/fairScheduler.bench.ts",
-    },
-    note: "Implements the existing Scheduler interface (drops into any consumer); L4 via its Infinity-fast-path bench. Not L5 — the scheduler is ephemeral, not a durable/wire contract.",
-  },
-  {
     id: "execution-authz",
     title: "Execution-Lifecycle Authorization",
     package: "@loom/workflow-runtime",
@@ -500,18 +487,6 @@ export const CAPABILITIES: readonly Capability[] = [
       conformanceTest: "packages/workflow-runtime/src/typedFailure.test.ts",
     },
     note: "NO new syscall — TypedFailure is a userspace throw caught at the execute seam (KERNEL_ABI stays 1.1.0, the saga/ctx.compensate precedent). EVENT_SCHEMA 1.17.0: additive STEP_FAILED {channel, payload}. Undeclared channels keep legacy at-least-once retry semantics (G2).",
-  },
-  {
-    id: "saga",
-    title: "Saga / Compensation",
-    package: "@loom/saga",
-    level: "L2",
-    summary:
-      "Register compensators as a flow progresses; run them in reverse on failure. Compensators are ordinary ctx.run steps, so rollback is replay-safe.",
-    evidence: {
-      conformanceTest: "packages/saga/src/saga.test.ts",
-    },
-    note: "NO new syscall/event type/fold change (P10 win; the plan's ctx.compensate syscall + COMPENSATION_* events proved unnecessary — compensators run as replay-guarded ctx.run steps). KERNEL_ABI stays 1.1.0. Verified crash-safe by a DST no-double-compensation property.",
   },
   {
     id: "scheduler",
