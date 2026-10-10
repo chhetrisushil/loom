@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@loom/core": "workspace:*",
+    "@loom/replay-vm": "workspace:*",
     "@loom/verify": "workspace:*"
   },
   "devDependencies": {

@@ -74,13 +74,14 @@ describe("custom metering dimensions in analytics", () => {
     expect(formatIntrospection(r, "resources")).toContain("5 s gpu_seconds");
   });
 
-  it("skips what the fold skips: built-in names, prototype names, bad names, bad values", () => {
+  it("skips what the fold skips: prototype names, bad names, bad values", () => {
     seq = 0;
     const custom = JSON.parse(
       '{"tokens":9,"__proto__":3,"constructor":3,"Bad Name":1,"neg":-1,"nan":null,"ok":2}'
     );
     const c = analyze([metered({ custom })]).cost;
-    expect(c.custom).toEqual({ ok: 2 });
+    // a built-in name inside custom is summed, as the fold does
+    expect(c.custom).toEqual({ tokens: 9, ok: 2 });
     expect(Object.getPrototypeOf(c.custom)).toBeNull();
     expect(c.tokens).toBe(0);
   });
@@ -115,5 +116,71 @@ describe("custom metering dimensions in analytics", () => {
     const r = analyze([metered({ custom })]).cost.customReport;
     expect(r?.otherNames).toBe(3);
     expect(r?.otherNamesCapped).toBe(false);
+  });
+
+  it("skips a value above the kernel fold's 1e15 ceiling, and sums a built-in name inside custom (as the fold does)", () => {
+    seq = 0;
+    const l = [
+      metered({ custom: { gpu_seconds: 1e20, ok: 1e15, tokens: 5 } }),
+      metered({ custom: { gpu_seconds: 2, tokens: 1 } }),
+    ];
+    expect(analyze(l).cost.custom).toEqual({ gpu_seconds: 2, ok: 1e15, tokens: 6 });
+    expect(resourceGraph(l).total.custom).toEqual({ gpu_seconds: 2, ok: 1e15, tokens: 6 });
+  });
+
+  it("admits the TOP names by value, so a late high-value name is not buried, in any order", () => {
+    const build = (): EventEnvelope[] => {
+      seq = 0;
+      const evs: EventEnvelope[] = [ev("STEP_STARTED", { stepId: "s" })];
+      for (let i = 0; i < MAX_CUSTOM_DIMENSIONS + 5; i++) {
+        evs.push(metered({ custom: { [`small_${i}`]: 1 } }));
+      }
+      evs.push(metered({ custom: { big_late: 1000 } }));
+      return evs;
+    };
+    const l = build();
+    const cost = analyze(l).cost;
+    expect(cost.custom?.big_late).toBe(1000);
+    expect(cost.customReport?.otherNames).toBe(6);
+    expect(resourceGraph(l).byStep[0]?.custom?.big_late).toBe(1000);
+
+    // Order independence: reversed and shuffled logs give identical reports.
+    const strip = (r: unknown) => JSON.stringify(r);
+    const base = strip({ c: costAnalytics(l), g: resourceGraph(l, undefined) });
+    const metersOnly = (xs: EventEnvelope[]) =>
+      xs.filter((e) => e.eventType === "RESOURCE_METERED");
+    const rev = [...metersOnly(l)].reverse();
+    const shuffled = [...metersOnly(l)].sort(
+      (a, b) => ((a.sequence * 7919) % 31) - ((b.sequence * 7919) % 31)
+    );
+    const sortedKeys = (c: Record<string, number> | undefined) => Object.entries(c ?? {}).sort();
+    const ref = sortedKeys(costAnalytics(metersOnly(l)).custom);
+    expect(sortedKeys(costAnalytics(rev).custom)).toEqual(ref);
+    expect(sortedKeys(costAnalytics(shuffled).custom)).toEqual(ref);
+    expect(costAnalytics(rev).customReport).toEqual(costAnalytics(metersOnly(l)).customReport);
+    expect(base.length).toBeGreaterThan(0);
+  });
+
+  it("breaks value ties by name, not by first-seen", () => {
+    seq = 0;
+    const custom: Record<string, number> = {};
+    for (let i = MAX_CUSTOM_DIMENSIONS + 1; i >= 0; i--)
+      custom[`t${String(i).padStart(2, "0")}`] = 1;
+    const c = analyze([metered({ custom })]).cost.custom ?? {};
+    expect(c.t00).toBe(1);
+    expect(c.t33).toBeUndefined();
+    expect(c[OTHER_DIMENSION]).toBe(2);
+  });
+
+  it("strips control characters from caller-supplied units when printing", () => {
+    seq = 0;
+    const l = [ev("STEP_STARTED", { stepId: "s" }), metered({ custom: { gpu_seconds: 2 } })];
+    const out = formatIntrospection(
+      introspect(l, "x", { dimensionUnits: { gpu_seconds: "s\u001b[2J\u0007\n" } }),
+      "resources"
+    );
+    expect(out).toContain("2 s[2J gpu_seconds");
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting none survive
+    expect(out).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f]/);
   });
 });
