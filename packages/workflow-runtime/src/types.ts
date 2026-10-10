@@ -1243,6 +1243,12 @@ export interface InboxExpiryResult {
   expired: number;
   /** The chain head the pass ran against (`done` only). */
   executionId?: string;
+  /**
+   * Whether the chain still has an unconsumed message under a TTL (one to expire now or later). A
+   * `not-parked` / `contended` pass with `pending: false` has nothing to retry: the caller retires
+   * its row instead of re-arming it forever.
+   */
+  pending?: boolean;
 }
 
 export interface DiscardInboxResult {

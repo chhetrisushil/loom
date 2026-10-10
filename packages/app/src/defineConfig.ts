@@ -677,8 +677,11 @@ export interface LoomConfig {
        * for every topic, or `{ default?, topics? }` per topic. OFF by default (nothing expires, no
        * behaviour changes). An expiry is a journaled discard (`reason: "expired"`, recorded as the
        * runtime, never an operator), so it replays; it is timed from the message's envelope timestamp
-       * by the app's `TimerService` rows, never read inside the fold. Needs `timers`; configure every
-       * node of a fleet alike (a node without it retires an expiry row as obsolete).
+       * by the app's `TimerService` rows, never read inside the fold. Each TTL is at least 60 000 ms
+       * (a smaller one is refused): the age is judged across nodes' clocks, on the store's own clock
+       * when it has `storeNow()` (Postgres), else the TTL must far exceed the fleet's clock skew. Needs
+       * `timers`; enable it on EVERY node of a fleet before relying on it (a node without it retires an
+       * expiry row as obsolete, and expiry is then lost until a `recoverAbandoned` sweep).
        */
       messageTtlMs?: number | { default?: number; topics?: Readonly<Record<string, number>> };
     };

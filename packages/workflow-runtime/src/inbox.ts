@@ -163,7 +163,7 @@ export function appendInboxMessage(
   store: EventStore,
   chainId: string,
   message: StoredMessage,
-  now: () => number
+  now: () => number | Promise<number>
 ): Promise<number> {
   let queues = sendQueues.get(store);
   if (queues === undefined) {
@@ -184,7 +184,7 @@ async function appendOnce(
   store: EventStore,
   chainId: string,
   message: StoredMessage,
-  now: () => number
+  now: () => number | Promise<number>
 ): Promise<number> {
   const stream = inboxStreamId(chainId);
   for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt++) {
@@ -196,7 +196,7 @@ async function appendOnce(
       executionId: stream,
       eventType: INBOX_MESSAGE_KIND,
       sequence,
-      timestamp: now(),
+      timestamp: await now(),
       payload: message,
     };
     try {
@@ -420,6 +420,13 @@ export function staleInboxBatch(
 /** The identity recorded as the `sender` of an expiry fact: the runtime itself, never an operator. */
 export const INBOX_TTL_ACTOR = "__loom_inbox_ttl__";
 
+/**
+ * The smallest TTL a config may name (ms). A message is aged against a clock another node may have
+ * stamped, so a TTL near the fleet's clock skew would expire fresh messages; like ADR 0055's
+ * `MIN_ORPHAN_ERASE_MARGIN_MS`, a floor keeps the TTL an order of magnitude above any sane skew.
+ */
+export const MIN_INBOX_TTL_MS = 60_000;
+
 /** What `messageTtlMs` accepts: one TTL for every topic, or per-topic with an optional default. */
 export type InboxTtlConfig =
   | number
@@ -434,13 +441,13 @@ export function ttlOfTopic(config: InboxTtlConfig | undefined, topic: string): n
   return config.default;
 }
 
-/** Validate a TTL config at composition: every TTL a positive safe integer. */
+/** Validate a TTL config at composition: every TTL a safe integer of at least {@link MIN_INBOX_TTL_MS}. */
 export function assertTtlConfig(config: InboxTtlConfig | undefined): void {
   if (config === undefined) return;
   const check = (name: string, v: unknown): void => {
-    if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 1) {
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v < MIN_INBOX_TTL_MS) {
       throw new Error(
-        `inbox messageTtlMs${name} must be a positive integer number of milliseconds (got ${String(v)}): it expires unconsumed inbox messages (ADR 0110 D10a)`
+        `inbox messageTtlMs${name} must be an integer number of milliseconds of at least ${MIN_INBOX_TTL_MS} (got ${String(v)}): it expires unconsumed inbox messages, judged across nodes' clocks, so a smaller TTL could expire a fresh message (ADR 0110 D10a)`
       );
     }
   };
@@ -494,8 +501,13 @@ export async function scanExpired(
       if (m === undefined || e.sequence <= cursorFor(cursors, m.topic)) continue;
       const ttl = opts.ttlOf(m.topic);
       if (ttl === undefined || closed.has(m.topic)) continue;
+      // A stamp AHEAD of the judge's clock (a sender whose clock runs fast, or a different clock than
+      // the judge's) is suspect: it is never expired before `now` has passed the stamp itself, and
+      // then only after its full TTL (`stamp + ttl`), so it is never dropped early. It stays "young"
+      // exactly until the judge's clock passes `stamp + ttl`, not forever; and while it is young it
+      // closes its topic (a prefix scan), so older messages behind it wait.
       const expiresAt = e.timestamp + ttl;
-      if (expiresAt > opts.now) {
+      if (e.timestamp > opts.now || expiresAt > opts.now) {
         closed.add(m.topic);
         if (nextAt === undefined || expiresAt < nextAt) nextAt = expiresAt;
         continue;

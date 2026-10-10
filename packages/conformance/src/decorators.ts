@@ -71,6 +71,18 @@ export function optionalSurfaceProblems(
   return problems;
 }
 
+/**
+ * The reference inner store of the EventStore decorator kit: the in-memory store PLUS `storeNow()`
+ * (SPI 2.4.0), so "every optional method" really is every one and a decorator that drops the clock is
+ * caught. The in-memory store itself omits it (a single process has one clock: callers fall back to
+ * their injected one).
+ */
+export class ReferenceEventStore extends InMemoryAsyncEventStore {
+  storeNow(): Promise<number> {
+    return Promise.resolve(Date.now());
+  }
+}
+
 /** Whether `store` carries the structural encryption marker (`keys`) an encrypting store has. */
 function hasEncryptionMarker(store: object): boolean {
   const keys = (store as { keys?: unknown }).keys;
@@ -94,7 +106,7 @@ export function runEventStoreDecoratorConformance(
   wrap: (inner: EventStore) => EventStore,
   options: DecoratorConformanceOptions<OptionalEventStoreMethod, EventStore> = {}
 ): void {
-  const inner = options.inner ?? (() => new InMemoryAsyncEventStore());
+  const inner = options.inner ?? (() => new ReferenceEventStore());
   describe(`${label} decorator conformance (optional EventStore SPI)`, () => {
     it("the reference inner store offers every optional method, so an absence is the decorator's", async () => {
       const reference = inner();

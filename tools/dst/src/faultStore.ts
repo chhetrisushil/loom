@@ -201,6 +201,7 @@ export function faultInjectingStore(inner: EventStore, source: FaultSource): Fau
       }
       return conditional.call(inner, executionId, event, expect);
     },
+    storeNow: "forward",
     copyPrefix: "forward",
     deleteExecution: "forward",
     truncatePrefix: "forward",

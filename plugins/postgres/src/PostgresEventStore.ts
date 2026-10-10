@@ -544,6 +544,19 @@ export class PostgresEventStore implements EventStore {
     return rows.map(rowToEnvelope);
   }
 
+  /**
+   * SPI 2.4.0 (ADR 0110 amendment, D10a) - the database's own clock, epoch ms: the single clock a
+   * fleet of nodes shares, so an inbox message stamped by one node and judged by another is aged on
+   * ONE clock (the EventStore twin of `PostgresLeaseStore.storeNow`, same expression).
+   */
+  async storeNow(): Promise<number> {
+    await this.ready;
+    const { rows } = await this.pool.query<{ now: string }>(
+      "SELECT (extract(epoch from clock_timestamp()) * 1000)::bigint AS now"
+    );
+    return Number(rows[0]?.now);
+  }
+
   async head(executionId: string): Promise<number | null> {
     await this.ready;
     const { rows } = await this.pool.query<{ tip: string | number | null }>(

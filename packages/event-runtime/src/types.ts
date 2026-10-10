@@ -57,6 +57,13 @@ export type { EventEnvelope };
  *   that metadata may keep the legacy {@link creationMarker} (`timestamp:id`) until it is
  *   deleted (no backfill). A store that cannot assign one keeps 2.2.0 behaviour and does not
  *   claim 2.3.0.
+ * 2.4.0: the optional `storeNow(): Promise<number>` (ADR 0110 amendment, D10a) - the store's OWN
+ *   clock in epoch ms, the one a multi-node fleet shares (Postgres: database time), the EventStore
+ *   twin of `LeaseStore.storeNow()` (L29). It lets two nodes agree on an age (a message's TTL is
+ *   judged against the instant it was stamped) without trusting either node's wall clock. A
+ *   single-process store (memory, SQLite) need not implement it; a caller then falls back to its
+ *   injected clock. Values must be finite, non-negative, and non-decreasing across sequential
+ *   calls. Additive: no existing method changed, so a 2.3.0 store conforms.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -66,7 +73,7 @@ export type { EventEnvelope };
  * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
  * fitness test makes every in-repo decorator run it).
  */
-export const EVENT_STORE_SPI_VERSION = "2.3.0";
+export const EVENT_STORE_SPI_VERSION = "2.4.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -296,6 +303,14 @@ export interface EventStore {
     expect?: TipObservation
   ): Promise<AppendIfUnchangedResult>;
   /**
+   * OPTIONAL (SPI 2.4.0, ADR 0110 amendment D10a): the store's own clock in epoch milliseconds - the
+   * single clock every node of a fleet shares (Postgres: database time). A caller that must compare
+   * an instant stamped by one node with "now" on another (an inbox message's TTL) uses this on both
+   * sides instead of trusting the nodes' wall clocks. A store that is a single process (memory,
+   * SQLite) omits it and callers fall back to their injected clock.
+   */
+  storeNow?(): Promise<number>;
+  /**
    * OPTIONAL bulk copy of the prefix `[0..throughSequence]` of one execution's log
    * into another `executionId`, re-stamping `id` + `executionId` and merging
    * `metadata` into each copied event — WITHOUT round-tripping payloads through JS
@@ -425,6 +440,7 @@ export const OPTIONAL_EVENT_STORE_METHODS = [
   "acquireFence",
   "acquireFenceIf",
   "appendIfUnchanged",
+  "storeNow",
   "copyPrefix",
   "deleteExecution",
   "truncatePrefix",

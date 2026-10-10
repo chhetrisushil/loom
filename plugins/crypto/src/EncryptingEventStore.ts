@@ -105,6 +105,7 @@ export class EncryptingEventStore implements EventStore {
   readonly acquireFence?: NonNullable<EventStore["acquireFence"]>;
   readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
+  readonly storeNow?: NonNullable<EventStore["storeNow"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -169,6 +170,7 @@ export class EncryptingEventStore implements EventStore {
               );
         return inner.appendIfUnchanged!(executionId, sealed, expect);
       },
+      storeNow: "forward", // a clock reading: no envelope to seal
       // copyPrefix copies CIPHERTEXT verbatim in the inner store — a fork must
       // resolve to the parent's subject (A2) for the copied prefix to stay readable.
       copyPrefix: "forward",

@@ -726,8 +726,10 @@ parked-only, so it retries on the next sweep. The message's age is its envelope 
 `kernel.inbox.messageTtlMs` (`WorkflowRuntimeDeps.inboxMessageTtlMs`): a number (every topic) or
 `{ default?, topics? }` (per topic, own-property lookup). **Off by default**: with it unset no row is written,
 `expireInbox` answers `"off"`, `TimerService` and `recoverAbandoned` take no new branch, and behaviour is
-byte-identical. A non-positive or non-integer TTL is refused at composition. **Wire and ABI: nothing changes**
-(`EVENT_SCHEMA` 1.23.0, `KERNEL_ABI` 1.3.0, no fold handler, no store method; the conformance kit is untouched).
+byte-identical. A TTL that is not an integer of at least `MIN_INBOX_TTL_MS` (60 000 ms, the floor, like ADR 0055's
+`MIN_ORPHAN_ERASE_MARGIN_MS`) is refused at composition (and so at `defineConfig`). **Wire and ABI: the log and the fold
+are unchanged** (`EVENT_SCHEMA` 1.23.0, `KERNEL_ABI` 1.3.0, no fold handler). The only SPI change is the review-round
+clock fix below: an OPTIONAL `EventStore.storeNow()` (EventStore SPI 2.3.0 to 2.4.0, additive).
 
 - **The fact is D8's.** An expiry is `MESSAGE_CONSUMED` under the reserved `__loom_discard__` wait, `payload: null`,
   one per skipped message (its id joins the dedupe window, so a sender's retry of an expired id is a duplicate),
@@ -740,11 +742,18 @@ byte-identical. A non-positive or non-integer TTL is refused at composition. **W
   identity can be mistaken for in an audit.
 - **Driven by the durable timer service, never the fold.** `send` of a topic with a TTL writes one `TimerStore` row
   at `ceil((now + ttl) / 1000) * 1000` (whole seconds, so messages expiring together share a pass), coalesced per
-  chain while a pending one is known. `TimerService.fire` treats a row that is no timer of the park as an expiry row
-  when a TTL is configured and calls `runtime.expireInbox`; `done`/`closed` retire it, `not-parked`/`contended`
-  KEEP it with the existing in-process backoff (capped, never dropped and never reported as exhausted: a long
-  turn is not a failure). The age is `envelope.timestamp + ttl <= now()` against the runtime's injected clock,
-  evaluated in the pass; the fold reads no clock. Each pass re-arms the next (the earliest still-unexpired message,
+  chain while a pending one is known (a per-process map, so N nodes may each write one row; harmless, every pass
+  is idempotent and retires its own row). `TimerService.fire` treats a row that is no timer of the park as an
+  expiry row when a TTL is configured and calls `runtime.expireInbox`; `done`/`closed` retire it. A `not-parked`/
+  `contended` pass (a running owner) with an unconsumed TTL'd message still PENDING re-arms DURABLY: the next row
+  is written at a later instant (in-process exponential backoff, capped like a re-drive, never reported as
+  exhausted: a long turn is not a failure) and only then is this one retired. Review fix (P1): the first cut
+  kept the row in place, so it stayed at the head of `TimerStore.due()` (oldest first) and a batch of busy-owner
+  rows starved every real timer behind it. A row with nothing TTL'd pending (an obsolete plain-timer row of an
+  owner that is now running) takes the ordinary path and is retired. Review fix (P3-1): an expiry row and a real
+  timer on the SAME instant are one row (`(executionId, wakeAt)`, expiry rows on whole seconds, as is
+  `ctx.sleepUntil(W)`), so a fired timer also runs the pass for its chain before the row is retired. The age is
+  `envelope.timestamp + ttl <= now` evaluated in the pass; the fold reads no clock. Each pass re-arms the next (the earliest still-unexpired message,
   or "now" when it was cut short). `recoverAbandoned` runs one pass per inbox stream as the safety net for a row a
   crashed sender never wrote (`summary.inboxExpired`; a fork's chain, which maps to no execution, is skipped).
 - **No race with a delivery.** The pass journals through `advanceInbox`: one atomic batch under the park's
@@ -756,7 +765,22 @@ byte-identical. A non-positive or non-integer TTL is refused at composition. **W
   running owner does not consult the clock).
 - **Only a prefix per topic.** A discard advances a topic's cursor THROUGH a sequence, so a pass reports, per topic,
   the unconsumed messages up to the first unexpired one (a younger message is never dropped ahead of an older one,
-  even with sender clock skew). A topic with no TTL is never touched.
+  even with sender clock skew). A topic with no TTL is never touched. **Head of line (stated):** a young message, or
+  one stamped by a fast sender clock (see below), at a topic's head holds every older-than-TTL message behind it
+  back, so a pin can outlive the TTL by up to the skew of that one stamp.
+- **One clock for the age (review P2).** The envelope timestamp is whatever clock the SENDER stamped, and the judge
+  may be another node, so with per-node wall clocks a sender 10 minutes behind got a fresh message expired on the
+  first pass (silent loss). When the event store has `storeNow()` (EventStore SPI 2.4.0, optional, the twin of
+  `LeaseStore.storeNow()`, L29; Postgres reports DATABASE time) the sender stamps the inbox envelope with it and the
+  pass judges against it, so every node ages a message on one clock. A single-process store (memory, SQLite) has one
+  clock anyway and the runtime's injected clock is used. A store WITHOUT `storeNow` shared by several nodes has no
+  common clock: the TTL must then be much larger than the fleet's clock skew (the 60 s floor is a minimum, not a
+  recommendation), and a stamp ahead of the judge (`timestamp > now`) is treated as suspect: it is never expired
+  until the judge's clock has passed `timestamp + ttl`, so a fast sender can delay an expiry but never cause an
+  early one, and it is not young forever. Messages stamped before a node enabled the TTL carry that node's runtime
+  clock (the sender stamps with the store clock only while a TTL is configured).
+  Timer rows stay on the runtime clock; the judge's remaining wait is carried over as a delay, so a host whose clock
+  differs from the store's still wakes the next pass at the right moment.
 - **Bounded per wake.** At most 1 024 messages (`INBOX_DEDUPE_CAP`'s size) are discarded per pass in one batch;
   when more are due the next pass is armed for the very next second. The scan reads the retained stream above the
   known consumed floor, which `inboxMaxRetained` bounds.
@@ -767,8 +791,9 @@ byte-identical. A non-positive or non-integer TTL is refused at composition. **W
   opted a topic into a TTL, and a healthy consumer drains a message long before it expires.
 - **Deviation from the sketch, stated.** The sketch had `recoverAbandoned` find the pinned stream. A sweep alone
   would expire late and only when someone runs it; the timer row makes expiry timely and the sweep a safety net.
-- **Fleet.** A node without the TTL configured retires an expiry row as obsolete (it cannot tell it from a stale
-  timer), so configure every node alike; with no `TimerStore` a warning says expiry then happens only on a sweep.
+- **Fleet / rollout.** A node without the TTL configured (or with the inbox off) retires an expiry row as obsolete
+  (it cannot tell it from a stale timer), and expiry is then lost until a `recoverAbandoned` sweep re-arms it: enable
+  the TTL on EVERY node before relying on it. With no `TimerStore` a warning says expiry then happens only on a sweep.
 
 Tests (`r2-ttl.test.ts`, memory, SQLite, Postgres, injected clocks, no sleeps): expiry discards, journals and
 replays identically and never resumes the owner; TTL off writes no row and delivers the old message; a cold topic's

@@ -398,17 +398,18 @@ describe("checkCompatibility", () => {
   it("refuses a 1.x EventStore (SPI 2.x, ADR 0108: pinned id order + id cursors)", () => {
     // A 1.5.0 store may page in any order with an opaque cursor, which ShardedEventStore and
     // TenantScopedEventStore can no longer tolerate — the reason the bump is MAJOR. 2.1.0,
-    // 2.2.0 and 2.3.0 are MINORs (acquireFenceIf; appendIfUnchanged; the incarnation anchor MUST):
+    // 2.2.0, 2.3.0 and 2.4.0 are MINORs (acquireFenceIf; appendIfUnchanged; the incarnation anchor MUST; storeNow):
     // a 2.0.0 store still conforms.
-    expect(kernelManifest().spis.eventStore).toBe("2.3.0");
+    expect(kernelManifest().spis.eventStore).toBe("2.4.0");
     const report = checkCompatibility({ eventStoreSpi: "1.5.0" });
     expect(report.ok).toBe(false);
     expect(report.issues).toEqual([
-      expect.objectContaining({ component: "eventStoreSpi", expected: "2.3.0", actual: "1.5.0" }),
+      expect.objectContaining({ component: "eventStoreSpi", expected: "2.4.0", actual: "1.5.0" }),
     ]);
     expect(checkCompatibility({ eventStoreSpi: "2.0.0" }).ok).toBe(true);
     expect(checkCompatibility({ eventStoreSpi: "2.1.0" }).ok).toBe(true);
     expect(checkCompatibility({ eventStoreSpi: "2.2.0" }).ok).toBe(true);
+    expect(checkCompatibility({ eventStoreSpi: "2.3.0" }).ok).toBe(true);
   });
 
   it("accepts a same-major (MINOR-bumped) deployment", () => {
