@@ -4,8 +4,9 @@ import type {
   ContainerContext,
   RendererRegistry,
   Widget,
+  WidgetValueCheck,
 } from "@loom/blueprint-runtime";
-import { traverseBlueprint } from "@loom/blueprint-runtime";
+import { describeWidgetStatus, traverseBlueprint } from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { TerminalWidgetRenderer } from "./defaultRegistry";
 import { formatValue, indent } from "./format";
@@ -20,10 +21,7 @@ import { formatValue, indent } from "./format";
  *
  * Returning `undefined` means "nothing to say"; the normal matrix then applies.
  */
-export type WidgetValueCheck = (
-  widget: Widget,
-  value: unknown
-) => { code: string; message: string } | undefined;
+export type { WidgetValueCheck };
 
 export interface TerminalRenderOptions {
   /**
@@ -105,36 +103,23 @@ export function renderBlueprintToString(
             ? renderer(widget, value, status)
             : `[${widget.kind}] ${renderKindBlind(widget, value)}`;
       const title = widget.title ?? widget.kind;
-      const channel = widget.binding?.status !== undefined;
-      // `empty` (IR 2.3.0, ADR 0100) ranks right after `error`: the upstream answered with no
-      // subject, so there is no value to check or show — a value beside it is ignored.
-      const noValue = status?.state === "error" || status?.state === "empty";
-      // The §5 slot: after `error`/`empty`, before `stale`, and only for a declared channel.
-      const contract = channel && !noValue ? check?.(widget, value) : undefined;
+      // The decision is shared (`describeWidgetStatus`); this renderer owns only the text.
+      const d = describeWidgetStatus(widget, value, status, check);
+      // A malformed `source` is the error placeholder (as DOM and React), never a throw.
+      if (d.tag === "invalid") return `[Renderer for ${widget.kind} failed]`;
       let text: string;
-      if (!channel) text = inner();
-      else if (status?.state === "error")
-        text = `✗ ${title}: ${status.finding?.message ?? "error"}`;
-      else if (status?.state === "empty")
-        text = `○ ${title}: ${status.finding?.message ?? "no data"}`;
-      else if (contract) text = `✗ ${title}: ${contract.message}`;
-      else if (status?.state === "stale")
-        text =
-          value === undefined
-            ? `~ ${title}: — (${status.finding?.message ?? "stale"})`
-            : `~ ${inner()}`;
-      else if (status?.state === "pending")
-        text = value === undefined ? `⋯ ${title}` : `⋯ ${inner()}`;
-      // `ready`, or a status that has not landed yet / is malformed. A PRESENT value renders
-      // ready; an ABSENT one is the loading row, and the terminal now says so with the same
-      // glyph React and loom-ui's Lit base use rather than printing `title: —`, which reads as
-      // "the answer is nothing" instead of "it has not arrived". ADR 0097 D2 calls the matrix
-      // identical on every renderer; this row was the one that was not.
-      else text = value === undefined ? `⋯ ${title}` : inner();
-      const chain = widget.source?.degradedFrom?.map((d) => `${d.type}@${d.version}`).join(" › ");
-      if (chain) {
+      if (d.tag === "inert") text = inner();
+      else if (d.tag === "error") text = `✗ ${title}: ${d.message}`;
+      else if (d.tag === "empty") text = `○ ${title}: ${d.message}`;
+      else if (d.tag === "stale")
+        text = d.hasValue ? `~ ${inner()}` : `~ ${title}: — (${d.message})`;
+      else if (d.tag === "pending") text = `⋯ ${inner()}`;
+      // `loading`: the same glyph React and loom-ui's Lit base use (ADR 0097 D2).
+      else if (d.tag === "loading") text = `⋯ ${title}`;
+      else text = inner();
+      if (d.degradedChain) {
         const [first, ...rest] = text.split("\n");
-        text = [`${first} (degraded from ${chain})`, ...rest].join("\n");
+        text = [`${first} (degraded from ${d.degradedChain})`, ...rest].join("\n");
       }
       return text;
     },

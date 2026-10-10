@@ -974,7 +974,7 @@ Tenant isolation is enforced *by construction* at the store — see ~TenantScope
 #+begin_src typescript
 new ToolEffect((input, ctx) => Promise<TOut>)    // kind "tool" — any async work
 new LlmEffect((input, ctx) => Promise<TOut>)     // kind "llm"  — a model call
-new A2AEffect((input, ctx) => Promise<TOut>)     // kind "a2a"  — delegate to a remote agent (now defined in @loom/plugin-a2a; this copy is deprecated, ADR 0115)
+new A2AEffect((input, ctx) => Promise<TOut>)     // kind "a2a"  — delegate to a remote agent (defined in @loom/plugin-a2a only; the effect-runtime copy was removed, ADR 0115)
 new HumanEffect({ on: string; timeout?: number; correlationKey?: (input) => string })  // kind "human" — throws SuspendError
 new LazyEffect(spec: HandlerSpec)                // kind "tool" — resolves an inline/lazy handler on first execute
 #+end_src
@@ -1541,6 +1541,9 @@ interface WidgetSource { type: string; version: string; degradedFrom?: Array<{ t
 // Widget gains: source?: WidgetSource                          // never in props
 // Blueprint gains: irVersion?: string                          // absent ⇒ "1.0.0"; writers always set it
 function resolveWidgetStatus(widget: Widget, stateMap: Map<string, unknown>): BindingStatus | undefined
+function describeWidgetStatus(widget: Widget, value: unknown, status: BindingStatus | undefined, check?: WidgetValueCheck): WidgetStatusDescriptor
+// the status matrix (error > empty > contract > stale > pending/loading > ready) as one pure decision the React, terminal and DOM renderers draw from (ADR 0127);
+// tag: "inert" | "error" | "empty" | "stale" | "pending" | "loading" | "ready", plus message, finding, hasValue, showBody, degradedChain; a malformed source.degradedFrom is { tag: "invalid" } (never a throw)
 function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0, 2.1.0, 2.2.0, 2.3.0 and 2.4.0 input
 function blueprintIrVersion(bp: Blueprint): string    // bp.irVersion ?? "1.0.0"
 

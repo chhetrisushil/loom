@@ -139,3 +139,7 @@ bad keys folds to the same state on two replicas); fold equality on every existi
 - **Not done.** No unit or price registry (as designed). `analytics` does not yet surface custom
   dimensions: its per-step attribution and its `total` cover the BUILT-IN dimensions (tokens, costUsd, ms)
   only. Custom dimensions in analytics are a listed follow-up.
+
+## Update 2026-10-11 — the deprecated `A2AEffect` copy is removed
+
+`@loom/effect-runtime` no longer exports `A2AEffect` (the deprecated copy described in D1 above was deleted ahead of the "next major" it was scheduled for; user request). Import it from `@loom/plugin-a2a`. A search of this repo and the sibling repos found no source import of it from `@loom/effect-runtime`; the plugin's copy-parity test was deleted with the copy.

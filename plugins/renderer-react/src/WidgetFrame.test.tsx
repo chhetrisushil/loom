@@ -224,3 +224,25 @@ describe("WidgetFrame status matrix", () => {
     expect(frame.getAttribute("title")).toContain("Collection@1.0.0");
   });
 });
+
+describe("a malformed source.degradedFrom is the error placeholder, never a throw", () => {
+  it("draws the placeholder instead of the child, and leaks neither the cause nor the child", () => {
+    for (const bad of ["oops", 7, [null]]) {
+      const poisoned = {
+        ...widget,
+        source: { type: "x", version: "1", degradedFrom: bad },
+      } as never;
+      const { container, unmount } = render(
+        <WidgetFrame widget={poisoned} value={1}>
+          <span>SECRET-CHILD</span>
+        </WidgetFrame>
+      );
+      expect(container.querySelector('[data-placeholder="error"]')?.textContent).toBe(
+        "[Renderer for MetricCard failed]"
+      );
+      expect(container.textContent).not.toContain("SECRET-CHILD");
+      expect(container.textContent).not.toContain("oops");
+      unmount();
+    }
+  });
+});

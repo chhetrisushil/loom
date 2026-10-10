@@ -577,3 +577,28 @@ describe("renderBlueprintToString ignores a layout id (IR 2.4.0, ADR 0101)", () 
     expect(plain).not.toContain("root");
   });
 });
+
+describe("a malformed source.degradedFrom is the error placeholder, never a throw", () => {
+  const poisoned = (degradedFrom: unknown) =>
+    ({
+      ...MetricCard({ id: "m", title: "CPU", binding: { projectionId: "p", path: "v" } }),
+      source: { type: "x", version: "1", degradedFrom },
+    }) as never;
+  it("replaces the widget's row and leaks neither the cause nor the value", () => {
+    for (const bad of ["oops", 7, [null]]) {
+      const out = renderBlueprintToString(
+        blueprint$({
+          id: "b",
+          title: "T",
+          layout: stack({ children: [poisoned(bad)] }),
+          projections: ["p"],
+        }),
+        new Map([["p", { v: "SECRET-VALUE" }]]),
+        { registry: defaultTerminalRegistry }
+      );
+      expect(out).toContain("[Renderer for MetricCard failed]");
+      expect(out).not.toContain("SECRET-VALUE");
+      expect(out).not.toContain("oops");
+    }
+  });
+});
