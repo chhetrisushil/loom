@@ -371,7 +371,8 @@ export function judgeRequest(
   });
 }
 
-function renderRequest(r: LlmRequest): string {
+/** Render a request as one prompt string. Exported for tests only (not re-exported from the package entry). */
+export function renderRequest(r: LlmRequest): string {
   // messageText (@loom/llm textOf), not JSON.stringify: a parts message must render as its text, not as a JSON array.
   return [r.system ?? "", ...r.messages.map((m) => messageText(m.content))]
     .filter(Boolean)

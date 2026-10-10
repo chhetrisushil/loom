@@ -16,7 +16,13 @@ import {
   TenantScopedEventStore,
 } from "@loom/event-runtime";
 import type { LlmProvider, LlmRequest } from "@loom/llm";
-import { assertRequestSupported, textOf } from "@loom/llm";
+import {
+  AnthropicProvider,
+  GeminiProvider,
+  OpenAiProvider,
+  assertRequestSupported,
+  textOf,
+} from "@loom/llm";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import {
   InMemoryAsyncSnapshotStore,
@@ -622,6 +628,79 @@ describe("checkPartsReadAsText (R5)", () => {
 
   it("FAILS an HTTP provider whose body drops the text parts (wire check)", async () => {
     const dropping = httpProvider(() => ({ messages: [{ text: "" }] }));
-    await expect(checkPartsReadAsText(dropping)).rejects.toThrow(/does not carry a text part/);
+    await expect(checkPartsReadAsText(dropping)).rejects.toThrow(/carries the text parts/);
   });
+
+  it("passes a provider that makes an auxiliary fetch (auth, count_tokens) besides the real one", async () => {
+    const withAux: LlmProvider = {
+      async complete(r) {
+        await fetch("https://example.invalid/token", { method: "POST", body: "grant_type=x" });
+        await fetch("https://example.invalid/count_tokens", { method: "POST", body: "{}" });
+        await fetch("https://example.invalid/", {
+          method: "POST",
+          body: JSON.stringify({ messages: r.messages.map((m) => ({ text: textOf(m.content) })) }),
+        });
+        return { content: "", stopReason: "end_turn" };
+      },
+    };
+    await expect(checkPartsReadAsText(withAux)).resolves.toBeUndefined();
+  });
+
+  it("passes FormData, stream and bodiless fetches, and reads a Request body", async () => {
+    const odd: LlmProvider = {
+      async complete(r) {
+        await fetch("https://example.invalid/upload", { method: "POST", body: new FormData() });
+        await fetch(new Request("https://example.invalid/get"));
+        await fetch(
+          new Request("https://example.invalid/", {
+            method: "POST",
+            body: JSON.stringify({ messages: r.messages.map((m) => textOf(m.content)) }),
+          })
+        );
+        return { content: "", stopReason: "end_turn" };
+      },
+    };
+    await expect(checkPartsReadAsText(odd)).resolves.toBeUndefined();
+  });
+
+  it("FAILS a raw-join provider that also makes an auxiliary fetch", async () => {
+    const naive: LlmProvider = {
+      async complete(r) {
+        await fetch("https://example.invalid/token", { method: "POST", body: "x" });
+        await fetch("https://example.invalid/", {
+          method: "POST",
+          body: JSON.stringify({ prompt: `${r.messages[0]?.content}` }),
+        });
+        return { content: "", stopReason: "end_turn" };
+      },
+    };
+    await expect(checkPartsReadAsText(naive)).rejects.toThrow();
+  });
+
+  it("FAILS a Request-body provider whose body holds '[object Object]' (no toString trap hit)", async () => {
+    const naive: LlmProvider = {
+      async complete() {
+        await fetch(
+          new Request("https://example.invalid/", { method: "POST", body: "x [object Object] y" })
+        );
+        return { content: "", stopReason: "end_turn" };
+      },
+    };
+    await expect(checkPartsReadAsText(naive)).rejects.toThrow(/\[object Object\]/);
+  });
+});
+
+// The parts-as-text case against the real first-party providers (fetch is stubbed by the check), so
+// the case is exercised by shipped code and not only by hand-written naive providers.
+describe("checkPartsReadAsText on the first-party providers (R5)", () => {
+  const providers: Array<[string, () => LlmProvider]> = [
+    ["AnthropicProvider", () => new AnthropicProvider({ apiKey: "k" })],
+    ["OpenAiProvider", () => new OpenAiProvider({ apiKey: "k" })],
+    ["GeminiProvider", () => new GeminiProvider({ apiKey: "k" })],
+  ];
+  for (const [name, make] of providers) {
+    it(`${name} reads a parts message as text`, async () => {
+      await expect(checkPartsReadAsText(make())).resolves.toBeUndefined();
+    });
+  }
 });

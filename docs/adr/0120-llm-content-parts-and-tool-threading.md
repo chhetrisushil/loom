@@ -183,7 +183,7 @@ validated; an over-cap tool call no longer bricks the run (decision 7).
 
 `content: string | LlmContentPart[]` type-checks under `.join`, template strings and untyped `JSON.stringify`, so a parts
 message silently became `"[object Object]"` (found by hand in loom-demo and several loom-examples providers). Guards:
-a type-aware fitness test (`packages/spec/src/rawMessageContent.test.ts`) over loom's own source, a
+a type-aware fitness test (`packages/spec/src/rawMessageContent.test.ts`) over loom's own `.ts`/`.tsx`/`.mts` source that flags `x.content`, `x?.content`, `x["content"]`, a destructured `{ content }` and later reads of a variable initialised from one, unless the value goes to `textOf`/`toParts`/`hasStructuredParts`/`Array.isArray`, a `typeof` or `===`/`!==`, or a union-preserving position (it does not track the value through arbitrary calls or `any`), a
 `runLlmProviderConformance` case that sends a text-parts message and fails a provider that string-coerces it, and a
 user-guide warning plus provider-author checklist. A type-level brand was rejected (it breaks `textOf`'s own `string`
 branch and every legitimate narrowing), and biome has no type-aware rules.

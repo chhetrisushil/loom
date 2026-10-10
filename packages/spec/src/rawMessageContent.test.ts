@@ -34,16 +34,35 @@ interface RawContentScan {
   examined: Map<string, number>;
 }
 
-function isContentType(type: ts.Type): boolean {
+function hasContentAlias(type: ts.Type): boolean {
   const alias = type.aliasSymbol?.getName();
   return alias !== undefined && CONTENT_ALIASES.has(alias);
+}
+
+/**
+ * Whether `type` is the content union, nullable or not. `m?.content` is `LlmMessageContent | undefined`,
+ * which loses the alias, so the nullable is stripped first and, failing the alias, the shape is matched:
+ * a union of a string and an array of objects that carry a `type` discriminant (`LlmContentPart[]`).
+ */
+function isContentType(checker: ts.TypeChecker, type: ts.Type): boolean {
+  if (hasContentAlias(type)) return true;
+  const bare = checker.getNonNullableType(type);
+  if (hasContentAlias(bare)) return true;
+  if (!bare.isUnion()) return false;
+  const hasString = bare.types.some((t) => (t.flags & ts.TypeFlags.StringLike) !== 0);
+  const hasPartsArray = bare.types.some((t) => {
+    if (!checker.isArrayType(t)) return false;
+    const el = checker.getTypeArguments(t as ts.TypeReference)[0];
+    return el !== undefined && el.getProperty("type") !== undefined;
+  });
+  return hasString && hasPartsArray;
 }
 
 /** Whether the contextual type at `node` is itself a content type (a type-preserving pass-through). */
 function preservesUnion(checker: ts.TypeChecker, node: ts.Expression): boolean {
   const ctx = checker.getContextualType(node);
   if (ctx === undefined) return false;
-  if (isContentType(ctx)) return true;
+  if (isContentType(checker, ctx)) return true;
   // `LlmMessage["content"]` etc. resolve to the same union without the alias on the contextual side.
   if (ctx.isUnion()) {
     const hasString = ctx.types.some((t) => (t.flags & ts.TypeFlags.StringLike) !== 0);
@@ -86,6 +105,32 @@ function isSafeUse(checker: ts.TypeChecker, node: ts.Expression): boolean {
   return preservesUnion(checker, node);
 }
 
+/** Whether an identifier is a value read (not a declaration name, member name, label or type reference). */
+function isReadPosition(checker: ts.TypeChecker, id: ts.Identifier): boolean {
+  const p = id.parent;
+  if (
+    (ts.isVariableDeclaration(p) ||
+      ts.isParameter(p) ||
+      ts.isBindingElement(p) ||
+      ts.isPropertyDeclaration(p) ||
+      ts.isPropertySignature(p) ||
+      ts.isPropertyAssignment(p) ||
+      ts.isFunctionLike(p) ||
+      ts.isTypeReferenceNode(p)) &&
+    (p as { name?: ts.Node }).name === id
+  ) {
+    return false;
+  }
+  if (ts.isPropertyAccessExpression(p) && p.name === id) return false;
+  if (ts.isQualifiedName(p) || ts.isTypeReferenceNode(p) || ts.isTypeQueryNode(p)) return false;
+  if (ts.isBindingElement(p) && p.propertyName === id) return false;
+  // Only variables/parameters/properties are value reads (not a type alias or an import specifier).
+  const sym = checker.getSymbolAtLocation(id);
+  return (
+    sym !== undefined && (sym.flags & (ts.SymbolFlags.Variable | ts.SymbolFlags.Property)) !== 0
+  );
+}
+
 function isInferredCallbackResult(node: ts.Expression, parent: ts.Node): boolean {
   let fn: ts.Node | undefined;
   if (ts.isArrowFunction(parent) && parent.body === node) fn = parent;
@@ -101,6 +146,9 @@ function isInferredCallbackResult(node: ts.Expression, parent: ts.Node): boolean
   return (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) && ts.isCallExpression(fn.parent);
 }
 
+const SOURCE_EXT = /\.(ts|tsx|mts)$/;
+const DECLARATION_OR_TEST = /(\.d\.(ts|mts)|\.(perf\.)?test\.(ts|tsx|mts))$/;
+
 function walkSourceFiles(): string[] {
   const out: string[] = [];
   const walk = (dir: string): void => {
@@ -113,12 +161,7 @@ function walkSourceFiles(): string[] {
     for (const entry of entries) {
       if (entry.isDirectory()) {
         if (!SKIP.has(entry.name) && !entry.name.startsWith(".tmp")) walk(resolve(dir, entry.name));
-      } else if (
-        entry.name.endsWith(".ts") &&
-        !entry.name.endsWith(".d.ts") &&
-        !entry.name.endsWith(".test.ts") &&
-        !entry.name.endsWith(".perf.test.ts")
-      ) {
+      } else if (SOURCE_EXT.test(entry.name) && !DECLARATION_OR_TEST.test(entry.name)) {
         out.push(resolve(dir, entry.name));
       }
     }
@@ -143,6 +186,7 @@ function scanRawMessageContent(files: string[] = candidateFiles()): RawContentSc
     module: ts.ModuleKind.CommonJS,
     moduleResolution: ts.ModuleResolutionKind.Node10,
     strict: true,
+    jsx: ts.JsxEmit.ReactJSX,
     noEmit: true,
     skipLibCheck: true,
     esModuleInterop: true,
@@ -164,16 +208,29 @@ function scanRawMessageContent(files: string[] = candidateFiles()): RawContentSc
       const { line } = sf.getLineAndCharacterOfPosition(node.getStart(sf));
       findings.push({ file: rel, line: line + 1, text: node.getText(sf) });
     };
+    const typeIsContent = (n: ts.Node): boolean =>
+      isContentType(checker, checker.getTypeAtLocation(n));
     const visit = (node: ts.Node): void => {
       if (ts.isPropertyAccessExpression(node) && node.name.text === "content") {
-        if (isContentType(checker.getTypeAtLocation(node))) record(node, !isSafeUse(checker, node));
+        if (typeIsContent(node)) record(node, !isSafeUse(checker, node));
+      } else if (
+        ts.isElementAccessExpression(node) &&
+        (ts.isStringLiteral(node.argumentExpression) ||
+          ts.isNoSubstitutionTemplateLiteral(node.argumentExpression)) &&
+        node.argumentExpression.text === "content"
+      ) {
+        // `m["content"]` is the same read as `m.content`.
+        if (typeIsContent(node)) record(node, !isSafeUse(checker, node));
       } else if (
         ts.isBindingElement(node) &&
         ts.isObjectBindingPattern(node.parent) &&
         (node.propertyName ?? node.name).getText(sf) === "content"
       ) {
         // `const { content } = message` hides the property access; the binding is the raw read.
-        if (isContentType(checker.getTypeAtLocation(node))) record(node, true);
+        if (typeIsContent(node)) record(node, true);
+      } else if (ts.isIdentifier(node) && isReadPosition(checker, node)) {
+        // An alias (`const c = m.content`) carries the union; a later `${c}` is the raw read.
+        if (typeIsContent(node)) record(node, !isSafeUse(checker, node));
       }
       ts.forEachChild(node, visit);
     };
@@ -202,6 +259,8 @@ describe("no raw LLM message content reads (R5, ADR 0120)", () => {
   it("is not vacuous: the scan resolved typed content accesses, and every allowlist entry is live", () => {
     // If @loom/llm's dist is missing the alias resolves to `any` and nothing is ever flagged.
     expect(scan.examined.size).toBeGreaterThanOrEqual(3);
+    // .tsx and .mts sources are walked too (plugins/renderer-react is .tsx).
+    expect(walkSourceFiles().some((f) => f.endsWith(".tsx"))).toBe(true);
     for (const file of Object.keys(ALLOWLIST)) {
       expect(
         scan.examined.get(file) ?? 0,
@@ -216,31 +275,41 @@ describe("no raw LLM message content reads (R5, ADR 0120)", () => {
       // Resolve @loom/llm through the repo's own node_modules by living under the repo is not possible
       // for a tmp dir, so the fixture declares the same alias locally.
       const fixture = join(dir, "fixture.ts");
-      writeFileSync(
-        fixture,
-        `
-type LlmContentPart = { type: "text"; text: string } | { type: "image"; data: string };
+      const source = `type LlmContentPart = { type: "text"; text: string } | { type: "image"; data: string };
 export type LlmMessageContent = string | LlmContentPart[];
 interface LlmMessage { role: "user"; content: LlmMessageContent }
-declare function textOf(c: LlmMessageContent): string;
+declare function textOf(c: LlmMessageContent | undefined): string;
 declare function takesString(s: string): void;
 declare function takesAny(a: any): void;
-function bad(ms: LlmMessage[], m: LlmMessage) {
-  const joined = ms.map((x) => x.content).join(" ");   // BAD 1
-  const tpl = \`\${m.content}\`;                       // BAD 2
-  takesAny({ text: m.content });                       // BAD 3
-  const { content } = m;                               // BAD 4
-  return [joined, tpl, content];
+function bad(ms: LlmMessage[], m: LlmMessage, o?: LlmMessage) {
+  const joined = ms.map((x) => x.content).join(" ");   // BAD
+  const tpl = \`\${m.content}\`;                       // BAD
+  takesAny({ text: m.content });                       // BAD
+  const { content } = m;                               // BAD
+  const c = m.content;
+  const viaAlias = \`\${c}\`;                           // BAD alias
+  const q = \`\${o?.content}\`;                         // BAD optional chain
+  const e = \`\${m["content"]}\`;                       // BAD element access
+  const qe = [o?.["content"]].join(",");               // BAD optional element access
+  return [joined, tpl, viaAlias, q, e, qe];
 }
-function good(m: LlmMessage): LlmMessage {
+function good(m: LlmMessage, o?: LlmMessage): LlmMessage {
   const t = textOf(m.content);
   if (typeof m.content === "string") takesString(m.content);
-  return { role: "user", content: m.content, ...(t ? {} : {}) };
+  const c = m.content;
+  const t2 = textOf(c);
+  const t3 = textOf(o?.content);
+  const t4 = textOf(m["content"]);
+  const t5 = textOf(o?.["content"]);
+  if (typeof c === "string") takesString(c);
+  return { role: "user", content: m.content, ...(t || t2 || t3 || t4 || t5 ? {} : {}) };
 }
-`
-      );
+`;
+      writeFileSync(fixture, source);
+      const bad = source.split("\n").flatMap((l, i) => (l.includes("// BAD") ? [i + 1] : []));
       const { findings } = scanRawMessageContent([fixture]);
-      expect(findings.map((f) => f.line)).toEqual([9, 10, 11, 12]);
+      expect(bad).toHaveLength(8);
+      expect(findings.map((f) => f.line)).toEqual(bad);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
