@@ -388,7 +388,7 @@ await runtime.resume(executionId, answerApproval(state!, { approved: true }));
 ```
 
 A resume whose digest is missing or stale is refused with `ResumeRefusedError`
-(`view-digest-mismatch`) before anything is appended. `agentLoop$({ requireApproval })` does this
+(`view-digest-mismatch`) before anything is appended. `agentLoop$({ needsApproval })` does this
 for you (tool + input + position); `bindApproval: false` opts out.
 
 To record *who* approved, wire the first-party authenticator (`security.strict` requires one) and

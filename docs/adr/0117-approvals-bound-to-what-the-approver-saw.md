@@ -48,7 +48,7 @@ that declares no digest behaves exactly as before.
 `answerApproval(state, decision)` builds the resume event from the parked state, echoing the
 digest; keep that state with the UI so "echoed" means "this is what I was shown".
 
-`agentLoop$({ requireApproval })` declares `approvalViewDigest(gateKey, tool, input)` by default
+`agentLoop$({ needsApproval })` (formerly `requireApproval`) declares `approvalViewDigest(gateKey, tool, input)` by default
 (`gateKey` is the gate's `<executionId>#<loop id>#turn:<n>:tool:<j>` correlation key, which pins
 execution, loop and position: two loops in one flow do not share `#turn:0:tool:0`). The proposal
 itself is NOT copied into the suspend condition — tool input is model output of arbitrary size and

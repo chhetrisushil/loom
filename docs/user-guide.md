@@ -614,16 +614,18 @@ Step ids do not change with `parallelTools` (`<loop>#turn:<i>:tool:<j>`), result
 
 ### Pausing for a human
 
-`requireApproval` parks the execution on a gate **before** the tool runs — the point of asking. A refusal comes back to the model as a tool result rather than an exception, because a human declining is information the agent can settle on, not an error:
+`needsApproval` parks the execution on a gate **before** the tool runs — the point of asking. A refusal comes back to the model as a tool result rather than an exception, because a human declining is information the agent can settle on, not an error:
 
 ```ts
 agentLoop$(ctx, {
   definition: dbaAgent,
   modelToolId: "model",
-  requireApproval: (call) => call.name !== "drop-table",  // false ⇒ ask first
+  needsApproval: (call) => call.name === "drop-table",    // true ⇒ ask first
   approvalGate: "AgentToolApproval",                       // resume with { approved: boolean }
 }, input);
 ```
+
+`needsApproval` returns `true` to park and `false` to run. It replaces `requireApproval`, which read backwards (an auto-approve policy: `true` proceeds, `false` parks) and is now a deprecated alias with its old polarity: `requireApproval: (c) => c.name !== "x"` is `needsApproval: (c) => c.name === "x"`. The recorded log is identical, so old logs replay unchanged; using the alias emits one `LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED` warning, and supplying both throws `AgentLoopConfigError`. A `kind: "human"` tool parks by itself for its answer; the approval policy is independent of that.
 
 Pair the gate with `flow$({ resumeSchemas })` so the resume payload is parsed before it lands — see [§4 Suspend & resume](#4-suspend--resume) and [ADR 0077](adr/0077-typed-resume-payloads.md).
 

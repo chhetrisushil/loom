@@ -350,9 +350,9 @@ describe("R22 — no authority escalation", () => {
     const b = boot({
       provider: script([[SEARCH("slow queries")], [call("x", "db_slow_queries")]]),
       config: {
-        requireApproval: (c, _turn, onMenu) => {
+        needsApproval: (c, _turn, onMenu) => {
           asked.push(`${c.name}:${String(onMenu)}`);
-          return false;
+          return true;
         },
       },
     });

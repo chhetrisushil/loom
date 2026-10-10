@@ -171,6 +171,32 @@ ring, parallel lookups with a flaky tool, a destructive call parked on a human a
 write-back, one model call after the restart). The `loom-examples` repo is the right home for the user-facing version and
 is listed as a companion change in the PR (name, what it shows); this repo does not edit it.
 
+## Amendment (2026-10-10) — `needsApproval`, and `requireApproval` is deprecated
+
+`requireApproval` reads backwards. It is an auto-approve policy: it answers "may this call proceed on its own?", so `true`
+means run and `false` means PARK. `agentLoop$` now takes `needsApproval?: (toolCall, turn, onMenu?) => boolean`, where `true`
+parks the call for a human and `false` runs it:
+
+```ts
+agentLoop$(ctx, {
+  definition: dbaAgent,
+  modelToolId: "model",
+  needsApproval: (call) => call.name === "drop-table", // true => ask first
+}, input);
+// was: requireApproval: (call) => call.name !== "drop-table"
+```
+
+- `requireApproval` keeps working with its current polarity as a `@deprecated` alias. Using it emits one
+  `process.emitWarning` per process with code `LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED`. Supplying both options throws
+  `AgentLoopConfigError`.
+- Nothing recorded changes. Both spellings feed one check before the same gate (same gate key, view digest and resume
+  event), so the same effective decision records an identical log and old logs replay unchanged
+  (`agentLoopNeedsApproval.test.ts` compares the two logs). `needsApproval` fails closed: anything but an explicit `false`
+  parks.
+- A `kind: "human"` tool still parks inside its own step for the human's answer. The approval policy is independent of it
+  and composes exactly as before: a flagged human tool asks for approval, then for its answer.
+- `conversation$` refuses `needsApproval` for the same reason it refuses `requireApproval` (ADR 0122 D2).
+
 ## Rejected
 
 - **Deleting `AgentRunner` / `agentStep$`.** Unreleased-or-internal is the bar for removal and they are neither (every

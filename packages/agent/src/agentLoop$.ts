@@ -65,7 +65,19 @@ export interface AgentModelCall {
   temperature?: number;
 }
 
-/** What a tool call must clear before it runs. Returning `false` parks the loop on a gate. */
+/** Whether a tool call must be parked for human approval. `true` parks, `false` runs it. */
+export type NeedsApprovalPolicy = (
+  toolCall: LlmToolCall,
+  turn: number,
+  /** Whether the tool name is on this loop's menu; `false` means the call WILL be refused whatever the answer. */
+  onMenu?: boolean
+) => boolean;
+
+/**
+ * What a tool call must clear before it runs, as the DEPRECATED `requireApproval` reads it: an
+ * auto-approve policy where `true` = proceed and `false` = park the loop on a gate. Prefer
+ * {@link NeedsApprovalPolicy}, whose polarity is the one its name says.
+ */
 export type ApprovalPolicy = (
   toolCall: LlmToolCall,
   turn: number,
@@ -227,14 +239,32 @@ export interface AgentLoopConfig {
   /** R10 — a per-call deadline for each TOOL call, in milliseconds (the frame's kernel `timeoutMs`). */
   toolTimeoutMs?: number;
   /**
-   * Park the execution for approval before a tool call the policy declines.
-   * Returning `false` suspends on {@link approvalGate}; the resume payload
-   * `{ approved: false }` refuses the call and feeds the refusal back to the
-   * model as a tool result, so the agent can settle rather than retry blindly.
+   * Park the execution for approval before a tool call this policy flags. Returning `true`
+   * suspends on {@link approvalGate}; returning `false` runs the call. The resume payload
+   * `{ approved: false }` refuses the call and feeds the refusal back to the model as a tool
+   * result, so the agent can settle rather than retry blindly.
+   *
+   * ```ts
+   * needsApproval: (call) => call.name === "drop-table", // only drop-table stops for a human
+   * ```
+   *
+   * A tool declared `kind: "human"` parks by itself (inside its own step, for the human's answer);
+   * this policy is independent of that and composes exactly as `requireApproval` did: it is consulted
+   * first, so a flagged human tool asks for approval and then for its answer.
+   * Anything but an explicit `false` parks, so a policy that forgets to return fails closed.
+   * Supplying both this and the deprecated `requireApproval` throws {@link AgentLoopConfigError}.
    *
    * This is the capability `agentStep$` structurally cannot have: a handler
    * cannot suspend, so approval had to be hoisted out of the agent — which is
    * precisely the design the feature exists to avoid.
+   */
+  needsApproval?: NeedsApprovalPolicy;
+  /**
+   * @deprecated ADR 0121 amendment (2026-10-10) — use {@link needsApproval}, which has the OPPOSITE
+   * polarity. `requireApproval` is an auto-approve policy: `true` = proceed, `false` = PARK, so
+   * `requireApproval: (c) => c.name !== "x"` is `needsApproval: (c) => c.name === "x"`. Behaviour
+   * and the recorded log are unchanged; using it emits one `LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED`
+   * process warning. Supplying both options throws {@link AgentLoopConfigError}.
    */
   requireApproval?: ApprovalPolicy;
   /** Gate name for approvals. Pair with `flow$({ resumeSchemas })` to parse the payload (ADR 0077). */
@@ -418,6 +448,36 @@ function warnReasoningOutsideRing(): void {
   );
 }
 
+let warnedRequireApproval = false;
+/** One advisory per process: `requireApproval` is the deprecated, inverted-polarity spelling. */
+function warnRequireApprovalDeprecated(): void {
+  if (warnedRequireApproval) return;
+  warnedRequireApproval = true;
+  const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
+    .process;
+  proc?.emitWarning?.(
+    "agentLoop$: `requireApproval` is deprecated; use `needsApproval`, which has the opposite polarity (`true` PARKS for approval, `false` runs). `requireApproval: (c) => c.name !== 'x'` is `needsApproval: (c) => c.name === 'x'`.",
+    { code: "LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED", type: "DeprecationWarning" }
+  );
+}
+
+/** The single place both spellings meet: does this call park? (`needsApproval` fails closed.) */
+function parksForApproval(
+  config: AgentLoopConfig,
+  toolCall: LlmToolCall,
+  turn: number,
+  onMenu: boolean
+): boolean {
+  if (config.needsApproval !== undefined)
+    return config.needsApproval(toolCall, turn, onMenu) !== false;
+  return config.requireApproval?.(toolCall, turn, onMenu) === false;
+}
+
+/** Test seam: re-arm the one-time `requireApproval` deprecation warning. */
+export function resetRequireApprovalWarning(): void {
+  warnedRequireApproval = false;
+}
+
 /** Test seam: re-arm the one-time advisory. */
 export function resetReasoningRingWarning(): void {
   warnedReasoningOutsideRing = false;
@@ -550,6 +610,12 @@ export async function agentLoop$(
   config: AgentLoopConfig,
   input: AgentInput
 ): Promise<AgentOutput> {
+  if (config.needsApproval !== undefined && config.requireApproval !== undefined) {
+    throw new AgentLoopConfigError(
+      "agentLoop$: supply `needsApproval` OR the deprecated `requireApproval`, not both (they have opposite polarity)"
+    );
+  }
+  if (config.requireApproval !== undefined) warnRequireApprovalDeprecated();
   if (config.modelToolId === undefined && config.reasoning === undefined) {
     // Refused up front rather than running zero turns and returning an empty
     // answer, which is what an absent model access would otherwise look like.
@@ -969,7 +1035,7 @@ export async function agentLoop$(
       };
     }
 
-    if (!tooBig && config.requireApproval?.(toolCall, turn, menu.has(toolCall.name)) === false) {
+    if (!tooBig && parksForApproval(config, toolCall, turn, menu.has(toolCall.name))) {
       // The key carries `idPrefix` (the loop's definition id), so two loops in one flow do not
       // share `#turn:0:tool:0` — a shared key would let one loop's approval read as the other's.
       const gateKey = `${ctx.executionId}#${idPrefix}#turn:${turn}:tool:${j}`;

@@ -457,9 +457,9 @@ describe("approval hook sees onMenu; skills; reasoning", () => {
   it("passes onMenu so a host can skip prompting for an off-menu call", async () => {
     const seen: Array<[string, boolean | undefined]> = [];
     const t = bootLoop([{ name: "drop-table", input: {} }], undefined, {
-      requireApproval: (c, _turn, onMenu) => {
+      needsApproval: (c, _turn, onMenu) => {
         seen.push([c.name, onMenu]);
-        return onMenu === false; // true = no prompt; off-menu is refused anyway
+        return onMenu !== false; // false = no prompt; off-menu is refused anyway
       },
     });
     const h = await t.runtime.start(flowDef, {}, { executionId: "e1" });
