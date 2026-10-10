@@ -11,6 +11,7 @@
   "K10.5", which the K10 requirement set had already assigned to encryption-at-rest
   (ADR 0022, `docs/loom-2.0/11-encryption-at-rest.md`). The pin seam is K10.6 everywhere
   (docs, code comments, tests); mechanics unchanged.
+- Amendment (2026-10-10): **`reclaimOrphans` requires an explicit completeness acknowledgement** (see the end of D6).
 - Amendment (2026-09-28, L11): compaction keeps pinned event kinds and the D6 checkpoint
   lookup follows the kept events — see the closed "known gap" under D6 and
   [ADR 0106](0106-compaction-integrity.md).
@@ -287,6 +288,22 @@ it warns on stderr BEFORE erasing anything, and the dry-run report carries the s
 `--orphans` also needs the snapshot store (`--snap`/`--archive-snap`; a config always has one).
 The CLI help and the `reclaimOrphans` docstring say the same. `docs/data-protection-patterns.md` now says the archive is REQUIRED
 whenever retention archives.
+
+**Amendment (2026-10-10) — the acknowledgement is mandatory.** The paragraph above left the
+guard to the CLI and to `dryRun`; a library host calling `sweepUnpinnedContent({ reclaimOrphans: true })`
+that omitted an event store or snapshot store silently erased every blob only that store cited
+(the library cannot see a store it was not given). Decided: `reclaimOrphans` is now
+`{ completeScan: true }`. A bare `true`, `{}`, `{ completeScan: false }` or any other value throws
+`ReclaimOrphansAckError` (a `TypeError`) before anything is read or erased, `dryRun` included,
+so the unsafe sweep cannot be reached by accident and a migrating host must read the hazard once.
+The object form is the caller's assertion that `eventStores`, `snapshotStores` and `roots` cover
+every citing store. The CLI passes it only after its own archive/snapshot checks. Considered and
+not added: (b) a two-phase plan/apply token, because the re-cite TOCTOU between plan and delete is
+already closed by D5 (`deleteIfUntouchedSince` against the store-clock cutoff read once at the
+start), and a token would not detect an omitted store either; (c) a grace floor, which exists
+already (a blob touched within `olderThanMs` of the sweep is never an orphan, and an in-flight
+`put` survives). The sweep cannot detect an omitted store, so no further automatic detection is
+claimed. The `reclaimOrphans: false` / absent path is unchanged.
 
 ### D7 — External root sets
 

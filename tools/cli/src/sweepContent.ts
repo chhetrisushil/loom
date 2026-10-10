@@ -159,7 +159,7 @@ export async function cmdSweepContent(
       olderThanMs: opts.ttlMs,
       now: Date.now(),
       dryRun: !opts.apply,
-      ...(opts.orphans === true && { reclaimOrphans: true }),
+      ...(opts.orphans === true && { reclaimOrphans: { completeScan: true } }),
     });
     return formatReport(
       report,
