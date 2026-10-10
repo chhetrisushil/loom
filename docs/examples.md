@@ -59,17 +59,23 @@ pnpm --filter @loom/db-observability start
   (`search_tools`, `activate_skill`, its own tool) and loads only what a search returns.
   Remote tools (`origin: "remote"`) have their descriptions withheld (one of them carries an
   injection) and search results naming them arrive tainted; host `annotations` close the
-  vocabulary gap ("bill the customer" finds `charge_invoice`); skills are discovered through
-  search (`skillActivation.discovery: "search"`) and their instructions arrive as the
-  `activate_skill` tool result; a custom ranker runs two-ranker mode; and a crash/resume
-  replays every page from the log with zero ranker calls and no repeated MCP call.
+  vocabulary gap and the built-in BM25F drops query stopwords (`DEFAULT_STOPWORDS`;
+  `stopwords: []` disables), so "bill the customer" returns `charge_invoice` alone; skills are
+  discovered through search (`skillActivation.discovery: "search"`) and their instructions
+  arrive as the `activate_skill` tool result; a custom `toolSearch.ranker` is a FACTORY that
+  receives the run's sanitized search docs (host annotations in, remote descriptions out),
+  built lazily once per run (two-ranker mode; a custom ranker owns its own query processing,
+  stopwords included); and a crash/resume replays every page from the log with zero factory
+  calls, zero ranker calls and no repeated MCP call.
 
 - **`agent-swarm`** — a dynamic agent swarm wired from user intent (release-audit):
   record-plan → `PLAN_COMPOSED`, then a parallel `executeGraph` fan-out. Offline.
 - **`db-command-center`** (+ **`-server`**, **`-wc`**) — an intent → planner → A2A
   agentic app with a React UI, an A2A server surface, and a web-component surface.
 - **`a2a-mesh`**, **`agent-network`** — agent-to-agent mesh / networking with
-  `@loom/plugin-a2a` and `A2AEffect`.
+  `@loom/plugin-a2a` and `A2AEffect`. `a2a-mesh` shows that a peer's card description is
+  withheld from the model-facing spec ("Third-party tool; description withheld") unless the
+  operator vouches with `new A2APeerClient({ ..., trustDescriptions: true })` (ADR 0125 D14).
 
 ### Compute & backends
 
@@ -97,7 +103,10 @@ pnpm --filter @loom/db-observability start
   Viewers vote on what the server recorded showing them (U11: `SignalIngestor` with
   `seenLogExposure`, so an unexposed vote is refused; one bounded vote per viewer in a
   `VoteLedger`; tenant-aware), `settleRewards` records one late reward per planner decision,
-  and a candidate layout policy goes through the `PolicyRegistry` via `decideWithRollout`:
+  and a candidate layout policy goes through the `PolicyRegistry`: ONE loom-ui `ReferencePlanner`
+  chooses its variant with `variants.rollout` (it calls `decideWithRollout`; a fresh turn's report
+  names the acting version and rollout stamp, a replay's names neither), and the contextual
+  candidate reads a host-owned feature store keyed by the opaque unit:
   offline gate, SHADOW (scored, never served), CANARY (a stable slice), SNIPS + bootstrap +
   `promotionGate`, then promote or `rollback`. v2 passes offline and in shadow, the world
   drifts at canary, the gate refuses and it rolls back; v3 is promoted. Replay serves the
