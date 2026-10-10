@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **A malformed `source.degradedFrom` no longer throws in the React and terminal renderers.** It was already the error placeholder in the DOM renderer; all three now draw `[Renderer for <kind> failed]` (React: `data-placeholder="error"` inside the frame) and never the cause or the value.
+- **A malformed `source.degradedFrom` no longer throws in the React and terminal renderers.** It was already the error placeholder in the DOM renderer; all three now draw `[Renderer for <kind> failed]` (React: `data-placeholder="error"` inside the frame) and never the cause or the value. The rule is wider than before: a `degradedFrom` that is not an array of objects (e.g. a string entry, which the DOM renderer used to draw as `undefined@undefined`) is now the same placeholder everywhere.
 
 ### Removed
 
