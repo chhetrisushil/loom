@@ -1,6 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import { type EventStore, headOf, readRangeOf } from "@loom/event-runtime";
-import { createInboxSource, inboxStreamId } from "@loom/workflow-runtime";
+import { createInboxSource, inboxStreamId, inboxTopicStreamId } from "@loom/workflow-runtime";
 import { senderKey } from "./access";
 import { CONVERSATION_TOPIC } from "./types";
 
@@ -114,8 +114,12 @@ export async function pendingMessages(
   ownerId: string,
   limit: number
 ): Promise<StoredInboxMessage[] | undefined> {
-  const newest = await headOf(store, inboxStreamId(conversationId));
-  if (newest === null) return [];
+  // The conversation topic's messages live in the legacy stream or, once the fleet writes per-topic
+  // streams (ADR 0110 D10b), in the topic's own; the cursor is one number space across both.
+  const legacyHead = await headOf(store, inboxStreamId(conversationId));
+  const topicHead = await headOf(store, inboxTopicStreamId(conversationId, CONVERSATION_TOPIC));
+  if (legacyHead === null && topicHead === null) return [];
+  const newest = Math.max(legacyHead ?? -1, topicHead ?? -1);
   const tip = await headOf(store, ownerId);
   if (tip === null) return undefined;
   let consumed = -1;
@@ -143,10 +147,21 @@ export async function pendingMessages(
  */
 export function inboxBargeIn(eventStore: EventStore): BargeInSource {
   return async (conversationId, ownerId, handlers) => {
-    const unsubscribe = await eventStore.subscribe(inboxStreamId(conversationId), (ev) => {
+    const onEvent = (ev: EventEnvelope): void => {
       if (isNew(ev.payload as StoredInboxMessage, handlers)) handlers.onMessage();
-    });
+    };
+    // Both layouts (ADR 0110 D10b): a message lands in the legacy stream or in the topic's own.
+    const unsubLegacy = await eventStore.subscribe(inboxStreamId(conversationId), onEvent);
+    let unsubTopic: (() => void) | undefined;
+    const unsubscribe = (): void => {
+      unsubLegacy();
+      unsubTopic?.();
+    };
     try {
+      unsubTopic = await eventStore.subscribe(
+        inboxTopicStreamId(conversationId, CONVERSATION_TOPIC),
+        onEvent
+      );
       if (await pendingInbox(eventStore, conversationId, ownerId, handlers)) handlers.onMessage();
     } catch (err) {
       unsubscribe();

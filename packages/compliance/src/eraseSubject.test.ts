@@ -1,5 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, inboxTopicStreamId } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -339,6 +339,52 @@ describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)",
     expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
     expect(await store.read(streamOf("a1"))).toEqual([]);
     expect(order).toEqual(["shred", `delete ${streamOf("a1")}`]);
+  });
+
+  it("ADR 0110 D10b: EVERY stream of the chain is purged — topic streams, the legacy one, then the registry LAST", async () => {
+    const { store, shred, order } = await setup();
+    await seedStarted(store, "a1", "ann");
+    await store.append(ev("a1", 1, "EXECUTION_COMPLETED", {}));
+    const registry = "__loom_inbox__:a1#reg";
+    const hot = inboxTopicStreamId("a1", "hot");
+    const cold = inboxTopicStreamId("a1", "cold");
+    for (const topic of ["hot", "cold", "hot"]) {
+      await store.append({
+        id: `${registry}-${(await store.read(registry)).length}`,
+        workflowId: "__loom_inbox__",
+        executionId: registry,
+        eventType: "INBOX_TOPIC",
+        sequence: (await store.read(registry)).length,
+        timestamp: 1,
+        payload: { topic },
+      });
+    }
+    for (const stream of [hot, cold]) {
+      await store.append({ ...inboxMsg("a1", 2 ** 40), id: `${stream}-x`, executionId: stream });
+    }
+    await store.append(inboxMsg("a1"));
+    const rawDelete = store.deleteExecution!.bind(store);
+    store.deleteExecution = async (id: string) => {
+      order.push(`delete ${id}`);
+      return rawDelete(id);
+    };
+    const coord = new EraseCoordinator({
+      index: await indexOf(store, ["a1"]),
+      eventStore: store,
+      shred,
+    });
+    expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
+    for (const stream of [hot, cold, streamOf("a1"), registry]) {
+      expect(await store.read(stream)).toEqual([]);
+    }
+    // The topic streams first, the registry that names them last (a crash midway stays findable).
+    expect(order).toEqual([
+      "shred",
+      `delete ${hot}`,
+      `delete ${cold}`,
+      `delete ${streamOf("a1")}`,
+      `delete ${registry}`,
+    ]);
   });
 
   it("the logs are read BEFORE the key is destroyed: a store that cannot read after the shred still gets its stream purged", async () => {

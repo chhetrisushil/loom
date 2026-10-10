@@ -1,5 +1,9 @@
 import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import {
+  InMemoryAsyncEventStore,
+  inboxRegistryStreamId,
+  inboxTopicStreamId,
+} from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
 import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
@@ -51,6 +55,25 @@ describe("EncryptingEventStore — a chain's inbox stream", () => {
     expect((read?.payload as { payload: unknown }).payload).toBe(SECRET);
     // The topic, id and sender are not sensitive: they stay readable for routing and dedupe.
     expect((read?.payload as { topic: string }).topic).toBe("t");
+  });
+
+  it("ADR 0110 D10b: a TOPIC stream and the registry resolve to the same owner subject and read as the marker after a shred", async () => {
+    const { inner, keys, store } = setup("throw");
+    const topic = inboxTopicStreamId("alice-1", "t");
+    await store.append(msg(topic, 2 ** 40, SECRET));
+    expect(JSON.stringify(await inner.read(topic))).not.toContain(SECRET);
+    expect(await keys.get("alice")).not.toBeNull(); // the OWNER's key, not the stream's own id
+    expect(await keys.get(topic)).toBeNull();
+    // The registry is routing data (no sensitive path), but it maps to the same chain too.
+    await store.append({
+      ...msg(inboxRegistryStreamId("alice-1"), 0, null),
+      eventType: "INBOX_TOPIC",
+      payload: { topic: "t" },
+    });
+    await keys.destroy("alice");
+    const [read] = await store.read(topic);
+    expect(isShredded((read?.payload as { payload: unknown }).payload)).toBe(true);
+    expect(await store.read(inboxRegistryStreamId("alice-1"))).toHaveLength(1); // never throws
   });
 
   it("after the subject's key is destroyed the payload reads as the marker even in the default 'throw' mode", async () => {

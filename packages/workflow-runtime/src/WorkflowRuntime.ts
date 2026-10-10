@@ -13,7 +13,12 @@ import type {
   TransientInvokeOptions,
 } from "@loom/effect-runtime";
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
-import { RESERVED_STREAM_PREFIX, isReservedStream } from "@loom/event-runtime";
+import {
+  RESERVED_STREAM_PREFIX,
+  hasInboxStreamShape,
+  inboxChainOf,
+  isReservedStream,
+} from "@loom/event-runtime";
 import { appendBatchOf, headOf, isAnsweringKind, readRangeOf } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
@@ -65,11 +70,13 @@ import {
   DEFAULT_INBOX_MAX_BACKLOG,
   DEFAULT_INBOX_MAX_PAYLOAD_BYTES,
   INBOX_STREAM_PREFIX,
+  INBOX_TOPIC_SEQ_BASE,
   INBOX_TTL_ACTOR,
   INBOX_WAKE_AT,
   type InboxTtlConfig,
   MAX_MESSAGE_ID_LENGTH,
   WAITS_PARK_ON,
+  activateInboxLayout,
   appendInboxMessage,
   assertTtlConfig,
   chainIdOf,
@@ -80,14 +87,19 @@ import {
   dedupeKeyOf,
   deleteInbox,
   discardFacts,
-  ensureInboxFloor,
+  inboxLayoutActive,
   inboxStreamId,
+  inboxTopicStreamId,
   maxCursor,
+  readRegisteredTopics,
+  registerInboxTopic,
   scanExpired,
   scanInbox,
+  seedInboxFloors,
   staleInboxBatch,
   topicProblem,
   trimInbox,
+  trimTopicStream,
   ttlOfTopic,
 } from "./inbox";
 import { WaitsPark, isKernelHumanPark } from "./kernelPark";
@@ -348,6 +360,16 @@ export interface WorkflowRuntimeDeps {
    * by `recoverAbandoned`). Needs a `timerStore`, and every node of a fleet must configure it alike.
    */
   inboxMessageTtlMs?: InboxTtlConfig;
+  /**
+   * ADR 0110 amendment, D10b — this node may WRITE per-topic inbox streams, once the FLEET has opted
+   * in (a durable switch written by {@link WorkflowRuntime.enableInboxTopicStreams}; until then the
+   * node keeps writing the legacy single stream). Off by default: the node writes exactly as before.
+   * Every D10-aware node READS both layouts whatever this says, so turn it on only after every node
+   * runs this version (a pre-D10 node cannot read a topic stream). See the ADR's operator procedure.
+   */
+  inboxTopicStreams?: boolean;
+  /** ADR 0110 D10b — topics a chain may have streams for (counted from its registry). Default 64. */
+  inboxMaxTopics?: number;
   /**
    * ADR 0112 D2 — error classes a fail-fast scope may REHYDRATE by name (composition-time,
    * deterministic): the scope journals the failing error's `name` and message, and the first run
@@ -801,6 +823,8 @@ class StaleInboxBatch extends Error {
 const RETRY = Symbol("notify-retry");
 const RETRY_FENCED = Symbol("notify-retry-fenced");
 const NOTIFY_ATTEMPTS = 4;
+/** ADR 0110 D10b — default `inboxMaxTopics`. */
+const DEFAULT_INBOX_MAX_TOPICS = 64;
 /** ADR 0110 D10a — most messages one expiry pass discards (the rest are armed for the very next tick). */
 const INBOX_EXPIRY_BATCH = 1024;
 /** ADR 0110 D10a — expiry rows land on whole multiples of this, so messages expiring together share a pass. */
@@ -863,6 +887,12 @@ export class WorkflowRuntime {
   private readonly inboxMaxPayloadBytes: number;
   private readonly inboxMaxRetained: number;
   private readonly inboxTtl: InboxTtlConfig | undefined;
+  private readonly inboxTopicStreamsFlag: boolean;
+  private readonly inboxMaxTopics: number;
+  /** Sticky: the fleet switch was seen (it is one-way, so `true` is never re-checked). */
+  private inboxLayoutSeen = false;
+  /** Per chain, the topics this process knows are registered (a hint; the registry is the truth). */
+  private readonly inboxKnownTopics = new Map<string, Set<string>>();
   /** Per chain, the instant of the expiry row this process last wrote (a pending one is not re-written per send). */
   private readonly inboxExpiryRows = new Map<string, number>();
   private readonly meterCeilings: Readonly<Record<string, number>> | undefined;
@@ -956,6 +986,9 @@ export class WorkflowRuntime {
     assertPositiveInt("inboxMaxRetained", deps.inboxMaxRetained);
     assertPositiveInt("inboxMaxPayloadBytes", deps.inboxMaxPayloadBytes);
     assertTtlConfig(deps.inboxMessageTtlMs);
+    assertPositiveInt("inboxMaxTopics", deps.inboxMaxTopics);
+    this.inboxTopicStreamsFlag = deps.inboxTopicStreams === true && this.inboxEnabled;
+    this.inboxMaxTopics = deps.inboxMaxTopics ?? DEFAULT_INBOX_MAX_TOPICS;
     this.inboxTtl = deps.inboxMessageTtlMs;
     assertMeterCeilings(deps.meterCeilings);
     this.meterCeilings = deps.meterCeilings === undefined ? undefined : { ...deps.meterCeilings };
@@ -2593,6 +2626,7 @@ export class WorkflowRuntime {
     if (restoredFirst === undefined && successorShapeOf(preloadedState.executionId) !== "none") {
       throw new ReservedSuccessorIdError(preloadedState.executionId);
     }
+    if (restoredFirst === undefined) this.assertNotInboxStreamShaped(preloadedState.executionId);
     // The durable fold as it exists BEFORE this restore (snapshot + tail of the existing log): it
     // predates the caller's state, so it is what the log says about the running totals, the inbox
     // cursors and the start time (which feeds the chain deadline).
@@ -3639,20 +3673,28 @@ export class WorkflowRuntime {
         ? message.messageId
         : ulid();
     const chainId = head.chainId;
-    await this.assertInboxHasRoom(head.id, chainId);
-    const inboxSeq = await appendInboxMessage(
-      this.eventStore,
-      chainId,
-      {
-        topic: message.topic,
-        messageId,
-        payload: message.payload ?? null,
-        sender: ownerOfChain(options?.principal) ?? {},
-      },
-      // With a TTL on, the envelope is stamped on the STORE's clock when it has one (every node of a
-      // fleet then ages a message on one clock); off, or on a single-process store, the runtime clock.
-      this.inboxTtlOn ? () => this.ttlClock() : this.now
-    );
+    // ADR 0110 D10b — write the topic's own stream only when this node may AND the fleet has opted in.
+    const perTopic = await this.perTopicWriter();
+    await this.assertInboxHasRoom(head.id, chainId, perTopic ? message.topic : undefined);
+    if (perTopic) await this.ensureTopicRegistered(head.id, chainId, message.topic);
+    // With a TTL on, the envelope is stamped on the STORE's clock when it has one (every node of a
+    // fleet then ages a message on one clock); off, or on a single-process store, the runtime clock.
+    const stampClock = this.inboxTtlOn ? () => this.ttlClock() : this.now;
+    const stored = {
+      topic: message.topic,
+      messageId,
+      payload: message.payload ?? null,
+      sender: ownerOfChain(options?.principal) ?? {},
+    };
+    const inboxSeq = await appendInboxMessage(this.eventStore, chainId, stored, stampClock, perTopic);
+    if (!perTopic && this.inboxTopicStreamsFlag && (await this.fleetSwitched())) {
+      // The fleet switched while this send was in flight: it may have written the legacy stream after
+      // a consumer moved on into the topic's own stream, where the legacy copy sits BELOW its cursor
+      // and would be skipped. Write the topic-stream copy too; the owner's dedupe window delivers
+      // whichever it reaches first once.
+      await this.ensureTopicRegistered(head.id, chainId, message.topic);
+      await appendInboxMessage(this.eventStore, chainId, stored, stampClock, true);
+    }
     // The wake decision is made from a read taken AFTER the append (ADR 0110 D5, the lost-wakeup
     // protocol). The owner parks durably and THEN re-reads the stream; this sender appends and THEN
     // reads the owner. Whichever order they interleave in, one of them sees the other: if the
@@ -3835,7 +3877,11 @@ export class WorkflowRuntime {
     const chainId = chainIdOf(state, head.id);
     const cursor = cursorFor(cursorsOf(state.variables), topic);
     if (through <= cursor) return { executionId: head.id, topic, skipped: 0, cursor };
-    const streamHead = await headOf(this.eventStore, inboxStreamId(chainId));
+    // ADR 0110 D10b: a sequence in the topic range names the topic's OWN stream, below it the legacy one.
+    const streamHead = await headOf(
+      this.eventStore,
+      through >= INBOX_TOPIC_SEQ_BASE ? inboxTopicStreamId(chainId, topic) : inboxStreamId(chainId)
+    );
     if (streamHead === null || through > streamHead) {
       refuse(
         "invalid",
@@ -3984,6 +4030,7 @@ export class WorkflowRuntime {
       now,
       ttlOf: (topic) => ttlOfTopic(this.inboxTtl, topic),
       maxExpired: INBOX_EXPIRY_BATCH,
+      topics: await readRegisteredTopics(this.eventStore, chainId),
     });
     // Something this chain's TTL still has to do: a message to expire now, or one to expire later.
     const pending = scan.expired.length > 0 || scan.nextAt !== undefined || scan.more;
@@ -4270,6 +4317,79 @@ export class WorkflowRuntime {
     );
   }
 
+  /** Has the fleet switched to per-topic writing? Sticky once seen (the switch is one-way). */
+  private async fleetSwitched(): Promise<boolean> {
+    if (this.inboxLayoutSeen) return true;
+    if (await inboxLayoutActive(this.eventStore)) this.inboxLayoutSeen = true;
+    return this.inboxLayoutSeen;
+  }
+
+  /**
+   * ADR 0110 D10b — does THIS send write the topic's own stream? Only when the node opted in
+   * (`inboxTopicStreams`) AND the fleet did (the durable switch). A node with the flag off never
+   * reads the switch: it writes the legacy stream, exactly as before.
+   */
+  private async perTopicWriter(): Promise<boolean> {
+    return this.inboxTopicStreamsFlag && (await this.fleetSwitched());
+  }
+
+  /** Register `topic` in the chain's registry before its first message (refusing past `inboxMaxTopics`). */
+  private async ensureTopicRegistered(
+    executionId: string,
+    chainId: string,
+    topic: string
+  ): Promise<void> {
+    const known = this.inboxKnownTopics.get(chainId);
+    if (known?.has(topic) === true) return;
+    const r = await registerInboxTopic(
+      this.eventStore,
+      chainId,
+      topic,
+      this.inboxMaxTopics,
+      this.now
+    );
+    if (r === "full") {
+      throw new InboxMessageRefusedError(
+        executionId,
+        `the chain already has ${this.inboxMaxTopics} topics with a stream (inbox.maxTopics); "${topic}" would be one more`
+      );
+    }
+    if (known !== undefined) known.add(topic);
+    else rememberBounded(this.inboxKnownTopics, chainId, new Set([topic]));
+  }
+
+  /**
+   * ADR 0110 amendment, D10b — the FLEET opt-in to per-topic inbox streams. Writes the durable switch
+   * once (idempotent; returns whether this call wrote it); from then on every node with
+   * `inboxTopicStreams` writes the topic's own stream. Run it ONLY after every node runs a build that
+   * reads topic streams and has `inboxTopicStreams` on (see the ADR's operator procedure): a node
+   * that still writes the legacy stream after consumers moved on would have its message skipped, and
+   * a build older than D10 cannot read a topic stream at all. The switch is one-way and a no-op
+   * unless `kernel.features.inboxTopicStreams` is on for this node. Needs a principal (an operator
+   * action; recorded in the entry).
+   */
+  async enableInboxTopicStreams(options: {
+    principal: PrincipalChain;
+  }): Promise<{ enabled: true; newlyEnabled: boolean }> {
+    if (!this.inboxTopicStreamsFlag) {
+      throw new Error(
+        "runtime.enableInboxTopicStreams needs kernel.features.inboxTopicStreams (and the inbox) on this node: enable it on every node first (ADR 0110 D10b)"
+      );
+    }
+    if (options.principal === undefined) {
+      throw new Error(
+        "runtime.enableInboxTopicStreams is an operator action and needs an authenticated principal"
+      );
+    }
+    const newlyEnabled = await activateInboxLayout(
+      this.eventStore,
+      this.now,
+      ownerOfChain(options.principal) ?? {}
+    );
+    this.inboxLayoutSeen = true;
+    return { enabled: true, newlyEnabled };
+  }
+
   /**
    * ADR 0110 D1 — backpressure, O(1) on the hot path. The stream's head minus the highest sequence
    * known consumed-and-trimmed (`inboxFloors`) bounds the backlog from above; only when that bound
@@ -4279,12 +4399,22 @@ export class WorkflowRuntime {
    * one scan per interval, not a fold of the owner and a scan of the backlog per send. The price is
    * that a send right after the owner drains may be refused for up to that interval.
    */
-  private async assertInboxHasRoom(executionId: string, chainId: string): Promise<void> {
-    const head = await headOf(this.eventStore, inboxStreamId(chainId));
+  private async assertInboxHasRoom(
+    executionId: string,
+    chainId: string,
+    /** ADR 0110 D10b: judge THIS topic's own stream (per-topic bounds), not the legacy one. */
+    topic?: string
+  ): Promise<void> {
+    const stream =
+      topic === undefined ? inboxStreamId(chainId) : inboxTopicStreamId(chainId, topic);
+    // Every per-stream hint is keyed by the stream id; the legacy stream keeps its chain id.
+    const key = topic === undefined ? chainId : stream;
+    const head = await headOf(this.eventStore, stream);
     if (head === null) return;
-    const floor = this.inboxFloors.get(chainId) ?? -1;
+    const floor =
+      this.inboxFloors.get(key) ?? (topic === undefined ? -1 : INBOX_TOPIC_SEQ_BASE - 1);
     if (head - floor < this.inboxMaxBacklog) return;
-    const full = this.inboxFull.get(chainId);
+    const full = this.inboxFull.get(key);
     if (full !== undefined && full.head === head && this.now() < full.until) {
       throw this.inboxFullError(executionId, full);
     }
@@ -4292,7 +4422,7 @@ export class WorkflowRuntime {
     // every later count from above (each send adds one, a consume only subtracts), so a chain whose
     // backlog is far below the cap rescans once per (cap - backlog) sends, not once per send. The
     // retained-entries cap is judged against the same floor, which a scan has just advanced.
-    const counted = this.inboxCounted.get(chainId);
+    const counted = this.inboxCounted.get(key);
     if (
       counted !== undefined &&
       head >= counted.head &&
@@ -4300,7 +4430,7 @@ export class WorkflowRuntime {
       head - floor < this.inboxMaxRetained &&
       // Past half the retained cap, a chain that has not yet been warned about its pin takes the
       // scan (below), which names the pinning message; once warned it is cheap again.
-      (head - floor < this.inboxMaxRetained / 2 || this.inboxWarned.has(chainId))
+      (head - floor < this.inboxMaxRetained / 2 || this.inboxWarned.has(key))
     ) {
       return;
     }
@@ -4308,28 +4438,29 @@ export class WorkflowRuntime {
     const exact = await scanInbox(this.eventStore, chainId, cursorsOf(state?.variables ?? {}), {
       from: floor + 1,
       limit: this.inboxMaxBacklog,
+      ...(topic !== undefined && { stream }),
     });
     const refuse = (hint: { unconsumed: number; pinnedAt?: number }): never => {
       const entry = { head, until: this.now() + INBOX_FULL_TTL_MS, ...hint };
-      rememberBounded(this.inboxFull, chainId, entry);
+      rememberBounded(this.inboxFull, key, entry);
       throw this.inboxFullError(executionId, entry);
     };
     if (exact.unconsumed >= this.inboxMaxBacklog) refuse({ unconsumed: exact.unconsumed });
-    this.inboxFull.delete(chainId);
+    this.inboxFull.delete(key);
     const newFloor = (exact.oldest ?? head + 1) - 1;
-    rememberBounded(this.inboxFloors, chainId, newFloor);
-    rememberBounded(this.inboxCounted, chainId, { head, unconsumed: exact.unconsumed });
+    rememberBounded(this.inboxFloors, key, newFloor);
+    rememberBounded(this.inboxCounted, key, { head, unconsumed: exact.unconsumed });
     // A stream retaining half its cap above one unconsumed message is being pinned (a cold topic
     // beside a hot one): say so ONCE, naming it, long before `send` starts refusing (ADR 0110 D1).
     if (head - newFloor >= this.inboxMaxRetained / 2 && exact.oldest !== undefined) {
-      if (this.inboxWarned.get(chainId) !== exact.oldest) {
-        rememberBounded(this.inboxWarned, chainId, exact.oldest);
+      if (this.inboxWarned.get(key) !== exact.oldest) {
+        rememberBounded(this.inboxWarned, key, exact.oldest);
         this.onWarn(
           `inbox of execution "${executionId}" retains ${head - newFloor} entries (${Math.round(((head - newFloor) / this.inboxMaxRetained) * 100)}% of inboxMaxRetained=${this.inboxMaxRetained}) above its oldest unconsumed message: topic "${exact.oldestTopic ?? "?"}" at inbox sequence ${exact.oldest}, which nothing consumes and which pins every later entry. Once the cap is reached \`send\` refuses. Consume that topic (a flow that never receives it needs a receive for it), or have an operator release it with runtime.discardInbox (ADR 0110).`
         );
       }
     } else {
-      this.inboxWarned.delete(chainId);
+      this.inboxWarned.delete(key);
     }
     if (head - newFloor >= this.inboxMaxRetained) {
       refuse({
@@ -4364,20 +4495,41 @@ export class WorkflowRuntime {
     if (!this.inboxEnabled || state.variables._inbox === undefined) return;
     const cursors = cursorsOf(state.variables);
     const max = maxCursor(cursors);
-    if (max <= (this.inboxTrimmed.get(chainId) ?? -1) + 1) return;
-    try {
-      const floor = this.inboxFloors.get(chainId) ?? -1;
-      const through = await trimInbox(this.eventStore, chainId, cursors, floor);
-      rememberBounded(this.inboxTrimmed, chainId, through ?? max);
-      if (through !== undefined) {
-        const next = Math.max(floor, through);
-        rememberBounded(this.inboxFloors, chainId, next);
-        // The floor passed the message a pin warning named: that pin is gone, re-arm for the next.
-        const warnedAt = this.inboxWarned.get(chainId);
-        if (warnedAt !== undefined && next >= warnedAt) this.inboxWarned.delete(chainId);
+    if (max > (this.inboxTrimmed.get(chainId) ?? -1) + 1) {
+      try {
+        const floor = this.inboxFloors.get(chainId) ?? -1;
+        const through = await trimInbox(this.eventStore, chainId, cursors, floor);
+        rememberBounded(this.inboxTrimmed, chainId, through ?? max);
+        if (through !== undefined) {
+          const next = Math.max(floor, through);
+          rememberBounded(this.inboxFloors, chainId, next);
+          // The floor passed the message a pin warning named: that pin is gone, re-arm for the next.
+          const warnedAt = this.inboxWarned.get(chainId);
+          if (warnedAt !== undefined && next >= warnedAt) this.inboxWarned.delete(chainId);
+        }
+      } catch (err) {
+        this.onStorageError?.(chainId, err);
       }
-    } catch (err) {
-      this.onStorageError?.(chainId, err);
+    }
+    // ADR 0110 D10b — a topic whose cursor is in the topic range consumes from its OWN stream: trim
+    // it up to the cursor (a single-topic stream has no cold neighbour pinning it).
+    for (const [topic, cursor] of Object.entries(cursors)) {
+      if (typeof cursor !== "number" || cursor < INBOX_TOPIC_SEQ_BASE) continue;
+      const stream = inboxTopicStreamId(chainId, topic);
+      if (cursor <= (this.inboxTrimmed.get(stream) ?? INBOX_TOPIC_SEQ_BASE - 1) + 1) continue;
+      try {
+        const floor = this.inboxFloors.get(stream) ?? INBOX_TOPIC_SEQ_BASE - 1;
+        const through = await trimTopicStream(this.eventStore, stream, cursor, floor);
+        rememberBounded(this.inboxTrimmed, stream, through ?? cursor);
+        if (through !== undefined) {
+          const next = Math.max(floor, through);
+          rememberBounded(this.inboxFloors, stream, next);
+          const warnedAt = this.inboxWarned.get(stream);
+          if (warnedAt !== undefined && next >= warnedAt) this.inboxWarned.delete(stream);
+        }
+      } catch (err) {
+        this.onStorageError?.(chainId, err);
+      }
     }
   }
 
@@ -4390,15 +4542,22 @@ export class WorkflowRuntime {
    */
   private async retireInbox(chainId: string): Promise<void> {
     if (!this.inboxEnabled) return;
+    let topics: string[] = [];
     try {
+      // The registry names the topic streams: read it before it is deleted, to forget their hints.
+      topics = await readRegisteredTopics(this.eventStore, chainId);
       await deleteInbox(this.eventStore, chainId);
     } catch (err) {
       this.onStorageError?.(chainId, err);
     }
-    this.inboxFloors.delete(chainId);
-    this.inboxTrimmed.delete(chainId);
-    this.inboxFull.delete(chainId);
-    this.inboxCounted.delete(chainId);
+    for (const key of [chainId, ...topics.map((t) => inboxTopicStreamId(chainId, t))]) {
+      this.inboxFloors.delete(key);
+      this.inboxTrimmed.delete(key);
+      this.inboxFull.delete(key);
+      this.inboxCounted.delete(key);
+      this.inboxWarned.delete(key);
+    }
+    this.inboxKnownTopics.delete(chainId);
   }
 
   /**
@@ -4412,10 +4571,10 @@ export class WorkflowRuntime {
   private async reopenInbox(executionId: string, state: ExecutionState): Promise<void> {
     if (!this.inboxEnabled) return;
     if (state.status !== "completed" && state.status !== "failed") return;
-    const floor = maxCursor(cursorsOf(state.variables));
-    if (floor < 0) return;
+    const cursors = cursorsOf(state.variables);
+    if (Object.keys(cursors).length === 0) return;
     try {
-      await ensureInboxFloor(this.eventStore, chainIdOf(state, executionId), floor, this.now);
+      await seedInboxFloors(this.eventStore, chainIdOf(state, executionId), cursors, this.now);
     } catch (err) {
       this.onStorageError?.(executionId, err);
     }
@@ -4429,9 +4588,12 @@ export class WorkflowRuntime {
    */
   async reclaimInbox(streamId: string): Promise<boolean> {
     if (!this.inboxEnabled || !streamId.startsWith(INBOX_STREAM_PREFIX)) return false;
-    const chainId = streamId.slice(INBOX_STREAM_PREFIX.length);
+    // Any of the chain's streams (legacy, a topic's, the registry) names the chain (ADR 0110 D10b).
+    const chainId = inboxChainOf(streamId);
+    if (chainId === undefined) return false;
     try {
       const head = await this.sendTarget(chainId);
+
       if (
         head === null ||
         head.chainId !== chainId ||
@@ -5396,9 +5558,10 @@ export class WorkflowRuntime {
     // it can never land at a sequence the cursors already passed (it would be skipped forever and
     // trimmed). Replay of the copied prefix is untouched: the cursors stay what the fold computed.
     if (this.inboxEnabled) {
-      const inherited = maxCursor(cursorsOf(forkState.variables));
-      if (inherited >= 0) {
-        await ensureInboxFloor(this.eventStore, chainIdOf(forkState, childId), inherited, this.now);
+      // (ADR 0110 D10b: the legacy stream at the highest legacy cursor, each topic stream at its own.)
+      const inherited = cursorsOf(forkState.variables);
+      if (Object.keys(inherited).length > 0) {
+        await seedInboxFloors(this.eventStore, chainIdOf(forkState, childId), inherited, this.now);
       }
     }
 
@@ -5642,6 +5805,19 @@ export class WorkflowRuntime {
   }
 
   /**
+   * ADR 0110 D10b — a caller-chosen id ending `#<16 hex digits>` or `#reg` would, as a chain id, alias
+   * a topic or registry stream of ANOTHER chain (`__loom_inbox__:<x>#<hash>`): refused once the inbox
+   * is on, as the `<x>~<digits>` successor shape is. A minted ulid cannot have it.
+   */
+  private assertNotInboxStreamShaped(executionId: string): void {
+    if (this.inboxEnabled && hasInboxStreamShape(executionId)) {
+      throw new Error(
+        `executionId "${executionId}" is reserved: with the inbox on, an id ending in "#" plus 16 hex digits (or "#reg") would alias a per-topic inbox stream of another chain (ADR 0110 D10b)`
+      );
+    }
+  }
+
+  /**
    * Creation-time id check (ADR 0109 D2 (a)): everything `assertNotReserved` refuses, plus the
    * SUCCESSOR SHAPE (`<x>~<digits>`):
    *  - on the LAST `::` segment (`a~1`, `parent::g#0~1`: the next generation of a chain, derived or
@@ -5654,6 +5830,7 @@ export class WorkflowRuntime {
    */
   private async assertCreatable(executionId: string, trusted = false): Promise<void> {
     assertNotReserved(executionId);
+    this.assertNotInboxStreamShaped(executionId);
     const shape = successorShapeOf(executionId);
     if (shape === "none") return;
     if (shape === "derived" && trusted) {

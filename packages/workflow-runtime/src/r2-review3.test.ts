@@ -80,6 +80,7 @@ describe("P2-1b — an event landing between the notifier's fold and its batch i
       await (
         await h.rt.start(f, {}, { executionId: "e1", ...(fence !== undefined && { fence }) })
       ).waitForSuspend();
+      await h.rt.notifyInbox("e1"); // the owner's own post-park read finishes first (else it finds the append below)
       await appendInboxMessage(h.eventStore, "e1", msg("m"), Date.now);
       armed = true;
       const r = await h.rt.notifyInboxDetailed("e1");
@@ -102,6 +103,7 @@ describe("P2-1b — an event landing between the notifier's fold and its batch i
     const f = recv();
     h.rt.registerFlow(f.definition, f.runner);
     await (await h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
+    await h.rt.notifyInbox("e1"); // the owner's own post-park read finishes first (else it finds the append below)
     await appendInboxMessage(h.eventStore, "e1", msg("m"), Date.now);
     const r = await h.rt.notifyInboxDetailed("e1");
     expect(r.contended).toBe(true);
@@ -121,6 +123,7 @@ describe("P2-1c — rival notifiers on an unfenced park: exactly once, quietly, 
       h.rt.registerFlow(f.definition, f.runner);
       sib.registerFlow(f.definition, f.runner);
       await (await h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
+      await h.rt.notifyInbox("e1"); // the owner's own post-park read finishes first (else it finds the append below)
       await appendInboxMessage(h.eventStore, "e1", msg("m"), Date.now);
       const rs = await Promise.all([
         h.rt.notifyInboxDetailed("e1"),
@@ -153,6 +156,7 @@ describe("P2-1 — a handle is never reported for an append that did not land", 
     const f = recv();
     h.rt.registerFlow(f.definition, f.runner);
     await (await h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
+    await h.rt.notifyInbox("e1"); // the owner's own post-park read finishes first (else it finds the append below)
     await appendInboxMessage(h.eventStore, "e1", msg("m"), Date.now);
     boom = true;
     await expect(h.rt.notifyInboxDetailed("e1")).rejects.toThrow();

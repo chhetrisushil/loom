@@ -147,6 +147,7 @@ describe("R2 D5 — crash at every step of the send / wake protocol", () => {
     const c = crashHarness(dropFrom, opts);
     c.h.rt.registerFlow(f.definition, f.runner);
     await (await c.h.rt.start(f, {}, { executionId: "e1" })).waitForSuspend();
+    await c.h.rt.notifyInbox("e1"); // the owner's own post-park read finishes before a test appends by hand
     const reboot = async () => {
       const rt2 = await c.reboot();
       rt2.registerFlow(f.definition, f.runner);

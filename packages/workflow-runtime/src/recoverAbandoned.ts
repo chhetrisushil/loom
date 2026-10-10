@@ -1,8 +1,8 @@
 import type { EventEnvelope } from "@loom/core";
 import {
   type ExecutionEnumerable,
-  INBOX_STREAM_PREFIX,
   type LeaseStore,
+  inboxChainOf,
   isReservedStream,
   iterateExecutionIds,
   readRangeOf,
@@ -218,6 +218,7 @@ export async function recoverAbandoned(
     throw new Error("recoverAbandoned: `maxRecoveries` must be an integer ≥ 1");
   }
 
+  const expiredChains = new Set<string>();
   for await (const executionId of candidateIds(options)) {
     // A dry run recovers nothing, so `recovered` would never reach the limit and the scan
     // would run to the end of the store. Bound the mode that is actually counting.
@@ -233,7 +234,10 @@ export async function recoverAbandoned(
         // ADR 0110 D10a — the safety net for a lost expiry row (a sender that died between its append
         // and its row): one pass re-arms it. A chain id that maps to no execution (a fork's) is skipped.
         try {
-          const chainId = executionId.slice(INBOX_STREAM_PREFIX.length);
+          // One pass per CHAIN: its legacy, per-topic and registry streams all name it (ADR 0110 D10b).
+          const chainId = inboxChainOf(executionId);
+          if (chainId === undefined || expiredChains.has(chainId)) continue;
+          expiredChains.add(chainId);
           const r = await runtime.expireInbox(chainId);
           if (r.expired > 0) summary.inboxExpired = (summary.inboxExpired ?? 0) + r.expired;
         } catch (err) {

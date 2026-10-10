@@ -75,6 +75,7 @@ describe("ADR 0109 D4 — head resolution", () => {
     await parked(h, "c~5");
     // a resume by the first id reaches the head too
     await h.rt.send("c", { topic: "go", payload: "y", messageId: "y1" });
+    await until(async () => (await h.rt.followToHead("c"))?.executionId === "c~6");
     expect(await h.rt.followToHead("c")).toMatchObject({ executionId: "c~6" });
   });
 

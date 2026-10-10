@@ -553,7 +553,7 @@ and, with `LOOM_TEST_POSTGRES_URL`, on Postgres.
 
 ## Amendment 2026-10-11 — erasure into the stream, an operator discard, and the per-topic design
 
-- Status: **Accepted** (D8, D9, **D10a implemented**); **D10b (per-topic streams) is a design only** (not implemented in this section, see why below).
+- Status: **Accepted** (D8, D9, **D10a and D10b implemented**).
 - Closes the logged follow-ups of the 2026-10-07 "Residuals" and "Pinned-stream DoS" bullets.
 - **Wire and ABI: nothing changes.** `EVENT_SCHEMA` stays 1.23.0, `KERNEL_ABI` stays 1.3.0, the `EventStore` SPI is
   untouched, no fold handler changes, no syscall is added. `ExecutionOp` gains one additive member (`"discard"`),
@@ -703,16 +703,14 @@ The 2026-10-07 residual: erasure reached `MESSAGE_CONSUMED` in the owner's log b
   stream yourself; there is no re-seal API, and the coordinator does not delete a PARKED owner's stream (the
   owner still reads it). The opt-in does not change this.
 
-### D10 — per-topic streams with an optional journaled TTL (D10a implemented; D10b a design, not built)
+### D10 — per-topic streams with an optional journaled TTL (D10a and D10b implemented)
 
-**Not built, and why.** It needs no `EVENT_SCHEMA` or `KERNEL_ABI` change and can keep existing data readable
-(below), so the gate is not the ABI. It is not built here because it rewrites the stream layout across at least
-ten sites in four packages (the sender's allocation, the default `InboxSource`, the notify scan, the trim, the
-backlog accounting, the reclaim sweep and the delete-with-chain, fork and re-open floor seeding, the
-`@loom/conversation` `inboxBargeIn` subscription, the erasure purge of D9, the load test and the bench) and adds a
-reserved-id rule and a fleet flag; that wants its own review round, and D8 already closes the *operational* hole
-(an operator can release a pin) while D10 only removes the *need* to. Recommended order when a workload asks:
-D10a first (cheap, no layout change), D10b only if hot/cold traffic is routine rather than exceptional.
+**Why it was deferred first, and what was built.** It needs no `EVENT_SCHEMA` or `KERNEL_ABI` change and keeps existing data
+readable, so the gate was never the ABI: it rewrites the stream layout across ten sites in four packages (the sender's
+allocation, the default `InboxSource`, the notify scan, the trim, the backlog accounting, the reclaim sweep and the
+delete-with-chain, fork and re-open floor seeding, `@loom/conversation`'s `inboxBargeIn`, the erasure purge of D9) and adds a
+reserved-id rule and a fleet switch, which wanted its own review round. D8 closes the *operational* hole (an operator can
+release a pin); D10a (TTL, no layout change) was built first and D10b (per-topic streams) on request. Both are below.
 
 **D10a — journaled TTL expiry on today's layout.** `kernel.inbox.messageTtlMs` (off by default). A sweep
 (`recoverAbandoned`, already enumerating reserved streams) finds a chain whose stream is *pinned* (retained
@@ -807,35 +805,80 @@ once it parks; a pass is bounded (1 024, then the rest); only a topic with a TTL
 `inboxConfig.test.ts` (app): the setting reaches the runtime. Each was revert-checked (no stale-batch guard, no
 journaling, no `TimerService` branch, a default TTL when unset).
 
-**D10b — per-topic streams.** Layout: `__loom_inbox__:<chainId>#<h>` with `h` the first 16 hex chars of
-`sha256(topic)`; the legacy `__loom_inbox__:<chainId>` stream stays and is read first.
+**D10b — per-topic streams: implemented (as built; the design bullets that follow it in the sketch were revised, see "What changed from the sketch").**
+`kernel.features.inboxTopicStreams` (default **off**) and `kernel.inbox.maxTopics` (default 64). **Wire and ABI: nothing
+changes** (`EVENT_SCHEMA` 1.23.0, `KERNEL_ABI` 1.3.0, no fold handler, no `EventStore` method): the cursors are still one
+`Record<topic, number>`, `MESSAGE_CONSUMED` is unchanged, and existing logs replay byte-identically (a per-topic run and a
+legacy run fold to the same event kinds and output, tested).
 
-- **One cursor space, no fold change.** Today `cursors[topic]` is a sequence in the chain's single stream. A topic
-  stream is seeded (`ensureInboxFloor`, the fork mechanism) at the legacy stream's head at its first send, so
-  its sequences start above every legacy one; the folded cursor stays one monotone number that is valid in
-  either stream. A topic's reader drains the legacy messages of that topic past its cursor, then the topic
-  stream. Existing data is read where it lies; nothing is copied or rewritten.
-- **Per-topic bounds.** `inboxMaxBacklog` and `inboxMaxRetained` apply per topic stream, so the pin and
-  `InboxFullError` are per topic (the hot topic is never refused for the cold one's sake), and trim reads one
-  cursor per stream instead of the minimum across topics. Topic cardinality becomes a resource: a new
-  `inboxMaxTopics` (default 64) per chain, counted from a registry entry (below), refuses the 65th topic.
-- **Enumeration.** Streams are found by name only through the optional `listExecutionsPage`, so the chain keeps
-  a registry: the first send of a topic appends an `INBOX_TOPIC` marker (not a message, never delivered) to the legacy
-  stream, and the owner's cursors name every topic it ever consumed. Retirement deletes the legacy
-  stream, every registered topic stream and (as the sweep's catch-all) any `#`-suffixed stream whose chain is
-  terminal.
-- **Reserved ids.** A caller-chosen execution id ending in `#` plus 16 hex digits would alias a topic stream of
-  another chain, so it is refused at `start` (as the `<x>~<digits>` successor shape already is).
-- **Continue-as-new, fork, re-open.** Cursors (one space) and the dedupe window carry unchanged, so a
-  continuation needs nothing. A fork and a re-open seed each topic stream's floor from the inherited cursor, as
-  they seed the legacy stream today.
-- **Timers.** The due-now row is per execution and unchanged; the notify scan reads only the streams of the
-  topics the park waits on, so it gets cheaper, not different.
-- **Rolling upgrade.** A pre-D10 node writes only the legacy stream, so a fleet flag
-  (`kernel.features.inboxTopicStreams`, off until every node reads topic streams) gates the writer; readers
-  always read both.
-- **Erasure.** D9's purge and its subject mapping take the topic stream's chain from the part before `#`; the
-  registry makes the purge enumerable.
+- **Layout.** A chain's inbox may hold, beside the legacy stream `__loom_inbox__:<chainId>`: one stream per topic,
+  `__loom_inbox__:<chainId>#<h>` (`h` = first 16 hex digits of `sha256(topic)`), and a registry
+  `__loom_inbox__:<chainId>#reg`. The naming lives in `@loom/event-runtime` (`inboxTopicStreamId`,
+  `inboxRegistryStreamId`, `inboxChainOf` — which now maps all three to the chain — and `inboxStreamsOfChain`), so the
+  runtime, the compliance purge and the crypto decorator share one rule.
+- **One cursor space, disjoint ranges (what makes it lossless).** A topic stream's sequences start at
+  `INBOX_TOPIC_SEQ_BASE` = 2^40, far above any legacy-stream sequence. The folded cursor stays one number valid in
+  either stream; a topic's reader (the default `InboxSource`) reads the topic's own stream FIRST and then the legacy
+  stream, and returns the legacy messages (all below the base) before the topic's. The sketch seeded each topic stream
+  at the legacy head instead; that makes a legacy message appended LATER (a straggling writer) collide with, or land
+  below the cursor of, a topic-stream message and be skipped forever. Disjoint ranges cannot collide. The reads are
+  ordered topic-then-legacy because a topic-stream message is written only after every legacy message that precedes
+  it is durable: reading the later stream first can never miss an earlier legacy message. A cursor already in the topic
+  range skips the legacy read. Nothing is copied or rewritten; legacy data is read where it lies.
+- **Per-topic bounds.** `send` judges the topic's own stream: `inboxMaxBacklog` and `inboxMaxRetained` apply per
+  topic, the full verdict, counts, floors and pin warning are keyed by the stream, and `InboxFullError` is per topic (a
+  hot topic is never refused for a cold one). Trim is per stream: a topic whose cursor is in the topic range deletes its
+  stream's consumed prefix up to the cursor (a single-topic stream has no cold neighbour to pin it).
+- **Topic cap and registry.** The first send of a topic appends an `INBOX_TOPIC` entry to the chain's registry BEFORE its
+  first message, so every stream with a message is enumerable without `listExecutionsPage`; the topic past `inboxMaxTopics` (the 65th by default) is refused with `InboxMessageRefusedError`, a known topic never is. The sketch put the marker
+  in the legacy stream; the legacy stream is trimmed from the front, so a marker there would be trimmed away. A separate
+  registry stream is never trimmed and bounded by the cap. It carries topic NAMES (already present, unsealed, in every
+  message and cursor).
+- **Reserved ids.** A caller-chosen id that ends `#<16 hex digits>` or `#reg` would alias a topic or registry stream of
+  another chain; it is refused at `start` (and at a restore onto a missing log) whenever the inbox is on, as the
+  `<x>~<digits>` successor shape is. **Residual:** an id of that shape that already exists keeps working for the
+  runtime but its legacy stream is read as a topic stream by `inboxChainOf` (the crypto subject mapping and the sweep);
+  rename such a chain before turning per-topic on (it is vanishingly rare: 16 hex digits after a `#`).
+- **Continue-as-new, fork, re-open.** Cursors and the dedupe window carry unchanged in the one cursor space, and the
+  chain id keys every stream, so a continuation needs nothing (tested: cursors carry across rotations and read on from
+  the topic's stream). A fork and a re-open seed from the inherited cursors (`seedInboxFloors`): the legacy stream at the
+  highest legacy-range cursor (as before) and each topic whose cursor is in the topic range at that cursor, registering
+  the topic, so a send lands above the cursor and is neither skipped nor trimmed.
+- **Timers.** The due-now row is per execution and unchanged; the notify scan asks the source only for the topics the
+  park waits on, so it reads those streams and no others.
+- **Erasure (D9).** The crypto decorator maps a topic stream and the registry to the chain's OWNER subject through
+  `inboxChainOf` (a topic stream is sealed and shredded under the same key; its read never throws), and the compliance
+  purge deletes EVERY stream of each finished chain: the topic streams, the legacy stream and the registry LAST (a crash
+  midway leaves the rest findable), the registry read BEFORE the shred. Retirement (`retireInbox`), the lifecycle delete
+  and the orphan sweep (`reclaimInbox`, any stream of the chain names it) do the same.
+- **D8 discard and D10a TTL.** `discardInbox` takes `throughSeq` in either range (the bound is the head of the stream the
+  sequence names, so a topic-range sequence is judged against the topic's stream); the TTL pass also scans each
+  registered topic's stream that has a TTL (the legacy stream first, so the per-topic prefix rule holds).
+- **`@loom/conversation`.** `inboxBargeIn` subscribes to the legacy stream AND the conversation topic's own stream, and
+  `pendingMessages` compares the owner's cursor with the higher of the two heads (tested: a new turn still interrupts, and
+  a message already waiting in the topic's stream is found by a late subscriber).
+- **Rolling upgrade: a node writes per-topic only once the FLEET opted in.** Two steps, both durable:
+  (1) the per-node flag `inboxTopicStreams` (this node reads AND is allowed to write topic streams); (2) a one-way,
+  fleet-wide switch, `runtime.enableInboxTopicStreams({ principal })`, which appends one `INBOX_LAYOUT` entry to the
+  reserved stream `__loom_inbox_layout__`. A send writes the topic's own stream iff its node has the flag AND the switch
+  exists (a point read per send until the switch is seen, then cached: it never goes away). Before the switch every node
+  writes the legacy stream exactly as before, flag or not. **Operator procedure:** (a) deploy a D10 build to EVERY node
+  (readers always read both layouts; a pre-D10 node cannot read a topic stream, so a chain whose owner runs there would
+  stall); (b) turn `inboxTopicStreams` on for EVERY node (nothing changes yet); (c) call `enableInboxTopicStreams` once;
+  never run (c) while a node without the flag exists, and never turn the flag off afterwards (such a node would keep
+  writing the legacy stream below consumers' cursors, and its messages could be skipped). **A send that straddles the
+  switch is safe:** a flag-on node that read "no switch", wrote the legacy stream and then finds the switch writes the
+  message's topic-stream copy too; the owner's dedupe window (sender + `messageId`) delivers whichever it reaches first
+  exactly once (tested with a send paused between its switch read and its legacy append while another node switches,
+  writes and the owner consumes from the topic stream). The cost on every node: one extra point read per message read (the
+  topic stream's head) and, until the switch is seen, one per send.
+- **Not done, deliberately.** A node with the flag OFF does not check the switch (it must be byte-identical), so it cannot
+  fail closed after the switch: the procedure above is the guard. The registry is never compacted (64 entries at most).
+
+**What changed from the sketch.** (1) Disjoint sequence ranges instead of seeding at the legacy head (stragglers, above).
+(2) A separate registry stream instead of a marker in the legacy stream (trim). (3) The fleet opt-in is a durable switch plus
+a per-node flag, not a per-node flag alone, with a dual-write for a send that straddles the switch. (4) No `EVENT_SCHEMA`,
+ABI or fold change was needed, as the sketch predicted.
 
 ### Tests (this amendment)
 
@@ -853,4 +896,20 @@ idempotent; one answer entry however many discards; a running owner refused with
 bounds refused and the next message not swallowed; a finished owner is `InboxClosedError`; closed by default, opened
 per tenant, the operator recorded, existence not an oracle; a discard racing a live delivery lands on retry. `r2-discardRace.test.ts` (memory, SQLite, Postgres, fenced and unfenced park): a notifier paused after its scan loses to a discard (the discarded message is never delivered, the reported count is accurate, no consumption below the cursor is ever recorded as an answer); a discarded `messageId` resent is a duplicate. `r2-discard.test.ts` also pins the principal-less refusal. `r2-erasure.test.ts` adds the sealed consumed copy, a mixed plaintext/sealed log, the unforgeable marker and a shredded parked owner (resume and `loadState` typed `PayloadShreddedError`, `cancel` still terminal, on memory, SQLite and Postgres); `eraseSubject.test.ts` the opt-in `parked: "shred"` (cancel-then-shred order, deferral on a failed cancel); `inboxStream.test.ts` the marker scoped to `MESSAGE_CONSUMED.payload`, the unresolved-owner failure and the refused `""` subject. A wire
 vector pins the fold. Each was revert-checked: undoing the change fails the test that names it, and restoring it passes.
+
+**Tests (D10b).** `r2-topicStreams.test.ts` (memory, SQLite, Postgres): a cold topic beside a hot one no longer pins it
+(and the single-stream control still does); the backlog bound is per topic; legacy data written before the switch is
+read first and in order after it, and nothing is copied; a mixed fleet (flag on and off) loses and doubles nothing; a send
+paused across the switch is neither lost nor doubled; flag off and flag on before the switch are byte-identical to
+each other (stream, log kinds, cursors from 0) and the switch needs the flag; the reserved-id rule; the topic cap;
+continue-as-new carries the per-topic cursors; a fork and a re-open land above them; a discard works through a
+topic-range sequence; TTL expiry works per topic stream; the sweep reclaims a finished chain's orphan topic stream and
+its registry; a per-topic run folds to the same shape as a legacy run. Plus `inboxStreams.test.ts` (event-runtime: the
+naming, the chain mapping, the reserved shape, `inboxStreamsOfChain`), `eraseSubject.test.ts` (every stream purged,
+registry last, topic streams first, registry read before the shred), `inboxStream.test.ts` (crypto: a topic stream seals
+under the owner and reads as the marker after a shred), `bargeIn.test.ts` (conversation) and `inboxConfig.test.ts`
+(app). Each was revert-checked. **Existing tests changed:** four owner-then-append-by-hand tests (`r2-protocol`,
+`r2-review3`) and one chain test (`r1b-chain`) raced the owner's own post-park read by microtask luck; the reader's one
+extra await (the topic stream's head) moved the interleaving, so they now wait for that read (`notifyInbox`) or for the
+head they assert.
 

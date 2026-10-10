@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { EventEnvelope } from "@loom/core";
 
 export type { EventEnvelope };
@@ -122,15 +123,104 @@ export function chainIdOfFirst(first: EventEnvelope, executionId: string): strin
 }
 
 /**
+ * ADR 0110 amendment, D10b — per-topic inbox streams. A chain's inbox may hold one stream per topic,
+ * beside the legacy single stream:
+ *
+ *  - `__loom_inbox__:<chainId>#<16 hex>` — the messages of ONE topic (the first 16 hex digits of the
+ *    SHA-256 of the topic name);
+ *  - `__loom_inbox__:<chainId>#reg` — the chain's REGISTRY: one `INBOX_TOPIC` event per topic that
+ *    ever had a stream, so every stream of a chain is enumerable without `listExecutionsPage`.
+ *
+ * The cursors stay ONE number space (the fold is unchanged): a topic stream's sequences start at
+ * {@link INBOX_TOPIC_SEQ_BASE}, far above any legacy-stream sequence, so a legacy message of a topic
+ * (below the base) always precedes its topic-stream messages and the two can never collide.
+ */
+export const INBOX_TOPIC_SEQ_BASE = 2 ** 40;
+
+/** The suffix of a chain's registry stream (see {@link INBOX_TOPIC_SEQ_BASE}). */
+export const INBOX_REGISTRY_SUFFIX = "#reg";
+
+/**
+ * The control stream whose existence is the FLEET-WIDE opt-in to per-topic writing (ADR 0110 D10b):
+ * one `INBOX_LAYOUT` event, written once by `runtime.enableInboxTopicStreams`. Reserved by prefix.
+ */
+export const INBOX_LAYOUT_STREAM = "__loom_inbox_layout__";
+
+const TOPIC_STREAM_SUFFIX = /#[0-9a-f]{16}$/;
+
+/** The 16-hex-digit stream suffix of `topic` (first 8 bytes of its SHA-256). */
+export function inboxTopicHash(topic: string): string {
+  return createHash("sha256").update(topic).digest("hex").slice(0, 16);
+}
+
+/** The reserved stream holding `topic`'s messages for `chainId` (see {@link INBOX_TOPIC_SEQ_BASE}). */
+export function inboxTopicStreamId(chainId: string, topic: string): string {
+  return `${INBOX_STREAM_PREFIX}${chainId}#${inboxTopicHash(topic)}`;
+}
+
+/** The chain's registry stream (see {@link INBOX_TOPIC_SEQ_BASE}). */
+export function inboxRegistryStreamId(chainId: string): string {
+  return `${INBOX_STREAM_PREFIX}${chainId}${INBOX_REGISTRY_SUFFIX}`;
+}
+
+/**
+ * Would an id, taken as a CHAIN id, alias a topic or registry stream of another chain
+ * (`<x>#<16 hex>` or `<x>#reg`)? Such an id is refused at `start` once the inbox is on.
+ */
+export function hasInboxStreamShape(id: string): boolean {
+  return id.endsWith(INBOX_REGISTRY_SUFFIX) || TOPIC_STREAM_SUFFIX.test(id);
+}
+
+/**
  * The chain id an inbox stream belongs to, or `undefined` when `executionId` is not an inbox
  * stream (or names an empty chain). A chain's id is its generation-0 execution id (or a fork's
- * fresh one), so a decorator that maps executions to erasure subjects can map the chain's stream
- * to the same subject as its owner.
+ * fresh one), so a decorator that maps executions to erasure subjects can map the chain's streams
+ * (legacy, per-topic and registry alike) to the same subject as its owner.
  */
 export function inboxChainOf(executionId: string): string | undefined {
   if (!executionId.startsWith(INBOX_STREAM_PREFIX)) return undefined;
-  const chain = executionId.slice(INBOX_STREAM_PREFIX.length);
+  let chain = executionId.slice(INBOX_STREAM_PREFIX.length);
+  if (chain.endsWith(INBOX_REGISTRY_SUFFIX)) chain = chain.slice(0, -INBOX_REGISTRY_SUFFIX.length);
+  else if (TOPIC_STREAM_SUFFIX.test(chain)) chain = chain.slice(0, -17);
   return chain.length > 0 ? chain : undefined;
+}
+
+/** The inbox streams of one chain, from {@link inboxStreamsOfChain}. */
+export interface InboxStreams {
+  /** The legacy single stream (always named, whether or not it holds anything). */
+  legacy: string;
+  /** The registry stream, only when it has entries (a chain never written per-topic has none). */
+  registry: string | undefined;
+  /** One stream per registered topic. */
+  topics: string[];
+}
+
+/**
+ * Every inbox stream a chain has on `store`: the legacy stream, the registry (when it exists) and one
+ * stream per registered topic. The registry is bounded by the per-chain topic cap, so this is one small
+ * read. Used by every site that must reach ALL of a chain's streams (retirement, erasure, lifecycle
+ * deletion) without a second copy of the naming rule. Delete `topics`, then `legacy`, then `registry`
+ * LAST: a crash midway then leaves the remaining topic streams still findable.
+ */
+export async function inboxStreamsOfChain(
+  store: Pick<EventStore, "read">,
+  chainId: string
+): Promise<InboxStreams> {
+  const registry = inboxRegistryStreamId(chainId);
+  const entries = await store.read(registry);
+  const topics: string[] = [];
+  const seen = new Set<string>();
+  for (const e of entries) {
+    const topic = (e.payload as { topic?: unknown } | null)?.topic;
+    if (typeof topic !== "string" || seen.has(topic)) continue;
+    seen.add(topic);
+    topics.push(inboxTopicStreamId(chainId, topic));
+  }
+  return {
+    legacy: `${INBOX_STREAM_PREFIX}${chainId}`,
+    registry: entries.length > 0 ? registry : undefined,
+    topics,
+  };
 }
 
 /**

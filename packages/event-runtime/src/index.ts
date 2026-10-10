@@ -1,5 +1,6 @@
 export { TenantScopedEventStore } from "./TenantScopedEventStore";
 export { CoalescingEventStore } from "./CoalescingEventStore";
+export type { InboxStreams } from "./types";
 export type { CoalescingEventStoreOptions } from "./CoalescingEventStore";
 export { ShardedEventStore } from "./ShardedEventStore";
 export type { MigrationResult, ShardedEventStoreOptions } from "./ShardedEventStore";
@@ -29,8 +30,16 @@ export {
   readRangeOf,
   appendBatchOf,
   INBOX_STREAM_PREFIX,
+  INBOX_TOPIC_SEQ_BASE,
+  INBOX_REGISTRY_SUFFIX,
+  INBOX_LAYOUT_STREAM,
   chainIdOfFirst,
+  hasInboxStreamShape,
   inboxChainOf,
+  inboxRegistryStreamId,
+  inboxStreamsOfChain,
+  inboxTopicHash,
+  inboxTopicStreamId,
   isReservedStream,
   iterateExecutionIds,
   RESERVED_STREAM_PREFIX,

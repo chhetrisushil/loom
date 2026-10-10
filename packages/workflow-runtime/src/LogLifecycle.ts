@@ -18,7 +18,7 @@ import {
   planBlankStreamRepair,
   rehomedEnvelope,
 } from "./blankStream";
-import { chainIdOf, inboxStreamId } from "./inbox";
+import { chainIdOf, deleteInbox } from "./inbox";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 import { isWriteConflict } from "./writeConflict";
 
@@ -481,7 +481,7 @@ export class LogLifecycle {
     // head (a continued predecessor is never retained past its successor), so nothing can read
     // `__loom_inbox__:<chainId>` any more. Idempotent; a store without the stream is a no-op.
     if (headState.status !== "continued") {
-      await deleteExecution.call(this.eventStore, inboxStreamId(chainIdOf(headState, executionId)));
+      await deleteInbox(this.eventStore, chainIdOf(headState, executionId));
     }
     await this.snapshotStore.deleteExecution?.(executionId);
     // The fork edge described data that no longer exists. Dropping it here is the only

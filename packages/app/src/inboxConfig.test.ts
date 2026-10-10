@@ -93,3 +93,41 @@ describe("kernel.inbox.messageTtlMs", () => {
     expect(() => mk({ topics: { a: 5_000 } })).toThrow(/at least 60000/);
   });
 });
+
+// ADR 0110 amendment, D10b — `kernel.features.inboxTopicStreams` and `kernel.inbox.maxTopics` reach the runtime.
+describe("kernel.features.inboxTopicStreams", () => {
+  const mk = (topicStreams: boolean | undefined, maxTopics?: number) =>
+    defineConfig({
+      storage: { kind: "memory" },
+      autostart: false,
+      kernel: {
+        features: {
+          inbox: true,
+          ...(topicStreams !== undefined && { inboxTopicStreams: topicStreams }),
+        },
+        ...(maxTopics !== undefined && { inbox: { maxTopics } }),
+      },
+    });
+  const OPS = { actor: "ops", tenant: "t1" };
+
+  it("is off by default: the switch is refused and the node writes the legacy stream", async () => {
+    const app = mk(undefined);
+    await expect(app.runtime.enableInboxTopicStreams({ principal: OPS })).rejects.toThrow(
+      /inboxTopicStreams/
+    );
+    await app.close();
+  });
+
+  it("is honoured: the fleet switch can be written, once", async () => {
+    const app = mk(true, 3);
+    expect(await app.runtime.enableInboxTopicStreams({ principal: OPS })).toEqual({
+      enabled: true,
+      newlyEnabled: true,
+    });
+    await app.close();
+  });
+
+  it("refuses a topic cap that is not a positive integer", () => {
+    expect(() => mk(true, 0)).toThrow(/inboxMaxTopics/);
+  });
+});
