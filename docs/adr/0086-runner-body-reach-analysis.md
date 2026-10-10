@@ -290,6 +290,16 @@ EVENT_SCHEMA and the syscall table are unchanged.
      other use, anywhere in the module, leaves the target unresolved (`s.toolId = "t.y"` after
      `{ toolId: "t.x" }` used to resolve to `t.x`). Reuse (`ctx.run(s, a)` twice, inside a loop) stays
      resolved.
+     An array element is an alias unless the OUTERMOST enclosing array literal (through nested ones,
+     `ctx.parallel([[s, input]])`) is itself directly an argument of a ctx call: `const arr = [s]`,
+     `[s].forEach(…)`, `const [e] = [s]`, `for (const e of [s])` and `mut(...[s])` are escapes. In an
+     object literal a `toolId` / `id` key that appears twice (JS takes the last) or is followed by a
+     spread (`{ toolId: "y", ...s }`) is not authoritative and is unresolved; a spread before the key
+     (`{ ...s, toolId: "y" }`) is fine.
+     **Accepted trust boundary:** a ctx hand-off (`lib(ctx, s)`) is NOT proof the step stays unchanged.
+     The callee is outside the analysis; a callee that rewrites a step it was handed (`lib(ctx, s);
+     await ctx.run(s)` resolving `s` to its declared id) breaks what its own L34 declaration claims.
+     The library-side check is `assertReachMatches` with `passedSteps`, not this analysis.
   8. A step with NO `toolId` dispatches its own id (the runtime resolves `step.toolId ?? step.id`), so
      `step$({ id: SCAN_ID, … })` reaches the effect `SCAN_ID`, with `SCAN_ID` resolved by the constant /
      relative-import rules above. Only for `step$` itself (an unshadowed import from `@loom/core` or

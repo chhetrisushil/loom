@@ -709,8 +709,9 @@ describe("ctx.parallel (L35)", () => {
   it("reports a non-literal list, a spread and an unresolvable pair - never silently empty", () => {
     const r = analyzeRunnerReach(`
       const a = step$({ id: "a", toolId: "tool.a" });
+      const m = step$({ id: "m", toolId: "tool.m" });
       const runner = async (ctx, items) => {
-        await ctx.parallel(items.map((i) => [a, i]));
+        await ctx.parallel(items.map((i) => [m, i]));
         await ctx.parallel([...more]);
         await ctx.parallel([[imported, 1], [a, 2]]);
         await ctx.parallel([somePair]);
@@ -718,7 +719,7 @@ describe("ctx.parallel (L35)", () => {
     `);
     expect(r.steps.map((s) => s.toolId)).toEqual(["tool.a"]);
     expect(r.unresolved.map((u) => u.expr)).toEqual([
-      "parallel(items.map((i) => [a, i]))",
+      "parallel(items.map((i) => [m, i]))",
       "parallel(...more)",
       "imported",
       "parallel branch somePair",
@@ -1253,6 +1254,65 @@ describe("an import and a same-named local elsewhere are ambiguous (L34 re-revie
         expect(r.steps).toEqual([]);
         expect(r.unresolved.length).toBeGreaterThan(0);
       }
+    });
+
+    it.each([
+      ["bound array", 'const arr = [s]; arr[0].toolId = "y";'],
+      ["forEach over a literal", '[s].forEach((e) => { e.toolId = "q"; });'],
+      ["array destructuring", 'const [e] = [s]; e.toolId = "q";'],
+      ["for-of over a literal", 'for (const e of [s]) e.toolId = "q";'],
+      ["spread into a call", "mut(...[s]);"],
+      ["bound tuple list", 'const t = [s, {}]; t[0].toolId = "z";'],
+    ])("array containment that is not a direct ctx argument is an escape: %s", (_n, stmt) => {
+      for (const decl of [literal, factory]) {
+        const r = run(stmt, decl);
+        expect(r.steps).toEqual([]);
+        expect(r.unresolved.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("a nested parallel tuple directly in ctx.parallel still resolves; a bound one does not", () => {
+      const ok = analyzeRunnerReach(`
+        const s = { toolId: "t.x" };
+        export const runner = async (ctx) => { await ctx.parallel([[s, {}], [s, {}]]); };
+      `);
+      expect(ok.unresolved).toEqual([]);
+      expect([...new Set(ok.steps.map((x) => x.toolId))]).toEqual(["t.x"]);
+      const bad = analyzeRunnerReach(`
+        const s = { toolId: "t.x" };
+        export const runner = async (ctx) => { const t = [[s, {}]]; t[0][0].toolId = "z"; await ctx.parallel(t); };
+      `);
+      expect(bad.steps).toEqual([]);
+      expect(bad.unresolved.length).toBeGreaterThan(0);
+    });
+
+    it("a duplicate key is not authoritative (JS takes the last)", () => {
+      const a = analyzeRunnerReach(`
+        const s = step$({ id: "X", id: "Z" });
+        export const runner = async (ctx) => { await ctx.run(s, {}); };
+      `);
+      expect(a.steps).toEqual([]);
+      expect(a.unresolved.length).toBeGreaterThan(0);
+      const b = analyzeRunnerReach(`
+        export const runner = async (ctx) => { await ctx.run({ toolId: "a", toolId: "b" }, {}); };
+      `);
+      expect(b.steps).toEqual([]);
+      expect(b.unresolved.length).toBeGreaterThan(0);
+    });
+
+    it("a spread AFTER the key may override it (unresolved); a spread before is fine", () => {
+      const after = analyzeRunnerReach(`
+        const s = { toolId: "x" };
+        export const runner = async (ctx) => { await ctx.run({ toolId: "y", ...s }, {}); };
+      `);
+      expect(after.steps).toEqual([]);
+      expect(after.unresolved.length).toBeGreaterThan(0);
+      const before = analyzeRunnerReach(`
+        const s = { toolId: "x" };
+        export const runner = async (ctx) => { await ctx.run({ ...s, toolId: "y" }, {}); };
+      `);
+      expect(before.unresolved).toEqual([]);
+      expect(before.steps).toEqual([{ toolId: "y" }]);
     });
 
     it("a mutation in another function still counts (module-wide)", () => {

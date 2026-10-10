@@ -56,7 +56,10 @@ const warnedSchedules = new Set<string>();
 
 /**
  * ADR 0126 D5: the fall-back hour's second pass is skipped by design, so a sub-hourly or hourly
- * expression in a DST zone silently loses it. Say so once per schedule id, at definition time.
+ * expression in a DST zone silently loses it. Say so at definition time. The check is conservative
+ * (any non-fixed minute, or a wildcard / stepped hour, in a zone that observes DST), so it can warn for
+ * a schedule that is unaffected, and it fires once per schedule id per process. `console.warn` because
+ * core has no warning sink.
  */
 function warnHourlyInDstZone(config: { id: string; cron: string; timeZone?: string }): void {
   const { id, cron, timeZone } = config;
@@ -64,7 +67,7 @@ function warnHourlyInDstZone(config: { id: string; cron: string; timeZone?: stri
   if (!firesWithinEveryHour(cron) || !observesDst(timeZone)) return;
   warnedSchedules.add(id);
   console.warn(
-    `[loom] schedule "${id}": cron "${cron}" fires more than once per hour-of-day in "${timeZone}", which observes DST. The repeated fall-back hour runs only its first pass (ADR 0126). Use UTC for fixed-interval schedules.`
+    `[loom] schedule "${id}": cron "${cron}" can fire more than once in a repeated (fall-back) hour in "${timeZone}", which observes DST. A repeated hour runs only its first pass (ADR 0126); this check is conservative and may warn for a schedule that is unaffected. Use UTC for fixed-interval schedules.`
   );
 }
 
