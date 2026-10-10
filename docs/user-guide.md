@@ -2544,6 +2544,32 @@ await catalog.invoke(runtime, "triage", input, { principal: "oncall" }); // deni
 
 ---
 
+### Browser bundles: which packages are browser-safe
+
+The kernel is isomorphic by design (architecture P8), but a few packages import Node built-ins, so a
+bundler (Vite/Rollup) prints `Module "node:..." has been externalized for browser compatibility` when
+they enter a browser bundle. Know which, and why:
+
+- **Browser-safe (no `node:` imports in `src`):** `@loom/core` (pure `sha256Hex`, `canonicalJson`),
+  `@loom/agent`, `@loom/memory`, `@loom/app` (the SQLite stores load lazily on `kind: "sqlite"` only),
+  and the in-memory subpaths `@loom/event-runtime/memory` and `@loom/snapshot-runtime/memory`. Import
+  those subpaths, never the package barrels, which re-export the SQLite stores.
+- **Server-only by nature:** `@loom/plugin-sqlite`, `-postgres`, `-sandbox`, `-worker-server`,
+  `-crypto`, `-audit-chain`, `-content`, `-mcp`, `-a2a` (server half; use `@loom/plugin-a2a/cards` in
+  a browser), `-conversation-sse`, and `@loom/isolate`.
+- **Mixed, carry the warning:** `@loom/workflow-runtime` and `@loom/effect-runtime`. They use
+  `node:crypto` for HMAC and `timingSafeEqual` (signed resume tokens, delegated-grant tokens) and
+  `node:async_hooks` `AsyncLocalStorage` for step/decide scope. These are security- and
+  semantics-critical, so they are deliberately NOT replaced with hand-rolled code: run the durable
+  runtime on the server and keep a browser to rendering and the A2A/SSE wire. A browser that
+  executes flows itself has to alias those built-ins to its own implementations (WebCrypto,
+  an `AsyncLocalStorage` shim) and accepts that responsibility.
+
+The warning is therefore expected when `@loom/workflow-runtime` or `@loom/effect-runtime` is bundled
+for a browser; it is not a defect in the packages that appear browser-safe above.
+
+---
+
 ### See also
 
 - **[Getting Started](getting-started.md)** · **[Usage tutorial](usage.md)** · **[Architecture](architecture.md)** · **[ADRs](adr/)**
