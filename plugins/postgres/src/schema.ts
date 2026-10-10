@@ -187,6 +187,8 @@ async function runMigration(
     await client.query("SELECT set_config('statement_timeout', $1, true)", [
       callerStatementTimeout,
     ]);
+    // ADR 0129 — last, so the hot `events` table is locked for the shortest remaining stretch.
+    await client.query(INCARNATION);
     await client.query("COMMIT");
   } catch (err) {
     // Best-effort rollback; the original error is what the caller needs to see.
@@ -387,10 +389,83 @@ const L10_COLLATION = `
             OR dependent_objects_still_exist OR deadlock_detected THEN
             RAISE WARNING 'loom: events.execution_id is not COLLATE "C" (%: %). Execution-id paging stays correct but cannot use idx_events_exec until you run: ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "C"; ANALYZE events;',
               SQLSTATE, SQLERRM;
+          -- ADR 0129: tell the incarnation step (which runs later in this transaction) that
+          -- the events table could not be locked, so it does not queue behind the same holder again.
+          PERFORM set_config('loom.events_lock_failed', 'on', true);
         END;
       END IF;
     END
     $l10$;
+`;
+
+/**
+ * ADR 0129 — the store-assigned incarnation of an execution, kept in STORE METADATA only (never
+ * in an envelope, so replay stays byte-identical). A nullable `events.incarnation BIGINT`,
+ * filled ONLY for `sequence = 0` rows by a row trigger from a SEQUENCE, so every way a sequence 0
+ * can land (append, appendBatch, appendIfUnchanged, copyPrefix, another process) assigns one. A
+ * sequence never reuses a value after a delete, so a re-created id always gets a larger one.
+ * Logs created before this column existed keep NULL (no backfill): their anchor stays the legacy
+ * `timestamp:id`, and a rollback to an older kernel simply ignores the column.
+ *
+ * Runs LAST in `runMigration` (the hot `events` table is locked for the shortest stretch), under
+ * the migration advisory lock, so two booting nodes cannot interleave. Everything is guarded by
+ * the catalog, so every later boot is a no-op: `ADD COLUMN IF NOT EXISTS` alone would request
+ * ACCESS EXCLUSIVE on `events` on EVERY boot (see the `timers` note in DDL_REST). The one real
+ * ALTER (nullable, no default: metadata only) and the CREATE TRIGGER wait under
+ * `loom.migration_lock_timeout` and FAIL SOFT like L10 (a WARNING, the subtransaction restores
+ * the caller's lock_timeout): the store then reads the anchor without the column (legacy marker)
+ * until a later boot installs it.
+ */
+const INCARNATION = `
+    CREATE SEQUENCE IF NOT EXISTS events_incarnation_seq;
+    DO $incarnation$
+    DECLARE
+      caller_lock_timeout text := current_setting('lock_timeout');
+    BEGIN
+      IF current_setting('loom.events_lock_failed', true) = 'on' THEN
+        RAISE NOTICE 'loom: skipping the ADR 0129 incarnation install, events is locked by another transaction (see the L10 warning)';
+        RETURN;
+      END IF;
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'events'
+            AND column_name = 'incarnation'
+        ) THEN
+          PERFORM set_config(
+            'lock_timeout',
+            COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
+            true
+          );
+          ALTER TABLE events ADD COLUMN IF NOT EXISTS incarnation BIGINT;
+          PERFORM set_config('lock_timeout', caller_lock_timeout, true);
+        END IF;
+        CREATE OR REPLACE FUNCTION events_assign_incarnation() RETURNS trigger AS $fn$
+        BEGIN
+          NEW.incarnation := nextval('events_incarnation_seq');
+          RETURN NEW;
+        END
+        $fn$ LANGUAGE plpgsql;
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_trigger
+          WHERE tgrelid = 'events'::regclass AND tgname = 'trg_events_incarnation'
+        ) THEN
+          PERFORM set_config(
+            'lock_timeout',
+            COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
+            true
+          );
+          CREATE TRIGGER trg_events_incarnation BEFORE INSERT ON events
+            FOR EACH ROW WHEN (NEW.sequence = 0) EXECUTE FUNCTION events_assign_incarnation();
+          PERFORM set_config('lock_timeout', caller_lock_timeout, true);
+        END IF;
+      EXCEPTION
+        WHEN lock_not_available OR query_canceled OR deadlock_detected THEN
+          RAISE WARNING 'loom: the ADR 0129 incarnation column/trigger on events could not be installed (%: %). This node keeps the legacy creation-marker anchor (SPI 2.2.0 behaviour) until a later boot installs it.',
+            SQLSTATE, SQLERRM;
+      END;
+    END
+    $incarnation$;
 `;
 
 const DDL_REST = `

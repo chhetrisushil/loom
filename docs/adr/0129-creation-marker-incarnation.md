@@ -1,6 +1,6 @@
 # ADR 0129 — Close the `creationMarker` ABA: a store-assigned incarnation, kept out of the envelope
 
-- Status: **Proposed** (2026-10-11) — design only; no runtime change in this PR. Needs the user's decision (see "Decision needed").
+- Status: **Accepted** (2026-10-11) — option A, user decision 2026-10-11; implemented (see "Implementation note").
 - Date: 2026-10-11
 - Closes (if accepted): the logged follow-up "ABA nonce for `creationMarker` (breaks byte-identical replay — needs a design)" and [ADR 0116](0116-late-outcome-attach.md) round 4 item 7.
 - Builds on: [ADR 0116](0116-late-outcome-attach.md) (`appendIfUnchanged`, `TipObservation.anchor`), [ADR 0118](0118-acquire-if-parked-fence.md) (the fence row the conditional write locks).
@@ -70,3 +70,17 @@ Not kernel (no event, fold, syscall or ABI). It is an SPI semantic tightening in
 2. If A: accept `EVENT_STORE_SPI_VERSION` 2.3.0 as a semantic minor with a new MUST on `anchor`?
 3. If A: Postgres column on `events` (sequence-0 row only; proposed) versus a column on the `fences` row (that row is lazily created and reclaimed with the log, which makes it a worse home)?
 4. If A: legacy logs keep the old `timestamp:id` anchor until deleted (proposed, no backfill) versus a one-time backfill?
+
+## Decision (user, 2026-10-11)
+
+Option A, with the recommended defaults: close it; `EVENT_STORE_SPI_VERSION` 2.3.0 as a semantic minor with the new MUST on `anchor`; Postgres column on `events` (sequence-0 row only); legacy logs keep the old `timestamp:id` anchor until deleted (no backfill).
+
+## Implementation note
+
+- **Memory** (`InMemoryAsyncEventStore`): a store-wide counter; the incarnation is taken when sequence 0 first lands (in `setLog`, so append, batch and `copyPrefix` all assign) and is dropped by `deleteExecution` / `close`. The anchor is its decimal string.
+- **SQLite**: a nullable `incarnation INTEGER` on the `events` table, on the sequence-0 row, not on `executions` (that table is not maintained by the event store, so a column there would need a second write on every creation and delete). An `AFTER INSERT ... WHEN NEW.sequence = 0` trigger bumps a one-row `incarnation_counter` and stamps the row, so every insert path (and another process) assigns one. The counter is never reset, so a delete cannot make a value reusable (`MAX()+1` would). The column is added by a `PRAGMA table_info` check plus `ALTER TABLE`, tolerating a concurrent migrator; counter and trigger are `IF NOT EXISTS`.
+- **Postgres**: a nullable `incarnation BIGINT` on `events` and `events_incarnation_seq`; a `BEFORE INSERT ... FOR EACH ROW WHEN (NEW.sequence = 0)` trigger fills it from `nextval`. The block runs last in `runMigration`, under the existing advisory lock, with every step guarded by the catalog (so a normal boot takes no `events` lock), and the ALTER / CREATE TRIGGER wait under `loom.migration_lock_timeout`, the same pattern as `timers.redrive`. The tip query reads it beside `a_id` / `a_ts`.
+- **Anchor**: the incarnation's decimal string, or the legacy `timestamp:id` (contains a `:`, so it can never equal an incarnation) when the column is NULL. `creationMarker()` is kept as the legacy derivation. No backfill; a rollback to a 2.2.0 kernel ignores the column.
+- **Decorators**: tenant scope, sharding, coalescing, profiling, encryption, content, audit-chain, DST fault store and the crash harness all forward `expect` and return the inner `anchor` untouched; none rebuilds an anchor. One caveat: `ShardedEventStore.migrateExecution` re-creates a log on another shard (a copy then a delete), which takes that shard's own incarnation; incarnations are only comparable within one store, and the moved log is byte-identical, so the residual case is the harmless one argued in Context.
+- **Conformance** (`@loom/conformance`, +3 cases): a delete plus a byte-identical re-creation (same id, timestamp, head, token) is `moved`; repeated observations agree and each is honoured (no false refusals); the anchor is stable across later appends and a compaction. Plus a Postgres migration test (old-shape `events`, concurrent `migrate`, legacy anchor kept, new logs get incarnations, delete plus recreate is `moved`) and a SQLite equivalent.
+- **3P stores**: one claiming 2.3.0 must satisfy the MUST (documented in the spec, `docs/usage.md`, the SPI header comment); one that cannot stays at 2.2.0.
