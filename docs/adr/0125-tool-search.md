@@ -120,8 +120,8 @@ selector and with `toolSearch`.
   offered skill's tool; a non-positive/over-ceiling cap; `"registry"` without a `skills` registry.
 - **Residuals.** The activation result is an ordinary tool_result, so compaction may fold it into its summary; the skill's
   instructions then survive only as the summary's paraphrase, but its tools stay on the menu (append-only) and activating the skill
-  again re-delivers them (Review round 1). A run re-loads an
-  activated skill's instructions on replay from the CURRENT registry, as upfront skills already are. Skill tools are not counted
+  again re-delivers them (Review round 1). ~~A run re-loads an
+  activated skill's instructions on replay from the CURRENT registry~~ (closed by D14 for digest-bearing records; upfront skills still are). Skill tools are not counted
   against `toolSearch.maxLoaded`.
 
 **D12 — Skills discoverable through search (R22b, user ruling 2026-10-09: "add skills to search_tools as R22 follow-up").** With a
@@ -185,8 +185,40 @@ refusal of `toolSearch.ranker` with `discovery: "search" | "both"` is removed. C
   next to `ranker` (the learning substrate sees which ranker produced each side). Replay calls NEITHER ranker and re-admits against
   the live sets, tools first up to `maxPerSearch`. A live page has at most `maxPerSearch` entries in total, so an untampered
   interleaved page is never truncated differently on replay (tested under `divergence: "fail"`).
-- **Residual.** A sloppy skill ranker that ignores `limit` makes `admitSkills` iterate its whole output (host-controlled, like the
-  tool ranker).
+- ~~**Residual.** A sloppy skill ranker that ignores `limit` makes `admitSkills` iterate its whole output (host-controlled, like the
+  tool ranker).~~ — closed by D14.
+
+**D14 — Closing three residuals (R22d).** Additive; default-off behaviour of D1 is untouched.
+- **1. The menu spec of an un-vouched tool withholds its description.** `toolSpecFor` now uses the same remoteness test as search
+  (`isRemoteTool`, exported from `toolSchema.ts` and reused by `ToolSearchSession`): `origin: "remote"`, OR a `jsonInputSchema`,
+  OR `kind: "a2a"`. Such a tool's description in the model-facing spec is the fixed `"Third-party tool; description withheld"`
+  unless the operator vouched (`trustJsonSchemaText`); a TAINTED description on a remote tool is withheld even when vouched (it used
+  to throw a `TypeError` on `.slice`). MCP tools already had a `jsonInputSchema` and are unchanged; the gap was A2A tools (and any
+  `origin: "remote"` tool) without one. A tainted description on a FIRST-PARTY tool is deliberately left alone, so the prompt
+  boundary still refuses the request loudly (a host bug should fail, not degrade silently). **Behaviour change** for existing
+  A2A users: the model no longer sees the peer's description (vouch with `trustJsonSchemaText`, or describe the tool in the
+  system prompt). **Replay:** model responses are journaled by step id and a resume never compares request bytes (the only replay
+  checks are the step/decision ordinals and the code fingerprint, ADR 0113), so a log recorded under the old spec resumes
+  under the new one; a test pins that.
+- **2. Instructions are pinned by a digest.** An accepted activation records `{ skill, digest }`, `digest` = lowercase hex sha256
+  of the UTF-8 instructions it delivered (additive optional field; refusals still record only their verdict; no `EVENT_SCHEMA`
+  change, the field is inside the decision's `choice`). On a replay of an accepted activation, and on re-delivery of an
+  already-active skill, the CURRENT text's digest is compared with the recorded one. On a mismatch nothing new is delivered:
+  the result is the typed error **`instructions_changed`** and one `process.emitWarning` (`code: "LOOM_AGENT_SKILL_CHANGED"`,
+  once per skill per run). The activation stands: its tools join the menu (the output lists them), nothing is recorded, `maxActive`
+  accounting is unchanged. A separate code, not `instructions_unavailable`, because the text loaded and passed every check but is
+  not what the recorded run delivered (the model/host can tell "gone" from "different"); `instructions_unavailable` keeps its
+  meaning. A record with no digest, or a non-string one, behaves exactly as before (byte-identical). The warn channel is
+  `process.emitWarning`, like the other agent-loop advisories: `ExecutionContext` does not expose the runtime's `onWarn`, and adding
+  it would be a kernel change for a convenience.
+- **3. Rankers are clamped to what they were asked for.** Before admission, each ranker's output (`toolSearch.ranker`,
+  `skillActivation.skillRanker`, and the built-in index alike) is cut to the first `ask` hits it was asked for (`idsOf`): admission
+  is O(ask) per round (at most 4 rounds, `ask <= 1000`) however many hits a sloppy ranker returns; tested with a 10 000-hit ranker
+  and a counting getter.
+- **Residual (remaining).** The digest detects a changed text, it cannot restore the old one: after `instructions_changed` the
+  model has no copy of what the first run's model read (the registry would need to be content-addressed; out of scope). Upfront
+  (`#skills`) selected skills are still loaded from the current registry on replay, as before. A first-party tool with a TAINTED
+  description is still refused loudly by the prompt boundary rather than withheld (deliberate, see 1).
 
 ## Review round 1 (2026-10-09)
 
@@ -205,15 +237,16 @@ The first adversarial review (verdict: not approved as drafted; design holds) fo
   un-vouched tool's description is not ranked or shown, its own tags / aliases are ignored (host `annotations` still apply), and a
   result naming it is tainted; `trustJsonSchemaText` vouches for the text as before. A description that is itself TAINTED is never
   vouched for: it is listed withheld, not indexed, and the tool is not put on the menu (the prompt boundary would refuse its spec).
-  Residual: the menu spec of a loaded A2A tool still carries the peer's description via `toolSpecFor` (unchanged R4b behaviour for a
-  tool with no `jsonInputSchema`); only search's own ranking and results are covered here.
+  ~~Residual: the menu spec of a loaded A2A tool still carries the peer's description via `toolSpecFor` (unchanged R4b behaviour for a
+  tool with no `jsonInputSchema`); only search's own ranking and results are covered here.~~ — closed by D14.
 - **D11 amended: refusals and replay.** The instructions verdict is now part of the RECORDED decision: a live refusal records
   `{ skill, refused: "instructions_refused" | "instructions_too_large" }` (it used to record nothing), so a replay reproduces the
   refusal whatever the registry holds by then, and an accepted activation records `{ skill }` and STANDS on replay even if the
   reloaded text no longer passes the checks: its tools join the menu (consistent with the record) and the result is the typed
   error `instructions_unavailable`. Once a decision is recorded, replay honours it in both directions (a skill that grew, a skill
-  that shrank), appends nothing, and cannot diverge. Residual: on replay the instructions delivered are the CURRENT registry text,
-  which may differ from what the original run's model saw; the model's recorded responses do not change.
+  that shrank), appends nothing, and cannot diverge. ~~Residual: on replay the instructions delivered are the CURRENT registry text,
+  which may differ from what the original run's model saw; the model's recorded responses do not change.~~ — closed by D14 for
+  records written from R22d on (older records, without a digest, keep this behaviour).
 - **Re-activating an active skill re-delivers it.** After compaction folds the activation result into a summary the instructions
   would otherwise be unrecoverable. The result is `{ skill, instructions, note }`; nothing is recorded, no tools are added, and it
   is not counted against `maxActive`. (`already_active` is no longer an error.) The instructions are re-checked (tainted /
@@ -256,10 +289,11 @@ The first adversarial review (verdict: not approved as drafted; design holds) fo
   `search_unavailable` / `instructions_unavailable`, a fixed reason, nothing recorded) unless the error is terminal under R10
   (cancellation, kill switch, quota, a park), which still propagates. Because the decider threw, `ctx.decide` marks the segment
   unsettled (as for any throwing decider). `maxIndexBytes` too small for even one skill is a config error.
-- Residual: the A2A menu spec still carries the peer's description (pre-existing, R4b).
-- Residual: re-delivering an already-active skill re-reads the LIVE instructions and records nothing, so a replay may deliver
-  newer text than the first run did (the activation itself still replays from its record).
-- Residual (host-controlled): a custom `ranker` that ignores `limit` makes `admit` iterate its whole output.
+- ~~Residual: the A2A menu spec still carries the peer's description (pre-existing, R4b).~~ — closed by D14.
+- ~~Residual: re-delivering an already-active skill re-reads the LIVE instructions and records nothing, so a replay may deliver
+  newer text than the first run did (the activation itself still replays from its record).~~ — closed by D14 (re-delivery compares
+  with the digest recorded at activation; old records keep the old behaviour).
+- ~~Residual (host-controlled): a custom `ranker` that ignores `limit` makes `admit` iterate its whole output.~~ — closed by D14.
 
 ## Questions for the user
 

@@ -1,3 +1,4 @@
+import { isTainted } from "@loom/classify";
 import type { ZodTypeAny } from "zod";
 import { sanitizeJsonSchema } from "./thirdPartySchema";
 
@@ -265,10 +266,23 @@ export const WITHHELD_DESCRIPTION = "Third-party tool; description withheld";
 const MAX_DESCRIPTION = 1000;
 
 /**
- * What the model may be told about a tool: its description and JSON Schema. A
- * tool carrying a `jsonInputSchema` is third-party (ADR 0085): unless it states
- * `trustJsonSchemaText`, its description is replaced by a fixed neutral string
- * and the schema's text is stripped. A trusted description is still capped.
+ * Built from a REMOTE declaration (ADR 0125 D7 / D14): the plugin marked it (`origin: "remote"`), or it
+ * carries a remote JSON Schema (MCP), or it is an A2A peer. Fails closed: ANY of the three suffices,
+ * so a plugin that forgets the marker is still treated as remote.
+ */
+export const isRemoteTool = (t: {
+  origin?: string;
+  jsonInputSchema?: unknown;
+  kind?: string;
+}): boolean => t.origin === "remote" || t.jsonInputSchema !== undefined || t.kind === "a2a";
+
+/**
+ * What the model may be told about a tool: its description and JSON Schema. A REMOTE tool (see
+ * {@link isRemoteTool}: MCP, A2A, or marked `origin: "remote"`) is third-party (ADR 0085): unless it
+ * states `trustJsonSchemaText`, its description is replaced by a fixed neutral string and the schema's
+ * text is stripped. A trusted description is still capped, and a TAINTED description is never put in
+ * the spec of a remote tool, vouched or not (ADR 0125 D14). A tainted description on a first-party tool
+ * is passed through untouched so the prompt boundary refuses the request loudly.
  */
 export function toolSpecFor(t: {
   id: string;
@@ -276,8 +290,10 @@ export function toolSpecFor(t: {
   inputSchema?: ZodTypeAny;
   jsonInputSchema?: Readonly<Record<string, unknown>>;
   trustJsonSchemaText?: boolean;
+  origin?: string;
+  kind?: string;
 }): { name: string; description: string; inputSchema: Record<string, unknown> } {
-  const thirdParty = t.jsonInputSchema !== undefined;
+  const thirdParty = isRemoteTool(t);
   const trusted = !thirdParty || t.trustJsonSchemaText === true;
   if (thirdParty && trusted)
     warnOnce(
@@ -290,7 +306,7 @@ export function toolSpecFor(t: {
     name: t.id,
     description: !thirdParty
       ? t.description
-      : trusted
+      : trusted && !isTainted(t.description)
         ? t.description.slice(0, MAX_DESCRIPTION)
         : WITHHELD_DESCRIPTION,
     inputSchema: toolInputJsonSchema(t.inputSchema, t.jsonInputSchema, {

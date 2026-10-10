@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isTainted, tainted, unwrapTainted } from "@loom/classify";
 import type { EventEnvelope, FlowDefinition, SkillDefinition, ToolDefinition } from "@loom/core";
 import { agent$, instructions$, skill$, tool$ } from "@loom/core";
@@ -8,7 +9,7 @@ import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { SkillRegistry } from "./SkillRegistry";
 import { type AgentLoopConfig, agentLoop$ } from "./agentLoop$";
@@ -23,6 +24,8 @@ import { SOURCE_TOOL_SEARCH } from "./toolSearchSession";
 // tools on the menu from the next step; every activation is a recorded decision so a replay re-decides
 // nothing; refusals are typed results that record nothing; caps hold; and without the option the run
 // is byte-identical.
+
+const sha = (t: string) => createHash("sha256").update(t, "utf8").digest("hex");
 
 const mk = (id: string, description = id): ToolDefinition =>
   tool$({
@@ -228,7 +231,7 @@ describe("R22 D11 - activate a skill mid-loop", () => {
       {
         decisionId: "dba#turn:0:tool:0:skill",
         source: SOURCE_SKILL_ACTIVATION,
-        value: { skill: "billing" },
+        value: { skill: "billing", digest: sha("BILLING-RULES") },
       },
     ]);
   });
@@ -322,7 +325,9 @@ describe("R22 D11 - refusals are typed results (an instructions refusal records 
       calls: [[ACT("alpha")], [ACT("zeta")]],
     });
     expect(codes(b, 2)).toEqual(["skill_limit_reached"]);
-    expect((await activations(b)).map((d) => d.value)).toEqual([{ skill: "alpha" }]);
+    expect((await activations(b)).map((d) => d.value)).toEqual([
+      { skill: "alpha", digest: sha("ALPHA-RULES") },
+    ]);
   });
 
   it("instructions over the byte cap are refused (multi-byte counted as bytes)", async () => {
@@ -760,5 +765,186 @@ describe("R22 polish P3-a/b - an unloadable skill is feedback; an index that fit
       provider: script([]),
     });
     await expect(runToEnd(b)).rejects.toThrow(/maxIndexBytes/);
+  });
+});
+
+// ── R22d (ADR 0125 D14) — instructions are pinned by a digest ───────────────────
+
+describe("R22d D14 - the delivered instructions are pinned by a recorded digest", () => {
+  const tool = mk("rev_tool");
+  /** A skill whose instructions can change under the run (a registry hot-reload). */
+  const live = (initial: string) => {
+    const box = { text: initial };
+    const skill = {
+      ...mkSkill("rev", initial, [tool]),
+      instructions: async () => ({ default: box.text }),
+    } as SkillDefinition;
+    return { box, skill };
+  };
+  const warnings = (spy: ReturnType<typeof vi.spyOn>) =>
+    spy.mock.calls
+      .filter((c) => (c[1] as { code?: string } | undefined)?.code === "LOOM_AGENT_SKILL_CHANGED")
+      .map((c) => String(c[0]));
+
+  /** Run `steps` against `first`, cut the log before turn 1, resume against `second`. */
+  async function resume(
+    first: SkillDefinition,
+    second: SkillDefinition,
+    mapEvent: (e: EventEnvelope) => EventEnvelope = (e) => e
+  ) {
+    const steps = [[ACT("rev")]];
+    const store = new InMemoryAsyncEventStore();
+    await runToEnd(boot({ store, skills: [first], provider: script(steps) }));
+    const full = await store.read("e1");
+    const cutoff = full.findIndex((e) =>
+      String((e.payload as { stepId?: string }).stepId ?? "").startsWith("dba#turn:1")
+    );
+    const prefix = full.slice(0, cutoff).map(mapEvent);
+    const crashed = new InMemoryAsyncEventStore();
+    for (const e of prefix) await crashed.append(e);
+    const folded = new ReplayVM(prefix, {
+      executionId: "e1",
+      workflowId: "ask",
+      workflowVersion: "1.0.0",
+    }).getState();
+    const b = boot({ store: crashed, skills: [second], provider: script(steps) });
+    const st = await (await b.runtime.restoreFromState(folded)).waitForCompletion();
+    expect(st.status).toBe("completed");
+    expect(b.warnings.filter((w) => /diverge/i.test(w))).toEqual([]);
+    return { b, before: decisions(prefix), after: decisions(await crashed.read("e1")) };
+  }
+
+  it("an accepted activation records the sha256 of the text it delivered", async () => {
+    const b = boot({
+      skills: [mkSkill("rev", "RULES-v1", [tool])],
+      provider: script([[ACT("rev")]]),
+    });
+    await runToEnd(b);
+    expect((await activations(b)).map((d) => d.value)).toEqual([
+      { skill: "rev", digest: sha("RULES-v1") },
+    ]);
+  });
+
+  it("NEGATIVE: a refusal records its verdict only (no digest: nothing was delivered)", async () => {
+    const b = boot({
+      skills: [mkSkill("rev", "x".repeat(500), [tool])],
+      activation: { maxInstructionBytes: 100 },
+      provider: script([[ACT("rev")]]),
+    });
+    await runToEnd(b);
+    expect((await activations(b)).map((d) => d.value)).toEqual([
+      { skill: "rev", refused: "instructions_too_large" },
+    ]);
+  });
+
+  it("replay with the SAME text delivers it (digest matches), no warning", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const a = live("RULES-v1");
+      const { b, before, after } = await resume(a.skill, live("RULES-v1").skill);
+      expect(after).toEqual(before);
+      expect(resultsOf(b.requests[0] as LlmRequest)[0]?.result.instructions).toBe("RULES-v1");
+      expect(warnings(spy)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("replay with CHANGED (still valid) text delivers nothing: instructions_changed, tools stay, nothing recorded, one warning", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const { b, before, after } = await resume(live("RULES-v1").skill, live("RULES-v2-NEW").skill);
+      expect(after).toEqual(before);
+      const [r] = resultsOf(b.requests[0] as LlmRequest);
+      expect(r?.isError).toBe(true);
+      expect(r?.result.error?.code).toBe("instructions_changed");
+      expect(JSON.stringify(r?.result)).not.toContain("RULES-v2-NEW");
+      expect(r?.result.tools).toEqual(["rev_tool"]);
+      expect(toolNames(b.requests[0] as LlmRequest)).toEqual(["activate_skill", "rev_tool"]);
+      expect(warnings(spy)).toHaveLength(1);
+      expect(warnings(spy)[0]).toContain("rev");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("an OLD record (no digest) keeps today's behaviour: the current text is delivered, silently", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const strip = (e: EventEnvelope): EventEnvelope => {
+        const p = e.payload as { source?: string; choice?: { skill: string } };
+        return p.source === SOURCE_SKILL_ACTIVATION
+          ? ({
+              ...e,
+              payload: { ...p, choice: { skill: p.choice?.skill } },
+            } as unknown as EventEnvelope)
+          : e;
+      };
+      const { b } = await resume(live("RULES-v1").skill, live("RULES-v2-NEW").skill, strip);
+      const [r] = resultsOf(b.requests[0] as LlmRequest);
+      expect(r?.isError).toBe(false);
+      expect(r?.result.instructions).toBe("RULES-v2-NEW");
+      expect(warnings(spy)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("a recorded digest that is not a string is ignored (legacy behaviour), never trusted", async () => {
+    const junk = (e: EventEnvelope): EventEnvelope => {
+      const p = e.payload as { source?: string; choice?: Record<string, unknown> };
+      return p.source === SOURCE_SKILL_ACTIVATION
+        ? ({
+            ...e,
+            payload: { ...p, choice: { ...p.choice, digest: 42 } },
+          } as unknown as EventEnvelope)
+        : e;
+    };
+    const { b } = await resume(live("RULES-v1").skill, live("RULES-v2-NEW").skill, junk);
+    expect(resultsOf(b.requests[0] as LlmRequest)[0]?.result.instructions).toBe("RULES-v2-NEW");
+  });
+
+  it("re-delivering an active skill compares with the digest recorded at activation (live run)", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const a = live("RULES-v1");
+      let mutated = false;
+      const b = boot({
+        skills: [a.skill],
+        // The registry text changes after the first activation delivered v1.
+        provider: (req) => {
+          if (!mutated && req.messages.filter((m) => m.role === "assistant").length === 1) {
+            a.box.text = "RULES-v2-NEW";
+            mutated = true;
+          }
+          return script([[ACT("rev")], [ACT("rev")]])(req);
+        },
+      });
+      await runToEnd(b);
+      const [again] = resultsOf(b.requests[2] as LlmRequest);
+      expect(again?.isError).toBe(true);
+      expect(again?.result.error?.code).toBe("instructions_changed");
+      expect(JSON.stringify(again?.result)).not.toContain("RULES-v2-NEW");
+      expect(await activations(b)).toHaveLength(1); // re-delivery still records nothing
+      expect(warnings(spy)).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("NEGATIVE: re-delivering an active skill whose text is unchanged still returns it, no warning", async () => {
+    const spy = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const b = boot({
+        skills: [live("RULES-v1").skill],
+        provider: script([[ACT("rev")], [ACT("rev")]]),
+      });
+      await runToEnd(b);
+      const [again] = resultsOf(b.requests[2] as LlmRequest);
+      expect(again?.result.instructions).toBe("RULES-v1");
+      expect(warnings(spy)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -3,7 +3,7 @@ import type { SkillDefinition, ToolDefinition } from "@loom/core";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import { z } from "zod";
 import { isTerminalToolError } from "./toolFailure";
-import { WITHHELD_DESCRIPTION, toolSpecFor, validateToolInput } from "./toolSchema";
+import { WITHHELD_DESCRIPTION, isRemoteTool, toolSpecFor, validateToolInput } from "./toolSchema";
 import { Bm25ToolRanker, type ToolRanker, firstLineOf } from "./toolSearch";
 
 // ── R22 (ADR 0125) — tool search: the loop half ─────────────────────────────────
@@ -146,13 +146,7 @@ export class ToolSearchError extends Error {
   }
 }
 
-/**
- * Built from a REMOTE declaration (ADR 0125 D7): the plugin marked it (`origin: "remote"`), or it
- * carries a remote JSON Schema (MCP), or it is an A2A peer. Fails closed: ANY of the three suffices,
- * so a plugin that forgets the marker is still treated as remote.
- */
-const isRemote = (t: ToolDefinition): boolean =>
-  t.origin === "remote" || t.jsonInputSchema !== undefined || t.kind === "a2a";
+const isRemote = (t: ToolDefinition): boolean => isRemoteTool(t);
 /** Its own bytes are not the host's: remote, or a description that arrived tainted (ADR 0085). */
 const isThirdParty = (t: ToolDefinition): boolean => isRemote(t) || isTainted(t.description);
 /**
@@ -458,10 +452,7 @@ export class ToolSearchSession {
           let adm: { tools: string[]; skills: string[] } = { tools: [], skills: [] };
           for (let round = 0; round < MAX_RANK_ROUNDS; round++) {
             const ranked = await this.ranker.rank(query, ask);
-            adm = this.admitRanked(
-              ranked.map((h) => h.id),
-              want
-            );
+            adm = this.admitRanked(idsOf(ranked, ask), want);
             if (
               adm.tools.length + adm.skills.length >= want ||
               ranked.length < ask ||
@@ -612,7 +603,7 @@ export class ToolSearchSession {
     let out: string[] = [];
     for (let round = 0; round < MAX_RANK_ROUNDS; round++) {
       const ranked = await ranker.rank(query, ask);
-      out = admitIds(ranked.map((h) => h.id));
+      out = admitIds(idsOf(ranked, ask));
       if (out.length >= want || ranked.length < ask || ask >= MAX_RANK_ASK) break;
       ask = Math.min(ask * 2, MAX_RANK_ASK);
     }
@@ -695,6 +686,18 @@ export class ToolSearchSession {
     }
     return out;
   }
+}
+
+/**
+ * ADR 0125 D14 — the ids of the first `limit` hits only. A ranker is asked for `limit` hits; one that
+ * ignores it (host-controlled) must not make admission iterate its whole output, so the clamp is
+ * O(limit) however many it returns. Hits past the count asked for are not read at all.
+ */
+function idsOf(ranked: readonly { id: string }[], limit: number): string[] {
+  const n = Math.min(ranked.length, limit);
+  const out: string[] = new Array(n);
+  for (let i = 0; i < n; i++) out[i] = (ranked[i] as { id: string }).id;
+  return out;
 }
 
 /**

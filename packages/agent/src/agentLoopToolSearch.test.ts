@@ -1160,3 +1160,56 @@ describe("R22 polish P3-a - a failing ranker is feedback, a terminal error is no
     await expect(runToEnd(b)).rejects.toThrow(/quota/);
   });
 });
+
+describe("R22d (ADR 0125 D14) - a ranker that ignores `limit` is clamped to what it was asked for", () => {
+  /** 10k hits whose `id` getter counts reads: O(limit) admission reads at most `limit` of them per round. */
+  const flood = (reads: { n: number }, head: string[]) =>
+    Array.from({ length: 10_000 }, (_, i) => ({
+      score: 1,
+      get id() {
+        reads.n++;
+        return head[i] ?? `foreign_${i}`;
+      },
+    }));
+
+  it("admit reads at most the asked count per round, not the ranker's whole output; the page is still right", async () => {
+    const reads = { n: 0 };
+    const asks: number[] = [];
+    const sloppy: ToolRanker = {
+      kind: "sloppy",
+      rank: (_q, limit) => {
+        asks.push(limit);
+        return flood(
+          reads,
+          NEEDED.map((t) => t.id)
+        );
+      },
+    };
+    const b = boot({ search: { ranker: sloppy }, provider: script([[SEARCH("x")]]) });
+    expect((await runToEnd(b)).status).toBe("completed");
+    expect(toolNames(b.requests[1] as LlmRequest)).toEqual([
+      "search_tools",
+      ...NEEDED.map((t) => t.id),
+    ]);
+    expect(asks.length).toBeGreaterThan(0);
+    expect(reads.n).toBeLessThanOrEqual(asks.reduce((a, b) => a + b, 0));
+  });
+
+  it("NEGATIVE: a ranker that ONLY floods foreign ids still ends in a bounded number of reads", async () => {
+    const reads = { n: 0 };
+    const asks: number[] = [];
+    const sloppy: ToolRanker = {
+      kind: "sloppy",
+      rank: (_q, limit) => {
+        asks.push(limit);
+        return flood(reads, []);
+      },
+    };
+    const b = boot({ search: { ranker: sloppy }, provider: script([[SEARCH("x")]]) });
+    await runToEnd(b);
+    expect(toolNames(b.requests[1] as LlmRequest)).toEqual(["search_tools"]);
+    expect(asks.length).toBeLessThanOrEqual(4);
+    expect(reads.n).toBeLessThanOrEqual(asks.reduce((a, b) => a + b, 0));
+    expect(reads.n).toBeLessThan(10_000);
+  });
+});
