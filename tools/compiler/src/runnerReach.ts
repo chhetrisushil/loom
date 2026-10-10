@@ -194,6 +194,139 @@ function collectBindings(root: ts.Node): Map<string, RunnerStepRef> {
   return bindings;
 }
 
+/** The name a call's callee ends in: `ctx.run` / `ctx["run"]` / `run`, through `.call/.apply/.bind`. */
+function calleeMethodName(call: ts.CallExpression): string | undefined {
+  let e: ts.Expression = unwrap(call.expression);
+  for (;;) {
+    if (ts.isPropertyAccessExpression(e)) {
+      if (
+        ["call", "apply", "bind"].includes(e.name.text) &&
+        ts.isPropertyAccessExpression(unwrap(e.expression))
+      )
+        e = unwrap(e.expression);
+      else return e.name.text;
+    } else if (ts.isElementAccessExpression(e)) {
+      const a = unwrap(e.argumentExpression);
+      return ts.isStringLiteralLike(a) ? a.text : undefined;
+    } else return ts.isIdentifier(e) ? e.text : undefined;
+  }
+}
+
+/**
+ * Whether a step object bound to `name` can change between its declaration and its use (ADR 0086,
+ * 2026-10-10 amendment). The only uses that cannot change it are: the declaration, an argument of a
+ * ctx method call (`ctx.run(s)`) or a ctx hand-off (`lib(ctx, s)`, L34), an element of an array literal (a `ctx.parallel` tuple), a spread
+ * copy, and a property READ. Anything else - a property assignment / `delete` / `++`, being handed to
+ * `Object.assign(s, ...)` or any other function, aliased, returned, stored in another object -
+ * makes the binding "not followed" (unresolved): a guess at `toolId` would name the wrong effect.
+ */
+function stepBindingEscapes(
+  sourceFile: ts.SourceFile,
+  name: string,
+  ctxNames: ReadonlySet<string>
+): boolean {
+  let escapes = false;
+  const strip = (n: ts.Node): ts.Node => {
+    let top = n;
+    while (
+      top.parent !== undefined &&
+      (ts.isParenthesizedExpression(top.parent) ||
+        ts.isAsExpression(top.parent) ||
+        ts.isNonNullExpression(top.parent) ||
+        ts.isSatisfiesExpression(top.parent))
+    )
+      top = top.parent;
+    return top;
+  };
+  const isWriteTarget = (member: ts.Node): boolean => {
+    let top = strip(member);
+    // Walk out of destructuring-assignment patterns: `[s.toolId] = …`, `({ a: s.toolId } = …)`.
+    while (
+      top.parent !== undefined &&
+      (ts.isArrayLiteralExpression(top.parent) ||
+        ts.isPropertyAssignment(top.parent) ||
+        ts.isShorthandPropertyAssignment(top.parent) ||
+        ts.isSpreadElement(top.parent) ||
+        ts.isSpreadAssignment(top.parent) ||
+        ts.isObjectLiteralExpression(top.parent))
+    )
+      top = strip(top.parent);
+    const p = top.parent;
+    if (p === undefined) return false;
+    if (ts.isBinaryExpression(p))
+      return (
+        p.left === top &&
+        p.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        p.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      );
+    if (ts.isDeleteExpression(p)) return true;
+    if (ts.isPrefixUnaryExpression(p) || ts.isPostfixUnaryExpression(p))
+      return (
+        p.operator === ts.SyntaxKind.PlusPlusToken || p.operator === ts.SyntaxKind.MinusMinusToken
+      );
+    // `for (s.toolId of xs)` / `for (s.toolId in o)`.
+    return (ts.isForOfStatement(p) || ts.isForInStatement(p)) && p.initializer === top;
+  };
+  const walk = (n: ts.Node): void => {
+    if (escapes) return;
+    if (ts.isIdentifier(n) && n.text === name) {
+      const p = n.parent;
+      const top = strip(n);
+      const q = top.parent;
+      const isDecl = ts.isVariableDeclaration(p) && p.name === n;
+      // `{ s: 1 }` key, `x.s` member name, `{ s }` shorthand is a VALUE use (handled by falling through).
+      const isNotAReference =
+        (ts.isPropertyAssignment(p) && p.name === n) ||
+        (ts.isPropertyAccessExpression(p) && p.name === n) ||
+        (ts.isPropertySignature(p) && p.name === n);
+      if (!isDecl && !isNotAReference) {
+        let ok = false;
+        if (
+          q !== undefined &&
+          ts.isCallExpression(q) &&
+          q.arguments.includes(top as ts.Expression)
+        ) {
+          const m = calleeMethodName(q);
+          // A ctx hand-off (`lib(ctx, s)`) is the declared-reach seam (L34): its step arguments are
+          // recorded for the callee's declaration, so it is the one function call that may take `s`.
+          ok =
+            (m !== undefined && CTX_METHODS.has(m)) ||
+            q.arguments.some((a) => {
+              const u = unwrap(a);
+              return ts.isIdentifier(u) && ctxNames.has(u.text);
+            });
+        } else if (q !== undefined && ts.isArrayLiteralExpression(q)) ok = true;
+        else if (q !== undefined && (ts.isSpreadElement(q) || ts.isSpreadAssignment(q))) ok = true;
+        else if (
+          q !== undefined &&
+          (ts.isPropertyAccessExpression(q) || ts.isElementAccessExpression(q)) &&
+          q.expression === top
+        ) {
+          // A property READ is fine; a write through it, or a method call on it, is not.
+          let chain: ts.Node = q;
+          while (
+            chain.parent !== undefined &&
+            (ts.isPropertyAccessExpression(chain.parent) ||
+              ts.isElementAccessExpression(chain.parent)) &&
+            chain.parent.expression === chain
+          )
+            chain = chain.parent;
+          const callee = strip(chain).parent;
+          const isMethodCall =
+            callee !== undefined &&
+            ts.isCallExpression(callee) &&
+            callee.expression === strip(chain);
+          ok = !isWriteTarget(chain) && !isMethodCall;
+        }
+        if (!ok) escapes = true;
+      }
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(sourceFile);
+  return escapes;
+}
+
 /** Short, stable source text for an unresolved expression (bounded for log safety). */
 function exprText(node: ts.Node): string {
   if (ts.isTaggedTemplateExpression(node)) return `${exprText(node.tag)}\`…\``;
@@ -951,6 +1084,28 @@ export function analyzeReachNode(
       }
     }
     const callee = unwrap(call.expression);
+    // A step with NO `toolId` dispatches its own id: the runtime resolves `step.toolId ?? step.id`
+    // (WorkflowRuntime). Followed only for `step$` itself (an unshadowed import from @loom/core or
+    // @loom/sdk, any alias) whose object has no `toolId` key and no spread: a wrapper might add one.
+    if (
+      first !== undefined &&
+      ts.isObjectLiteralExpression(first) &&
+      ts.isIdentifier(callee) &&
+      unshadowed(callee.text) &&
+      first.properties.every(
+        (p) =>
+          !ts.isSpreadAssignment(p) &&
+          !ts.isMethodDeclaration(p) &&
+          !(p.name !== undefined && propName(p.name) === "toolId") &&
+          !(p.name !== undefined && ts.isComputedPropertyName(p.name))
+      )
+    ) {
+      const imp = imports.get(callee.text);
+      if (imp?.imported === "step$" && (imp.spec === "@loom/core" || imp.spec === "@loom/sdk")) {
+        const id = constProp(first, "id");
+        return id === undefined ? undefined : { toolId: id, stepId: id };
+      }
+    }
     const name = ts.isIdentifier(callee)
       ? callee.text
       : ts.isPropertyAccessExpression(callee)
@@ -986,9 +1141,18 @@ export function analyzeReachNode(
    * Resolve a `ctx.run` / `ctx.parallel` / hand-off step target to a tool, or `undefined` when it
    * cannot be (reported unresolved by the caller - never silently dropped).
    */
+  const escapeCache = new Map<string, boolean>();
   const resolveTarget = (target: ts.Expression, depth = 0): RunnerStepRef | undefined => {
     const t = unwrap(target);
     if (ts.isIdentifier(t)) {
+      // A step object that is mutated, aliased or handed to another function may no longer be what
+      // its declaration says (ADR 0086 amendment 2026-10-10): not followed, never guessed.
+      let escapes = escapeCache.get(t.text);
+      if (escapes === undefined) {
+        escapes = stepBindingEscapes(sourceFile, t.text, ctxNames);
+        escapeCache.set(t.text, escapes);
+      }
+      if (escapes) return undefined;
       const bound = bindings.get(t.text);
       if (bound !== undefined) return bound;
       const init = constInits.get(t.text);

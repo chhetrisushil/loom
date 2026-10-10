@@ -289,6 +289,20 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "ADR 0125 (R22, lexical path). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged. Default OFF (ids unchanged); not worth enabling below ~30 tools. Searching never widens authority: the loaded tool still passes the R4 menu gate, the approval hook and the effect ring. The semantic ranker (R18 embedding SPI) is a follow-up behind `ToolRanker`.",
   },
   {
+    id: "unicode-locale",
+    title: "Unicode Scoring, Prompt Overrides and Schedule Time Zones",
+    package: "@loom/core",
+    level: "L2",
+    summary:
+      "`CapabilityCatalog.find` and `SkillRegistry.find` tokenize Unicode (NFKC, letters/numbers/marks in any script; unspaced scripts become overlapping bigrams); `PlannerRuntime`, `IntentRuntime`, `planGoal` and `makeReviser` accept prompt overrides with the English text as default and the untrusted-content note always appended; `schedule$({ timeZone })` reads the cron fields on an IANA zone's wall clock (default UTC; skipped wall time runs once shifted by the gap, repeated wall time runs once at its first occurrence; the occurrence id stays the UTC epoch ms).",
+    evidence: {
+      conformanceTest: "packages/workflow-runtime/src/cron.test.ts",
+      usedIn:
+        "packages/planner/src/plannerPrompts.test.ts - the prompt overrides and the always-appended untrusted note",
+    },
+    note: "ADR 0126 (R19). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged. ASCII queries tokenize byte-identically and `agentLoop$` records its skill selection as a decision, so replay never re-scores. Known limit: an hourly or sub-hourly cron in a DST zone loses the repeated hour's second pass; `schedule$` warns once at definition time.",
+  },
+  {
     id: "conversation-sse",
     title: "Conversation SSE Gateway",
     package: "@loom/plugin-conversation-sse",

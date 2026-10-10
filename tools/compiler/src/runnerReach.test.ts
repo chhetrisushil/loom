@@ -1226,4 +1226,119 @@ describe("an import and a same-named local elsewhere are ambiguous (L34 re-revie
       function w() { const mk = (id) => step$({ id, toolId: "t.local" }); return mk; }
       const runner = async (ctx) => { await ctx.run(mk("a")); };`);
   });
+
+  // ADR 0086 amendment 2026-10-10: a step object that can change is never followed.
+  describe("step binding mutation (never a guess)", () => {
+    const run = (body: string, decl: string) =>
+      analyzeRunnerReach(`
+        ${decl}
+        export const runner = async (ctx) => { ${body} await ctx.run(s, {}); };
+      `);
+    const literal = 'const s = { toolId: "t.x" };';
+    const factory = 'const s = step$({ id: "s", toolId: "t.x" });';
+
+    it.each([
+      ["property assignment", 's.toolId = "t.y";'],
+      ["element assignment", 's["toolId"] = "t.y";'],
+      ["compound assignment", 's.toolId += "y";'],
+      ["delete", "delete s.toolId;"],
+      ["Object.assign", 'Object.assign(s, { toolId: "t.y" });'],
+      ["a call that receives it", "mutate(s);"],
+      ["a method call on it", "s.patch();"],
+      ["destructuring assignment", '({ a: s.toolId } = { a: "t.y" });'],
+      ["an alias", 'const t = s; t.toolId = "t.y";'],
+    ])("%s makes the binding unresolved", (_name, stmt) => {
+      for (const decl of [literal, factory]) {
+        const r = run(stmt, decl);
+        expect(r.steps).toEqual([]);
+        expect(r.unresolved.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("a mutation in another function still counts (module-wide)", () => {
+      const r = analyzeRunnerReach(`
+        const s = { toolId: "t.x" };
+        function patch() { s.toolId = "t.y"; }
+        export const runner = async (ctx) => { await ctx.run(s, {}); };
+      `);
+      expect(r.steps).toEqual([]);
+      expect(r.unresolved.length).toBeGreaterThan(0);
+    });
+
+    it("positive: reuse, loops, reads, spread copies and parallel tuples still resolve", () => {
+      const r = analyzeRunnerReach(`
+        const s = step$({ id: "s", toolId: "t.x" });
+        const lit = { toolId: "t.l" };
+        export const runner = async (ctx) => {
+          await ctx.run(s, 1);
+          await ctx.run(s, 2);
+          for (const i of [1, 2]) await ctx.run(s, i);
+          const id = s.id;
+          const copy = { ...lit, extra: true };
+          await ctx.run(lit, {});
+          await ctx.parallel([[s, 1], [s, 2]]);
+        };
+      `);
+      expect(r.unresolved).toEqual([]);
+      expect([...new Set(r.steps.map((x) => x.toolId))].sort()).toEqual(["t.l", "t.x"]);
+    });
+  });
+});
+
+describe("a step$ with no toolId dispatches its own id (runtime: toolId ?? id)", () => {
+  const withIds = async (body: string) => {
+    const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const ts = (await import("typescript")).default;
+    const { createImportResolver } = await import("./importResolve");
+    const dir = mkdtempSync(join(tmpdir(), "loom-reach-id-"));
+    try {
+      writeFileSync(join(dir, "ids.ts"), 'export const SCAN_TOOLS_STEP_ID = "scan-tools";\n');
+      const file = join(dir, "flow.ts");
+      const sf = ts.createSourceFile(file, body, ts.ScriptTarget.ESNext, true);
+      return analyzeReachNode(sf, undefined, { importResolver: createImportResolver(sf, file) });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it("resolves an id imported from a relative module", async () => {
+    const r = await withIds(`
+      import { step$ } from "@loom/core";
+      import { SCAN_TOOLS_STEP_ID } from "./ids";
+      const Scan = step$({ id: SCAN_TOOLS_STEP_ID, effectClass: "read" });
+      export const runner = async (ctx) => { await ctx.run(Scan, {}); };
+    `);
+    expect(r.unresolved).toEqual([]);
+    expect(r.steps).toEqual([{ toolId: "scan-tools", stepId: "scan-tools" }]);
+  });
+
+  it("a same-named local shadowing the imported id stays unresolved", async () => {
+    const r = await withIds(`
+      import { step$ } from "@loom/core";
+      import { SCAN_TOOLS_STEP_ID } from "./ids";
+      const Scan = step$({ id: SCAN_TOOLS_STEP_ID });
+      function other() { const SCAN_TOOLS_STEP_ID = "x"; return SCAN_TOOLS_STEP_ID; }
+      export const runner = async (ctx) => { await ctx.run(Scan, {}); };
+    `);
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved.length).toBeGreaterThan(0);
+  });
+
+  it("is not guessed for a wrapper, a shadowed step$, a spread, or a computed toolId", async () => {
+    for (const body of [
+      `import { mk$ } from "./ids"; const S = mk$({ id: "a" });`,
+      `import { step$ } from "./ids"; const S = step$({ id: "a" });`,
+      `const step$ = (x) => x; const S = step$({ id: "a" });`,
+      `import { step$ } from "@loom/core"; const S = step$({ id: "a", ...extra });`,
+      `import { step$ } from "@loom/core"; const S = step$({ id: "a", ["toolId"]: t });`,
+      `import { step$ } from "@loom/core"; const S = step$({ id: "a", toolId: pick() });`,
+    ]) {
+      const r = await withIds(
+        `${body} export const runner = async (ctx) => { await ctx.run(S, {}); };`
+      );
+      expect(r.steps, body).toEqual([]);
+    }
+  });
 });
