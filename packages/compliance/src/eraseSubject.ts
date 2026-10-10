@@ -1,5 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import { type EventStore, INBOX_STREAM_PREFIX, chainIdOfFirst } from "@loom/event-runtime";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
 import { DEFAULT_TENANT, type SubjectIndex } from "./SubjectIndex";
@@ -44,7 +44,13 @@ export type Shredder = (subjectId: string, executionIds: readonly string[]) => P
 
 export interface EraseCoordinatorOptions {
   index: SubjectIndex;
-  eventStore: Pick<EventStore, "read" | "append">;
+  /**
+   * `deleteExecution` (optional) lets erasure reach the RESERVED inbox streams of the subject's
+   * finished executions (ADR 0110 follow-up): see {@link EraseCoordinator}. A store without it
+   * cannot delete a stream, and a payload still in flight in one is then erased only by the key
+   * (the crypto plugin seals inbox payloads under the owner's subject).
+   */
+  eventStore: Pick<EventStore, "read" | "append"> & Partial<Pick<EventStore, "deleteExecution">>;
   shred: Shredder;
   /**
    * ADR 0106 — where compaction checkpoints live. A compacted execution's log no longer holds
@@ -100,7 +106,10 @@ export class EraseCoordinator {
     }
     const live = await this.liveExecutions(executions);
     if (live.length === 0) {
+      // Resolved BEFORE the key is destroyed: a decrypting store cannot read these logs afterwards.
+      const chains = await this.finishedChains(executions);
       await this.options.shred(subjectId, executions);
+      await this.purgeInboxStreams(chains);
       this.parked.delete(parkKey(tenant, subjectId));
       return { subjectId, outcome: "erased", erased: executions, pending: [] };
     }
@@ -121,8 +130,49 @@ export class EraseCoordinator {
     if (!this.parked.has(parkKey(tenant, subjectId))) return;
     const executions = this.options.index.executionsOf(subjectId, tenant);
     if ((await this.liveExecutions(executions)).length > 0) return; // still blocked
+    const chains = await this.finishedChains(executions);
     await this.options.shred(subjectId, executions);
+    await this.purgeInboxStreams(chains);
     this.parked.delete(parkKey(tenant, subjectId));
+  }
+
+  /**
+   * ADR 0110 follow-up — erasure reaches payloads still in flight in a RESERVED inbox stream.
+   *
+   * A chain's inbox (`__loom_inbox__:<chainId>`) holds undelivered messages for its owner. The
+   * runtime deletes it when the chain's head turns terminal, but a crash between a sender's append
+   * and its re-read can leave an orphan, and until it is reclaimed it holds the subject's data.
+   * Once the subject is erased (every execution of it terminal, so nothing can consume) the stream
+   * of each execution that is the HEAD of its chain (terminal and not `continued`: a continued
+   * execution's successor owns the stream) is deleted. Idempotent, and a no-op for a store that
+   * cannot delete or an execution whose stream is already gone.
+   *
+   * This is the physical half. The cryptographic half is the key: the crypto plugin seals inbox
+   * payloads under the OWNER's subject, so `shred` makes a payload unreadable even where a stream
+   * cannot be deleted (a consumer then receives the `{ $shredded: true }` marker, never the raw
+   * value).
+   */
+  private async purgeInboxStreams(chains: readonly string[]): Promise<void> {
+    const remove = this.options.eventStore.deleteExecution?.bind(this.options.eventStore);
+    if (remove === undefined) return;
+    for (const chain of chains) await remove(`${INBOX_STREAM_PREFIX}${chain}`);
+  }
+
+  /**
+   * The chains whose HEAD is among `executions`: terminal and not `continued` (a continued
+   * execution's successor owns the chain's inbox and is judged on its own events). Folded while
+   * the logs are still readable, so a decrypting store has not yet lost its key.
+   */
+  private async finishedChains(executions: readonly string[]): Promise<string[]> {
+    if (this.options.eventStore.deleteExecution === undefined) return [];
+    const chains = new Set<string>();
+    for (const executionId of executions) {
+      const folded = await this.foldExecution(executionId);
+      if (folded === undefined) continue;
+      if (!TERMINAL_STATUS.has(folded.status) || folded.status === "continued") continue;
+      chains.add(chainIdOfFirst(folded.first, executionId));
+    }
+    return [...chains];
   }
 
   /** Subjects with a deferred erasure still awaiting completion (sorted, deduped across tenants). */
@@ -134,31 +184,41 @@ export class EraseCoordinator {
   private async liveExecutions(executions: readonly string[]): Promise<string[]> {
     const live: string[] = [];
     for (const executionId of executions) {
-      const events = await this.options.eventStore.read(executionId);
-      if (events.length === 0) continue; // deleted by retention — nothing to protect
-      const snapshot = (await this.options.snapshotStore?.loadLatest(executionId)) ?? null;
-      // Fill a blank legacy identity; a NON-blank one naming another execution is a store or
-      // tenant-scoping defect, refused as everywhere else a fold is seeded (ADR 0106).
-      if (snapshot !== null) {
-        assertSnapshotIdentity(snapshot.state, executionId, events[0]?.workflowId ?? "");
-      }
-      const state =
-        snapshot !== null
-          ? foldEvents(
-              events.filter((e) => e.sequence > snapshot.sequence),
-              // A pre-ADR-0106 checkpoint may carry a blank identity: fill it, as the kernel does.
-              // A pre-1.21.0 snapshot may read `failed` for a caught step failure: repair it
-              // (ADR 0105), or a live execution would read terminal and be shredded.
-              {
-                ...normalizeSnapshotState(snapshot.state),
-                executionId: snapshot.state.executionId || executionId,
-                workflowId: snapshot.state.workflowId || (events[0]?.workflowId ?? ""),
-              }
-            )
-          : foldEvents(events, { executionId });
-      if (!TERMINAL_STATUS.has(state.status)) live.push(executionId);
+      const folded = await this.foldExecution(executionId);
+      if (folded === undefined) continue; // deleted by retention — nothing to protect
+      if (!TERMINAL_STATUS.has(folded.status)) live.push(executionId);
     }
     return live;
+  }
+
+  /** One execution's folded status and its first event, or `undefined` when its log is gone. */
+  private async foldExecution(
+    executionId: string
+  ): Promise<{ status: ExecutionState["status"]; first: EventEnvelope } | undefined> {
+    const events = await this.options.eventStore.read(executionId);
+    const first = events[0];
+    if (first === undefined) return undefined;
+    const snapshot = (await this.options.snapshotStore?.loadLatest(executionId)) ?? null;
+    // Fill a blank legacy identity; a NON-blank one naming another execution is a store or
+    // tenant-scoping defect, refused as everywhere else a fold is seeded (ADR 0106).
+    if (snapshot !== null) {
+      assertSnapshotIdentity(snapshot.state, executionId, first.workflowId ?? "");
+    }
+    const state =
+      snapshot !== null
+        ? foldEvents(
+            events.filter((e) => e.sequence > snapshot.sequence),
+            // A pre-ADR-0106 checkpoint may carry a blank identity: fill it, as the kernel does.
+            // A pre-1.21.0 snapshot may read `failed` for a caught step failure: repair it
+            // (ADR 0105), or a live execution would read terminal and be shredded.
+            {
+              ...normalizeSnapshotState(snapshot.state),
+              executionId: snapshot.state.executionId || executionId,
+              workflowId: snapshot.state.workflowId || (first.workflowId ?? ""),
+            }
+          )
+        : foldEvents(events, { executionId });
+    return { status: state.status, first };
   }
 
   // `prior.length` is the next sequence only because a reserved stream is never compacted:

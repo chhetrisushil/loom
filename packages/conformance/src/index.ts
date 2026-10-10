@@ -60,7 +60,8 @@ export type ExecutionOpLike =
   | "query"
   | "actAsOwner"
   | "send"
-  | "annotate";
+  | "annotate"
+  | "discard";
 
 export interface ExecutionAuthzRequestLike {
   op: ExecutionOpLike;
@@ -2091,6 +2092,7 @@ export function runExecutionAuthorizerConformance(
     "actAsOwner",
     "send",
     "annotate",
+    "discard",
   ];
   const req = (op: ExecutionOpLike): ExecutionAuthzRequestLike => ({
     op,

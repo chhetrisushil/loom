@@ -99,7 +99,15 @@ export class QueueFullError extends Error {
   }
 }
 
-const POLICED_OPS = ["query", "send", "cancel", "resume", "actAsOwner", "annotate"] as const;
+const POLICED_OPS = [
+  "query",
+  "send",
+  "cancel",
+  "resume",
+  "actAsOwner",
+  "annotate",
+  "discard",
+] as const;
 
 function assertOwnerScopedPolicy(deps: ConversationsDeps): void {
   if (deps.runtimePolicyIsOwnerScoped === true) return;

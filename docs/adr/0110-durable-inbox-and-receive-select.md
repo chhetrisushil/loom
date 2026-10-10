@@ -481,8 +481,8 @@ fields and adds `waits`; a bare resume of the positional gate answers it as ever
   chain when the stream retains 50% of `inboxMaxRetained` above the oldest unconsumed message, naming that
   message's topic and inbox sequence (re-armed when the pin clears). Per-topic refusal was deliberately
   not built. Follow-ups: (1) a journaled, authorized operator discard (advance one topic's cursor up to a
-  sequence, as a log event, so it replays); (2) per-topic streams, with an optional TTL via a journaled
-  expiry. Both need the second consumer rule (ADR 0083) to be named before they ship.
+  sequence, as a log event, so it replays) — **shipped by the 2026-10-11 amendment (D8)**; (2) per-topic
+  streams, with an optional TTL via a journaled expiry — **designed in the amendment (D10), not built**.
 - **`resume` / `resumeAs` re-open a terminal owner's inbox only after every refusal passed** (replay-check,
   migration, authz, not-suspended); a refused resume used to leave an empty stream behind for an execution
   that stays terminal.
@@ -496,9 +496,8 @@ fields and adds `waits`; a bare resume of the positional gate answers it as ever
 - A message consumed for a branch that is then aborted by a sibling's failure is consumed: it is recorded
   in the log and the flow never sees it (the same as a gate answer in an aborted scope).
 - The inbox stream holds payloads until they are consumed and trimmed or the head turns terminal (the
-  stream is deleted then). **`eraseSubject` does not reach payloads still in flight in the stream**: erasure
-  reaches `MESSAGE_CONSUMED` in the owner's log (`PAYLOAD_SHREDDED`), not the stream. Follow-up: extend
-  erasure into reserved streams.
+  stream is deleted then). ~~**`eraseSubject` does not reach payloads still in flight in the stream**~~ **CLOSED
+  by the 2026-10-11 amendment (D9)**: erasure now reaches the reserved stream, cryptographically and physically.
 - **The park-per-message loop is quadratic until the flow rotates (R1b, ADR 0109, now Accepted).** A slow-sender loop re-parks between messages and
   every park snapshots (and every wake re-runs) a state holding one answer per consumed message: turn n is
   O(n), the whole conversation O(n^2). The inbox itself is flat (measured below); continue-as-new (R1b,
@@ -551,3 +550,152 @@ the stream deleted with its chain); a fork leaves the chain. The protocol tests 
 and, with `LOOM_TEST_POSTGRES_URL`, on Postgres.
 
 **Live `onEvent` order (review round 4).** An inbox delivery's batch (and a duplicate-only advance) fires `onEvent` only once it is durable, so a retried or lost batch is never shown to live subscribers. Because projections and the compliance subject index fold in sequence order, the journal holds every LATER envelope's `onEvent` behind a pending deferred batch and releases them in sequence order when it lands; a lost batch's envelopes are dropped and what queued behind it is delivered. With nothing deferred, `onEvent` stays synchronous, exactly as before.
+
+## Amendment 2026-10-11 — erasure into the stream, an operator discard, and the per-topic design
+
+- Status: **Accepted** (D8, D9 implemented); **D10 is a design only** (not implemented, see why below).
+- Closes the logged follow-ups of the 2026-10-07 "Residuals" and "Pinned-stream DoS" bullets.
+- **Wire and ABI: nothing changes.** `EVENT_SCHEMA` stays 1.23.0, `KERNEL_ABI` stays 1.3.0, the `EventStore` SPI is
+  untouched, no fold handler changes, no syscall is added. `ExecutionOp` gains one additive member (`"discard"`),
+  exactly as `"send"` and `"annotate"` did, and the conformance kit gains its case. `@loom/event-runtime` exports
+  `INBOX_STREAM_PREFIX`, `inboxChainOf` and `chainIdOfFirst` (the stream's addressing, moved down so the crypto
+  plugin and the compliance package can name it without depending on the runtime).
+- **Consumers (ADR 0083, named).** The second-consumer rule gates *speculative surface*; these close known safety
+  and operability gaps, and each has consumers that exist today: **D8** — any agent or conversation app with a
+  hot topic and a cold one (a chat agent that receives `user-message` all day and is also addressed on a
+  `telemetry` or `admin` topic it reads once), and the **operator of any deployment that uses the inbox** (the
+  pin is otherwise cleared only by the owner finishing); **D9** — **GDPR/CCPA erasure for any app** that puts
+  personal data in a message (every conversation or agent app does).
+
+### D8 — a journaled, authorized operator discard (`runtime.discardInbox`)
+
+`runtime.discardInbox(executionId, { topic, throughSeq, reason? }, { principal, system? })` skips every unconsumed
+message of ONE topic with `inboxSeq <= throughSeq`, and so releases a pinned stream.
+
+- **The fact is `MESSAGE_CONSUMED`, not a new kind.** The fold already has exactly the semantics a discard needs:
+  the cursor advances monotonically and the id joins the dedupe window. What it must NOT do is deliver, so the
+  fact carries `payload: null` and the reserved `waitId` `__loom_discard__`: no `ctx` wait can carry that id
+  (they are `<scopePath>#<ordinal>`), and the fold's first-answer-wins rule means a chain's log records ONE answer
+  under it however many discards run (no unbounded state; pinned by a wire vector). The payload of the skipped
+  messages is never copied into the log. Extra fields (`discarded: true`, `skipped`, `reason`) ride in the
+  payload and the fold ignores them, so an older node folds the same log identically. The dedupe id is the hash
+  of `["discard", topic, throughSeq]`: the same discard twice is a duplicate, and `through <= cursor` appends
+  nothing.
+- **Authorized as `ExecutionOp "discard"`**, against the recorded owner of the chain's head (resolved like
+  `send`), before "not found" is revealed; a denial appends nothing (no `EXECUTION_DENIED`, as for `send`: an
+  outsider never writes the owner's log). `executionAccessPolicy` maps it to **`"deny"`**: it destroys messages
+  a sender was told were accepted, so the integrator opens it deliberately (`rules: { discard: "tenant" }` for
+  a tenant's operators, `"any"` for a platform operator). `@loom/conversation` polices it with the other ops
+  (owner or deny). The operator's identity subset is recorded as the fact's `sender`.
+- **The owner must be parked.** The fact lands in the owner's OWN log, which only a parked owner accepts without
+  racing its own appends (the race the separate stream exists to avoid). It is written by the existing
+  duplicate-only path (`advanceInbox`): one atomic batch under the park's conditional fence (ADR 0118), an
+  *ignorable* kind, so the park stays unanswered and a later delivery still resumes it. A running owner is
+  `InboxDiscardRefusedError` `not-parked` (retryable); so is one that resumes while the call is in flight. A hot
+  topic is not what pins the stream, so an owner that is busy on it parks again within a turn, and the retry
+  lands (tested racing a live delivery). A finished owner is `InboxClosedError` (its stream is already gone).
+- **Bounded to what exists.** `throughSeq` may not exceed the stream's head (a later message would take a skipped
+  sequence and vanish), nor be negative or fractional; a bad or reserved topic and an over-long reason are
+  refused (`invalid`, nothing appended). Other topics' messages are untouched (cursors are per topic).
+- **It releases the pin.** After the fact is durable the runtime forgets its cached full-verdict and backlog
+  count and forces a trim past the old floor, so the stream accepts sends again and the consumed prefix is
+  reclaimed in the same call.
+- **Rejected:** a discard that works on a running owner (an external append races its sequencer; routing it
+  through the live in-process journal covers one process and misleads the rest); a new `INBOX_DISCARDED` kind
+  (an `EVENT_SCHEMA` bump for a semantic `MESSAGE_CONSUMED` already has); deleting the entries from the stream
+  directly (not journaled, so a replay and a second node disagree, and the store deletes only by prefix).
+
+### D9 — erasure reaches payloads still in flight in the stream
+
+The 2026-10-07 residual: erasure reached `MESSAGE_CONSUMED` in the owner's log but not an unconsumed message in
+`__loom_inbox__:<chainId>`. Two halves, because neither alone is complete.
+
+- **Cryptographic (the erasure itself).** `EncryptingEventStore` resolves a chain's inbox stream to the erasure
+  subject of its OWNER: `subjectOf` is asked about the chain id, which is the generation-0 execution id (or a
+  fork's fresh one). `defineConfig` registers `INBOX_MESSAGE: ["payload"]` when `security.crypto` and
+  `kernel.features.inbox` are both on, so an in-flight payload is sealed at rest under the owner's key and
+  `shredSubject` makes it unreadable. A read of an inbox stream **never throws** `PayloadShreddedError`
+  (senders scan it for their backlog and the trim reads it; a destroyed key must not break `send` for the chain):
+  a payload whose key is gone, or that a re-minted key cannot open, reads as the `{ $shredded: true }` marker,
+  never as ciphertext and never as the raw value. A consumer that reaches it delivers the marker (tainted like any
+  delivery), journaled in `MESSAGE_CONSUMED` in the owner's log, so **a replay of that log is identical** and
+  consults neither the stream nor the key. The topic, message id and sender are not sealed (routing and dedupe
+  need them); the sender is the SENDER's identity, not the owner's, and declaring it sensitive is the app's
+  choice. A `send` after the shred is refused by the key store (`InMemoryKeyStore` never recreates a destroyed
+  key; a store that did would only produce the marker for the older payloads).
+- **Physical (the orphan).** `EraseCoordinator`, once the subject's executions are all terminal (its existing
+  liveness gate, unchanged), deletes the inbox stream of every execution that is the HEAD of its chain
+  (terminal and not `continued`, chain id read from the log with `chainIdOfFirst`, so a fork's own chain is
+  found by its stamp). The runtime already deletes a finished chain's stream; this reaches the orphan a crash
+  between a sender's append and its re-read leaves, which the sweep cannot map back to an owner for a fork's
+  chain (13.f). The chains are resolved BEFORE the shred, because a decrypting store cannot read the logs
+  afterwards. A store without `deleteExecution` skips this half; the key still erases the payload.
+- **What stays true.** Erasure still never lands on a RUNNING owner (the coordinator's liveness gate; and
+  `shredSubject`'s tombstone append would race the owner's sequencer); a parked or finished one is the case, which
+  is why the test parks the owner on a gate while the message is in flight.
+
+### D10 — per-topic streams with an optional journaled TTL (DESIGN ONLY, not built)
+
+**Not built, and why.** It needs no `EVENT_SCHEMA` or `KERNEL_ABI` change and can keep existing data readable
+(below), so the gate is not the ABI. It is not built here because it rewrites the stream layout across at least
+ten sites in four packages (the sender's allocation, the default `InboxSource`, the notify scan, the trim, the
+backlog accounting, the reclaim sweep and the delete-with-chain, fork and re-open floor seeding, the
+`@loom/conversation` `inboxBargeIn` subscription, the erasure purge of D9, the load test and the bench) and adds a
+reserved-id rule and a fleet flag; that wants its own review round, and D8 already closes the *operational* hole
+(an operator can release a pin) while D10 only removes the *need* to. Recommended order when a workload asks:
+D10a first (cheap, no layout change), D10b only if hot/cold traffic is routine rather than exceptional.
+
+**D10a — journaled TTL expiry on today's layout.** `kernel.inbox.messageTtlMs` (off by default). A sweep
+(`recoverAbandoned`, already enumerating reserved streams) finds a chain whose stream is *pinned* (retained
+entries above the oldest unconsumed message past half of `inboxMaxRetained`, the condition that already warns)
+whose pinning message is older than the TTL, and calls `discardInbox` with the system grant and `reason: "ttl"`.
+Pinned-only, so a slow but healthy consumer is never expired merely for being slow; journaled, so it replays;
+parked-only, so it retries on the next sweep. The message's age is its envelope timestamp.
+
+**D10b — per-topic streams.** Layout: `__loom_inbox__:<chainId>#<h>` with `h` the first 16 hex chars of
+`sha256(topic)`; the legacy `__loom_inbox__:<chainId>` stream stays and is read first.
+
+- **One cursor space, no fold change.** Today `cursors[topic]` is a sequence in the chain's single stream. A topic
+  stream is seeded (`ensureInboxFloor`, the fork mechanism) at the legacy stream's head at its first send, so
+  its sequences start above every legacy one; the folded cursor stays one monotone number that is valid in
+  either stream. A topic's reader drains the legacy messages of that topic past its cursor, then the topic
+  stream. Existing data is read where it lies; nothing is copied or rewritten.
+- **Per-topic bounds.** `inboxMaxBacklog` and `inboxMaxRetained` apply per topic stream, so the pin and
+  `InboxFullError` are per topic (the hot topic is never refused for the cold one's sake), and trim reads one
+  cursor per stream instead of the minimum across topics. Topic cardinality becomes a resource: a new
+  `inboxMaxTopics` (default 64) per chain, counted from a registry entry (below), refuses the 65th topic.
+- **Enumeration.** Streams are found by name only through the optional `listExecutionsPage`, so the chain keeps
+  a registry: the first send of a topic appends an `INBOX_TOPIC` marker (not a message, never delivered) to the legacy
+  stream, and the owner's cursors name every topic it ever consumed. Retirement deletes the legacy
+  stream, every registered topic stream and (as the sweep's catch-all) any `#`-suffixed stream whose chain is
+  terminal.
+- **Reserved ids.** A caller-chosen execution id ending in `#` plus 16 hex digits would alias a topic stream of
+  another chain, so it is refused at `start` (as the `<x>~<digits>` successor shape already is).
+- **Continue-as-new, fork, re-open.** Cursors (one space) and the dedupe window carry unchanged, so a
+  continuation needs nothing. A fork and a re-open seed each topic stream's floor from the inherited cursor, as
+  they seed the legacy stream today.
+- **Timers.** The due-now row is per execution and unchanged; the notify scan reads only the streams of the
+  topics the park waits on, so it gets cheaper, not different.
+- **Rolling upgrade.** A pre-D10 node writes only the legacy stream, so a fleet flag
+  (`kernel.features.inboxTopicStreams`, off until every node reads topic streams) gates the writer; readers
+  always read both.
+- **Erasure.** D9's purge and its subject mapping take the topic stream's chain from the part before `#`; the
+  registry makes the purge enumerable.
+
+### Tests (this amendment)
+
+`r2-erasure.test.ts` (memory, SQLite, Postgres): an in-flight payload is sealed at rest and absent from every raw
+row after the shred; a consume after the erasure delivers the marker, journaled once, and a fresh runtime folds the
+identical answer; a `send` after the erasure is refused and appends nothing; another subject's payload is intact.
+`inboxStream.test.ts` (crypto): the owner's subject, the marker in `throw` mode through `read`, `readFrom` and
+`readRange`, a re-minted key, every other stream still throws. `eraseSubject.test.ts` (compliance): the orphan
+stream is deleted after the shred and chains are resolved before it, a fork's chain by its stamp, a later
+generation by its start, a `continued` execution never purges, another subject's stream is untouched, a parked
+erasure purges on completion, a store that cannot delete is a no-op. `r2-discard.test.ts` (memory, SQLite,
+Postgres): the pin is released and the consumed prefix trimmed; the fact is kernel-stamped, carries no payload and
+replays; the discarded message is never delivered and the next is; other topics and the park are untouched;
+idempotent; one answer entry however many discards; a running owner refused with nothing appended; invalid
+bounds refused and the next message not swallowed; a finished owner is `InboxClosedError`; closed by default, opened
+per tenant, the operator recorded, existence not an oracle; a discard racing a live delivery lands on retry. A wire
+vector pins the fold. Each was revert-checked: undoing the change fails the test that names it, and restoring it passes.
+

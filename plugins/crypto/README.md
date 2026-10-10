@@ -50,6 +50,18 @@ await shredSubject(keys, innerEvents, executionId, { reason: "gdpr-erasure", sna
 - **A3 — tombstone at shred time.** `PAYLOAD_SHREDDED` is appended by
   `shredSubject`, never at replay time, so replay stays a pure read and
   deterministically *encounters* the erasure.
+- **A5 — a message still in flight in an inbox (ADR 0110).** A chain's inbox
+  stream `__loom_inbox__:<chainId>` resolves to the SAME subject as its owner
+  (`subjectOf` is asked about the chain id, the generation-0 execution), so an
+  `INBOX_MESSAGE: ["payload"]` path (registered for you by `defineConfig` when
+  `security.crypto` and `kernel.features.inbox` are both on) seals an unconsumed
+  payload under the owner's key and a shred makes it unreadable. A read of an inbox
+  stream NEVER throws `PayloadShreddedError`, whatever `onShredded` says: it is read
+  by senders (backlog scan) and the trim, and a payload nobody can open reaches the
+  consumer as the `{ $shredded: true }` marker, never as ciphertext or the raw value.
+  After the subject is shredded a new `send` is refused by the key store (a
+  destroyed key is never recreated). `MESSAGE_CONSUMED.payload` in the owner's log is
+  yours to declare sensitive, like any event.
 - **Real encryption** — AES-256-GCM with a per-value random IV and an auth tag;
   a wrong key fails, not silently mis-decrypts.
 

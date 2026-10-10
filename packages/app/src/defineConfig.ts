@@ -74,6 +74,7 @@ import type {
 import { InProcessA2ABus } from "./InProcessA2ABus";
 import {
   type PrincipalCryptoOptions,
+  registerInboxPaths,
   registerPrincipalPaths,
   resolvePrincipalIdentity,
 } from "./principalPolicy";
@@ -1050,6 +1051,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     codec: config.principalCodec,
   });
   if (config.crypto !== undefined) registerPrincipalPaths(config.crypto);
+  if (config.crypto !== undefined && config.kernel?.features?.inbox === true) {
+    registerInboxPaths(config.crypto);
+  }
   const killSwitch: KillSwitchRegistry | undefined =
     config.killSwitch ?? (strict ? new InMemoryKillSwitch() : undefined);
   const ledger = new BudgetLedger();

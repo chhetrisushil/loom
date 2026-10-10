@@ -500,11 +500,15 @@ export type ExecutionOp =
   | "query"
   | "actAsOwner"
   | "send"
-  | "annotate";
+  | "annotate"
+  | "discard";
 // `"actAsOwner"` (ADR 0111 D7) authorizes `fork(…, { actAs: "owner" })` on the PARENT: the fork
 // then runs the owner's remaining effects under the owner's grants instead of the forker's.
 // `"send"` (ADR 0110 D1) authorizes `runtime.send`, the only writer of an execution's inbox.
 // `"annotate"` (ADR 0116) authorizes `runtime.recordOutcome`, a late reward on a FINISHED execution.
+// `"discard"` (ADR 0110 amendment) authorizes `runtime.discardInbox`, an operator's journaled skip of
+// unconsumed inbox messages: it destroys messages a sender was told were accepted, so it is closed by
+// default (`executionAccessPolicy` maps it to `"deny"`) and an integrator opens it for its operators.
 
 export interface ExecutionAuthzRequest {
   op: ExecutionOp;
@@ -1201,6 +1205,61 @@ export interface SendResult {
   inboxSeq: number;
   /** The execution the message was addressed to after following a continuation to the head. */
   executionId: string;
+}
+
+/** What `runtime.discardInbox` takes (ADR 0110 amendment, D8). */
+export interface DiscardInboxInput {
+  /** The topic whose cursor advances. Other topics' messages are untouched. */
+  topic: string;
+  /**
+   * Skip every unconsumed message of `topic` with `inboxSeq <= throughSeq`. At most the stream's
+   * current head: an operator discards what exists, never a sequence a future message will take.
+   */
+  throughSeq: number;
+  /** Free text for the audit trail (journaled, at most 256 characters). */
+  reason?: string;
+}
+
+export interface DiscardInboxOptions {
+  /** The authenticated operator, judged as `ExecutionOp` `"discard"` against the chain head's owner. */
+  principal?: PrincipalChain;
+  /** The kernel-internal grant (see `WorkflowRuntime.systemOptions`). */
+  system?: SystemGrant;
+}
+
+export interface DiscardInboxResult {
+  /** The execution the discard was journaled in (the chain's head). */
+  executionId: string;
+  topic: string;
+  /** How many messages the journaled cursor advance skipped (`0`: nothing to do, nothing appended). */
+  skipped: number;
+  /** The topic's cursor after the call. */
+  cursor: number;
+}
+
+/**
+ * `discardInbox` refused with nothing appended. `reason` is stable:
+ * - `not-parked`: the owner is running (or resumed while the discard was in flight). The discard is a
+ *   fact in the OWNER's log, which only a parked owner can accept without racing its own appends;
+ *   retry once it parks. `retryable`.
+ * - `contended`: the fence kept moving. `retryable`.
+ * - `invalid`: a bad topic, a negative or non-integer `throughSeq`, or one beyond the stream's head.
+ */
+export class InboxDiscardRefusedError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly reason: "not-parked" | "contended" | "invalid",
+    detail: string
+  ) {
+    super(
+      `discardInbox on execution "${executionId}" refused (${reason}): ${detail} Nothing was appended.`
+    );
+    this.name = "InboxDiscardRefusedError";
+    Object.setPrototypeOf(this, InboxDiscardRefusedError.prototype);
+  }
+  get retryable(): boolean {
+    return this.reason !== "invalid";
+  }
 }
 
 /** ADR 0116 — a late reward for a decision of a FINISHED execution. */

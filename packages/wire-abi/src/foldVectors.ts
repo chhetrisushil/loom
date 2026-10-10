@@ -366,6 +366,74 @@ export const FOLD_VECTORS: FoldVector[] = [
     },
   },
   {
+    // ADR 0110 amendment (D8): an operator discard is an ordinary stamped MESSAGE_CONSUMED whose
+    // waitId no wait can carry. The cursor advances (monotone), the id joins the dedupe window, and the
+    // fixed waitId records ONE answer (first wins) whose payload is null, however many discards run. No
+    // fold change: an older node folds the same log identically.
+    name: "an operator discard (MESSAGE_CONSUMED under the reserved discard waitId)",
+    events: [
+      ev("v11", 0, "EXECUTION_STARTED", { input: {} }),
+      ev(
+        "v11",
+        1,
+        "MESSAGE_CONSUMED",
+        {
+          waitId: "__loom_discard__",
+          topic: "cold",
+          messageId: "d1",
+          inboxSeq: 4,
+          sender: { actor: "ops" },
+          payload: null,
+          discarded: true,
+          skipped: 2,
+        },
+        { kernel: true }
+      ),
+      ev(
+        "v11",
+        2,
+        "MESSAGE_CONSUMED",
+        {
+          waitId: "__loom_discard__",
+          topic: "cold",
+          messageId: "d2",
+          inboxSeq: 9,
+          sender: { actor: "ops" },
+          payload: null,
+          discarded: true,
+          skipped: 1,
+        },
+        { kernel: true }
+      ),
+      ev(
+        "v11",
+        3,
+        "MESSAGE_CONSUMED",
+        {
+          waitId: "__loom_discard__",
+          topic: "cold",
+          messageId: "d3",
+          inboxSeq: 3,
+          sender: { actor: "ops" },
+          payload: null,
+          discarded: true,
+          skipped: 0,
+        },
+        { kernel: true }
+      ),
+    ],
+    expected: {
+      status: "running",
+      sequence: 3,
+      variables: {
+        _input: {},
+        _inbox: { cursors: { cold: 9 }, dedupe: ["d1", "d2", "d3"] },
+        _waitAnswers: { __loom_discard__: { kind: "inbox", name: "cold", payload: null } },
+      },
+      frames: {},
+    },
+  },
+  {
     // ADR 0112 D2, ADR 0115 D2, ADR 0116 D1: the scope outcome, an open metering dimension (a bad
     // key skipped, deterministically) and a late outcome.
     name: "PARALLEL_COMPLETED, RESOURCE_METERED.custom and a late OUTCOME_RECORDED",
