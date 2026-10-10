@@ -40,6 +40,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "StartFencedOutError",
   "PrincipalUnrestorableError",
   "StorageWriteError",
+  // a deployment mismatch (this node cannot write per-topic inbox streams after the fleet switch): no retry helps
+  "InboxTopicStreamsRequiredError",
   // the environment cannot host the runtime's scopes (no AsyncLocalStorage): no retry helps
   "AsyncContextUnavailableError",
   // fencing / supersession: this execution no longer owns its log; a leaked egress or spawn bound
