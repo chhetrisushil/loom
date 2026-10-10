@@ -4,7 +4,14 @@ import type { ExecutionContext } from "@loom/workflow-runtime";
 import { z } from "zod";
 import { isTerminalToolError } from "./toolFailure";
 import { WITHHELD_DESCRIPTION, isRemoteTool, toolSpecFor, validateToolInput } from "./toolSchema";
-import { Bm25ToolRanker, type ToolRanker, firstLineOf } from "./toolSearch";
+import {
+  Bm25ToolRanker,
+  type ToolRanker,
+  type ToolRankerFactory,
+  type ToolSearchDoc,
+  firstLineOf,
+  resolveStopwords,
+} from "./toolSearch";
 
 // ── R22 (ADR 0125) — tool search: the loop half ─────────────────────────────────
 //
@@ -54,7 +61,7 @@ export interface SkillSearchSource {
    * Present, or a custom `toolSearch.ranker` present: the session ranks tools and skills with two
    * separate rankers and composes the page by rank position, never by mixing scores.
    */
-  readonly skillRanker?: ToolRanker | undefined;
+  readonly skillRanker?: ToolRanker | ToolRankerFactory | undefined;
 }
 
 /** A skill hit as the model reads it. It is NOT loaded: the model calls the activation tool. */
@@ -110,8 +117,21 @@ export interface ToolSearchConfig {
    * R22c (ADR 0125 D13): a custom ranker ranks TOOLS only. It is never given a skill doc or key; when
    * skill discovery is on, skills are ranked separately (built-in BM25F over skill docs, or
    * `skillActivation.skillRanker`) and the page interleaves the two by rank position.
+   *
+   * R22e (ADR 0125 D15): may instead be a {@link ToolRankerFactory}, `(docs) => ToolRanker`, called at
+   * most once per run on the first search with the sanitized docs of THIS run's searchable tools
+   * (the exact vocabulary the built-in BM25F indexes: host annotations, first-party tags/aliases,
+   * vouched descriptions; never an un-vouched remote's text). A factory that throws is
+   * `search_unavailable` and is retried on the next search.
    */
-  ranker?: ToolRanker;
+  ranker?: ToolRanker | ToolRankerFactory;
+  /**
+   * R22e (ADR 0125 D15): query terms the built-in BM25F ignores ("bill THE customer"). Default: a
+   * small English list ({@link DEFAULT_STOPWORDS}); `[]` disables. Query-only (the index is
+   * unchanged), and an all-stopword query keeps its terms. At most 256 entries. Also applies to the
+   * built-in skill index. A custom ranker is unaffected.
+   */
+  stopwords?: readonly string[];
 }
 
 const searchInput = z.object({
@@ -161,6 +181,73 @@ const hitDescription = (t: ToolDefinition): string =>
     ? firstLineOf(toolSpecFor(t).description, MAX_RESULT_DESCRIPTION)
     : WITHHELD_DESCRIPTION;
 
+/**
+ * R22e (ADR 0125 D15) — the search vocabulary of `tools`, ONE source of the D7 trust policy: exactly
+ * the docs the built-in BM25F indexes. The host's `annotations` (tags/aliases per id) are always
+ * included; a first-party tool contributes its own tags/aliases and description; a remote
+ * (third-party) tool's description and self-declared tags/aliases count only as description-level
+ * text and only if the operator vouched (`trustJsonSchemaText`); a tainted description never does.
+ * Pure; the output is what a prebuilt shared ranker should be built from.
+ */
+export function toolSearchDocs(
+  tools: readonly ToolDefinition[],
+  opts: {
+    readonly annotations?: Readonly<
+      Record<string, { tags?: readonly string[]; aliases?: readonly string[] }>
+    >;
+  } = {}
+): ToolSearchDoc[] {
+  return tools.map((t) => {
+    const host = opts.annotations?.[t.id];
+    // Trusted vocabulary: the host's annotations and the tool author's own, the last ONLY for a
+    // first-party tool. A remote tool's self-declared tags/aliases are the server's claims.
+    const own = isThirdParty(t) ? undefined : t;
+    const remote = isThirdParty(t) && vouched(t) ? [...(t.tags ?? []), ...(t.aliases ?? [])] : [];
+    return {
+      id: t.id,
+      // An un-vouched description is not ranked on: it is attacker text.
+      ...(vouched(t) && { description: [t.description, ...remote].join(" ") }),
+      tags: [...(host?.tags ?? []), ...(own?.tags ?? [])],
+      aliases: [...(host?.aliases ?? []), ...(own?.aliases ?? [])],
+    };
+  });
+}
+
+/** R22e: the search docs of skills (host-registry author text, vouched by construction); raw skill ids. */
+export function skillSearchDocs(skills: Iterable<SkillDefinition>): ToolSearchDoc[] {
+  return [...skills].map((s) => ({
+    id: s.id,
+    description: String(s.description),
+    tags: s.tags ?? [],
+    aliases: s.aliases ?? [],
+  }));
+}
+
+/**
+ * R22e: a ranker built lazily from `docs()` by a host factory. Built on the first `rank`, at most
+ * once on success; a factory that throws (or returns something that is not a ranker) is NOT cached,
+ * so the next search tries again (a transient failure, e.g. a model still loading, must not poison
+ * the run; the cost is bounded by `maxSearches`). `kind` is the built ranker's, read after `rank`.
+ */
+function lazyFactoryRanker(factory: ToolRankerFactory, docs: () => ToolSearchDoc[]): ToolRanker {
+  let built: ToolRanker | undefined;
+  return {
+    get kind() {
+      return built?.kind ?? "custom";
+    },
+    rank: (query, limit) => {
+      if (built === undefined) {
+        const r = factory(docs());
+        if (r === null || typeof r !== "object" || typeof r.rank !== "function") {
+          throw new TypeError("a toolSearch ranker factory must return a ToolRanker");
+        }
+        built = r;
+      }
+      return built.rank(query, limit);
+    },
+  };
+}
+
 function positiveInt(name: string, v: number | undefined, def: number, ceiling: number): number {
   const n = v ?? def;
   if (!Number.isSafeInteger(n) || n < 1 || n > ceiling) {
@@ -188,6 +275,7 @@ export class ToolSearchSession {
   private readonly searchable = new Set<string>();
   private readonly loadedIds = new Set<string>();
   private readonly ranker: ToolRanker;
+  private readonly stopwords: readonly string[] | undefined;
   private readonly maxPerSearch: number;
   private readonly maxLoaded: number;
   private readonly maxSearches: number;
@@ -258,8 +346,24 @@ export class ToolSearchSession {
         this.initial.push(t);
       }
     }
+    try {
+      resolveStopwords(cfg.stopwords);
+    } catch (err) {
+      throw new ToolSearchError(`toolSearch.${(err as Error).message}`);
+    }
+    this.stopwords = cfg.stopwords;
     this.customRanker = cfg.ranker !== undefined;
-    this.ranker = cfg.ranker ?? this.lazyBm25(cfg);
+    this.ranker =
+      cfg.ranker === undefined
+        ? this.lazyBm25(cfg)
+        : typeof cfg.ranker === "function"
+          ? lazyFactoryRanker(cfg.ranker, () =>
+              toolSearchDocs(
+                [...this.searchable].map((id) => this.byId.get(id) as ToolDefinition),
+                { ...(cfg.annotations !== undefined && { annotations: cfg.annotations }) }
+              )
+            )
+          : cfg.ranker;
     this.definition = {
       _tag: "ToolDefinition",
       id: this.name,
@@ -294,7 +398,14 @@ export class ToolSearchSession {
     this.skillSource = src;
     for (const s of src.discoverable()) this.skillById.set(s.id, s);
     this.dual = this.customRanker || src.skillRanker !== undefined;
-    if (this.dual) this.skillRanker = src.skillRanker ?? this.lazySkillBm25();
+    if (this.dual) {
+      this.skillRanker =
+        src.skillRanker === undefined
+          ? this.lazySkillBm25()
+          : typeof src.skillRanker === "function"
+            ? lazyFactoryRanker(src.skillRanker, () => skillSearchDocs(this.skillById.values()))
+            : src.skillRanker;
+    }
     this.definition = {
       ...this.definition,
       description: `${this.definition.description} It also finds skills (returned under \`skills\`): a skill hit loads nothing by itself; pass its id to \`${src.activationName}\` to get its instructions (search only helps find ids; activation is not gated on it).`,
@@ -305,38 +416,22 @@ export class ToolSearchSession {
   private lazyBm25(cfg: ToolSearchConfig): ToolRanker {
     let built: Bm25ToolRanker | undefined;
     const build = (): Bm25ToolRanker =>
-      new Bm25ToolRanker([
-        ...[...this.searchable]
-          .filter((id) => !this.combined || !id.startsWith(SKILL_KEY))
-          .map((id) => {
-            const t = this.byId.get(id) as ToolDefinition;
-            const host = cfg.annotations?.[id];
-            // Trusted vocabulary: the host's annotations and the tool author's own — the last ONLY for
-            // a first-party tool. A remote tool's self-declared tags/aliases are the server's claims:
-            // they count as description-level text, and only if the operator vouched for that text
-            // (`trustJsonSchemaText`). An un-vouched tool contributes its id and the host's annotations.
-            const own = isThirdParty(t) ? undefined : t;
-            const remote =
-              isThirdParty(t) && vouched(t) ? [...(t.tags ?? []), ...(t.aliases ?? [])] : [];
-            return {
-              id,
-              // An un-vouched description is not ranked on: it is attacker text.
-              ...(vouched(t) && { description: [t.description, ...remote].join(" ") }),
-              tags: [...(host?.tags ?? []), ...(own?.tags ?? [])],
-              aliases: [...(host?.aliases ?? []), ...(own?.aliases ?? [])],
-            };
-          }),
-        // Skills: host-registry author text, so vouched by construction; ranked with the same fields.
-        // Only in the combined (single-index) mode: with two rankers the tool index has no skills.
-        ...(this.combined
-          ? [...this.skillById.values()].map((s) => ({
-              id: SKILL_KEY + s.id,
-              description: String(s.description),
-              tags: s.tags ?? [],
-              aliases: s.aliases ?? [],
-            }))
-          : []),
-      ]);
+      new Bm25ToolRanker(
+        [
+          ...toolSearchDocs(
+            [...this.searchable]
+              .filter((id) => !this.combined || !id.startsWith(SKILL_KEY))
+              .map((id) => this.byId.get(id) as ToolDefinition),
+            { ...(cfg.annotations !== undefined && { annotations: cfg.annotations }) }
+          ),
+          // Skills share the tool index only in the combined (single-index) mode: with two rankers
+          // the tool index has no skills.
+          ...(this.combined
+            ? skillSearchDocs(this.skillById.values()).map((d) => ({ ...d, id: SKILL_KEY + d.id }))
+            : []),
+        ],
+        { ...(this.stopwords !== undefined && { stopwords: this.stopwords }) }
+      );
     return {
       kind: "bm25f",
       rank: (query, limit) => {
@@ -359,14 +454,9 @@ export class ToolSearchSession {
       rank: (query, limit) => {
         built =
           built ??
-          new Bm25ToolRanker(
-            [...this.skillById.values()].map((s) => ({
-              id: s.id,
-              description: String(s.description),
-              tags: s.tags ?? [],
-              aliases: s.aliases ?? [],
-            }))
-          );
+          new Bm25ToolRanker(skillSearchDocs(this.skillById.values()), {
+            ...(this.stopwords !== undefined && { stopwords: this.stopwords }),
+          });
         return built.rank(query, limit);
       },
     };

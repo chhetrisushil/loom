@@ -49,10 +49,23 @@ export {
   toolQueryTerms,
   tokenizeToolText,
 } from "./toolSearch";
-export type { SearchableTool, ToolHit, ToolRanker } from "./toolSearch";
+export { DEFAULT_STOPWORDS, MAX_STOPWORDS } from "./toolSearch";
+export type {
+  SearchableTool,
+  ToolHit,
+  ToolRanker,
+  ToolRankerFactory,
+  ToolSearchDoc,
+} from "./toolSearch";
 export { SOURCE_SKILL_ACTIVATION, SkillActivationError } from "./skillActivation";
 export type { SkillActivationConfig } from "./skillActivation";
-export { SOURCE_TOOL_SEARCH, ToolSearchError, ToolSearchSession } from "./toolSearchSession";
+export {
+  SOURCE_TOOL_SEARCH,
+  ToolSearchError,
+  ToolSearchSession,
+  skillSearchDocs,
+  toolSearchDocs,
+} from "./toolSearchSession";
 export type {
   SkillSearchHit,
   ToolSearchConfig,

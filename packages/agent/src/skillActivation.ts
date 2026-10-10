@@ -7,7 +7,7 @@ import type { SkillRegistry } from "./SkillRegistry";
 import { isTerminalToolError } from "./toolFailure";
 import { toolResultContent } from "./toolResultContent";
 import { cap, toolSpecFor, validateToolInput } from "./toolSchema";
-import { type ToolRanker, firstLineOf } from "./toolSearch";
+import { type ToolRanker, type ToolRankerFactory, firstLineOf } from "./toolSearch";
 
 // ── R22 (ADR 0125 D11) — mid-loop skill activation ──────────────────────────────
 //
@@ -83,7 +83,7 @@ export interface SkillActivationConfig {
    * position, tool first, up to `maxPerSearch` (scores are never mixed). Neither ranker is called on
    * replay. A ranker failure is `search_unavailable` with nothing recorded.
    */
-  skillRanker?: ToolRanker;
+  skillRanker?: ToolRanker | ToolRankerFactory;
 }
 
 /** What the activation session needs to know about the loop's `toolSearch` (R22b). */
@@ -192,7 +192,7 @@ export class SkillActivationSession {
   readonly discovery: "index" | "search" | "both";
   private readonly searchName: string | undefined;
   /** R22c: the host skill ranker, when configured (the {@link SkillSearchSource} contract). */
-  readonly skillRanker: ToolRanker | undefined;
+  readonly skillRanker: ToolRanker | ToolRankerFactory | undefined;
   private readonly active = new Set<string>();
   /** D14 — the digest each ACTIVE skill's instructions were pinned to (absent: an old record). Bounded by `maxActive`. */
   private readonly digests = new Map<string, string>();
@@ -231,8 +231,14 @@ export class SkillActivationSession {
           `skillActivation.discovery "${discovery}" needs \`toolSearch\` (skills are found through search_tools)`
         );
       }
-      if (cfg.skillRanker !== undefined && typeof cfg.skillRanker.rank !== "function") {
-        throw new SkillActivationError("skillActivation.skillRanker must be a ToolRanker");
+      if (
+        cfg.skillRanker !== undefined &&
+        typeof cfg.skillRanker !== "function" &&
+        typeof cfg.skillRanker.rank !== "function"
+      ) {
+        throw new SkillActivationError(
+          "skillActivation.skillRanker must be a ToolRanker or a ToolRankerFactory"
+        );
       }
       this.searchName = opts.search.name;
     } else if (cfg.skillRanker !== undefined) {

@@ -1741,7 +1741,7 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 //   interface SkillActivationConfig { catalog?: "registry" | SkillDefinition[]   // host-registered skills; upfront-selected ones are not offered
 //                                     maxActive?: 5 (<=50); maxIndex?: 50 (<=500); maxIndexBytes?: 8192 (<=128 KiB); maxInstructionBytes?: 32768 (<=1 MiB); toolName?: "activate_skill";
 //                                     discovery?: "index" | "search" | "both"   // R22b D12: "search"/"both" need toolSearch; skills found via search_tools
-//                                     skillRanker?: ToolRanker                  // R22c D13: ranks SKILLS only (raw skill ids); needs discovery search/both; a custom toolSearch.ranker ranks TOOLS only; page interleaves by rank position, tool first }
+//                                     skillRanker?: ToolRanker | ToolRankerFactory                  // R22c D13: ranks SKILLS only (raw skill ids); needs discovery search/both; a custom toolSearch.ranker ranks TOOLS only; page interleaves by rank position, tool first }
 //   R22b: search hits for skills = `skills: [{ kind: "skill", id, description }]` beside the unchanged `tools`; share maxPerSearch; never loaded by the search (call activate_skill); recorded as `skills: string[]` in the agent-tool-search decision
 //   index of unselected skills in the turn-0 system prompt; the skill's instructions are the TOOL RESULT; its tools join the menu (deduped)
 //   each activation = ONE recorded decision `<agent>#turn:<i>:tool:<j>:skill` (source "agent-skill-activation"); an instructions refusal records its verdict `{ skill, refused }` (replay reproduces it); other refusals are typed error results, nothing recorded; re-activating an active skill re-delivers its instructions
@@ -1749,9 +1749,13 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 //   R22d D14: an accepted activation records `{ skill, digest }` (sha256 hex of the delivered instructions); a replay / re-delivery whose current text differs returns the typed error `instructions_changed` (tools stay, nothing recorded, process warning LOOM_AGENT_SKILL_CHANGED); rankers are clamped to the `limit` they were asked for
 // ToolDefinition.origin?: "remote" — set by the MCP and A2A plugins; tool search AND toolSpecFor treat origin remote / jsonInputSchema / kind a2a as un-vouched (description withheld in the model-facing spec unless trustJsonSchemaText)
 class SkillActivationError; const SOURCE_SKILL_ACTIVATION = "agent-skill-activation"; ToolSearchSession.noteLoaded(tools)
+// R22e D15: toolSearch.ranker / skillActivation.skillRanker: ToolRanker | ToolRankerFactory; toolSearch.stopwords?: string[] (query-only, [] disables, <=256)
+type ToolRankerFactory = (docs: readonly ToolSearchDoc[]) => ToolRanker   // sync; once per run, first search; throw = search_unavailable (retried next search); replay never calls it
+interface ToolSearchDoc { id: string; description?: string; tags: readonly string[]; aliases: readonly string[] }   // what the built-in BM25F indexes (D7 trust applied)
+function toolSearchDocs(tools: ToolDefinition[], opts?: { annotations? }): ToolSearchDoc[]; function skillSearchDocs(skills: Iterable<SkillDefinition>): ToolSearchDoc[]; const DEFAULT_STOPWORDS, MAX_STOPWORDS = 256
 interface ToolRanker { kind: string; rank(query: string, limit: number): readonly { id: string; score: number }[] | Promise<...> }
-class Bm25ToolRanker implements ToolRanker { constructor(tools: { id; description?; tags?; aliases? }[]); size: number }   // BM25F: name 3, aliases 2, tags 2, description 1
-function tokenizeToolText(text, maxTokens): string[]; function toolQueryTerms(query): string[]; function normalizeLabels(labels?, maxCount?, maxChars?): string[]
+class Bm25ToolRanker implements ToolRanker { constructor(tools: { id; description?; tags?; aliases? }[], opts?: { stopwords?: string[] }); size: number }   // BM25F: name 3, aliases 2, tags 2, description 1
+function tokenizeToolText(text, maxTokens): string[]; function toolQueryTerms(query, stopwords?: ReadonlySet<string>): string[]; function normalizeLabels(labels?, maxCount?, maxChars?): string[]
 class ToolSearchSession; const SOURCE_TOOL_SEARCH = "agent-tool-search"; class ToolSearchError
 function registerReasoningRoutes(effects: { register(id, effect) }, reasoning: ReasoningRuntime, o?: { prefix?: string; stream?: boolean }): (routeId: string) => string
 #+end_src

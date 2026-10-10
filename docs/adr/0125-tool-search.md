@@ -274,6 +274,38 @@ The re-review (one P2, one P3). Both fixed.
   `.describe()` text today, so nothing changes for it; if a future revision adds descriptions to it they will be withheld unless the
   peer is vouched for with `trustDescriptions`. Recorded as a residual, not a defect.
 
+**D15 — Ranker vocabulary and a query stoplist (R22e, user ruling 2026-10-10: "give the custom ranker the vocabulary rather than make it rebuild it").** Additive; a config with no factory and no `stopwords` changes only in result ORDER (below).
+- **1. One source of the trust policy.** The doc-building of the built-in index is extracted into exported pure functions,
+  `toolSearchDocs(tools, { annotations })` and `skillSearchDocs(skills)`, returning `ToolSearchDoc[]` (`{ id, description?, tags, aliases }`).
+  They are exactly what the built-in BM25F indexes (the built-in path calls them; a test pins that the built-in ranking equals
+  `Bm25ToolRanker(toolSearchDocs(...))`). The D7 rules live there and only there: host annotations always; a first-party tool's own
+  tags/aliases/description; a remote tool's description and self-declared tags/aliases only as description-level text and only if
+  vouched (`trustJsonSchemaText`); a tainted or un-vouched description never. (The per-tool `trustJsonSchemaText` flag is the
+  vouching input, so there is no separate option for it.) A host that wrote its own doc-builder would be re-implementing this
+  and, by the failure modes seen in the example, indexing the attacker's text.
+- **2. Factory form.** `toolSearch.ranker` and `skillActivation.skillRanker` accept `ToolRanker | ToolRankerFactory`,
+  `ToolRankerFactory = (docs: readonly ToolSearchDoc[]) => ToolRanker` (sync), told apart by `typeof === "function"`. It is
+  called at most once per run, lazily on the first search that reaches that ranker, with the docs of THIS run's searchable tools
+  (catalog filtered by `namespaces`; never a `\0skill:` key) or of the discoverable skills (raw ids). Recording is unchanged
+  (`ranker: <kind>` of the BUILT ranker; before a build it reads `"custom"`, never recorded), and replay never calls it (tested).
+  A factory that throws or returns a non-ranker is `search_unavailable` (fixed reason, nothing recorded); terminal errors propagate.
+  **A failed factory is not cached**: the next search calls it again. A transient failure (a model still loading) should not
+  disable search for the rest of the run, and the retry cost is bounded by `maxSearches`; the failure is never recorded, so replay is unaffected.
+- **3. Why a factory and not docs passed on every `rank` call.** `rank(query, limit)` stays the one stable interface, a ranker
+  that indexes (BM25, embeddings) builds once, and a per-run ranker needs the run's docs only once. A PREBUILT, shared ranker (the
+  existing object form, build once for a big catalog) takes its docs from `toolSearchDocs(catalog, { annotations })`, so it gets
+  the same sanitized vocabulary without the factory; the loop still intersects its hits with the run's allowed set.
+- **4. Query stoplist.** The built-in BM25F ignores a small documented English list (`DEFAULT_STOPWORDS`: articles, conjunctions,
+  common prepositions, copulas, pronouns, a few auxiliaries; deliberately NOT negations, question words or verbs) in QUERY terms
+  only. Without it "bill the customer" matched every alias that contained "the" ("give the money back", "why is the database
+  slow"). The index is unchanged, so a tool named `get_the_x` is still found by name. Stopwords are dropped before the distinct-term
+  cap; if filtering would leave no terms, the unfiltered terms are kept (a query of only stopwords still searches). Configurable
+  with `toolSearch.stopwords?: readonly string[]` (normalized like labels, then tokenized like a query; `[]` disables; at most
+  256 entries, a config error beyond; a `Set`, so O(1) per term); it also reaches the built-in skill index and
+  `new Bm25ToolRanker(tools, { stopwords })`. A custom ranker is unaffected.
+- **Behaviour change.** Live result ORDER (and, for queries that matched only through a stopword, the result set) can differ from
+  before for the built-in ranker; set `stopwords: []` for the old behaviour. Replay never ranks, so existing logs are unaffected.
+
 ## Review round 1 (2026-10-09)
 
 The first adversarial review (verdict: not approved as drafted; design holds) found the following; all are fixed.
