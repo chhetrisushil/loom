@@ -25,6 +25,14 @@ import { ANSWERING_KINDS_SQL, KERNEL_KINDS_SQL, NOTIFY_CHANNEL, migrate } from "
  * 8000 bytes, and a failed NOTIFY fails the append itself. 1024 bytes leaves room for the worst
  * case: every byte a JSON control escape (6x) is 6144 bytes, plus the 63-byte schema and the
  * sender and sequence. The kernel puts no length rule on ids; real ones are UUIDs or short slugs.
+ *
+ * Sharp edges. (1) Derived streams are slightly longer than their execution: the inbox stream is
+ * `__loom_inbox__:${chainId}` (+15 bytes) and continueAsNew appends `~N` (+2 to 4), so an id at
+ * 1010-1024 bytes starts but its inbox `send` / continueAsNew is refused. Keep ids well below the
+ * cap, at most 900 bytes. (2) The runtime wraps this error: `start()` rejects with a
+ * `StorageWriteError` whose `cause` is the `ExecutionIdTooLongError`; check `err.cause`. (3) Under
+ * `TenantScopedEventStore` the cap counts the SCOPED id (`tenant:` prefix included), and the error
+ * reaches the caller with that scoped id, not the caller's own.
  */
 export const MAX_EXECUTION_ID_BYTES = 1024;
 
@@ -555,6 +563,7 @@ export class PostgresEventStore implements EventStore {
     throughSequence: number,
     metadata: Record<string, unknown>
   ): Promise<void> {
+    assertExecutionIdLength(toExecutionId);
     await this.ready;
     // Copy the prefix entirely inside Postgres — payload JSONB stays server-side (no
     // JS round-trip), id/execution_id are re-stamped, and provenance metadata is
@@ -570,6 +579,7 @@ export class PostgresEventStore implements EventStore {
   }
 
   async acquireFence(executionId: string): Promise<number> {
+    assertExecutionIdLength(executionId);
     await this.ready;
     // Atomic increment-and-return; the upsert makes concurrent acquirers strictly
     // ordered, so two nodes can never hold the same token.
@@ -619,6 +629,7 @@ export class PostgresEventStore implements EventStore {
     executionId: string,
     expect: { fence: number; parkSeq: number }
   ): Promise<AcquireFenceIfResult> {
+    assertExecutionIdLength(executionId);
     await this.ready;
     if (!Number.isSafeInteger(expect.fence) || !Number.isSafeInteger(expect.parkSeq)) {
       throw new TypeError("acquireFenceIf: fence and parkSeq must be safe integers");
