@@ -2,6 +2,7 @@ import { SkillRegistry } from "@loom/agent";
 import { agentSurfaceProjection, createSurfaceEmitter } from "@loom/agent-surface";
 import {
   EraseCoordinator,
+  type EraseSubjectOptions,
   type EraseSubjectResult,
   type Shredder,
   type SubjectExport,
@@ -883,9 +884,15 @@ export interface LoomApp {
   /**
    * T3 — request erasure of a subject (Art. 17), optionally scoped to a `tenant` (T3-R2.4).
    * Shreds now if the subject's executions are all terminal, else parks the request and
-   * completes it when the last one terminates. Throws unless `compliance.erase` is configured.
+   * completes it when the last one terminates; a PARKED (suspended) execution counts as live
+   * unless `options.parked` is `"shred"` (opt-in; see `EraseSubjectOptions`). Throws unless
+   * `compliance.erase` is configured.
    */
-  eraseSubject(subjectId: string, tenant?: string): Promise<EraseSubjectResult>;
+  eraseSubject(
+    subjectId: string,
+    tenant?: string,
+    options?: EraseSubjectOptions
+  ): Promise<EraseSubjectResult>;
   /**
    * Re-run pre-flight verification on demand (read-only, off-log). Returns the report;
    * the caller decides what to do with it (the CLI exits non-zero on `!ok`). Available
@@ -1634,13 +1641,13 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         ...(options?.tenant !== undefined && { tenant: options.tenant }),
       });
     },
-    eraseSubject(subjectId, tenant) {
+    eraseSubject(subjectId, tenant, options) {
       if (eraseCoordinator === undefined) {
         return Promise.reject(
           new Error("[loom] eraseSubject requires `compliance: { subjectOf, erase: { shred } }`")
         );
       }
-      return eraseCoordinator.eraseSubject(subjectId, tenant);
+      return eraseCoordinator.eraseSubject(subjectId, tenant, options);
     },
     verify(options) {
       return runVerify(resolveInput(options?.lint), verifyOptions);

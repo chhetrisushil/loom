@@ -471,3 +471,64 @@ describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)",
     expect(await store.read(streamOf("a1"))).toHaveLength(1);
   });
 });
+
+describe("EraseCoordinator and PARKED owners (review P2-2)", () => {
+  const suspend = (id: string, seq: number) =>
+    ev(id, seq, "EXECUTION_SUSPENDED", { condition: { on: "Go" } });
+  const make = async (parkedIds: string[], runningIds: string[] = []) => {
+    const store = new InMemoryAsyncEventStore();
+    for (const id of [...parkedIds, ...runningIds]) await seedStarted(store, id, "pat");
+    for (const id of parkedIds) await store.append(suspend(id, 1));
+    const events = (
+      await Promise.all([...parkedIds, ...runningIds].map((id) => store.read(id)))
+    ).flat();
+    const shred = vi.fn(async () => {});
+    const coord = new EraseCoordinator({
+      index: SubjectIndex.fromEvents(events, subjectOf),
+      eventStore: store,
+      shred,
+    });
+    return { store, shred, coord };
+  };
+
+  it("by default a suspended owner is LIVE: the erasure is parked (honestly) and nothing is shredded", async () => {
+    const { shred, coord } = await make(["p1"]);
+    const r = await coord.eraseSubject("pat");
+    expect(r).toMatchObject({ outcome: "parked", erased: [], pending: ["p1"] });
+    expect(shred).not.toHaveBeenCalled();
+    expect(coord.pendingSubjects()).toEqual(["pat"]);
+  });
+
+  it('{ parked: "shred" } shreds a subject whose non-terminal owners are all PARKED, and names them', async () => {
+    const { shred, coord } = await make(["p1", "p2"]);
+    const r = await coord.eraseSubject("pat", undefined, { parked: "shred" });
+    expect(r).toMatchObject({
+      outcome: "erased",
+      erased: ["p1", "p2"],
+      pending: [],
+      parkedShredded: ["p1", "p2"],
+    });
+    expect(shred).toHaveBeenCalledWith("pat", ["p1", "p2"]);
+  });
+
+  it('{ parked: "shred" } NEVER shreds past a RUNNING owner: it defers on exactly that one', async () => {
+    const { shred, coord } = await make(["p1"], ["r1"]);
+    const r = await coord.eraseSubject("pat", undefined, { parked: "shred" });
+    expect(r).toMatchObject({ outcome: "parked", erased: [], pending: ["r1"] });
+    expect(shred).not.toHaveBeenCalled();
+  });
+
+  it('{ parked: "defer" } is the default spelled out; a terminal-only subject is unaffected by the option', async () => {
+    const { store, shred, coord } = await make([], []);
+    await seedStarted(store, "t1", "pat");
+    await store.append(ev("t1", 1, "EXECUTION_COMPLETED", {}));
+    const c2 = new EraseCoordinator({
+      index: SubjectIndex.fromEvents(await store.read("t1"), subjectOf),
+      eventStore: store,
+      shred,
+    });
+    const r = await c2.eraseSubject("pat", undefined, { parked: "shred" });
+    expect(r).toMatchObject({ outcome: "erased", parkedShredded: [] });
+    void coord;
+  });
+});

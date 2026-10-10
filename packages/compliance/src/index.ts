@@ -15,6 +15,7 @@ export {
   EraseCoordinator,
   ERASURE_STREAM,
   type EraseCoordinatorOptions,
+  type EraseSubjectOptions,
   type EraseSubjectResult,
   type Shredder,
 } from "./eraseSubject";

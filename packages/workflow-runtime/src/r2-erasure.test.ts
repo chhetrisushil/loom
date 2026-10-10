@@ -3,6 +3,7 @@ import {
   EncryptingEventStore,
   InMemoryKeyStore,
   type KeyStore,
+  PayloadShreddedError,
   isShredded,
   shredSubject,
 } from "@loom/plugin-crypto";
@@ -20,6 +21,11 @@ import { InboxMessageRefusedError } from "./types";
 // `{ $shredded: true }` marker, journaled in the owner's log like any delivery, so a replay of that
 // log never consults the stream or the key again.
 
+const PRINCIPAL_PATHS = [
+  "principal.identity.tenant",
+  "principal.identity.actor",
+  "principal.identity.onBehalfOf",
+];
 const SECRET = "123-45-6789";
 // What `defineConfig` registers when crypto and the inbox are on (P3-2: the consumed copy too).
 const SENSITIVE = { INBOX_MESSAGE: ["payload"], MESSAGE_CONSUMED: ["payload"] };
@@ -34,14 +40,20 @@ for (const backend of inboxBackends("erase")) {
     let seq = 0;
     const id = () => `alice-${backend.name}-${++seq}-${Math.random().toString(36).slice(2, 6)}`;
 
-    function sealed() {
+    function sealed(sealPrincipal = false) {
       const raw = backend.make();
       const keys: KeyStore = new InMemoryKeyStore();
       const store = new EncryptingEventStore(raw.eventStore, keys, {
-        sensitive: SENSITIVE,
+        sensitive: {
+          ...SENSITIVE,
+          ...(sealPrincipal && { EXECUTION_STARTED: PRINCIPAL_PATHS }),
+        },
         subjectOf,
       });
-      const h = build({}, { ...raw, eventStore: store });
+      const h = build(sealPrincipal ? { principalIdentity: "encrypted" } : {}, {
+        ...raw,
+        eventStore: store,
+      });
       const erase = (executionIds: string[]) =>
         shredSubject(keys, raw.eventStore, executionIds[0] as string, {
           subjectId: "alice",
@@ -55,8 +67,9 @@ for (const backend of inboxBackends("erase")) {
 
     /**
      * Parked on a gate that is not the topic, so a message sent meanwhile stays IN FLIGHT in the
-     * stream. (Erasure only ever lands on a parked or finished execution: the coordinator's
-     * liveness gate, and the tombstone's append, both forbid a running one.)
+     * stream. (These tests call `shredSubject` directly on a parked owner. The coordinator does NOT
+     * shred a parked owner by default: a `suspended` execution is live to it and defers the erasure;
+     * `eraseSubject(..., { parked: "shred" })` is the opt-in. Neither shreds a RUNNING one.)
      */
     const parkedThenReceive = () =>
       flow("w", async (ctx) => {
@@ -174,6 +187,31 @@ for (const backend of inboxBackends("erase")) {
         await h.rt.send(e, { topic: "y", payload: ok, messageId: `ok${i}` });
       }
       expect(await raw.eventStore.read(inboxStreamId(e))).toHaveLength(3);
+    });
+
+    it("P2-2: a PARKED owner resumed after its subject was shredded fails cleanly with a typed error and appends nothing (its log holds sealed fields)", async () => {
+      const { raw, keys, h } = sealed(true);
+      const f = flow("w", async (ctx) => {
+        await ctx.suspend({ on: "Go" });
+        return "done";
+      });
+      h.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (
+        await h.rt.start(f, {}, { executionId: e, principal: { actor: "alice", tenant: "t1" } })
+      ).waitForSuspend();
+      const before = (await raw.eventStore.read(e)).length;
+      await shredSubject(keys, raw.eventStore, e, {
+        subjectId: "alice",
+        executionIds: [e],
+        snapshotStore: raw.snapshotStore,
+      });
+      // What the coordinator's opt-in `parked: "shred"` leaves behind: the owner is still parked,
+      // and a later resume fails with the typed error rather than folding ciphertext.
+      const err = await h.rt.resume(e, { eventType: "Go", payload: null }).catch((x) => x);
+      expect(err).toBeInstanceOf(PayloadShreddedError);
+      expect((await raw.eventStore.read(e)).length).toBe(before + 1); // only the tombstone
+      expect(JSON.stringify(await raw.eventStore.read(e))).not.toContain('"actor":"alice"');
     });
 
     it("after the erasure a send is refused loudly and appends nothing (the key is never resurrected)", async () => {
