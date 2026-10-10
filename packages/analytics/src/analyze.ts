@@ -119,6 +119,11 @@ export function costAnalytics(events: EventEnvelope[], options?: AnalyzeOptions)
   const a: CostAnalytics = { tokens: 0, costUsd: 0, ms: 0, meteredCalls: 0, quotaExceeded: false };
   const dims = new CustomDimensionTracker(options?.dimensionUnits);
   let custom: CustomTotals | undefined;
+  // Pass 1 fixes the admitted names (top by value); pass 2 attributes.
+  for (const e of events) {
+    if (e.eventType === "RESOURCE_METERED")
+      dims.observe((e.payload as { custom?: unknown }).custom);
+  }
   for (const e of events) {
     if (e.eventType === "RESOURCE_METERED") {
       const p = e.payload as { tokens?: number; costUsd?: number; ms?: number; custom?: unknown };
@@ -228,6 +233,11 @@ export function analyze(events: EventEnvelope[], options?: AnalyzeOptions): Anal
   const dims = new CustomDimensionTracker(options?.dimensionUnits);
   let custom: CustomTotals | undefined;
 
+  // Pass 1 fixes the admitted custom names (top by value); pass 2 attributes.
+  for (const e of events) {
+    if (e.eventType === "RESOURCE_METERED")
+      dims.observe((e.payload as { custom?: unknown }).custom);
+  }
   for (const e of events) {
     switch (e.eventType) {
       case "STEP_STARTED":

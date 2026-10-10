@@ -244,7 +244,8 @@ export function taskGraph(events: EventEnvelope[], executionId?: string): TaskGr
  * event landed (the log doesn't carry a stepId on the meter event, so we attribute to
  * the most recent STEP_STARTED — steps with no active step go to "(execution)").
  * Custom (open) dimensions are attributed the same way, in the same single pass, bounded at 32
- * distinct names per graph with an `"(other)"` bucket.
+ * distinct names per graph (the top by value, tie by name; the rest under `"(other)"`), so it walks
+ * the events twice. Totals equal the fold's `_resources.custom` until the cap is hit.
  */
 export function resourceGraph(
   events: EventEnvelope[],
@@ -256,6 +257,11 @@ export function resourceGraph(
   const byStep = new Map<string, ResourceNode>();
   let currentStep = "(execution)";
   const dims = new CustomDimensionTracker(options?.dimensionUnits);
+  // Pass 1 fixes the admitted custom names (top by value); pass 2 attributes per step.
+  for (const e of scoped) {
+    if (e.eventType === "RESOURCE_METERED")
+      dims.observe((e.payload as { custom?: unknown }).custom);
+  }
 
   for (const e of scoped) {
     if (e.eventType === "STEP_STARTED") {
@@ -390,12 +396,18 @@ export function formatIntrospection(x: RuntimeIntrospection, graph?: string): st
   if (wantAll || graph === "resources") {
     const r = x.resources;
     lines.push("resources:");
+    // Units are caller-supplied: strip control characters so one cannot rewrite the terminal.
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+    const cleanUnit = (u: string): string => u.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
     const units = r.customReport?.units;
     const fmtCustom = (c: CustomTotals | undefined): string =>
       c === undefined
         ? ""
         : Object.entries(c)
-            .map(([k, v]) => ` · ${v}${units?.[k] !== undefined ? ` ${units[k]}` : ""} ${k}`)
+            .map(
+              ([k, v]) =>
+                ` · ${v}${units?.[k] !== undefined ? ` ${cleanUnit(units[k] as string)}` : ""} ${k}`
+            )
             .join("");
     lines.push(
       `  total: ${r.total.tokens} tok · $${r.total.costUsd} · ${r.total.ms}ms${fmtCustom(r.total.custom)}`

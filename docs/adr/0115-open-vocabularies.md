@@ -140,9 +140,13 @@ bad keys folds to the same state on two replicas); fold equality on every existi
 - **Analytics (follow-up, done).** `@loom/analytics` attributes `RESOURCE_METERED.custom` like the built-ins:
   `analyze(...).cost.custom` / `costAnalytics` (per execution) and `resourceGraph` / `introspect`
   (`total.custom`, `byStep[].custom`; `loom introspect` prints them), in the same single pass. Absent when
-  nothing custom was metered, so built-in output is unchanged. Bounded per report: at most 32 distinct names
-  (first seen, log order), the rest summed under `"(other)"` with `customReport.otherNames` and a warning (the
-  overflow-name set is itself capped at 1024, then `otherNamesCapped`). Names and values the fold skips are
+  nothing custom was metered, so built-in output is unchanged. Bounded per report: at most 32 distinct names,
+  the TOP by total value (tie: name), so the result is order-independent and a late high-value name is never
+  buried; the rest are summed under `"(other)"` with `customReport.otherNames` and a warning (per-name totals
+  are tracked for at most 1024 names, then `otherNamesCapped`; the events are walked twice, O(events)
+  + O(names log names)). The cap is per report, not per execution: until it is hit the `custom` totals equal
+  the fold's `_resources.custom` (same name pattern, same 1e15 value ceiling, a built-in name inside
+  `custom` is summed as the fold does); `(other)` has no fold counterpart. Names and values the fold skips are
   skipped. Units are not in the log (no registry), so a caller passes `dimensionUnits` (`analyze`,
   `costAnalytics`, `introspect`) and they appear in `customReport.units`. Analytics has no per-flow or
   per-tenant axis for the built-ins either, so none is added for custom ones.

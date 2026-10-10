@@ -206,6 +206,9 @@ importers:
       '@loom/core':
         specifier: workspace:*
         version: link:../core
+      '@loom/replay-vm':
+        specifier: workspace:*
+        version: link:../replay-vm
       '@loom/verify':
         specifier: workspace:*
         version: link:../verify
