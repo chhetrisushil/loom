@@ -17,9 +17,11 @@ import {
 import {
   ContentMissingError,
   ContentResolvingEventStore,
+  ContentTouchingSnapshotStore,
   InMemoryContentStore,
   contentAddress,
   encodeValue,
+  isContentTouchingSnapshotStore,
 } from "./index";
 
 /** The ADR 0054 claim-check envelope shape (structural â€” no middleware dep). */
@@ -1183,6 +1185,105 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       });
       expect(acked.orphansReclaimed).toHaveLength(1);
+    });
+
+    describe("snapshot-store brand (best-effort detection, never a refusal)", () => {
+      const rawStore = () => ({
+        loadLatest: async () => null,
+        loadLatestBefore: async () => null,
+      });
+      const wrapped = (content: InMemoryContentStore) =>
+        new ContentTouchingSnapshotStore(new InMemoryAsyncSnapshotStore(), content);
+      const warnings = async (run: () => Promise<unknown>): Promise<string[]> => {
+        const seen: string[] = [];
+        const on = (w: Error & { code?: string }) => {
+          if (w.code === "LOOM_CONTENT_SNAPSHOT_UNWRAPPED") seen.push(w.message);
+        };
+        process.on("warning", on);
+        try {
+          await run();
+          await new Promise((r) => setImmediate(r)); // 'warning' is emitted on nextTick
+        } finally {
+          process.off("warning", on);
+        }
+        return seen;
+      };
+
+      it("isContentTouchingSnapshotStore recognises the decorator and nothing else", async () => {
+        const { content } = await seeded();
+        expect(isContentTouchingSnapshotStore(wrapped(content))).toBe(true);
+        expect(isContentTouchingSnapshotStore(new InMemoryAsyncSnapshotStore())).toBe(false);
+        expect(isContentTouchingSnapshotStore(null)).toBe(false);
+        expect(isContentTouchingSnapshotStore({ [Symbol.for("other")]: true })).toBe(false);
+      });
+
+      it("a branded store does NOT waive the explicit acknowledgement (it vouches only for itself)", async () => {
+        const { content, base } = await seeded();
+        await expect(
+          sweepUnpinnedContent({
+            ...base,
+            snapshotStores: [wrapped(content)],
+            reclaimOrphans: { completeScan: true },
+          })
+        ).rejects.toBeInstanceOf(ReclaimOrphansSnapshotAckError);
+        expect(content.size).toBe(1);
+      });
+
+      it("an unbranded store with the ack still erases and warns nothing (CLI raw reader)", async () => {
+        const { base } = await seeded();
+        let report: Awaited<ReturnType<typeof sweepUnpinnedContent>> | undefined;
+        const w = await warnings(async () => {
+          report = await sweepUnpinnedContent({
+            ...base,
+            snapshotStores: [rawStore()],
+            reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
+          });
+        });
+        expect(w).toEqual([]);
+        expect(report?.orphansReclaimed).toHaveLength(1);
+        expect(report?.snapshotStoresTouching).toBe(0);
+        expect(report?.snapshotStoresUnbranded).toBe(1);
+      });
+
+      it("all branded: counted, no warning", async () => {
+        const { content, base } = await seeded();
+        let report: Awaited<ReturnType<typeof sweepUnpinnedContent>> | undefined;
+        const w = await warnings(async () => {
+          report = await sweepUnpinnedContent({
+            ...base,
+            snapshotStores: [wrapped(content)],
+            reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
+          });
+        });
+        expect(w).toEqual([]);
+        expect(report?.snapshotStoresTouching).toBe(1);
+        expect(report?.snapshotStoresUnbranded).toBe(0);
+      });
+
+      it("a MIX in an erasing pass warns once, still erases; a dryRun does not warn", async () => {
+        const { content, base } = await seeded();
+        const stores = [wrapped(content), rawStore()];
+        const w = await warnings(async () => {
+          const r = await sweepUnpinnedContent({
+            ...base,
+            snapshotStores: stores,
+            reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
+          });
+          expect(r.orphansReclaimed).toHaveLength(1);
+        });
+        expect(w).toHaveLength(1);
+        expect(w[0]).toMatch(/1 of 2 snapshot stores/);
+        const dry = await seeded();
+        const wDry = await warnings(async () => {
+          await sweepUnpinnedContent({
+            ...dry.base,
+            snapshotStores: [wrapped(dry.content), rawStore()],
+            dryRun: true,
+            reclaimOrphans: { completeScan: true },
+          });
+        });
+        expect(wDry).toEqual([]);
+      });
     });
 
     it("with NO snapshotStores (an event store that cannot truncatePrefix) the acknowledgement is not needed", async () => {

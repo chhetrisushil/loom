@@ -26,8 +26,10 @@ export {
   type ContentResolvingEventStoreOptions,
 } from "./ContentResolvingEventStore";
 export {
+  CONTENT_TOUCHING_SNAPSHOT_STORE,
   ContentTouchingSnapshotStore,
   type ContentTouchingSnapshotStoreOptions,
+  isContentTouchingSnapshotStore,
 } from "./ContentTouchingSnapshotStore";
 export type { TouchErrorHook, TouchReport } from "./touchAround";
 export { ContentMissingError } from "./errors";

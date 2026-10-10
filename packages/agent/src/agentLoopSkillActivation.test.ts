@@ -329,6 +329,18 @@ describe("R22 D11 - refusals are typed results (an instructions refusal records 
     expect(toolNames(b.requests[3] as LlmRequest)).toEqual(["activate_skill", "audit_tool"]);
   });
 
+  it("the recorded digest is the lowercase hex sha256 of the UTF-8 instructions, runtime-neutral and byte-identical to node:crypto", async () => {
+    const wide = "héllo ✓ 𝄞 😀 ".repeat(900); // multi-byte, > 55 bytes so the hash spans many blocks
+    const b = await run({
+      skills: [mkSkill("abc", "abc"), mkSkill("wide", wide)],
+      calls: [[ACT("abc", "1"), ACT("wide", "2")]],
+    });
+    const digests = (await activations(b)).map((d) => (d.value as { digest: string }).digest);
+    // NIST vector for "abc" (hard-coded: not derived from the code under test).
+    expect(digests[0]).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    expect(digests[1]).toBe(sha(wide));
+  });
+
   it("over maxActive", async () => {
     const b = await run({
       activation: { maxActive: 1 },
