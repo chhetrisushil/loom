@@ -303,6 +303,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "ADR 0126 (R19). 1P, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged. ASCII queries tokenize byte-identically and `agentLoop$` records its skill selection as a decision, so replay never re-scores. Known limit: an hourly or sub-hourly cron in a DST zone loses the repeated hour's second pass; `schedule$` warns once at definition time.",
   },
   {
+    id: "dom-renderer",
+    title: "Framework-free DOM Renderer",
+    package: "@loom/plugin-renderer-dom",
+    level: "L2",
+    summary:
+      "`mountBlueprint(host, blueprint, { projectionRuntime, executionId })` draws a Blueprint into the DOM with no React, Lit or loom-ui and keeps it live (a projection change re-draws only the widgets whose value or status changed; `update(next)` is a keyed reconcile that keeps the node of every surviving widget/container id); `renderBlueprintToDom` is the one-shot form. Covers the eight built-in kinds and the canonical status matrix, asserted equal to the React and terminal registries. Every element is built through an allowlisting `h()` (text nodes, no `innerHTML`, `href` through `safeUrl`).",
+    evidence: {
+      conformanceTest: "plugins/renderer-dom/src/parity.test.ts",
+    },
+    note: "ADR 0127 (U21). 1P plugin, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged; depends only on blueprint-runtime and projection-runtime and is not in the @loom/sdk barrel. Written from the Blueprint and the two existing renderers rather than moved from loom-ui's renderer-lit, whose adapter is bound to loom-ui's action stamping, i18n and Lit handle contract. No consumer outside its own suite yet (L2, not L3): the candidates are the a2ui-dashboard and db-observability examples.",
+  },
+  {
     id: "conversation-sse",
     title: "Conversation SSE Gateway",
     package: "@loom/plugin-conversation-sse",

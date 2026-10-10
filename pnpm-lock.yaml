@@ -1908,6 +1908,43 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
 
+  plugins/renderer-dom:
+    dependencies:
+      '@loom/blueprint-runtime':
+        specifier: workspace:*
+        version: link:../../packages/blueprint-runtime
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../../packages/projection-runtime
+    devDependencies:
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@loom/plugin-renderer-react':
+        specifier: workspace:*
+        version: link:../renderer-react
+      '@loom/plugin-renderer-terminal':
+        specifier: workspace:*
+        version: link:../renderer-terminal
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      '@types/react':
+        specifier: ^18.3.12
+        version: 18.3.31
+      jsdom:
+        specifier: ^25.0.0
+        version: 25.0.1
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   plugins/renderer-react:
     dependencies:
       '@loom/agent-surface':

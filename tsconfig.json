@@ -88,6 +88,9 @@
       "path": "plugins/renderer-react"
     },
     {
+      "path": "plugins/renderer-dom"
+    },
+    {
       "path": "tools/compiler"
     },
     {
