@@ -236,9 +236,9 @@ The first adversarial review of R22d (not approved as drafted; design holds). Al
   the error's own size. Only the trigger's measure changes; the transcript the model sees is the real one. The trigger therefore
   fires on the turns the live run's did. Pinned with `divergence: "fail"` for a same-length edit, a length change and a text that
   became unavailable. **Residual (remaining):** a record without `bytes` (written before this round) keeps the old behaviour, so an
-  edit under a byte-triggered compaction can still diverge on such a log (the test pins that). Also not covered: a skill whose
-  `tools` list changed between runs (the rebuilt size uses the current tool ids), and a live run that itself got an error where a
-  later replay gets the full text.
+  edit under a byte-triggered compaction can still diverge on such a log (the test pins that). Also not covered: a live run that itself
+  got an error where a later replay gets the full text. (A skill whose `tools` list changed between runs was a gap here; closed by
+  Review round 2.)
 - **P3: the `LOOM_AGENT_TRUSTED_TOOL_TEXT` warning** no longer says "third-party JSON schema" (it also fires for a vouched A2A or
   `origin: "remote"` tool with no schema).
 - **P3: Zod `.describe()` text of an un-vouched remote tool is stripped** from the spec too (it reached the model for an A2A or
@@ -248,6 +248,31 @@ The first adversarial review of R22d (not approved as drafted; design holds). Al
   mirroring MCP's `trustDescriptions`. D14.1's "vouch with `trustJsonSchemaText`" now reads "vouch with `trustDescriptions`".
 - **P3: test gap.** Re-delivery after a RESUME (the pin comes from the replayed record) is pinned by a test that fails if the pin is
   set only on the live path.
+
+### D14 - Review round 2 (R22d, 2026-10-10)
+
+The re-review (one P2, one P3). Both fixed.
+
+- **P2: the virtual size used the CURRENT skill's tool ids.** The round-1 stand-in rebuilt the would-be-successful activation result
+  from the recorded `bytes` plus `tools.map(t => t.id)` of the skill as it is NOW, while the live result carried the ids as they
+  were then. A replay where the text and the tool list both changed (reproduced with a ~65-byte extra id, `afterBytes` just inside
+  that margin) put the trigger on the wrong side of `afterBytes` and a recorded `#turn:t:compact` frame was "not asked for".
+  Fix: the activation record also carries **`resultBytes`**, the UTF-8 length of the WHOLE live activation result as the
+  `tool_result` serialized it (envelope, tool-id list and instructions), measured when the live run decided. Additive, optional,
+  bounded on read (an integer at least `bytes`, at most `6 * maxInstructionBytes + 2` plus 1 MiB of tool-id list). When a replay
+  cannot reproduce the live result, the trigger counts exactly `resultBytes`, whatever changed since: the text, the tool ids, or both.
+  This now also covers a replay that delivers the SAME text under a CHANGED tool list (a successful result of a different size), which
+  round 1 did not: it too is measured at the recorded size. The transcript the model sees is still the real one.
+  **Re-delivery** (an already-active skill asked for again) has its own result shape (`skill`, `instructions`, `note`; no tools) and is
+  never recorded, so its virtual size is rebuilt from `bytes` alone and does not depend on the tool list: exact already.
+  Pinned under `divergence: "fail"` by deterministic threshold sweeps (`afterBytes` 3000..3400 step 4, straddling the live trigger,
+  no timing) for tools-and-text changed (tools added, tools removed) and tools-only changed, each also asserting the replay's compact
+  frames equal the live run's. Revert-checked: replacing the `resultBytes` use with the round-1 rebuild fails both. **Residual:** a
+  record with `bytes` but without `resultBytes` (written by round 1) keeps round-1 behaviour, so a changed tool list under a
+  byte-triggered compaction can still diverge on such a log (a test pins that).
+- **P3 (doc): the Zod `.describe()` strip also applies to A2A's static `peerInputSchema`** (D14.1 / round 1). That schema carries no
+  `.describe()` text today, so nothing changes for it; if a future revision adds descriptions to it they will be withheld unless the
+  peer is vouched for with `trustDescriptions`. Recorded as a residual, not a defect.
 
 ## Review round 1 (2026-10-09)
 

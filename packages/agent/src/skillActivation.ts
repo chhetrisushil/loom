@@ -123,9 +123,20 @@ interface Recorded {
    * the turns the live run's did and the log's `#turn:t:compact` frames keep matching.
    */
   bytes?: number;
+  /**
+   * ADR 0125 D14 (review round 2) — the UTF-8 length of the WHOLE live activation result as the
+   * `tool_result` carried it (envelope, tool-id list and instructions), measured when the live run
+   * decided. A replay whose text OR tool list changed measures the result at exactly this size, not
+   * at a size rebuilt from the skill as it is now. Additive and optional, bounded on read; a record
+   * with `bytes` but without it keeps the round-1 reconstruction (residual: exact only while the
+   * tool-id list is unchanged).
+   */
+  resultBytes?: number;
 }
 
 const UTF8 = new TextEncoder();
+/** Read-side bound on the tool-id list's share of a recorded `resultBytes` (a sanity cap, not an allocation). */
+const MAX_TOOL_LIST_BYTES = 1024 * 1024;
 /** UTF-8 length of `text` as the JSON string the `tool_result` carries. */
 const wireBytes = (text: string): number => UTF8.encode(JSON.stringify(text)).length;
 /** A stand-in string whose JSON form has exactly `bytes` UTF-8 bytes (ASCII, no escapes). */
@@ -488,7 +499,15 @@ export class SkillActivationSession {
           if (!d.ok && d.code === "instructions_unavailable") throw new InstructionsUnavailable();
           if (!d.ok) return { skill: name, refused: d.code };
           live.text = d.text;
-          return { skill: name, digest: sha256(d.text), bytes: wireBytes(d.text) };
+          const liveTools = skill.tools ?? [];
+          const resultBytes = UTF8.encode(
+            toolResultContent(this.name, {
+              skill: name,
+              instructions: d.text,
+              ...(liveTools.length > 0 && { tools: liveTools.map((t) => t.id) }),
+            }) as string
+          ).length;
+          return { skill: name, digest: sha256(d.text), bytes: wireBytes(d.text), resultBytes };
         },
         { source: SOURCE_SKILL_ACTIVATION }
       );
@@ -532,16 +551,26 @@ export class SkillActivationSession {
     if (pinned !== undefined && recordedBytes !== undefined) this.sizes.set(name, recordedBytes);
     const tools = skill.tools ?? [];
     // What the live run's result weighed, when this replay cannot reproduce it (see `Recorded.bytes`).
-    const virtualBytes =
-      pinned !== undefined && recordedBytes !== undefined
-        ? UTF8.encode(
-            toolResultContent(this.name, {
-              skill: name,
-              instructions: standIn(recordedBytes),
-              ...(tools.length > 0 && { tools: tools.map((t) => t.id) }),
-            }) as string
-          ).length
+    // The whole live result's size, when recorded: exact whatever changed since (text, tool ids).
+    const recordedResult =
+      typeof recorded.resultBytes === "number" &&
+      Number.isSafeInteger(recorded.resultBytes) &&
+      recorded.resultBytes >= (recordedBytes ?? 2) &&
+      recorded.resultBytes <= 6 * this.maxInstructionBytes + 2 + MAX_TOOL_LIST_BYTES
+        ? recorded.resultBytes
         : undefined;
+    const virtualBytes =
+      pinned !== undefined && recordedResult !== undefined
+        ? recordedResult
+        : pinned !== undefined && recordedBytes !== undefined
+          ? UTF8.encode(
+              toolResultContent(this.name, {
+                skill: name,
+                instructions: standIn(recordedBytes),
+                ...(tools.length > 0 && { tools: tools.map((t) => t.id) }),
+              }) as string
+            ).length
+          : undefined;
     if (d.ok && live.text === undefined && pinned !== undefined && sha256(d.text) !== pinned) {
       // A replay whose current text is not what the recorded run delivered: deliver nothing new.
       warnChanged(name, this.warned);
@@ -580,6 +609,11 @@ export class SkillActivationSession {
       },
       isError: false,
       newlyLoaded: tools,
+      // A replay delivering the same text under a CHANGED tool list weighs differently from the live
+      // result; the recorded whole-result size keeps the trigger where the live run's was.
+      ...(live.text === undefined &&
+        recordedResult !== undefined &&
+        virtualBytes !== undefined && { virtualBytes }),
     };
   }
 
