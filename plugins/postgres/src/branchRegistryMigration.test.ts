@@ -16,7 +16,11 @@ if (PG_URL === undefined) {
   describe.skip("BranchRegistry L21 migration (needs LOOM_TEST_POSTGRES_URL)", () => {});
 } else {
   const legacy = `loom_branch_migrate_${process.pid}`;
-  const LEGACY_REFS = 50_000;
+  // Only the plan-shape test needs enough rows for the planner's choice to depend on the
+  // column's statistics; every other test is about control flow (locks, warnings, ordering),
+  // so it seeds just the named rows plus a token bulk and stays cheap under a loaded cluster.
+  const PLAN_REFS = 50_000;
+  const SMALL_REFS = 100;
 
   afterAll(async () => {
     const admin = new Pool({ connectionString: PG_URL });
@@ -24,14 +28,14 @@ if (PG_URL === undefined) {
   });
 
   /** A fresh schema holding the pre-L21 `refs` table, analyzed as a live one would be. */
-  async function legacyTable(admin: Pool, refs = LEGACY_REFS): Promise<void> {
+  async function legacyTable(admin: Pool, refs = SMALL_REFS): Promise<void> {
     await admin.query(`DROP SCHEMA IF EXISTS ${legacy} CASCADE`);
     await admin.query(`CREATE SCHEMA ${legacy}`);
     await legacyRefs(admin, refs);
   }
 
   /** Just the pre-L21 `refs` DDL + rows, assuming the schema already exists. */
-  async function legacyRefs(admin: Pool, refs = LEGACY_REFS): Promise<void> {
+  async function legacyRefs(admin: Pool, refs = SMALL_REFS): Promise<void> {
     // The pre-L21 DDL, verbatim for the columns that matter.
     await admin.query(`CREATE TABLE refs (
       name TEXT NOT NULL, execution_id TEXT NOT NULL, tip BIGINT NOT NULL,
@@ -73,7 +77,7 @@ if (PG_URL === undefined) {
   }
 
   /** Both tables pre-migration, in one schema — the L10+L21 boot the reordering (P2) covers. */
-  async function legacyBoth(admin: Pool, refsRows = LEGACY_REFS, eventsRows = 1000): Promise<void> {
+  async function legacyBoth(admin: Pool, refsRows = SMALL_REFS, eventsRows = 1000): Promise<void> {
     await admin.query(`DROP SCHEMA IF EXISTS ${legacy} CASCADE`);
     await admin.query(`CREATE SCHEMA ${legacy}`);
     await legacyRefs(admin, refsRows);
@@ -141,7 +145,7 @@ if (PG_URL === undefined) {
     it('converts name to COLLATE "C" in place, re-analyzes it, and pages index-only', async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
       try {
-        await legacyTable(admin);
+        await legacyTable(admin, PLAN_REFS);
         expect(await collation(admin)).not.toBe("C");
 
         const warnings: string[] = [];
@@ -245,7 +249,7 @@ if (PG_URL === undefined) {
     it("memoizes per pool, and a later call after conversion is a no-op", async () => {
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
       try {
-        await legacyTable(admin, 100);
+        await legacyTable(admin);
         const pool = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
         try {
           await migrate(pool);
@@ -261,20 +265,31 @@ if (PG_URL === undefined) {
       } finally {
         await admin.end();
       }
-    }, 60_000);
+    }, 180_000); // migrate() waits on the cluster-wide migration lock, unbounded by design
 
     it("completes the conversion under a session statement_timeout shorter than the rebuild", async () => {
       // Same premise as `sharded.test.ts`'s equivalent L10 case: a pool-level statement_timeout
-      // shorter than the index rebuild used to abort the conversion (57014) on EVERY boot —
-      // taking the exclusive lock each time — so the column never converted. `refs` is a
-      // narrower table than `events`, so it needs more rows to make the rebuild reliably
-      // exceed a 200ms budget (measured: ~1s at 3M rows vs. ~75ms at 300k).
-      const REBUILD_ROWS = 3_000_000;
+      // shorter than the rebuild used to abort the conversion (57014) on EVERY boot — taking the
+      // exclusive lock each time — so the column never converted. The rebuild's duration is a
+      // schema-set LOWER BOUND, independent of machine speed and row count: a CHECK constraint
+      // whose function sleeps SLEEP_MS per row is re-validated by the ALTER, so the rebuild takes
+      // >= rows * SLEEP_MS however fast the machine is. (It used to be 3M rows against a 200 ms
+      // budget: a fast machine finished the bare ALTER inside the budget and broke the premise,
+      // while a loaded one spent minutes building the table.)
+      const SLEEP_MS = 800;
+      // < the floor (5 rows x 800 ms = 4 s), and ~50x the idle cost of the migration's
+      // non-exempt statements. RESIDUAL: those must still finish inside this budget.
+      const BUDGET_MS = 2000;
       const admin = new Pool({ connectionString: PG_URL, options: `-c search_path=${legacy}` });
       try {
-        await legacyTable(admin, REBUILD_ROWS);
+        await legacyTable(admin, 0);
+        const seeded = await admin.query("SELECT count(*)::int AS n FROM refs");
+        expect(seeded.rows[0].n).toBe(5); // the floor is 5 * SLEEP_MS
+        await admin.query(`CREATE FUNCTION slow_ok(t text) RETURNS boolean
+          LANGUAGE plpgsql IMMUTABLE AS $$ BEGIN PERFORM pg_sleep(${SLEEP_MS / 1000}); RETURN true; END $$`);
+        await admin.query("ALTER TABLE refs ADD CONSTRAINT slow_check CHECK (slow_ok(name))");
         const warnings: string[] = [];
-        const pool = noticingPool(warnings, "-c statement_timeout=200");
+        const pool = noticingPool(warnings, `-c statement_timeout=${BUDGET_MS}`);
         try {
           // Proves the premise: the bare ALTER alone does not fit in this session's budget.
           const probe = await pool.connect();
@@ -287,7 +302,10 @@ if (PG_URL === undefined) {
             await probe.query("ROLLBACK").catch(() => {});
             probe.release();
           }
+          const started = Date.now();
           await migrate(pool);
+          // The conversion really did run past the budget rather than being skipped.
+          expect(Date.now() - started).toBeGreaterThan(5 * SLEEP_MS - 500);
         } finally {
           await pool.end();
         }
@@ -296,7 +314,7 @@ if (PG_URL === undefined) {
       } finally {
         await admin.end();
       }
-    }, 300_000);
+    }, 180_000);
 
     // Review round 1 (P2/1c) — both tables need converting in the SAME migration transaction,
     // and each table's own lock contention is independent of the other's.
