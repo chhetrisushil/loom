@@ -39,11 +39,11 @@ describe("runner-body reach analysis", () => {
     expect(reach.unresolved).toEqual([{ expr: "chargeCard", kind: "step" }]);
   });
 
-  it("reports a minted step as unresolved — its toolId is runtime data", () => {
+  it("reports a minted step whose factory is unknown as unresolved — its toolId is runtime data", () => {
     const reach = analyzeRunnerReach(`
-      const runner = async (ctx) => { await ctx.run(mcpInvoke$("hydrate#0"), {}); };
+      const runner = async (ctx) => { await ctx.run(mintStep("hydrate#0"), {}); };
     `);
-    expect(reach.unresolved).toEqual([{ expr: 'mcpInvoke$("hydrate#0")', kind: "step" }]);
+    expect(reach.unresolved).toEqual([{ expr: 'mintStep("hydrate#0")', kind: "step" }]);
   });
 
   it("bounds the recorded expression text", () => {
@@ -680,5 +680,300 @@ describe("runner-body reach analysis", () => {
       const r = reachOf(src);
       expect(r.escapes?.map((e) => e.callee)).toEqual(["lib"]);
     });
+  });
+});
+
+// ── L35: ctx.parallel's pair list ────────────────────────────────────────────
+
+describe("ctx.parallel (L35)", () => {
+  it("reads each [step, input] pair of an array literal like ctx.run", () => {
+    const r = analyzeRunnerReach(`
+      const a = step$({ id: "a", toolId: "tool.a" });
+      const b = step$({ id: "b", toolId: "tool.b" });
+      const runner = async (ctx) => { await ctx.parallel([[a, 1], [b, 2], [{ id: "c", toolId: "tool.c" }, 3]]); };
+    `);
+    expect(r.steps.map((s) => s.toolId)).toEqual(["tool.a", "tool.b", "tool.c"]);
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it("follows a const bound to the literal, and `as` wrappers", () => {
+    const r = analyzeRunnerReach(`
+      const a = step$({ id: "a", toolId: "tool.a" });
+      const pairs = [[a, 1]];
+      const runner = async (ctx) => { await ctx.parallel(pairs as never, { limit: 2 }); };
+    `);
+    expect(r.steps.map((s) => s.toolId)).toEqual(["tool.a"]);
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it("reports a non-literal list, a spread and an unresolvable pair - never silently empty", () => {
+    const r = analyzeRunnerReach(`
+      const a = step$({ id: "a", toolId: "tool.a" });
+      const runner = async (ctx, items) => {
+        await ctx.parallel(items.map((i) => [a, i]));
+        await ctx.parallel([...more]);
+        await ctx.parallel([[imported, 1], [a, 2]]);
+        await ctx.parallel([somePair]);
+      };
+    `);
+    expect(r.steps.map((s) => s.toolId)).toEqual(["tool.a"]);
+    expect(r.unresolved.map((u) => u.expr)).toEqual([
+      "parallel(items.map((i) => [a, i]))",
+      "parallel(...more)",
+      "imported",
+      "parallel branch somePair",
+    ]);
+  });
+
+  it("walks callback branches (their b.run is found like any run)", () => {
+    const r = analyzeRunnerReach(`
+      const a = step$({ id: "a", toolId: "tool.a" });
+      const runner = async (ctx) => { await ctx.parallel([async (b) => b.run(a, 1)]); };
+    `);
+    expect(r.steps.map((s) => s.toolId)).toEqual(["tool.a"]);
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it("reads the element-access, destructured and .call forms too", () => {
+    const r = analyzeRunnerReach(`
+      const a = step$({ id: "a", toolId: "tool.a" });
+      const b = step$({ id: "b", toolId: "tool.b" });
+      const c = step$({ id: "c", toolId: "tool.c" });
+      const runner = async (ctx) => {
+        await ctx["parallel"]([[a, 1]]);
+        const { parallel } = ctx;
+        await parallel([[b, 1]]);
+        await ctx.parallel.call(ctx, [[c, 1]]);
+        await ctx.parallel.apply(ctx, [[[a, 1]]]);
+      };
+    `);
+    expect(r.steps.map((s) => s.toolId).sort()).toEqual(["tool.a", "tool.b", "tool.c"]);
+    expect(r.unresolved.map((u) => u.expr)).toEqual(["ctx.parallel.apply(…)"]);
+  });
+});
+
+// ── L37: constant ids and step factories ─────────────────────────────────────
+
+describe("constant ids and step factories (L37)", () => {
+  it("resolves a toolId given by a same-module string constant", () => {
+    const r = analyzeRunnerReach(`
+      const TOOL = "llm.reshape";
+      const s = step$({ id: "s", toolId: TOOL });
+      const runner = async (ctx) => { await ctx.run(s, {}); await ctx.run({ id: "t", toolId: TOOL }, {}); };
+    `);
+    expect(r.steps.map((x) => x.toolId)).toEqual(["llm.reshape", "llm.reshape"]);
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it("resolves mcpInvoke$ whatever its (templated) step id: the EFFECT is mcp.invoke", () => {
+    const r = analyzeRunnerReach(`
+      const runner = async (ctx, steps) => {
+        for (const s of steps) await ctx.run(mcpInvoke$(\`tool:\${s.id}\`), {});
+        await ctx.run(mcpInvoke$("remap-sample"), {});
+      };
+    `);
+    expect(r.steps.map((x) => x.toolId)).toEqual(["mcp.invoke", "mcp.invoke"]);
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it("a local function named like a known factory wins (shadowing is not guessed past)", () => {
+    const r = analyzeRunnerReach(`
+      function mcpInvoke$(id) { return somethingElse(id); }
+      const runner = async (ctx) => { await ctx.run(mcpInvoke$("x"), {}); };
+    `);
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved).toHaveLength(1);
+  });
+
+  it("infers a same-module factory whose toolId is a parameter, with a templated step id", () => {
+    const r = analyzeRunnerReach(`
+      const LLM_RESHAPE = "llm.reshape";
+      function llmStep$(id, toolId) { return step$({ id, name: id, toolId }); }
+      const mk = (id, tool) => step$({ id, toolId: tool });
+      const fixed = (id) => step$({ id, toolId: "audit.write" });
+      const runner = async (ctx, attempt) => {
+        await ctx.run(llmStep$(\`reshape@a\${attempt}\`, LLM_RESHAPE), {});
+        await ctx.run(mk("m", "tool.m"), {});
+        await ctx.run(fixed(\`f\${attempt}\`), {});
+      };
+    `);
+    expect(r.steps.map((x) => x.toolId)).toEqual(["llm.reshape", "tool.m", "audit.write"]);
+    expect(r.unresolved).toEqual([]);
+  });
+
+  it("a factory argument that is not constant stays unresolved", () => {
+    const r = analyzeRunnerReach(`
+      function llmStep$(id, toolId) { return step$({ id, toolId }); }
+      const runner = async (ctx, name) => {
+        await ctx.run(llmStep$("a", name), {});
+        await ctx.run(llmStep$("b"), {});
+      };
+    `);
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved.map((u) => u.expr)).toEqual(['llmStep$("a", name)', 'llmStep$("b")']);
+  });
+
+  it("does not trust a factory with several returns, or a reassigned / duplicated constant", () => {
+    const r = analyzeRunnerReach(`
+      function two(id, toolId) { if (id) return step$({ id, toolId }); return step$({ id, toolId: "x" }); }
+      let LET = "tool.let";
+      const DUP = "tool.dup";
+      const f = (DUP) => 1;
+      const runner = async (ctx) => {
+        await ctx.run(two("a", "tool.a"), {});
+        await ctx.run({ id: "l", toolId: LET }, {});
+        await ctx.run({ id: "d", toolId: DUP }, {});
+      };
+    `);
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved).toHaveLength(3);
+  });
+
+  it("resolves a const-bound factory call and a template of constants", () => {
+    const r = analyzeRunnerReach(`
+      const P = "llm";
+      function llmStep$(id, toolId) { return step$({ id, toolId }); }
+      const s = llmStep$("s", \`\${P}.x\`);
+      const runner = async (ctx) => { await ctx.run(s, {}); await ctx.run({ id: "q", toolId: P + ".y" }, {}); };
+    `);
+    expect(r.steps.map((x) => x.toolId)).toEqual(["llm.x", "llm.y"]);
+  });
+
+  it("resolves scope.invokeTransient with a constant tool id", () => {
+    const r = analyzeRunnerReach(`
+      const T = "kb.search";
+      const runner = async (ctx) => { await ctx.decide("d", async (scope) => scope.invokeTransient(T, {})); };
+    `);
+    expect(r.steps).toEqual([{ toolId: "kb.search", viaDecider: true }]);
+  });
+
+  it("pins the first-party fixed factory to the package constant", async () => {
+    const { readFileSync } = await import("node:fs");
+    const { KNOWN_STEP_FACTORIES } = await import("./runnerReach");
+    const src = readFileSync(
+      new URL("../../../plugins/mcp/src/mcpInvoke$.ts", import.meta.url),
+      "utf8"
+    );
+    const m = /MCP_INVOKE_TOOL_ID = "([^"]+)"/.exec(src);
+    expect(KNOWN_STEP_FACTORIES.mcpInvoke$).toEqual({ fixed: m?.[1] });
+    const sb = readFileSync(
+      new URL("../../../plugins/sandbox/src/sandboxEval$.ts", import.meta.url),
+      "utf8"
+    );
+    const sm = /SANDBOX_TOOL_ID = "([^"]+)"/.exec(sb);
+    expect(KNOWN_STEP_FACTORIES.sandboxEval$).toEqual({ argIndex: 1, default: sm?.[1] });
+    expect(sb).toMatch(/toolId: string = SANDBOX_TOOL_ID/);
+  });
+
+  it("sandboxEval$ resolves to its default effect, or to a constant override", () => {
+    const r = analyzeRunnerReach(`
+      const T = "sandbox.custom";
+      const runner = async (ctx, i, v) => {
+        await ctx.run(sandboxEval$(\`reshape#\${i}\`), {});
+        await ctx.run(sandboxEval$("a", T), {});
+        await ctx.run(sandboxEval$("b", v), {});
+      };
+    `);
+    expect(r.steps.map((x) => x.toolId)).toEqual(["sandbox.eval", "sandbox.custom"]);
+    expect(r.unresolved.map((u) => u.expr)).toEqual(['sandboxEval$("b", v)']);
+  });
+
+  it("infers a parameter default from a same-module factory", () => {
+    const r = analyzeRunnerReach(`
+      const DEFAULT = "audit.write";
+      function mk(id, toolId = DEFAULT) { return step$({ id, toolId }); }
+      const runner = async (ctx) => { await ctx.run(mk("a"), {}); await ctx.run(mk("b", "x.y"), {}); };
+    `);
+    expect(r.steps.map((x) => x.toolId)).toEqual(["audit.write", "x.y"]);
+  });
+});
+
+// ── L34: a hand-off's step arguments ─────────────────────────────────────────
+
+describe("hand-off step arguments (L34)", () => {
+  it("records the arguments that resolve to a step, by position", () => {
+    const r = analyzeRunnerReach(`
+      const a = step$({ id: "a", toolId: "tool.a" });
+      const runner = async (ctx, items) => {
+        await fanout$(ctx, a, items, { limit: 2 });
+        await fanout$(ctx, mcpInvoke$(\`f#\${items.length}\`), items);
+      };
+    `);
+    expect(r.escapes).toEqual([
+      {
+        callee: "fanout$",
+        root: "fanout$",
+        via: "ctx",
+        args: [{ index: 1, step: { toolId: "tool.a", stepId: "a" } }],
+      },
+      {
+        callee: "fanout$",
+        root: "fanout$",
+        via: "ctx",
+        args: [{ index: 1, step: { toolId: "mcp.invoke" } }],
+      },
+    ]);
+  });
+
+  it("two hand-offs to one callee with different steps are BOTH kept", () => {
+    const r = analyzeRunnerReach(`
+      const a = step$({ id: "a", toolId: "tool.a" });
+      const b = step$({ id: "b", toolId: "tool.b" });
+      const runner = async (ctx) => { await fanout$(ctx, a, []); await fanout$(ctx, b, []); };
+    `);
+    expect(r.escapes?.map((e) => e.args?.[0]?.step.toolId)).toEqual(["tool.a", "tool.b"]);
+  });
+
+  it("an unresolved step argument is simply absent (the verifier reports the position)", () => {
+    const r = analyzeRunnerReach(`
+      const runner = async (ctx, s, items) => { await fanout$(ctx, s, items); };
+    `);
+    expect(r.escapes).toEqual([{ callee: "fanout$", root: "fanout$", via: "ctx" }]);
+  });
+});
+
+describe("imported constants and factories (L37)", () => {
+  it("follows a relative import to the constant and the factory it names", async () => {
+    const { mkdtempSync, writeFileSync, mkdirSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const ts = (await import("typescript")).default;
+    const { createImportResolver } = await import("./importResolve");
+    const { analyzeReachNode } = await import("./runnerReach");
+    const dir = mkdtempSync(join(tmpdir(), "loom-reach-"));
+    try {
+      mkdirSync(join(dir, "llm"));
+      writeFileSync(
+        join(dir, "llm", "effects.ts"),
+        `import { step$ } from "@loom/core";
+         export const LLM_REPAIR = "llm.repair";
+         export const NOT_CONST = String(1);
+         export function llmStep$(id: string, toolId: string) { return step$({ id, toolId }); }
+         export function multi(id: string) { if (id) return step$({ id, toolId: "a" }); return step$({ id, toolId: "b" }); }`
+      );
+      const file = join(dir, "flow.ts");
+      const src = `
+        import { LLM_REPAIR, NOT_CONST, llmStep$, multi } from "./llm/effects.js";
+        import { other } from "@pkg/elsewhere";
+        const runner = async (ctx, n) => {
+          await ctx.run(llmStep$(\`repair@a\${n}\`, LLM_REPAIR), {});
+          await ctx.run(llmStep$("x", NOT_CONST), {});
+          await ctx.run(multi("m"), {});
+          await ctx.run(other("o"), {});
+        };`;
+      const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true);
+      const importResolver = createImportResolver(sf, file);
+      const withImports = analyzeReachNode(sf, undefined, { importResolver });
+      expect(withImports.steps.map((s) => s.toolId)).toEqual(["llm.repair"]);
+      expect(withImports.unresolved.map((u) => u.expr)).toEqual([
+        'llmStep$("x", NOT_CONST)',
+        'multi("m")',
+        'other("o")',
+      ]);
+      // Without the resolver the same module is all unresolved (same-module only).
+      expect(analyzeReachNode(sf).steps).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -22,6 +22,13 @@ export interface ReachDeclaration {
   readonly run?: readonly string[];
   /** toolIds the code calls through `scope.invokeTransient` inside a `ctx.decide` decider. */
   readonly transient?: readonly string[];
+  /**
+   * L34 — zero-based argument positions of STEP DEFINITIONS the code runs with the ctx it is handed
+   * (`fanout$(ctx, step, items)` -> `[1]`). The tool is its CALLER's, so it cannot be a fixed list:
+   * the compiler reads the argument at each hand-off site and the verifier counts the step it
+   * resolves to (and reports one it cannot resolve). Nothing else about the call is claimed.
+   */
+  readonly stepArgs?: readonly number[];
 }
 
 /** Attach a reach declaration to `target` (non-enumerable, so it never leaks into serialization). */
@@ -40,10 +47,15 @@ function isToolList(v: unknown): v is readonly string[] {
 
 function isDeclaration(v: unknown): v is ReachDeclaration {
   if (typeof v !== "object" || v === null) return false;
-  const d = v as { run?: unknown; transient?: unknown };
+  const d = v as { run?: unknown; transient?: unknown; stepArgs?: unknown };
   if (d.run !== undefined && !isToolList(d.run)) return false;
   if (d.transient !== undefined && !isToolList(d.transient)) return false;
-  return d.run !== undefined || d.transient !== undefined;
+  if (
+    d.stepArgs !== undefined &&
+    !(Array.isArray(d.stepArgs) && d.stepArgs.every((x) => Number.isInteger(x) && x >= 0))
+  )
+    return false;
+  return d.run !== undefined || d.transient !== undefined || d.stepArgs !== undefined;
 }
 
 /**
@@ -172,11 +184,22 @@ export function recordReach(): ReachRecorder {
 export function assertReachMatches(
   declaration: ReachDeclaration,
   recorded: RecordedReach,
-  opts: { exact?: boolean } = {}
+  opts: {
+    exact?: boolean;
+    /**
+     * Tools the TEST handed the code as step arguments (for a `stepArgs` declaration, e.g.
+     * `fanout$`): a recorded `run` tool in this list is covered by `stepArgs`, one that is not is
+     * still a mismatch.
+     */
+    passedSteps?: readonly string[];
+  } = {}
 ): void {
   const problems: string[] = [];
   const diff = (kind: "run" | "transient"): void => {
     const declared = new Set(declaration[kind] ?? []);
+    if (kind === "run" && (declaration.stepArgs?.length ?? 0) > 0) {
+      for (const t of opts.passedSteps ?? []) declared.add(t);
+    }
     const seen = new Set(recorded[kind]);
     for (const t of seen)
       if (!declared.has(t)) problems.push(`${kind} tool "${t}" ran but is not declared`);

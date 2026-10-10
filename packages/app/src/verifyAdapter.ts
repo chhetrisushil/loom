@@ -68,6 +68,11 @@ export interface RunnerReachInput {
     readonly via: "ctx" | "decide";
     /** The ctx method handed over (`run` for `lib(ctx.run)`); absent for the whole ctx. */
     readonly member?: string;
+    /** L34 — the hand-off's arguments that resolve to a step, by position. */
+    readonly args?: readonly {
+      readonly index: number;
+      readonly step: { readonly stepId?: string; readonly toolId: string };
+    }[];
     readonly location?: string;
   }[];
 }
@@ -357,6 +362,29 @@ export function resolveVerifyInput(
       };
       for (const t of decl.run ?? []) add(t, false);
       for (const t of decl.transient ?? []) add(t, true);
+      // L34 — the callee runs a step it is HANDED (`fanout$(ctx, step, items)`): the step is its
+      // caller's, so it is read from the hand-off site. A position that did not resolve is
+      // reported, never counted as "reaches nothing".
+      for (const index of decl.stepArgs ?? []) {
+        const arg = esc.args?.find((a) => a.index === index);
+        if (arg !== undefined) {
+          if (!declaredToolIds.has(arg.step.toolId)) {
+            declaredToolIds.add(arg.step.toolId);
+            effects.push({
+              toolId: arg.step.toolId,
+              capability: arg.step.toolId,
+              kind: "step" as const,
+              viaDeclared: esc.callee,
+            });
+          }
+          continue;
+        }
+        unresolvedReach.push({
+          expr: `${esc.callee} (argument ${index}) is not a step the analysis can resolve at the hand-off`,
+          kind: "step",
+          ...(esc.location !== undefined && { location: esc.location }),
+        });
+      }
     }
     const suspends = reach?.suspends ?? [];
 

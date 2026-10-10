@@ -106,6 +106,20 @@ declareReach(planner, { transient: ["llm.complete"] }); // from @loom/verify
 defineConfig({ checks: { verify: { mode: "warn", reach: { planner } } } });
 ```
 
+A library that runs a step ITS CALLER passes (`fanout$(ctx, step, items)`) cannot list a fixed tool; it
+declares which argument positions hold steps, and the verifier counts the step it reads at each call
+site (a position it cannot resolve is reported, not dropped):
+
+```ts
+declareReach(fanout$, { run: [], transient: [], stepArgs: [1] });
+```
+
+`ctx.parallel([[step, input], ...])` is read like `ctx.run`. Effect ids given by a same-module (or
+relative-imported) `const`, or minted by a factory (`llmStep$(id, LLM_X)`, `mcpInvoke$` = `mcp.invoke`,
+`sandboxEval$`), resolve; anything else stays unresolved. In `@loom/orchestration`, `@loom/learning`,
+`@loom/analytics` and `@loom/knowledge` the hand-offs declare their reach (none run a tool). `agentLoop$` does
+not: its reach depends on the config, so declare it in `verify.reach` for your own tool set.
+
 The compiler records `planner.compose(input, ctx)` as an escape; declared tools join the flow's
 effects (capability-compat, effect-class, and replay-safety for `transient`), with
 `viaDeclared` provenance. An escape with no declaration is an unresolved `warn` naming the key to

@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { declareReach } from "@loom/verify";
 
 // ── Learning seam: outcomes → rankings (closes the P9 loop) ───────────────────
 //
@@ -42,6 +43,9 @@ export function recordOutcome(sink: OutcomeSink, outcome: Outcome): void {
     ...(outcome.decisionId !== undefined && { decisionId: outcome.decisionId }),
   });
 }
+
+// L34 - declared reach (ADR 0086): `recordOutcome(ctx, …)` is one `sink.emit` of a fact. No tool.
+declareReach(recordOutcome, { run: [], transient: [] });
 
 /** One late reward for a decision of a finished execution (ADR 0116). */
 export interface LateReward {

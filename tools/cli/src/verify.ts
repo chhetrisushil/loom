@@ -41,7 +41,14 @@ interface RunnerReachEntry {
   steps: Array<{ stepId?: string; toolId: string; viaDecider?: boolean }>;
   unresolved: Array<{ expr: string; kind: "step" | "suspend"; location?: string }>;
   suspends: Array<{ id?: string; correlationKey?: string; timed?: boolean; wakeAt?: boolean }>;
-  escapes?: Array<{ callee: string; root?: string; via: "ctx" | "decide"; location?: string }>;
+  escapes?: Array<{
+    callee: string;
+    root?: string;
+    via: "ctx" | "decide";
+    member?: string;
+    args?: Array<{ index: number; step: { stepId?: string; toolId: string } }>;
+    location?: string;
+  }>;
 }
 
 /** The subset of the compiler manifest this command reads. */

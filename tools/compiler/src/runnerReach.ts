@@ -69,8 +69,61 @@ export interface ReachEscape {
   via: "ctx" | "decide";
   /** When `via` is "ctx": the ctx METHOD handed over (`run` for `lib(ctx.run)`), absent for the whole ctx. */
   member?: string;
+  /**
+   * L34 - the arguments of the hand-off that RESOLVE to a step, by position, for a callee whose
+   * declaration says it runs a step it is handed (`fanout$(ctx, step, items)`: argument 1). A
+   * position absent here did not resolve; the verifier reports that only if the declaration names
+   * the position. Absent for `via: "decide"`, a ctx method, and a pass-through
+   * (`setTimeout(lib, …)`), whose arguments are not the callee's.
+   */
+  args?: ReachEscapeArg[];
   location?: string;
 }
+
+/** One argument of a ctx hand-off, see {@link ReachEscape.args}. */
+export interface ReachEscapeArg {
+  index: number;
+  step: RunnerStepRef;
+}
+
+/**
+ * Resolution services the analysis cannot do on a single parsed module. Optional: without it
+ * the analysis is same-module only.
+ */
+export interface AnalyzeReachOptions {
+  /**
+   * L37 - resolve a name this module IMPORTS to what its declaration shows: a string constant
+   * (`export const LLM_X = "llm.x"`) or a step-factory shape (`export function llmStep$(id, toolId)`).
+   */
+  importResolver?: (localName: string) => ImportedBinding | undefined;
+}
+
+/** What an imported name resolves to. */
+export interface ImportedBinding {
+  value?: string;
+  factory?: StepFactoryShape;
+}
+
+/**
+ * L37 - how a step factory yields its effect id: a fixed one (`mcpInvoke$` always dispatches
+ * `mcp.invoke`; the step ID is minted but the EFFECT is what verify checks) or the value of one of
+ * its parameters (`llmStep$(id, toolId)`).
+ */
+export type StepFactoryShape =
+  | { fixed: string }
+  /** The effect id is argument `argIndex`; when that argument is absent, `default` (a parameter default). */
+  | { argIndex: number; default?: string };
+
+/**
+ * First-party factories whose effect id is fixed and whose source is in a package (never followed
+ * through an import). `mcp.invoke` is `MCP_INVOKE_TOOL_ID` in `@loom/plugin-mcp` and `sandbox.eval` is
+ * `SANDBOX_TOOL_ID` in `@loom/plugin-sandbox`; a test pins each to its package.
+ */
+export const KNOWN_STEP_FACTORIES: Readonly<Record<string, StepFactoryShape>> = {
+  mcpInvoke$: { fixed: "mcp.invoke" },
+  // `sandboxEval$(id, toolId = SANDBOX_TOOL_ID)` in `@loom/plugin-sandbox`.
+  sandboxEval$: { argIndex: 1, default: "sandbox.eval" },
+};
 
 export interface RunnerReach {
   steps: RunnerStepRef[];
@@ -226,10 +279,69 @@ function scanDeclarations(root: ts.Node): {
   return { fns, inits };
 }
 
-/** A string-literal-like toolId (`"x"` or an expression-free template), else undefined. */
-function literalToolId(node: ts.Node | undefined): string | undefined {
-  if (node === undefined) return undefined;
-  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
+/** The string a literal-ish expression denotes (`"x"`, an expression-free template, `"x" as const`). */
+export function stringLiteralValue(e: ts.Expression): string | undefined {
+  const u = unwrap(e);
+  return ts.isStringLiteral(u) || ts.isNoSubstitutionTemplateLiteral(u) ? u.text : undefined;
+}
+
+/**
+ * L37 - infer how a function yields a step's effect id, by SHAPE (like {@link collectBindings}):
+ * its single returned expression is a call whose first argument is an object literal with a
+ * `toolId` that is a constant (per `str`) or one of the function's plain parameters. Anything else
+ * (several returns, a spread, a computed toolId) is `undefined`, never a guess.
+ */
+export function inferStepFactory(
+  fn: ts.Node,
+  str: (e: ts.Expression) => string | undefined
+): StepFactoryShape | undefined {
+  if (!isFn(fn) || fn.body === undefined) return undefined;
+  let returned: ts.Expression | undefined;
+  if (!ts.isBlock(fn.body)) returned = fn.body;
+  else {
+    let count = 0;
+    const scan = (n: ts.Node): void => {
+      if (isFn(n) || ts.isMethodDeclaration(n) || ts.isClassLike(n)) return;
+      if (ts.isReturnStatement(n)) {
+        count++;
+        returned = n.expression;
+      }
+      ts.forEachChild(n, scan);
+    };
+    ts.forEachChild(fn.body, scan);
+    if (count !== 1) return undefined;
+  }
+  if (returned === undefined) return undefined;
+  const call = unwrap(returned);
+  if (!ts.isCallExpression(call)) return undefined;
+  const arg = call.arguments[0];
+  if (arg === undefined || !ts.isObjectLiteralExpression(arg)) return undefined;
+  const paramIndex = (name: string): number | undefined => {
+    const i = fn.parameters.findIndex((p) => ts.isIdentifier(p.name) && p.name.text === name);
+    const p = fn.parameters[i];
+    return i >= 0 && p !== undefined && p.dotDotDotToken === undefined ? i : undefined;
+  };
+  const viaParam = (i: number): StepFactoryShape => {
+    const init = fn.parameters[i]?.initializer;
+    const dflt = init === undefined ? undefined : str(init);
+    return { argIndex: i, ...(dflt !== undefined && { default: dflt }) };
+  };
+  for (const prop of arg.properties) {
+    if (ts.isShorthandPropertyAssignment(prop) && prop.name.text === "toolId") {
+      const i = paramIndex("toolId");
+      return i === undefined ? undefined : viaParam(i);
+    }
+    if (ts.isPropertyAssignment(prop) && propName(prop.name) === "toolId") {
+      const v = unwrap(prop.initializer);
+      const fixed = str(v);
+      if (fixed !== undefined) return { fixed };
+      if (ts.isIdentifier(v)) {
+        const i = paramIndex(v.text);
+        if (i !== undefined) return viaParam(i);
+      }
+      return undefined;
+    }
+  }
   return undefined;
 }
 
@@ -637,9 +749,15 @@ const PASS_THROUGH = new Set([
 ]);
 
 /** Analyze a parsed node (a flow runner body) for reachable steps and suspend points. */
-export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach {
+export function analyzeReachNode(
+  root: ts.Node,
+  location?: string,
+  options: AnalyzeReachOptions = {}
+): RunnerReach {
   const bindings = collectBindings(root);
   const functions = collectFunctions(root);
+  const constInits = collectConstInits(root);
+  const importer = options.importResolver;
   const steps: RunnerStepRef[] = [];
   const unresolved: UnresolvedReach[] = [];
   const suspends: RunnerSuspend[] = [];
@@ -649,6 +767,107 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
   const ctxNames = ctx.names;
   const at = location !== undefined ? { location } : {};
   for (const expr of ctx.unresolved) unresolved.push({ expr, kind: "step", ...at });
+
+  /**
+   * L37 - the string a constant expression denotes: a literal, an expression-free or
+   * all-constant template, `a + b`, or an identifier bound once to such a `const` in this module
+   * (or IMPORTED from a relative module, when an `importResolver` is supplied). `undefined` for
+   * anything else - never a guess.
+   */
+  const constString = (e: ts.Expression, depth = 0): string | undefined => {
+    if (depth > 8) return undefined;
+    const u = unwrap(e);
+    if (ts.isStringLiteral(u) || ts.isNoSubstitutionTemplateLiteral(u)) return u.text;
+    if (ts.isTemplateExpression(u)) {
+      let out = u.head.text;
+      for (const span of u.templateSpans) {
+        const v = constString(span.expression, depth + 1);
+        if (v === undefined) return undefined;
+        out += v + span.literal.text;
+      }
+      return out;
+    }
+    if (ts.isBinaryExpression(u) && u.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      const l = constString(u.left, depth + 1);
+      const r = l === undefined ? undefined : constString(u.right, depth + 1);
+      return l !== undefined && r !== undefined ? l + r : undefined;
+    }
+    if (ts.isIdentifier(u)) {
+      const init = constInits.get(u.text);
+      if (init !== undefined) return constString(init, depth + 1);
+      return importer?.(u.text)?.value;
+    }
+    return undefined;
+  };
+
+  /** A string property of an object literal, constant-resolved (`toolId: LLM_X`). */
+  const constProp = (obj: ts.ObjectLiteralExpression, name: string): string | undefined => {
+    for (const p of obj.properties) {
+      if (ts.isPropertyAssignment(p) && propName(p.name) === name)
+        return constString(p.initializer);
+      if (ts.isShorthandPropertyAssignment(p) && p.name.text === name) return constString(p.name);
+    }
+    return undefined;
+  };
+
+  /**
+   * L37 - a step-producing call: the shape-based `anything$({ toolId })` first, then a factory
+   * (same-module function, imported function, or a first-party one in {@link KNOWN_STEP_FACTORIES})
+   * whose effect id is fixed or one of its arguments. The step ID may be templated (`tool:${i}`):
+   * verify needs the EFFECT id.
+   */
+  const resolveCall = (call: ts.CallExpression): RunnerStepRef | undefined => {
+    const first = call.arguments[0];
+    if (first !== undefined && ts.isObjectLiteralExpression(first)) {
+      const toolId = constProp(first, "toolId");
+      if (toolId !== undefined) {
+        const stepId = constProp(first, "id");
+        return { toolId, ...(stepId !== undefined && { stepId }) };
+      }
+    }
+    const callee = unwrap(call.expression);
+    const name = ts.isIdentifier(callee)
+      ? callee.text
+      : ts.isPropertyAccessExpression(callee)
+        ? callee.name.text
+        : undefined;
+    if (name === undefined || call.arguments.some((a) => ts.isSpreadElement(a))) return undefined;
+    let shape: StepFactoryShape | undefined;
+    const local = ts.isIdentifier(callee) ? functions.get(name) : undefined;
+    if (local !== undefined) shape = inferStepFactory(local, constString);
+    else if (ts.isIdentifier(callee) && constInits.has(name)) shape = undefined;
+    else
+      shape =
+        (ts.isIdentifier(callee) ? importer?.(name)?.factory : undefined) ??
+        KNOWN_STEP_FACTORIES[name];
+    if (shape === undefined) return undefined;
+    if ("fixed" in shape) return { toolId: shape.fixed };
+    const arg = call.arguments[shape.argIndex];
+    const toolId = arg === undefined ? shape.default : constString(arg);
+    return toolId === undefined ? undefined : { toolId };
+  };
+
+  /**
+   * Resolve a `ctx.run` / `ctx.parallel` / hand-off step target to a tool, or `undefined` when it
+   * cannot be (reported unresolved by the caller - never silently dropped).
+   */
+  const resolveTarget = (target: ts.Expression, depth = 0): RunnerStepRef | undefined => {
+    const t = unwrap(target);
+    if (ts.isIdentifier(t)) {
+      const bound = bindings.get(t.text);
+      if (bound !== undefined) return bound;
+      const init = constInits.get(t.text);
+      return init !== undefined && depth < 4 ? resolveTarget(init, depth + 1) : undefined;
+    }
+    if (ts.isObjectLiteralExpression(t)) {
+      const toolId = constProp(t, "toolId");
+      if (toolId === undefined) return undefined;
+      const stepId = constProp(t, "id");
+      return { toolId, ...(stepId !== undefined && { stepId }) };
+    }
+    if (ts.isCallExpression(t)) return resolveCall(t);
+    return undefined;
+  };
 
   const stripCallish = (c: ts.Expression): ts.Expression => {
     let cur = unwrap(c);
@@ -662,6 +881,18 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
   };
   const isPlainChain = (e: ts.Expression): boolean =>
     ts.isIdentifier(e) || (ts.isPropertyAccessExpression(e) && isPlainChain(e.expression));
+
+  /**
+   * L34 - the hand-off's arguments (at most the first 8) that resolve to a step.
+   */
+  function escapeArgs(site: ts.CallExpression | ts.NewExpression): ReachEscapeArg[] {
+    const out: ReachEscapeArg[] = [];
+    (site.arguments ?? []).slice(0, 8).forEach((a, index) => {
+      const step = resolveTarget(a);
+      if (step !== undefined) out.push({ index, step });
+    });
+    return out;
+  }
 
   /**
    * Record a hand-off to whatever `site` calls. `.call/.apply/.bind` on the callee is stripped
@@ -721,7 +952,13 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
       });
       return;
     }
-    const key = `${via}:${member ?? ""}:${text}`;
+    // L34 - the other arguments, for a whole-ctx hand-off made directly (not through a
+    // pass-through, whose arguments are not the callee's).
+    const args =
+      via === "ctx" && member === undefined && !PASS_THROUGH.has(direct)
+        ? escapeArgs(site)
+        : undefined;
+    const key = `${via}:${member ?? ""}:${text}:${args === undefined ? "" : JSON.stringify(args)}`;
     if (escapeSeen.has(key)) return;
     escapeSeen.add(key);
     escapes.push({
@@ -729,6 +966,7 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
       ...(rootName !== undefined && { root: rootName }),
       via,
       ...(member !== undefined && { member }),
+      ...(args !== undefined && args.length > 0 && { args }),
       ...at,
     });
   }
@@ -806,6 +1044,7 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
       // element-access form is not, so do it here.
       if (ts.isElementAccessExpression(access)) {
         if (member === "run") visitRun(parent);
+        else if (member === "parallel") visitParallel(parent);
         else if (member === "suspend") visitSuspend(parent);
       }
       return;
@@ -820,11 +1059,15 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
       const called = gp !== undefined && ts.isCallExpression(gp) && gp.expression === parent;
       if (called && (op === "call" || op === "apply")) {
         if (op === "call" && member === "run") visitRun(gp, 1);
+        else if (op === "call" && member === "parallel") visitParallel(gp, 1);
         else if (op === "call" && member === "suspend") visitSuspend(gp, 1);
-        else if (op === "apply" && (member === "run" || member === "suspend")) {
+        else if (
+          op === "apply" &&
+          (member === "run" || member === "suspend" || member === "parallel")
+        ) {
           unresolved.push({
             expr: `ctx.${member}.apply(…)`,
-            kind: member === "run" ? "step" : "suspend",
+            kind: member === "suspend" ? "suspend" : "step",
             ...at,
           });
         }
@@ -874,6 +1117,7 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
       const member = ctx.members.get(node.text) as string;
       if (ts.isCallExpression(parent) && parent.expression === node) {
         if (member === "run") visitRun(parent);
+        else if (member === "parallel") visitParallel(parent);
         else if (member === "suspend") visitSuspend(parent);
         return;
       }
@@ -920,23 +1164,56 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
   function visitRun(call: ts.CallExpression, argOffset = 0): void {
     const target = call.arguments[argOffset];
     if (target === undefined) return;
-    if (ts.isIdentifier(target)) {
-      const bound = bindings.get(target.text);
-      if (bound !== undefined) steps.push(bound);
-      else unresolved.push({ expr: target.text, kind: "step", ...at });
+    const ref = resolveTarget(target);
+    if (ref !== undefined) {
+      steps.push(ref);
       return;
     }
-    if (ts.isObjectLiteralExpression(target)) {
-      const toolId = stringProp(target, "toolId");
-      if (toolId !== undefined) {
-        const stepId = stringProp(target, "id");
-        steps.push({ toolId, ...(stepId !== undefined && { stepId }) });
-        return;
+    // An element access, a parameter, a factory whose effect id is not constant - all real and
+    // all unresolvable from this region alone.
+    unresolved.push({ expr: exprText(target), kind: "step", ...at });
+  }
+
+  /**
+   * L35 - `ctx.parallel([[step, input], …])`. Each tuple's first element is a `ctx.run` target,
+   * resolved the same way. A branch written as a callback is already walked (its `b.run(...)` is
+   * found like any `run`). A pair list that is not an array literal (or a const bound to one), a
+   * spread, or a branch that is neither a tuple nor a function is reported unresolved: the steps
+   * it holds cannot be seen, and an empty answer would read as "reaches nothing".
+   */
+  function visitParallel(call: ts.CallExpression, argOffset = 0): void {
+    const arg = call.arguments[argOffset];
+    if (arg === undefined) return;
+    let list = unwrap(arg);
+    if (ts.isIdentifier(list)) {
+      const init = constInits.get(list.text);
+      if (init !== undefined) list = unwrap(init);
+    }
+    if (!ts.isArrayLiteralExpression(list)) {
+      unresolved.push({ expr: `parallel(${exprText(arg)})`, kind: "step", ...at });
+      return;
+    }
+    for (const el of list.elements) {
+      if (ts.isSpreadElement(el)) {
+        unresolved.push({ expr: `parallel(...${exprText(el.expression)})`, kind: "step", ...at });
+        continue;
+      }
+      const u = unwrap(el);
+      if (ts.isArrayLiteralExpression(u)) {
+        const first = u.elements[0];
+        if (first === undefined || ts.isSpreadElement(first)) {
+          unresolved.push({ expr: `parallel branch ${exprText(u)}`, kind: "step", ...at });
+          continue;
+        }
+        const ref = resolveTarget(first);
+        if (ref !== undefined) steps.push(ref);
+        else unresolved.push({ expr: exprText(first), kind: "step", ...at });
+      } else if (isFn(u) || (ts.isIdentifier(u) && functions.has(u.text))) {
+        // A callback branch: its body is part of this walk.
+      } else {
+        unresolved.push({ expr: `parallel branch ${exprText(u)}`, kind: "step", ...at });
       }
     }
-    // A minted step (`mcpInvoke$("hydrate#0")`), an element access, a parameter —
-    // all real and all unresolvable from this region alone.
-    unresolved.push({ expr: exprText(target), kind: "step", ...at });
   }
 
   function visitSuspend(call: ts.CallExpression, argOffset = 0): void {
@@ -1031,7 +1308,8 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
     if (scopeNames.size === 0 && callNames.size === 0) return;
 
     const record = (c: ts.CallExpression): void => {
-      const id = literalToolId(c.arguments[0]);
+      const first = c.arguments[0];
+      const id = first === undefined ? undefined : constString(first);
       if (id !== undefined) steps.push({ toolId: id, viaDecider: true });
       else {
         const arg = c.arguments[0];
@@ -1118,6 +1396,8 @@ export function analyzeReachNode(root: ts.Node, location?: string): RunnerReach 
   function visit(node: ts.Node): void {
     const run = methodCall(node, "run");
     if (run !== undefined) visitRun(run);
+    const parallel = methodCall(node, "parallel");
+    if (parallel !== undefined) visitParallel(parallel);
     const decide = methodCall(node, "decide");
     if (decide !== undefined) visitDecide(decide);
     else flagIndirectDecide(node);

@@ -2,6 +2,7 @@ import { tainted } from "@loom/classify";
 import { canonicalJson, fnv1a64 } from "@loom/core";
 import { TieredMemory } from "@loom/memory";
 import type { MemoryEntry, MemoryStore } from "@loom/memory";
+import { declareReach } from "@loom/verify";
 import { packParagraphs } from "./chunk";
 import type { Chunker, DocRecord, KnowledgeDoc, Passage } from "./types";
 
@@ -397,6 +398,14 @@ export class KnowledgeBase {
     return hits.map(toPassage);
   }
 }
+
+// L34 - declared reach (ADR 0086). `kb.retrieve(q, { decide: ctx.decide })` is one `ctx.decide`
+// whose decider reads the memory store; it runs no tool (embedding, if any, is the store's own, not
+// a ctx effect). Declared on the PROTOTYPE so both `verify.reach["kb.retrieve"]` and `verify.reach.kb`
+// (the instance, which inherits it) and a method reference (`kb.retrieve`) resolve. Only `retrieve` is
+// ever handed a ctx seam.
+declareReach(KnowledgeBase.prototype, { run: [], transient: [] });
+declareReach(KnowledgeBase.prototype.retrieve, { run: [], transient: [] });
 
 /**
  * Open a corpus over a `MemoryStore` directly — the two-line form of the four every

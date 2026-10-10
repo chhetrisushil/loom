@@ -21,7 +21,8 @@
   "dependencies": {
     "@loom/analytics": "workspace:*",
     "@loom/classify": "workspace:*",
-    "@loom/core": "workspace:*"
+    "@loom/core": "workspace:*",
+    "@loom/verify": "workspace:*"
   },
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",

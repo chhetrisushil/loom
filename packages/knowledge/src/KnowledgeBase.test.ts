@@ -355,3 +355,25 @@ class NoSearchStore implements MemoryStore {
     return this.inner.remove(key, ids);
   }
 }
+
+describe("KnowledgeBase - declared reach (L34, ADR 0086)", () => {
+  it("retrieve declares an empty reach, on the method AND the instance, and runs no tool", async () => {
+    const { assertReachMatches, readReachDeclaration, recordReach } = await import("@loom/verify");
+    const { kb } = corpus();
+    await kb.putDoc(RUNBOOK);
+    const rec = recordReach();
+    const ctx = rec.ctx({
+      run: async () => undefined,
+      execute: async () => undefined,
+      parallel: async () => [],
+      decide: async (_id: string, decider: (scope: object) => unknown) =>
+        decider({ invokeTransient: async () => undefined }),
+    });
+    const hits = await kb.retrieve("replica replay delay", { decide: ctx.decide });
+    expect(hits.length).toBeGreaterThan(0);
+    for (const target of [kb, kb.retrieve, KnowledgeBase.prototype]) {
+      expect(readReachDeclaration(target)).toEqual({ run: [], transient: [] });
+    }
+    assertReachMatches(readReachDeclaration(kb) as never, rec.recorded, { exact: true });
+  });
+});

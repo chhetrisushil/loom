@@ -267,6 +267,15 @@ the first parameter of every runner is ctx. ~ctx.run~ / ~ctx.suspend~ handed out
 escapes too (~member~). ~ctx~ stored, aliased, returned, or reaching a parameter that cannot be
 followed is unresolved.
 
+*Step arguments, ~ctx.parallel~ and constant ids (L34/L35/L37).* A library that runs the step its
+caller passes (~fanout$(ctx, step, items)~) declares ~stepArgs: [1]~; the hand-off's ~args~ carry the
+steps that resolved and the verifier counts them (an unresolved position is reported). The ~[step,
+input]~ pairs of ~ctx.parallel([...])~ are read like ~ctx.run~ (a non-literal list is unresolved).
+A step's effect id resolves from a same-module ~const~ string, an all-constant template, a
+same-module or *relative*-imported factory (~llmStep$(id, LLM_X)~, found by shape: the returned
+~step$({ toolId })~), and the first-party ~mcpInvoke$~ (always ~mcp.invoke~) and ~sandboxEval$~. Bare
+or aliased import specifiers and re-exports are not followed. See ADR 0086's 2026-10-10 amendment.
+
 Because the transform feeds whole *modules*, ~analyzeNonDeterminism~ is called with
 ~{ skipMemoized: true }~ there: a module holds runner bodies *and* ~handler$~ bodies, and
 a ~Math.random()~ inside a handler is safe by construction — the handler's result is

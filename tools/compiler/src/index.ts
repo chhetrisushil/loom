@@ -7,8 +7,13 @@ export type { NonDeterministicCall } from "./nondeterminism";
 export { analyzeLoopIdentity, analyzeLoopIdentityNode } from "./loopIdentity";
 export type { LoopStepIdentityFinding } from "./loopIdentity";
 export { analyzeReachNode, analyzeRunnerReach } from "./runnerReach";
+export { KNOWN_STEP_FACTORIES } from "./runnerReach";
 export type {
+  AnalyzeReachOptions,
+  ImportedBinding,
   ReachEscape,
+  ReachEscapeArg,
+  StepFactoryShape,
   RunnerReach,
   RunnerStepRef,
   RunnerSuspend,

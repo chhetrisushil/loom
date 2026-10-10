@@ -10,6 +10,7 @@
     { "path": "../classify" },
     { "path": "../core" },
     { "path": "../llm" },
-    { "path": "../memory" }
+    { "path": "../memory" },
+    { "path": "../verify" }
   ]
 }

@@ -117,3 +117,26 @@ describe("recordReach / assertReachMatches (claim vs reality)", () => {
     expect(rec.recorded.run).toEqual(["p.a", "p.b"]);
   });
 });
+
+describe("stepArgs (L34)", () => {
+  it("is a valid declaration on its own and malformed shapes are undeclared", () => {
+    expect(readReachDeclaration({ stepArgs: [1] })).toEqual({ stepArgs: [1] });
+    expect(readReachDeclaration({ stepArgs: [] })).toEqual({ stepArgs: [] });
+    expect(readReachDeclaration({ stepArgs: [-1] })).toBeUndefined();
+    expect(readReachDeclaration({ stepArgs: ["1"] })).toBeUndefined();
+    expect(readReachDeclaration({ stepArgs: 1 })).toBeUndefined();
+  });
+
+  it("passedSteps covers a recorded run tool only under a stepArgs declaration", () => {
+    const rec = { run: ["caller.step"], transient: [] };
+    assertReachMatches({ stepArgs: [1] }, rec, { passedSteps: ["caller.step"] });
+    expect(() => assertReachMatches({ stepArgs: [1] }, rec)).toThrow(/caller\.step/);
+    expect(() => assertReachMatches({ stepArgs: [1] }, rec, { passedSteps: ["other"] })).toThrow(
+      /caller\.step/
+    );
+    // Without stepArgs a passed step is NOT a free pass.
+    expect(() => assertReachMatches({ run: [] }, rec, { passedSteps: ["caller.step"] })).toThrow(
+      /caller\.step/
+    );
+  });
+});
