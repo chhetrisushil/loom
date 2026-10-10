@@ -1,4 +1,4 @@
-import type { TaintedValue } from "@loom/classify";
+import { type TaintedValue, isTainted } from "@loom/classify";
 
 // ── R5 — content parts (ADR 0120) ─────────────────────────────────────────────
 //
@@ -126,12 +126,32 @@ export function toParts(content: LlmMessageContent): LlmContentPart[] {
 }
 
 /**
+ * Thrown by {@link textOf} when handed a `tainted()` wrapper (`{ __loomTainted, value }`) instead
+ * of message content. A wrapper is neither a string nor parts; reading it as text would either
+ * crash obscurely or, worse, silently drop the provenance. The message never echoes the content.
+ */
+export class TaintedContentError extends Error {
+  /** The `origin` recorded when the content was tainted. */
+  readonly origin: string;
+  constructor(origin: string) {
+    super(
+      `textOf() was given tainted content from "${origin}": untrusted data wrapped by tainted(), not message text. Unwrap it deliberately with unwrapTainted() (or, in a conversation summarizer, summarizerText() from @loom/conversation) and treat the result as DATA - never place it in an instruction position.`
+    );
+    this.name = "TaintedContentError";
+    this.origin = origin;
+  }
+}
+
+/**
  * The text of a message: the string itself, or its text parts joined (including text
  * inside `tool_result`s, which is what a text-only consumer wants to read). Media and
  * `tool_use` parts contribute nothing.
+ *
+ * Throws {@link TaintedContentError} on a `tainted()` wrapper: unwrap it on purpose first.
  */
 export function textOf(content: LlmMessageContent): string {
   if (typeof content === "string") return content;
+  if (isTainted(content)) throw new TaintedContentError(content.__loomTainted.origin);
   let out = "";
   for (const p of content) {
     if (p.type === "text") out += p.text;

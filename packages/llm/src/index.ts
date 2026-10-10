@@ -32,7 +32,14 @@ export type {
   LlmToolResultPartInput,
   LlmToolUsePart,
 } from "./parts";
-export { assistantMessageOf, base64ByteLength, hasStructuredParts, textOf, toParts } from "./parts";
+export {
+  TaintedContentError,
+  assistantMessageOf,
+  base64ByteLength,
+  hasStructuredParts,
+  textOf,
+  toParts,
+} from "./parts";
 export type { LlmCapabilities, MediaTypeSet } from "./capabilities";
 export {
   UnsupportedModalityError,

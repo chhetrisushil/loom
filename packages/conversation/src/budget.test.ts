@@ -1,7 +1,15 @@
+import { tainted } from "@loom/classify";
 import { agent$ } from "@loom/core";
+import { ToolEffect } from "@loom/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { TEST_KEY, boot, lastUserText, messages, signRaw, until } from "./__fixtures__/harness";
-import { type TokenCounter, conversation$, fitToWindow, heuristicTokenCounter } from "./index";
+import {
+  type TokenCounter,
+  conversation$,
+  fitToWindow,
+  heuristicTokenCounter,
+  summarizerText,
+} from "./index";
 
 /** 1 token per character: exact arithmetic for the tests. */
 const perChar = (calls?: { n: number }): TokenCounter => ({
@@ -132,6 +140,35 @@ describe("conversation budgeting", () => {
     expect(last).not.toContain("question-1");
   });
 
+  it("a summarizer reading its input through summarizerText survives rotation; the summary is fenced", async () => {
+    const seen: string[] = [];
+    const b = boot({
+      config: cfg({ summarizerToolId: "real-summarize" }),
+      reply: () => ({ content: "r".repeat(60), stopReason: "end_turn" }),
+      extraEffects: (e) =>
+        e.register(
+          "real-summarize",
+          new ToolEffect(async (input: unknown) => {
+            const text = (input as { messages: { content: unknown }[] }).messages
+              .map((m) => summarizerText(m.content))
+              .join("|");
+            seen.push(text);
+            return { summary: `digest(${text.length})` };
+          })
+        ),
+    });
+    const { conversationId: id } = await b.conv.start();
+    for (let i = 1; i <= 6; i++) {
+      await b.conv.sendTurn(id, `question-${i}-${"q".repeat(40)}`);
+      await messages(b, id, i * 2);
+    }
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.join("")).toContain("question-1"); // the text was readable, not [object Object]
+    const last = JSON.stringify(b.requests.at(-1)?.messages);
+    expect(last).toContain("digest(");
+    expect(last).toContain("conversation:summary"); // re-injected fenced, origin-labelled
+  });
+
   it("a prompt that cannot fit even alone is refused: no model call, the dialogue continues", async () => {
     const b = boot({ config: cfg() });
     const { conversationId: id } = await b.conv.start();
@@ -201,5 +238,19 @@ describe("conversation budgeting", () => {
       (e) => (e.payload as { source?: string } | null)?.source === "conversation-budget"
     );
     expect(fits).toHaveLength(4);
+  });
+});
+
+describe("summarizerText", () => {
+  it("passes a plain string and a parts array through textOf, and unwraps a tainted one", () => {
+    expect(summarizerText("hi")).toBe("hi");
+    expect(
+      summarizerText([
+        { type: "text", text: "a" },
+        { type: "text", text: "b" },
+      ])
+    ).toBe("ab");
+    expect(summarizerText(tainted("data", "x"))).toBe("data");
+    expect(summarizerText(tainted([{ type: "text", text: "p" }], "x"))).toBe("p");
   });
 });

@@ -172,7 +172,7 @@ not proposed: the signal has to come from outside the flow body (D2), which `age
   again.
 - **Eviction and summary.** Dropped turns leave the prompt (they stay in `history`). With `budget.summarizerToolId` they
   are folded into a rolling summary through `ctx.execute` against that effect, **using the same `{ messages } → { summary }`
-  contract as `agentLoop$` `compaction.toolId`, so one summarizer effect serves both**. The summary is model output over
+  contract as `agentLoop$` `compaction.toolId`, so one summarizer effect serves both**. *(Note: the INPUT differs in one respect - the user's words and the previous summary arrive as `tainted()` wrappers, not strings; `textOf` on one throws `TaintedContentError`, and `summarizerText` from `@loom/conversation` is the sanctioned reader. It returns untrusted data that must stay out of instruction positions; the summary is re-injected fenced with origin `conversation:summary`.)* The summary is model output over
   untrusted text, so it rides in a *fenced* `user` message (origin `conversation:summary`), never the system prompt.
   `maxWindowTurns` (default 64) bounds the carried window whether or not a budget is configured. **The summary can never
   wedge the conversation** (P3-1): it is cut to `maxSummaryTokens` (default a quarter of the window) by a recorded decision

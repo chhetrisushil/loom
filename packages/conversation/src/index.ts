@@ -55,6 +55,7 @@ export {
 } from "./reader";
 export type { ConversationReader, Position, ReadOptions, ReadResult } from "./reader";
 export { conversationIdOf, generationId, generationOf, isValidConversationId } from "./ids";
+export { summarizerText } from "./summarizerText";
 export { CONVERSATION_TOPIC, RECORD_SOURCE, SUMMARY_ORIGIN, USER_ORIGIN } from "./types";
 export type {
   BudgetConfig,
