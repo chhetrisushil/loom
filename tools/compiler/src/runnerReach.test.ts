@@ -1183,3 +1183,47 @@ describe("false resolutions are unresolved, never a guess (L34 fix round)", () =
       const runner = async (ctx) => { { class T {} await ctx.run({ toolId: T }); } };`);
   });
 });
+
+describe("an import and a same-named local elsewhere are ambiguous (L34 re-review)", () => {
+  const unresolvedOnly = (src: string): void => {
+    const r = analyzeRunnerReach(src);
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved.length).toBeGreaterThan(0);
+  };
+
+  it("an imported step with a same-named binding in another function", () => {
+    unresolvedOnly(`
+      import { step$ } from "@loom/core";
+      import { a } from "./steps";
+      function w() { const a = step$({ id: "a", toolId: "t.local" }); return a; }
+      const runner = async (ctx) => { await ctx.run(a, {}); };`);
+  });
+  it("an imported factory with a same-named arrow in another function", () => {
+    unresolvedOnly(`
+      import { step$ } from "@loom/core";
+      import { mk } from "./steps";
+      function w() { const mk = (id) => step$({ id, toolId: "t.local" }); return mk; }
+      const runner = async (ctx) => { await ctx.run(mk("a")); };`);
+  });
+  it("an imported factory with a same-named nested function declaration", () => {
+    unresolvedOnly(`
+      import { step$ } from "@loom/core";
+      import { mk } from "./steps";
+      function w() { function mk(id) { return step$({ id, toolId: "t.local" }); } return mk; }
+      const runner = async (ctx) => { await ctx.run(mk("a")); };`);
+  });
+  it("the plugin's mcpInvoke$ with a same-named local in another function", () => {
+    unresolvedOnly(`
+      import { step$ } from "@loom/core";
+      import { mcpInvoke$ } from "@loom/plugin-mcp";
+      function w(ctx) { const mcpInvoke$ = (id) => step$({ id, toolId: "x.y" }); return mcpInvoke$; }
+      const runner = async (ctx) => { await ctx.run(mcpInvoke$("a")); };`);
+  });
+  it("a default import with a same-named local factory elsewhere", () => {
+    unresolvedOnly(`
+      import { step$ } from "@loom/core";
+      import mk from "./steps";
+      function w() { const mk = (id) => step$({ id, toolId: "t.local" }); return mk; }
+      const runner = async (ctx) => { await ctx.run(mk("a")); };`);
+  });
+});

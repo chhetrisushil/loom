@@ -278,6 +278,10 @@ EVENT_SCHEMA and the syscall table are unchanged.
   5. A `ctx.parallel` list bound to an identifier is read only if that identifier is used nowhere but its
      declaration and `ctx.parallel(...)` arguments; a `push`, a pass to a function or any other use makes
      the list unresolved.
+  6. The two directions are both closed: a name that is imported (named, default or namespace) AND
+     declared anywhere else in the module is never resolved through the local declaration either — the
+     module-wide scan cannot tell which one a use refers to, so `import { mk } …; function w() { const mk
+     = … }; ctx.run(mk("a"))` is unresolved, not the local `mk`.
   A factory with several returns, a spread argument, a non-constant effect argument or a
   duplicated/reassigned constant stays unresolved.
   Consequence worth knowing: a flow that used `mcpInvoke$` now reaches `mcp.invoke` for capability-compat,
