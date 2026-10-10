@@ -5,7 +5,9 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import {
   type ContentSweepOptions,
+  MIN_ORPHAN_ERASE_MARGIN_MS,
   ReclaimOrphansAckError,
+  ReclaimOrphansMarginError,
   ReclaimOrphansTouchError,
   pinByEventKinds,
   sweepUnpinnedContent,
@@ -936,6 +938,162 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
     expect(result.orphansReclaimed).toEqual([ref.__loomContent]);
     expect(await content.get(ref)).toBeNull();
     await expect(resolving.read("a-child")).rejects.toBeInstanceOf(ContentMissingError);
+  });
+
+  /**
+   * The fork/delete race with a SLOW write: the fork's before-touch lands at `touchedAt` (older
+   * than the sweep's eventual cutoff), then the sweep starts and its scan passes the child, then
+   * the fork commits and its after-touch runs on the sweep's clock, then the parent is reaped.
+   * Only the after-touch can save the blob. (Realistic only for a write slower than the margin;
+   * a faster one is protected by the before-touch alone, ADR 0055 D5.)
+   */
+  async function slowForkRace(opts: { failAfterTouch: boolean }) {
+    const { clock, content } = clockedStore(OLD);
+    const ref = await content.put(encodeValue("recalled memory, cited only by p-parent"));
+    const raw = new InMemoryAsyncEventStore();
+    await raw.append(evt("a-child", 0, "EXECUTION_STARTED", { input: {} }, OLD));
+    await raw.append(evt("a-child", 1, "STEP_COMPLETED", { output: 1 }, OLD));
+    await raw.append(evt("p-parent", 0, "EXECUTION_STARTED", { input: {} }, OLD));
+    await raw.append(evt("p-parent", 1, "STEP_COMPLETED", { output: ref }, OLD));
+
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const slow = Object.assign(Object.create(raw) as InMemoryAsyncEventStore, {
+      copyPrefix: async (...args: Parameters<InMemoryAsyncEventStore["copyPrefix"]>) => {
+        await gate;
+        await raw.deleteExecution("a-child");
+        return raw.copyPrefix(...args);
+      },
+    });
+    let touches = 0;
+    let beforeTouched!: () => void;
+    const beforeLanded = new Promise<void>((r) => {
+      beforeTouched = r;
+    });
+    const real = content.touch.bind(content);
+    content.touch = async (addresses) => {
+      if (++touches === 2 && opts.failAfterTouch) throw new Error("touch unavailable");
+      const missing = await real(addresses);
+      if (touches === 1) beforeTouched();
+      return missing;
+    };
+    const reports: Array<{ err: unknown; phase: string }> = [];
+    const resolving = new ContentResolvingEventStore(slow, content, {
+      externalize: {},
+      onTouchError: (err, info) => reports.push({ err, phase: info.phase }),
+    });
+
+    clock.now = NOW - TTL - 1_000; // the before-touch's time: older than the cutoff to come
+    const fork = resolving.copyPrefix!("p-parent", "a-child", 1, {});
+    await beforeLanded;
+    clock.now = NOW; // the sweep starts: cutoff = NOW - TTL, just above the before-touch
+    const store = racing(raw, "a-child", async () => {
+      clock.now = NOW + 1;
+      release(); // the slow fork commits now, after the scan passed the child
+      await fork;
+      await raw.deleteExecution("p-parent");
+    });
+    const result = await sweepUnpinnedContent({
+      eventStores: [store],
+      snapshotStores: [NO_SNAPSHOTS],
+      contentStore: content,
+      pinnedEventTypes: [],
+      olderThanMs: TTL,
+      now: NOW,
+      reclaimOrphans: { completeScan: true },
+    });
+    return { result, content, ref, reports, resolving };
+  }
+
+  it("the AFTER touch extends a write slower than the margin: the blob survives because of it", async () => {
+    const { result, content, ref, reports, resolving } = await slowForkRace({
+      failAfterTouch: false,
+    });
+    expect(result.orphansReclaimed).toEqual([]);
+    expect(await content.get(ref)).not.toBeNull();
+    expect(reports).toEqual([]);
+    expect((await resolving.read("a-child"))[1]?.payload).toEqual({
+      output: "recalled memory, cited only by p-parent",
+    });
+  });
+
+  it("control: when the after-touch fails (reported, not thrown) a write slower than the margin loses the blob", async () => {
+    const { result, content, ref, reports } = await slowForkRace({ failAfterTouch: true });
+    expect(result.orphansReclaimed).toEqual([ref.__loomContent]);
+    expect(await content.get(ref)).toBeNull();
+    expect(reports.map((r) => r.phase)).toEqual(["after"]);
+    expect((reports[0]!.err as Error).message).toMatch(/touch unavailable/);
+  });
+
+  describe("an ERASING orphan pass needs a guard margin (ADR 0055 D6 amendment 2)", () => {
+    async function seeded() {
+      const { clock, content } = clockedStore(OLD);
+      await content.put(encodeValue("an old orphan"));
+      clock.now = NOW;
+      let reads = 0;
+      const live = new InMemoryAsyncEventStore();
+      const counting = Object.assign(Object.create(live) as InMemoryAsyncEventStore, {
+        listExecutionsPage: async (
+          ...a: Parameters<InMemoryAsyncEventStore["listExecutionsPage"]>
+        ) => {
+          reads++;
+          return live.listExecutionsPage(...a);
+        },
+      });
+      const base = {
+        eventStores: [counting],
+        snapshotStores: [NO_SNAPSHOTS],
+        contentStore: content,
+        pinnedEventTypes: [],
+        now: NOW,
+        reclaimOrphans: { completeScan: true as const },
+      };
+      return { clock, content, base, reads: () => reads };
+    }
+
+    it("refuses olderThanMs <= 0 before reading anything; a dryRun is exempt", async () => {
+      const { content, base, reads } = await seeded();
+      for (const olderThanMs of [0, -1, Number.NaN]) {
+        await expect(sweepUnpinnedContent({ ...base, olderThanMs })).rejects.toBeInstanceOf(
+          ReclaimOrphansMarginError
+        );
+      }
+      expect(reads()).toBe(0);
+      expect(content.size).toBe(1);
+      const dry = await sweepUnpinnedContent({ ...base, olderThanMs: 0, dryRun: true });
+      expect(dry.orphansReclaimed).toHaveLength(1);
+      expect(content.size).toBe(1);
+    });
+
+    it("refuses a TTL shorter than the minimum margin, and accepts exactly the minimum", async () => {
+      const { content, base } = await seeded();
+      await expect(
+        sweepUnpinnedContent({ ...base, olderThanMs: MIN_ORPHAN_ERASE_MARGIN_MS - 1 })
+      ).rejects.toBeInstanceOf(ReclaimOrphansMarginError);
+      expect(content.size).toBe(1);
+      const ok = await sweepUnpinnedContent({ ...base, olderThanMs: MIN_ORPHAN_ERASE_MARGIN_MS });
+      expect(ok.orphansReclaimed).toHaveLength(1);
+    });
+
+    it("refuses a touchedBefore closer to the store's clock than the minimum, whatever the TTL", async () => {
+      const { clock, content, base } = await seeded();
+      await expect(
+        sweepUnpinnedContent({
+          ...base,
+          olderThanMs: TTL,
+          touchedBefore: clock.now - MIN_ORPHAN_ERASE_MARGIN_MS + 1,
+        })
+      ).rejects.toBeInstanceOf(ReclaimOrphansMarginError);
+      expect(content.size).toBe(1);
+      const ok = await sweepUnpinnedContent({
+        ...base,
+        olderThanMs: TTL,
+        touchedBefore: clock.now - MIN_ORPHAN_ERASE_MARGIN_MS,
+      });
+      expect(ok.orphansReclaimed).toHaveLength(1);
+    });
   });
 
   it("reclaimOrphans REFUSES to erase through a store without touch (fail closed), erasing nothing; a dryRun is still allowed", async () => {

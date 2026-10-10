@@ -21,12 +21,12 @@
   "dependencies": {
     "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
-    "@loom/event-runtime": "workspace:*"
+    "@loom/event-runtime": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*"
   },
   "devDependencies": {
     "@loom/conformance": "workspace:*",
     "@loom/replay-vm": "workspace:*",
-    "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8",

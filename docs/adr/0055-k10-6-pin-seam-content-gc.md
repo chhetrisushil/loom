@@ -328,32 +328,60 @@ detect an omitted store, so no further automatic detection is claimed. The `recl
 >    with the missing addresses so a caller can notice a dangling ref early. `SqliteContentStore`
 >    does it as chunked `UPDATE ... WHERE address IN (...) RETURNING address` in one transaction;
 >    `InMemoryContentStore` as a map walk; `CachingContentStore` forwards it. The conformance kit
->    checks a store that has it (bumps; unknown address reported and not inserted); 3P stores
+>    checks a store that has it (bumps, never backwards under a stepped-back clock; unknown address reported and not inserted; a store with `touch` but not the whole 1.3.0 set fails); 3P stores
 >    that omit it keep compiling.
 > 2. **Callers.** When the content store has `touch`, `ContentResolvingEventStore` touches the
 >    addresses cited by the INPUT payloads of `append`, `appendBatch` and `appendIfUnchanged`
 >    (refs newly externalized by that write are not in the input; their `put` is the touch), and by
->    the range `copyPrefix` copies (read raw from the inner store; a fork already costs O(range)).
->    Addresses come from the sweep's own mark-phase walker (`citations.ts`: iterative, cycle-safe,
->    so it also sees R5 media sources and claim-check envelope refs), deduped, one `touch` per
->    write. The touch runs BEFORE the write (a failure aborts it with nothing landed) and AFTER it
->    (best-effort: the write is durable, so its failure is swallowed). Before covers a sweep that
->    starts after the touch; after covers a sweep whose mark pass had already read this log, since
->    the guard cutoff is read at the sweep's start and a touch after the write is necessarily later
->    than it. Hot-path cost: with no `touch` on the store, none; otherwise one iterative walk of the
->    input payload, and a round trip only when a ref was found. The walk is paid on every event
->    type, marked or not, because the sweep's mark phase cites refs from any payload.
+>    the range `copyPrefix` copies (read raw from the inner store). Addresses come from the
+>    sweep's own mark-phase walker (`citations.ts`: iterative, cycle-safe, so it also sees R5
+>    media sources and claim-check envelope refs), deduped, one `touch` per write. The touch runs
+>    BEFORE the write (a failure aborts it with nothing landed) and AFTER it (best-effort: the
+>    write is durable, so a failure is not raised; it is reported through `onTouchError`). A
+>    non-empty `missing` from either touch, restricted to BARE refs, is reported through the same
+>    hook as a `ContentMissingError` (the write cites a blob that is already gone). It is a report,
+>    not a refusal: a claim-check envelope's `ref` may be reclaimed on a TTL by design (D4), so a
+>    fork of a log with a reclaimed envelope is legitimate, and the walker cannot tell a bare
+>    `__loomContent` from an R5 media address, so failing the write would reject legitimate
+>    forks. Hot-path cost: with no `touch` on the store, none; otherwise one iterative walk of the
+>    input payload, and a round trip only when a ref was found. **Fork read I/O roughly doubles**:
+>    `copyPrefix` re-reads the raw prefix (`readRangeOf`) to find its refs, and then the inner
+>    store reads it again to copy it; only a store with `touch` pays this, and it is paid once per
+>    fork, O(range).
+>    **The seed snapshot is the second citation path.** For a parent compacted at gap g,
+>    `copyPrefix` copies only the post-gap events; the refs of the truncated prefix live in the
+>    child's seed snapshot (`WorkflowRuntime.fork` saves it), where R5 media sources and
+>    claim-check envelopes stay verbatim and nothing re-`put`s them. `ContentTouchingSnapshotStore`
+>    (a `SnapshotStore` decorator, wrapped outside any encrypting store) touches the citations of
+>    every state it SAVES, before and after, with the same walker and hook. Chosen over a runtime
+>    hook because the runtime holds no content store and must not depend on the plugin, and it
+>    also covers compaction checkpoints and every other save. It costs one walk of the saved state
+>    per save, and a round trip only when it cites a blob.
 > 3. **`reclaimOrphans` fails closed without `touch`.** To ERASE, a content store lacking
 >    `touch` throws `ReclaimOrphansTouchError` before anything is read or erased; a `dryRun` is
 >    exempt. This is a deletion safety boundary, so the old advice ("quiesce forks and deletes")
 >    is not an acceptable default, and the fix for a pre-1.4.0 store is one method. There is no
 >    escape hatch: a host that really can prove quiescence can implement `touch` as a no-op
 >    returning `[]`, which makes that claim explicit in its own code instead of a flag here.
-> 4. **Scope of the guarantee.** It covers logs written through a `ContentResolvingEventStore`
->    over that store (a writer that copies refs another way is outside it; a test pins a raw
->    `copyPrefix` still losing the blob). Residual window: a touch lands one round trip before and
->    after the write it guards, so a sweep whose entire mark-to-erase interval fits inside that
->    round trip could still lose; a real sweep (a full scan, then a listing) is far longer.
+> 4. **The guarantee is D5's, not the touch's.** The cutoff is `touchClock() - olderThanMs`. The
+>    touch BEFORE a write is what makes a sweep whose cutoff is later refuse, so the race is
+>    closed exactly while a write's touch-to-commit window is SHORTER than the margin
+>    `store-now - cutoff` (the TTL, or an explicit `touchedBefore`'s distance from the store's
+>    clock). The touch AFTER the write is a best-effort extension for a write slower than the
+>    margin; it is not what closes the race (it is not retried, and its failure is swallowed).
+>    With `olderThanMs: 0`, or a `touchedBefore` near store-now, the window is unbounded: a
+>    before-touch at t=100, a sweep cutoff of 101, a scan that passes the child, a commit at 102,
+>    a swallowed after-touch failure, the parent deleted, and the blob is erased under a live fork.
+>    So an ERASING orphan pass (not `dryRun`) refuses `olderThanMs <= 0` and any cutoff closer
+>    to the store's clock than `MIN_ORPHAN_ERASE_MARGIN_MS` (60 s) with
+>    `ReclaimOrphansMarginError`, before reading anything. 60 s is far above an append and above a
+>    fork's prefix copy at realistic sizes; an operator who needs more passes a larger TTL, and
+>    the CLI's `--ttl 0 --orphans --apply` therefore refuses. The guarantee covers logs written
+>    through a `ContentResolvingEventStore` over that store, with snapshots saved through a
+>    `ContentTouchingSnapshotStore` (a writer that copies refs another way is outside it; a test
+>    pins a raw `copyPrefix` still losing the blob). Not covered: a fork racing the DELETION of its
+>    own parent between the prefix copy and the seed save (the fork's read of the parent fails then
+>    too).
 >
 > The former `KNOWN GAP` test now asserts the blob survives and the fork replays, for
 > `InMemoryContentStore` and `SqliteContentStore`; a store without `touch` pins the refusal.

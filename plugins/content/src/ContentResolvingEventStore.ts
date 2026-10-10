@@ -7,7 +7,6 @@ import {
   readRangeOf,
 } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
-import { visitCitedAddresses } from "./citations";
 import {
   type ContentRef,
   collectContentRefs,
@@ -17,6 +16,7 @@ import {
   substituteContentRefs,
 } from "./content";
 import { ContentMissingError } from "./errors";
+import { type TouchErrorHook, touchAround } from "./touchAround";
 
 export interface ContentResolvingEventStoreOptions {
   /**
@@ -25,6 +25,14 @@ export interface ContentResolvingEventStoreOptions {
    * on read they are resolved back. Unmarked events are stored verbatim (zero overhead, G2).
    */
   externalize: Record<string, readonly string[]>;
+  /**
+   * Observer for the SPI 1.4.0 `touch` this store makes around ref-carrying writes (ADR 0055 D6
+   * amendment 2): called when the touch AFTER a durable write threw (swallowed otherwise, since the
+   * write already landed), and when either touch reports a cited bare ref MISSING (the write cites
+   * a blob that is already gone). A failure of the touch BEFORE the write still rejects the write.
+   * Wire it to your logger or metrics. See {@link TouchErrorHook}.
+   */
+  onTouchError?: TouchErrorHook;
 }
 
 /**
@@ -68,6 +76,7 @@ function pathsFor(
 
 export class ContentResolvingEventStore implements EventStore {
   private readonly externalize: Record<string, readonly string[]>;
+  private readonly onTouchError: TouchErrorHook | undefined;
   readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;
   readonly head?: NonNullable<EventStore["head"]>;
   readonly readRange?: NonNullable<EventStore["readRange"]>;
@@ -87,6 +96,7 @@ export class ContentResolvingEventStore implements EventStore {
     options: ContentResolvingEventStoreOptions
   ) {
     this.externalize = options.externalize;
+    this.onTouchError = options.onTouchError;
     // Every optional method decided over the whole union (ADR 0074 Amendment), each
     // installed only when the inner store has it.
     const plan = {
@@ -97,6 +107,7 @@ export class ContentResolvingEventStore implements EventStore {
       appendBatch: async (envelopes) =>
         this.touching(
           envelopes.map((e) => e.payload),
+          { operation: "appendBatch", executionId: envelopes[0]?.executionId },
           async () =>
             inner.appendBatch!(await Promise.all(envelopes.map((e) => this.externalizeEnvelope(e))))
         ),
@@ -136,8 +147,11 @@ export class ContentResolvingEventStore implements EventStore {
                 };
           }
         }
-        return this.touching([event.payload], async () =>
-          inner.appendIfUnchanged!(executionId, await this.externalizeEnvelope(event), expect)
+        return this.touching(
+          [event.payload],
+          { operation: "appendIfUnchanged", executionId },
+          async () =>
+            inner.appendIfUnchanged!(executionId, await this.externalizeEnvelope(event), expect)
         );
       },
       // Refs are content-addressed: copying them verbatim makes the fork share the parent's
@@ -152,6 +166,7 @@ export class ContentResolvingEventStore implements EventStore {
               const copied = await readRangeOf(inner, fromExecutionId, 0, throughSequence);
               return this.touching(
                 copied.map((e) => e.payload),
+                { operation: "copyPrefix", executionId: toExecutionId },
                 () => inner.copyPrefix!(fromExecutionId, toExecutionId, throughSequence, metadata)
               );
             },
@@ -175,8 +190,10 @@ export class ContentResolvingEventStore implements EventStore {
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
-    return this.touching([envelope.payload], async () =>
-      this.inner.append(await this.externalizeEnvelope(envelope))
+    return this.touching(
+      [envelope.payload],
+      { operation: "append", executionId: envelope.executionId },
+      async () => this.inner.append(await this.externalizeEnvelope(envelope))
     );
   }
 
@@ -185,33 +202,22 @@ export class ContentResolvingEventStore implements EventStore {
    * incoming payload already carries: a recalled memory value, a `scriptRef`, a ref handed
    * between steps) is a citation the orphan sweep's conditional delete cannot see. So, when the
    * content store can `touch`, the payloads' cited addresses are touched BEFORE the write (a
-   * failure aborts it, nothing landed) and again AFTER it (best-effort: the write is durable, so
-   * its outcome must not be turned into a failure). Before covers a sweep that starts after the
-   * touch; after covers a sweep whose mark pass had already read this log, so the touch lands
-   * later than its cutoff. Refs externalized by THIS write are not in the INPUT payloads (their
-   * `put` is the touch). Cost: with no `touch` on the store, nothing (the closure is the write);
-   * otherwise one iterative cycle-safe walk of the input payload (no recursion; the same walker
-   * the sweep's mark phase uses), and a round trip only when a ref was found.
+   * failure aborts it, nothing landed) and again AFTER it (best-effort and reported through
+   * `onTouchError`: the write is durable, so its outcome must not be turned into a failure).
+   * The guarantee is D5's: the BEFORE touch protects a write whose touch-to-commit window is
+   * shorter than the sweep's margin (`touchClock() - cutoff`, which an erasing orphan pass
+   * requires to be at least 60 s); the AFTER touch only extends that for a slower write. See
+   * {@link touchAround}. Refs externalized by THIS write are not in the INPUT payloads (their
+   * `put` is the touch). Cost: with no `touch` on the store, nothing (the closure is the
+   * write); otherwise one iterative cycle-safe walk of the input payload (no recursion; the same
+   * walker the sweep's mark phase uses), and a round trip only when a ref was found.
    */
-  private async touching<T>(payloads: readonly unknown[], write: () => Promise<T>): Promise<T> {
-    const touch = this.content.touch;
-    if (touch === undefined) return write();
-    const cited = new Set<string>();
-    for (const payload of payloads) {
-      if (typeof payload === "object" && payload !== null) {
-        visitCitedAddresses(payload, (address) => cited.add(address));
-      }
-    }
-    if (cited.size === 0) return write();
-    const addresses = [...cited];
-    await touch.call(this.content, addresses);
-    const result = await write();
-    try {
-      await touch.call(this.content, addresses);
-    } catch {
-      /* best-effort: see above */
-    }
-    return result;
+  private touching<T>(
+    payloads: readonly unknown[],
+    ctx: Parameters<typeof touchAround>[2],
+    write: () => Promise<T>
+  ): Promise<T> {
+    return touchAround(this.content, payloads, ctx, this.onTouchError, write);
   }
 
   private async externalizeValue(value: unknown): Promise<ContentRef> {

@@ -20,10 +20,15 @@ export const settle = (): Promise<void> => new Promise((resolve) => setTimeout(r
  */
 export async function checkContentStoreTouchContract(store: ContentStoreLike): Promise<void> {
   const present = SPI_1_3_METHODS.filter((m) => store[m] !== undefined);
+  if (present.length === 0 && store.touch !== undefined) {
+    throw new Error(
+      "ContentStore SPI 1.4.0: touch needs the whole SPI 1.3.0 set (deleteIfUntouchedSince, listPage, touchClock) — a store with touch and none of them cannot make a touch observable to the conditional delete"
+    );
+  }
   if (present.length === 0) return;
   if (present.length !== SPI_1_3_METHODS.length) {
     throw new Error(
-      `ContentStore SPI 1.3.0: implement deleteIfUntouchedSince, listPage and touchClock together — this store has only ${present.join(", ")}`
+      `ContentStore SPI 1.3.0: implement deleteIfUntouchedSince, listPage and touchClock together${store.touch !== undefined ? " (touch, SPI 1.4.0, needs them all)" : ""} — this store has only ${present.join(", ")}`
     );
   }
   const bytes = new TextEncoder().encode(`touch-contract-${Math.random()}`);
@@ -70,5 +75,52 @@ async function checkTouch(store: ContentStoreLike, ref: { __loomContent: string 
   await store.touch!([]); // an empty batch is legal
   if ((await store.get({ __loomContent: ghost })) !== null) {
     throw new Error("ContentStore SPI 1.4.0: touch of an unknown address created a blob");
+  }
+}
+
+/** The store's recorded touch time for one address, found by paging `listPage`. */
+async function touchedAtOf(store: ContentStoreLike, address: string): Promise<number> {
+  let cursor: string | undefined;
+  do {
+    const page = await store.listPage!({ ...(cursor !== undefined && { cursor }), limit: 100 });
+    const hit = page.entries.find((e) => e.address === address);
+    if (hit !== undefined) return hit.touchedAt;
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
+  throw new Error(`listPage never returned ${address}`);
+}
+
+/**
+ * SPI 1.4.0 `touch` takes the MAXIMUM of the stored time and the store's clock, never a plain
+ * overwrite: a touch under a clock that stepped back must not lower a blob's touch time, or a
+ * recently re-cited blob becomes erasable again. Needs a store whose clock the kit drives (the
+ * `clocked` factory); resolves for a store with no `touch` or no 1.3.0 set. Internal to the kit,
+ * like {@link checkContentStoreTouchContract}.
+ */
+export async function checkTouchNeverMovesBackwards(
+  clocked: (now: () => number) => ContentStoreLike
+): Promise<void> {
+  let clock = 2_000;
+  const store = clocked(() => clock);
+  if (
+    store.touch === undefined ||
+    store.listPage === undefined ||
+    store.deleteIfUntouchedSince === undefined
+  ) {
+    return;
+  }
+  const ref = await store.put(new TextEncoder().encode("touch-monotonic"));
+  clock = 1_000; // NTP stepped back
+  await store.touch([ref.__loomContent]);
+  const after = await touchedAtOf(store, ref.__loomContent);
+  if (after !== 2_000) {
+    throw new Error(
+      `ContentStore SPI 1.4.0: touch under a clock that stepped back moved the touch time backwards (2000 -> ${after}); it must take the maximum, as put does`
+    );
+  }
+  if (await store.deleteIfUntouchedSince(ref, 1_500)) {
+    throw new Error(
+      "ContentStore SPI 1.4.0: touch under a stepped-back clock lowered the touch time — deleteIfUntouchedSince erased a blob touched at 2000 for a cutoff of 1500"
+    );
   }
 }

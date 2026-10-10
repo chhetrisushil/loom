@@ -108,6 +108,25 @@ describe("SqliteContentStore touch (SPI 1.4.0)", () => {
     await store.close();
   });
 
+  it("prepares the touch UPDATE once per chunk size, not once per chunk per call", async () => {
+    const clock = { now: 1_000 };
+    const store = open(clock);
+    const addresses: string[] = [];
+    for (let i = 0; i < 1_100; i++) addresses.push((await store.put(encodeValue(i))).__loomContent);
+    const db = (store as unknown as { db: { prepare: (sql: string) => unknown } }).db;
+    const prepare = db.prepare.bind(db);
+    const touchSql: string[] = [];
+    db.prepare = (sql: string) => {
+      if (sql.includes("SET touched_at")) touchSql.push(sql);
+      return prepare(sql);
+    };
+    await store.touch(addresses); // 500 + 500 + 100
+    await store.touch(addresses);
+    await store.touch(addresses.slice(0, 500));
+    expect(touchSql).toHaveLength(2); // sizes 500 and 100, each prepared once
+    await store.close();
+  });
+
   it("a fork made mid-sweep keeps the blob and replays (the ADR 0055 D6 race, on SQLite)", async () => {
     const OLD = 1_000;
     const NOW = 100_000;
@@ -147,7 +166,7 @@ describe("SqliteContentStore touch (SPI 1.4.0)", () => {
       snapshotStores: [{ loadLatest: async () => null }],
       contentStore: content,
       pinnedEventTypes: [],
-      olderThanMs: 10,
+      olderThanMs: 60_000, // the minimum guard margin an erasing orphan pass accepts
       now: NOW,
       reclaimOrphans: { completeScan: true },
     });
@@ -156,15 +175,15 @@ describe("SqliteContentStore touch (SPI 1.4.0)", () => {
     const replayed = await resolving.read("a-child");
     expect(replayed[1]?.payload).toEqual({ output: "recalled memory" });
     // Control: the same blob, untouched and uncited, IS reclaimed (the guard is not a no-op).
-    clock.now = NOW + 50_000;
+    clock.now = NOW + 100_000;
     await raw.deleteExecution("a-child");
     const control = await sweepUnpinnedContent({
       eventStores: [raw],
       snapshotStores: [{ loadLatest: async () => null }],
       contentStore: content,
       pinnedEventTypes: [],
-      olderThanMs: 10,
-      now: NOW + 50_000,
+      olderThanMs: 60_000, // the minimum guard margin an erasing orphan pass accepts
+      now: NOW + 100_000,
       reclaimOrphans: { completeScan: true },
     });
     expect(control.orphansReclaimed).toEqual([ref.__loomContent]);

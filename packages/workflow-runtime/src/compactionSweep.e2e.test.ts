@@ -2,7 +2,12 @@ import { step$ } from "@loom/core";
 import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { InMemoryContentStore, sweepUnpinnedContent } from "@loom/plugin-content";
+import {
+  ContentResolvingEventStore,
+  ContentTouchingSnapshotStore,
+  InMemoryContentStore,
+  sweepUnpinnedContent,
+} from "@loom/plugin-content";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -34,7 +39,8 @@ const later = step$({
 
 describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
   it("keeps every blob the checkpoint or a kept finding cites, and still reclaims a true orphan", async () => {
-    const content = new InMemoryContentStore({ now: () => 1 });
+    const clock = { now: 1 };
+    const content = new InMemoryContentStore({ now: () => clock.now });
     const stepBlob = await content.put(new TextEncoder().encode("step output, claim-checked"));
     const evidence = await content.put(new TextEncoder().encode("the finding's evidence"));
     const orphan = await content.put(new TextEncoder().encode("cited by nothing"));
@@ -93,6 +99,7 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       )
     ).toBe(false);
 
+    clock.now = 1_000 + 100 * DAY; // the store's clock at sweep time: cutoff = now - DAY, far past every put
     const result = await sweepUnpinnedContent({
       eventStores: [eventStore],
       snapshotStores: [snapshotStore],
@@ -100,7 +107,6 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       pinnedEventTypes: [FINDING], // NOTE is kept by compaction only
       olderThanMs: DAY,
       now: 1_000 + 100 * DAY,
-      touchedBefore: 2,
       reclaimOrphans: { completeScan: true },
     });
     expect(result.orphansReclaimed).toEqual([orphan.__loomContent]);
@@ -113,5 +119,114 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       await runtime.resume("x", { eventType: "go2", payload: { ok: 2 } })
     ).waitForCompletion();
     expect(done.status).toBe("completed");
+  });
+
+  // ADR 0055 D6 amendment 2 — the SECOND citation path. A parent compacted through its tip keeps
+  // its prefix refs ONLY in its snapshot; a fork copies just the post-gap events and seeds the
+  // child's snapshot with the parent's folded state, so an R5 media source cited only in the
+  // truncated prefix reaches the child through the seed with no `put` and no event.
+  describe("fork of a compacted parent mid-sweep (the seed snapshot is a citation path)", () => {
+    const media = (address: string) => ({ kind: "ref", ref: { address } });
+
+    async function forkMidSweep(touching: boolean) {
+      const clock = { now: 1 };
+      const content = new InMemoryContentStore({ now: () => clock.now });
+      const blob = await content.put(new TextEncoder().encode("media cited only by the prefix"));
+      const effects = new EffectRuntime();
+      effects.register("fetch", new ToolEffect(async () => ({ clip: media(blob.__loomContent) })));
+      const definition: FlowDefinition<unknown, unknown> = {
+        _tag: "FlowDefinition",
+        id: "seed-fork",
+        name: "seed-fork",
+        version: "1.0.0",
+        inputSchema: anyIo,
+        outputSchema: anyIo,
+        steps: [fetch],
+      };
+      const runner: FlowRunner<unknown, unknown> = async (ctx) => {
+        await ctx.run(fetch, {});
+        await ctx.suspend({ on: "go" });
+        return {};
+      };
+      const rawEvents = new InMemoryAsyncEventStore();
+      const rawSnaps = new InMemoryAsyncSnapshotStore();
+      const eventStore = new ContentResolvingEventStore(rawEvents, content, { externalize: {} });
+      const snapshotStore = touching
+        ? new ContentTouchingSnapshotStore(rawSnaps, content)
+        : rawSnaps;
+      const runtime = new WorkflowRuntime({
+        eventStore,
+        snapshotStore,
+        effectRuntime: effects,
+        now: () => 1_000,
+        onWarn: () => {},
+      });
+      runtime.registerFlow(definition, runner);
+      await (
+        await runtime.start({ definition, runner }, {}, { executionId: "p-parent" })
+      ).waitForSuspend();
+      const tip = (await eventStore.head!("p-parent"))!;
+      await new LogLifecycle(eventStore, snapshotStore).compact("p-parent");
+      // The prefix no longer cites the blob: only the parent's checkpoint does.
+      expect(JSON.stringify(await rawEvents.read("p-parent"))).not.toContain(blob.__loomContent);
+      // "a-child" sorts before the parent, so the scan has passed it when the fork lands. Two
+      // events, because a one-event log reads as "compacted at its tip" and would be pinned
+      // through the very snapshot the fork seeds.
+      for (const [sequence, eventType] of [
+        [0, "EXECUTION_STARTED"],
+        [1, "STEP_COMPLETED"],
+      ] as const) {
+        await rawEvents.append({
+          id: `a-${sequence}`,
+          workflowId: "wf",
+          executionId: "a-child",
+          eventType,
+          sequence,
+          timestamp: 1,
+          payload: { input: {} },
+        });
+      }
+      const read = rawEvents.read.bind(rawEvents);
+      const scanned = Object.assign(Object.create(rawEvents) as InMemoryAsyncEventStore, {
+        read: async (id: string) => {
+          const events = await read(id);
+          if (id === "a-child") {
+            clock.now += 1; // the fork happens after the sweep started
+            await rawEvents.deleteExecution("a-child");
+            await runtime.fork("p-parent", tip, { executionId: "a-child" });
+            await rawEvents.deleteExecution("p-parent"); // retention reaps the parent
+            await rawSnaps.deleteExecution("p-parent");
+          }
+          return events;
+        },
+      });
+      clock.now = 100 * DAY;
+      const result = await sweepUnpinnedContent({
+        eventStores: [scanned],
+        snapshotStores: [rawSnaps],
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: DAY,
+        now: 100 * DAY,
+        reclaimOrphans: { completeScan: true },
+      });
+      return { result, content, blob, runtime };
+    }
+
+    it("a ContentTouchingSnapshotStore touches the seed's citations, so the blob survives and the child still resumes", async () => {
+      const { result, content, blob, runtime } = await forkMidSweep(true);
+      expect(result.orphansReclaimed).toEqual([]);
+      expect(await content.get(blob)).not.toBeNull();
+      const done = await (
+        await runtime.resume("a-child", { eventType: "go", payload: { ok: 1 } })
+      ).waitForCompletion();
+      expect(done.status).toBe("completed");
+    });
+
+    it("control: without the decorator the same fork loses the blob (the gap is real)", async () => {
+      const { result, content, blob } = await forkMidSweep(false);
+      expect(result.orphansReclaimed).toEqual([blob.__loomContent]);
+      expect(await content.get(blob)).toBeNull();
+    });
   });
 });
