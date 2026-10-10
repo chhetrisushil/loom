@@ -9,7 +9,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { summarizerText } from "./summarizerText";
+import { SUMMARIZER_TEXT_TRUNCATED, summarizerText } from "./summarizerText";
 
 const mk = (id: string) =>
   tool$({
@@ -109,5 +109,22 @@ describe("summarizerText over an agentLoop$ compaction fold", () => {
     expect(summarizerText(tainted(fold, "y"))).toBe("abc");
     expect(summarizerText(tainted(tainted("deep", "a"), "b"))).toBe("deep");
     expect(summarizerText(undefined)).toBe("");
+  });
+
+  it("an off-type wrapper used as a part is unwrapped; content past the depth cap is marked, never dropped", () => {
+    expect(summarizerText([tainted({ type: "text", text: "w" }, "x")])).toBe("w");
+    // 20 levels of tool_result nesting around a text part: past the 16-level cap
+    let deep: unknown = [{ type: "text", text: "HIDDEN" }];
+    for (let i = 0; i < 20; i++) deep = [{ type: "tool_result", toolUseId: `${i}`, content: deep }];
+    expect(summarizerText(deep)).toBe(SUMMARIZER_TEXT_TRUNCATED);
+    // tainted() does not double-wrap, so a long wrapper chain collapses to one: still read
+    let chain: unknown = "seen";
+    for (let i = 0; i < 20; i++) chain = tainted(chain, "x");
+    expect(summarizerText(chain)).toBe("seen");
+    // under the cap, nested content is read
+    let shallow: unknown = [{ type: "text", text: "ok" }];
+    for (let i = 0; i < 5; i++)
+      shallow = [{ type: "tool_result", toolUseId: `${i}`, content: shallow }];
+    expect(summarizerText(shallow)).toBe("ok");
   });
 });

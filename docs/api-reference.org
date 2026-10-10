@@ -2052,7 +2052,7 @@ A conversation is ONE chained execution (ADR 0109): user turns arrive on the inb
 function conversation$(config: ConversationConfig, options?: { id?: string; name?: string; version?: string }):
   RegisteredFlow<ConversationCarry | Record<string, never>, ConversationResult>
 function conversationRunner(config: ConversationConfig): FlowRunner<...>   // the body, for your own flow
-function summarizerText(content: unknown): string   // reads a summarizer/compaction message: unwraps tainted() at every level (top, text parts, tool_result content); result is UNTRUSTED data; re-wrap with tainted() before any LLM call
+function summarizerText(content: unknown): string   // reads a summarizer/compaction message: unwraps tainted() at every level (top, text parts, tool_result content); result is UNTRUSTED data; re-wrap with tainted() before any LLM call; content nested > 16 levels becomes SUMMARIZER_TEXT_TRUNCATED (exported), never silently dropped
 
 interface ConversationConfig {
   key: string;                                       // HMAC secret: every inbox envelope is host-signed, both modes

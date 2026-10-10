@@ -155,6 +155,7 @@ export function textOf(content: LlmMessageContent): string {
   if (isTainted(content)) throw new TaintedContentError(content.__loomTainted.origin);
   let out = "";
   for (const p of content) {
+    if (isTainted(p)) throw new TaintedContentError(p.__loomTainted.origin); // off-type: a wrapper as a part
     if (p.type === "text") out += plainText(p.text);
     else if (p.type === "tool_result") {
       const c = p.content as unknown;
