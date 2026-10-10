@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`OversizedInlinePartError.scope` (`@loom/llm`; additive).** The constructor already took `scope: "part" | "request"` but dropped it, so a caller could not tell the per-part cap from the per-request inline total except by `limit` or message text. It is now a `readonly scope` property. Tested for both scopes.
+
+### Documentation
+
+- **Docs/DX batch.** `execution.registerEffects` (how `agentLoop$` gets its model and tool effects in a `defineConfig` app) is documented in the user guide and ADR 0121's migration steps, and its JSDoc shows the grouped spelling. ADR 0121 D5 / the `cacheScope` JSDoc now say `cacheScope` is a direct-path-only requirement (the ring bypasses the response cache). The SSE `/history` default direction (`forward`) and how to request `backward` are documented. ADR 0120 gains "Authorizing under dedupe" (a `ContentResolver`'s owner is a SET of tenants). The `@loom/conversation` README gains a security section on the raw inbox path (never expose `runtime.send(…, runtime.systemOptions())` into a conversation inbox).
+
 ### Changed
 
 - **BREAKING: `sweepUnpinnedContent({ reclaimOrphans })` now requires `{ completeScan: true }` ([ADR 0055](docs/adr/0055-k10-6-pin-seam-content-gc.md) D6 amendment; `@loom/plugin-content`; kernel untouched).** Orphan reclamation erases every blob no scanned log, snapshot or root cites, so a host that left out an event store or snapshot store lost, silently, every blob only that store cited, while still cited; only `dryRun` guarded it. A bare `reclaimOrphans: true` (or `{}`, `{ completeScan: false }`, any other value) now throws the new `ReclaimOrphansAckError` (a `TypeError`) before anything is read or erased. A `dryRun` is exempt (it erases nothing and is how you check completeness): `dryRun: true` still accepts `reclaimOrphans: true`. The acknowledgement also covers scan ORDER: each live store before its archive. **Migration:** `reclaimOrphans: true` becomes `reclaimOrphans: { completeScan: true }` once `eventStores` (live AND every archive), `snapshotStores` and `roots` cover everything that cites content; dry-run first. Absent/`false` is unchanged, and so is the TTL floor. The conditional delete (D5) closes the re-cite race only for a re-cite through `put`; **KNOWN GAP:** a citation copied without a `put` (a fork's `copyPrefix`, a ref kept in an `append` payload) is not protected, so do not run an orphan sweep concurrently with forks or deletes of the executions it scans (ADR 0055 D6 amendment). `loom sweep content --orphans` is unchanged for users (it passes the acknowledgement after its own archive and snapshot checks). The `loom-examples` `media-gallery` sweep needs the same one-line change.

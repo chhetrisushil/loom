@@ -18,9 +18,11 @@ POST /conversations                  -> 201 { conversationId }       (the server
 POST /conversations/:id/turns        { text, messageId?, editOf? } -> 202  (a barge-in if a turn is running; editOf = ord of your earlier turn)
 POST /conversations/:id/close
 GET  /conversations/:id              -> status
-GET  /conversations/:id/history      ?limit&cursor&direction
+GET  /conversations/:id/history      ?limit&cursor&direction=forward|backward  (default forward)
 GET  /conversations/:id/events       text/event-stream; Last-Event-ID or ?cursor resumes
 ```
+
+**History direction.** `direction` defaults to `forward`: oldest first, starting at the beginning of the log (or after `cursor`), and `done` is true at the live tip. To load the newest messages first (the usual chat opening), request `?direction=backward&limit=N`: you get the latest N, newest first, and `nextCursor` continues toward older ones (`done` is true at the start). A cursor continues in the direction that produced it; any other value of `direction` is a `400`. A client that renders the page must order it to match (for example loom-ui `ChatFeed.applyHistory` takes a matching direction argument).
 
 SSE events: `status` (first), `partial` (the reply in progress), `message` (durable; its SSE `id` is the history cursor), `delta` / `reset` (live), `closed`, `reconnect`, `error`. Render user text as **text**: it is untrusted.
 

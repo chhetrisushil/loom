@@ -153,6 +153,10 @@
     tool calls (generated images/audio) is not represented. Gemini's `parametersJsonSchema` and `functionCall.id` follow the
     current API reference and were not exercised against the live service (the tests stub `fetch`).
 
+### Authorizing under dedupe
+
+The ContentStore is content-addressed, so identical bytes are ONE blob however many tenants stored them. A `ContentResolver`'s notion of "owner" must therefore be a SET of tenants (a blob each of them put), not a single owner: a single-owner map records the first tenant and wrongly denies the second tenant who stored the same bytes. Record every `put`'s tenant against the address, authorize if the asking principal's tenant is in the set, and drop a tenant from the set (erase the blob when it empties) on that tenant's delete.
+
 ## Consequences
 
 - **Breaking for `@loom/llm` consumers**: see the CHANGELOG. A provider written against the old text-only `LlmMessage`

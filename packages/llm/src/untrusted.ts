@@ -112,6 +112,8 @@ export class InvalidLlmRequestError extends Error {
 export class OversizedInlinePartError extends Error {
   readonly bytes: number;
   readonly limit: number;
+  /** Which cap was exceeded: `"part"` is the per-part cap, `"request"` the per-request inline total. */
+  readonly scope: "part" | "request";
   constructor(bytes: number, limit: number, scope: "part" | "request" = "part") {
     super(
       `Inline media ${scope === "part" ? "part is" : "in this request totals"} ${bytes} bytes, over the ${limit}-byte cap. Store it in the ContentStore and send a { kind: "ref" } source — inline bytes would be journaled into the log.`
@@ -119,6 +121,7 @@ export class OversizedInlinePartError extends Error {
     this.name = "OversizedInlinePartError";
     this.bytes = bytes;
     this.limit = limit;
+    this.scope = scope;
   }
 }
 
