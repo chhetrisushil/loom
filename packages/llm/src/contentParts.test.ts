@@ -79,6 +79,23 @@ describe("part helpers", () => {
     }
   });
 
+  it("textOf throws TaintedContentError on a wrapper nested in a text part or a tool_result, never a TypeError or [object Object]", () => {
+    const t = tainted("secret", "mcp:s/t");
+    const cases = [
+      [{ type: "text", text: t }],
+      [{ type: "tool_result", toolUseId: "1", content: t }],
+      [{ type: "tool_result", toolUseId: "1", content: [{ type: "text", text: t }] }],
+    ];
+    for (const c of cases) {
+      expect(() => textOf(c as never)).toThrow(TaintedContentError);
+    }
+    try {
+      textOf(cases[1] as never);
+    } catch (e) {
+      expect((e as TaintedContentError).origin).toBe("mcp:s/t");
+    }
+  });
+
   it("assistantMessageOf puts text first, then one tool_use per call; never empty content", () => {
     expect(
       assistantMessageOf({ content: "hm", toolCalls: [{ id: "1", name: "n", input: {} }] })

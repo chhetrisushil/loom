@@ -147,20 +147,29 @@ export class TaintedContentError extends Error {
  * inside `tool_result`s, which is what a text-only consumer wants to read). Media and
  * `tool_use` parts contribute nothing.
  *
- * Throws {@link TaintedContentError} on a `tainted()` wrapper: unwrap it on purpose first.
+ * Throws {@link TaintedContentError} on a `tainted()` wrapper - at the top level, in a text part's
+ * `text`, or in a `tool_result`'s `content` (or its text parts): unwrap it on purpose first.
  */
 export function textOf(content: LlmMessageContent): string {
   if (typeof content === "string") return content;
   if (isTainted(content)) throw new TaintedContentError(content.__loomTainted.origin);
   let out = "";
   for (const p of content) {
-    if (p.type === "text") out += p.text;
+    if (p.type === "text") out += plainText(p.text);
     else if (p.type === "tool_result") {
-      if (typeof p.content === "string") out += p.content;
-      else for (const r of p.content) if (r.type === "text") out += r.text;
+      const c = p.content as unknown;
+      if (isTainted(c)) throw new TaintedContentError(c.__loomTainted.origin);
+      if (typeof c === "string") out += c;
+      else for (const r of c as LlmResultPart[]) if (r.type === "text") out += plainText(r.text);
     }
   }
   return out;
+}
+
+/** A text slot's string; a `tainted()` wrapper nested in a part is refused like a top-level one. */
+function plainText(text: unknown): string {
+  if (isTainted(text)) throw new TaintedContentError(text.__loomTainted.origin);
+  return text as string;
 }
 
 /** Whether a message carries any non-text part. */

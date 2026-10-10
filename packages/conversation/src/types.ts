@@ -118,12 +118,12 @@ export interface BudgetConfig {
    * An effect id that folds evicted turns into the rolling summary: `{ messages } -> { summary }`.
    * Without it, evicted turns are simply dropped from the PROMPT (they stay in `history`).
    *
-   * INPUT SHAPE (differs from `agentLoop$` `compaction.toolId`, which carries no wrapper):
+   * INPUT SHAPE (shared with `agentLoop$` `compaction.toolId`; BOTH may carry `tainted()` wrappers):
    * `messages` is `{ role, content }[]`. The USER's words (and the previous summary) arrive with
    * `content` as a TAINTED wrapper `{ __loomTainted: { origin }, value }` - untrusted data, neither
    * a string nor parts. Assistant replies are plain strings. `textOf(content)` on a wrapper throws
    * `TaintedContentError`; read every message with {@link summarizerText} from this package, which
-   * unwraps the taint and applies `textOf`. The result is untrusted DATA: never put it in an
+   * unwraps the taint at every level (top level, text parts, `tool_result` content) and returns text. Compaction input carries wrappers too (tool failures, MCP results, origin-bearing history), so one effect through `summarizerText` serves both. The result is untrusted DATA: never put it in an
    * instruction position (system prompt, assistant role); pass it to a model only as fenced
    * `tainted()` user content. The returned `summary` is cut to `maxSummaryTokens` and re-injected
    * as a fenced `user` message with origin `conversation:summary` (`SUMMARY_ORIGIN`).

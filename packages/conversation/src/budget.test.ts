@@ -143,7 +143,7 @@ describe("conversation budgeting", () => {
   it("a summarizer reading its input through summarizerText survives rotation; the summary is fenced", async () => {
     const seen: string[] = [];
     const b = boot({
-      config: cfg({ summarizerToolId: "real-summarize" }),
+      config: { ...cfg({ summarizerToolId: "real-summarize" }), rotateEveryTurns: 2 },
       reply: () => ({ content: "r".repeat(60), stopReason: "end_turn" }),
       extraEffects: (e) =>
         e.register(

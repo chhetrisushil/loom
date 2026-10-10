@@ -33,14 +33,14 @@ const page = await conversations.history(conversationId, { principal, direction:
 
 ## Writing a summarizer (`budget.summarizerToolId`)
 
-The effect receives `{ messages: { role, content }[] }` and returns `{ summary: string }`. Unlike `agentLoop$` `compaction.toolId`, the user's words (and the previous summary) arrive with `content` as a **tainted wrapper** `{ __loomTainted: { origin }, value }` - untrusted data, neither a string nor parts; assistant replies are plain strings. `textOf(m.content)` on a wrapper throws `TaintedContentError` (it used to be an obscure `TypeError` that failed the step and killed the conversation at its first rotation). Read messages with `summarizerText`:
+The effect receives `{ messages: { role, content }[] }` and returns `{ summary: string }`. Like `agentLoop$` `compaction.toolId` (whose input also carries wrappers: failed tool calls, MCP results and origin-bearing history are tainted, in text parts and `tool_result` content), the user's words (and the previous summary) arrive with `content` as a **tainted wrapper** `{ __loomTainted: { origin }, value }` - untrusted data, neither a string nor parts; assistant replies are plain strings. `textOf(m.content)` on a wrapper throws `TaintedContentError` (it used to be an obscure `TypeError` that failed the step and killed the conversation at its first rotation). Read messages with `summarizerText`, which unwraps every level (top level, text parts, `tool_result` content) and so serves both effects:
 
 ```ts
 import { summarizerText } from "@loom/conversation";
 const transcript = input.messages.map((m) => `${m.role}: ${summarizerText(m.content)}`).join("\n");
 ```
 
-The text is **untrusted data**: summarize or quote it, never put it in a system prompt or assistant message (re-wrap with `tainted()` if you pass it to a model). The returned summary is clipped to `maxSummaryTokens` and re-injected as a fenced `user` message with origin `conversation:summary`, never the system prompt.
+The text is **untrusted data**: summarize or quote it, never put it in a system prompt or assistant message (if the summarizer calls an LLM with this text, re-wrap it with `tainted(text, origin)` and put it in a user message, never the system prompt: `guardRequest` can no longer refuse it after unwrapping). The returned summary is clipped to `maxSummaryTokens` and re-injected as a fenced `user` message with origin `conversation:summary`, never the system prompt.
 
 ## What it is
 
