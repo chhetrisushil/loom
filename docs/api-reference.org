@@ -13,7 +13,7 @@ New to Loom? Start with [[file:getting-started.md][Getting Started]] and the [[f
 4.  [[#replay-storage][Replay & storage]] — ~@loom/replay-vm~, ~@loom/event-runtime~, ~@loom/snapshot-runtime~
 5.  [[#effects][Effects]] (~@loom/effect-runtime~) — ~Effect~, ~EffectRuntime~, middleware, the four effect kinds, K2 capability ring + K12 delegation
 6.  [[#kernel-hardening][Kernel hardening & security]] — the K1–K12 / T1–T2 ring map + ~@loom/isolate~ (K7), ~@loom/plugin-crypto~ (K10), ~@loom/wire-abi~ (T2)
-7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/agent-surface~, ~@loom/plugin-a2ui~, ~@loom/plugin-mcp-app~, ~@loom/blueprint-runtime~, ~@loom/plugin-renderer-react~, ~@loom/plugin-renderer-terminal~
+7.  [[#projection-ui][Projection & UI]] — ~@loom/projection-runtime~, ~@loom/agent-surface~, ~@loom/plugin-a2ui~, ~@loom/plugin-mcp-app~, ~@loom/blueprint-runtime~, ~@loom/plugin-renderer-react~, ~@loom/plugin-renderer-terminal~, ~@loom/plugin-renderer-dom~
 8.  [[#agentic][Agentic]] — ~@loom/llm~, ~@loom/reasoning~, ~@loom/agent~, ~@loom/plugin-mcp~, ~@loom/plugin-a2a~, ~@loom/conversation~, ~@loom/plugin-conversation-sse~, ~@loom/capability~, ~@loom/intent~, ~@loom/planner~, ~@loom/memory~, ~@loom/orchestrator~
 9.  [[#compute][Compute & distribution]] — ~@loom/dispatcher~, ~@loom/worker-runtime~ (+ ~-local~), ~@loom/plugin-worker-remote~, ~@loom/plugin-worker-server~, ~@loom/plugin-cloudrun~, ~@loom/plugin-postgres~, ~@loom/graph-executor~, ~@loom/scheduler~
 10. [[#dx][DX & tooling]] — ~@loom/analytics~, ~@loom/appgen~, ~@loom/appgen-model~, ~@loom/cli~, ~@loom/testing~, ~@loom/eval~, ~@loom/deploy-sim~, ~@loom/scaffold~, ~@loom/compiler~, ~@loom/telemetry~
@@ -1662,6 +1662,40 @@ const defaultTerminalRegistry: RendererRegistry<TerminalWidgetRenderer>         
 function renderBlueprintToString(blueprint: Blueprint, stateMap: Map<string, unknown>, options?: TerminalRenderOptions): string
 class TerminalRenderer { constructor(projectionRuntime: ProjectionRuntime, options?: TerminalRenderOptions); render(blueprint: Blueprint, executionId: string): string }
 #+end_src
+
+** ~@loom/plugin-renderer-dom~
+
+#+begin_src typescript
+// Framework-free DOM renderer (ADR 0127). Depends on blueprint-runtime and projection-runtime only.
+interface DomWidgetContext { doc: Document; widget: Widget; value: unknown; status?: BindingStatus; onAction?: (a: WidgetAction) => void }
+type DomWidgetRenderer = (ctx: DomWidgetContext) => HTMLElement   // returns the widget BODY; the adapter owns the status frame
+interface DomRenderOptions {
+  registry?: RendererRegistry<DomWidgetRenderer>   // default defaultDomRegistry; an unregistered kind draws "[No renderer for X]"
+  check?: WidgetValueCheck                         // value-contract slot between error/empty and stale, declared channels only
+  onAction?: (action: WidgetAction) => unknown     // { type, widgetId, payload } — no viewedVersion stamping (that is loom-ui)
+  title?: "heading" | "none"                       // root <h1>, default "heading"
+  document?: Document                              // default host.ownerDocument, else globalThis.document
+}
+interface MountOptions extends DomRenderOptions { projectionRuntime: ProjectionRuntime; executionId: string }
+interface DomUpdateReport { identity: IdentityReport; remounted: readonly string[] }   // remounted: present before AND after but rebuilt (kind change, moved container)
+interface DomHandle { element: HTMLElement; update(next: Blueprint): DomUpdateReport; dispose(): void }   // update never throws
+const defaultDomRegistry: RendererRegistry<DomWidgetRenderer>   // the eight built-in kinds (asserted by catalogCoverage and the three-way parity test)
+// one-shot, not live — the sibling of renderBlueprintToString
+function renderBlueprintToDom(blueprint: Blueprint, stateMap: Map<string, unknown>, options?: DomRenderOptions): HTMLElement
+// live: subscribes each bound projection; a change re-draws only widgets bound to it whose value/status changed.
+// update(next): widgets keyed by id, containers by layout id (IR 2.4.0) or ordinal+type; matched nodes are kept, moved only if out of place
+function mountBlueprint(host: HTMLElement, blueprint: Blueprint, options: MountOptions): DomHandle
+// for custom renderers — the only way this package builds elements (no innerHTML anywhere)
+function h(doc: Document, tag: string, attrs?: Attrs, ...children: Child[]): HTMLElement   // string child = text node; unlisted tag/attr THROWS; href checked by safeUrl
+function safeUrl(url: unknown): string | undefined    // http, https, mailto, tel or relative; javascript:/data:/protocol-relative and disguised schemes -> undefined
+function display(value: unknown): string              // text for a value (objects as JSON)
+function token(value: unknown, fallback: string): string   // a short lowercase token usable as a class suffix, else fallback
+// IR 2.1.0: titled layout -> <section aria-label><h2>; placed grid cells get grid-column/grid-row on the child (no wrapper)
+// IR 2.2.0: Layout.role is ignored (no container registry; that is loom-ui)
+// IR 2.3.0: status empty -> <div role="status" data-binding-marker="empty">○ title: no data</div>
+#+end_src
+
+Built-in DOM renderers: the eight kinds ~MetricCard~, ~Timeline~, ~ApprovalCard~, ~StatusBadge~, ~StreamingText~, ~ProgressBar~, ~DataTable~, ~AlertCard~. Not exported from ~@loom/sdk~.
 
 -----
 

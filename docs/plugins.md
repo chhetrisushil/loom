@@ -210,6 +210,11 @@ and compute.
 
 **Compute**
 
+- `@loom/plugin-renderer-dom` — framework-free DOM renderer (`renderBlueprintToDom`, live `mountBlueprint`), the
+  web surface for an app that wants neither React nor loom-ui. Covers the same eight kinds as the other two (asserted
+  by a three-way parity test); builds every element through an allowlisting `h()` (no `innerHTML`, `href` through
+  `safeUrl`), ships no CSS and no runtime dependency beyond blueprint-runtime and projection-runtime, and is not in
+  the `@loom/sdk` barrel (ADR 0127).
 - `@loom/plugin-worker-remote` — `RemoteWorkerRuntime`: dispatches an `ExecutionPackage` to a
   stateless worker's `POST /execute` and collects the `ExecutionResult`.
 - `@loom/plugin-worker-server` — `createWorkerServer`: the other half, and the container
