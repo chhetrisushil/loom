@@ -120,4 +120,31 @@ suite("NOTIFY delivery is scoped to the store's schema", () => {
     unsub();
     await Promise.all([reader.close(), writer.close()]);
   });
+
+  it("a legacy 3-element tag (no schema) is still delivered", async () => {
+    // Backwards compatibility for rolling upgrades: an older node sends [sender, exec, seq].
+    const reader = new PostgresEventStore(pool(SCHEMA_A));
+    const writer = new PostgresEventStore(pool(SCHEMA_A));
+    const seen: number[] = [];
+    const unsub = await reader.subscribe("legacy", (e) => seen.push(e.sequence));
+    await writer.append(evt("legacy", 0, "EXECUTION_STARTED"));
+    await until(() => seen.length >= 1, "the first event");
+    // Append without notifying via the store: insert the row, then send a 3-element tag by hand.
+    const raw = pool(SCHEMA_A, 1);
+    await raw.query(
+      "INSERT INTO events (id, workflow_id, execution_id, event_type, sequence, timestamp, payload) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+      ["legacy-1", "wf", "legacy", "STEP_COMPLETED", 1, 1001, JSON.stringify({ sequence: 1 })]
+    );
+    // Every channel, so the test does not depend on which bucket "legacy" hashes to.
+    for (const channel of writer.notifyChannels()) {
+      await raw.query("SELECT pg_notify($1, $2)", [
+        channel,
+        JSON.stringify(["old-node-sender", "legacy", 1]),
+      ]);
+    }
+    await until(() => seen.includes(1), "the legacy-tag event");
+    expect(seen).toEqual([0, 1]);
+    unsub();
+    await Promise.all([reader.close(), writer.close()]);
+  });
 });
