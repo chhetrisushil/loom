@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { toClientConfig, toPool } from "./pool";
 import { postgresPool } from "./preset";
 
@@ -114,5 +114,32 @@ describe("postgresPool", () => {
     const { pool: same, owned } = toPool(pool);
     expect(same).toBe(pool);
     expect(owned).toBe(false);
+  });
+});
+
+describe("nextSenderId", () => {
+  it("is unique across many calls", async () => {
+    const { nextSenderId } = await import("./pool");
+    const ids = new Set(Array.from({ length: 5000 }, () => nextSenderId()));
+    expect(ids.size).toBe(5000);
+  });
+
+  it("does not collide between two processes that share a pid", async () => {
+    // Containers commonly all run as pid 1 and build stores in the same order. Fresh module
+    // instances model separate processes (each has its own counter), with the pid forced equal.
+    const realPid = process.pid;
+    const first = async (): Promise<string> => {
+      vi.resetModules();
+      const m = await import("./pool");
+      return m.nextSenderId();
+    };
+    Object.defineProperty(process, "pid", { value: 1, configurable: true });
+    try {
+      const a = await first();
+      const b = await first();
+      expect(a).not.toBe(b);
+    } finally {
+      Object.defineProperty(process, "pid", { value: realPid, configurable: true });
+    }
   });
 });
