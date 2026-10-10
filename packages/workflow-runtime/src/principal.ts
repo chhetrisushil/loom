@@ -44,7 +44,8 @@ export interface PrincipalCodec {
  * Returning `undefined` for a record that carries a `delegation` fails closed (D4); for any other
  * record it means "no principal".
  *
- * What it receives: the recorded {@link PrincipalRecord} (`identity` subset, and a `delegation`
+ * What it receives: the recorded {@link PrincipalRecord} (the `identity` subset when one was recorded, i.e. outside
+ * strict/compliance, and a `delegation`
  * DIGEST `{ id, exp? }` - never the token) plus `{ executionId }`. What it must return: a
  * {@link PrincipalChain} whose `delegation` is an equivalent token RE-MINTED by the app (for
  * example from its own grant table, keyed by `identity` or the digest `id`). The log cannot supply
