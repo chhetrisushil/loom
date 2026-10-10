@@ -457,12 +457,14 @@ a finished execution is refused (`InboxClosedError`); past `maxBacklog` unconsum
 **One unconsumed message pins the stream.** The event store deletes a stream's prefix only, so a message on a topic
 the flow never receives keeps every entry above it, hot topic included, until `inboxMaxRetained` makes `send`
 refuse the whole chain (`onWarn` names the pin at 50%). An operator releases it with
-`runtime.discardInbox(executionId, { topic, throughSeq, reason? }, { principal })` (ADR 0110 amendment): it advances
+`runtime.discardInbox(executionId, { topic, throughSeq, reason? }, { principal })` (ADR 0110 amendment; the principal is REQUIRED, a call without one is refused with `ExecutionDeniedError` whatever the policy): it advances
 that one topic's cursor, journaled as a `MESSAGE_CONSUMED` fact in the owner's log (payload never copied; the
 operator is its `sender`; it replays), and forces the trim. It is authorized as op `discard`, which
 `executionAccessPolicy` keeps **closed** (`deny`) until you open it (`rules: { discard: "tenant" }`). The owner must
 be parked (a running owner is `InboxDiscardRefusedError` `not-parked`, retryable); `throughSeq` may not exceed the
-stream's head; a repeat is a no-op.
+stream's head; a repeat is a no-op. Each discarded message's id joins the dedupe window, so a sender that resends it
+is treated as a duplicate (up to the window's 1024 newest ids). A discard that races a delivery wins: the discarded
+message is never delivered.
 
 ### Keep a long conversation bounded: `ctx.continueAsNew` (ADR 0109)
 

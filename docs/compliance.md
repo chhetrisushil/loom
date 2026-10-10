@@ -124,6 +124,26 @@ The **one hard rule** (T3-R4.5): never shred a fold that is still in flight. Era
 
 This is honest deferral: the request is recorded and named, never silently dropped.
 
+**"Live" means "not terminal", a PARKED execution included.** An execution suspended on an
+approval, a timer or `ctx.receive` is not `completed`/`failed`/`cancelled`/`continued`, so the
+coordinator defers on it. A chat agent that parks on `receive` forever therefore blocks the
+coordinated erasure forever (you get `parked` + `pending`, not a silent success). Two ways out:
+cancel the execution, or opt in to shredding parked owners:
+
+```ts
+await app.eraseSubject("user-42", undefined, { parked: "shred" });
+// { outcome: "erased", ..., parkedShredded: ["exec-1"] }
+```
+
+`parked: "shred"` shreds when every non-terminal execution is **suspended**; a **running** one
+still defers (its fold would read the key as it is destroyed). The parked owner is NOT finished:
+if a timer, a send or a resume wakes it later, its first read of a sealed event (a principal
+identity, a sealed step output or consumed payload) throws `PayloadShreddedError`, so the resume
+rejects with that typed error and appends nothing; a log with nothing sealed resumes normally and
+an in-flight message reaches it as the `{ $shredded: true }` marker. Cancel such an owner once its
+subject is erased. A deferred request completes only when every owner is terminal; re-issue the
+call to shred once the running owner parks.
+
 ### A message still in flight in an inbox (ADR 0110)
 
 A durable inbox (`kernel.features.inbox`) holds a message in a reserved stream
@@ -136,14 +156,33 @@ as well as the owner's log. It does, twice:
   therefore makes an unconsumed payload unreadable; a consumer that reaches it afterwards gets the
   `{ $shredded: true }` marker (journaled in the owner's log like any delivery, so a replay of that
   log is identical), never the raw value. Inbox reads never throw `PayloadShreddedError`: a
-  sender's backlog scan and the trim must keep working. Once the key is destroyed a `send` is
-  refused (a destroyed key is never recreated).
+  sender's backlog scan and the trim must keep working. Only a DESTROYED key reads as the marker:
+  ciphertext that an existing key cannot open (corruption, a drifted `subjectOf`) throws
+  `PayloadUndecryptableError`, so a defect cannot pass for an erasure. A `subscribe` handler on the
+  stream gets the marker too. Once the key is destroyed a `send` is refused (a destroyed key is never
+  recreated; a `KeyStore` must not re-mint one). A sender cannot forge the marker: `send` refuses a
+  payload that is exactly `{ $shredded: true }`. `defineConfig` also registers
+  `MESSAGE_CONSUMED.payload`, so the consumed copy in the owner's log is sealed (new writes only; an
+  older plaintext consumption still reads and replays).
 - **Physically.** When the erasure runs (every execution of the subject terminal), the
   coordinator deletes the inbox stream of each execution that is the HEAD of its chain (terminal
   and not `continued`), read BEFORE the key is destroyed. The runtime already deletes a finished
   chain's stream; this reaches the orphan a crash between a sender's append and its re-read leaves,
   which the runtime cannot map back to an owner for a fork's chain. A store without
   `deleteExecution` skips this half; the key still erases the payload.
+
+**Migration edge: plaintext written before crypto was enabled survives a shred.** A decrypting
+read passes an unsealed payload through unchanged, so a message appended (or a consumption
+journaled) before `security.crypto` was composed is plaintext, and destroying the key does not
+touch it. Only deleting the stream erases it, which the coordinator does for a TERMINAL chain
+head. *Remedy:* before relying on the key for such a chain, cancel the owner and run the erasure
+(its stream is then deleted), or delete the stream yourself; there is no re-seal API, and a
+parked owner's stream is never deleted (it still reads it), with or without `parked: "shred"`.
+
+**Not covered: snapshots.** A snapshot's `variables._waitAnswers` holds an answered payload under a
+dynamic key (the `waitId`), which a sensitive path cannot name, so a snapshot taken while an
+answered wait is in the fold holds that payload verbatim unless your snapshot store seals the whole
+state.
 
 The sender recorded on a message (`tenant`, `actor`, `onBehalfOf`) is the SENDER's identity, not
 the owner's, and is not sealed by the inbox path: declare `INBOX_MESSAGE` / `MESSAGE_CONSUMED`

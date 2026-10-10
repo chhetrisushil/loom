@@ -1221,9 +1221,14 @@ export interface DiscardInboxInput {
 }
 
 export interface DiscardInboxOptions {
-  /** The authenticated operator, judged as `ExecutionOp` `"discard"` against the chain head's owner. */
+  /**
+   * The authenticated operator, judged as `ExecutionOp` `"discard"` against the chain head's owner.
+   * REQUIRED at runtime: a call without one is refused with `ExecutionDeniedError` (a discard is an
+   * operator action; the system grant does not stand in for one). Optional in the type only so the
+   * refusal is typed rather than a compile error for an untyped caller.
+   */
   principal?: PrincipalChain;
-  /** The kernel-internal grant (see `WorkflowRuntime.systemOptions`). */
+  /** The kernel-internal grant (see `WorkflowRuntime.systemOptions`); does NOT replace `principal`. */
   system?: SystemGrant;
 }
 
