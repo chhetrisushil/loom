@@ -903,6 +903,15 @@ const handlers: Record<string, Handler> = {
       foldOwned.add(decisions);
     }
     const estimatedCost = sanitizeEstimatedCost(payload.estimatedCost);
+    // 1.24.0 (ADR 0128) — the record's own envelope sequence, so the ORDER decisions were made in
+    // survives a checkpoint (the map's key order does not: array-index-like ids sort first, and a
+    // normalising snapshot store such as Postgres `jsonb` reorders keys). From the ENVELOPE, never
+    // the payload; a repeated id keeps its FIRST `seq` (as it keeps its slot). A repeat of a legacy
+    // entry (folded before 1.24.0, no `seq`) stays without one: its first sequence is unknowable.
+    const had = Object.hasOwn(decisions, payload.decisionId)
+      ? (decisions[payload.decisionId] as { seq?: unknown } | undefined)
+      : undefined;
+    const seq = had === undefined ? event.sequence : had.seq;
     decisions[payload.decisionId] = {
       choice: payload.choice,
       ...(payload.rationale !== undefined && { rationale: payload.rationale }),
@@ -928,6 +937,7 @@ const handlers: Record<string, Handler> = {
               recordedAtSeq: event.sequence,
             }),
         }),
+      ...(Number.isSafeInteger(seq) && { seq: seq as number }),
     };
     return {
       ...state,
@@ -1498,7 +1508,13 @@ export function getHandler(eventType: string): Handler | undefined {
 //   The envelope metadata the fold now reads: `kernel` (the new kinds, `PARALLEL_COMPLETED` and a
 //   wait-addressed resume fold ONLY a kernel-stamped envelope), `forkChain`, `forkedBy`. A log
 //   carrying none of these replays byte-identically.
-export const EVENT_SCHEMA_VERSION = "1.23.0";
+// 1.24.0: ADR 0128 — each folded `_decisions` entry carries `seq`, the envelope sequence of the
+//   FIRST `DECISION_RECORDED` for that id, so decision ORDER survives a checkpoint (key order does
+//   not survive array-index-like ids or a normalising snapshot store such as Postgres `jsonb`).
+//   Descriptive only: `getDecision` still returns just `choice`. A snapshot written by a 1.23 fold
+//   has no `seq` on its absorbed entries; those are LEGACY and read in map order (no migration, the
+//   same documented exception to snapshot+tail == full fold as 1.21.0). Log bytes are unchanged.
+export const EVENT_SCHEMA_VERSION = "1.24.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

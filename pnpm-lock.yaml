@@ -740,6 +740,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../event-runtime
+      '@loom/plugin-postgres':
+        specifier: workspace:*
+        version: link:../../plugins/postgres
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../snapshot-runtime

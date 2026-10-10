@@ -27,6 +27,7 @@
   "devDependencies": {
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/plugin-postgres": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "@types/node": "^22.0.0",

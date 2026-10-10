@@ -61,7 +61,7 @@ describe("DECISION_RECORDED D1 materialization fields", () => {
   it("folds a legacy decision (no D1 fields) with only choice", () => {
     const state = foldEvents(events, INITIAL);
     const decisions = state.variables._decisions as Record<string, Record<string, unknown>>;
-    expect(decisions.legacy).toEqual({ choice: "x" });
+    expect(decisions.legacy).toEqual({ choice: "x", seq: 2 });
   });
 });
 
@@ -89,6 +89,7 @@ describe("DECISION_RECORDED context/policy fields (ADR 0079)", () => {
       choice: "opus",
       context: { intent: "summarize", tokens: 4096, tenant: "acme" },
       policy: { id: "linucb", version: "3", propensity: 0.7 },
+      seq: 1,
     });
   });
 
@@ -104,7 +105,7 @@ describe("DECISION_RECORDED context/policy fields (ADR 0079)", () => {
     const legacyOnly = [events[0] as EventEnvelope, events[2] as EventEnvelope];
     const state = foldEvents(legacyOnly, INITIAL);
     const decisions = state.variables._decisions as Record<string, Record<string, unknown>>;
-    expect(decisions).toEqual({ legacy: { choice: "x" } });
-    expect(Object.keys(decisions.legacy as object)).toEqual(["choice"]);
+    expect(decisions).toEqual({ legacy: { choice: "x", seq: 2 } });
+    expect(Object.keys(decisions.legacy as object)).toEqual(["choice", "seq"]);
   });
 });

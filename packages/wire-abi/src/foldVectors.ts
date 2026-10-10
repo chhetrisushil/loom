@@ -422,7 +422,7 @@ export const FOLD_VECTORS: FoldVector[] = [
       variables: {
         _input: {},
         _resources: { tokens: 0, costUsd: 0, ms: 1, count: 1, custom: { credits: 3 } },
-        _decisions: { route: { choice: "a", estimatedCost: { gpu_seconds: 2 } } },
+        _decisions: { route: { choice: "a", estimatedCost: { gpu_seconds: 2 }, seq: 2 } },
       },
       frames: {},
     },
@@ -621,14 +621,15 @@ export const FOLD_VECTORS: FoldVector[] = [
         _input: {},
         _codeHash: "fp2",
         _decisions: {
-          d: { choice: 1, innerSteps: ["a", "b"] },
-          e: { choice: 2 },
+          d: { choice: 1, innerSteps: ["a", "b"], seq: 5 },
+          e: { choice: 2, seq: 6 },
           f: {
             choice: 3,
             innerSteps: ["a"],
             innerStepsOverflow: true,
             innerFrom: 4,
             recordedAtSeq: 7,
+            seq: 7,
           },
         },
         _migratedTo: "wf",
@@ -636,6 +637,33 @@ export const FOLD_VECTORS: FoldVector[] = [
       },
       frames: { a: { status: "running", attempts: 2 }, b: { status: "running", attempts: 1 } },
       frameMeta: { a: { firstSeq: 1, scope: "/0.1" }, b: { firstSeq: 2 } },
+    },
+  },
+  {
+    // ADR 0128 (additive, EVENT_SCHEMA 1.24.0): each folded decision carries `seq`, the ENVELOPE
+    // sequence of the FIRST record of that id. A repeated id keeps its first `seq` (and its slot) and
+    // takes the later content; an array-index-like id is stamped like any other, so the order
+    // survives a checkpoint that reorders the map's keys. `seq` is never a replay input.
+    name: "ADR 0128: DECISION_RECORDED stamps seq from the envelope, a repeated id keeps its first",
+    events: [
+      ev("v14", 0, "EXECUTION_STARTED", { input: {} }),
+      ev("v14", 1, "DECISION_RECORDED", { decisionId: "route-b", choice: 1 }),
+      ev("v14", 2, "DECISION_RECORDED", { decisionId: "10", choice: 2, seq: 99 }), // payload seq ignored
+      ev("v14", 3, "DECISION_RECORDED", { decisionId: "route-a", choice: 3 }),
+      ev("v14", 4, "DECISION_RECORDED", { decisionId: "route-b", choice: 4 }), // repeat
+    ],
+    expected: {
+      status: "running",
+      sequence: 4,
+      variables: {
+        _input: {},
+        _decisions: {
+          "route-b": { choice: 4, seq: 1 },
+          "10": { choice: 2, seq: 2 },
+          "route-a": { choice: 3, seq: 3 },
+        },
+      },
+      frames: {},
     },
   },
 ];

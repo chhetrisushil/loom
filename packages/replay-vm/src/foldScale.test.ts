@@ -232,6 +232,8 @@ function referenceFold(events: EventEnvelope[]): ExecutionState {
             choice: p.choice,
             ...(p.rationale !== undefined && { rationale: p.rationale }),
             ...(p.policy !== undefined && { policy: p.policy }),
+            // ADR 0128 — the FIRST record's envelope sequence is kept by a repeated id.
+            seq: vars._decisions?.[p.decisionId]?.seq ?? e.sequence,
           },
         };
         break;
