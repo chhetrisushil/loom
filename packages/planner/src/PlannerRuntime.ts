@@ -17,6 +17,18 @@ export interface Plan {
   steps: PlanStep[];
 }
 
+/**
+ * R19 - the flat planner's fixed English prompt text, overridable. Defaults are the English text, so
+ * omitting this changes nothing. A replacement `system` must still ask for the JSON array of
+ * `{ capabilityId, rationale }` that `plan()` parses.
+ */
+export interface PlannerRuntimePrompts {
+  /** Replaces the system prompt. */
+  system?: string;
+  /** Builds the user message from the goal and the capability menu (`- id: intent` lines). */
+  user?: (args: { goal: string; menu: string }) => string;
+}
+
 export interface PlannerRuntimeConfig {
   catalog: CapabilityCatalog;
   // When supplied, the model composes an ordered plan from the catalog;
@@ -40,6 +52,8 @@ export interface PlannerRuntimeConfig {
    * which is journaled and has no silent fallback at all.
    */
   strict?: boolean;
+  /** R19 - override the fixed English prompt text. */
+  prompts?: PlannerRuntimePrompts;
 }
 
 // The proposal's Planner Runtime: given a goal, selects and orders the
@@ -95,10 +109,12 @@ export class PlannerRuntime {
       .join("\n");
 
     const system =
+      this.config.prompts?.system ??
       "You are a planner. Given a goal and a list of capabilities, output an " +
-      'ordered plan as a JSON array of objects { "capabilityId": string, ' +
-      '"rationale": string }. Use only ids from the list. Output JSON only.';
-    const userContent = `Goal: ${goal}\n\nCapabilities:\n${menu}`;
+        'ordered plan as a JSON array of objects { "capabilityId": string, ' +
+        '"rationale": string }. Use only ids from the list. Output JSON only.';
+    const userContent =
+      this.config.prompts?.user?.({ goal, menu }) ?? `Goal: ${goal}\n\nCapabilities:\n${menu}`;
     const content = await this.complete(system, userContent);
 
     const steps = this.parseSteps(content).slice(0, maxSteps);

@@ -369,3 +369,33 @@ describe("T1.2 — schedule$ firing", () => {
     ).rejects.toMatchObject({ name: "StaleFenceError" });
   });
 });
+
+describe("R19 - schedule$ timeZone", () => {
+  it("rejects an unknown zone when the schedule is DEFINED", () => {
+    expect(() =>
+      schedule$<In>({ id: "x", cron: "0 9 * * *", flowId: FLOW, timeZone: "Nope/Zone" })
+    ).toThrow(/unknown time zone/);
+  });
+
+  it("fires at the zone's wall time (injected clock), and not at the UTC time", async () => {
+    const app = boot();
+    const ny = schedule$<In>({
+      id: "ny-nine",
+      cron: "0 9 * * *",
+      flowId: FLOW,
+      input: { label: "ny" },
+      timeZone: "America/New_York",
+    });
+    const start = Date.parse("2026-07-10T00:00:00Z");
+    const service = new TimerService(app.runtime, app.timerStore, {
+      schedules: [ny],
+      now: () => start,
+    });
+    await service.tick(Date.parse("2026-07-10T09:00:00Z")); // 09:00 UTC is 05:00 in New York: nothing
+    expect(app.auditFn).toHaveBeenCalledTimes(0);
+    const occurrence = Date.parse("2026-07-10T13:00:00Z"); // 09:00 EDT
+    await service.tick(occurrence);
+    expect(app.auditFn).toHaveBeenCalledTimes(1);
+    expect((await app.runtime.loadState(`ny-nine@${occurrence}`))?.status).toBe("completed");
+  });
+});

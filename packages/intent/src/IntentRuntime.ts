@@ -11,6 +11,18 @@ export interface IntentRoute {
   rationale?: string;
 }
 
+/**
+ * R19 - the router's fixed English prompt text, overridable. Defaults are the English text, so
+ * omitting this changes nothing. A replacement `system` must still ask for ONLY a capability id (or
+ * `NONE`), because the reply's first whitespace-separated word is matched against the catalog.
+ */
+export interface IntentRuntimePrompts {
+  /** Replaces the system prompt. */
+  system?: string;
+  /** Builds the user message from the request and the capability menu (`- id: intent` lines). */
+  user?: (args: { intentText: string; menu: string }) => string;
+}
+
 export interface IntentRuntimeConfig {
   catalog: CapabilityCatalog;
   // Optional. When supplied, intent → capability routing is done by the model;
@@ -26,6 +38,8 @@ export interface IntentRuntimeConfig {
   // priority so it yields to live work under a concurrency cap. No effect on the
   // routing decision.
   scheduler?: Scheduler;
+  /** R19 - override the fixed English prompt text. */
+  prompts?: IntentRuntimePrompts;
 }
 
 // The proposal's Intent Runtime: turns a natural-language goal into a concrete
@@ -74,9 +88,12 @@ export class IntentRuntime {
   ): Promise<IntentRoute | null> {
     const menu = capabilities.map((c) => `- ${c.id}: ${c.intent}`).join("\n");
     const system =
+      this.config.prompts?.system ??
       "You route a user's request to exactly one capability. Reply with ONLY the " +
-      "capability id from the list, or the word NONE if nothing fits.";
-    const userContent = `Capabilities:\n${menu}\n\nRequest: ${intentText}`;
+        "capability id from the list, or the word NONE if nothing fits.";
+    const userContent =
+      this.config.prompts?.user?.({ intentText, menu }) ??
+      `Capabilities:\n${menu}\n\nRequest: ${intentText}`;
     const content = await this.complete(system, userContent, "intent.route", "routing");
 
     const chosen = content.trim().split(/\s+/)[0] ?? "";

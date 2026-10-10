@@ -1,4 +1,5 @@
 import type { ExecutionHandle, WorkflowRuntime } from "@loom/workflow-runtime";
+import { lexicalTerms } from "./lexicalTerms";
 import {
   type CapabilityDefinition,
   type CapabilityInvokeAuthorizer,
@@ -90,18 +91,12 @@ export class CapabilityCatalog {
     // Deduplicated and capped, for the reason `SkillRegistry.find` is: the score counts
     // terms the haystack contains, so a repeat adds a substring search and no information,
     // and an unbounded question is O(capabilities x terms) of them.
-    const terms = [
-      ...new Set(
-        query
-          .toLowerCase()
-          .split(/\W+/)
-          .filter((t) => t.length > 2)
-      ),
-    ].slice(0, MAX_SCORED_TERMS);
+    const terms = [...new Set(lexicalTerms(query))].slice(0, MAX_SCORED_TERMS);
     const matches: CapabilityMatch[] = [];
     for (const capability of this.capabilities.values()) {
       const haystack = [capability.id, capability.name, capability.intent, ...capability.tags]
         .join(" ")
+        .normalize("NFKC")
         .toLowerCase();
       let score = 0;
       for (const term of terms) {

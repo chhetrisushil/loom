@@ -5,7 +5,13 @@ import type { TaintedValue } from "@loom/classify";
 import type { LlmContentPartInput } from "@loom/llm";
 import type { BranchContext, ExecutionContext } from "@loom/workflow-runtime";
 import { claimId } from "./claim";
-import { PlanFailedError, type PlanModel, askForPlan, plannerSystemPrompt } from "./planGoal";
+import {
+  PlanFailedError,
+  type PlanModel,
+  type PlannerPrompts,
+  askForPlan,
+  plannerSystemPrompt,
+} from "./planGoal";
 import {
   DEFAULT_PLAN_LIMITS,
   type PlanGraph,
@@ -400,6 +406,8 @@ export async function executePlan(
 
 export interface MakeReviserConfig {
   model: PlanModel;
+  /** R19 - override the planner's fixed English prompt text (system / step limit / capabilities heading / rejection line). The replan round header and data labels stay English. */
+  prompts?: PlannerPrompts;
   maxAttempts?: number;
   maxReplyChars?: number;
 }
@@ -468,7 +476,8 @@ export function makeReviser(
         const external = new Set(Object.keys(req.completed));
         return askForPlan(scope, {
           model: cfg.model,
-          system: plannerSystemPrompt(catalog, limits),
+          system: plannerSystemPrompt(catalog, limits, cfg.prompts),
+          ...(cfg.prompts?.rejected !== undefined && { rejected: cfg.prompts.rejected }),
           opening: [{ role: "user", content: parts }],
           goal: req.goal,
           limits,

@@ -1,5 +1,10 @@
 export { PlannerRuntime } from "./PlannerRuntime";
-export type { Plan, PlanStep, PlannerRuntimeConfig } from "./PlannerRuntime";
+export type {
+  Plan,
+  PlanStep,
+  PlannerRuntimeConfig,
+  PlannerRuntimePrompts,
+} from "./PlannerRuntime";
 export {
   DEFAULT_PLAN_LIMITS,
   PlanValidationError,
@@ -35,7 +40,8 @@ export {
   planGoal,
   providerPlanModel,
 } from "./planGoal";
-export type { PlanFailureReason, PlanGoalInput, PlanModel } from "./planGoal";
+export { DEFAULT_PLANNER_SYSTEM } from "./planGoal";
+export type { PlanFailureReason, PlanGoalInput, PlanModel, PlannerPrompts } from "./planGoal";
 export { IdReusedError } from "./claim";
 export { executePlan, makeReviser } from "./executePlan";
 export type {

@@ -89,15 +89,36 @@ export interface PlanGoalInput {
   fallback?: (goal: string) => PlanGraph;
   /** Cap on the model's reply, in characters, before parsing. Default 128 KiB. */
   maxReplyChars?: number;
+  /** R19 - override the fixed English prompt text (see {@link PlannerPrompts}). */
+  prompts?: PlannerPrompts;
 }
 
-const SYSTEM = [
+/**
+ * R19 - the planner's fixed English prompt text, overridable. Every field is optional and the English
+ * text below is the default, so passing nothing changes nothing. Only the prose is replaceable: the
+ * JSON reply shape the parser reads is part of `system`, so a replacement `system` MUST still tell the
+ * model to answer with the same JSON, and the untrusted-content note
+ * (`UNTRUSTED_CONTENT_SYSTEM_NOTE`, a security boundary) is always appended after it.
+ */
+export interface PlannerPrompts {
+  /** Replaces the instruction paragraph (role, reply shape, `$from` rules). Default: {@link DEFAULT_PLANNER_SYSTEM}. */
+  system?: string;
+  /** The step-limit line, given `limits.maxNodes`. Default `At most ${n} steps.` */
+  maxSteps?: (maxNodes: number) => string;
+  /** The heading above the capability menu. Default `Capabilities:` */
+  capabilities?: string;
+  /** The label above the goal in the first user message (`planGoal` only). Default `Goal:` */
+  goal?: string;
+  /** The line that introduces a rejection. Default `Your previous plan was rejected. Fix it and reply with JSON only:` */
+  rejected?: string;
+}
+
+export const DEFAULT_PLANNER_SYSTEM = [
   "You are a planner. Compose a plan that achieves the goal using ONLY the capabilities listed.",
   'Reply with JSON only: {"nodes":[{"id":string,"capabilityId":string,"args":object,"dependsOn":[stepId],"preconditions":[{"ref":"stepId.path","test":"exists|truthy|equals","value":scalar}],"rationale":string}]}.',
   "A step id matches ^[A-Za-z][A-Za-z0-9_-]{0,63}$ and is unique.",
   'To use an earlier step\'s output as an argument write {"$from":"<stepId>.<path>"} in place of the value, and list that step in dependsOn.',
   "Never write a value you do not know; bind it with $from. Steps with no dependency between them run in parallel. Prefer the fewest steps.",
-  UNTRUSTED_CONTENT_SYSTEM_NOTE,
 ].join("\n");
 
 const MAX_SCHEMA_CHARS = 3000;
@@ -113,8 +134,15 @@ function menu(catalog: CapabilityCatalog): string {
     .join("\n");
 }
 
-function systemPrompt(catalog: CapabilityCatalog, limits: PlanLimits): string {
-  return `${SYSTEM}\nAt most ${limits.maxNodes} steps.\n\nCapabilities:\n${menu(catalog)}`;
+function systemPrompt(
+  catalog: CapabilityCatalog,
+  limits: PlanLimits,
+  prompts?: PlannerPrompts
+): string {
+  const head = prompts?.system ?? DEFAULT_PLANNER_SYSTEM;
+  const max = prompts?.maxSteps?.(limits.maxNodes) ?? `At most ${limits.maxNodes} steps.`;
+  const caps = prompts?.capabilities ?? "Capabilities:";
+  return `${head}\n${UNTRUSTED_CONTENT_SYSTEM_NOTE}\n${max}\n\n${caps}\n${menu(catalog)}`;
 }
 
 const NODE_KEYS = [
@@ -205,6 +233,8 @@ export async function askForPlan(
     limits: PlanLimits;
     maxAttempts: number;
     maxReplyChars: number;
+    /** The line that introduces a rejection (R19). */
+    rejected?: string;
     /** Return issues to reject the parsed plan. */
     validate: (plan: PlanGraph) => PlanIssue[];
     allowEmpty?: boolean;
@@ -241,7 +271,11 @@ export async function askForPlan(
     messages.push({
       role: "user",
       content: [
-        { type: "text", text: "Your previous plan was rejected. Fix it and reply with JSON only:" },
+        {
+          type: "text",
+          text:
+            args.rejected ?? "Your previous plan was rejected. Fix it and reply with JSON only:",
+        },
         { type: "text", text: tainted(feedback, "plan:validation-feedback") },
       ],
     });
@@ -276,14 +310,15 @@ export async function planGoal(
         {
           role: "user",
           content: [
-            { type: "text", text: "Goal:" },
+            { type: "text", text: input.prompts?.goal ?? "Goal:" },
             { type: "text", text: input.goal as LlmContent },
           ],
         },
       ];
       const r = await askForPlan(scope, {
         model: input.model,
-        system: systemPrompt(input.catalog, limits),
+        system: systemPrompt(input.catalog, limits, input.prompts),
+        ...(input.prompts?.rejected !== undefined && { rejected: input.prompts.rejected }),
         opening,
         goal: input.goal,
         limits,

@@ -101,6 +101,36 @@ describe("capability$ + CapabilityCatalog", () => {
     expect(matches[0]?.score).toBeGreaterThan(0);
   });
 
+  it("find() matches non-ASCII words (R19): German, accented, and CJK", () => {
+    const mk = (id: string, intent: string, tags: string[] = []) =>
+      capability$({
+        id,
+        intent,
+        tags,
+        inputSchema: z.object({ text: z.string() }),
+        flow: echoFlow,
+      });
+    const cat = new CapabilityCatalog()
+      .register(mk("check-invoice", "Rechnung prüfen und freigeben"))
+      .register(mk("pay-invoice", "請求書を作成して支払う"))
+      .register(mk("cafe", "Résumé du café"))
+      .register(investigate);
+    expect(cat.find("Rechnung prüfen")[0]?.capability.id).toBe("check-invoice");
+    expect(cat.find("請求書")[0]?.capability.id).toBe("pay-invoice");
+    // a single CJK character is still a term
+    expect(cat.find("請")[0]?.capability.id).toBe("pay-invoice");
+    // NFKC: a decomposed "e + combining acute" query finds the precomposed text
+    expect(cat.find("cafe\u0301")[0]?.capability.id).toBe("cafe");
+    // full-width Latin folds to ASCII under NFKC
+    expect(cat.find("ＩＮＣＩＤＥＮＴ")[0]?.capability.id).toBe("investigate-incident");
+  });
+
+  it("find() on ASCII queries is unchanged: underscore stays a word character", () => {
+    const cat = new CapabilityCatalog().register(investigate).register(scaleCluster);
+    expect(cat.find("incident_x")).toEqual([]);
+    expect(cat.find("scale-cluster db2").map((m) => m.capability.id)).toEqual(["scale-cluster"]);
+  });
+
   it("invoke() runs the capability's flow via a WorkflowRuntime", async () => {
     const cat = new CapabilityCatalog().register(investigate);
     const runtime = new WorkflowRuntime({

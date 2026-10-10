@@ -359,8 +359,14 @@ export interface FlowDefinition<TIn = unknown, TOut = unknown> {
 export interface ScheduleDefinition<TIn = unknown> {
   readonly _tag: "ScheduleDefinition";
   id: string;
-  /** 5-field cron (min hour dom mon dow), UTC. Supports wildcards, steps, lists, ranges. */
+  /** 5-field cron (min hour dom mon dow), in `timeZone` (default UTC). Supports wildcards, steps, lists, ranges. */
   cron: string;
+  /**
+   * R19 - IANA zone the cron fields are read in (e.g. `"Europe/Berlin"`). Default UTC. A wall time
+   * skipped by spring-forward runs once, shifted forward by the gap; a wall time repeated by fall-back
+   * runs once, at its first occurrence. Validated when the schedule is defined.
+   */
+  timeZone?: string;
   /** The registered flow id each occurrence starts. */
   flowId: string;
   /** Input passed to every occurrence. */

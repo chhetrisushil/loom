@@ -1,4 +1,5 @@
 import type { SkillDefinition } from "@loom/core";
+import { lexicalTerms } from "./lexicalTerms";
 
 export interface SkillMatch {
   skill: SkillDefinition;
@@ -48,18 +49,12 @@ export class SkillRegistry {
     // a term inflates nothing and only costs another substring search per skill, and an
     // unbounded question is O(skills x terms) of it. Scoring beyond a few dozen terms is
     // noise anyway. First-seen order is preserved; the cap only decides what is dropped.
-    const terms = [
-      ...new Set(
-        query
-          .toLowerCase()
-          .split(/\W+/)
-          .filter((t) => t.length > 2)
-      ),
-    ].slice(0, MAX_SCORED_TERMS);
+    const terms = [...new Set(lexicalTerms(query))].slice(0, MAX_SCORED_TERMS);
     const matches: SkillMatch[] = [];
     for (const skill of this.skills.values()) {
       const haystack = [skill.id, skill.name, skill.description, ...(skill.tags ?? [])]
         .join(" ")
+        .normalize("NFKC")
         .toLowerCase();
       let score = 0;
       for (const term of terms) {
