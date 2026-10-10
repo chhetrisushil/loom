@@ -48,6 +48,15 @@ export type { EventEnvelope };
  *   presents or adopts a fence token, so it can neither supersede a live holder nor be
  *   written under one it did not observe. A store that omits it makes `recordOutcome` refuse.
  *   No existing method changed, so a 2.1.0 store conforms.
+ * 2.3.0: a SEMANTIC minor, no signature change (ADR 0129). The `anchor` of an observation MUST
+ *   differ between two incarnations of an execution id, EVEN WHEN their sequence-0 envelopes
+ *   are byte-identical (a delete followed by a re-creation under a frozen clock). A store
+ *   claiming 2.3.0 therefore assigns a monotonic incarnation when it durably creates sequence 0
+ *   and returns it as the anchor; it lives in STORE METADATA only, never in an event, a fold, a
+ *   snapshot or a hash, so replay stays byte-identical. A log created before the store gained
+ *   that metadata may keep the legacy {@link creationMarker} (`timestamp:id`) until it is
+ *   deleted (no backfill). A store that cannot assign one keeps 2.2.0 behaviour and does not
+ *   claim 2.3.0.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -57,7 +66,7 @@ export type { EventEnvelope };
  * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
  * fitness test makes every in-repo decorator run it).
  */
-export const EVENT_STORE_SPI_VERSION = "2.2.0";
+export const EVENT_STORE_SPI_VERSION = "2.3.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -323,10 +332,13 @@ export interface EventStore {
 
 /**
  * What a caller saw of an execution's tip: the stored head, the fence token (0 = never fenced) and
- * the `anchor` — an OPAQUE creation marker the store derived from the execution's sequence-0
- * envelope (its id and timestamp). The anchor is what tells "the log I observed" from "a log
- * deleted and re-created under the same id that happens to have the same head and token" (the ABA
- * case): envelope ids are deterministic (`<exec>-<seq>`), so the head and token alone cannot.
+ * the `anchor` — an OPAQUE incarnation marker. Since SPI 2.3.0 (ADR 0129) it is a STORE-ASSIGNED,
+ * monotonic incarnation that differs between two incarnations of an id even when their sequence-0
+ * envelopes are byte-identical (before it: a marker derived from that envelope's id and
+ * timestamp, which a pre-migration log keeps). The anchor is what tells "the log I observed" from
+ * "a log deleted and re-created under the same id that happens to have the same head and token"
+ * (the ABA case): envelope ids are deterministic (`<exec>-<seq>`), so the head and token alone
+ * cannot.
  * Pass back exactly what an observation returned; a decorator forwards it untouched.
  */
 export interface TipObservation {

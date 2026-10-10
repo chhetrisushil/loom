@@ -681,6 +681,77 @@ export function runEventStoreConformance(factory: () => EventStore, label = "Eve
       await store.close();
     });
 
+    // ── SPI 2.3.0 (ADR 0129) — the anchor names an INCARNATION, not a sequence-0 envelope ──
+    it("appendIfUnchanged (if implemented, SPI 2.3.0): a delete + BYTE-IDENTICAL re-creation is a different incarnation -> `moved`", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined || store.deleteExecution === undefined) {
+        return void (await store.close());
+      }
+      // Same id, same timestamp, same payload, same head, same token: nothing in the envelopes
+      // tells the two incarnations apart, so only the store-assigned anchor can.
+      const log = async (): Promise<void> => {
+        await store.append({ ...evt("aiu-inc", 0), timestamp: 1_000 });
+        await store.append({ ...evt("aiu-inc", 1), timestamp: 1_001 });
+      };
+      await log();
+      const seen = await obs(store, "aiu-inc");
+      await store.deleteExecution("aiu-inc");
+      await log();
+      const now = await obs(store, "aiu-inc");
+      expect({ head: now.head, fence: now.fence }).toEqual({ head: seen.head, fence: seen.fence });
+      expect(now.anchor).not.toBe(seen.anchor);
+      expect(
+        await store.appendIfUnchanged("aiu-inc", { ...evt("aiu-inc", 2), id: "inc-late" }, seen)
+      ).toMatchObject({ appended: false, reason: "moved", head: 1, anchor: now.anchor });
+      expect((await store.read("aiu-inc")).map((e) => e.sequence)).toEqual([0, 1]);
+      // the fresh observation of the NEW incarnation is honoured
+      expect(await store.appendIfUnchanged("aiu-inc", evt("aiu-inc", 2), now)).toEqual({
+        appended: true,
+      });
+      await store.close();
+    });
+
+    it("appendIfUnchanged (if implemented, SPI 2.3.0): no false refusals - repeated observations of one incarnation agree and each is honoured", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined) return void (await store.close());
+      await store.append(evt("aiu-same", 0));
+      const a = await obs(store, "aiu-same");
+      const b = await obs(store, "aiu-same");
+      expect(b).toEqual(a);
+      expect(await store.appendIfUnchanged("aiu-same", evt("aiu-same", 1), a)).toEqual({
+        appended: true,
+      });
+      // an unrelated execution being created or deleted does not disturb this anchor
+      await store.append(evt("aiu-other", 0));
+      await store.deleteExecution?.("aiu-other");
+      const c = await obs(store, "aiu-same");
+      expect(c.anchor).toBe(a.anchor);
+      expect(await store.appendIfUnchanged("aiu-same", evt("aiu-same", 2), c)).toEqual({
+        appended: true,
+      });
+      await store.close();
+    });
+
+    it("appendIfUnchanged (if implemented, SPI 2.3.0): the anchor is stable across later appends and across a compaction", async () => {
+      const store = factory();
+      if (store.appendIfUnchanged === undefined) return void (await store.close());
+      await store.append(evt("aiu-stable", 0));
+      await store.append(evt("aiu-stable", 1));
+      const first = await obs(store, "aiu-stable");
+      await store.append(evt("aiu-stable", 2));
+      await store.append(evt("aiu-stable", 3));
+      expect((await obs(store, "aiu-stable")).anchor).toBe(first.anchor);
+      if (store.truncatePrefix !== undefined) {
+        await store.truncatePrefix("aiu-stable", 2); // keeps sequence 0
+        const after = await obs(store, "aiu-stable");
+        expect(after.anchor).toBe(first.anchor);
+        expect(await store.appendIfUnchanged("aiu-stable", evt("aiu-stable", 4), after)).toEqual({
+          appended: true,
+        });
+      }
+      await store.close();
+    });
+
     it("appendIfUnchanged (if implemented): concurrent callers on one observation -> exactly one wins", async () => {
       const store = factory();
       if (store.appendIfUnchanged === undefined) return void (await store.close());

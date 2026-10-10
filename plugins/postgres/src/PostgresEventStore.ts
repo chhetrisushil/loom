@@ -699,17 +699,33 @@ export class PostgresEventStore implements EventStore {
         "appendIfUnchanged: an event needs `expect` and the matching executionId"
       );
     }
-    type Tip = { tip: string | null; a_id: string | null; a_ts: string | null };
+    type Tip = {
+      tip: string | null;
+      a_id: string | null;
+      a_ts: string | null;
+      a_inc: string | null;
+    };
+    // ADR 0129: a boot whose migration could not install the column (events was locked) reads
+    // the legacy anchor instead of failing.
+    const incarnationSql = (await this.hasIncarnation())
+      ? "(array_agg(incarnation) FILTER (WHERE sequence = 0))[1] AS a_inc"
+      : "NULL::text AS a_inc";
     const tipSql = `SELECT MAX(sequence) AS tip,
                            (array_agg(id) FILTER (WHERE sequence = 0))[1] AS a_id,
-                           (array_agg(timestamp) FILTER (WHERE sequence = 0))[1] AS a_ts
+                           (array_agg(timestamp) FILTER (WHERE sequence = 0))[1] AS a_ts,
+                           ${incarnationSql}
                       FROM events WHERE execution_id = $1`;
     const tipOf = (row: Tip | undefined): { head: number; anchor: string } | null =>
       row === undefined || row.a_id === null || row.a_ts === null || row.tip === null
         ? null
         : {
             head: Number(row.tip),
-            anchor: creationMarker({ id: row.a_id, timestamp: Number(row.a_ts) }),
+            // ADR 0129: the store-assigned incarnation; a pre-migration log (NULL) keeps the
+            // legacy marker.
+            anchor:
+              row.a_inc === null
+                ? creationMarker({ id: row.a_id, timestamp: Number(row.a_ts) })
+                : String(row.a_inc),
           };
     if (event === null) {
       const f = await this.pool.query<{ fence: string }>(
@@ -896,6 +912,19 @@ export class PostgresEventStore implements EventStore {
    * new name and the two groups drop each other's cross-node deliveries until ALL nodes
    * restart. Restart every node after a schema rename.
    */
+  private incarnationColumn: Promise<boolean> | undefined;
+  /** ADR 0129 — is `events.incarnation` installed? Asked once per store, after `ready`. */
+  private hasIncarnation(): Promise<boolean> {
+    this.incarnationColumn ??= this.pool
+      .query(
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_schema = current_schema() AND table_name = 'events'
+            AND column_name = 'incarnation'`
+      )
+      .then((r) => (r.rowCount ?? 0) > 0);
+    return this.incarnationColumn;
+  }
+
   private resolveNamespace(): Promise<string | undefined> {
     if (this.namespaceLookup === undefined) {
       this.namespaceLookup = eventsNamespace(this.pool).then(

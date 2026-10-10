@@ -284,6 +284,9 @@ const NOT_A_CAPABILITY = new Set([
   // finished execution under a new authorizer op, plus a retention-clock fix. It extends the
   // learning substrate (ADR 0078-0080) and execution authz (C.1). No new subsystem to grade.
   "0116",
+  // 0129 - a semantic tightening of the EventStore SPI (2.3.0: the appendIfUnchanged anchor names an
+  // incarnation) across the three reference stores. No new subsystem to grade.
+  "0129",
   // 0115 — R15: three closed vocabularies (effect/task kinds, metering dimensions) become open
   // names with a pattern; the metering fold shape was frozen at W2-0. It widens existing
   // capabilities (K3 metering and quotas, ADR 0032 dimensions, ADR 0030 decisions). No new
@@ -394,13 +397,14 @@ describe("checkCompatibility", () => {
 
   it("refuses a 1.x EventStore (SPI 2.x, ADR 0108: pinned id order + id cursors)", () => {
     // A 1.5.0 store may page in any order with an opaque cursor, which ShardedEventStore and
-    // TenantScopedEventStore can no longer tolerate — the reason the bump is MAJOR. 2.1.0 and
-    // 2.2.0 are additive MINORs (acquireFenceIf; appendIfUnchanged): a 2.0.0 store still conforms.
-    expect(kernelManifest().spis.eventStore).toBe("2.2.0");
+    // TenantScopedEventStore can no longer tolerate — the reason the bump is MAJOR. 2.1.0,
+    // 2.2.0 and 2.3.0 are MINORs (acquireFenceIf; appendIfUnchanged; the incarnation anchor MUST):
+    // a 2.0.0 store still conforms.
+    expect(kernelManifest().spis.eventStore).toBe("2.3.0");
     const report = checkCompatibility({ eventStoreSpi: "1.5.0" });
     expect(report.ok).toBe(false);
     expect(report.issues).toEqual([
-      expect.objectContaining({ component: "eventStoreSpi", expected: "2.2.0", actual: "1.5.0" }),
+      expect.objectContaining({ component: "eventStoreSpi", expected: "2.3.0", actual: "1.5.0" }),
     ]);
     expect(checkCompatibility({ eventStoreSpi: "2.0.0" }).ok).toBe(true);
     expect(checkCompatibility({ eventStoreSpi: "2.1.0" }).ok).toBe(true);

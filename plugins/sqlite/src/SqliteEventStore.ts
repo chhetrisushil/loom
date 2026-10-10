@@ -206,14 +206,15 @@ export class SqliteEventStore implements EventStore {
     }
     const run = this.db.transaction((): AppendIfUnchangedResult => {
       const first = this.db
-        .prepare<[string], { id: string; timestamp: number }>(
-          "SELECT id, timestamp FROM events WHERE execution_id = ? AND sequence = 0"
+        .prepare<[string], { id: string; timestamp: number; incarnation: number | null }>(
+          "SELECT id, timestamp, incarnation FROM events WHERE execution_id = ? AND sequence = 0"
         )
         .get(executionId);
       if (first === undefined) {
         return { appended: false, reason: "gone", head: null, fence: 0, anchor: null };
       }
-      const anchor = creationMarker(first);
+      // ADR 0129: the store-assigned incarnation; a pre-migration log keeps the legacy marker.
+      const anchor = first.incarnation === null ? creationMarker(first) : String(first.incarnation);
       const tip = this.db
         .prepare<[string], { tip: number }>(
           "SELECT MAX(sequence) AS tip FROM events WHERE execution_id = ?"

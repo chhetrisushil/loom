@@ -1,6 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
 import { SubscriberRegistry } from "./SubscriberRegistry";
-import { creationMarker } from "./creationMarker";
 import { isAnsweringKind } from "./eventKindClass";
 import { compareExecutionIds } from "./executionIdOrder";
 import { StaleFenceError, fenceOf } from "./fencing";
@@ -55,6 +54,13 @@ export class InMemoryAsyncEventStore implements EventStore {
   private readonly ids = new Set<string>();
   private readonly subscribers = new SubscriberRegistry();
   private readonly fences = new Map<string, number>();
+  /**
+   * ADR 0129 — the store-assigned incarnation of each execution, taken from a store-wide
+   * monotonic counter when its sequence 0 first lands and dropped with the log. Store metadata
+   * only: never in an envelope, a fold, a snapshot or a hash, so replay stays byte-identical.
+   */
+  private readonly incarnations = new Map<string, number>();
+  private nextIncarnation = 1;
   private readonly latencyMs: number;
   private readonly failAppendWhen:
     | ((envelope: EventEnvelope) => boolean | string | Error)
@@ -290,7 +296,7 @@ export class InMemoryAsyncEventStore implements EventStore {
       return { appended: false, reason: "gone", head: null, fence, anchor: null };
     }
     const head = (list[list.length - 1] as EventEnvelope).sequence;
-    const anchor = creationMarker(list[0] as EventEnvelope);
+    const anchor = String(this.incarnations.get(executionId));
     if (event === null) return { appended: false, reason: "observed", head, fence, anchor };
     const want = expect as TipObservation;
     if (
@@ -314,10 +320,14 @@ export class InMemoryAsyncEventStore implements EventStore {
     for (const e of this.log.get(executionId) ?? []) this.ids.delete(e.id);
     if (this.log.delete(executionId)) this.sortedIds = undefined;
     this.fences.delete(executionId);
+    this.incarnations.delete(executionId);
   }
 
   private setLog(executionId: string, list: EventEnvelope[]): void {
     if (!this.log.has(executionId)) this.sortedIds = undefined;
+    if (list[0]?.sequence === 0 && !this.incarnations.has(executionId)) {
+      this.incarnations.set(executionId, this.nextIncarnation++);
+    }
     this.log.set(executionId, list);
   }
 
@@ -391,6 +401,7 @@ export class InMemoryAsyncEventStore implements EventStore {
   async close(): Promise<void> {
     this.ids.clear();
     this.log.clear();
+    this.incarnations.clear();
     this.sortedIds = undefined;
     this.subscribers.clear();
   }
