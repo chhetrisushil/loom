@@ -2566,10 +2566,10 @@ they enter a browser bundle. Know which, and why:
   and accepts that responsibility.
   `AsyncLocalStorage` is created lazily on first use, so **loading** `@loom/workflow-runtime` in a
   browser bundle (where the bundler externalizes `node:async_hooks` to an empty module) no longer
-  throws at import. Without a real `AsyncLocalStorage` the step/decide scope falls back to a
-  synchronous stack: it is visible only to code running synchronously inside the scope, not across
-  an `await`, so async context propagation is unavailable in a browser (work after an `await`
-  falls back to the root scope). Node, Deno and Bun are unchanged.
+  throws at import. Without a real `AsyncLocalStorage`, ENTERING a step/decide scope (a
+  `ctx.parallel` branch, `ctx.decide`) throws `AsyncContextUnavailableError` rather than losing the
+  scope at the first `await` and recording steps under the wrong identity: run the durable runtime
+  on the server. Node, Deno and Bun are unchanged.
 
 The warning is therefore expected when `@loom/workflow-runtime` or `@loom/effect-runtime` is bundled
 for a browser; it is not a defect in the packages that appear browser-safe above.

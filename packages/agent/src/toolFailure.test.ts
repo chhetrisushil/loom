@@ -86,6 +86,7 @@ const TERMINAL = new Set([
   "StartFencedOutError",
   "PrincipalUnrestorableError",
   "StorageWriteError",
+  "AsyncContextUnavailableError",
   "StaleFenceError",
   "ExecutionSupersededError",
   "DuplicateEnvelopeIdError",

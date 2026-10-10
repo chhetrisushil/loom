@@ -9,49 +9,52 @@ export interface ContextStore<T> {
   run<R>(store: T, fn: () => R): R;
 }
 
+/** Thrown when a step/decide scope is entered where there is no `AsyncLocalStorage` (a browser bundle). */
+export class AsyncContextUnavailableError extends Error {
+  constructor() {
+    super(
+      "@loom/workflow-runtime: entering a step/decide scope needs AsyncLocalStorage (node:async_hooks), " +
+        "which this environment does not provide. Run the durable runtime on the server."
+    );
+    this.name = "AsyncContextUnavailableError";
+  }
+}
+
 /**
  * A context store that does not touch `node:async_hooks` until first use, so merely LOADING this
  * package in a browser bundle (where a bundler externalizes `node:async_hooks` to an empty module)
  * no longer throws. Where `AsyncLocalStorage` exists (Node, Deno, Bun, workers with
  * nodejs_compat) it IS one, so Node behaviour is unchanged.
  *
- * Where it does not exist, the fallback is a synchronous stack: the store is visible to code that
- * runs synchronously inside `run`, and NOT across an `await`. Async context propagation is
- * unavailable in such an environment, so work after an `await` falls back to the root scope (the
- * documented behaviour for detached work). Run the durable runtime on the server.
+ * Where it does not exist there is no scope to read (`getStore()` is `undefined`, the root scope)
+ * and ENTERING one (`run`) throws {@link AsyncContextUnavailableError}. A synchronous stack would
+ * lose the scope at the first `await`, so a parallel branch's or a decide's steps would be
+ * recorded under the wrong scope: wrong step identities and broken replay, silently. Failing
+ * loudly is the only safe answer.
  */
 export function createContextStore<T>(): ContextStore<T> {
   let als: ContextStore<T> | undefined;
-  let stack: T[] | undefined;
-  const ctor = (): (new () => ContextStore<T>) | undefined => {
-    try {
-      const c = (asyncHooks as { AsyncLocalStorage?: unknown }).AsyncLocalStorage;
-      return typeof c === "function" ? (c as new () => ContextStore<T>) : undefined;
-    } catch {
-      return undefined;
-    }
-  };
+  let missing = false;
   const init = (): void => {
-    if (als !== undefined || stack !== undefined) return;
-    const C = ctor();
-    if (C !== undefined) als = new C();
-    else stack = [];
+    if (als !== undefined || missing) return;
+    let C: unknown;
+    try {
+      C = (asyncHooks as { AsyncLocalStorage?: unknown }).AsyncLocalStorage;
+    } catch {
+      C = undefined;
+    }
+    if (typeof C === "function") als = new (C as new () => ContextStore<T>)();
+    else missing = true;
   };
   return {
     getStore() {
       init();
-      return als !== undefined ? als.getStore() : stack?.[stack.length - 1];
+      return als?.getStore();
     },
     run(store, fn) {
       init();
-      if (als !== undefined) return als.run(store, fn);
-      const s = stack as T[];
-      s.push(store);
-      try {
-        return fn();
-      } finally {
-        s.pop();
-      }
+      if (als === undefined) throw new AsyncContextUnavailableError();
+      return als.run(store, fn);
     },
   };
 }
