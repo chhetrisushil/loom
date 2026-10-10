@@ -13,25 +13,20 @@ describe("createContextStore", () => {
     expect(s.getStore()).toBeUndefined();
   });
 
-  it("loads and works where node:async_hooks has no AsyncLocalStorage (browser bundle)", async () => {
+  it("loads where node:async_hooks has no AsyncLocalStorage, and refuses to ENTER a scope there", async () => {
     vi.resetModules();
     vi.doMock("node:async_hooks", () => ({}));
-    const { createContextStore: make } = await import("./contextStore");
-    const s = make<number>();
-    expect(s.getStore()).toBeUndefined();
-    expect(
-      s.run(1, () => {
-        const inner = s.run(2, () => s.getStore());
-        return [inner, s.getStore()];
-      })
-    ).toEqual([2, 1]);
-    expect(s.getStore()).toBeUndefined();
-    // the documented limit: not visible across an await
-    const after = await s.run(3, async () => {
-      await Promise.resolve();
-      return s.getStore();
-    });
-    expect(after).toBeUndefined();
-    vi.doUnmock("node:async_hooks");
+    try {
+      const { createContextStore: make, AsyncContextUnavailableError: E } = await import(
+        "./contextStore"
+      );
+      const s = make<number>();
+      expect(s.getStore()).toBeUndefined();
+      const ran = vi.fn();
+      expect(() => s.run(1, ran)).toThrow(E);
+      expect(ran).not.toHaveBeenCalled();
+    } finally {
+      vi.doUnmock("node:async_hooks");
+    }
   });
 });

@@ -193,3 +193,5 @@ export {
   deserializeProjections,
 } from "./resumability";
 export type { ProjectionSnapshot } from "./resumability";
+
+export { AsyncContextUnavailableError } from "./contextStore";
