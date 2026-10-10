@@ -718,6 +718,8 @@ agentLoop$(ctx, {
 - **Large registries: `discovery` ([D12](adr/0125-tool-search.md)).** The index is capped, so with hundreds of skills the tail cannot be activated. Set `skillActivation: { discovery: "search" }` (needs `toolSearch`) and the prompt carries one fixed line instead of the index; the model finds skills with `search_tools`, which returns them under `skills` (`{ kind: "skill", id, description }`, beside the unchanged `tools`) and then calls `activate_skill({ name })`. Search is a convenience, not an authorization step: `activate_skill` accepts any catalog skill (minus upfront-selected ones) by id, found or not. `"both"` with a tiny `maxIndexBytes` is allowed (search covers everything) and `"search"` ignores `maxIndexBytes`. A search never loads a skill or its tools. `"both"` keeps the index and adds search; the default `"index"` is today's behaviour. Skill hits share the `maxPerSearch` page, already-active and upfront-selected skills are not hits. A custom `toolSearch.ranker` works with it ([D13](adr/0125-tool-search.md)): it ranks TOOLS only and never sees a skill; skills are ranked separately by the built-in BM25F over skill docs, or by your own `skillActivation: { discovery: "search", skillRanker }` (same `ToolRanker` interface, returns raw skill ids). The page interleaves the two lists by rank position, tool first (t1, s1, t2, s2, ...) up to `maxPerSearch`, a kind that runs out giving its share to the other; scores are never mixed. A ranker that throws is `search_unavailable` (nothing recorded), and replay calls neither ranker.
 - **Skills are host author text.** Register them yourself; never build the catalog from a remote declaration. Compaction may fold an activation result into its summary; the skill's tools stay on the menu, and calling `activate_skill` for an already-active skill re-delivers its instructions (nothing recorded, no tools, not counted against `maxActive`).
 
+- **Which skills ran: `selectedSkillsOf`.** The selection is not an event; it is recorded as decisions whose ids are internal. Read it with the supported helper, a pure function over events (works on a live log, a replay or an audit export): `selectedSkillsOf(await store.read(executionId))` returns `{ upfront, activated, byLoop }`, `upfront` being the skills selected before turn 0 and `activated` those the model loaded with `activate_skill` (a refused activation is not listed). Pass `{ loopId }` to read one loop.
+
 ### Bounding what the log carries
 
 `compaction` folds older turns into a summary once the transcript passes a threshold. It runs through `ctx.execute` against an effect you register, deliberately: a summary is lossy and nondeterministic, so it has to be a *recorded fact* or a replay would rebuild a different transcript than the one that ran.
@@ -816,6 +818,8 @@ The service principal only coordinates (grant it the `conversation.turn` effect 
 `history` reads `direction: "forward"` (oldest first) unless you pass `"backward"`; the SSE `/history` route takes the same `?direction=forward|backward` and defaults to forward, so a chat UI that wants the latest messages first must ask for `backward` and order the page to match (see the plugin README).
 
 For a browser, put `@loom/plugin-conversation-sse` in front: authenticated JSON routes plus an SSE stream whose event ids are the history cursors, so `EventSource`'s automatic `Last-Event-ID` reconnect resumes from the log. Live tokens (`delta`, `partial`) are transient and per process; only the durable `message` events are resumable.
+
+Tests and trusted bridges that write to the inbox directly build a valid envelope with `signInboxEnvelope(key, body)` (same signer as `sendTurn`). It needs the conversation's `key` and authorizes nothing by itself: the participant, replay and staleness checks and the runtime's access policy all still apply.
 
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 
@@ -1340,6 +1344,25 @@ const provider = process.env.RECORD ? recordingProvider(realLlm, cassette) : rep
 ```
 
 ---
+
+### One-off agent runs: `runAgentOnce` (`@loom/app`)
+
+`agentLoop$` needs an `ExecutionContext`, which only a flow has. For a script or a test that just wants "run this agent once", `runAgentOnce` builds the in-memory `defineConfig` app and the one-off flow for you:
+
+```ts
+import { runAgentOnce } from "@loom/app";
+import { ToolEffect } from "@loom/effect-runtime";
+
+const { output, events } = await runAgentOnce({
+  agent,                                   // an agent$ definition
+  provider,                                // registered as the ring effect `loop.modelToolId` (default "model")
+  registerEffects: (fx) => fx.register("lookup", new ToolEffect(async (input) => lookup(input))),
+  input: "why is replication lagging?",
+  loop: { systemPrompt: "You are a DBA." },
+});
+```
+
+It is for scripts and tests: nothing survives the call, and a run that parks on an approval returns `status: "suspended"` rather than being resumed. Production puts `agentLoop$` in a registered flow on durable storage. It does not relax anything: it goes through `defineConfig` (so `config.security` applies), the model call is an effect in the ring, and a `loop` config `agentLoop$` refuses rejects with `agentLoop$`'s own error.
 
 ## 11. The `loom` CLI
 

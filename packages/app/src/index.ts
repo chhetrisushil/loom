@@ -63,3 +63,8 @@ export {
 // "@loom/workflow-runtime"` augmentation) into every program that imports `@loom/app`, so a
 // composed app keeps `ctx.ui` typed without a direct agent-surface import.
 export type { SurfaceEmitter } from "@loom/agent-surface";
+export {
+  runAgentOnce,
+  type RunAgentOnceOptions,
+  type RunAgentOnceResult,
+} from "./runAgentOnce";

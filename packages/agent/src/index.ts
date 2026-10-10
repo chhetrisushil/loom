@@ -58,6 +58,8 @@ export type {
   ToolRankerFactory,
   ToolSearchDoc,
 } from "./toolSearch";
+export { selectedSkillsOf } from "./selectedSkills";
+export type { LoopSkills, SelectedSkills } from "./selectedSkills";
 export { SOURCE_SKILL_ACTIVATION, SkillActivationError } from "./skillActivation";
 export type { SkillActivationConfig } from "./skillActivation";
 export {
