@@ -393,3 +393,24 @@ export async function firstRetained(
   const got = await readRangeOf(store, inboxStreamId(chainId), from, to);
   return got[0]?.sequence;
 }
+
+/**
+ * Would a delivery batch record a consumption at or below its topic's cursor (ADR 0110 D8)? The
+ * batch is judged in order against the folded cursors, each entry advancing its own topic, exactly
+ * as the fold will apply it. A well-formed batch is strictly increasing per topic and above the
+ * cursor; anything else was built from a fold that has since moved (an operator discard).
+ */
+export function staleInboxBatch(
+  state: ExecutionState,
+  pre: ReadonlyArray<{ eventType: string; payload: unknown }>
+): boolean {
+  const cursors = { ...cursorsOf(state.variables) };
+  for (const e of pre) {
+    if (e.eventType !== "MESSAGE_CONSUMED") continue;
+    const p = e.payload as { topic?: unknown; inboxSeq?: unknown };
+    if (typeof p.topic !== "string" || typeof p.inboxSeq !== "number") continue;
+    if (p.inboxSeq <= cursorFor(cursors, p.topic)) return true;
+    cursors[p.topic] = p.inboxSeq;
+  }
+  return false;
+}
