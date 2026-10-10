@@ -449,7 +449,7 @@ const INCARNATION = `
       caller_lock_timeout text := current_setting('lock_timeout');
       sch text;
       seq_name text;
-      fn_version constant text := 'loom-incarnation-v2';
+      fn_version constant text := 'loom-incarnation-v3';
     BEGIN
       IF current_setting('loom.events_lock_failed', true) = 'on' THEN
         PERFORM set_config('loom.incarnation_skip', 'events is locked by another transaction (see the L10 warning)', true);
@@ -490,9 +490,11 @@ const INCARNATION = `
             AND obj_description(p.oid, 'pg_proc') = fn_version
         ) THEN
           EXECUTE format(
-            'CREATE OR REPLACE FUNCTION %I.events_assign_incarnation() RETURNS trigger AS $fn$ BEGIN NEW.incarnation := nextval(%L::regclass); RETURN NEW; END $fn$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog',
+            'CREATE OR REPLACE FUNCTION %I.events_assign_incarnation() RETURNS trigger AS $fn$ BEGIN NEW.incarnation := nextval(%L::regclass); RETURN NEW; END $fn$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp',
             sch, seq_name
           );
+          -- Trigger firing needs no EXECUTE grant; nobody else should hold one on a SECURITY DEFINER function.
+          EXECUTE format('REVOKE ALL ON FUNCTION %I.events_assign_incarnation() FROM PUBLIC', sch);
           EXECUTE format('COMMENT ON FUNCTION %I.events_assign_incarnation() IS %L', sch, fn_version);
         END IF;
         IF NOT EXISTS (
