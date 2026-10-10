@@ -68,8 +68,10 @@ const SAFE_SCHEMES: ReadonlySet<string> = new Set(["http", "https", "mailto", "t
 export function safeUrl(url: unknown): string | undefined {
   if (typeof url !== "string") return undefined;
   const squashed = [...url].filter((ch) => !isInvisible(ch.codePointAt(0) as number)).join("");
+  // A browser reads `\` as `/` in a special-scheme URL, so `/\evil.com` is `//evil.com`.
   const scheme = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(squashed);
-  if (scheme === null) return squashed.startsWith("//") ? undefined : url.trim();
+  if (scheme === null)
+    return squashed.replaceAll("\\", "/").startsWith("//") ? undefined : url.trim();
   return SAFE_SCHEMES.has((scheme[1] as string).toLowerCase()) ? url.trim() : undefined;
 }
 

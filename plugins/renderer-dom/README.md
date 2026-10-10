@@ -11,7 +11,8 @@ const handle = mountBlueprint(document.getElementById("app")!, blueprint, {
   onAction: (a) => submit(a), // { type: "APPROVE", widgetId, payload: { approved: true } }
 });
 
-handle.update(revisedBlueprint); // keyed reconcile: matching widgets keep their DOM node
+const report = handle.update(revisedBlueprint); // keyed reconcile: matching widgets keep their DOM node;
+// report.outcome is "updated" | "recovered" | "failed" | "busy" | "disposed" (+ report.error)
 handle.dispose();
 ```
 
