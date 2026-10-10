@@ -2367,7 +2367,7 @@ export class WorkflowRuntime {
     // live handle's state when running here, else fold; a denial is best-effort
     // recorded WITHOUT a fence (never disrupts the still-running execution).
     if (this.authzApplies(options?.principal, options?.system)) {
-      const gate = live?.getState() ?? (await this.foldState(executionId));
+      const gate = live?.getState() ?? (await this.foldStateForCancel(executionId));
       if (gate === null || gate === undefined) {
         await this.denyMissing("cancel", executionId, options?.principal, options?.system);
         throw new Error(`No execution found for id: ${executionId}`);
@@ -2398,7 +2398,7 @@ export class WorkflowRuntime {
       if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
       return true;
     }
-    const state = await this.foldState(executionId);
+    const state = await this.foldStateForCancel(executionId);
     if (state === null) {
       throw new Error(`No execution found for id: ${executionId}`);
     }
@@ -2433,6 +2433,40 @@ export class WorkflowRuntime {
     await this.retireInbox(chainIdOf(state, executionId));
     if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
     return true;
+  }
+
+  /**
+   * The fold `cancel` acts on. A subject erased by key destruction leaves an owner whose sealed
+   * fields (a principal identity, a sealed step output) cannot be opened, so the authoritative
+   * {@link foldState} throws `PayloadShreddedError`: a PARKED owner shredded in place would then
+   * be neither resumable nor cancellable and would sit suspended forever. A cancel needs no sealed
+   * field (status, tip and workflow id are plaintext), so it folds the REDACTED view the error
+   * carries (each sealed field replaced by `{ $shredded: true }`) and appends the terminal event
+   * under the fence like any cancel. Used by `cancel` ONLY: `resume`, `loadState` and every other
+   * fold stay strict (a resume off a redacted fold would diverge). A COMPACTED log (its prefix is
+   * gone and its checkpoint is sealed too) cannot be reconstructed this way and keeps the error.
+   */
+  private async foldStateForCancel(executionId: string): Promise<ExecutionState | null> {
+    try {
+      return await this.foldState(executionId);
+    } catch (err) {
+      if ((err as { name?: unknown } | null)?.name !== "PayloadShreddedError") throw err;
+      // Always re-read the whole log: the error that reached us may come from a partial read (the
+      // anchor of a snapshot-seeded fold), whose redacted view is only that slice.
+      let redacted: readonly EventEnvelope[] | undefined;
+      try {
+        redacted = await this.eventStore.read(executionId);
+      } catch (err2) {
+        redacted = (err2 as { redacted?: readonly EventEnvelope[] } | null)?.redacted;
+      }
+      if (redacted === undefined || redacted.length === 0 || redacted[0]!.sequence !== 0) throw err;
+      const workflowId = redacted[0]!.workflowId;
+      return new ReplayVM([...redacted], {
+        executionId,
+        workflowId,
+        workflowVersion: this.flows.get(workflowId)?.definition.version ?? "",
+      }).getState();
+    }
   }
 
   /**

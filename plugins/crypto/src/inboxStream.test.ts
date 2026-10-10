@@ -2,7 +2,7 @@ import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
-import { PayloadShreddedError, PayloadUndecryptableError } from "./errors";
+import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import { InMemoryKeyStore } from "./keystore";
 
 // ADR 0110 follow-up — a chain's inbox stream (`__loom_inbox__:<chainId>`) is sealed under the
@@ -157,10 +157,145 @@ describe("EncryptingEventStore — a chain's inbox stream", () => {
     await store.append(msg("__loom_inbox__:owner-1", 0, SECRET));
     expect(asked.at(-1)).toEqual({ executionId: "owner-1", workflowId: "billing" });
     expect(await store.keys.get("acct")).not.toBeNull();
-    // Unresolvable owner (no log yet): the empty string, documented, never the reserved id.
-    await store.append(msg("__loom_inbox__:ghost-1", 0, SECRET));
-    expect(asked.at(-1)).toEqual({ executionId: "ghost-1", workflowId: "" });
     expect(asked.some((a) => a.workflowId === "__loom_inbox__")).toBe(false);
+  });
+
+  it("review P3: an UNRESOLVABLE owner is never sealed under a guessed subject: a workflow-keyed subjectOf makes the write FAIL", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const keys = new InMemoryKeyStore();
+    const store = new EncryptingEventStore(inner, keys, {
+      sensitive: { INBOX_MESSAGE: ["payload"] },
+      subjectOf: (e) => (e.workflowId === "billing" ? "acct" : e.executionId),
+    });
+    // the owner has no log yet: nothing to read the workflow id from
+    await expect(store.append(msg("__loom_inbox__:ghost-1", 0, SECRET))).rejects.toBeInstanceOf(
+      OwnerUnresolvedError
+    );
+    expect(await inner.read("__loom_inbox__:ghost-1")).toEqual([]); // no row, sealed or not
+    expect(await keys.get("")).toBeNull(); // nothing minted under the blank subject
+    // a subjectOf that keys on the execution id never reads the workflow id: unaffected
+    const plain = new EncryptingEventStore(inner, keys, {
+      sensitive: { INBOX_MESSAGE: ["payload"] },
+      subjectOf,
+    });
+    await plain.append(msg("__loom_inbox__:ghost-1", 0, SECRET));
+    expect(await inner.read("__loom_inbox__:ghost-1")).toHaveLength(1);
+  });
+
+  it('review P3: a TRANSIENT readRange failure fails the send (nothing sealed under ""); the retry seals under the right subject', async () => {
+    const inner = new InMemoryAsyncEventStore();
+    await inner.append({
+      id: "o-0",
+      workflowId: "billing",
+      executionId: "owner-1",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: {},
+    });
+    let failures = 1;
+    const flaky = Object.create(inner) as InMemoryAsyncEventStore;
+    flaky.readRange = async (id, from, to) => {
+      if (failures-- > 0) throw new Error("connection reset");
+      return inner.readRange(id, from, to);
+    };
+    const keys = new InMemoryKeyStore();
+    const store = new EncryptingEventStore(flaky, keys, {
+      sensitive: { INBOX_MESSAGE: ["payload"] },
+      subjectOf: (e) => (e.workflowId === "billing" ? "acct" : e.executionId),
+    });
+    const err = await store.append(msg("__loom_inbox__:owner-1", 0, SECRET)).catch((x) => x);
+    expect(err).toBeInstanceOf(OwnerUnresolvedError);
+    expect((err as OwnerUnresolvedError).cause).toBeInstanceOf(Error);
+    expect(await inner.read("__loom_inbox__:owner-1")).toEqual([]);
+    expect(await keys.get("")).toBeNull();
+    expect(await keys.get("owner-1")).toBeNull();
+    // the failure was not cached as "unresolvable": the retry succeeds under the owner's subject
+    await store.append(msg("__loom_inbox__:owner-1", 0, SECRET));
+    expect(await keys.get("acct")).not.toBeNull();
+    expect(JSON.stringify(await inner.read("__loom_inbox__:owner-1"))).not.toContain(SECRET);
+  });
+
+  it('review P3: the crypto layer refuses "" as a sealing subject (every such record would share one key)', async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const keys = new InMemoryKeyStore();
+    const store = new EncryptingEventStore(inner, keys, {
+      sensitive: { STEP_COMPLETED: ["output.ssn"] },
+      subjectOf: () => "",
+    });
+    await expect(
+      store.append({
+        id: "x-1",
+        workflowId: "w",
+        executionId: "x",
+        eventType: "STEP_COMPLETED",
+        sequence: 1,
+        timestamp: 1,
+        payload: { output: { ssn: SECRET } },
+      })
+    ).rejects.toThrow(/refuses to seal under/);
+    expect(await inner.read("x")).toEqual([]);
+    expect(await keys.get("")).toBeNull();
+  });
+
+  it("review P3: the verbatim erasure-marker exception is scoped to MESSAGE_CONSUMED.payload; the same bytes anywhere else are DATA and are sealed", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const keys = new InMemoryKeyStore();
+    const store = new EncryptingEventStore(inner, keys, {
+      sensitive: {
+        STEP_COMPLETED: ["output.a"],
+        INBOX_MESSAGE: ["payload"],
+        MESSAGE_CONSUMED: ["payload", "extra"],
+      },
+      subjectOf,
+    });
+    const marker = { $shredded: true };
+    await store.append({
+      id: "alice-1-1",
+      workflowId: "w",
+      executionId: "alice-1",
+      eventType: "STEP_COMPLETED",
+      sequence: 1,
+      timestamp: 1,
+      payload: { output: { a: marker } },
+    });
+    await store.append(msg("__loom_inbox__:alice-1", 0, marker));
+    const consumed = (sequence: number, payload: unknown, extra?: unknown): EventEnvelope => ({
+      id: `alice-1-${sequence}`,
+      workflowId: "w",
+      executionId: "alice-1",
+      eventType: "MESSAGE_CONSUMED",
+      sequence,
+      timestamp: 1,
+      payload: {
+        waitId: "#0",
+        topic: "t",
+        messageId: "m",
+        inboxSeq: 0,
+        sender: {},
+        payload,
+        extra,
+      },
+    });
+    await store.append(consumed(2, marker, marker));
+    // the step output and the inbox message hold ciphertext, not the plaintext marker
+    const rawStep = (await inner.read("alice-1"))[0]?.payload as { output: { a: unknown } };
+    expect(JSON.stringify(rawStep.output.a)).toContain("loomEnc");
+    const rawMsg = (await inner.read("__loom_inbox__:alice-1"))[0]?.payload as { payload: unknown };
+    expect(JSON.stringify(rawMsg.payload)).toContain("loomEnc");
+    // MESSAGE_CONSUMED.payload is the one verbatim exception; a second marked path is sealed
+    const rawConsumed = (await inner.read("alice-1"))[1]?.payload as {
+      payload: unknown;
+      extra: unknown;
+    };
+    expect(rawConsumed.payload).toEqual(marker);
+    expect(JSON.stringify(rawConsumed.extra)).toContain("loomEnc");
+    // and the live subject reads its OWN marker-shaped value back as data, not as erased
+    const [step] = await store.read("alice-1");
+    expect((step?.payload as { output: { a: unknown } }).output.a).toEqual(marker);
+    // after the erasure the sealed step is unreadable (the old behaviour left it plaintext)
+    await keys.destroy("alice");
+    await expect(store.read("alice-1")).rejects.toBeInstanceOf(PayloadShreddedError);
   });
 
   it("P3-2: a record that carries only the erasure marker is stored verbatim, so a shredded owner can still journal it", async () => {

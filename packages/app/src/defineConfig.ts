@@ -1211,6 +1211,10 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
           eventStore: stores.eventStore,
           snapshotStore: stores.snapshotStore,
           shred: config.compliance.erase.shred,
+          // `parked: "shred"` cancels each parked owner first, under the runtime's own authority.
+          // `runtime` is assigned below; nothing erases before defineConfig returns.
+          cancel: (executionId, reason) =>
+            runtime.cancel(executionId, reason, runtime.systemOptions()),
         })
       : undefined;
   // Both erasure calls read (and eventually write) the durable store, so both reject on an

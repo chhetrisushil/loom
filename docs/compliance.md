@@ -135,14 +135,27 @@ await app.eraseSubject("user-42", undefined, { parked: "shred" });
 // { outcome: "erased", ..., parkedShredded: ["exec-1"] }
 ```
 
-`parked: "shred"` shreds when every non-terminal execution is **suspended**; a **running** one
-still defers (its fold would read the key as it is destroyed). The parked owner is NOT finished:
-if a timer, a send or a resume wakes it later, its first read of a sealed event (a principal
-identity, a sealed step output or consumed payload) throws `PayloadShreddedError`, so the resume
-rejects with that typed error and appends nothing; a log with nothing sealed resumes normally and
-an in-flight message reaches it as the `{ $shredded: true }` marker. Cancel such an owner once its
-subject is erased. A deferred request completes only when every owner is terminal; re-issue the
-call to shred once the running owner parks.
+`parked: "shred"` leaves **no owner stuck**. When every non-terminal execution is **suspended**
+it first CANCELS each parked owner (reason `"erased"`, under the runtime's own system authority,
+through the same fenced path a normal `cancel` takes) and only then shreds, so every owner is
+terminal (`cancelled`) afterwards and `parkedShredded` names the ones it cancelled. A **running**
+owner still defers (its fold would read the key as it is destroyed), and so does a subject whose
+cancel failed or whose owner woke up before the key went (nothing is shredded; owners already
+cancelled stay cancelled). A deferred request completes only when every owner is terminal; re-issue
+the call to shred once the running owner parks. Because the owners are terminal heads, the
+coordinator's terminal-head purge also deletes their reserved inbox streams, which removes
+plaintext inbox payloads written before crypto was enabled (see the migration edge below).
+`EraseCoordinator` needs its `cancel` option for this (`defineConfig` wires it); without it the call
+throws.
+
+An owner that was shredded some OTHER way (a direct `shredSubject` call on a parked owner) can still
+be cancelled: `cancel` needs no sealed field (status, tip and workflow id are plaintext), so it
+folds the redacted view of the log and appends `EXECUTION_CANCELLED` under the fence. Its `resume`
+and `loadState` stay strict: both throw the typed `PayloadShreddedError` (and append nothing); the
+error's `redacted` property carries the events with each sealed field replaced by
+`{ $shredded: true }` for operator tooling. A compacted log whose checkpoint is sealed cannot be
+rebuilt that way and keeps the error. Re-running the erasure over an already-shredded subject is
+idempotent: liveness is judged on that redacted view.
 
 ### A message still in flight in an inbox (ADR 0110)
 
@@ -163,7 +176,11 @@ as well as the owner's log. It does, twice:
   recreated; a `KeyStore` must not re-mint one). A sender cannot forge the marker: `send` refuses a
   payload that is exactly `{ $shredded: true }`. `defineConfig` also registers
   `MESSAGE_CONSUMED.payload`, so the consumed copy in the owner's log is sealed (new writes only; an
-  older plaintext consumption still reads and replays).
+  older plaintext consumption still reads and replays). The marker is stored verbatim ONLY there
+  (`MESSAGE_CONSUMED.payload`, an erased message's consumption); the same bytes on any other sensitive
+  path (a step output, say) are data, sealed like any value. If the owner's workflow id cannot be
+  resolved for a chain (a `subjectOf` keyed on it) the send FAILS and can be retried; nothing is ever
+  sealed under a guessed subject, and the crypto layer refuses `""` as a sealing subject.
 - **Physically.** When the erasure runs (every execution of the subject terminal), the
   coordinator deletes the inbox stream of each execution that is the HEAD of its chain (terminal
   and not `continued`), read BEFORE the key is destroyed. The runtime already deletes a finished
@@ -177,7 +194,7 @@ journaled) before `security.crypto` was composed is plaintext, and destroying th
 touch it. Only deleting the stream erases it, which the coordinator does for a TERMINAL chain
 head. *Remedy:* before relying on the key for such a chain, cancel the owner and run the erasure
 (its stream is then deleted), or delete the stream yourself; there is no re-seal API, and a
-parked owner's stream is never deleted (it still reads it), with or without `parked: "shred"`.
+parked owner's stream is never deleted by the default erasure (it still reads it); `parked: "shred"` cancels the owner first, so its stream is then deleted.
 
 **Not covered: snapshots.** A snapshot's `variables._waitAnswers` holds an answered payload under a
 dynamic key (the `waitId`), which a sensitive path cannot name, so a snapshot taken while an

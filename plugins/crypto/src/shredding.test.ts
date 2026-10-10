@@ -6,6 +6,7 @@ import { InMemoryAsyncSnapshotStore, TenantScopedSnapshotStore } from "@loom/sna
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore, isShredded } from "./EncryptingEventStore";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";
+import { encryptValue } from "./crypto";
 import { PayloadShreddedError } from "./errors";
 import { InMemoryKeyStore } from "./keystore";
 import { ShredIncompleteError, shredSubject } from "./shred";
@@ -401,7 +402,14 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
 describe("ADR 0107 — shredSubject never tombstones a reserved stream", () => {
   it('refuses "" and __loom_* as executionIds, before the key is destroyed', async () => {
     const { inner, keys, store } = setup();
-    await store.append(ev("", 3, "STEP_COMPLETED", { stepId: "s", output: { ssn: "1" } }));
+    // A pre-0106 stream sealed under "" (the crypto layer no longer WRITES under it): seed it raw.
+    await keys.getOrCreate("");
+    await inner.append(
+      ev("", 3, "STEP_COMPLETED", {
+        stepId: "s",
+        output: { ssn: encryptValue((await keys.get(""))!, "1") },
+      })
+    );
     const key = await keys.get("");
     expect(key).not.toBeNull();
     for (const executionIds of [[""], ["e1", "__loom_lifecycle__"]]) {
@@ -419,7 +427,14 @@ describe("ADR 0107 — shredSubject never tombstones a reserved stream", () => {
 
   it('still destroys the key of subject "" when no reserved stream is named', async () => {
     const { inner, keys, store } = setup();
-    await store.append(ev("", 3, "STEP_COMPLETED", { stepId: "s", output: { ssn: "1" } }));
+    // A pre-0106 stream sealed under "" (the crypto layer no longer WRITES under it): seed it raw.
+    await keys.getOrCreate("");
+    await inner.append(
+      ev("", 3, "STEP_COMPLETED", {
+        stepId: "s",
+        output: { ssn: encryptValue((await keys.get(""))!, "1") },
+      })
+    );
     await shredSubject(keys, inner, "", { executionIds: [], snapshotStore: NO_SNAPSHOTS });
     expect(await keys.get("")).toBeNull();
     await expect(store.read("")).rejects.toBeInstanceOf(PayloadShreddedError);

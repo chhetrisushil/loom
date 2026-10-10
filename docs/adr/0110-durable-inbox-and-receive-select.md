@@ -647,7 +647,8 @@ The 2026-10-07 residual: erasure reached `MESSAGE_CONSUMED` in the owner's log b
   with no key still reads as erased: that is indistinguishable from a shred, so keep it stable). A `KeyStore`
   must never re-mint a destroyed subject's key. `subscribe` on an inbox stream hands the marker, not
   ciphertext, once the key is gone. `subjectOf` is asked with the OWNER's workflow id (read once from the
-  owner's first event and cached), `""` if that cannot be resolved, never the stream's reserved
+  owner's first event and cached), handed LAZILY: a `subjectOf` that reads it while it is unresolved (a transient read error, no log yet) makes the write THROW `OwnerUnresolvedError` (retryable), never a guessed `""`
+  subject; the crypto layer also refuses `""` as a sealing subject. Never the stream's reserved
   `__loom_inbox__`. **The marker cannot be forged.** A flow tells "erased" from "sent" by the marker's shape,
   and the delivered envelope has no field a flow could check instead without an `EVENT_SCHEMA` change, so
   `runtime.send` refuses (`InboxMessageRefusedError`) a payload that IS the marker (a top-level
@@ -655,8 +656,9 @@ The 2026-10-07 residual: erasure reached `MESSAGE_CONSUMED` in the owner's log b
   delivery), journaled in `MESSAGE_CONSUMED` in the owner's log, so **a replay of that log is identical** and
   consults neither the stream nor the key. **The consumed copy is sealed too:** the same condition registers
   `MESSAGE_CONSUMED.payload`, so a consumed payload is not left in plaintext in the owner's log (new writes
-  only; a log mixing old plaintext consumptions and new sealed ones reads and replays unchanged, and a record
-  that carries only the marker is stored verbatim so a shredded owner can still journal the erasure).
+  only; a log mixing old plaintext consumptions and new sealed ones reads and replays unchanged, and a `MESSAGE_CONSUMED.payload`
+  that is exactly the marker is stored verbatim so a shredded owner can still journal the erasure; that
+  exception is scoped to that one path, the same bytes on any other sensitive path are data and are sealed).
   **Not covered:** a snapshot's `variables._waitAnswers` holds an answered payload under a DYNAMIC key (the
   `waitId`), which a sensitive path (fixed keys and array elements) cannot name, so a snapshot taken while an
   answered wait is in the fold holds it verbatim unless the app's snapshot store seals the whole state. The
@@ -677,16 +679,22 @@ The 2026-10-07 residual: erasure reached `MESSAGE_CONSUMED` in the owner's log b
   forever on `receive` therefore blocks the coordinated erasure forever; the caller gets an honest `parked` +
   `pending`, never a silent success. The cryptographic half works on a parked owner when `shredSubject` is
   called directly (the tests do, parking the owner on a gate while the message is in flight).
-- **Opt-in: `eraseSubject(subject, tenant, { parked: "shred" })`.** Shreds NOW when every non-terminal execution
-  is parked, and reports them in `parkedShredded`. A RUNNING owner still defers (its fold would read the key as
-  it is destroyed, and the tombstone append races its sequencer); a parked owner that a timer, a send or a resume
-  wakes between the check and the shred becomes a running one and fails as below. **What a shredded parked owner
-  experiences on a later resume:** with the default `onShredded: "throw"`, its first read of a sealed event (a
-  principal identity, a sealed step output or consumed payload) throws `PayloadShreddedError`, so the resume
-  rejects with that typed error and appends nothing; a log with nothing sealed resumes normally and an in-flight
-  message reaches it as the marker. Cancel such an owner after the erasure. A deferred request completes only
-  when every owner is terminal (the option is not stored with it); re-issue the call to shred once the running
-  owner parks.
+- **Opt-in: `eraseSubject(subject, tenant, { parked: "shred" })`: leaves NO stuck owner (review round 2).** When
+  every non-terminal execution is parked, the coordinator first CANCELS each one (`EraseCoordinatorOptions.cancel`,
+  wired by `defineConfig` to `runtime.cancel(id, "erased", runtime.systemOptions())`: the runtime's own authority,
+  the same fenced path a normal cancel takes, the reason journaled), then shreds, and reports the cancelled owners
+  in `parkedShredded`. Every owner is therefore terminal and the terminal-head purge of the reserved inbox streams
+  runs for them too, which also closes the plaintext-before-crypto edge below for those owners. A RUNNING owner still
+  defers (its fold would read the key as it is destroyed, and the tombstone append races its sequencer); a cancel that
+  fails, or an owner that woke up before the key was destroyed, defers the subject exactly as `"defer"` does (owners
+  already cancelled stay cancelled). Without the `cancel` option the call throws. **An owner shredded some other way**
+  (a direct `shredSubject`) can still be cancelled: `cancel` folds the REDACTED view that `PayloadShreddedError.redacted`
+  carries (each sealed field `{ $shredded: true }`; status, tip and workflow id are plaintext), appends
+  `EXECUTION_CANCELLED` under the fence and retires the inbox. `resume` and `loadState` remain strict and reject with
+  the typed error, appending nothing (a resume off a redacted fold would diverge; the orchestration supervisor relies on
+  `loadState` throwing so a shredded parent is not pinned). A compacted log whose checkpoint is sealed keeps the
+  error. A deferred request completes only when every owner is terminal (the option is not stored with it); re-issue the
+  call to shred once the running owner parks. Re-running the erasure over an already-shredded log is idempotent.
 - **Migration edge: plaintext written before crypto was enabled survives a shred.** A decrypting read passes an
   unsealed payload through unchanged, so an inbox message appended (or a consumption journaled) before
   `security.crypto` was composed is plaintext, and destroying the key does not touch it. It is erased only by
@@ -749,7 +757,7 @@ parked-only, so it retries on the next sweep. The message's age is its envelope 
 row after the shred; a consume after the erasure delivers the marker, journaled once, and a fresh runtime folds the
 identical answer; a `send` after the erasure is refused and appends nothing; another subject's payload is intact.
 `inboxStream.test.ts` (crypto): the owner's subject, the marker in `throw` mode through `read`, `readFrom` and
-`readRange`, a key that exists but cannot open the ciphertext (and a tampered row) throws `PayloadUndecryptableError`, `subscribe` hands the marker, `subjectOf` gets the owner's workflow id, a marker-only record needs no key, every other stream still throws. `eraseSubject.test.ts` (compliance): the orphan
+`readRange`, a key that exists but cannot open the ciphertext (and a tampered row) throws `PayloadUndecryptableError`, `subscribe` hands the marker, `subjectOf` gets the owner's workflow id (lazily; unresolved throws), a marker-only `MESSAGE_CONSUMED` record needs no key, every other stream still throws. `eraseSubject.test.ts` (compliance): the orphan
 stream is deleted after the shred and chains are resolved before it, a fork's chain by its stamp, a later
 generation by its start, a `continued` execution never purges, another subject's stream is untouched, a parked
 erasure purges on completion, a store that cannot delete is a no-op. `r2-discard.test.ts` (memory, SQLite,
@@ -757,6 +765,6 @@ Postgres): the pin is released and the consumed prefix trimmed; the fact is kern
 replays; the discarded message is never delivered and the next is; other topics and the park are untouched;
 idempotent; one answer entry however many discards; a running owner refused with nothing appended; invalid
 bounds refused and the next message not swallowed; a finished owner is `InboxClosedError`; closed by default, opened
-per tenant, the operator recorded, existence not an oracle; a discard racing a live delivery lands on retry. `r2-discardRace.test.ts` (memory, SQLite, Postgres, fenced and unfenced park): a notifier paused after its scan loses to a discard (the discarded message is never delivered, the reported count is accurate, no consumption below the cursor is ever recorded as an answer); a discarded `messageId` resent is a duplicate. `r2-discard.test.ts` also pins the principal-less refusal. `r2-erasure.test.ts` adds the sealed consumed copy, a mixed plaintext/sealed log, the unforgeable marker and a shredded parked owner's resume (typed `PayloadShreddedError`); `eraseSubject.test.ts` the opt-in `parked: "shred"`. A wire
+per tenant, the operator recorded, existence not an oracle; a discard racing a live delivery lands on retry. `r2-discardRace.test.ts` (memory, SQLite, Postgres, fenced and unfenced park): a notifier paused after its scan loses to a discard (the discarded message is never delivered, the reported count is accurate, no consumption below the cursor is ever recorded as an answer); a discarded `messageId` resent is a duplicate. `r2-discard.test.ts` also pins the principal-less refusal. `r2-erasure.test.ts` adds the sealed consumed copy, a mixed plaintext/sealed log, the unforgeable marker and a shredded parked owner (resume and `loadState` typed `PayloadShreddedError`, `cancel` still terminal, on memory, SQLite and Postgres); `eraseSubject.test.ts` the opt-in `parked: "shred"` (cancel-then-shred order, deferral on a failed cancel); `inboxStream.test.ts` the marker scoped to `MESSAGE_CONSUMED.payload`, the unresolved-owner failure and the refused `""` subject. A wire
 vector pins the fold. Each was revert-checked: undoing the change fails the test that names it, and restoring it passes.
 

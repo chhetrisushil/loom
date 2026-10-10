@@ -53,6 +53,16 @@ export interface EraseCoordinatorOptions {
   eventStore: Pick<EventStore, "read" | "append"> & Partial<Pick<EventStore, "deleteExecution">>;
   shred: Shredder;
   /**
+   * Cancel one PARKED execution under the coordinator's own authority (a system / compliance
+   * grant, never a caller's), journaled with the given reason (`"erased"`), through the runtime's
+   * normal fenced cancel. REQUIRED for `eraseSubject(..., { parked: "shred" })`: that mode leaves
+   * no owner stuck, so every parked owner is moved to a terminal state BEFORE its subject is
+   * shredded. Resolves `true` when the cancel was performed; a rejection, or an owner that is not
+   * terminal afterwards (it woke up and is running), defers the subject exactly as `"defer"`
+   * does. `defineConfig` wires it to `runtime.cancel(id, reason, runtime.systemOptions())`.
+   */
+  cancel?: (executionId: string, reason: string) => Promise<boolean>;
+  /**
    * ADR 0106 — where compaction checkpoints live. A compacted execution's log no longer holds
    * its prefix (`[0]` after compacting through the tip), so folding the log alone reads a
    * TERMINAL execution as still running and a parked erasure would wait for it forever. With
@@ -93,15 +103,20 @@ export interface EraseSubjectOptions {
    *   check and the key's destruction is the shredder's to close: a parked execution that a timer,
    *   a send or a resume wakes in it becomes a running one whose reads fail (below).
    *
-   * What a shredded parked owner experiences when it later resumes. Its sealed fields read as
-   * erased: with the default `onShredded: "throw"` a read of its log throws `PayloadShreddedError`
-   * the moment it touches a sealed event (a principal identity, a sealed step output or consumed
-   * payload), so the resume REJECTS with that typed error and appends nothing; a log that holds
-   * nothing sealed reads normally, and an inbox message of the subject still in flight reaches it
-   * as the `{ $shredded: true }` marker. A parked owner is therefore best CANCELLED once its
-   * subject is erased (an erased subject's execution cannot continue meaningfully). Inbox
-   * payloads written before crypto was enabled are plaintext and survive the shred: cancel the
-   * owner (a terminal head's stream is deleted by the erasure) or purge the stream yourself.
+   * Leaves NO stuck owner. Each parked (`suspended`) owner is first CANCELLED under the
+   * coordinator's own authority ({@link EraseCoordinatorOptions.cancel}, reason `"erased"`, the
+   * same fenced path a normal cancel takes), and only when every owner is terminal is the subject
+   * shredded. The owners are therefore terminal (`cancelled`) afterwards, so the terminal-head
+   * purge of the reserved inbox streams also runs for them, which removes plaintext inbox payloads
+   * written before crypto was enabled (these survive the key's destruction) too. If a cancel
+   * fails, or an owner woke up and is running by then, nothing is shredded and the subject
+   * defers as `"defer"` does (owners already cancelled stay cancelled: the request to erase
+   * them was made). Requires {@link EraseCoordinatorOptions.cancel}; without it the call throws.
+   *
+   * An owner shredded some other way (a direct `shredSubject` call) can still be cancelled:
+   * `cancel` folds the redacted view of its log. `resume` of it rejects with the typed
+   * `PayloadShreddedError` and appends nothing; so does `loadState` (the strict, authoritative
+   * read; its error carries the `redacted` events for operator tooling).
    */
   parked?: "defer" | "shred";
 }
@@ -139,13 +154,31 @@ export class EraseCoordinator {
       return { subjectId, outcome: "unknown", erased: [], pending: [] };
     }
     const shredParked = options.parked === "shred";
-    const nonTerminal = await this.liveExecutions(executions);
+    if (shredParked && this.options.cancel === undefined) {
+      throw new TypeError(
+        'eraseSubject({ parked: "shred" }) cancels each parked owner before shredding: pass `cancel` to the EraseCoordinator (defineConfig wires it)'
+      );
+    }
+    let nonTerminal = await this.liveExecutions(executions);
     // `defer`: every non-terminal execution blocks. `shred`: only a RUNNING one does.
-    const live = shredParked
+    let live = shredParked
       ? nonTerminal.filter((x) => x.status !== "suspended").map((x) => x.id)
       : nonTerminal.map((x) => x.id);
+    let parkedOwners: string[] = [];
+    if (shredParked && live.length === 0 && nonTerminal.length > 0) {
+      // No owner may be left stuck: cancel every parked one FIRST (the log is still readable and
+      // the fence is the runtime's own). A failure, or an owner that is not terminal afterwards,
+      // defers the subject.
+      parkedOwners = nonTerminal.map((x) => x.id);
+      try {
+        for (const id of parkedOwners) await this.options.cancel!(id, "erased");
+      } catch {
+        // fall through to the recheck: whatever did not become terminal blocks the shred
+      }
+      nonTerminal = await this.liveExecutions(executions);
+      live = nonTerminal.map((x) => x.id);
+    }
     if (live.length === 0) {
-      const parkedOwners = shredParked ? nonTerminal.map((x) => x.id) : [];
       // Resolved BEFORE the key is destroyed: a decrypting store cannot read these logs afterwards.
       const chains = await this.finishedChains(executions);
       await this.options.shred(subjectId, executions);
@@ -240,11 +273,28 @@ export class EraseCoordinator {
     return live;
   }
 
+  /**
+   * The log, or — when its subject is ALREADY shredded (a direct `shredSubject`, a retry) — the
+   * redacted view the typed error carries: status and tip are plaintext, so liveness and the
+   * chain's head can still be judged, and a re-run of the erasure stays idempotent.
+   */
+  private async readErasedOk(executionId: string): Promise<EventEnvelope[]> {
+    try {
+      return await this.options.eventStore.read(executionId);
+    } catch (err) {
+      const redacted = (err as { name?: unknown; redacted?: EventEnvelope[] } | null)?.redacted;
+      if ((err as { name?: unknown } | null)?.name === "PayloadShreddedError" && redacted) {
+        return redacted;
+      }
+      throw err;
+    }
+  }
+
   /** One execution's folded status and its first event, or `undefined` when its log is gone. */
   private async foldExecution(
     executionId: string
   ): Promise<{ status: ExecutionState["status"]; first: EventEnvelope } | undefined> {
-    const events = await this.options.eventStore.read(executionId);
+    const events = await this.readErasedOk(executionId);
     const first = events[0];
     if (first === undefined) return undefined;
     const snapshot = (await this.options.snapshotStore?.loadLatest(executionId)) ?? null;

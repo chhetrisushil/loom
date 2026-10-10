@@ -189,7 +189,7 @@ for (const backend of inboxBackends("erase")) {
       expect(await raw.eventStore.read(inboxStreamId(e))).toHaveLength(3);
     });
 
-    it("P2-2: a PARKED owner resumed after its subject was shredded fails cleanly with a typed error and appends nothing (its log holds sealed fields)", async () => {
+    it("P2-2: a PARKED owner shredded in place can be CANCELLED (terminal, under the fence); its resume and loadState fail with the typed error and append nothing", async () => {
       const { raw, keys, h } = sealed(true);
       const f = flow("w", async (ctx) => {
         await ctx.suspend({ on: "Go" });
@@ -197,21 +197,35 @@ for (const backend of inboxBackends("erase")) {
       });
       h.rt.registerFlow(f.definition, f.runner);
       const e = id();
-      await (
-        await h.rt.start(f, {}, { executionId: e, principal: { actor: "alice", tenant: "t1" } })
-      ).waitForSuspend();
+      const principal = { actor: "alice", tenant: "t1" };
+      await (await h.rt.start(f, {}, { executionId: e, principal })).waitForSuspend();
       const before = (await raw.eventStore.read(e)).length;
       await shredSubject(keys, raw.eventStore, e, {
         subjectId: "alice",
         executionIds: [e],
         snapshotStore: raw.snapshotStore,
       });
-      // What the coordinator's opt-in `parked: "shred"` leaves behind: the owner is still parked,
-      // and a later resume fails with the typed error rather than folding ciphertext.
+      // The owner is still parked, its principal sealed under a key that is gone. A resume rejects
+      // with the typed error rather than folding ciphertext...
       const err = await h.rt.resume(e, { eventType: "Go", payload: null }).catch((x) => x);
       expect(err).toBeInstanceOf(PayloadShreddedError);
       expect((await raw.eventStore.read(e)).length).toBe(before + 1); // only the tombstone
-      expect(JSON.stringify(await raw.eventStore.read(e))).not.toContain('"actor":"alice"');
+      // ...and so does the strict query, whose error carries the REDACTED view for tooling.
+      const q = await h.rt.loadState(e, { principal }).catch((x) => x);
+      expect(q).toBeInstanceOf(PayloadShreddedError);
+      expect(JSON.stringify((q as PayloadShreddedError).redacted)).not.toContain('"actor":"alice"');
+      // ...but the owner is NOT stuck: a cancel needs no sealed field.
+      expect(await h.rt.cancel(e, "erased", { principal })).toBe(true);
+      const log = await raw.eventStore.read(e);
+      expect(log.map((x) => x.eventType).slice(-2)).toEqual([
+        "PAYLOAD_SHREDDED",
+        "EXECUTION_CANCELLED",
+      ]);
+      expect(log.at(-1)?.payload).toMatchObject({ reason: "erased" });
+      expect(JSON.stringify(log)).not.toContain('"actor":"alice"');
+      // terminal now: a second cancel is quiet, a resume still refuses
+      expect(await h.rt.cancel(e, "again", { principal }).catch((x) => x)).toBe(false);
+      expect((await raw.eventStore.read(e)).length).toBe(log.length);
     });
 
     it("after the erasure a send is refused loudly and appends nothing (the key is never resurrected)", async () => {

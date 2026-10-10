@@ -7,7 +7,12 @@ import {
   InMemoryAsyncEventStore,
   headOf,
 } from "@loom/event-runtime";
-import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+import {
+  EncryptingEventStore,
+  InMemoryKeyStore,
+  encryptValue,
+  mapPaths,
+} from "@loom/plugin-crypto";
 import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
@@ -493,6 +498,24 @@ const spans = (census: {
 }) =>
   census.segments.map((s) => `${s.executionId}:${s.fromSequence}-${s.throughSequence}:${s.status}`);
 
+/**
+ * What the pre-0106 journal wrote: a record sealed under the blank subject "". The crypto layer
+ * no longer WRITES under "" (review P3), so the legacy rows are seeded straight into the raw store.
+ */
+async function appendLegacyBlank(
+  raw: EventStore,
+  keys: InMemoryKeyStore,
+  sensitive: Record<string, string[]>,
+  e: EventEnvelope
+): Promise<void> {
+  const key = await keys.getOrCreate("");
+  const paths = sensitive[e.eventType] ?? [];
+  await raw.append({
+    ...e,
+    payload: mapPaths(e.payload, paths, (v) => encryptValue(key, v)),
+  } as EventEnvelope);
+}
+
 describe("ADR 0107 (B) — review round 1", () => {
   it("two executions' segments interleaved in one stream are each proven and re-homed", async () => {
     const h = await history(1);
@@ -782,7 +805,12 @@ describe("ADR 0107 (B) — review round 1", () => {
       createdAt: 0,
     });
     for (const e of h.log.filter((e) => e.sequence > h.gate1 && e.sequence <= h.gate2)) {
-      await enc.append({ ...e, id: `-${e.sequence}`, executionId: "", workflowId: "" });
+      await appendLegacyBlank(app.raw, keys, sensitive, {
+        ...e,
+        id: `-${e.sequence}`,
+        executionId: "",
+        workflowId: "",
+      });
     }
     // Raw: the payloads are ciphertext it cannot read. The census says so; the apply refuses.
     const rawLife = new LogLifecycle(app.raw, app.snapshotStore);
@@ -905,7 +933,12 @@ describe("ADR 0107 (B) — review round 2", () => {
     );
     await image(app, "e1", h, { checkpoint: h.gate1, blanks: [h.gate2], through: h.gate1 });
     for (const e of h.log.filter((e) => e.sequence > h.gate1 && e.sequence <= h.gate2)) {
-      await app.eventStore.append({ ...e, id: `-${e.sequence}`, executionId: "", workflowId: "" });
+      await appendLegacyBlank(app.raw, keys, sensitive, {
+        ...e,
+        id: `-${e.sequence}`,
+        executionId: "",
+        workflowId: "",
+      });
     }
     await keys.destroy("");
     const census = await app.life.blankStreamCensus();

@@ -575,6 +575,40 @@ describe("defineConfig — compliance / subject rights (T3)", () => {
     await app.close();
   });
 
+  it('eraseSubject({ parked: "shred" }) CANCELS each parked owner (reason "erased") BEFORE shredding: no owner is left stuck', async () => {
+    const flow = gatedFlow();
+    const order: string[] = [];
+    const seen: EventEnvelope[] = [];
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      observability: { onEvent: (e) => seen.push(e) },
+      security: {
+        compliance: {
+          subjectOf: (e) =>
+            e.eventType === "EXECUTION_STARTED"
+              ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+              : undefined,
+          erase: {
+            shred: async (subjectId) => {
+              order.push(`shred ${subjectId} after ${(await app.runtime.loadState("p1"))?.status}`);
+            },
+          },
+        },
+      },
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    const h = await app.runtime.start(flow, { incidentId: "acme" }, { executionId: "p1" });
+    await h.waitForSuspend();
+
+    const r = await app.eraseSubject("acme", undefined, { parked: "shred" });
+    expect(r).toMatchObject({ outcome: "erased", parkedShredded: ["p1"] });
+    expect(order).toEqual(["shred acme after cancelled"]); // terminal BEFORE the key is destroyed
+    const cancelled = seen.find((e) => e.eventType === "EXECUTION_CANCELLED");
+    expect(cancelled?.payload).toMatchObject({ reason: "erased" });
+    await app.close();
+  });
+
   it("eraseSubject rejects when erasure is not configured", async () => {
     const app = defineConfig({
       storage: { kind: "memory" },
