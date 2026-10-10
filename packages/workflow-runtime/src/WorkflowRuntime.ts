@@ -23,6 +23,7 @@ import {
   EVENT_SCHEMA_VERSION,
   FAILED_WHILE_PARKED,
   FLOW_DIVERGED_GATE,
+  INBOX_DEDUPE_CAP,
   ReplayVM,
   knownEventTypes,
   normalizeSnapshotState,
@@ -81,6 +82,7 @@ import {
   inboxStreamId,
   maxCursor,
   scanInbox,
+  staleInboxBatch,
   topicProblem,
   trimInbox,
 } from "./inbox";
@@ -767,6 +769,19 @@ function assertPositiveInt(name: string, value: number | undefined): void {
 
 /** How long a scan that found a chain's inbox full is trusted (see `assertInboxHasRoom`). */
 const INBOX_FULL_TTL_MS = 250;
+
+/**
+ * A delivery batch built from cursors that an append has since moved past (a journaled operator
+ * discard is the one that can land under the notifier's fence). Internal: `notifyAttempt` turns it
+ * into a refold. The batch is never written: a consumption at or below the folded cursor must not
+ * be recorded as an answer (the fold would accept it).
+ */
+class StaleInboxBatch extends Error {
+  constructor(executionId: string) {
+    super(`The inbox batch for "${executionId}" was built from cursors that have since moved.`);
+    this.name = "StaleInboxBatch";
+  }
+}
 
 const RETRY = Symbol("notify-retry");
 const RETRY_FENCED = Symbol("notify-retry-fenced");
@@ -3139,6 +3154,13 @@ export class WorkflowRuntime {
       fence = got.fence;
       runVm = got.vm;
     }
+    // ADR 0110 D8 — the batch was built from an earlier fold. Whatever was appended since (a
+    // journaled operator discard is an ignorable kind, so the fence still holds) may have moved a
+    // cursor past a message in it; the fold would accept that consumption as an answer. Judge the
+    // batch against the cursors of the VM it will run from, and refold instead of writing it.
+    if (inboxWake !== undefined && staleInboxBatch(runVm.getState(), inboxWake.pre)) {
+      throw new StaleInboxBatch(executionId);
+    }
 
     const bootstrap: BootstrapEvent[] = [
       ...(approval !== undefined ? [approval] : []),
@@ -3730,37 +3752,60 @@ export class WorkflowRuntime {
         `the owner is ${state.status}; a discard is journaled in its log, which only a parked owner accepts. Retry once it parks.`
       );
     }
-    // Count what the advance skips (bounded by the backlog cap), for the audit fact and the result.
+    // Count what the advance skips (bounded by the backlog cap), for the audit fact and the result,
+    // and keep the dedupe key of each (only the newest window's worth can matter, see below).
     let skipped = 0;
+    const skippedKeys: Array<{ key: string; seq: number }> = [];
     for (let after = cursor; ; ) {
       const page = await this.inboxSource(chainId, topic, after, NOTIFY_PAGE);
-      for (const m of page) if (m.inboxSeq <= through) skipped++;
+      for (const m of page) {
+        if (m.inboxSeq > through) continue;
+        skipped++;
+        skippedKeys.push({ key: dedupeKeyOf(m), seq: m.inboxSeq });
+      }
       const last = page[page.length - 1];
       if (page.length < NOTIFY_PAGE || last === undefined || last.inboxSeq >= through) break;
       after = last.inboxSeq;
     }
+    if (skippedKeys.length > INBOX_DEDUPE_CAP) skippedKeys.splice(0, skippedKeys.length - INBOX_DEDUPE_CAP);
     const parkSeq = await this.locatePark(head.id, state, { events: undefined, complete: false });
     if (parkSeq === undefined) {
       refuse("not-parked", "the owner has no unanswered park to journal under.");
     }
     const operator = ownerOfChain(options?.principal) ?? {};
-    const outcome = await this.advanceInbox(head.id, state, parkSeq as number, undefined, [
-      {
-        eventType: "MESSAGE_CONSUMED",
-        payload: {
-          // A fixed id no wait can have: the fold records ONE answer under it, ever (first wins).
-          waitId: DISCARD_WAIT_ID,
-          topic,
-          messageId: discardKeyOf(topic, through),
-          inboxSeq: through,
-          sender: operator,
-          payload: null,
-          discarded: true,
-          skipped,
-          ...(input.reason !== undefined && { reason: input.reason }),
-        },
+    // Each skipped message enters the fold's dedupe window (P3-4: a sender that resends a discarded
+    // `messageId` is a duplicate, delivered to nothing, not a fresh message). Only the newest
+    // INBOX_DEDUPE_CAP ids can still be in a window, so a larger discard journals that many: past
+    // the window the oldest ids are forgotten, as they are for any consumed message. The LAST fact
+    // carries the whole discard (`inboxSeq: through`, the count, the reason); with nothing of this
+    // topic to skip, one fact under a fixed key still advances the cursor.
+    const facts: Array<{ eventType: string; payload: unknown }> = [];
+    const summary = {
+      skipped,
+      ...(input.reason !== undefined && { reason: input.reason }),
+    };
+    const fact = (messageId: string, inboxSeq: number, extra: object) => ({
+      eventType: "MESSAGE_CONSUMED",
+      payload: {
+        // A fixed id no wait can have: the fold records ONE answer under it, ever (first wins).
+        waitId: DISCARD_WAIT_ID,
+        topic,
+        messageId,
+        inboxSeq,
+        sender: operator,
+        payload: null,
+        discarded: true,
+        ...extra,
       },
-    ]);
+    });
+    skippedKeys.forEach((k, i) => {
+      const lastOne = i === skippedKeys.length - 1;
+      facts.push(
+        lastOne ? fact(k.key, through, summary) : fact(k.key, k.seq, {})
+      );
+    });
+    if (facts.length === 0) facts.push(fact(discardKeyOf(topic, through), through, summary));
+    const outcome = await this.advanceInbox(head.id, state, parkSeq as number, undefined, facts);
     if (outcome === "gone") {
       refuse("not-parked", "the owner resumed while the discard was in flight.");
     }
@@ -4433,6 +4478,7 @@ export class WorkflowRuntime {
     } catch (err) {
       if (err instanceof ResumeRefusedError) return none; // answered meanwhile / settled
       if (err instanceof ResumeContendedError) return contended();
+      if (err instanceof StaleInboxBatch) return RETRY; // a cursor moved under the scan: refold
       const cause = err instanceof StorageWriteError ? err.cause : err;
       // The park was written unfenced but a fence has been acquired since (without an append):
       // the unfenced batch carried no token. Answer under the conditional fence instead.
