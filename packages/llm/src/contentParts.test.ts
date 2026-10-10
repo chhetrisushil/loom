@@ -85,14 +85,12 @@ describe("part helpers", () => {
       [{ type: "text", text: t }],
       [{ type: "tool_result", toolUseId: "1", content: t }],
       [{ type: "tool_result", toolUseId: "1", content: [{ type: "text", text: t }] }],
+      [t], // off-type: a wrapper used as a part
     ];
     for (const c of cases) {
-      expect(() => textOf(c as never)).toThrow(TaintedContentError);
-    }
-    try {
-      textOf(cases[1] as never);
-    } catch (e) {
-      expect((e as TaintedContentError).origin).toBe("mcp:s/t");
+      expect(() => textOf(c as never)).toThrow(
+        expect.objectContaining({ name: "TaintedContentError", origin: "mcp:s/t" })
+      );
     }
   });
 
