@@ -101,7 +101,7 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       olderThanMs: DAY,
       now: 1_000 + 100 * DAY,
       touchedBefore: 2,
-      reclaimOrphans: true,
+      reclaimOrphans: { completeScan: true },
     });
     expect(result.orphansReclaimed).toEqual([orphan.__loomContent]);
     expect(await content.get(stepBlob)).not.toBeNull();

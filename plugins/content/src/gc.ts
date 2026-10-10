@@ -213,11 +213,37 @@ export interface ContentSweepOptions {
    * prefix), once untouched for the TTL. Requires the store's `listPage` and
    * `deleteIfUntouchedSince`; refuses otherwise.
    *
-   * HAZARD the sweep cannot detect: a citing store that was NOT passed in `eventStores`. Pass
-   * every archive (`retention.archive`) — an archived finding's evidence is otherwise an
-   * orphan, and this pass erases it.
+   * ACKNOWLEDGEMENT REQUIRED (ADR 0055 amendment, fail-closed): pass `{ completeScan: true }`.
+   * A bare `true` (or any other value) throws {@link ReclaimOrphansAckError} before anything is
+   * read or erased, `dryRun` included. The flag is your assertion that `eventStores`,
+   * `snapshotStores` and `roots` together cover EVERY place that cites content.
+   *
+   * HAZARD the sweep cannot detect, which is why the assertion exists: a citing store that was
+   * NOT passed in `eventStores` or `snapshotStores`. Every blob only that store cites is an
+   * orphan to this pass, and it is erased while still cited. Pass every archive
+   * (`retention.archive`) and each archive's snapshot store, and every app table through `roots`.
+   * Run with `dryRun: true` first and read the list.
    */
-  reclaimOrphans?: boolean;
+  reclaimOrphans?: ReclaimOrphansAck;
+}
+
+/**
+ * The caller's assertion that a `reclaimOrphans` sweep sees every citing store. The literal
+ * `true` type makes `{ completeScan: false }` a compile error; the runtime check also refuses
+ * untyped callers.
+ */
+export interface ReclaimOrphansAck {
+  completeScan: true;
+}
+
+/** `reclaimOrphans` was set without `{ completeScan: true }`. Nothing was read or erased. */
+export class ReclaimOrphansAckError extends TypeError {
+  constructor(received: unknown) {
+    super(
+      `sweepUnpinnedContent: reclaimOrphans must be { completeScan: true } (received ${JSON.stringify(received) ?? String(received)}). Orphan reclamation erases every blob that no scanned log, snapshot or root cites, so a citing store you forgot to pass loses its blobs while they are still cited. Set { completeScan: true } only when eventStores, snapshotStores and roots cover ALL of them (every retention archive and its snapshot store included). Migration: reclaimOrphans: true -> reclaimOrphans: { completeScan: true }.`
+    );
+    this.name = "ReclaimOrphansAckError";
+  }
 }
 
 /** Structural view of a snapshot store: just `loadLatest` (no snapshot-runtime dependency). */
@@ -284,7 +310,17 @@ export async function sweepUnpinnedContent(
   options: ContentSweepOptions
 ): Promise<ContentSweepReport> {
   const store = options.contentStore;
-  const orphans = options.reclaimOrphans === true;
+  const requested = options.reclaimOrphans as unknown;
+  if (requested !== undefined && requested !== false) {
+    if (
+      typeof requested !== "object" ||
+      requested === null ||
+      (requested as { completeScan?: unknown }).completeScan !== true
+    ) {
+      throw new ReclaimOrphansAckError(requested);
+    }
+  }
+  const orphans = requested !== undefined && requested !== false;
   if (orphans && store.listPage === undefined) {
     throw new TypeError(
       "sweepUnpinnedContent: reclaimOrphans needs a content store with listPage() (ContentStore SPI 1.3.0) — orphans cannot be found without enumerating the store"

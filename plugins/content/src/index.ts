@@ -28,9 +28,11 @@ export {
 export { ContentMissingError } from "./errors";
 export { externalizePathsFromSteps } from "./derive";
 export {
+  ReclaimOrphansAckError,
   pinByEventKinds,
   sweepUnpinnedContent,
   type ContentSweepOptions,
   type ContentSweepReport,
+  type ReclaimOrphansAck,
   type SnapshotLookup,
 } from "./gc";

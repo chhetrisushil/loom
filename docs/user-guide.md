@@ -2110,8 +2110,9 @@ lifecycle without ever creating a silent third behavior between "replays identic
 refs cited by pinned event kinds survive — across archival, re-derived from the log on every
 sweep (mark-and-sweep, no mutable index). Over a store with ContentStore SPI 1.3.0 (SQLite,
 in-memory) every erase is conditional on the blob's touch time, so a blob re-cited mid-sweep is
-kept. `reclaimOrphans` also reclaims blobs nothing cites any more, which requires passing every
-archive. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
+kept. `reclaimOrphans: { completeScan: true }` also reclaims blobs nothing cites any more; the
+acknowledgement is required (a bare `true` throws `ReclaimOrphansAckError`) because you are asserting
+that you passed every archive, every snapshot store and every `roots` source. Run `dryRun` first. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
 Give the same kinds to `retention.pinnedEventTypes` so compaction keeps those events in place
 too (ADR 0106): a pinned execution then compacts around its findings. (With no
