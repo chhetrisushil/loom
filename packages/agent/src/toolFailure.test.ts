@@ -37,6 +37,7 @@ const FEEDBACK = new Set([
   "InvalidLlmRequestError",
   "OversizedInlinePartError",
   "UntrustedContentError",
+  "TaintedContentError",
   "MalformedStreamError",
   // workflow-runtime: lifecycle / validation refusals a tool that drives the runtime can see
   "StepTimeoutError",

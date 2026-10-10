@@ -115,9 +115,18 @@ export interface BudgetConfig {
   /** Default {@link heuristicTokenCounter}. A provider's exact counter may be supplied. */
   counter?: TokenCounter;
   /**
-   * An effect id (the same contract as `agentLoop$` `compaction.toolId`: `{ messages } -> { summary }`)
-   * that folds evicted turns into the rolling summary. Without it, evicted turns are simply dropped
-   * from the PROMPT (they stay in `history`).
+   * An effect id that folds evicted turns into the rolling summary: `{ messages } -> { summary }`.
+   * Without it, evicted turns are simply dropped from the PROMPT (they stay in `history`).
+   *
+   * INPUT SHAPE (differs from `agentLoop$` `compaction.toolId`, which carries no wrapper):
+   * `messages` is `{ role, content }[]`. The USER's words (and the previous summary) arrive with
+   * `content` as a TAINTED wrapper `{ __loomTainted: { origin }, value }` - untrusted data, neither
+   * a string nor parts. Assistant replies are plain strings. `textOf(content)` on a wrapper throws
+   * `TaintedContentError`; read every message with {@link summarizerText} from this package, which
+   * unwraps the taint and applies `textOf`. The result is untrusted DATA: never put it in an
+   * instruction position (system prompt, assistant role); pass it to a model only as fenced
+   * `tainted()` user content. The returned `summary` is cut to `maxSummaryTokens` and re-injected
+   * as a fenced `user` message with origin `conversation:summary` (`SUMMARY_ORIGIN`).
    */
   summarizerToolId?: string;
   /** The rolling summary is cut to this many tokens (by the counter) so it can never crowd out the prompt. Default `floor(contextWindow / 4)`. */

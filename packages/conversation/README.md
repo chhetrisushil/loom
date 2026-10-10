@@ -31,6 +31,17 @@ await conversations.sendTurn(conversationId, "Actually, make it two days", { pri
 const page = await conversations.history(conversationId, { principal, direction: "backward", limit: 20 });
 ```
 
+## Writing a summarizer (`budget.summarizerToolId`)
+
+The effect receives `{ messages: { role, content }[] }` and returns `{ summary: string }`. Unlike `agentLoop$` `compaction.toolId`, the user's words (and the previous summary) arrive with `content` as a **tainted wrapper** `{ __loomTainted: { origin }, value }` - untrusted data, neither a string nor parts; assistant replies are plain strings. `textOf(m.content)` on a wrapper throws `TaintedContentError` (it used to be an obscure `TypeError` that failed the step and killed the conversation at its first rotation). Read messages with `summarizerText`:
+
+```ts
+import { summarizerText } from "@loom/conversation";
+const transcript = input.messages.map((m) => `${m.role}: ${summarizerText(m.content)}`).join("\n");
+```
+
+The text is **untrusted data**: summarize or quote it, never put it in a system prompt or assistant message (re-wrap with `tainted()` if you pass it to a model). The returned summary is clipped to `maxSummaryTokens` and re-injected as a fenced `user` message with origin `conversation:summary`, never the system prompt.
+
 ## What it is
 
 - **One chained execution per conversation.** The id is the chain id. Idle, it is parked on the inbox; a user turn wakes it. Every `rotateEveryTurns` (default 100) it `continueAsNew`s, carrying the rolling summary and a bounded window, so any one generation's fold and log stay small. The inbox cursors and dedupe window cross the rotation (kernel).
