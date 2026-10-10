@@ -34,8 +34,10 @@ export class InvalidEnvelopeError extends Error {
  * - It needs the conversation's envelope key (`ConversationFlowOptions.key`). The key is the authority of a
  *   TRUSTED bridge: keep it server-side, never ship it to a browser, and rotate it via `previousKeys`.
  * - The body is checked up front with the same shape rules the conversation applies (a non-empty `id` of
- *   at most 256 chars, a finite `iat`, a valid `asker`, `text` for `"user"`, a positive integer `editOf`);
- *   a body that would be refused as malformed throws {@link InvalidEnvelopeError} instead of being signed.
+ *   at most 256 chars, a finite `iat`, a valid `asker`, non-blank `text` for `"user"`, a positive integer
+ *   `editOf`); a body that would be refused as malformed throws {@link InvalidEnvelopeError} instead of
+ *   being signed. `maxTurnChars` is NOT checked here (the signer does not know the flow's limit): the
+ *   conversation enforces it on the body.
  * - A signature is NOT "nothing". A holder of the key can: (1) in SHARED mode, speak as ANY participant (the
  *   body checks only that the named `asker` is a participant); (2) edit that asker's earlier turns (`editOf`
  *   is checked against the signed `asker`, so it is only as strong as (1)); (3) bypass the client-only
@@ -56,6 +58,11 @@ export function signInboxEnvelope(key: string, body: InboxEnvelopeBody): Record<
   if (typeof key !== "string" || key.length === 0) {
     throw new TypeError(
       "signInboxEnvelope: `key` must be the conversation's non-empty envelope key"
+    );
+  }
+  if (body.kind === "user" && typeof body.text === "string" && body.text.trim() === "") {
+    throw new InvalidEnvelopeError(
+      "signInboxEnvelope: a `user` envelope needs non-blank `text` (the conversation refuses it as malformed)"
     );
   }
   const signed = signedEnvelope(key, { ...body });
