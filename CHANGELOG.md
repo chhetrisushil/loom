@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`decideWithPolicy` / `decideWithRollout` no longer consult the policy on replay ([ADR 0124](docs/adr/0124-learning-lifecycle.md) R18 follow-up; 1P `@loom/learning`, kernel untouched).** The registry read, the resolver and every `select` (the shadow/other arm included) moved INSIDE the decider passed to `ctx.decide`, so a served decision runs none of them: a model-backed or side-effecting policy is no longer run for an answer that was thrown away. The recorded `DECISION_RECORDED` payload (choice, propensity, `policy.rollout`, shadow, refs) is byte-identical to before (pinned by a golden captured from the old code) and old logs replay unchanged. The options object handed to `ctx.decide` is completed by the decider (the kernel reads `opts` when it commits, after the decider settled).
+
+### Fixed
+
+- **`PromotionRefusedError.reasons` listed each reason twice** when the registry floor and the per-call thresholds failed the same check; the reasons are now de-duplicated, in first-seen order (`@loom/learning`).
+
 ### Added
 
 - **A custom tool ranker with skill discovery ([ADR 0125](docs/adr/0125-tool-search.md) D13, R22c; 1P `@loom/agent`, kernel untouched).** The R22b refusal of `toolSearch.ranker` with `skillActivation.discovery: "search" | "both"` is removed. A custom ranker ranks TOOLS only (unchanged `ToolRanker`; it never receives a skill doc or the internal `\0skill:` key); skills are ranked separately by the built-in BM25F over skill docs only, or by the new optional `skillActivation.skillRanker?: ToolRanker` (sees skill docs only, returns raw skill ids; needs `discovery: "search" | "both"`). A search page interleaves the two lists by rank position, tool first (t1, s1, t2, s2, ...) up to `maxPerSearch`, an exhausted kind handing its share to the other; scores are never mixed. Over-ask and widening are per ranker (bounded). Either ranker throwing is `search_unavailable` with nothing recorded; terminal errors propagate; replay calls neither ranker and re-admits against the live sets. Recorded in the same decision (`results`, `loaded`, `skills`) plus `skillRanker: <kind>` in two-ranker mode only. The single-ranker path (no custom ranker, no `skillRanker`) is byte-identical to R22b.

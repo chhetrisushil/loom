@@ -84,8 +84,7 @@ the acting `{id, version, propensity}`, plus `rollout: { registry, mode, bucket?
 - **Canary is deterministic.** `bucket = sha256(salt || unitKey)` as a 48-bit fraction in [0,1); `bucket < canaryFraction` means
   the candidate acts. Same unit, same salt, same arm, in every process, with no assignment table. The bucket is recorded.
 - **Replay is identical.** The choice and the stamp are recorded once by `ctx.decide` and served on every replay whatever the
-  registry says by then (P9). Registry state is read before the call (as `select` is in `decideWithPolicy`) and a read failure
-  is deferred into the decider, so a replay of an old execution never breaks on a registry that has since gone away.
+  registry says by then (P9). Registry state is read inside the decider (see the R18 follow-up note below), so a replay of an old execution never reads it and never breaks on a registry that has since gone away.
 - **Fail closed toward the incumbent.** A candidate version the process has no code for acts as the incumbent and records why
   (`rollout.shadow.error`, `rollout.fellBack`, and the INCUMBENT arm's `armProbability`, not the candidate slice the bucket fell
   in). A missing incumbent is an error: there is nothing safe left to do. The stamp names the code that RAN: a resolver that
@@ -261,6 +260,29 @@ a revert-checked guard; the details are in D1 to D7 above.
 Decisions taken in review: canary arms stay per-arm (no `Policy.probability`); every mode change needs a fresh gate over its report
 (re-derived by the registry), with `ramp` exempt because it moves no version; examples recommend `minLiftLowerBound: 0` together with
 the `minClusters` floor; a real-model embedding client is a later plugin.
+
+### Follow-up — `select` and the registry read move inside the decider
+
+Originally the registry read, the resolver and every `select` ran BEFORE `ctx.decide` (the kernel takes `DecideOptions` by value and
+the stamp needs the acting policy's propensity), so on replay they ran and their answers were thrown away. That was wasted work and
+a hazard for model-backed or side-effecting policies, and ADR 0080's "`select` must be cheap" was the only mitigation.
+
+Now `decideWithPolicy` and `decideWithRollout` hand `ctx.decide` an options object whose `policy` stamp is set BY THE DECIDER, after
+the registry read, the resolver and every `select` (acting and other arm) have run. This relies on a kernel property that already
+held: `decideIn` reads `opts` when it commits `DECISION_RECORDED`, after the decider settled. A served decision returns before the
+decider, so a replay reads no registry state, calls no resolver and no `select`; it serves the recorded choice, propensity and
+`policy.rollout` (including the version that acted) unchanged. Consequences:
+
+- **Records are byte-identical** for a live run: same choice, same stamp keys in the same order (a golden captured from the old
+  code pins it, `recordGolden.test.ts`), so old logs, `trajectories`, `evaluatePolicy` and `sliceByVersion` read both alike. Nothing
+  consumed the replay-time `select`: the only observers of a policy's behaviour are the recorded fields.
+- **In-flight semantics.** The registry is now read after the kernel's replay lookup, cancellation and park checks, immediately
+  before the record is committed, instead of before them; the window between read and record only got shorter. A `promote` or
+  `rollback` landing between the read and the commit still loses to the record: the decision names the version that ACTED, which is
+  the version read, exactly as before (the registry is read once per decision, never re-read at commit).
+- A parked, cancelled or frozen scope that never runs the decider now never reads the registry either.
+- `DecideCapable.decide` implementations that copy `opts` before the decider runs (a test double, a wrapper) would lose the stamp;
+  copy lazily or pass the object through.
 
 ## Consequences
 

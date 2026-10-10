@@ -1,13 +1,13 @@
 import { createHash, createHmac } from "node:crypto";
-import type { DecideCapable } from "./decideWithPolicy";
+import type { DecideCapable, DecideRecordOpts } from "./decideWithPolicy";
 import type { RolloutState } from "./registry";
-import type { Policy, PolicyChoice, PolicyContext, PolicyStamp, RolloutStamp } from "./types";
+import type { Policy, PolicyChoice, PolicyContext, RolloutStamp } from "./types";
 import type { VersionRef } from "./types";
 
 // ── Acting through a rollout (R18, ADR 0124) ─────────────────────────────────
 //
 // `decideWithRollout` is `decideWithPolicy` for a policy that has a registry: it reads who is
-// live, lets the right version act, and records the answer to "who acted, who merely watched"
+// live (inside the decider, so a replay reads nothing), lets the right version act, and records the answer to "who acted, who merely watched"
 // in the decision's stamp. The rules:
 //
 //  - **shadow never acts.** The incumbent's choice is the decision; the candidate is run on the
@@ -101,138 +101,134 @@ export async function decideWithRollout<A>(
   }
   if (unitKey === "") throw new Error(`decideWithRollout("${decisionId}"): unitKey is required`);
 
-  let acted: PolicyChoice<A> | undefined;
-  let stamp: PolicyStamp | undefined;
-  let failure: unknown;
-  try {
-    const state = await rollout.source.resolve(rollout.policyId);
-    if (state === undefined || state.incumbent === undefined) {
-      throw new Error(`policy "${rollout.policyId}" has no live version in the registry`);
-    }
-    const incumbent = rollout.resolve(rollout.policyId, state.incumbent);
-    if (incumbent === undefined) {
-      throw new Error(
-        `no code for incumbent ${rollout.policyId}@${state.incumbent} in this process`
-      );
-    }
-    // The stamp names the code that RAN. A resolver that hands back other code than the registry
-    // named would record a version that did not act, and every evaluation sliced by it would lie.
-    if (incumbent.version !== state.incumbent) {
-      throw new Error(
-        `resolver returned ${incumbent.id}@${incumbent.version} for incumbent ${rollout.policyId}@${state.incumbent}`
-      );
-    }
-    let candidate =
-      state.candidate === undefined
-        ? undefined
-        : rollout.resolve(rollout.policyId, state.candidate);
-    let candidateMismatch: string | undefined;
-    if (candidate !== undefined && candidate.version !== state.candidate) {
-      candidateMismatch = `resolver returned ${candidate.id}@${candidate.version} for candidate ${rollout.policyId}@${state.candidate}`;
-      candidate = undefined;
-    }
-
-    let mode: RolloutStamp["mode"] = "full";
-    let bucket: number | undefined;
-    let useCandidate = false;
-    let armProbability = 1;
-    if (state.mode === "canary" && state.candidate !== undefined) {
-      mode = "canary";
-      bucket = rolloutBucket(state.salt, unitKey, opts.bucketSecret);
-      const f = state.canaryFraction ?? 0;
-      useCandidate = bucket < f;
-      armProbability = useCandidate ? f : 1 - f;
-    } else if (state.mode === "shadow" && state.candidate !== undefined) {
-      mode = "shadow";
-    }
-
-    let actingPolicy = incumbent;
-    let otherPolicy = candidate;
-    let otherVersion = state.candidate;
-    let candidateMissing: string | undefined;
-    let fellBack = false;
-    if (useCandidate) {
-      if (candidate === undefined) {
-        candidateMissing =
-          candidateMismatch ??
-          `no code for candidate ${rollout.policyId}@${state.candidate} in this process`;
-        // The incumbent acts instead: the stamp's arm probability is the INCUMBENT arm's, with the
-        // fallback flagged, never the candidate slice the unit's bucket fell in.
-        armProbability = 1 - (state.canaryFraction ?? 0);
-        fellBack = true;
-      } else {
-        actingPolicy = candidate;
-        otherPolicy = incumbent;
-        otherVersion = state.incumbent;
-      }
-    }
-
-    const mine = sel(actingPolicy, context, actions);
-    if (!mine.ok) throw new Error(`acting policy threw: ${mine.error}`);
-    acted = mine.choice;
-
-    let shadow: RolloutStamp["shadow"];
-    if (mode !== "full" && otherVersion !== undefined) {
-      if (otherPolicy === undefined) {
-        shadow = {
-          id: rollout.policyId,
-          version: otherVersion,
-          action: null,
-          error: candidateMissing ?? "no code for this version in this process",
-        };
-      } else {
-        const other = sel(otherPolicy, context, actions);
-        shadow = other.ok
-          ? {
-              id: rollout.policyId,
-              version: otherVersion,
-              action: other.choice.action,
-              ...(other.choice.propensity !== undefined && {
-                propensity: other.choice.propensity,
-              }),
-            }
-          : { id: rollout.policyId, version: otherVersion, action: null, error: other.error };
-      }
-    } else if (candidateMissing !== undefined) {
-      shadow = {
-        id: rollout.policyId,
-        version: state.candidate as string,
-        action: null,
-        error: candidateMissing,
-      };
-    }
-
-    stamp = {
-      id: actingPolicy.id,
-      version: actingPolicy.version,
-      ...(acted.propensity !== undefined && { propensity: acted.propensity }),
-      ...(opts.refs !== undefined && { refs: opts.refs }),
-      rollout: {
-        registry: rollout.policyId,
-        mode,
-        ...(bucket !== undefined && { bucket }),
-        acted: { id: actingPolicy.id, version: actingPolicy.version },
-        ...(shadow !== undefined && { shadow }),
-        ...(mode === "canary" && { armProbability }),
-        ...(fellBack && { fellBack: true }),
-      },
-    };
-  } catch (err) {
-    failure = err;
-  }
+  // Everything that consults the world - the registry read, the resolver, every `select` - runs
+  // INSIDE the decider, so a served (replayed) decision touches none of it. The stamp holds the
+  // acting policy's propensity, which `ctx.decide` needs in its options; the options object is
+  // handed over now and its `policy` is set by the decider (the kernel reads it at commit time).
+  const recordOpts: DecideRecordOpts = {
+    context,
+    alternatives: actions,
+    ...(opts.rationale !== undefined && { rationale: opts.rationale }),
+    ...(opts.source !== undefined && { source: opts.source }),
+  };
 
   return ctx.decide<A>(
     decisionId,
-    () => {
-      if (acted === undefined) throw failure;
+    async () => {
+      const state = await rollout.source.resolve(rollout.policyId);
+      if (state === undefined || state.incumbent === undefined) {
+        throw new Error(`policy "${rollout.policyId}" has no live version in the registry`);
+      }
+      const incumbent = rollout.resolve(rollout.policyId, state.incumbent);
+      if (incumbent === undefined) {
+        throw new Error(
+          `no code for incumbent ${rollout.policyId}@${state.incumbent} in this process`
+        );
+      }
+      // The stamp names the code that RAN. A resolver that hands back other code than the registry
+      // named would record a version that did not act, and every evaluation sliced by it would lie.
+      if (incumbent.version !== state.incumbent) {
+        throw new Error(
+          `resolver returned ${incumbent.id}@${incumbent.version} for incumbent ${rollout.policyId}@${state.incumbent}`
+        );
+      }
+      let candidate =
+        state.candidate === undefined
+          ? undefined
+          : rollout.resolve(rollout.policyId, state.candidate);
+      let candidateMismatch: string | undefined;
+      if (candidate !== undefined && candidate.version !== state.candidate) {
+        candidateMismatch = `resolver returned ${candidate.id}@${candidate.version} for candidate ${rollout.policyId}@${state.candidate}`;
+        candidate = undefined;
+      }
+
+      let mode: RolloutStamp["mode"] = "full";
+      let bucket: number | undefined;
+      let useCandidate = false;
+      let armProbability = 1;
+      if (state.mode === "canary" && state.candidate !== undefined) {
+        mode = "canary";
+        bucket = rolloutBucket(state.salt, unitKey, opts.bucketSecret);
+        const f = state.canaryFraction ?? 0;
+        useCandidate = bucket < f;
+        armProbability = useCandidate ? f : 1 - f;
+      } else if (state.mode === "shadow" && state.candidate !== undefined) {
+        mode = "shadow";
+      }
+
+      let actingPolicy = incumbent;
+      let otherPolicy = candidate;
+      let otherVersion = state.candidate;
+      let candidateMissing: string | undefined;
+      let fellBack = false;
+      if (useCandidate) {
+        if (candidate === undefined) {
+          candidateMissing =
+            candidateMismatch ??
+            `no code for candidate ${rollout.policyId}@${state.candidate} in this process`;
+          // The incumbent acts instead: the stamp's arm probability is the INCUMBENT arm's, with the
+          // fallback flagged, never the candidate slice the unit's bucket fell in.
+          armProbability = 1 - (state.canaryFraction ?? 0);
+          fellBack = true;
+        } else {
+          actingPolicy = candidate;
+          otherPolicy = incumbent;
+          otherVersion = state.incumbent;
+        }
+      }
+
+      const mine = sel(actingPolicy, context, actions);
+      if (!mine.ok) throw new Error(`acting policy threw: ${mine.error}`);
+      const acted = mine.choice;
+
+      let shadow: RolloutStamp["shadow"];
+      if (mode !== "full" && otherVersion !== undefined) {
+        if (otherPolicy === undefined) {
+          shadow = {
+            id: rollout.policyId,
+            version: otherVersion,
+            action: null,
+            error: candidateMissing ?? "no code for this version in this process",
+          };
+        } else {
+          const other = sel(otherPolicy, context, actions);
+          shadow = other.ok
+            ? {
+                id: rollout.policyId,
+                version: otherVersion,
+                action: other.choice.action,
+                ...(other.choice.propensity !== undefined && {
+                  propensity: other.choice.propensity,
+                }),
+              }
+            : { id: rollout.policyId, version: otherVersion, action: null, error: other.error };
+        }
+      } else if (candidateMissing !== undefined) {
+        shadow = {
+          id: rollout.policyId,
+          version: state.candidate as string,
+          action: null,
+          error: candidateMissing,
+        };
+      }
+
+      recordOpts.policy = {
+        id: actingPolicy.id,
+        version: actingPolicy.version,
+        ...(acted.propensity !== undefined && { propensity: acted.propensity }),
+        ...(opts.refs !== undefined && { refs: opts.refs }),
+        rollout: {
+          registry: rollout.policyId,
+          mode,
+          ...(bucket !== undefined && { bucket }),
+          acted: { id: actingPolicy.id, version: actingPolicy.version },
+          ...(shadow !== undefined && { shadow }),
+          ...(mode === "canary" && { armProbability }),
+          ...(fellBack && { fellBack: true }),
+        },
+      };
       return acted.action;
     },
-    {
-      context,
-      ...(stamp !== undefined && { policy: stamp }),
-      alternatives: actions,
-      ...(opts.rationale !== undefined && { rationale: opts.rationale }),
-      ...(opts.source !== undefined && { source: opts.source }),
-    }
+    recordOpts
   );
 }
