@@ -3,6 +3,28 @@ import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "@loom
 import type { ContentStore } from "./ContentStore";
 import { type TouchErrorHook, touchAround } from "./touchAround";
 
+/**
+ * The brand a {@link ContentTouchingSnapshotStore} carries (a registered symbol, so a second copy of
+ * this package still recognises it). Read it through {@link isContentTouchingSnapshotStore}.
+ */
+export const CONTENT_TOUCHING_SNAPSHOT_STORE: unique symbol = Symbol.for(
+  "loom.plugin-content.ContentTouchingSnapshotStore"
+);
+
+/**
+ * True when `store` is a {@link ContentTouchingSnapshotStore}. Evidence about THIS object only: a
+ * `false` does not prove the runtime wrote unwrapped (a sweep or the CLI reads a raw store over the
+ * same tables a wrapped one wrote), and a `true` does not prove every OTHER store the runtime saves
+ * to is wrapped. `sweepUnpinnedContent` therefore uses it only to warn, never to relax or refuse.
+ */
+export function isContentTouchingSnapshotStore(store: unknown): boolean {
+  return (
+    typeof store === "object" &&
+    store !== null &&
+    (store as Record<symbol, unknown>)[CONTENT_TOUCHING_SNAPSHOT_STORE] === true
+  );
+}
+
 export interface ContentTouchingSnapshotStoreOptions {
   /** See {@link TouchErrorHook}: the touch after a durable save, and a cited blob found missing. */
   onTouchError?: TouchErrorHook;
@@ -30,6 +52,8 @@ export interface ContentTouchingSnapshotStoreOptions {
 export class ContentTouchingSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   readonly loadLatestSealed?: NonNullable<SnapshotStore["loadLatestSealed"]>;
+  /** Brand: see {@link isContentTouchingSnapshotStore}. */
+  readonly [CONTENT_TOUCHING_SNAPSHOT_STORE] = true;
   private readonly onTouchError: TouchErrorHook | undefined;
 
   constructor(

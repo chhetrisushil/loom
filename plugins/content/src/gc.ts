@@ -1,6 +1,7 @@
 import type { EventStore, ExecutionEnumerable } from "@loom/event-runtime";
 import { iterateExecutionIds } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
+import { isContentTouchingSnapshotStore } from "./ContentTouchingSnapshotStore";
 import { visitCitedAddresses } from "./citations";
 
 // ── K10.6 (ADR 0055) — pinned mark-and-sweep for claim-checked content ────────
@@ -174,12 +175,20 @@ export interface ContentSweepBase {
    * cites refs that exist nowhere else (the prefix was truncated). `ContentResolvingEventStore`
    * cannot see it; only a snapshot store wrapped in `ContentTouchingSnapshotStore`
    * (outside any `EncryptingSnapshotStore`, over the same content store) touches those refs.
-   * loom never builds either store for the host, so the wrapping is the host's and cannot be
-   * detected from here: an ERASING pass given `snapshotStores` must also pass
+   * loom never builds either store for the host, so the wrapping is the host's and is not PROVEN
+   * from here (a sweep, and the CLI, read a RAW store over the tables a wrapped one wrote, so an
+   * unbranded store is no evidence the writer was unwrapped): an ERASING pass given `snapshotStores` must also pass
    * `{ completeScan: true, snapshotsTouchContent: true }` or it throws
    * {@link ReclaimOrphansSnapshotAckError}. Without `snapshotStores` it is not needed (such a
    * pass already refuses a store that can `truncatePrefix`, and a fork of an uncompacted parent
    * copies every event, so its seed cites nothing the copied events do not). A `dryRun` is exempt.
+   * The flag stays an assertion about the WRITER and is ALWAYS required, even when every store
+   * passed is a `ContentTouchingSnapshotStore` (it vouches for itself, not for the other stores the
+   * runtime saves to). Best-effort detection only WARNS: the report counts branded and unbranded
+   * stores (`snapshotStoresTouching` / `snapshotStoresUnbranded`), and a pass that is handed a MIX
+   * (some branded, some not: a host wrapped some writers and likely forgot others) emits one
+   * `LOOM_CONTENT_SNAPSHOT_UNWRAPPED` process warning. It never refuses, so the CLI's raw SQLite
+   * stores are not rejected; it never relaxes the flag either (fail-closed).
    *
    * THE GUARANTEE IS D5'S, NOT THE TOUCH'S. The cutoff is `touchClock() - olderThanMs`. The
    * touch BEFORE a write is what makes a sweep whose cutoff is later refuse; so the race is
@@ -344,6 +353,20 @@ export interface SnapshotLookup {
   ): Promise<{ sequence: number; state: unknown } | null>;
 }
 
+/** One process warning for a MIXED set of snapshot stores; never throws (best effort, advisory). */
+function emitUnwrappedWarning(touching: number, unbranded: number): void {
+  const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
+    .process;
+  try {
+    proc?.emitWarning?.(
+      `sweepUnpinnedContent: ${unbranded} of ${touching + unbranded} snapshot stores are not a ContentTouchingSnapshotStore while ${touching} are. If an unbranded one is a store the runtime SAVES to, a fork of a compacted parent can lose blobs to this erasing orphan pass; if it is only a raw reader over a wrapped writer's tables, ignore this.`,
+      { code: "LOOM_CONTENT_SNAPSHOT_UNWRAPPED" }
+    );
+  } catch {
+    // advisory only
+  }
+}
+
 /** Orphan-pass page size (ADR 0055 D6): bounded memory per page. */
 const ORPHAN_PAGE_LIMIT = 500;
 
@@ -367,6 +390,13 @@ export interface ContentSweepReport {
   raceSafe: boolean;
   /** ADR 0055 D6 — orphans erased (or, under `dryRun`, that WOULD be); `[]` unless `reclaimOrphans`. */
   orphansReclaimed: string[];
+  /**
+   * Of `snapshotStores`, how many are a `ContentTouchingSnapshotStore` (branded). Informational:
+   * an unbranded store may be a raw reader over tables a wrapped writer filled.
+   */
+  snapshotStoresTouching: number;
+  /** Of `snapshotStores`, how many are NOT branded. See `snapshotStoresTouching`. */
+  snapshotStoresUnbranded: number;
 }
 
 /**
@@ -449,6 +479,17 @@ export async function sweepUnpinnedContent(
   // ADR 0055 D5 — the guard cutoff is on the STORE's clock, read once at the START: a blob
   // touched after it (a re-citing put the scan could not see yet) is refused. The TTL on the
   // log (`now`) is a different clock and never feeds it.
+  const snapshotList = options.snapshotStores ?? [];
+  const snapshotStoresTouching = snapshotList.filter(isContentTouchingSnapshotStore).length;
+  const snapshotStoresUnbranded = snapshotList.length - snapshotStoresTouching;
+  if (
+    orphans &&
+    options.dryRun !== true &&
+    snapshotStoresTouching > 0 &&
+    snapshotStoresUnbranded > 0
+  ) {
+    emitUnwrappedWarning(snapshotStoresTouching, snapshotStoresUnbranded);
+  }
   const raceSafe = store.deleteIfUntouchedSince !== undefined;
   let cutoff = Number.NEGATIVE_INFINITY;
   if (raceSafe) {
@@ -627,5 +668,7 @@ export async function sweepUnpinnedContent(
     reclaimed,
     raceSafe,
     orphansReclaimed,
+    snapshotStoresTouching,
+    snapshotStoresUnbranded,
   };
 }

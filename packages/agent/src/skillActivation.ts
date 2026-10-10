@@ -1,6 +1,5 @@
-import { createHash } from "node:crypto";
 import { isTainted } from "@loom/classify";
-import { type SkillDefinition, type ToolDefinition, loadInstructions } from "@loom/core";
+import { type SkillDefinition, type ToolDefinition, loadInstructions, sha256Hex } from "@loom/core";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 import { z } from "zod";
 import type { SkillRegistry } from "./SkillRegistry";
@@ -147,7 +146,8 @@ const wireBytes = (text: string): number => UTF8.encode(JSON.stringify(text)).le
 /** A stand-in string whose JSON form has exactly `bytes` UTF-8 bytes (ASCII, no escapes). */
 const standIn = (bytes: number): string => "x".repeat(Math.max(0, bytes - 2));
 
-const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+/** Runtime-neutral (no `node:crypto`: browser bundles include this file); recorded in logs, so the hex must stay byte-identical. */
+const sha256 = (text: string): string => sha256Hex(text);
 
 /** Bound for the once-per-skill advisory set (the active set is itself capped by `maxActive`). */
 const warnChanged = (id: string, seen: Set<string>): void => {
