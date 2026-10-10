@@ -43,6 +43,14 @@ export interface PrincipalCodec {
  * D2 — the app's own rehydration of a recorded principal (replaces the default for every record).
  * Returning `undefined` for a record that carries a `delegation` fails closed (D4); for any other
  * record it means "no principal".
+ *
+ * What it receives: the recorded {@link PrincipalRecord} (`identity` subset, and a `delegation`
+ * DIGEST `{ id, exp? }` - never the token) plus `{ executionId }`. What it must return: a
+ * {@link PrincipalChain} whose `delegation` is an equivalent token RE-MINTED by the app (for
+ * example from its own grant table, keyed by `identity` or the digest `id`). The log cannot supply
+ * the token, so a resolver that only echoes the record back restores nothing. A
+ * {@link PrincipalCodec} is the alternative: it stores an opaque ref instead of the identity and
+ * rebuilds the chain from that ref alone.
  */
 export interface PrincipalResolver {
   resolve(
@@ -133,7 +141,7 @@ export function buildPrincipalRecord(
     // would be denied after its first park (D4 rule 2).
     if (!deps.hasResolver) {
       throw new PrincipalUnrestorableError(
-        "the principal carries a delegation but no principalCodec/principalResolver can restore it after a park or a crash; wire one (superviseChildren({ delegation }) does for supervised children)"
+        "the principal carries a delegation but no principalCodec/principalResolver can restore it after a park or a crash; wire one (superviseChildren({ delegation }) does for supervised children). A principalResolver.resolve(record, { executionId }) receives the recorded record (the identity plus a delegation DIGEST { id, exp }, never the token) and must return a PrincipalChain with an equivalent delegation token re-minted from the app's own grant table; a principalCodec instead stores an opaque ref in toRef and rebuilds the chain from it in fromRef"
       );
     }
     record.delegation = {

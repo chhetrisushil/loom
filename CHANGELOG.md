@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`McpClient.listTools()` makes skipped tools visible (`@loom/plugin-mcp`; additive).** New `ListToolsOptions.onSkippedTool(name, reason)` is called per skipped tool; new `strictToolNames: true` throws the typed `McpToolNamesSkippedError` (`.skipped: { name, reason }[]`) instead of skipping. The default still skips; the process warning (`LOOM_MCP_TOOL_NAME`, still one per skipped tool) now states how many tools the listing skipped and that `anyToolName` exists for tools never shown to a model.
 - **`runAgentOnce({ registerEffects })` may be async (`@loom/app`; additive).** It is awaited before the run starts, so async discovery such as `McpClient.registerInto` / `A2APeerClient.registerInto` (which also exposes the peer to an `AgentRegistry`) can run inside it.
 - **`OversizedInlinePartError.scope` (`@loom/llm`; additive).** The constructor already took `scope: "part" | "request"` but dropped it, so a caller could not tell the per-part cap from the per-request inline total except by `limit` or message text. It is now a `readonly scope` property. Tested for both scopes.
 
 ### Changed
 
+- **`anyToolName` now validates the name (`@loom/plugin-mcp`; behaviour change).** It still relaxes only the CHARSET, but a name must now be non-empty, at most 256 characters, and free of `\p{Cc}\p{Cf}\p{Zl}\p{Zp}` characters (control, zero-width/format, line and paragraph separators). Before, any string passed. A name that fails is skipped through the same visible path as above (`onSkippedTool`, `strictToolNames`, the warning). Dotted names are unaffected (`mcpInvoke$` is fine). Names become effect ids, map keys, log text and prompts, so this closes an injection and log-forging vector.
+- **`PrincipalUnrestorableError` message and `PrincipalResolver` JSDoc now say what a resolver receives and must return (`@loom/workflow-runtime`).** A resolver gets the recorded record (identity plus a delegation DIGEST, not the token) and must re-mint an equivalent delegation token, e.g. from the app's grant table; a codec instead stores an opaque ref. Wording only.
 - **`@loom/memory` no longer imports `node:crypto`** (`embedding.ts` hashes with `@loom/core`'s pure `sha256Hex`; entry keys are byte-identical, the in-process text tag is now hex). Browser bundles of `@loom/memory` stop warning.
 
 ### Documentation
