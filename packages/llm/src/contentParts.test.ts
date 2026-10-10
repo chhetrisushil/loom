@@ -273,6 +273,7 @@ describe("guardRequest — structure and provenance of parts (R5)", () => {
     })();
     expect(err).toBeInstanceOf(OversizedInlinePartError);
     expect((err as Error).message).toContain("request totals");
+    expect((err as OversizedInlinePartError).scope).toBe("request");
     expect(() => guardRequest({ messages: [msg(2)] }, { maxInlineTotalBytes: 100 * 1024 })).toThrow(
       OversizedInlinePartError
     );
@@ -329,6 +330,7 @@ describe("guardRequest — structure and provenance of parts (R5)", () => {
     })();
     expect(err).toBeInstanceOf(OversizedInlinePartError);
     expect((err as Error).message).toContain("ContentStore");
+    expect((err as OversizedInlinePartError).scope).toBe("part");
     // a ref of any declared size is not "inline"
     expect(() => guardRequest({ messages: [{ role: "user", content: [ref()] }] })).not.toThrow();
     // the cap is configurable per call

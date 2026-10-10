@@ -397,6 +397,11 @@ export interface ExecutionOptions {
    * `registerEffects: (fx) => { registerMcpInvoke(client, fx); registerSandboxEval(fx, store); }`.
    * Discovery (`toolModules`) supplies tool *metadata*; this supplies the
    * runnable effects. Static wiring (P5) — the hook runs at boot, never later.
+   *
+   * Declared in the `execution` group (`defineConfig({ execution: { registerEffects } })`);
+   * the flat spelling throws. This is also how `agentLoop$` gets its model and tool effects
+   * in a `defineConfig` app: `execution: { registerEffects: (fx) => { fx.register("model",
+   * createAgentModelEffect(provider)); } }`, then `agentLoop$(ctx, { modelToolId: "model", … })`.
    */
   registerEffects?: (effects: EffectRuntime) => void;
   /**

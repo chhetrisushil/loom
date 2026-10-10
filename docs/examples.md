@@ -166,7 +166,7 @@ pnpm --filter @loom/db-observability start
 - **`media-gallery`** — multi-modal media claim-checked by address (ADR 0120, loom-ui U9/U9b): a
   `returnsMedia` tool returns a generated image as a ref, so the model sees the bytes but the log
   holds only addresses; a `ContentResolver(ref, ctx)` authorizes per tenant (under content-addressed
-  dedupe the owner is a SET of tenants); the provider capability allowlist gives an unknown model
+  dedupe the owner is a SET of tenants: identical bytes are one blob, so a single-owner map denies the second tenant; see ADR 0120 "Authorizing under dedupe"); the provider capability allowlist gives an unknown model
   or a custom baseUrl a text-only fallback; an `x-content-ref` tool argument naming someone else's
   ref is refused before the tool runs; a loom-ui gallery issues viewer-scoped links; and content
   GC keeps what any log or app table cites, provided the sweep scans EVERY store (dry run first).

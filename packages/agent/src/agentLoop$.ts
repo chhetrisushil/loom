@@ -151,8 +151,10 @@ export interface AgentLoopConfig {
   /**
    * R10 — partition the Reasoning Runtime's response cache (`ReasonOptions.cacheScope`). A runner body
    * cannot read its own principal, so a multi-tenant host that configures a cache passes the tenant id
-   * here. REQUIRED when the runtime has a response cache and calls go direct (no `reasoningToolId`):
-   * `agentLoop$` throws {@link AgentLoopConfigError} otherwise. Use a per-tenant value; a constant
+   * here. Only the DIRECT (un-ringed) path consults the response cache: REQUIRED when the runtime has
+   * a response cache and calls go direct (no `reasoningToolId`), where `agentLoop$` throws
+   * {@link AgentLoopConfigError} without it. With `reasoningToolId` (the effect ring) the cache is
+   * bypassed, so ring users need not set it and it has no effect for them. Use a per-tenant value; a constant
    * value means every run that uses it shares cache entries. Ignored without `reasoning`.
    */
   cacheScope?: string;

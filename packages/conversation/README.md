@@ -61,4 +61,14 @@ The text is **untrusted data**: summarize or quote it, never put it in a system 
 - `needsApproval` (and its deprecated alias `requireApproval`) is refused (a parked approval gate and the barge-in model do not compose).
 - Live deltas are transient and per-process. Only the durable messages are resumable.
 
+## Security: the raw inbox path
+
+Anything holding the host's system grant can bypass the client API and write straight into a conversation's inbox:
+
+```ts
+runtime.send(conversationId, { topic: CONVERSATION_TOPIC, payload }, runtime.systemOptions());
+```
+
+`conversations.send` is the intended door; this raw path skips it. What still defends the conversation is the envelope check in the body, not the caller's good manners: the payload must be a host-signed, conversation-bound, single-use envelope (a forged or unsigned one is dropped), it must be above the replay floor (an old or replayed envelope is dropped), and in shared mode its author must pass the participant check. **A host must never expose this path** to users, to a route handler that forwards a client-supplied `executionId` or payload, or to a plugin it does not trust, and must keep `CONVERSATION_KEY` out of anything that can send. Expose conversations only through `createConversations` (or `@loom/plugin-conversation-sse`, which does) ([ADR 0122](../../docs/adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md) D10).
+
 See [ADR 0122](../../docs/adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md) and, for the browser, [`@loom/plugin-conversation-sse`](../../plugins/conversation-sse/README.md).

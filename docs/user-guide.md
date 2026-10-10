@@ -590,6 +590,22 @@ runtime.registerFlow(askFlow, async (ctx, input) =>
 );
 ```
 
+In a `defineConfig` app there is no `effects` variable to call `register` on: the model and every tool effect are registered through `execution.registerEffects`, which runs once at boot with the constructed `EffectRuntime` (section 9):
+
+```ts
+const app = defineConfig({
+  flows, // …
+  execution: {
+    registerEffects: (effects) => {
+      effects.register("model", createAgentModelEffect(provider)); // the id you pass as `modelToolId`
+      // …and each tool's runnable effect, under the id the agent's tool definition names
+    },
+  },
+});
+```
+
+An `agentLoop$` whose `modelToolId` (or a tool id) was never registered fails at its first call, so moving off `AgentRunner` (which took the provider directly) means adding this registration. Discovery (`toolModules`) supplies tool metadata only.
+
 **What it costs:** per-turn durability journals each turn's message array, so the log grows with conversation length. Two mitigations, both already in the box — claim-check middleware bounds the *bytes* per turn, and `compaction` bounds the *turns* (below). An adopter who wants neither can still use the deprecated `agentStep$`.
 
 See [ADR 0087](adr/0087-durable-agent-loop.md).
@@ -796,6 +812,8 @@ await conversations.addParticipant(id, { actor: "bob", tenant: "acme" }, { princ
 ```
 
 The service principal only coordinates (grant it the `conversation.turn` effect and the summarizer); each turn execution starts as the asker. Build the runtime with `executionAccessPolicy({ rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" } })`: the coordinator's log holds the unfiltered transcript, so a policy that lets a tenant peer read it defeats the filtering (construction refuses it). A sender who presents a delegation is refused unless you supply `principalFor`. Rotate the envelope key with `key: next, previousKeys: [old]`, then drop `previousKeys` after `maxEnvelopeAgeMs` (do it while conversations are quiet: an in-flight turn is restarted under its new id). Turns queue first-come; a participant's follow-up interrupts only their own turn. Removing a participant is effective on their next request and ends their open streams at the next re-authorization. `requireApproval` stays unsupported (the future rule is in ADR 0122 D10.8).
+
+`history` reads `direction: "forward"` (oldest first) unless you pass `"backward"`; the SSE `/history` route takes the same `?direction=forward|backward` and defaults to forward, so a chat UI that wants the latest messages first must ask for `backward` and order the page to match (see the plugin README).
 
 For a browser, put `@loom/plugin-conversation-sse` in front: authenticated JSON routes plus an SSE stream whose event ids are the history cursors, so `EventSource`'s automatic `Last-Event-ID` reconnect resumes from the log. Live tokens (`delta`, `partial`) are transient and per process; only the durable `message` events are resumable.
 
@@ -1163,7 +1181,7 @@ defineConfig({
                    executionAuthorizer, onExecutionDenied, compliance },
   observability: { telemetry, onEvent, onWarn, onStorageError },
   durability:    { snapshotEvery, retention },
-  execution:     { dispatcher, effectMiddleware, registerEffects, now, validateInput },
+  execution:     { dispatcher, effectMiddleware, registerEffects, now, validateInput, envelope, errorClasses },
   checks:        { validate, verify, manifest },
 });
 ```
@@ -1240,7 +1258,7 @@ interface LoomConfig {
   execution?: {
     dispatcher?: ExecutionDispatcher;    // where executions run
     effectMiddleware?: EffectMiddleware[];
-    registerEffects?: (effects: EffectRuntime) => void;
+    registerEffects?: (effects: EffectRuntime) => void;  // boot-time effect registration: agentLoop$'s model + tool effects go here
     now?: () => number;                  // injectable clock for envelope timestamps (DST/simulation)
     validateInput?: boolean;             // parse inputSchema at start() (ADR 0051 D7)
   };
