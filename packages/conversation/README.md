@@ -68,8 +68,10 @@ await runtime.send(conversationId, {
 });
 ```
 
-- It needs the conversation's envelope key (`key`). Whoever holds the key can mint envelopes: keep it server-side, never in a browser, and rotate it with `previousKeys`.
-- Signing authorizes nothing by itself. The body still refuses an envelope for another conversation, a replayed `id`, a stale `iat`, and (owner mode) any voice but the owner's or (shared mode) any asker who is not a participant; the runtime's access policy still decides who may `send`.
+- It needs the conversation's envelope key (`key`). **The key is the authority of a trusted bridge**: keep it server-side, never in a browser, and rotate it with `previousKeys`. The body is validated up front with the conversation's own shape rules; a malformed body throws `InvalidEnvelopeError` instead of being signed.
+- A key holder CAN: speak as ANY participant in shared mode (the body checks only that the named `asker` is a participant); edit that asker's earlier turns (`editOf` is checked against the signed `asker`, so it is only as strong as that); bypass the client-only checks (the per-asker `maxQueuedPerAsker` cap, and "a delegated sender needs `principalFor`"); write to every conversation the runtime's `send` policy admits (the key is per flow, not per tenant, so that policy alone decides which conversations a bridge can reach); and, in owner mode, nothing beyond what the runtime access policy lets it `send` (the `asker` = owner comparison is a consistency check, not authentication).
+- A key holder can NOT: sign for another conversation, replay an `id`, use an `iat` at or before the staleness floor or outside the age window, speak as anyone but the owner in owner mode, name a non-participant in shared mode, close a shared conversation unless the named closer is the owner, the service principal or a `manageParticipants` manager, exceed `maxTurnChars`, or send a malformed envelope.
+- A future `iat` up to +60 s is accepted. Once that id is evicted from the replay set the staleness floor moves forward, so a key holder can make legitimate envelopes issued in the following ~60 s `stale`.
 - Use it in tests and trusted bridges. Applications call `sendTurn`.
 
 ## Read these before relying on it

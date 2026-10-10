@@ -1,7 +1,7 @@
 import { selectedSkillsOf } from "@loom/agent";
 import { SkillRegistry } from "@loom/agent";
 import { agent$, instructions$, skill$, tool$ } from "@loom/core";
-import { ToolEffect } from "@loom/effect-runtime";
+import { GrantTable, ToolEffect } from "@loom/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { runAgentOnce } from "./runAgentOnce";
@@ -119,11 +119,52 @@ describe("runAgentOnce", () => {
           observability: { onWarn: () => {} },
         },
       })
-    ).rejects.toThrow(/denied|not authorized|no/i);
+    ).rejects.toThrow(/Capability denied: effect "model"/);
     expect(calls).toBe(0);
   });
 
   it("needs a model source", async () => {
     await expect(runAgentOnce({ agent, input: "go" })).rejects.toThrow(/provider/);
+  });
+
+  it("`principal` reaches the effect ring: a GrantTable keyed by actor allows one caller and denies another", async () => {
+    const run = (actor: string) =>
+      runAgentOnce({
+        agent,
+        provider: provider as never,
+        registerEffects: (fx) =>
+          fx.register("lookup", new ToolEffect(async () => ({ found: true }))),
+        input: "find x",
+        principal: { actor, tenant: "t1" },
+        config: {
+          security: {
+            authorizer: new GrantTable(
+              { alice: ["model", "lookup"], bob: ["model"] },
+              { principal: (req) => req.principal?.actor ?? "" }
+            ),
+          } as never,
+          observability: { onWarn: () => {} },
+        },
+      });
+    const ok = await run("alice");
+    expect(ok.output?.content).toBe("the answer");
+    expect(ok.output?.toolCallLog).toHaveLength(1);
+    // bob may call the model but not the tool: the denial is of the TOOL, so the principal was seen
+    await expect(run("bob")).rejects.toThrow(
+      /Capability denied: effect "lookup" — effect "lookup" not granted to "bob"/
+    );
+  });
+
+  it("refuses a config where `provider` and `registerEffects` both register the model effect", async () => {
+    await expect(
+      runAgentOnce({
+        agent,
+        provider: provider as never,
+        registerEffects: (fx) =>
+          fx.register("model", new ToolEffect(async () => ({ content: "shadow" }))),
+        input: "go",
+        config: { observability: { onWarn: () => {} } },
+      })
+    ).rejects.toThrow(/both `provider` and `registerEffects` register the model effect "model"/);
   });
 });

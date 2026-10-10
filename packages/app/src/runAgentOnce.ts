@@ -7,7 +7,7 @@ import {
 } from "@loom/agent";
 import type { AgentDefinition, EventEnvelope, FlowDefinition } from "@loom/core";
 import type { ExecutionStatus } from "@loom/core";
-import type { EffectRuntime } from "@loom/effect-runtime";
+import type { EffectRuntime, PrincipalChain } from "@loom/effect-runtime";
 import { z } from "zod";
 import { type LoomConfig, defineConfig } from "./defineConfig";
 
@@ -36,6 +36,11 @@ export interface RunAgentOnceOptions {
   config?: Omit<LoomConfig, "storage" | "flows" | "flowModules">;
   /** The execution id (default: minted). */
   executionId?: string;
+  /**
+   * The principal the execution runs as (passed to `runtime.start`), so a script can exercise its grants:
+   * an authorizer in `config.security` sees it on every effect. Omit to run with none.
+   */
+  principal?: PrincipalChain;
 }
 
 export interface RunAgentOnceResult {
@@ -112,14 +117,25 @@ export async function runAgentOnce(options: RunAgentOnceOptions): Promise<RunAge
     ],
   });
   try {
+    options.registerEffects?.(app.effectRuntime);
     if (options.provider !== undefined) {
+      // Two sources for one effect id would silently let the later registration win: refuse instead.
+      if (app.effectRuntime.has(modelToolId)) {
+        throw new TypeError(
+          `runAgentOnce: both \`provider\` and \`registerEffects\` register the model effect "${modelToolId}"; supply only one`
+        );
+      }
       app.effectRuntime.register(modelToolId, createAgentModelEffect(options.provider));
     }
-    options.registerEffects?.(app.effectRuntime);
     const handle = await app.runtime.start(
       app.runtime.getFlow(definition.id) as never,
       {},
-      options.executionId !== undefined ? { executionId: options.executionId } : undefined
+      options.executionId !== undefined || options.principal !== undefined
+        ? {
+            ...(options.executionId !== undefined && { executionId: options.executionId }),
+            ...(options.principal !== undefined && { principal: options.principal }),
+          }
+        : undefined
     );
     let state: Awaited<ReturnType<typeof handle.waitForCompletion>>;
     try {

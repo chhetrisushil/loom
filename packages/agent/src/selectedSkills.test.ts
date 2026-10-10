@@ -126,4 +126,34 @@ describe("selectedSkillsOf", () => {
       activated: ["billing"],
     });
   });
+
+  it("a user's own ctx.decide ending in #skills but with another source is NOT read as a selection", async () => {
+    const events = await run({}, []);
+    const own = {
+      eventType: "DECISION_RECORDED",
+      payload: { decisionId: "mine#skills", source: "my-app", choice: ["evil"] },
+    } as unknown as EventEnvelope;
+    const r = selectedSkillsOf([...events, own]);
+    expect(r.upfront).toEqual(["alpha"]);
+    expect(r.byLoop).not.toHaveProperty("mine");
+    // the same decision with NO source is, by the documented rule, agentLoop$'s own record
+    const unsourced = {
+      eventType: "DECISION_RECORDED",
+      payload: { decisionId: "mine#skills", choice: ["evil"] },
+    } as unknown as EventEnvelope;
+    expect(selectedSkillsOf([unsourced]).byLoop).toEqual({
+      mine: { upfront: ["evil"], activated: [] },
+    });
+  });
+
+  it("byLoop is an ordinary object, and a loop id of __proto__ is a plain key", () => {
+    const e = {
+      eventType: "DECISION_RECORDED",
+      payload: { decisionId: "__proto__#skills", choice: ["a"] },
+    } as unknown as EventEnvelope;
+    const r = selectedSkillsOf([e]);
+    expect(Object.getPrototypeOf(r.byLoop)).toBe(Object.prototype);
+    expect(Object.keys(r.byLoop)).toEqual(["__proto__"]);
+    expect(r.upfront).toEqual(["a"]);
+  });
 });

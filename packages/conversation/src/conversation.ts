@@ -539,6 +539,25 @@ export function conversationRunner(
       const verified = env as TurnEnvelope;
 
       if (verified.kind === "close") {
+        // SHARED: a close ends EVERYONE's conversation, so the body re-judges the "manage" rule the client
+        // applies (the key alone must not be enough): the owner, the service principal, or a host manager
+        // (`manageParticipants`). A plain participant may not close. Recorded verdict, so replay is stable.
+        if (sharedCfg !== undefined) {
+          const closer = verified.asker;
+          const mayClose = await ctx.decide<boolean>(
+            `conv#o${ord}:close-auth`,
+            async () =>
+              closer !== undefined &&
+              (sameIdentity(closer, owner) ||
+                sameIdentity(closer, identityOf(sharedCfg.servicePrincipal)) ||
+                (await sharedCfg.manageParticipants?.(closer, conversationId)) === true),
+            { source: "conversation-access" }
+          );
+          if (!mayClose) {
+            await reject("unauthenticated", closer);
+            continue;
+          }
+        }
         await ctx.decide("conv#closed", () => ({ kind: "closed", turns: seq }), {
           source: RECORD_SOURCE,
         });
