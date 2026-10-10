@@ -292,7 +292,11 @@ EVENT_SCHEMA and the syscall table are unchanged.
      resolved.
      An array element is an alias unless the OUTERMOST enclosing array literal (through nested ones,
      `ctx.parallel([[s, input]])`) is itself directly an argument of a ctx call: `const arr = [s]`,
-     `[s].forEach(…)`, `const [e] = [s]`, `for (const e of [s])` and `mut(...[s])` are escapes. In an
+     `[s].forEach(…)`, `const [e] = [s]`, `for (const e of [s])` and `mut(...[s])` are escapes. One
+     non-ctx containment is a DECLARATION, not an alias: the `steps` array of loom's own `flow$` (an
+     unshadowed import from `@loom/core` / `@loom/sdk`; only the `steps` key of its first argument),
+     which keeps the list and is only read by the runtime. A later write through the flow definition
+     (`F.steps[0].toolId = …`) is outside the analysis, the same trust class as the hand-off below. In an
      object literal a `toolId` / `id` key that appears twice (JS takes the last) or is followed by a
      spread (`{ toolId: "y", ...s }`) is not authoritative and is unresolved; a spread before the key
      (`{ ...s, toolId: "y" }`) is fine.

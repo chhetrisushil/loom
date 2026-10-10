@@ -1402,3 +1402,48 @@ describe("a step$ with no toolId dispatches its own id (runtime: toolId ?? id)",
     }
   });
 });
+
+describe("a step declared in flow$({ steps }) is still followed (loom's own flow$ only reads it)", () => {
+  it("resolves a step listed in flow$ steps and run by the runner", () => {
+    const r = analyzeRunnerReach(`
+      import { flow$, step$ } from "@loom/core";
+      const Scan = step$({ id: "scan-tools", handler: async () => ({}) });
+      const runner = async (ctx) => ctx.run(Scan, {});
+      export const F = flow$({ id: "f", name: "f", version: "1", steps: [Scan] });`);
+    expect(r.steps.map((s) => s.toolId)).toEqual(["scan-tools"]);
+    expect(r.unresolved).toEqual([]);
+  });
+  it("a local or other-package flow$ is not loom's: the containment stays an escape", () => {
+    for (const head of [
+      `import { step$ } from "@loom/core"; const flow$ = (d) => d;`,
+      `import { step$ } from "@loom/core"; import { flow$ } from "@acme/flows";`,
+    ]) {
+      const r = analyzeRunnerReach(`
+        ${head}
+        const Scan = step$({ id: "scan-tools", toolId: "t.x" });
+        const runner = async (ctx) => ctx.run(Scan, {});
+        export const F = flow$({ steps: [Scan] });`);
+      expect(r.steps).toEqual([]);
+      expect(r.unresolved.length).toBeGreaterThan(0);
+    }
+  });
+  it("an imported flow$ shadowed by a same-named local elsewhere is not trusted", () => {
+    const r = analyzeRunnerReach(`
+      import { flow$, step$ } from "@loom/core";
+      function w() { const flow$ = (d) => d; return flow$; }
+      const Scan = step$({ id: "scan-tools", toolId: "t.x" });
+      const runner = async (ctx) => ctx.run(Scan, {});
+      export const F = flow$({ steps: [Scan] });`);
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved.length).toBeGreaterThan(0);
+  });
+  it("only the `steps` key of flow$'s first argument counts", () => {
+    const r = analyzeRunnerReach(`
+      import { flow$, step$ } from "@loom/core";
+      const Scan = step$({ id: "scan-tools", toolId: "t.x" });
+      const runner = async (ctx) => ctx.run(Scan, {});
+      export const F = flow$({ steps: [], extra: [Scan] });`);
+    expect(r.steps).toEqual([]);
+    expect(r.unresolved.length).toBeGreaterThan(0);
+  });
+});
