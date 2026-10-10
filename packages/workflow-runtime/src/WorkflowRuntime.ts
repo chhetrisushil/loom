@@ -3548,7 +3548,7 @@ export class WorkflowRuntime {
     // tells a flow "this message was erased" (an inbox read whose key is gone yields it). A sender
     // must not be able to forge it, and a marker-shaped payload has no other use, so it is refused
     // (the marker carries no EVENT_SCHEMA field a flow could check instead).
-    if (json !== undefined && json.includes('"$shredded"')) {
+    if (json?.includes('"$shredded"')) {
       const sent = JSON.parse(json) as unknown;
       if (
         typeof sent === "object" &&
