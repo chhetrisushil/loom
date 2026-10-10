@@ -19,7 +19,13 @@ import {
   inboxChainOf,
   isReservedStream,
 } from "@loom/event-runtime";
-import { appendBatchOf, headOf, isAnsweringKind, readRangeOf } from "@loom/event-runtime";
+import {
+  appendBatchOf,
+  headOf,
+  inboxStreamsOfChain,
+  isAnsweringKind,
+  readRangeOf,
+} from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
 // the barrel eagerly re-exports the SQLite store (better-sqlite3 / node:fs), which
 // would otherwise leak into every browser app that builds on the WorkflowRuntime.
@@ -93,6 +99,7 @@ import {
   maxCursor,
   readRegisteredTopics,
   registerInboxTopic,
+  retireInboxTopic,
   scanExpired,
   scanInbox,
   seedInboxFloors,
@@ -136,6 +143,7 @@ import {
   InboxDiscardRefusedError,
   InboxFullError,
   InboxMessageRefusedError,
+  InboxTopicStreamsRequiredError,
   InputValidationError,
   OutcomeContendedError,
   OutcomeRefusedError,
@@ -893,6 +901,8 @@ export class WorkflowRuntime {
   private inboxLayoutSeen = false;
   /** Per chain, the topics this process knows are registered (a hint; the registry is the truth). */
   private readonly inboxKnownTopics = new Map<string, Set<string>>();
+  /** Per topic stream, the cursor at which a drained-topic retirement was last evaluated (see `pruneDrainedTopic`). */
+  private readonly inboxPruned = new Map<string, number>();
   /** Per chain, the instant of the expiry row this process last wrote (a pending one is not re-written per send). */
   private readonly inboxExpiryRows = new Map<string, number>();
   private readonly meterCeilings: Readonly<Record<string, number>> | undefined;
@@ -3673,8 +3683,12 @@ export class WorkflowRuntime {
         ? message.messageId
         : ulid();
     const chainId = head.chainId;
-    // ADR 0110 D10b — write the topic's own stream only when this node may AND the fleet has opted in.
-    const perTopic = await this.perTopicWriter();
+    // ADR 0110 D10b — once the FLEET switched, every send writes the topic's own stream. A node whose
+    // flag is off refuses (typed) instead of writing the legacy stream below the owner's cursor,
+    // where the message would be skipped forever.
+    const switched = await this.fleetSwitched();
+    if (switched && !this.inboxTopicStreamsFlag) throw new InboxTopicStreamsRequiredError(head.id);
+    const perTopic = switched;
     await this.assertInboxHasRoom(head.id, chainId, perTopic ? message.topic : undefined);
     if (perTopic) await this.ensureTopicRegistered(head.id, chainId, message.topic);
     // With a TTL on, the envelope is stamped on the STORE's clock when it has one (every node of a
@@ -3686,15 +3700,29 @@ export class WorkflowRuntime {
       payload: message.payload ?? null,
       sender: ownerOfChain(options?.principal) ?? {},
     };
-    const inboxSeq = await appendInboxMessage(this.eventStore, chainId, stored, stampClock, perTopic);
-    if (!perTopic && this.inboxTopicStreamsFlag && (await this.fleetSwitched())) {
-      // The fleet switched while this send was in flight: it may have written the legacy stream after
-      // a consumer moved on into the topic's own stream, where the legacy copy sits BELOW its cursor
-      // and would be skipped. Write the topic-stream copy too; the owner's dedupe window delivers
-      // whichever it reaches first once.
-      await this.ensureTopicRegistered(head.id, chainId, message.topic);
-      await appendInboxMessage(this.eventStore, chainId, stored, stampClock, true);
+    // The sequence of each copy this send wrote (the cursor spaces differ: legacy < 2^40 <= topic).
+    let legacySeq: number | undefined;
+    let topicSeq: number | undefined;
+    if (perTopic) {
+      topicSeq = await appendInboxMessage(this.eventStore, chainId, stored, stampClock, true);
+      await this.verifyTopicRegistered(chainId, message.topic);
+    } else {
+      legacySeq = await appendInboxMessage(this.eventStore, chainId, stored, stampClock, false);
+      if (await this.fleetSwitched()) {
+        // The fleet switched while this send was in flight: the legacy copy may sit BELOW a cursor
+        // that already moved into the topic's own stream, and be skipped.
+        if (!this.inboxTopicStreamsFlag) throw new InboxTopicStreamsRequiredError(head.id, true);
+        // Write the topic-stream copy too; the owner's dedupe window delivers whichever it reaches
+        // first once (within the window, see the ADR). An UNREGISTERED topic that cannot register
+        // (the cap) has no topic-stream message, so no cursor of it can be in the topic range yet: the
+        // legacy copy is read first and suffices, and the delivered message is not refused.
+        if (await this.ensureTopicRegistered(head.id, chainId, message.topic, true)) {
+          topicSeq = await appendInboxMessage(this.eventStore, chainId, stored, stampClock, true);
+          await this.verifyTopicRegistered(chainId, message.topic);
+        }
+      }
     }
+    const inboxSeq = (topicSeq ?? legacySeq) as number;
     // The wake decision is made from a read taken AFTER the append (ADR 0110 D5, the lost-wakeup
     // protocol). The owner parks durably and THEN re-reads the stream; this sender appends and THEN
     // reads the owner. Whichever order they interleave in, one of them sees the other: if the
@@ -3713,10 +3741,25 @@ export class WorkflowRuntime {
       // window) and then finished: that is a normal send, not a refusal.
       const final = await this.foldState(after.id);
       await this.retireInbox(chainId);
+      // The stream THIS send wrote, deleted by name: the registry may not (or no longer) name it.
+      if (topicSeq !== undefined) {
+        try {
+          await this.eventStore.deleteExecution?.(inboxTopicStreamId(chainId, message.topic));
+        } catch (err) {
+          this.onStorageError?.(chainId, err);
+        }
+      }
       const inbox = final?.variables._inbox as { dedupe?: string[] } | undefined;
+      // Compare within the cursor's OWN space: a cursor in the topic range is "past" every legacy
+      // sequence, which says nothing about a message that was written only to the legacy stream.
+      const cursor = final === null ? -1 : cursorFor(cursorsOf(final.variables), message.topic);
+      const cursorPast =
+        cursor >= INBOX_TOPIC_SEQ_BASE
+          ? topicSeq !== undefined && cursor >= topicSeq
+          : legacySeq !== undefined && cursor >= legacySeq;
       const delivered =
         final !== null &&
-        (cursorFor(cursorsOf(final.variables), message.topic) >= inboxSeq ||
+        (cursorPast ||
           (inbox?.dedupe ?? []).includes(
             dedupeKeyOf({ messageId, sender: ownerOfChain(options?.principal) ?? {} })
           ));
@@ -4325,22 +4368,19 @@ export class WorkflowRuntime {
   }
 
   /**
-   * ADR 0110 D10b — does THIS send write the topic's own stream? Only when the node opted in
-   * (`inboxTopicStreams`) AND the fleet did (the durable switch). A node with the flag off never
-   * reads the switch: it writes the legacy stream, exactly as before.
+   * Register `topic` as a live topic of the chain before its first message (refusing past
+   * `inboxMaxTopics` LIVE topics). The cache only skips the registry append: it can be stale (another
+   * node retired the chain, or the topic), which {@link verifyTopicRegistered} repairs after the
+   * append. `lenient` returns false on "full" instead of throwing (the dual-write copy).
    */
-  private async perTopicWriter(): Promise<boolean> {
-    return this.inboxTopicStreamsFlag && (await this.fleetSwitched());
-  }
-
-  /** Register `topic` in the chain's registry before its first message (refusing past `inboxMaxTopics`). */
   private async ensureTopicRegistered(
     executionId: string,
     chainId: string,
-    topic: string
-  ): Promise<void> {
+    topic: string,
+    lenient = false
+  ): Promise<boolean> {
     const known = this.inboxKnownTopics.get(chainId);
-    if (known?.has(topic) === true) return;
+    if (known?.has(topic) === true) return true;
     const r = await registerInboxTopic(
       this.eventStore,
       chainId,
@@ -4349,13 +4389,54 @@ export class WorkflowRuntime {
       this.now
     );
     if (r === "full") {
+      if (lenient) return false;
       throw new InboxMessageRefusedError(
         executionId,
-        `the chain already has ${this.inboxMaxTopics} topics with a stream (inbox.maxTopics); "${topic}" would be one more`
+        `the chain already has ${this.inboxMaxTopics} live topics with a stream (inbox.maxTopics); "${topic}" would be one more`
       );
     }
+    this.rememberTopic(chainId, topic);
+    return true;
+  }
+
+  private rememberTopic(chainId: string, topic: string): void {
+    const known = this.inboxKnownTopics.get(chainId);
     if (known !== undefined) known.add(topic);
     else rememberBounded(this.inboxKnownTopics, chainId, new Set([topic]));
+  }
+
+  /**
+   * After a topic-stream append: is the topic still a LIVE registered topic? The registry is the only
+   * way the owner (and retirement, and erasure) find the stream, and it can change under a send that
+   * trusted a cache or a read: another node retired the chain and deleted it (the chain was then
+   * re-opened), or a drained-topic retirement tombstoned the topic. If it is gone, register again (the
+   * message is already written, so the cap is not applied: never strand it). Together with the
+   * retirer's re-check of the stream this is complete in either interleaving (see `retireInboxTopic`).
+   */
+  private async verifyTopicRegistered(chainId: string, topic: string): Promise<void> {
+    if ((await readRegisteredTopics(this.eventStore, chainId)).includes(topic)) {
+      this.rememberTopic(chainId, topic);
+      return;
+    }
+    this.inboxKnownTopics.get(chainId)?.delete(topic);
+    await registerInboxTopic(this.eventStore, chainId, topic, Number.MAX_SAFE_INTEGER, this.now);
+    this.rememberTopic(chainId, topic);
+  }
+
+  /**
+   * A topic whose cursor reached its stream's head is drained: stop counting it against
+   * `inboxMaxTopics` (a tombstone in the registry; the stream keeps its head entry so the sequence
+   * space stays monotone). A later send re-registers it. Best effort.
+   */
+  private async pruneDrainedTopic(chainId: string, topic: string, cursor: number): Promise<void> {
+    const stream = inboxTopicStreamId(chainId, topic);
+    const head = await headOf(this.eventStore, stream);
+    if (head === null || head > cursor) return;
+    const retired = await retireInboxTopic(this.eventStore, chainId, topic, this.now, async () => {
+      const now = await headOf(this.eventStore, stream);
+      return now !== null && now > cursor;
+    });
+    if (retired) this.inboxKnownTopics.get(chainId)?.delete(topic);
   }
 
   /**
@@ -4516,6 +4597,15 @@ export class WorkflowRuntime {
     for (const [topic, cursor] of Object.entries(cursors)) {
       if (typeof cursor !== "number" || cursor < INBOX_TOPIC_SEQ_BASE) continue;
       const stream = inboxTopicStreamId(chainId, topic);
+      // A drained topic stops counting against the topic cap (once per cursor value).
+      if (this.inboxPruned.get(stream) !== cursor) {
+        try {
+          await this.pruneDrainedTopic(chainId, topic, cursor);
+          rememberBounded(this.inboxPruned, stream, cursor);
+        } catch (err) {
+          this.onStorageError?.(chainId, err);
+        }
+      }
       if (cursor <= (this.inboxTrimmed.get(stream) ?? INBOX_TOPIC_SEQ_BASE - 1) + 1) continue;
       try {
         const floor = this.inboxFloors.get(stream) ?? INBOX_TOPIC_SEQ_BASE - 1;
@@ -4544,13 +4634,15 @@ export class WorkflowRuntime {
     if (!this.inboxEnabled) return;
     let topics: string[] = [];
     try {
-      // The registry names the topic streams: read it before it is deleted, to forget their hints.
-      topics = await readRegisteredTopics(this.eventStore, chainId);
+      // The registry names the topic streams (live or drained): read it before it is deleted, to
+      // forget their hints.
+      topics = (await inboxStreamsOfChain(this.eventStore, chainId)).topics.map((stream) => stream);
       await deleteInbox(this.eventStore, chainId);
     } catch (err) {
       this.onStorageError?.(chainId, err);
     }
-    for (const key of [chainId, ...topics.map((t) => inboxTopicStreamId(chainId, t))]) {
+    for (const key of [chainId, ...topics]) {
+      this.inboxPruned.delete(key);
       this.inboxFloors.delete(key);
       this.inboxTrimmed.delete(key);
       this.inboxFull.delete(key);
@@ -4601,8 +4693,16 @@ export class WorkflowRuntime {
       ) {
         return false;
       }
-      await deleteInbox(this.eventStore, chainId);
-      return true;
+      // The stream the sweep was HANDED is deleted by name: a topic stream the registry does not name
+      // (a sender died before registering, the registry was deleted under it) is only findable this
+      // way, and reporting `true` for a chain-level delete that never touched it left it behind and
+      // was reported again on every pass.
+      if (this.eventStore.deleteExecution === undefined) return false;
+      const existed = (await headOf(this.eventStore, streamId)) !== null;
+      if (existed) await this.eventStore.deleteExecution(streamId);
+      // Then the rest of the chain, including any unregistered topic stream (a prefix scan).
+      await deleteInbox(this.eventStore, chainId, true);
+      return existed;
     } catch (err) {
       this.onStorageError?.(chainId, err);
       return false;

@@ -4,6 +4,7 @@ import {
   INBOX_LAYOUT_STREAM,
   INBOX_TOPIC_SEQ_BASE,
   inboxRegistryStreamId,
+  inboxStreamsOfChain,
   inboxTopicStreamId,
 } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
@@ -15,12 +16,13 @@ import type { Harness } from "./__tests__/r2Harness";
 import {
   appendInboxMessage,
   cursorsOf,
+  deleteInbox,
   inboxStreamId,
   readRegisteredTopics,
   registerInboxTopic,
 } from "./inbox";
 import { recoverAbandoned } from "./recoverAbandoned";
-import { InboxFullError, InboxMessageRefusedError } from "./types";
+import { InboxFullError, InboxMessageRefusedError, InboxTopicStreamsRequiredError } from "./types";
 
 // ADR 0110 amendment, D10b — per-topic inbox streams behind `inboxTopicStreams`, switched fleet-wide by
 // `enableInboxTopicStreams`. One cursor space, the fold untouched: these tests read the raw streams.
@@ -96,7 +98,12 @@ for (const backend of inboxBackends("topics")) {
         expect(hotStream.length).toBeLessThan(5);
         expect(hotStream[0]?.sequence).toBeGreaterThanOrEqual(BASE);
         expect(await raw(h.eventStore, inboxTopicStreamId(e, "cold"))).toHaveLength(1);
-        expect(await readRegisteredTopics(h.eventStore, e)).toEqual(["cold", "hot"]);
+        // `hot` is drained (cursor at its head), so it no longer counts as a LIVE topic; its stream
+        // (and `cold`'s) are still named by the registry for deletion.
+        expect(await readRegisteredTopics(h.eventStore, e)).toEqual(["cold"]);
+        expect((await inboxStreamsOfChain(h.eventStore, e)).topics.sort()).toEqual(
+          [inboxTopicStreamId(e, "cold"), inboxTopicStreamId(e, "hot")].sort()
+        );
         const cursors = cursorsOf((await h.rt.loadState(e))?.variables ?? {});
         expect(cursors.hot).toBe(BASE + 39);
         expect(cursors.cold).toBeUndefined();
@@ -149,7 +156,7 @@ for (const backend of inboxBackends("topics")) {
       }
     });
 
-    it("rolling upgrade: a node with the flag off keeps writing the legacy stream; nothing is lost or doubled", async () => {
+    it("rolling upgrade: before the switch a flag-off node writes the legacy stream and nothing is lost or doubled", async () => {
       const be = backend.make();
       const on = build({ inboxTopicStreams: true }, be);
       const off = on.sibling({ inboxTopicStreams: false });
@@ -400,13 +407,13 @@ for (const backend of inboxBackends("topics")) {
 
     it("TTL expiry works per topic stream and journals the expiry in the topic range", async () => {
       const clock = { t: 9_000_000 };
-      const h = mk({ now: () => clock.t, inboxMessageTtlMs: { topics: { cold: 5_000 } } });
+      const h = mk({ now: () => clock.t, inboxMessageTtlMs: { topics: { cold: 60_000 } } });
       await enable(h);
       const e = id();
       await parkOn(h, gated("hot", 1), e);
       const m = await h.rt.send(e, { topic: "cold", payload: "STALE", messageId: "c" });
       expect(m.inboxSeq).toBeGreaterThanOrEqual(BASE);
-      clock.t += 10_000;
+      clock.t += 120_000;
       await new TimerService(h.rt, h.timers).tick(clock.t);
       const facts = (await eventsOf(h.eventStore, e, "MESSAGE_CONSUMED")).map(
         (x) => x.payload as Record<string, unknown>
@@ -444,6 +451,215 @@ for (const backend of inboxBackends("topics")) {
       expect(await raw(h.eventStore, inboxRegistryStreamId(e))).toEqual([]);
     });
 
+    it("a stale 'already registered' cache cannot strand a topic stream: the send verifies after its append", async () => {
+      const be = backend.make();
+      const a = build({ inboxTopicStreams: true }, be);
+      await enable(a);
+      const e = id();
+      await parkOn(a, gated("y", 1), e);
+      await a.rt.send(e, { topic: "y", payload: "SECRET-1", messageId: "m1" }); // A now caches y
+      // Another node retires the chain's inbox (the chain is later re-opened): registry and streams go.
+      await deleteInbox(be.eventStore, e);
+      expect(await raw(be.eventStore, inboxRegistryStreamId(e))).toEqual([]);
+      await a.rt.send(e, { topic: "y", payload: "SECRET-2", messageId: "m2" }); // cache hit
+      expect(await readRegisteredTopics(be.eventStore, e)).toEqual(["y"]); // re-registered
+      await a.rt.resume(e, { eventType: "Go", payload: null });
+      await done(a, e);
+      await until(async () => (await raw(be.eventStore, inboxTopicStreamId(e, "y"))).length === 0);
+      expect(await raw(be.eventStore, inboxRegistryStreamId(e))).toEqual([]);
+    });
+
+    it("a send racing the owner's completion deletes the stream it wrote, even when the registry no longer names it", async () => {
+      const be = backend.make();
+      const view = Object.create(be.eventStore) as EventStore;
+      let armed = false;
+      let atAppend!: () => void;
+      const reached = new Promise<void>((r) => {
+        atAppend = r;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      view.append = async (env) => {
+        if (armed && env.executionId.includes("#") && !env.executionId.endsWith("#reg")) {
+          armed = false;
+          atAppend(); // registered, about to write the topic stream
+          await gate;
+        }
+        return be.eventStore.append(env);
+      };
+      const h = build({ inboxTopicStreams: true }, { ...be, eventStore: view });
+      const owner = h.sibling({ eventStore: be.eventStore });
+      await enable(h);
+      const e = id();
+      const f = gated("y", 1);
+      h.rt.registerFlow(f.definition, f.runner);
+      owner.registerFlow(f.definition, f.runner);
+      await settle(await h.rt.start(f, {}, { executionId: e }));
+      armed = true;
+      const sending = h.rt
+        .send(e, { topic: "y", payload: "SECRET", messageId: "s" })
+        .catch((x: unknown) => x);
+      await reached;
+      // Meanwhile the owner finishes and its retirement runs (it deletes what the registry names, then
+      // the registry); the sender then appends into a stream nothing names.
+      await owner.send(e, { topic: "y", payload: "first", messageId: "f" });
+      await owner.resume(e, { eventType: "Go", payload: null });
+      await until(
+        async () => (await owner.loadState(e, owner.systemOptions()))?.status === "completed"
+      );
+      await until(async () => (await raw(be.eventStore, inboxRegistryStreamId(e))).length === 0);
+      release();
+      await sending;
+      expect(await raw(be.eventStore, inboxTopicStreamId(e, "y"))).toEqual([]);
+    });
+
+    it("the sweep deletes an UNREGISTERED topic stream of a finished chain by name, once (not every pass)", async () => {
+      const h = mk();
+      await enable(h);
+      const e = id();
+      await parkOn(
+        h,
+        flow("w", async () => "done"),
+        e
+      );
+      await until(
+        async () => (await h.rt.loadState(e, h.rt.systemOptions()))?.status === "completed"
+      );
+      // A sender that died between its append and its registration: no registry entry at all.
+      await appendInboxMessage(
+        h.eventStore,
+        e,
+        { topic: "ghost", messageId: "z", payload: "SECRET", sender: {} },
+        Date.now,
+        true
+      );
+      expect(await raw(h.eventStore, inboxRegistryStreamId(e))).toEqual([]);
+      const first = await recoverAbandoned(h.rt, {
+        source: h.eventStore,
+        isAbandoned: () => false,
+      });
+      expect(first.inboxReclaimed).toBeGreaterThanOrEqual(1);
+      expect(await raw(h.eventStore, inboxTopicStreamId(e, "ghost"))).toEqual([]);
+      const again = await recoverAbandoned(h.rt, {
+        source: h.eventStore,
+        isAbandoned: () => false,
+      });
+      expect(again.inboxReclaimed ?? 0).toBe(0);
+    });
+
+    it("a flag-off node refuses (typed) once the fleet switched: nothing is written, never the legacy stream", async () => {
+      const be = backend.make();
+      const on = build({ inboxTopicStreams: true }, be);
+      const off = on.sibling({ inboxTopicStreams: false });
+      const e = id();
+      const f = gated("t", 3);
+      on.rt.registerFlow(f.definition, f.runner);
+      off.registerFlow(f.definition, f.runner);
+      await settle(await on.rt.start(f, {}, { executionId: e }));
+      await on.rt.send(e, { topic: "t", payload: "m1", messageId: "m1" });
+      await off.send(e, { topic: "t", payload: "m1b", messageId: "m1b" }); // pre-switch: legacy, fine
+      await enable(on);
+      const legacyBefore = await raw(be.eventStore, inboxStreamId(e));
+      const err = await off.send(e, { topic: "t", payload: "m2", messageId: "m2" }).catch((x) => x);
+      expect(err).toBeInstanceOf(InboxTopicStreamsRequiredError);
+      expect(err.possiblyWritten).toBe(false);
+      expect(await raw(be.eventStore, inboxStreamId(e))).toEqual(legacyBefore);
+      expect(await raw(be.eventStore, inboxTopicStreamId(e, "t"))).toHaveLength(0);
+      await on.rt.send(e, { topic: "t", payload: "m3", messageId: "m3" });
+      await on.rt.resume(e, { eventType: "Go", payload: null });
+      await done(on, e);
+      expect((await on.rt.loadState(e))?.variables._output).toEqual(["m1", "m1b", "m3"]);
+    });
+
+    it("a flag-off send that only SEES the switch after its legacy write reports it (retry with the same messageId)", async () => {
+      const be = backend.make();
+      const inner = be.eventStore;
+      const view = Object.create(inner) as EventStore;
+      let armed = false;
+      let atAppend!: () => void;
+      const reached = new Promise<void>((r) => {
+        atAppend = r;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      view.append = async (env) => {
+        if (
+          armed &&
+          env.executionId.startsWith("__loom_inbox__:") &&
+          !env.executionId.includes("#")
+        ) {
+          armed = false;
+          atAppend();
+          await gate;
+        }
+        return inner.append(env);
+      };
+      const off = build({ inboxTopicStreams: false }, { ...be, eventStore: view });
+      const on = off.sibling({ eventStore: inner, inboxTopicStreams: true });
+      const e = id();
+      const f = gated("t", 1);
+      off.rt.registerFlow(f.definition, f.runner);
+      on.registerFlow(f.definition, f.runner);
+      await settle(await off.rt.start(f, {}, { executionId: e }));
+      armed = true;
+      const sending = off.rt.send(e, { topic: "t", payload: "S", messageId: "s" }).catch((x) => x);
+      await reached;
+      await on.enableInboxTopicStreams({ principal: OPS });
+      release();
+      const err = await sending;
+      expect(err).toBeInstanceOf(InboxTopicStreamsRequiredError);
+      expect(err.possiblyWritten).toBe(true);
+    });
+
+    it("the topic cap counts LIVE topics: a chain cycling through 100 drained dynamic topics is never refused", async () => {
+      const h = mk({ inboxMaxTopics: 8 });
+      await enable(h);
+      const e = id();
+      const N = 100;
+      await parkOn(
+        h,
+        flow("w", async (ctx) => {
+          for (let i = 0; i < N; i++) unwrapTainted(await ctx.receive(`dyn-${i}`));
+          return "ok";
+        }),
+        e
+      );
+      for (let i = 0; i < N; i++) {
+        await h.rt.send(e, { topic: `dyn-${i}`, payload: i, messageId: `d${i}` });
+        await until(async () => (await answers(h, e)) === i + 1);
+        await until(async () => (await readRegisteredTopics(h.eventStore, e)).length === 0);
+      }
+      await done(h, e);
+      // Retirement deleted every stream the registry (live or drained) named.
+      expect(await raw(h.eventStore, inboxTopicStreamId(e, "dyn-3"))).toEqual([]);
+    }, 60_000);
+
+    it("a drained topic re-registers on its next send and is delivered above its cursor", async () => {
+      const h = mk();
+      await enable(h);
+      const e = id();
+      await parkOn(
+        h,
+        flow("w", async (ctx) => {
+          const a = unwrapTainted(await ctx.receive("t"));
+          const b = unwrapTainted(await ctx.receive("t"));
+          return [a, b];
+        }),
+        e
+      );
+      await h.rt.send(e, { topic: "t", payload: 1, messageId: "a" });
+      await until(async () => (await answers(h, e)) === 1);
+      await until(async () => (await readRegisteredTopics(h.eventStore, e)).length === 0);
+      await h.rt.send(e, { topic: "t", payload: 2, messageId: "b" });
+      expect(await readRegisteredTopics(h.eventStore, e)).toEqual(["t"]);
+      await done(h, e);
+      expect((await h.rt.loadState(e))?.variables._output).toEqual([1, 2]);
+    });
+
     it("the log is unchanged by the layout: a per-topic run and a legacy run fold to the same shape", async () => {
       const shape = async (perTopic: boolean) => {
         const h = mk({ inboxTopicStreams: perTopic });
@@ -457,8 +673,8 @@ for (const backend of inboxBackends("topics")) {
           kinds: await kinds(h.eventStore, e),
           out: (await h.rt.loadState(e))?.variables._output,
           consumed: (await eventsOf(h.eventStore, e, "MESSAGE_CONSUMED")).map((x) => {
-            const p = x.payload as Record<string, unknown>;
-            return { ...p, inboxSeq: (p.inboxSeq as number) >= BASE ? "topic" : "legacy" };
+            const p = x.payload as { messageId: string; inboxSeq: number };
+            return { messageId: p.messageId, inboxSeq: p.inboxSeq >= BASE ? "topic" : "legacy" };
           }),
         };
       };
@@ -466,12 +682,10 @@ for (const backend of inboxBackends("topics")) {
       const topic = await shape(true);
       expect(topic.kinds).toEqual(legacy.kinds);
       expect(topic.out).toEqual(legacy.out);
-      expect(topic.consumed.map((c) => (c as { messageId: string }).messageId)).toEqual(
-        legacy.consumed.map((c) => (c as { messageId: string }).messageId)
+      expect(topic.consumed.map((c) => c.messageId)).toEqual(
+        legacy.consumed.map((c) => c.messageId)
       );
-      expect(new Set(topic.consumed.map((c) => (c as { inboxSeq: string }).inboxSeq))).toEqual(
-        new Set(["topic"])
-      );
+      expect(new Set(topic.consumed.map((c) => c.inboxSeq))).toEqual(new Set(["topic"]));
     });
   });
 }

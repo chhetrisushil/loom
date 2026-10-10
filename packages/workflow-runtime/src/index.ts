@@ -22,6 +22,7 @@ export {
   InboxDiscardRefusedError,
   InboxFullError,
   InboxMessageRefusedError,
+  InboxTopicStreamsRequiredError,
   InputValidationError,
   ParallelScopeFailedError,
   ResumePayloadValidationError,

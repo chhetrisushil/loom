@@ -118,6 +118,29 @@ describe("ShardPlan", () => {
 });
 
 describe("ShardedEventStore — rebalancing", () => {
+  it("a stream with NO sequence 0 (an inbox topic stream, a floor-seeded one) keeps routing to the shard that holds it", async () => {
+    const pool = shards(3);
+    const plan = ShardPlan.uniform(2, 256);
+    const before = new ShardedEventStore(pool.slice(0, 2), { plan });
+    const BASE = 2 ** 40;
+    const all = Array.from({ length: 200 }, (_, i) => `__loom_inbox__:chain-${i}#0123456789abcdef`);
+    for (const id of all) {
+      await before.append(evt(id, BASE));
+      await before.append(evt(id, BASE + 1));
+    }
+    const grown = plan.rebalanced(3);
+    const after = new ShardedEventStore(pool, { plan: grown });
+    const moving = migratingIds(grown, all);
+    expect(moving.length).toBeGreaterThan(0);
+    for (const id of moving) {
+      // Read where it lies (the source), head intact, and the next append lands above the head.
+      expect((await after.read(id)).map((e) => e.sequence)).toEqual([BASE, BASE + 1]);
+      expect(await after.head!(id)).toBe(BASE + 1);
+      await after.append(evt(id, BASE + 2));
+      expect((await before.read(id)).map((e) => e.sequence)).toEqual([BASE, BASE + 1, BASE + 2]);
+    }
+  });
+
   const ids = Array.from({ length: 300 }, (_, i) => `exec-${i}`);
 
   it("keeps serving executions that stay on the source while a bucket migrates", async () => {

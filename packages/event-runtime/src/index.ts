@@ -38,6 +38,7 @@ export {
   inboxChainOf,
   inboxRegistryStreamId,
   inboxStreamsOfChain,
+  inboxStreamsOfChainDeep,
   inboxTopicHash,
   inboxTopicStreamId,
   isReservedStream,

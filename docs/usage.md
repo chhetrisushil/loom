@@ -483,10 +483,10 @@ every node of a fleet before relying on it: a node without it retires an expiry 
 **Give a cold topic its own stream: per-topic inbox streams (ADR 0110 D10b, off by default).** With
 `kernel.features.inboxTopicStreams` and the fleet switch, each topic has its own stream, so a cold topic no longer pins a
 hot one and `maxBacklog` / `maxRetained` / `InboxFullError` apply per topic (`kernel.inbox.maxTopics`, default 64, caps a
-chain's topics). Nothing about flows, the log or the cursors changes. Roll it out in order: (1) deploy to every node, (2)
+chain's LIVE topics: a drained topic stops counting). Nothing about flows, the log or the cursors changes. Roll it out in order: (1) deploy to every node, (2)
 set `inboxTopicStreams: true` on every node, (3) call `app.runtime.enableInboxTopicStreams({ principal })` once. Until
 step 3 every node keeps writing the single stream; never do step 3 while a node without the flag exists, and never turn
-the flag off afterwards. Existing single-stream data is read first, in order. Do not start an execution whose id ends in
+the flag off afterwards (after step 3 a node with the flag off refuses sends with `InboxTopicStreamsRequiredError`). Existing single-stream data is read first, in order. Do not start an execution whose id ends in
 `#` plus 16 hex digits or `#reg` (refused while the inbox is on).
 
 ### Keep a long conversation bounded: `ctx.continueAsNew` (ADR 0109)
