@@ -47,7 +47,7 @@ const page = await conversations.history(conversationId, { principal, direction:
 
 - A registered `ctx.receive` is **not** woken while a step is in flight (ADR 0110): barge-in cannot be built from the inbox primitives, which is why the signal comes from a store subscription outside the flow body (ADR 0122 D2).
 - A tool call already in flight when a barge-in lands completes; the loop stops before issuing the next call. Wrap the provider with `hub.wrapProvider` to cut the *generation* itself.
-- `requireApproval` is refused (a parked approval gate and the barge-in model do not compose).
+- `needsApproval` (and its deprecated alias `requireApproval`) is refused (a parked approval gate and the barge-in model do not compose).
 - Live deltas are transient and per-process. Only the durable messages are resumable.
 
 See [ADR 0122](../../docs/adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md) and, for the browser, [`@loom/plugin-conversation-sse`](../../plugins/conversation-sse/README.md).
