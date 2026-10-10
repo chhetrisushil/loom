@@ -281,22 +281,81 @@ function stepBindingEscapes(
         (ts.isPropertySignature(p) && p.name === n);
       if (!isDecl && !isNotAReference) {
         let ok = false;
+        // A ctx method call or a ctx hand-off (`lib(ctx, s)`, the declared-reach seam, L34) may take
+        // an argument: its step arguments are recorded for the callee's declaration.
+        const isCtxCall = (c: ts.CallExpression): boolean => {
+          const m = calleeMethodName(c);
+          return (
+            (m !== undefined && CTX_METHODS.has(m)) ||
+            c.arguments.some((a) => {
+              const u = unwrap(a);
+              return ts.isIdentifier(u) && ctxNames.has(u.text);
+            })
+          );
+        };
         if (
           q !== undefined &&
           ts.isCallExpression(q) &&
           q.arguments.includes(top as ts.Expression)
         ) {
-          const m = calleeMethodName(q);
-          // A ctx hand-off (`lib(ctx, s)`) is the declared-reach seam (L34): its step arguments are
-          // recorded for the callee's declaration, so it is the one function call that may take `s`.
-          ok =
-            (m !== undefined && CTX_METHODS.has(m)) ||
-            q.arguments.some((a) => {
-              const u = unwrap(a);
-              return ts.isIdentifier(u) && ctxNames.has(u.text);
-            });
-        } else if (q !== undefined && ts.isArrayLiteralExpression(q)) ok = true;
-        else if (q !== undefined && (ts.isSpreadElement(q) || ts.isSpreadAssignment(q))) ok = true;
+          ok = isCtxCall(q);
+        } else if (q !== undefined && ts.isArrayLiteralExpression(q)) {
+          // A `ctx.parallel([[s, input]])` tuple: safe ONLY when the OUTERMOST enclosing array
+          // literal is itself directly an argument of a ctx call. Bound, iterated, destructured or
+          // spread (`const a = [s]`, `[s].forEach`, `f(...[s])`) it is an alias: an escape.
+          let outer: ts.Node = q;
+          for (;;) {
+            const o = strip(outer);
+            if (o.parent !== undefined && ts.isArrayLiteralExpression(o.parent)) outer = o.parent;
+            else {
+              outer = o;
+              break;
+            }
+          }
+          const host = outer.parent;
+          if (
+            host !== undefined &&
+            ts.isVariableDeclaration(host) &&
+            host.initializer === outer &&
+            ts.isIdentifier(host.name) &&
+            ts.isVariableDeclarationList(host.parent) &&
+            (host.parent.flags & ts.NodeFlags.Const) !== 0
+          ) {
+            // `const pairs = [[s, 1]]; ctx.parallel(pairs)`: the list is followed (rule 5) only if
+            // the binding is used nowhere but as a direct ctx-call argument.
+            const listName = host.name.text;
+            let clean = true;
+            const scan = (n: ts.Node): void => {
+              if (!clean) return;
+              if (ts.isIdentifier(n) && n.text === listName && n !== host.name) {
+                const isKey =
+                  (ts.isPropertyAssignment(n.parent) && n.parent.name === n) ||
+                  (ts.isPropertyAccessExpression(n.parent) && n.parent.name === n);
+                const t = strip(n);
+                const c = t.parent;
+                if (
+                  !isKey &&
+                  !(
+                    c !== undefined &&
+                    ts.isCallExpression(c) &&
+                    c.arguments.includes(t as ts.Expression) &&
+                    isCtxCall(c)
+                  )
+                )
+                  clean = false;
+              }
+              ts.forEachChild(n, scan);
+            };
+            scan(sourceFile);
+            ok = clean;
+          } else {
+            ok =
+              host !== undefined &&
+              ts.isCallExpression(host) &&
+              host.arguments.includes(outer as ts.Expression) &&
+              isCtxCall(host);
+          }
+        } else if (q !== undefined && ts.isSpreadAssignment(q)) ok = true;
         else if (
           q !== undefined &&
           (ts.isPropertyAccessExpression(q) || ts.isElementAccessExpression(q)) &&
@@ -1060,12 +1119,25 @@ export function analyzeReachNode(
 
   /** A string property of an object literal, constant-resolved (`toolId: LLM_X`). */
   const constProp = (obj: ts.ObjectLiteralExpression, name: string): string | undefined => {
+    // JS takes the LAST duplicate key, and a spread AFTER the key may override it: neither is
+    // authoritative, so the property is unresolved (a spread BEFORE the key is fine).
+    let found: string | undefined;
+    let count = 0;
+    let spreadAfter = false;
     for (const p of obj.properties) {
-      if (ts.isPropertyAssignment(p) && propName(p.name) === name)
-        return constString(p.initializer);
-      if (ts.isShorthandPropertyAssignment(p) && p.name.text === name) return constString(p.name);
+      if (ts.isSpreadAssignment(p)) {
+        if (count > 0) spreadAfter = true;
+        continue;
+      }
+      if (ts.isPropertyAssignment(p) && propName(p.name) === name) {
+        count++;
+        found = constString(p.initializer);
+      } else if (ts.isShorthandPropertyAssignment(p) && p.name.text === name) {
+        count++;
+        found = constString(p.name);
+      }
     }
-    return undefined;
+    return count === 1 && !spreadAfter ? found : undefined;
   };
 
   /**
