@@ -328,6 +328,22 @@ function mentionsAny(e: ts.Node, names: ReadonlySet<string>): boolean {
 }
 
 /** Import bindings of a module: local name -> module specifier and the imported (exported) name. */
+/** Every local name an import binds (named, default and namespace; type-only included, harmlessly). */
+function allImportBindings(sf: ts.SourceFile): Set<string> {
+  const out = new Set<string>();
+  for (const st of sf.statements) {
+    if (!ts.isImportDeclaration(st)) continue;
+    const clause = st.importClause;
+    if (clause === undefined) continue;
+    if (clause.name !== undefined) out.add(clause.name.text);
+    const nb = clause.namedBindings;
+    if (nb === undefined) continue;
+    if (ts.isNamespaceImport(nb)) out.add(nb.name.text);
+    else for (const el of nb.elements) out.add(el.name.text);
+  }
+  return out;
+}
+
 function importedNames(sf: ts.SourceFile): Map<string, { spec: string; imported: string }> {
   const out = new Map<string, { spec: string; imported: string }>();
   for (const st of sf.statements) {
@@ -843,11 +859,24 @@ export function analyzeReachNode(
   const sourceFile = ts.isSourceFile(root) ? root : root.getSourceFile();
   const declaredAnywhere = scan.declared;
   const imports = importedNames(sourceFile);
+  // An imported name that is ALSO declared somewhere in the module (a same-named local in another
+  // function) is ambiguous in BOTH directions: the use may be the import or the local, so neither
+  // the local function/const/binding nor the import may answer for it (-> unresolved).
+  const importBindings = allImportBindings(sourceFile);
+  for (const name of importBindings) {
+    functions.delete(name);
+    constInits.delete(name);
+  }
   // A step binding is followed only when its name is declared exactly once, never reassigned: a
   // shadowing parameter or a second same-named binding in another function makes it ambiguous.
   const bindings = collectBindings(root);
   for (const name of [...bindings.keys()]) {
-    if ((declaredAnywhere.get(name) ?? 0) !== 1 || scan.ambiguous.has(name)) bindings.delete(name);
+    if (
+      (declaredAnywhere.get(name) ?? 0) !== 1 ||
+      scan.ambiguous.has(name) ||
+      importBindings.has(name)
+    )
+      bindings.delete(name);
   }
   /** A name with no declaration anywhere in the module: only then can it be the import binding. */
   const unshadowed = (name: string): boolean => (declaredAnywhere.get(name) ?? 0) === 0;
