@@ -112,6 +112,17 @@ interface EventRow {
   metadata: unknown | null; // JSONB → parsed object
 }
 
+/**
+ * The schema the pool's `events` table resolves to — the same resolution every query of this
+ * store makes through its `search_path`, so it names exactly the log this store reads.
+ */
+async function eventsNamespace(pool: PoolLike): Promise<string | undefined> {
+  const { rows } = await pool.query<{ ns: string }>(
+    "SELECT n.nspname AS ns FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = 'events'::regclass"
+  );
+  return rows[0]?.ns;
+}
+
 function rowToEnvelope(row: EventRow): EventEnvelope {
   return {
     id: row.id,
@@ -144,6 +155,20 @@ export class PostgresEventStore implements EventStore {
   private readonly ready: Promise<void>;
   private readonly subscribers: SubscriberRegistry;
   private readonly senderId = nextSenderId();
+  /**
+   * The schema this store's `events` table lives in, resolved once after migration. NOTIFY
+   * channels are DATABASE-wide, but a log is scoped to a schema (one `search_path` per pool —
+   * schema-per-tenant, or isolated test schemas). Every notification carries it, and a
+   * listener drops one from another schema: without that, an append to `x`/1 in schema B made
+   * a subscriber of `x` in schema A re-read ITS OWN `x`/1 and deliver it a second time.
+   */
+  private namespace: string | undefined;
+  /**
+   * Resolves {@link namespace} on first use, by the operation that needs it (an append, a
+   * subscribe), so a failure surfaces to that caller. Not part of `ready`: nothing awaits a
+   * store that is built and closed unused, so a background lookup there could reject unhandled.
+   */
+  private namespaceLookup: Promise<string | undefined> | undefined;
   private readonly connConfig: PgConfig;
   private listener: Client | undefined;
   private listenerReady: Promise<void> | undefined;
@@ -174,6 +199,7 @@ export class PostgresEventStore implements EventStore {
 
   async append(envelope: EventEnvelope): Promise<void> {
     await this.ready;
+    await this.resolveNamespace();
     // K9.4 — fence-guarded insert, atomic in one statement: the row lands only if
     // the execution has no fence, or the envelope's token (0 when absent) is at
     // least the current one. A conditional zero-row insert means a zombie write.
@@ -192,7 +218,7 @@ export class PostgresEventStore implements EventStore {
     // halving DB round-trips on the hottest write path. On a fence rejection the CTE inserts
     // 0 rows, the outer SELECT returns 0 rows, pg_notify is never called, and rowCount === 0
     // still signals the stale fence exactly as before.
-    const notifyTag = JSON.stringify([this.senderId, envelope.executionId, envelope.sequence]);
+    const notifyTag = this.notifyTag(envelope.executionId, envelope.sequence);
     // ADR 0118 D1 — a PARK also makes sure the execution has a fence row (token 0, a no-op for one
     // that has it, an index probe). `acquireFenceIf` answers a park, and an append can only take
     // `FOR SHARE` on a row that EXISTS: without one, an answering append whose statement began
@@ -276,6 +302,7 @@ export class PostgresEventStore implements EventStore {
   async appendBatch(envelopes: readonly EventEnvelope[]): Promise<void> {
     if (envelopes.length === 0) return;
     await this.ready;
+    await this.resolveNamespace();
     const rows = envelopes.map((e) => ({
       id: e.id,
       workflow_id: e.workflowId,
@@ -368,10 +395,10 @@ export class PostgresEventStore implements EventStore {
          RETURNING execution_id
        )
        SELECT (SELECT count(*)::int FROM ins) AS inserted,
-              pg_notify(b.channel, json_build_array($2::text, b.execution_id, b."sequence")::text)
+              pg_notify(b.channel, json_build_array($2::text, b.execution_id, b."sequence", $3::text)::text)
        FROM batch b
        WHERE NOT EXISTS (SELECT 1 FROM rejected)`,
-        [JSON.stringify(rows), this.senderId]
+        [JSON.stringify(rows), this.senderId, this.namespace ?? null]
       )
       .catch(async (err: unknown) => {
         // #306 — a taken slot, in the batch or already in the log. The statement is atomic,
@@ -622,6 +649,7 @@ export class PostgresEventStore implements EventStore {
     expect?: TipObservation
   ): Promise<AppendIfUnchangedResult> {
     await this.ready;
+    await this.resolveNamespace();
     if (event !== null && (expect === undefined || event.executionId !== executionId)) {
       throw new TypeError(
         "appendIfUnchanged: an event needs `expect` and the matching executionId"
@@ -697,7 +725,7 @@ export class PostgresEventStore implements EventStore {
       );
       await client.query("SELECT pg_notify($1, $2)", [
         this.channelFor(executionId),
-        JSON.stringify([this.senderId, executionId, event.sequence]),
+        this.notifyTag(executionId, event.sequence),
       ]);
       await client.query("COMMIT");
     } catch (err) {
@@ -721,6 +749,7 @@ export class PostgresEventStore implements EventStore {
     handler: (event: EventEnvelope) => void
   ): Promise<() => void> {
     await this.ready;
+    await this.resolveNamespace();
     await this.ensureListener();
     const unsubscribe = this.subscribers.add(executionId, handler);
     // `add` fires onInterestChange synchronously, which queues a LISTEN. Await it so the
@@ -813,6 +842,32 @@ export class PostgresEventStore implements EventStore {
       this.listener = undefined;
     }
     if (this.ownsPool) await this.pool.end();
+  }
+
+  /**
+   * Cross-process delivery tag: JSON `[senderId, executionId, sequence, namespace]`. The
+   * sender lets our own listener skip what we already delivered locally; the namespace (the
+   * events table's schema) lets a listener in ANOTHER schema of the same database skip it.
+   * Appended last, so a pre-namespace reader that destructures three elements still works.
+   */
+  private resolveNamespace(): Promise<string | undefined> {
+    if (this.namespaceLookup === undefined) {
+      this.namespaceLookup = eventsNamespace(this.pool).then(
+        (ns) => {
+          this.namespace = ns;
+          return ns;
+        },
+        (err: unknown) => {
+          this.namespaceLookup = undefined; // a transient failure is retried by the next caller
+          throw err;
+        }
+      );
+    }
+    return this.namespaceLookup;
+  }
+
+  private notifyTag(executionId: string, sequence: number): string {
+    return JSON.stringify([this.senderId, executionId, sequence, this.namespace ?? null]);
   }
 
   private notifyLocal(_executionId: string, event: EventEnvelope): void {
@@ -931,13 +986,24 @@ export class PostgresEventStore implements EventStore {
     let sender: string;
     let executionId: string;
     let sequence: number;
+    let namespace: string | null | undefined;
     try {
-      [sender, executionId, sequence] = JSON.parse(raw) as [string, string, number];
+      [sender, executionId, sequence, namespace] = JSON.parse(raw) as [
+        string,
+        string,
+        number,
+        (string | null)?,
+      ];
     } catch {
       return;
     }
     // Skip our own appends — already delivered synchronously to local subscribers.
     if (sender === this.senderId) return;
+    // Skip another schema's appends. The channel is database-wide, and the lookup below reads
+    // OUR schema's row at that (executionId, sequence) — so another log's append of the same
+    // id would re-deliver an event of ours (a duplicate) or one we never meant to announce.
+    // A tag without a namespace comes from a pre-namespace node: deliver it, as before.
+    if (namespace != null && this.namespace !== undefined && namespace !== this.namespace) return;
     // A bucket carries several executions; keep the local interest check.
     if (!this.subscribers.has(executionId)) return;
     const { rows } = await this.pool.query<EventRow>(
