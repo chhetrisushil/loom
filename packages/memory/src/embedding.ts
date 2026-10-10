@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256Hex } from "@loom/core";
 import { searchableText, tokenize } from "./searchText";
 import { clampSearchLimit } from "./types";
 import type { MemoryEntry, MemorySearchOptions, MemoryStore } from "./types";
@@ -331,7 +331,7 @@ const keyMemo = new WeakMap<MemoryEntry, string>();
 
 /** A fixed-size tag of an entry's searchable text: what `indexed` compares, never the text itself. */
 function textTag(text: string): string {
-  return createHash("sha256").update(text).digest("base64url");
+  return sha256Hex(text);
 }
 
 function entryKey(e: MemoryEntry): string {
@@ -341,9 +341,7 @@ function entryKey(e: MemoryEntry): string {
   // store that hands back the same objects is hashed once, not once per search.
   const memo = keyMemo.get(e);
   if (memo !== undefined) return memo;
-  const k = `h:${createHash("sha256")
-    .update(`${e.role ?? ""}\u0000${e.timestamp}\u0000${searchableText(e)}`)
-    .digest("hex")}`;
+  const k = `h:${sha256Hex(`${e.role ?? ""}\u0000${e.timestamp}\u0000${searchableText(e)}`)}`;
   keyMemo.set(e, k);
   return k;
 }

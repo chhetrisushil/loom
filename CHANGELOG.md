@@ -11,7 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`OversizedInlinePartError.scope` (`@loom/llm`; additive).** The constructor already took `scope: "part" | "request"` but dropped it, so a caller could not tell the per-part cap from the per-request inline total except by `limit` or message text. It is now a `readonly scope` property. Tested for both scopes.
 
+### Changed
+
+- **`@loom/memory` no longer imports `node:crypto`** (`embedding.ts` hashes with `@loom/core`'s pure `sha256Hex`; entry keys are byte-identical, the in-process text tag is now hex). Browser bundles of `@loom/memory` stop warning.
+
 ### Documentation
+
+- **User guide: "Browser bundles".** Which `@loom/*` packages are browser-safe and which carry `node:` imports (and why `workflow-runtime`/`effect-runtime` keep HMAC and `AsyncLocalStorage`).
 
 - **Docs/DX batch.** `execution.registerEffects` (how `agentLoop$` gets its model and tool effects in a `defineConfig` app) is documented in the user guide and ADR 0121's migration steps, and its JSDoc shows the grouped spelling. ADR 0121 D5 / the `cacheScope` JSDoc now say `cacheScope` is a direct-path-only requirement (the ring bypasses the response cache). The SSE `/history` default direction (`forward`) and how to request `backward` are documented. ADR 0120 gains "Authorizing under dedupe" (a `ContentResolver`'s owner is a SET of tenants). The `@loom/conversation` README gains a security section on the raw inbox path (never expose `runtime.send(…, runtime.systemOptions())` into a conversation inbox).
 
