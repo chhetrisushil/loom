@@ -158,7 +158,13 @@ export interface SharedConfig {
   cleared: (viewer: Identity, classes: readonly string[]) => boolean | Promise<boolean>;
   /** The declared data class of a tool, by tool name. `undefined` = unclassified (a label of its own). */
   classOf?: (toolName: string) => string | undefined;
-  /** Who may add / remove participants and close, beside the owner. Default: the owner only. */
+  /**
+   * Who may add / remove participants and close, beside the owner. Default: the owner only.
+   *
+   * The callback is called inside a recorded decision. If it throws or rejects, the decision throws and the
+   * whole shared conversation fails (the same as `directory.list`). It should not throw: return `false` on
+   * a transient error (the manage action is then refused and can be retried).
+   */
   manageParticipants?: (manager: Identity, conversationId: string) => boolean | Promise<boolean>;
   /** The effect id the coordinator runs a turn through. Default `conversation.turn`. */
   turnEffectId?: string;

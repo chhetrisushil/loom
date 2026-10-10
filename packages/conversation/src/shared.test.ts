@@ -10,6 +10,7 @@ import {
   messages,
   until,
 } from "./__fixtures__/harness";
+import { SERVICE } from "./__fixtures__/harness";
 import { CONVERSATION_TOPIC, ConversationNotFoundError, signInboxEnvelope } from "./index";
 
 const asIdentity = (p: { actor?: string; tenant?: string }) => ({
@@ -176,6 +177,26 @@ describe("shared mode: a signed close is authorized by the BODY, not only the cl
     const all = await messages(b, id, 3, carol);
     expect(all[0]).toMatchObject({ status: "rejected", reason: "unauthenticated" });
     expect((await b.conv.status(id, { principal: alice })).state).not.toBe("closed");
+  });
+
+  it("a signed close naming the SERVICE principal is accepted; the same actor under another tenant is refused", async () => {
+    const wrongTenant = await sharedConv();
+    await closeAs(wrongTenant.b, wrongTenant.id, {
+      actor: SERVICE.actor as string,
+      tenant: "other-tenant",
+    });
+    await wrongTenant.b.conv.sendTurn(wrongTenant.id, "still open?", { principal: carol });
+    const all = await messages(wrongTenant.b, wrongTenant.id, 3, carol);
+    expect(all[0]).toMatchObject({ status: "rejected", reason: "unauthenticated" });
+    expect((await wrongTenant.b.conv.status(wrongTenant.id, { principal: alice })).state).not.toBe(
+      "closed"
+    );
+
+    const svc = await sharedConv();
+    await closeAs(svc.b, svc.id, asIdentity(SERVICE));
+    await until(
+      async () => (await svc.b.conv.status(svc.id, { principal: alice })).state === "closed"
+    );
   });
 
   it("the owner's and a host manager's closes are accepted", async () => {

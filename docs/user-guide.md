@@ -803,7 +803,7 @@ const chat = conversation$({
     directory: logParticipants(eventStore),                  // the participant set, an append-only log
     classOf: (tool) => TOOL_CLASSES[tool],                   // undefined = "unclassified" (a label of its own)
     cleared: (viewer, classes) => classes.every((c) => policy.mayRead(viewer, c)),   // fail closed: false for anything unknown
-    manageParticipants: (who) => responderLeads.has(who.actor),   // beside the owner
+    manageParticipants: (who) => responderLeads.has(who.actor),   // beside the owner; must not throw (see below)
   },
 });
 const conversations = createConversations({
@@ -819,7 +819,9 @@ The service principal only coordinates (grant it the `conversation.turn` effect 
 
 For a browser, put `@loom/plugin-conversation-sse` in front: authenticated JSON routes plus an SSE stream whose event ids are the history cursors, so `EventSource`'s automatic `Last-Event-ID` reconnect resumes from the log. Live tokens (`delta`, `partial`) are transient and per process; only the durable `message` events are resumable.
 
-Tests and trusted bridges that write to the inbox directly build a valid envelope with `signInboxEnvelope(key, body)` (same signer as `sendTurn`). It needs the conversation's `key`, which is the authority of a trusted bridge: a key holder can speak as ANY participant in shared mode, edit that asker's turns, bypass the client-only checks (`maxQueuedPerAsker`, the delegated-sender rule), write to every conversation the runtime `send` policy admits, and push the staleness floor forward with an `iat` up to 60 s ahead. It cannot sign for another conversation, replay an id, use a stale `iat`, speak as another owner in owner mode, name a non-participant in shared mode, close a shared conversation unless the closer is the owner, the service principal or a `manageParticipants` manager, exceed `maxTurnChars`, or send a malformed body (`InvalidEnvelopeError`). Keep the key server-side.
+`manageParticipants` is judged inside a recorded decision in the conversation body: if it throws or rejects, the decision throws and the whole shared conversation fails (the same as `directory.list`). It should not throw; return `false` on a transient error.
+
+Tests and trusted bridges that write to the inbox directly build a valid envelope with `signInboxEnvelope(key, body)` (same signer as `sendTurn`). It needs the conversation's `key`, which is the authority of a trusted bridge: a key holder can speak as ANY participant in shared mode, edit that asker's turns, bypass the client-only checks (`maxQueuedPerAsker`, the delegated-sender rule), write to every conversation the runtime `send` policy admits, and push the staleness floor forward with an `iat` up to 60 s ahead. It cannot sign for another conversation, replay an id, use a stale `iat`, speak as another owner in owner mode, name a non-participant in shared mode, close a shared conversation unless the closer is the owner, the service principal or a `manageParticipants` manager, send a turn over `maxTurnChars` (the body rejects it), or send a malformed body (`InvalidEnvelopeError`, thrown by the signer). Keep the key server-side.
 
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 

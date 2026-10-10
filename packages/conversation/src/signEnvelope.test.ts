@@ -88,6 +88,8 @@ describe("signInboxEnvelope", () => {
       { iat: Number.NaN },
       { iat: "now" },
       { text: undefined },
+      { text: "" },
+      { text: "  \n\t " },
       { kind: "other" },
       { asker: { actor: 7 } },
       { editOf: 0 },
