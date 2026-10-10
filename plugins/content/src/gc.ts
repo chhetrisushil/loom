@@ -353,8 +353,19 @@ export interface SnapshotLookup {
   ): Promise<{ sequence: number; state: unknown } | null>;
 }
 
-/** One process warning for a MIXED set of snapshot stores; never throws (best effort, advisory). */
+let warnedUnwrapped = false;
+/** Test-only: re-arm the once-per-process warning below. Not exported from the package index. */
+export function resetSnapshotUnwrappedWarning(): void {
+  warnedUnwrapped = false;
+}
+/**
+ * One process warning for a MIXED set of snapshot stores, ONCE per process (like
+ * `LOOM_CONTENT_TOUCH`): a scheduled sweep over the same mixed set would otherwise warn every run.
+ * Never throws (best effort, advisory).
+ */
 function emitUnwrappedWarning(touching: number, unbranded: number): void {
+  if (warnedUnwrapped) return;
+  warnedUnwrapped = true;
   const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
     .process;
   try {
@@ -476,9 +487,6 @@ export async function sweepUnpinnedContent(
       "sweepUnpinnedContent: reclaimOrphans over an event store that can truncatePrefix needs snapshotStores — a compacted prefix's refs live only in its snapshot, and without it they look like orphans"
     );
   }
-  // ADR 0055 D5 — the guard cutoff is on the STORE's clock, read once at the START: a blob
-  // touched after it (a re-citing put the scan could not see yet) is refused. The TTL on the
-  // log (`now`) is a different clock and never feeds it.
   const snapshotList = options.snapshotStores ?? [];
   const snapshotStoresTouching = snapshotList.filter(isContentTouchingSnapshotStore).length;
   const snapshotStoresUnbranded = snapshotList.length - snapshotStoresTouching;
@@ -490,6 +498,9 @@ export async function sweepUnpinnedContent(
   ) {
     emitUnwrappedWarning(snapshotStoresTouching, snapshotStoresUnbranded);
   }
+  // ADR 0055 D5 — the guard cutoff is on the STORE's clock, read once at the START: a blob
+  // touched after it (a re-citing put the scan could not see yet) is refused. The TTL on the
+  // log (`now`) is a different clock and never feeds it.
   const raceSafe = store.deleteIfUntouchedSince !== undefined;
   let cutoff = Number.NEGATIVE_INFINITY;
   if (raceSafe) {

@@ -21,8 +21,9 @@ const rotr = (x: number, n: number): number => (x >>> n) | (x << (32 - n));
 
 /**
  * SHA-256 of the UTF-8 encoding of `text`, as 64 lowercase hex characters. `TextEncoder` replaces a
- * lone surrogate with U+FFFD, so two strings that differ only in lone surrogates hash alike; the
- * inputs here (flow ids, versions, step ids, tool ids) are identifiers, where that cannot matter.
+ * lone surrogate with U+FFFD, so two strings that differ only in lone surrogates hash alike. That
+ * matches `node:crypto`'s `update(s, "utf8")` byte for byte (Buffer also encodes a lone surrogate as
+ * U+FFFD), so digests recorded with either agree, including over free text (skill instructions).
  */
 export function sha256Hex(text: string): string {
   const data = new TextEncoder().encode(text);
