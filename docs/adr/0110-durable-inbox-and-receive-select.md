@@ -778,7 +778,10 @@ clock fix below: an OPTIONAL `EventStore.storeNow()` (EventStore SPI 2.3.0 to 2.
   recommendation), and a stamp ahead of the judge (`timestamp > now`) is treated as suspect: it is never expired
   until the judge's clock has passed `timestamp + ttl`, so a fast sender can delay an expiry but never cause an
   early one, and it is not young forever. Messages stamped before a node enabled the TTL carry that node's runtime
-  clock (the sender stamps with the store clock only while a TTL is configured).
+  clock (the sender stamps with the store clock only while a TTL is configured), and the runtime cannot tell such
+  a stamp from a store-clock one: a backlog stamped before enabling the TTL (or by a node with the TTL still off
+  during a rollout) is aged on MIXED clocks, so it may expire earlier by up to the host/database skew. Only messages
+  that are already old are affected; enable the TTL on every node before relying on exact expiry of a backlog.
   Timer rows stay on the runtime clock; the judge's remaining wait is carried over as a delay, so a host whose clock
   differs from the store's still wakes the next pass at the right moment.
 - **Bounded per wake.** At most 1 024 messages (`INBOX_DEDUPE_CAP`'s size) are discarded per pass in one batch;
