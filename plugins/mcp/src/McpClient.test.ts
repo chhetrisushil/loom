@@ -168,6 +168,29 @@ describe("McpClient", () => {
       expect(warnings[0]).not.toContain("\u200B");
     });
 
+    it("anyToolName refuses a bidi override and a lone surrogate too", async () => {
+      const c = await client(["db.query", "evil\u202Eexe", "half\uD800"]);
+      const seen: string[] = [];
+      const { out } = await captureWarnings(() =>
+        c.listTools({ anyToolName: true, onSkippedTool: (n) => seen.push(n) })
+      );
+      expect(out.map((t) => t.definition.id)).toEqual(["db.query"]);
+      expect(seen).toEqual(["evil\u202Eexe", "half\uD800"]);
+    });
+
+    it("a throwing onSkippedTool does not abort the listing", async () => {
+      const c = await client(["ok_tool", "db.query", "other.tool"]);
+      const { out, warnings } = await captureWarnings(() =>
+        c.listTools({
+          onSkippedTool: () => {
+            throw new Error("hook bug");
+          },
+        })
+      );
+      expect(out.map((t) => t.definition.id)).toEqual(["ok_tool"]);
+      expect(warnings).toHaveLength(2); // every skip still warned about
+    });
+
     it("anyToolName accepts a 256-character name", async () => {
       const c = await client(["x".repeat(256)]);
       expect(await c.listTools({ anyToolName: true })).toHaveLength(1);

@@ -39,8 +39,10 @@ const MAX_ERROR_TEXT = 2048;
 const TOOL_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 /** `anyToolName` relaxes the CHARSET only: a name still becomes an effect id, a map key and log text. */
 const ANY_TOOL_NAME_MAX = 256;
-const UNSAFE_CHARS_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
-const HAS_UNSAFE_CHARS_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+/** Control, format (incl. bidi overrides), line/paragraph separators and lone surrogates. One source for both uses. */
+const UNSAFE_CHARS = "[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\p{Cs}]";
+const UNSAFE_CHARS_RE = new RegExp(UNSAFE_CHARS, "gu");
+const HAS_UNSAFE_CHARS_RE = new RegExp(UNSAFE_CHARS, "u");
 
 /** A name made safe to put in a warning or error: capped, control/format/separator characters scrubbed. */
 function scrubName(name: string): string {
@@ -54,9 +56,9 @@ function toolNameProblem(name: string, anyToolName: boolean): string | undefined
   }
   if (name.length === 0) return "its name is empty";
   if (name.length > ANY_TOOL_NAME_MAX)
-    return `its name is longer than ${ANY_TOOL_NAME_MAX} characters`;
+    return `its name is longer than ${ANY_TOOL_NAME_MAX} UTF-16 code units`;
   if (HAS_UNSAFE_CHARS_RE.test(name))
-    return "its name contains control, format or separator characters";
+    return "its name contains control, format, separator or lone-surrogate characters";
   return undefined;
 }
 
@@ -100,8 +102,9 @@ export interface ListToolsOptions {
    * Keep tools whose name is not provider-safe (`^[A-Za-z0-9_-]{1,64}$`). Default
    * false: the name is the effect id AND what a model is shown. Set it only when
    * the tools are NOT handed to a model (`mcpInvoke$`, an app view). It relaxes the
-   * CHARSET only: a name must still be non-empty, at most 256 characters, and free of
-   * control / format / line- and paragraph-separator characters (`\p{Cc}\p{Cf}\p{Zl}\p{Zp}`).
+   * CHARSET only: a name must still be non-empty, at most 256 UTF-16 code units, and free of
+   * control / format (incl. bidi overrides) / line- and paragraph-separator characters and lone surrogates
+   * (`\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}`).
    */
   anyToolName?: boolean;
   /** Called once per skipped tool (name as the server sent it; scrub before logging). */
@@ -252,7 +255,12 @@ export class McpClient {
       const problem = toolNameProblem(mcpTool.name, options.anyToolName === true);
       if (problem !== undefined) {
         skipped.push({ name: mcpTool.name, reason: problem });
-        options.onSkippedTool?.(mcpTool.name, problem);
+        // Caller code: a throwing hook must not turn one odd tool name into a failed listing.
+        try {
+          options.onSkippedTool?.(mcpTool.name, problem);
+        } catch {
+          // ignored: the skip is still warned about (or reported by strictToolNames)
+        }
         continue;
       }
       mapped.push(this.mapTool(mcpTool, fidelity, options.trustDescriptions === true));
