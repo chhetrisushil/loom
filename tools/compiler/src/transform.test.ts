@@ -224,6 +224,51 @@ describe("compiler — runner reach in the manifest (L36)", () => {
     expect(reachOf(src)).toBeUndefined();
   });
 
+  it("genUI shapes: a typed const runner beside RegisteredFlow { definition: flow$, runner } is analysed-empty", () => {
+    const src = [
+      'import { flow$ } from "@loom/core";',
+      'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
+      'import { z } from "zod";',
+      "const runner: FlowRunner<In, Out> = async (_ctx, input) => reduceAuthoringOp(input);",
+      "export const F: RegisteredFlow = {",
+      "  definition: flow$({",
+      '    id: "wf", name: "n", version: "1.0.0",',
+      "    inputSchema: z.object({}).passthrough() as unknown as z.ZodType<In>,",
+      '    steps: [], effectClass: "pure",',
+      "  }),",
+      "  runner: runner as FlowRunner<unknown, unknown>,",
+      "};",
+    ].join("\n");
+    expect(reachOf(src)).toEqual({ steps: [], unresolved: [], suspends: [] });
+  });
+
+  it("a registerFlow(def, pure runner) naming this module's flow$ is analysed-empty", () => {
+    const src = [
+      'import { flow$ } from "@loom/core";',
+      'const def = flow$({ id: "wf", version: "1.0.0", steps: [] });',
+      "registerFlow(def, async (_c, x) => x);",
+    ].join("\n");
+    expect(reachOf(src)).toEqual({ steps: [], unresolved: [], suspends: [] });
+  });
+
+  describe("an unrelated pure runner elsewhere leaves the flow UNANALYSED", () => {
+    const def = [
+      'import { flow$ } from "@loom/core";',
+      'export const def = flow$({ id: "wf", version: "1.0.0", steps: [] });',
+    ];
+    const shapes: Record<string, string> = {
+      "object property": "export const other = { runner: async (_x) => 1 };",
+      "class field": "export class K { runner = async (_x) => 1; }",
+      "registerFlow of another definition": "registerFlow(otherDef, async (_c) => 1);",
+      "nested function": "export function f() { const g = { runner: async (_x) => 1 }; return g; }",
+    };
+    for (const [name, line] of Object.entries(shapes)) {
+      it(name, () => {
+        expect(reachOf([...def, line].join("\n"))).toBeUndefined();
+      });
+    }
+  });
+
   it("an imported runner is reported unresolved, never an analysed empty", () => {
     const src = [
       'import { flow$ } from "@loom/core";',

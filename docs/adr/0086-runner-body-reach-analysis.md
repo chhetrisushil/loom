@@ -363,8 +363,11 @@ runner (`async (_ctx, input) => reduce(input)`) that the analysis READ and found
 was indistinguishable from a runner it never read, and D2's coverage note named it "no runner-body
 analysis" (genUI's `apply-authoring-operation` and `presubmit`). An empty reach is ambiguous on
 its own: it is also what a module with no runner in it (a definition whose runner is registered
-from another module) produces. The compiler now keeps the empty reach only when the module
-declares at least one runner the analysis followed AND exactly one flow. That is sound because a
+from another module) produces, and so is an unrelated runner elsewhere in the module (an object
+property, a class field, a nested function, another flow's `registerFlow`). The compiler now keeps
+the empty reach only when a followed runner is BOUND to the flow (in the same object literal or
+class as its `flow$` call, or passed to `registerFlow(def, …)` where `def` is, or names, that
+`flow$` call) AND the module declares exactly one flow. That is sound because a
 runner the analysis cannot follow is never silent (`runner not analysable: …` is `unresolved`, so
 the reach is not empty), and because the reach is module-wide, a module with several flows keeps
 the old, conservative answer. Manifest shape and the public `analyzeReachNode` are unchanged.
