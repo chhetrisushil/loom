@@ -185,6 +185,54 @@ describe("compiler — runner reach in the manifest (L36)", () => {
       "planner.compose",
     ]);
   });
+
+  const reachOf = (src: string): unknown => {
+    const state = emptyState();
+    transformFile(src, "/abs/flow.ts", state);
+    return buildManifest(state, "dist").flows.wf?.runnerReach;
+  };
+
+  it("keeps an EMPTY runnerReach for a pure runner that never touches ctx", () => {
+    // Regression: an empty reach was dropped, so a flow whose runner was read and reaches nothing
+    // (`async (_ctx, input) => reduce(input)`) was reported as "no runner-body analysis".
+    const src = [
+      'import { flow$ } from "@loom/core";',
+      'import { reduce } from "./reduce";',
+      "const runner: FlowRunner<In, Out> = async (_ctx, input) => reduce(input);",
+      'export const f = { definition: flow$({ id: "wf", version: "1.0.0", steps: [] }), runner: runner as FlowRunner<unknown, unknown> } as RegisteredFlow;',
+    ].join("\n");
+    expect(reachOf(src)).toEqual({ steps: [], unresolved: [], suspends: [] });
+  });
+
+  it("claims nothing when the module holds no runner (registered from another module)", () => {
+    // An empty reach with no runner here is NOT an analysed empty: the runner was never read.
+    const src = [
+      'import { flow$ } from "@loom/core";',
+      'export const def = flow$({ id: "wf", version: "1.0.0", steps: [] });',
+    ].join("\n");
+    expect(reachOf(src)).toBeUndefined();
+  });
+
+  it("claims nothing for an empty reach when several flows share the module", () => {
+    // The reach is module-wide: the one runner found may be the sibling's, while wf's lives elsewhere.
+    const src = [
+      'import { flow$ } from "@loom/core";',
+      "const runner = async (_ctx, input) => input;",
+      'export const a = { definition: flow$({ id: "other", version: "1.0.0", steps: [] }), runner } as RegisteredFlow;',
+      'export const def = flow$({ id: "wf", version: "1.0.0", steps: [] });',
+    ].join("\n");
+    expect(reachOf(src)).toBeUndefined();
+  });
+
+  it("an imported runner is reported unresolved, never an analysed empty", () => {
+    const src = [
+      'import { flow$ } from "@loom/core";',
+      'import { runner } from "./runner";',
+      'export const f = { definition: flow$({ id: "wf", version: "1.0.0", steps: [] }), runner } as RegisteredFlow;',
+    ].join("\n");
+    const reach = reachOf(src) as { unresolved: { expr: string }[] } | undefined;
+    expect(reach?.unresolved.map((u) => u.expr)).toEqual(["runner not analysable: runner"]);
+  });
 });
 
 describe("compiler - imported constants and factories in the manifest (L37)", () => {

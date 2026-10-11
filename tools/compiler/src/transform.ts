@@ -4,7 +4,7 @@ import { shortHash } from "./hash";
 import { createImportResolver } from "./importResolve";
 import { type LoopStepIdentityFinding, analyzeLoopIdentityNode } from "./loopIdentity";
 import { type NonDeterministicCall, analyzeNode } from "./nondeterminism";
-import { type RunnerReach, analyzeReachNode } from "./runnerReach";
+import { type RunnerReach, analyzeReachRegion } from "./runnerReach";
 import type {
   ExtractedChunk,
   FlowEntry,
@@ -333,15 +333,18 @@ function collectFlows(
     return nonDetCalls;
   };
   const importResolver = createImportResolver(sourceFile, absolutePath);
-  let reach: RunnerReach | undefined;
-  const analyzeReach = (): RunnerReach => {
-    reach ??= analyzeReachNode(
+  let region: { reach: RunnerReach; runners: number } | undefined;
+  const analyzeRegion = (): { reach: RunnerReach; runners: number } => {
+    region ??= analyzeReachRegion(
       sourceFile,
       undefined,
       importResolver !== undefined ? { importResolver } : {}
     );
-    return reach;
+    return region;
   };
+  /** Flows this module declares whose reach came back EMPTY (see the pure-runner rule below). */
+  const emptyReach: FlowEntry[] = [];
+  let flowsInModule = 0;
 
   ts.forEachChild(sourceFile, function visit(node: ts.Node): void {
     // Match a `flow$(...)` call WHEREVER it appears — not only as a direct variable
@@ -392,7 +395,7 @@ function collectFlows(
 
         const findings = lintLoopIdentity();
         const nonDet = lintNonDeterminism();
-        const flowReach = analyzeReach();
+        const flowReach = analyzeRegion().reach;
         // Any reach fact keeps the analysis — including a ctx hand-off alone (L32 `escapes`); a
         // flow whose only reach is `planner.compose(x, ctx)` must not read as "not analysed".
         const hasReach =
@@ -400,7 +403,7 @@ function collectFlows(
           flowReach.unresolved.length > 0 ||
           flowReach.suspends.length > 0 ||
           (flowReach.escapes?.length ?? 0) > 0;
-        pluginState.flows.set(flowId, {
+        const entry: FlowEntry = {
           id: flowId,
           version: version ?? "0.0.0",
           stepIds,
@@ -409,12 +412,33 @@ function collectFlows(
           ...(findings.length > 0 && { loopIdentityFindings: findings }),
           ...(nonDet.length > 0 && { nonDeterministicCalls: nonDet }),
           ...(hasReach && { runnerReach: flowReach }),
-        } satisfies FlowEntry);
+        };
+        flowsInModule++;
+        if (!hasReach) emptyReach.push(entry);
+        pluginState.flows.set(flowId, entry);
       }
     }
 
     ts.forEachChild(node, visit);
   });
+
+  // A PURE runner — one that never touches ctx (`async (_ctx, input) => reduce(input)`) — reaches
+  // nothing, and an empty reach used to be dropped, so verify reported the flow as "no runner-body
+  // analysis" although its body was read. An empty reach is only an ANALYSED empty when this module
+  // holds the flow's runner: a runner the analysis cannot follow is reported `unresolved`, never
+  // silently skipped, so `runners > 0` with an empty reach means every runner here was read. The
+  // reach is module-wide, so with several flows in one module a runner found here may belong to a
+  // sibling while this flow's runner lives elsewhere; that case stays unclaimed (still reported as
+  // not analysed) rather than read as clean.
+  if (
+    flowsInModule === 1 &&
+    emptyReach.length === 1 &&
+    region !== undefined &&
+    region.runners > 0
+  ) {
+    const [entry] = emptyReach;
+    if (entry !== undefined) entry.runnerReach = region.reach;
+  }
 }
 
 function detectSuspendPoints(
