@@ -16,7 +16,14 @@ import {
 } from "./continuation";
 import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
-import { assertDeliverable, cursorFor, cursorsOf, dedupeKeyOf, topicProblem } from "./inbox";
+import {
+  assertDeliverable,
+  cursorFor,
+  cursorsOf,
+  dedupeKeyOf,
+  sealedEnvelopeIn,
+  topicProblem,
+} from "./inbox";
 import { WaitsPark, markKernelHumanPark } from "./kernelPark";
 import { discardDecisionId } from "./strayPassthroughs";
 import { SealedPayloadUnreadableError } from "./types";
@@ -407,6 +414,7 @@ export class WorkflowContextImpl implements WorkflowContext {
   private idleWaiters: Array<() => void> = [];
   private frozen = false;
   private sealed = false;
+  private sealedReplayRefusalError: SealedPayloadUnreadableError | undefined;
   private sealedByCancel = false;
   private warnedSealed = false;
   private readonly parkDrainMs: number;
@@ -637,6 +645,11 @@ export class WorkflowContextImpl implements WorkflowContext {
    * appends reaches the log. The barrier drains in-flight STEPS; user code between steps (an
    * `emit`, a `decide`) can still run after a branch settled, and must not follow the terminal.
    */
+  /** ADR 0130 — set when a replayed inbox answer was still sealed on this node: the attempt is refused. */
+  get sealedReplayRefusal(): SealedPayloadUnreadableError | undefined {
+    return this.sealedReplayRefusalError;
+  }
+
   seal(opts?: { cancel?: boolean }): void {
     this.sealedByCancel = opts?.cancel === true && !this.sealed;
     this.sealed = true;
@@ -1915,6 +1928,23 @@ export class WorkflowContextImpl implements WorkflowContext {
             { kind: String(rec.kind), name: String(rec.name) },
             { kind: arm.kind, name: arm.name }
           );
+        }
+        // ADR 0130 — a recorded inbox answer that is still a sealed envelope on THIS node means the
+        // node cannot open what a capable node journaled. Handing it to the flow would let the run
+        // complete with ciphertext as its data. Refuse this ATTEMPT: latch (a flow that swallows
+        // the rejection cannot get past it), seal the journal (nothing more is appended, and never
+        // an EXECUTION_FAILED: the execution stays where it was for a capable node).
+        if (arm.kind === "inbox" && sealedEnvelopeIn(rec.payload) !== "clean") {
+          const refusal = new SealedPayloadUnreadableError(
+            this.executionId,
+            arm.waitId,
+            arm.name,
+            sealedEnvelopeIn(rec.payload) === "unverified",
+            true
+          );
+          this.sealedReplayRefusalError = refusal;
+          this.seal();
+          throw refusal;
         }
         return Promise.resolve({
           arm: arm.index,

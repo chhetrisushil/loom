@@ -152,6 +152,7 @@ import {
   ResumeContendedError,
   ResumePayloadValidationError,
   ResumeRefusedError,
+  SealedPayloadUnreadableError,
   StartFencedOutError,
   StateMigrationError,
   TIMER_FIRED,
@@ -3666,25 +3667,27 @@ export class WorkflowRuntime {
         );
       }
     }
-    // ADR 0130 — send runs BEFORE the store seals (sealing happens inside the event-store wrapper at
-    // append), so a raw payload carrying `__loomEnc` here is ALWAYS forged or relayed ciphertext:
-    // never a genuine seal. Refused, or a forged envelope would be indistinguishable from a real
-    // one at delivery. A payload too large/deep to check is refused too (fail closed).
-    const envelope = sealedEnvelopeIn(message.payload);
-    if (envelope !== "clean") {
-      throw new InboxMessageRefusedError(
-        head.id,
-        envelope === "sealed"
-          ? 'the payload carries a "__loomEnc" envelope, which only the configured crypto store may produce'
-          : "the payload is too large or too deeply nested to be checked for a sealed envelope"
-      );
-    }
     // Bytes, not UTF-16 code units: the limit protects the store and the owner's log.
     const size = json === undefined ? 0 : Buffer.byteLength(json, "utf8");
     if (size > this.inboxMaxPayloadBytes) {
       throw new InboxMessageRefusedError(
         head.id,
         `the payload is ${size} bytes, over inboxMaxPayloadBytes (${this.inboxMaxPayloadBytes})`
+      );
+    }
+    // ADR 0130 — send runs BEFORE the store seals (sealing happens inside the event-store wrapper at
+    // append), so a raw payload carrying `__loomEnc` here is ALWAYS forged or relayed ciphertext:
+    // never a genuine seal. Refused, or a forged envelope would be indistinguishable from a real
+    // one at delivery. A payload too large/deep to check is refused too (fail closed).
+    // Walk the JSON the store will persist (a `toJSON` can mint an envelope the live object does
+    // not show), AFTER the byte-size check so the parse is bounded by `inboxMaxPayloadBytes`.
+    const envelope = sealedEnvelopeIn(json === undefined ? undefined : JSON.parse(json));
+    if (envelope !== "clean") {
+      throw new InboxMessageRefusedError(
+        head.id,
+        envelope === "sealed"
+          ? 'the payload carries a "__loomEnc" envelope, which only the configured crypto store may produce'
+          : "the payload is too large or too deeply nested to be checked for a sealed envelope"
       );
     }
     if (typeof message.messageId === "string" && message.messageId.length > MAX_MESSAGE_ID_LENGTH) {
@@ -4827,10 +4830,22 @@ export class WorkflowRuntime {
     hint?: { parked?: ExecutionState }
   ): Promise<{ handle?: ExecutionHandle; contended: boolean }> {
     let forceFence = false;
-    for (let attempt = 1; attempt <= NOTIFY_ATTEMPTS; attempt++) {
-      const r = await this.notifyAttempt(executionId, attempt === 1 ? hint : undefined, forceFence);
-      if (r !== RETRY && r !== RETRY_FENCED) return r;
-      if (r === RETRY_FENCED) forceFence = true;
+    try {
+      for (let attempt = 1; attempt <= NOTIFY_ATTEMPTS; attempt++) {
+        const r = await this.notifyAttempt(
+          executionId,
+          attempt === 1 ? hint : undefined,
+          forceFence
+        );
+        if (r !== RETRY && r !== RETRY_FENCED) return r;
+        if (r === RETRY_FENCED) forceFence = true;
+      }
+    } catch (err) {
+      // ADR 0130: a sealed message this node cannot open leaves a durable due-now row (whichever
+      // caller got here: the post-park read, a send's wake, a timer poll), so a node that CAN open
+      // it picks the message up on its next poll without waiting for a new send. Then it reports.
+      if (err instanceof SealedPayloadUnreadableError) await this.markContended(executionId);
+      throw err;
     }
     return this.markContended(executionId);
   }
@@ -6819,6 +6834,8 @@ export class WorkflowRuntime {
         // ADR 0109 — an accepted `continueAsNew` rejects `continueSignal` the same way, so a flow
         // that swallowed the sentinel still rotates.
         const output = await Promise.race([runner(ctx, input), ctx.parkSignal, ctx.continueSignal]);
+        // ADR 0130 — a flow that swallowed the replay refusal must not complete on it.
+        if (ctx.sealedReplayRefusal !== undefined) throw ctx.sealedReplayRefusal;
 
         // A cancel (a deadline that had already passed when a parked execution was resumed, say)
         // owns the outcome: EXECUTION_CANCELLED is committed and nothing may follow it.
@@ -6843,6 +6860,20 @@ export class WorkflowRuntime {
         const refused = err instanceof FlowReplayDivergenceError ? err : divergence.latched;
         if (refused !== undefined && !cancelled && !journal.failed) {
           await refuseDiverged(refused);
+          return;
+        }
+        // ADR 0130 — a replayed inbox answer is still sealed on this node: refuse the ATTEMPT.
+        // Nothing is appended (the context sealed the journal at the refusal), no EXECUTION_FAILED
+        // (terminal: it would strand the execution for a capable node), no park, no completion.
+        const sealedRefusal = ctx.sealedReplayRefusal;
+        if (sealedRefusal !== undefined && !cancelled && !journal.failed) {
+          ctx.seal();
+          await journal.drain().catch(() => {});
+          this.onWarn(
+            `execution "${executionId}": run attempt REFUSED, NOT failed: ${sealedRefusal.message}`
+          );
+          rejectSuspend(sealedRefusal);
+          rejectCompletion(sealedRefusal);
           return;
         }
         if (err instanceof ContinueAsNewSignal) {

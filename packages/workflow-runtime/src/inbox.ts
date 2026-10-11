@@ -113,7 +113,7 @@ export function dedupeKeyOf(m: { messageId: string; sender: InboxMessage["sender
 export const SEALED_WALK_BUDGET = 100_000;
 
 /**
- * Does `payload` hold a ciphertext envelope (a plain object with an OWN `__loomEnc` key), at the top
+ * Does `payload` hold a ciphertext envelope (a plain object with an OWN `__loomEnc` key whose value is a STRING, the algorithm id; the check is algorithm-independent and a non-string value is not an envelope), at the top
  * or nested at any depth (a deployment may seal a nested field, `payload.secret`)? `"unverified"`
  * when the walk ran out of budget before finishing: the caller must treat it as not-clean (fail
  * closed). The kernel does not depend on the crypto plugin, so this is the envelope's SHAPE only.
@@ -126,7 +126,12 @@ export function sealedEnvelopeIn(payload: unknown): "clean" | "sealed" | "unveri
     const next: unknown[] = [];
     for (const x of queue) {
       if (++seen > SEALED_WALK_BUDGET) return "unverified";
-      if (Object.hasOwn(x as object, "__loomEnc")) return "sealed";
+      if (
+        Object.hasOwn(x as object, "__loomEnc") &&
+        typeof (x as { __loomEnc: unknown }).__loomEnc === "string"
+      ) {
+        return "sealed";
+      }
       for (const child of Object.values(x as object)) {
         if (typeof child === "object" && child !== null) next.push(child);
       }
