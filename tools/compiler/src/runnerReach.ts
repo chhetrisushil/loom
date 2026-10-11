@@ -832,6 +832,8 @@ interface CtxModel {
   members: Map<string, string>;
   /** Shapes that bind ctx where it cannot be followed (nested/computed patterns, array patterns). */
   unresolved: Set<string>;
+  /** How many runner functions `collectRunners` found and followed in this region. */
+  runners: number;
 }
 
 /**
@@ -984,7 +986,7 @@ function collectCtx(root: ts.Node, functions: Map<string, FnNode>): CtxModel {
       }
     }
   }
-  return { names, members, unresolved };
+  return { names, members, unresolved, runners: found.runners.length };
 }
 
 /** The leftmost identifier of a member/call chain (`planner` for `planner.a.b(c).d`). */
@@ -1066,6 +1068,22 @@ export function analyzeReachNode(
   location?: string,
   options: AnalyzeReachOptions = {}
 ): RunnerReach {
+  return analyzeReachRegion(root, location, options).reach;
+}
+
+/**
+ * {@link analyzeReachNode} plus how many runner functions the region declares and the analysis
+ * followed. An EMPTY reach is ambiguous on its own: "the runner reaches nothing" and "there is no
+ * runner here to read" (a flow whose runner is registered from another module) look the same. A
+ * runner that is NOT followable is never silent — it is reported as `unresolved` ("runner not
+ * analysable: …") — so an empty reach with `runners > 0` means every runner here was read and none
+ * reaches a step, a suspend or a ctx hand-off: a pure runner, analysed.
+ */
+export function analyzeReachRegion(
+  root: ts.Node,
+  location?: string,
+  options: AnalyzeReachOptions = {}
+): { reach: RunnerReach; runners: number } {
   const scan = scanDeclarations(root);
   const functions = scan.fns;
   const constInits = scan.inits;
@@ -1851,7 +1869,10 @@ export function analyzeReachNode(
   }
 
   visit(root);
-  return { steps, unresolved, suspends, ...(escapes.length > 0 && { escapes }) };
+  return {
+    reach: { steps, unresolved, suspends, ...(escapes.length > 0 && { escapes }) },
+    runners: ctx.runners,
+  };
 }
 
 /**
