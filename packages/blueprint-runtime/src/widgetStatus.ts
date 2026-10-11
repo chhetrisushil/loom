@@ -2,7 +2,7 @@ import type { BindingStatus, Widget } from "./types";
 
 // ── The canonical binding-status matrix, as one pure decision ─────────────────
 //
-// error > empty > contract > stale > pending/loading > ready (IR 2.0.0; `empty` since 2.3.0,
+// redacted > error > empty > contract > stale > pending/loading > ready (IR 2.0.0; `empty` since 2.3.0,
 // ADR 0100). Every first-party renderer (React, terminal, DOM) used to carry its own copy of
 // this ordering, its `degradedFrom` chain and its tolerance for a malformed `source`. They now
 // DRAW from this descriptor and own only their output format (ADR 0127). The function reads
@@ -17,7 +17,14 @@ export type WidgetValueCheck = (
 ) => { code: string; message: string } | undefined;
 
 /** What a widget with a declared status channel is showing. */
-export type WidgetShownState = "error" | "empty" | "stale" | "pending" | "loading" | "ready";
+export type WidgetShownState =
+  | "redacted"
+  | "error"
+  | "empty"
+  | "stale"
+  | "pending"
+  | "loading"
+  | "ready";
 
 /** The decided status of one widget. `inert` = no status channel declared (IR 1.0.0 behaviour). */
 export type WidgetStatusDescriptor =
@@ -41,6 +48,7 @@ export type WidgetStatusDescriptor =
     };
 
 const DEFAULT_MESSAGE: Record<WidgetShownState, string> = {
+  redacted: "redacted",
   error: "error",
   empty: "no data",
   stale: "stale",
@@ -75,6 +83,19 @@ export function describeWidgetStatus(
   status: BindingStatus | undefined,
   check?: WidgetValueCheck
 ): WidgetStatusDescriptor {
+  // IR 2.5.0: a redacted widget outranks everything — it is decided before `value`, `status`,
+  // `check`, `binding`, `title` or a malformed `source.degradedFrom` is looked at, so none of them
+  // can reach a renderer's output. The message is the constant, never data from the widget.
+  if ((widget.source as { redacted?: unknown } | undefined)?.redacted === true) {
+    return {
+      tag: "redacted",
+      message: DEFAULT_MESSAGE.redacted,
+      finding: undefined,
+      hasValue: false,
+      showBody: false,
+      degradedChain: undefined,
+    };
+  }
   const chain = degradedChainOf(widget);
   if (chain === INVALID)
     return { tag: "invalid", reason: "source.degradedFrom is not an array of objects" };

@@ -260,3 +260,59 @@ retrofitting a fourth structural field onto artifacts that predate it.
   syscall changed. `@loom/spec`'s capability registry lists this ADR in `NOT_A_CAPABILITY` for
   the same reason ADR 0096 is there — a declared IR version and two renderer options are a
   contract and an adapter surface, not a runtime subsystem the registry grades.
+
+
+## Amendment 2026-10-11 — `WidgetSource.redacted` (IR 2.5.0): the Blueprint records the RESULT of an audience decision
+
+**Why.** D4 shipped `DataBinding.sensitivity` as a declared, unenforced fact and D5 kept audience
+off the Blueprint. loom-ui's roadmap slice 7 (`audience`: `"viewer" | "broadcast"`) is the
+enforcer: its `compile` withholds or redacts a widget whose binding `sensitivity` exceeds what the
+surface's audience may see. Without a mark on the artifact, a renderer or downstream consumer
+cannot tell "withheld for this audience" from an ordinary widget, and the standing rule applies:
+grow the IR (no reserved prop, no side channel). loom-ui slice 7 is the producer; this change is
+the IR it needs, and nothing in loom produces it.
+
+**The field.** `WidgetSource.redacted?: true` (additive; `BLUEPRINT_IR_VERSION` 2.4.0 to **2.5.0**,
+a MINOR; `WIDGET_SOURCE` gains `redacted: "optional"`; 2.4.0 stays in `IR_VERSIONS_READ_AS_IS`, so
+`upgradeBlueprint` is identity on it).
+
+**What `redacted: true` asserts.** The compiler withheld this widget's content for the audience of
+the surface it rendered. It is a statement about the artifact's content, not about who is asking.
+- Renderers **MUST** draw no value and no label derived from the widget: not `title`, `props`,
+  `binding`, the resolved value, any status finding, or `kind`. They **SHOULD** draw the redaction
+  marker instead. All three first-party renderers do: `⊘ redacted` (React and DOM:
+  `data-binding-state="redacted"` plus a `role="status"` `data-binding-marker="redacted"` element;
+  terminal: the line `⊘ redacted`). The marker text is a constant, never data from the widget, and
+  no `data-source-*`, `data-degraded` or `title` attribute is emitted for it.
+- `describeWidgetStatus` gains the `redacted` tag and puts it **first** in the precedence
+  (redacted > error > empty > contract > stale > pending/loading > ready). It is decided before the
+  value, the status, the `check`, the `binding`, or a malformed `degradedFrom` is read, so none of
+  them can reach a renderer's output; `check` is not called.
+- Only `true` is legal. Absent means not redacted; `false` (or anything else) is
+  `redacted-invalid`, and renderers treat anything but `true` as not redacted.
+
+**Relation to `degradedFrom` and `binding`: mutually exclusive.** A redacted widget has **no
+`binding`** and **no `source.degradedFrom`**. A binding leaves the projection id and path (what was
+withheld) on the artifact; a degrade chain leaves the original semantic types. `validateBlueprint`
+enforces this with the new error `redacted-invalid` (also raised for a non-`true` value). The same
+rule keeps a redacted widget out of the renderers' projection subscriptions.
+
+**What a redacted placeholder carries.** `source.type` and `source.version` stay required (the
+shape contract is unchanged), but the original type may itself be sensitive (`SalaryTrend` says a
+great deal), so the compiler sets the generic constants `{ type: "redacted", version: "1",
+redacted: true }`. The rest is exactly today's loom-ui placeholder: an opaque `r_` alias id, the
+same grid cell, no binding, no label, no original props. Which `kind` a placeholder uses is the
+compiler's (loom-ui uses its `Note`); renderers never draw it, and a catalogue must declare it for
+`validateBlueprint` to walk it (an unknown kind is `unknown-kind`, unchanged).
+
+**D5 holds.** The Blueprint has no `audience` field and gains none (the manifests are asserted
+free of it). `redacted` records the RESULT of resolving audience for one rendered surface; the
+question ("who may see this") still varies by viewer and channel and lives in the compiler. Two
+artifacts compiled for different audiences differ in content, hence in content address, as any
+two different compositions do.
+
+**Still not enforced by loom.** `sensitivity` remains declared-not-enforced (D4): loom does not
+decide what to redact, it carries and draws the decision. A renderer cannot tell a legitimately
+redacted widget from a forged one; the guarantee that the withheld content is absent from the
+artifact is the compiler's, and `redacted-invalid` checks the two leaks (`binding`,
+`degradedFrom`) that a well-formed placeholder cannot have.

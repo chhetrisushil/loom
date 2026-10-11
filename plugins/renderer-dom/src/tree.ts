@@ -92,6 +92,17 @@ function drawWidgetUnsafe(e: WidgetEntry, ctx: Ctx): void {
   // file owns only the markup. A malformed widget throws into `drawWidget`'s error placeholder.
   const d = describeWidgetStatus(widget, value, status, ctx.check);
   if (d.tag === "invalid") throw new TypeError(`renderer-dom: ${d.reason}`);
+  if (d.tag === "redacted") {
+    // IR 2.5.0: withheld for the surface's audience. Only the constant marker is drawn; no body,
+    // no title, and no source/degraded attributes (the original type may itself be sensitive).
+    for (const a of ["data-source-type", "data-source-version", "data-degraded", "title"])
+      e.host.removeAttribute(a);
+    e.host.replaceChildren(
+      h(doc, "div", { "data-binding-marker": "redacted", role: "status" }, `⊘ ${d.message}`)
+    );
+    e.host.setAttribute("data-binding-state", "redacted");
+    return;
+  }
   const state = d.tag === "inert" ? undefined : d.tag;
   const label = widget.title ?? widget.kind;
 

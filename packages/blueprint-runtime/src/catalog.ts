@@ -140,6 +140,12 @@ export type BlueprintFindingCode =
   | "sensitivity-unknown"
   /** `widget.source` (or a `degradedFrom` entry) is missing `type` or `version`. */
   | "source-invalid"
+  /**
+   * `source.redacted` (IR 2.5.0, ADR 0097 amendment) is present but not `true`, or is `true` on a
+   * widget that still carries a `binding` or a `degradedFrom` chain — both would leave the
+   * withheld content (a projection id, a path, the original type) on the artifact.
+   */
+  | "redacted-invalid"
   /** `blueprint.irVersion` is set but not a version this module recognizes. */
   | "ir-version-unknown";
 
@@ -561,7 +567,12 @@ export function validateBlueprint(
     if (source !== undefined) {
       const src =
         source !== null && typeof source === "object"
-          ? (source as { type?: unknown; version?: unknown; degradedFrom?: unknown })
+          ? (source as {
+              type?: unknown;
+              version?: unknown;
+              degradedFrom?: unknown;
+              redacted?: unknown;
+            })
           : undefined;
       const degradedFrom = Array.isArray(src?.degradedFrom) ? src.degradedFrom : undefined;
       // Typed as `string`, so a NON-string is exactly what a hand-assembled artifact gets wrong.
@@ -588,6 +599,30 @@ export function validateBlueprint(
           kind,
           message: `widget.source is missing a non-empty string "type" or "version" — either on the source itself or a degradedFrom entry (which must be an array)`,
         });
+      }
+      // IR 2.5.0: `redacted` is `true` or absent, and a redacted widget carries nothing it
+      // withheld. Checked on any object `source`, whether or not it was otherwise valid.
+      if (src !== undefined && "redacted" in src) {
+        const leaks: string[] = [];
+        if (widget.binding !== undefined) leaks.push("binding");
+        if (src.degradedFrom !== undefined) leaks.push("source.degradedFrom");
+        if (src.redacted !== true) {
+          findings.push({
+            code: "redacted-invalid",
+            severity: "error",
+            nodeId: id,
+            kind,
+            message: `widget.source.redacted must be true or absent, got ${JSON.stringify(src.redacted)}`,
+          });
+        } else if (leaks.length > 0) {
+          findings.push({
+            code: "redacted-invalid",
+            severity: "error",
+            nodeId: id,
+            kind,
+            message: `a redacted widget must carry no ${leaks.join(" and no ")} — it would leave the withheld content on the artifact`,
+          });
+        }
       }
     }
   });

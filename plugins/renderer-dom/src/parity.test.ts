@@ -277,4 +277,85 @@ describe("renderer parity: the status matrix on dom / react / terminal", () => {
       expect(out).not.toContain("oops");
     }
   });
+  // IR 2.5.0 (ADR 0097 amendment): a widget redacted for the surface's audience draws ONE constant
+  // marker on every surface. The input is deliberately hostile — the title, props, binding, value,
+  // finding, kind and degrade chain all carry would-be-sensitive text — to prove the render path
+  // never reads them, whatever a (non-validating) caller hands it.
+  describe("redacted (IR 2.5.0)", () => {
+    const hostile = {
+      ...MetricCard({
+        id: "r_1",
+        title: "SECRET-TITLE",
+        binding: { projectionId: "p", path: "v", status: { path: "s" } },
+      }),
+      props: { unit: "SECRET-PROP" },
+      source: {
+        type: "SECRET-TYPE",
+        version: "SECRET-VER",
+        redacted: true,
+        degradedFrom: [{ type: "SECRET-FROM", version: "9" }],
+      },
+    } as never;
+    const clean = {
+      _tag: "Widget",
+      id: "r_2",
+      kind: "StatusBadge",
+      props: {},
+      source: { type: "redacted", version: "1", redacted: true },
+    } as never;
+    const bp = (w: never) =>
+      blueprint$({
+        id: "red",
+        title: "Red",
+        layout: stack({ children: [w] }),
+        projections: ["p"],
+      });
+    const stateMap = new Map<string, unknown>([
+      [
+        "p",
+        {
+          v: "SECRET-VALUE",
+          s: { state: "error", finding: { code: "c", message: "SECRET-FINDING" } },
+        },
+      ],
+    ]);
+
+    for (const [name, w] of [
+      ["a hostile input", hostile],
+      ["the clean placeholder", clean],
+    ] as const) {
+      it(`${name}: the same marker, and nothing of the widget, on all three`, () => {
+        const check = () => ({ code: "x", message: "SECRET-CHECK" });
+        const dom = renderBlueprintToDom(bp(w), stateMap, { check });
+        const react = renderReact(bp(w), stateMap, check);
+        const term = renderBlueprintToString(bp(w), stateMap, {
+          registry: defaultTerminalRegistry,
+          check,
+        });
+        for (const host of [dom, react]) {
+          expect(
+            host.querySelector("[data-binding-state]")?.getAttribute("data-binding-state")
+          ).toBe("redacted");
+          expect(host.querySelector('[data-binding-marker="redacted"]')?.textContent).toBe(
+            "⊘ redacted"
+          );
+          expect(host.innerHTML).not.toMatch(/SECRET|data-source|data-degraded|title=/);
+        }
+        expect(term).toContain("⊘ redacted");
+        expect(term).not.toMatch(/SECRET/);
+        // The marker is the whole widget: no body, no label on any surface.
+        expect(dom.textContent).toContain("⊘ redacted");
+        expect(dom.textContent).not.toMatch(/SECRET|CPU/);
+      });
+    }
+
+    it("redacted: false is an ordinary widget on all three", () => {
+      const w = {
+        ...(clean as object),
+        source: { type: "t", version: "1", redacted: false },
+      } as never;
+      const t = renderBlueprintToString(bp(w), new Map(), { registry: defaultTerminalRegistry });
+      expect(t).not.toContain("⊘");
+    });
+  });
 });

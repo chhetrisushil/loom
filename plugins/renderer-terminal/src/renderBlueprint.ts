@@ -107,6 +107,8 @@ export function renderBlueprintToString(
       const d = describeWidgetStatus(widget, value, status, check);
       // A malformed `source` is the error placeholder (as DOM and React), never a throw.
       if (d.tag === "invalid") return `[Renderer for ${widget.kind} failed]`;
+      // IR 2.5.0: withheld for the surface's audience — a constant marker, no title, no value.
+      if (d.tag === "redacted") return `⊘ ${d.message}`;
       let text: string;
       if (d.tag === "inert") text = inner();
       else if (d.tag === "error") text = `✗ ${title}: ${d.message}`;
