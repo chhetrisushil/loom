@@ -9,7 +9,7 @@ import {
 } from "@loom/plugin-crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inboxBackends } from "./__tests__/r2Backends";
-import { build, eventsOf, flow, until } from "./__tests__/r2Harness";
+import { build, eventsOf, flow, retirable, until } from "./__tests__/r2Harness";
 import { inboxStreamId } from "./inbox";
 import { InboxMessageRefusedError } from "./types";
 
@@ -139,8 +139,10 @@ for (const backend of inboxBackends("erase")) {
     it("P3-2: a log written BEFORE the path was sealed (plaintext consumption) still replays beside sealed ones", async () => {
       const raw = backend.make();
       const keys: KeyStore = new InMemoryKeyStore();
-      const unsealed = new EncryptingEventStore(raw.eventStore, keys, { sensitive: {}, subjectOf });
-      const before = build({}, { ...raw, eventStore: unsealed });
+      const unsealed = retirable(
+        new EncryptingEventStore(raw.eventStore, keys, { sensitive: {}, subjectOf })
+      );
+      const before = build({}, { ...raw, eventStore: unsealed.store });
       const f = flow("w", async (ctx) => {
         const a = unwrapTainted(await ctx.receive<string>("a"));
         const b = unwrapTainted(await ctx.receive<string>("b"));
@@ -150,7 +152,18 @@ for (const backend of inboxBackends("erase")) {
       const e = id();
       await (await before.rt.start(f, {}, { executionId: e })).waitForSuspend();
       await before.rt.send(e, { topic: "a", payload: "plain-a", messageId: "a1" });
-      await until(async () => (await eventsOf(raw.eventStore, e, "MESSAGE_CONSUMED")).length === 1);
+      // Wait for the WHOLE exchange on the old deployment: "a" consumed AND the flow parked again on
+      // "b". The consumption alone is not enough: the old runtime is still running the flow, and its
+      // next `receive("b")` reads the inbox through ITS store, which does not open the sealed path.
+      await until(
+        async () =>
+          (await eventsOf(raw.eventStore, e, "MESSAGE_CONSUMED")).length === 1 &&
+          (await before.rt.loadState(e))?.status === "suspended"
+      );
+      // ...then the old deployment goes away. A park is followed by a fire-and-forget re-read of the
+      // inbox (ADR 0110 D5 closure 2); left alive, that read could consume "b" through the unsealed
+      // store and hand the flow the ciphertext envelope (`b.length` undefined).
+      await unsealed.retire();
       // crypto is now turned on (a redeploy): the next consumption is sealed
       const sealedStore = new EncryptingEventStore(raw.eventStore, keys, {
         sensitive: SENSITIVE,

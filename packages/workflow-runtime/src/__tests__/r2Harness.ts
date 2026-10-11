@@ -242,3 +242,37 @@ export function crashHarness(
     },
   };
 }
+
+/**
+ * A store a test can RETIRE, to model the process that owns it going away (a redeploy, a crash):
+ * `retire()` refuses every call made after it and resolves once every call made before it has
+ * settled, so nothing that process started can still read or write once it returns. A runtime
+ * merely left alive is NOT gone: it keeps running its in-flight work (a resumed flow, the
+ * fire-and-forget closure-2 re-read after a park) against its own store.
+ */
+export function retirable(store: EventStore): { store: EventStore; retire(): Promise<void> } {
+  let retired = false;
+  const inFlight = new Set<Promise<unknown>>();
+  const wrapped = new Proxy(store, {
+    get(target, key, receiver) {
+      const value = Reflect.get(target, key, receiver);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => {
+        if (retired) return Promise.reject(new Error(`store retired: ${String(key)}`));
+        const result = value.apply(target, args);
+        if (!(result instanceof Promise)) return result;
+        inFlight.add(result);
+        const forget = () => inFlight.delete(result);
+        result.then(forget, forget);
+        return result;
+      };
+    },
+  });
+  return {
+    store: wrapped,
+    retire: async () => {
+      retired = true;
+      await Promise.allSettled([...inFlight]);
+    },
+  };
+}
