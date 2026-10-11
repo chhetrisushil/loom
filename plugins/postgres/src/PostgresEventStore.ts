@@ -87,6 +87,13 @@ export interface PostgresEventStoreOptions {
   backfillParkFences?: boolean;
   /** ADR 0129 — receives the one-per-boot WARNING when the incarnation install did not happen. Default `console.warn`. */
   onWarn?: (message: string) => void;
+  /**
+   * Upper bound (ms) on the per-delivery lookup a cross-node NOTIFY triggers. A lookup that never
+   * returns (a half-open socket; the pool has no statement timeout) would otherwise block every
+   * later delivery for that execution; past the bound the one delivery is dropped (with an
+   * `onWarn`) and the queue proceeds. The log stays authoritative. Default 30000.
+   */
+  deliveryLookupTimeoutMs?: number;
   /** ADR 0129 — minimum ms between re-probes for a missing `events.incarnation`. Default 30000. */
   incarnationRecheckMs?: number;
   /** Injectable clock (ms) for the re-probe backoff. Default `Date.now`. */
@@ -226,6 +233,8 @@ export class PostgresEventStore implements EventStore {
    * tail and settle, so the map holds only executions with a delivery in flight.
    */
   private readonly deliveryTail = new Map<string, Promise<void>>();
+  private readonly deliveryLookupTimeoutMs: number;
+  private readonly warn: (message: string) => void;
   private readonly notifyBuckets: number;
   /** Executions subscribed per bucket, so we LISTEN on first and UNLISTEN on last. */
   private readonly bucketRefs = new Map<number, number>();
@@ -238,6 +247,8 @@ export class PostgresEventStore implements EventStore {
   constructor(config: PgConfig, options: PostgresEventStoreOptions = {}) {
     this.connConfig = config;
     this.notifyBuckets = Math.max(1, options.notifyBuckets ?? 16);
+    this.deliveryLookupTimeoutMs = Math.max(1, options.deliveryLookupTimeoutMs ?? 30_000);
+    this.warn = options.onWarn ?? ((m) => console.warn(m));
     this.subscribers = new SubscriberRegistry({
       onInterestChange: (executionId, kind) => this.onInterestChange(executionId, kind),
     });
@@ -1157,10 +1168,16 @@ export class PostgresEventStore implements EventStore {
     if (namespace != null && this.namespace !== undefined && namespace !== this.namespace) return;
     // A bucket carries several executions; keep the local interest check.
     if (!this.subscribers.has(executionId)) return;
-    const fetched = this.pool.query<EventRow>(
-      "SELECT * FROM events WHERE execution_id = $1 AND sequence = $2 LIMIT 1",
-      [executionId, sequence]
-    );
+    const timer: { id?: ReturnType<typeof setTimeout> } = {};
+    const timedOut = new Promise<"timeout">((resolve) => {
+      timer.id = setTimeout(() => resolve("timeout"), this.deliveryLookupTimeoutMs);
+    });
+    const fetched = this.pool
+      .query<EventRow>("SELECT * FROM events WHERE execution_id = $1 AND sequence = $2 LIMIT 1", [
+        executionId,
+        sequence,
+      ])
+      .finally(() => clearTimeout(timer.id));
     // Observed below, after the predecessor; mark it handled now so a rejection that settles first
     // is not reported as unhandled in the meantime.
     fetched.catch(() => {});
@@ -1169,7 +1186,14 @@ export class PostgresEventStore implements EventStore {
       // `previous` never rejects (this body catches everything), so awaiting it only orders.
       if (previous !== undefined) await previous;
       try {
-        const row = (await fetched).rows[0];
+        const res = await Promise.race([fetched, timedOut]);
+        if (res === "timeout") {
+          this.warn(
+            `PostgresEventStore: cross-node lookup for ${executionId}#${sequence} exceeded ${this.deliveryLookupTimeoutMs}ms; delivery dropped (the log is authoritative)`
+          );
+          return;
+        }
+        const row = res.rows[0];
         if (row !== undefined) this.notifyLocal(executionId, rowToEnvelope(row));
       } catch {
         // A failed lookup (or a throwing handler) drops this one delivery, as before; it must not
