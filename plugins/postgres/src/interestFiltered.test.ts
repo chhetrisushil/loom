@@ -28,6 +28,15 @@ const evt = (executionId: string, sequence: number): EventEnvelope => ({
   payload: { sequence },
 });
 
+/** Wait on a condition, never a fixed sleep: cross-node delivery is asynchronous. */
+const until = async (cond: () => boolean | Promise<boolean>, ms = 10_000): Promise<void> => {
+  const end = Date.now() + ms;
+  while (!(await cond())) {
+    if (Date.now() > end) throw new Error("until: timed out");
+    await new Promise((r) => setTimeout(r, 25));
+  }
+};
+
 suite("interest-filtered NOTIFY delivery", () => {
   const pools: Pool[] = [];
   const track = (p: Pool): Pool => {
@@ -72,8 +81,8 @@ suite("interest-filtered NOTIFY delivery", () => {
     await reader.subscribe(ID("shared"), (e) => seen.push(e.sequence));
     await writer.append(evt(ID("shared"), 0));
     await writer.append(evt(ID("shared"), 1));
-    // Cross-process delivery is asynchronous.
-    await new Promise((r) => setTimeout(r, 500));
+    // Cross-process delivery is asynchronous: wait for both, then check the ORDER.
+    await until(() => seen.length >= 2);
     expect(seen).toEqual([0, 1]);
     await writer.close();
     await reader.close();
@@ -91,11 +100,11 @@ suite("interest-filtered NOTIFY delivery", () => {
     // Write to 40 OTHER executions. Pre-bucketing every one of these would have crossed the
     // wire to this node and been discarded client-side.
     for (let i = 0; i < 40; i++) await writer.append(evt(ID(`unwanted-${i}`), 0));
-    await new Promise((r) => setTimeout(r, 500));
-    expect(deliveries).toBe(0);
-    // The node is still live for what it DID ask for.
+    // The node is still live for what it DID ask for. The wanted append commits after every
+    // unwanted one and NOTIFYs arrive on the listener in commit order, so once it is delivered
+    // anything the unwanted appends could have caused has already happened.
     await writer.append(evt(ID("wanted"), 0));
-    await new Promise((r) => setTimeout(r, 500));
+    await until(() => deliveries >= 1);
     expect(deliveries).toBe(1);
     await writer.close();
     await reader.close();
@@ -113,10 +122,12 @@ suite("interest-filtered NOTIFY delivery", () => {
     expect(during.rows.length).toBe(1);
     expect(during.rows[0].channel.startsWith(`${NOTIFY_CHANNEL}_`)).toBe(true);
     un();
-    // UNLISTEN is queued behind the same serial chain as LISTEN.
-    await new Promise((r) => setTimeout(r, 200));
-    const after = await listener.query("SELECT channel FROM pg_listening_channels() AS channel");
-    expect(after.rows.length).toBe(0);
+    // UNLISTEN is queued behind the same serial chain as LISTEN: wait for the session to drop it.
+    await until(
+      async () =>
+        (await listener.query("SELECT channel FROM pg_listening_channels() AS channel")).rows
+          .length === 0
+    );
     await store.close();
   });
 
@@ -179,10 +190,56 @@ suite("interest-filtered NOTIFY delivery", () => {
     await reader.subscribe(ID("p"), (e) => seen.push(`p${e.sequence}`));
     await reader.subscribe(ID("q"), (e) => seen.push(`q${e.sequence}`));
     await writer.appendBatch([evt(ID("p"), 0), evt(ID("q"), 0), evt(ID("p"), 1)]);
-    await new Promise((r) => setTimeout(r, 600));
+    await until(() => seen.length >= 3);
     // EVERY envelope is delivered, not just each execution's tip — a batch must not
     // silently coalesce what per-event append would have delivered separately.
     expect([...seen].sort()).toEqual(["p0", "p1", "q0"]);
+    // ...and each execution's events in commit order.
+    expect(seen.filter((x) => x.startsWith("p"))).toEqual(["p0", "p1"]);
+    await writer.close();
+    await reader.close();
+  });
+
+  it("delivers an execution's events in commit order even when their lookups complete out of order", async () => {
+    // Each NOTIFY becomes an event through its own pooled SELECT, and those complete in any order
+    // under load: the cross-node subscriber used to receive [1, 0]. Force that interleaving: the
+    // reader's lookup of sequence 0 is held until its lookup of sequence 1 has COMPLETED.
+    const real = track(new Pool(scoped()));
+    const LOOKUP = "SELECT * FROM events WHERE execution_id = $1 AND sequence = $2";
+    let releaseZero!: () => void;
+    const oneDone = new Promise<void>((r) => {
+      releaseZero = r;
+    });
+    let held = 0;
+    const gated = {
+      options: real.options,
+      connect: real.connect.bind(real),
+      end: real.end.bind(real),
+      query: (async (text: string, params?: unknown[]) => {
+        if (typeof text === "string" && text.startsWith(LOOKUP) && params?.[0] === ID("ordered")) {
+          if (params[1] === 0) {
+            held++;
+            await oneDone;
+            return real.query(text, params);
+          }
+          if (params[1] === 1) {
+            const r = await real.query(text, params);
+            releaseZero();
+            return r;
+          }
+        }
+        return real.query(text, params as unknown[]);
+      }) as unknown as Pool["query"],
+    };
+    const writer = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: 8 });
+    const reader = new PostgresEventStore(gated as unknown as Pool, { notifyBuckets: 8 });
+    const seen: number[] = [];
+    await reader.subscribe(ID("ordered"), (e) => seen.push(e.sequence));
+    await writer.append(evt(ID("ordered"), 0));
+    await writer.append(evt(ID("ordered"), 1));
+    await until(() => seen.length >= 2);
+    expect(held).toBe(1); // the interleaving really was forced
+    expect(seen).toEqual([0, 1]);
     await writer.close();
     await reader.close();
   });

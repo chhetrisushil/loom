@@ -50,6 +50,16 @@ for (const backend of inboxBackends("topics")) {
         async () => (await h.rt.loadState(e, h.rt.systemOptions()))?.status === "completed",
         15000
       );
+    /**
+     * Retirement runs AFTER the terminal is durable (`retireInbox` follows the drain), so a status of
+     * `completed` does not yet mean the streams are gone: wait for the deletes, never assume them.
+     */
+    const retired = (h: Harness, streams: string[]) =>
+      until(async () => {
+        for (const stream of streams)
+          if ((await raw(h.eventStore, stream)).length > 0) return false;
+        return true;
+      }, 15000);
     const answers = async (h: Harness, e: string) =>
       Object.keys(
         ((await h.rt.loadState(e, h.rt.systemOptions()))?.variables._waitAnswers as object) ?? {}
@@ -147,13 +157,9 @@ for (const backend of inboxBackends("topics")) {
       await done(h, e);
       expect((await h.rt.loadState(e))?.variables._output).toEqual(["a", "b", "c", "d", "e"]);
       // The chain finished: every stream of it is gone (topic stream, legacy stream, registry).
-      for (const stream of [
-        inboxStreamId(e),
-        inboxTopicStreamId(e, "t"),
-        inboxRegistryStreamId(e),
-      ]) {
-        expect(await raw(h.eventStore, stream)).toEqual([]);
-      }
+      const streams = [inboxStreamId(e), inboxTopicStreamId(e, "t"), inboxRegistryStreamId(e)];
+      await retired(h, streams);
+      for (const stream of streams) expect(await raw(h.eventStore, stream)).toEqual([]);
     });
 
     it("rolling upgrade: before the switch a flag-off node writes the legacy stream and nothing is lost or doubled", async () => {
@@ -652,6 +658,7 @@ for (const backend of inboxBackends("topics")) {
       }
       await done(h, e);
       // Retirement deleted every stream the registry (live or drained) named.
+      await retired(h, [inboxTopicStreamId(e, "dyn-3")]);
       expect(await raw(h.eventStore, inboxTopicStreamId(e, "dyn-3"))).toEqual([]);
     }, 60_000);
 
