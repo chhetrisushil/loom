@@ -234,10 +234,10 @@ One spec (this document); **one implementation plan per phase**, each written af
 
 ### 6.2 Done
 
-- genUI has no private view model; the §5.2 guards are green.
-- genUI's full CI — typecheck, lint, i18n check, unit, integration, all 18 e2e journeys, `loom doctor` — is green against a pinned loom-ui.
-- Stored dashboards and blueprints are migrated and verified; the old tables are dropped.
-- loom-ui's `README` names genUI as its first consumer; `2026-09-21-loom-ui-design.md` §10 marks the slice-6 row shipped.
+- [x] genUI has no private view model; the §5.2 guards are green. *(genUI 6.3, guards G-A–G-J, PR #213.)*
+- [x] genUI's full CI — typecheck, lint, i18n check, unit, integration, all 22 e2e journeys (the suite grew from 18 during 6.2/6.3), `loom doctor` — is green against a pinned loom-ui. *(Local full gate on genUI main; loom-ui pin 7442532.)*
+- [ ] Stored dashboards and blueprints are migrated and verified; the old tables are dropped. *(Migrations and the verify-then-drop command `migrate:drop-legacy` shipped in genUI #200/#205/#212; the LIVE drop on production is run by the operator per the genUI README runbook — pending.)*
+- [x] loom-ui's `README` names genUI as its first consumer; `2026-09-21-loom-ui-design.md` §10 marks the slice-6 row shipped.
 
 ## 7. Non-goals
 
