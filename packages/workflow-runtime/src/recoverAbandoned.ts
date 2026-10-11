@@ -8,10 +8,15 @@ import {
   readRangeOf,
 } from "@loom/event-runtime";
 import type { TimerDispatcher } from "./TimerService";
+import { redriveDelayMs } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
-import { EXECUTION_RECOVERED, FlowReplayDivergenceError } from "./types";
+import {
+  EXECUTION_RECOVERED,
+  FlowReplayDivergenceError,
+  SealedPayloadUnreadableError,
+} from "./types";
 
 // ── Recovering executions whose supervisor died ───────────────────────────────
 //
@@ -303,6 +308,7 @@ export async function recoverAbandoned(
         continue;
       }
     }
+    if (sealedBackedOff(runtime, executionId)) continue; // ADR 0130: this node cannot open it
     options.onCandidate?.(executionId);
 
     // A dry run stops HERE, before the claim: acquiring a lease is a write, and it would
@@ -380,6 +386,14 @@ export async function recoverAbandoned(
         // gate, which later passes skip; report it as failed through `onError` rather than counting
         // a re-drive that went nowhere as recovered.
         if (refused instanceof FlowReplayDivergenceError) throw refused;
+        // ADR 0130 — the re-drive was refused because THIS node cannot open a recorded sealed
+        // answer: not recovered. Report it (rate-limited) and skip the execution on this node for
+        // a back-off window so the sweep does not re-drive it every pass.
+        if (refused instanceof SealedPayloadUnreadableError) {
+          sealedRefusalBackoff(runtime, executionId, refused, options);
+          summary.failed++;
+          continue;
+        }
       }
       summary.recovered++;
       options.onRecovered?.(executionId);
@@ -456,4 +470,43 @@ async function unproductiveRecoveries(
     if (decided !== undefined) return decided;
   }
   return n;
+}
+
+// ADR 0130 — per-runtime back-off for executions this node refused as sealed-unreadable. Bounded
+// (oldest evicted; beyond the cap an execution is simply re-tried, i.e. periodic polling).
+const SEALED_CAP = 1024;
+const sealedBackoffs = new WeakMap<
+  WorkflowRuntime,
+  Map<string, { attempt: number; nextTryAt: number }>
+>();
+
+function sealedBackedOff(runtime: WorkflowRuntime, executionId: string): boolean {
+  const e = sealedBackoffs.get(runtime)?.get(executionId);
+  return e !== undefined && e.nextTryAt > Date.now();
+}
+
+function sealedRefusalBackoff(
+  runtime: WorkflowRuntime,
+  executionId: string,
+  err: SealedPayloadUnreadableError,
+  options: RecoverAbandonedOptions
+): void {
+  let m = sealedBackoffs.get(runtime);
+  if (m === undefined) {
+    m = new Map();
+    sealedBackoffs.set(runtime, m);
+  }
+  const attempt = (m.get(executionId)?.attempt ?? 0) + 1;
+  m.delete(executionId); // re-insert at the end: eviction order = recency
+  if (m.size >= SEALED_CAP) {
+    const oldest = m.keys().next().value;
+    if (oldest !== undefined) m.delete(oldest);
+  }
+  m.set(executionId, {
+    attempt,
+    nextTryAt:
+      Date.now() +
+      Math.max(1, redriveDelayMs(attempt, { baseMs: 1000, capMs: 60_000, random: () => 1 })),
+  });
+  if (attempt === 1 || attempt % 16 === 0) options.onError?.(executionId, err);
 }

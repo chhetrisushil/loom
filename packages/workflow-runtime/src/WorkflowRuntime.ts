@@ -4844,7 +4844,13 @@ export class WorkflowRuntime {
       // ADR 0130: a sealed message this node cannot open leaves a durable due-now row (whichever
       // caller got here: the post-park read, a send's wake, a timer poll), so a node that CAN open
       // it picks the message up on its next poll without waiting for a new send. Then it reports.
-      if (err instanceof SealedPayloadUnreadableError) await this.markContended(executionId);
+      if (err instanceof SealedPayloadUnreadableError) {
+        try {
+          await this.markContended(executionId);
+        } catch {
+          // a failure writing the row must not mask the typed error
+        }
+      }
       throw err;
     }
     return this.markContended(executionId);
