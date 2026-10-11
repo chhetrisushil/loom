@@ -333,8 +333,8 @@ function collectFlows(
     return nonDetCalls;
   };
   const importResolver = createImportResolver(sourceFile, absolutePath);
-  let region: { reach: RunnerReach; runners: number } | undefined;
-  const analyzeRegion = (): { reach: RunnerReach; runners: number } => {
+  let region: { reach: RunnerReach; boundRunners: number } | undefined;
+  const analyzeRegion = (): { reach: RunnerReach; boundRunners: number } => {
     region ??= analyzeReachRegion(
       sourceFile,
       undefined,
@@ -424,17 +424,18 @@ function collectFlows(
 
   // A PURE runner — one that never touches ctx (`async (_ctx, input) => reduce(input)`) — reaches
   // nothing, and an empty reach used to be dropped, so verify reported the flow as "no runner-body
-  // analysis" although its body was read. An empty reach is only an ANALYSED empty when this module
-  // holds the flow's runner: a runner the analysis cannot follow is reported `unresolved`, never
-  // silently skipped, so `runners > 0` with an empty reach means every runner here was read. The
-  // reach is module-wide, so with several flows in one module a runner found here may belong to a
-  // sibling while this flow's runner lives elsewhere; that case stays unclaimed (still reported as
-  // not analysed) rather than read as clean.
+  // analysis" although its body was read. An empty reach is only an ANALYSED empty when a followed
+  // runner is BOUND to this flow: in the same object literal / class as its `flow$` call, or passed
+  // to `registerFlow(def, …)` with `def` naming it. A runner that is merely somewhere in the module
+  // (an unrelated object property, class field, nested function, another flow's registration) does
+  // not count, and a runner the analysis cannot follow is `unresolved`, never silently skipped. The
+  // reach is module-wide, so with several flows in one module the binding is ambiguous and the
+  // flow stays unclaimed (still reported as not analysed) rather than read as clean.
   if (
     flowsInModule === 1 &&
     emptyReach.length === 1 &&
     region !== undefined &&
-    region.runners > 0
+    region.boundRunners > 0
   ) {
     const [entry] = emptyReach;
     if (entry !== undefined) entry.runnerReach = region.reach;

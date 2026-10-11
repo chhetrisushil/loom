@@ -709,8 +709,47 @@ function isInertValue(e: ts.Expression): boolean {
 function collectRunners(
   root: ts.Node,
   functions: Map<string, FnNode>
-): { runners: ParamOwner[]; unresolved: string[] } {
+): { runners: ParamOwner[]; bound: Set<ParamOwner>; unresolved: string[] } {
   const out: ParamOwner[] = [];
+  /** Followed runners tied to a `flow$` definition (see {@link boundContext}). */
+  const bound = new Set<ParamOwner>();
+  let boundNow = false;
+  const isFlowCall = (e: ts.Expression | undefined): boolean => {
+    if (e === undefined) return false;
+    const u = unwrap(e);
+    if (!ts.isCallExpression(u)) return false;
+    const c = unwrap(u.expression);
+    return (
+      (ts.isIdentifier(c) ? c.text : ts.isPropertyAccessExpression(c) ? c.name.text : "") ===
+      "flow$"
+    );
+  };
+  /** An expression that IS a `flow$(...)` call, or an identifier bound once to a `const` holding one. */
+  const isFlowDefinition = (e: ts.Expression | undefined): boolean => {
+    if (e === undefined) return false;
+    const u = unwrap(e);
+    return isFlowCall(u) || (ts.isIdentifier(u) && isFlowCall(inits.get(u.text)));
+  };
+  /** Does this object literal / class body also hold a flow definition (`definition: flow$(...)`)? */
+  const holdsDefinition = (container: ts.Node | undefined): boolean => {
+    if (container === undefined) return false;
+    if (ts.isObjectLiteralExpression(container)) {
+      return container.properties.some(
+        (m) =>
+          (ts.isPropertyAssignment(m) && isFlowDefinition(m.initializer)) ||
+          (ts.isShorthandPropertyAssignment(m) && isFlowDefinition(m.name))
+      );
+    }
+    if (ts.isClassLike(container)) {
+      return container.members.some(
+        (m) => ts.isPropertyDeclaration(m) && isFlowDefinition(m.initializer)
+      );
+    }
+    return false;
+  };
+  const markBound = (f: ParamOwner): void => {
+    if (boundNow) bound.add(f);
+  };
   const unresolved: string[] = [];
   const inits = collectConstInits(root);
   const seenValues = new Set<ts.Node>();
@@ -748,22 +787,31 @@ function collectRunners(
   function runnerValue(e: ts.Expression | undefined): void {
     if (e === undefined) return;
     const u = unwrap(e);
-    if (seenValues.has(u)) return;
+    if (seenValues.has(u)) {
+      if (isFn(u)) markBound(u);
+      return;
+    }
     seenValues.add(u);
     if (isFn(u)) {
       out.push(u);
+      markBound(u);
     } else if (isInertValue(u)) {
       return;
     } else if (ts.isIdentifier(u)) {
       const f = functions.get(u.text);
       const init = inits.get(u.text);
-      if (f !== undefined) out.push(f);
-      else if (init !== undefined) runnerValue(init);
+      if (f !== undefined) {
+        out.push(f);
+        markBound(f);
+      } else if (init !== undefined) runnerValue(init);
       else refuse(u);
     } else if (ts.isCallExpression(u) || ts.isNewExpression(u)) {
       for (const a of u.arguments ?? []) {
         const f = argFn(a);
-        if (f !== undefined) out.push(f);
+        if (f !== undefined) {
+          out.push(f);
+          markBound(f);
+        }
       }
       // A LOCAL factory (`makeRunner(lib)` where `function makeRunner` is in this region) whose
       // every return is a function: those returned functions are the runners, nothing hidden.
@@ -771,8 +819,10 @@ function collectRunners(
       const factory =
         callee !== undefined && ts.isIdentifier(callee) ? functions.get(callee.text) : undefined;
       const returned = factory === undefined ? undefined : returnedFns(factory);
-      if (returned !== undefined) out.push(...returned);
-      else refuse(u);
+      if (returned !== undefined) {
+        out.push(...returned);
+        for (const r of returned) markBound(r);
+      } else refuse(u);
     } else if (ts.isConditionalExpression(u)) {
       runnerValue(u.whenTrue);
       runnerValue(u.whenFalse);
@@ -781,20 +831,29 @@ function collectRunners(
     }
   }
   function visit(node: ts.Node): void {
+    const prevBound = boundNow;
+    boundNow = false;
     if (ts.isPropertyAssignment(node) && propName(node.name) === "runner") {
+      boundNow = holdsDefinition(node.parent);
       runnerValue(node.initializer);
     } else if (ts.isShorthandPropertyAssignment(node) && node.name.text === "runner") {
+      boundNow = holdsDefinition(node.parent);
       runnerValue(node.name);
     } else if (ts.isMethodDeclaration(node) && propName(node.name) === "runner") {
       out.push(node);
+      boundNow = holdsDefinition(node.parent);
+      markBound(node);
     } else if (ts.isPropertyDeclaration(node) && propName(node.name) === "runner") {
+      boundNow = holdsDefinition(node.parent);
       runnerValue(node.initializer);
     } else if (ts.isGetAccessorDeclaration(node) && propName(node.name) === "runner") {
       // `get runner() { return async (c) => … }`: the returned function(s) are the runner, like a
       // local factory; a getter returning anything else is refused, never silently skipped.
       const returned = returnedFns(node);
-      if (returned !== undefined) out.push(...returned);
-      else {
+      if (returned !== undefined) {
+        out.push(...returned);
+        if (holdsDefinition(node.parent)) for (const r of returned) bound.add(r);
+      } else {
         const text = "runner not analysable: get runner()";
         if (!unresolved.includes(text)) unresolved.push(text);
       }
@@ -806,6 +865,8 @@ function collectRunners(
           ? node.expression.name.text
           : "") === "registerFlow"
     ) {
+      // Bound only when the definition argument IS (or names) this module's `flow$` call.
+      boundNow = isFlowDefinition(node.arguments[0]);
       runnerValue(node.arguments[1]);
     } else if (
       ts.isVariableDeclaration(node) &&
@@ -814,10 +875,12 @@ function collectRunners(
     ) {
       runnerValue(node.initializer);
     }
+    boundNow = false;
     ts.forEachChild(node, visit);
+    boundNow = prevBound;
   }
   visit(root);
-  return { runners: out, unresolved };
+  return { runners: out, bound, unresolved };
 }
 
 function propName(n: ts.PropertyName): string | undefined {
@@ -834,6 +897,8 @@ interface CtxModel {
   unresolved: Set<string>;
   /** How many runner functions `collectRunners` found and followed in this region. */
   runners: number;
+  /** How many of those runners are BOUND to a `flow$` definition (see `collectRunners`). */
+  boundRunners: number;
 }
 
 /**
@@ -986,7 +1051,13 @@ function collectCtx(root: ts.Node, functions: Map<string, FnNode>): CtxModel {
       }
     }
   }
-  return { names, members, unresolved, runners: found.runners.length };
+  return {
+    names,
+    members,
+    unresolved,
+    runners: found.runners.length,
+    boundRunners: found.bound.size,
+  };
 }
 
 /** The leftmost identifier of a member/call chain (`planner` for `planner.a.b(c).d`). */
@@ -1073,17 +1144,19 @@ export function analyzeReachNode(
 
 /**
  * {@link analyzeReachNode} plus how many runner functions the region declares and the analysis
- * followed. An EMPTY reach is ambiguous on its own: "the runner reaches nothing" and "there is no
- * runner here to read" (a flow whose runner is registered from another module) look the same. A
- * runner that is NOT followable is never silent — it is reported as `unresolved` ("runner not
- * analysable: …") — so an empty reach with `runners > 0` means every runner here was read and none
- * reaches a step, a suspend or a ctx hand-off: a pure runner, analysed.
+ * followed, and how many of them are BOUND to a `flow$` definition: declared in the same object
+ * literal / class as a `flow$(...)` (or a const holding one), or passed to `registerFlow(def, …)`
+ * whose `def` is a `flow$` call or names one. An EMPTY reach is ambiguous on its own: "the runner
+ * reaches nothing" and "no runner of THIS flow is here" (an unrelated runner elsewhere in the
+ * module, or one registered from another module) look the same. A runner that is NOT followable is
+ * never silent (`unresolved`), so an empty reach with `boundRunners > 0` means the flow's own
+ * runner was read and reaches no step, suspend or ctx hand-off: a pure runner, analysed.
  */
 export function analyzeReachRegion(
   root: ts.Node,
   location?: string,
   options: AnalyzeReachOptions = {}
-): { reach: RunnerReach; runners: number } {
+): { reach: RunnerReach; runners: number; boundRunners: number } {
   const scan = scanDeclarations(root);
   const functions = scan.fns;
   const constInits = scan.inits;
@@ -1872,6 +1945,7 @@ export function analyzeReachRegion(
   return {
     reach: { steps, unresolved, suspends, ...(escapes.length > 0 && { escapes }) },
     runners: ctx.runners,
+    boundRunners: ctx.boundRunners,
   };
 }
 
