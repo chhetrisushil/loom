@@ -66,7 +66,7 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
 
 - **GitHub Actions minutes are a budget.** CI runs once per READY pull request (drafts and pushes to
   `main` do not run; `workflow_dispatch` runs it by hand). Open PRs as **drafts**, iterate fix rounds
-  against the full LOCAL verify (`pnpm build && npx turbo test --force --concurrency=2 && pnpm typecheck
+  against the full LOCAL verify (`pnpm build && npx turbo test --force --concurrency=2 && pnpm typecheck && pnpm typecheck:tests
   && pnpm lint`), and mark the PR ready for review only when it is final. Never push just to "see CI".
 - **Writing tests — CI is concurrent and shared; a flaky test is a bug.** (Enforced by
   `packages/spec/src/testTiming.test.ts`; flakes are hunted ON DEMAND by `.github/workflows/flake-hunt.yml` — manual only, it costs N× CI minutes.)
@@ -84,6 +84,10 @@ wiring rationale (why `link:`/overrides and not git/npm deps) is in
     `listen(0)`. On macOS a wildcard bind can share a port with another process's 127.0.0.1 listener,
     and the client then talks to that stranger (enforced by `packages/spec/src/testServerBinding.test.ts`).
 
+- **`pnpm typecheck` does NOT see tests** (every package tsconfig excludes `*.test.ts`); **`pnpm typecheck:tests`**
+  runs each package's `tsconfig.test.json` (`noEmit`, tests included, siblings resolved from built `dist`, so
+  build first). A new package with tests needs a `tsconfig.test.json` + the script
+  (enforced by `packages/spec/src/testTypecheckCoverage.test.ts`).
 - Package manager: `pnpm@9.14.4` (pinned; use `corepack`). Build: `pnpm build`
   (turbo). Test: `pnpm test`. Lint: `pnpm lint` (biome).
 - **A package's tests import its siblings' built `dist`**, which is what a consumer

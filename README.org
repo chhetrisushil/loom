@@ -329,6 +329,7 @@ pnpm install     # install the workspace
 pnpm build       # build all packages (Turbo respects the dependency graph)
 pnpm test        # run every package's test suite
 pnpm typecheck   # type-check everything
+pnpm typecheck:tests   # type-check every *.test.ts too
 pnpm lint        # Biome lint
 pnpm format      # Biome format
 pnpm fitness     # build + typecheck + lint + test (the full gate)
