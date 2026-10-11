@@ -1459,6 +1459,35 @@ export class InboxMessageRefusedError extends Error {
 }
 
 /**
+ * ADR 0130 — an inbox message carries a sealed envelope (`__loomEnc`, written by the crypto plugin)
+ * that THIS node did not open, so it cannot be delivered to the flow: handing the flow the
+ * ciphertext as if it were the user's payload would also journal it as `MESSAGE_CONSUMED`, and the
+ * corruption would be durable and replay deterministically. Nothing was consumed: the message stays
+ * in the inbox for a node whose store is configured to open it. Terminal for THIS node (no retry on
+ * it helps; fix the node's crypto configuration or route the execution to one that can open it).
+ * Carries ids only, never the ciphertext. `unverifiable` is true when the payload was too large or
+ * too deep to be checked within the walk bound (the guard fails closed).
+ */
+export class SealedPayloadUnreadableError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly messageId: string,
+    readonly topic: string,
+    readonly unverifiable = false
+  ) {
+    super(
+      `execution "${executionId}": the inbox message "${messageId}" on topic "${topic}" ${
+        unverifiable
+          ? "could not be checked for a sealed envelope within the walk bound"
+          : "carries a sealed (encrypted) payload this node cannot open"
+      }, so it was not delivered or consumed. It stays in the inbox for a node configured to open it.`
+    );
+    this.name = "SealedPayloadUnreadableError";
+    Object.setPrototypeOf(this, SealedPayloadUnreadableError.prototype);
+  }
+}
+
+/**
  * ADR 0110 D10b — `send` refused because the FLEET switched to per-topic inbox streams
  * (`runtime.enableInboxTopicStreams`) and this node has `kernel.features.inboxTopicStreams` OFF. A
  * legacy-stream write after the switch would sit below the owner's cursor and be skipped, so the node

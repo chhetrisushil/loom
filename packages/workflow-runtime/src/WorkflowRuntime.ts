@@ -84,6 +84,7 @@ import {
   WAITS_PARK_ON,
   activateInboxLayout,
   appendInboxMessage,
+  assertDeliverable,
   assertTtlConfig,
   chainIdOf,
   chainIdOfFirst,
@@ -102,6 +103,7 @@ import {
   retireInboxTopic,
   scanExpired,
   scanInbox,
+  sealedEnvelopeIn,
   seedInboxFloors,
   staleInboxBatch,
   topicProblem,
@@ -3664,6 +3666,19 @@ export class WorkflowRuntime {
         );
       }
     }
+    // ADR 0130 — send runs BEFORE the store seals (sealing happens inside the event-store wrapper at
+    // append), so a raw payload carrying `__loomEnc` here is ALWAYS forged or relayed ciphertext:
+    // never a genuine seal. Refused, or a forged envelope would be indistinguishable from a real
+    // one at delivery. A payload too large/deep to check is refused too (fail closed).
+    const envelope = sealedEnvelopeIn(message.payload);
+    if (envelope !== "clean") {
+      throw new InboxMessageRefusedError(
+        head.id,
+        envelope === "sealed"
+          ? 'the payload carries a "__loomEnc" envelope, which only the configured crypto store may produce'
+          : "the payload is too large or too deeply nested to be checked for a sealed envelope"
+      );
+    }
     // Bytes, not UTF-16 code units: the limit protects the store and the owner's log.
     const size = json === undefined ? 0 : Buffer.byteLength(json, "utf8");
     if (size > this.inboxMaxPayloadBytes) {
@@ -4891,6 +4906,10 @@ export class WorkflowRuntime {
           for (const m of msgs) {
             const key = dedupeKeyOf(m);
             const duplicate = recent.has(key);
+            // ADR 0130: refuse a sealed payload this node cannot open BEFORE journaling anything.
+            // Throws to the caller (afterInboxPark / TimerService / recoverAbandoned report it);
+            // the message and the park are untouched, so a node configured to open it delivers it.
+            if (!duplicate) assertDeliverable(executionId, m);
             pre.push({
               eventType: "MESSAGE_CONSUMED",
               payload: {

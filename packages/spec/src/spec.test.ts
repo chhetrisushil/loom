@@ -335,6 +335,10 @@ const NOT_A_CAPABILITY = new Set([
   // extension of ctx.decide's scope / invokeTransient (ADR 0066, L30); no kernel change. No new
   // subsystem to grade.
   "0119",
+  // 0130 — the sealed-payload delivery guard: a fail-closed refusal in the existing inbox delivery
+  // path (ADR 0110), no new events, SPI or subsystem. Completes the inbox capability; nothing new
+  // to grade.
+  "0130",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

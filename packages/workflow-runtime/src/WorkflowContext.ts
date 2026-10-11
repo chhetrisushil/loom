@@ -16,9 +16,10 @@ import {
 } from "./continuation";
 import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
-import { cursorFor, cursorsOf, dedupeKeyOf, topicProblem } from "./inbox";
+import { assertDeliverable, cursorFor, cursorsOf, dedupeKeyOf, topicProblem } from "./inbox";
 import { WaitsPark, markKernelHumanPark } from "./kernelPark";
 import { discardDecisionId } from "./strayPassthroughs";
+import { SealedPayloadUnreadableError } from "./types";
 import {
   DecideScopeClosedError,
   EFFECT_INDOUBT_RESOLVED,
@@ -2071,6 +2072,18 @@ export class WorkflowContextImpl implements WorkflowContext {
           // replay of its log can never disagree about what was delivered (ADR 0110 D6).
           const key = dedupeKeyOf(m);
           const duplicate = this.isDuplicate(key);
+          if (!duplicate) {
+            // ADR 0130: a sealed payload this node cannot open is NOT delivered and NOT journaled.
+            // Park instead of failing: the message stays in the inbox (FIFO, so it holds this
+            // topic's head) and the post-park notify pass reports the typed error; a node that can
+            // open it consumes it on its next notify.
+            try {
+              assertDeliverable(this.executionId, m);
+            } catch (err) {
+              if (err instanceof SealedPayloadUnreadableError) return delivered;
+              throw err;
+            }
+          }
           this.commit("MESSAGE_CONSUMED", {
             waitId: target.arm.waitId,
             topic,

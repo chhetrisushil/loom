@@ -15,6 +15,7 @@ import {
   readRangeOf,
 } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
+import { SealedPayloadUnreadableError } from "./types";
 import type { InboxMessage, InboxSource } from "./types";
 
 // ── ADR 0110 D1 — the inbox stream ───────────────────────────────────────────────────────────
@@ -100,6 +101,58 @@ export function dedupeKeyOf(m: { messageId: string; sender: InboxMessage["sender
   return createHash("sha256")
     .update(JSON.stringify([s.tenant ?? "", s.actor ?? "", s.onBehalfOf ?? "", m.messageId]))
     .digest("hex");
+}
+
+// ── ADR 0130 — the sealed-payload guard ──────────────────────────────────────────────────────
+
+/**
+ * The most nodes the guard visits in one payload. Sized like the other untrusted-content walkers
+ * (`blankStream`'s `carriesKey`): the walk is iterative (no stack to blow) and breadth-first, so a
+ * top-level or shallow envelope is found before the budget matters.
+ */
+export const SEALED_WALK_BUDGET = 100_000;
+
+/**
+ * Does `payload` hold a ciphertext envelope (a plain object with an OWN `__loomEnc` key), at the top
+ * or nested at any depth (a deployment may seal a nested field, `payload.secret`)? `"unverified"`
+ * when the walk ran out of budget before finishing: the caller must treat it as not-clean (fail
+ * closed). The kernel does not depend on the crypto plugin, so this is the envelope's SHAPE only.
+ */
+export function sealedEnvelopeIn(payload: unknown): "clean" | "sealed" | "unverified" {
+  if (typeof payload !== "object" || payload === null) return "clean";
+  let queue: unknown[] = [payload];
+  let seen = 0;
+  while (queue.length > 0) {
+    const next: unknown[] = [];
+    for (const x of queue) {
+      if (++seen > SEALED_WALK_BUDGET) return "unverified";
+      if (Object.hasOwn(x as object, "__loomEnc")) return "sealed";
+      for (const child of Object.values(x as object)) {
+        if (typeof child === "object" && child !== null) next.push(child);
+      }
+    }
+    queue = next;
+  }
+  return "clean";
+}
+
+/**
+ * THE delivery check, shared by every site that consumes an inbox message into a flow
+ * (`WorkflowContext.satisfyFromInbox` and the notify scan). At delivery time any envelope the store
+ * recognised has already been opened, so one that survives is sealed and not openable here: throws
+ * {@link SealedPayloadUnreadableError} BEFORE anything is journaled. Duplicates deliver nothing
+ * (their payload is not copied into the log), so they need no check.
+ */
+export function assertDeliverable(executionId: string, m: InboxMessage): void {
+  const verdict = sealedEnvelopeIn(m.payload);
+  if (verdict !== "clean") {
+    throw new SealedPayloadUnreadableError(
+      executionId,
+      m.messageId,
+      m.topic,
+      verdict === "unverified"
+    );
+  }
 }
 
 /** The stored shape of one stream entry. */
