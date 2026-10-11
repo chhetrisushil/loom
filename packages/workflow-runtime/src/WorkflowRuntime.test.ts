@@ -10,7 +10,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
-import { forParallel, testSurface, uiOf } from "./testSurface";
+import { testSurface, uiOf } from "./testSurface";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
 const inputSchema = z.object({ incidentId: z.string() });
@@ -51,7 +51,7 @@ function makeFlow(
       version: "1.0.0",
       inputSchema,
       outputSchema,
-      steps: [forParallel(fetchMetricsStep), fetchLogsStep, applyRemediationStep],
+      steps: [fetchMetricsStep, fetchLogsStep, applyRemediationStep],
     },
     runner,
   };
@@ -381,8 +381,8 @@ describe("WorkflowRuntime — parallel steps", () => {
       input
     ) => {
       await ctx.parallel([
-        [forParallel(fetchMetricsStep), { incidentId: input.incidentId }],
-        [forParallel(fetchLogsStep), { incidentId: input.incidentId }],
+        [fetchMetricsStep, { incidentId: input.incidentId }],
+        [fetchLogsStep, { incidentId: input.incidentId }],
       ]);
       return { resolved: true };
     };
@@ -420,8 +420,8 @@ describe("WorkflowRuntime — parallel steps", () => {
     ) => {
       results = await ctx.parallel(
         [
-          [forParallel(fetchMetricsStep), { incidentId: input.incidentId }],
-          [forParallel(fetchLogsStep), { incidentId: input.incidentId }],
+          [fetchMetricsStep, { incidentId: input.incidentId }],
+          [fetchLogsStep, { incidentId: input.incidentId }],
         ],
         { limit: 1 }
       );

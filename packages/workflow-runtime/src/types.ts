@@ -135,6 +135,44 @@ export interface DecisionPolicyStamp {
   propensity?: number;
 }
 
+/**
+ * The branches of the explicit-result form `ctx.parallel<Outcome[]>(...)`. Not inferable (`NoInfer`): with no
+ * type argument written `TResults` falls to `unknown[]` and this is `never`, so an inferred call can only take
+ * the checked overload. A step's declared input is NOT checked here.
+ */
+export type ExplicitParallelBranches<TResults extends unknown[]> = NoInfer<
+  unknown[] extends TResults
+    ? never
+    : {
+        [K in keyof TResults]: // biome-ignore lint/suspicious/noExplicitAny: the explicit-result form does not relate input to value
+          | readonly [StepDefinition<any, TResults[K]>, unknown]
+          | ((branch: BranchContext) => Promise<TResults[K]>);
+      }
+>;
+
+/** One `ctx.parallel` branch: a `[step, input]` pair, or a function that runs a sub-flow in the scope. */
+export type ParallelBranch =
+  // biome-ignore lint/suspicious/noExplicitAny: the input type is matched per branch by `CheckedBranch`
+  readonly [StepDefinition<any, unknown>, unknown] | ((branch: BranchContext) => Promise<unknown>);
+
+/** A pair's input must be the step's input type; a function branch is unconstrained. */
+export type CheckedBranch<T> = T extends readonly [StepDefinition<infer I, infer O>, unknown]
+  ? readonly [StepDefinition<I, O>, I]
+  : T;
+
+/** The result tuple of `ctx.parallel`: each branch's output, in input order. */
+export type ParallelResults<B extends readonly ParallelBranch[]> = {
+  -readonly [K in keyof B]: B[K] extends readonly [
+    // biome-ignore lint/suspicious/noExplicitAny: only the output is read
+    StepDefinition<any, infer O>,
+    unknown,
+  ]
+    ? O
+    : B[K] extends (branch: BranchContext) => Promise<infer O>
+      ? O
+      : never;
+};
+
 /** Options for {@link ExecutionContext.parallel} (ADR 0112). */
 export interface ParallelOptions {
   /** Bounded concurrency; omit for unbounded. Results are always in input order. */
@@ -244,12 +282,17 @@ export interface ExecutionContext extends ExecutionContextExtensions {
    * frozen, in-flight siblings drain (or, with `onPark: "abort"`, are aborted first) within
    * `parkDrainMs`, and no sibling event follows `EXECUTION_SUSPENDED`.
    */
+  parallel<const B extends readonly ParallelBranch[]>(
+    branches: B & { readonly [K in keyof B]: CheckedBranch<B[K]> },
+    options?: ParallelOptions
+  ): Promise<ParallelResults<B>>;
+  /**
+   * The result tuple named explicitly (`ctx.parallel<Outcome[]>(branches)`). Only reachable with the
+   * type argument written: an inferred call always takes the overload above, which checks each
+   * step's input against its value. Here a step's declared input is NOT checked (`any`).
+   */
   parallel<TResults extends unknown[]>(
-    branches: {
-      [K in keyof TResults]:
-        | [StepDefinition<unknown, TResults[K]>, unknown]
-        | ((branch: BranchContext) => Promise<TResults[K]>);
-    },
+    branches: ExplicitParallelBranches<TResults>,
     options?: ParallelOptions
   ): Promise<TResults>;
 

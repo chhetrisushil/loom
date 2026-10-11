@@ -100,10 +100,10 @@ interface ExecutionContext {
   // Loom 2.0 (P9): record an advisory/optimizer choice durably; served on replay.
   decide<T>(id: string, decider: (scope: DecideScope) => T | Promise<T>, opts?: { rationale?: unknown; source?: string }): Promise<T>;
 
-  parallel<T extends unknown[]>(
-    pairs: { [K in keyof T]: [StepDefinition<unknown, T[K]>, unknown] },
+  parallel<const B extends readonly ParallelBranch[]>(
+    branches: B & { readonly [K in keyof B]: CheckedBranch<B[K]> },
     options?: { limit?: number }
-  ): Promise<T>;
+  ): Promise<ParallelResults<B>>;
   suspend<T = never>(config: { on: string; timeout?: number; correlationKey?: string }): Promise<T>;
   emit(eventType: string, payload: unknown): void;
   stream(eventType: string, delta: string, done?: boolean): void;
@@ -128,6 +128,8 @@ const [metrics, logs] = await ctx.parallel(
   [ [fetchMetrics, { target }], [fetchLogs, { target }] ],
   { limit: 2 }
 );
+// a step with a typed input is accepted as-is, `metrics`/`logs` carry each step's output type,
+// and a wrong `{ target }` for a step is a compile error
 ```
 
 **Emit domain events** into the log for projections/telemetry:

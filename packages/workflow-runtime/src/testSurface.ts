@@ -2,7 +2,7 @@
 // so its own tests inject a minimal `surface` factory and fold the resulting SURFACE_PATCH events
 // with a flat-path fold. The real emitter/fold, and byte-identity against it, are tested in
 // `@loom/agent-surface` (`context.test.ts`).
-import type { EventEnvelope, StepDefinition } from "@loom/core";
+import type { EventEnvelope } from "@loom/core";
 
 type Emit = (eventType: string, payload: unknown) => void;
 type Patch = { op: string; path: string; value?: unknown; by?: number };
@@ -57,15 +57,4 @@ export function foldTestSurface(events: EventEnvelope[]): Record<string, unknown
     }
   }
   return state;
-}
-
-/**
- * `ExecutionContext.parallel` types a tuple branch as `StepDefinition<unknown, T>`, but a step's handler
- * takes its input contravariantly, so no step with a typed input satisfies it (reported as a typing gap in
- * the product API). The step IS what `parallel` runs; only the declared input type is widened here.
- */
-export function forParallel<TIn, TOut>(
-  step: StepDefinition<TIn, TOut>
-): StepDefinition<unknown, TOut> {
-  return step as unknown as StepDefinition<unknown, TOut>;
 }
