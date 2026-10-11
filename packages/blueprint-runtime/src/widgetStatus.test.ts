@@ -44,6 +44,39 @@ describe("describeWidgetStatus: the canonical matrix", () => {
     expect(tag(channel, undefined, undefined)).toBe("loading");
   });
 
+  it("redacted outranks everything, reads nothing of the widget, and carries only a constant (IR 2.5.0)", () => {
+    const secret = MetricCard({
+      id: "r_1",
+      title: "TOP SECRET TITLE",
+      binding: { projectionId: "p", path: "v", status: { path: "s" } },
+    });
+    const red = {
+      ...secret,
+      source: { type: "redacted", version: "1", redacted: true, degradedFrom: "not-an-array" },
+    } as unknown as Widget;
+    let checked = 0;
+    const d = describeWidgetStatus(red, "TOP SECRET VALUE", st("error", "SECRET FINDING"), () => {
+      checked++;
+      return { code: "x", message: "SECRET CHECK" };
+    });
+    expect(checked).toBe(0);
+    expect(d).toEqual({
+      tag: "redacted",
+      message: "redacted",
+      finding: undefined,
+      hasValue: false,
+      showBody: false,
+      degradedChain: undefined,
+    });
+    expect(JSON.stringify(d)).not.toMatch(/SECRET/);
+    // `redacted: false` is not redaction; the ordinary matrix applies.
+    const notRed = {
+      ...secret,
+      source: { type: "T", version: "1", redacted: false },
+    } as unknown as Widget;
+    expect(describeWidgetStatus(notRed, 1, st("error"), undefined).tag).toBe("error");
+  });
+
   it("the check runs only for a declared channel and never under error or empty", () => {
     let calls = 0;
     const check = () => {

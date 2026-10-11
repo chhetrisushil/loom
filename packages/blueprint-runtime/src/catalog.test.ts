@@ -639,6 +639,37 @@ describe("validateBlueprint — malformed structure is a finding, never a throw"
     expect(r.widgets).toBe(1);
   });
 
+  describe("source.redacted (IR 2.5.0, ADR 0097 amendment)", () => {
+    const red = (extra: Record<string, unknown> = {}, source: Record<string, unknown> = {}) =>
+      ({
+        _tag: "Widget",
+        id: "r_1",
+        kind: "StatusBadge",
+        props: {},
+        source: { type: "redacted", version: "1", redacted: true, ...source },
+        ...extra,
+      }) as unknown as Widget;
+    const check = (wd: Widget) =>
+      validateBlueprint(bp({ type: "stack", children: [wd] }), builtinCatalog).findings.filter(
+        (f) => f.code === "redacted-invalid" || f.code === "source-invalid"
+      );
+
+    it("accepts the placeholder: redacted true, no binding, no degradedFrom", () => {
+      expect(check(red())).toEqual([]);
+    });
+    it("rejects anything but true", () => {
+      for (const bad of [false, "true", 1, null, {}])
+        expect(check(red({}, { redacted: bad })).map((f) => f.code)).toEqual(["redacted-invalid"]);
+    });
+    it("rejects a redacted widget that still carries a binding or a degradedFrom chain", () => {
+      const binding = { projectionId: "p", path: "secret", sensitivity: "restricted" };
+      expect(check(red({ binding })).map((f) => f.code)).toEqual(["redacted-invalid"]);
+      expect(
+        check(red({}, { degradedFrom: [{ type: "Trend", version: "1.0.0" }] })).map((f) => f.code)
+      ).toEqual(["redacted-invalid"]);
+    });
+  });
+
   it("source.type/version must be non-empty STRINGS, not merely truthy", () => {
     const r = validateBlueprint(
       bp({

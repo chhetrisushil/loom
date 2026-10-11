@@ -1537,17 +1537,18 @@ interface DataBinding {
   status?: { path: string };       // same projection state as the value; absent ⇒ no status channel
   sensitivity?: DataClass;         // @loom/classify; read by compilers/delivery, never by renderers
 }
-interface WidgetSource { type: string; version: string; degradedFrom?: Array<{ type: string; version: string }> }
+interface WidgetSource { type: string; version: string; degradedFrom?: Array<{ type: string; version: string }>; redacted?: true }
+// redacted (IR 2.5.0, ADR 0097 amendment): content withheld for the surface's audience; carries { type: "redacted", version: "1" }, no binding, no degradedFrom (validateBlueprint: redacted-invalid); renderers draw only the constant marker "⊘ redacted"
 // Widget gains: source?: WidgetSource                          // never in props
 // Blueprint gains: irVersion?: string                          // absent ⇒ "1.0.0"; writers always set it
 function resolveWidgetStatus(widget: Widget, stateMap: Map<string, unknown>): BindingStatus | undefined
 function describeWidgetStatus(widget: Widget, value: unknown, status: BindingStatus | undefined, check?: WidgetValueCheck): WidgetStatusDescriptor
-// the status matrix (error > empty > contract > stale > pending/loading > ready) as one pure decision the React, terminal and DOM renderers draw from (ADR 0127);
-// tag: "inert" | "error" | "empty" | "stale" | "pending" | "loading" | "ready", plus message, finding, hasValue, showBody, degradedChain; a malformed source.degradedFrom is { tag: "invalid" } (never a throw)
-function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0, 2.1.0, 2.2.0, 2.3.0 and 2.4.0 input
+// the status matrix (redacted > error > empty > contract > stale > pending/loading > ready) as one pure decision the React, terminal and DOM renderers draw from (ADR 0127);
+// tag: "inert" | "redacted" | "error" | "empty" | "stale" | "pending" | "loading" | "ready", plus message, finding, hasValue, showBody, degradedChain; a malformed source.degradedFrom is { tag: "invalid" } (never a throw)
+function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0 through 2.5.0 input
 function blueprintIrVersion(bp: Blueprint): string    // bp.irVersion ?? "1.0.0"
 
-// The Blueprint is a declared rendering IR (ADR 0096; 2.0.0 by ADR 0097, 2.1.0 by ADR 0098, 2.2.0 by ADR 0099, 2.3.0 by ADR 0100, 2.4.0 by ADR 0101): bump on any
+// The Blueprint is a declared rendering IR (ADR 0096; 2.0.0 by ADR 0097, 2.1.0 by ADR 0098, 2.2.0 by ADR 0099, 2.3.0 by ADR 0100, 2.4.0 by ADR 0101, 2.5.0 by the ADR 0097 amendment): bump on any
 // shape change; a test pins the shape digest per version
 const BLUEPRINT_IR_VERSION: string; const BLUEPRINT_IR_SHAPE: Record<string, readonly string[]>
 

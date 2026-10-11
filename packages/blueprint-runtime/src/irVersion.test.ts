@@ -34,6 +34,7 @@ const PINNED: ReadonlyArray<readonly [version: string, digest: string]> = [
   ["2.2.0", "09d36418d9a034d3"],
   ["2.3.0", "fb7ee931bd472134"],
   ["2.4.0", "d9e2342f8308c8d5"],
+  ["2.5.0", "86c9989cb673869f"],
 ];
 
 const digestOf = (shape: unknown) => fnv1a64(canonicalJson(shape));
@@ -147,6 +148,19 @@ describe("BLUEPRINT_IR_SHAPE", () => {
     expect(BLUEPRINT_IR_SHAPE.widget).toContain("id:required");
     expect(BLUEPRINT_IR_SHAPE.gridCell).not.toContain("id:optional");
     expect(BLUEPRINT_IR_SHAPE.blueprint).toContain("id:required");
+  });
+
+  it("2.5.0 carries an optional redacted on the widget source, and nothing else changed (ADR 0097 amendment)", () => {
+    expect(BLUEPRINT_IR_SHAPE.widgetSource).toEqual([
+      "degradedFrom:optional",
+      "redacted:optional",
+      "type:required",
+      "version:required",
+    ]);
+    // Audience stays off the Blueprint (ADR 0097 D5): the result is recorded, the question is not.
+    expect(BLUEPRINT_IR_SHAPE.blueprint.join()).not.toMatch(/audience/);
+    expect(BLUEPRINT_IR_SHAPE.widget.join()).not.toMatch(/audience|redacted/);
+    expect(BLUEPRINT_IR_SHAPE.degradedFrom).toEqual(["type:required", "version:required"]);
   });
 
   it("isBindingStatus admits exactly the manifested states — the runtime set cannot drift from the IR", () => {

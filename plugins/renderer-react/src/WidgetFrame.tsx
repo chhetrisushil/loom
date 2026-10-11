@@ -56,6 +56,18 @@ export const WidgetFrame: React.FC<{
       </div>
     );
   }
+  if (d.tag === "redacted") {
+    // IR 2.5.0: withheld for this surface's audience. Nothing of the widget is drawn or exposed —
+    // not its title, kind, source type/version, nor `children` (the kind renderer never mounts).
+    return (
+      <div data-widget-frame={widget.id} data-binding-state="redacted">
+        {/* biome-ignore lint/a11y/useSemanticElements: see the `empty` marker below */}
+        <div role="status" data-binding-marker="redacted">
+          ⊘ {d.message}
+        </div>
+      </div>
+    );
+  }
   const state = d.tag === "inert" ? undefined : d.tag;
   const degraded = d.degradedChain;
   const title = widget.title ?? widget.kind;

@@ -42,6 +42,16 @@ export interface WidgetSource {
   version: string;
   /** Outermost first. */
   degradedFrom?: Array<{ type: string; version: string }>;
+  /**
+   * IR 2.5.0 (ADR 0097, amendment 2026-10-11): `true` asserts this widget's content was WITHHELD
+   * for the audience the surface was compiled for. A renderer draws NO value and NO label from a
+   * redacted widget (not `title`, `props`, `binding` or `kind`) and draws a redaction marker
+   * instead. The compiler records the RESULT of resolving audience, never the audience itself.
+   * Only `true` is legal (absent = not redacted); with it `binding` and `degradedFrom` MUST be
+   * absent, and `type`/`version` are a generic placeholder (`"redacted"`/`"1"`) — the original
+   * widget's type may itself be sensitive.
+   */
+  redacted?: true;
 }
 
 export interface Widget {

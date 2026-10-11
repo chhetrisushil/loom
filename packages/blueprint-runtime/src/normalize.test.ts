@@ -50,7 +50,7 @@ describe("irVersion", () => {
       projections: [],
     });
     expect(bp.irVersion).toBe(BLUEPRINT_IR_VERSION);
-    expect(BLUEPRINT_IR_VERSION).toBe("2.4.0");
+    expect(BLUEPRINT_IR_VERSION).toBe("2.5.0");
     const { irVersion: _v, ...legacy } = bp;
     expect(blueprintIrVersion(legacy as Blueprint)).toBe(IR_VERSION_LEGACY);
   });
@@ -328,7 +328,7 @@ describe("layout ids (IR 2.4.0, ADR 0101)", () => {
     );
   });
   it("upgradeBlueprint is identity on 2.3.0 and 2.4.0 artifacts, and keeps a layout id when it wraps 1.0.0", () => {
-    for (const irVersion of ["2.3.0", "2.4.0"]) {
+    for (const irVersion of ["2.3.0", "2.4.0", "2.5.0"]) {
       const v: Blueprint = {
         ...blueprint$({
           id: "x",

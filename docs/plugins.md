@@ -207,6 +207,8 @@ and compute.
   set, a trailing `(degraded from …)` suffix — absent either, the line is unchanged (ADR 0097).
   Placed grid cells print in reading order and a titled layout under an underlined heading
   (ADR 0098); a layout's `role` or `id` changes nothing in the output (ADR 0099, ADR 0101).
+  A widget whose `source.redacted` is `true` (IR 2.5.0, ADR 0097 amendment) is the single line `⊘ redacted` on
+  this surface and the React and DOM ones: no title, kind or value, whatever the widget carries.
 
 **Compute**
 
