@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EventEnvelope } from "@loom/core";
+import type { PrincipalChain } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import type { EventStore, TimerStore } from "@loom/event-runtime";
 import {
@@ -120,7 +121,12 @@ for (const backend of [memory, sqlite, postgres]) {
       await ctx.decide("route", () => "opus");
       throw new Error("boom");
     });
-    const finish = async (h: Harness, f: typeof deciding, e: string, principal?: object) => {
+    const finish = async (
+      h: Harness,
+      f: typeof deciding,
+      e: string,
+      principal?: PrincipalChain
+    ) => {
       h.rt.registerFlow(f.definition, f.runner);
       const run = await h.rt.start(f, {}, { executionId: e, ...(principal && { principal }) });
       await run.waitForCompletion().catch(() => undefined);
@@ -559,7 +565,7 @@ for (const backend of [memory, sqlite, postgres]) {
       const fenced = store.acquireFence !== undefined; // SQLite does not fence
       if (!fenced && when === "acquire-in-window") return undefined;
       const late = (key: string) => h.rt.recordOutcome(e, { decisionId: "route", key, score: 0.5 });
-      let fence = 0;
+      let fence: number | undefined = 0;
       let outcome: Promise<unknown> = Promise.resolve();
       if (when === "acquire-in-window") {
         // the late write OBSERVED the log before the reopener took its token, and appends after
@@ -583,7 +589,7 @@ for (const backend of [memory, sqlite, postgres]) {
         e,
         "fenced2",
         { eventType: "RETRY", payload: {} },
-        { strategy: "operator-ack", ...(fenced && { fence }) }
+        { strategy: "operator-ack", ...(fenced && fence !== undefined && { fence }) }
       );
       await run.waitForCompletion();
       if (when === "after-it-finished") outcome = late("c");
@@ -979,6 +985,7 @@ for (const backend of [memory, sqlite, postgres]) {
       h.rt.registerFlow(fixed.definition, fixed.runner);
       if (h.eventStore.acquireFence === undefined) return;
       const t2 = await h.rt.acquireFence(e2);
+      if (t2 === undefined) return;
       await (
         await h.rt.resumeAs(
           e2,

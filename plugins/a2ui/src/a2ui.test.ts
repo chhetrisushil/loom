@@ -4,7 +4,7 @@ import type { EventEnvelope } from "@loom/core";
 import { EffectModeViolationError, EffectRuntime } from "@loom/effect-runtime";
 import type { Effect, EffectContext } from "@loom/effect-runtime";
 import { describe, expect, it } from "vitest";
-import { A2UISurfaceBridge } from "./A2UISurfaceBridge";
+import { A2UISurfaceBridge, type A2UISurfaceBridgeOptions } from "./A2UISurfaceBridge";
 import type { A2UICallFunctionInput } from "./callFunction";
 import { A2UI_CALL_FUNCTION_TOOL_ID, registerA2UICallFunction } from "./callFunction";
 import {
@@ -59,7 +59,7 @@ function patchEvent(
 
 const view = [column("root", ["status"]), text("status", bind("/status"))];
 
-function newBridge(over: Partial<Parameters<typeof makeBridge>[0]> = {}) {
+function newBridge(over: Partial<A2UISurfaceBridgeOptions> = {}) {
   return makeBridge({ executionId: "exec-1", components: view, ...over });
 }
 
@@ -75,15 +75,10 @@ const callableCatalog = defineCatalog({
   },
 });
 
-function callableBridge(over: Partial<Parameters<typeof makeBridge>[0]> = {}) {
+function callableBridge(over: Partial<A2UISurfaceBridgeOptions> = {}) {
   return newBridge({ catalog: callableCatalog, ...over });
 }
-function makeBridge(o: {
-  executionId: string;
-  components: typeof view;
-  surface?: string;
-  redact?: readonly string[];
-}) {
+function makeBridge(o: A2UISurfaceBridgeOptions) {
   return new A2UISurfaceBridge(o);
 }
 

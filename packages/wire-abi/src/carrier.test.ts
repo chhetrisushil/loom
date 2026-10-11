@@ -11,6 +11,9 @@ import { z } from "zod";
 import { handleRpc } from "./carrier";
 import type { JsonRpcResponse } from "./protocol";
 
+/** A JSON-RPC response is a success OR an error; the error member is present only on the latter. */
+const hasError = (r: JsonRpcResponse): boolean => "error" in r;
+
 const io = { inputSchema: z.object({ n: z.number() }), outputSchema: z.object({ n: z.number() }) };
 const gateStep = step$({ id: "act", name: "act", toolId: "act-tool", ...io });
 
@@ -227,14 +230,14 @@ describe("carrier principal under fail-closed execution authz", () => {
       input: { n: 1 },
       executionId: "w1",
     });
-    expect(started.error).toBeUndefined();
-    expect((await rpc("execution.getState", { executionId: "w1" })).error).toBeUndefined();
+    expect(hasError(started)).toBe(false);
+    expect(hasError(await rpc("execution.getState", { executionId: "w1" }))).toBe(false);
     const resumed = await rpc("execution.resume", {
       executionId: "w1",
       event: { eventType: "Approval", payload: {} },
     });
-    expect(resumed.error).toBeUndefined();
-    expect((await rpc("execution.cancel", { executionId: "w1" })).error).toBeUndefined();
+    expect(hasError(resumed)).toBe(false);
+    expect(hasError(await rpc("execution.cancel", { executionId: "w1" }))).toBe(false);
 
     // no resolvePrincipal => anonymous on every method => refused
     for (const [m, p] of [
@@ -242,7 +245,7 @@ describe("carrier principal under fail-closed execution authz", () => {
       ["execution.resume", { executionId: "w1", event: { eventType: "Approval", payload: {} } }],
       ["execution.cancel", { executionId: "w1" }],
     ] as const) {
-      expect((await rpc(m, p, {})).error).toBeDefined();
+      expect(hasError(await rpc(m, p, {}))).toBe(true);
     }
   });
 });

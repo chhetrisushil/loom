@@ -75,7 +75,7 @@ const top = reg("top", async (ctx) => {
 });
 
 function build() {
-  const holder: { supervisor?: ChildSupervisor } = {};
+  const holder: { supervisor?: ChildSupervisor | undefined } = {};
   const runtime = new WorkflowRuntime({
     eventStore: new InMemoryAsyncEventStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),

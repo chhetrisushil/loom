@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import type { PrincipalChain } from "@loom/effect-runtime";
 import { describe, expect, it } from "vitest";
 import { rehydratePrincipal, storedPrincipalOf } from "./principal";
 
@@ -6,7 +7,7 @@ import { rehydratePrincipal, storedPrincipalOf } from "./principal";
 // non-empty record) and P3-2 (the principal is read only from sequence 0's EXECUTION_STARTED).
 
 const undef = { resolve: () => undefined };
-const codecFor = (chain: object | undefined) => ({
+const codecFor = (chain: PrincipalChain | undefined) => ({
   toRef: () => undefined,
   fromRef: () => chain,
 });

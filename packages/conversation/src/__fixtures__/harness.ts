@@ -7,7 +7,7 @@ import type { EventStore } from "@loom/event-runtime";
 import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamChunk } from "@loom/llm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
-import type { ExecutionAuthorizer, WorkflowRuntimeDeps } from "@loom/workflow-runtime";
+import type { ExecutionAuthorizer } from "@loom/workflow-runtime";
 import { z } from "zod";
 import { signedEnvelope } from "../conversation";
 import {
@@ -20,6 +20,8 @@ import {
   inboxBargeIn,
   logParticipants,
 } from "../index";
+
+type WorkflowRuntimeDeps = ConstructorParameters<typeof WorkflowRuntime>[0];
 
 /** The user text of a request's last message, with the prompt-boundary fence stripped. */
 export function lastUserText(request: LlmRequest): string {
@@ -81,14 +83,14 @@ export interface BootOptions {
 }
 
 export const TEST_KEY = "test-envelope-key";
-export const SERVICE: PrincipalChain = { actor: "conversation-service", tenant: "svc" };
+export const SERVICE = { actor: "conversation-service", tenant: "svc" } satisfies PrincipalChain;
 /** The reference policy, OWNER-scoped for everything a conversation's log must be protected by. */
 export const ownerScoped = () =>
   executionAccessPolicy({
     rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" },
   });
-export const carol: PrincipalChain = { actor: "carol", tenant: "t2" };
-export const dave: PrincipalChain = { actor: "dave", tenant: "t3" };
+export const carol = { actor: "carol", tenant: "t2" } satisfies PrincipalChain;
+export const dave = { actor: "dave", tenant: "t3" } satisfies PrincipalChain;
 export const SECRET = "TOP-SECRET-PAYLOAD";
 
 export const kb = tool$({
@@ -126,9 +128,9 @@ export function sharedScript(request: LlmRequest): LlmResponse {
     : { content: "", toolCalls: [{ id: `c-${name}`, name, input: {} }], stopReason: "tool_use" };
 }
 
-export const alice: PrincipalChain = { actor: "alice", tenant: "t1" };
-export const bob: PrincipalChain = { actor: "bob", tenant: "t1" };
-export const mallory: PrincipalChain = { actor: "mallory", tenant: "t2" };
+export const alice = { actor: "alice", tenant: "t1" } satisfies PrincipalChain;
+export const bob = { actor: "bob", tenant: "t1" } satisfies PrincipalChain;
+export const mallory = { actor: "mallory", tenant: "t2" } satisfies PrincipalChain;
 
 export function boot(opts: BootOptions = {}) {
   const requests: LlmRequest[] = [];

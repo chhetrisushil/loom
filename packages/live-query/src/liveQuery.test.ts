@@ -115,6 +115,7 @@ function countingStore(inner: EventStore): { store: EventStore; rows: () => numb
   let rows = 0;
   const store: EventStore = {
     append: (e) => inner.append(e),
+    close: () => inner.close(),
     read: async (id) => {
       const events = await inner.read(id);
       rows += events.length;
@@ -248,6 +249,7 @@ describe("liveQuery — incremental fold (O(N), not O(N²))", () => {
 function withChaosSubscribe(inner: EventStore): EventStore {
   return {
     append: (e) => inner.append(e),
+    close: () => inner.close(),
     read: (id) => inner.read(id),
     readFrom: (id, from) => inner.readFrom(id, from),
     subscribe: (id, handler) =>
@@ -338,6 +340,7 @@ function withHoldableSubscribe(inner: EventStore & Required<Pick<EventStore, "he
   const queued: EventEnvelope[] = [];
   const store: EventStore = {
     append: (e) => inner.append(e),
+    close: () => inner.close(),
     read: (id) => inner.read(id),
     readFrom: (id, from) => inner.readFrom(id, from),
     head: (id) => inner.head(id),
@@ -378,6 +381,7 @@ function withHoldableSubscribeNoHead(inner: InMemoryAsyncEventStore): {
   const queued: EventEnvelope[] = [];
   const store: EventStore = {
     append: (e) => inner.append(e),
+    close: () => inner.close(),
     read: (id) => inner.read(id),
     readFrom: (id, from) => inner.readFrom(id, from),
     // no `head` — deliberately omitted
@@ -650,6 +654,7 @@ describe("liveQuery — LogLifecycle.compact races a live subscription", () => {
     let headCalls = 0;
     const store: EventStore = {
       append: (e) => inner.append(e),
+      close: () => inner.close(),
       read: (id) => inner.read(id),
       readFrom: (id, from) => inner.readFrom(id, from),
       head: (id) => {
@@ -836,6 +841,7 @@ describe("liveQuery — through ContentResolvingEventStore, a failed resolve sur
 function flakyReadFromStore(inner: EventStore, fail: { now: boolean }): EventStore {
   return {
     append: (e) => inner.append(e),
+    close: () => inner.close(),
     read: (id) => inner.read(id),
     readFrom: async (id, from) => {
       if (fail.now) throw new Error("store unavailable");

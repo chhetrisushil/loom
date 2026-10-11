@@ -1,13 +1,14 @@
 import { step$ } from "@loom/core";
 import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime, HumanEffect, ToolEffect } from "@loom/effect-runtime";
-import type { Effect } from "@loom/effect-runtime";
+import type { Effect, EffectContext } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { recoverAbandoned } from "./recoverAbandoned";
+import { forParallel } from "./testSurface";
 import { ApprovalRejectedError, ResumeRefusedError } from "./types";
 import type { FlowRunner, ResumeAuthenticator, ResumeEvent } from "./types";
 
@@ -40,7 +41,7 @@ const tick = () => new Promise((r) => setTimeout(r, 25));
 function setup(
   runner: FlowRunner<Record<string, unknown>, Record<string, unknown>>,
   opts: {
-    steps?: ReturnType<typeof step$>[];
+    steps?: FlowDefinition["steps"];
     effects?: (e: EffectRuntime) => void;
     resumeSchemas?: FlowDefinition["resumeSchemas"];
     authenticator?: ResumeAuthenticator;
@@ -142,7 +143,7 @@ describe("flow and effect code cannot write kernel state (ADR 0104)", () => {
     const seen: string[] = [];
     const probe: Effect = {
       kind: "tool",
-      async execute(_input, ctx) {
+      async execute(_input: unknown, ctx: EffectContext) {
         for (const t of ["STEP_COMPLETED", "EXECUTION_RESUMED"]) {
           try {
             ctx.emit(t, { stepId: "a" });
@@ -211,8 +212,8 @@ describe("human parks record which step parked (ADR 0104)", () => {
     const { runtime, flow, eventStore } = setup(
       async (ctx) => {
         const r = await ctx.parallel([
-          [H1, {}],
-          [H2, {}],
+          [forParallel(H1), {}],
+          [forParallel(H2), {}],
         ]);
         ctx.emit("out", { r });
         return {};

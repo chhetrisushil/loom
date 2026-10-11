@@ -1,6 +1,7 @@
 import { surface } from "@loom/agent-surface";
 import { secret, sensitive } from "@loom/classify";
 import {
+  type EventEnvelope,
   agent$,
   instructions$,
   memory$,
@@ -1173,7 +1174,7 @@ describe("defineConfig — executionAuthorizer / onExecutionDenied", () => {
   });
 
   it("fires the audit hook with the refused request and reason", async () => {
-    const denials: { request: unknown; reason?: string }[] = [];
+    const denials: { request: unknown; reason?: string | undefined }[] = [];
     const app = build((request, reason) => denials.push({ request, reason }));
     await expect(
       app.runtime.start(gatedFlow(), { incidentId: "i1" }, { principal: mallory })

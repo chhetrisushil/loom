@@ -113,7 +113,10 @@ function boot(opts: { toolInput?: unknown; second?: boolean } = {}) {
     return { content: out.content };
   };
   runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
-  const flow: RegisteredFlow = { definition: flowDef, runner: runner as FlowRunner };
+  const flow: RegisteredFlow = {
+    definition: flowDef,
+    runner: runner as FlowRunner<unknown, unknown>,
+  };
   return { runtime, flowDef, dropped, requests };
 }
 

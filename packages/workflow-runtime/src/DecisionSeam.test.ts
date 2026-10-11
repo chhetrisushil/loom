@@ -5,7 +5,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
-import type { FlowRunner, RegisteredFlow } from "./types";
+import type { DecideOptions, FlowRunner, RegisteredFlow } from "./types";
 
 // M2 (Loom 2.0, P9) — the Decision seam. `ctx.decide` records an optimizer's choice
 // as a durable DECISION_RECORDED event; on replay/resume the recorded choice is
@@ -208,14 +208,14 @@ describe("ADR 0124 — opts are read at commit", () => {
     let deciderCalls = 0;
     let optsReads = 0;
     const runner: FlowRunner<{ id: string }, { model: string }> = async (ctx) => {
-      const fields: Record<string, unknown> = {};
+      const fields: DecideOptions = {};
       // Counts every property read, so a served decision touching opts is visible.
       const opts = new Proxy(fields, {
         get(target, key) {
           optsReads++;
-          return target[key as string];
+          return Reflect.get(target, key);
         },
-      }) as { policy?: unknown; context?: unknown; rationale?: unknown };
+      }) as DecideOptions;
       const model = await ctx.decide(
         "route",
         () => {

@@ -79,8 +79,8 @@ const twoMetrics = blueprint$({
 // normalizes every child through `asCell` (IR 2.0.0), so a grid's children are
 // GridCell wrappers `{ span, node }`, not bare widgets — unwrap with `asCell`
 // rather than reading `.id` off the cell itself.
-const cpuId = (asCell(twoMetrics.layout.children[0]).node as { id: string }).id;
-const memId = (asCell(twoMetrics.layout.children[1]).node as { id: string }).id;
+const cpuId = (asCell(twoMetrics.layout.children[0]!).node as { id: string }).id;
+const memId = (asCell(twoMetrics.layout.children[1]!).node as { id: string }).id;
 
 describe("useFiber — parity", () => {
   it("fiber={false} and fiber={{granularUpdates}} produce identical DOM (initial + after update)", () => {

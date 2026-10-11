@@ -10,7 +10,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
-import { testSurface } from "./testSurface";
+import { forParallel, testSurface, uiOf } from "./testSurface";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
 const inputSchema = z.object({ incidentId: z.string() });
@@ -51,7 +51,7 @@ function makeFlow(
       version: "1.0.0",
       inputSchema,
       outputSchema,
-      steps: [fetchMetricsStep, fetchLogsStep, applyRemediationStep],
+      steps: [forParallel(fetchMetricsStep), fetchLogsStep, applyRemediationStep],
     },
     runner,
   };
@@ -148,10 +148,10 @@ describe("WorkflowRuntime — agent-surface (ctx.ui)", () => {
     });
 
     const runner: FlowRunner<{ incidentId: string }, { resolved: boolean }> = async (ctx) => {
-      ctx.ui.set("phase", "investigating");
-      ctx.ui.merge("stats", { items: 3 });
-      ctx.ui.append("log", "started");
-      ctx.ui.increment("steps");
+      uiOf(ctx).set("phase", "investigating");
+      uiOf(ctx).merge("stats", { items: 3 });
+      uiOf(ctx).append("log", "started");
+      uiOf(ctx).increment("steps");
       return { resolved: true };
     };
 
@@ -381,8 +381,8 @@ describe("WorkflowRuntime — parallel steps", () => {
       input
     ) => {
       await ctx.parallel([
-        [fetchMetricsStep, { incidentId: input.incidentId }],
-        [fetchLogsStep, { incidentId: input.incidentId }],
+        [forParallel(fetchMetricsStep), { incidentId: input.incidentId }],
+        [forParallel(fetchLogsStep), { incidentId: input.incidentId }],
       ]);
       return { resolved: true };
     };
@@ -420,8 +420,8 @@ describe("WorkflowRuntime — parallel steps", () => {
     ) => {
       results = await ctx.parallel(
         [
-          [fetchMetricsStep, { incidentId: input.incidentId }],
-          [fetchLogsStep, { incidentId: input.incidentId }],
+          [forParallel(fetchMetricsStep), { incidentId: input.incidentId }],
+          [forParallel(fetchLogsStep), { incidentId: input.incidentId }],
         ],
         { limit: 1 }
       );

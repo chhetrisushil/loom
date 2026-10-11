@@ -317,7 +317,7 @@ describe("normalizeSnapshotState — a snapshot folded before 1.21.0 (ADR 0105)"
     workflowVersion: "1",
     status: "failed" as const,
     frames: { s1: { stepId: "s1", status: "failed" as const, attempts: 1, error: "boom" } },
-    variables: { _input: {} },
+    variables: { _input: {} } as Record<string, unknown>,
     sequence: 2,
     startedAt: 1,
     updatedAt: 3,

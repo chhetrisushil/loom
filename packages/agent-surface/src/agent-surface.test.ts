@@ -7,6 +7,12 @@ import { agentSurfaceProjection } from "./surfaceProjection";
 import { SURFACE_PATCH } from "./types";
 import type { SurfacePatch, SurfaceState } from "./types";
 
+/** A projection's handler table; one built without it is a failure of the fixture, not a skip. */
+function handlersOf<H>(projection: { handlers?: H }): H {
+  if (projection.handlers === undefined) throw new Error("the projection declares no handlers");
+  return projection.handlers;
+}
+
 // ── applySurfacePatch ────────────────────────────────────────────────────────────
 
 describe("applySurfacePatch", () => {
@@ -182,14 +188,14 @@ describe("agentSurfaceProjection", () => {
 
   it("its SURFACE_PATCH handler folds matching-surface patches", () => {
     const proj = agentSurfaceProjection("ui");
-    const handler = proj.handlers[SURFACE_PATCH]!;
+    const handler = handlersOf(proj)[SURFACE_PATCH]!;
     const next = handler({}, patchEvent([{ op: "set", path: "a", value: 1 }], "ui"));
     expect(next).toEqual({ a: 1 });
   });
 
   it("ignores patches for other surfaces", () => {
     const proj = agentSurfaceProjection("ui");
-    const handler = proj.handlers[SURFACE_PATCH]!;
+    const handler = handlersOf(proj)[SURFACE_PATCH]!;
     const next = handler({ a: 0 }, patchEvent([{ op: "set", path: "a", value: 1 }], "sidebar"));
     expect(next).toEqual({ a: 0 });
   });
@@ -210,7 +216,7 @@ describe("agentSurfaceProjection — egress redaction (K10-R6)", () => {
 
   it("masks declared surface paths before they reach the folded state", () => {
     const proj = agentSurfaceProjection("ui", { redact: ["user.ssn"] });
-    const state = proj.handlers[SURFACE_PATCH]!(
+    const state = handlersOf(proj)[SURFACE_PATCH]!(
       {},
       patchEvent([{ op: "set", path: "user", value: { name: "Ann", ssn: "123-45-6789" } }])
     );
@@ -219,11 +225,11 @@ describe("agentSurfaceProjection — egress redaction (K10-R6)", () => {
 
   it("stays masked across successive folds (idempotent) and leaves unmarked paths intact", () => {
     const proj = agentSurfaceProjection("ui", { redact: ["token"] });
-    let state = proj.handlers[SURFACE_PATCH]!(
+    let state = handlersOf(proj)[SURFACE_PATCH]!(
       {},
       patchEvent([{ op: "set", path: "token", value: "sk_1" }])
     );
-    state = proj.handlers[SURFACE_PATCH]!(
+    state = handlersOf(proj)[SURFACE_PATCH]!(
       state,
       patchEvent([{ op: "set", path: "label", value: "ok" }])
     );
@@ -232,7 +238,7 @@ describe("agentSurfaceProjection — egress redaction (K10-R6)", () => {
 
   it("with no redact option is an unchanged pass-through (G2)", () => {
     const proj = agentSurfaceProjection("ui");
-    const state = proj.handlers[SURFACE_PATCH]!(
+    const state = handlersOf(proj)[SURFACE_PATCH]!(
       {},
       patchEvent([{ op: "set", path: "a", value: 1 }])
     );

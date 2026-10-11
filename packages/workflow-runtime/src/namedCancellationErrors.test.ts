@@ -17,7 +17,7 @@ const io = z.object({}).passthrough() as z.ZodSchema<Record<string, unknown>>;
 
 function boot(runner: FlowRunner<Record<string, unknown>, Record<string, unknown>>) {
   const effects = new EffectRuntime();
-  const seen: { signal?: AbortSignal; err?: unknown } = {};
+  const seen: { signal?: AbortSignal | undefined; err?: unknown } = {};
   effects.register(
     "hang",
     new ToolEffect(

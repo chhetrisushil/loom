@@ -170,7 +170,11 @@ describe("foldState — bounded reads", () => {
     );
     const without = makeRuntime(new InMemoryAsyncEventStore(), new InMemoryAsyncSnapshotStore());
     const flow = benchFlow(6);
-    const states: { status?: string; sequence?: number; frames: string[] }[] = [];
+    const states: {
+      status?: string | undefined;
+      sequence?: number | undefined;
+      frames: string[];
+    }[] = [];
     for (const runtime of [withSnapshots, without]) {
       runtime.registerFlow(flow.definition, flow.runner as FlowRunner<unknown, unknown>);
       const handle = await runtime.start(flow, { n: 0 });

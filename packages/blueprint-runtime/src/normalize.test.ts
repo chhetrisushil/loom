@@ -132,6 +132,7 @@ describe("status resolution", () => {
     const map = new Map<string, unknown>([["p", { v: {}, s: { a: { state: "empty", seq: 2 } } }]]);
     const widget = MetricCard({
       id: "a",
+      title: "A",
       binding: { projectionId: "p", path: "v.a", status: { path: "s.a" } },
     });
     expect(resolveWidgetStatus(widget, map)).toEqual({ state: "empty", seq: 2 });

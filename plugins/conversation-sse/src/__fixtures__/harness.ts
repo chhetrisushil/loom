@@ -127,9 +127,7 @@ export interface BootOptions {
   reply?: (
     request: LlmRequest,
     nth: number
-  ) =>
-    | { content: string; stopReason: "end_turn" }
-    | Promise<{ content: string; stopReason: "end_turn" }>;
+  ) => ReturnType<typeof sharedScript> | Promise<ReturnType<typeof sharedScript>>;
   /** Tokens the default authenticate accepts (default {@link TOKENS}). */
   tokens?: Record<string, PrincipalChain>;
 }

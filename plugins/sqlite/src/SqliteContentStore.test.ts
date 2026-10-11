@@ -163,7 +163,7 @@ describe("SqliteContentStore touch (SPI 1.4.0)", () => {
     });
     const result = await sweepUnpinnedContent({
       eventStores: [racing],
-      snapshotStores: [{ loadLatest: async () => null }],
+      snapshotStores: [{ loadLatest: async () => null, loadLatestBefore: async () => null }],
       contentStore: content,
       pinnedEventTypes: [],
       olderThanMs: 60_000, // the minimum guard margin an erasing orphan pass accepts
@@ -179,7 +179,7 @@ describe("SqliteContentStore touch (SPI 1.4.0)", () => {
     await raw.deleteExecution("a-child");
     const control = await sweepUnpinnedContent({
       eventStores: [raw],
-      snapshotStores: [{ loadLatest: async () => null }],
+      snapshotStores: [{ loadLatest: async () => null, loadLatestBefore: async () => null }],
       contentStore: content,
       pinnedEventTypes: [],
       olderThanMs: 60_000, // the minimum guard margin an erasing orphan pass accepts

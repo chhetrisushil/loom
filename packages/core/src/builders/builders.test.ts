@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { agent$, flow$, memory$, policy$, projection$, step$, tool$ } from "./index";
+import {
+  isProjectionHandlersRef,
+  loadProjectionHandlers,
+  projectionEventTypes,
+} from "./projection";
 
 const inputSchema = z.object({ id: z.string() });
 const outputSchema = z.object({ result: z.string() });
@@ -108,7 +113,7 @@ describe("agent$", () => {
 });
 
 describe("projection$", () => {
-  it("returns a ProjectionDefinition with initialState and handlers", () => {
+  it("returns a ProjectionDefinition with initialState and handlers", async () => {
     const def = projection$({
       id: "metrics-projection",
       name: "Metrics",
@@ -119,7 +124,9 @@ describe("projection$", () => {
     });
     expect(def._tag).toBe("ProjectionDefinition");
     expect(def.initialState).toEqual({ count: 0 });
-    expect(typeof def.handlers.STEP_COMPLETED).toBe("function");
+    expect(isProjectionHandlersRef(def.handlers)).toBe(false);
+    expect(projectionEventTypes(def.handlers)).toEqual(["STEP_COMPLETED"]);
+    expect(typeof (await loadProjectionHandlers(def.handlers)).STEP_COMPLETED).toBe("function");
   });
 });
 

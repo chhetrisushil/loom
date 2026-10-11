@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { RULE_ORDER } from "./rules";
-import type { FlowSpec, VerifyInput } from "./types";
+import type { FlowSpec, RuleName, VerifyInput } from "./types";
 import { VerificationError, formatReport, runVerification, verify } from "./verify";
 
 /** A fully-clean flow: hash present, no non-determinism, correlated suspend, granted effect. */
@@ -17,6 +17,12 @@ function cleanFlow(overrides: Partial<FlowSpec> = {}): FlowSpec {
     reachAnalyzed: true,
     ...overrides,
   };
+}
+
+/** A clean flow with the content hash removed (exactOptionalPropertyTypes forbids `flowHash: undefined`). */
+function hashless(overrides: Partial<FlowSpec> = {}): FlowSpec {
+  const { flowHash: _omitted, ...rest } = cleanFlow();
+  return { ...rest, ...overrides };
 }
 
 /** A fully-clean input around one flow. */
@@ -62,8 +68,7 @@ describe("determinism rule", () => {
 
 describe("replay-safety rule", () => {
   it("flags a flow with no content hash", () => {
-    const flow = cleanFlow();
-    const report = verify(cleanInput({ ...flow, flowHash: undefined }));
+    const report = verify(cleanInput(hashless()));
     expect(report.ok).toBe(false);
     expect(report.findings).toContainEqual(
       expect.objectContaining({ rule: "replay-safety", severity: "error" })
@@ -287,12 +292,7 @@ describe("runVerification — mode gate", () => {
 
   it("warn: logs when there are findings and returns the report", () => {
     const log = vi.fn();
-    const report = runVerification(
-      "warn",
-      () => cleanInput(cleanFlow({ flowHash: undefined })),
-      undefined,
-      log
-    );
+    const report = runVerification("warn", () => cleanInput(hashless()), undefined, log);
     expect(report?.ok).toBe(false);
     expect(log).toHaveBeenCalledOnce();
   });
@@ -304,9 +304,7 @@ describe("runVerification — mode gate", () => {
   });
 
   it("error: throws VerificationError before start when not ok", () => {
-    expect(() =>
-      runVerification("error", () => cleanInput(cleanFlow({ flowHash: undefined })))
-    ).toThrow(VerificationError);
+    expect(() => runVerification("error", () => cleanInput(hashless()))).toThrow(VerificationError);
   });
 
   it("error: passes through a clean input", () => {
@@ -444,9 +442,7 @@ describe("formatReport", () => {
   });
 
   it("renders error and warning counts", () => {
-    const report = verify(
-      cleanInput(cleanFlow({ flowHash: undefined, budget: { dimensions: ["tokens"] } }))
-    );
+    const report = verify(cleanInput(hashless({ budget: { dimensions: ["tokens"] } })));
     const text = formatReport(report);
     expect(text).toContain("error(s)");
     expect(text).toContain("warning(s)");

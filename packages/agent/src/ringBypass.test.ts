@@ -480,7 +480,7 @@ describe("replay under the effect ring (R9 fix round)", () => {
     rt.registerFlow(flowDef, runner);
     const h = await rt.start(flowDef, {}, { executionId: id });
     await h.waitForSuspend();
-    const r = await rt.resume(id, { eventType: "Go", payload: {}, correlationKey: "k" });
+    const r = await rt.resume(id, { eventType: "Go", payload: {} });
     return r.waitForCompletion();
   }
 

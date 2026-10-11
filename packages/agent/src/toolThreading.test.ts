@@ -41,7 +41,8 @@ const lookup = tool$({
 });
 const dbAgent = agent$({ id: "dba", name: "DBA", tools: [lookup] });
 // The same tool WITHOUT the operator's `returnsMedia` declaration.
-const plainLookup = tool$({ ...lookup, returnsMedia: undefined });
+const { returnsMedia: _declared, ...lookupWithoutMedia } = lookup;
+const plainLookup = tool$(lookupWithoutMedia);
 const plainAgent = agent$({ id: "dba", name: "DBA", tools: [plainLookup] });
 
 const PNG = Buffer.from("not-really-a-png-but-bytes-".repeat(40));
@@ -278,7 +279,7 @@ describe("media from tools flows as a ContentRef (R5)", () => {
     expect(JSON.stringify(rp)).not.toContain(big.slice(0, 64));
     // The model-call inputs (re-journaled every turn) never carry the oversized part.
     const modelInputs = (await eventStore.read("big-1"))
-      .filter((e: EventEnvelope) => e.type === "STEP_STARTED")
+      .filter((e: EventEnvelope) => e.eventType === "STEP_STARTED")
       .map((e: EventEnvelope) => JSON.stringify(e.payload))
       .filter((p) => p.includes('"kind":"llm"') || p.includes("#turn:1"));
     for (const p of modelInputs) expect(p).not.toContain(big.slice(0, 64));

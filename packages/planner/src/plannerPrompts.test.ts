@@ -74,7 +74,8 @@ Capabilities:
       },
     });
     expect(plan.nodes).toHaveLength(1);
-    const sys = requests[0]?.system ?? "";
+    const sys = requests[0]?.system;
+    if (typeof sys !== "string") throw new Error("the planner system prompt is not plain text");
     expect(sys.startsWith("Du bist ein Planer.")).toBe(true);
     expect(sys).toContain(UNTRUSTED_CONTENT_SYSTEM_NOTE);
     expect(sys).toContain("Höchstens");

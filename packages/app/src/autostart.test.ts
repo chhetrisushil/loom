@@ -2,7 +2,7 @@ import { step$ } from "@loom/core";
 import type { FlowDefinition } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
 import { InMemoryLeaseStore, InMemoryTimerStore } from "@loom/event-runtime";
-import type { DurableTimer } from "@loom/event-runtime";
+import type { TimerRecord } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineConfig } from "./defineConfig";
@@ -48,9 +48,13 @@ function sleeper() {
 /** Records polls, so "never started" is observable rather than merely asserted. */
 class CountingTimerStore extends InMemoryTimerStore {
   polls = 0;
-  override async due(now: number, limit?: number): Promise<DurableTimer[]> {
+  override async due(
+    now: number,
+    limit?: number,
+    options?: { redrive?: boolean; inbox?: boolean }
+  ): Promise<TimerRecord[]> {
     this.polls++;
-    return super.due(now, limit);
+    return super.due(now, limit, options);
   }
 }
 

@@ -2,12 +2,32 @@
 // so its own tests inject a minimal `surface` factory and fold the resulting SURFACE_PATCH events
 // with a flat-path fold. The real emitter/fold, and byte-identity against it, are tested in
 // `@loom/agent-surface` (`context.test.ts`).
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope, StepDefinition } from "@loom/core";
 
 type Emit = (eventType: string, payload: unknown) => void;
 type Patch = { op: string; path: string; value?: unknown; by?: number };
 
-export function testSurface(emit: Emit, surface = "ui"): Record<string, unknown> {
+export interface TestSurface {
+  set(path: string, value: unknown): void;
+  merge(path: string, value: unknown): void;
+  append(path: string, value: unknown): void;
+  remove(path: string): void;
+  increment(path: string, by?: number): void;
+  patch(patches: Patch[]): void;
+}
+
+/**
+ * `ctx.ui` is merged into `ExecutionContext` only where `@loom/agent-surface` is in the program (ADR 0114),
+ * and this package cannot depend on it. The runtime injects the accessor from `deps.surface`, so the tests
+ * read it through this narrowing instead of a declaration merge.
+ */
+export function uiOf(ctx: object): TestSurface {
+  if (!("ui" in ctx))
+    throw new Error("ctx.ui missing: build the runtime with `surface: testSurface`");
+  return ctx.ui as TestSurface;
+}
+
+export function testSurface(emit: Emit, surface = "ui"): TestSurface {
   const send = (patches: Patch[]): void => emit("SURFACE_PATCH", { surface, patches });
   return {
     set: (path: string, value: unknown) => send([{ op: "set", path, value }]),
@@ -37,4 +57,15 @@ export function foldTestSurface(events: EventEnvelope[]): Record<string, unknown
     }
   }
   return state;
+}
+
+/**
+ * `ExecutionContext.parallel` types a tuple branch as `StepDefinition<unknown, T>`, but a step's handler
+ * takes its input contravariantly, so no step with a typed input satisfies it (reported as a typing gap in
+ * the product API). The step IS what `parallel` runs; only the declared input type is widened here.
+ */
+export function forParallel<TIn, TOut>(
+  step: StepDefinition<TIn, TOut>
+): StepDefinition<unknown, TOut> {
+  return step as unknown as StepDefinition<unknown, TOut>;
 }

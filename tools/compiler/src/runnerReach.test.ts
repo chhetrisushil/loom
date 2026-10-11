@@ -1,5 +1,14 @@
+import { join } from "node:path";
+import type ts from "typescript";
 import { describe, expect, it } from "vitest";
+import { createImportResolver } from "./importResolve";
 import { analyzeReachNode, analyzeRunnerReach } from "./runnerReach";
+
+/** analyzeReachNode with the module's relative-import resolver (omitted when it imports nothing). */
+function analyzeReachWithImports(sf: ts.SourceFile, file: string) {
+  const importResolver = createImportResolver(sf, file);
+  return analyzeReachNode(sf, undefined, importResolver === undefined ? {} : { importResolver });
+}
 
 describe("runner-body reach analysis", () => {
   it("resolves a ctx.run target bound to a step$ in the same region", () => {
@@ -852,14 +861,11 @@ describe("constant ids and step factories (L37)", () => {
   it("pins the first-party fixed factory to the package constant", async () => {
     const { readFileSync } = await import("node:fs");
     const { KNOWN_STEP_FACTORIES } = await import("./runnerReach");
-    const src = readFileSync(
-      new URL("../../../plugins/mcp/src/mcpInvoke$.ts", import.meta.url),
-      "utf8"
-    );
+    const src = readFileSync(join(__dirname, "../../../plugins/mcp/src/mcpInvoke$.ts"), "utf8");
     const m = /MCP_INVOKE_TOOL_ID = "([^"]+)"/.exec(src);
     expect(KNOWN_STEP_FACTORIES.mcpInvoke$).toEqual({ fixed: m?.[1] });
     const sb = readFileSync(
-      new URL("../../../plugins/sandbox/src/sandboxEval$.ts", import.meta.url),
+      join(__dirname, "../../../plugins/sandbox/src/sandboxEval$.ts"),
       "utf8"
     );
     const sm = /SANDBOX_TOOL_ID = "([^"]+)"/.exec(sb);
@@ -966,8 +972,7 @@ describe("imported constants and factories (L37)", () => {
           await ctx.run(other("o"), {});
         };`;
       const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true);
-      const importResolver = createImportResolver(sf, file);
-      const withImports = analyzeReachNode(sf, undefined, { importResolver });
+      const withImports = analyzeReachWithImports(sf, file);
       expect(withImports.steps.map((s) => s.toolId)).toEqual(["llm.repair"]);
       expect(withImports.unresolved.map((u) => u.expr)).toEqual([
         'llmStep$("x", NOT_CONST)',
@@ -1047,7 +1052,7 @@ describe("false resolutions are unresolved, never a guess (L34 fix round)", () =
       writeFileSync(join(dir, "c.ts"), `export const T = "real.tool";`);
       const file = join(dir, "flow.ts");
       const sf = ts.createSourceFile(file, src(file), ts.ScriptTarget.ESNext, true);
-      const r = analyzeReachNode(sf, undefined, { importResolver: createImportResolver(sf, file) });
+      const r = analyzeReachWithImports(sf, file);
       return { steps: r.steps.map((s) => s.toolId), unresolved: r.unresolved.length };
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1110,7 +1115,7 @@ describe("false resolutions are unresolved, never a guess (L34 fix round)", () =
       const file = join(dir, "flow.ts");
       const src = `import { mk } from "./d"; const runner = async (ctx) => { await ctx.run(${use}); };`;
       const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true);
-      const r = analyzeReachNode(sf, undefined, { importResolver: createImportResolver(sf, file) });
+      const r = analyzeReachWithImports(sf, file);
       return { steps: r.steps.map((s) => s.toolId), unresolved: r.unresolved.length };
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -1357,7 +1362,7 @@ describe("a step$ with no toolId dispatches its own id (runtime: toolId ?? id)",
       writeFileSync(join(dir, "ids.ts"), 'export const SCAN_TOOLS_STEP_ID = "scan-tools";\n');
       const file = join(dir, "flow.ts");
       const sf = ts.createSourceFile(file, body, ts.ScriptTarget.ESNext, true);
-      return analyzeReachNode(sf, undefined, { importResolver: createImportResolver(sf, file) });
+      return analyzeReachWithImports(sf, file);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -68,7 +68,7 @@ describe("SandboxEvalEffect — input size limit", () => {
     }
   }, 30_000);
 
-  const ENGINES: { name: string; workers: SandboxSpec["workers"] }[] = [
+  const ENGINES: { name: string; workers: NonNullable<SandboxSpec["workers"]> }[] = [
     { name: "in-process", workers: {} },
     { name: "worker pool", workers: { count: 1 } },
   ];

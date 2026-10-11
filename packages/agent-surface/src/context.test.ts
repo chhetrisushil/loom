@@ -12,6 +12,12 @@ import { createSurfaceEmitter } from "./emitter";
 import type { SurfaceEmitter } from "./emitter";
 import { agentSurfaceProjection } from "./surfaceProjection";
 
+/** A projection's handler table; one built without it is a failure of the fixture, not a skip. */
+function handlersOf<H>(projection: { handlers?: H }): H {
+  if (projection.handlers === undefined) throw new Error("the projection declares no handlers");
+  return projection.handlers;
+}
+
 // ADR 0114 — `ctx.ui` leaves the kernel. Three spellings must put the SAME events in the log:
 //   1. `ctx.ui` from the injected factory (`deps.surface: createSurfaceEmitter`, what defineConfig does)
 //   2. `surface(ctx)` (the documented spelling; needs only `ctx.emit`, works on a bare runtime)
@@ -117,7 +123,8 @@ describe("ADR 0114 — ctx.ui and surface(ctx) produce byte-identical events", (
     const fold = (events: EventEnvelope[]) => {
       let state = projection.initialState;
       for (const e of events) {
-        if (e.eventType === "SURFACE_PATCH") state = projection.handlers.SURFACE_PATCH!(state, e);
+        if (e.eventType === "SURFACE_PATCH")
+          state = handlersOf(projection).SURFACE_PATCH!(state, e);
       }
       return state;
     };

@@ -1,3 +1,4 @@
+import type { EventEnvelope } from "@loom/core";
 import { describe, expect, it } from "vitest";
 import { boot, messages, until } from "./__fixtures__/harness";
 import { type FeedItem, createConversationReader, followConversation } from "./index";
@@ -89,9 +90,9 @@ describe("followConversation", () => {
     const store = new Proxy(b.eventStore, {
       get(t, p, r) {
         if (p === "subscribe") {
-          return async (...a: Parameters<typeof t.subscribe>) => {
+          return async (executionId: string, handler: (event: EventEnvelope) => void) => {
             subscribed++;
-            const off = await t.subscribe(...a);
+            const off = await t.subscribe(executionId, handler);
             return () => {
               unsubscribed++;
               off();

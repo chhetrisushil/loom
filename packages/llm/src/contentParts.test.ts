@@ -8,6 +8,7 @@ import {
 } from "./capabilities";
 import { createLlmEffect } from "./createLlmEffect";
 import {
+  type LlmContentPart,
   TaintedContentError,
   assistantMessageOf,
   base64ByteLength,
@@ -16,7 +17,7 @@ import {
   toParts,
 } from "./parts";
 import { UnresolvedContentError, resolveRequestContent } from "./resolveContent";
-import type { LlmContentPart, LlmProvider, LlmRequest } from "./types";
+import type { LlmProvider, LlmRequest } from "./types";
 import {
   InvalidLlmRequestError,
   MAX_INLINE_BYTES,
@@ -177,7 +178,7 @@ describe("guardRequest — structure and provenance of parts (R5)", () => {
     expect(r.messages[0]?.content).toEqual([{ ...img(), untrusted: { origin: "mcp:render" } }]);
     // and the shared helper does the bracketing, dropping the mark and an untrusted file's name
     expect(
-      fenceUntrustedMedia([
+      fenceUntrustedMedia<LlmContentPart>([
         { ...img(), untrusted: { origin: "mcp:render" } },
         {
           type: "file" as const,

@@ -23,7 +23,7 @@ function ev(executionId: string, eventType: string, payload: unknown): EventEnve
 function decision(
   executionId: string,
   decisionId: string,
-  choice: string,
+  choice: unknown,
   extra: Record<string, unknown> = {}
 ): EventEnvelope {
   return ev(executionId, "DECISION_RECORDED", { decisionId, choice, ...extra });
@@ -348,12 +348,8 @@ describe("promotionGate", () => {
   });
 
   it("refuses a policy with no unbiased estimate", () => {
-    const v = promotionGate({
-      ...base,
-      estimator: "agreement-only",
-      estimatedValue: undefined,
-      lift: undefined,
-    });
+    const { estimatedValue: _estimated, lift: _lift, ...noEstimate } = base;
+    const v = promotionGate({ ...noEstimate, estimator: "agreement-only" });
     expect(v.ok).toBe(false);
     expect(v.reasons.join(" ")).toMatch(/propensity/);
   });

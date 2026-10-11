@@ -461,7 +461,7 @@ describe("MCP server — audience and seam boundaries", () => {
     const body = (await res.json()) as {
       result: { tools: { _meta: Record<string, unknown> }[] };
     };
-    const meta = body.result.tools[0]._meta;
+    const meta = body.result.tools[0]?._meta ?? {};
     expect(meta.ui).toEqual({ resourceUri: SURFACE_HOST_URI, visibility: ["model"] });
     expect(meta["ui/resourceUri"]).toBe(SURFACE_HOST_URI);
   });

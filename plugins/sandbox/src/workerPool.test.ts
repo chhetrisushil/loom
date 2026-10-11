@@ -559,7 +559,7 @@ describe("SandboxWorkerPool (ADR 0089)", () => {
           return true;
         }
         return emit(event, ...args);
-      }) as typeof fresh.worker.emit;
+      }) as import("node:worker_threads").Worker["emit"];
 
       await expect(next).resolves.toEqual({ ok: true, value: 2 });
     },

@@ -238,7 +238,7 @@ function bootWith(
   return { runtime, eventStore, definition };
 }
 
-const hang = (seen?: { signal?: AbortSignal }) =>
+const hang = (seen?: { signal?: AbortSignal | undefined }) =>
   new ToolEffect(
     (_i: unknown, ctx: EffectContext) =>
       new Promise((_res, rej) => {

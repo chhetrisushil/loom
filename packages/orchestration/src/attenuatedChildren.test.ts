@@ -48,7 +48,7 @@ const CHILD_KEY = "worker";
 const CHILD = childIdFor(PARENT, CHILD_KEY);
 
 /** The child calls whichever tool it was told to; the ring decides if it may. */
-type ChildIn = { tool: string; park?: boolean };
+type ChildIn = { tool: string; park?: boolean | undefined };
 const childRunner: FlowRunner<ChildIn, { ok: boolean }> = async (ctx, input) => {
   // R3k — a child that PARKS first, so a "crash" between the park and the effect can be driven.
   if ((input as { park?: boolean }).park === true) await ctx.suspend({ on: "GO" });

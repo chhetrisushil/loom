@@ -83,7 +83,7 @@ async function boot(
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime: effects,
     timerStore: timers,
-    clock: () => clock.t,
+    now: () => clock.t,
   });
   holder.rt = runtime;
   runtime.registerFlow(definition, runner);
