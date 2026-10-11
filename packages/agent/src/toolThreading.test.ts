@@ -282,6 +282,7 @@ describe("media from tools flows as a ContentRef (R5)", () => {
       .filter((e: EventEnvelope) => e.eventType === "STEP_STARTED")
       .map((e: EventEnvelope) => JSON.stringify(e.payload))
       .filter((p) => p.includes('"kind":"llm"') || p.includes("#turn:1"));
+    expect(modelInputs.length).toBeGreaterThan(0); // never vacuous: the filter must find the model calls
     for (const p of modelInputs) expect(p).not.toContain(big.slice(0, 64));
   });
 
