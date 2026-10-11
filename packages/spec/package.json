@@ -31,6 +31,8 @@
     "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
+    "@loom/blueprint-runtime": "workspace:*",
+    "@loom/projection-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"

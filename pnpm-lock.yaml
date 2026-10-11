@@ -1278,6 +1278,12 @@ importers:
         specifier: workspace:*
         version: link:../workflow-runtime
     devDependencies:
+      '@loom/blueprint-runtime':
+        specifier: workspace:*
+        version: link:../blueprint-runtime
+      '@loom/projection-runtime':
+        specifier: workspace:*
+        version: link:../projection-runtime
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0
