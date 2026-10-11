@@ -385,7 +385,7 @@ Seven slices, each a PR with its negative tests, in dependency order:
 3. **loom-ui:** `hydration`.
 4. **loom-ui:** `renderer-lit` + `renderer-terminal` + parity tests.
 5. **loom-ui:** `planner` SPI + reference + conformance kit.
-6. **genUI:** migrate — server composes through loom-ui; web renders a compiled Blueprint via `renderer-lit`; private Blueprint deleted. **Until this lands the framework has no consumer; it is not optional.**
+6. **genUI:** migrate — server composes through loom-ui; web renders a compiled Blueprint via `renderer-lit`; private Blueprint deleted. **Until this lands the framework has no consumer; it is not optional.** **Shipped 2026-10-12** (genUI phases 6.1–6.3; the production drop of the legacy tables is operator-run).
 7. **loom:** docs pointers.
 
 ## 11. Out of scope for v1
