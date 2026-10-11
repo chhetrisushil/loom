@@ -4,15 +4,20 @@
   "description": "Schema-driven UI blueprint generation — pure JSON-serializable types",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "module": "./dist/esm/index.js",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
+      "node": "./dist/index.js",
+      "import": "./dist/esm/index.js",
       "default": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsc --build",
+    "build": "tsc --build && rm -rf dist/esm && tsc -p tsconfig.esm.json",
+    "build:esm": "rm -rf dist/esm && tsc -p tsconfig.esm.json",
     "dev": "tsc --build --watch",
     "test": "vitest run",
     "test:watch": "vitest",

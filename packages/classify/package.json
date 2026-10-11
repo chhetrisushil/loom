@@ -4,15 +4,20 @@
   "description": "Data-handling vocabulary for Loom — the sensitive()/secret()/internal() confidentiality markers + a schema walker, so a field is classified ONCE at its schema and every mechanism (crypto, redaction, egress) derives its wiring from that; plus the integrity axis (tainted()/unwrapTainted()), which attaches provenance to a VALUE at ingress because trustworthiness is not a property a schema can know. Kernel stays ignorant of both (G3).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "module": "./dist/esm/index.js",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
+      "node": "./dist/index.js",
+      "import": "./dist/esm/index.js",
       "default": "./dist/index.js"
     }
   },
   "scripts": {
-    "build": "tsc --build",
+    "build": "tsc --build && rm -rf dist/esm && tsc -p tsconfig.esm.json",
+    "build:esm": "rm -rf dist/esm && tsc -p tsconfig.esm.json",
     "dev": "tsc --build --watch",
     "test": "vitest run",
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
