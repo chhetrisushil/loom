@@ -26,6 +26,7 @@ export {
   InputValidationError,
   ParallelScopeFailedError,
   ResumePayloadValidationError,
+  SealedPayloadUnreadableError,
   ResumeContendedError,
   ResumeRefusedError,
   StartFencedOutError,

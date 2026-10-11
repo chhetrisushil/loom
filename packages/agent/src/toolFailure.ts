@@ -42,6 +42,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "StorageWriteError",
   // a deployment mismatch (this node cannot write per-topic inbox streams after the fleet switch): no retry helps
   "InboxTopicStreamsRequiredError",
+  // a sealed inbox payload this node cannot open: retrying on the same node cannot help (ADR 0130)
+  "SealedPayloadUnreadableError",
   // the environment cannot host the runtime's scopes (no AsyncLocalStorage): no retry helps
   "AsyncContextUnavailableError",
   // fencing / supersession: this execution no longer owns its log; a leaked egress or spawn bound
