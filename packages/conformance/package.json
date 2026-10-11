@@ -15,7 +15,8 @@
   "scripts": {
     "build": "tsc --build",
     "test": "vitest run",
-    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "peerDependencies": {
     "vitest": ">=2"

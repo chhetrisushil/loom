@@ -11,6 +11,7 @@
     "lint": "biome check .",
     "format": "biome format --write .",
     "typecheck": "tsc --build",
+    "typecheck:tests": "pnpm -r --workspace-concurrency=8 --no-bail typecheck:tests",
     "clean": "turbo clean",
     "fitness": "pnpm build && pnpm typecheck && pnpm lint && pnpm test",
     "present": "npx @marp-team/marp-cli@latest -s docs/presentation/",

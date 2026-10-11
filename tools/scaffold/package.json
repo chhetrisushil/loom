@@ -15,7 +15,8 @@
     "build": "tsc --build",
     "dev": "tsc --build --watch",
     "test": "vitest run",
-    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+    "clean": "rm -rf dist tsconfig.tsbuildinfo",
+    "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -14,7 +14,8 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo",
     "hardware": "tsc --build && node dist/hardware.js",
     "bench:fence": "tsc --build && node dist/fenceIf.js",
-    "bench:inbox": "tsc --build && node dist/inbox.js"
+    "bench:inbox": "tsc --build && node dist/inbox.js",
+    "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@loom/core": "workspace:*",
