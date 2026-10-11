@@ -35,12 +35,25 @@ export function flow<I = unknown, O = unknown>(
   return { definition, runner };
 }
 
-/** A latch a test opens by hand: the `slow` tool awaits it. */
+/**
+ * A latch a test opens by hand: the `slow` tool awaits it. `entered` resolves once the tool is
+ * blocked on it — by then the owner has appended everything it writes before the effect runs, so a
+ * test that snapshots the log "while the owner is running" must await it first (an unawaited
+ * snapshot races the owner's own STEP_STARTED append on a slow store).
+ */
 export class Latch {
   private open!: () => void;
+  private arrive!: () => void;
   readonly promise = new Promise<void>((r) => {
     this.open = r;
   });
+  readonly entered = new Promise<void>((r) => {
+    this.arrive = r;
+  });
+  /** Called by the `slow` tool as it starts waiting. */
+  enter(): void {
+    this.arrive();
+  }
   release(): void {
     this.open();
   }
@@ -78,6 +91,7 @@ export function build(
     effects.register(
       "slow",
       new ToolEffect(async (i: unknown) => {
+        opts.latch?.enter();
         await opts.latch?.promise;
         return i;
       })

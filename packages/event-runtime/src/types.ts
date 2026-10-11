@@ -366,6 +366,12 @@ export interface EventStore {
    * tolerate its absence — use {@link headOf}.
    */
   head?(executionId: string): Promise<number | null>;
+  /**
+   * Live delivery of one execution's appends. A handler sees that execution's events in the order
+   * they were committed (what `runEventStoreConformance` asserts), in-process or cross-node: a
+   * transport that turns a notification into an event asynchronously must not emit on completion
+   * order (the Postgres store queues each execution's emits behind its predecessor's).
+   */
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
   /**
    * OPTIONAL fencing (K9.4). Atomically increment and return the execution's

@@ -231,6 +231,9 @@ for (const backend of inboxBackends("discard")) {
       h.rt.registerFlow(f.definition, f.runner);
       const e = id();
       await h.rt.start(f, {}, { executionId: e });
+      // The owner is running only once it is blocked inside `slow`: before that, its own
+      // STEP_STARTED may still be in flight and would land after the `before` snapshot.
+      await latch.entered;
       const m = await h.rt.send(e, { topic: "t", payload: "x", messageId: "1" });
       const before = await kinds(h.eventStore, e);
       const err = await h.rt

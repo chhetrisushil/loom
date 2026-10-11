@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A cross-node Postgres subscriber now sees an execution's events in commit order.** `PostgresEventStore` turned each NOTIFY into an event with its own pooled `SELECT` and emitted when that lookup completed, so under load two lookups could finish out of order and a subscriber on another node received `[0, 2, 1]`. Lookups still run concurrently, but each execution's emits now queue behind its previous delivery. The `EventStore.subscribe` doc now states the per-execution commit-order delivery the conformance kit already asserted.
+
 - **A malformed `source.degradedFrom` no longer throws in the React and terminal renderers.** It was already the error placeholder in the DOM renderer; all three now draw `[Renderer for <kind> failed]` (React: `data-placeholder="error"` inside the frame) and never the cause or the value. The rule is wider than before: a `degradedFrom` that is not an array of objects (e.g. a string entry, which the DOM renderer used to draw as `undefined@undefined`) is now the same placeholder everywhere.
 
 ### Removed

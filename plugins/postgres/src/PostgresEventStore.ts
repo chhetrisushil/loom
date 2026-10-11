@@ -216,6 +216,16 @@ export class PostgresEventStore implements EventStore {
   private readonly connConfig: PgConfig;
   private listener: Client | undefined;
   private listenerReady: Promise<void> | undefined;
+  /**
+   * The last cross-node delivery queued per execution. NOTIFYs arrive on the one listener session
+   * in commit order, but each is turned into an event by its own pooled `SELECT`, and those
+   * complete in any order — so emitting on completion handed a subscriber `[0, 2, 1]`. Each
+   * delivery's fetch starts at once (they still overlap) but its EMIT waits for the previous
+   * delivery of the same execution, so a subscriber sees an execution's events in the order they
+   * were committed, as a same-process subscriber does. Entries delete themselves when they are the
+   * tail and settle, so the map holds only executions with a delivery in flight.
+   */
+  private readonly deliveryTail = new Map<string, Promise<void>>();
   private readonly notifyBuckets: number;
   /** Executions subscribed per bucket, so we LISTEN on first and UNLISTEN on last. */
   private readonly bucketRefs = new Map<number, number>();
@@ -1147,11 +1157,27 @@ export class PostgresEventStore implements EventStore {
     if (namespace != null && this.namespace !== undefined && namespace !== this.namespace) return;
     // A bucket carries several executions; keep the local interest check.
     if (!this.subscribers.has(executionId)) return;
-    const { rows } = await this.pool.query<EventRow>(
+    const fetched = this.pool.query<EventRow>(
       "SELECT * FROM events WHERE execution_id = $1 AND sequence = $2 LIMIT 1",
       [executionId, sequence]
     );
-    const row = rows[0];
-    if (row !== undefined) this.notifyLocal(executionId, rowToEnvelope(row));
+    // Observed below, after the predecessor; mark it handled now so a rejection that settles first
+    // is not reported as unhandled in the meantime.
+    fetched.catch(() => {});
+    const previous = this.deliveryTail.get(executionId);
+    const tail = (async () => {
+      // `previous` never rejects (this body catches everything), so awaiting it only orders.
+      if (previous !== undefined) await previous;
+      try {
+        const row = (await fetched).rows[0];
+        if (row !== undefined) this.notifyLocal(executionId, rowToEnvelope(row));
+      } catch {
+        // A failed lookup (or a throwing handler) drops this one delivery, as before; it must not
+        // stall the deliveries queued behind it. The log stays authoritative.
+      }
+    })();
+    this.deliveryTail.set(executionId, tail);
+    await tail;
+    if (this.deliveryTail.get(executionId) === tail) this.deliveryTail.delete(executionId);
   }
 }
