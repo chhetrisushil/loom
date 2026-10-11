@@ -3,8 +3,16 @@ import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime
 import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
+import { TimerService } from "./TimerService";
 import { build, eventsOf, flow, until } from "./__tests__/r2Harness";
-import { SEALED_WALK_BUDGET, assertDeliverable, inboxStreamId, sealedEnvelopeIn } from "./inbox";
+import {
+  INBOX_WAKE_AT,
+  SEALED_WALK_BUDGET,
+  assertDeliverable,
+  inboxStreamId,
+  sealedEnvelopeIn,
+} from "./inbox";
+import { recoverAbandoned } from "./recoverAbandoned";
 import { InboxMessageRefusedError, SealedPayloadUnreadableError } from "./types";
 
 // ADR 0130 — the kernel refuses to deliver a sealed (encrypted) inbox payload to a flow on a node
@@ -50,6 +58,7 @@ describe("sealed-payload guard (ADR 0130)", () => {
     // The owner is parked on its receive. Write the sealed message straight through the sealing
     // store (no send, so no wake on the sealed node) and let ONLY the plain node look at it.
     await until(async () => (await sealed.rt.loadState(e2))?.status === "suspended");
+    await sealed.rt.notifyInbox(e2); // settle the owner's own post-park read before the raw append
     const rawBefore = (await raw.eventStore.read(e2)).length;
     await sealed.eventStore.append({
       executionId: inboxStreamId(e2),
@@ -153,16 +162,19 @@ describe("sealed-payload guard (ADR 0130)", () => {
     const e = id();
     await (await h.rt.start(g, {}, { executionId: e })).waitForSuspend();
     const env = { __loomEnc: "loom/aes-256-gcm", iv: "AA", ct: "AA", tag: "AA" };
-    for (const forged of [env, { a: { b: [env] } }, [env], { __loomEnc: 1 }]) {
+    const viaToJson = { x: { toJSON: () => ({ __loomEnc: "loom/aes-256-gcm", iv: "AA" }) } };
+    for (const forged of [env, { a: { b: [env] } }, [env], viaToJson]) {
       await expect(
         h.rt.send(e, { topic: "y", payload: forged, messageId: "f" })
       ).rejects.toBeInstanceOf(InboxMessageRefusedError);
     }
     expect(await h.eventStore.read(inboxStreamId(e))).toHaveLength(0);
-    for (const [i, ok] of [{ x_loomEnc: 1 }, { "__loomEnc ": 1 }, "__loomEnc"].entries()) {
+    // A non-string `__loomEnc` is not an envelope (the predicate is "own key, STRING value").
+    const oks = [{ x_loomEnc: 1 }, { "__loomEnc ": 1 }, "__loomEnc", { __loomEnc: 1 }];
+    for (const [i, ok] of oks.entries()) {
       await h.rt.send(e, { topic: "y", payload: ok, messageId: `ok${i}` });
     }
-    expect(await h.eventStore.read(inboxStreamId(e))).toHaveLength(3);
+    expect(await h.eventStore.read(inboxStreamId(e))).toHaveLength(4);
   });
 
   it("a deep or huge payload cannot blow the stack or hang the walk", () => {
@@ -187,7 +199,11 @@ describe("sealed-payload guard (ADR 0130)", () => {
       assertDeliverable("e", { inboxSeq: 1, topic: "t", messageId: "m", payload: wide, sender: {} })
     ).toThrow(SealedPayloadUnreadableError);
     // Inherited keys are not envelopes.
-    expect(sealedEnvelopeIn(Object.create({ __loomEnc: 1 }))).toBe("clean");
+    expect(sealedEnvelopeIn(Object.create({ __loomEnc: "x" }))).toBe("clean");
+    // Only a STRING value is an envelope.
+    expect(sealedEnvelopeIn({ __loomEnc: 1 })).toBe("clean");
+    expect(sealedEnvelopeIn({ __loomEnc: { a: 1 } })).toBe("clean");
+    expect(sealedEnvelopeIn({ __loomEnc: "loom/aes-256-gcm" })).toBe("sealed");
   });
 
   it("send refuses a payload too large to check", async () => {
@@ -203,5 +219,166 @@ describe("sealed-payload guard (ADR 0130)", () => {
     await expect(
       h.rt.send(e, { topic: "y", payload: wide, messageId: "w" })
     ).rejects.toBeInstanceOf(InboxMessageRefusedError);
+  });
+
+  // A flow whose receive is answered BEFORE a later gate, so a resume of that gate REPLAYS the answer.
+  const replayFlow = (swallow = false) =>
+    flow("w", async (ctx) => {
+      let y: unknown;
+      try {
+        y = unwrapTainted(await ctx.receive<unknown>("y"));
+      } catch (e) {
+        if (!swallow) throw e;
+        y = "swallowed";
+      }
+      await ctx.suspend({ on: "Go" });
+      return { y };
+    });
+
+  for (const swallow of [false, true]) {
+    it(`REPLAY on a node that cannot open the recorded answer is refused, appends nothing, and a capable node completes it${swallow ? " (flow swallows the rejection)" : ""}`, async () => {
+      const { raw, sealed } = twoNodes({ INBOX_MESSAGE: ["payload"] });
+      // The plain node folds from the log: its own snapshot store (a shared one would hand it the
+      // capable node's plaintext checkpoint, the residual ADR 0130 documents).
+      const plain = build({}, { ...raw, snapshotStore: new InMemoryAsyncSnapshotStore() });
+      const f = replayFlow(swallow);
+      sealed.rt.registerFlow(f.definition, f.runner);
+      plain.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await sealed.rt.start(f, {}, { executionId: e })).waitForSuspend();
+      await sealed.rt.send(e, { topic: "y", payload: { ssn: SECRET }, messageId: "m1" });
+      await until(async () => (await eventsOf(raw.eventStore, e, "MESSAGE_CONSUMED")).length === 1);
+      await until(async () => (await sealed.rt.loadState(e))?.suspendedOn?.on === "Go");
+      expect(JSON.stringify(await eventsOf(raw.eventStore, e, "MESSAGE_CONSUMED"))).toContain(
+        "__loomEnc"
+      );
+
+      const handle = await plain.rt.resume(e, { eventType: "Go", payload: null });
+      const refused = await handle.waitForCompletion().then(
+        () => undefined,
+        (x: unknown) => x
+      );
+      expect(refused).toBeInstanceOf(SealedPayloadUnreadableError);
+      expect((refused as SealedPayloadUnreadableError).recorded).toBe(true);
+      expect(JSON.stringify(refused)).not.toContain("ciphertext");
+      const kinds = (await raw.eventStore.read(e)).map((x) => x.eventType);
+      // Nothing from the refused attempt: no completion, no failure, no second park, no step.
+      for (const k of ["EXECUTION_COMPLETED", "EXECUTION_FAILED", "STEP_COMPLETED"]) {
+        expect(kinds).not.toContain(k);
+      }
+      expect(kinds.filter((k) => k === "EXECUTION_SUSPENDED")).toHaveLength(2); // receive park + Go park
+      const sizeAfterRefusal = kinds.length;
+
+      // A capable node re-drives the (running) execution and completes it correctly.
+      const summary = await recoverAbandoned(sealed.rt, {
+        source: raw.eventStore,
+        isAbandoned: () => true,
+      });
+      expect(summary.recovered).toBeGreaterThanOrEqual(1);
+      await until(async () => (await sealed.rt.loadState(e))?.status === "completed");
+      expect((await sealed.rt.loadState(e))?.variables._output).toEqual({
+        y: { ssn: SECRET }, // the swallow happened only on the refused attempt
+      });
+      expect(sizeAfterRefusal).toBeLessThan((await raw.eventStore.read(e)).length);
+    });
+  }
+
+  it("an OLD log with an already-journaled plaintext answer replays unchanged (a plain node)", async () => {
+    const plainA = build();
+    const f = replayFlow();
+    plainA.rt.registerFlow(f.definition, f.runner);
+    const e = id();
+    await (await plainA.rt.start(f, {}, { executionId: e })).waitForSuspend();
+    await plainA.rt.send(e, { topic: "y", payload: { ssn: SECRET }, messageId: "m1" });
+    await until(async () => (await plainA.rt.loadState(e))?.suspendedOn?.on === "Go");
+    expect(JSON.stringify(await eventsOf(plainA.eventStore, e, "MESSAGE_CONSUMED"))).toContain(
+      SECRET
+    );
+    // Another node, no checkpoint, replays the plaintext answer.
+    const plainB = build(
+      {},
+      {
+        eventStore: plainA.eventStore,
+        timers: plainA.timers,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+      }
+    );
+    plainB.rt.registerFlow(f.definition, f.runner);
+    await (await plainB.rt.resume(e, { eventType: "Go", payload: null })).waitForCompletion();
+    expect((await plainB.rt.loadState(e))?.variables._output).toEqual({ y: { ssn: SECRET } });
+    expect(plainB.warnings.filter((w) => w.includes("REFUSED"))).toEqual([]);
+  });
+
+  it("a live refusal leaves a durable wake row and a capable node's TimerService delivers it", async () => {
+    const { raw, sealed, plain } = twoNodes({ INBOX_MESSAGE: ["payload"] });
+    const f = flow("w", async (ctx) => {
+      await ctx.suspend({ on: "Go" });
+      return { y: unwrapTainted(await ctx.receive<unknown>("y")) };
+    });
+    sealed.rt.registerFlow(f.definition, f.runner);
+    plain.rt.registerFlow(f.definition, f.runner);
+    const e = id();
+    await (await sealed.rt.start(f, {}, { executionId: e })).waitForSuspend();
+    await sealed.rt.send(e, { topic: "y", payload: { ssn: SECRET }, messageId: "m1" });
+    // send's own wake on the capable node may leave/consume rows: start from a clean slate.
+    await until(async () => (await sealed.rt.loadState(e))?.status === "suspended");
+    await raw.timers.due(Number.MAX_SAFE_INTEGER).then(async (rows) => {
+      for (const r of rows) await raw.timers.complete(r.executionId, r.wakeAt);
+    });
+    await plain.rt.resume(e, { eventType: "Go", payload: null });
+    await until(() => plain.storageErrors.some((x) => x instanceof SealedPayloadUnreadableError));
+    await until(async () =>
+      (await raw.timers.due(Number.MAX_SAFE_INTEGER)).some(
+        (r) => r.executionId === e && r.wakeAt === INBOX_WAKE_AT
+      )
+    );
+    await new TimerService(sealed.rt, raw.timers).tick(Date.now() + 1);
+    await until(async () => (await sealed.rt.loadState(e))?.status === "completed");
+    expect((await sealed.rt.loadState(e))?.variables._output).toEqual({ y: { ssn: SECRET } });
+  });
+
+  it("an incapable node's TimerService backs off: bounded fires and error reports, row never retired", async () => {
+    const { raw, sealed, plain } = twoNodes({ INBOX_MESSAGE: ["payload"] });
+    const f = receiveFlow();
+    sealed.rt.registerFlow(f.definition, f.runner);
+    plain.rt.registerFlow(f.definition, f.runner);
+    const e = id();
+    await (await sealed.rt.start(f, {}, { executionId: e })).waitForSuspend();
+    await sealed.rt.notifyInbox(e); // settle the owner's own post-park read before the raw append
+    await sealed.eventStore.append({
+      executionId: inboxStreamId(e),
+      workflowId: "__loom_inbox__",
+      sequence: 0,
+      eventType: "INBOX_MESSAGE",
+      timestamp: Date.now(),
+      payload: { topic: "y", messageId: "m1", payload: { ssn: SECRET }, sender: {} },
+    } as never);
+    await raw.timers.schedule({ executionId: e, wakeAt: INBOX_WAKE_AT });
+    let clock = 1_000_000;
+    const errors: unknown[] = [];
+    const svc = new TimerService(plain.rt, raw.timers, {
+      now: () => clock,
+      onError: (_id: string, err: unknown) => errors.push(err),
+      redriveBackoff: { baseMs: 100, capMs: 10_000, random: () => 1 },
+    });
+    let fires = 0;
+    const real = plain.rt.notifyInboxDetailed.bind(plain.rt);
+    plain.rt.notifyInboxDetailed = (...a: Parameters<typeof real>) => {
+      fires++;
+      return real(...a);
+    };
+    const POLLS = 200;
+    for (let i = 0; i < POLLS; i++) {
+      clock += 50; // 10 s of 50 ms polls
+      await svc.tick(clock);
+    }
+    expect(fires).toBeGreaterThan(0);
+    expect(fires).toBeLessThanOrEqual(10); // unbounded would be ~POLLS
+    expect(errors.length).toBeLessThanOrEqual(2);
+    expect(errors.every((x) => x instanceof SealedPayloadUnreadableError)).toBe(true);
+    // The row was never retired: a capable node still sees it.
+    expect(
+      (await raw.timers.due(Number.MAX_SAFE_INTEGER)).some((r) => r.wakeAt === INBOX_WAKE_AT)
+    ).toBe(true);
   });
 });

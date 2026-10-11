@@ -1473,14 +1473,22 @@ export class SealedPayloadUnreadableError extends Error {
     readonly executionId: string,
     readonly messageId: string,
     readonly topic: string,
-    readonly unverifiable = false
+    readonly unverifiable = false,
+    /** true when the sealed payload is a RECORDED answer met on replay (not a message in the inbox). */
+    readonly recorded = false
   ) {
     super(
-      `execution "${executionId}": the inbox message "${messageId}" on topic "${topic}" ${
-        unverifiable
-          ? "could not be checked for a sealed envelope within the walk bound"
-          : "carries a sealed (encrypted) payload this node cannot open"
-      }, so it was not delivered or consumed. It stays in the inbox for a node configured to open it.`
+      recorded
+        ? `execution "${executionId}": the recorded answer to the inbox wait on topic "${topic}" ${
+            unverifiable
+              ? "could not be checked for a sealed envelope within the walk bound"
+              : "is a sealed (encrypted) payload this node cannot open"
+          }, so this run attempt was refused and nothing was appended. The execution is unchanged for a node configured to open it.`
+        : `execution "${executionId}": the inbox message "${messageId}" on topic "${topic}" ${
+            unverifiable
+              ? "could not be checked for a sealed envelope within the walk bound"
+              : "carries a sealed (encrypted) payload this node cannot open"
+          }, so it was not delivered or consumed. It stays in the inbox for a node configured to open it.`
     );
     this.name = "SealedPayloadUnreadableError";
     Object.setPrototypeOf(this, SealedPayloadUnreadableError.prototype);

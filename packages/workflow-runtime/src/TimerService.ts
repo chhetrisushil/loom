@@ -9,6 +9,7 @@ import {
   ExecutionAlreadyExistsError,
   ResumeContendedError,
   ResumeRefusedError,
+  SealedPayloadUnreadableError,
   TIMER_FIRED,
 } from "./types";
 
@@ -274,6 +275,12 @@ export class TimerService {
    * live holder's token.
    */
   private readonly wakeBackoff = new Map<string, { attempt: number; nextTryAt: number }>();
+  /**
+   * ADR 0130 — back-off for an inbox wake row whose head message is sealed and NOT openable on this
+   * node. Separate from `wakeBackoff` because it must NEVER retire the row (no attempt cap): a node
+   * that can open the message still needs it. Bounded (oldest evicted).
+   */
+  private readonly sealedBackoff = new Map<string, { attempt: number; nextTryAt: number }>();
   /** Retries per chain of a D10a expiry row whose owner was running (bounded like `wakeBackoff`). */
   private readonly expiryBackoff = new Map<string, number>();
   private readonly now: () => number;
@@ -501,16 +508,48 @@ export class TimerService {
         nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
       });
     };
-    for (let round = 0; round < 8; round++) {
-      const r = await this.runtime.notifyInboxDetailed(executionId);
-      if (r.contended) return contended();
-      if (r.handle === undefined) break;
-      await settle(r.handle);
+    try {
+      for (let round = 0; round < 8; round++) {
+        const r = await this.runtime.notifyInboxDetailed(executionId);
+        if (r.contended) return contended();
+        if (r.handle === undefined) break;
+        await settle(r.handle);
+      }
+      this.sealedBackoff.delete(executionId);
+      this.wakeBackoff.delete(executionId);
+      await this.store.complete(executionId, wakeAt);
+      // After retiring the row, look once more: a send that found the row present skipped writing
+      // another, so a message that landed between the last read and the retire is delivered here.
+      await this.lastLook(executionId, wakeAt, settle);
+    } catch (err) {
+      if (!(err instanceof SealedPayloadUnreadableError)) throw err;
+      // ADR 0130: the head message is sealed and this node cannot open it. Keep the row (a capable
+      // node needs it) but stop hammering: exponential back-off with no attempt cap, and report
+      // the first refusal and then only every 16th, not every poll.
+      const attempt = (this.sealedBackoff.get(executionId)?.attempt ?? 0) + 1;
+      this.sealedBackoff.delete(executionId); // re-insert at the end: eviction order = recency
+      if (this.sealedBackoff.size >= MAX_WAKE_BACKOFFS) {
+        const oldest = this.sealedBackoff.keys().next().value;
+        if (oldest !== undefined) this.sealedBackoff.delete(oldest);
+      }
+      this.sealedBackoff.set(executionId, {
+        attempt,
+        nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
+      });
+      if (attempt === 1 || attempt % 16 === 0) this.onError?.(executionId, err);
+      // The row was retired only if the throw came from the post-retire look: re-write it.
+      await this.store.schedule({ executionId, wakeAt });
     }
-    this.wakeBackoff.delete(executionId);
-    await this.store.complete(executionId, wakeAt);
-    // After retiring the row, look once more: a send that found the row present skipped writing
-    // another, so a message that landed between the last read and the retire is delivered here.
+  }
+
+  private async lastLook(
+    executionId: string,
+    wakeAt: number,
+    settle: (h: {
+      waitForSuspend(): Promise<unknown>;
+      waitForCompletion(): Promise<unknown>;
+    }) => Promise<void>
+  ): Promise<void> {
     const last = await this.runtime.notifyInboxDetailed(executionId);
     if (last.contended) {
       await this.store.schedule({ executionId, wakeAt });
@@ -576,6 +615,8 @@ export class TimerService {
       }
       const backoff = this.wakeBackoff.get(executionId);
       if (backoff !== undefined && backoff.nextTryAt > this.now()) return; // backing off: no acquire
+      const sealedOff = this.sealedBackoff.get(executionId);
+      if (sealedOff !== undefined && sealedOff.nextTryAt > this.now()) return; // ADR 0130
       const state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
       // ADR 0110 D5 — the inbox wake row: run the notify path (read past the cursors, consume,
       // resume), then re-check after retiring the row so a send that coalesced into it just before
