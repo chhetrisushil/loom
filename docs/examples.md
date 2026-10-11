@@ -256,6 +256,21 @@ pnpm --filter @loom/db-observability start
   (`read({ until })` → `seenToState`); `eraseViewer` crypto-shreds one viewer and
   `collectSeenGarbage` sweeps exactly that viewer's unique blob while a value the other viewer
   also saw survives, and retention rolls old views off. Headless, offline.
+- **`experience-merge`** — loom-ui's three-way merge (`mergeExperiences(base, ours, theirs)`) on a
+  community-garden rota board two volunteers fork and edit independently. Disjoint edits merge
+  clean and the app seals the merge commit with both heads as parents; both relabelling one notice
+  is `edit/edit` (ours wins, and swapping the sides swaps the winner); competing moves are
+  `move/move`; two new nodes giving one localization key different words are `message/message`
+  (`keyConflicts` is the same check on its own), resolved by an ordinary `setLabel`. The result is
+  always ours-biased and unsealed. Headless, offline.
+- **`experience-broadcast`** — loom-ui audience on a support desk: ONE sealed Experience compiled
+  for the agent's own screen (`audience: "viewer"`) and a lobby wallboard driven from the same
+  logged-in machine (`audience: "broadcast"`, the least-privileged effective viewer whoever is
+  logged in). Each classified widget becomes loom's redacted widget (Blueprint IR 2.5.0,
+  `source.redacted`, an opaque `r_` id, drawn as the constant `⊘ redacted` marker) with an
+  `audience-withheld` finding server-side; `handleInventory` lists no classified handle, and a
+  broadcast-scoped hydration store (`HydrationScope.audience`) never shares state with the agent's
+  own surface. Headless, offline.
 - **`appgen-brownfield`**, **`appgen-models`** — AI-driven app generation
   (`@loom/appgen`).
 
