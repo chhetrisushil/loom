@@ -640,33 +640,49 @@ describe("validateBlueprint — malformed structure is a finding, never a throw"
   });
 
   describe("source.redacted (IR 2.5.0, ADR 0097 amendment)", () => {
+    // The placeholder's kind is the compiler's choice (loom-ui uses `Note`, binding "none"), so a
+    // clean placeholder yields NO finding at all — not even `missing-binding` — and the
+    // assertions below are on the FULL finding list.
+    const cat = { id: "red-cat", entries: [{ kind: "Note", props: [], binding: "none" }] } as never;
     const red = (extra: Record<string, unknown> = {}, source: Record<string, unknown> = {}) =>
       ({
         _tag: "Widget",
         id: "r_1",
-        kind: "StatusBadge",
+        kind: "Note",
         props: {},
         source: { type: "redacted", version: "1", redacted: true, ...source },
         ...extra,
       }) as unknown as Widget;
-    const check = (wd: Widget) =>
-      validateBlueprint(bp({ type: "stack", children: [wd] }), builtinCatalog).findings.filter(
-        (f) => f.code === "redacted-invalid" || f.code === "source-invalid"
-      );
+    const all = (wd: Widget) =>
+      validateBlueprint(bp({ type: "stack", children: [wd] }), cat).findings.map((f) => f.code);
 
-    it("accepts the placeholder: redacted true, no binding, no degradedFrom", () => {
-      expect(check(red())).toEqual([]);
+    it("accepts the placeholder with NO findings at all", () => {
+      expect(all(red())).toEqual([]);
+    });
+    it("explicit `redacted: undefined` is absent, not invalid", () => {
+      expect(all(red({}, { redacted: undefined, type: "t" }))).toEqual([]);
     });
     it("rejects anything but true", () => {
       for (const bad of [false, "true", 1, null, {}])
-        expect(check(red({}, { redacted: bad })).map((f) => f.code)).toEqual(["redacted-invalid"]);
+        expect(all(red({}, { redacted: bad }))).toEqual(["redacted-invalid"]);
     });
     it("rejects a redacted widget that still carries a binding or a degradedFrom chain", () => {
       const binding = { projectionId: "p", path: "secret", sensitivity: "restricted" };
-      expect(check(red({ binding })).map((f) => f.code)).toEqual(["redacted-invalid"]);
-      expect(
-        check(red({}, { degradedFrom: [{ type: "Trend", version: "1.0.0" }] })).map((f) => f.code)
-      ).toEqual(["redacted-invalid"]);
+      expect(all(red({ binding }))).toContain("redacted-invalid");
+      expect(all(red({}, { degradedFrom: [{ type: "Trend", version: "1.0.0" }] }))).toEqual([
+        "redacted-invalid",
+      ]);
+    });
+    it("rejects a title, props, or an original source type/version", () => {
+      expect(all(red({ title: "Salary of Alice" }))).toEqual(["redacted-invalid"]);
+      expect(all(red({ props: { x: 1 } }))).toContain("redacted-invalid");
+      expect(all(red({}, { type: "SalaryTrend" }))).toEqual(["redacted-invalid"]);
+      expect(all(red({}, { version: "3" }))).toEqual(["redacted-invalid"]);
+    });
+    it("still flags a redacted widget of an UNKNOWN kind that carries data", () => {
+      const codes = all(red({ kind: "Nope", title: "Salary of Alice" }));
+      expect(codes).toContain("unknown-kind");
+      expect(codes).toContain("redacted-invalid");
     });
   });
 

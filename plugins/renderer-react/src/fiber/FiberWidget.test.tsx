@@ -441,3 +441,47 @@ describe("useFiber — an unrelated projection write re-renders nothing", () => 
     expect([counts.get("wA"), counts.get("wB")]).toEqual([1, 1]);
   });
 });
+
+describe("useFiber — redacted widget (IR 2.5.0)", () => {
+  it("a redacted widget that still carries a binding subscribes to and reads nothing", () => {
+    const runtime = makeRuntime();
+    let subscribes = 0;
+    let reads = 0;
+    const sub = runtime.subscribeSelector.bind(runtime);
+    const get = runtime.getState.bind(runtime);
+    runtime.subscribeSelector = ((...a: Parameters<typeof sub>) => {
+      subscribes++;
+      return sub(...a);
+    }) as typeof runtime.subscribeSelector;
+    runtime.getState = ((...a: Parameters<typeof get>) => {
+      reads++;
+      return get(...a);
+    }) as typeof runtime.getState;
+    const w = {
+      ...MetricCard({
+        id: "red",
+        title: "SECRET",
+        binding: { projectionId: "metrics", path: "cpu.current" },
+      }),
+      source: { type: "redacted", version: "1", redacted: true },
+    } as never;
+    const bp = blueprint$({
+      id: "r",
+      title: "R",
+      layout: grid({ columns: 1, children: [asCell(w)] }),
+      projections: ["metrics"],
+    });
+    const { container } = render(
+      <BlueprintRenderer
+        blueprint={bp}
+        projectionRuntime={runtime}
+        executionId={EXECUTION_ID}
+        fiber={{ granularUpdates: true }}
+      />
+    );
+    expect(container.querySelector('[data-binding-marker="redacted"]')).not.toBeNull();
+    expect(container.innerHTML).not.toContain("SECRET");
+    expect(subscribes).toBe(0);
+    expect(reads).toBe(0);
+  });
+});

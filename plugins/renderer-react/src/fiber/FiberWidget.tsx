@@ -6,6 +6,10 @@ import { WidgetFrame, type WidgetValueCheck } from "../WidgetFrame";
 import { useWidgetSlice } from "../hooks/useWidgetSlice";
 import type { ResolvedFiberConfig } from "./types";
 
+// IR 2.5.0: a redacted widget draws one constant marker and never reads its binding.
+const isRedacted = (w: Widget): boolean =>
+  (w.source as { redacted?: unknown } | undefined)?.redacted === true;
+
 export interface FiberWidgetProps {
   widget: Widget;
   runtime: ProjectionRuntime;
@@ -61,7 +65,7 @@ const EagerFiberWidgetInner: React.FC<FiberWidgetProps> = ({
   onAction,
   check,
 }) => {
-  const { value, status } = useWidgetSlice(runtime, widget, executionId);
+  const { value, status } = useWidgetSlice(runtime, widget, executionId, !isRedacted(widget));
   return (
     <WidgetBody
       widget={widget}
@@ -93,7 +97,7 @@ const DeferredFiberWidgetInner: React.FC<FiberWidgetProps> = ({
   onAction,
   check,
 }) => {
-  const slice = useWidgetSlice(runtime, widget, executionId);
+  const slice = useWidgetSlice(runtime, widget, executionId, !isRedacted(widget));
   const deferred = useDeferredValue(slice);
   return (
     <WidgetBody
