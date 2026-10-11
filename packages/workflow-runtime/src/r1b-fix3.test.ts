@@ -84,7 +84,10 @@ describe("P3-1 - the carry cannot be forged through a snapshot", () => {
     return "done";
   });
 
-  async function forgedRotation(forged: Record<string, unknown>, restoreOpts: object = {}) {
+  async function forgedRotation(
+    forged: { top?: Record<string, unknown>; vars?: Record<string, unknown> },
+    restoreOpts: object = {}
+  ) {
     const h = build({ ...on, snapshotEvery: 1 });
     h.rt.registerFlow(meter.definition, meter.runner);
     await settle(await h.rt.start(meter, {}, { executionId: "m" }));

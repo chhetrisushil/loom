@@ -77,7 +77,11 @@ describe("WidgetFrame status matrix", () => {
   for (const row of rows) {
     it(`${row.status?.state ?? "undefined"} + ${row.value === undefined ? "no value" : "value"} → ${row.expectState}`, () => {
       const { container } = render(
-        <WidgetFrame widget={widget} value={row.value} status={row.status}>
+        <WidgetFrame
+          widget={widget}
+          value={row.value}
+          {...(row.status !== undefined && { status: row.status })}
+        >
           <span data-child>412</span>
         </WidgetFrame>
       );

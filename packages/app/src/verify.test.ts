@@ -1,5 +1,5 @@
 import { analyzeRunnerReach } from "@loom/compiler";
-import { step$ } from "@loom/core";
+import { type FlowDefinition, type StepDefinition, step$ } from "@loom/core";
 import { GrantTable, ToolEffect } from "@loom/effect-runtime";
 import { declareReach, verify } from "@loom/verify";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
@@ -252,7 +252,7 @@ describe("effect-class reaches the rule through defineConfig", () => {
   const efFlow = (
     id: string,
     effectClass: string,
-    steps: ReturnType<typeof step$>[]
+    steps: StepDefinition<{ incidentId: string }, { ok: boolean }>[]
   ): RegisteredFlow =>
     ({
       definition: {
@@ -262,7 +262,7 @@ describe("effect-class reaches the rule through defineConfig", () => {
         version: "1.0.0",
         inputSchema: incident,
         outputSchema: resolved,
-        steps,
+        steps: steps as FlowDefinition["steps"],
         effectClass,
       },
       runner: (async () => ({ resolved: true })) as unknown as FlowRunner<unknown, unknown>,
@@ -675,10 +675,11 @@ describe("declared reach for code handed ctx (L32)", () => {
 
   it("CONTROL: the ctx-handed planner's tool is invisible without a declaration (and, before L32, unreported)", () => {
     const { runtime } = build(partialGrants);
+    const { escapes: _omitted, ...withoutEscapes } = reach().gated;
     const report = verify(
       resolveVerifyInput(runtime, {
         authorizer: partialGrants,
-        runnerReachByFlow: { gated: { ...reach().gated, escapes: undefined } },
+        runnerReachByFlow: { gated: withoutEscapes },
       })
     );
     expect(report.findings.filter((f) => f.severity !== "info")).toEqual([]);
@@ -911,7 +912,11 @@ describe("step arguments, ctx.parallel and constant-id factories reach the rules
   const warns = (report: ReturnType<typeof verify>) =>
     report.findings.filter((f) => f.rule === "capability-compat" && f.severity === "warn");
   const fanout$ = declareReach(function fanout$() {}, { run: [], transient: [], stepArgs: [1] });
-  const check = (source: string, authorizer: GrantTable, reachDeclarations?: object) => {
+  const check = (
+    source: string,
+    authorizer: GrantTable,
+    reachDeclarations?: Readonly<Record<string, unknown>>
+  ) => {
     const { runtime } = build(authorizer);
     return verify(
       resolveVerifyInput(runtime, {

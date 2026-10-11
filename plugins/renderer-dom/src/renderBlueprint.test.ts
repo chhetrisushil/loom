@@ -18,7 +18,7 @@ import {
 } from "@loom/blueprint-runtime";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import { describe, expect, it } from "vitest";
-import { defaultDomRegistry } from "./defaultRegistry";
+import { type DomWidgetRenderer, defaultDomRegistry } from "./defaultRegistry";
 import { mountBlueprint, renderBlueprintToDom } from "./renderBlueprint";
 
 const b = (path: string, projectionId = "p", status?: string) => ({
@@ -97,7 +97,7 @@ describe("renderBlueprintToDom — the eight built-in kinds", () => {
 
   it("a registered custom kind renders; a throwing renderer is contained and its message not shown", () => {
     const registry = defaultDomRegistry.merge(
-      new RendererRegistry()
+      new RendererRegistry<DomWidgetRenderer>()
         .register("Boom", () => {
           throw new Error("secret internals");
         })
@@ -110,7 +110,7 @@ describe("renderBlueprintToDom — the eight built-in kinds", () => {
     const blueprint = bp([
       customWidget$({ kind: "Boom", id: "boom", binding: b("v") }) as never,
       customWidget$({ kind: "Spark", id: "spark", binding: b("v") }) as never,
-      MetricCard({ id: "ok", binding: b("v") }),
+      MetricCard({ title: "", id: "ok", binding: b("v") }),
     ]);
     const el = renderBlueprintToDom(blueprint, state({ v: 3 }), { registry });
     expect(widget(el, "boom").textContent).toBe("[Renderer for Boom failed]");
@@ -156,7 +156,10 @@ describe("binding status matrix (canonical, as React and terminal)", () => {
   });
   it("a widget with no channel and no source gets no frame attributes", () => {
     const el = widget(
-      renderBlueprintToDom(bp([MetricCard({ id: "m", binding: b("cpu") })]), state({ cpu: 1 })),
+      renderBlueprintToDom(
+        bp([MetricCard({ title: "", id: "m", binding: b("cpu") })]),
+        state({ cpu: 1 })
+      ),
       "m"
     );
     expect(el.hasAttribute("data-binding-state")).toBe(false);
@@ -167,7 +170,7 @@ describe("binding status matrix (canonical, as React and terminal)", () => {
 describe("layout", () => {
   it("a titled container is a labelled section with an h2; the heading is not a grid item", () => {
     const el = renderBlueprintToDom(
-      bp([MetricCard({ id: "m", binding: b("v") })], { title: "Vitals" }),
+      bp([MetricCard({ title: "", id: "m", binding: b("v") })], { title: "Vitals" }),
       state({})
     );
     const section = q(el, "section");
@@ -183,9 +186,9 @@ describe("layout", () => {
         columns: 3,
         gap: 8,
         children: [
-          cell(2, MetricCard({ id: "a", binding: b("v") })),
-          cell(1, MetricCard({ id: "c", binding: b("v") }), { row: 2, column: 1 }),
-          MetricCard({ id: "d", binding: b("v") }),
+          cell(2, MetricCard({ title: "", id: "a", binding: b("v") })),
+          cell(1, MetricCard({ title: "", id: "c", binding: b("v") }), { row: 2, column: 1 }),
+          MetricCard({ title: "", id: "d", binding: b("v") }),
         ],
       }),
       projections: ["p"],
@@ -225,10 +228,13 @@ describe("layout", () => {
 
   it("a layout role is ignored: the DOM is the plain container's", () => {
     const withRole = renderBlueprintToDom(
-      bp([MetricCard({ id: "m", binding: b("v") })], { role: "tabbed" }),
+      bp([MetricCard({ title: "", id: "m", binding: b("v") })], { role: "tabbed" }),
       state({})
     );
-    const plain = renderBlueprintToDom(bp([MetricCard({ id: "m", binding: b("v") })]), state({}));
+    const plain = renderBlueprintToDom(
+      bp([MetricCard({ title: "", id: "m", binding: b("v") })]),
+      state({})
+    );
     expect(withRole.innerHTML).toBe(plain.innerHTML);
   });
 });
@@ -237,7 +243,7 @@ describe("actions", () => {
   it("routes an approval click to onAction with widgetId and payload", () => {
     const seen: unknown[] = [];
     const el = renderBlueprintToDom(
-      bp([ApprovalCard({ id: "ap", binding: b("pending") })]),
+      bp([ApprovalCard({ title: "", id: "ap", binding: b("pending") })]),
       state({ pending: true }),
       { onAction: (a) => seen.push(a) }
     );
@@ -255,11 +261,15 @@ describe("actions", () => {
     const rt = new InMemoryProjectionRuntime();
     rt.register({ id: "p", initialState: { pending: true }, handlers: {} });
     const seen: unknown[] = [];
-    const h = mountBlueprint(host, bp([ApprovalCard({ id: "ap", binding: b("pending") })]), {
-      projectionRuntime: rt,
-      executionId: "e",
-      onAction: (a) => seen.push(a),
-    });
+    const h = mountBlueprint(
+      host,
+      bp([ApprovalCard({ title: "", id: "ap", binding: b("pending") })]),
+      {
+        projectionRuntime: rt,
+        executionId: "e",
+        onAction: (a) => seen.push(a),
+      }
+    );
     const button = h.element.querySelector("button") as HTMLElement;
     h.dispose();
     button.click();
@@ -291,8 +301,8 @@ describe("mountBlueprint — live", () => {
     return { rt, emit };
   };
   const live = [
-    MetricCard({ id: "cpu", binding: b("cpu") }),
-    MetricCard({ id: "other", binding: b("other") }),
+    MetricCard({ title: "", id: "cpu", binding: b("cpu") }),
+    MetricCard({ title: "", id: "other", binding: b("other") }),
   ];
 
   it("re-draws only the widget whose value changed", () => {
@@ -325,7 +335,7 @@ describe("mountBlueprint — live", () => {
     const missing = blueprint$({
       id: "x",
       title: "X",
-      layout: stack({ children: [MetricCard({ id: "m", binding: b("v", "ghost") })] }),
+      layout: stack({ children: [MetricCard({ title: "", id: "m", binding: b("v", "ghost") })] }),
       projections: ["ghost"],
     });
     const h = mountBlueprint(document.createElement("div"), missing, {
@@ -349,7 +359,7 @@ describe("mountBlueprint — live", () => {
       });
       const cpu = widget(h.element, "cpu");
       const other = widget(h.element, "other");
-      const added = MetricCard({ id: "new", binding: b("cpu") });
+      const added = MetricCard({ title: "", id: "new", binding: b("cpu") });
       const report = h.update(bp([live[1] as never, added, live[0] as never], {}, "v2"));
       expect(report.remounted).toEqual([]);
       expect(widget(h.element, "cpu")).toBe(cpu);
@@ -381,7 +391,7 @@ describe("mountBlueprint — live", () => {
       const { rt } = setup();
       const h = mountBlueprint(
         document.createElement("div"),
-        bp([MetricCard({ id: "m", binding: b("cpu"), unit: "%" })]),
+        bp([MetricCard({ title: "", id: "m", binding: b("cpu"), unit: "%" })]),
         {
           projectionRuntime: rt,
           executionId: "e",
@@ -389,7 +399,7 @@ describe("mountBlueprint — live", () => {
       );
       const host = widget(h.element, "m");
       expect(host.textContent).toContain("%");
-      const r1 = h.update(bp([MetricCard({ id: "m", binding: b("cpu"), unit: "ms" })]));
+      const r1 = h.update(bp([MetricCard({ title: "", id: "m", binding: b("cpu"), unit: "ms" })]));
       expect(widget(h.element, "m")).toBe(host);
       expect(host.textContent).toContain("ms");
       expect(r1.remounted).toEqual([]);
@@ -402,7 +412,7 @@ describe("mountBlueprint — live", () => {
     it("keeps an id'd container's widgets when a container is inserted before it", () => {
       const { rt } = setup();
       const inner = (id: string, wid: string): Layout =>
-        stack({ id, children: [MetricCard({ id: wid, binding: b("cpu") })] });
+        stack({ id, children: [MetricCard({ title: "", id: wid, binding: b("cpu") })] });
       const h = mountBlueprint(document.createElement("div"), bp([inner("c1", "w1")]), {
         projectionRuntime: rt,
         executionId: "e",
@@ -429,7 +439,7 @@ describe("mountBlueprint — live", () => {
         blueprint$({
           id: "v2",
           title: "T",
-          layout: stack({ children: [MetricCard({ id: "n", binding: b("n", "q") })] }),
+          layout: stack({ children: [MetricCard({ title: "", id: "n", binding: b("n", "q") })] }),
           projections: ["q"],
         })
       );

@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -19,7 +20,7 @@ import { contentHash, promptVersion } from "./versions";
 // byte-identical (compared as JSON strings, so key ORDER is covered too).
 // Regenerate deliberately with LOOM_WRITE_GOLDEN=1 - and only for an intended record change.
 
-const GOLDEN = new URL("./recordGolden.json", import.meta.url);
+const GOLDEN = join(__dirname, "recordGolden.json");
 const ACTIONS = ["gemma", "opus"];
 const FLOW: FlowDefinition = {
   _tag: "FlowDefinition",

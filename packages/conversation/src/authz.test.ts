@@ -182,10 +182,17 @@ describe("conversation authorization: owner-only by default", () => {
 
   it("a real conversation and an unknown one give the caller the SAME answer", async () => {
     const { b, id } = await owned();
-    const real = await b.conv.history(id, { principal: mallory }).catch((e: Error) => e);
-    const unknown = await b.conv
-      .history("no-such-conversation", { principal: mallory })
-      .catch((e: Error) => e);
+    const rejection = async (p: Promise<unknown>): Promise<Error> => {
+      try {
+        await p;
+      } catch (e) {
+        if (e instanceof Error) return e;
+        throw e;
+      }
+      throw new Error("expected the call to reject");
+    };
+    const real = await rejection(b.conv.history(id, { principal: mallory }));
+    const unknown = await rejection(b.conv.history("no-such-conversation", { principal: mallory }));
     expect(real).toBeInstanceOf(ConversationNotFoundError);
     expect(unknown).toBeInstanceOf(ConversationNotFoundError);
     expect(real.message.replace(id, "X")).toBe(

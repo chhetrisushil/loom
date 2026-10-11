@@ -759,7 +759,9 @@ describe("loom CLI", () => {
         const page = await fetch(`${server.url}/`);
         expect(await page.text()).toContain("loom inspector");
 
-        const trace = await (await fetch(`${server.url}/api/trace/${executionId}`)).json();
+        const trace = (await (await fetch(`${server.url}/api/trace/${executionId}`)).json()) as {
+          finalStatus: string;
+        };
         expect(trace.finalStatus).toBe("suspended");
 
         const state = await (await fetch(`${server.url}/api/state/${executionId}/0`)).text();

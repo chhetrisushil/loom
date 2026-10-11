@@ -50,7 +50,7 @@ describe("passageMessages", () => {
     // by hand it is refused at the boundary instead, before any provider sees it.
     expect(() =>
       guardRequest({
-        system: PASSAGES[0]?.text,
+        ...(PASSAGES[0] !== undefined && { system: PASSAGES[0].text }),
         messages: [{ role: "user", content: "The replica is lagging. What do I do?" }],
       })
     ).toThrow(UntrustedContentError);

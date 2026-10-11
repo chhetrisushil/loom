@@ -293,7 +293,7 @@ describe("exportJsonl (R18)", () => {
       tenant: "t",
       kinds: ["trajectory"],
       pageSize: 5,
-      cursor: first.stats.nextCursor,
+      ...(first.stats.nextCursor !== undefined && { cursor: first.stats.nextCursor }),
     });
     const ids = new Set(
       [...ofType(first, "trajectory"), ...ofType(second, "trajectory")].map((l) => l.executionId)

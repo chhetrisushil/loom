@@ -1,6 +1,7 @@
 import { flow$, handler$, step$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
@@ -31,8 +32,10 @@ describe("ctx.decide binding", () => {
   });
 
   it("works when handed to a helper as a bare function reference", async () => {
+    const eventStore = new InMemoryAsyncEventStore();
     const runtime = new WorkflowRuntime({
-      eventStore: new InMemoryAsyncEventStore(),
+      eventStore,
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
       effectRuntime: new EffectRuntime(),
     });
 
@@ -48,7 +51,7 @@ describe("ctx.decide binding", () => {
     const state = await handle.waitForCompletion();
     expect((state.variables._output as { choice: string }).choice).toBe("recorded");
 
-    const events = await runtime.eventStore.read(handle.executionId);
+    const events = await eventStore.read(handle.executionId);
     expect(events.filter((e) => e.eventType === "DECISION_RECORDED")).toHaveLength(1);
   });
 });

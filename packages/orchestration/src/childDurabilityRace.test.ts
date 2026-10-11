@@ -26,8 +26,12 @@ class SlowAppendStore implements EventStore {
   readFrom(id: string, s: number) {
     return this.inner.readFrom(id, s);
   }
-  // biome-ignore lint: pass-through for any remaining EventStore surface
-  [k: string]: any;
+  subscribe(...args: Parameters<EventStore["subscribe"]>) {
+    return this.inner.subscribe(...args);
+  }
+  close() {
+    return this.inner.close();
+  }
 }
 
 // Instant child: no effects, returns immediately (completes before a slow append drains).
@@ -43,7 +47,7 @@ const childFlow = {
     steps: [],
   } satisfies FlowDefinition<{ n: number }, { v: number }>,
   runner: childRunner,
-} as RegisteredFlow;
+} as RegisteredFlow<{ n: number }, { v: number }>;
 const parentRunner: FlowRunner<{ n: number }, { fromChild: number }> = async (ctx, input) => {
   const c = await awaitChild<{ v: number }>(ctx, {
     key: "c1",
@@ -63,19 +67,19 @@ const parentFlow = {
     steps: [],
   } satisfies FlowDefinition<{ n: number }, { fromChild: number }>,
   runner: parentRunner,
-} as RegisteredFlow;
+} as RegisteredFlow<{ n: number }, { fromChild: number }>;
 
 function build() {
   const holder: { supervisor?: ChildSupervisor } = {};
   const runtime = new WorkflowRuntime({
-    eventStore: new SlowAppendStore() as unknown as EventStore,
+    eventStore: new SlowAppendStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime: new EffectRuntime(),
     onEvent: (e) => holder.supervisor?.onEvent(e),
   });
   runtime.registerFlow(parentFlow.definition, parentRunner);
   runtime.registerFlow(childFlow.definition, childRunner);
-  holder.supervisor = superviseChildren({ runtime, flows: { child: childFlow } });
+  holder.supervisor = superviseChildren({ runtime, flows: { child: childFlow as RegisteredFlow } });
   return runtime;
 }
 async function waitDone(rt: WorkflowRuntime, id: string, tries = 400): Promise<string> {

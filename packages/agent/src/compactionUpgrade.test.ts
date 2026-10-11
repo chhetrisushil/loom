@@ -178,7 +178,11 @@ function boot(
   body: "legacy" | "new",
   opts: {
     store?: InMemoryAsyncEventStore;
-    compaction?: typeof COMPACTION & { afterBytes?: number };
+    compaction?: Omit<typeof COMPACTION, "afterMessages"> & {
+      afterMessages?: number;
+      afterBytes?: number;
+    };
+    perTurn?: number;
   } = {}
 ) {
   const calls = { n: 0 };
@@ -228,7 +232,10 @@ const compactIds = (events: EventEnvelope[]): string[] =>
   ].sort();
 
 async function crashAndResume(
-  compaction: typeof COMPACTION & { afterBytes?: number },
+  compaction: Omit<typeof COMPACTION, "afterMessages"> & {
+    afterMessages?: number;
+    afterBytes?: number;
+  },
   crashAt: string,
   perTurn = 2
 ) {

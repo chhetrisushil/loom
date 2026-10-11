@@ -40,7 +40,7 @@ const types = async (s: Stores, id: string) =>
 function boot(opts: {
   shared?: Stores;
   runner: FlowRunner<Record<string, unknown>, Record<string, unknown>>;
-  steps: ReturnType<typeof step$>[];
+  steps: FlowDefinition["steps"];
   tool?: () => Promise<Record<string, unknown>>;
   toolB?: () => Promise<Record<string, unknown>>;
   idempotentA?: boolean;

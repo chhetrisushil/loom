@@ -1,5 +1,5 @@
 import { step$ } from "@loom/core";
-import type { FlowDefinition } from "@loom/core";
+import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import { InMemoryBranchRegistry } from "@loom/event-runtime";

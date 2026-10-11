@@ -18,7 +18,7 @@ import {
 
 // ── Child: doubles `n`, optionally after `delayMs` (so completion order can be made
 //    to differ from input order) and optionally throwing (to exercise settled failure). ──
-type ChildIn = { n: number; delayMs?: number; boom?: boolean };
+type ChildIn = { n: number; delayMs?: number | undefined; boom?: boolean | undefined };
 type ChildOut = { v: number };
 const childRunner: FlowRunner<ChildIn, ChildOut> = async (_ctx, input) => {
   if (input.delayMs) await new Promise((r) => setTimeout(r, input.delayMs));
@@ -150,8 +150,12 @@ class SlowAppendStore implements EventStore {
   readFrom(id: string, s: number) {
     return this.inner.readFrom(id, s);
   }
-  // biome-ignore lint: pass-through for any remaining EventStore surface
-  [k: string]: any;
+  subscribe(...args: Parameters<EventStore["subscribe"]>) {
+    return this.inner.subscribe(...args);
+  }
+  close() {
+    return this.inner.close();
+  }
 }
 
 describe("awaitChildren — parallel children (wait-all settled)", () => {
@@ -212,7 +216,7 @@ describe("awaitChildren — parallel children (wait-all settled)", () => {
   }, 20000);
 
   it("does not strand the parent when instant children outrun the suspend write", async () => {
-    const rt = build(new SlowAppendStore() as unknown as EventStore);
+    const rt = build(new SlowAppendStore());
     // No delays → children complete almost instantly, N of them racing ONE suspend.
     await rt.start(parentFlow, { items: [{ n: 1 }, { n: 2 }, { n: 3 }] }, { executionId: "S1" });
     const parent = await waitForStatus(rt, "S1", "completed");
@@ -287,7 +291,7 @@ describe("awaitAll — all-or-nothing fan-out", () => {
 //    grandchild via settled results. Proves ids compose (`T::g#0::g#1`), depth deepens,
 //    reclaim survives nesting, and a partial failure stays contained at the level that
 //    inspects it. ──
-type MidIn = { base: number; boomSecond?: boolean };
+type MidIn = { base: number; boomSecond?: boolean | undefined };
 type MidOut = { sum: number; failures: number };
 const midRunner: FlowRunner<MidIn, MidOut> = async (ctx, input) => {
   const results = await awaitChildren<ChildOut>(ctx, {
@@ -337,7 +341,7 @@ const topFlow = {
     steps: [],
   } satisfies FlowDefinition<Record<string, never>, TopOut>,
   runner: topRunner,
-} as RegisteredFlow;
+} as RegisteredFlow<Record<string, never>, TopOut>;
 
 describe("awaitChildren — nested fan-out with contained failure", () => {
   it("composes: a partial grandchild failure stays contained at the mid that inspects it", async () => {

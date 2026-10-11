@@ -1,6 +1,7 @@
 import { step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
+import type { PrincipalChain } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { pinByEventKinds } from "@loom/plugin-content";
 import { InMemoryKeyStore, shredSubject } from "@loom/plugin-crypto";
@@ -12,7 +13,7 @@ import { ExecutionJournal } from "./ExecutionJournal";
 import { LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { SnapshotIdentityMismatchError } from "./types";
-import type { ExecutionAuthorizer, FlowRunner, PrincipalChain } from "./types";
+import type { ExecutionAuthorizer, FlowRunner } from "./types";
 
 // L11 (ADR 0106) — compaction must be invisible to everything that reads the log afterwards:
 // a resume across one compaction, or two, produces the same log suffix and the same state as

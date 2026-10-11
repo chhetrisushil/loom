@@ -5,6 +5,12 @@ import { provenanceOf, surfaceProvenanceProjection } from "./provenance";
 import type { ProvenanceState } from "./provenance";
 import { SURFACE_PATCH } from "./types";
 
+/** A projection's handler table; one built without it is a failure of the fixture, not a skip. */
+function handlersOf<H>(projection: { handlers?: H }): H {
+  if (projection.handlers === undefined) throw new Error("the projection declares no handlers");
+  return projection.handlers;
+}
+
 const event = (seq: number, payload: unknown): EventEnvelope => ({
   id: `e${seq}`,
   workflowId: "wf",
@@ -19,7 +25,7 @@ function fold(events: EventEnvelope[], surface = "ui"): ProvenanceState {
   const projection = surfaceProvenanceProjection(surface);
   let state = projection.initialState;
   for (const e of events) {
-    const handler = projection.handlers[e.eventType];
+    const handler = handlersOf(projection)[e.eventType];
     if (handler) state = handler(state, e);
   }
   return state;

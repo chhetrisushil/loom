@@ -119,7 +119,10 @@ describe("IntentRuntime", () => {
     const seen: { system?: string; user?: string }[] = [];
     const provider: LlmProvider = {
       complete: async (req) => {
-        seen.push({ system: req.system, user: String(req.messages[0]?.content) });
+        seen.push({
+          ...(req.system !== undefined && { system: req.system }),
+          user: String(req.messages[0]?.content),
+        });
         return { content: "issue-refund", stopReason: "end_turn" };
       },
     };

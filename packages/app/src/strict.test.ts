@@ -525,7 +525,6 @@ describe("strict — resume never re-applies the default deadline (P1)", () => {
     const r = await strict.runtime.resume("e", {
       eventType: "Go",
       payload: {},
-      correlationKey: "k",
     });
     expect((await r.waitForCompletion()).status).toBe("completed");
     await strict.close();
@@ -541,7 +540,7 @@ describe("strict — resume never re-applies the default deadline (P1)", () => {
     await h.waitForSuspend();
     skew = 2 * DAY;
     const b = strictOn(flow, storage, now);
-    const r = await b.runtime.resume("e", { eventType: "Go", payload: {}, correlationKey: "k" });
+    const r = await b.runtime.resume("e", { eventType: "Go", payload: {} });
     expect((await r.waitForCompletion()).status).toBe("completed");
     await b.close();
   });

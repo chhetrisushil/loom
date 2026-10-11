@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { sha256Hex } from "@loom/core";
 import { describe, expect, it } from "vitest";
 
@@ -18,7 +19,7 @@ describe("embedding hashing is node-free and byte-identical to node:crypto", () 
     expect(sha256Hex(s)).toBe(createHash("sha256").update(s).digest("hex"));
   });
   it("embedding.ts does not import a node: module", () => {
-    const src = readFileSync(new URL("./embedding.ts", import.meta.url), "utf8");
+    const src = readFileSync(join(__dirname, "embedding.ts"), "utf8");
     expect(src).not.toMatch(/from\s+["']node:/);
   });
 });

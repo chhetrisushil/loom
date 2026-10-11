@@ -8,7 +8,7 @@ const channel = MetricCard({
   title: "CPU",
   binding: { projectionId: "p", path: "v", status: { path: "s" } },
 });
-const bare = MetricCard({ id: "b", binding: { projectionId: "p", path: "v" } });
+const bare = MetricCard({ id: "b", title: "B", binding: { projectionId: "p", path: "v" } });
 const st = (state: BindingStatus["state"], message?: string): BindingStatus => ({
   state,
   ...(message !== undefined && { finding: { code: "c", message } }),

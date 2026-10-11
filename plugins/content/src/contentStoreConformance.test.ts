@@ -49,7 +49,7 @@ describe("CachingContentStore forwards the SPI 1.3.0 optionals", () => {
     const ref = await cache.put(enc("cached"));
     expect(await cache.get(ref)).not.toBeNull(); // warm
     clock = 100;
-    expect(await cache.deleteIfUntouchedSince(ref, 50)).toBe(true);
+    expect(await cache.deleteIfUntouchedSince!(ref, 50)).toBe(true);
     expect(await cache.get(ref)).toBeNull();
   });
 
@@ -57,7 +57,7 @@ describe("CachingContentStore forwards the SPI 1.3.0 optionals", () => {
     const inner = new InMemoryContentStore({ now: () => 100 });
     const cache = new CachingContentStore(inner, { maxBytes: 1024 });
     const ref = await cache.put(enc("touched"));
-    expect(await cache.deleteIfUntouchedSince(ref, 50)).toBe(false);
+    expect(await cache.deleteIfUntouchedSince!(ref, 50)).toBe(false);
     expect(await cache.get(ref)).not.toBeNull();
   });
 });

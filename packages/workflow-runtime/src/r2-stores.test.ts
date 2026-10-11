@@ -261,7 +261,11 @@ for (const backend of [memory, sqlite, postgres]) {
       expect(left).not.toContain(1);
       // the head turning terminal deletes the stream with it (nothing can ever consume it)
       const fence = await h.eventStore.acquireFence?.(e);
-      await h.rt.resume(e, { eventType: "hold", payload: { ok: true } }, { fence });
+      await h.rt.resume(
+        e,
+        { eventType: "hold", payload: { ok: true } },
+        { ...(fence !== undefined && { fence }) }
+      );
       await done(h, e);
       await until(async () => (await h.eventStore.read(inboxStreamId(e))).length === 0, 8000);
       expect(await h.eventStore.read(inboxStreamId(e))).toEqual([]);

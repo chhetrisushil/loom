@@ -270,7 +270,7 @@ describe("R22 D11 - activate a skill mid-loop", () => {
     expect(sys).not.toContain("- zeta:");
     const [res] = resultsOf(b.requests[1] as LlmRequest);
     expect(res?.isError).toBe(true);
-    expect(res?.result.error.code).toBe("unknown_skill");
+    expect(res?.result.error?.code).toBe("unknown_skill");
   });
 
   it("an explicit catalog array works without a registry selection; no offers means no meta-tool", async () => {

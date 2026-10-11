@@ -1,4 +1,5 @@
 import { BUILTIN_METER_DIMENSIONS, SuspendError, VOCABULARY_NAME_PATTERN, step$ } from "@loom/core";
+import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { Effect, EffectContext } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -23,7 +24,7 @@ const mkStep = (id: string, toolId = `${id}-tool`) =>
   step$({ id, name: id, toolId, inputSchema: io, outputSchema: io });
 
 function flowOf(
-  steps: ReturnType<typeof step$>[],
+  steps: FlowDefinition["steps"],
   runner: FlowRunner<Record<string, unknown>, Record<string, unknown>>
 ): RegisteredFlow {
   return {

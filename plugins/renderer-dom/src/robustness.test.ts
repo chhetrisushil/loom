@@ -53,17 +53,21 @@ const setup = (initial: Record<string, unknown> = { secret: "OLD-SECRET", v: 1 }
 describe("update() failure is never reported as success (P2-1)", () => {
   const poisoned = (id: string, degradedFrom: unknown) =>
     ({
-      ...MetricCard({ id, binding: bind("secret") }),
+      ...MetricCard({ title: "", id, binding: bind("secret") }),
       source: { type: "x", version: "1", degradedFrom },
     }) as never;
 
   it("a malformed source draws the error placeholder; the old value is gone", () => {
     const { rt } = setup();
     const host = document.createElement("div");
-    const handle = mountBlueprint(host, bp([MetricCard({ id: "m", binding: bind("secret") })]), {
-      projectionRuntime: rt,
-      executionId: "e",
-    });
+    const handle = mountBlueprint(
+      host,
+      bp([MetricCard({ title: "", id: "m", binding: bind("secret") })]),
+      {
+        projectionRuntime: rt,
+        executionId: "e",
+      }
+    );
     expect(host.textContent).toContain("OLD-SECRET");
     const report = handle.update(bp([poisoned("m", "oops")]));
     expect(host.textContent).not.toContain("OLD-SECRET");
@@ -76,10 +80,14 @@ describe("update() failure is never reported as success (P2-1)", () => {
   it("a reconcile that still fails rebuilds fresh, releases old subscriptions, and says so", () => {
     const { rt, live } = setup();
     const host = document.createElement("div");
-    const handle = mountBlueprint(host, bp([MetricCard({ id: "m", binding: bind("secret") })]), {
-      projectionRuntime: rt,
-      executionId: "e",
-    });
+    const handle = mountBlueprint(
+      host,
+      bp([MetricCard({ title: "", id: "m", binding: bind("secret") })]),
+      {
+        projectionRuntime: rt,
+        executionId: "e",
+      }
+    );
     expect(live()).toBe(1);
     // A child layout whose `children` getter throws once: the failure escapes the per-widget
     // guard, so the reconcile itself fails and must not leave the old surface behind.
@@ -113,10 +121,14 @@ describe("update() failure is never reported as success (P2-1)", () => {
   it("a fresh mount that fails too leaves an empty surface and says failed", () => {
     const { rt, live } = setup();
     const host = document.createElement("div");
-    const handle = mountBlueprint(host, bp([MetricCard({ id: "m", binding: bind("secret") })]), {
-      projectionRuntime: rt,
-      executionId: "e",
-    });
+    const handle = mountBlueprint(
+      host,
+      bp([MetricCard({ title: "", id: "m", binding: bind("secret") })]),
+      {
+        projectionRuntime: rt,
+        executionId: "e",
+      }
+    );
     expect(live()).toBe(1);
     // A child layout whose `children` getter throws once: the failure escapes the per-widget
     // guard, so the reconcile itself fails and must not leave the old surface behind.
@@ -166,7 +178,7 @@ describe("update() failure is never reported as success (P2-1)", () => {
       registry: registry as never,
     });
     inner = "arm";
-    handle.update(bp([MetricCard({ id: "m", binding: bind("v") })]));
+    handle.update(bp([MetricCard({ title: "", id: "m", binding: bind("v") })]));
     expect(inner).toBe("busy");
     handle.dispose();
     const after = handle.update(bp([]));
@@ -191,7 +203,8 @@ describe("duplicate ids (P2-2)", () => {
         );
       },
     };
-    const mk = () => bp(["a", "a", "a~1"].map((id) => MetricCard({ id, binding: bind("v") })));
+    const mk = () =>
+      bp(["a", "a", "a~1"].map((id) => MetricCard({ title: "", id, binding: bind("v") })));
     const host = document.createElement("div");
     const handle = mountBlueprint(host, mk(), {
       projectionRuntime: rt,
@@ -210,7 +223,8 @@ describe("duplicate ids (P2-2)", () => {
     const { rt } = setup();
     const ids = (h: HTMLElement) =>
       [...h.querySelectorAll("[data-widget-id]")].map((e) => e.getAttribute("data-widget-id"));
-    const mk = (order: string[]) => bp(order.map((id) => MetricCard({ id, binding: bind("v") })));
+    const mk = (order: string[]) =>
+      bp(order.map((id) => MetricCard({ title: "", id, binding: bind("v") })));
     const host = document.createElement("div");
     const handle = mountBlueprint(host, mk(["a", "a", "a~1"]), {
       projectionRuntime: rt,
@@ -226,7 +240,7 @@ describe("a throwing check never escapes into the runtime (P2-3)", () => {
   it("draws the error placeholder and the other subscriber still hears the event", () => {
     const { rt, emit } = setup({ v: 1 });
     const widgetWithChannel = {
-      ...MetricCard({ id: "m", binding: { ...bind("v"), status: { path: "s" } } }),
+      ...MetricCard({ title: "", id: "m", binding: { ...bind("v"), status: { path: "s" } } }),
     };
     const host = document.createElement("div");
     const handle = mountBlueprint(host, bp([widgetWithChannel as never]), {

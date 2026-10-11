@@ -104,7 +104,7 @@ describe("PlannerRuntime", () => {
   });
 
   it("uses the prompts override (R19) and the English default otherwise", async () => {
-    const seen: { system?: string; user?: string }[] = [];
+    const seen: { system: string | undefined; user: string }[] = [];
     const provider: LlmProvider = {
       complete: async (req) => {
         seen.push({ system: req.system, user: String(req.messages[0]?.content) });

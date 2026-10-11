@@ -10,7 +10,7 @@ import { LogLifecycle } from "./LogLifecycle";
 import { flowEmitDigest } from "./WorkflowContext";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { recoverAbandoned } from "./recoverAbandoned";
-import { foldTestSurface, testSurface } from "./testSurface";
+import { foldTestSurface, testSurface, uiOf } from "./testSurface";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "./types";
 
 // ── ADR 0102 — flow-level emit / stream / ui append ONCE per execution ────────
@@ -133,7 +133,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
 
   it("ctx.ui.append before a gate is ONE patch, and the surface folds to one entry", async () => {
     const h = boot(async (ctx) => {
-      ctx.ui.append("timeline", "x");
+      uiOf(ctx).append("timeline", "x");
       await ctx.suspend({ on: "go1" });
       await ctx.suspend({ on: "go2" });
       return { done: true };
@@ -288,9 +288,9 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
 
   it("fork: a child forked after the emit does not duplicate it on resume", async () => {
     const h = boot(async (ctx) => {
-      ctx.ui.append("timeline", "x");
+      uiOf(ctx).append("timeline", "x");
       await ctx.suspend({ on: "go1" });
-      ctx.ui.append("timeline", "y");
+      uiOf(ctx).append("timeline", "y");
       return { done: true };
     });
     const started = await h.runtime.start(h.flow, {}, { executionId: "e-parent" });
@@ -325,7 +325,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
         await ctx.run(stepA, {});
         ctx.emit("between", {});
         await ctx.suspend({ on: "go1" });
-        ctx.ui.append("timeline", "x"); // identical to the effect's patch
+        uiOf(ctx).append("timeline", "x"); // identical to the effect's patch
         await ctx.suspend({ on: "go2" });
         return { done: true };
       },
@@ -334,7 +334,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
           e.register(
             "tool-a",
             new ToolEffect(async () => {
-              flowCtx!.ui.append("timeline", "x");
+              uiOf(flowCtx!).append("timeline", "x");
               return { ok: true };
             })
           ),
@@ -502,13 +502,13 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
         try {
           await ctx.run(stepA, {});
         } catch {
-          ctx.ui.increment("failures", 1);
+          uiOf(ctx).increment("failures", 1);
         }
         await ctx.suspend({ on: "go1" });
         try {
           await ctx.run(stepB, {});
         } catch {
-          ctx.ui.increment("failures", 1);
+          uiOf(ctx).increment("failures", 1);
         }
         await ctx.suspend({ on: "go2" });
         return { done: true };
@@ -543,9 +543,9 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
       /* the stranded worker is gone */
     });
     const runner: FlowRunner<Io, Io> = async (ctx) => {
-      ctx.ui.increment("failures", 1); // identical content to the one S may cause
+      uiOf(ctx).increment("failures", 1); // identical content to the one S may cause
       const out = (await ctx.run(stepB, {})) as { bad?: boolean };
-      if (out.bad === true) ctx.ui.increment("failures", 1);
+      if (out.bad === true) uiOf(ctx).increment("failures", 1);
       return { done: true };
     };
     const a = boot(runner, { effects: (e) => e.register("tool-b", new ToolEffect(() => never)) });
@@ -572,7 +572,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
 
   it("a deploy that removes an emit: the old one stays as history, content that recurs later is appended", async () => {
     const v1: FlowRunner<Io, Io> = async (ctx) => {
-      ctx.ui.increment("n", 1);
+      uiOf(ctx).increment("n", 1);
       await ctx.suspend({ on: "go1" });
       await ctx.suspend({ on: "go2" });
       return { done: true };
@@ -586,7 +586,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
     // gate segment, so it is new content and appended, not served by v1's stamp.
     const v2: FlowRunner<Io, Io> = async (ctx) => {
       await ctx.suspend({ on: "go1" });
-      ctx.ui.increment("n", 1);
+      uiOf(ctx).increment("n", 1);
       await ctx.suspend({ on: "go2" });
       return { done: true };
     };
@@ -602,7 +602,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
 
   it("a deploy that inserts a step: an emit after the live step is appended, not served by an old stamp", async () => {
     const v1: FlowRunner<Io, Io> = async (ctx) => {
-      ctx.ui.increment("n", 1);
+      uiOf(ctx).increment("n", 1);
       await ctx.suspend({ on: "go1" });
       await ctx.suspend({ on: "go2" });
       return { done: true };
@@ -617,7 +617,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
     // increment after it cannot be proven a replay of v1's and is appended.
     const v2: FlowRunner<Io, Io> = async (ctx) => {
       const r = (await ctx.run(stepA, {})) as { bad?: boolean };
-      if (r.bad === true) ctx.ui.increment("n", 1);
+      if (r.bad === true) uiOf(ctx).increment("n", 1);
       await ctx.suspend({ on: "go1" });
       await ctx.suspend({ on: "go2" });
       return { done: true };
@@ -642,7 +642,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
   // the segment's log already holds that content once, which is what the new code emits.
   it("residual, pinned: an emit moved later within the same segment is served by its old stamp", async () => {
     const v1: FlowRunner<Io, Io> = async (ctx) => {
-      ctx.ui.increment("n", 1);
+      uiOf(ctx).increment("n", 1);
       await ctx.decide("route", () => "left");
       await ctx.suspend({ on: "go1" });
       return { done: true };
@@ -651,7 +651,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
     await (await first.runtime.start(first.flow, {}, { executionId: "e-moved" })).waitForSuspend();
     const v2: FlowRunner<Io, Io> = async (ctx) => {
       await ctx.decide("route", () => "left");
-      ctx.ui.increment("n", 1);
+      uiOf(ctx).increment("n", 1);
       await ctx.suspend({ on: "go1" });
       return { done: true };
     };
@@ -928,7 +928,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
     const h = boot(
       async (ctx) => {
         ctx.emit("one", {});
-        ctx.ui.append("timeline", "x");
+        uiOf(ctx).append("timeline", "x");
         ctx.emit("two", {});
         await ctx.suspend({ on: "go1" });
         ctx.emit("three", {});
@@ -951,7 +951,7 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
     const h = boot(async (ctx) => {
       ctx.emit("one", {});
       ctx.emit("one", {});
-      ctx.ui.append("timeline", "x");
+      uiOf(ctx).append("timeline", "x");
       await ctx.suspend({ on: "go1" });
       return { done: true };
     });

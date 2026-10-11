@@ -557,6 +557,7 @@ describe("shared mode: rotation and approvals", () => {
       boot({
         shared: true,
         config: {
+          // @ts-expect-error requireApproval is deliberately outside the config type: the runtime refuses it
           agent: { definition: undefined as never, modelToolId: "m", requireApproval: () => false },
         },
       })
@@ -565,6 +566,7 @@ describe("shared mode: rotation and approvals", () => {
       boot({
         shared: true,
         config: {
+          // @ts-expect-error needsApproval is deliberately outside the config type: the runtime refuses it
           agent: { definition: undefined as never, modelToolId: "m", needsApproval: () => true },
         },
       })

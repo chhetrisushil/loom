@@ -523,6 +523,7 @@ describe("validateBlueprint — IR 2.0.0 slots", () => {
     // written into projection state at run time, which validateBlueprint never sees.
     const widget = MetricCard({
       id: "m",
+      title: "M",
       binding: { projectionId: "p", path: "v", status: { path: "s" } },
     });
     expect(validateBlueprint(bp(stack({ children: [widget] })), builtinCatalog).findings).toEqual(

@@ -22,7 +22,7 @@ import { SANDBOX_ERRORS, type SandboxSpec } from "./types";
 
 const encoder = new TextEncoder();
 
-const ENGINES: { name: string; workers: SandboxSpec["workers"] }[] = [
+const ENGINES: { name: string; workers: NonNullable<SandboxSpec["workers"]> }[] = [
   { name: "in-process", workers: {} },
   { name: "worker pool", workers: { count: 2 } },
 ];

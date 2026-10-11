@@ -29,7 +29,11 @@ function startFake(handler: (method: string, params?: Record<string, unknown>) =
         id: number;
         params?: Record<string, unknown>;
       };
-      seen.push({ method: body.method, params: body.params, headers: req.headers });
+      seen.push({
+        method: body.method,
+        ...(body.params !== undefined && { params: body.params }),
+        headers: req.headers,
+      });
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({ jsonrpc: "2.0", id: body.id, result: handler(body.method, body.params) })

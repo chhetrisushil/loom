@@ -13,7 +13,7 @@ import {
   stack,
 } from "@loom/blueprint-runtime";
 import { describe, expect, it } from "vitest";
-import { defaultDomRegistry } from "./defaultRegistry";
+import { type DomWidgetRenderer, defaultDomRegistry } from "./defaultRegistry";
 import { renderBlueprintToDom } from "./renderBlueprint";
 import { display, h, safeUrl, token } from "./safeDom";
 
@@ -37,6 +37,7 @@ function hostile() {
         ProgressBar({ id: "pb", title: IMG, binding: b("n") }),
         Timeline({ id: "tl", title: IMG, binding: b("tl") }),
         DataTable({ id: "dt", title: IMG, binding: b("rows"), columns: [IMG, "ok"] }),
+        // @ts-expect-error intentionally invalid severity: the renderer must neutralise hostile strings
         AlertCard({ id: "al", title: IMG, binding: b("m"), severity: IMG }),
         ApprovalCard({
           id: "ap",
@@ -182,7 +183,7 @@ describe("safeDom", () => {
 
   it("a custom renderer built on h inherits the guarantees", () => {
     const registry = defaultDomRegistry.merge(
-      new RendererRegistry().register("Link", ({ doc, value }) =>
+      new RendererRegistry<DomWidgetRenderer>().register("Link", ({ doc, value }) =>
         h(doc, "a", { href: String(value) }, String(value))
       )
     );

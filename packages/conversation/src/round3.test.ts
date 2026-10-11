@@ -271,7 +271,7 @@ describe("P3-7 key rotation and domain separation", () => {
       topic: "conversation:turn",
       payload: signedEnvelope(OLD, { ...body, conversationId: id2 }),
     });
-    await strict.conv.sendTurn(id2, "after", { principal: undefined });
+    await strict.conv.sendTurn(id2, "after");
     const rest = await messages(strict, id2, 3);
     expect(rest[0]).toMatchObject({ status: "rejected", reason: "unauthenticated" });
   });

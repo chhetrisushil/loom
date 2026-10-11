@@ -366,7 +366,7 @@ describe("KnowledgeBase - declared reach (L34, ADR 0086)", () => {
       run: async () => undefined,
       execute: async () => undefined,
       parallel: async () => [],
-      decide: async (_id: string, decider: (scope: object) => unknown) =>
+      decide: async <T>(_id: string, decider: (scope: object) => Promise<T> | T) =>
         decider({ invokeTransient: async () => undefined }),
     });
     const hits = await kb.retrieve("replica replay delay", { decide: ctx.decide });

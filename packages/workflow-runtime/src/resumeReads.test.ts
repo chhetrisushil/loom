@@ -3,8 +3,8 @@ import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import type { WorkflowContext } from "./WorkflowContext";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import type { WorkflowContext } from "./types";
 
 // R1a — a resume must read the log from the latest snapshot forward, not the whole log. A
 // message-loop agent resumes once per turn, so a whole-log read per resume is quadratic.

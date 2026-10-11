@@ -27,7 +27,7 @@ const gatedRunner: FlowRunner<unknown, unknown> = async (ctx: WorkflowContext) =
 
 function def(version = "1.0.0") {
   return {
-    _tag: "FlowDefinition",
+    _tag: "FlowDefinition" as const,
     id: "flow",
     name: "Flow",
     version,

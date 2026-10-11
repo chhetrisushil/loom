@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { agent$, instructions$, skill$, tool$ } from "@loom/core";
 import { EffectRuntime } from "@loom/effect-runtime";
 import type { EffectContext } from "@loom/effect-runtime";
@@ -72,13 +73,16 @@ describe("SkillRegistry.find", () => {
 
   it("tokenizes exactly like CapabilityCatalog (the two copies must not drift)", async () => {
     const { lexicalTerms: a } = await import("./lexicalTerms");
-    const { lexicalTerms: b } = await import("../../capability/src/lexicalTerms");
+    // A computed specifier: the capability SOURCE is deliberately outside this package's rootDir
+    // (the module is not exported), so the compiler must not follow it.
+    const capabilitySource = resolve(__dirname, "../../capability/src/lexicalTerms");
+    const { lexicalTerms: b } = (await import(capabilitySource)) as { lexicalTerms: typeof a };
     for (const q of ["Rechnung prüfen", "請求書を作成 abc", "run_query x1 ab", "ＩＮＣ café", ""]) {
       expect(a(q)).toEqual(b(q));
     }
     // Byte-identical sources: a sample of queries cannot catch a drift in a branch it never takes.
     const { readFileSync } = await import("node:fs");
-    const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+    const src = (rel: string) => readFileSync(resolve(__dirname, rel), "utf8");
     expect(src("./lexicalTerms.ts")).toBe(src("../../capability/src/lexicalTerms.ts"));
   });
 

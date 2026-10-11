@@ -79,6 +79,7 @@ const FLOW: FlowDefinition = {
 
 interface Rig {
   runtime: WorkflowRuntime;
+  eventStore: InMemoryAsyncEventStore;
   /** capabilityId → every args it ran with. */
   ran: Record<string, unknown[]>;
   requests: LlmRequest[];
@@ -129,8 +130,9 @@ function rig(handlers: Record<string, (i: any) => unknown> = {}, divergence?: "f
       })
     );
   }
+  const eventStore = new InMemoryAsyncEventStore();
   const runtime = new WorkflowRuntime({
-    eventStore: new InMemoryAsyncEventStore(),
+    eventStore,
     snapshotStore: new InMemoryAsyncSnapshotStore(),
     effectRuntime: effects,
     ...(divergence !== undefined && { divergence }),
@@ -139,6 +141,7 @@ function rig(handlers: Record<string, (i: any) => unknown> = {}, divergence?: "f
 
   return {
     runtime,
+    eventStore,
     ran,
     requests,
     modelCalls: () => calls,
@@ -218,7 +221,7 @@ describe("planGoal + executePlan (R16)", () => {
     // The binding was resolved at execution from the recorded outputs.
     expect(r.ran.combine).toEqual([{ a: "alpha", b: "beta" }]);
     expect(r.modelCalls()).toBe(1);
-    const events = await r.runtime.eventStore.read(r.lastId());
+    const events = await r.eventStore.read(r.lastId());
     const decisions = events.filter((e) => e.eventType === "DECISION_RECORDED");
     expect(decisions.map((d) => (d.payload as { decisionId?: string }).decisionId)).toContain(
       "plan:plan"
@@ -268,7 +271,7 @@ describe("planGoal + executePlan (R16)", () => {
     const a = await ok.go({ replies: ["garbage"], fallback: true, goal: "sink" });
     expect(a.error).toBeUndefined();
     expect(a.run?.status).toBe("completed");
-    const events = await ok.runtime.eventStore.read(ok.lastId());
+    const events = await ok.eventStore.read(ok.lastId());
     const rec = events.find(
       (e) => (e.payload as { decisionId?: string }).decisionId === "plan:plan"
     );

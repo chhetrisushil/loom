@@ -176,6 +176,7 @@ describe("third-party MCP content on the path to a prompt", () => {
 
     expect(status).toBe("completed");
     const content = seen[0]?.messages[0]?.content ?? "";
+    if (typeof content !== "string") throw new Error("expected a string message content");
     expect(content).toContain('<untrusted-input origin="mcp:acme/fetch_doc">');
     expect(content).toContain(INJECTION);
     expect(content.endsWith("</untrusted-input>")).toBe(true);

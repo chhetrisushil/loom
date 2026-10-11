@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { createAgentModelEffect } from "@loom/agent";
 import { CapabilityCatalog, capability$ } from "@loom/capability";
 import { flow$, handler$, step$ } from "@loom/core";
@@ -351,7 +352,12 @@ describe("fix round 1 - goals (R16)", () => {
   });
 
   it("P1: the goal owner key is the conversation identity key (one definition)", async () => {
-    const { identityKey } = await import("../../conversation/src/access");
+    // A computed specifier: planner does not depend on @loom/conversation (and its source sits outside
+    // this package's rootDir), but the two owner keys must stay ONE definition.
+    const conversationAccess = resolve(__dirname, "../../conversation/src/access");
+    const { identityKey } = (await import(conversationAccess)) as {
+      identityKey: (i: { tenant?: string; actor?: string; onBehalfOf?: string }) => string;
+    };
     const p = { tenant: "t", actor: "assistant", onBehalfOf: "u1" };
     expect(ownerOfPrincipal(p)).toBe(
       identityKey({ tenant: "t", actor: "assistant", onBehalfOf: "u1" })

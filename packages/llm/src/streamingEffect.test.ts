@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { LLM_INTERRUPTED } from "./assembleStream";
 import type { InterruptedGeneration } from "./assembleStream";
 import { createLlmEffect } from "./createLlmEffect";
+import { textOf } from "./parts";
 import type { LlmProvider, LlmStreamChunk } from "./types";
 
 // ── R9 — the streaming LLM effect ─────────────────────────────────────────────
@@ -175,7 +176,7 @@ describe("streaming LLM effect (R9)", () => {
         return { content: "", stopReason: "end_turn" };
       },
       async *stream(request) {
-        seen.push(request.messages[0]?.content ?? "");
+        seen.push(textOf(request.messages[0]?.content ?? ""));
         yield { delta: "", done: true };
       },
     };

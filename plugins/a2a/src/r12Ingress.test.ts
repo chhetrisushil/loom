@@ -1,6 +1,6 @@
 import { networkInterfaces } from "node:os";
 import { flow$, handler$, step$ } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
+import { EffectRuntime, signDelegation } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
@@ -218,7 +218,11 @@ describe("R12 — A2A server is secure by default", () => {
 
   it("principals differing only by a delegation token share a namespace; tenants do not", () => {
     expect(principalNamespace({ actor: "a", tenant: "t" })).toBe(
-      principalNamespace({ actor: "a", tenant: "t", delegation: "tok" })
+      principalNamespace({
+        actor: "a",
+        tenant: "t",
+        delegation: signDelegation("s3cret", "a", ["tool.x"]),
+      })
     );
     expect(principalNamespace({ actor: "a", tenant: "t1" })).not.toBe(
       principalNamespace({ actor: "a", tenant: "t2" })

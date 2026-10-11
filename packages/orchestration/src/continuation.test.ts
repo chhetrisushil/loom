@@ -98,7 +98,7 @@ const awaitsMany = reg("awaits-many", async (ctx) => {
 });
 
 function build(withSupervisor = true, extra: { maxChainHops?: number; errors?: unknown[] } = {}) {
-  const holder: { supervisor?: ChildSupervisor } = {};
+  const holder: { supervisor?: ChildSupervisor | undefined } = {};
   const runtime = new WorkflowRuntime({
     eventStore: new InMemoryAsyncEventStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),

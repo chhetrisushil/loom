@@ -93,6 +93,8 @@ describe("ContentResolvingEventStore touches citations that arrive without a put
     clock.now = NOW + 5;
     const tip = await raw.appendIfUnchanged!("e", null);
     if (tip.appended) throw new Error("an observation does not append");
+    if (tip.head === null || tip.anchor === null)
+      throw new Error("the execution exists, so its observation carries a head and an anchor");
     const r = await resolving.appendIfUnchanged!("e", evt("e", 2, { output: [b, b] }), {
       head: tip.head,
       fence: tip.fence,

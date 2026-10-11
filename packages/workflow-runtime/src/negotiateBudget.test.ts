@@ -107,7 +107,7 @@ describe("R2 — bounded budget negotiation", () => {
     };
     const state = await (await runtime.start(makeFlow(runner), {})).waitForCompletion();
     const decisions = state.variables._decisions as Record<string, { choice: number }>;
-    expect(decisions.n.choice).toBe(20); // min(100, 30 − 10)
+    expect(decisions.n?.choice).toBe(20); // min(100, 30 − 10)
   });
 
   it("grants the full request when no ceiling is given (advisory, never throws)", async () => {
@@ -119,6 +119,6 @@ describe("R2 — bounded budget negotiation", () => {
     const state = await (await runtime.start(makeFlow(runner), {})).waitForCompletion();
     expect(state.status).toBe("completed");
     const decisions = state.variables._decisions as Record<string, { choice: number }>;
-    expect(decisions.n.choice).toBe(50);
+    expect(decisions.n?.choice).toBe(50);
   });
 });

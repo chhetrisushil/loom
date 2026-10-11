@@ -982,7 +982,7 @@ describe("P1-1 — safety stops are never fed back to the model", () => {
           new KillSwitchEngagedError({ scope: "global", key: undefined, reason: "stop" } as never),
       ],
       ["quota", () => new QuotaExceededError("tokens 2 >= budget 1")],
-      ["rate limit", () => new RateLimitExceededError("k" as never, 1, 1000)],
+      ["rate limit", () => new RateLimitExceededError("global", "k", 1000)],
     ];
     for (const [label, make] of cases) {
       const b = boot({
