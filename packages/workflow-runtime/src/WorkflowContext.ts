@@ -1943,6 +1943,9 @@ export class WorkflowContextImpl implements WorkflowContext {
             true
           );
           this.sealedReplayRefusalError = refusal;
+          // Frozen too: a flow that swallows the rejection must not dispatch NEW tools, effects or
+          // children on a node that cannot open the message (step entry and decisions check it).
+          this.frozen = true;
           this.seal();
           throw refusal;
         }

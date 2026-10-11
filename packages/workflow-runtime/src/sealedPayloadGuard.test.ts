@@ -1,8 +1,11 @@
 import { unwrapTainted } from "@loom/classify";
+import { step$ } from "@loom/core";
+import { ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { TimerService } from "./TimerService";
 import { build, eventsOf, flow, until } from "./__tests__/r2Harness";
 import {
@@ -282,6 +285,119 @@ describe("sealed-payload guard (ADR 0130)", () => {
       expect(sizeAfterRefusal).toBeLessThan((await raw.eventStore.read(e)).length);
     });
   }
+
+  async function refusedRunning() {
+    const { raw, sealed } = twoNodes({ INBOX_MESSAGE: ["payload"] });
+    return { raw, sealed };
+  }
+
+  it("a flow that swallows the replay refusal dispatches NO new effect and starts NO child", async () => {
+    const { raw, sealed } = await refusedRunning();
+    const plain = build({}, { ...raw, snapshotStore: new InMemoryAsyncSnapshotStore() });
+    let probed = 0;
+    let spawned = 0;
+    plain.effects.register(
+      "probe",
+      new ToolEffect(async () => {
+        probed++;
+        return 1;
+      })
+    );
+    const childFlow = flow("child", async () => "c");
+    plain.effects.register(
+      "spawn",
+      new ToolEffect(async () => {
+        spawned++;
+        await plain.rt.start(childFlow, {});
+        return 1;
+      })
+    );
+    const io = { inputSchema: z.any(), outputSchema: z.any() };
+    const probe = step$({ id: "probe", name: "Probe", toolId: "probe", ...io });
+    const spawn = step$({ id: "spawn", name: "Spawn", toolId: "spawn", ...io });
+    const f = flow("w", async (ctx) => {
+      try {
+        await ctx.receive<unknown>("y");
+      } catch {
+        // swallowed: only a node that could not open the answer gets here, and it then tries to
+        // start new work (the capable node never runs these, so nothing is served from the log).
+        void ctx.run(probe, {});
+        void ctx.run(spawn, {});
+      }
+      await ctx.suspend({ on: "Go" });
+      return {};
+    });
+    sealed.rt.registerFlow(f.definition, f.runner);
+    plain.rt.registerFlow(f.definition, f.runner);
+    plain.rt.registerFlow(childFlow.definition, childFlow.runner);
+    const e = id();
+    await (await sealed.rt.start(f, {}, { executionId: e })).waitForSuspend();
+    await sealed.rt.send(e, { topic: "y", payload: { ssn: SECRET }, messageId: "m1" });
+    await until(async () => (await sealed.rt.loadState(e))?.suspendedOn?.on === "Go");
+    // The capable node's own run ran the probe/spawn steps? Only the plain node's counters matter.
+    const before = { probed, spawned };
+    const handle = await plain.rt.resume(e, { eventType: "Go", payload: null });
+    const refused = await handle.waitForCompletion().then(
+      () => undefined,
+      (x: unknown) => x
+    );
+    expect(refused).toBeInstanceOf(SealedPayloadUnreadableError);
+    await new Promise((r) => setTimeout(r, 200)); // timing-bound: a dispatch would land in ms
+    expect({ probed, spawned }).toEqual(before);
+    expect(probed).toBe(0);
+    expect(spawned).toBe(0);
+  });
+
+  it("recoverAbandoned reports a sealed refusal as failed (not recovered) and backs off", async () => {
+    const { raw, sealed } = twoNodes({ INBOX_MESSAGE: ["payload"] });
+    const plain = build({}, { ...raw, snapshotStore: new InMemoryAsyncSnapshotStore() });
+    const f = replayFlow();
+    sealed.rt.registerFlow(f.definition, f.runner);
+    plain.rt.registerFlow(f.definition, f.runner);
+    const e = id();
+    await (await sealed.rt.start(f, {}, { executionId: e })).waitForSuspend();
+    await sealed.rt.send(e, { topic: "y", payload: { ssn: SECRET }, messageId: "m1" });
+    await until(async () => (await sealed.rt.loadState(e))?.suspendedOn?.on === "Go");
+    const h = await plain.rt.resume(e, { eventType: "Go", payload: null });
+    await h.waitForCompletion().catch(() => undefined);
+
+    let resumes = 0;
+    const realResume = plain.rt.resume.bind(plain.rt);
+    plain.rt.resume = (...a: Parameters<typeof realResume>) => {
+      resumes++;
+      return realResume(...a);
+    };
+    const errors: unknown[] = [];
+    let recoveredCb = 0;
+    const sweep = () =>
+      recoverAbandoned(plain.rt, {
+        source: raw.eventStore,
+        isAbandoned: () => true,
+        onError: (_i, err) => errors.push(err),
+        onRecovered: () => {
+          recoveredCb++;
+        },
+      });
+    const first = await sweep();
+    expect(first.failed).toBe(1);
+    expect(first.recovered).toBe(0);
+    expect(recoveredCb).toBe(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(SealedPayloadUnreadableError);
+    for (let i = 0; i < 10; i++) {
+      const again = await sweep();
+      expect(again.recovered).toBe(0);
+      expect(again.failed).toBe(0);
+    }
+    expect(resumes).toBe(1); // backed off: the sweep did not re-drive it
+    expect(errors).toHaveLength(1);
+    // A capable node is not affected by this node's back-off and completes it.
+    const ok = await recoverAbandoned(sealed.rt, {
+      source: raw.eventStore,
+      isAbandoned: () => true,
+    });
+    expect(ok.recovered).toBeGreaterThanOrEqual(1);
+  });
 
   it("an OLD log with an already-journaled plaintext answer replays unchanged (a plain node)", async () => {
     const plainA = build();
