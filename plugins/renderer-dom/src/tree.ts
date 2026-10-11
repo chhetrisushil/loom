@@ -95,7 +95,13 @@ function drawWidgetUnsafe(e: WidgetEntry, ctx: Ctx): void {
   if (d.tag === "redacted") {
     // IR 2.5.0: withheld for the surface's audience. Only the constant marker is drawn; no body,
     // no title, and no source/degraded attributes (the original type may itself be sensitive).
-    for (const a of ["data-source-type", "data-source-version", "data-degraded", "title"])
+    for (const a of [
+      "data-source-type",
+      "data-source-version",
+      "data-degraded",
+      "data-widget-kind",
+      "title",
+    ])
       e.host.removeAttribute(a);
     e.host.replaceChildren(
       h(doc, "div", { "data-binding-marker": "redacted", role: "status" }, `⊘ ${d.message}`)

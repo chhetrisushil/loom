@@ -46,9 +46,12 @@ function sliceOf(widget: Widget, projectionId: string | undefined, state: unknow
 export function useWidgetSlice(
   runtime: ProjectionRuntime,
   widget: Widget,
-  executionId: string
+  executionId: string,
+  // `false` subscribes to nothing and reads nothing (IR 2.5.0: a redacted widget must not pull
+  // its bound value into memory). A flag rather than a conditional call, so hook order is stable.
+  enabled = true
 ): WidgetSlice {
-  const projectionId = widget.binding?.projectionId;
+  const projectionId = enabled ? widget.binding?.projectionId : undefined;
 
   const subscribe = useCallback(
     (onStoreChange: () => void) => {

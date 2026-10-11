@@ -283,7 +283,8 @@ the surface it rendered. It is a statement about the artifact's content, not abo
   marker instead. All three first-party renderers do: `⊘ redacted` (React and DOM:
   `data-binding-state="redacted"` plus a `role="status"` `data-binding-marker="redacted"` element;
   terminal: the line `⊘ redacted`). The marker text is a constant, never data from the widget, and
-  no `data-source-*`, `data-degraded` or `title` attribute is emitted for it.
+  no `data-source-*`, `data-degraded`, `data-widget-kind` (the `kind` may itself be sensitive) or
+  `title` attribute is emitted for it, on first draw or after an in-place update.
 - `describeWidgetStatus` gains the `redacted` tag and puts it **first** in the precedence
   (redacted > error > empty > contract > stale > pending/loading > ready). It is decided before the
   value, the status, the `check`, the `binding`, or a malformed `degradedFrom` is read, so none of
@@ -294,8 +295,10 @@ the surface it rendered. It is a statement about the artifact's content, not abo
 **Relation to `degradedFrom` and `binding`: mutually exclusive.** A redacted widget has **no
 `binding`** and **no `source.degradedFrom`**. A binding leaves the projection id and path (what was
 withheld) on the artifact; a degrade chain leaves the original semantic types. `validateBlueprint`
-enforces this with the new error `redacted-invalid` (also raised for a non-`true` value). The same
-rule keeps a redacted widget out of the renderers' projection subscriptions.
+enforces this with the new error `redacted-invalid` (also raised for a non-`true` value; an explicit
+`redacted: undefined` is absent). The same rule keeps a redacted widget out of the renderers'
+projection subscriptions: the React fiber path skips the subscription and the state read for it even
+when an unvalidated widget still carries a binding.
 
 **What a redacted placeholder carries.** `source.type` and `source.version` stay required (the
 shape contract is unchanged), but the original type may itself be sensitive (`SalaryTrend` says a
@@ -314,5 +317,7 @@ two different compositions do.
 **Still not enforced by loom.** `sensitivity` remains declared-not-enforced (D4): loom does not
 decide what to redact, it carries and draws the decision. A renderer cannot tell a legitimately
 redacted widget from a forged one; the guarantee that the withheld content is absent from the
-artifact is the compiler's, and `redacted-invalid` checks the two leaks (`binding`,
-`degradedFrom`) that a well-formed placeholder cannot have.
+artifact is the compiler's, and `redacted-invalid` checks the leaks a well-formed placeholder
+cannot have: a `binding`, a `degradedFrom`, a `title`, any `props`, or a `source.type`/`version`
+other than the constants `"redacted"`/`"1"`. The check runs before the unknown-kind return, so a
+redacted widget of an unknown kind that still carries data is caught too.

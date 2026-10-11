@@ -21,7 +21,7 @@ import { cleanup, render } from "@testing-library/react";
 import { createElement } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { defaultDomRegistry } from "./defaultRegistry";
-import { renderBlueprintToDom } from "./renderBlueprint";
+import { mountBlueprint, renderBlueprintToDom } from "./renderBlueprint";
 
 // The three first-party surfaces over one Blueprint IR must handle the same vocabulary. A kind
 // added to the catalogue and rendered by two of them, or a kind one registers that another
@@ -288,6 +288,7 @@ describe("renderer parity: the status matrix on dom / react / terminal", () => {
         title: "SECRET-TITLE",
         binding: { projectionId: "p", path: "v", status: { path: "s" } },
       }),
+      kind: "SECRETKIND",
       props: { unit: "SECRET-PROP" },
       source: {
         type: "SECRET-TYPE",
@@ -339,7 +340,9 @@ describe("renderer parity: the status matrix on dom / react / terminal", () => {
           expect(host.querySelector('[data-binding-marker="redacted"]')?.textContent).toBe(
             "⊘ redacted"
           );
-          expect(host.innerHTML).not.toMatch(/SECRET|data-source|data-degraded|title=/);
+          expect(host.innerHTML).not.toMatch(
+            /SECRET|data-source|data-degraded|data-widget-kind|title=/
+          );
         }
         expect(term).toContain("⊘ redacted");
         expect(term).not.toMatch(/SECRET/);
@@ -348,6 +351,68 @@ describe("renderer parity: the status matrix on dom / react / terminal", () => {
         expect(dom.textContent).not.toMatch(/SECRET|CPU/);
       });
     }
+
+    // The UPDATE path: an ordinary widget carrying real content, revised in place to a redacted
+    // one with the same id. Nothing of the first draw (attributes included) may survive.
+    const ordinary = {
+      ...MetricCard({
+        id: "r_1",
+        title: "SECRET-TITLE",
+        binding: { projectionId: "p", path: "v", status: { path: "s" } },
+      }),
+      kind: "StatusBadge",
+      props: { unit: "SECRET-PROP" },
+      source: {
+        type: "SECRET-TYPE",
+        version: "SECRET-VER",
+        degradedFrom: [{ type: "SECRET-FROM", version: "9" }],
+      },
+    } as never;
+    const redactedSame = {
+      _tag: "Widget",
+      id: "r_1",
+      kind: "StatusBadge",
+      props: {},
+      source: { type: "redacted", version: "1", redacted: true },
+    } as never;
+
+    it("dom update(): ordinary -> redacted strips every attribute and node of the first draw", () => {
+      const rt = new InMemoryProjectionRuntime();
+      rt.register({ id: "p", initialState: { v: "SECRET-VALUE" }, handlers: {} });
+      const h = mountBlueprint(document.createElement("div"), bp(ordinary), {
+        projectionRuntime: rt,
+        executionId: "e",
+      });
+      const before = h.element.innerHTML;
+      expect(before).toMatch(/SECRET/);
+      expect(before).toContain("data-source-type");
+      h.update(bp(redactedSame));
+      expect(h.element.innerHTML).not.toMatch(
+        /SECRET|data-source|data-degraded|data-widget-kind|title=/
+      );
+      expect(h.element.querySelector('[data-binding-marker="redacted"]')?.textContent).toBe(
+        "⊘ redacted"
+      );
+      h.dispose();
+    });
+
+    it("react rerender: ordinary -> redacted leaves nothing of the first draw", () => {
+      const rt = new InMemoryProjectionRuntime();
+      rt.register({ id: "p", initialState: { v: "SECRET-VALUE" }, handlers: {} });
+      const el = (b: ReturnType<typeof bp>) =>
+        createElement(BlueprintRenderer, {
+          blueprint: b,
+          projectionRuntime: rt,
+          executionId: "e",
+        });
+      const r = render(el(bp(ordinary)));
+      expect(r.container.innerHTML).toMatch(/SECRET/);
+      r.rerender(el(bp(redactedSame)));
+      expect(r.container.innerHTML).not.toMatch(/SECRET|data-source|data-degraded|title=/);
+      expect(r.container.querySelector('[data-binding-marker="redacted"]')?.textContent).toBe(
+        "⊘ redacted"
+      );
+    });
 
     it("redacted: false is an ordinary widget on all three", () => {
       const w = {

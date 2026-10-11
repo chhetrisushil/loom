@@ -476,6 +476,33 @@ export function validateBlueprint(
       seenIds.set(id, "widget");
     }
 
+    // IR 2.5.0: `source.redacted` is `true` or absent (an explicit `undefined` is absent), and a
+    // redacted widget carries nothing it withheld: no binding, no title, no props, no degradedFrom,
+    // and the constant source type/version. Runs BEFORE the unknown-kind return, so a redacted
+    // widget of an unknown kind that still carries data is caught too.
+    {
+      const rs = widget.source as { [k: string]: unknown } | null | undefined;
+      if (rs !== null && typeof rs === "object" && rs.redacted !== undefined) {
+        const bad = (message: string) =>
+          findings.push({ code: "redacted-invalid", severity: "error", nodeId: id, kind, message });
+        if (rs.redacted !== true) {
+          bad(`widget.source.redacted must be true or absent, got ${JSON.stringify(rs.redacted)}`);
+        } else {
+          const leaks: string[] = [];
+          if (widget.binding !== undefined) leaks.push("binding");
+          if (widget.title !== undefined) leaks.push("title");
+          if (widget.props && Object.keys(widget.props).length > 0) leaks.push("props");
+          if (rs.degradedFrom !== undefined) leaks.push("source.degradedFrom");
+          if (rs.type !== "redacted" || rs.version !== "1")
+            leaks.push(`original source type/version (must be "redacted"/"1")`);
+          if (leaks.length > 0)
+            bad(
+              `a redacted widget must carry no ${leaks.join(" and no ")} — it would leave the withheld content on the artifact`
+            );
+        }
+      }
+    }
+
     const entry = entries.get(kind);
     if (!entry) {
       findings.push({
@@ -599,30 +626,6 @@ export function validateBlueprint(
           kind,
           message: `widget.source is missing a non-empty string "type" or "version" — either on the source itself or a degradedFrom entry (which must be an array)`,
         });
-      }
-      // IR 2.5.0: `redacted` is `true` or absent, and a redacted widget carries nothing it
-      // withheld. Checked on any object `source`, whether or not it was otherwise valid.
-      if (src !== undefined && "redacted" in src) {
-        const leaks: string[] = [];
-        if (widget.binding !== undefined) leaks.push("binding");
-        if (src.degradedFrom !== undefined) leaks.push("source.degradedFrom");
-        if (src.redacted !== true) {
-          findings.push({
-            code: "redacted-invalid",
-            severity: "error",
-            nodeId: id,
-            kind,
-            message: `widget.source.redacted must be true or absent, got ${JSON.stringify(src.redacted)}`,
-          });
-        } else if (leaks.length > 0) {
-          findings.push({
-            code: "redacted-invalid",
-            severity: "error",
-            nodeId: id,
-            kind,
-            message: `a redacted widget must carry no ${leaks.join(" and no ")} — it would leave the withheld content on the artifact`,
-          });
-        }
       }
     }
   });
