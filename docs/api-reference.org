@@ -499,10 +499,10 @@ interface ExecutionContext {
   run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn): Promise<TOut>;          // thin alias; memoized on replay
   decide<T>(id: string, decider: (scope: DecideScope) => T | Promise<T>,
             opts?: { rationale?: unknown; source?: string }): Promise<T>;              // (2.0, P9) log an optimizer choice; scope.invokeTransient runs AS this execution (L30)
-  parallel<T extends unknown[]>(
-    pairs: { [K in keyof T]: [StepDefinition<unknown, T[K]>, unknown] },
+  parallel<const B extends readonly ParallelBranch[]>(
+    branches: B & { readonly [K in keyof B]: CheckedBranch<B[K]> },   // [step, input] pairs: input must match the step
     options?: { limit?: number }
-  ): Promise<T>;                                                                       // results ALWAYS in input order
+  ): Promise<ParallelResults<B>>;                                       // a tuple of each branch's output, in input order
   suspend(config: { on: string; timeout?: number; correlationKey?: string }): Promise<never>;
   sleep(ms: number): Promise<void>;                                                    // (2.0, T1) durable timer
   sleepUntil(wakeAt: number): Promise<void>;                                           // (2.0, T1) wake at absolute ms

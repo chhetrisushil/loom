@@ -30,12 +30,16 @@ import {
 } from "./types";
 import type {
   BranchContext,
+  CheckedBranch,
   DecideOptions,
   DecideScope,
   EffectInDoubtResolution,
   ErrorClassCtor,
+  ExplicitParallelBranches,
   InboxSource,
+  ParallelBranch,
   ParallelOptions,
+  ParallelResults,
   ResourceDimension,
   SelectArm,
   SelectResult,
@@ -1249,19 +1253,16 @@ export class WorkflowContextImpl implements WorkflowContext {
       : 0;
   }
 
-  parallel<TResults extends unknown[]>(
-    branches: {
-      [K in keyof TResults]:
-        | [StepDefinition<unknown, TResults[K]>, unknown]
-        | ((branch: BranchContext) => Promise<TResults[K]>);
-    },
+  parallel<const B extends readonly ParallelBranch[]>(
+    branches: B & { readonly [K in keyof B]: CheckedBranch<B[K]> },
     options?: ParallelOptions
-  ): Promise<TResults> {
-    return this.parallelIn(
-      this.currentScope(),
-      branches as unknown as Branch[],
-      options
-    ) as Promise<TResults>;
+  ): Promise<ParallelResults<B>>;
+  parallel<TResults extends unknown[]>(
+    branches: ExplicitParallelBranches<TResults>,
+    options?: ParallelOptions
+  ): Promise<TResults>;
+  parallel(branches: unknown, options?: ParallelOptions): Promise<unknown> {
+    return this.parallelIn(this.currentScope(), branches as Branch[], options);
   }
 
   /** The scope the current async context belongs to: its branch's, or the root. */

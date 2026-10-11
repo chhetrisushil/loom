@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { recoverAbandoned } from "./recoverAbandoned";
-import { forParallel } from "./testSurface";
 import { ApprovalRejectedError, ResumeRefusedError } from "./types";
 import type { FlowRunner, ResumeAuthenticator, ResumeEvent } from "./types";
 
@@ -212,8 +211,8 @@ describe("human parks record which step parked (ADR 0104)", () => {
     const { runtime, flow, eventStore } = setup(
       async (ctx) => {
         const r = await ctx.parallel([
-          [forParallel(H1), {}],
-          [forParallel(H2), {}],
+          [H1, {}],
+          [H2, {}],
         ]);
         ctx.emit("out", { r });
         return {};
