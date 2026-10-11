@@ -37,6 +37,22 @@ const until = async (cond: () => boolean | Promise<boolean>, ms = 10_000): Promi
   }
 };
 
+const LOOKUP = "SELECT * FROM events WHERE execution_id = $1 AND sequence = $2";
+
+/** A pool whose `query` is routed through `hook` (return undefined to fall through to the real pool). */
+const wrapPool = (
+  real: Pool,
+  hook: (text: string, params: unknown[] | undefined) => Promise<unknown> | undefined
+): Pool =>
+  ({
+    options: real.options,
+    connect: real.connect.bind(real),
+    end: real.end.bind(real),
+    query: (async (text: string, params?: unknown[]) =>
+      (await hook(text, params)) ??
+      real.query(text, params as unknown[])) as unknown as Pool["query"],
+  }) as unknown as Pool;
+
 suite("interest-filtered NOTIFY delivery", () => {
   const pools: Pool[] = [];
   const track = (p: Pool): Pool => {
@@ -92,7 +108,16 @@ suite("interest-filtered NOTIFY delivery", () => {
     // With 64 buckets, two ids collide only by chance; pick a pair that provably differ.
     const buckets = 64;
     const writer = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: buckets });
-    const reader = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: buckets });
+    let lookups = 0;
+    const lookedUp: unknown[] = [];
+    const counting = wrapPool(track(new Pool(scoped())), (text, params) => {
+      if (typeof text === "string" && text.startsWith(LOOKUP)) {
+        lookups++;
+        lookedUp.push(params?.[0]);
+      }
+      return undefined;
+    });
+    const reader = new PostgresEventStore(counting, { notifyBuckets: buckets });
     let deliveries = 0;
     await reader.subscribe(ID("wanted"), () => {
       deliveries++;
@@ -106,6 +131,10 @@ suite("interest-filtered NOTIFY delivery", () => {
     await writer.append(evt(ID("wanted"), 0));
     await until(() => deliveries >= 1);
     expect(deliveries).toBe(1);
+    // The evidence that interest filtering holds: the ONLY cross-node lookup is the wanted event's.
+    // A node that fetched (then discarded) the 40 uninterested events would show 41 here.
+    expect(lookups).toBe(1);
+    expect(lookedUp).toEqual([ID("wanted")]);
     await writer.close();
     await reader.close();
   });
@@ -240,6 +269,72 @@ suite("interest-filtered NOTIFY delivery", () => {
     await until(() => seen.length >= 2);
     expect(held).toBe(1); // the interleaving really was forced
     expect(seen).toEqual([0, 1]);
+    await writer.close();
+    await reader.close();
+  });
+
+  it("a local append is emitted synchronously and may overtake an in-flight cross-node event; remote events stay ordered among themselves", async () => {
+    // Pins the documented EventStore.subscribe contract: only events from OTHER nodes are ordered
+    // relative to each other. Hold the reader's lookup of the remote seq 0 until its LOCAL seq 1
+    // append has been emitted, so the overtake is deterministic rather than a race.
+    let releaseZero!: () => void;
+    const gate = new Promise<void>((r) => {
+      releaseZero = r;
+    });
+    const real = track(new Pool(scoped()));
+    const gated = wrapPool(real, async (text, params) => {
+      if (typeof text === "string" && text.startsWith(LOOKUP) && params?.[1] === 0) {
+        await gate;
+      }
+      return undefined;
+    });
+    const writer = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: 8 });
+    const reader = new PostgresEventStore(gated, { notifyBuckets: 8 });
+    const seen: number[] = [];
+    await reader.subscribe(ID("overtake"), (e) => seen.push(e.sequence));
+    await writer.append(evt(ID("overtake"), 0)); // remote to the reader; its lookup is held
+    await reader.append(evt(ID("overtake"), 1)); // local to the reader: emitted synchronously
+    expect(seen).toEqual([1]); // the local append overtook the in-flight remote event
+    releaseZero();
+    await until(() => seen.length >= 2);
+    expect([...seen].sort()).toEqual([0, 1]); // nothing lost, nothing duplicated
+    await writer.append(evt(ID("overtake"), 2));
+    await writer.append(evt(ID("overtake"), 3));
+    await until(() => seen.length >= 4);
+    // remote events (0, 2, 3) are in commit order among themselves
+    expect(seen.filter((n) => n !== 1)).toEqual([0, 2, 3]);
+    await writer.close();
+    await reader.close();
+  });
+
+  it("a lookup that never returns is dropped after the timeout (warned once) and later events still arrive", async () => {
+    const real = track(new Pool(scoped()));
+    const warnings: string[] = [];
+    const hung = wrapPool(real, (text, params) => {
+      if (typeof text === "string" && text.startsWith(LOOKUP) && params?.[1] === 0) {
+        return new Promise(() => {}); // half-open socket: never settles
+      }
+      return undefined;
+    });
+    const writer = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: 8 });
+    const reader = new PostgresEventStore(hung, {
+      notifyBuckets: 8,
+      deliveryLookupTimeoutMs: 50,
+      onWarn: (m) => warnings.push(m),
+    });
+    const seen: number[] = [];
+    await reader.subscribe(ID("hung"), (e) => seen.push(e.sequence));
+    await writer.append(evt(ID("hung"), 0));
+    await writer.append(evt(ID("hung"), 1));
+    await writer.append(evt(ID("hung"), 2));
+    await until(() => seen.length >= 2);
+    expect(seen).toEqual([1, 2]); // seq 0 dropped, the chain proceeded in order
+    const ours = warnings.filter((w) => w.includes(ID("hung")));
+    expect(ours).toHaveLength(1);
+    expect(ours[0]).toContain("#0");
+    // The queue entry is freed once the tail settles.
+    // biome-ignore lint/suspicious/noExplicitAny: private map — asserts the leak is closed
+    await until(() => (reader as any).deliveryTail.size === 0);
     await writer.close();
     await reader.close();
   });

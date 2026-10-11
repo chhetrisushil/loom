@@ -231,9 +231,11 @@ for (const backend of inboxBackends("discard")) {
       h.rt.registerFlow(f.definition, f.runner);
       const e = id();
       await h.rt.start(f, {}, { executionId: e });
-      // The owner is running only once it is blocked inside `slow`: before that, its own
-      // STEP_STARTED may still be in flight and would land after the `before` snapshot.
+      // `entered` only means the tool is blocked inside `slow`; STEP_STARTED is queued through the
+      // journal's async write and may not be durable yet, so wait for it before the `before`
+      // snapshot (else it lands after the snapshot).
       await latch.entered;
+      await until(async () => (await kinds(h.eventStore, e)).includes("STEP_STARTED"));
       const m = await h.rt.send(e, { topic: "t", payload: "x", messageId: "1" });
       const before = await kinds(h.eventStore, e);
       const err = await h.rt

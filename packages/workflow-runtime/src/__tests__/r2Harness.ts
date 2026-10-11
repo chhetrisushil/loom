@@ -37,9 +37,9 @@ export function flow<I = unknown, O = unknown>(
 
 /**
  * A latch a test opens by hand: the `slow` tool awaits it. `entered` resolves once the tool is
- * blocked on it — by then the owner has appended everything it writes before the effect runs, so a
- * test that snapshots the log "while the owner is running" must await it first (an unawaited
- * snapshot races the owner's own STEP_STARTED append on a slow store).
+ * blocked on it. That does NOT mean STEP_STARTED is durable (the journal writes it asynchronously),
+ * so a test that snapshots the log "while the owner is running" must also wait for the event it
+ * relies on (e.g. `until(() => kinds(...).includes("STEP_STARTED"))`).
  */
 export class Latch {
   private open!: () => void;

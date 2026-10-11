@@ -367,10 +367,11 @@ export interface EventStore {
    */
   head?(executionId: string): Promise<number | null>;
   /**
-   * Live delivery of one execution's appends. A handler sees that execution's events in the order
-   * they were committed (what `runEventStoreConformance` asserts), in-process or cross-node: a
-   * transport that turns a notification into an event asynchronously must not emit on completion
-   * order (the Postgres store queues each execution's emits behind its predecessor's).
+   * Live delivery of one execution's appends. Events committed by OTHER nodes arrive in commit
+   * order relative to each other (the Postgres store queues each execution's cross-node emits
+   * behind its predecessor's rather than emitting on lookup-completion order). A LOCAL append is
+   * emitted synchronously and may overtake a cross-node event still in flight, so a subscriber that
+   * needs total order should order by `sequence` (or read the log).
    */
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void>;
   /**
