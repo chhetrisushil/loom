@@ -472,3 +472,70 @@ describe("manifest → lint extraction", () => {
     });
   });
 });
+
+// ── ADR 0130 D11 heartbeat leases ─────────────────────────────────────────────
+describe("loom doctor -- heartbeat leases", () => {
+  const HB = "heartbeat leases";
+  const run = async (heartbeat: Record<string, unknown>) => {
+    const ws = workspace();
+    const config = join(ws, "config.js");
+    writeFileSync(
+      config,
+      `module.exports = { stores: {}, heartbeat: ${JSON.stringify(heartbeat)} };`
+    );
+    const { result } = await cmdDoctor({ dir: ws, config });
+    return result.checks.find((c) => c.name.includes(HB));
+  };
+
+  it("disabled because no cluster-visible lease store: warn (advisory)", async () => {
+    const c = await run({ enabled: false, source: "none", eventStoreInMemory: false });
+    expect(c?.status).toBe("advisory");
+    expect(c?.detail).toMatch(/no cluster-visible lease store/);
+  });
+  it("an in-memory lease store beside a durable event store: error (failed)", async () => {
+    const c = await run({
+      enabled: true,
+      source: "explicit",
+      storeInMemory: true,
+      eventStoreInMemory: false,
+    });
+    expect(c?.status).toBe("failed");
+    expect(c?.detail).toMatch(/meaningless evidence across nodes/);
+  });
+  it('onStoreError "continue": info (advisory) -- the lease no longer proves liveness', async () => {
+    const c = await run({
+      enabled: true,
+      source: "co-located",
+      storeInMemory: false,
+      eventStoreInMemory: false,
+      onStoreError: "continue",
+    });
+    expect(c?.status).toBe("advisory");
+    expect(c?.detail).toMatch(/no longer proves liveness/);
+  });
+  it("negatives: co-located + stop, in-memory beside in-memory, and enabled:false are quiet", async () => {
+    expect(
+      (
+        await run({
+          enabled: true,
+          source: "co-located",
+          storeInMemory: false,
+          eventStoreInMemory: false,
+          onStoreError: "stop",
+        })
+      )?.status
+    ).toBe("ok");
+    expect(
+      (
+        await run({
+          enabled: true,
+          source: "in-memory",
+          storeInMemory: true,
+          eventStoreInMemory: true,
+          onStoreError: "stop",
+        })
+      )?.status
+    ).toBe("ok");
+    expect((await run({ enabled: false, source: "off" }))?.status).toBe("skipped");
+  });
+});

@@ -1303,6 +1303,7 @@ interface LoomApp {
     branchRegistry?: BranchRegistry; memoryStore?: MemoryStore;
     timerStore?: TimerStore; leaseStore?: LeaseStore;            // absent = not wired, not "empty"
   };
+  heartbeat: HeartbeatStatus;                                   // ADR 0130 D11: which lease store the drivers heartbeat into, or why disabled
   tools: ToolDefinition[];                                      // from toolModules (metadata)
   skills: SkillRegistry;                                        // app.skills.find(query) — offline selection
   schedules: ScheduleDefinition[];                              // from scheduleModules + timers.schedules

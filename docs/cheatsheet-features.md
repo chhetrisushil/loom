@@ -59,7 +59,7 @@ defineConfig({
   autostart: false,        // build, don't run
   security:      { … },    // the three rings
   observability: { … },    // onEvent, telemetry, onWarn
-  durability:    { … },    // snapshots, retention
+  durability:    { … },    // snapshots, retention, heartbeat leases (co-located store; ADR 0130 D11)
   execution:     { … },    // dispatcher, middleware, clock
   checks:        { … },    // boot-time validation
 })

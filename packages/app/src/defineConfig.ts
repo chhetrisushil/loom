@@ -39,7 +39,7 @@ import type {
 // keeps better-sqlite3 / node:fs out of browser bundles. The SQLite stores +
 // node:fs/path are loaded lazily on the `kind:"sqlite"` path only (see
 // `loadNodeModule`), so a browser app using in-memory storage stays clean.
-import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory";
+import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime/memory";
 import { type KnowledgeBase, openKnowledgeBase } from "@loom/knowledge";
 import type { KnowledgeBaseConfig } from "@loom/knowledge";
 import { InMemoryMemoryStore, MemoryRuntime } from "@loom/memory";
@@ -153,6 +153,13 @@ export type StorageConfig =
        */
       snapshotStore?: SnapshotStore;
       branchRegistry?: BranchRegistry;
+      /**
+       * ADR 0130 D11 -- the heartbeat-lease store CO-LOCATED with `eventStore` (same database /
+       * pool). A durable preset (`sqliteStorage()`, `postgresStorage()`) supplies it; `defineConfig`
+       * uses it for `durability.heartbeat` unless an explicit `heartbeat.store` overrides. Optional
+       * and read only when heartbeat is enabled (a preset may open it lazily).
+       */
+      leaseStore?: LeaseStore;
     };
 
 /**
@@ -344,11 +351,143 @@ export interface ObservabilityOptions {
   onStorageError?: (executionId: string, err: unknown) => void;
 }
 
+/** `durability.heartbeat` (ADR 0130 D11). */
+export interface HeartbeatConfig {
+  /** `false` turns heartbeat leases off entirely. Default `true`. */
+  enabled?: boolean;
+  /** Lease TTL. Default 30000 (the runtime's default). Detection latency of a dead driver is about this. */
+  ttlMs?: number;
+  /** Renewal cadence. Default TTL/3. Must be < ttlMs - floor(ttlMs / 6) (the self-fencing deadline). */
+  renewEveryMs?: number;
+  /** Explicit lease store; overrides the one co-located with the event store. */
+  store?: LeaseStore;
+  /**
+   * What a driver does when the lease store is unreachable. `"stop"` (default): abort at its
+   * self-fencing deadline, so an expired lease stays true evidence. `"continue"`: keep running
+   * (the fence still protects the log) but the lease no longer proves liveness.
+   */
+  onStoreError?: "stop" | "continue";
+}
+
+/**
+ * The resolved heartbeat decision, exposed as `app.heartbeat` for `loom doctor` and tests.
+ * `source`: `explicit` (config store), `co-located` (the storage preset's `leaseStore`),
+ * `in-memory` (event store is in-memory too), `none` (disabled: durable event store and no
+ * derivable lease store), `off` (`enabled: false`).
+ */
+export interface HeartbeatStatus {
+  enabled: boolean;
+  source: "explicit" | "co-located" | "in-memory" | "none" | "off";
+  store?: LeaseStore;
+  storeInMemory: boolean;
+  eventStoreInMemory: boolean;
+  onStoreError: "stop" | "continue";
+  ttlMs?: number;
+  renewEveryMs?: number;
+}
+
+/**
+ * Local structural twin of the runtime's `WorkflowRuntimeDeps.heartbeat`; replaced by
+ * @loom/workflow-runtime `HeartbeatOptions` when S7c merges.
+ */
+interface RuntimeHeartbeatDeps {
+  leaseStore: LeaseStore;
+  ttlMs?: number;
+  renewEveryMs?: number;
+  onStoreError?: "stop" | "continue";
+  nodeId?: string;
+}
+
+const HEARTBEAT_KEYS = new Set(["enabled", "ttlMs", "renewEveryMs", "store", "onStoreError"]);
+
+function isLeaseStore(v: unknown): v is LeaseStore {
+  const o = v as Record<string, unknown> | null;
+  return (
+    typeof o === "object" &&
+    o !== null &&
+    typeof o.acquire === "function" &&
+    typeof o.renew === "function" &&
+    typeof o.release === "function"
+  );
+}
+
+/** Validate `durability.heartbeat` (TypeError on bad values) and resolve the lease store (D11 "Config"). */
+function resolveHeartbeat(
+  raw: HeartbeatConfig | undefined,
+  storage: StorageConfig
+): HeartbeatStatus {
+  const hb = (raw ?? {}) as Record<string, unknown>;
+  if (raw !== undefined && (typeof raw !== "object" || raw === null))
+    throw new TypeError("defineConfig: durability.heartbeat must be an object");
+  for (const k of Object.keys(hb))
+    if (!HEARTBEAT_KEYS.has(k))
+      throw new TypeError(
+        `defineConfig: durability.heartbeat.${k} is not an option (expected ${[...HEARTBEAT_KEYS].join(", ")})`
+      );
+  if (hb.enabled !== undefined && typeof hb.enabled !== "boolean")
+    throw new TypeError("defineConfig: durability.heartbeat.enabled must be a boolean");
+  const positive = (name: string): number | undefined => {
+    const v = hb[name];
+    if (v === undefined) return undefined;
+    if (typeof v !== "number" || !Number.isFinite(v) || v <= 0)
+      throw new TypeError(`defineConfig: durability.heartbeat.${name} must be a finite number > 0`);
+    return v;
+  };
+  const ttlMs = positive("ttlMs");
+  const renewEveryMs = positive("renewEveryMs");
+  // Same bound the runtime's LeaseKeeper enforces, caught at boot rather than at first drive.
+  const ttl = ttlMs ?? 30_000;
+  if (renewEveryMs !== undefined && renewEveryMs >= ttl - Math.floor(ttl / 6))
+    throw new TypeError(
+      "defineConfig: durability.heartbeat.renewEveryMs must be < ttlMs - floor(ttlMs / 6)"
+    );
+  if (hb.onStoreError !== undefined && hb.onStoreError !== "stop" && hb.onStoreError !== "continue")
+    throw new TypeError(
+      'defineConfig: durability.heartbeat.onStoreError must be "stop" or "continue"'
+    );
+  if (hb.store !== undefined && !isLeaseStore(hb.store))
+    throw new TypeError("defineConfig: durability.heartbeat.store must be a LeaseStore");
+
+  const eventStoreInMemory =
+    storage.kind === "memory" || storage.eventStore instanceof InMemoryAsyncEventStore;
+  const onStoreError = (hb.onStoreError as "stop" | "continue" | undefined) ?? "stop";
+  const common = {
+    eventStoreInMemory,
+    onStoreError,
+    ...(ttlMs !== undefined && { ttlMs }),
+    ...(renewEveryMs !== undefined && { renewEveryMs }),
+  };
+  const withStore = (source: HeartbeatStatus["source"], store: LeaseStore): HeartbeatStatus => ({
+    enabled: true,
+    source,
+    store,
+    storeInMemory: store instanceof InMemoryLeaseStore,
+    ...common,
+  });
+  if (hb.enabled === false)
+    return { enabled: false, source: "off", storeInMemory: false, ...common };
+  if (hb.store !== undefined) return withStore("explicit", hb.store as LeaseStore);
+  // Derived from the SAME factory as the event store (the preset's `leaseStore` accessor).
+  const colocated = storage.kind === "custom" ? storage.leaseStore : undefined;
+  if (colocated !== undefined) return withStore("co-located", colocated);
+  if (eventStoreInMemory) return withStore("in-memory", new InMemoryLeaseStore());
+  return { enabled: false, source: "none", storeInMemory: false, ...common };
+}
+
 /**
  * How much log a restart has to fold, and how long it is kept. Both trade write cost for
  * read cost; see `docs/scaling.md` for the measurements.
  */
 export interface DurabilityOptions {
+  /**
+   * ADR 0130 D11 -- heartbeat leases: every driver holds a renewed lease for as long as it
+   * drives an execution, so "a lease existed and expired" is real evidence of an abandoned driver.
+   * Default ON. The lease store is CO-LOCATED with the event store (the storage preset's
+   * `leaseStore`), or in-memory ONLY when the event store is in-memory. A durable event store with
+   * no derivable lease store DISABLES heartbeat (fail-closed; `loom doctor` says so). Never a silent
+   * in-memory fallback against a shared store. `enabled: false` reproduces the pre-D11 behaviour.
+   */
+  heartbeat?: HeartbeatConfig;
   /**
    * Take a mid-run snapshot every N committed events, and a matching one at completion,
    * bounding what a later `loadState`/resume has to fold.
@@ -882,6 +1021,8 @@ export interface LoomApp {
    */
   killSwitch?: KillSwitchRegistry;
   stores: LoomStores;
+  /** ADR 0130 D11 -- the resolved heartbeat-lease decision (which store, or why disabled). */
+  heartbeat: HeartbeatStatus;
   /** Tool definitions discovered from `toolModules` (metadata; register effects separately). */
   tools: ToolDefinition[];
   /**
@@ -1097,7 +1238,7 @@ export const GROUPED_OPTIONS = [
     ],
   ],
   ["observability", ["telemetry", "onEvent", "onWarn", "onStorageError"]],
-  ["durability", ["snapshotEvery", "retention"]],
+  ["durability", ["snapshotEvery", "retention", "heartbeat"]],
   [
     "execution",
     [
@@ -1203,6 +1344,19 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   const spawn = resolveSpawn(config.envelope?.spawn, strict);
   const envelopeActive = Object.keys(spawn).length > 0 || budgetConfigured(config.envelope, strict);
   const stores = buildStores(config.storage, warnOut);
+  // ADR 0130 D11 -- validated and resolved at boot, before any runtime exists.
+  const heartbeat = resolveHeartbeat(config.heartbeat, config.storage);
+  const heartbeatDeps: { heartbeat?: RuntimeHeartbeatDeps } =
+    heartbeat.enabled && heartbeat.store !== undefined
+      ? {
+          heartbeat: {
+            leaseStore: heartbeat.store,
+            ...(heartbeat.ttlMs !== undefined && { ttlMs: heartbeat.ttlMs }),
+            ...(heartbeat.renewEveryMs !== undefined && { renewEveryMs: heartbeat.renewEveryMs }),
+            ...(heartbeat.onStoreError !== "stop" && { onStoreError: heartbeat.onStoreError }),
+          },
+        }
+      : {};
   // Present only when CONFIGURED — see LoomStores.memoryStore for why the distinction is
   // the useful part.
   if (config.memoryStore !== undefined) stores.memoryStore = config.memoryStore;
@@ -1395,6 +1549,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     surface: createSurfaceEmitter,
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),
     ...(config.timers !== undefined && { timerStore: config.timers.store }),
+    ...heartbeatDeps,
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
     ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
     // ADR 0130 D8 - the explicit opt-out of the kernel's refusal of a plaintext checkpoint.
@@ -1767,6 +1922,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       },
     }),
     stores,
+    heartbeat,
     tools,
     skills,
     schedules,
