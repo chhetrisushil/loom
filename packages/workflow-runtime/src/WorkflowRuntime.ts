@@ -20,10 +20,10 @@ import {
   isReservedStream,
 } from "@loom/event-runtime";
 import {
+  QUARANTINE_STREAM_PREFIX,
   appendBatchOf,
   headOf,
   inboxStreamsOfChain,
-  QUARANTINE_STREAM_PREFIX,
   isAnsweringKind,
   quarantineStreamId,
   readRangeOf,

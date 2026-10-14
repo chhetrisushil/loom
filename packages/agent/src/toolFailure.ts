@@ -44,6 +44,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "InboxTopicStreamsRequiredError",
   // a sealed inbox payload this node cannot open: retrying on the same node cannot help (ADR 0130)
   "SealedPayloadUnreadableError",
+  // a waited inbox topic is HELD (quarantined) and this node will not lift it: retrying here cannot help (ADR 0130 residuals D9)
+  "QuarantineHeldError",
   // a stream this node cannot open (a seal marker it cannot open, a key it does not hold), refused
   // DENIAL-SHAPED (it is an ExecutionDeniedError to the caller); and the store error behind the key
   // case. No retry on this node helps (ADR 0130 residuals D7)

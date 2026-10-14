@@ -142,6 +142,7 @@ export function consumedOf(events: readonly EventEnvelope[]) {
           inboxSeq: number;
           payload: unknown;
           discarded?: boolean;
+          waitId?: string;
         }
     );
 }

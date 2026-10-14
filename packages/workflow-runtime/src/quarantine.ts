@@ -33,8 +33,18 @@ import type { InboxMessage } from "./types";
 export const DEFAULT_QUARANTINE_MAX = 256;
 /** The ceiling of `quarantineMax`: the fold's own cap (a fold cannot read a runtime setting). */
 export const QUARANTINE_MAX_CEILING = QUARANTINE_FOLD_CAP;
-/** A copy's envelope id is `quarantine:<dedupe key>`: a retry of the copy is a duplicate append. */
+/**
+ * A copy's envelope id is `quarantine:<chainId>:<dedupe key>`: deterministic, so a retry of the copy
+ * is a duplicate append. The chain is part of it because a SQL store keeps envelope ids unique across
+ * ALL streams, and the same sender/message id (hence the same dedupe key) legitimately recurs in
+ * different chains.
+ */
 export const QUARANTINE_ENVELOPE_PREFIX = "quarantine:";
+
+/** The deterministic envelope id of `key`'s copy in `chainId`'s quarantine stream. */
+export function quarantineCopyId(chainId: string, key: string): string {
+  return `${QUARANTINE_ENVELOPE_PREFIX}${chainId}:${key}`;
+}
 const APPEND_ATTEMPTS = 64;
 
 /** `kernel.inbox.quarantineMax`, validated: a positive integer no larger than the fold cap. */
@@ -135,7 +145,7 @@ export async function findQuarantineCopy(
   chainId: string,
   key: string
 ): Promise<EventEnvelope | undefined> {
-  const id = `${QUARANTINE_ENVELOPE_PREFIX}${key}`;
+  const id = quarantineCopyId(chainId, key);
   return (await store.read(quarantineStreamId(chainId))).find((e) => e.id === id);
 }
 
@@ -152,7 +162,7 @@ export async function appendQuarantineCopy(
   key: string
 ): Promise<number> {
   const stream = quarantineStreamId(chainId);
-  const id = `${QUARANTINE_ENVELOPE_PREFIX}${key}`;
+  const id = quarantineCopyId(chainId, key);
   for (let attempt = 0; attempt < APPEND_ATTEMPTS; attempt++) {
     const existing = await findQuarantineCopy(store, chainId, key);
     if (existing !== undefined) return existing.sequence;

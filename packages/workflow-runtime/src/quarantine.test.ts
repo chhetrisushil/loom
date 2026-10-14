@@ -1,6 +1,7 @@
 import { quarantineStreamId } from "@loom/event-runtime";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
+import type { WorkflowRuntimeDeps } from "./WorkflowRuntime";
 import {
   OP,
   SECRET,
@@ -47,22 +48,17 @@ for (const backend of inboxBackends("quarantine")) {
       /** A parked on select([a, b]); a1 SEALED, a2 plain on `a`, b1 plain on `b`; nobody has woken it. */
       async function scene(
         opts: {
-          a?: Parameters<typeof fleet>[1] extends infer O
-            ? O extends { a?: infer X }
-              ? X
-              : never
-            : never;
-          b?: Parameters<typeof fleet>[1] extends infer O
-            ? O extends { b?: infer X }
-              ? X
-              : never
-            : never;
+          a?: Partial<WorkflowRuntimeDeps>;
+          b?: Partial<WorkflowRuntimeDeps>;
           total?: number;
           withB1?: boolean;
         } = {}
       ) {
         const raw = backend.make();
-        const fl = fleet(raw, { a: opts.a ?? { inboxAutoRelease: false }, b: opts.b });
+        const fl = fleet(raw, {
+          a: opts.a ?? { inboxAutoRelease: false },
+          ...(opts.b !== undefined && { b: opts.b }),
+        });
         const f = collector(opts.total ?? 3);
         fl.a.rt.registerFlow(f.definition, f.runner);
         fl.b.rt.registerFlow(f.definition, f.runner);
@@ -125,7 +121,7 @@ for (const backend of inboxBackends("quarantine")) {
         expect(copy?.payload).toEqual(original?.payload);
         expect(copy?.metadata?.seal).toEqual(original?.metadata?.seal);
         expect(copy?.metadata?.seal).toBeDefined();
-        expect(copy?.id).toBe(`quarantine:${keyOf("a1")}`);
+        expect(copy?.id).toBe(`quarantine:${s.e}:${keyOf("a1")}`);
         expect(JSON.stringify(copy)).not.toContain(SECRET);
 
         // The fact: audit trail names the operator and reason; the fold holds the topic.
@@ -269,7 +265,10 @@ for (const backend of inboxBackends("quarantine")) {
         const clock = { t: 1_000 };
         const svcB = new TimerService(s.b.rt, s.raw.timers, {
           now: () => clock.t,
-          onError: (_i: string, err: unknown) => reports.push(err),
+          // a shared database may hold other tests' due rows: only THIS execution's reports count
+          onError: (i: string, err: unknown) => {
+            if (i === s.e) reports.push(err);
+          },
         });
         const before = await kindsOf(s.raw.eventStore, s.e);
         await s.raw.timers.schedule({ executionId: s.e, wakeAt: -1 });
@@ -282,6 +281,13 @@ for (const backend of inboxBackends("quarantine")) {
         expect(
           (await s.raw.timers.due(Number.MAX_SAFE_INTEGER)).some((r) => r.executionId === s.e)
         ).toBe(true);
+        // ...and then only every 16th refusal is reported (attempts 2..15 are silent), the row never retired
+        for (let attempt = 2; attempt <= 16; attempt++) {
+          clock.t += 120_000; // past any back-off
+          await svcB.tick(clock.t);
+        }
+        expect(reports).toHaveLength(2);
+        expect(await kindsOf(s.raw.eventStore, s.e)).toEqual(before);
         // A capable node starts later: its first poll of the wake row releases and delivers, no send.
         const svcA = new TimerService(s.a.rt, s.raw.timers, { now: () => clock.t + 1e9 });
         await svcA.tick(clock.t + 1e9);
