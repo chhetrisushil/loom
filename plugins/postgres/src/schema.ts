@@ -524,11 +524,13 @@ const INCARNATION = `
 `;
 
 const DDL_REST = `
+    -- The probe looks in the TABLE's own namespace (to_regclass would search the whole search_path and
+    -- wrongly skip an index that exists in another schema).
     -- Every index below is created behind a catalog probe. \`CREATE INDEX IF NOT EXISTS\` takes a
     -- SHARE lock on the table BEFORE it notices the index exists, and migrate runs it under
     -- lock_timeout=0, so it HANGS behind a long-held SHARE UPDATE EXCLUSIVE lock (an anti-wraparound
     -- autovacuum). A probe on the (lock-free) catalog skips the statement on every boot after the first.
-    DO $ix_idx_events_exec$ BEGIN IF to_regclass('idx_events_exec') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_events_exec ON events (execution_id, sequence ASC); END IF; END $ix_idx_events_exec$;
+    DO $ix_idx_events_exec$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_events_exec' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'events'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_events_exec ON events (execution_id, sequence ASC); END IF; END $ix_idx_events_exec$;
 
     CREATE TABLE IF NOT EXISTS snapshots (
       id TEXT NOT NULL PRIMARY KEY,
@@ -538,7 +540,7 @@ const DDL_REST = `
       state JSONB NOT NULL,
       created_at BIGINT NOT NULL
     );
-    DO $ix_idx_snapshots_exec$ BEGIN IF to_regclass('idx_snapshots_exec') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_snapshots_exec ON snapshots (execution_id, sequence DESC); END IF; END $ix_idx_snapshots_exec$;
+    DO $ix_idx_snapshots_exec$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_snapshots_exec' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'snapshots'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_snapshots_exec ON snapshots (execution_id, sequence DESC); END IF; END $ix_idx_snapshots_exec$;
 
     CREATE TABLE IF NOT EXISTS refs (
       name TEXT COLLATE "C" NOT NULL PRIMARY KEY,
@@ -556,7 +558,7 @@ const DDL_REST = `
       fork_sequence BIGINT NOT NULL,
       created_at BIGINT NOT NULL
     );
-    DO $ix_idx_lineage_parent$ BEGIN IF to_regclass('idx_lineage_parent') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_lineage_parent ON lineage (parent_execution_id); END IF; END $ix_idx_lineage_parent$;
+    DO $ix_idx_lineage_parent$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_lineage_parent' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'lineage'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_lineage_parent ON lineage (parent_execution_id); END IF; END $ix_idx_lineage_parent$;
 
     -- K9.4 fencing: the current monotonic fence token per execution. A row exists once a
     -- dispatcher/worker acquires a fence, AND (ADR 0118 D1) once the execution PARKS: a park
@@ -578,7 +580,7 @@ const DDL_REST = `
       refused JSONB,
       PRIMARY KEY (execution_id, wake_at)
     );
-    DO $ix_idx_timers_wake$ BEGIN IF to_regclass('idx_timers_wake') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC); END IF; END $ix_idx_timers_wake$;
+    DO $ix_idx_timers_wake$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_timers_wake' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'timers'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC); END IF; END $ix_idx_timers_wake$;
     -- ADR 0118 D4: \`redrive\` marks a re-drive row (a backed-off retry of a contended resume).
     -- \`CREATE TABLE IF NOT EXISTS\` never adds a column to a table an older version created, so
     -- an older table gains it here. \`ADD COLUMN IF NOT EXISTS\` would take ACCESS EXCLUSIVE on
@@ -625,7 +627,7 @@ const DDL_REST = `
     $timers_refused$;
     -- ADR 0130 D10: a PARTIAL index over the (rare) refusal rows only; a plain timer pays nothing
     -- for it, and a scan for refusal rows never walks the plain ones.
-    DO $ix_idx_timers_refused$ BEGIN IF to_regclass('idx_timers_refused') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_timers_refused ON timers (wake_at ASC) WHERE refused IS NOT NULL; END IF; END $ix_idx_timers_refused$;
+    DO $ix_idx_timers_refused$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_timers_refused' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'timers'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_timers_refused ON timers (wake_at ASC) WHERE refused IS NOT NULL; END IF; END $ix_idx_timers_refused$;
 
     -- #380 — durable ownership of a RUNNING execution. One row per execution: a lease is
     -- exclusive by definition, so the primary key is the mutual exclusion.
@@ -634,7 +636,7 @@ const DDL_REST = `
       owner TEXT NOT NULL,
       expires_at BIGINT NOT NULL
     );
-    DO $ix_idx_leases_expiry$ BEGIN IF to_regclass('idx_leases_expiry') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases (expires_at ASC); END IF; END $ix_idx_leases_expiry$;
+    DO $ix_idx_leases_expiry$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_leases_expiry' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'leases'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases (expires_at ASC); END IF; END $ix_idx_leases_expiry$;
     -- ADR 0130 D11 (S7a): heartbeat leases make this table small, hot and update-churned (every
     -- renewal rewrites a row). fillfactor < 100 leaves free space in each page for the new row
     -- versions (and for HOT where an update leaves every indexed column alone; a renewal changes
@@ -699,8 +701,8 @@ const DDL_REST = `
       value JSONB NOT NULL,
       PRIMARY KEY (model_id, row_id)
     );
-    DO $ix_idx_rm_rows_order$ BEGIN IF to_regclass('idx_rm_rows_order') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_rm_rows_order ON read_model_rows (model_id, kind, timestamp, sequence); END IF; END $ix_idx_rm_rows_order$;
-    DO $ix_idx_rm_rows_fields$ BEGIN IF to_regclass('idx_rm_rows_fields') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_rm_rows_fields ON read_model_rows USING GIN (fields jsonb_path_ops); END IF; END $ix_idx_rm_rows_fields$;
+    DO $ix_idx_rm_rows_order$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_rm_rows_order' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'read_model_rows'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_rm_rows_order ON read_model_rows (model_id, kind, timestamp, sequence); END IF; END $ix_idx_rm_rows_order$;
+    DO $ix_idx_rm_rows_fields$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_rm_rows_fields' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'read_model_rows'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_rm_rows_fields ON read_model_rows USING GIN (fields jsonb_path_ops); END IF; END $ix_idx_rm_rows_fields$;
     CREATE TABLE IF NOT EXISTS read_model_watermarks (
       model_id TEXT NOT NULL,
       execution_id TEXT NOT NULL,
@@ -718,18 +720,18 @@ const DDL_REST = `
       entry JSONB NOT NULL,
       text TEXT NOT NULL
     );
-    DO $ix_idx_memory_entries_key$ BEGIN IF to_regclass('idx_memory_entries_key') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_memory_entries_key ON memory_entries (key, seq ASC); END IF; END $ix_idx_memory_entries_key$;
+    DO $ix_idx_memory_entries_key$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_memory_entries_key' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'memory_entries'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_memory_entries_key ON memory_entries (key, seq ASC); END IF; END $ix_idx_memory_entries_key$;
     -- Relevance search over searchableText(entry). The 'simple' configuration neither
     -- stems nor drops stopwords, which keeps it language-neutral and close to how SQLite's
     -- unicode61 tokenizer and @loom/memory's own tokenize() split text -- three backends
     -- that agree on what a term is. An expression index, so the column stays the source.
-    DO $ix_idx_memory_entries_fts$ BEGIN IF to_regclass('idx_memory_entries_fts') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_memory_entries_fts ON memory_entries USING GIN (to_tsvector('simple', text)); END IF; END $ix_idx_memory_entries_fts$;
+    DO $ix_idx_memory_entries_fts$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_memory_entries_fts' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'memory_entries'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_memory_entries_fts ON memory_entries USING GIN (to_tsvector('simple', text)); END IF; END $ix_idx_memory_entries_fts$;
     -- Removal by entry id (ADR 0091). An EXPRESSION index over the stored JSON, not a
     -- column: the entry is already persisted whole, so an id round-trips with no schema
     -- change and no migration of existing rows -- and a column would be a second copy
     -- able to disagree with the one the SPI actually reads back. Partial, because only
     -- corpus entries carry an id and indexing the NULLs would be most of the table.
-    DO $ix_idx_memory_entries_id$ BEGIN IF to_regclass('idx_memory_entries_id') IS NULL THEN CREATE INDEX IF NOT EXISTS idx_memory_entries_id ON memory_entries (key, (entry->>'id')) WHERE entry->>'id' IS NOT NULL; END IF; END $ix_idx_memory_entries_id$;
+    DO $ix_idx_memory_entries_id$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class c WHERE c.relname = 'idx_memory_entries_id' AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = 'memory_entries'::regclass)) THEN CREATE INDEX IF NOT EXISTS idx_memory_entries_id ON memory_entries (key, (entry->>'id')) WHERE entry->>'id' IS NOT NULL; END IF; END $ix_idx_memory_entries_id$;
   `;
 
 /**
