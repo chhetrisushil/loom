@@ -21,8 +21,13 @@
  *
  * 2.1.0 (L29): optional `storeNow()` — the store's own clock. Additive: a store without it behaves
  * exactly as before, and a caller with no `storeNow()` falls back to `Date.now()`.
+ *
+ * 2.2.0 (ADR 0130 D11, heartbeat leases): optional `acquireMany` / `renewMany` (returns the HELD
+ * set) / `releaseMany`, and the `steal` option on `acquire`. Additive: a store without them is
+ * driven through the single-id methods by the caller (correct, just slower). A store that claims
+ * 2.2.0 implements all three batch methods and the steal gate; one that claims 2.1.0 is not asked.
  */
-export const LEASE_STORE_SPI_VERSION = "2.1.0";
+export const LEASE_STORE_SPI_VERSION = "2.2.0";
 
 export interface Lease {
   executionId: string;
@@ -33,6 +38,30 @@ export interface Lease {
    * necessarily the caller's. Past this, the lease is collectable by anyone.
    */
   expiresAt: number;
+}
+
+/**
+ * The proof a caller must hold to `steal` a lease: the fence it won with a CONDITIONAL fence
+ * acquisition (`acquireFenceIf`, i.e. proof the execution is parked). The store cannot verify it
+ * against the event log (the lease store is deliberately a separate, dumb SPI); it can only refuse
+ * a steal that does not even carry one, so a flag cannot be passed by accident. The caller's
+ * contract is that it passes the fence it actually won.
+ */
+export interface StealProof {
+  /** The fence value the caller won: a non-negative safe integer. */
+  fence: number;
+}
+
+/** Options for {@link LeaseStore.acquire} / {@link LeaseStore.acquireMany} (SPI 2.2.0). */
+export interface AcquireOptions {
+  /**
+   * Take the lease even though ANOTHER owner holds it unexpired (a slow release left a stale row
+   * behind a driver that has already proved the execution is parked). Valid ONLY with a
+   * {@link StealProof}; anything else (`true`, `{}`, a negative or fractional fence) THROWS
+   * `TypeError` and changes nothing. A steal never resurrects: it only replaces a row that exists,
+   * and the displaced owner's next `renew`/`renewMany` reports it lost (`false` / absent).
+   */
+  steal?: StealProof;
 }
 
 export interface LeaseStore {
@@ -47,7 +76,41 @@ export interface LeaseStore {
    * An EXPIRED lease is acquirable by anyone, which is the whole point — the previous owner
    * stopped saying it was alive.
    */
-  acquire(executionId: string, owner: string, ttlMs: number, now?: number): Promise<Lease | null>;
+  acquire(
+    executionId: string,
+    owner: string,
+    ttlMs: number,
+    now?: number,
+    options?: AcquireOptions
+  ): Promise<Lease | null>;
+  /**
+   * OPTIONAL (SPI 2.2.0): `acquire` for many executions in ONE round trip. Returns the leases
+   * granted; an id another owner holds unexpired is simply absent (the batch form of `null`).
+   * Duplicate ids count once. Per id the semantics are exactly {@link acquire}'s, and `now`,
+   * `options` apply to the whole batch. Empty input returns `[]` without touching the store.
+   */
+  acquireMany?(
+    executionIds: readonly string[],
+    owner: string,
+    ttlMs: number,
+    now?: number,
+    options?: AcquireOptions
+  ): Promise<Lease[]>;
+  /**
+   * OPTIONAL (SPI 2.2.0): `renew` for many executions in one round trip. Returns the HELD set:
+   * the ids whose lease this `owner` still holds after the call (their expiry extended). Every
+   * other id, released, taken over, or never held, is absent, and nothing about it changes: a
+   * renew NEVER resurrects. The returned set is what a keeper diffs against its own to find the
+   * lost ids, so a store must not echo its input.
+   */
+  renewMany?(
+    executionIds: readonly string[],
+    owner: string,
+    ttlMs: number,
+    now?: number
+  ): Promise<string[]>;
+  /** OPTIONAL (SPI 2.2.0): `release` for many executions in one round trip; other owners' are untouched. */
+  releaseMany?(executionIds: readonly string[], owner: string): Promise<void>;
   /**
    * Extend a lease you hold. `false` means you no longer hold it — someone else took over
    * after it expired — and a caller that keeps working on `false` is the split-brain this
@@ -116,15 +179,51 @@ export class InMemoryLeaseStore implements LeaseStore {
     executionId: string,
     owner: string,
     ttlMs: number,
-    now = this.now()
+    now = this.now(),
+    options?: AcquireOptions
   ): Promise<Lease | null> {
     assertTtl(ttlMs);
+    const steal = assertSteal(options);
     const held = this.leases.get(executionId);
-    // Someone else's, and still alive.
-    if (held !== undefined && held.owner !== owner && held.expiresAt > now) return null;
+    // Someone else's, and still alive (unless the caller proved it may take it).
+    if (held !== undefined && held.owner !== owner && held.expiresAt > now && !steal) return null;
     const lease: Lease = { executionId, owner, expiresAt: now + ttlMs };
     this.leases.set(executionId, lease);
     return { ...lease };
+  }
+
+  async acquireMany(
+    executionIds: readonly string[],
+    owner: string,
+    ttlMs: number,
+    now = this.now(),
+    options?: AcquireOptions
+  ): Promise<Lease[]> {
+    assertTtl(ttlMs);
+    assertSteal(options);
+    const out: Lease[] = [];
+    for (const id of new Set(executionIds)) {
+      const lease = await this.acquire(id, owner, ttlMs, now, options);
+      if (lease !== null) out.push(lease);
+    }
+    return out;
+  }
+
+  async renewMany(
+    executionIds: readonly string[],
+    owner: string,
+    ttlMs: number,
+    now = this.now()
+  ): Promise<string[]> {
+    assertTtl(ttlMs);
+    const held: string[] = [];
+    for (const id of new Set(executionIds))
+      if (await this.renew(id, owner, ttlMs, now)) held.push(id);
+    return held;
+  }
+
+  async releaseMany(executionIds: readonly string[], owner: string): Promise<void> {
+    for (const id of new Set(executionIds)) await this.release(id, owner);
   }
 
   async renew(
@@ -168,4 +267,21 @@ export function assertTtl(ttlMs: number): void {
   if (!Number.isFinite(ttlMs) || ttlMs <= 0) {
     throw new RangeError(`lease ttlMs must be a positive number of milliseconds, got ${ttlMs}`);
   }
+}
+
+/**
+ * The `steal` gate every backend applies BEFORE touching storage: `true` only for a real
+ * {@link StealProof}; `undefined` options or no `steal` is `false`; anything else THROWS
+ * `TypeError` (a flag is never a proof).
+ */
+export function assertSteal(options: AcquireOptions | undefined): boolean {
+  const steal = options?.steal as unknown;
+  if (steal === undefined) return false;
+  const fence = (steal as { fence?: unknown } | null)?.fence;
+  if (typeof fence !== "number" || !Number.isSafeInteger(fence) || fence < 0) {
+    throw new TypeError(
+      "lease steal requires a conditional-fence proof: { steal: { fence: <non-negative integer> } }"
+    );
+  }
+  return true;
 }

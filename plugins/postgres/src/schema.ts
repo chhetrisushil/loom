@@ -631,6 +631,37 @@ const DDL_REST = `
       expires_at BIGINT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_leases_expiry ON leases (expires_at ASC);
+    -- ADR 0130 D11 (S7a): heartbeat leases make this table small, hot and update-churned (every
+    -- renewal rewrites a row). fillfactor < 100 leaves free space in each page for the new row
+    -- versions (and for HOT where an update leaves every indexed column alone; a renewal changes
+    -- the indexed \`expires_at\`, so it is not HOT: the S7f bench measures it), and an aggressive
+    -- per-table autovacuum keeps dead tuples from outrunning the default 20% scale factor.
+    -- Guarded like the timers column: ALTER TABLE ... SET takes SHARE UPDATE EXCLUSIVE on every
+    -- boot, so it runs only on a table with NO storage options (an operator-tuned table, or one a
+    -- previous boot already filled, is left alone), under \`loom.migration_lock_timeout\`.
+    DO $leases_storage$
+    DECLARE
+      caller_lock_timeout text := current_setting('lock_timeout');
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_class
+        WHERE oid = to_regclass('leases') AND reloptions IS NULL
+      ) THEN
+        PERFORM set_config(
+          'lock_timeout',
+          COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
+          true
+        );
+        ALTER TABLE leases SET (
+          fillfactor = 70,
+          autovacuum_vacuum_scale_factor = 0.02,
+          autovacuum_vacuum_threshold = 50,
+          autovacuum_analyze_scale_factor = 0.05
+        );
+        PERFORM set_config('lock_timeout', caller_lock_timeout, true);
+      END IF;
+    END
+    $leases_storage$;
 
     -- ADR 0051 D2 (@loom/plugin-durable-state): typed keyed carry state for
     -- schedule-driven agents, revisioned for compare-and-set. The contract

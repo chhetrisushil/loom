@@ -8,10 +8,11 @@ import type {
   TimerRecord,
   TimerStore,
 } from "@loom/event-runtime";
-import type { LeaseStore } from "@loom/event-runtime";
+import type { AcquireOptions, LeaseStore } from "@loom/event-runtime";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
+  LEASE_STORE_SPI_VERSION,
   headOf,
   readRangeOf,
 } from "@loom/event-runtime";
@@ -1249,6 +1250,81 @@ export interface LeaseStoreConformanceOptions {
    * get the wall-clock fallback (a real `setTimeout`).
    */
   clocked?: (now: () => number) => LeaseStore;
+  /**
+   * The `LEASE_STORE_SPI_VERSION` this store claims. Default: the current version. A store that
+   * claims below 2.2.0 skips the batch / steal cases (those methods are additive and optional
+   * for it); one that claims 2.2.0 or later MUST implement `acquireMany`, `renewMany` and
+   * `releaseMany`, and the cases fail if a method is missing.
+   */
+  spiVersion?: string;
+}
+
+/** `true` when `version` (`major.minor.patch`) is at least `min`. */
+function spiAtLeast(version: string, min: string): boolean {
+  const a = version.split(".").map(Number);
+  const b = min.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+
+/** `undefined` when the three batch methods exist, else a problem naming the missing ones (SPI 2.2.0). */
+function requireBatch(store: LeaseStore): string | undefined {
+  const missing = (["acquireMany", "renewMany", "releaseMany"] as const).filter(
+    (m) => typeof store[m] !== "function"
+  );
+  return missing.length === 0
+    ? undefined
+    : `a LeaseStore claiming SPI 2.2.0 must implement ${missing.join(", ")}`;
+}
+
+/**
+ * The 2.2.0 invariants that matter most to a caller, as a function so the kit's own tests can
+ * prove they DISCRIMINATE: `renewMany` returns exactly the HELD set (not its input), never
+ * resurrects a released lease, and `steal` is honoured only with a fence proof. Returns
+ * `undefined` when the store conforms. Closes the store.
+ */
+export async function leaseBatchProblem(factory: () => LeaseStore): Promise<string | undefined> {
+  const store = factory();
+  try {
+    const missing = requireBatch(store);
+    if (missing !== undefined) return missing;
+    await store.acquire("mine", "node-a", 1000, 0);
+    await store.acquire("theirs", "node-b", 1000, 0);
+    await store.acquire("gone", "node-a", 1000, 0);
+    await store.release("gone", "node-a");
+    const held = [
+      ...((await store.renewMany?.(["mine", "theirs", "gone", "never"], "node-a", 1000, 10)) ?? []),
+    ];
+    if (held.join() !== "mine") {
+      return `renewMany must return exactly the held set [mine], got [${held.join()}]`;
+    }
+    if (store.get !== undefined && (await store.get("gone")) !== null) {
+      return "renewMany resurrected a released lease";
+    }
+    if (((await store.acquireMany?.(["theirs"], "node-a", 1000, 20)) ?? []).length !== 0) {
+      return "acquireMany took a lease another owner holds unexpired";
+    }
+    try {
+      const stole = await store.acquire("theirs", "node-a", 1000, 20, {
+        steal: true,
+      } as unknown as AcquireOptions);
+      if (stole !== null) return "acquire accepted a steal without a fence proof";
+    } catch (e) {
+      if (!(e instanceof TypeError)) return "a steal without a fence proof must throw TypeError";
+    }
+    const taken = await store.acquire("theirs", "node-a", 1000, 20, { steal: { fence: 1 } });
+    if (taken === null || taken.owner !== "node-a") return "steal with a proof did not take";
+    if (await store.renew("theirs", "node-b", 1000, 30)) {
+      return "the displaced owner could still renew after a steal";
+    }
+    return undefined;
+  } finally {
+    await store.close();
+  }
 }
 
 /**
@@ -1490,6 +1566,195 @@ export function runLeaseStoreConformance(
       await store.release("x", "node-a");
       expect(await store.get("x")).toBeNull();
       await store.close();
+    });
+
+    const batchDeclared = spiAtLeast(options.spiVersion ?? LEASE_STORE_SPI_VERSION, "2.2.0");
+    const batch = batchDeclared ? it : it.skip;
+
+    batch("2.2.0: a store claiming it implements acquireMany, renewMany and releaseMany", () => {
+      expect(requireBatch(factory())).toBeUndefined();
+    });
+
+    batch(
+      "acquireMany agrees with acquire: free, held-by-other, own, expired, duplicates",
+      async () => {
+        const store = factory();
+        await store.acquire("held", "node-b", 1000, 0);
+        await store.acquire("mine", "node-a", 1000, 0);
+        await store.acquire("dead", "node-b", 100, 0);
+        const got = await store.acquireMany?.(
+          ["free", "held", "mine", "dead", "free"],
+          "node-a",
+          1000,
+          500
+        );
+        // Granted: free, mine (a renewal), dead (expired at 100 <= 500). NOT held, and no duplicate.
+        expect((got ?? []).map((l) => l.executionId).sort()).toEqual(["dead", "free", "mine"]);
+        for (const l of got ?? []) expect(l).toMatchObject({ owner: "node-a", expiresAt: 1500 });
+        expect(await store.acquire("held", "node-a", 1000, 500)).toBeNull(); // unchanged by the batch
+        expect(await store.acquireMany?.([], "node-a", 1000, 500)).toEqual([]);
+        await expect(store.acquireMany?.(["x"], "node-a", 0, 0)).rejects.toThrow(/positive/);
+        await store.close();
+      }
+    );
+
+    batch("renewMany returns exactly the HELD set and extends only those", async () => {
+      const store = factory();
+      await store.acquire("a", "node-a", 1000, 0);
+      await store.acquire("b", "node-a", 1000, 0);
+      await store.acquire("c", "node-b", 1000, 0);
+      await store.acquire("d", "node-a", 100, 0);
+      await store.acquire("d", "node-b", 1000, 200); // d: taken over after expiry
+      const held = await store.renewMany?.(["a", "b", "c", "d", "unknown"], "node-a", 1000, 400);
+      expect([...(held ?? [])].sort()).toEqual(["a", "b"]);
+      expect(await store.renewMany?.([], "node-a", 1000, 400)).toEqual([]);
+      if (store.get !== undefined) {
+        expect((await store.get("a"))?.expiresAt).toBe(1400);
+        expect((await store.get("c"))?.expiresAt).toBe(1000); // not ours: untouched
+        expect((await store.get("d"))?.owner).toBe("node-b");
+      }
+      await store.close();
+    });
+
+    batch("renewMany agrees with renew one id at a time", async () => {
+      const store = factory();
+      const single = factory();
+      for (const s of [store, single]) {
+        await s.acquire("a", "node-a", 1000, 0);
+        await s.acquire("b", "node-b", 1000, 0);
+        await s.acquire("c", "node-a", 100, 0);
+        await s.acquire("c", "node-b", 1000, 200);
+      }
+      const ids = ["a", "b", "c", "none"];
+      const viaBatch = [...((await store.renewMany?.(ids, "node-a", 1000, 400)) ?? [])].sort();
+      const viaSingle: string[] = [];
+      for (const id of ids) if (await single.renew(id, "node-a", 1000, 400)) viaSingle.push(id);
+      expect(viaBatch).toEqual(viaSingle.sort());
+      await store.close();
+      await single.close();
+    });
+
+    batch("a renew never resurrects a released lease, single or batch", async () => {
+      const store = factory();
+      await store.acquire("x", "node-a", 1000, 0);
+      await store.acquire("y", "node-a", 1000, 0);
+      await store.releaseMany?.(["x"], "node-a");
+      await store.release("y", "node-a");
+      expect(await store.renew("x", "node-a", 1000, 10)).toBe(false);
+      expect(await store.renewMany?.(["x", "y"], "node-a", 1000, 10)).toEqual([]);
+      if (store.get !== undefined) {
+        expect(await store.get("x")).toBeNull();
+        expect(await store.get("y")).toBeNull();
+      }
+      await store.close();
+    });
+
+    batch("releaseMany frees the caller's leases and is a no-op for anyone else's", async () => {
+      const store = factory();
+      await store.acquire("a", "node-a", 1000, 0);
+      await store.acquire("b", "node-a", 1000, 0);
+      await store.acquire("c", "node-b", 1000, 0);
+      await store.releaseMany?.(["a", "c", "ghost"], "node-a"); // c is not ours; ghost does not exist
+      expect(await store.acquire("a", "node-b", 1000, 10)).not.toBeNull(); // freed
+      expect(await store.acquire("c", "node-a", 1000, 10)).toBeNull(); // still node-b's
+      expect(await store.acquire("b", "node-b", 1000, 10)).toBeNull(); // not named: still node-a's
+      await expect(store.releaseMany?.([], "node-a")).resolves.toBeUndefined();
+      await store.close();
+    });
+
+    batch(
+      "steal takes a live lease ONLY with a fence proof; the displaced owner loses it",
+      async () => {
+        const store = factory();
+        await store.acquire("x", "node-b", 10_000, 0);
+        // Without a proof it is the ordinary acquire: refused.
+        expect(await store.acquire("x", "node-a", 1000, 100)).toBeNull();
+        expect(await store.acquire("x", "node-a", 1000, 100, {})).toBeNull();
+        // A steal flag that is not a proof is a programming error, never a silent steal.
+        for (const bad of [true, {}, { fence: -1 }, { fence: 1.5 }, { fence: Number.NaN }]) {
+          await expect(
+            store.acquire("x", "node-a", 1000, 100, { steal: bad } as unknown as AcquireOptions)
+          ).rejects.toThrow(TypeError);
+        }
+        if (store.get !== undefined) expect((await store.get("x"))?.owner).toBe("node-b");
+        const lease = await store.acquire("x", "node-a", 1000, 100, { steal: { fence: 4 } });
+        expect(lease).toMatchObject({ owner: "node-a", expiresAt: 1100 });
+        expect(await store.renew("x", "node-b", 1000, 200)).toBe(false);
+        expect(await store.renewMany?.(["x"], "node-b", 1000, 200)).toEqual([]);
+        expect(await store.renewMany?.(["x"], "node-a", 1000, 200)).toEqual(["x"]);
+        // Stealing a lease nobody holds is just an acquire (a steal never resurrects anything).
+        await store.release("x", "node-a");
+        expect(
+          await store.acquire("x", "node-c", 1000, 300, { steal: { fence: 5 } })
+        ).toMatchObject({
+          owner: "node-c",
+        });
+        await store.close();
+      }
+    );
+
+    batch("acquireMany honours the same steal gate", async () => {
+      const store = factory();
+      await store.acquire("a", "node-b", 10_000, 0);
+      await store.acquire("b", "node-b", 10_000, 0);
+      expect(await store.acquireMany?.(["a", "b"], "node-a", 1000, 100)).toEqual([]);
+      await expect(
+        store.acquireMany?.(["a"], "node-a", 1000, 100, {
+          steal: true,
+        } as unknown as AcquireOptions)
+      ).rejects.toThrow(TypeError);
+      const got = await store.acquireMany?.(["a", "b"], "node-a", 1000, 100, {
+        steal: { fence: 2 },
+      });
+      expect((got ?? []).map((l) => l.executionId).sort()).toEqual(["a", "b"]);
+      expect(await store.renew("a", "node-b", 1000, 200)).toBe(false);
+      await store.close();
+    });
+
+    batch("batch expiry is judged on the STORE clock, not the caller's (skew)", async () => {
+      if (options.clocked !== undefined) {
+        // The store's clock sits at 1000 while the process clock is ~1.8e12: a store that
+        // stamps or judges on Date.now() sees everything expired / far-future.
+        let sim = 1_000;
+        const store = options.clocked(() => sim);
+        const got = await store.acquireMany?.(["a", "b"], "node-a", 1000);
+        expect((got ?? []).map((l) => l.expiresAt)).toEqual([2000, 2000]);
+        expect(await store.acquireMany?.(["a"], "node-b", 1000)).toEqual([]); // live on ITS clock
+        sim = 1500;
+        expect([...((await store.renewMany?.(["a", "b"], "node-a", 1000)) ?? [])].sort()).toEqual([
+          "a",
+          "b",
+        ]);
+        if (store.get !== undefined) expect((await store.get("a"))?.expiresAt).toBe(2500);
+        sim = 2400;
+        expect((await store.acquireMany?.(["a"], "node-b", 1000))?.length).toBe(0); // 2500 > 2400
+        sim = 2600;
+        expect((await store.acquireMany?.(["a"], "node-b", 1000))?.length).toBe(1); // expired
+        await store.close();
+        return;
+      }
+      // No injectable clock: the stamp must still agree with storeNow() when it exists.
+      const store = factory();
+      if (store.storeNow === undefined) return void (await store.close());
+      const before = await store.storeNow();
+      const got = await store.acquireMany?.(["a", "b"], "node-a", 60_000);
+      const after = await store.storeNow();
+      expect(got?.length).toBe(2);
+      for (const l of got ?? []) {
+        expect(l.expiresAt).toBeGreaterThanOrEqual(before + 60_000);
+        expect(l.expiresAt).toBeLessThanOrEqual(after + 60_001);
+      }
+      const renewed = await store.renewMany?.(["a", "b"], "node-a", 60_000);
+      expect([...(renewed ?? [])].sort()).toEqual(["a", "b"]);
+      // Live on the store's clock, so another owner is refused with no explicit `now`.
+      expect(await store.acquireMany?.(["a"], "node-b", 60_000)).toEqual([]);
+      await store.close();
+    });
+
+    it("a store claiming SPI below 2.2.0 is not asked for the batch cases", () => {
+      expect(spiAtLeast("2.1.0", "2.2.0")).toBe(false);
+      expect(spiAtLeast("2.2.0", "2.2.0")).toBe(true);
+      expect(spiAtLeast("3.0.0", "2.2.0")).toBe(true);
     });
 
     it("refuses a TTL that would expire on arrival", async () => {

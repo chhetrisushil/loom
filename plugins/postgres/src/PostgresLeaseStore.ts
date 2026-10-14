@@ -1,4 +1,10 @@
-import { type Lease, type LeaseStore, assertTtl } from "@loom/event-runtime";
+import {
+  type AcquireOptions,
+  type Lease,
+  type LeaseStore,
+  assertSteal,
+  assertTtl,
+} from "@loom/event-runtime";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
@@ -79,9 +85,11 @@ export class PostgresLeaseStore implements LeaseStore {
     executionId: string,
     owner: string,
     ttlMs: number,
-    now?: number
+    now?: number,
+    options?: AcquireOptions
   ): Promise<Lease | null> {
     assertTtl(ttlMs);
+    const steal = assertSteal(options);
     const ttl = Math.ceil(ttlMs);
     await this.ready;
     // `now` undefined => both the stamp and the takeover test use the DB clock (NULL params
@@ -91,11 +99,87 @@ export class PostgresLeaseStore implements LeaseStore {
        INSERT INTO leases (execution_id, owner, expires_at)
        VALUES ($1, $2, (SELECT n FROM t) + $3::bigint)
        ON CONFLICT (execution_id) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at
-       WHERE leases.owner = $2 OR leases.expires_at <= (SELECT n FROM t)
+       WHERE leases.owner = $2 OR leases.expires_at <= (SELECT n FROM t) OR $5::boolean
        RETURNING execution_id, owner, expires_at`,
-      [executionId, owner, ttl, now ?? null]
+      [executionId, owner, ttl, now ?? null, steal]
     );
     return rows[0] ? rowToLease(rows[0]) : null;
+  }
+
+  /**
+   * Many leases in ONE statement (SPI 2.2.0). Same conflict rule as {@link acquire}; the ids are
+   * deduped (a multi-row upsert that names a key twice is an error) and sorted so two concurrent
+   * batches take their row locks in the same order and cannot deadlock each other.
+   */
+  async acquireMany(
+    executionIds: readonly string[],
+    owner: string,
+    ttlMs: number,
+    now?: number,
+    options?: AcquireOptions
+  ): Promise<Lease[]> {
+    assertTtl(ttlMs);
+    const steal = assertSteal(options);
+    const ids = [...new Set(executionIds)].sort();
+    if (ids.length === 0) return [];
+    const ttl = Math.ceil(ttlMs);
+    await this.ready;
+    const { rows } = await this.pool.query<LeaseRow>(
+      `WITH t(n) AS (SELECT ${nowOrDb(4)})
+       INSERT INTO leases (execution_id, owner, expires_at)
+       SELECT id, $2, (SELECT n FROM t) + $3::bigint
+       FROM unnest($1::text[]) AS u(id) ORDER BY id
+       ON CONFLICT (execution_id) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at
+       WHERE leases.owner = $2 OR leases.expires_at <= (SELECT n FROM t) OR $5::boolean
+       RETURNING execution_id, owner, expires_at`,
+      [ids, owner, ttl, now ?? null, steal]
+    );
+    return rows.map(rowToLease);
+  }
+
+  /**
+   * One statement for everything the node holds. `RETURNING` IS the held set: a row that was
+   * released, taken over or never existed is simply not updated, so nothing is resurrected. The
+   * locking subselect is ordered so concurrent batches cannot deadlock.
+   */
+  async renewMany(
+    executionIds: readonly string[],
+    owner: string,
+    ttlMs: number,
+    now?: number
+  ): Promise<string[]> {
+    assertTtl(ttlMs);
+    const ids = [...new Set(executionIds)];
+    if (ids.length === 0) return [];
+    const ttl = Math.ceil(ttlMs);
+    await this.ready;
+    const { rows } = await this.pool.query<{ execution_id: string }>(
+      `WITH t(n) AS (SELECT ${nowOrDb(1)}),
+            mine AS (
+              SELECT execution_id FROM leases
+              WHERE execution_id = ANY($2::text[]) AND owner = $3
+              ORDER BY execution_id FOR UPDATE
+            )
+       UPDATE leases SET expires_at = (SELECT n FROM t) + $4::bigint
+       WHERE execution_id IN (SELECT execution_id FROM mine) AND owner = $3
+       RETURNING execution_id`,
+      [now ?? null, ids, owner, ttl]
+    );
+    return rows.map((r) => r.execution_id);
+  }
+
+  async releaseMany(executionIds: readonly string[], owner: string): Promise<void> {
+    const ids = [...new Set(executionIds)];
+    if (ids.length === 0) return;
+    await this.ready;
+    await this.pool.query(
+      `DELETE FROM leases WHERE execution_id IN (
+         SELECT execution_id FROM leases
+         WHERE execution_id = ANY($1::text[]) AND owner = $2
+         ORDER BY execution_id FOR UPDATE
+       ) AND owner = $2`,
+      [ids, owner]
+    );
   }
 
   async renew(executionId: string, owner: string, ttlMs: number, now?: number): Promise<boolean> {

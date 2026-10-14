@@ -1,7 +1,9 @@
+import type { LeaseStore } from "@loom/event-runtime";
 import type { CustomStorage } from "@loom/plugin-kit";
 import type { Pool, PoolConfig } from "pg";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 import { PostgresEventStore } from "./PostgresEventStore";
+import { PostgresLeaseStore } from "./PostgresLeaseStore";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
 import { type PgConfig, toPool } from "./pool";
 
@@ -40,8 +42,15 @@ export interface PostgresStorageOptions {
  * Ownership: the pool is built here, so `eventStore.close()` — which owns only what it was
  * handed — will not end it. The returned descriptor's stores share one lifetime; close the
  * event store to release the stores, and the pool is ended alongside it.
+ *
+ * `leaseStore` (ADR 0130 D11) is the heartbeat-lease store CO-LOCATED with the event store: the
+ * same pool and database, so a multi-node deployment gets cluster-visible leases with no extra
+ * config and the lease and the log share one failure domain. An accessor on the factory's
+ * result (no `EventStore` SPI change); `defineConfig` does not read it yet.
  */
-export function postgresStorage(options: PostgresStorageOptions): CustomStorage {
+export function postgresStorage(
+  options: PostgresStorageOptions
+): CustomStorage & { leaseStore: LeaseStore } {
   const { pool, owned } = toPool(options.url);
   const eventStore = new PostgresEventStore(pool, {
     ...(options.notifyBuckets !== undefined && { notifyBuckets: options.notifyBuckets }),
@@ -53,6 +62,7 @@ export function postgresStorage(options: PostgresStorageOptions): CustomStorage 
     }),
   });
   const snapshotStore = new PostgresSnapshotStore(pool);
+  const leaseStore = new PostgresLeaseStore(pool);
   const branchRegistry = options.branching === true ? new PostgresBranchRegistry(pool) : undefined;
 
   if (owned) {
@@ -63,6 +73,7 @@ export function postgresStorage(options: PostgresStorageOptions): CustomStorage 
     eventStore.close = async () => {
       await closeStores();
       await snapshotStore.close();
+      await leaseStore.close();
       await branchRegistry?.close?.();
       await pool.end();
     };
@@ -72,6 +83,7 @@ export function postgresStorage(options: PostgresStorageOptions): CustomStorage 
     kind: "custom",
     eventStore,
     snapshotStore,
+    leaseStore,
     ...(branchRegistry !== undefined && { branchRegistry }),
   };
 }

@@ -64,10 +64,13 @@ export { EVENT_KIND_CLASS, isAnsweringKind, type EventKindClass } from "./eventK
 export {
   InMemoryLeaseStore,
   LEASE_STORE_SPI_VERSION,
+  assertSteal,
   assertTtl,
+  type AcquireOptions,
   type InMemoryLeaseStoreOptions,
   type Lease,
   type LeaseStore,
+  type StealProof,
 } from "./leases";
 export { DuplicateEnvelopeIdError, DuplicateSequenceError } from "./writeConflicts";
 export { lowerBoundBySequence, sliceBySequence } from "./sequenceRange";
