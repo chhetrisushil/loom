@@ -6,6 +6,7 @@ import {
   type WidgetAction,
   type WidgetValueCheck,
   asCell,
+  describeWidgetFrame,
   describeWidgetStatus,
   isLayoutId,
   isWidget,
@@ -92,6 +93,7 @@ function drawWidgetUnsafe(e: WidgetEntry, ctx: Ctx): void {
   // file owns only the markup. A malformed widget throws into `drawWidget`'s error placeholder.
   const d = describeWidgetStatus(widget, value, status, ctx.check);
   if (d.tag === "invalid") throw new TypeError(`renderer-dom: ${d.reason}`);
+  const frame = describeWidgetFrame(widget, d);
   if (d.tag === "redacted") {
     // IR 2.5.0: withheld for the surface's audience. Only the constant marker is drawn; no body,
     // no title, and no source/degraded attributes (the original type may itself be sensitive).
@@ -103,43 +105,46 @@ function drawWidgetUnsafe(e: WidgetEntry, ctx: Ctx): void {
       "title",
     ])
       e.host.removeAttribute(a);
+    const m = frame.marker;
+    if (m === undefined) return;
     e.host.replaceChildren(
-      h(doc, "div", { "data-binding-marker": "redacted", role: "status" }, `⊘ ${d.message}`)
+      h(
+        doc,
+        "div",
+        { "data-binding-marker": m.name, ...(m.role !== undefined && { role: m.role }) },
+        m.text ?? ""
+      )
     );
     e.host.setAttribute("data-binding-state", "redacted");
     return;
   }
-  const state = d.tag === "inert" ? undefined : d.tag;
-  const label = widget.title ?? widget.kind;
-
   const children: Node[] = [];
-  const marker = (tag: string, name: string, text: string, attrs: Record<string, string> = {}) =>
-    children.push(h(doc, tag, { "data-binding-marker": name, ...attrs }, text));
-  if (state === "error") marker("div", "error", `✗ ${label}: ${d.message}`, { role: "alert" });
-  if (state === "empty") marker("div", "empty", `○ ${label}: ${d.message}`, { role: "status" });
-  if (state === "stale" && value === undefined)
-    marker("div", "stale", `~ ${label}: ${d.message} — no value`);
-  if (state === "stale" && value !== undefined)
-    children.push(h(doc, "span", { "data-binding-marker": "stale", title: d.finding }, "~"));
-  if (state === "pending") marker("span", "pending", "⋯");
-  if (state === "loading") marker("div", "loading", "…");
+  const m = frame.marker;
+  if (m !== undefined) {
+    children.push(
+      h(
+        doc,
+        m.block ? "div" : "span",
+        {
+          "data-binding-marker": m.name,
+          ...(m.role !== undefined && { role: m.role }),
+          ...(m.tooltip !== undefined && { title: m.tooltip }),
+        },
+        m.text ?? m.glyph
+      )
+    );
+  }
 
   if (d.showBody) children.push(drawBody(e, ctx));
   e.host.replaceChildren(...children);
 
   const set = (name: string, v: string | undefined) =>
     v === undefined ? e.host.removeAttribute(name) : e.host.setAttribute(name, v);
-  set("data-binding-state", state);
-  set("data-source-type", widget.source?.type);
-  set("data-source-version", widget.source?.version);
-  const chain = d.degradedChain;
-  set("data-degraded", chain);
-  set(
-    "title",
-    chain
-      ? `${widget.source?.type}@${widget.source?.version} shown as ${widget.kind} (degraded from ${chain})`
-      : undefined
-  );
+  set("data-binding-state", frame.state);
+  set("data-source-type", frame.sourceType);
+  set("data-source-version", frame.sourceVersion);
+  set("data-degraded", frame.degraded);
+  set("title", frame.tooltip);
 }
 
 function placeholder(ctx: Ctx, reason: "missing" | "error", kind: string): HTMLElement {

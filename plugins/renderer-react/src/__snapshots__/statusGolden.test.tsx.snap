@@ -1,0 +1,51 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`react status golden > contract outranks pending 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="error"><div role="alert" data-binding-marker="error">✗ CPU: unlucky</div></div></div></div>"`;
+
+exports[`react status golden > contract outranks stale 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="error"><div role="alert" data-binding-marker="error">✗ CPU: unlucky</div></div></div></div>"`;
+
+exports[`react status golden > contract skipped under empty 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="empty"><div role="status" data-binding-marker="empty">○ CPU: no data</div></div></div></div>"`;
+
+exports[`react status golden > degraded + error 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="error" data-source-type="T" data-source-version="1" data-degraded="Trend@2 › Spark@1" title="T@1 shown as MetricCard (degraded from Trend@2 › Spark@1)"><div role="alert" data-binding-marker="error">✗ CPU: down</div></div></div></div>"`;
+
+exports[`react status golden > degraded + ready 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="ready" data-source-type="T" data-source-version="1" data-degraded="Trend@2" title="T@1 shown as MetricCard (degraded from Trend@2)"><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`react status golden > degraded + stale value 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="stale" data-source-type="T" data-source-version="1" data-degraded="Trend@2 › Spark@1" title="T@1 shown as MetricCard (degraded from Trend@2 › Spark@1)"><span data-binding-marker="stale">~</span><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`react status golden > degraded empty list 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="ready" data-source-type="T" data-source-version="1"><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`react status golden > empty 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="empty"><div role="status" data-binding-marker="empty">○ CPU: none</div></div></div></div>"`;
+
+exports[`react status golden > empty no finding 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="empty"><div role="status" data-binding-marker="empty">○ CPU: no data</div></div></div></div>"`;
+
+exports[`react status golden > error + value 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="error"><div role="alert" data-binding-marker="error">✗ CPU: down</div></div></div></div>"`;
+
+exports[`react status golden > error no finding 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="error"><div role="alert" data-binding-marker="error">✗ CPU: error</div></div></div></div>"`;
+
+exports[`react status golden > error outranks stale finding 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="error"><div role="alert" data-binding-marker="error">✗ CPU: hard</div></div></div></div>"`;
+
+exports[`react status golden > inert, degraded 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-source-type="T" data-source-version="1" data-degraded="Trend@2 › Spark@1" title="T@1 shown as MetricCard (degraded from Trend@2 › Spark@1)"><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`react status golden > inert, no source 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div>"`;
+
+exports[`react status golden > inert, source only 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-source-type="T" data-source-version="1"><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`react status golden > malformed degradedFrom 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-placeholder="error">[Renderer for MetricCard failed]</div></div></div>"`;
+
+exports[`react status golden > pending + value 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="pending"><span data-binding-marker="pending">⋯</span><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`react status golden > pending no value (loading) 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="loading"><div data-binding-marker="loading">…</div></div></div></div>"`;
+
+exports[`react status golden > ready 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="ready"><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`react status golden > redacted 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="redacted"><div role="status" data-binding-marker="redacted">⊘ redacted</div></div></div></div>"`;
+
+exports[`react status golden > stale + value 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="stale"><span data-binding-marker="stale" title="old">~</span><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`react status golden > stale no finding no value 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="stale"><div data-binding-marker="stale">~ CPU: stale — no value</div></div></div></div>"`;
+
+exports[`react status golden > stale no value 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="stale"><div data-binding-marker="stale">~ CPU: old — no value</div></div></div></div>"`;
+
+exports[`react status golden > status unwritten + value 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="ready"><div data-widget-kind="MetricCard" data-widget-id="m"><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`react status golden > status unwritten no value 1`] = `"<div data-blueprint-id="g"><h1>Golden</h1><div style="display: flex; flex-direction: column;"><div data-widget-frame="m" data-binding-state="loading"><div data-binding-marker="loading">…</div></div></div></div>"`;

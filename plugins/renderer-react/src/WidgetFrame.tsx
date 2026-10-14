@@ -2,6 +2,7 @@ import {
   type BindingStatus,
   type Widget,
   type WidgetValueCheck,
+  describeWidgetFrame,
   describeWidgetStatus,
 } from "@loom/blueprint-runtime";
 import type React from "react";
@@ -56,58 +57,37 @@ export const WidgetFrame: React.FC<{
       </div>
     );
   }
+  const frame = describeWidgetFrame(widget, d);
+  const m = frame.marker;
   if (d.tag === "redacted") {
     // IR 2.5.0: withheld for this surface's audience. Nothing of the widget is drawn or exposed —
     // not its title, kind, source type/version, nor `children` (the kind renderer never mounts).
     return (
       <div data-widget-frame={widget.id} data-binding-state="redacted">
-        {/* biome-ignore lint/a11y/useSemanticElements: see the `empty` marker below */}
-        <div role="status" data-binding-marker="redacted">
-          ⊘ {d.message}
+        <div role={m?.role} data-binding-marker={m?.name}>
+          {m?.text}
         </div>
       </div>
     );
   }
-  const state = d.tag === "inert" ? undefined : d.tag;
-  const degraded = d.degradedChain;
-  const title = widget.title ?? widget.kind;
+  const Tag = m?.block ? "div" : "span";
   return (
     <div
       data-widget-frame={widget.id}
-      {...(state !== undefined && { "data-binding-state": state })}
-      {...(widget.source && {
-        "data-source-type": widget.source.type,
-        "data-source-version": widget.source.version,
+      {...(frame.state !== undefined && { "data-binding-state": frame.state })}
+      {...(frame.sourceType !== undefined && {
+        "data-source-type": frame.sourceType,
+        "data-source-version": frame.sourceVersion,
       })}
-      {...(degraded && {
-        "data-degraded": degraded,
-        title: `${widget.source?.type}@${widget.source?.version} shown as ${widget.kind} (degraded from ${degraded})`,
-      })}
+      {...(frame.degraded && { "data-degraded": frame.degraded, title: frame.tooltip })}
     >
-      {state === "error" && (
-        <div role="alert" data-binding-marker="error">
-          ✗ {title}: {d.message}
-        </div>
+      {m && (
+        // `role="status"` is a polite live region (empty): announced like a status, never as an
+        // alert — it is not an error. (Dynamic role: biome cannot flag it, so no suppression.)
+        <Tag role={m.role} data-binding-marker={m.name} title={m.tooltip}>
+          {m.text ?? m.glyph}
+        </Tag>
       )}
-      {state === "empty" && (
-        // A polite live region: announced like a status, never as an alert — it is not an error.
-        // biome-ignore lint/a11y/useSemanticElements: <output> is a calculation result, and its implicit live-region support varies by screen reader; an explicit role="status" on a div is the reliably announced form
-        <div role="status" data-binding-marker="empty">
-          ○ {title}: {d.message}
-        </div>
-      )}
-      {state === "stale" && value === undefined && (
-        <div data-binding-marker="stale">
-          ~ {title}: {d.message} — no value
-        </div>
-      )}
-      {state === "stale" && value !== undefined && (
-        <span data-binding-marker="stale" title={d.finding}>
-          ~
-        </span>
-      )}
-      {state === "pending" && <span data-binding-marker="pending">⋯</span>}
-      {state === "loading" && <div data-binding-marker="loading">…</div>}
       {d.showBody && children}
     </div>
   );

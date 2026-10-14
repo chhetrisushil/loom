@@ -6,7 +6,11 @@ import type {
   Widget,
   WidgetValueCheck,
 } from "@loom/blueprint-runtime";
-import { describeWidgetStatus, traverseBlueprint } from "@loom/blueprint-runtime";
+import {
+  describeWidgetFrame,
+  describeWidgetStatus,
+  traverseBlueprint,
+} from "@loom/blueprint-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { TerminalWidgetRenderer } from "./defaultRegistry";
 import { formatValue, indent } from "./format";
@@ -108,14 +112,14 @@ export function renderBlueprintToString(
       // A malformed `source` is the error placeholder (as DOM and React), never a throw.
       if (d.tag === "invalid") return `[Renderer for ${widget.kind} failed]`;
       // IR 2.5.0: withheld for the surface's audience — a constant marker, no title, no value.
-      if (d.tag === "redacted") return `⊘ ${d.message}`;
+      const m = describeWidgetFrame(widget, d).marker;
+      if (d.tag === "redacted") return m?.text ?? "";
       let text: string;
       if (d.tag === "inert") text = inner();
-      else if (d.tag === "error") text = `✗ ${title}: ${d.message}`;
-      else if (d.tag === "empty") text = `○ ${title}: ${d.message}`;
+      else if (d.tag === "error" || d.tag === "empty") text = m?.text ?? "";
       else if (d.tag === "stale")
-        text = d.hasValue ? `~ ${inner()}` : `~ ${title}: — (${d.message})`;
-      else if (d.tag === "pending") text = `⋯ ${inner()}`;
+        text = d.hasValue ? `${m?.glyph} ${inner()}` : `${m?.glyph} ${title}: — (${d.message})`;
+      else if (d.tag === "pending") text = `${m?.glyph} ${inner()}`;
       // `loading`: the same glyph React and loom-ui's Lit base use (ADR 0097 D2).
       else if (d.tag === "loading") text = `⋯ ${title}`;
       else text = inner();
