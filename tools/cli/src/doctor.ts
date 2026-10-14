@@ -537,10 +537,23 @@ function heartbeatCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
       detail:
         '`onStoreError: "continue"` — drivers keep running through a lease-store outage, so an expired lease no longer proves liveness; the poll must treat this fleet as heuristic. The fence still protects the log',
     };
+  const scope = hb.scope ?? "unknown";
+  if (scope === "host")
+    return {
+      name: HEARTBEAT_CHECK,
+      status: "advisory",
+      detail: `lease store is visible to ONE host only: evidence holds only if every node shares it (${hb.source}, scope host)`,
+    };
+  if (scope === "unknown")
+    return {
+      name: HEARTBEAT_CHECK,
+      status: "advisory",
+      detail: `lease store scope is unknown (it declares no \`scope\`): cannot tell whether every node sees the same leases (${hb.source})`,
+    };
   return {
     name: HEARTBEAT_CHECK,
     status: "ok",
-    detail: `heartbeat leases on (${hb.source})`,
+    detail: `heartbeat leases on (${hb.source}, scope ${scope})`,
   };
 }
 

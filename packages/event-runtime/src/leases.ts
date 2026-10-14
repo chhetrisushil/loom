@@ -22,7 +22,8 @@
  * 2.1.0 (L29): optional `storeNow()` — the store's own clock. Additive: a store without it behaves
  * exactly as before, and a caller with no `storeNow()` falls back to `Date.now()`.
  *
- * 2.2.0 (ADR 0130 D11, heartbeat leases): optional `acquireMany` / `renewMany` (returns the HELD
+ * 2.2.0 (ADR 0130 D11, heartbeat leases): optional `scope` (who can see this store's leases:
+ * "process" | "host" | "cluster"; absent = unknown, treated as NOT cluster-visible), optional `acquireMany` / `renewMany` (returns the HELD
  * set) / `releaseMany`, and the `steal` option on `acquire`. Additive: a store without them is
  * driven through the single-id methods by the caller (correct, just slower). A store that claims
  * 2.2.0 implements all three batch methods and the steal gate; one that claims 2.1.0 is not asked.
@@ -74,6 +75,13 @@ export interface AcquireOptions {
 }
 
 export interface LeaseStore {
+  /**
+   * OPTIONAL (SPI 2.2.0): who can observe this store's leases. `"process"`: one process (in-memory);
+   * `"host"`: processes on one machine (a local file); `"cluster"`: every node (a shared server).
+   * Absent means unknown and is treated as NOT cluster-visible. Heartbeat evidence ("a lease
+   * expired, so the driver is gone") holds only if every node reads the same table.
+   */
+  readonly scope?: "process" | "host" | "cluster";
   /**
    * Take ownership, or report that someone else has it.
    *
@@ -177,6 +185,7 @@ export interface InMemoryLeaseStoreOptions {
  * durable backends. Behaviour is pinned by `runLeaseStoreConformance`.
  */
 export class InMemoryLeaseStore implements LeaseStore {
+  readonly scope = "process" as const;
   private readonly leases = new Map<string, Lease>();
   private readonly now: () => number;
 

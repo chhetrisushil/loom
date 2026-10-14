@@ -464,7 +464,7 @@ interface WorkflowRuntimeDeps {
   heartbeat?: { leaseStore: LeaseStore; ttlMs?: number; renewEveryMs?: number; onStoreError?: "stop" | "continue"; nodeId?: string }; // heartbeat leases (ADR 0130 D11); defineConfig fills it from durability.heartbeat
 }
 
-Durability group (~defineConfig({ durability })~): ~snapshotEvery~, ~retention~, and ~heartbeat: { enabled?, ttlMs?, renewEveryMs?, store?, onStoreError? }~ (ADR 0130 D11). The lease store is co-located with the event store (the storage preset's ~leaseStore~), in-memory only beside an in-memory event store, else heartbeat is disabled and ~loom doctor~ says so. ~app.heartbeat~ (~HeartbeatStatus~) reports the decision.
+Durability group (~defineConfig({ durability })~): ~snapshotEvery~, ~retention~, and ~heartbeat: { enabled?, ttlMs?, renewEveryMs?, store?, onStoreError? }~ (ADR 0130 D11). The lease store is co-located with the event store (the storage preset's ~leaseStore~), in-memory only beside an in-memory event store, else heartbeat is disabled and ~loom doctor~ says so. ~app.heartbeat~ (~HeartbeatStatus~) reports the decision, including ~scope~ (the store's declared optional ~LeaseStore.scope~: process, host, cluster, or unknown) and ~clusterVisible~.
 
 class WorkflowRuntime {
   constructor(deps: WorkflowRuntimeDeps)

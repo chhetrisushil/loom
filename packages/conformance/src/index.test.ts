@@ -59,6 +59,7 @@ import {
   leaseBatchDeclarationProblem,
   leaseBatchProblem,
   leaseExpiredDefaultProblem,
+  leaseScopeProblem,
   leaseStoreNowProblem,
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
@@ -345,6 +346,19 @@ runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore", {
 });
 
 // The 2.2.0 batch invariants must DISCRIMINATE, not merely pass on the reference store.
+describe("leaseScopeProblem discriminates", () => {
+  it("accepts an undeclared scope and the three declared ones", () => {
+    expect(leaseScopeProblem(new InMemoryLeaseStore())).toBeUndefined();
+    for (const scope of ["process", "host", "cluster"])
+      expect(leaseScopeProblem(Object.assign(new InMemoryLeaseStore(), { scope }))).toBeUndefined();
+  });
+  it("fails a declared scope that is not one of the three", () => {
+    expect(leaseScopeProblem(Object.assign(new InMemoryLeaseStore(), { scope: "galaxy" }))).toMatch(
+      /scope/
+    );
+  });
+});
+
 describe("leaseBatchProblem discriminates", () => {
   class RenewManyEchoes extends InMemoryLeaseStore {
     // The classic bug: report the input, not the held set.
