@@ -109,7 +109,6 @@ import {
   quarantineQueue,
   quarantineQueues,
   readRegisteredTopics,
-  refusalWakeAt,
   registerInboxTopic,
   retireInboxTopic,
   scanExpired,
@@ -6004,9 +6003,11 @@ export class WorkflowRuntime {
 
   /**
    * ADR 0130 D10 - a replay refusal leaves a REFUSAL row stamped with the log head (see
-   * `refusalWakeAt`). A timer-store row only; best effort (a failure to write it must not mask the
+   * `TimerRecord.refused`, an ordinary `wakeAt` of now). A timer-store row only; best effort (a failure to write it must not mask the
    * typed refusal, and the sweep still recovers the execution).
    */
+  private lastRefusalAt = 0;
+
   private async markRefused(executionId: string): Promise<void> {
     if (this.timerStore === undefined) return;
     try {
@@ -6018,7 +6019,11 @@ export class WorkflowRuntime {
         head = all.length === 0 ? null : all[all.length - 1]?.sequence;
       }
       if (head === null || head === undefined) return;
-      await this.timerStore.schedule({ executionId, wakeAt: refusalWakeAt(head) });
+      // Strictly increasing per runtime: two refusals in one millisecond must not share the row key
+      // `(executionId, wakeAt)`, or the poll retiring the older row would retire the newer stamp.
+      const wakeAt = Math.max(this.now(), this.lastRefusalAt + 1);
+      this.lastRefusalAt = wakeAt;
+      await this.timerStore.schedule({ executionId, wakeAt, refused: { head } });
     } catch (e) {
       this.onStorageError?.(executionId, e);
     }

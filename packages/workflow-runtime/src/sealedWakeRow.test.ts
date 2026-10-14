@@ -60,9 +60,8 @@ const g = flow("g", async (ctx) => {
   return { y };
 });
 
-/** A refusal row is stamped with the log head at refusal time: `wakeAt = -2 - head` (D10). */
-const REFUSAL_BASE = -2;
-const isRefusalRow = (wakeAt: number): boolean => wakeAt <= REFUSAL_BASE;
+/** A refusal row carries `refused: { head }`, the log head at refusal time (D10); its `wakeAt` is an ordinary instant. */
+const isRefusalRow = (r: { refused?: { head: number } }): boolean => r.refused !== undefined;
 
 async function scenario(opts: { flow?: typeof f; latchC?: Latch; clock?: { t: number } } = {}) {
   const fl = opts.flow ?? f;
@@ -110,7 +109,7 @@ async function scenario(opts: { flow?: typeof f; latchC?: Latch; clock?: { t: nu
   /** The rows a REPLAY REFUSAL wrote (stamped, D10). */
   const wakeRows = async () =>
     (await raw.timers.due(Number.MAX_SAFE_INTEGER)).filter(
-      (r) => r.executionId === e && isRefusalRow(r.wakeAt)
+      (r) => r.executionId === e && isRefusalRow(r)
     );
   const logLen = async () => (await raw.eventStore.read(e)).length;
   const count = async (kind: string) =>
@@ -128,8 +127,12 @@ async function refuseOnB(s: Awaited<ReturnType<typeof scenario>>) {
   expect(err).toBeInstanceOf(SealedPayloadUnreadableError);
 }
 
-/** Where a held refusal row sits: the stamped refusal row (D10). */
-const HELD_ROW_AT = (head: number): number => REFUSAL_BASE - head;
+/** A refusal-shaped row at `head` (D10): an ordinary instant, stamped by `refused`. */
+const refusalRow = (executionId: string, head: number, wakeAt = 1) => ({
+  executionId,
+  wakeAt,
+  refused: { head },
+});
 const BACKOFF = { baseMs: 100, capMs: 10_000, random: () => 1 };
 
 /** Count calls of `rt.resume` (the poll's own re-drive, or the sweep's). */
@@ -152,7 +155,8 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     const afterRefusal = await s.logLen();
     // the row is a timer-store row stamped with the head at refusal; the log did not move for it
     const head = await s.raw.eventStore.head!(s.e);
-    expect((await s.wakeRows())[0]?.wakeAt).toBe(REFUSAL_BASE - (head as number));
+    expect((await s.wakeRows())[0]?.refused).toEqual({ head: head as number });
+    expect((await s.wakeRows())[0]?.wakeAt).toBeGreaterThanOrEqual(0); // an ordinary instant, not an encoded stamp
     await new Promise((r) => setTimeout(r, 30));
     expect(await s.logLen()).toBe(afterRefusal);
     expect((await s.b.rt.loadState(s.e))?.status).toBe("running");
@@ -295,7 +299,7 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     await until(async () => (await s.count("STEP_STARTED")) === 1);
     const head = (await s.raw.eventStore.head!(s.e)) as number;
     // a refusal-shaped row at the CURRENT head (nothing moved since) - the head check alone passes
-    await s.raw.timers.schedule({ executionId: s.e, wakeAt: REFUSAL_BASE - head });
+    await s.raw.timers.schedule(refusalRow(s.e, head));
     const resumes = countResumes(s.c.rt);
     const svc = new TimerService(s.c.rt, s.raw.timers, {
       fenced: true,
@@ -309,7 +313,7 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     // a pending successor start on this node (sequence 0 durable, handle not yet registered)
     const s2 = await scenario({ flow: g, latchC: new Latch() });
     const head2 = (await s2.raw.eventStore.head!(s2.e)) as number;
-    await s2.raw.timers.schedule({ executionId: s2.e, wakeAt: REFUSAL_BASE - head2 });
+    await s2.raw.timers.schedule(refusalRow(s2.e, head2));
     (
       s2.d.rt as unknown as { startingSuccessors: Map<string, Promise<undefined>> }
     ).startingSuccessors.set(s2.e, new Promise(() => {}));
@@ -321,8 +325,45 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     expect(await s2.wakeRows()).toHaveLength(1);
   });
 
-  it("(e) held rows never starve a real timer: >100 held candidates and a real timer still fires", async () => {
+  it("(e) thousands of held refusal rows never starve a real timer: it fires on the NEXT tick, with no per-tick O(held) loadState", async () => {
     const latch = new Latch();
+    const timers = new InMemoryTimerStore();
+    const raw = {
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      timers,
+    };
+    const timed = flow("tmd", async (ctx) => {
+      await ctx.sleepUntil(Date.now() + 5);
+      return "woke";
+    });
+    const poller = build({}, { ...raw, latch });
+    poller.rt.registerFlow(timed.definition, timed.runner);
+    // 2000 refusal rows, OLDER than the real timer (they sort first): the worst case for starvation.
+    const N = 2000;
+    for (let i = 0; i < N; i++) await timers.schedule(refusalRow(`held-${i}`, 1, 1));
+    await (await poller.rt.start(timed, {}, { executionId: "real" })).waitForSuspend();
+    await new Promise((r) => setTimeout(r, 10));
+    const loads = { n: 0 };
+    const realLoad = poller.rt.loadState.bind(poller.rt);
+    poller.rt.loadState = ((...a: Parameters<typeof realLoad>) => {
+      loads.n++;
+      return realLoad(...a);
+    }) as typeof poller.rt.loadState;
+    // no evidence configured: the node asks the store for NO refusal rows at all
+    const svc = new TimerService(poller.rt, timers, { redriveBackoff: BACKOFF });
+    await svc.tick(Date.now() + 1000);
+    expect((await poller.rt.loadState("real"))?.status).toBe("completed"); // fired on the very next tick
+    expect(loads.n).toBeLessThanOrEqual(2); // the real timer's own reads, nothing per held row
+    for (let i = 0; i < 5; i++) await svc.tick(Date.now() + 1000);
+    expect(loads.n).toBeLessThanOrEqual(4);
+    // every refusal row is still there, untouched, for a node that has evidence
+    expect(
+      (await timers.due(Number.MAX_SAFE_INTEGER, 100_000)).filter((r) => r.refused).length
+    ).toBe(N);
+  }, 60_000);
+
+  it("(e2) held rows are RESCHEDULED in the store (one row each, later instant), not held in memory: later ticks do no work for them", async () => {
     const timers = new InMemoryTimerStore();
     const raw = {
       eventStore: new InMemoryAsyncEventStore(),
@@ -333,32 +374,101 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
       await ctx.run(slow, {});
       return "ok";
     });
-    const timed = flow("tmd", async (ctx) => {
-      await ctx.sleepUntil(Date.now() + 5);
-      return "woke";
-    });
+    const latch = new Latch();
     const owner = build({}, { ...raw, latch });
     const poller = build({}, raw);
-    for (const n of [owner, poller]) {
-      n.rt.registerFlow(blocked.definition, blocked.runner);
-      n.rt.registerFlow(timed.definition, timed.runner);
-    }
-    const N = 120;
+    for (const n of [owner, poller]) n.rt.registerFlow(blocked.definition, blocked.runner);
+    const N = 250;
     const handles = [];
     for (let i = 0; i < N; i++) {
-      handles.push(await owner.rt.start(blocked, {}, { executionId: `held-${i}` }));
-      const head = (await raw.eventStore.head!(`held-${i}`)) as number;
-      await timers.schedule({ executionId: `held-${i}`, wakeAt: HELD_ROW_AT(head) });
+      handles.push(await owner.rt.start(blocked, {}, { executionId: `h-${i}` }));
+      const head = (await raw.eventStore.head!(`h-${i}`)) as number;
+      await timers.schedule(refusalRow(`h-${i}`, head, 1));
     }
-    await (await poller.rt.start(timed, {}, { executionId: "real" })).waitForSuspend();
-    await new Promise((r) => setTimeout(r, 10));
-    // no evidence configured: every row is held. A default batch of 100 would be all held rows.
-    const svc = new TimerService(poller.rt, timers, { redriveBackoff: BACKOFF });
-    for (let i = 0; i < 6; i++) await svc.tick(Date.now() + 1000);
-    await until(async () => (await poller.rt.loadState("real"))?.status === "completed", 5000);
+    const loads = { n: 0 };
+    const realLoad = poller.rt.loadState.bind(poller.rt);
+    poller.rt.loadState = ((...a: Parameters<typeof realLoad>) => {
+      loads.n++;
+      return realLoad(...a);
+    }) as typeof poller.rt.loadState;
+    // evidence configured but the predicate says no: every row is HELD
+    const now = Date.now();
+    const svc = new TimerService(poller.rt, timers, {
+      isAbandoned: () => false,
+      redriveBackoff: BACKOFF,
+      now: () => now,
+    });
+    for (let i = 0; i < 4; i++) await svc.tick(now); // batch 100: three ticks drain 250
+    const drained = loads.n;
+    expect(drained).toBeGreaterThanOrEqual(N);
+    const rows = (await timers.due(Number.MAX_SAFE_INTEGER, 100_000)).filter((r) => r.refused);
+    expect(rows).toHaveLength(N); // one row per execution: rescheduled, never duplicated
+    expect(rows.every((r) => r.wakeAt > now)).toBe(true); // a later instant: not due again yet
+    for (let i = 0; i < 5; i++) await svc.tick(now); // still inside the back-off window
+    expect(loads.n).toBe(drained); // nothing fetched, nothing read
     latch.release();
     await Promise.all(handles.map((h) => h.waitForCompletion()));
   }, 60_000);
+
+  it("a genuine timer with a negative / simulated wakeAt is never treated as a refusal row", async () => {
+    const neg = flow("neg", async (ctx) => {
+      await ctx.sleepUntil(-100);
+      return "woke";
+    });
+    const timers = new InMemoryTimerStore();
+    const n = build(
+      {},
+      {
+        eventStore: new InMemoryAsyncEventStore(),
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        timers,
+      }
+    );
+    n.rt.registerFlow(neg.definition, neg.runner);
+    const h = await n.rt.start(neg, {}, { executionId: "neg-1" });
+    await h.waitForSuspend().catch(() => undefined);
+    await timers.schedule({ executionId: "neg-1", wakeAt: -100 }); // the genuine timer row
+    await timers.schedule({ executionId: "neg-2", wakeAt: -7 });
+    const rows = await timers.due(Number.MAX_SAFE_INTEGER);
+    expect(rows.every((r) => r.refused === undefined)).toBe(true);
+    const resumes = countResumes(n.rt);
+    await new TimerService(n.rt, timers, { isAbandoned: () => true, fenced: false }).tick(0);
+    await until(async () => (await n.rt.loadState("neg-1"))?.status === "completed");
+    expect(resumes.n).toBe(1); // woken as a timer, once
+    expect((await timers.due(Number.MAX_SAFE_INTEGER)).some((r) => r.executionId === "neg-1")).toBe(
+      false
+    );
+  });
+
+  it("a refusal stamp riding on a real timer's own row does not retire the timer", async () => {
+    // (exec, wakeAt) is the row key: a refusal at the SAME instant as the park's timer upserts the
+    // stamp onto the timer row. The poll must still fire the timer.
+    const sl = flow("sl", async (ctx) => {
+      await ctx.sleepUntil(Date.now() + 50);
+      return "woke";
+    });
+    const timers = new InMemoryTimerStore();
+    const n = build(
+      {},
+      {
+        eventStore: new InMemoryAsyncEventStore(),
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        timers,
+      }
+    );
+    n.rt.registerFlow(sl.definition, sl.runner);
+    const h = await n.rt.start(sl, {}, { executionId: "sl-1" });
+    await h.waitForSuspend();
+    const [row] = await timers.due(Number.MAX_SAFE_INTEGER);
+    expect(row).toBeDefined();
+    await timers.schedule({
+      executionId: "sl-1",
+      wakeAt: (row as { wakeAt: number }).wakeAt,
+      refused: { head: 99 },
+    });
+    await new TimerService(n.rt, timers, { isAbandoned: () => true }).tick(Date.now() + 10_000);
+    await until(async () => (await n.rt.loadState("sl-1"))?.status === "completed");
+  });
 
   it("(f) the poll's attempts are bounded (cap, then retire + ONE report) and its markers cannot exhaust a capable sweep's maxRecoveries", async () => {
     const clk = { t: 20_000_000 };
@@ -369,6 +479,7 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     const svc = new TimerService(s.b.rt, s.raw.timers, {
       fenced: true,
       isAbandoned: () => true,
+      now: () => clk.t,
       maxRedriveAttempts: 3,
       redriveBackoff: { baseMs: 1, capMs: 1, random: () => 0 },
       onError: (_i: string, err: unknown) => errors.push(err),
@@ -403,6 +514,7 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     const svc = new TimerService(s.b.rt, s.raw.timers, {
       fenced: true,
       isAbandoned: () => true,
+      now: () => clk.t,
       maxRecoveries: 2,
       maxRedriveAttempts: 50,
       redriveBackoff: { baseMs: 1, capMs: 1, random: () => 0 },
@@ -426,6 +538,7 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     const svc = new TimerService(s.b.rt, s.raw.timers, {
       fenced: true,
       isAbandoned: () => true,
+      now: () => clk.t,
       onError: (_i: string, err: unknown) => errors.push(err),
       redriveBackoff: BACKOFF,
     });
@@ -468,7 +581,7 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     raw.rt.registerFlow(f.definition, f.runner);
     const before = await s.logLen();
     const fenceBefore = await s.raw.eventStore.acquireFence!(s.e);
-    let clock = 7_000_000;
+    let clock = Date.now();
     const svc = new TimerService(raw.rt, s.raw.timers, {
       now: () => clock,
       fenced: true,
@@ -576,7 +689,7 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
       };
       await refuseOnB(s);
       await until(async () => (await s.wakeRows()).length === 1);
-      let clock = 9_000_000;
+      let clock = Date.now();
       const svcB = new TimerService(s.b.rt, s.raw.timers, {
         isAbandoned: () => true,
         now: () => clock,
@@ -598,7 +711,7 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
         expect((await s.b.rt.loadState(s.e))?.status).toBe("running");
         // a row survives, and one is stamped at the CURRENT head (stale older ones retire lazily)
         const head = (await s.raw.eventStore.head!(s.e)) as number;
-        expect((await s.wakeRows()).some((r) => r.wakeAt === REFUSAL_BASE - head)).toBe(true);
+        expect((await s.wakeRows()).some((r) => r.refused?.head === head)).toBe(true);
       }
       for (const ev of await s.raw.eventStore.read(s.e)) {
         if (ev.eventType === "EXECUTION_COMPLETED") {

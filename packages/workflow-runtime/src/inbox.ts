@@ -45,26 +45,6 @@ export const INBOX_WORKFLOW_ID = "__loom_inbox__";
  */
 export const INBOX_WAKE_AT = -1;
 
-/**
- * ADR 0130 D10 - the `TimerRecord.wakeAt` of a REPLAY-REFUSAL row: `-2 - head`, where `head` is the
- * execution's log head when the refusal happened. Only a row of this shape is a re-drive candidate
- * for the timer poll; every other row on a `running` execution (a contended notify pass, an
- * ambiguous-tail send, both `INBOX_WAKE_AT`) keeps the ordinary rules and is retired. The stamp
- * rides in the instant because a `TimerRecord` has no payload and the stores' schemas are not
- * changed for it; the poll re-drives only while the log head still equals it.
- */
-export const REFUSAL_WAKE_BASE = -2;
-
-/** The refusal row's instant for a refusal at log head `head`. */
-export function refusalWakeAt(head: number): number {
-  return REFUSAL_WAKE_BASE - head;
-}
-
-/** The log head a refusal row was stamped with, or `undefined` when `wakeAt` is not a refusal row. */
-export function refusalHeadOf(wakeAt: number): number | undefined {
-  return wakeAt <= REFUSAL_WAKE_BASE ? REFUSAL_WAKE_BASE - wakeAt : undefined;
-}
-
 /** The `condition.on` of a park whose legacy single-gate fields cannot describe it (several waits). */
 export const WAITS_PARK_ON = "__loom_waits__";
 

@@ -39,6 +39,27 @@ describe("SqliteTimerStore migration (ADR 0118 D4)", () => {
     await store.close();
   });
 
+  it("a redrive-era table (no `refused`) gains it, keeps its rows, and round-trips a refusal row (ADR 0130 D10)", async () => {
+    const path = join(dir, "loom.db");
+    const old = new Database(path);
+    old.exec(`CREATE TABLE timers (
+      execution_id TEXT NOT NULL, wake_at INTEGER NOT NULL, redrive TEXT,
+      PRIMARY KEY (execution_id, wake_at))`);
+    old.prepare("INSERT INTO timers (execution_id, wake_at) VALUES ('old', 50)").run();
+    old.close();
+    const store = new SqliteTimerStore(path);
+    await store.schedule({ executionId: "r", wakeAt: 60, refused: { head: 7 } });
+    expect(await store.due(100)).toEqual([
+      { executionId: "old", wakeAt: 50 },
+      { executionId: "r", wakeAt: 60, refused: { head: 7 } },
+    ]);
+    expect(await store.due(100, 10, { refused: false })).toEqual([
+      { executionId: "old", wakeAt: 50 },
+    ]);
+    await store.close();
+    await new SqliteTimerStore(path).close(); // re-open does not re-run the ALTER
+  });
+
   it("re-opening a migrated database does not re-run the ALTER (it would throw)", async () => {
     const path = join(dir, "loom.db");
     await new SqliteTimerStore(path).close();

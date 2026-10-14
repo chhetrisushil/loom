@@ -1921,6 +1921,55 @@ export function runTimerStoreConformance(factory: () => TimerStore, label = "Tim
       expect(due.find((t) => t.executionId === "gain")?.redrive).toEqual({ attempt: 1 });
       await s.close();
     });
+
+    // ADR 0130 D10 - `refused` stamps a REPLAY-REFUSAL row with the log head at refusal. TimerStore
+    // is unversioned (no SPI constant), so these cases are part of the kit for every store: a store
+    // that predates the field fails them and must add it (additive, optional on the record).
+    it("a refusal row round-trips through due, distinguishable from a plain wake and from a re-drive (ADR 0130 D10)", async () => {
+      const s = factory();
+      await s.schedule({ executionId: "plain", wakeAt: 100 });
+      await s.schedule({ executionId: "refused", wakeAt: 200, refused: { head: 7 } });
+      await s.schedule({ executionId: "redrive", wakeAt: 300, redrive: { attempt: 1 } });
+      const due = await s.due(500);
+      expect(due).toEqual([
+        { executionId: "plain", wakeAt: 100 },
+        { executionId: "refused", wakeAt: 200, refused: { head: 7 } },
+        { executionId: "redrive", wakeAt: 300, redrive: { attempt: 1 } },
+      ]);
+      expect("refused" in (due[0] as object)).toBe(false);
+      await s.complete("refused", 200);
+      expect((await s.due(500)).map((t) => t.executionId)).toEqual(["plain", "redrive"]);
+      await s.close();
+    });
+
+    it("schedule UPSERTS the refusal stamp: never cleared by a plain schedule, a later head replaces it (ADR 0130 D10)", async () => {
+      const s = factory();
+      await s.schedule({ executionId: "keep", wakeAt: 100, refused: { head: 3 } });
+      await s.schedule({ executionId: "keep", wakeAt: 100 });
+      await s.schedule({ executionId: "gain", wakeAt: 100 });
+      await s.schedule({ executionId: "gain", wakeAt: 100, refused: { head: 4 } });
+      await s.schedule({ executionId: "move", wakeAt: 100, refused: { head: 5 } });
+      await s.schedule({ executionId: "move", wakeAt: 100, refused: { head: 9 } });
+      const due = await s.due(500);
+      expect(due.find((t) => t.executionId === "keep")?.refused).toEqual({ head: 3 });
+      expect(due.find((t) => t.executionId === "gain")?.refused).toEqual({ head: 4 });
+      expect(due.find((t) => t.executionId === "move")?.refused).toEqual({ head: 9 });
+      await s.close();
+    });
+
+    it("due({ refused: false }) excludes refusal rows BEFORE the limit, so they cannot starve real timers (ADR 0130 D10)", async () => {
+      const s = factory();
+      for (let i = 0; i < 4; i++) {
+        await s.schedule({ executionId: `x${i}`, wakeAt: i, refused: { head: i } });
+      }
+      await s.schedule({ executionId: "real", wakeAt: 50 });
+      expect((await s.due(100, 2)).map((t) => t.executionId)).toEqual(["x0", "x1"]);
+      expect(await s.due(100, 2, { refused: false })).toEqual([
+        { executionId: "real", wakeAt: 50 },
+      ]);
+      expect((await s.due(100, 10, { refused: true })).length).toBe(5);
+      await s.close();
+    });
   });
 }
 
