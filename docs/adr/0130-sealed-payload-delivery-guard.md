@@ -78,3 +78,108 @@ Residuals, named:
 3. **A pre-existing plaintext payload carrying a string `__loomEnc` key.** `send` now refuses it, but one journaled before this ADR would be refused on replay forever. No such payload is expected (the key is the crypto plugin's envelope marker).
 4. **Head-of-line blocking is per execution** (D4), until a capable node consumes the message or an operator discards it.
 5. **A writer that bypasses `send`** (D6).
+
+## Residuals (Proposed, 2026-10-14)
+
+- Status: **Proposed**. Nothing below is decided or implemented; every decision is the user's (questions at the end).
+- Scope: the four residuals logged after #576 merged (this ADR's own residuals 1, 2 and 4, plus a gap in the replay refusal's wake). Residuals 3 and 5 above stand as written.
+- Placement bias: outward (ADR 0083, the triage rule). Each residual gets a verdict.
+- Version batching: loom batches kernel bumps. Only the bumps an option NEEDS are listed; "none" means no `EVENT_SCHEMA`, `EVENT_STORE_SPI`, `SNAPSHOT_STORE_SPI`, `KERNEL_ABI` or wire-vector change.
+
+### R-a — Other sealed event kinds on an incapable node
+
+**Confirmed.** `assertDeliverable` is called at exactly two sites, `packages/workflow-runtime/src/WorkflowContext.ts:2114` (live consume) and `packages/workflow-runtime/src/WorkflowRuntime.ts:4933` (notify scan), plus the replay check at `WorkflowContext.ts:1936` (recorded INBOX answers only, `arm.kind === "inbox"`). Nothing else looks for an envelope. `EncryptingEventStore` seals any event type named in its `sensitive` map (`plugins/crypto/src/EncryptingEventStore.ts:86` `pathsFor`, `:162` append, `:385-415` read and subscribe), and the kernel itself registers kernel-authored kinds: `defineConfig` seals `EXECUTION_STARTED.principal.identity.*` and `OUTCOME_RECORDED.recordedBy` (`packages/app/src/principalPolicy.ts:99-101`). The other places a recorded value reaches a flow are therefore unguarded: `STEP_COMPLETED.output` served on replay (`WorkflowContext.ts:859/887/1077` write it, replay serves it), the `EXECUTION_STARTED.input` handed to the flow, effect and decision results, human-step answers.
+
+**Minimal repro (describe only).** Node A: `EncryptingEventStore` with `sensitive: { STEP_COMPLETED: ["output"] }`; run a flow `const s = await ctx.run(tool); await ctx.receive("go"); return s` to the park. Node B: same stream through a RAW store, `resume`/`recoverAbandoned` after `send("go")`. B replays the recorded step, `s` is `{ __loomEnc: "loom/aes-256-gcm", ... }`, the flow completes, and `EXECUTION_COMPLETED.output` journals the envelope (or a downstream step is invoked with ciphertext as input). Variant with the principal: B reads `principal.identity.tenant` as an envelope object; whether authz fails closed depends on the policy comparing a string to an object (not verified here, it needs a test before anyone relies on it).
+
+**Severity.** Correctness plus integrity of the log, not confidentiality (ciphertext is shown, never plaintext). It is the same durable-corruption class D2 closed for the inbox, so the "mixed fleet can no longer corrupt a log" claim is bounded to two event kinds today. Kernel-authored sealed kinds (principal, outcome) are the part that cannot be handled by "run such kinds only on capable nodes", because `defineConfig` opted the app in without the operator choosing the kind.
+
+**Options.**
+
+1. *Document only.* Keep Consequences residual 1; add the principal and outcome kinds to `docs/compliance.md` as "mixed fleets must be homogeneous in `security.crypto`". Free; leaves a footgun the kernel itself arms.
+2. *Generalise the replay and fold guard to every recorded value.* One check on the fold input: when the kernel hydrates an event for a VM, any envelope in a kind that is not the inbox raises `SealedPayloadUnreadableError` (`recorded: true`) from the fold or the VM seed, refusing the whole attempt like the replay refusal. Kernel, because only the kernel sees every read. Cost: a bounded walk per event folded, which is O(total payload bytes) on every fold and replay (not per delivered message), so it needs a cheap pre-filter (substring test for `__loomEnc` on the already-serialised JSON where the store keeps it) or a per-execution "checked up to seq" watermark. False positives: an app payload with a string `__loomEnc` key (residual 3) would be refused on EVERY kind. No version bump if it only refuses; a new error context field is additive.
+3. *Capability handshake instead of shape sniffing.* The store declares what it seals; the runtime refuses to start an execution (or resume one) whose stream header says "sealed under config X" unless this node has X. Needs a stream-level sealed-config marker (a new field on `EXECUTION_STARTED` or a metadata record) and a decorator capability bit. Fixes the class properly and also covers (b) partially, but is a durable-format change: `EVENT_SCHEMA` minor bump (and `EVENT_STORE_SPI` minor if the marker lives in store metadata, as the ADR 0129 incarnation anchor did). It is also the largest option and has no consumer asking.
+
+**Placement.** Option 2 is kernel (read-path choke point; same argument as D1). Option 3 is kernel plus 1P (`@loom/plugin-crypto` writes the marker). Option 1 is docs.
+
+**Recommendation.** Option 2, scoped to the kernel-authored sealed kinds first (`EXECUTION_STARTED` principal and `OUTCOME_RECORDED`), because those are sealed without the operator choosing them. Keep the arbitrary-kind case as documented (Option 1) until a deployment names a second kind; revisit Option 3 only if the user wants the marker for (b) too. Bumps: none for the scoped Option 2 (it adds a refusal, no event shape); `EVENT_SCHEMA` 1.25.0 (+ `EVENT_STORE_SPI` minor) only if Option 3 is chosen.
+
+### R-b — An unencrypted shared snapshot store holds plaintext of sealed content
+
+**Confirmed, but narrower than first logged.** An encrypting snapshot decorator already exists (`plugins/crypto/src/EncryptingSnapshotStore.ts`, `sensitive` dot-paths into the folded `ExecutionState`, same subject key as the events, so a shred erases both). The gap is that it is opt-in and the kernel does not check it on the ordinary path:
+
+- `WorkflowRuntime.ts:6519` and `:7009` call `snapshotStore.save(...)` with the decrypted fold (checkpoint on settle, periodic) whatever the snapshot store is.
+- The only cross-check is `LogLifecycle.ts:155`, which refuses COMPACTION when the event store encrypts but the snapshot store does not share its `KeyStore`. A plain checkpoint is not checked.
+- `docs/compliance.md:203-206` documents that `variables._waitAnswers` is keyed by a dynamic `waitId`, "which a sensitive path cannot name", so even an `EncryptingSnapshotStore` configured with static paths does not seal a recorded inbox answer. The fix named there is "seal the whole state", which `EncryptingSnapshotStore` does not offer (it maps declared paths only).
+
+**Minimal repro (describe only).** Node A: `EncryptingEventStore` with `INBOX_MESSAGE`/`MESSAGE_CONSUMED` payload sealed, plain `InMemorySnapshotStore`. Run a flow that receives a secret and settles. `snapshotStore.loadLatest(id)` returns state with `variables._waitAnswers.<waitId>.payload` in clear. Shred the subject: the event log is unreadable, the snapshot still serves the secret (and node B, incapable, replays from the snapshot, passes the D4 check because it is plaintext, and completes).
+
+**Severity.** Confidentiality, and erasure-theater (K10.2/A1 is the same hole for static paths, closed by `EncryptingSnapshotStore`). Not a liveness or corruption issue. For the guard itself it is benign (an incapable node served plaintext is correct), so it is a compliance gap rather than a hole in D2.
+
+**Options.**
+
+1. *Document and doctor.* Keep the compliance note; add a `loom doctor` finding (structural `keys` property check already exists, `packages/event-runtime/src/installOptional.ts:28`) "event store seals X but snapshot store does not share the KeyStore". Outward, no kernel change, no bump.
+2. *Whole-state sealing mode in `EncryptingSnapshotStore`.* A `sensitive: "all"` (or `sealState: true`) option that encrypts `variables._waitAnswers` and the other dynamic-key containers wholesale under the subject key. 1P plugin change; the snapshot payload stays an opaque `ExecutionState` to the store contract, so no SPI change if the decorator re-presents the same shape on load. Cost: snapshots lose partial readability (tooling that inspects `variables`), and a load needs the key (already true for static paths).
+3. *Kernel refuses the plaintext checkpoint.* At `snapshotStore.save` the runtime refuses (or skips the save) when `security.crypto.events` is composed and the snapshot store lacks the shared `KeyStore`, generalising `LogLifecycle.ts:155` to every save. Kernel behaviour change: a deployment that today checkpoints plaintext starts failing or losing checkpoints (a skip is safe for correctness but regresses read cost). No bump; a behaviour change needing a CHANGELOG "Changed" entry.
+
+**Placement.** Option 1 and 2: 1P (`@loom/plugin-crypto`, `loom doctor`). Option 3: kernel, but the kernel only enforces "same KeyStore", never the cipher.
+
+**Recommendation.** Options 1 and 2 together, no kernel change; defer Option 3 unless the user wants fail-closed by default (it is the only option that makes the unsafe configuration impossible rather than detectable, and it changes behaviour for existing deployments). Bumps: none for 1/2/3 (`SNAPSHOT_STORE_SPI` unchanged because the shape is preserved).
+
+### R-c — Head-of-line blocking is per execution
+
+**Confirmed, and designed.** `WorkflowContext.ts:2116` (`return delivered`) abandons the whole scan, and `WorkflowRuntime.ts:4933` throws out of the whole notify scan; the scan loop covers every topic of the execution (`for (const w of waits)` at `:4925-4932`), so a sealed head on topic A holds topic B's deliverable messages. D4 gives the reason: skipping would let nodes with different configs pick different `select` branches.
+
+**Repro (describe only).** Execution parks on `select([receive("a"), receive("b")])`; `send("a", sealedUnderNodeA)` then `send("b", "plain")`. Capable node A consumes `a` (lowest `inboxSeq`) and completes the select with arm `a`. Incapable node B refuses the scan and never delivers `b`: correct, since delivering `b` on B would diverge from A's branch.
+
+**Severity.** Liveness only, on the incapable node only; capable nodes are unaffected and the log is never corrupted. The harm is a fleet whose only runner of an execution is incapable (a misconfigured deploy): the execution stalls behind a message nobody can open, with an `onError` every 16th poll and an operator escape hatch (`discardInbox`, D3; TTL expiry D10a if configured).
+
+**Why most options are unsound.** Skipping a sealed topic is unsafe for the reason in D4. A weaker rule, "block only messages with a higher `inboxSeq` than the sealed one", is already what FIFO plus a deterministic first-answered-arm gives for a single `select`; it does not unblock any case that is not already blocked by that ordering, so it buys nothing.
+
+**Options.**
+
+1. *Document and accept (WONTFIX in the kernel).* Name it as designed (already Consequences residual 4); point operators at `discardInbox` and the journaled TTL. Zero change.
+2. *Observability, no semantics change.* Surface a stuck-behind-sealed state: an `onError` payload carrying the blocked topics and the sealed message's age, and an analytics advisory (`@loom/analytics`, advisory per ADR 0034) "execution X blocked behind sealed message M for > T". 1P, no bump.
+3. *Operator quarantine verb.* A first-class `quarantineInbox` that journals the sealed message as a dead letter (`MESSAGE_CONSUMED` with `payload: null` plus a reason) so the head clears while preserving the audit trail, an explicit, human-triggered version of the existing discard. Possibly already expressible by `discardInbox` with a reason; if a new reason value is needed it is an additive field. Kernel only if a new journaled reason is required (`EVENT_SCHEMA` minor), otherwise no bump.
+
+**Placement.** 1: docs. 2: 1P analytics. 3: kernel if it adds a journaled reason, else a recipe over `discardInbox`.
+
+**Recommendation.** WONTFIX the semantics (Option 1) and do Option 2 so the state is visible; do Option 3 only if `discardInbox`'s journal does not already record who discarded and why (check before proposing a schema bump). Bumps: none for 1/2; `EVENT_SCHEMA` minor only if 3 needs a new reason value.
+
+### R-d — A replay refusal writes no wake row
+
+**Confirmed.** `markContended` (`WorkflowRuntime.ts:4861`) is reached only from `notifyPass`'s catch (`:4847`), i.e. the notify path. The replay refusal is raised inside `run()` (`WorkflowContext.ts:1936-1945`, handled `WorkflowRuntime.ts:6874-6885`), which warns, rejects the handles and returns: no `timerStore.schedule`, no event. The execution is left `running` (an unrelated resume already appended `EXECUTION_RESUMED`) or whatever it was. The ADR already admits this (Consequences, "a PURE replay refusal in `run()` writes no row").
+
+What recovers it today: `recoverAbandoned` on a capable node (`recoverAbandoned.ts:280`, `status` running or pending), but that needs an app to run the sweep with an `isAbandoned` predicate or a lease store (`recoverAbandoned.ts:60-75`, the predicate is REQUIRED with no default), and the staleness window must elapse. The incapable node's own sweep skips it for a back-off window (`:392`, `:491`).
+
+**Minimal repro (describe only).** Capable node A journals `MESSAGE_CONSUMED` with a sealed `payload`, then crashes before the next step; the execution is `running`. Incapable node B resumes (`resume` of any gate, or a sweep): replay hits `WorkflowContext.ts:1936`, B refuses; no timer row exists. Node A is later redeployed capable but no `send`, no timer, no resume arrives, and the app runs no sweep: the execution sits `running` indefinitely.
+
+**Severity.** Liveness, narrow: needs a mixed fleet AND no sweep on a capable node. Not a confidentiality or correctness issue.
+
+**Options.**
+
+1. *Document that a sweep is the contract.* State that a deployment with an incapable node must run `recoverAbandoned` on a capable node; no code.
+2. *Write the durable wake on a replay refusal too.* In the `run()` catch at `WorkflowRuntime.ts:6874`, call `markContended(executionId)` (same best-effort `.catch(onStorageError)`). Then `TimerService`'s inbox poll (`INBOX_WAKE_AT`) re-drives it on any node. But the wake row's job today is to trigger the NOTIFY scan for a PARKED execution; for a `running` execution the notify path may find no unanswered park and retire the row, so the row alone does not re-run the flow. Either the poll must learn to `resume`-redrive a running execution carrying the row, or the row must be paired with a distinct reason. Kernel, small, no event change; needs a decision on what the poll does with a `running` execution (this is why it is not a one-liner).
+3. *Park the execution on the refusal.* Instead of leaving it `running`, journal a reserved park (like `FLOW_DIVERGED_GATE`, ADR 0113) so it is `suspended` and every existing wake path (notify, timers, `recoverAbandoned`'s parked-execution notify pass) applies. Strongest liveness, but it appends an event on a refusal, which contradicts D4 "appends nothing" and the property that an incapable node never writes about an execution it cannot read; it also adds a reserved gate name (`EVENT_SCHEMA` minor if the gate is a new journaled condition kind, none if it reuses `SuspendError` with a reserved `on`). Highest risk.
+
+**Placement.** Kernel (1: docs).
+
+**Recommendation.** Option 2 only after the poll semantics for `running` executions are decided; until then Option 1 plus a `recoverAbandoned` recipe in `docs/` naming this case. Reject Option 3 (breaks the appends-nothing rule). Bumps: none for 1 and 2; `EVENT_SCHEMA` minor only for 3.
+
+### Summary of verdicts
+
+| Residual | Real? | Severity | Recommendation | Placement | Bumps |
+|---|---|---|---|---|---|
+| R-a other sealed kinds | yes, incl. kernel-authored principal/outcome | correctness (log corruption), not confidentiality | scoped kernel refusal for kernel-authored sealed kinds; document the rest | kernel | none (unless the capability handshake is chosen: `EVENT_SCHEMA` 1.25.0 + `EVENT_STORE_SPI` minor) |
+| R-b unencrypted snapshots | yes, opt-in gap (`EncryptingSnapshotStore` exists; dynamic `_waitAnswers` keys unsealable) | confidentiality / erasure | doctor finding + whole-state sealing in the 1P decorator | 1P | none |
+| R-c head-of-line | yes, by design | liveness (incapable node only) | WONTFIX semantics; add visibility | docs / 1P | none |
+| R-d no wake on replay refusal | yes | liveness, narrow | document the sweep; then durable wake once poll semantics for `running` are decided | kernel | none |
+
+### Decision questions (for the user)
+
+1. R-a: scope the kernel refusal to the kernel-authored sealed kinds (`EXECUTION_STARTED` principal, `OUTCOME_RECORDED`), or to every event kind (Option 2 as written), or only document? Is a stream-level capability marker (Option 3, `EVENT_SCHEMA` 1.25.0) wanted at all?
+2. R-a: should an incapable node that reads a sealed principal fail closed on authz? (Needs a test to establish the current behaviour first.)
+3. R-b: accept 1P-only (doctor finding plus whole-state sealing), or also make the kernel refuse a plaintext checkpoint when the event store encrypts (Option 3, behaviour change)?
+4. R-c: confirm head-of-line blocking is WONTFIX in the kernel and that visibility (advisory) is enough.
+5. R-d: should the poll re-drive a `running` execution that carries a wake row, or should this stay a documented `recoverAbandoned` contract?
+6. Batching: if any of R-a Option 3 or R-d Option 3 is chosen, fold the `EVENT_SCHEMA` bump into the next kernel batch rather than shipping alone?
