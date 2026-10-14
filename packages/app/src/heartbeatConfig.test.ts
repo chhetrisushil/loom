@@ -275,7 +275,7 @@ describe("durability.heartbeat -- wired into the runtime", () => {
 
   it("default ON: the in-memory lease store holds a row while a step is in flight, and releases at the end", async () => {
     const { app, release, inStep } = rig();
-    const store = app.heartbeat.store as LeaseStore;
+    const store = app.heartbeat.store as InMemoryLeaseStore;
     expect(app.runtime.leaseKeeper).toBeDefined();
     const handle = await app.runtime.start({ definition, runner } as never, {});
     await inStep;
@@ -306,8 +306,8 @@ describe("durability.heartbeat -- wired into the runtime", () => {
         new WorkflowRuntime({
           eventStore: new InMemoryAsyncEventStore(),
           snapshotStore: new InMemoryAsyncSnapshotStore(),
-          heartbeat: { leaseStore: new InMemoryLeaseStore(), onStoreError: "continue" as never },
-        })
+          heartbeat: { leaseStore: new InMemoryLeaseStore(), onStoreError: "continue" },
+        } as never)
     ).toThrow(/continue/);
   });
 });
