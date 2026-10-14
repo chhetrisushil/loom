@@ -1085,8 +1085,8 @@ export class WorkflowRuntime {
     // state (under the same keys) is refused here; every `save` re-checks (stores can change late).
     const allowPlaintext = deps.allowPlaintextCheckpoints === true;
     if (!allowPlaintext) assertCheckpointSealed(guardedEvents, deps.snapshotStore);
-    const guardedSnapshots = new SealGuardedSnapshotStore(deps.snapshotStore, async (id) => {
     this.guardedEvents = guardedEvents;
+    const guardedSnapshots = new SealGuardedSnapshotStore(deps.snapshotStore, async (id) => {
       // A key-unavailable snapshot load asks the LOG whether it was a real shred. Read the WHOLE
       // stream (a tombstone sits ABOVE the snapshot, not at sequence 0): the guarded read raises the
       // store's own erasure error when it can see the shred, and a `PAYLOAD_SHREDDED` fact in what
