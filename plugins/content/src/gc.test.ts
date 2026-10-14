@@ -1728,7 +1728,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
           return inner.loadLatestBefore(id, seq);
         },
       });
-      const setup = async () => {
+      const setup = async (tombstone = true) => {
         const { clock, content } = clockedStore(OLD);
         const sole = await content.put(bytes("cited only by the shredded checkpoint"));
         const shared = await content.put(bytes("cited by both checkpoints"));
@@ -1757,6 +1757,8 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         await raw.save(cite("alive", [shared.__loomContent, liveOnly.__loomContent]));
         await live.truncatePrefix("gone", 1);
         await live.truncatePrefix("alive", 1);
+        // shredSubject's durable tombstone in the shredded execution's own log.
+        if (tombstone) await live.append(evt("gone", 3, "PAYLOAD_SHREDDED", { subject: "u" }, OLD));
         clock.now = NOW;
         return { content, live, raw, sole, shared, liveOnly };
       };
@@ -1793,6 +1795,21 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         const report = await run(t, { gone: () => new ShreddedError() }, { dryRun: true });
         expect(report.shreddedSnapshots).toEqual(["gone"]);
         expect(await t.content.get(t.sole)).not.toBeNull();
+      });
+
+      it("the same error WITHOUT the execution's tombstone (a node that merely lacks the key) aborts, nothing erased", async () => {
+        const t = await setup(false);
+        await expect(
+          run(
+            t,
+            { gone: () => new ShreddedError() },
+            {
+              reclaimOrphans: { completeScan: true as const, snapshotsTouchContent: true as const },
+            }
+          )
+        ).rejects.toThrow("shredded");
+        expect(await t.content.get(t.sole)).not.toBeNull();
+        expect(await t.content.get(t.shared)).not.toBeNull();
       });
 
       it("any other snapshot error still aborts the pass, nothing erased", async () => {

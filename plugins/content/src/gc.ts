@@ -663,10 +663,14 @@ export async function sweepUnpinnedContent(
             covered = true;
           }
         } catch (err) {
-          // Only a CONFIRMED crypto-shred (matched by name: content does not import plugin-crypto)
-          // means the snapshot is erased. Anything else (key unavailable, undecryptable, I/O)
-          // propagates: dropping refs for data that still exists would delete live blobs.
-          if (!(err instanceof Error) || err.name !== "PayloadShreddedError") throw err;
+          // Only a CONFIRMED crypto-shred means the snapshot is erased: the store's error (matched by
+          // name: content does not import plugin-crypto) AND the execution's own `PAYLOAD_SHREDDED`
+          // tombstone. A node that merely lacks the key can report the same error, so without the
+          // tombstone it propagates like anything else (key unavailable, undecryptable, I/O):
+          // dropping refs for data that still exists would delete live blobs.
+          const tombstoned = events.some((e) => e.eventType === "PAYLOAD_SHREDDED");
+          if (!(err instanceof Error) || err.name !== "PayloadShreddedError" || !tombstoned)
+            throw err;
           if (!shreddedSnapshots.includes(executionId)) shreddedSnapshots.push(executionId);
           covered = true;
         }
