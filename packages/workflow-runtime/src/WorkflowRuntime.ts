@@ -1456,6 +1456,28 @@ export class WorkflowRuntime {
   private readonly sealedReports = new Map<string, number>();
 
   /** Operator report of a sealed refusal: the first, then only every 16th (not every poll). */
+  /**
+   * ADR 0130 D8 - a checkpoint is saved on every cadence tick, settle and suspend, so a standing
+   * `PlaintextCheckpointError` would flood `onStorageError`. The first refusal of an execution is
+   * reported, then every 16th (bounded map, oldest dropped, like the sealed reports); any other
+   * storage error is reported as before.
+   */
+  private reportCheckpointError(executionId: string, err: unknown): void {
+    if (!(err instanceof PlaintextCheckpointError)) {
+      this.onStorageError?.(executionId, err);
+      return;
+    }
+    const n = (this.checkpointRefusals.get(executionId) ?? 0) + 1;
+    this.checkpointRefusals.delete(executionId);
+    if (this.checkpointRefusals.size >= SEALED_REPORT_CAP) {
+      const oldest = this.checkpointRefusals.keys().next().value;
+      if (oldest !== undefined) this.checkpointRefusals.delete(oldest);
+    }
+    this.checkpointRefusals.set(executionId, n);
+    if (n === 1 || n % 16 === 0) this.onStorageError?.(executionId, err);
+  }
+  private readonly checkpointRefusals = new Map<string, number>();
+
   private reportSealed(executionId: string, err: SealedStreamUnreadableError): void {
     const n = (this.sealedReports.get(executionId) ?? 0) + 1;
     this.sealedReports.delete(executionId);
@@ -7067,7 +7089,7 @@ export class WorkflowRuntime {
       // ADR 0130 D8: the seed is an optimisation (resume folds the copied prefix without it), so a
       // refused plaintext checkpoint skips it instead of failing a fork whose child already exists.
       if (!(err instanceof PlaintextCheckpointError)) throw err;
-      this.onStorageError?.(childId, err);
+      this.reportCheckpointError(childId, err);
     }
 
     // 3b. Re-register the forked gate's durable wake.
@@ -7881,7 +7903,7 @@ export class WorkflowRuntime {
       const state = vm.getState(); // stable: copy-on-write folds never mutate a prior state
       void this.snapshotStore
         .save({ id: ulid(), executionId, workflowId, sequence, state, createdAt: Date.now() })
-        .catch((err: unknown) => this.onStorageError?.(executionId, err))
+        .catch((err: unknown) => this.reportCheckpointError(executionId, err))
         .finally(() => {
           snapshotInFlight = false;
         });
@@ -7932,7 +7954,7 @@ export class WorkflowRuntime {
         });
       } catch (err: unknown) {
         // A lost checkpoint only costs a longer replay — never fail the execution for it.
-        this.onStorageError?.(executionId, err);
+        this.reportCheckpointError(executionId, err);
       }
     };
 
@@ -8446,7 +8468,7 @@ export class WorkflowRuntime {
             // a snapshot store that rejected here left `waitForSuspend`/`waitForCompletion`
             // pending FOREVER and surfaced only as an unhandled rejection. A transient
             // blip in a network-backed SnapshotStore wedged the execution.
-            this.onStorageError?.(executionId, err);
+            this.reportCheckpointError(executionId, err);
           }
           // T1 — schedule the durable wake ONLY after the suspension is durable, so a
           // timer can never fire into a log that doesn't yet record the suspend. The
