@@ -1403,7 +1403,11 @@ export interface ReleaseInboxResult {
   topic: string;
   messageId: string;
   disposition: "deliver" | "discard";
-  /** `false`: the release had already happened (idempotent repeat, or a concurrent release won): nothing was appended. */
+  /**
+   * `false`: the release had already happened (idempotent repeat, or a concurrent release won): nothing was appended.
+   * The repeat is recognised only while its release fact is within 4096 events of the log tail; an older
+   * repeat is refused `invalid` ("not held") — treat that as already done when retrying a release.
+   */
   changed: boolean;
 }
 
