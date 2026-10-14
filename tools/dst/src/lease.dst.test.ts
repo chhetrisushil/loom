@@ -1,8 +1,20 @@
 import type { EventEnvelope } from "@loom/core";
 import { LeaseHeldError, LeaseLostError, recoverAbandoned } from "@loom/workflow-runtime";
 import { LeaseStoreQuietError, StartLeaseHeldError } from "@loom/workflow-runtime";
+import { TimerService } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
-import { type Node, type Rig, TTL, advance, flaky, rig, settle, until } from "./__tests__/leaseRig";
+import {
+  type Node,
+  Probe,
+  type Rig,
+  TTL,
+  advance,
+  deferred,
+  flaky,
+  rig,
+  settle,
+  until,
+} from "./__tests__/leaseRig";
 import { INVARIANTS } from "./invariants";
 import { splitmix64 } from "./rng";
 
@@ -17,11 +29,13 @@ import { splitmix64 } from "./rng";
 // no append is ever made without a live lease row for the stream (leased nodes), and the log keeps
 // its structural invariants (one STEP_COMPLETED per step, gap-free sequences).
 //
-// Scenarios that need slice S7d (poll default re-drive on lease evidence, lease veto on
-// `isAbandoned`, ghost-lease GC) are written now and gated `it.skip` with an `// S7d:` marker; S7d's
-// merge flips them on.
+// Phase 2 (S7d merged): the lease veto on `isAbandoned`, the poll's DEFAULT re-drive on expired-lease
+// evidence, ghost-lease GC and the entitlement window are live scenarios; the double-entry detector
+// has independent negative controls so a green run is not vacuous.
 
+const FAR = Number.MAX_SAFE_INTEGER / 2; // far enough ahead that every held refusal row is due
 const DEADLINE = TTL - TTL / 6; // the keeper's local self-fencing window
+const DEADLINE_MARGIN = TTL / 6; // how long before the row expires the keeper stops its driver
 const E = (id: string) => ({ executionId: id });
 
 function expectClean(r: Rig, nodes: Node[]): void {
@@ -369,39 +383,109 @@ describe("lease DST - mixed fleet", () => {
   });
 });
 
-describe("lease DST - a live silent driver and an aggressive isAbandoned", () => {
-  async function silentLive(sweeper: "leased" | "legacy") {
-    const r = rig();
-    const a = r.node("a");
-    const b = r.node("b", { legacy: sweeper === "legacy" });
-    const h = await a.rt.start(r.flow, { id: "live" }, E("live"));
-    await until(() => r.probe.count("live", "b") === 1, "inside step b");
-    await a.tick(); // healthy: renewing, just silent in the log
-    advance(r.clock, 10_000);
-    await a.tick();
-    const errors: unknown[] = [];
-    const sweep = recoverAbandoned(b.rt, {
-      source: r.events,
-      isAbandoned: () => true,
-      onError: (_id, e) => errors.push(e),
-    });
-    return { r, a, b, h, sweep, errors };
-  }
+// `leased`: a peer sweeper with its own keeper (a different lease owner). `twin`: a second runtime of
+// the SAME node (same owner as the driver), the case the lease store alone cannot refuse - the keeper
+// answers true for a lease its own owner holds, so only the veto stands between it and a re-drive.
+// `legacy`: a keeper-less sweeper wired to nothing (no lease to consult).
+async function silentLive(sweeper: "leased" | "twin" | "legacy") {
+  const r = rig();
+  const a = r.node("a");
+  const b = r.node(sweeper === "twin" ? "a" : "b", { legacy: sweeper === "legacy" });
+  const h = await a.rt.start(r.flow, { id: "live" }, E("live"));
+  await until(() => r.probe.count("live", "b") === 1, "inside step b");
+  await a.tick(); // healthy: renewing, just silent in the log
+  advance(r.clock, 10_000);
+  await a.tick();
+  const errors: unknown[] = [];
+  const sweep = recoverAbandoned(b.rt, {
+    source: r.events,
+    isAbandoned: () => true,
+    onError: (_id, e) => errors.push(e),
+  });
+  return { r, a, b, h, sweep, errors };
+}
 
-  it("CURRENT: a heartbeat-wired sweeper is refused by the live lease, so nothing is re-driven or double-entered", async () => {
+describe("lease DST - a live silent driver and an aggressive isAbandoned", () => {
+  it("a heartbeat-wired sweeper vetoes an aggressive isAbandoned up front: nothing is re-driven or double-entered", async () => {
     const { r, a, b, h, sweep, errors } = await silentLive("leased");
     const sum = await sweep;
     expect(sum.recovered).toBe(0);
-    expect(errors.some((e) => e instanceof LeaseHeldError)).toBe(true);
+    expect(sum.failed).toBe(0); // vetoed before any claim, not refused by the driver's stand-down
+    expect(errors).toEqual([]);
     expect(r.probe.count("live", "b")).toBe(1);
     r.probe.gate("live").open();
     expect((await settleOf(h.waitForCompletion())).ok).toBe(true);
     expectClean(r, [a, b]);
   });
 
-  it("CURRENT (S6 residual): an UNLEASED sweeper has no lease to consult, so an aggressive predicate re-drives a live driver (a double entry)", async () => {
+  // S7d replacement for the S6-residual test that used to sit here: it asserted that an aggressive
+  // `isAbandoned` DOUBLE-ENTERED a live silent driver (the sweeper had no lease to consult). Only ONE
+  // of the pair is active: this one. The unwired variant's double entry survives as the detector's
+  // negative control below ("the double-entry detector fires ...").
+  it("S7d veto: a same-owner twin runtime's aggressive sweep never double-enters a live silent driver (only the veto stops it)", async () => {
+    const { r, a, b, h, sweep, errors } = await silentLive("twin");
+    // Without the veto the sweep re-enters step b and then blocks on the gate, so race it against that
+    // entry instead of awaiting it: a regression fails fast here, not on a 30 s timeout.
+    const sum = await Promise.race([
+      sweep,
+      until(() => r.probe.count("live", "b") === 2, "the sweep re-entered step b").then(() => null),
+    ]);
+    expect(sum, "the twin's sweep re-drove a live driver").not.toBeNull();
+    if (sum === null) return;
+    expect(sum.recovered).toBe(0);
+    expect(errors).toEqual([]);
+    expect(r.probe.count("live", "b")).toBe(1);
+    expect(r.probe.doubleEntries).toEqual([]);
+    expect((await r.logOf("live")).some((e) => e.eventType === "EXECUTION_RECOVERED")).toBe(false);
+    r.probe.gate("live").open();
+    expect((await settleOf(h.waitForCompletion())).ok).toBe(true);
+    expectClean(r, [a, b]);
+  });
+});
+
+describe("lease DST - the double-entry detector is not vacuous (independent negative controls)", () => {
+  it("Probe unit: two ENTITLED drivers inside one step is flagged; a non-entitled one is not", async () => {
+    const probe = new Probe();
+    const g = deferred();
+    const first = probe.around(
+      "x",
+      "b",
+      () => true,
+      () => g.promise
+    );
+    await probe.around(
+      "x",
+      "b",
+      () => true,
+      async () => {}
+    ); // overlaps the entitled first
+    expect(probe.doubleEntries).toEqual(["x/b"]);
+    g.open();
+    await first;
+
+    const quiet = new Probe();
+    const g2 = deferred();
+    const stale = quiet.around(
+      "y",
+      "b",
+      () => false,
+      () => g2.promise
+    ); // not entitled (stalled)
+    await quiet.around(
+      "y",
+      "b",
+      () => true,
+      async () => {}
+    );
+    expect(quiet.doubleEntries).toEqual([]);
+    g2.open();
+    await stale;
+  });
+
+  it("end to end: a sweeper wired to NO lease source re-drives a live driver and the audit reports the double entry", async () => {
+    // This is the S6 residual, kept as the control: with nothing to consult, no veto exists, so two
+    // nodes really do drive "live" at once. If the detector went quiet this would fail.
     const { r, h, sweep } = await silentLive("legacy");
-    // The sweeper enters step b while the live driver is still inside it.
     await until(() => r.probe.count("live", "b") === 2, "the sweeper re-entered step b");
     expect(r.probe.doubleEntries).toEqual(["live/b"]);
     r.probe.gate("live").open();
@@ -410,53 +494,115 @@ describe("lease DST - a live silent driver and an aggressive isAbandoned", () =>
     // The fence still keeps the LOG consistent: one completion per step.
     await expectLogInvariants(r, "live");
   });
-
-  // S7d: the lease veto on `isAbandoned` (and conditional takeover) flips this on. The contract:
-  // an unexpired live lease vetoes the predicate, so the aggressive sweep NEVER double-enters.
-  it.skip("S7d: an aggressive isAbandoned never double-enters a live silent driver (lease veto)", async () => {
-    const { r, h, sweep } = await silentLive("legacy");
-    await Promise.race([sweep, settle(50)]);
-    expect(r.probe.doubleEntries).toEqual([]);
-    expect(r.probe.count("live", "b")).toBe(1);
-    r.probe.gate("live").open();
-    await settleOf(h.waitForCompletion());
-    await settleOf(sweep);
-  });
 });
 
-describe("lease DST - S7d-gated scenarios", () => {
-  // S7d: the poll's DEFAULT re-drive on expired-lease evidence. After a stall longer than the TTL the
-  // execution is recovered by the poll (no `recoverAbandoned` sweep configured) once its lease row
-  // has expired, and never before.
-  it.skip("S7d: the poll re-drives a stalled driver's execution on expired-lease evidence, never earlier", async () => {
+describe("lease DST - S7d consumers (poll default re-drive, ghost GC)", () => {
+  /** Poll until `done` (each poll is deterministic; the loop only waits for the async settle). */
+  async function pollUntil(svc: TimerService, done: () => Promise<boolean>): Promise<void> {
+    await until(async () => {
+      await svc.tick(FAR);
+      return done();
+    }, "the poll's condition");
+  }
+
+  it("the poll re-drives a stalled driver's execution on expired-lease evidence by DEFAULT (no `leases` option), never earlier", async () => {
+    const r = rig();
+    const a = r.node("a");
+    const b = r.node("b", { extra: { inboxEnabled: true } }); // the poll acts on refusal rows only with an inbox
+    const h = await a.rt.start(r.flow, { id: "poll" }, E("poll"));
+    await until(() => r.probe.count("poll", "b") === 1, "inside step b");
+    await r.refusalRow("poll");
+    // Cluster-visible store + heartbeat "stop" mode: the default evidence, with no `leases` wiring.
+    const svc = new TimerService(b.rt, r.timers, { fenced: true });
+
+    // Not before the lease lapses (a stalled-but-unexpired lease is a veto).
+    advance(r.clock, TTL - 1_000);
+    for (let i = 0; i < 3; i++) await svc.tick(FAR);
+    expect(r.probe.count("poll", "b")).toBe(1);
+    expect(await statusOf(b, "poll")).toBe("running");
+
+    advance(r.clock, 2_000); // now past the TTL: the lease row is expired evidence
+    // The poll's re-drive runs the resumed step to completion inside the tick, so it is awaited only
+    // after the gate opens; until then wait for the CONDITION that B re-entered step b.
+    const polling = svc.tick(FAR);
+    await until(() => r.probe.count("poll", "b") === 2, "the poll re-entered step b");
+    r.probe.gate("poll").open();
+    await polling;
+    await pollUntil(svc, async () => (await statusOf(b, "poll")) === "completed");
+    const stalled = await settleOf(h.waitForCompletion());
+    expect(stalled.ok).toBe(false); // the stalled driver self-fenced
+    expect(
+      (await r.logOf("poll")).filter((e) => e.eventType === "EXECUTION_RECOVERED")
+    ).toHaveLength(1);
+    expect(r.probe.doubleEntries).toEqual([]);
+    await expectLogInvariants(r, "poll");
+  });
+
+  it("an expired ghost lease (no stream) is garbage-collected by the poll, and a live execution's lease is left alone", async () => {
     const r = rig();
     const a = r.node("a");
     const b = r.node("b");
-    const h = await a.rt.start(r.flow, { id: "poll" }, E("poll"));
-    await until(() => r.probe.count("poll", "b") === 1, "inside step b");
-    advance(r.clock, TTL + 1);
-    r.probe.gate("poll").open();
-    await settleOf(h.waitForCompletion());
-    // S7d wires the poll (TimerService.tick) to do what evidenceSweep does today.
-    const { TimerService } = await import("@loom/workflow-runtime");
-    const { InMemoryTimerStore } = await import("@loom/event-runtime");
-    const timers = new TimerService(b.rt, new InMemoryTimerStore(), {
-      leases: { store: r.leases, owner: "b-poll" },
-    });
-    await timers.tick(r.clock.wall);
-    expect(await statusOf(b, "poll")).toBe("completed");
-    expect(r.probe.doubleEntries).toEqual([]);
-  });
-
-  // S7d: ghost-lease GC. A lease row whose stream never got a sequence 0 is deleted once expired.
-  it.skip("S7d: an expired ghost lease (no stream) is garbage-collected by the sweep", async () => {
-    const r = rig();
-    const b = r.node("b");
+    const h = await a.rt.start(r.flow, { id: "alive" }, E("alive"));
+    await until(() => r.probe.count("alive", "b") === 1, "inside step b");
     await r.leases.acquire("ghost-gc", "dead:node", TTL, r.clock.wall);
+    expect(await r.leases.get?.("ghost-gc")).not.toBeNull();
     advance(r.clock, TTL + 1);
-    await evidenceSweep(b, r);
+    const svc = new TimerService(b.rt, r.timers, { fenced: true });
+    await svc.tick(FAR);
     expect((await r.leases.get?.("ghost-gc")) ?? null).toBeNull();
+    // The stalled driver's stream exists: its (expired) lease row is an orphan, evidence, not a ghost.
+    expect(await r.leases.get?.("alive")).not.toBeNull();
+    r.probe.gate("alive").open();
+    await settleOf(h.waitForCompletion());
   });
+});
+
+describe("lease DST - entitlement window", () => {
+  // The keeper stops its driver TTL/6 BEFORE the store row expires, so with agreeing clocks a driver
+  // never outlives its row. The window opens under CLOCK SKEW: the store's clock runs ahead of the
+  // node's, so the row is expired on the store's clock while the node's own deadline (monotonic AND
+  // wall) has not been reached - it has not observed its expiry (`validNow` is still true). Another
+  // node then takes over (evidence sweep -> conditional takeover, then the fence). The stale node's
+  // write must be REFUSED: one driver per range of the log.
+  for (const ahead of [DEADLINE_MARGIN + 1, DEADLINE_MARGIN + 5_000]) {
+    it(`store clock +${ahead}ms ahead: a node that has not observed its expiry cannot commit after the takeover`, async () => {
+      const r = rig();
+      const a = r.node("a");
+      const b = r.node("b");
+      const h = await a.rt.start(r.flow, { id: "win" }, E("win"));
+      await until(() => r.probe.count("win", "b") === 1, "inside step b");
+
+      advance(r.clock, DEADLINE - 1_000); // still inside A's own deadline
+      r.skew.ms = TTL - (DEADLINE - 1_000) + (ahead - DEADLINE_MARGIN); // store time just past the row's expiry
+      expect(a.rt.leaseKeeper?.validNow("win")).toBe(true); // A has not observed its expiry
+      const row = await r.leases.get?.("win");
+      expect(row?.expiresAt).toBeLessThan(r.clock.wall + r.skew.ms); // but the store says it lapsed
+
+      const sweep = evidenceSweep(b, r);
+      await until(() => r.probe.count("win", "b") === 2, "B took over and entered step b");
+      const markers = (await r.logOf("win")).filter((e) => e.eventType === "EXECUTION_RECOVERED");
+      expect(markers).toHaveLength(1); // the conditional takeover landed exactly once
+      const markerSeq = markers[0]?.sequence as number;
+      const headAtTakeover = (await r.logOf("win")).length;
+
+      r.probe.gate("win").open(); // both drivers' step b return; A's write races B's
+      const aRes = await settleOf(h.waitForCompletion());
+      expect(aRes.ok).toBe(false); // A's commit was refused
+      await sweep;
+      expect(await statusOf(b, "win")).toBe("completed");
+
+      // One driver per range: A added nothing after the takeover marker (the log grew only by B's
+      // work, each step completing exactly once, gap-free), and A's stale write was attempted
+      // (the audit saw it) but never landed.
+      const log = await r.logOf("win");
+      expect(markerSeq).toBeLessThan(headAtTakeover);
+      expect(log.filter((e) => e.eventType === "STEP_COMPLETED")).toHaveLength(3);
+      expect(log.map((e) => e.sequence)).toEqual(log.map((_, i) => i));
+      await expectLogInvariants(r, "win");
+      expect(a.unleasedAppends.length).toBeGreaterThan(0);
+      expect(b.unleasedAppends).toEqual([]);
+    });
+  }
 });
 
 const coverage = { runs: 0, crashes: 0, flips: 0, sweeps: 0, recoveredRuns: 0, started: 0 };
