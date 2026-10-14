@@ -498,7 +498,7 @@ the TTL. A delivery racing an expiry never delivers the expired message and neve
 every node of a fleet before relying on it: a node without it retires an expiry row, and expiry is then lost until a
 `recoverAbandoned` sweep.
 
-Sealed inbox payloads (ADR 0130 D10): a node that cannot open a recorded sealed answer refuses the replay and leaves an inbox wake row (a timer-store row). With a `TimerService` configured with `leases`, a capable node's poll re-drives that `running` execution once its lease is claimable, so the sweep is no longer the only recovery; without `leases` the row waits and `recoverAbandoned` remains the recovery.
+Sealed inbox payloads (ADR 0130 D10): a node that cannot open a recorded sealed answer refuses the replay and leaves an inbox wake row (a timer-store row). A `TimerService` re-drives that `running` execution on a capable node only on evidence of abandonment (its `isAbandoned` option, or with `leases` an existing lease that has expired) and only while the log has not moved since the refusal. With neither `isAbandoned` nor `leases` the poll keeps the row but cannot prove abandonment, so recovery comes from a configured `recoverAbandoned` sweep.
 
 **Give a cold topic its own stream: per-topic inbox streams (ADR 0110 D10b, off by default).** With
 `kernel.features.inboxTopicStreams` and the fleet switch, each topic has its own stream, so a cold topic no longer pins a

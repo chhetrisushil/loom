@@ -1,19 +1,22 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loom/core";
 import {
   type ExecutionEnumerable,
   type LeaseStore,
   inboxChainOf,
   isReservedStream,
   iterateExecutionIds,
-  readRangeOf,
 } from "@loom/event-runtime";
 import type { TimerDispatcher } from "./TimerService";
 import { redriveDelayMs } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
-import { isSealedBackedOff, noteSealedRefusal, redriveAbandoned } from "./redriveAbandoned";
+import {
+  isSealedBackedOff,
+  noteSealedRefusal,
+  redriveAbandoned,
+  unproductiveRecoveries,
+} from "./redriveAbandoned";
 import { isSealedUnreadable } from "./sealGuard";
-import { EXECUTION_RECOVERED } from "./types";
 
 // ── Recovering executions whose supervisor died ───────────────────────────────
 //
@@ -398,52 +401,12 @@ async function* candidateIds(options: RecoverAbandonedOptions): AsyncGenerator<s
   yield* iterateExecutionIds(options.source as ExecutionEnumerable, options.pageSize);
 }
 
-/** A re-drive that got somewhere: a step finished, or the flow reached (or passed) a gate. */
-const PROGRESS = new Set(["STEP_COMPLETED", "EXECUTION_SUSPENDED", "EXECUTION_RESUMED"]);
-const TAIL_PAGE = 256;
-
-/**
- * `EXECUTION_RECOVERED` events since the log's last progress event, counted up to `cap` (enough
- * to decide). With `readRange` it reads the tail backwards in pages from `head`, so the cost is
- * the events since progress, not the log. A store without `readRange` would turn each page into
- * a `readFrom` to the END of the log (quadratic in the tail), so it gets ONE bounded read
- * instead: the last `cap × TAIL_PAGE` events. A re-drive that writes more than `TAIL_PAGE`
- * events between recoveries can then be undercounted — one more re-drive, never a false skip.
- */
-async function unproductiveRecoveries(
-  runtime: WorkflowRuntime,
-  executionId: string,
-  head: number,
-  cap: number
-): Promise<number> {
-  const store = runtime.events;
-  let n = 0;
-  // Returns the count once decided, or undefined to keep reading.
-  const scan = (page: readonly EventEnvelope[]): number | undefined => {
-    for (let i = page.length - 1; i >= 0; i--) {
-      const type = (page[i] as EventEnvelope).eventType;
-      if (PROGRESS.has(type)) return n;
-      if (type === EXECUTION_RECOVERED && ++n >= cap) return n;
-    }
-    return undefined;
-  };
-  if (store.readRange === undefined) {
-    const window = await store.readFrom(executionId, Math.max(0, head - cap * TAIL_PAGE + 1));
-    return scan(window) ?? n;
-  }
-  for (let hi = head; hi >= 0; hi -= TAIL_PAGE) {
-    const page = await readRangeOf(store, executionId, Math.max(0, hi - TAIL_PAGE + 1), hi);
-    if (page.length === 0) break; // below a truncated prefix
-    const decided = scan(page);
-    if (decided !== undefined) return decided;
-  }
-  return n;
-}
-
 // ADR 0130 - the per-runtime sealed back-off is SHARED with the TimerService wake-row re-drive
-// (redriveAbandoned.ts), so a refusal seen by either path suppresses the other for the window.
+// (redriveAbandoned.ts), so a refusal seen by either path suppresses the other for the window. Both
+// judge it on ONE clock, the runtime's (`runtime.clock`): the poll's own injectable `now` is not
+// used for this map, or a back-off stamped on one clock would be read on another.
 function sealedBackedOff(runtime: WorkflowRuntime, executionId: string): boolean {
-  return isSealedBackedOff(runtime, executionId, Date.now());
+  return isSealedBackedOff(runtime, executionId, runtime.clock());
 }
 
 function sealedRefusalBackoff(
@@ -452,7 +415,7 @@ function sealedRefusalBackoff(
   err: Error,
   options: RecoverAbandonedOptions
 ): void {
-  const report = noteSealedRefusal(runtime, executionId, Date.now(), (attempt) =>
+  const report = noteSealedRefusal(runtime, executionId, runtime.clock(), (attempt) =>
     redriveDelayMs(attempt, { baseMs: 1000, capMs: 60_000, random: () => 1 })
   );
   if (report) options.onError?.(executionId, err);

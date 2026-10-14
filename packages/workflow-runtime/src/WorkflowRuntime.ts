@@ -109,6 +109,7 @@ import {
   quarantineQueue,
   quarantineQueues,
   readRegisteredTopics,
+  refusalWakeAt,
   registerInboxTopic,
   retireInboxTopic,
   scanExpired,
@@ -6001,6 +6002,38 @@ export class WorkflowRuntime {
     return this.markContended(executionId);
   }
 
+  /**
+   * ADR 0130 D10 - a replay refusal leaves a REFUSAL row stamped with the log head (see
+   * `refusalWakeAt`). A timer-store row only; best effort (a failure to write it must not mask the
+   * typed refusal, and the sweep still recovers the execution).
+   */
+  private async markRefused(executionId: string): Promise<void> {
+    if (this.timerStore === undefined) return;
+    try {
+      const store = this.eventStore;
+      let head: number | null | undefined;
+      if (store.head !== undefined) head = await store.head(executionId);
+      else {
+        const all = await store.readFrom(executionId, 0);
+        head = all.length === 0 ? null : all[all.length - 1]?.sequence;
+      }
+      if (head === null || head === undefined) return;
+      await this.timerStore.schedule({ executionId, wakeAt: refusalWakeAt(head) });
+    } catch (e) {
+      this.onStorageError?.(executionId, e);
+    }
+  }
+
+  /**
+   * Is this node driving `executionId` right now, or starting it (a continuation successor whose
+   * sequence 0 is durable but whose handle is not registered yet)? Synchronous, no log read.
+   *
+   * @internal Used by the `TimerService` wake-row re-drive; not part of the public runtime API.
+   */
+  drivesLocally(executionId: string): boolean {
+    return this.liveHandles.has(executionId) || this.startingSuccessors.has(executionId);
+  }
+
   /** The park is unanswered but could not be answered now: keep (or write) the durable due-now row. */
   private async markContended(executionId: string): Promise<{ contended: true }> {
     if (this.timerStore !== undefined) {
@@ -8220,9 +8253,9 @@ export class WorkflowRuntime {
           this.onWarn(
             `execution "${executionId}": run attempt REFUSED, NOT failed: ${sealedRefusal.message}`
           );
-          // ADR 0130 D10: leave a durable wake row (a TIMER-store row, never a log append) so a
-          // capable node's poll re-drives this `running` execution without a send or a sweep.
-          await this.markContended(executionId).catch(() => undefined);
+          // ADR 0130 D10: leave a durable, head-stamped refusal row (a TIMER-store row, never a log
+          // append) so a capable node's poll can re-drive this `running` execution, on evidence.
+          await this.markRefused(executionId);
           rejectSuspend(sealedRefusal);
           rejectCompletion(sealedRefusal);
           return;
@@ -8236,7 +8269,7 @@ export class WorkflowRuntime {
           this.onWarn(
             `execution "${executionId}": run attempt REFUSED, NOT failed: ${(err as Error).message}`
           );
-          await this.markContended(executionId).catch(() => undefined); // ADR 0130 D10 (see above)
+          await this.markRefused(executionId); // ADR 0130 D10 (see above)
           rejectSuspend(err);
           rejectCompletion(err);
           return;

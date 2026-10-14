@@ -76,6 +76,7 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
       // streams, exempt from the stream guard) through the runtime's store; never an owner's log.
       "packages/workflow-runtime/src/quarantine.ts",
       "packages/workflow-runtime/src/recoverAbandoned.ts",
+      "packages/workflow-runtime/src/redriveAbandoned.ts",
       "packages/workflow-runtime/src/sealGuard.ts",
     ]);
   });
