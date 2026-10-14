@@ -31,6 +31,8 @@ const refusals = new WeakMap<object, ReadonlyMap<string, string>>();
  * the decrypted fold to a plaintext snapshot store (ADR 0022 Amendment).
  */
 const ENCRYPTION_MARKER = "keys";
+/** `EncryptingSnapshotStore.sealsWholeState` (ADR 0130 D8), carried up the same way. */
+const WHOLE_STATE_MARKER = "sealsWholeState";
 
 /**
  * Install each optional method of `plan` on `target`, **iff the inner store has it** — so a
@@ -73,6 +75,11 @@ export function installOptional<S extends object, M extends keyof S>(
   const marker = source[ENCRYPTION_MARKER];
   if (typeof marker === "object" && marker !== null && writable[ENCRYPTION_MARKER] === undefined) {
     writable[ENCRYPTION_MARKER] = marker;
+  }
+  // ADR 0130 D8 — a snapshot store that seals its WHOLE state says so structurally; a decorator
+  // above it must not hide that (the doctor / kernel would read a sealed store as plaintext).
+  if (source[WHOLE_STATE_MARKER] === true && writable[WHOLE_STATE_MARKER] === undefined) {
+    writable[WHOLE_STATE_MARKER] = true;
   }
 }
 

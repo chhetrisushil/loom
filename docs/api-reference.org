@@ -1048,6 +1048,11 @@ interface EncryptingEventStoreOptions {
   sensitive: Record<string, readonly string[]>;   // event type → encrypted payload dot-paths
   subjectOf?: (e: { executionId: string; workflowId: string }) => string;  // erasure subject (default: executionId)
 }
+interface EncryptingSnapshotStoreOptions {
+  sealState?: true;                    // ADR 0130 D8: seal the WHOLE folded state as one envelope (covers dynamic _waitAnswers keys); exposes sealsWholeState: true
+  sensitive?: readonly string[];       // static dot-paths into the folded state; mutually exclusive with sealState
+  subjectOf?: (s: { executionId: string; workflowId: string }) => string;
+}
 interface KeyStore { getOrCreate(subjectId: string): Promise<Buffer>; get(subjectId: string): Promise<Buffer | null>; destroy(subjectId: string): Promise<void>; }
 class InMemoryKeyStore implements KeyStore { … }   // reference (tests / ephemeral)
 function shredSubject(keys: KeyStore, rawEventStore: EventStore, executionId: string,

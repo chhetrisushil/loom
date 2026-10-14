@@ -200,10 +200,17 @@ head. *Remedy:* before relying on the key for such a chain, cancel the owner and
 (its stream is then deleted), or delete the stream yourself; there is no re-seal API, and a
 parked owner's stream is never deleted by the default erasure (it still reads it); `parked: "shred"` cancels the owner first, so its stream is then deleted.
 
-**Not covered: snapshots.** A snapshot's `variables._waitAnswers` holds an answered payload under a
-dynamic key (the `waitId`), which a sensitive path cannot name, so a snapshot taken while an
-answered wait is in the fold holds that payload verbatim unless your snapshot store seals the whole
-state.
+**Snapshots: use `sealState`.** A snapshot's `variables._waitAnswers` holds an answered payload under a
+dynamic key (the `waitId`), which a static `sensitive` path cannot name, so a snapshot taken while an
+answered wait is in the fold holds that payload verbatim under a path-list `EncryptingSnapshotStore`.
+Build the snapshot store with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` (the SAME
+`KeyStore` as the event store; mutually exclusive with `sensitive`): the whole folded state is sealed as
+one envelope (only `id`, `executionId`, `workflowId`, `sequence`, `createdAt` stay in the clear), and a
+shred makes the snapshot unreadable (`PayloadShreddedError`) along with the events. `loom doctor`
+reports `snapshot-plaintext-under-encrypting-events` (error for a plaintext or different-keys snapshot
+store, warning for static paths) and names `security.crypto.allowPlaintextCheckpoints` as the explicit
+opt-out. Snapshots already written in plaintext are not rewritten: they stay readable and the next
+`save` seals the state.
 
 The sender recorded on a message (`tenant`, `actor`, `onBehalfOf`) is the SENDER's identity, not
 the owner's, and is not sealed by the inbox path: declare `INBOX_MESSAGE` / `MESSAGE_CONSUMED`

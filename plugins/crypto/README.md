@@ -23,7 +23,10 @@ const eventStore = new EncryptingEventStore(innerEvents, keys, {
   sensitive: { STEP_COMPLETED: ["output.ssn", "output.email"] }, // dot-paths into the payload
 });
 const snapshotStore = new EncryptingSnapshotStore(innerSnaps, keys, {
-  sensitive: ["variables._input.ssn"], // same fields as they appear in folded state
+  // Seal the WHOLE folded state as one envelope (ADR 0130 D8). This also covers the dynamic
+  // `variables._waitAnswers.<waitId>` keys that no static path list can name.
+  sealState: true,
+  // Legacy alternative (mutually exclusive): sensitive: ["variables._input.ssn"],
 });
 
 // …later, an erasure request:
