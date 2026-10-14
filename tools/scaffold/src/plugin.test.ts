@@ -111,6 +111,17 @@ describe("pluginFiles", () => {
     expect(index).toContain("PRESENCE IS THE FEATURE FLAG");
   });
 
+  it("scaffolds the key store's OPTIONAL wasDestroyed as a comment, never a throwing member", () => {
+    // Conformance skips a store without `wasDestroyed`; a generated member that throws would
+    // fail it (and advertise a destruction proof the store cannot give).
+    const index = pluginFiles("keystore", "foo", { firstParty: false })[
+      "loom-plugin-foo/src/index.ts"
+    ]!;
+    const body = index.slice(index.indexOf("export class"));
+    expect(body).toContain("// wasDestroyed(");
+    expect(body.replace(/^\s*\/\/.*$/gm, "")).not.toContain("wasDestroyed");
+  });
+
   it("emits an exports map an ESM consumer can enter", () => {
     // The scaffold used to mint `{ require, types }` — the exact shape that left 49
     // packages in loom itself unreachable from `import`. A generator that reproduces

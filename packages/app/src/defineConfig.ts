@@ -25,7 +25,13 @@ import type {
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime, PolicyAuthorizer } from "@loom/effect-runtime";
 import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
-import type { BranchRegistry, EventStore, LeaseStore, TimerStore } from "@loom/event-runtime";
+import type {
+  BranchRegistry,
+  DestructionProof,
+  EventStore,
+  LeaseStore,
+  TimerStore,
+} from "@loom/event-runtime";
 // Only the in-memory stores are imported statically — they are pure JS. We import
 // them from the browser-safe `/memory` SUBPATH rather than the package barrel: the
 // barrel also re-exports the SQLite stores (which `import "better-sqlite3"`), and
@@ -286,8 +292,13 @@ export interface SecurityOptions {
     erase?: {
       shred: Shredder;
       /**
-       * ADR 0130 D7 (round 5) - proof the key store destroyed a subject's key
-       * (`(s) => keys.wasDestroyed(s)`). Needed to resume an erasure in the ShredIncomplete window
+       * ADR 0130 D7 (round 5) - proof the key store destroyed a subject's key. DEFAULTS to
+       * `(s) => keys.wasDestroyed(s)` when `security.crypto`'s key store implements `wasDestroyed`;
+       * an explicit value overrides it. A PROOF function only: returning `true` for a key not
+       * destroyed in the authoritative store produces a FALSE erasure record, so never stub it.
+       * For a store that cannot prove destruction, assert it per call with
+       * `eraseSubject(..., { force: "key-destroyed-elsewhere" })` / `exportSubject(..., { force })`.
+       * Needed to resume an erasure in the ShredIncomplete window
        * and for `exportSubject` to read it; without it a key-unavailable stream is refused.
        */
       destroyed?: (subjectId: string) => boolean | Promise<boolean>;
@@ -912,7 +923,12 @@ export interface LoomApp {
    */
   exportSubject(
     subjectId: string,
-    options?: { includeEvents?: boolean; tenant?: string }
+    options?: {
+      includeEvents?: boolean;
+      tenant?: string;
+      /** ADR 0130 D7: the operator's per-call assertion that the key was destroyed elsewhere. */
+      force?: "key-destroyed-elsewhere";
+    }
   ): Promise<SubjectExport>;
   /**
    * T3 — request erasure of a subject (Art. 17), optionally scoped to a `tenant` (T3-R2.4).
@@ -936,6 +952,17 @@ export interface LoomApp {
    */
   verify(options?: { lint?: VerifyLintInputs }): VerificationReport;
   close(): Promise<void>;
+}
+
+/**
+ * ADR 0130 D7 (round 6): the crypto key store's own destruction proof, when it has one. `security.crypto.events`
+ * is the app's `EncryptingEventStore`, which exposes its `keys`; a store without `wasDestroyed` gives no proof.
+ */
+function keyStoreProof(crypto: unknown): DestructionProof | undefined {
+  const events = (crypto as { events?: unknown } | undefined)?.events;
+  const keys = (events as { keys?: { wasDestroyed?: (s: string) => Promise<boolean> } } | undefined)
+    ?.keys;
+  return typeof keys?.wasDestroyed === "function" ? keys.wasDestroyed.bind(keys) : undefined;
 }
 
 function buildStores(storage: StorageConfig): LoomStores {
@@ -1237,6 +1264,12 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
 
   // T3 Phase B — erasure coordinator, only when erasure is wired. Rehydrates any parked
   // requests from the durable control stream (best-effort, so a restart resumes deferrals).
+  // ADR 0130 D7 (round 6): the destruction proof defaults to the crypto key store's own
+  // `wasDestroyed` (the `EncryptingEventStore` handed in as `security.crypto.events` exposes its
+  // `keys`); an explicit `compliance.erase.destroyed` overrides it; a store without the method
+  // yields no proof and the window fails closed.
+  const destroyedProof: DestructionProof | undefined =
+    config.compliance?.erase?.destroyed ?? keyStoreProof(config.crypto);
   const eraseCoordinator =
     subjectIndex !== undefined && config.compliance?.erase !== undefined
       ? new EraseCoordinator({
@@ -1247,9 +1280,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
           eventStore: stores.eventStore,
           snapshotStore: stores.snapshotStore,
           shred: config.compliance.erase.shred,
-          ...(config.compliance.erase.destroyed !== undefined && {
-            destroyed: config.compliance.erase.destroyed,
-          }),
+          ...(destroyedProof !== undefined && { destroyed: destroyedProof }),
           // `parked: "shred"` cancels each parked owner first, under the runtime's own authority.
           // `runtime` is assigned below; nothing erases before defineConfig returns.
           cancel: (executionId, reason) =>
@@ -1695,9 +1726,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         eventStore: stores.eventStore,
         ...(options?.includeEvents !== undefined && { includeEvents: options.includeEvents }),
         ...(options?.tenant !== undefined && { tenant: options.tenant }),
-        ...(config.compliance?.erase?.destroyed !== undefined && {
-          destroyed: config.compliance.erase.destroyed,
-        }),
+        ...(destroyedProof !== undefined && { destroyed: destroyedProof }),
+        ...(options?.force !== undefined && { force: options.force }),
       });
     },
     eraseSubject(subjectId, tenant, options) {
