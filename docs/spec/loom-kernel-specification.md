@@ -186,7 +186,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   and its order-preserving release; folded only from a `metadata.kernel` envelope; both `ignorable`
   for the park fence; `INBOX_RELEASED` carries exactly one of `operator` / `auto`, `auto` only with
   `deliver`, and a fact with both or neither is ignored), the fold variable `_quarantined`
-  (queue per topic, shape `released* held*`, at most 1 024 entries), an additive `MESSAGE_CONSUMED`
+  (queue per topic, shape `released? held*`, at most 1 024 entries), an additive `MESSAGE_CONSUMED`
   step that drops a delivered released entry (gated on `_quarantined`), and the carry
   `continuedFrom.carried.quarantined`. `KERNEL_ABI_VERSION` stays 1.3.0.
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or

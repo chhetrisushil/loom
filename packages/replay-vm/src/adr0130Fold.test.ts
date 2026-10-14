@@ -245,7 +245,7 @@ describe("INBOX_QUARANTINED", () => {
 describe("INBOX_RELEASED", () => {
   const base = [start(), quarantine(1, "chat", 3, "k3"), quarantine(2, "chat", 5, "k5")];
 
-  it("deliver marks the OLDEST held entry released; the queue stays released* held*", () => {
+  it("deliver marks the OLDEST held entry released; the queue stays released? held*", () => {
     expect(q([...base, release(3, "chat", "k3")])).toEqual({
       chat: [{ ...held("k3", 3), state: "released" }, held("k5", 5)],
     });
@@ -310,7 +310,7 @@ describe("INBOX_RELEASED", () => {
       release(2, "chat", "k3", { operator: OP }, "discard"),
       release(3, "chat", "k3", { operator: OP }, "discard"),
     ];
-    expect(q(log)).toEqual({});
+    expect(q(log)).toBeUndefined();
     expect(inbox(log)).toEqual({ cursors: { chat: 3 }, dedupe: ["k3"] });
   });
 
@@ -358,7 +358,30 @@ describe("MESSAGE_CONSUMED of a released key (the one handler that changed)", ()
       release(2, "chat", "k3"),
       consumed(3, "chat", "k3", 3),
     ];
-    expect(q(log)).toEqual({});
+    expect(q(log)).toBeUndefined();
+    expect(foldEvents(log).variables).not.toHaveProperty("_quarantined");
+  });
+
+  it("a full hold -> release -> consume (and hold -> discard) cycle returns to the never-quarantined shape", () => {
+    const plainInbox = (state: ReturnType<typeof foldEvents>) => ({
+      ...state.variables,
+      _inbox: { ...(state.variables._inbox as object), cursors: undefined },
+    });
+    const without = foldEvents([start(), consumed(1, "chat", "k3", 3)]);
+    const cycle = foldEvents([
+      start(),
+      quarantine(1, "chat", 3, "k3"),
+      release(2, "chat", "k3"),
+      consumed(3, "chat", "k3", 3),
+    ]);
+    expect(plainInbox(cycle)).toEqual(plainInbox(without));
+    expect(cycle.variables).not.toHaveProperty("_quarantined");
+    const discarded = foldEvents([
+      start(),
+      quarantine(1, "chat", 3, "k3"),
+      release(2, "chat", "k3", { operator: OP }, "discard"),
+    ]);
+    expect(discarded.variables).not.toHaveProperty("_quarantined");
   });
 
   it("does not drop a HELD entry, an entry of another key, or another topic's entry", () => {
@@ -423,6 +446,10 @@ describe("EXECUTION_STARTED.continuedFrom.carried.quarantined (the validated see
       badHeld: [{ ...held("k", 1), heldAt: 1.5 }],
       badState: [{ ...held("k", 1), state: "gone" }],
       heldThenReleased: [held("a", 1), { ...held("b", 2), state: "released" }],
+      twoReleased: [
+        { ...held("c", 1), state: "released" },
+        { ...held("d", 2), state: "released" },
+      ],
       notObject: [null],
       ["__proto__"]: good,
     };

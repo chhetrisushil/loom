@@ -447,7 +447,7 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
 - **Folds into:** acts only on the topic's FIRST `_quarantined` entry while it is `held` and its `key` matches:
   `"deliver"` marks it `released`; `"discard"` removes it and adds its key to the dedupe window. A
   following `MESSAGE_CONSUMED` whose `messageId` equals the first `released` entry's `key` drops that entry
-  (the cursor does not move). Queue shape is always `released* held*`.
+  (the cursor does not move). Queue shape is always `released? held*`. An emptied topic queue is deleted, and `_quarantined` itself is deleted when no topic remains, so a full hold/release/consume cycle returns to the never-quarantined shape.
 
 #### `ERASURE_PENDING`
 - **Introduced:** 1.14.0 — T3-R4.5 deferred-erasure protocol ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
@@ -511,7 +511,7 @@ optional field and a MINOR bump), never an edit in place.
 | `EXECUTION_STARTED` | `principal: { v: 1, ref?, identity?, delegation? }` (a fork's `forkedBy` envelope metadata wins) | `_principal` | 0111 |
 | | `parent: string` | `_parent` | 0111 |
 | | `chainId`, `generation`, `continuedFrom: { executionId, carried? }` (a fork's `forkChain` metadata wins and drops `continuedFrom`) | `_chain = { chainId, generation, continuedFrom? }` | 0109 |
-| | `continuedFrom.carried.{resources, inbox, quarantined}` (validated; `quarantined` is 1.25.0, reserved: a per-topic queue shaped `released* held*`, 1 024 entries at most; an invalid carry is ignored, never thrown; not applied to a fork; `resources` includes `exceeded`/`reason`, so a rotation cannot reset a quota) | seeds `_resources`, `_inbox`; `chainDeadline` stays in `_chain.continuedFrom.carried` | 0109 D3 |
+| | `continuedFrom.carried.{resources, inbox, quarantined}` (validated; `quarantined` is 1.25.0, reserved: a per-topic queue shaped `released? held*`, 1 024 entries at most; an invalid carry is ignored, never thrown; not applied to a fork; `resources` includes `exceeded`/`reason`, so a rotation cannot reset a quota) | seeds `_resources`, `_inbox`; `chainDeadline` stays in `_chain.continuedFrom.carried` | 0109 D3 |
 | | `codeHash: string` | `_codeHash` | 0113 |
 | `EXECUTION_SUSPENDED` | `condition.waits[]: { waitId, kind: "gate"|"inbox"|"timer", on?, topic?, viewDigest?, correlationKey?, wakeAt? }`, **honoured only on a kernel-stamped park** (the runtime's commit site strips `waits` from every userspace park; the R2 writer adds it afterwards and stamps the event). Unstamped, the fold drops it from `suspendedOn` too | stamped: the well-formed entries are kept in `suspendedOn.waits` (the table a wait-addressed resume reads) and `_waits[waitId] = { kind: "timer", wakeAt }` is set at the FIRST park that lists the timer arm; malformed entries are skipped, never thrown | 0110 D4 |
 | `EXECUTION_RESUMED` | a **wait-addressed** resume: `metadata.kernel === true` and payload `{ waitId, payload }`, unwrapped by the fold | `_waitAnswers[waitId] = { kind, name, payload }` (kind and name from the park's wait; first answer wins); drops `_waits[waitId]`; never enters `_resumePayloads`. Naming no wait of the current park: status-only re-open | 0110 D3 |
