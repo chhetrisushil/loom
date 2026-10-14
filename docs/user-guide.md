@@ -2583,6 +2583,9 @@ they enter a browser bundle. Know which, and why:
   `@loom/agent`, `@loom/memory`, `@loom/app` (the SQLite stores load lazily on `kind: "sqlite"` only),
   and the in-memory subpaths `@loom/event-runtime/memory` and `@loom/snapshot-runtime/memory`. Import
   those subpaths, never the package barrels, which re-export the SQLite stores.
+  Since ADR 0130 D8 `@loom/app` also depends on `@loom/plugin-crypto` (it builds the sealed default snapshot
+  store), which imports `node:crypto`: a browser bundle of `@loom/app` pulls it in unless the bundler
+  tree-shakes it away, so expect that `node:crypto` externalisation warning there.
 - **Server-only by nature:** `@loom/plugin-sqlite`, `-postgres`, `-sandbox`, `-worker-server`,
   `-crypto`, `-audit-chain`, `-content`, `-mcp`, `-a2a` (server half; use `@loom/plugin-a2a/cards` in
   a browser), `-conversation-sse`, and `@loom/isolate`.

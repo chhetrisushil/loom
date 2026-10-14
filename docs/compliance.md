@@ -284,6 +284,17 @@ opt-out is `security.crypto.allowPlaintextCheckpoints: true` (also exposed as
 for a snapshot store on an encrypted volume, or to keep booting while you migrate. Plaintext snapshots already
 written are not rewritten or deleted.
 
+Three limits of the sealed default, stated plainly. (1) The default keys snapshots by `executionId`; if your
+`EncryptingEventStore` maps executions to subjects with a different `subjectOf` (the field is private and is
+not visible to `defineConfig`), build the snapshot store yourself with the SAME `subjectOf`, or a shred of
+the subject will not erase the checkpoint. (2) The in-memory default is node-local and unbounded, so a
+durable event store without a durable `snapshotStore` loses checkpoints on restart (and replays from the
+log); `defineConfig` warns through `observability.onWarn` when it chooses that default for a store it cannot
+see to be in-memory. (3) The kernel judges the snapshot store structurally (`sealsWholeState === true` and
+the identical `keys` object). A plaintext decorator that inherits BOTH properties from a sealing store (a tee
+or cache layer built with `Object.create(sealing)`) would pass; the guard is against misconfiguration, not a
+hostile host object.
+
 The sender recorded on a message (`tenant`, `actor`, `onBehalfOf`) is the SENDER's identity, not
 the owner's, and is not sealed by the inbox path: declare `INBOX_MESSAGE` / `MESSAGE_CONSUMED`
 `sender.*` paths sensitive yourself if the sender is a data subject.
