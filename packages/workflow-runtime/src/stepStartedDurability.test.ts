@@ -337,7 +337,8 @@ describe("K9.3: STEP_STARTED must be durable before a non-idempotent effect runs
       held.release();
       const types = async () => (await durable.read(id)).map((e) => e.eventType);
       // Bounded far below parkDrainMs (30 s): a drain-stranded step would stall past this.
-      const deadline = Date.now() + 4_000;
+      // timing-bound: the stall being excluded is parkDrainMs = 30 s; 5 s is far below it.
+      const deadline = Date.now() + 5_000;
       let log = await types();
       while (!log.includes("EXECUTION_SUSPENDED")) {
         if (Date.now() > deadline) {
@@ -360,4 +361,118 @@ describe("K9.3: STEP_STARTED must be durable before a non-idempotent effect runs
     },
     10_000
   );
+});
+
+// A park decided while a non-idempotent step drains its STEP_STARTED, then the execution is
+// cancelled or the parallel scope aborts on park (`onPark: "abort"`).
+describe("K9.3 STEP_STARTED drain: cancel and onPark abort during the drain", () => {
+  function bootPark(
+    store: InMemoryAsyncEventStore,
+    kind: "suspend" | "abort"
+  ): {
+    runtime: WorkflowRuntime;
+    flow: RegisteredFlow<Record<string, never>, { ok: boolean }>;
+    ran: string[];
+  } {
+    const ran: string[] = [];
+    const effects = new EffectRuntime();
+    effects.register(
+      "tool-a",
+      new ToolEffect(
+        async () => {
+          ran.push("a");
+          return { ok: true };
+        },
+        { idempotent: false }
+      )
+    );
+    const runtime = new WorkflowRuntime({
+      eventStore: store,
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+      scopes: kind === "abort",
+      onWarn: () => {},
+    });
+    const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
+      if (kind === "suspend") {
+        void ctx.run(stepA, {}).catch(() => {});
+        await ctx.suspend({ on: "Approval" });
+      } else {
+        await ctx.parallel(
+          [async () => ctx.run(stepA, {}), async () => ctx.suspend({ on: "Approval" })],
+          { onPark: "abort" }
+        );
+      }
+      return { ok: true };
+    };
+    const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
+      _tag: "FlowDefinition",
+      id: `park-${kind}`,
+      name: `park-${kind}`,
+      version: "1.0.0",
+      inputSchema: io.inputSchema,
+      outputSchema: io.outputSchema,
+      steps: [stepA],
+    };
+    runtime.registerFlow(definition, runner);
+    return { runtime, flow: { definition, runner }, ran };
+  }
+
+  it("cancel while a park waits on the draining step releases the live handle promptly (no parkDrainMs stall)", async () => {
+    const durable = new InMemoryAsyncEventStore();
+    const order: string[] = [];
+    const held = stepStartedStore(durable, order, "hold");
+    const a = bootPark(held.store, "suspend");
+    void a.runtime.start(a.flow, {}, { executionId: "cancel-drain" });
+    await until(() => order.includes("append:STEP_STARTED"), "the held STEP_STARTED append");
+    await until(() => a.runtime.liveHandle("cancel-drain") !== undefined, "the live handle");
+    await new Promise((r) => setTimeout(r, 50)); // let the sibling suspend decide the park
+    await a.runtime.cancel("cancel-drain");
+    held.release();
+    // timing-bound: without the fix the handle stays live for parkDrainMs = 30 s; until() allows 5 s.
+    await until(
+      () => a.runtime.liveHandle("cancel-drain") === undefined,
+      "the live handle to release"
+    );
+    expect(a.ran).toEqual([]);
+    expect((await durable.read("cancel-drain")).map((e) => e.eventType)).toContain(
+      "EXECUTION_CANCELLED"
+    );
+  }, 15_000);
+
+  it('onPark:"abort" with scopes: the draining step is STEP_CANCELLED before the park, never runs, and resume completes it with no in-doubt', async () => {
+    const durable = new InMemoryAsyncEventStore();
+    const order: string[] = [];
+    const held = stepStartedStore(durable, order, "hold");
+    const a = bootPark(held.store, "abort");
+    void a.runtime.start(a.flow, {}, { executionId: "abort-drain" });
+    await until(() => order.includes("append:STEP_STARTED"), "the held STEP_STARTED append");
+    await new Promise((r) => setTimeout(r, 50));
+    held.release();
+    const types = async () => (await durable.read("abort-drain")).map((e) => e.eventType);
+    // timing-bound: the stall being excluded is parkDrainMs = 30 s; 5 s is far below it.
+    const deadline = Date.now() + 5_000;
+    let log = await types();
+    while (!log.includes("EXECUTION_SUSPENDED")) {
+      if (Date.now() > deadline) throw new Error(`timed out; log=${log.join(",")}`);
+      await new Promise((r) => setTimeout(r, 2));
+      log = await types();
+    }
+    expect(log.slice(0, 4)).toEqual([
+      "EXECUTION_STARTED",
+      "STEP_STARTED",
+      "STEP_CANCELLED",
+      "EXECUTION_SUSPENDED",
+    ]);
+    expect(a.ran).toEqual([]);
+    const handle = await a.runtime.resume("abort-drain", { eventType: "Approval", payload: {} });
+    await handle.waitForCompletion();
+    const after = await types();
+    expect(after).not.toContain("EFFECT_INDOUBT");
+    expect(after.slice(-3)).toEqual(
+      ["STEP_STARTED", "STEP_COMPLETED", "EXECUTION_COMPLETED"].slice(-3)
+    );
+    expect(after.at(-1)).toBe("EXECUTION_COMPLETED");
+    expect(a.ran).toEqual(["a"]);
+  }, 15_000);
 });

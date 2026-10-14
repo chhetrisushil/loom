@@ -939,7 +939,14 @@ export class WorkflowContextImpl implements WorkflowContext {
       // barrier, it runs to completion and journals its result before EXECUTION_SUSPENDED.
       // Bailing here would leave activeWork > 0 forever (stalling the barrier for parkDrainMs)
       // and strand a STEP_STARTED with no dispatch, which resume would park as EFFECT_INDOUBT.
-      if (this.sealed) return new Promise<TOut>(() => {});
+      if (this.sealed) {
+        // A CANCEL seal settles instead (the abort precedes the seal, so the signal is already
+        // aborted): execute's finally then ends the work, so the park barrier / run() is not held
+        // for parkDrainMs behind an activeWork count nothing will ever lower.
+        this.throwIfCancelled(scope.signal);
+        this.throwIfCancelled();
+        return new Promise<TOut>(() => {});
+      }
     }
 
     // K8.3 — declared step deadline (`timeoutMs`), anchored to the step's FIRST
