@@ -383,6 +383,15 @@ function quarantinedOf(state: ExecutionState): Quarantined | undefined {
   return isPlain(q) ? (q as Quarantined) : undefined;
 }
 
+/** `variables` with `_quarantined` set to `q`, or ABSENT when `q` is empty (never-quarantined shape). */
+function withQuarantined(
+  variables: Record<string, unknown>,
+  q: Quarantined
+): Record<string, unknown> {
+  const { _quarantined: _dropped, ...rest } = variables;
+  return Object.keys(q).length === 0 ? rest : { ...rest, _quarantined: q };
+}
+
 function quarantineTotal(q: Quarantined | undefined): number {
   let n = 0;
   if (q !== undefined) for (const queue of Object.values(q)) n += queue.length;
@@ -391,7 +400,7 @@ function quarantineTotal(q: Quarantined | undefined): number {
 
 /**
  * A validated `_quarantined` seed from `continuedFrom.carried.quarantined` (1.25.0); invalid parts
- * are ignored, never thrown. A topic's queue must read `released* held*` (the shape release
+ * are ignored, never thrown. A topic's queue must read `released? held*` (at most ONE released entry: the fold can only produce one) (the shape release
  * preserves); a queue that does not is dropped whole. The total is capped at {@link QUARANTINE_FOLD_CAP}.
  */
 function seedQuarantined(raw: unknown): Quarantined | undefined {
@@ -402,6 +411,7 @@ function seedQuarantined(raw: unknown): Quarantined | undefined {
     if (!safeMapKey(topic) || !Array.isArray(queue)) continue;
     const entries: QuarantineEntry[] = [];
     let sawHeld = false;
+    let sawReleased = false;
     let ok = true;
     for (const e of queue as unknown[]) {
       if (
@@ -413,12 +423,14 @@ function seedQuarantined(raw: unknown): Quarantined | undefined {
         !Number.isSafeInteger(e.heldAt) ||
         (e.heldAt as number) < 0 ||
         (e.state !== "held" && e.state !== "released") ||
-        (sawHeld && e.state === "released")
+        (sawHeld && e.state === "released") ||
+        (sawReleased && e.state === "released")
       ) {
         ok = false;
         break;
       }
       if (e.state === "held") sawHeld = true;
+      else sawReleased = true;
       entries.push({
         key: e.key,
         inboxSeq: e.inboxSeq as number,
@@ -827,7 +839,13 @@ const handlers: Record<string, Handler> = {
         const next = ownedRecord(held);
         if (queue.length === 1) delete next[p.topic];
         else next[p.topic] = queue.slice(1);
-        variables._quarantined = next;
+        // An emptied record is deleted, so a full hold/release/consume cycle folds to the
+        // never-quarantined shape.
+        return {
+          ...state,
+          variables: withQuarantined(variables, next),
+          updatedAt: event.timestamp,
+        };
       }
     }
     return { ...state, variables, updatedAt: event.timestamp };
@@ -935,15 +953,11 @@ const handlers: Record<string, Handler> = {
       dedupe = appendAudit(window, first.key);
       if (dedupe.length > INBOX_DEDUPE_CAP) dedupe.splice(0, dedupe.length - INBOX_DEDUPE_CAP);
     }
-    return {
-      ...state,
-      variables: {
-        ...state.variables,
-        _inbox: { cursors: inbox?.cursors ?? {}, dedupe: dedupe ?? [] },
-        _quarantined: quarantined,
-      },
-      updatedAt: event.timestamp,
-    };
+    const variables = withQuarantined(
+      { ...state.variables, _inbox: { cursors: inbox?.cursors ?? {}, dedupe: dedupe ?? [] } },
+      quarantined
+    );
+    return { ...state, variables, updatedAt: event.timestamp };
   },
 
   EXECUTION_SUSPENDED: (state, event) => {
@@ -1730,7 +1744,7 @@ export function getHandler(eventType: string): Handler | undefined {
 //   ignored; acts only on the topic's FIRST entry while `held`), BOTH folded only from a
 //   kernel-stamped envelope (`metadata.kernel === true`) and both `ignorable` for the park fence.
 //   (3) The fold variable `_quarantined` (`{ [topic]: Array<{ key, inboxSeq, heldAt, state }> }`,
-//   queue shape `released* held*`, at most QUARANTINE_FOLD_CAP = 1024 entries in total). (4)
+//   queue shape `released? held*`, at most QUARANTINE_FOLD_CAP = 1024 entries in total). (4)
 //   `MESSAGE_CONSUMED` additionally drops the topic's first `released` entry whose `key` equals the
 //   fact's `messageId`, gated on `_quarantined` existing. (5) `EXECUTION_STARTED.continuedFrom.
 //   carried.quarantined`, a validated seed (invalid parts ignored). Byte-identity: a log carrying

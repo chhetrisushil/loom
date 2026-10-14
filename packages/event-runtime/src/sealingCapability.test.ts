@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CoalescingEventStore } from "./CoalescingEventStore";
 import { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 import { ProfilingEventStore } from "./ProfilingEventStore";
-import { ShardedEventStore } from "./ShardedEventStore";
+import { ShardSealingMismatchError, ShardedEventStore } from "./ShardedEventStore";
 import { TenantScopedEventStore } from "./TenantScopedEventStore";
 import {
   EVENT_STORE_SPI_VERSION,
@@ -78,7 +78,7 @@ describe("EventStore SPI 2.5.0: sealingCapability", () => {
   });
 });
 
-describe("ShardedEventStore: the intersection rule", () => {
+describe("ShardedEventStore: the sealing capability fails closed on disagreement", () => {
   const marker = (cipher: string, covers: string[]): SealMarker => ({ v: 1, cipher, covers });
 
   it("one shard: the same cipher and covers, and opens() agrees", () => {
@@ -91,26 +91,80 @@ describe("ShardedEventStore: the intersection rule", () => {
     expect(got?.opens(marker("other", []))).toBe(false);
   });
 
-  it("covers is the INTERSECTION, and opens() needs every shard to open the marker", () => {
+  it("AGREE: identical capabilities on every shard answer that capability", () => {
+    const sharded = new ShardedEventStore([
+      new Sealing(capability("c", ["A.x", "B.y"])),
+      new Sealing(capability("c", ["A.x", "B.y"])),
+    ]);
+    const got = sharded.sealingCapability?.();
+    expect(got?.cipher).toBe("c");
+    expect(got?.covers).toEqual(["A.x", "B.y"]);
+    expect(got?.opens(marker("c", ["B.y"]))).toBe(true);
+    expect(got?.opens(marker("c", ["Z.z"]))).toBe(false);
+  });
+
+  it("ALL ABSENT: no shard seals -> undefined (not an error)", () => {
+    const sharded = new ShardedEventStore([new Sealing(undefined), new Sealing(undefined)]);
+    expect(sharded.sealingCapability?.()).toBeUndefined();
+  });
+
+  it("MIXED absent/present throws ShardSealingMismatchError (a store that seals on some shards seals)", () => {
+    const sharded = new ShardedEventStore([
+      new Sealing(capability("c", ["A.x"])),
+      new Sealing(undefined),
+    ]);
+    expect(() => sharded.sealingCapability?.()).toThrow(ShardSealingMismatchError);
+    const reversed = new ShardedEventStore([
+      new Sealing(undefined),
+      new Sealing(capability("c", ["A.x"])),
+    ]);
+    expect(() => reversed.sealingCapability?.()).toThrow(ShardSealingMismatchError);
+  });
+
+  it("DIFFERENT covers throws (no intersection that hides a sealing shard)", () => {
     const sharded = new ShardedEventStore([
       new Sealing(capability("c", ["A.x", "B.y"])),
       new Sealing(capability("c", ["B.y", "C.z"])),
     ]);
-    const got = sharded.sealingCapability?.();
-    expect(got?.covers).toEqual(["B.y"]);
-    expect(got?.opens(marker("c", ["B.y"]))).toBe(true);
-    expect(got?.opens(marker("c", ["A.x"]))).toBe(false); // shard 2 cannot
-    expect(got?.opens(marker("c", ["C.z"]))).toBe(false); // shard 1 cannot
+    expect(() => sharded.sealingCapability?.()).toThrow(ShardSealingMismatchError);
   });
 
-  it("is undefined unless EVERY shard has a capability of the SAME cipher", () => {
-    const a = new Sealing(capability("c", ["A.x"]));
-    expect(
-      new ShardedEventStore([a, new Sealing(undefined)]).sealingCapability?.()
-    ).toBeUndefined();
-    expect(
-      new ShardedEventStore([a, new Sealing(capability("d", ["A.x"]))]).sealingCapability?.()
-    ).toBeUndefined();
+  it("DIFFERENT cipher throws, and the error names the shards without key material", () => {
+    const sharded = new ShardedEventStore([
+      new Sealing(capability("c", ["A.x"])),
+      new Sealing(capability("d", ["A.x"])),
+    ]);
+    let caught: unknown;
+    try {
+      sharded.sealingCapability?.();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ShardSealingMismatchError);
+    const err = caught as ShardSealingMismatchError;
+    expect(err.shards.map((x) => x.cipher)).toEqual(["c", "d"]);
+    expect(err.shards.map((x) => x.index)).toEqual([0, 1]);
+  });
+
+  it("is LIVE: a registerSensitive-style change on ONE shard flips agree -> throws -> agree", () => {
+    let second = capability("c", ["A.x"]);
+    class Live extends InMemoryAsyncEventStore {
+      constructor(private readonly get: () => SealingCapability | undefined) {
+        super();
+      }
+      sealingCapability(): SealingCapability | undefined {
+        return this.get();
+      }
+    }
+    const sharded = new ShardedEventStore([
+      new Sealing(capability("c", ["A.x"])),
+      new Live(() => second),
+    ]);
+    expect(sharded.sealingCapability?.()?.covers).toEqual(["A.x"]);
+    second = capability("c", ["A.x", "B.y"]); // shard 2 registers another path
+    expect(() => sharded.sealingCapability?.()).toThrow(ShardSealingMismatchError);
+    second = capability("c", ["A.x"]);
+    expect(sharded.sealingCapability?.()?.covers).toEqual(["A.x"]);
   });
 
   it("is not offered at all when any shard lacks the method (a partial capability is worse than none)", () => {
@@ -119,18 +173,5 @@ describe("ShardedEventStore: the intersection rule", () => {
       new InMemoryAsyncEventStore(),
     ]);
     expect(sharded.sealingCapability).toBeUndefined();
-  });
-
-  it("is LIVE: it reflects a shard's configuration change on the next call", () => {
-    let current = capability("c", ["A.x"]);
-    class Live extends InMemoryAsyncEventStore {
-      sealingCapability(): SealingCapability {
-        return current;
-      }
-    }
-    const sharded = new ShardedEventStore([new Live()]);
-    expect(sharded.sealingCapability?.()?.covers).toEqual(["A.x"]);
-    current = capability("c", ["A.x", "B.y"]);
-    expect(sharded.sealingCapability?.()?.covers).toEqual(["A.x", "B.y"]);
   });
 });

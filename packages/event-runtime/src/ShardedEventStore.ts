@@ -116,23 +116,65 @@ function commonOptional(shards: readonly EventStore[]): EventStore {
  * and an observation taken on one shard never equals the anchor of another.
  */
 /**
- * The sealing capability of a fleet of shards: `undefined` unless every shard has one with the same
- * cipher; then the `covers` that every shard has, and an `opens` that every shard must agree to.
+ * ADR 0130 residuals D7/D8: the shards of one store disagree about sealing (some seal and some do
+ * not, or they seal different paths or with different ciphers). Misconfiguration, raised live on
+ * every `sealingCapability()` call and never papered over, because one answer serves two questions
+ * that must not diverge: "what can this node open" (D7) and "does this store seal at all" (D8, a
+ * non-empty `covers`). Carries each shard's cipher and covers, never key material.
  */
-function intersectSealing(
+export class ShardSealingMismatchError extends Error {
+  readonly code = "SHARD_SEALING_MISMATCH";
+  readonly shards: readonly {
+    readonly index: number;
+    readonly cipher: string | undefined;
+    readonly covers: readonly string[] | undefined;
+  }[];
+  constructor(caps: readonly (SealingCapability | undefined)[]) {
+    const shards = caps.map((c, index) => ({
+      index,
+      cipher: c?.cipher,
+      covers: c === undefined ? undefined : [...c.covers],
+    }));
+    super(
+      `shards disagree about sealing (${shards
+        .map(
+          (x) =>
+            `#${x.index}: ${x.cipher === undefined ? "none" : `${x.cipher} [${x.covers?.join(", ")}]`}`
+        )
+        .join("; ")}); every shard must seal the same paths with the same cipher, or none may seal`
+    );
+    this.name = "ShardSealingMismatchError";
+    this.shards = shards;
+  }
+}
+
+/**
+ * The sealing capability of a fleet of shards, FAIL CLOSED: no shard seals -> undefined; every shard
+ * reports the same cipher and the same covers -> that capability (`opens` needs every shard to
+ * agree); anything else throws {@link ShardSealingMismatchError}.
+ */
+function commonSealing(
   caps: readonly (SealingCapability | undefined)[]
 ): SealingCapability | undefined {
   const first = caps[0];
-  if (first === undefined) return undefined;
+  if (caps.every((c) => c === undefined)) return undefined;
+  if (first === undefined) throw new ShardSealingMismatchError(caps);
+  const covers = new Set(first.covers);
   const all: SealingCapability[] = [];
   for (const c of caps) {
-    if (c === undefined || c.cipher !== first.cipher) return undefined;
+    if (
+      c === undefined ||
+      c.cipher !== first.cipher ||
+      c.covers.length !== first.covers.length ||
+      !c.covers.every((e) => covers.has(e))
+    ) {
+      throw new ShardSealingMismatchError(caps);
+    }
     all.push(c);
   }
-  const covers = first.covers.filter((entry) => all.every((c) => c.covers.includes(entry)));
   return {
     cipher: first.cipher,
-    covers,
+    covers: first.covers,
     opens: (marker) => all.every((c) => c.opens(marker)),
   };
 }
@@ -198,10 +240,10 @@ export class ShardedEventStore implements EventStore {
       },
       // One clock for the fleet: every shard has it (commonOptional), read from the first shard.
       storeNow: "forward",
-      // ADR 0130 residuals D7: a stream may sit on any shard, so the node can open only what EVERY
-      // shard opens. Installed only when every shard has the method (commonOptional); undefined
-      // unless every shard reports a capability of the SAME cipher, then the intersection.
-      sealingCapability: () => intersectSealing(this.shards.map((s) => s.sealingCapability!())),
+      // ADR 0130 residuals D7/D8: a stream may sit on any shard, so shards must agree. Installed only
+      // when every shard has the method (commonOptional); fails closed (ShardSealingMismatchError)
+      // on any disagreement, so "can open" and "does seal" cannot diverge.
+      sealingCapability: () => commonSealing(this.shards.map((s) => s.sealingCapability!())),
       deleteExecution: async (id) => {
         await (await this.route(id)).deleteExecution!(id);
         this.placementCache.delete(id);

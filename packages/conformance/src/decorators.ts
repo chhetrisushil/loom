@@ -3,6 +3,7 @@ import {
   InMemoryAsyncEventStore,
   OPTIONAL_EVENT_STORE_METHODS,
   type OptionalEventStoreMethod,
+  type SealMarker,
   type SealingCapability,
   refusalsOf,
 } from "@loom/event-runtime";
@@ -92,6 +93,41 @@ export class ReferenceEventStore extends InMemoryAsyncEventStore {
   }
 }
 
+/**
+ * Problems with a decorator over {@link ReferenceEventStore} that is supposed to FORWARD
+ * `sealingCapability` unchanged: it must answer the reference capability's cipher, covers and
+ * `opens()` verdicts. Catches a decorator that forwards the method but swallows or alters its value
+ * (the drop case is `optionalSurfaceProblems`); either would make a sealing store read as plain.
+ */
+export function sealingForwardingProblems(
+  label: string,
+  store: Pick<EventStore, "sealingCapability">
+): string[] {
+  const got = store.sealingCapability?.();
+  const problems: string[] = [];
+  if (got === undefined) {
+    return [
+      `${label} returned no sealingCapability() over an inner store that has one (swallowed)`,
+    ];
+  }
+  if (got.cipher !== REFERENCE_SEALING.cipher) {
+    problems.push(`${label} altered sealingCapability().cipher (${String(got.cipher)})`);
+  }
+  if (JSON.stringify(got.covers) !== JSON.stringify(REFERENCE_SEALING.covers)) {
+    problems.push(`${label} altered sealingCapability().covers (${JSON.stringify(got.covers)})`);
+  }
+  const probes: [SealMarker, boolean][] = [
+    [{ v: 1, cipher: "loom/reference", covers: [] }, true],
+    [{ v: 1, cipher: "other", covers: [] }, false],
+  ];
+  for (const [marker, want] of probes) {
+    if (got.opens(marker) !== want) {
+      problems.push(`${label} altered sealingCapability().opens() for cipher ${marker.cipher}`);
+    }
+  }
+  return problems;
+}
+
 const REFERENCE_SEALING: SealingCapability = {
   cipher: "loom/reference",
   covers: ["STEP_COMPLETED.output"],
@@ -155,15 +191,11 @@ export function runEventStoreDecoratorConformance(
 
     it("hands the inner store's sealing capability through unchanged unless it owns the answer (SPI 2.5.0)", async () => {
       const store = wrap(inner());
-      const got = store.sealingCapability?.();
       if (options.sealing === "own" || options.inner !== undefined) {
         // Its own answer (or an inner of the author's choosing): presence was checked above.
         expect(store.sealingCapability === undefined).toBe(false);
       } else {
-        expect(got?.cipher).toBe(REFERENCE_SEALING.cipher);
-        expect(got?.covers).toEqual(REFERENCE_SEALING.covers);
-        expect(got?.opens({ v: 1, cipher: "loom/reference", covers: [] })).toBe(true);
-        expect(got?.opens({ v: 1, cipher: "other", covers: [] })).toBe(false);
+        expect(sealingForwardingProblems(label, store)).toEqual([]);
       }
       await store.close();
     });

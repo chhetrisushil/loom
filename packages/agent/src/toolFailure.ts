@@ -44,6 +44,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "InboxTopicStreamsRequiredError",
   // a sealed inbox payload this node cannot open: retrying on the same node cannot help (ADR 0130)
   "SealedPayloadUnreadableError",
+  // shards disagree about sealing: a misconfiguration, no retry helps (ADR 0130 residuals D7/D8)
+  "ShardSealingMismatchError",
   // the environment cannot host the runtime's scopes (no AsyncLocalStorage): no retry helps
   "AsyncContextUnavailableError",
   // fencing / supersession: this execution no longer owns its log; a leaked egress or spawn bound

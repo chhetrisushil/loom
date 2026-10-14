@@ -808,7 +808,6 @@ export const FOLD_VECTORS: FoldVector[] = [
       variables: {
         _input: {},
         _inbox: { cursors: { chat: 3 }, dedupe: ["k3"] },
-        _quarantined: {},
         _waitAnswers: { "#0": { kind: "inbox", name: "chat", payload: "hello" } },
       },
       frames: {},

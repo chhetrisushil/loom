@@ -2,7 +2,7 @@ export { TenantScopedEventStore } from "./TenantScopedEventStore";
 export { CoalescingEventStore } from "./CoalescingEventStore";
 export type { InboxStreams } from "./types";
 export type { CoalescingEventStoreOptions } from "./CoalescingEventStore";
-export { ShardedEventStore } from "./ShardedEventStore";
+export { ShardSealingMismatchError, ShardedEventStore } from "./ShardedEventStore";
 export type { MigrationResult, ShardedEventStoreOptions } from "./ShardedEventStore";
 export { ShardPlan, DEFAULT_BUCKETS } from "./ShardPlan";
 export type { ShardPlacement, ShardPlanJSON } from "./ShardPlan";

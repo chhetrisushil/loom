@@ -48,6 +48,7 @@ import {
   optionalSurfaceProblems,
   runEventStoreDecoratorConformance,
   runSnapshotStoreDecoratorConformance,
+  sealingForwardingProblems,
 } from "./decorators";
 import {
   type ContentStoreLike,
@@ -291,6 +292,46 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
       optionalSurfaceProblems("Liar", store, OPTIONAL_EVENT_STORE_METHODS, { head: "no tips" })
     ).toEqual([expect.stringContaining("declares head refused")]);
   });
+});
+
+// …and so must the VALUE check: a decorator that forwards `sealingCapability` (so the drop check
+// passes) but swallows or alters what it returns is just as wrong, and would make D8 read a sealing
+// store as plain. `sealingForwardingProblems` is the check the kit's own `it` asserts empty.
+describe("the decorator kit rejects a decorator that swallows or alters sealingCapability", () => {
+  const swallowing = (inner: ReferenceEventStore) =>
+    Object.assign(Object.create(inner) as ReferenceEventStore, {
+      sealingCapability: () => undefined,
+    });
+  const alteringCovers = (inner: ReferenceEventStore) =>
+    Object.assign(Object.create(inner) as ReferenceEventStore, {
+      sealingCapability: () => ({ ...inner.sealingCapability(), covers: [] }),
+    });
+  const alteringCipher = (inner: ReferenceEventStore) =>
+    Object.assign(Object.create(inner) as ReferenceEventStore, {
+      sealingCapability: () => ({ ...inner.sealingCapability(), cipher: "other" }),
+    });
+  const alteringOpens = (inner: ReferenceEventStore) =>
+    Object.assign(Object.create(inner) as ReferenceEventStore, {
+      sealingCapability: () => ({ ...inner.sealingCapability(), opens: () => false }),
+    });
+
+  it("passes a faithful forward", () => {
+    const inner = new ReferenceEventStore();
+    expect(sealingForwardingProblems("Faithful", inner)).toEqual([]);
+  });
+
+  for (const [name, make] of [
+    ["swallows it (returns undefined)", swallowing],
+    ["empties covers", alteringCovers],
+    ["changes the cipher", alteringCipher],
+    ["answers opens() differently", alteringOpens],
+  ] as const) {
+    it(`fails a decorator that ${name}`, () => {
+      const problems = sealingForwardingProblems("Liar", make(new ReferenceEventStore()));
+      expect(problems).toEqual([expect.stringContaining("Liar")]);
+      expect(() => expect(problems).toEqual([])).toThrow();
+    });
+  }
 });
 
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
