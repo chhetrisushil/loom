@@ -53,6 +53,10 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "KeyUnavailableError",
   // shards disagree about sealing: a misconfiguration, no retry helps (ADR 0130 residuals D7/D8)
   "ShardSealingMismatchError",
+  // heartbeat lease lost (taken over / past its self-fencing deadline / keeper closed): this driver
+  // must stop; and the node's lease store is in its quiet period: no tool-level retry helps (ADR 0130 D11)
+  "LeaseLostError",
+  "LeaseStoreQuietError",
   // the environment cannot host the runtime's scopes (no AsyncLocalStorage): no retry helps
   "AsyncContextUnavailableError",
   // fencing / supersession: this execution no longer owns its log; a leaked egress or spawn bound
