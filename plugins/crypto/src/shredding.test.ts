@@ -1,6 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { KeyUnavailableError } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, KeyUnavailableError } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import type { Snapshot } from "@loom/snapshot-runtime";
 import { InMemoryAsyncSnapshotStore, TenantScopedSnapshotStore } from "@loom/snapshot-runtime";
@@ -165,10 +164,7 @@ describe("K10.2 / A1 — shredding covers snapshots (no erasure theater)", () =>
     // fail loudly. The A1 hole (snapshot retains plaintext) is closed.
     await shredSubject(keys, innerEvents, "e1", { snapshotStore: innerSnaps });
     await expect(events.read("e1")).rejects.toBeInstanceOf(PayloadShreddedError);
-    // ADR 0130 residuals D7: this snapshot PREDATES the shred, so it cannot record it, and key-gone
-    // reads as key-unavailable here; the kernel asks the log (which holds the tombstone) and gets
-    // the erasure error. Either way the secret is not served.
-    await expect(snaps.loadLatest("e1")).rejects.toBeInstanceOf(KeyUnavailableError);
+    await expect(snaps.loadLatest("e1")).rejects.toBeInstanceOf(PayloadShreddedError);
   });
 });
 
@@ -380,8 +376,7 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
     });
     const opts = { subjectId: "subj", executionIds: ["a", "b"], snapshotStore: snaps };
     await expect(shredSubject(keys, flaky, "a", opts)).rejects.toBeInstanceOf(ShredIncompleteError);
-    // key gone; the snapshot predates the shred so it cannot record it (key-unavailable, D7)
-    await expect(snaps.loadLatest("b")).rejects.toBeInstanceOf(KeyUnavailableError);
+    await expect(snaps.loadLatest("b")).rejects.toBeInstanceOf(PayloadShreddedError); // key gone
     await shredSubject(keys, flaky, "a", opts);
     for (const id of ["a", "b"]) {
       const t = await tombstones(inner, id);

@@ -270,8 +270,16 @@ describe("key gone: KeyUnavailableError (no tombstone) vs PayloadShreddedError (
       state: state(),
       createdAt: 0,
     });
+    // WITHOUT `events` nothing can prove "no tombstone": the old PayloadShreddedError stands (a real
+    // shred must never read as a missing key).
+    const noLog = new EncryptingSnapshotStore(innerSnaps, new InMemoryKeyStore(), {
+      sensitive: ["variables._input.ssn"],
+    });
+    await expect(noLog.loadLatest("s")).rejects.toBeInstanceOf(PayloadShreddedError);
+    // WITH the raw log, an empty log proves there is no tombstone: key-unavailable
     const wrong = new EncryptingSnapshotStore(innerSnaps, new InMemoryKeyStore(), {
       sensitive: ["variables._input.ssn"],
+      events: new InMemoryAsyncEventStore(),
     });
     await expect(wrong.loadLatest("s")).rejects.toBeInstanceOf(KeyUnavailableError);
     // a snapshot that RECORDS the shred (compaction folded the tombstone into it) is an erasure
