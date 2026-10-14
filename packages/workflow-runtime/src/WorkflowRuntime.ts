@@ -4585,6 +4585,24 @@ export class WorkflowRuntime {
     return this.liveHandles.get(executionId);
   }
 
+  /**
+   * {@link liveHandle}, plus the in-flight start of a continuation successor: its sequence 0 is
+   * durable BEFORE its handle is registered (`execute` runs after the bootstrap append), and a
+   * reader that finds it in that window (`followToHead`) must be able to wait for the handle
+   * instead of guessing how many ticks it takes. The pending entry is registered before the
+   * successor's sequence 0 can be observed, so a head the log shows always resolves here: to its
+   * handle when this runtime drives it, to `undefined` when it does not (driven elsewhere, or
+   * already settled).
+   */
+  awaitLiveHandle(executionId: string): Promise<ExecutionHandle | undefined> {
+    const live = this.liveHandles.get(executionId);
+    if (live !== undefined) return Promise.resolve(live);
+    return this.startingSuccessors.get(executionId) ?? Promise.resolve(undefined);
+  }
+
+  /** Successors whose start is in flight (sequence 0 maybe durable, live handle not yet registered). */
+  private readonly startingSuccessors = new Map<string, Promise<ExecutionHandle | undefined>>();
+
   /** Whether `kernel.features.inbox` is on for this runtime (the `TimerService` leaves inbox rows alone when it is not). */
   get inboxOn(): boolean {
     return this.inboxEnabled;
@@ -6482,6 +6500,63 @@ export class WorkflowRuntime {
     const chain = chainOfState(seed, predecessorId);
     const generation = chain.generation + 1;
     const successorId = successorIdOf(chain.chainId, chain.generation);
+    // Registered BEFORE the successor's sequence 0 can be observed (see `awaitLiveHandle`) and
+    // settled on every exit: with the handle once `execute` registered it, else `undefined`.
+    let settleStarting!: (h: ExecutionHandle | undefined) => void;
+    const starting = new Promise<ExecutionHandle | undefined>((resolve) => {
+      settleStarting = resolve;
+    });
+    this.startingSuccessors.set(successorId, starting);
+    let started: ExecutionHandle | undefined;
+    try {
+      return await this.startSuccessorBody(args, {
+        first0,
+        durable,
+        seed,
+        chain,
+        generation,
+        successorId,
+        registered,
+        runner,
+        onHandle: (h) => {
+          started = h;
+        },
+      });
+    } finally {
+      if (this.startingSuccessors.get(successorId) === starting) {
+        this.startingSuccessors.delete(successorId);
+      }
+      settleStarting(started);
+    }
+  }
+
+  private async startSuccessorBody(
+    args: {
+      predecessorId: string;
+      workflowId: string;
+      workflowVersion: string;
+      carry: unknown;
+      deadlineMs: number | undefined;
+    },
+    c: {
+      first0: EventEnvelope | undefined;
+      durable: ExecutionState;
+      seed: ExecutionState;
+      chain: ChainIdentity;
+      generation: number;
+      successorId: string;
+      registered: RegisteredFlow | undefined;
+      runner: FlowRunner<unknown, unknown>;
+      onHandle: (h: ExecutionHandle) => void;
+    }
+  ): Promise<{
+    successorId: string;
+    chainId: string;
+    generation: number;
+    handle: ExecutionHandle | undefined;
+  }> {
+    const { predecessorId, workflowId } = args;
+    const { first0, durable, seed, chain, generation, successorId, registered, runner } = c;
     // The chain's absolute deadline is fixed at generation 0 and carried unchanged afterwards.
     const chainDeadline =
       chainDeadlineOf(seed, predecessorId) ??
@@ -6562,6 +6637,7 @@ export class WorkflowRuntime {
         registered?.definition.deadlineMs,
         actingAs
       );
+      c.onHandle(handle);
       return { successorId, chainId: chain.chainId, generation, handle };
     } catch (err) {
       if (this.startRecords.get(successorId) === startRecord) this.startRecords.delete(successorId);
