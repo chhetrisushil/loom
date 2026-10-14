@@ -167,9 +167,26 @@ describe("ShardedEventStore: the sealing capability fails closed on disagreement
     expect(sharded.sealingCapability?.()?.covers).toEqual(["A.x"]);
   });
 
-  it("is not offered at all when any shard lacks the method (a partial capability is worse than none)", () => {
+  it("a method-ABSENT shard counts as sealing nothing: sealing + absent throws, in both orders", () => {
+    const sealing = (): EventStore => new Sealing(capability("c", ["A.x"]));
+    const plain = (): EventStore => new InMemoryAsyncEventStore();
+    expect(plain().sealingCapability).toBeUndefined();
+    const a = new ShardedEventStore([sealing(), plain()]);
+    expect(a.sealingCapability).toBeTypeOf("function");
+    expect(() => a.sealingCapability?.()).toThrow(ShardSealingMismatchError);
+    const b = new ShardedEventStore([plain(), sealing()]);
+    expect(() => b.sealingCapability?.()).toThrow(ShardSealingMismatchError);
+  });
+
+  it("method-absent + undefined-returning shard -> undefined (nothing seals)", () => {
+    const sharded = new ShardedEventStore([new InMemoryAsyncEventStore(), new Sealing(undefined)]);
+    expect(sharded.sealingCapability).toBeTypeOf("function");
+    expect(sharded.sealingCapability?.()).toBeUndefined();
+  });
+
+  it("ALL shards lack the method -> the method is omitted (an all-plain fleet is unchanged)", () => {
     const sharded = new ShardedEventStore([
-      new Sealing(capability("c", ["A.x"])),
+      new InMemoryAsyncEventStore(),
       new InMemoryAsyncEventStore(),
     ]);
     expect(sharded.sealingCapability).toBeUndefined();
