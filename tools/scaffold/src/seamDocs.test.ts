@@ -173,6 +173,8 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
       ManifestView: "compiler-manifest DATA — there is no behaviour to supply",
       CatalogLike: "an adapter shape for an existing catalog object, not a pluggable backend",
       ResolvedEnvelope: "an OUTPUT on LoomApp (the resolved bounds), not something an app supplies",
+      HeartbeatConfig:
+        "heartbeat-lease SETTINGS (ttl, cadence, enabled); the pluggable part is its `store`, a LeaseStore (ADR 0130 D11)",
     };
     const options = [...config.matchAll(/^\s{2,4}(\w+)\?:\s*([A-Z]\w+);/gm)];
     const missing: string[] = [];
