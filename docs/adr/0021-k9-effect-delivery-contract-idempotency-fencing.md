@@ -99,7 +99,9 @@ A3 rejected an EXTRA append per effect, and that still holds: no new event is ad
 in that gap left no "running" frame and the non-idempotent effect was silently re-run. Now
 `executeLive` awaits the journal's durable tail after committing `STEP_STARTED` and before the
 dispatch gate and effect dispatch, **only** when the tool is declared `idempotent: false`. Cost:
-one awaited store round trip on those steps (and if the context was sealed or frozen during that
-await, the call never starts, like any later `ctx.run` on a frozen context). Undeclared (A2) and `idempotent: true` tools keep the
+one awaited store round trip on those steps (a terminal-SEALED context never dispatches, so
+if it was sealed during that await the call never starts; a park decided during the await does
+not block it: the draining step counts as in flight, so the park barrier waits for it and it runs
+to completion, journaling its result before `EXECUTION_SUSPENDED`, like any in-flight step). Undeclared (A2) and `idempotent: true` tools keep the
 write-behind hot path unchanged. A refused write (stale fence, storage error) throws before
 dispatch: the effect never runs and the run fails as any storage failure. Replay never drains.

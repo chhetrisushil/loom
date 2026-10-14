@@ -931,10 +931,15 @@ export class WorkflowContextImpl implements WorkflowContext {
       } finally {
         this.inFlight--;
       }
-      // The drain yielded: a park or terminal seal may have landed (sealed inbox payload, terminal
-      // commit, a park barrier that gave up). Same rule as step entry above - a frozen/sealed/parked
-      // context starts no NEW work, and the call simply never starts (the resume re-issues it).
-      if (this.frozen || this.sealed || scopeIsParked(scope)) return new Promise<TOut>(() => {});
+      // The drain yielded: a terminal seal may have landed (terminal commit, sealed inbox payload,
+      // a park barrier that gave up). A sealed context never dispatches: nothing it did could be
+      // recorded, and nothing waits on its idle set any more, so the call simply never settles.
+      // A FROZEN / parked-scope context is different: this step was already in flight (it holds
+      // activeWork, so the park barrier is waiting for it) and, like any in-flight step at a
+      // barrier, it runs to completion and journals its result before EXECUTION_SUSPENDED.
+      // Bailing here would leave activeWork > 0 forever (stalling the barrier for parkDrainMs)
+      // and strand a STEP_STARTED with no dispatch, which resume would park as EFFECT_INDOUBT.
+      if (this.sealed) return new Promise<TOut>(() => {});
     }
 
     // K8.3 — declared step deadline (`timeoutMs`), anchored to the step's FIRST
