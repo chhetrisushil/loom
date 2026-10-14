@@ -292,6 +292,9 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../llm
+      '@loom/plugin-crypto':
+        specifier: workspace:*
+        version: link:../../plugins/crypto
       '@loom/scaffold':
         specifier: workspace:*
         version: link:../../tools/scaffold
