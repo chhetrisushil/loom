@@ -14,6 +14,7 @@ import { INBOX_WAKE_AT } from "./inbox";
 import * as operatorEntry from "./operator";
 import { recoverAbandoned } from "./recoverAbandoned";
 import {
+  OpaqueQuarantineEventStore,
   SealGuardedEventStore,
   SealGuardedSnapshotStore,
   SealedStreamUnreadableError,
@@ -37,6 +38,10 @@ const id = (): string => `sm-${++seq}-${Math.random().toString(36).slice(2, 6)}`
 runEventStoreDecoratorConformance(
   "SealGuardedEventStore",
   (inner) => new SealGuardedEventStore(inner)
+);
+runEventStoreDecoratorConformance(
+  "OpaqueQuarantineEventStore",
+  (inner) => new OpaqueQuarantineEventStore(inner)
 );
 runSnapshotStoreDecoratorConformance(
   "SealGuardedSnapshotStore",

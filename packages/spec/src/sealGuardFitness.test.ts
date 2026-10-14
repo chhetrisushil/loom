@@ -161,6 +161,87 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
   });
 });
 
+// User ruling 2026-10-14 (read past sealed payloads): the quarantine verbs' log fold may step over a
+// `MESSAGE_CONSUMED.payload` seal. The bypass read must be reachable from the quarantine verbs ONLY,
+// and the state folded through it must be unable to reach a snapshot or a restore.
+describe("the opaque quarantine read is reachable only from the quarantine verbs", () => {
+  const RT = "packages/workflow-runtime/src/WorkflowRuntime.ts";
+  const KERNEL = sourceFiles("packages/workflow-runtime/src");
+
+  it("`quarantineReadView` / `quarantineReadsFor` are named in exactly the pinned places", () => {
+    const hits = (re: RegExp): string[] => KERNEL.filter((f) => re.test(strip(read(f)))).sort();
+    expect(hits(/\bquarantineReadView\b/)).toEqual([
+      "packages/workflow-runtime/src/WorkflowRuntime.ts",
+      "packages/workflow-runtime/src/sealGuard.ts",
+    ]);
+    expect(hits(/\bquarantineReadsFor\b/)).toEqual([RT]);
+    expect(hits(/\bassertStreamReadableOpaque\b|\bOpaqueQuarantineEventStore\b/)).toEqual([
+      "packages/workflow-runtime/src/sealGuard.ts",
+    ]);
+    const src = strip(read(RT));
+    expect(src.match(/\.quarantineReadView\(\)/g)).toHaveLength(1); // inside quarantineReadsFor
+    // nothing outside the kernel source reaches it, and the entries do not export it
+    for (const f of ["index.ts", "operator.ts"]) {
+      expect(strip(read(`packages/workflow-runtime/src/${f}`)), f).not.toMatch(
+        /quarantineReadView|opaqueToQuarantineFold|OpaqueQuarantine|TransientFold/
+      );
+    }
+    for (const dir of ["packages/app/src", "packages/agent/src", "plugins/crypto/src"]) {
+      for (const f of sourceFiles(dir)) {
+        expect(strip(read(f)), f).not.toMatch(/quarantineReadView|opaqueToQuarantineFold/);
+      }
+    }
+  });
+
+  it("every `quarantineReadsFor(` call sits in a pinned quarantine-verb read method", () => {
+    const src = strip(read(RT));
+    const allowed = new Set([
+      "classifyTip",
+      "locatePark",
+      "findReleaseFact",
+      "findReleaseFactBack",
+      "foldFromCompleteLog",
+    ]);
+    const callers: string[] = [];
+    for (const m of src.matchAll(/this\.quarantineReadsFor\(/g)) {
+      const head = src.slice(0, m.index);
+      const decl = [
+        ...head.matchAll(/\n {2}(?:private |public |protected )?(?:async )?(\w+)\s*\(/g),
+      ].at(-1);
+      callers.push(decl?.[1] ?? "?");
+    }
+    expect(callers.length).toBeGreaterThan(0);
+    for (const c of callers) expect(allowed.has(c), c).toBe(true);
+    expect(new Set(callers)).toEqual(allowed);
+    // a second `foldState` argument (the verb) is passed only in the verbs' own paths
+    const verbArgs = [...src.matchAll(/this\.foldState\(\s*[\w.!]+\s*,\s*([^)]+)\)/g)].map((m) =>
+      (m[1] ?? "").trim()
+    );
+    expect(verbArgs.length).toBeGreaterThan(0);
+    for (const a of verbArgs) {
+      expect([
+        "verb",
+        "logFoldFor",
+        "opts.logFoldFor",
+        '"releaseInbox"',
+        '"quarantineInbox"',
+      ]).toContain(a);
+    }
+  });
+
+  it("a state folded past sealed payloads is branded transient, minted in one place, and refused by snapshots and restore", () => {
+    const src = strip(read(RT));
+    expect(src.match(/markTransientFold\(/g)).toHaveLength(1);
+    const fold = src.slice(src.indexOf("private async foldFromCompleteLog("));
+    expect(fold.slice(0, fold.indexOf("\n  }\n"))).toMatch(/markTransientFold\(/);
+    expect(src).toMatch(/assertNotTransientFold\(preloadedState, "restoreFromState"\)/);
+    const sg = strip(read("packages/workflow-runtime/src/sealGuard.ts"));
+    expect(sg).toMatch(
+      /async save\(snapshot: Snapshot\)[^{]*\{\s*assertNotTransientFold\(snapshot\.state/
+    );
+  });
+});
+
 describe("the operator detail stays off the main entry", () => {
   it("main index does not export sealedDetailOf; the operator entry and package exports do", () => {
     expect(strip(read("packages/workflow-runtime/src/index.ts"))).not.toMatch(/sealedDetailOf/);

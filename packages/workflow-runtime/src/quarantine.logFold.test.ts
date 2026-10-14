@@ -1,9 +1,15 @@
 import { unwrapTainted } from "@loom/classify";
-import { EncryptingSnapshotStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+import {
+  EncryptingEventStore,
+  EncryptingSnapshotStore,
+  InMemoryKeyStore,
+  type KeyStore,
+} from "@loom/plugin-crypto";
 import { describe, expect, it } from "vitest";
 import {
   OP,
   SECRET,
+  SENSITIVE,
   consumedOf,
   eventsByKind,
   keyOf,
@@ -205,5 +211,119 @@ describe("quarantineInbox / releaseInbox on an incapable node with a SEALED chec
       .catch((x) => x);
     expect(err).toBeInstanceOf(InboxQuarantineRefusedError);
     expect(err.reason).toBe("not-sealed");
+  });
+});
+
+/** A key store that counts every ask: proof that the incapable node never reached for a key. */
+class SpyKeys implements KeyStore {
+  asks = 0;
+  readonly inner = new InMemoryKeyStore();
+  getOrCreate(s: string) {
+    this.asks++;
+    return this.inner.getOrCreate(s);
+  }
+  get(s: string) {
+    this.asks++;
+    return this.inner.get(s);
+  }
+  destroy(s: string) {
+    return this.inner.destroy(s);
+  }
+}
+
+// User ruling 2026-10-14 (read past sealed payloads): the log fold reads past a marker whose `covers`
+// lists only `MESSAGE_CONSUMED.payload` (an opaque value the fold copies and never interprets).
+async function sealedHistoryScene(sensitive: Record<string, readonly string[]> = SENSITIVE) {
+  const raw = memory.make();
+  const keys = new SpyKeys();
+  const sealing = new EncryptingEventStore(raw.eventStore, keys, {
+    sensitive: { ...sensitive },
+    subjectOf: (e: { executionId: string }) => e.executionId,
+  } as never);
+  const sealedSnaps = new EncryptingSnapshotStore(raw.snapshotStore, keys, { sealState: true });
+  const a = build(
+    { inboxAutoRelease: false },
+    { ...raw, eventStore: sealing, snapshotStore: sealedSnaps }
+  );
+  const b = build({}, { ...raw });
+  const f = flow("lf-hist", async (ctx) => {
+    await ctx.run(echo, {});
+    const got: unknown[] = [];
+    while (got.length < 3) got.push(unwrapTainted((await ctx.receive<unknown>("a")) as never));
+    return got;
+  });
+  a.rt.registerFlow(f.definition, f.runner);
+  b.rt.registerFlow(f.definition, f.runner);
+  const e = `logfold-hist-${Math.random().toString(36).slice(2, 8)}`;
+  await (await a.rt.start(f, {}, { executionId: e })).waitForSuspend();
+  await until(async () => (await a.rt.loadState(e))?.status === "suspended");
+  // A capable node delivers a SEALED message first: the owner log now holds a sealed MESSAGE_CONSUMED.
+  await put(a.eventStore, e, { topic: "a", messageId: "a0", payload: { ssn: SECRET } });
+  await a.rt.notifyInbox(e);
+  await until(async () =>
+    consumedOf(await raw.eventStore.read(e)).some((c) => c.messageId === keyOf("a0"))
+  );
+  await until(async () => (await a.rt.loadState(e))?.status === "suspended");
+  await put(a.eventStore, e, { topic: "a", messageId: "a1", payload: { ssn: SECRET } });
+  return { raw, keys, a, b, e };
+}
+
+describe("the log fold reads past a sealed payload it does not interpret (user ruling 2026-10-14)", () => {
+  it("precondition: the owner log holds a MESSAGE_CONSUMED sealed under a marker the incapable node cannot open", async () => {
+    const s = await sealedHistoryScene();
+    const consumed = await eventsByKind(s.raw.eventStore, s.e, "MESSAGE_CONSUMED");
+    expect(consumed).toHaveLength(1);
+    expect((consumed[0]?.metadata as { seal?: { covers: string[] } })?.seal?.covers).toEqual([
+      "MESSAGE_CONSUMED.payload",
+    ]);
+    expect(isSealedUnreadable(await s.b.rt.loadState(s.e).catch((x) => x))).toBe(true);
+  });
+
+  it("quarantine and discard-release work on the incapable node; no key is asked; no state escapes; the general fold still refuses", async () => {
+    const s = await sealedHistoryScene();
+    s.keys.asks = 0;
+    const q = await s.b.rt.quarantineInbox(s.e, { topic: "a" }, { principal: OP });
+    expect(q).toMatchObject({ executionId: s.e, topic: "a", messageId: "a1" });
+    const r = await s.b.rt.releaseInbox(
+      s.e,
+      { topic: "a", messageId: "a1", disposition: "discard" },
+      { principal: OP }
+    );
+    expect(r).toMatchObject({ disposition: "discard", changed: true });
+    expect(s.keys.asks).toBe(0);
+    // nothing returned carries ciphertext, plaintext, or a state
+    for (const out of [q, r]) {
+      const json = JSON.stringify(out);
+      expect(json).not.toContain("__loomEnc");
+      expect(json).not.toContain(SECRET);
+      expect(json).not.toContain('"variables"');
+    }
+    // the checkpoint at rest is still the capable node's sealed one (nothing was written for the fold)
+    expect(JSON.stringify((await s.raw.snapshotStore.loadLatest(s.e))?.state)).toContain(
+      "__loomEnc"
+    );
+    // D7 unchanged everywhere else
+    expect(isSealedUnreadable(await s.b.rt.loadState(s.e).catch((x) => x))).toBe(true);
+    expect(isSealedUnreadable(await s.b.rt.notifyInbox(s.e).catch((x) => x))).toBe(true);
+    const sealedSeq = (await eventsByKind(s.raw.eventStore, s.e, "MESSAGE_CONSUMED"))[0]
+      ?.sequence as number;
+    expect(isSealedUnreadable(await s.b.rt.fork(s.e, sealedSeq).catch((x) => x))).toBe(true);
+    expect(
+      isSealedUnreadable(
+        await s.b.rt.send(s.e, { topic: "a", messageId: "zz", payload: 1 } as never).catch((x) => x)
+      )
+    ).toBe(true);
+  });
+
+  it("a log event whose seal covers a field the fold needs is still refused (typed denial), appending nothing", async () => {
+    // STEP_COMPLETED.output is sealed too: the opaque rule admits MESSAGE_CONSUMED.payload only.
+    const s = await sealedHistoryScene({ ...SENSITIVE, STEP_COMPLETED: ["output"] });
+    const before = await kindsOf(s.raw.eventStore, s.e);
+    const err = await s.b.rt
+      .quarantineInbox(s.e, { topic: "a" }, { principal: OP })
+      .catch((x) => x);
+    expect(isSealedUnreadable(err)).toBe(true);
+    expect(err).toBeInstanceOf(ExecutionDeniedError);
+    expect(await kindsOf(s.raw.eventStore, s.e)).toEqual(before);
   });
 });
