@@ -307,7 +307,7 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
     });
     for (const id of ids) {
       const [t] = await tombstones(inner, id);
-      expect(t?.sequence).toBe(6); // after the checkpoint at 5, not in its slot
+      expect(t?.sequence).toBe(7); // after the checkpoint at 5 and the erase intent at 6
     }
     expect(await keys.get("subj")).toBeNull();
   });
@@ -318,7 +318,7 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
     let failB = true;
     const flaky = Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {
       append: async (e: Parameters<InMemoryAsyncEventStore["append"]>[0]) => {
-        if (e.executionId === "b" && failB) {
+        if (e.executionId === "b" && e.eventType === "PAYLOAD_SHREDDED" && failB) {
           failB = false;
           throw new Error("write conflict");
         }
@@ -340,7 +340,7 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
       snapshotStore: snaps,
     });
     for (const id of ids) expect(await tombstones(inner, id)).toHaveLength(1);
-    expect((await tombstones(inner, "b"))[0]?.sequence).toBe(6);
+    expect((await tombstones(inner, "b"))[0]?.sequence).toBe(7);
   });
 
   it("tenant-scoped over encrypting: the retry after ShredIncompleteError still completes (loadLatestSealed is forwarded)", async () => {
@@ -369,7 +369,7 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
     let failB = true;
     const flaky = Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {
       append: async (e: Parameters<InMemoryAsyncEventStore["append"]>[0]) => {
-        if (e.executionId === "b" && failB) {
+        if (e.executionId === "b" && e.eventType === "PAYLOAD_SHREDDED" && failB) {
           failB = false;
           throw new Error("write conflict");
         }
@@ -383,7 +383,7 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
     await shredSubject(keys, flaky, "a", opts);
     for (const id of ["a", "b"]) {
       const t = await tombstones(inner, id);
-      expect(t.map((e) => e.sequence)).toEqual([6]);
+      expect(t.map((e) => e.sequence)).toEqual([7]);
     }
   });
 

@@ -1,5 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { type EventStore, isKeyUnavailable } from "@loom/event-runtime";
+import { type EventStore, erasureWindowView } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import type { SubjectIndex } from "./SubjectIndex";
 
@@ -59,9 +59,11 @@ export async function exportSubject(
     try {
       events = await options.eventStore.read(executionId);
     } catch (err) {
-      // The ShredIncomplete window (key destroyed, tombstone not yet written): the redacted view.
-      if (!isKeyUnavailable(err) || !err.redacted) throw err;
-      events = [...err.redacted];
+      // The ShredIncomplete window (key destroyed, tombstone not yet written): the redacted view,
+      // only with the log's durable erase intent. A node that lacks the key is not an erasure.
+      const window = erasureWindowView(err);
+      if (window === undefined) throw err;
+      events = [...window];
     }
     if (events.length === 0) continue; // deleted (retention) — nothing left to export
     // Seed the fold with identity — foldEvents takes executionId/workflowId from `initial`,

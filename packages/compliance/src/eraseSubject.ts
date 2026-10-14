@@ -3,8 +3,8 @@ import {
   type EventStore,
   type InboxStreams,
   chainIdOfFirst,
+  erasureWindowView,
   inboxStreamsOfChainDeep,
-  isKeyUnavailable,
 } from "@loom/event-runtime";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
@@ -314,8 +314,11 @@ export class EraseCoordinator {
       }
       // The ShredIncomplete window (ADR 0130 D7): the key is destroyed but the tombstone append
       // failed, so no PAYLOAD_SHREDDED exists yet and the read is `KeyUnavailableError`. Its
-      // redacted view (plaintext status and tip) lets the retry judge liveness and complete.
-      if (isKeyUnavailable(err) && err.redacted) return [...err.redacted];
+      // redacted view (plaintext status and tip) lets the retry judge liveness and complete, but
+      // ONLY when the log records this subject's durable erase intent: without it the node merely
+      // lacks the key (wrong key, partitioned key store) and the error is rethrown.
+      const window = erasureWindowView(err);
+      if (window !== undefined) return [...window];
       throw err;
     }
   }

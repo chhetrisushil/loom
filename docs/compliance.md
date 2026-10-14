@@ -222,7 +222,14 @@ nothing is appended, the execution is never failed, and a node that CAN open it 
   reads keep raising `PayloadShreddedError`. No tombstone means this node's `KeyStore` lacks the key:
   the store raises `KeyUnavailableError`, which the kernel turns into the refusal above. Between
   `keys.destroy` and a failed tombstone write (`ShredIncompleteError`) a read reports key-unavailable
-  until the retry completes.
+  until the retry completes. That window is recognised only on durable evidence that THIS erasure
+  began: `shredSubject` appends an `ERASURE_PENDING` (an existing, ignorable, pure-audit kind) naming
+  the subject to each affected execution's log BEFORE it destroys the key (intent, then destroy,
+  then tombstone). `eraseSubject` and `exportSubject` complete in the window only when the log holds
+  that intent; a node whose key store never had the key (a wrong key, a partitioned key store) has
+  none, so `eraseSubject`/`exportSubject` rethrow `KeyUnavailableError` and `shredSubject` refuses
+  with it, writing and destroying nothing, whenever sealed data is present and the key is absent. A
+  window left by a pre-intent version has no intent and must be completed by hand.
 - **Unmarked streams behave exactly as before.** A stream written without a marker (before 1.25.0,
   or by a third-party sealer) makes no claim and is never refused for lacking one; the inbox shape
   guard (ADR 0130 D2-D4) still covers inbox payloads. Pre-1.25.0 nodes ignore the marker and keep

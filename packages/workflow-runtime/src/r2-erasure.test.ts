@@ -222,7 +222,7 @@ for (const backend of inboxBackends("erase")) {
       // with the typed error rather than folding ciphertext...
       const err = await h.rt.resume(e, { eventType: "Go", payload: null }).catch((x) => x);
       expect(err).toBeInstanceOf(PayloadShreddedError);
-      expect((await raw.eventStore.read(e)).length).toBe(before + 1); // only the tombstone
+      expect((await raw.eventStore.read(e)).length).toBe(before + 2); // only the erase intent and the tombstone
       // ...and so does the strict query, whose error carries the REDACTED view for tooling.
       const q = await h.rt.loadState(e, { principal }).catch((x) => x);
       expect(q).toBeInstanceOf(PayloadShreddedError);

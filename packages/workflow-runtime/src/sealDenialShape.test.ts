@@ -34,7 +34,8 @@ type Denied = { op: string; executionId: string; principal: unknown; reason: unk
 function node(
   store: EventStore,
   timers = new InMemoryTimerStore(),
-  policy: Parameters<typeof executionAccessPolicy>[0] = { rules: { discard: "tenant" } }
+  policy: Parameters<typeof executionAccessPolicy>[0] = { rules: { discard: "tenant" } },
+  snapshotStore: InMemoryAsyncSnapshotStore = new InMemoryAsyncSnapshotStore()
 ) {
   const denied: Denied[] = [];
   const f = secret();
@@ -50,7 +51,7 @@ function node(
         reason?: string
       ) => denied.push({ op: r.op, executionId: r.executionId, principal: r.principal, reason }),
     },
-    { eventStore: store, snapshotStore: new InMemoryAsyncSnapshotStore(), timers }
+    { eventStore: store, snapshotStore, timers }
   );
   h.rt.registerFlow(f.definition, f.runner);
   return { h, f, denied };
@@ -257,6 +258,51 @@ describe("a sealed refusal is worded as the ordinary unknown-owner call of the s
         }
       });
     }
+  }
+
+  // The SNAPSHOT path carries the plaintext workflow id too (`snapshot.workflowId`): a whole-state
+  // sealed snapshot read by a node that did not open it is worded as the ordinary call of that workflow.
+  for (const [label, allow] of [
+    ["permitted workflow: the ordinary unknown-owner denial", ["secret"]],
+    ["non-permitted workflow: the ordinary workflow denial", ["other"]],
+  ] as const) {
+    it(`snapshot path, allowWorkflows, ${label}`, async () => {
+      const policy = { allowWorkflows: allow, rules: { discard: "tenant" as const } };
+      const E = "shape-snap";
+      const plainInner = new InMemoryAsyncEventStore();
+      const f0 = secret();
+      const setup = build(
+        {},
+        { eventStore: plainInner, snapshotStore: new InMemoryAsyncSnapshotStore() }
+      );
+      setup.rt.registerFlow(f0.definition, f0.runner);
+      await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
+      const base = node(plainInner, new InMemoryTimerStore(), policy);
+      // plaintext events, but the checkpoint's whole state is a sealed envelope
+      const sealedSnaps = new InMemoryAsyncSnapshotStore();
+      await sealedSnaps.save({
+        id: "cp-sealed",
+        executionId: E,
+        workflowId: "secret",
+        sequence: 1,
+        state: { __loomEnc: "AAAA" } as never,
+        createdAt: 0,
+      });
+      const sealed = node(plainInner, new InMemoryTimerStore(), policy, sealedSnaps);
+      let refused = 0;
+      for (const call of [
+        (n: ReturnType<typeof node>) => n.h.rt.loadState(E, { principal: STRANGER }),
+        (n: ReturnType<typeof node>) => n.h.rt.cancel(E, "no", { principal: STRANGER }),
+      ]) {
+        const want = await rejection(call(base));
+        const got = await rejection(call(sealed));
+        if (!isSealedUnreadable(got)) continue; // this op does not read the checkpoint first
+        refused++;
+        expect(shape(got)).toEqual(shape(want));
+        if (allow[0] === "other") expect((got as Error).message).toContain('"secret"');
+      }
+      expect(refused).toBeGreaterThanOrEqual(1);
+    });
   }
 
   it("unknownOwner: allow still refuses, with the generic unknown-owner wording", async () => {
