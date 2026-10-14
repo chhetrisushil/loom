@@ -180,6 +180,9 @@ describe("S2 — stores the composition exposes", () => {
     const app = defineConfig({
       storage: { kind: "memory" },
       flows: [sleeper()],
+      // ADR 0130 D11 (S7c): with heartbeat ON (the default) the wake claims through the runtime's
+      // keeper, not `timers.leases`; this test pins the legacy poll-claim path, so heartbeat is off.
+      durability: { heartbeat: { enabled: false } },
       timers: {
         store: new InMemoryTimerStore(),
         pollMs: 2,
