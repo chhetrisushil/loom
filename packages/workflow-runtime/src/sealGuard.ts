@@ -11,6 +11,7 @@ import {
 } from "@loom/event-runtime";
 import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { UNKNOWN_OWNER_REASON } from "./executionAccessPolicy";
+import { assertNotTransientFold } from "./transientFold";
 import { ExecutionDeniedError, type ExecutionOp, SealedPayloadUnreadableError } from "./types";
 
 // ── ADR 0130 residuals D7 - the stream-level seal guard ──────────────────────────────────────
@@ -179,6 +180,66 @@ export function assertStreamReadable(
   }
 }
 
+// ── User ruling 2026-10-14: the quarantine verbs read PAST sealed payload values ─────────────
+//
+// The fold copies `MESSAGE_CONSUMED.payload` into `_waitAnswers` and never interprets it; every
+// field the inbox / quarantine / park / dedupe / cursor / status fold reads (`waitId`, `topic`,
+// `messageId`, `inboxSeq`, `key`, `heldAt`, `operator`, `disposition`, ...) is plaintext. So a marker
+// whose `covers` is exactly a subset of `<its own event type>.payload[.…]` on a MESSAGE_CONSUMED
+// envelope can be read as an OPAQUE value. Anything else covered (an event type other than
+// MESSAGE_CONSUMED, any other path, an empty or malformed marker) is still refused.
+
+/** The event types and payload value path whose sealing the quarantine fold can step over. */
+const OPAQUE_OK_TYPE = "MESSAGE_CONSUMED";
+const OPAQUE_OK_PATH = `${OPAQUE_OK_TYPE}.payload`;
+/** The routing fields the fold interprets: if any is a ciphertext envelope the marker lied. */
+const FOLD_READ_FIELDS = ["waitId", "topic", "messageId", "inboxSeq"] as const;
+
+/** May the quarantine fold step over this MARKED envelope without opening it? */
+export function opaqueToQuarantineFold(e: EventEnvelope, marker: SealMarker): boolean {
+  if (e.eventType !== OPAQUE_OK_TYPE) return false;
+  if (marker.covers.length === 0) return false;
+  for (const c of marker.covers) {
+    if (c !== OPAQUE_OK_PATH && !c.startsWith(`${OPAQUE_OK_PATH}.`)) return false;
+  }
+  const p = e.payload as Record<string, unknown> | null | undefined;
+  if (typeof p !== "object" || p === null) return false;
+  return !FOLD_READ_FIELDS.some((f) => isCipherEnvelope(p[f]));
+}
+
+/**
+ * Like {@link assertStreamReadable}, except a marked envelope that {@link opaqueToQuarantineFold}
+ * admits is left in place as an opaque ciphertext value (never decrypted, never tried). Only the
+ * quarantine verbs' read view calls this.
+ */
+function assertStreamReadableOpaque(
+  executionId: string,
+  events: readonly EventEnvelope[],
+  capability: () => SealingCapability | undefined
+): void {
+  if (isReservedStream(executionId)) return;
+  let cap: SealingCapability | undefined;
+  let resolved = false;
+  for (const e of events) {
+    const marker = markerOf(e);
+    if (marker === undefined) continue;
+    if (!resolved) {
+      cap = capability();
+      resolved = true;
+    }
+    if (marker !== "malformed") {
+      if (cap?.opens(marker) === true) continue;
+      if (opaqueToQuarantineFold(e, marker)) continue;
+    }
+    throw new SealedStreamUnreadableError("query", executionId, {
+      reason: "marker-unopenable",
+      sequence: e.sequence,
+      covers: marker === "malformed" ? [] : [...marker.covers],
+      workflowId: e.workflowId,
+    });
+  }
+}
+
 /** Translate a crypto store's `KeyUnavailableError` into the denial-shaped refusal; rethrow anything else. */
 function translate(executionId: string, err: unknown): never {
   if (isKeyUnavailable(err)) {
@@ -247,8 +308,23 @@ export class SealGuardedEventStore implements EventStore {
     } catch (err) {
       return translate(executionId, err);
     }
-    assertStreamReadable(executionId, events, () => this.inner.sealingCapability?.());
+    this.check(executionId, events);
     return events;
+  }
+
+  /** The seal check every read passes; the quarantine view overrides it (and only it). */
+  protected check(executionId: string, events: readonly EventEnvelope[]): void {
+    assertStreamReadable(executionId, events, () => this.inner.sealingCapability?.());
+  }
+
+  /**
+   * The view the quarantine verbs (and only they) read an owner's log through: it steps
+   * over a marker {@link opaqueToQuarantineFold} admits and refuses every other exactly as the
+   * guard does. The one place the bypass is reachable; `quarantineReadsFor` in `WorkflowRuntime`
+   * is its only caller (pinned by `sealGuardFitness.test.ts`).
+   */
+  quarantineReadView(): EventStore {
+    return new OpaqueQuarantineEventStore(this.inner);
   }
 
   append(envelope: EventEnvelope): Promise<void> {
@@ -266,7 +342,7 @@ export class SealGuardedEventStore implements EventStore {
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void> {
     return this.inner.subscribe(executionId, (event) => {
       try {
-        assertStreamReadable(executionId, [event], () => this.inner.sealingCapability?.());
+        this.check(executionId, [event]);
       } catch {
         return; // never hand a subscriber an envelope this node cannot open
       }
@@ -276,6 +352,18 @@ export class SealGuardedEventStore implements EventStore {
 
   close(): Promise<void> {
     return this.inner.close();
+  }
+}
+
+/**
+ * The quarantine verbs' view of the event store (see {@link SealGuardedEventStore.quarantineReadView}):
+ * the same guarded decorator except that a marker {@link opaqueToQuarantineFold} admits is left in
+ * place as an opaque ciphertext value. Exported for the decorator conformance kit only (not on the package
+ * entry); `quarantineReadView` is its one production constructor, reached via `quarantineReadsFor`.
+ */
+export class OpaqueQuarantineEventStore extends SealGuardedEventStore {
+  protected override check(executionId: string, events: readonly EventEnvelope[]): void {
+    assertStreamReadableOpaque(executionId, events, () => this.inner.sealingCapability?.());
   }
 }
 
@@ -341,6 +429,7 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
 
   async save(snapshot: Snapshot): Promise<void> {
     this.saveGuard?.(snapshot, this.inner);
+    assertNotTransientFold(snapshot.state, "a snapshot");
     return this.inner.save(snapshot);
   }
   loadLatest(executionId: string): Promise<Snapshot | null> {

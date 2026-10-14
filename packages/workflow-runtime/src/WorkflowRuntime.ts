@@ -167,6 +167,7 @@ import {
   discardDecisionId,
   strayPassthroughMessage,
 } from "./strayPassthroughs";
+import { assertNotTransientFold, markTransientFold } from "./transientFold";
 import {
   ApprovalRejectedError,
   CompactedForkPointError,
@@ -1058,6 +1059,19 @@ export class WorkflowRuntime {
   // settles (completes / suspends / fails / cancels).
   private readonly liveHandles = new Map<string, ExecutionHandle>();
 
+  /** The seal-guarded store, kept typed so {@link quarantineReadsFor} can reach its read-only view. */
+  private readonly guardedEvents: SealGuardedEventStore;
+
+  /**
+   * User ruling 2026-10-14. The ONLY door to the opaque-sealed read view: the quarantine verbs'
+   * owner-log reads (`foldFromCompleteLog`, `classifyTip`, `findReleaseFact[Back]`) pass their verb
+   * and get a view that steps over a `MESSAGE_CONSUMED.payload` seal; every other caller (verb
+   * `undefined`) gets the ordinary guarded store. `sealGuardFitness.test.ts` pins this.
+   */
+  private quarantineReadsFor(verb: QuarantineVerb | undefined): EventStore {
+    return verb === undefined ? this.eventStore : this.guardedEvents.quarantineReadView();
+  }
+
   constructor(deps: WorkflowRuntimeDeps) {
     // ADR 0130 residuals D7 - THE funnel: every read of a stored envelope into the fold, the replay
     // VM, an authorization decision or a flow passes the seal guard (a marker this node cannot open,
@@ -1070,6 +1084,7 @@ export class WorkflowRuntime {
     const allowPlaintext = deps.allowPlaintextCheckpoints === true;
     if (!allowPlaintext) assertCheckpointSealed(guardedEvents, deps.snapshotStore);
     const guardedSnapshots = new SealGuardedSnapshotStore(deps.snapshotStore, async (id) => {
+    this.guardedEvents = guardedEvents;
       // A key-unavailable snapshot load asks the LOG whether it was a real shred. Read the WHOLE
       // stream (a tombstone sits ABOVE the snapshot, not at sequence 0): the guarded read raises the
       // store's own erasure error when it can see the shred, and a `PAYLOAD_SHREDDED` fact in what
@@ -2331,7 +2346,9 @@ export class WorkflowRuntime {
       events: readonly { eventType: string; sequence: number }[] | undefined;
       complete: boolean;
       searchFrom?: number;
-    }
+    },
+    /** The quarantine verb walking back for the park: reads through the opaque view (user ruling 2026-10-14). */
+    logFoldFor?: QuarantineVerb
   ): Promise<number | undefined> {
     if (state.status !== "suspended") return undefined;
     const inHand = lastSuspendSequence(held.events);
@@ -2341,7 +2358,7 @@ export class WorkflowRuntime {
     let hi = held.searchFrom ?? state.sequence;
     while (hi >= 0) {
       const lo = Math.max(0, hi - CHUNK + 1);
-      const got = await readRangeOf(this.eventStore, executionId, lo, hi);
+      const got = await readRangeOf(this.quarantineReadsFor(logFoldFor), executionId, lo, hi);
       for (let i = got.length - 1; i >= 0; i--) {
         const e = got[i];
         if (e !== undefined && e.eventType === "EXECUTION_SUSPENDED") return e.sequence;
@@ -2886,6 +2903,7 @@ export class WorkflowRuntime {
     // ADR 0107 — the same ids `start` refuses: a blank identity (the journal refuses it too)
     // and the control streams.
     assertNotReserved(preloadedState.executionId);
+    assertNotTransientFold(preloadedState, "restoreFromState");
     // Before any read or append (see `start`): an invalid budget must leave the log untouched.
     assertValidBudget("deadlineMs", options?.deadlineMs, "restoreFromState options");
     // R3 — restoring a state IS driving that execution on, so it is gated and authenticated
@@ -3823,7 +3841,7 @@ export class WorkflowRuntime {
           : (await readRangeOf(this.eventStore, id, 0, 0))[0];
       if (first === undefined) return null; // hop 0: not found; later: the successor is not durable yet
       const base = { id, first, workflowId: first.workflowId, chainId: chainIdOfFirst(first, id) };
-      const tip = await this.classifyTip(id);
+      const tip = await this.classifyTip(id, opts.logFoldFor);
       if (tip.kind === "continued") {
         const next = tip.successorId;
         if (next !== undefined) {
@@ -3896,7 +3914,8 @@ export class WorkflowRuntime {
    * would skip the wake of a parked owner (a lost wakeup). The sender treats it as "maybe parked".
    */
   private async classifyTip(
-    id: string
+    id: string,
+    logFoldFor?: QuarantineVerb
   ): Promise<
     | { kind: "running" }
     | { kind: "ambiguous" }
@@ -3904,14 +3923,10 @@ export class WorkflowRuntime {
     | { kind: "terminal"; status: "completed" | "failed" | "cancelled" }
     | { kind: "continued"; successorId: string | undefined }
   > {
-    const tipSeq = await headOf(this.eventStore, id);
+    const reads = this.quarantineReadsFor(logFoldFor);
+    const tipSeq = await headOf(reads, id);
     if (tipSeq === null) return { kind: "ambiguous" };
-    const window = await readRangeOf(
-      this.eventStore,
-      id,
-      Math.max(0, tipSeq - SEND_TIP_WALK + 1),
-      tipSeq
-    );
+    const window = await readRangeOf(reads, id, Math.max(0, tipSeq - SEND_TIP_WALK + 1), tipSeq);
     for (let i = window.length - 1; i >= 0; i--) {
       const e = window[i] as EventEnvelope;
       if (e.eventType === "EXECUTION_CONTINUED" && e.metadata?.kernel === true) {
@@ -4652,7 +4667,12 @@ export class WorkflowRuntime {
         );
       }
     }
-    const parkSeq = await this.locatePark(head.id, state, { events: undefined, complete: false });
+    const parkSeq = await this.locatePark(
+      head.id,
+      state,
+      { events: undefined, complete: false },
+      "quarantineInbox"
+    );
     if (parkSeq === undefined)
       refuse("not-parked", "the owner has no unanswered park to journal under.");
     // Copy FIRST (verbatim, still sealed), THEN the fact: a crash between leaves an orphan copy a
@@ -4742,9 +4762,10 @@ export class WorkflowRuntime {
   private async findReleaseFact(
     executionId: string,
     fromSeq: number,
-    match: (p: { topic?: unknown; key?: unknown; messageId?: unknown }) => boolean
+    match: (p: { topic?: unknown; key?: unknown; messageId?: unknown }) => boolean,
+    verb: QuarantineVerb
   ): Promise<{ disposition: "deliver" | "discard" } | undefined> {
-    for (const e of await this.eventStore.readFrom(executionId, fromSeq)) {
+    for (const e of await this.quarantineReadsFor(verb).readFrom(executionId, fromSeq)) {
       if (e.eventType !== "INBOX_RELEASED") continue;
       const p = e.payload as {
         disposition?: unknown;
@@ -4774,15 +4795,16 @@ export class WorkflowRuntime {
     logFoldFor?: QuarantineVerb
   ): Promise<{ disposition: "deliver" | "discard"; ambiguous: boolean } | undefined> {
     let budget = budgetEvents;
+    const reads = this.quarantineReadsFor(logFoldFor);
     let found: { disposition: "deliver" | "discard" } | undefined;
     const keys = new Set<string>();
     let executionId: string | undefined = headId;
     let current: ExecutionState | undefined = state;
     for (let hop = 0; executionId !== undefined && hop <= this.maxChainHops; hop++) {
-      let to = await headOf(this.eventStore, executionId);
+      let to = await headOf(reads, executionId);
       while (to !== null && to >= 0 && budget > 0) {
         const from = Math.max(0, to - RELEASE_SEARCH_CHUNK + 1);
-        const events = await readRangeOf(this.eventStore, executionId, from, to);
+        const events = await readRangeOf(reads, executionId, from, to);
         budget -= to - from + 1;
         for (let i = events.length - 1; i >= 0; i--) {
           const e = events[i] as EventEnvelope;
@@ -4993,7 +5015,12 @@ export class WorkflowRuntime {
         `the owner is ${state.status}; a release is journaled in its log, which only a parked owner accepts. Retry once it parks.`
       );
     }
-    const parkSeq = await this.locatePark(head.id, state, { events: undefined, complete: false });
+    const parkSeq = await this.locatePark(
+      head.id,
+      state,
+      { events: undefined, complete: false },
+      "releaseInbox"
+    );
     if (parkSeq === undefined)
       refuse("not-parked", "the owner has no unanswered park to journal under.");
     const operator = ownerOfChain(options?.principal) ?? {};
@@ -5025,7 +5052,8 @@ export class WorkflowRuntime {
       const landed = await this.findReleaseFact(
         head.id,
         state.sequence + 1,
-        (p) => p.key === first.key
+        (p) => p.key === first.key,
+        "releaseInbox"
       );
       if (landed === undefined) {
         if (outcome === "gone")
@@ -6946,7 +6974,9 @@ export class WorkflowRuntime {
     refusal: SealedStreamUnreadableError,
     verb: QuarantineVerb
   ): Promise<ExecutionState | null> {
-    const events = await this.eventStore.read(executionId);
+    // User ruling 2026-10-14: read PAST a seal that covers only `MESSAGE_CONSUMED.payload` (kept as an
+    // opaque ciphertext value, never decrypted); any other covered field is still the D7 refusal.
+    const events = await this.quarantineReadsFor(verb).read(executionId);
     if (events.length === 0) return null;
     let checkpointSeq = sealedDetailOf(refusal)?.sequence;
     if (checkpointSeq === undefined) {
@@ -6966,11 +6996,14 @@ export class WorkflowRuntime {
       );
     }
     const workflowId = events[0]!.workflowId;
-    return new ReplayVM(events, {
-      executionId,
-      workflowId,
-      workflowVersion: this.flows.get(workflowId)?.definition.version ?? "",
-    }).getState();
+    // TRANSIENT: may hold ciphertext where a real fold holds values; it only decides the verb.
+    return markTransientFold(
+      new ReplayVM(events, {
+        executionId,
+        workflowId,
+        workflowVersion: this.flows.get(workflowId)?.definition.version ?? "",
+      }).getState()
+    );
   }
 
   /**
