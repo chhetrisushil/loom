@@ -2414,6 +2414,8 @@ export interface KeyStoreLike {
   getOrCreate(subjectId: string): Promise<Uint8Array>;
   get(subjectId: string): Promise<Uint8Array | null>;
   destroy(subjectId: string): Promise<void>;
+  /** OPTIONAL (ADR 0130 D7 round 5): true only if THIS store destroyed the subject's key. */
+  wasDestroyed?(subjectId: string): Promise<boolean>;
 }
 
 /**
@@ -2477,6 +2479,21 @@ export function runKeyStoreConformance(factory: () => KeyStoreLike, label = "Key
       await store.destroy("s1");
       await store.destroy("s1");
       expect(await store.get("s1")).toBeNull();
+    });
+
+    // Proof of destruction (ADR 0130 D7, round 5): optional; a store without it skips these, and
+    // shredSubject then completes a retry window only under the operator's `force` option.
+    it("wasDestroyed: true after destroy, false for a never-minted or a live subject", async () => {
+      const store = factory();
+      if (store.wasDestroyed === undefined) return; // optional SPI method: skipped
+      expect(await store.wasDestroyed("never")).toBe(false);
+      await store.getOrCreate("s1");
+      expect(await store.wasDestroyed("s1")).toBe(false);
+      await store.destroy("s1");
+      expect(await store.wasDestroyed("s1")).toBe(true);
+      await store.destroy("s1"); // idempotent
+      expect(await store.wasDestroyed("s1")).toBe(true);
+      expect(await store.wasDestroyed("never")).toBe(false);
     });
   });
 }

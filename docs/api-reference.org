@@ -1066,7 +1066,8 @@ class KeyUnavailableError extends Error { code: "KEY_UNAVAILABLE"; subjectId: st
 // key absent and NO tombstone: this node's KeyStore lacks it. The kernel turns it into a denial-shaped
 // SealedStreamUnreadableError (an ExecutionDeniedError with UNKNOWN_OWNER_REASON; isSealedUnreadable(e));
 // the real cause: sealedDetailOf(err) from "@loom/workflow-runtime/operator" (operators only).
-interface KeyStore { getOrCreate(subjectId: string): Promise<Buffer>; get(subjectId: string): Promise<Buffer | null>; destroy(subjectId: string): Promise<void>; }
+interface KeyStore { getOrCreate(subjectId: string): Promise<Buffer>; get(subjectId: string): Promise<Buffer | null>; destroy(subjectId: string): Promise<void>;
+                    wasDestroyed?(subjectId: string): Promise<boolean>; }  // ADR 0130 D7 r5: true only if THIS store destroyed the key
 class InMemoryKeyStore implements KeyStore { … }   // reference (tests / ephemeral)
 function shredSubject(keys: KeyStore, rawEventStore: EventStore, executionId: string,
                       options?: { subjectId?: string; reason?: string; executionIds?: string[];
@@ -1074,7 +1075,11 @@ function shredSubject(keys: KeyStore, rawEventStore: EventStore, executionId: st
                                   // raw OR encrypting (tenant-scoped or not): the tombstone follows the FOLDED
                                   // tip, read via loadLatestSealed (SnapshotStore SPI 1.1.0, never decrypts).
                                   // Required (or tombstoneSequenceOf) when rawEventStore can truncatePrefix.
-                                  snapshotStore?: Pick<SnapshotStore, "loadLatest" | "loadLatestSealed"> }): Promise<void>;
+                                  snapshotStore?: Pick<SnapshotStore, "loadLatest" | "loadLatestSealed">;
+                                  // operator override: assert the key was destroyed in the authoritative store
+                                  // (a retry otherwise needs keys.wasDestroyed(subject) === true)
+                                  force?: "key-destroyed-elsewhere" }): Promise<void>;
+// EraseCoordinator({ destroyed }) / exportSubject({ destroyed }) / compliance.erase.destroyed: DestructionProof
 // EncryptingSnapshotStore.loadLatestSealed(id) — latest snapshot at rest, sensitive fields left as ciphertext
 class PayloadShreddedError extends Error { … }     // thrown on any read of a shredded subject
 class ShredIncompleteError extends Error { subjectId: string; failures: { executionId: string; error: unknown }[] }
