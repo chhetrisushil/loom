@@ -203,6 +203,7 @@ export function faultInjectingStore(inner: EventStore, source: FaultSource): Fau
     },
     storeNow: "forward",
     sealingCapability: "forward",
+    readAtRest: "forward",
     copyPrefix: "forward",
     deleteExecution: "forward",
     truncatePrefix: "forward",

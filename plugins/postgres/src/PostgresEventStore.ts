@@ -587,6 +587,19 @@ export class PostgresEventStore implements EventStore {
     return undefined;
   }
 
+  /**
+   * SPI 2.5.0 (ADR 0130 D9) - this store never decrypts, so its own reads ARE the envelopes at rest.
+   * Declared so the decorator kit's "the inner store offers every optional method" holds over Postgres.
+   */
+  readAtRest(): Pick<EventStore, "read" | "readFrom" | "readRange" | "head"> {
+    return {
+      read: (id) => this.read(id),
+      readFrom: (id, from) => this.readFrom(id, from),
+      readRange: (id, from, to) => this.readRange(id, from, to),
+      head: (id) => this.head(id),
+    };
+  }
+
   async head(executionId: string): Promise<number | null> {
     await this.ready;
     const { rows } = await this.pool.query<{ tip: string | number | null }>(

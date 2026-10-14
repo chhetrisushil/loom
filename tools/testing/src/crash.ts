@@ -117,6 +117,7 @@ export function crashingEventStore(
     },
     storeNow: "forward",
     sealingCapability: "forward",
+    readAtRest: "forward",
     copyPrefix: "forward",
     deleteExecution: "forward",
     truncatePrefix: "forward",

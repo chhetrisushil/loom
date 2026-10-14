@@ -46,6 +46,7 @@ import {
 } from "./contentTouchContract";
 import {
   ReferenceEventStore,
+  atRestForwardingProblems,
   optionalSurfaceProblems,
   runEventStoreDecoratorConformance,
   runSnapshotStoreDecoratorConformance,
@@ -53,6 +54,7 @@ import {
 } from "./decorators";
 import {
   type ContentStoreLike,
+  eventStoreAtRestProblem,
   eventStoreNowProblem,
   eventStoreSealingProblem,
   incarnationAnchorProblem,
@@ -262,6 +264,7 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
     appendIfUnchanged: inner.appendIfUnchanged.bind(inner),
     storeNow: inner.storeNow.bind(inner),
     sealingCapability: inner.sealingCapability.bind(inner),
+    readAtRest: inner.readAtRest.bind(inner),
     copyPrefix: inner.copyPrefix.bind(inner),
     deleteExecution: inner.deleteExecution.bind(inner),
     truncatePrefix: inner.truncatePrefix.bind(inner),
@@ -573,6 +576,52 @@ describe("eventStoreNowProblem discriminates", () => {
     expect(await eventStoreNowProblem(() => new InMemoryAsyncEventStore())).toBeUndefined();
   });
 });
+// EventStore.readAtRest() (SPI 2.5.0, ADR 0130 D9): a view that returns what was appended passes; one that
+// drops events, rewrites them, or exposes a write member FAILS; a store without it conforms. A decorator that
+// drops it fails the optional-surface check like any other optional method (see the dropping decorator above).
+describe("eventStoreAtRestProblem discriminates", () => {
+  const withView = (make: (self: InMemoryAsyncEventStore) => unknown) =>
+    class extends InMemoryAsyncEventStore {
+      readAtRest() {
+        return make(this) as never;
+      }
+    };
+  const honest = (s: InMemoryAsyncEventStore) => ({
+    read: (id: string) => s.read(id),
+    readFrom: (id: string, f: number) => s.readFrom(id, f),
+  });
+  it("passes an honest view and a store without the method", async () => {
+    const Honest = withView(honest);
+    expect(await eventStoreAtRestProblem(() => new Honest())).toBeUndefined();
+    expect(await eventStoreAtRestProblem(() => new InMemoryAsyncEventStore())).toBeUndefined();
+  });
+  it("fails a view that rewrites, drops, or can write", async () => {
+    const Rewrites = withView((s) => ({
+      ...honest(s),
+      read: async (id: string) => (await s.read(id)).map((e) => ({ ...e, payload: { x: 1 } })),
+    }));
+    expect(await eventStoreAtRestProblem(() => new Rewrites())).toMatch(
+      /different events|byte-identical/
+    );
+    const Drops = withView((s) => ({ ...honest(s), read: async () => [] }));
+    expect(await eventStoreAtRestProblem(() => new Drops())).toMatch(/different events/);
+    const Writes = withView((s) => ({ ...honest(s), append: (e: never) => s.append(e) }));
+    expect(await eventStoreAtRestProblem(() => new Writes())).toMatch(/non-read member/);
+    const BadTail = withView((s) => ({ ...honest(s), readFrom: async () => [] }));
+    expect(await eventStoreAtRestProblem(() => new BadTail())).toMatch(/readFrom/);
+  });
+  it("the decorator kit fails a decorator that forwards readAtRest but hides the stored bytes", async () => {
+    const inner = new ReferenceEventStore();
+    const hiding = {
+      append: inner.append.bind(inner),
+      readAtRest: () => ({ read: async () => [], readFrom: async () => [] }),
+    };
+    expect(await atRestForwardingProblems("Hider", hiding as never)).toEqual([
+      expect.stringContaining("altered or dropped"),
+    ]);
+  });
+});
+
 // EventStore.sealingCapability() (SPI 2.5.0, ADR 0130 residuals D7) must be stable and self-consistent; a
 // capability that flaps, is unsorted, accepts a foreign cipher or refuses its own must FAIL, an honest one
 // PASS, and a store without it (or one that returns undefined) conforms.

@@ -99,6 +99,7 @@ export class TenantScopedEventStore implements EventStore {
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
   readonly storeNow?: NonNullable<EventStore["storeNow"]>;
   readonly sealingCapability?: NonNullable<EventStore["sealingCapability"]>;
+  readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -138,6 +139,19 @@ export class TenantScopedEventStore implements EventStore {
         ).catch(this.rethrowUnscoped),
       storeNow: "forward", // the store clock is not tenant data
       sealingCapability: "forward", // what the store seals is not tenant data
+      // The at-rest view is tenant-scoped like `read`: ids scoped on the way in, unscoped on the way out.
+      readAtRest: () => {
+        const raw = inner.readAtRest!();
+        const back = async (p: Promise<EventEnvelope[]>) => (await p).map((e) => this.unscope(e));
+        return {
+          read: (id) => back(raw.read(scope(id))),
+          readFrom: (id, from) => back(raw.readFrom(scope(id), from)),
+          ...(raw.readRange !== undefined && {
+            readRange: (id: string, a: number, b: number) => back(raw.readRange!(scope(id), a, b)),
+          }),
+          ...(raw.head !== undefined && { head: (id: string) => raw.head!(scope(id)) }),
+        };
+      },
       // Fork stays IN-TENANT: both ids are scoped, so a fork can never cross the
       // tenant boundary (a cross-tenant copy is unaddressable here).
       copyPrefix: (from, to, through, metadata) =>

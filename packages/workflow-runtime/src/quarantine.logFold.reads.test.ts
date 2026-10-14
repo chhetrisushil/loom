@@ -38,7 +38,11 @@ class SpyKeys implements KeyStore {
   readonly asked: string[] = [];
   readonly ownerLogAsks: string[] = [];
   private note(): void {
+    // the default 10 frames would cut the walk's name off behind the crypto decorator's own frames
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 200;
     const stack = new Error().stack ?? "";
+    Error.stackTraceLimit = limit;
     const m = /(foldState|foldFromCompleteLog|classifyTip|locatePark|findReleaseFact)/.exec(stack);
     if (m !== null) this.ownerLogAsks.push(m[1] as string);
   }
@@ -67,7 +71,11 @@ async function scene(opts: { sealSnaps?: boolean } = {}) {
   } as never);
   // A's snapshots are PLAINTEXT (no sealState): the sealed content lives only in the log.
   const a = build(
-    { inboxAutoRelease: false },
+    {
+      inboxAutoRelease: false,
+      // A's checkpoints are PLAINTEXT on purpose (the sealed content lives only in the log)
+      ...(opts.sealSnaps !== true && { allowPlaintextCheckpoints: true }),
+    },
     {
       ...raw,
       eventStore: sealing,
@@ -140,7 +148,7 @@ describe("the owner fold past a sealed MESSAGE_CONSUMED on every read path (P3-1
       subjectOf: (e: { executionId: string }) => e.executionId,
     } as never);
     const b = build(
-      {},
+      { allowPlaintextCheckpoints: true }, // the key-less node's own checkpoints are plaintext here
       { ...s.raw, eventStore: wrongStore, snapshotStore: new InMemoryAsyncSnapshotStore() }
     );
     s.register(b);
@@ -158,6 +166,41 @@ describe("the owner fold past a sealed MESSAGE_CONSUMED on every read path (P3-1
     expect(r).toMatchObject({ disposition: "discard", changed: true });
     expect(wrong.ownerLogAsks).toEqual([]);
     expect(await eventsByKind(s.raw.eventStore, s.e, "INBOX_RELEASED")).toHaveLength(1);
+  });
+
+  it("POSITIVE CONTROL: with the at-rest reader absent the same verb asks the KeyStore MORE (so a zero-asks pin cannot go stale silently)", async () => {
+    // The stack regex of `SpyKeys` cannot see a walk behind an awaited decrypt (async frames are
+    // lost), so the control is comparative and independent of stack shape: the SAME verb on a node that
+    // holds the key asks strictly more without the at-rest view than with it, and it asks about the
+    // owner at all only through the walks the view replaced.
+    const asksFor = async (withAtRest: boolean): Promise<number> => {
+      const s = await scene();
+      const spy = new SpyKeys();
+      (spy as { inner: KeyStore }).inner = s.keys.inner;
+      const store = new EncryptingEventStore(s.raw.eventStore, spy, {
+        sensitive: { ...SENSITIVE },
+        subjectOf: (e: { executionId: string }) => e.executionId,
+      } as never);
+      if (!withAtRest) (store as { readAtRest?: unknown }).readAtRest = undefined;
+      const n = build(
+        { allowPlaintextCheckpoints: true },
+        { ...s.raw, eventStore: store, snapshotStore: new InMemoryAsyncSnapshotStore() }
+      );
+      s.register(n);
+      const p = build({}, { ...s.raw, snapshotStore: new InMemoryAsyncSnapshotStore() });
+      s.register(p);
+      await p.rt.quarantineInbox(s.e, { topic: "a" }, { principal: OP });
+      spy.asked.length = 0;
+      await n.rt.releaseInbox(
+        s.e,
+        { topic: "a", messageId: "a1", disposition: "discard" },
+        { principal: OP }
+      );
+      return spy.asked.length;
+    };
+    const withView = await asksFor(true);
+    const without = await asksFor(false);
+    expect(without).toBeGreaterThan(withView);
   });
 
   it("a crypto-decorated node with a STEP_COMPLETED seal the view cannot step over still refuses (no key, typed denial)", async () => {
@@ -183,7 +226,7 @@ describe("the owner fold past a sealed MESSAGE_CONSUMED on every read path (P3-1
       payload: { stepId: "x", output: { ssn: SECRET } },
     } as never);
     const b = build(
-      {},
+      { allowPlaintextCheckpoints: true }, // the key-less node's own checkpoints are plaintext here
       { ...s.raw, eventStore: wrongStore, snapshotStore: new InMemoryAsyncSnapshotStore() }
     );
     s.register(b);

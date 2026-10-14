@@ -1,4 +1,6 @@
+import type { EventEnvelope } from "@loom/core";
 import {
+  type AtRestEventReader,
   type EventStore,
   InMemoryAsyncEventStore,
   OPTIONAL_EVENT_STORE_METHODS,
@@ -91,6 +93,43 @@ export class ReferenceEventStore extends InMemoryAsyncEventStore {
   sealingCapability(): SealingCapability {
     return REFERENCE_SEALING;
   }
+
+  /** SPI 2.5.0 (ADR 0130 D9): an in-memory store keeps envelopes as appended, so its at-rest view is its own reads. */
+  readAtRest(): AtRestEventReader {
+    return {
+      read: (id) => this.read(id),
+      readFrom: (id, from) => this.readFrom(id, from),
+      readRange: (id, a, b) => this.readRange(id, a, b),
+      head: (id) => this.head(id),
+    };
+  }
+}
+
+/**
+ * Problems with a decorator over {@link ReferenceEventStore} that is supposed to FORWARD `readAtRest`:
+ * the view must exist and hand back what was appended (a decorator that forwards the method but
+ * returns a transformed or empty view would hide the stored bytes from the caller).
+ */
+export async function atRestForwardingProblems(
+  label: string,
+  store: Pick<EventStore, "readAtRest" | "append">
+): Promise<string[]> {
+  if (store.readAtRest === undefined) return [`${label} has no readAtRest()`];
+  const id = "at-rest-fwd";
+  const e = {
+    id: `${id}-0`,
+    executionId: id,
+    workflowId: "w",
+    sequence: 0,
+    eventType: "EXECUTION_STARTED",
+    timestamp: 1,
+    payload: { marker: "at-rest" },
+  } as EventEnvelope;
+  await store.append(e);
+  const got = await store.readAtRest().read(id);
+  return got.length === 1 && JSON.stringify(got[0]?.payload) === JSON.stringify(e.payload)
+    ? []
+    : [`${label} altered or dropped the envelopes in readAtRest().read()`];
 }
 
 /**
@@ -196,6 +235,16 @@ export function runEventStoreDecoratorConformance(
         expect(store.sealingCapability === undefined).toBe(false);
       } else {
         expect(sealingForwardingProblems(label, store)).toEqual([]);
+      }
+      await store.close();
+    });
+
+    it("hands the inner store's at-rest view through (SPI 2.5.0)", async () => {
+      const store = wrap(inner());
+      if (options.sealing === "own" || options.inner !== undefined) {
+        expect(store.readAtRest === undefined).toBe(false);
+      } else {
+        expect(await atRestForwardingProblems(label, store)).toEqual([]);
       }
       await store.close();
     });

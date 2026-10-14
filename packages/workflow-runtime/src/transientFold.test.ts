@@ -32,7 +32,11 @@ describe("transient fold brand", () => {
     const guarded = new SealGuardedSnapshotStore(inner, async () => undefined);
     const t = markTransientFold({
       executionId: "x",
-      variables: { _waitAnswers: { w: { kind: "inbox", payload: { __loomEnc: "ZZ" } } } },
+      variables: {
+        _waitAnswers: {
+          w: { kind: "inbox", payload: { __loomEnc: "loom/aes-256-gcm", iv: "i", ct: "c" } },
+        },
+      },
     } as never);
     const copy = { ...(t as object) };
     expect(isTransientFold(copy)).toBe(false); // the brand does not survive a spread
@@ -47,6 +51,19 @@ describe("transient fold brand", () => {
       } as never)
     ).rejects.toThrow(/sealed|ciphertext/i);
     expect(await inner.loadLatest("x")).toBeNull();
+    // user data that is merely `__loomEnc`-SHAPED (not the kernel cipher id) saves
+    await guarded.save({
+      id: "k",
+      executionId: "x",
+      workflowId: "w",
+      sequence: 3,
+      state: {
+        executionId: "x",
+        variables: { _waitAnswers: { w: { payload: { __loomEnc: "app/own" } } } },
+      },
+      createdAt: 0,
+    } as never);
+    expect((await inner.loadLatest("x"))?.sequence).toBe(3);
     // a plaintext answer is saved as before
     await guarded.save({
       id: "j",
@@ -56,7 +73,13 @@ describe("transient fold brand", () => {
       state: { executionId: "x", variables: { _waitAnswers: { w: { payload: "plain" } } } },
       createdAt: 0,
     } as never);
-    expect((await inner.loadLatest("x"))?.sequence).toBe(2);
+    expect((await inner.loadLatest("x"))?.sequence).toBe(3); // 2 saved, then 3 (the app-shaped one)
+  });
+
+  it("a variable structuredClone cannot copy is a typed refusal, not a DataCloneError", () => {
+    expect(() =>
+      markTransientFold({ executionId: "x", variables: { f: () => 1 } } as never)
+    ).toThrow(/cannot be copied/);
   });
 
   it("the guarded snapshot store refuses to save a transient state", async () => {

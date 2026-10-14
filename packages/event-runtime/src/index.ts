@@ -31,6 +31,7 @@ export type {
   OptionalEventStoreMethod,
   SealMarker,
   SealingCapability,
+  AtRestEventReader,
 } from "./types";
 export { installOptional, refusalsOf } from "./installOptional";
 export type { DecoratorPlan } from "./installOptional";

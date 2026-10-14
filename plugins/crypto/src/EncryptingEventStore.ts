@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import {
+  type AtRestEventReader,
   type DecoratorPlan,
   type EventStore,
   KeyUnavailableError,
@@ -139,14 +140,6 @@ function pathsFor(
 
 const OWNER_WORKFLOW_CACHE = 1024;
 
-/**
- * ADR 0130 S5b: the well-known symbol under which this store exposes the RAW (undecrypted)
- * envelopes it reads from its inner store, as a READ-ONLY reader. The kernel's quarantine verbs use
- * it to read an owner's log past a sealed `MESSAGE_CONSUMED.payload` WITHOUT asking the KeyStore.
- * Not part of the EventStore SPI and not a general raw-read door: it returns what is at rest.
- */
-export const RAW_ENVELOPE_READER: unique symbol = Symbol.for("loom.rawEnvelopeReader") as never;
-
 export class EncryptingEventStore implements EventStore {
   private readonly sensitive: Record<string, readonly string[]>;
   private readonly subjectOf: (e: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
@@ -165,6 +158,7 @@ export class EncryptingEventStore implements EventStore {
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
   readonly storeNow?: NonNullable<EventStore["storeNow"]>;
   readonly sealingCapability?: NonNullable<EventStore["sealingCapability"]>;
+  readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -238,6 +232,8 @@ export class EncryptingEventStore implements EventStore {
       // Installed unconditionally below: this decorator OWNS the answer (what it seals, live), so
       // it is offered whether or not the inner store has the method.
       sealingCapability: () => this.capability(),
+      // Installed unconditionally below too: the raw view is this decorator's to define.
+      readAtRest: () => this.atRest(),
       // copyPrefix copies CIPHERTEXT verbatim in the inner store — a fork must
       // resolve to the parent's subject (A2) for the copied prefix to stay readable.
       copyPrefix: "forward",
@@ -257,6 +253,7 @@ export class EncryptingEventStore implements EventStore {
     installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
     (this as { sealingCapability?: EventStore["sealingCapability"] }).sealingCapability = () =>
       this.capability();
+    (this as { readAtRest?: EventStore["readAtRest"] }).readAtRest = () => this.atRest();
   }
 
   /**
@@ -537,9 +534,14 @@ export class EncryptingEventStore implements EventStore {
     return found;
   }
 
-  /** The raw, read-only view beneath the decryption (see {@link RAW_ENVELOPE_READER}). */
-  [RAW_ENVELOPE_READER](): Pick<EventStore, "read" | "readFrom" | "readRange" | "head"> {
+  /**
+   * SPI 2.5.0 `readAtRest` (ADR 0130 D9): the envelopes AS STORED, beneath the decryption. An inner
+   * store that offers its own at-rest view (a decorator beneath this one) supplies it; otherwise the
+   * inner store's reads ARE the at-rest bytes. Read-only: no write, fence or subscribe.
+   */
+  private atRest(): AtRestEventReader {
     const inner = this.inner;
+    if (inner.readAtRest !== undefined) return inner.readAtRest();
     return {
       read: (id) => inner.read(id),
       readFrom: (id, from) => inner.readFrom(id, from),
