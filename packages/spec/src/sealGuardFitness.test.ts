@@ -46,9 +46,17 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
   const KERNEL = sourceFiles("packages/workflow-runtime/src");
 
   it("the kernel files that read stored envelopes are exactly the pinned set (a new funnel must be decided)", () => {
-    const readers = KERNEL.filter((f) =>
-      /\b(readRangeOf\(|\.readFrom\(|[sS]tore\.read\(|\.readRange\()/.test(strip(read(f)))
-    );
+    // A reader is pinned by what it TOUCHES, not by what it names its variable: a file that calls an
+    // EventStore read method (`.read(`, `.readFrom(`, `.readRange(`, `readRangeOf(`) AND either
+    // mentions the `EventStore` type (any identifier typed as one: `log.read(`, `es.read(`) or reaches
+    // a runtime's store (`.events` / `.eventStore`).
+    const readers = KERNEL.filter((f) => {
+      const src = strip(read(f));
+      return (
+        /(\breadRangeOf\(|\.read\(|\.readFrom\(|\.readRange\()/.test(src) &&
+        /(\bEventStore\b|\.events\b|\.eventStore\b)/.test(src)
+      );
+    });
     // Each reads through the store the RUNTIME hands it (`this.eventStore`, `runtime.events`, or a
     // store argument supplied by the runtime), which is the SealGuardedEventStore. Reserved control
     // streams (inbox, quarantine, lifecycle) are exempt from the stream guard by design.
@@ -138,6 +146,11 @@ describe("the deterministic cipher seam", () => {
     const crypto = strip(read("plugins/crypto/src/crypto.ts"));
     expect(crypto).toMatch(/ivOverride === undefined \? randomBytes\(12\)/);
     expect(crypto).toMatch(/NODE_ENV === "production"/);
+    expect(crypto).toMatch(/BRANDED_IV_SOURCES/);
+    expect(crypto).toMatch(/process\.env\.VITEST/);
+    // the brand minting function is not on the main entry; only testing.ts calls it
+    expect(strip(read("plugins/crypto/src/testing.ts"))).toMatch(/brandIvSource\(/);
+    expect(strip(read("plugins/crypto/src/index.ts"))).not.toMatch(/brandIvSource/);
     const idx = strip(read("plugins/crypto/src/index.ts"));
     expect(idx).not.toMatch(/seededIvSource|testing|IvSource/);
     expect(strip(read("plugins/crypto/src/testing.ts"))).toMatch(/export function seededIvSource/);

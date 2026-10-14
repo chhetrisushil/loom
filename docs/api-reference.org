@@ -1047,7 +1047,7 @@ class EncryptingSnapshotStore implements SnapshotStore { constructor(inner: Snap
 interface EncryptingEventStoreOptions {
   sensitive: Record<string, readonly string[]>;   // event type → encrypted payload dot-paths
   subjectOf?: (e: { executionId: string; workflowId: string }) => string;  // erasure subject (default: executionId)
-  ivSource?: IvSource;   // simulation only: see @loom/plugin-crypto/testing; REFUSED when NODE_ENV=production
+  ivSource?: IvSource;   // simulation only: a BRANDED value from @loom/plugin-crypto/testing (a plain function is refused); allowed only under NODE_ENV=test / VITEST
 }
 interface EncryptingSnapshotStoreOptions {
   sealState?: true;                    // ADR 0130 D8: seal the WHOLE folded state as one envelope (covers dynamic _waitAnswers keys); exposes sealsWholeState: true
@@ -1060,7 +1060,7 @@ interface EncryptingSnapshotStoreOptions {
 // (covers: exact, sorted "EVENT_TYPE.path" entries sealed in THAT envelope), and store.sealingCapability()
 // reports what this node seals and opens (live; registerSensitive is reflected).
 // EncryptingSnapshotStoreOptions.events?: EventStore — the RAW event store, so a missing key is judged by the
-// log's PAYLOAD_SHREDDED tombstone (PayloadShreddedError) vs none (KeyUnavailableError).
+// log's PAYLOAD_SHREDDED tombstone (PayloadShreddedError) vs none (KeyUnavailableError); without it the old PayloadShreddedError stands.
 // import { seededIvSource, type IvSource } from "@loom/plugin-crypto/testing";   // deterministic IVs for DST
 class KeyUnavailableError extends Error { code: "KEY_UNAVAILABLE"; subjectId: string; streamId?: string }  // @loom/event-runtime
 // key absent and NO tombstone: this node's KeyStore lacks it. The kernel turns it into a denial-shaped
