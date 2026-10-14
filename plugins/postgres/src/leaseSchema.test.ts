@@ -67,6 +67,50 @@ if (PG_URL === undefined) {
       expect(await options()).toContain("fillfactor=50");
     });
 
+    it("fails SOFT when the optional storage ALTER cannot get its lock: migrate succeeds with a warning, a later boot applies the options", async () => {
+      const schema = `${SCHEMA}_soft`;
+      const admin = new Pool({ connectionString: PG_URL });
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      await admin.query(`CREATE TABLE ${schema}.leases (
+        execution_id TEXT NOT NULL PRIMARY KEY, owner TEXT NOT NULL, expires_at BIGINT NOT NULL)`);
+      const opts = `-c search_path=${schema} -c loom.migration_lock_timeout=200ms`;
+      const blocker = new Pool({ connectionString: PG_URL, options: opts, max: 1 });
+      const boot1 = new Pool({ connectionString: PG_URL, options: opts, max: 4 });
+      const boot2 = new Pool({ connectionString: PG_URL, options: opts, max: 4 });
+      const holder = await blocker.connect();
+      try {
+        await holder.query("BEGIN");
+        await holder.query("LOCK TABLE leases IN SHARE MODE"); // conflicts with SHARE UPDATE EXCLUSIVE
+        await expect(migrate(boot1)).resolves.toBeUndefined();
+        const read = async () =>
+          (
+            await admin.query<{ reloptions: string[] | null }>(
+              "SELECT reloptions FROM pg_class WHERE oid = to_regclass($1)",
+              [`${schema}.leases`]
+            )
+          ).rows[0]?.reloptions ?? [];
+        expect(await read()).toEqual([]);
+        await holder.query("ROLLBACK");
+        const store = new PostgresLeaseStore(boot1);
+        try {
+          expect(await store.acquire("x", "n", 60_000)).not.toBeNull();
+        } finally {
+          await store.close();
+        }
+        await migrate(boot2); // a later boot retries and applies them
+        expect(await read()).toContain("fillfactor=70");
+      } finally {
+        await holder.query("ROLLBACK").catch(() => {});
+        holder.release();
+        await blocker.end();
+        await boot1.end();
+        await boot2.end();
+        await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+        await admin.end();
+      }
+    });
+
     it("the batch statements are ONE round trip each and use the index-backed ANY($ids) form", async () => {
       const seen: string[] = [];
       const counting = {
