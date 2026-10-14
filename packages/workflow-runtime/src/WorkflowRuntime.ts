@@ -1328,13 +1328,7 @@ export class WorkflowRuntime {
       return await body();
     } catch (err) {
       if (!(err instanceof SealedStreamUnreadableError) || this.sealedRefused.has(err)) throw err;
-      // The denial an ORDINARY existing id of unknown owner gets for this very call: the policy's own
-      // verdict with no owner (an op-level rule such as `discard: "deny"` answers before ownership
-      // is ever looked at, so a fixed unknown-owner reason would tell a sealed stream apart). The
-      // workflow id is unreadable here, so an `allowWorkflows` list is the stated residual.
-      const reason =
-        this.authzDenial(op, executionId, "", principal, system)?.reason ?? UNKNOWN_OWNER_REASON;
-      const refusal = withSealedDetail(op, executionId, err, reason);
+      const refusal = withSealedDetail(op, executionId, err);
       this.sealedRefused.add(refusal);
       this.reportSealed(executionId, refusal);
       // A kernel-internal caller (the system grant) is not a caller being denied.
@@ -1346,7 +1340,7 @@ export class WorkflowRuntime {
             workflowId: "",
             ...(principal !== undefined && { principal }),
           },
-          reason
+          UNKNOWN_OWNER_REASON
         );
       }
       throw refusal;
