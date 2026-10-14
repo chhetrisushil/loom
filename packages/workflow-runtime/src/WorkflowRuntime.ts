@@ -8220,6 +8220,9 @@ export class WorkflowRuntime {
           this.onWarn(
             `execution "${executionId}": run attempt REFUSED, NOT failed: ${sealedRefusal.message}`
           );
+          // ADR 0130 D10: leave a durable wake row (a TIMER-store row, never a log append) so a
+          // capable node's poll re-drives this `running` execution without a send or a sweep.
+          await this.markContended(executionId).catch(() => undefined);
           rejectSuspend(sealedRefusal);
           rejectCompletion(sealedRefusal);
           return;
@@ -8233,6 +8236,7 @@ export class WorkflowRuntime {
           this.onWarn(
             `execution "${executionId}": run attempt REFUSED, NOT failed: ${(err as Error).message}`
           );
+          await this.markContended(executionId).catch(() => undefined); // ADR 0130 D10 (see above)
           rejectSuspend(err);
           rejectCompletion(err);
           return;

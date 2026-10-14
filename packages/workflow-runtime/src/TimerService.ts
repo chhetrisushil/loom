@@ -5,6 +5,12 @@ import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { INBOX_WAKE_AT } from "./inbox";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
+import {
+  clearSealedBackoff,
+  isSealedBackedOff,
+  noteSealedRefusal,
+  redriveAbandoned,
+} from "./redriveAbandoned";
 import { isSealedUnreadable } from "./sealGuard";
 import {
   ExecutionAlreadyExistsError,
@@ -275,12 +281,6 @@ export class TimerService {
    * live holder's token.
    */
   private readonly wakeBackoff = new Map<string, { attempt: number; nextTryAt: number }>();
-  /**
-   * ADR 0130 — back-off for an inbox wake row whose head message is sealed and NOT openable on this
-   * node. Separate from `wakeBackoff` because it must NEVER retire the row (no attempt cap): a node
-   * that can open the message still needs it. Bounded (oldest evicted).
-   */
-  private readonly sealedBackoff = new Map<string, { attempt: number; nextTryAt: number }>();
   /** Retries per chain of a D10a expiry row whose owner was running (bounded like `wakeBackoff`). */
   private readonly expiryBackoff = new Map<string, number>();
   private readonly now: () => number;
@@ -478,6 +478,88 @@ export class TimerService {
   }
 
   /**
+   * The wake is still needed but could not be served now (the fence stayed contended, or a re-drive
+   * failed): keep the row and back off in-process (same schedule and attempt cap as a contended
+   * timed wake). At the cap the row is retired and reported as exhausted.
+   */
+  private async bumpWakeBackoff(executionId: string, wakeAt: number): Promise<void> {
+    const attempt = (this.wakeBackoff.get(executionId)?.attempt ?? 0) + 1;
+    if (attempt >= this.maxRedriveAttempts) {
+      this.wakeBackoff.delete(executionId);
+      this.onError?.(executionId, new RedriveExhaustedError(executionId, attempt));
+      await this.store.complete(executionId, wakeAt);
+      return;
+    }
+    this.wakeBackoff.delete(executionId); // re-insert at the end: eviction order = recency
+    if (this.wakeBackoff.size >= MAX_WAKE_BACKOFFS) {
+      const oldest = this.wakeBackoff.keys().next().value;
+      if (oldest !== undefined) this.wakeBackoff.delete(oldest);
+    }
+    this.wakeBackoff.set(executionId, {
+      attempt,
+      nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
+    });
+  }
+
+  /**
+   * ADR 0130 D10 - the inbox wake row of a `running` execution: a replay refusal on some node left
+   * it so a node that CAN open the stream picks the execution up. The execution is stuck unless
+   * another node is live on it, so:
+   *  - no lease store, or this process drives it: we cannot PROVE it abandoned. Never supersede a
+   *    possibly live holder: keep the row, uncapped back-off, no write.
+   *  - otherwise (`fire` holds the lease it claimed, which a live holder would have blocked):
+   *    re-drive through the routine the sweep shares. A sealed refusal keeps the row and backs off
+   *    (no attempt cap, first-then-every-16th report). A non-sealed failure uses the capped
+   *    `wakeBackoff`. Success hands back to the ordinary rules: a parked execution runs the notify
+   *    path, a terminal one retires the row.
+   */
+  private async fireRunning(executionId: string, wakeAt: number): Promise<void> {
+    if (this.leases === undefined || this.runtime.liveHandle(executionId) !== undefined) {
+      this.holdRow(executionId);
+      return;
+    }
+    try {
+      const r = await redriveAbandoned(this.runtime, executionId, {
+        source: "wake",
+        fenced: this.fenced,
+      });
+      if (r.outcome === "refused") {
+        this.noteSealed(executionId, r.error);
+        return;
+      }
+      clearSealedBackoff(this.runtime, executionId);
+      this.wakeBackoff.delete(executionId);
+      if (r.outcome === "skipped") return; // changed under us: the next poll applies the ordinary rules
+      const after = await this.runtime.loadState(executionId, this.runtime.systemOptions());
+      if (after === null || after.status === "running") return; // still being driven: keep the row
+      if (this.runtime.hasInboxWake(after)) await this.fireInbox(executionId, wakeAt);
+      else await this.store.complete(executionId, wakeAt);
+    } catch (err) {
+      if (isSealedUnreadable(err)) {
+        this.noteSealed(executionId, err);
+        return;
+      }
+      this.onError?.(executionId, err);
+      await this.bumpWakeBackoff(executionId, wakeAt);
+    }
+  }
+
+  /** Keep a wake row we may not act on: bounded uncapped back-off, no report, no write. */
+  private holdRow(executionId: string): void {
+    const attempt = (this.wakeBackoff.get(executionId)?.attempt ?? 0) + 1;
+    this.wakeBackoff.delete(executionId);
+    if (this.wakeBackoff.size >= MAX_WAKE_BACKOFFS) {
+      const oldest = this.wakeBackoff.keys().next().value;
+      if (oldest !== undefined) this.wakeBackoff.delete(oldest);
+    }
+    this.wakeBackoff.set(executionId, {
+      attempt: Math.min(attempt, 16),
+      nextTryAt:
+        this.now() + Math.max(1, redriveDelayMs(Math.min(attempt, 16), this.redriveBackoff)),
+    });
+  }
+
+  /**
    * ADR 0110 D5 — fire an inbox wake row. The row is retired only AFTER the notify path ran, and the
    * park is looked at once more afterwards: a send that found the row already present skipped
    * writing another, so a message that landed between the notify read and the retire would be
@@ -493,21 +575,7 @@ export class TimerService {
         h.waitForCompletion().catch(() => undefined),
       ]);
     };
-    const contended = async (): Promise<void> => {
-      // The park is still unanswered but the fence stayed contended: keep the row, back off
-      // in-process (same schedule and attempt cap as a contended timed wake).
-      const attempt = (this.wakeBackoff.get(executionId)?.attempt ?? 0) + 1;
-      if (attempt >= this.maxRedriveAttempts) {
-        this.wakeBackoff.delete(executionId);
-        this.onError?.(executionId, new RedriveExhaustedError(executionId, attempt));
-        await this.store.complete(executionId, wakeAt);
-        return;
-      }
-      this.wakeBackoff.set(executionId, {
-        attempt,
-        nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
-      });
-    };
+    const contended = (): Promise<void> => this.bumpWakeBackoff(executionId, wakeAt);
     try {
       for (let round = 0; round < 8; round++) {
         const r = await this.runtime.notifyInboxDetailed(executionId);
@@ -515,7 +583,7 @@ export class TimerService {
         if (r.handle === undefined) break;
         await settle(r.handle);
       }
-      this.sealedBackoff.delete(executionId);
+      clearSealedBackoff(this.runtime, executionId);
       this.wakeBackoff.delete(executionId);
       await this.store.complete(executionId, wakeAt);
       // After retiring the row, look once more: a send that found the row present skipped writing
@@ -538,17 +606,15 @@ export class TimerService {
    * then only every 16th, not every poll.
    */
   private noteSealed(executionId: string, err: Error): void {
-    const attempt = (this.sealedBackoff.get(executionId)?.attempt ?? 0) + 1;
-    this.sealedBackoff.delete(executionId); // re-insert at the end: eviction order = recency
-    if (this.sealedBackoff.size >= MAX_WAKE_BACKOFFS) {
-      const oldest = this.sealedBackoff.keys().next().value;
-      if (oldest !== undefined) this.sealedBackoff.delete(oldest);
+    // The back-off is shared with `recoverAbandoned` (per runtime): a refusal seen by either path
+    // suppresses the other for the window.
+    if (
+      noteSealedRefusal(this.runtime, executionId, this.now(), (attempt) =>
+        redriveDelayMs(attempt, this.redriveBackoff)
+      )
+    ) {
+      this.onError?.(executionId, err);
     }
-    this.sealedBackoff.set(executionId, {
-      attempt,
-      nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
-    });
-    if (attempt === 1 || attempt % 16 === 0) this.onError?.(executionId, err);
   }
 
   private async lastLook(
@@ -624,8 +690,7 @@ export class TimerService {
       }
       const backoff = this.wakeBackoff.get(executionId);
       if (backoff !== undefined && backoff.nextTryAt > this.now()) return; // backing off: no acquire
-      const sealedOff = this.sealedBackoff.get(executionId);
-      if (sealedOff !== undefined && sealedOff.nextTryAt > this.now()) return; // ADR 0130
+      if (isSealedBackedOff(this.runtime, executionId, this.now())) return; // ADR 0130 (shared w/ the sweep)
       const state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
       // ADR 0110 D5 — the inbox wake row: run the notify path (read past the cursors, consume,
       // resume), then re-check after retiring the row so a send that coalesced into it just before
@@ -635,6 +700,12 @@ export class TimerService {
         // A node with the inbox flag OFF cannot run the notify path, and must not retire the row as
         // obsolete: a node with it on (a mixed fleet mid-rollout) still needs it. Leave it be.
         if (!this.runtime.inboxOn) return;
+        // ADR 0130 D10: a `running` execution carrying the wake row is stuck behind a replay
+        // refusal; the notify path would find no park and retire the row.
+        if (state?.status === "running") {
+          await this.fireRunning(executionId, wakeAt);
+          return;
+        }
         await this.fireInbox(executionId, wakeAt);
         return;
       }
