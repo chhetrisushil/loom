@@ -362,7 +362,7 @@ export async function recoverAbandoned(
     // for it. Losing the race means someone else is already on it.
     let held: HeldLease | undefined;
     // ADR 0130 D11 (S7c): a runtime with a heartbeat keeper claims through it (shared owner, one timer).
-    let hold: { release(): Promise<void> } | undefined;
+    let hold: { release(): Promise<void>; forget(): void } | undefined;
     if (runtime.leaseKeeper !== undefined) {
       // Lease BEFORE fence (D11 section 1): a conditional takeover below must never fence out a
       // driver that heartbeats. S7d: every keeper runtime claims, not only lease mode.
@@ -393,13 +393,22 @@ export async function recoverAbandoned(
       );
     }
 
+    // A won claim whose attempt then fails FORGETS the lease (row left to expire, an expired lease is the
+    // retry's evidence) instead of releasing it (absent proves nothing).
+    let wonClaim = false;
+    let redriven = false;
     try {
       // The shared routine (also the TimerService wake-row re-drive, ADR 0130 D10): re-checks the
       // status, fences, dispatches or resumes, settles, and classifies a sealed refusal.
       const r = await redriveAbandoned(runtime, executionId, {
         source: "sweep",
         // ADR 0130 D11 section 4 step 4: with heartbeat leases the takeover is conditional on the head.
-        ...(runtime.leaseKeeper !== undefined && { conditional: true }),
+        ...(runtime.leaseKeeper !== undefined && {
+          conditional: true,
+          onClaimed: async () => {
+            wonClaim = true;
+          },
+        }),
         ...(options.fenced !== undefined && { fenced: options.fenced }),
         ...(options.dispatcher !== undefined && { dispatcher: options.dispatcher }),
         // ADR 0130 D11 (S7c): a dispatched re-drive is driven by the WORKER, which holds its own lease.
@@ -422,6 +431,7 @@ export async function recoverAbandoned(
         summary.failed++;
         continue;
       }
+      redriven = true;
       summary.recovered++;
       options.onRecovered?.(executionId);
     } catch (err) {
@@ -435,7 +445,10 @@ export async function recoverAbandoned(
       // Stop renewing whatever happened: the re-drive has settled, failed, or thrown, and a
       // claim outliving the work it covers blocks whoever legitimately takes it next.
       held?.stop();
-      await hold?.release();
+      if (hold !== undefined) {
+        if (wonClaim && !redriven) hold.forget();
+        else await hold.release();
+      }
     }
   }
 

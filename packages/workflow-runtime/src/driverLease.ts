@@ -59,6 +59,14 @@ export interface DriverLease {
    */
   release(): Promise<void>;
   /**
+   * Release this hold like {@link release}, but when it is the LAST one the keeper stops renewing and
+   * drops the lease WITHOUT deleting the store row: it expires on its own after the TTL and is then
+   * expired-lease evidence for a retry. For an attempt that failed after it claimed (a released row
+   * would be absent, which proves nothing). If other holds remain, the intent is kept and applies
+   * when the last of them goes. Synchronous (no store call); idempotent; a no-op once the lease was lost.
+   */
+  forget(): void;
+  /**
    * Called ONCE, synchronously, if the lease is lost while this hold is live (taken over, past the
    * local self-fencing deadline, or the keeper closed). May run inside `validNow`.
    */
@@ -75,6 +83,7 @@ export interface DriverLease {
 /** The hold of an unwired runtime: always valid, never lost, nothing to release. */
 export const NO_LEASE: DriverLease = Object.freeze({
   release: () => Promise.resolve(),
+  forget: () => {},
   onLost: () => {},
   valid: () => true,
   lossError: () => new LeaseLostError("", "", "closed"),
@@ -97,6 +106,8 @@ export class DriverLeases {
   private readonly pending = new Map<string, number>();
   /** ids whose last registered hold was released while an acquire was pending: release afterwards. */
   private readonly deferredRelease = new Set<string>();
+  /** ids whose lease is to be FORGOTTEN (row left to expire) rather than released when the last hold goes. */
+  private readonly forgetOnLast = new Set<string>();
 
   constructor(deps: HeartbeatOptions) {
     const { leaseStore, onStoreError, nodeId, ...options } = deps;
@@ -119,6 +130,7 @@ export class DriverLeases {
 
   private lost(id: string, err: LeaseLostError): void {
     this.deferredRelease.delete(id); // the keeper no longer holds it: nothing to release afterwards
+    this.forgetOnLast.delete(id);
     const set = this.holds.get(id);
     if (set === undefined) return;
     this.holds.delete(id);
@@ -185,6 +197,11 @@ export class DriverLeases {
     if (!ok) return null;
     return {
       release: () => this.release(hold),
+      forget: () => {
+        if (hold.released || hold.dead) return;
+        this.forgetOnLast.add(hold.id);
+        void this.release(hold);
+      },
       onLost: (listener) => {
         if (hold.dead) {
           // Lost before the driver attached: deliver it NOW (never a silent no-op).
@@ -210,7 +227,7 @@ export class DriverLeases {
       return;
     }
     this.pending.delete(id);
-    if (this.deferredRelease.delete(id) && !this.holds.has(id)) void this.keeper.release(id);
+    if (this.deferredRelease.delete(id) && !this.holds.has(id)) void this.finish(id);
   }
 
   private release(hold: Hold): Promise<void> {
@@ -229,7 +246,16 @@ export class DriverLeases {
       return Promise.resolve();
     }
     this.deferredRelease.delete(hold.id); // sending the release now: no stale flag may linger
-    return this.keeper.release(hold.id);
+    return this.finish(hold.id);
+  }
+
+  /** The last hold (and every pending acquire) is gone: give the lease up, or just stop keeping it. */
+  private finish(id: string): Promise<void> {
+    if (this.forgetOnLast.delete(id)) {
+      this.keeper.forget(id);
+      return Promise.resolve();
+    }
+    return this.keeper.release(id);
   }
 
   close(): Promise<void> {

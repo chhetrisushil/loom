@@ -694,7 +694,7 @@ export class TimerService {
     // owner); the keeper's claim is a reference-counted hold released in the `finally`. S7d: every
     // keeper runtime claims (an expired lease is acquirable by exactly one poller), not only one with
     // an explicit `leases` option.
-    let hold: { release(): Promise<void> } | undefined;
+    let hold: { release(): Promise<void>; forget(): void } | undefined;
     if (this.runtime.leaseKeeper !== undefined) {
       let got: Awaited<ReturnType<typeof this.runtime.acquireDriverLease>>;
       try {
@@ -728,6 +728,10 @@ export class TimerService {
         (err) => this.onError?.(executionId, err)
       );
     }
+    // A won claim whose attempt then does not succeed FORGETS the lease (row left to expire) instead of
+    // releasing it: the retry's default evidence is an expired lease, and a released row is absent.
+    let wonClaim = false;
+    let redriven = false;
     try {
       this.noteRefusalAttempt(executionId);
       const r = await redriveAbandoned(this.runtime, executionId, {
@@ -740,6 +744,7 @@ export class TimerService {
           // A won claim moved the head by one (its marker): re-stamp the row so a failure or crash
           // from here retries it, rather than the next fire seeing head+1 != stamp and retiring it.
           onClaimed: async (newHead: number) => {
+            wonClaim = true;
             refused = { ...refused, head: newHead };
             await this.store.schedule({ executionId, wakeAt, refused });
           },
@@ -755,6 +760,7 @@ export class TimerService {
         this.refusalAttempts.set(executionId, Math.max(0, attempts));
         return true;
       }
+      redriven = true;
       clearSealedBackoff(this.runtime, executionId);
       this.refusalAttempts.delete(executionId);
       const after = await this.runtime.loadState(executionId, this.runtime.systemOptions());
@@ -771,7 +777,10 @@ export class TimerService {
       await this.failRefusal(executionId, wakeAt, refused);
     } finally {
       held?.stop();
-      await hold?.release();
+      if (hold !== undefined) {
+        if (wonClaim && !redriven) hold.forget();
+        else await hold.release();
+      }
     }
     return true;
   }

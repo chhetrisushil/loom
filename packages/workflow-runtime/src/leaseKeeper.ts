@@ -503,6 +503,19 @@ export class LeaseKeeper {
     });
   }
 
+  /**
+   * Stop keeping the lease WITHOUT giving it up (ADR 0130 D11, S7d round 3). The id leaves the held
+   * set at once (no more renewals, `validNow` false, no `onLost`), but the store row is NOT touched:
+   * it expires on its own after the TTL, and an expired row IS the liveness evidence a retry of an
+   * attempt that failed needs (a released row is absent, which proves nothing). No store call, so it
+   * is synchronous and cannot fail. A same-owner `acquire` afterwards works as any other (it renews
+   * the row if it still exists, or takes it once expired). Use `release` when the work succeeded.
+   * It does not cancel an acquire already on the wire: callers serialise (see `DriverLeases`).
+   */
+  forget(executionId: string): void {
+    this.held.delete(executionId);
+  }
+
   /** Stop the timers, fail pending acquires, and release everything still held (awaited). */
   async close(): Promise<void> {
     if (this.closed) return;
