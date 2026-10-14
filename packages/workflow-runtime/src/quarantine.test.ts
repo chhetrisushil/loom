@@ -257,12 +257,14 @@ for (const backend of inboxBackends("quarantine")) {
       });
 
       it("NO capable node: the topic stays held, other topics flow, the poll leaves the row and reports first-then-every-16th, appends nothing; a capable node later releases on its first poll with no send", async () => {
-        const s = await scene({ a: {}, b: {} });
+        // The shared sealed back-off runs on the RUNTIME's clock (ADR 0130 D10), so the injected clock
+        // is the runtime's too, not only the poller's.
+        const clock = { t: 1_000 };
+        const s = await scene({ a: {}, b: { now: () => clock.t } });
         await s.b.rt.quarantineInbox(s.e, { topic: "a" }, { principal: OP });
         await until(async () => consumedOf(await s.raw.eventStore.read(s.e)).length === 1); // b1 flowed
         await parked(s.b, s.e);
         const reports: unknown[] = [];
-        const clock = { t: 1_000 };
         const svcB = new TimerService(s.b.rt, s.raw.timers, {
           now: () => clock.t,
           // a shared database may hold other tests' due rows: only THIS execution's reports count
