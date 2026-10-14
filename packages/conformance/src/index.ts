@@ -1251,10 +1251,12 @@ export interface LeaseStoreConformanceOptions {
    */
   clocked?: (now: () => number) => LeaseStore;
   /**
-   * The `LEASE_STORE_SPI_VERSION` this store claims. Default: the current version. A store that
-   * claims below 2.2.0 skips the batch / steal cases (those methods are additive and optional
-   * for it); one that claims 2.2.0 or later MUST implement `acquireMany`, `renewMany` and
-   * `releaseMany`, and the cases fail if a method is missing.
+   * The `LEASE_STORE_SPI_VERSION` this store claims. Default: unspecified. The batch methods are
+   * OPTIONAL (D11 section 7): with no `spiVersion` the batch / steal cases run only when the store
+   * implements ANY of `acquireMany`/`renewMany`/`releaseMany` (and then it must implement all
+   * three); a store with none passes untouched (a 2.1.0-shaped store needs no options). Pass
+   * `spiVersion: "2.2.0"` (or later) to FORCE the cases: a store claiming 2.2.0 MUST implement all
+   * three and they fail if a method is missing.
    */
   spiVersion?: string;
 }
@@ -1278,7 +1280,29 @@ function requireBatch(store: LeaseStore): string | undefined {
   );
   return missing.length === 0
     ? undefined
-    : `a LeaseStore claiming SPI 2.2.0 must implement ${missing.join(", ")}`;
+    : `a LeaseStore implementing any batch method (or claiming SPI 2.2.0) must implement acquireMany, renewMany and releaseMany (missing: ${missing.join(", ")})`;
+}
+
+const BATCH_METHODS = ["acquireMany", "renewMany", "releaseMany"] as const;
+
+/**
+ * The batch-declaration rule, as a function so the kit's own tests can prove it discriminates:
+ * a store implementing SOME but not all of the three batch methods is a problem; a store with none
+ * is a problem only when it claims `spiVersion >= 2.2.0`. Returns `undefined` when it conforms.
+ * Closes the store.
+ */
+export async function leaseBatchDeclarationProblem(
+  factory: () => LeaseStore,
+  spiVersion?: string
+): Promise<string | undefined> {
+  const store = factory();
+  try {
+    const any = BATCH_METHODS.some((m) => typeof store[m] === "function");
+    if (!any && !(spiVersion !== undefined && spiAtLeast(spiVersion, "2.2.0"))) return undefined;
+    return requireBatch(store);
+  } finally {
+    await store.close();
+  }
 }
 
 /**
@@ -1307,6 +1331,17 @@ export async function leaseBatchProblem(factory: () => LeaseStore): Promise<stri
     }
     if (((await store.acquireMany?.(["theirs"], "node-a", 1000, 20)) ?? []).length !== 0) {
       return "acquireMany took a lease another owner holds unexpired";
+    }
+    try {
+      const got = await store.acquireMany?.(["theirs"], "node-a", 1000, 20, {
+        steal: { fence: 1 },
+      });
+      if (got !== undefined) return "acquireMany must reject `steal` with TypeError";
+    } catch (e) {
+      if (!(e instanceof TypeError)) return "acquireMany with steal must throw TypeError";
+    }
+    if ((await store.get?.("theirs"))?.owner === "node-a") {
+      return "acquireMany with steal changed the lease before rejecting";
     }
     try {
       const stole = await store.acquire("theirs", "node-a", 1000, 20, {
@@ -1568,11 +1603,30 @@ export function runLeaseStoreConformance(
       await store.close();
     });
 
-    const batchDeclared = spiAtLeast(options.spiVersion ?? LEASE_STORE_SPI_VERSION, "2.2.0");
-    const batch = batchDeclared ? it : it.skip;
+    // The batch methods are OPTIONAL: the cases run when the store implements any of them, or
+    // when it explicitly claims >= 2.2.0 (then a missing method FAILS the declaration case).
+    const forced = options.spiVersion !== undefined && spiAtLeast(options.spiVersion, "2.2.0");
+    let implementsBatch: Promise<boolean> | undefined;
+    const hasAnyBatch = (): Promise<boolean> => {
+      implementsBatch ??= (async () => {
+        const probe = factory();
+        try {
+          return BATCH_METHODS.some((m) => typeof probe[m] === "function");
+        } finally {
+          await probe.close();
+        }
+      })();
+      return implementsBatch;
+    };
+    const batch = (name: string, fn: () => Promise<void> | void): void => {
+      it(name, async (ctx) => {
+        if (!forced && !(await hasAnyBatch())) return ctx.skip();
+        await fn();
+      });
+    };
 
-    batch("2.2.0: a store claiming it implements acquireMany, renewMany and releaseMany", () => {
-      expect(requireBatch(factory())).toBeUndefined();
+    it("2.2.0: a store with any batch method implements acquireMany, renewMany and releaseMany", async () => {
+      expect(await leaseBatchDeclarationProblem(factory, options.spiVersion)).toBeUndefined();
     });
 
     batch(
@@ -1671,7 +1725,7 @@ export function runLeaseStoreConformance(
         expect(await store.acquire("x", "node-a", 1000, 100)).toBeNull();
         expect(await store.acquire("x", "node-a", 1000, 100, {})).toBeNull();
         // A steal flag that is not a proof is a programming error, never a silent steal.
-        for (const bad of [true, {}, { fence: -1 }, { fence: 1.5 }, { fence: Number.NaN }]) {
+        for (const bad of [true, {}, { fence: -1 }, { fence: 0 }, { fence: 1.5 }, { fence: Number.NaN }]) {
           await expect(
             store.acquire("x", "node-a", 1000, 100, { steal: bad } as unknown as AcquireOptions)
           ).rejects.toThrow(TypeError);
@@ -1682,7 +1736,7 @@ export function runLeaseStoreConformance(
         expect(await store.renew("x", "node-b", 1000, 200)).toBe(false);
         expect(await store.renewMany?.(["x"], "node-b", 1000, 200)).toEqual([]);
         expect(await store.renewMany?.(["x"], "node-a", 1000, 200)).toEqual(["x"]);
-        // Stealing a lease nobody holds is just an acquire (a steal never resurrects anything).
+        // Stealing a lease nobody holds is just an acquire (after a release, a steal is just an acquire).
         await store.release("x", "node-a");
         expect(
           await store.acquire("x", "node-c", 1000, 300, { steal: { fence: 5 } })
@@ -1693,21 +1747,23 @@ export function runLeaseStoreConformance(
       }
     );
 
-    batch("acquireMany honours the same steal gate", async () => {
+    batch("acquireMany REJECTS steal (a fence belongs to one execution): TypeError, nothing changed", async () => {
       const store = factory();
       await store.acquire("a", "node-b", 10_000, 0);
       await store.acquire("b", "node-b", 10_000, 0);
       expect(await store.acquireMany?.(["a", "b"], "node-a", 1000, 100)).toEqual([]);
-      await expect(
-        store.acquireMany?.(["a"], "node-a", 1000, 100, {
-          steal: true,
-        } as unknown as AcquireOptions)
-      ).rejects.toThrow(TypeError);
-      const got = await store.acquireMany?.(["a", "b"], "node-a", 1000, 100, {
-        steal: { fence: 2 },
-      });
-      expect((got ?? []).map((l) => l.executionId).sort()).toEqual(["a", "b"]);
-      expect(await store.renew("a", "node-b", 1000, 200)).toBe(false);
+      for (const steal of [true, { fence: 2 }]) {
+        await expect(
+          store.acquireMany?.(["a", "b", "free"], "node-a", 1000, 100, {
+            steal,
+          } as unknown as AcquireOptions)
+        ).rejects.toThrow(TypeError);
+      }
+      if (store.get !== undefined) {
+        expect((await store.get("a"))?.owner).toBe("node-b");
+        expect(await store.get("free")).toBeNull(); // nothing granted before the rejection
+      }
+      expect(await store.renew("a", "node-b", 1000, 200)).toBe(true);
       await store.close();
     });
 

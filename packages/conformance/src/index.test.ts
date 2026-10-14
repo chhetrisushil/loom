@@ -56,6 +56,7 @@ import {
   eventStoreNowProblem,
   eventStoreSealingProblem,
   incarnationAnchorProblem,
+  leaseBatchDeclarationProblem,
   leaseBatchProblem,
   leaseExpiredDefaultProblem,
   leaseStoreNowProblem,
@@ -399,6 +400,69 @@ runLeaseStoreConformance(
   "InMemoryLeaseStore (2.1.0 subset)",
   { spiVersion: "2.1.0" }
 );
+
+// The batch methods are OPTIONAL (D11 section 7): a 2.1.0-shaped store passes with NO options.
+runLeaseStoreConformance(
+  () =>
+    Object.assign(new InMemoryLeaseStore(), {
+      acquireMany: undefined,
+      renewMany: undefined,
+      releaseMany: undefined,
+    }),
+  "InMemoryLeaseStore (2.1.0 subset, no options)"
+);
+
+describe("leaseBatchDeclarationProblem discriminates", () => {
+  const withOnly = (keep: "acquireMany" | "renewMany" | "releaseMany") => () => {
+    const s = new InMemoryLeaseStore();
+    return Object.assign(s, {
+      acquireMany: keep === "acquireMany" ? s.acquireMany.bind(s) : undefined,
+      renewMany: keep === "renewMany" ? s.renewMany.bind(s) : undefined,
+      releaseMany: keep === "releaseMany" ? s.releaseMany.bind(s) : undefined,
+    });
+  };
+  const none = () =>
+    Object.assign(new InMemoryLeaseStore(), {
+      acquireMany: undefined,
+      renewMany: undefined,
+      releaseMany: undefined,
+    });
+  it("a store with ONE batch method fails asking for all three", async () => {
+    expect(await leaseBatchDeclarationProblem(withOnly("renewMany"))).toMatch(
+      /acquireMany, renewMany and releaseMany/
+    );
+    expect(await leaseBatchDeclarationProblem(withOnly("acquireMany"), "2.1.0")).toMatch(
+      /missing: renewMany, releaseMany/
+    );
+  });
+  it("a store with none passes unless it claims >= 2.2.0", async () => {
+    expect(await leaseBatchDeclarationProblem(none)).toBeUndefined();
+    expect(await leaseBatchDeclarationProblem(none, "2.1.0")).toBeUndefined();
+    expect(await leaseBatchDeclarationProblem(none, "2.2.0")).toMatch(/must implement/);
+  });
+  it("a complete store passes", async () => {
+    expect(await leaseBatchDeclarationProblem(() => new InMemoryLeaseStore())).toBeUndefined();
+  });
+  it("a store that lets acquireMany steal fails leaseBatchProblem", async () => {
+    class BatchSteals extends InMemoryLeaseStore {
+      override async acquireMany(
+        ids: readonly string[],
+        owner: string,
+        ttl: number,
+        now?: number,
+        o?: AcquireOptions
+      ) {
+        const out = [];
+        for (const id of new Set(ids)) {
+          const l = await this.acquire(id, owner, ttl, now, o);
+          if (l !== null) out.push(l);
+        }
+        return out;
+      }
+    }
+    expect(await leaseBatchProblem(() => new BatchSteals())).toMatch(/acquireMany/);
+  });
+});
 
 // The kit's expired()-default case must DISCRIMINATE, not merely pass on the reference store
 // (L28 review: with wall-clock factories it passed the exact bug and failed a correct sim store).

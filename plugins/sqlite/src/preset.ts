@@ -23,18 +23,31 @@ export interface SqliteStorageOptions {
  * `leaseStore` (ADR 0130 D11) is the heartbeat-lease store CO-LOCATED with the event store: the
  * same `events.db`, so the lease and the log share one failure domain. It is an accessor on
  * the factory's result, not part of `CustomStorage`, so there is no `EventStore` SPI change;
- * `defineConfig` does not read it yet. The caller closes it (its own connection).
+ * `defineConfig` does not read it yet. It is opened lazily on first access (its own connection) and
+ * closed by `eventStore.close()`.
  */
 export function sqliteStorage(
   options: SqliteStorageOptions = {}
 ): CustomStorage & { leaseStore: LeaseStore } {
   const dir = options.dir ?? ".loom";
   mkdirSync(dir, { recursive: true });
+  const eventStore = new SqliteEventStore(join(dir, "events.db"));
+  // Lazy: a second events.db connection + migrate is opened only when something reads
+  // `leaseStore`, and it is closed together with the event store (as the Postgres preset does).
+  let lease: SqliteLeaseStore | undefined;
+  const closeEvents = eventStore.close.bind(eventStore);
+  eventStore.close = async () => {
+    await closeEvents();
+    await lease?.close();
+  };
   return {
     kind: "custom",
-    eventStore: new SqliteEventStore(join(dir, "events.db")),
+    eventStore,
     snapshotStore: new SqliteSnapshotStore(join(dir, "snapshots.db")),
-    leaseStore: new SqliteLeaseStore(join(dir, "events.db")),
+    get leaseStore(): LeaseStore {
+      lease ??= new SqliteLeaseStore(join(dir, "events.db"));
+      return lease;
+    },
     ...(options.branching === true && {
       branchRegistry: new SqliteBranchRegistry(join(dir, "branches.db")),
     }),

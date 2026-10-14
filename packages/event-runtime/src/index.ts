@@ -64,6 +64,7 @@ export { EVENT_KIND_CLASS, isAnsweringKind, type EventKindClass } from "./eventK
 export {
   InMemoryLeaseStore,
   LEASE_STORE_SPI_VERSION,
+  assertNoBatchSteal,
   assertSteal,
   assertTtl,
   type AcquireOptions,
