@@ -380,6 +380,10 @@ export interface HeartbeatStatus {
   source: "explicit" | "co-located" | "in-memory" | "none" | "off";
   store?: LeaseStore;
   storeInMemory: boolean;
+  /** The chosen store's declared `LeaseStore.scope`; `"unknown"` when undeclared or no store. */
+  scope: "process" | "host" | "cluster" | "unknown";
+  /** `scope === "cluster"`: only then is "a lease expired" evidence across nodes (S7d re-drive gate). */
+  clusterVisible: boolean;
   eventStoreInMemory: boolean;
   onStoreError: "stop" | "continue";
   ttlMs?: number;
@@ -437,9 +441,13 @@ function resolveHeartbeat(
   const renewEveryMs = positive("renewEveryMs");
   // Same bound the runtime's LeaseKeeper enforces, caught at boot rather than at first drive.
   const ttl = ttlMs ?? 30_000;
-  if (renewEveryMs !== undefined && renewEveryMs >= ttl - Math.floor(ttl / 6))
+  // The keeper defaults an omitted renewEveryMs to max(floor(ttl / 3), 1): check THAT too.
+  const renew = renewEveryMs ?? Math.max(Math.floor(ttl / 3), 1);
+  if (renew >= ttl - Math.floor(ttl / 6))
     throw new TypeError(
-      "defineConfig: durability.heartbeat.renewEveryMs must be < ttlMs - floor(ttlMs / 6)"
+      renewEveryMs === undefined
+        ? "defineConfig: durability.heartbeat.ttlMs is too small: the default renew cadence max(floor(ttlMs / 3), 1) must be < ttlMs - floor(ttlMs / 6)"
+        : "defineConfig: durability.heartbeat.renewEveryMs must be < ttlMs - floor(ttlMs / 6)"
     );
   if (hb.onStoreError !== undefined && hb.onStoreError !== "stop" && hb.onStoreError !== "continue")
     throw new TypeError(
@@ -462,16 +470,32 @@ function resolveHeartbeat(
     source,
     store,
     storeInMemory: store instanceof InMemoryLeaseStore,
+    scope: store.scope ?? "unknown",
+    clusterVisible: store.scope === "cluster",
     ...common,
   });
   if (hb.enabled === false)
-    return { enabled: false, source: "off", storeInMemory: false, ...common };
+    return {
+      enabled: false,
+      source: "off",
+      storeInMemory: false,
+      scope: "unknown",
+      clusterVisible: false,
+      ...common,
+    };
   if (hb.store !== undefined) return withStore("explicit", hb.store as LeaseStore);
   // Derived from the SAME factory as the event store (the preset's `leaseStore` accessor).
   const colocated = storage.kind === "custom" ? storage.leaseStore : undefined;
   if (colocated !== undefined) return withStore("co-located", colocated);
   if (eventStoreInMemory) return withStore("in-memory", new InMemoryLeaseStore());
-  return { enabled: false, source: "none", storeInMemory: false, ...common };
+  return {
+    enabled: false,
+    source: "none",
+    storeInMemory: false,
+    scope: "unknown",
+    clusterVisible: false,
+    ...common,
+  };
 }
 
 /**

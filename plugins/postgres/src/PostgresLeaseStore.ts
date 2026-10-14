@@ -71,6 +71,7 @@ export const EXPIRED_SQL = `SELECT * FROM leases WHERE expires_at <= ${nowOrDb(1
  * caller that must compare against it (`orphanCensus`) can.
  */
 export class PostgresLeaseStore implements LeaseStore {
+  readonly scope = "cluster" as const;
   private readonly pool: PoolLike;
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;

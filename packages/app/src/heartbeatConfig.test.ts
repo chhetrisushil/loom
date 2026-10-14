@@ -135,6 +135,11 @@ describe("durability.heartbeat -- validation", () => {
     expect(bad({ ttlMs: 6_000, renewEveryMs: 5_000 })).toThrow(TypeError);
     expect(bad({ ttlMs: 6_000, renewEveryMs: 4_999 })).not.toThrow();
   });
+  it("bound-checks the DEFAULT renew cadence too (max(floor(ttl/3),1) must beat the deadline)", () => {
+    expect(bad({ ttlMs: 1 })).toThrow(TypeError);
+    expect(bad({ ttlMs: 0.5 })).toThrow(TypeError);
+    expect(bad({ ttlMs: 2 })).not.toThrow();
+  });
   it("rejects a bad onStoreError, enabled, or store", () => {
     expect(bad({ onStoreError: "ignore" })).toThrow(TypeError);
     expect(bad({ enabled: "yes" })).toThrow(TypeError);
@@ -147,5 +152,56 @@ describe("durability.heartbeat -- validation", () => {
     expect(() =>
       defineConfig({ ...base, storage: { kind: "memory" }, heartbeat: { enabled: false } } as never)
     ).toThrow(/durability\.heartbeat/);
+  });
+});
+
+describe("durability.heartbeat -- scope (cluster visibility)", () => {
+  const withScope = (scope?: "process" | "host" | "cluster") => {
+    const s = new InMemoryLeaseStore();
+    if (scope === undefined) (s as { scope?: unknown }).scope = undefined;
+    else (s as { scope?: unknown }).scope = scope;
+    return s;
+  };
+  it("in-memory derivation is process-scoped and NOT cluster-visible", () => {
+    const app = defineConfig({ ...base, storage: { kind: "memory" } });
+    expect(app.heartbeat.scope).toBe("process");
+    expect(app.heartbeat.clusterVisible).toBe(false);
+  });
+  it("a co-located store reports its own declared scope", () => {
+    for (const [scope, cv] of [
+      ["host", false],
+      ["cluster", true],
+    ] as const) {
+      const app = defineConfig({
+        ...base,
+        storage: preset({ lease: withScope(scope), durable: true }),
+      });
+      expect(app.heartbeat.scope).toBe(scope);
+      expect(app.heartbeat.clusterVisible).toBe(cv);
+    }
+  });
+  it("an undeclared scope is unknown and NOT cluster-visible; an explicit store contributes its own", () => {
+    const a = defineConfig({
+      ...base,
+      storage: preset({ lease: withScope(undefined), durable: true }),
+    });
+    expect(a.heartbeat.scope).toBe("unknown");
+    expect(a.heartbeat.clusterVisible).toBe(false);
+    const b = defineConfig({
+      ...base,
+      storage: preset({ durable: true }),
+      durability: { heartbeat: { store: withScope("cluster") } },
+    });
+    expect(b.heartbeat.scope).toBe("cluster");
+    expect(b.heartbeat.clusterVisible).toBe(true);
+  });
+  it("a disabled heartbeat is unknown / not cluster-visible", () => {
+    const app = defineConfig({
+      ...base,
+      storage: { kind: "memory" },
+      durability: { heartbeat: { enabled: false } },
+    });
+    expect(app.heartbeat.scope).toBe("unknown");
+    expect(app.heartbeat.clusterVisible).toBe(false);
   });
 });

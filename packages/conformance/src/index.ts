@@ -1304,6 +1304,14 @@ export async function leaseBatchDeclarationProblem(
   }
 }
 
+/** A declared `LeaseStore.scope` must be one of the three values; undeclared (unknown) is allowed. */
+export function leaseScopeProblem(store: LeaseStore): string | undefined {
+  const scope = (store as { scope?: unknown }).scope;
+  if (scope === undefined || scope === "process" || scope === "host" || scope === "cluster")
+    return undefined;
+  return `LeaseStore.scope must be "process", "host" or "cluster" when declared (got ${String(scope)})`;
+}
+
 /**
  * The 2.2.0 invariants that matter most to a caller, as a function so the kit's own tests can
  * prove they DISCRIMINATE: `renewMany` returns exactly the HELD set (not its input), never
@@ -1508,6 +1516,12 @@ export function runLeaseStoreConformance(
   options: LeaseStoreConformanceOptions = {}
 ): void {
   describe(`${label} conformance (LeaseStore SPI)`, () => {
+    it("a declared scope is one of process / host / cluster", async () => {
+      const store = factory();
+      expect(leaseScopeProblem(store)).toBeUndefined();
+      await store.close();
+    });
+
     it("grants a free lease and refuses one another owner already holds", async () => {
       const store = factory();
       expect(await store.acquire("x", "node-a", 1000, 0)).toMatchObject({

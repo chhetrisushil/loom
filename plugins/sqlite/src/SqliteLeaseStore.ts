@@ -27,6 +27,7 @@ const rowToLease = (r: LeaseRow): Lease => ({
  * owns this", and a single-host deployment has one. Multi-node wants Postgres.
  */
 export class SqliteLeaseStore implements LeaseStore {
+  readonly scope = "host" as const;
   private readonly db: Database.Database;
 
   constructor(dbPath: string) {

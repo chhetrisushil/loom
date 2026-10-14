@@ -513,12 +513,31 @@ describe("loom doctor -- heartbeat leases", () => {
     expect(c?.status).toBe("advisory");
     expect(c?.detail).toMatch(/no longer proves liveness/);
   });
+  it("scope host: advisory -- visible to ONE host only; the ok detail prints the scope", async () => {
+    const base = {
+      enabled: true,
+      source: "co-located",
+      storeInMemory: false,
+      eventStoreInMemory: false,
+      onStoreError: "stop",
+    };
+    const host = await run({ ...base, scope: "host" });
+    expect(host?.status).toBe("advisory");
+    expect(host?.detail).toMatch(/ONE host only: evidence holds only if every node shares it/);
+    const unknown = await run({ ...base, scope: "unknown" });
+    expect(unknown?.status).toBe("advisory");
+    expect(unknown?.detail).toMatch(/scope is unknown/);
+    const ok = await run({ ...base, scope: "cluster" });
+    expect(ok?.status).toBe("ok");
+    expect(ok?.detail).toMatch(/cluster/);
+  });
   it("negatives: co-located + stop, in-memory beside in-memory, and enabled:false are quiet", async () => {
     expect(
       (
         await run({
           enabled: true,
           source: "co-located",
+          scope: "cluster",
           storeInMemory: false,
           eventStoreInMemory: false,
           onStoreError: "stop",
@@ -530,6 +549,7 @@ describe("loom doctor -- heartbeat leases", () => {
         await run({
           enabled: true,
           source: "in-memory",
+          scope: "process",
           storeInMemory: true,
           eventStoreInMemory: true,
           onStoreError: "stop",
