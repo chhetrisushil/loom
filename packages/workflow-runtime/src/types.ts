@@ -462,9 +462,13 @@ export interface RunOptions {
    * marker durable with `WorkflowRuntime.claimRecovery` (the conditional takeover), so the resume must
    * NOT write a second one. Ignored for any other event.
    *
+   * Honoured ONLY when it is the runtime's own grant token ({@link RecoveryClaimGrant}, obtained from
+   * `WorkflowRuntime.recoveryClaimOptions()`): any other value is ignored and the marker is written, so
+   * a caller cannot dodge the recovery count (`maxRecoveries`) by skipping it.
+   *
    * @internal Kernel plumbing for `redriveAbandoned`; not public API (ADR 0083).
    */
-  recoveryClaimed?: boolean;
+  recoveryClaimed?: RecoveryClaimGrant;
   /**
    * K8.3 — wall-clock deadline for this run, anchored to the LOGGED
    * `EXECUTION_STARTED` timestamp — so recovery/resume never resets the clock,
@@ -517,6 +521,11 @@ export interface RunOptions {
    * no authorizer and is not a principal.
    */
   lineage?: LineageGrant;
+}
+
+/** ADR 0130 D11 (S7d): the opaque token that lets `redriveAbandoned` skip a marker it already made durable. */
+export interface RecoveryClaimGrant {
+  readonly __loomRecoveryClaim: true;
 }
 
 /**

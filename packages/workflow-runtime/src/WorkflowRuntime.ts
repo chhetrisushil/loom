@@ -223,6 +223,7 @@ import type {
   RecordOutcomeInput,
   RecordOutcomeOptions,
   RecordOutcomeResult,
+  RecoveryClaimGrant,
   RegisteredFlow,
   ReleaseInboxInput,
   ReleaseInboxOptions,
@@ -1039,6 +1040,9 @@ export class WorkflowRuntime {
   private readonly systemGrantToken: SystemGrant | undefined;
   // R3k round 2 — held in EVERY mode (even with no authorizer): the only way a `parent` is recorded.
   private readonly lineageToken: LineageGrant = Object.freeze({ __loomLineageGrant: true });
+  private readonly recoveryClaimToken: RecoveryClaimGrant = Object.freeze({
+    __loomRecoveryClaim: true,
+  });
   private readonly validateInput: boolean;
   private readonly now: () => number;
   // ADR 0130 D11 (S7c) - the per-runtime heartbeat keeper behind every driver; undefined = unwired.
@@ -1198,6 +1202,16 @@ export class WorkflowRuntime {
    */
   systemOptions(): { system?: SystemGrant } {
     return this.systemGrantToken !== undefined ? { system: this.systemGrantToken } : {};
+  }
+
+  /**
+   * ADR 0130 D11 (S7d): the option a resume passes after {@link claimRecovery} won, naming the marker
+   * as already durable. The token is per runtime: a caller cannot forge it.
+   *
+   * @internal Used by `redriveAbandoned`; not part of the public runtime API.
+   */
+  recoveryClaimOptions(): { recoveryClaimed: RecoveryClaimGrant } {
+    return { recoveryClaimed: this.recoveryClaimToken };
   }
 
   /**
@@ -3682,7 +3696,8 @@ export class WorkflowRuntime {
             ]
           : [
               // ADR 0130 D11 (S7d): a conditional takeover already made its recovery marker durable.
-              ...(options?.recoveryClaimed === true && resumeEvent.eventType === EXECUTION_RECOVERED
+              ...(options?.recoveryClaimed === this.recoveryClaimToken &&
+              resumeEvent.eventType === EXECUTION_RECOVERED
                 ? []
                 : [{ eventType: resumeEvent.eventType, payload: resumePayload }]),
               ...answerEvents(runVm.getState(), resumePayload),

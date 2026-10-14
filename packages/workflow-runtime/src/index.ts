@@ -181,6 +181,7 @@ export type {
   ExecutionOp,
   SystemGrant,
   LineageGrant,
+  RecoveryClaimGrant,
   ForkOptions,
   ForkResult,
   FlowRunner,

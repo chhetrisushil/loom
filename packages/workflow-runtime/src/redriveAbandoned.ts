@@ -122,6 +122,13 @@ export interface RedriveOptions {
    * then dispatch, and the poll's `ifHeadAt` guard.
    */
   conditional?: boolean;
+  /**
+   * Called right after a conditional claim is WON (the marker is durable at `newHead`), BEFORE the
+   * fence or the resume. A caller that keeps a stamped row re-stamps it at `newHead` here, so a failure
+   * (or a crash) after the marker retries instead of finding head+1 != stamp and retiring the row as
+   * stale with the execution still undriven.
+   */
+  onClaimed?: (newHead: number) => Promise<void>;
 }
 
 /**
@@ -156,6 +163,7 @@ export async function redriveAbandoned(
       const won = await runtime.claimRecovery(executionId, fresh.workflowId, fresh.sequence);
       if (won === false) return { outcome: "skipped" };
       claimed = won === true;
+      if (claimed) await options.onClaimed?.(fresh.sequence + 1);
     }
     if (options.fenced) {
       if (ifHeadAt === undefined || claimed) {
@@ -187,7 +195,7 @@ export async function redriveAbandoned(
     }
     const handle = await runtime.resume(executionId, resumeEvent, {
       ...(fence !== undefined && { fence }),
-      ...(claimed && { recoveryClaimed: true }),
+      ...(claimed && runtime.recoveryClaimOptions()),
       ...runtime.systemOptions(),
     });
     // Settle before moving on, so the caller applies backpressure instead of stampeding.

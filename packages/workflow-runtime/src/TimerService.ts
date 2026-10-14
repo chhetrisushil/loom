@@ -623,8 +623,9 @@ export class TimerService {
   private async fireRefused(
     executionId: string,
     wakeAt: number,
-    refused: { head: number; holds?: number }
+    refusedIn: { head: number; holds?: number }
   ): Promise<boolean> {
+    let refused = refusedIn;
     const stamped = refused.head;
     // Is this execution parked on THIS very wakeAt (a stamp merged onto a real timer's own key)?
     // Judged BEFORE any hold branch: a hold completes the key, which would delete the real timer.
@@ -695,7 +696,17 @@ export class TimerService {
     // an explicit `leases` option.
     let hold: { release(): Promise<void> } | undefined;
     if (this.runtime.leaseKeeper !== undefined) {
-      const got = await this.runtime.acquireDriverLease(executionId);
+      let got: Awaited<ReturnType<typeof this.runtime.acquireDriverLease>>;
+      try {
+        got = await this.runtime.acquireDriverLease(executionId);
+      } catch (err) {
+        // FAIL CLOSED, like the judge read above (D11 section 6): a keeper that cannot confirm the
+        // lease (an acquire error, or the quiet period after one) is not "free", and must never
+        // reject the whole poll. Report (first, then every 16th), keep the row, spend no attempt.
+        if (this.evidenceErrors++ % 16 === 0) this.onError?.(executionId, err);
+        await this.holdRefusal(executionId, wakeAt, refused, state);
+        return true;
+      }
       if (got === null) {
         await this.holdRefusal(executionId, wakeAt, refused, state);
         return true;
@@ -724,7 +735,15 @@ export class TimerService {
         fenced: this.fenced,
         ifHeadAt: stamped,
         // D11 section 4 step 4: with heartbeat leases the takeover is conditional on the head.
-        ...(this.runtime.leaseKeeper !== undefined && { conditional: true }),
+        ...(this.runtime.leaseKeeper !== undefined && {
+          conditional: true,
+          // A won claim moved the head by one (its marker): re-stamp the row so a failure or crash
+          // from here retries it, rather than the next fire seeing head+1 != stamp and retiring it.
+          onClaimed: async (newHead: number) => {
+            refused = { ...refused, head: newHead };
+            await this.store.schedule({ executionId, wakeAt, refused });
+          },
+        }),
       });
       if (r.outcome === "refused") {
         this.noteSealed(executionId, r.error);
