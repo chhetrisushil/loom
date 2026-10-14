@@ -250,6 +250,12 @@ export class LeaseKeeper {
   private readonly pendingReleases = new Map<string, PendingRelease>();
   /** Releases on the wire, per id: an acquire for the id waits for it. */
   private readonly releasing = new Map<string, Promise<void>>();
+  /**
+   * Releases whose CALLER-facing call timed out but whose underlying store call has not settled, per
+   * id (the promise resolves when it finally does, success or failure). The store may still apply
+   * it, so a same-owner re-acquire waits for it (bounded) instead of landing a row it would delete.
+   */
+  private readonly lateReleases = new Map<string, Promise<void>>();
   /** Acquires on the wire, per id: a release marks them cancelled and goes after them. */
   private readonly acquiring = new Map<string, Set<Flight>>();
   /** Acquires parked behind an on-the-wire release, per id: a later release() withdraws them. */
@@ -353,6 +359,37 @@ export class LeaseKeeper {
             if (i >= 0) l.splice(i, 1);
             if (l.length === 0) this.parked.delete(executionId);
           }
+          if (!p.cancelled) resolve(this.acquire(executionId));
+        });
+      });
+    }
+    const late = this.lateReleases.get(executionId);
+    if (late) {
+      // A release the store has not answered may still be applied. Sending the acquire now could
+      // land a row that release then deletes (validNow true with no row). Wait for it to settle,
+      // at most one more storeTimeoutMs; a store that still does not answer rejects the acquire.
+      return new Promise<boolean>((resolve, reject) => {
+        const p: Parked = { resolve, cancelled: false };
+        const list = this.parked.get(executionId);
+        if (list) list.push(p);
+        else this.parked.set(executionId, [p]);
+        const unpark = (): void => {
+          const l = this.parked.get(executionId);
+          if (l) {
+            const i = l.indexOf(p);
+            if (i >= 0) l.splice(i, 1);
+            if (l.length === 0) this.parked.delete(executionId);
+          }
+        };
+        const cancel = this.after(() => {
+          unpark();
+          if (p.cancelled) return;
+          p.cancelled = true;
+          reject(new LeaseStoreTimeoutError("release", this.storeTimeoutMs));
+        }, this.storeTimeoutMs);
+        void late.then(() => {
+          cancel();
+          unpark();
           if (!p.cancelled) resolve(this.acquire(executionId));
         });
       });
@@ -527,7 +564,11 @@ export class LeaseKeeper {
    * {@link LeaseStoreTimeoutError}; its late result (if it ever comes) is ignored, and the row it
    * may have written simply expires.
    */
-  private bounded<T>(operation: string, call: () => Promise<T>): Promise<T> {
+  private bounded<T>(
+    operation: string,
+    call: () => Promise<T>,
+    onTimeout?: (underlying: Promise<T>) => void
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let p: Promise<T>;
       try {
@@ -536,10 +577,10 @@ export class LeaseKeeper {
         reject(err);
         return;
       }
-      const cancel = this.after(
-        () => reject(new LeaseStoreTimeoutError(operation, this.storeTimeoutMs)),
-        this.storeTimeoutMs
-      );
+      const cancel = this.after(() => {
+        reject(new LeaseStoreTimeoutError(operation, this.storeTimeoutMs));
+        onTimeout?.(p);
+      }, this.storeTimeoutMs);
       p.then(
         (v) => {
           cancel();
@@ -754,9 +795,24 @@ export class LeaseKeeper {
    * behind it, settle. A TIMED-OUT chunk is not retried per id (the store is not answering).
    */
   private async releaseIds(ids: string[]): Promise<void> {
+    // A timed-out release is still on the wire: remember it per id until it truly settles.
+    const late =
+      (c: string[]) =>
+      (underlying: Promise<unknown>): void => {
+        const settled = underlying.then(
+          () => undefined,
+          () => undefined
+        );
+        for (const id of c) {
+          this.lateReleases.set(id, settled);
+          void settled.then(() => {
+            if (this.lateReleases.get(id) === settled) this.lateReleases.delete(id);
+          });
+        }
+      };
     const one = async (id: string): Promise<void> => {
       try {
-        await this.bounded("release", () => this.store.release(id, this.owner));
+        await this.bounded("release", () => this.store.release(id, this.owner), late([id]));
       } catch (err) {
         this.onError(err);
       }
@@ -765,10 +821,13 @@ export class LeaseKeeper {
       try {
         if (this.store.releaseMany) {
           const releaseMany = this.store.releaseMany;
-          await this.bounded("release", () => releaseMany.call(this.store, c, this.owner));
+          await this.bounded("release", () => releaseMany.call(this.store, c, this.owner), late(c));
         } else
-          await this.bounded("release", () =>
-            Promise.all(c.map((id) => this.store.release(id, this.owner))).then(() => undefined)
+          await this.bounded(
+            "release",
+            () =>
+              Promise.all(c.map((id) => this.store.release(id, this.owner))).then(() => undefined),
+            late(c)
           );
       } catch (err) {
         this.onError(err);

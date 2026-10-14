@@ -624,17 +624,66 @@ describe("LeaseKeeper - bounded store calls (S7c review P1-1)", () => {
     expect(keeper.validNow("x")).toBe(false);
   });
 
-  it("an acquire parked behind a timed-out release stops waiting and acquires", async () => {
+  it("an acquire parked behind a timed-out release stops waiting and acquires once the release settles", async () => {
     const { keeper, store, fire } = afterRig();
     await keeper.acquire("x");
-    store.holdNext();
+    const go = store.holdNext();
     const rel = keeper.release("x");
     await until(() => store.calls.includes("releaseMany:1"));
     const acq = keeper.acquire("x"); // parked behind the on-the-wire release
     fire();
     await rel;
+    go(); // the late release settles; only then does the acquire go out
     expect(await acq).toBe(true);
     expect(keeper.validNow("x")).toBe(true);
+    expect(store.held.has("x")).toBe(true);
+  });
+
+  it("R3-P2: a release answered LATE never leaves validNow true without a row (re-acquire waits for the late release)", async () => {
+    const { keeper, store, fire, pending } = afterRig();
+    await keeper.acquire("x");
+    const go = store.holdNext(); // the release is on the wire but the store answers it late
+    const rel = keeper.release("x");
+    await until(() => store.calls.includes("releaseMany:1"));
+    fire(); // the bounded release times out; the handle settles
+    await rel;
+    const violations: string[] = [];
+    const watch = (when: string): void => {
+      if (keeper.validNow("x") && !store.held.has("x")) violations.push(when);
+    };
+    const acq = keeper.acquire("x"); // same owner re-acquires after the timed-out release
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setImmediate(r));
+      watch(`before-late-${i}`);
+    }
+    // The acquire must NOT have been sent while the original release is still outstanding.
+    expect(store.calls.filter((c) => c.startsWith("acquire"))).toHaveLength(1); // only the first
+    go(); // the store now applies the original release
+    expect(await acq).toBe(true);
+    watch("after-acquire");
+    expect(violations).toEqual([]);
+    expect(keeper.validNow("x")).toBe(true);
+    expect(store.held.has("x")).toBe(true);
+    void pending;
+  });
+
+  it("R3-P2: a late release that never settles bounds the re-acquire (rejects, never held, never hangs)", async () => {
+    const { keeper, store, fire } = afterRig();
+    await keeper.acquire("x");
+    store.holdNext();
+    const rel = keeper.release("x");
+    await until(() => store.calls.includes("releaseMany:1"));
+    fire();
+    await rel;
+    const acq = keeper.acquire("x");
+    const settled = acq.then(
+      () => "resolved",
+      (e: unknown) => (e as Error).name
+    );
+    await new Promise((r) => setImmediate(r));
+    fire(); // the extra wait for the late release times out
+    expect(await settled).toBe("LeaseStoreTimeoutError");
+    expect(keeper.validNow("x")).toBe(false);
   });
 
   it("a successful store call cancels its timeout (no leaked timers)", async () => {

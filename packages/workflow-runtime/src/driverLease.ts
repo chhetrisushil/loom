@@ -157,6 +157,8 @@ export class DriverLeases {
         this.holds.set(executionId, set);
       }
       set.add(hold);
+      // A deferred release is stale once a new hold owns the lease: that hold's release decides.
+      this.deferredRelease.delete(executionId);
       // Lost in the very tick it was granted (a stall past its deadline): the hold is born dead and
       // tells its first listener immediately.
       if (!this.keeper.validNow(executionId) && !hold.dead) {
@@ -213,6 +215,7 @@ export class DriverLeases {
       this.deferredRelease.add(hold.id);
       return Promise.resolve();
     }
+    this.deferredRelease.delete(hold.id); // sending the release now: no stale flag may linger
     return this.keeper.release(hold.id);
   }
 

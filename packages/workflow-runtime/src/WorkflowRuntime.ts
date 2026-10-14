@@ -6178,6 +6178,9 @@ export class WorkflowRuntime {
   /**
    * ADR 0130 D11 - does `executionId` have a sequence 0 (a real stream, as opposed to a ghost lease)?
    * Public so a worker runtime's `allocate` applies the same stand-down rule as `start`.
+   *
+   * @internal System-only: a kernel-internal helper shared with `@loom/worker-runtime`, NOT public
+   * API (ADR 0083) and deliberately absent from the api-reference. Do not build on it.
    */
   async hasSequenceZero(executionId: string): Promise<boolean> {
     return (await readRangeOf(this.eventStore, executionId, 0, 0)).length > 0;
