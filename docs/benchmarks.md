@@ -512,3 +512,59 @@ not yet instrumented.
   a throughput target any real workload approaches.
 
 See [`docs/scaling.md`](scaling.md) for what to do with all of this.
+
+## Heartbeat lease overhead (`tools/bench-throughput`, ADR 0130 D11 / Q8 gate)
+
+> **PRELIMINARY: measured while other heavy jobs ran.** Another agent was running a full test
+> suite on the same machine (load average 4-6 on 8 cores), so the run-to-run spread is wide (the
+> in-memory no-op samples below span 8K-118K exec/s). Re-run on a quiet machine before treating any
+> single figure as final.
+
+ADR 0130 D11 (Q8) ships eager leasing (every driver holds a heartbeat lease from before its first
+append) only if the lease overhead is **at most 10% on the no-op throughput ceiling and none at
+I/O-bound durations**, else it falls back to lazy. This measures exactly that: the same 1-step flow,
+`heartbeat` OFF vs ON (defaults: ttl 30 s, renew every 10 s, real timers), concurrency 64, OFF and
+ON interleaved per repeat and reduced to medians. `pnpm --filter @loom/bench-throughput bench:lease`
+(`LOOM_BENCH_REPEATS`, `LOOM_BENCH_CONC`, `LOOM_BENCH_EXECS`, `LOOM_BENCH_IO_MS`); the non-blocking
+assertion form is `leaseOverhead.perf.test.ts` (`pnpm test:perf`). Batching itself is pinned
+deterministically (call counts, not time) by `tools/dst/src/leaseBatching.test.ts`: N concurrent
+executions cost one `renewMany` per chunk per tick and group-committed acquires/releases.
+
+Machine: Apple M2, 8 cores, 8 GB, macOS (Darwin 25.6), Node v24.18.0, 2026-10-15. In-memory stores,
+and SQLite files in a temp dir (single host, WAL). No network: a Postgres lease store adds a round
+trip per batched acquire/release and per renew tick, which this does not price.
+
+Run A (`LOOM_BENCH_REPEATS=7`, 3000 in-memory / 1200 SQLite no-op executions, 1500 I/O-bound at 20 ms):
+
+| backend | shape | off exec/s | on exec/s | overhead |
+|---|---|---:|---:|---:|
+| memory | no-op | 84,978 | 71,632 | 15.7% |
+| sqlite | no-op | 6,116 | 5,940 | 2.9% |
+| memory | I/O 20 ms | 2,836 | 2,854 | -0.7% |
+| sqlite | I/O 20 ms | 2,773 | 2,733 | 1.5% |
+
+Run B (`LOOM_BENCH_REPEATS=9`, 12000 in-memory / 600 SQLite no-op, 640 I/O-bound):
+
+| backend | shape | off exec/s | on exec/s | overhead |
+|---|---|---:|---:|---:|
+| memory | no-op | 92,777 | 54,599 | 41.2% (noisy: samples 8K-100K) |
+| sqlite | no-op | 5,343 | 5,224 | 2.2% |
+| memory | I/O 20 ms | 2,883 | 2,784 | 3.4% |
+| sqlite | I/O 20 ms | 2,677 | 2,635 | 1.6% |
+
+**Does the 10% gate look met?** Partly, and the part that is not is the degenerate one.
+
+- **I/O-bound: met.** Overhead is within noise on both backends (-0.7% to 3.4%): the lease work
+  overlaps the wait.
+- **SQLite no-op: met.** About 2-3% on a durable store, where the baseline write path is real work.
+- **In-memory no-op: NOT clearly met.** 15.7% in run A and far above that in the noisier run B (the
+  best OFF and ON samples of run B, ~100K vs ~79K exec/s, still differ by ~20%). The in-memory event
+  store makes the baseline almost free (~85-100K exec/s), so the lease's fixed per-execution work
+  (one group-committed acquire, one release, the hold bookkeeping) is a large fraction of a tiny
+  denominator. This is the worst case for a RATIO and not a configuration anyone runs durable
+  workloads on; but the gate as written names "the no-op throughput ceiling", and on this machine,
+  under this load, the in-memory ceiling is over 10%.
+
+Not decided here: the eager/lazy default is unchanged. A quiet-machine re-run (and a Postgres lease
+store, where the ceiling is the ~5.7K exec/s durable write path above and the lease is a few extra
+batched statements) is the evidence Q8 should be confirmed or reversed on.

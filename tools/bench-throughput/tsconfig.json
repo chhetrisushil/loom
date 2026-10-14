@@ -29,6 +29,9 @@
       "path": "../../plugins/postgres"
     },
     {
+      "path": "../../plugins/sqlite"
+    },
+    {
       "path": "../../packages/middleware"
     }
   ]

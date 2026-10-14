@@ -2293,6 +2293,9 @@ importers:
       '@loom/plugin-postgres':
         specifier: workspace:*
         version: link:../../plugins/postgres
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../../plugins/sqlite
       '@loom/replay-vm':
         specifier: workspace:*
         version: link:../../packages/replay-vm

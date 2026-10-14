@@ -15,6 +15,7 @@
     "hardware": "tsc --build && node dist/hardware.js",
     "bench:fence": "tsc --build && node dist/fenceIf.js",
     "bench:inbox": "tsc --build && node dist/inbox.js",
+    "bench:lease": "tsc --build && node dist/leaseOverhead.js",
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
@@ -22,6 +23,7 @@
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
     "@loom/plugin-postgres": "workspace:*",
+    "@loom/plugin-sqlite": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@loom/workflow-runtime": "workspace:*",
     "pg": "^8.13.0",
