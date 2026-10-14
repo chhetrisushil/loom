@@ -36,6 +36,8 @@ export interface SealedDetail {
    * call of that workflow (an `allowWorkflows` policy must not tell a sealed id from an ordinary one).
    */
   readonly workflowId?: string;
+  /** True only when the refusal came from a CHECKPOINT (snapshot state), so `sequence` is its sequence. */
+  readonly checkpoint?: true;
 }
 
 const details = new WeakMap<object, SealedDetail>();
@@ -109,6 +111,32 @@ export function isCipherEnvelope(v: unknown): boolean {
     typeof (v as { __loomEnc?: unknown }).__loomEnc === "string" &&
     Object.hasOwn(v, "__loomEnc")
   );
+}
+
+/**
+ * Defence in depth for the transient quarantine fold (independent of its brand, which a spread copy
+ * loses): a real fold's `variables._waitAnswers` never holds a ciphertext envelope (a node that
+ * folds it has opened it), so a state that does is a fold past sealed payloads and must not be
+ * persisted, whether or not the snapshot store seals (it would store ciphertext as a value).
+ * Bounded walk: depth <= 8, 10 000 nodes.
+ */
+export function assertNoCipherAnswers(state: unknown, where: string): void {
+  const answers = (state as { variables?: { _waitAnswers?: unknown } } | null | undefined)
+    ?.variables?._waitAnswers;
+  if (typeof answers !== "object" || answers === null) return;
+  let budget = 10_000;
+  const walk = (v: unknown, depth: number): boolean => {
+    if (budget-- <= 0 || typeof v !== "object" || v === null) return false;
+    if (isCipherEnvelope(v)) return true;
+    if (depth >= 8) return false;
+    for (const c of Array.isArray(v) ? v : Object.values(v)) if (walk(c, depth + 1)) return true;
+    return false;
+  };
+  if (walk(answers, 0)) {
+    throw new Error(
+      `a state holding a sealed (ciphertext) wait answer cannot be used for ${where}; it is a fold past sealed payloads and only decides an operator verb`
+    );
+  }
 }
 
 /**
@@ -195,8 +223,17 @@ const OPAQUE_OK_PATH = `${OPAQUE_OK_TYPE}.payload`;
 /** The routing fields the fold interprets: if any is a ciphertext envelope the marker lied. */
 const FOLD_READ_FIELDS = ["waitId", "topic", "messageId", "inboxSeq"] as const;
 
+/**
+ * The envelope ciphers whose sealed VALUE has the shape the fold copies without reading: a plain
+ * object with a string `__loomEnc` (see {@link isCipherEnvelope}). The marker's `cipher` is
+ * attacker-influenced metadata, so an unknown cipher is never stepped over: it is the ordinary
+ * refusal. Add an id here only for a cipher that seals values as such an opaque envelope.
+ */
+const KNOWN_ENVELOPE_CIPHERS: ReadonlySet<string> = new Set(["loom/aes-256-gcm"]);
+
 /** May the quarantine fold step over this MARKED envelope without opening it? */
 export function opaqueToQuarantineFold(e: EventEnvelope, marker: SealMarker): boolean {
+  if (!KNOWN_ENVELOPE_CIPHERS.has(marker.cipher)) return false;
   if (e.eventType !== OPAQUE_OK_TYPE) return false;
   if (marker.covers.length === 0) return false;
   for (const c of marker.covers) {
@@ -205,6 +242,58 @@ export function opaqueToQuarantineFold(e: EventEnvelope, marker: SealMarker): bo
   const p = e.payload as Record<string, unknown> | null | undefined;
   if (typeof p !== "object" || p === null) return false;
   return !FOLD_READ_FIELDS.some((f) => isCipherEnvelope(p[f]));
+}
+
+/**
+ * The narrow, READ-ONLY reader the quarantine verbs get (no append, truncate, subscribe, fence):
+ * the only surface the owner-log walks (`classifyTip`, `locatePark`, `findReleaseFact[Back]`, the
+ * fold) need. `headOf` / `readRangeOf` accept it as is.
+ */
+export type QuarantineEventReader = Pick<EventStore, "read" | "readFrom" | "readRange" | "head">;
+
+/**
+ * A sealing decorator (the crypto plugin) may expose the RAW envelopes it reads beneath its
+ * decryption, under this well-known symbol (a read-only {@link QuarantineEventReader}). The
+ * quarantine view prefers it when every marked envelope of a read is one the opaque rule admits, so
+ * the KeyStore is never consulted for an event the rule steps over (a node WITHOUT the key must not
+ * even ask). A decorator stacked above the crypto one that does not forward it just falls back to
+ * the decrypting read (correct, but the key is asked).
+ */
+export const RAW_ENVELOPE_READER: unique symbol = Symbol.for("loom.rawEnvelopeReader") as never;
+
+function rawReaderOf(store: EventStore): QuarantineEventReader | undefined {
+  const f = (store as unknown as Record<symbol, unknown>)[RAW_ENVELOPE_READER];
+  return typeof f === "function" ? (f as () => QuarantineEventReader).call(store) : undefined;
+}
+
+/** Event arrays the view returned with sealed values LEFT in place (never decrypted). */
+const leftOpaque = new WeakSet<object>();
+
+/** True iff `events` came from the quarantine view with at least one sealed value left in place. */
+export function readLeftOpaque(events: readonly EventEnvelope[]): boolean {
+  return leftOpaque.has(events);
+}
+
+/**
+ * May a RAW (undecrypted) read be used as is? Every marked envelope must be one the opaque rule
+ * steps over, and no unmarked envelope may carry a ciphertext envelope as a top-level payload field
+ * (a pre-marker legacy row the decrypting store would have opened). O(events) property reads.
+ */
+function rawReadAdmissible(events: readonly EventEnvelope[]): boolean {
+  let anyMarked = false;
+  for (const e of events) {
+    const marker = markerOf(e);
+    if (marker === undefined) {
+      const p = e.payload as Record<string, unknown> | null | undefined;
+      if (typeof p === "object" && p !== null) {
+        for (const k of Object.keys(p)) if (isCipherEnvelope(p[k])) return false;
+      }
+      continue;
+    }
+    if (marker === "malformed" || !opaqueToQuarantineFold(e, marker)) return false;
+    anyMarked = true;
+  }
+  return anyMarked; // nothing marked: the ordinary (decrypting) read is the right one
 }
 
 /**
@@ -218,6 +307,7 @@ function assertStreamReadableOpaque(
   capability: () => SealingCapability | undefined
 ): void {
   if (isReservedStream(executionId)) return;
+  let stepped = false;
   let cap: SealingCapability | undefined;
   let resolved = false;
   for (const e of events) {
@@ -229,7 +319,10 @@ function assertStreamReadableOpaque(
     }
     if (marker !== "malformed") {
       if (cap?.opens(marker) === true) continue;
-      if (opaqueToQuarantineFold(e, marker)) continue;
+      if (opaqueToQuarantineFold(e, marker)) {
+        stepped = true;
+        continue;
+      }
     }
     throw new SealedStreamUnreadableError("query", executionId, {
       reason: "marker-unopenable",
@@ -238,6 +331,7 @@ function assertStreamReadableOpaque(
       workflowId: e.workflowId,
     });
   }
+  if (stepped) leftOpaque.add(events);
 }
 
 /** Translate a crypto store's `KeyUnavailableError` into the denial-shaped refusal; rethrow anything else. */
@@ -282,7 +376,7 @@ export class SealGuardedEventStore implements EventStore {
       appendBatch: "forward",
       head: "forward",
       readRange: (executionId: string, from: number, to: number) =>
-        this.guarded(executionId, inner.readRange!(executionId, from, to)),
+        this.readVia(executionId, (s) => s.readRange!(executionId, from, to)),
       acquireFence: "forward",
       acquireFenceIf: "forward",
       appendIfUnchanged: "forward",
@@ -312,6 +406,14 @@ export class SealGuardedEventStore implements EventStore {
     return events;
   }
 
+  /** How a read reaches the store; the quarantine view overrides it (and the check) only. */
+  protected readVia(
+    executionId: string,
+    op: (s: EventStore) => Promise<EventEnvelope[]>
+  ): Promise<EventEnvelope[]> {
+    return this.guarded(executionId, op(this.inner));
+  }
+
   /** The seal check every read passes; the quarantine view overrides it (and only it). */
   protected check(executionId: string, events: readonly EventEnvelope[]): void {
     assertStreamReadable(executionId, events, () => this.inner.sealingCapability?.());
@@ -323,8 +425,18 @@ export class SealGuardedEventStore implements EventStore {
    * guard does. The one place the bypass is reachable; `quarantineReadsFor` in `WorkflowRuntime`
    * is its only caller (pinned by `sealGuardFitness.test.ts`).
    */
-  quarantineReadView(): EventStore {
-    return new OpaqueQuarantineEventStore(this.inner);
+  quarantineReadView(): QuarantineEventReader {
+    const view = new OpaqueQuarantineEventStore(this.inner);
+    // Narrow on purpose: the verbs' walks can read and nothing else (no append, truncate, subscribe).
+    const narrow: {
+      -readonly [K in keyof QuarantineEventReader]: QuarantineEventReader[K];
+    } = {
+      read: (id) => view.read(id),
+      readFrom: (id, from) => view.readFrom(id, from),
+    };
+    if (view.readRange !== undefined) narrow.readRange = (id, a, b) => view.readRange!(id, a, b);
+    if (view.head !== undefined) narrow.head = (id) => view.head!(id);
+    return narrow;
   }
 
   append(envelope: EventEnvelope): Promise<void> {
@@ -332,11 +444,11 @@ export class SealGuardedEventStore implements EventStore {
   }
 
   read(executionId: string): Promise<EventEnvelope[]> {
-    return this.guarded(executionId, this.inner.read(executionId));
+    return this.readVia(executionId, (s) => s.read(executionId));
   }
 
   readFrom(executionId: string, fromSequence: number): Promise<EventEnvelope[]> {
-    return this.guarded(executionId, this.inner.readFrom(executionId, fromSequence));
+    return this.readVia(executionId, (s) => s.readFrom(executionId, fromSequence));
   }
 
   subscribe(executionId: string, handler: (event: EventEnvelope) => void): Promise<() => void> {
@@ -362,6 +474,27 @@ export class SealGuardedEventStore implements EventStore {
  * entry); `quarantineReadView` is its one production constructor, reached via `quarantineReadsFor`.
  */
 export class OpaqueQuarantineEventStore extends SealGuardedEventStore {
+  /**
+   * Prefer the RAW envelopes beneath a sealing decorator when every marked one is stepped over: no
+   * key is asked for them. Otherwise (a marked envelope the rule does not admit, or no raw reader)
+   * the ordinary decrypting read runs, under the opaque check.
+   */
+  protected override async readVia(
+    executionId: string,
+    op: (s: EventStore) => Promise<EventEnvelope[]>
+  ): Promise<EventEnvelope[]> {
+    const raw = isReservedStream(executionId) ? undefined : rawReaderOf(this.inner);
+    if (raw !== undefined) {
+      const events = await op(raw as EventStore);
+      if (rawReadAdmissible(events)) {
+        leftOpaque.add(events);
+        return events;
+      }
+    }
+    const events = await super.readVia(executionId, op);
+    return events;
+  }
+
   protected override check(executionId: string, events: readonly EventEnvelope[]): void {
     assertStreamReadableOpaque(executionId, events, () => this.inner.sealingCapability?.());
   }
@@ -422,6 +555,7 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
         sequence: snapshot.sequence,
         covers: [],
         workflowId: snapshot.workflowId,
+        checkpoint: true,
       });
     }
     return snapshot;
@@ -430,6 +564,7 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
   async save(snapshot: Snapshot): Promise<void> {
     this.saveGuard?.(snapshot, this.inner);
     assertNotTransientFold(snapshot.state, "a snapshot");
+    assertNoCipherAnswers(snapshot.state, "a snapshot");
     return this.inner.save(snapshot);
   }
   loadLatest(executionId: string): Promise<Snapshot | null> {

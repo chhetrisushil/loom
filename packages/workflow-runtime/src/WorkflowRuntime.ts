@@ -152,12 +152,14 @@ import {
 } from "./quarantine";
 import type { CopyRead } from "./quarantine";
 import {
+  type QuarantineEventReader,
   SealGuardedEventStore,
   SealGuardedSnapshotStore,
   type SealedDetail,
   SealedStreamUnreadableError,
   isSealedUnreadable,
   principalLooksSealed,
+  readLeftOpaque,
   sealedDetailOf,
   withSealedDetail,
 } from "./sealGuard";
@@ -1068,7 +1070,7 @@ export class WorkflowRuntime {
    * and get a view that steps over a `MESSAGE_CONSUMED.payload` seal; every other caller (verb
    * `undefined`) gets the ordinary guarded store. `sealGuardFitness.test.ts` pins this.
    */
-  private quarantineReadsFor(verb: QuarantineVerb | undefined): EventStore {
+  private quarantineReadsFor(verb: QuarantineVerb | undefined): QuarantineEventReader {
     return verb === undefined ? this.eventStore : this.guardedEvents.quarantineReadView();
   }
 
@@ -6926,31 +6928,61 @@ export class WorkflowRuntime {
       if (logFoldFor === undefined || !(err instanceof SealedStreamUnreadableError)) throw err;
       return this.foldFromCompleteLog(executionId, err, logFoldFor);
     }
+    // S5b: the operator verbs read the log (tail or whole) through the quarantine view, so a seal the
+    // view steps over (a `MESSAGE_CONSUMED.payload`) never refuses the plaintext-snapshot and
+    // no-snapshot paths either. Every other caller keeps the strict guarded store.
+    const reads: QuarantineEventReader = this.quarantineReadsFor(logFoldFor);
     if (snapshot !== null) {
       // Confirm the execution still exists before trusting the snapshot (orphan case
       // above). One row, not the log.
       const anchor = await readRangeOf(this.eventStore, executionId, 0, 0);
       if (anchor.length === 0) return null;
-      const tail = await this.eventStore.readFrom(executionId, snapshot.sequence + 1);
-      return new ReplayVM(
+      const tail = await reads.readFrom(executionId, snapshot.sequence + 1);
+      const folded = new ReplayVM(
         tail,
         this.seedOf(snapshot, executionId, anchor[0]!.workflowId)
       ).getState();
+      return logFoldFor !== undefined && readLeftOpaque(tail)
+        ? this.transientQuarantineFold(executionId, folded)
+        : folded;
     }
     // No snapshot: the log IS the bounded read (it is shorter than `snapshotEvery`, or
     // snapshots are off), and it answers existence itself — no extra round-trip. Same
     // query count as before on this path.
-    const allEvents = await this.eventStore.read(executionId);
+    const allEvents = await reads.read(executionId);
     if (allEvents.length === 0) {
       return null;
     }
     const workflowId = allEvents[0]!.workflowId;
     const flow = this.flows.get(workflowId);
-    return new ReplayVM(allEvents, {
+    const folded = new ReplayVM(allEvents, {
       executionId,
       workflowId,
       workflowVersion: flow?.definition.version ?? "",
     }).getState();
+    return logFoldFor !== undefined && readLeftOpaque(allEvents)
+      ? this.transientQuarantineFold(executionId, folded)
+      : folded;
+  }
+
+  /**
+   * Brand a state folded past sealed payloads (the only minting site). Erasure first: a log or
+   * checkpoint that records a crypto-shred (`variables._shredded`, folded from `PAYLOAD_SHREDDED`) is
+   * never folded for a verb, whatever node asks: the same erasure error the strict path raises.
+   */
+  private transientQuarantineFold(executionId: string, state: ExecutionState): ExecutionState {
+    const shredded = (state.variables as { _shredded?: { subjectId?: unknown } })._shredded;
+    if (shredded !== undefined) {
+      const subjectId = typeof shredded.subjectId === "string" ? shredded.subjectId : undefined;
+      throw Object.assign(
+        new Error(
+          `execution "${executionId}" was crypto-shredded (PAYLOAD_SHREDDED in its log${subjectId !== undefined ? ` for subject "${subjectId}"` : ""})`
+        ),
+        { name: "PayloadShreddedError", subjectId, executionId }
+      );
+    }
+    // TRANSIENT: may hold ciphertext where a real fold holds values; it only decides the verb.
+    return markTransientFold(state);
   }
 
   /**
@@ -6978,9 +7010,13 @@ export class WorkflowRuntime {
     // opaque ciphertext value, never decrypted); any other covered field is still the D7 refusal.
     const events = await this.quarantineReadsFor(verb).read(executionId);
     if (events.length === 0) return null;
-    let checkpointSeq = sealedDetailOf(refusal)?.sequence;
+    // The checkpoint's sequence from the at-rest form (no key, no plaintext). The refusal's own
+    // `sequence` is trusted ONLY when it came from the checkpoint: a key-unavailable load's erasure
+    // probe reads the LOG, and its refusal then names a LOG event's sequence, not the checkpoint's.
+    let checkpointSeq = (await this.snapshotStore.loadLatestSealed?.(executionId))?.sequence;
     if (checkpointSeq === undefined) {
-      checkpointSeq = (await this.snapshotStore.loadLatestSealed?.(executionId))?.sequence;
+      const detail = sealedDetailOf(refusal);
+      if (detail?.checkpoint === true) checkpointSeq = detail.sequence;
     }
     const tip = events.length - 1;
     let complete = events.every((e, i) => e.sequence === i);
@@ -6996,8 +7032,8 @@ export class WorkflowRuntime {
       );
     }
     const workflowId = events[0]!.workflowId;
-    // TRANSIENT: may hold ciphertext where a real fold holds values; it only decides the verb.
-    return markTransientFold(
+    return this.transientQuarantineFold(
+      executionId,
       new ReplayVM(events, {
         executionId,
         workflowId,
