@@ -1,5 +1,5 @@
 /**
- * EVENT_SCHEMA 1.23.0 (Wave 2, W2-0) — the NAMES of the kernel's folded event kinds, as a
+ * EVENT_SCHEMA 1.23.0 (Wave 2, W2-0; extended by 1.25.0) — the NAMES of the kernel's folded event kinds, as a
  * compile-time union.
  *
  * The fold's handler table (`@loom/replay-vm`) is the runtime truth; this tuple is its
@@ -28,6 +28,8 @@ export const KERNEL_EVENT_KINDS = [
   "EXECUTION_RESUMED",
   "EXECUTION_STARTED",
   "EXECUTION_SUSPENDED",
+  "INBOX_QUARANTINED",
+  "INBOX_RELEASED",
   "MESSAGE_CONSUMED",
   "OUTCOME_RECORDED",
   "PARALLEL_COMPLETED",

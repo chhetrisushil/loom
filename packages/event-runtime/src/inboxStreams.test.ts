@@ -3,6 +3,7 @@ import { InMemoryAsyncEventStore } from "./InMemoryAsyncEventStore";
 import {
   INBOX_STREAM_PREFIX,
   INBOX_TOPIC_SEQ_BASE,
+  QUARANTINE_STREAM_PREFIX,
   hasInboxStreamShape,
   inboxChainOf,
   inboxRegistryStreamId,
@@ -10,6 +11,7 @@ import {
   inboxTopicHash,
   inboxTopicStreamId,
   isReservedStream,
+  quarantineStreamId,
 } from "./types";
 
 // ADR 0110 amendment, D10b — the naming of a chain's inbox streams, shared by the runtime, the
@@ -61,6 +63,7 @@ describe("inbox stream naming", () => {
       legacy: `${INBOX_STREAM_PREFIX}c1`,
       registry: undefined,
       topics: [],
+      quarantine: `${QUARANTINE_STREAM_PREFIX}c1`,
     });
     const registry = inboxRegistryStreamId("c1");
     let seq = 0;
@@ -79,6 +82,16 @@ describe("inbox stream naming", () => {
       legacy: `${INBOX_STREAM_PREFIX}c1`,
       registry,
       topics: [inboxTopicStreamId("c1", "a"), inboxTopicStreamId("c1", "b")],
+      quarantine: `${QUARANTINE_STREAM_PREFIX}c1`,
     });
+  });
+
+  it("the quarantine stream (ADR 0130 residuals D9, reserved) is a reserved stream that belongs to its chain", () => {
+    expect(quarantineStreamId("c1")).toBe("__loom_quarantine__:c1");
+    expect(isReservedStream(quarantineStreamId("c1"))).toBe(true);
+    // The crypto subject mapping (`inboxChainOf`) therefore resolves it to the same owner as the inbox.
+    expect(inboxChainOf(quarantineStreamId("c1"))).toBe("c1");
+    expect(inboxChainOf(QUARANTINE_STREAM_PREFIX)).toBeUndefined();
+    expect(inboxChainOf(`${INBOX_STREAM_PREFIX}c1`)).toBe("c1");
   });
 });

@@ -121,7 +121,7 @@ load-bearing, plus the global guardrails that gate every additive capability:
   execution's snapshots, which makes the log authoritative.
 - **Compatibility (K5):** adding an event type or an **optional** payload field is a MINOR bump
   (folds treat absence as legacy); removing/renaming a type is a MAJOR break. Both the version and
-  the pinned type set MUST change together. The current version is **1.24.0** — after the
+  the pinned type set MUST change together. The current version is **1.25.0** — after the
   K10.1/T3 audit facts (1.13.0/1.14.0), the perpetual-agents series added two additive MINORs
   with **no new event kinds**: 1.15.0 extends `EXECUTION_MIGRATED` with an optional
   `migratedInput` payload field (K11.5 contract-versioned state migration — the fold replaces
@@ -179,6 +179,16 @@ load-bearing, plus the global guardrails that gate every additive capability:
   `fold(snapshot, tail) == fold(events)` as the 1.21.0 shapes. Event bytes and hash chains are
   unchanged; `WIRE_ABI_VERSION` stays 1.0.0 (ADR 0026 versions the wire protocol, and added fold
   vectors are not a protocol change; a foreign fold that does not stamp `seq` fails the vector).
+  [ADR 0130](../adr/0130-sealed-payload-delivery-guard.md) residuals reserved 1.25.0, with NO writer
+  yet (the shapes are frozen, the handlers present, a log written before it folds byte-identically):
+  the envelope key `metadata.seal` (`{ v: 1, cipher, covers }`, a sealing store's marker; the fold
+  IGNORES it), the kinds `INBOX_QUARANTINED` and `INBOX_RELEASED` (a per-topic hold on an inbox message
+  and its order-preserving release; folded only from a `metadata.kernel` envelope; both `ignorable`
+  for the park fence; `INBOX_RELEASED` carries exactly one of `operator` / `auto`, `auto` only with
+  `deliver`, and a fact with both or neither is ignored), the fold variable `_quarantined`
+  (queue per topic, shape `released* held*`, at most 1 024 entries), an additive `MESSAGE_CONSUMED`
+  step that drops a delivered released entry (gated on `_quarantined`), and the carry
+  `continuedFrom.carried.quarantined`. `KERNEL_ABI_VERSION` stays 1.3.0.
   Logs that never migrate state, resume twice, fail typed, record a policy, stamp a flow emit, or
   resume `null` into an unparked or in-doubt execution, hold a `STEP_FAILED`
   that no status-setting event follows, or record any `DECISION_RECORDED` (the folded state now
@@ -326,7 +336,7 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
 | Effect / middleware / authority | `Effect` / `EffectMiddleware` / `CapabilityAuthorizer` (`@loom/effect-runtime`) | — | (staged) |
 
 - **Required vs optional:** each interface marks optional methods (e.g. `EventStore.readRange`,
-  `acquireFence`, `acquireFenceIf` (the conditional fence, SPI 2.1.0, [ADR 0118](../adr/0118-acquire-if-parked-fence.md)), `appendIfUnchanged` (the conditional append a late outcome needs, SPI 2.2.0, [ADR 0116](../adr/0116-late-outcome-attach.md); since SPI 2.3.0, [ADR 0129](../adr/0129-creation-marker-incarnation.md), the observation `anchor` MUST differ between two incarnations of an execution id even when their sequence-0 envelopes are byte-identical, so a store claiming 2.3.0 assigns a monotonic incarnation in store metadata only, never in an event), `storeNow` (the store's own clock in epoch ms, SPI 2.4.0, [ADR 0110](../adr/0110-durable-inbox-and-receive-select.md) D10a: optional, additive; Postgres reports database time, so a fleet ages an inbox message on one clock; a single-process store omits it and callers fall back to their injected clock),
+  `acquireFence`, `acquireFenceIf` (the conditional fence, SPI 2.1.0, [ADR 0118](../adr/0118-acquire-if-parked-fence.md)), `appendIfUnchanged` (the conditional append a late outcome needs, SPI 2.2.0, [ADR 0116](../adr/0116-late-outcome-attach.md); since SPI 2.3.0, [ADR 0129](../adr/0129-creation-marker-incarnation.md), the observation `anchor` MUST differ between two incarnations of an execution id even when their sequence-0 envelopes are byte-identical, so a store claiming 2.3.0 assigns a monotonic incarnation in store metadata only, never in an event), `storeNow` (the store's own clock in epoch ms, SPI 2.4.0, [ADR 0110](../adr/0110-durable-inbox-and-receive-select.md) D10a: optional, additive; Postgres reports database time, so a fleet ages an inbox message on one clock; a single-process store omits it and callers fall back to their injected clock), `sealingCapability` (what the store seals and therefore opens, SPI 2.5.0, [ADR 0130](../adr/0130-sealed-payload-delivery-guard.md) D7: optional, additive, reserved - declared and forwarded by every decorator, no caller yet; absent or `undefined` means it seals and opens nothing, and `ShardedEventStore` returns one only when every shard agrees; the SPI also reserves the control stream prefix `__loom_quarantine__:<chainId>`),
   `copyPrefix`, `deleteExecution`, and the paged `listExecutionsPage` — SPI 1.2.0,
   the bounded-memory enumeration maintenance passes prefer). An implementation MAY omit optional
   methods; the conformance kit skips them. A store that omits `acquireFence` performs no fencing

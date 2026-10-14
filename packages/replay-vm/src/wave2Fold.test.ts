@@ -32,9 +32,9 @@ const start = (payload: unknown = { input: {} }, metadata?: Record<string, unkno
   ev(0, "EXECUTION_STARTED", payload, metadata);
 
 describe("EVENT_SCHEMA 1.23.0 — version and kinds", () => {
-  it("declares 1.24.0 (1.23.0 added the kinds; 1.24.0 is ADR 0128) and folds 32 kinds", () => {
-    expect(EVENT_SCHEMA_VERSION).toBe("1.24.0");
-    expect(knownEventTypes()).toHaveLength(32);
+  it("declares 1.25.0 (1.23.0 added the kinds; 1.24.0 is ADR 0128; 1.25.0 is the ADR 0130 residuals) and folds 34 kinds", () => {
+    expect(EVENT_SCHEMA_VERSION).toBe("1.25.0");
+    expect(knownEventTypes()).toHaveLength(34);
     expect(knownEventTypes()).toContain("EXECUTION_CONTINUED");
     expect(knownEventTypes()).toContain("MESSAGE_CONSUMED");
   });

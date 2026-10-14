@@ -57,6 +57,21 @@ describe("T2.3 — language-agnostic fold conformance vectors", () => {
     expect(runFoldVectors(metadataBlind).every((r) => r.passed)).toBe(false);
   });
 
+  it("covers the 1.25.0 reserved shapes (ADR 0130 residuals): only the vectors that carry them gain `_quarantined`; every other vector is untouched", () => {
+    const carrying = (v: (typeof FOLD_VECTORS)[number]) =>
+      v.events.some((e) => e.eventType.startsWith("INBOX_"));
+    const reserved = FOLD_VECTORS.filter(carrying);
+    expect(reserved.length).toBeGreaterThanOrEqual(3);
+    for (const v of FOLD_VECTORS.filter((x) => !carrying(x))) {
+      expect(JSON.stringify(v.expected.variables), v.name).not.toContain("_quarantined");
+    }
+    // A fold that ignores the kernel stamp (or treats the kinds as unknown) fails them.
+    const markerBlind = reserved
+      .filter((v) => v.events.some((e) => e.metadata?.kernel === true))
+      .map((v) => ({ ...v, events: v.events.map(({ metadata: _m, ...e }) => e) }));
+    for (const r of runFoldVectors(markerBlind)) expect(r.passed, r.name).toBe(false);
+  });
+
   it("covers the 1.23.0 kernel marker (Wave 2) — a fold that ignores metadata.kernel fails", () => {
     const stamped = FOLD_VECTORS.filter((v) => v.events.some((e) => e.metadata?.kernel === true));
     expect(stamped.length).toBeGreaterThanOrEqual(3);

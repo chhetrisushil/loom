@@ -84,6 +84,7 @@ export class ContentResolvingEventStore implements EventStore {
   readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
   readonly storeNow?: NonNullable<EventStore["storeNow"]>;
+  readonly sealingCapability?: NonNullable<EventStore["sealingCapability"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -156,6 +157,7 @@ export class ContentResolvingEventStore implements EventStore {
         );
       },
       storeNow: "forward", // a clock reading: no envelope to externalise
+      sealingCapability: "forward", // externalising refs seals nothing
       // Refs are content-addressed: copying them verbatim makes the fork share the parent's
       // blobs (dedup for free) — no decrypt/re-wrap step (contrast the crypto plugin's keys).
       // But a verbatim copy is a citation with NO `put`, invisible to the orphan sweep's

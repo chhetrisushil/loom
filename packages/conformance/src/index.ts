@@ -41,6 +41,7 @@ export {
   runEventStoreDecoratorConformance,
   runSnapshotStoreDecoratorConformance,
   type DecoratorConformanceOptions,
+  type EventDecoratorConformanceOptions,
 } from "./decorators.js";
 
 /**
@@ -61,7 +62,9 @@ export type ExecutionOpLike =
   | "actAsOwner"
   | "send"
   | "annotate"
-  | "discard";
+  | "discard"
+  | "quarantine"
+  | "release";
 
 export interface ExecutionAuthzRequestLike {
   op: ExecutionOpLike;
@@ -139,9 +142,11 @@ export interface EventStoreConformanceOptions {
    * cannot assign a per-incarnation `anchor` (ADR 0129) stays at `"2.2.0"` and passes
    * `{ eventStoreSpi: "2.2.0" }`: the three SPI 2.3.0 cases are then skipped, everything else
    * still runs. Declaring `"2.3.0"` (or nothing) while not meeting the MUST fails the kit, which
-   * is the point: the claim is the thing under test.
+   * is the point: the claim is the thing under test. A store that claims `"2.4.0"` (it predates
+   * `sealingCapability`, SPI 2.5.0, ADR 0130 residuals D7) skips the 2.5.0 case; the default claim
+   * is the current version, `"2.5.0"`.
    */
-  eventStoreSpi?: "2.2.0" | "2.3.0";
+  eventStoreSpi?: "2.2.0" | "2.3.0" | "2.4.0" | "2.5.0";
 }
 
 /**
@@ -191,7 +196,9 @@ export function runEventStoreConformance(
   label = "EventStore",
   options: EventStoreConformanceOptions = {}
 ): void {
-  const it23 = (options.eventStoreSpi ?? "2.3.0") === "2.2.0" ? it.skip : it;
+  const claimed = options.eventStoreSpi ?? "2.5.0";
+  const it23 = claimed === "2.2.0" ? it.skip : it;
+  const it25 = claimed === "2.5.0" ? it : it.skip;
   describe(`${label} conformance (EventStore SPI)`, () => {
     it("append + read returns an execution's events in sequence order", async () => {
       const store = factory();
@@ -602,6 +609,13 @@ export function runEventStoreConformance(
     it("storeNow() (optional, SPI 2.4.0) is a sane, non-decreasing epoch-ms clock; skipped if absent", async () => {
       expect(await eventStoreNowProblem(factory)).toBeUndefined();
     });
+
+    it25(
+      "sealingCapability() (optional, SPI 2.5.0) is stable, sorted and self-consistent; skipped if absent",
+      async () => {
+        expect(await eventStoreSealingProblem(factory)).toBeUndefined();
+      }
+    );
 
     // ── SPI 2.2.0 (ADR 0116 amendment) — appendIfUnchanged: exists AND same head AND same token ──
     // Runs only where the store offers the method. The token is COMPARED, never presented.
@@ -1291,6 +1305,56 @@ export async function eventStoreNowProblem(
     const skew = Math.abs(b - hostNow());
     if (skew > 24 * 3_600_000) {
       return `storeNow() ${b} is ${skew} ms from the host clock: not epoch milliseconds`;
+    }
+    return undefined;
+  } finally {
+    await store.close();
+  }
+}
+
+/**
+ * The optional `EventStore.sealingCapability()` check (EventStore SPI 2.5.0, ADR 0130 residuals D7),
+ * as a function so the kit's own tests can prove it discriminates. A store that seals nothing omits the
+ * method or returns `undefined` (both conform). Otherwise: two calls on an unchanged store agree (same
+ * `cipher`, same `covers`); `cipher` is a non-empty string; `covers` is sorted, deduped, non-empty
+ * strings; and `opens` is true exactly for a marker of the SAME cipher whose every `covers` entry the
+ * capability lists (a foreign cipher, or one entry it does not list, is false). Closes the store.
+ */
+export async function eventStoreSealingProblem(
+  factory: () => EventStore
+): Promise<string | undefined> {
+  const store = factory();
+  try {
+    if (store.sealingCapability === undefined) return undefined;
+    const a = store.sealingCapability();
+    const b = store.sealingCapability();
+    if (a === undefined || b === undefined) {
+      return a === b
+        ? undefined
+        : "sealingCapability() changed between two calls on an unchanged store";
+    }
+    if (typeof a.cipher !== "string" || a.cipher.length === 0) {
+      return "sealingCapability().cipher must be a non-empty string";
+    }
+    if (a.cipher !== b.cipher || JSON.stringify(a.covers) !== JSON.stringify(b.covers)) {
+      return "sealingCapability() is not stable across two calls on an unchanged store";
+    }
+    if (!Array.isArray(a.covers) || a.covers.some((c) => typeof c !== "string" || c === "")) {
+      return "sealingCapability().covers must be an array of non-empty strings";
+    }
+    const sorted = [...new Set(a.covers)].sort();
+    if (JSON.stringify(sorted) !== JSON.stringify(a.covers)) {
+      return "sealingCapability().covers must be sorted and deduped";
+    }
+    if (typeof a.opens !== "function") return "sealingCapability().opens must be a function";
+    if (a.opens({ v: 1, cipher: a.cipher, covers: a.covers }) !== true) {
+      return "opens() refuses a marker whose cipher and covers are exactly the capability's";
+    }
+    if (a.opens({ v: 1, cipher: `${a.cipher}~other`, covers: [] }) !== false) {
+      return "opens() accepts a marker of a different cipher";
+    }
+    if (a.opens({ v: 1, cipher: a.cipher, covers: [...a.covers, "~UNLISTED.path"] }) !== false) {
+      return "opens() accepts a marker that covers an entry the capability does not list";
     }
     return undefined;
   } finally {
@@ -2129,6 +2193,8 @@ export function runExecutionAuthorizerConformance(
     "send",
     "annotate",
     "discard",
+    "quarantine",
+    "release",
   ];
   const req = (op: ExecutionOpLike): ExecutionAuthzRequestLike => ({
     op,

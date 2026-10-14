@@ -30,6 +30,14 @@ describe("answering / ignorable classification (ADR 0118 D1)", () => {
     }
   });
 
+  it("the ADR 0130 residual kinds (1.25.0, reserved) are ignorable, like MESSAGE_CONSUMED: they land under the park's conditional fence and leave it unanswered", () => {
+    for (const k of ["INBOX_QUARANTINED", "INBOX_RELEASED"] as const) {
+      expect(EVENT_KIND_CLASS[k]).toBe(EVENT_KIND_CLASS.MESSAGE_CONSUMED);
+      expect(isAnsweringKind(env(k, { kernel: true }))).toBe(false);
+      expect(isAnsweringKind(env(k))).toBe(false);
+    }
+  });
+
   it("a kernel kind is classified by its entry, stamped or not", () => {
     expect(isAnsweringKind(env("EXECUTION_RESUMED"))).toBe(true);
     expect(isAnsweringKind(env("EXECUTION_RESUMED", { kernel: true }))).toBe(true);

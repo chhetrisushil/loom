@@ -21,6 +21,8 @@ export type {
   ExecutionEnumerable,
   ExecutionPage,
   OptionalEventStoreMethod,
+  SealMarker,
+  SealingCapability,
 } from "./types";
 export { installOptional, refusalsOf } from "./installOptional";
 export type { DecoratorPlan } from "./installOptional";
@@ -33,6 +35,8 @@ export {
   INBOX_TOPIC_SEQ_BASE,
   INBOX_REGISTRY_SUFFIX,
   INBOX_LAYOUT_STREAM,
+  QUARANTINE_STREAM_PREFIX,
+  quarantineStreamId,
   chainIdOfFirst,
   hasInboxStreamShape,
   inboxChainOf,

@@ -141,7 +141,7 @@ export {
   signedResumeAuthenticator,
   type SignedResumeOptions,
 } from "./signedResumeAuthenticator";
-export { executionAccessPolicy } from "./executionAccessPolicy";
+export { UNKNOWN_OWNER_REASON, executionAccessPolicy } from "./executionAccessPolicy";
 export type {
   ExecutionOwner,
   ExecutionAccessPolicy,

@@ -107,6 +107,8 @@ const POLICED_OPS = [
   "actAsOwner",
   "annotate",
   "discard",
+  "quarantine",
+  "release",
 ] as const;
 
 function assertOwnerScopedPolicy(deps: ConversationsDeps): void {

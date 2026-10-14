@@ -116,6 +116,7 @@ export function crashingEventStore(
       return conditional.call(inner, executionId, event, expect);
     },
     storeNow: "forward",
+    sealingCapability: "forward",
     copyPrefix: "forward",
     deleteExecution: "forward",
     truncatePrefix: "forward",
