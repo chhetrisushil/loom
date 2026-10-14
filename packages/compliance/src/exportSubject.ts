@@ -40,12 +40,19 @@ export interface ExportSubjectOptions {
   tenant?: string;
   /**
    * ADR 0130 D7 (round 5) - proof that the key store destroyed the subject's key
-   * (`(s) => keys.wasDestroyed(s)`, or `() => true` as the operator's assertion that it was
-   * destroyed in the authoritative store). Without it, a stream whose key is unavailable is
+   * (`(s) => keys.wasDestroyed(s)`). A PROOF function only: returning `true` for a key that was
+   * NOT destroyed in the authoritative store produces a false erasure view, so never stub it (use
+   * the per-call {@link ExportSubjectOptions.force} for the operator's assertion). Without it, a stream whose key is unavailable is
    * REFUSED (`KeyUnavailableError`) even if the log records an erase intent: a dangling intent
    * (the key still lives elsewhere) is not an erasure.
    */
   destroyed?: DestructionProof;
+  /**
+   * ADR 0130 D7 (round 6) - OPERATOR OVERRIDE, per call (mirrors `ShredOptions.force`): asserts the
+   * key was destroyed in the authoritative key store, for a store that cannot prove it. A wrong
+   * assertion exports a redacted view of a subject whose key lives on.
+   */
+  force?: "key-destroyed-elsewhere";
 }
 
 /**
@@ -69,7 +76,10 @@ export async function exportSubject(
     } catch (err) {
       // The ShredIncomplete window (key destroyed, tombstone not yet written): the redacted view,
       // only with the log's durable erase intent. A node that lacks the key is not an erasure.
-      const window = await erasureWindowView(err, options.destroyed);
+      const window = await erasureWindowView(
+        err,
+        options.force === "key-destroyed-elsewhere" ? () => true : options.destroyed
+      );
       if (window === undefined) throw err;
       events = [...window];
     }

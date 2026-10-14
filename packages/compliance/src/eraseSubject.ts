@@ -47,7 +47,12 @@ const TERMINAL_EVENTS = new Set([
  * `PAYLOAD_SHREDDED` and writes the rest. Do NOT guard on key existence — a key can be gone
  * while a tombstone append failed, and that guard would never retry it.
  */
-export type Shredder = (subjectId: string, executionIds: readonly string[]) => Promise<void>;
+export type Shredder = (
+  subjectId: string,
+  executionIds: readonly string[],
+  /** The per-call operator assertion of {@link EraseSubjectOptions.force}, when given. */
+  options?: { force?: "key-destroyed-elsewhere" }
+) => Promise<void>;
 
 export interface EraseCoordinatorOptions {
   index: SubjectIndex;
@@ -62,10 +67,13 @@ export interface EraseCoordinatorOptions {
   shred: Shredder;
   /**
    * ADR 0130 D7 (round 5) - proof that the key store destroyed a subject's key
-   * (`(s) => keys.wasDestroyed(s)`; `() => true` is the operator's assertion that it was destroyed
-   * in the authoritative store, for a store without `wasDestroyed`). Required to resume an erasure
-   * in the ShredIncomplete window: the log proves INTENT, not destruction, so without it a
-   * retry that reads `KeyUnavailableError` is refused rather than reported as erased.
+   * (`(s) => keys.wasDestroyed(s)`). A PROOF function only: returning `true` for a key that was
+   * NOT destroyed in the authoritative store produces a FALSE erasure record, so never stub it.
+   * `defineConfig` wires it from the crypto key store's `wasDestroyed` by default. Required to
+   * resume an erasure in the ShredIncomplete window: the log proves INTENT, not destruction, so
+   * without it a retry that reads `KeyUnavailableError` is refused rather than reported as erased.
+   * For a key store that cannot prove destruction, the operator asserts it per call with
+   * {@link EraseSubjectOptions.force}.
    */
   destroyed?: DestructionProof;
   /**
@@ -135,6 +143,14 @@ export interface EraseSubjectOptions {
    * read; its error carries the `redacted` events for operator tooling).
    */
   parked?: "defer" | "shred";
+  /**
+   * ADR 0130 D7 (round 6) - OPERATOR OVERRIDE, per call (mirrors `ShredOptions.force`). Asserts
+   * that the subject's key was destroyed in the authoritative key store, for a store that cannot
+   * prove it (no `wasDestroyed`). It lets a retry in the ShredIncomplete window complete, and is
+   * passed through to the shredder. A wrong assertion writes a FALSE erasure record while the key
+   * lives on.
+   */
+  force?: "key-destroyed-elsewhere";
 }
 
 /**
@@ -175,7 +191,8 @@ export class EraseCoordinator {
         'eraseSubject({ parked: "shred" }) cancels each parked owner before shredding: pass `cancel` to the EraseCoordinator (defineConfig wires it)'
       );
     }
-    let nonTerminal = await this.liveExecutions(executions);
+    const proof = this.proofFor(options.force);
+    let nonTerminal = await this.liveExecutions(executions, proof);
     // `defer`: every non-terminal execution blocks. `shred`: only a RUNNING one does.
     let live = shredParked
       ? nonTerminal.filter((x) => x.status !== "suspended").map((x) => x.id)
@@ -191,13 +208,17 @@ export class EraseCoordinator {
       } catch {
         // fall through to the recheck: whatever did not become terminal blocks the shred
       }
-      nonTerminal = await this.liveExecutions(executions);
+      nonTerminal = await this.liveExecutions(executions, proof);
       live = nonTerminal.map((x) => x.id);
     }
     if (live.length === 0) {
       // Resolved BEFORE the key is destroyed: a decrypting store cannot read these logs afterwards.
-      const chains = await this.finishedChains(executions);
-      await this.options.shred(subjectId, executions);
+      const chains = await this.finishedChains(executions, proof);
+      if (options.force !== undefined) {
+        await this.options.shred(subjectId, executions, { force: options.force });
+      } else {
+        await this.options.shred(subjectId, executions);
+      }
       await this.purgeInboxStreams(chains);
       this.parked.delete(parkKey(tenant, subjectId));
       return {
@@ -224,8 +245,8 @@ export class EraseCoordinator {
     const tenant = this.options.index.tenantOfExecution(event.executionId) ?? DEFAULT_TENANT;
     if (!this.parked.has(parkKey(tenant, subjectId))) return;
     const executions = this.options.index.executionsOf(subjectId, tenant);
-    if ((await this.liveExecutions(executions)).length > 0) return; // still blocked
-    const chains = await this.finishedChains(executions);
+    if ((await this.liveExecutions(executions, this.options.destroyed)).length > 0) return; // still blocked
+    const chains = await this.finishedChains(executions, this.options.destroyed);
     await this.options.shred(subjectId, executions);
     await this.purgeInboxStreams(chains);
     this.parked.delete(parkKey(tenant, subjectId));
@@ -265,11 +286,14 @@ export class EraseCoordinator {
    * Folded, and each chain's registry read, while the logs are still readable, so a decrypting store
    * has not yet lost its key.
    */
-  private async finishedChains(executions: readonly string[]): Promise<InboxStreams[]> {
+  private async finishedChains(
+    executions: readonly string[],
+    proof: DestructionProof | undefined
+  ): Promise<InboxStreams[]> {
     if (this.options.eventStore.deleteExecution === undefined) return [];
     const chains = new Set<string>();
     for (const executionId of executions) {
-      const folded = await this.foldExecution(executionId);
+      const folded = await this.foldExecution(executionId, proof);
       if (folded === undefined) continue;
       if (!TERMINAL_STATUS.has(folded.status) || folded.status === "continued") continue;
       chains.add(chainIdOfFirst(folded.first, executionId));
@@ -277,7 +301,7 @@ export class EraseCoordinator {
     const streams: InboxStreams[] = [];
     const store = this.options.eventStore;
     const view = {
-      read: (id: string) => this.readErasedOk(id),
+      read: (id: string) => this.readErasedOk(id, proof),
       // The registry may miss a topic stream (a sender that died before it registered): the prefix
       // scan is the backstop, so erasure reaches an unregistered stream too.
       ...(store.listExecutionsPage !== undefined && {
@@ -288,6 +312,11 @@ export class EraseCoordinator {
     return streams;
   }
 
+  /** The window proof for one call: the operator's per-call `force` asserts it, else the configured proof. */
+  private proofFor(force: "key-destroyed-elsewhere" | undefined): DestructionProof | undefined {
+    return force === "key-destroyed-elsewhere" ? () => true : this.options.destroyed;
+  }
+
   /** Subjects with a deferred erasure still awaiting completion (sorted, deduped across tenants). */
   pendingSubjects(): string[] {
     return [...new Set([...this.parked].map(subjectOfKey))].sort();
@@ -295,11 +324,12 @@ export class EraseCoordinator {
 
   /** The subset of `executions` that are not yet terminal (a live fold reading the key), with status. */
   private async liveExecutions(
-    executions: readonly string[]
+    executions: readonly string[],
+    proof: DestructionProof | undefined
   ): Promise<Array<{ id: string; status: ExecutionState["status"] }>> {
     const live: Array<{ id: string; status: ExecutionState["status"] }> = [];
     for (const executionId of executions) {
-      const folded = await this.foldExecution(executionId);
+      const folded = await this.foldExecution(executionId, proof);
       if (folded === undefined) continue; // deleted by retention — nothing to protect
       if (!TERMINAL_STATUS.has(folded.status))
         live.push({ id: executionId, status: folded.status });
@@ -313,7 +343,10 @@ export class EraseCoordinator {
    * carries: status and tip are plaintext, so liveness and the
    * chain's head can still be judged, and a re-run of the erasure stays idempotent.
    */
-  private async readErasedOk(executionId: string): Promise<EventEnvelope[]> {
+  private async readErasedOk(
+    executionId: string,
+    proof: DestructionProof | undefined
+  ): Promise<EventEnvelope[]> {
     try {
       return await this.options.eventStore.read(executionId);
     } catch (err) {
@@ -326,7 +359,7 @@ export class EraseCoordinator {
       // redacted view (plaintext status and tip) lets the retry judge liveness and complete, but
       // ONLY when the log records this subject's durable erase intent: without it the node merely
       // lacks the key (wrong key, partitioned key store) and the error is rethrown.
-      const window = await erasureWindowView(err, this.options.destroyed);
+      const window = await erasureWindowView(err, proof);
       if (window !== undefined) return [...window];
       throw err;
     }
@@ -334,9 +367,10 @@ export class EraseCoordinator {
 
   /** One execution's folded status and its first event, or `undefined` when its log is gone. */
   private async foldExecution(
-    executionId: string
+    executionId: string,
+    proof: DestructionProof | undefined
   ): Promise<{ status: ExecutionState["status"]; first: EventEnvelope } | undefined> {
-    const events = await this.readErasedOk(executionId);
+    const events = await this.readErasedOk(executionId, proof);
     const first = events[0];
     if (first === undefined) return undefined;
     const snapshot = (await this.options.snapshotStore?.loadLatest(executionId)) ?? null;

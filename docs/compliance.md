@@ -237,10 +237,13 @@ nothing is appended, the execution is never failed, and a node that CAN open it 
   throws `KeyUnavailableError` (writing nothing) when the key is absent, an intent is present and
   `wasDestroyed` is missing or false; `EraseCoordinator({ destroyed })`, `exportSubject({ destroyed })`
   and `compliance.erase.destroyed` take the same proof (`(s) => keys.wasDestroyed(s)`) and refuse
-  without it. The operator's override, for a key store that cannot answer, is
-  `shredSubject(..., { force: "key-destroyed-elsewhere" })` and `destroyed: () => true`: an
-  assertion that the key was destroyed in the authoritative store, and a wrong one writes a false
-  tombstone. Third-party key stores (KMS, vault, HSM) should implement `wasDestroyed` and persist the
+  without it. `defineConfig` wires that proof by default from the key store behind
+  `security.crypto`; an explicit `compliance.erase.destroyed` overrides it, and it stays a PROOF
+  function (returning `true` for a key not destroyed in the authoritative store produces a false
+  erasure record). The operator's override, for a key store that cannot answer, is the per-call
+  `force: "key-destroyed-elsewhere"` on `shredSubject(...)`, `app.eraseSubject(..., { force })` and
+  `app.exportSubject(..., { force })`: an assertion that the key was destroyed in the authoritative
+  store, and a wrong one writes a false tombstone. Third-party key stores (KMS, vault, HSM) should implement `wasDestroyed` and persist the
   destroy tombstone.
 - **Unmarked streams behave exactly as before.** A stream written without a marker (before 1.25.0,
   or by a third-party sealer) makes no claim and is never refused for lacking one; the inbox shape
