@@ -1707,6 +1707,105 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect(await content.get(cited)).not.toBeNull();
     });
 
+    describe("a sealState snapshot of a shredded subject (ADR 0130)", () => {
+      class ShreddedError extends Error {
+        constructor() {
+          super("shredded");
+          this.name = "PayloadShreddedError";
+        }
+      }
+      // Wraps a raw store the way a sealState EncryptingSnapshotStore behaves on read.
+      const guarded = (
+        inner: InMemoryAsyncSnapshotStore,
+        failing: Record<string, () => Error>
+      ) => ({
+        loadLatest: async (id: string) => {
+          if (failing[id]) throw failing[id]!();
+          return inner.loadLatest(id);
+        },
+        loadLatestBefore: async (id: string, seq: number) => {
+          if (failing[id]) throw failing[id]!();
+          return inner.loadLatestBefore(id, seq);
+        },
+      });
+      const setup = async () => {
+        const { clock, content } = clockedStore(OLD);
+        const sole = await content.put(bytes("cited only by the shredded checkpoint"));
+        const shared = await content.put(bytes("cited by both checkpoints"));
+        const liveOnly = await content.put(bytes("cited only by the live checkpoint"));
+        const live = new InMemoryAsyncEventStore();
+        const raw = new InMemoryAsyncSnapshotStore();
+        const cite = (id: string, addrs: string[]) => ({
+          id: `cp-${id}`,
+          executionId: id,
+          workflowId: "wf",
+          sequence: 1,
+          state: {
+            frames: {
+              a: { output: envelopeFor(addrs[0]!) },
+              b: addrs[1] ? { output: envelopeFor(addrs[1]) } : {},
+            },
+          } as never,
+          createdAt: 0,
+        });
+        for (const id of ["gone", "alive"]) {
+          await live.append(evt(id, 0, "EXECUTION_STARTED", { input: {} }, OLD));
+          await live.append(evt(id, 1, "STEP_STARTED", { stepId: "s" }, OLD));
+          await live.append(evt(id, 2, "STEP_STARTED", { stepId: "t" }, OLD));
+        }
+        await raw.save(cite("gone", [sole.__loomContent, shared.__loomContent]));
+        await raw.save(cite("alive", [shared.__loomContent, liveOnly.__loomContent]));
+        await live.truncatePrefix("gone", 1);
+        await live.truncatePrefix("alive", 1);
+        clock.now = NOW;
+        return { content, live, raw, sole, shared, liveOnly };
+      };
+      const run = (
+        t: Awaited<ReturnType<typeof setup>>,
+        failing: Record<string, () => Error>,
+        extra = {}
+      ) =>
+        sweepUnpinnedContent({
+          eventStores: [t.live],
+          snapshotStores: [guarded(t.raw, failing)],
+          contentStore: t.content,
+          pinnedEventTypes: [],
+          olderThanMs: TTL,
+          now: NOW,
+          ...extra,
+        });
+
+      it("completes, keeps live and shared blobs, collects the sole-owned one, and reports it", async () => {
+        const t = await setup();
+        const report = await run(
+          t,
+          { gone: () => new ShreddedError() },
+          { reclaimOrphans: { completeScan: true as const, snapshotsTouchContent: true as const } }
+        );
+        expect(report.shreddedSnapshots).toEqual(["gone"]);
+        expect(await t.content.get(t.liveOnly)).not.toBeNull();
+        expect(await t.content.get(t.shared)).not.toBeNull();
+        expect(await t.content.get(t.sole)).toBeNull();
+      });
+
+      it("a dry run reports the shredded execution and erases nothing", async () => {
+        const t = await setup();
+        const report = await run(t, { gone: () => new ShreddedError() }, { dryRun: true });
+        expect(report.shreddedSnapshots).toEqual(["gone"]);
+        expect(await t.content.get(t.sole)).not.toBeNull();
+      });
+
+      it("any other snapshot error still aborts the pass, nothing erased", async () => {
+        const t = await setup();
+        class SnapshotUndecryptableError extends Error {}
+        await expect(
+          run(t, { gone: () => new SnapshotUndecryptableError("bad") })
+        ).rejects.toBeInstanceOf(SnapshotUndecryptableError);
+        expect(await t.content.get(t.sole)).not.toBeNull();
+        expect(await t.content.get(t.liveOnly)).not.toBeNull();
+      });
+    });
+
     it("a run compacted at its tip (only sequence 0 left) with no snapshot found is uncovered â€” refused", async () => {
       const { clock, content } = clockedStore(OLD);
       const output = await content.put(bytes("a finished run's step output"));
