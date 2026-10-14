@@ -75,7 +75,6 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
       // ADR 0130 residuals D9: reads/writes the chain's quarantine + inbox streams (reserved control
       // streams, exempt from the stream guard) through the runtime's store; never an owner's log.
       "packages/workflow-runtime/src/quarantine.ts",
-      "packages/workflow-runtime/src/recoverAbandoned.ts",
       "packages/workflow-runtime/src/redriveAbandoned.ts",
       "packages/workflow-runtime/src/sealGuard.ts",
     ]);
@@ -150,7 +149,6 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
   it("internal handlers test the brand, never a bare ExecutionDeniedError, for sealed refusals", () => {
     for (const f of [
       "packages/workflow-runtime/src/TimerService.ts",
-      "packages/workflow-runtime/src/recoverAbandoned.ts",
     ]) {
       const src = strip(read(f));
       expect(src, f).toMatch(/isSealedUnreadable\(/);
