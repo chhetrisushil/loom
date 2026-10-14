@@ -215,6 +215,50 @@ describe("a sealed refusal is worded as the ordinary unknown-owner call of the s
     expect(JSON.stringify(await inner.read(E))).toBe(before);
   });
 
+  // The workflow id is a PLAINTEXT envelope column, so the refusal carries it: otherwise an
+  // `allowWorkflows` policy words every sealed refusal `workflow "" is not permitted`, an oracle.
+  for (const kind of ["marker", "wrongKey"] as const) {
+    for (const [label, allow] of [
+      ["permitted workflow: the ordinary unknown-owner denial", ["secret"]],
+      ["non-permitted workflow: the ordinary workflow denial", ["other"]],
+    ] as const) {
+      it(`${kind} node, allowWorkflows, ${label}`, async () => {
+        const policy = { allowWorkflows: allow, rules: { discard: "tenant" as const } };
+        const E = "shape-wf";
+        const plainInner = new InMemoryAsyncEventStore();
+        const f0 = secret();
+        const setup = build(
+          {},
+          { eventStore: plainInner, snapshotStore: new InMemoryAsyncSnapshotStore() }
+        );
+        setup.rt.registerFlow(f0.definition, f0.runner);
+        await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
+        const base = node(plainInner, new InMemoryTimerStore(), policy);
+        const inner = new InMemoryAsyncEventStore();
+        const keys = new InMemoryKeyStore();
+        const owner = node(new EncryptingEventStore(inner, keys, { sensitive: FULL }));
+        await (
+          await owner.h.rt.start(owner.f, {}, { executionId: E, principal: OWNER })
+        ).waitForSuspend();
+        const reader: EventStore =
+          kind === "marker"
+            ? inner
+            : new EncryptingEventStore(inner, new InMemoryKeyStore(), { sensitive: FULL });
+        const sealed = node(reader, new InMemoryTimerStore(), policy);
+        for (const call of [
+          (n: ReturnType<typeof node>) => n.h.rt.loadState(E, { principal: STRANGER }),
+          (n: ReturnType<typeof node>) => n.h.rt.cancel(E, "no", { principal: STRANGER }),
+        ]) {
+          const want = await rejection(call(base));
+          const got = await rejection(call(sealed));
+          expect(isSealedUnreadable(got)).toBe(true);
+          expect(shape(got)).toEqual(shape(want));
+          if (allow[0] === "other") expect((got as Error).message).toContain('"secret"');
+        }
+      });
+    }
+  }
+
   it("unknownOwner: allow still refuses, with the generic unknown-owner wording", async () => {
     const { E, base, sealed } = await world({
       unknownOwner: "allow",

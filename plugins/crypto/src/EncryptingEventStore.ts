@@ -432,7 +432,7 @@ export class EncryptingEventStore implements EventStore {
         // mode: `tolerate` redacts only a real shred, else a wrong-key node would fold a redacted
         // view and treat a live execution as erased, bypassing the sealed denial.
         if (!(await this.tombstoned(executionId, subjectId, events))) {
-          throw new KeyUnavailableError(subjectId, executionId);
+          throw new KeyUnavailableError(subjectId, executionId, events[0]?.workflowId, redacted);
         }
         if (this.onShredded === "throw") {
           throw new PayloadShreddedError(subjectId, executionId, redacted);
@@ -454,7 +454,7 @@ export class EncryptingEventStore implements EventStore {
             try {
               return decryptValue(key, v);
             } catch {
-              throw new KeyUnavailableError(subjectId, executionId);
+              throw new KeyUnavailableError(subjectId, executionId, events[0]?.workflowId);
             }
           }
           // Only a DESTROYED key (above) reads as erased. A key that exists but cannot open the

@@ -1,3 +1,5 @@
+import type { EventEnvelope } from "@loom/core";
+
 /** The stable `code` of {@link KeyUnavailableError}. */
 export const KEY_UNAVAILABLE_CODE = "KEY_UNAVAILABLE" as const;
 
@@ -15,7 +17,15 @@ export class KeyUnavailableError extends Error {
   readonly code = KEY_UNAVAILABLE_CODE;
   constructor(
     readonly subjectId: string,
-    readonly streamId?: string
+    readonly streamId?: string,
+    /** The stream's workflow id (a plaintext column), so the kernel can word its refusal. */
+    readonly workflowId?: string,
+    /**
+     * The stream with each sealed field replaced by a placeholder (its status and tip are
+     * plaintext). Lets the erasure lifecycle (`EraseCoordinator`, `exportSubject`) judge a stream
+     * in the ShredIncomplete window (key destroyed, tombstone not yet written). Never ciphertext.
+     */
+    readonly redacted?: readonly EventEnvelope[]
   ) {
     super(
       `the encryption key for subject "${subjectId}"${streamId ? ` (stream "${streamId}")` : ""} is not available to this node and the log records no erasure (no PAYLOAD_SHREDDED): this node's key store lacks the key. It is not a crypto-shred.`

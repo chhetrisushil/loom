@@ -158,7 +158,7 @@ export async function runAgentOnce(options: RunAgentOnceOptions): Promise<RunAge
     } catch (error) {
       throw thrown !== undefined ? thrown.error : error;
     }
-    const events = (await app.stores.eventStore.read(handle.executionId)) as EventEnvelope[];
+    const events = (await app.runtime.events.read(handle.executionId)) as EventEnvelope[];
     if (state.status === "completed" || state.status === "suspended") {
       return {
         ...(output !== undefined && { output }),

@@ -1,5 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import type { EventStore } from "@loom/event-runtime";
+import { type EventStore, isKeyUnavailable } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import type { SubjectIndex } from "./SubjectIndex";
 
@@ -55,7 +55,14 @@ export async function exportSubject(
   const executionIds = options.index.executionsOf(subjectId, options.tenant);
   const executions: SubjectExecutionExport[] = [];
   for (const executionId of executionIds) {
-    const events = await options.eventStore.read(executionId);
+    let events: EventEnvelope[];
+    try {
+      events = await options.eventStore.read(executionId);
+    } catch (err) {
+      // The ShredIncomplete window (key destroyed, tombstone not yet written): the redacted view.
+      if (!isKeyUnavailable(err) || !err.redacted) throw err;
+      events = [...err.redacted];
+    }
     if (events.length === 0) continue; // deleted (retention) — nothing left to export
     // Seed the fold with identity — foldEvents takes executionId/workflowId from `initial`,
     // not the events, so an unseeded fold would carry empty identity fields.

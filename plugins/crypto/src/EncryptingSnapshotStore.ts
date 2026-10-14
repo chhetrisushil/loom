@@ -305,7 +305,7 @@ export class EncryptingSnapshotStore implements SnapshotStore {
     ) {
       return new PayloadShreddedError(subjectId, snapshot.executionId);
     }
-    return new KeyUnavailableError(subjectId, snapshot.executionId);
+    return new KeyUnavailableError(subjectId, snapshot.executionId, snapshot.workflowId);
   }
 
   private async logRecordsShred(executionId: string, subjectId: string): Promise<boolean> {

@@ -42,6 +42,12 @@ function sourceFiles(dir: string): string[] {
 
 const strip = (s: string): string => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 
+/** Any spelling of a read of the app's UNGUARDED `stores.eventStore`. */
+const RAW_STORE_READ_SRC =
+  "\\bstores\\s*(?:\\.\\s*eventStore\\b|\\[\\s*[\"'`]eventStore[\"'`]\\s*\\])|\\{[^}]*\\beventStore\\b[^}]*\\}\\s*=\\s*[\\w.$]*\\bstores\\b";
+const RAW_STORE_READ = new RegExp(RAW_STORE_READ_SRC);
+const RAW_STORE_READ_G = new RegExp(RAW_STORE_READ_SRC, "g");
+
 describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () => {
   const KERNEL = sourceFiles("packages/workflow-runtime/src");
 
@@ -92,17 +98,18 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
 
   it("packages/app reads the RAW store only at the pinned, deliberate sites (compliance paths see their data with the keys)", () => {
     // `stores.eventStore` is the unguarded store. The runtime wraps it itself; the two compliance
-    // paths (EraseCoordinator, exportSubject) read it raw ON PURPOSE and carry a comment saying why;
-    // `runAgentOnce` is a dev helper reading its own just-finished run. A NEW raw reader in
-    // packages/app fails here until someone decides it is deliberate.
+    // paths (EraseCoordinator, exportSubject) read it raw ON PURPOSE and carry a comment saying why.
+    // A NEW raw reader in packages/app fails here until someone decides it is deliberate, whatever
+    // its spelling: `stores.eventStore`, `stores["eventStore"]`, or `const { eventStore } = stores`.
     const raw = sourceFiles("packages/app/src")
       .map((f) => ({ f, src: strip(read(f)) }))
-      .filter(({ src }) => /\bstores\.eventStore\b/.test(src));
-    expect(raw.map((r) => r.f)).toEqual([
-      "packages/app/src/defineConfig.ts",
-      "packages/app/src/runAgentOnce.ts",
-    ]);
+      .filter(({ src }) => RAW_STORE_READ.test(src));
+    expect(raw.map((r) => r.f)).toEqual(["packages/app/src/defineConfig.ts"]);
     const dc = strip(read("packages/app/src/defineConfig.ts"));
+    // every raw read in defineConfig is the literal spelling the owner table below attributes
+    expect(dc.match(RAW_STORE_READ_G)).toHaveLength(
+      dc.match(/\bstores\.eventStore\b/g)?.length ?? 0
+    );
     // each use is attributed to the NEAREST preceding constructor / call that takes it
     const owners: Array<[string, RegExp]> = [
       ["EraseCoordinator", /new EraseCoordinator\(/g],

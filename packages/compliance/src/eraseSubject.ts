@@ -4,6 +4,7 @@ import {
   type InboxStreams,
   chainIdOfFirst,
   inboxStreamsOfChainDeep,
+  isKeyUnavailable,
 } from "@loom/event-runtime";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
@@ -298,8 +299,9 @@ export class EraseCoordinator {
   }
 
   /**
-   * The log, or — when its subject is ALREADY shredded (a direct `shredSubject`, a retry) — the
-   * redacted view the typed error carries: status and tip are plaintext, so liveness and the
+   * The log, or — when its subject is ALREADY shredded (a direct `shredSubject`, a retry, or the
+   * window between the key's destruction and its tombstone) — the redacted view the typed error
+   * carries: status and tip are plaintext, so liveness and the
    * chain's head can still be judged, and a re-run of the erasure stays idempotent.
    */
   private async readErasedOk(executionId: string): Promise<EventEnvelope[]> {
@@ -310,6 +312,10 @@ export class EraseCoordinator {
       if ((err as { name?: unknown } | null)?.name === "PayloadShreddedError" && redacted) {
         return redacted;
       }
+      // The ShredIncomplete window (ADR 0130 D7): the key is destroyed but the tombstone append
+      // failed, so no PAYLOAD_SHREDDED exists yet and the read is `KeyUnavailableError`. Its
+      // redacted view (plaintext status and tip) lets the retry judge liveness and complete.
+      if (isKeyUnavailable(err) && err.redacted) return [...err.redacted];
       throw err;
     }
   }

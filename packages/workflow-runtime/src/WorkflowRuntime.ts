@@ -127,6 +127,7 @@ import {
 import {
   SealGuardedEventStore,
   SealGuardedSnapshotStore,
+  type SealedDetail,
   SealedStreamUnreadableError,
   isSealedUnreadable,
   principalLooksSealed,
@@ -1283,6 +1284,7 @@ export class WorkflowRuntime {
           reason: "marker-unopenable",
           sequence: 0,
           covers: [],
+          ...(knownFirst.first !== undefined && { workflowId: knownFirst.first.workflowId }),
         });
       }
       const recorded = await this.recordedPrincipal(executionId, knownFirst);
@@ -1328,7 +1330,7 @@ export class WorkflowRuntime {
       return await body();
     } catch (err) {
       if (!(err instanceof SealedStreamUnreadableError) || this.sealedRefused.has(err)) throw err;
-      const reason = this.sealedWording(op, executionId, principal, system);
+      const reason = this.sealedWording(op, executionId, principal, system, sealedDetailOf(err));
       const refusal = withSealedDetail(op, executionId, err, reason);
       this.sealedRefused.add(refusal);
       this.reportSealed(executionId, refusal);
@@ -1353,17 +1355,19 @@ export class WorkflowRuntime {
    * for an ordinary existing execution with an UNKNOWN owner. The policy is consulted with the owner
    * UNSET (exactly that input), never with the sealed principal, and only to phrase the error: the
    * refusal is unconditional, so a verdict of "allowed" (e.g. `unknownOwner: "allow"`) falls back to
-   * the generic unknown-owner wording. The workflow is unreadable here, so it is `""`.
+   * the generic unknown-owner wording. The workflow id is the plaintext one carried on the refusal (`""` only if the store gave none).
    */
   private sealedWording(
     op: ExecutionOp,
     executionId: string,
     principal: PrincipalChain | undefined,
-    system: SystemGrant | undefined
+    system: SystemGrant | undefined,
+    detail: SealedDetail | undefined
   ): string {
     try {
       return (
-        this.authzDenial(op, executionId, "", principal, system, {})?.reason ?? UNKNOWN_OWNER_REASON
+        this.authzDenial(op, executionId, detail?.workflowId ?? "", principal, system, {})
+          ?.reason ?? UNKNOWN_OWNER_REASON
       );
     } catch {
       return UNKNOWN_OWNER_REASON;
