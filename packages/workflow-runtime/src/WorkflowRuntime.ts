@@ -916,6 +916,9 @@ class StaleInboxBatch extends Error {
 
 /** ADR 0130 D9 - events a release's idempotent-repeat search examines (backwards from the tail), and its read chunk. */
 const RELEASE_SEARCH_BUDGET = 4096;
+
+/** The two operator verbs that may fold an owner from the log when the checkpoint is sealed (S5b). */
+type QuarantineVerb = "quarantineInbox" | "releaseInbox";
 const RELEASE_SEARCH_CHUNK = 64;
 const RETRY = Symbol("notify-retry");
 const RETRY_FENCED = Symbol("notify-retry-fenced");
@@ -3793,7 +3796,7 @@ export class WorkflowRuntime {
    */
   private async sendTarget(
     executionId: string,
-    opts: { first?: EventEnvelope } = {}
+    opts: { first?: EventEnvelope; logFoldFor?: QuarantineVerb } = {}
   ): Promise<{
     id: string;
     first: EventEnvelope;
@@ -3851,7 +3854,7 @@ export class WorkflowRuntime {
       }
       if (tip.kind === "terminal") return { ...base, status: tip.status };
       if (tip.kind === "parkedCandidate") {
-        const state = await this.foldState(id);
+        const state = await this.foldState(id, opts.logFoldFor);
         return { ...base, status: "parkedCandidate", ...(state !== null && { state }) };
       }
       // ADR 0109 D4 — the start-to-commit window: the predecessor still reads `running` (its
@@ -4458,7 +4461,7 @@ export class WorkflowRuntime {
         undefined
       );
     }
-    const head = await this.sendTarget(executionId, { first: addressed });
+    const head = await this.sendTarget(executionId, { first: addressed, logFoldFor: verb });
     if (head === null) throw new Error(`No execution found for id: ${executionId}`);
     if (head.id !== executionId && head.status !== "hop-limit") {
       const headDenial = this.authzDenial(
@@ -4491,8 +4494,12 @@ export class WorkflowRuntime {
   }
 
   /** The owner's folded state, or the typed `InboxClosedError` for a finished owner. */
-  private async openOwnerState(executionId: string, headId: string): Promise<ExecutionState> {
-    const state = await this.foldState(headId);
+  private async openOwnerState(
+    executionId: string,
+    headId: string,
+    verb: QuarantineVerb
+  ): Promise<ExecutionState> {
+    const state = await this.foldState(headId, verb);
     if (state === null) throw new Error(`No execution found for id: ${executionId}`);
     if (state.status === "completed" || state.status === "failed" || state.status === "cancelled") {
       throw new InboxClosedError(headId, state.status);
@@ -4550,7 +4557,7 @@ export class WorkflowRuntime {
     ) {
       refuse("invalid", "reason must be a string of at most 256 characters.");
     }
-    const state = await this.openOwnerState(executionId, head.id);
+    const state = await this.openOwnerState(executionId, head.id, "quarantineInbox");
     if (state.status !== "suspended") {
       refuse(
         "not-parked",
@@ -4690,7 +4697,7 @@ export class WorkflowRuntime {
         "the topic moved while the hold was in flight (a delivery, a discard or another hold won); the copy stays for a retry."
       );
     }
-    await this.afterHoldChange(head.id, chainId);
+    await this.afterHoldChange(head.id, chainId, "quarantineInbox");
     return {
       executionId: head.id,
       topic,
@@ -4707,7 +4714,11 @@ export class WorkflowRuntime {
    * other topics after a hold, the topic's own backlog after a discard). A sealed refusal from that
    * pass is the expected "held, awaiting a capable node": not an error of the verb.
    */
-  private async afterHoldChange(executionId: string, chainId: string): Promise<void> {
+  private async afterHoldChange(
+    executionId: string,
+    chainId: string,
+    verb: QuarantineVerb
+  ): Promise<void> {
     if (this.timerStore !== undefined) {
       await this.timerStore
         .schedule({ executionId, wakeAt: INBOX_WAKE_AT })
@@ -4716,7 +4727,7 @@ export class WorkflowRuntime {
     this.inboxFull.delete(chainId);
     this.inboxCounted.delete(chainId);
     this.inboxTrimmed.delete(chainId);
-    const after = await this.foldState(executionId);
+    const after = await this.foldState(executionId, verb);
     if (after !== null) {
       await this.maybeTrimInbox(chainId, after);
     }
@@ -4759,7 +4770,8 @@ export class WorkflowRuntime {
     state: ExecutionState,
     headId: string,
     match: (p: { topic?: unknown; key?: unknown; messageId?: unknown }) => boolean,
-    budgetEvents = RELEASE_SEARCH_BUDGET
+    budgetEvents = RELEASE_SEARCH_BUDGET,
+    logFoldFor?: QuarantineVerb
   ): Promise<{ disposition: "deliver" | "discard"; ambiguous: boolean } | undefined> {
     let budget = budgetEvents;
     let found: { disposition: "deliver" | "discard" } | undefined;
@@ -4795,7 +4807,7 @@ export class WorkflowRuntime {
       )?.continuedFrom?.executionId;
       if (prior === undefined) break;
       executionId = prior;
-      current = (await this.foldState(prior)) ?? undefined;
+      current = (await this.foldState(prior, logFoldFor)) ?? undefined;
     }
     return found === undefined ? undefined : { ...found, ambiguous: keys.size > 1 };
   }
@@ -4900,9 +4912,15 @@ export class WorkflowRuntime {
     // An earlier release of this message (the idempotent repeat), judged from the owner's log: searched
     // backwards from the tail (bounded) and through the continued predecessors, never from sequence 0.
     const earlier = async (): Promise<ReleaseInboxResult | undefined> => {
-      const at = await this.foldState(head.id);
+      const at = await this.foldState(head.id, "releaseInbox");
       if (at === null) return undefined;
-      const done = await this.findReleaseFactBack(at, head.id, sameMessage);
+      const done = await this.findReleaseFactBack(
+        at,
+        head.id,
+        sameMessage,
+        RELEASE_SEARCH_BUDGET,
+        "releaseInbox"
+      );
       if (done === undefined) return undefined;
       if (done.ambiguous) {
         return refuse(
@@ -4921,13 +4939,13 @@ export class WorkflowRuntime {
       s.status === "failed" ||
       s.status === "cancelled" ||
       s.status === "continued";
-    const state0 = await this.foldState(head.id);
+    const state0 = await this.foldState(head.id, "releaseInbox");
     if (state0 === null) throw new Error(`No execution found for id: ${executionId}`);
     if (terminal(state0)) {
       const repeat = await earlier();
       if (repeat !== undefined) return repeat;
     }
-    const state = await this.openOwnerState(executionId, head.id);
+    const state = await this.openOwnerState(executionId, head.id, "releaseInbox");
     const chainId = chainIdOf(state, head.id);
     const queue = quarantineQueue(state.variables, topic);
     if (queue === undefined) {
@@ -4965,7 +4983,7 @@ export class WorkflowRuntime {
         );
       }
       // The release is durable but its delivery has not landed (a crash window): heal it now.
-      await this.afterHoldChange(head.id, chainId);
+      await this.afterHoldChange(head.id, chainId, "releaseInbox");
       return result(false);
     }
     if (disposition === "deliver" && !copy.ok) throw this.copyRefusal(head.id, topic, first, copy);
@@ -5020,7 +5038,7 @@ export class WorkflowRuntime {
         `message "${wanted}" was ${landed.disposition === "discard" ? "discarded" : "released"} concurrently.`
       );
     }
-    await this.afterHoldChange(head.id, chainId);
+    await this.afterHoldChange(head.id, chainId, "releaseInbox");
     return result(true);
   }
 
@@ -6864,10 +6882,22 @@ export class WorkflowRuntime {
    * "does sequence 0 exist" is therefore exactly "does this execution exist", in one
    * indexed point-read. It doubles as the identity anchor the un-snapshotted path needs.
    */
-  private async foldState(executionId: string): Promise<ExecutionState | null> {
+  private async foldState(
+    executionId: string,
+    /** ADR 0130 D9 / S5b: the quarantine verb folding for an operator; see {@link foldFromCompleteLog}. */
+    logFoldFor?: QuarantineVerb
+  ): Promise<ExecutionState | null> {
     // ADR 0107 — `""` is no execution, whatever a pre-0106 bug left in its stream.
     if (executionId === "") return null;
-    const snapshot = await this.snapshotStore.loadLatest(executionId);
+    let snapshot: Awaited<ReturnType<SnapshotStore["loadLatest"]>>;
+    try {
+      snapshot = await this.snapshotStore.loadLatest(executionId);
+    } catch (err) {
+      // S5b: ONLY the operator verbs (`logFoldFor`) and ONLY the sealed-refusal class fall back; the
+      // general fold keeps refusing (D7). A shredded subject's erasure error is not this class.
+      if (logFoldFor === undefined || !(err instanceof SealedStreamUnreadableError)) throw err;
+      return this.foldFromCompleteLog(executionId, err, logFoldFor);
+    }
     if (snapshot !== null) {
       // Confirm the execution still exists before trusting the snapshot (orphan case
       // above). One row, not the log.
@@ -6892,6 +6922,54 @@ export class WorkflowRuntime {
       executionId,
       workflowId,
       workflowVersion: flow?.definition.version ?? "",
+    }).getState();
+  }
+
+  /**
+   * ADR 0130 D9 / S5b - the quarantine verbs' owner fold on a node that cannot open the sealed
+   * checkpoint: fold the owner from sequence 0 of the LOG. Used ONLY by `quarantineInbox` /
+   * `releaseInbox` (never replay, resume, `loadState` or `send`, which keep refusing per D7), and
+   * only after the caller was authorized against the plaintext recorded owner.
+   *
+   * The log fold is exact only when the log is COMPLETE: contiguous from sequence 0 AND reaching the
+   * checkpoint's own sequence. Compaction (`truncatePrefix[Keeping]`) always deletes sequence 1, so a
+   * compacted log has a gap after 0 - unless it was compacted to the tip, leaving `[0]` with the
+   * checkpoint ABOVE it, which the checkpoint's sequence (read through `loadLatestSealed`, the
+   * at-rest form: no plaintext, no key) exposes. A log this node cannot read either (its envelopes
+   * carry a seal marker it cannot open) rethrows the log's own ordinary denial. An incomplete log is
+   * the typed, operator-actionable `InboxQuarantineRefusedError` (`checkpoint-unreadable-log-compacted`).
+   * Cost: ONE full-log read per call (the verb folds up to three times); operator verbs are rare,
+   * and a log too long to fold is exactly the one that should run on a capable node.
+   */
+  private async foldFromCompleteLog(
+    executionId: string,
+    refusal: SealedStreamUnreadableError,
+    verb: QuarantineVerb
+  ): Promise<ExecutionState | null> {
+    const events = await this.eventStore.read(executionId);
+    if (events.length === 0) return null;
+    let checkpointSeq = sealedDetailOf(refusal)?.sequence;
+    if (checkpointSeq === undefined) {
+      checkpointSeq = (await this.snapshotStore.loadLatestSealed?.(executionId))?.sequence;
+    }
+    const tip = events.length - 1;
+    let complete = events.every((e, i) => e.sequence === i);
+    // A checkpoint above the log's tip means the log was compacted to the tip; with its sequence
+    // unknowable, a log of just `[0]` is not provably complete either.
+    if (checkpointSeq !== undefined ? tip < checkpointSeq : tip < 1) complete = false;
+    if (!complete) {
+      throw new InboxQuarantineRefusedError(
+        executionId,
+        "checkpoint-unreadable-log-compacted",
+        "this node cannot open the sealed checkpoint and the log was compacted, so the owner cannot be folded from the log here. Run the verb on a capable node (one holding the owner's key).",
+        verb
+      );
+    }
+    const workflowId = events[0]!.workflowId;
+    return new ReplayVM(events, {
+      executionId,
+      workflowId,
+      workflowVersion: this.flows.get(workflowId)?.definition.version ?? "",
     }).getState();
   }
 

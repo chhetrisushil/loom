@@ -1438,11 +1438,19 @@ export interface ReleaseInboxResult {
  * - `not-sealed`: `quarantineInbox` only - the head message is not sealed-and-unopenable on THIS node,
  *   so there is nothing to hold (a quarantine is a capability hold, never a moderation hold; use
  *   `discardInbox` to drop a message).
+ * - `checkpoint-unreadable-log-compacted` (ADR 0130 D9, S5b): THIS node cannot open the owner's sealed
+ *   checkpoint, and its log was compacted, so the verb cannot fold the owner from the log either.
+ *   Not retryable here: run the verb on a capable node (one holding the owner's key).
  */
 export class InboxQuarantineRefusedError extends Error {
   constructor(
     readonly executionId: string,
-    readonly reason: "not-parked" | "contended" | "invalid" | "not-sealed",
+    readonly reason:
+      | "not-parked"
+      | "contended"
+      | "invalid"
+      | "not-sealed"
+      | "checkpoint-unreadable-log-compacted",
     detail: string,
     readonly verb: "quarantineInbox" | "releaseInbox" | "fork" = "quarantineInbox"
   ) {
@@ -1454,7 +1462,11 @@ export class InboxQuarantineRefusedError extends Error {
   }
   get retryable(): boolean {
     // (the shape of InboxDiscardRefusedError: a transient refusal is retryable, a rule violation is not)
-    return this.reason !== "invalid" && this.reason !== "not-sealed";
+    return (
+      this.reason !== "invalid" &&
+      this.reason !== "not-sealed" &&
+      this.reason !== "checkpoint-unreadable-log-compacted"
+    );
   }
 }
 
