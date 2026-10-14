@@ -275,14 +275,15 @@ describe("S0 — a sealed/opaque principal read by a node that cannot open it (s
       const first = (await c.raw.read("ctl"))[0];
       const text = JSON.stringify(first?.payload);
       expect(text).toContain("__loomEnc");
-      expect(text).not.toContain("t1");
-      expect(text).not.toContain("alice");
+      // JSON-quoted: base64 ciphertext never contains `"`, so a random `t1` inside it cannot match.
+      expect(text).not.toContain('"t1"');
+      expect(text).not.toContain('"alice"');
       const snap = await c.rawSnaps.loadLatest("ctl");
       expect(snap).not.toBeNull();
       const snapText = JSON.stringify(snap);
       expect(snapText).toContain("__loomEnc");
-      expect(snapText).not.toContain("t1");
-      expect(snapText).not.toContain("alice");
+      expect(snapText).not.toContain('"t1"');
+      expect(snapText).not.toContain('"alice"');
     } finally {
       await c.close();
     }
