@@ -1068,6 +1068,8 @@ interface EncryptingSnapshotStoreOptions {
 // ADR 0130 residuals D7: every envelope with a sealed field is stamped metadata.seal = { v: 1, cipher, covers }
 // (covers: exact, sorted "EVENT_TYPE.path" entries sealed in THAT envelope), and store.sealingCapability()
 // reports what this node seals and opens (live; registerSensitive is reflected).
+// store.readAtRest?() (EventStore SPI 2.5.0, ADR 0130 D9): a read-only view (read/readFrom/readRange?/head?) of the
+// envelopes exactly as stored, never decrypted; EncryptingEventStore implements it, decorators forward it.
 // EncryptingSnapshotStoreOptions.events?: EventStore — the RAW event store, so a missing key is judged by the
 // log's PAYLOAD_SHREDDED tombstone (PayloadShreddedError) vs none (KeyUnavailableError); without it the old PayloadShreddedError stands.
 // import { seededIvSource, type IvSource } from "@loom/plugin-crypto/testing";   // deterministic IVs for DST

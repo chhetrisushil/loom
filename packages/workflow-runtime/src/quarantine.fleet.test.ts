@@ -625,8 +625,10 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
     const manual = await s.a.rt
       .releaseInbox(s.e, { topic: "a", messageId: "a1" }, { principal: OP })
       .catch((x) => x);
-    // the owner's CHECKPOINT shares the subject key, so the owner is unreadable before the copy is reached
-    expect(manual).toBeInstanceOf(ExecutionDeniedError);
+    // S5b: the sealed CHECKPOINT shares the shredded subject key, but the verbs fold the owner from the
+    // LOG past the sealed payloads (kernel facts are plaintext), so the owner is reached; the refusal
+    // then comes from the held copy's payload, which the destroyed key cannot open. Nothing appended.
+    expect(manual).toBeInstanceOf(SealedPayloadUnreadableError);
     expect(await s.a.rt.notifyInbox(s.e).catch((x) => x)).toBeInstanceOf(Error);
     expect(await kindsOf(s.raw.eventStore, s.e)).toEqual(before);
     expect(consumedOf(await s.raw.eventStore.read(s.e))).toHaveLength(0);

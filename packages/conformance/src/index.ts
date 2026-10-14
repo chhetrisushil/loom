@@ -617,6 +617,13 @@ export function runEventStoreConformance(
       }
     );
 
+    it25(
+      "readAtRest() (optional, SPI 2.5.0) returns the stored envelopes unchanged and read-only; skipped if absent",
+      async () => {
+        expect(await eventStoreAtRestProblem(factory)).toBeUndefined();
+      }
+    );
+
     // ── SPI 2.2.0 (ADR 0116 amendment) — appendIfUnchanged: exists AND same head AND same token ──
     // Runs only where the store offers the method. The token is COMPARED, never presented.
     const obs = async (store: EventStore, id: string) => {
@@ -1473,6 +1480,53 @@ export async function eventStoreSealingProblem(
     }
     if (a.opens({ v: 1, cipher: a.cipher, covers: [...a.covers, "~UNLISTED.path"] }) !== false) {
       return "opens() accepts a marker that covers an entry the capability does not list";
+    }
+    return undefined;
+  } finally {
+    await store.close();
+  }
+}
+
+/**
+ * The optional `EventStore.readAtRest()` check (EventStore SPI 2.5.0, ADR 0130 D9), as a function so
+ * the kit's own tests can prove it discriminates. A store without the method conforms. Otherwise,
+ * after two appends: the view offers exactly `read` and `readFrom` (plus `readRange` / `head`
+ * optionally) and NO write, fence or subscribe member; its `read` returns the same events, in order,
+ * as the store's own `read` (same ids and sequences); for a store that seals nothing it returns them
+ * BYTE-IDENTICAL to its own `read()` (what was appended, modulo the store's own normalisation); and `readFrom` honours its bound. Closes the store.
+ */
+export async function eventStoreAtRestProblem(
+  factory: () => EventStore
+): Promise<string | undefined> {
+  const store = factory();
+  try {
+    if (store.readAtRest === undefined) return undefined;
+    const id = "at-rest-probe";
+    const appended = [evt(id, 0, "EXECUTION_STARTED"), evt(id, 1)];
+    for (const e of appended) await store.append(e);
+    const view = store.readAtRest();
+    for (const forbidden of ["append", "appendBatch", "acquireFence", "subscribe", "close"]) {
+      if (forbidden in view) return `readAtRest() view exposes the non-read member "${forbidden}"`;
+    }
+    const raw = await view.read(id);
+    const viaStore = await store.read(id);
+    if (
+      JSON.stringify(raw.map((e) => [e.id, e.sequence])) !==
+      JSON.stringify(viaStore.map((e) => [e.id, e.sequence]))
+    ) {
+      return "readAtRest().read() returned different events than read()";
+    }
+    // A store that seals nothing hands back the very envelopes its own read() does (a store that
+    // normalises JSON, such as jsonb, normalises both the same way).
+    if (
+      store.sealingCapability?.() === undefined &&
+      JSON.stringify(raw) !== JSON.stringify(viaStore)
+    ) {
+      return "readAtRest().read() on a store that seals nothing is not byte-identical to its read()";
+    }
+    const tail = await view.readFrom(id, 1);
+    if (tail.length !== 1 || tail[0]?.sequence !== 1) {
+      return "readAtRest().readFrom(id, 1) must return exactly the events from sequence 1";
     }
     return undefined;
   } finally {

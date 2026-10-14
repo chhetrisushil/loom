@@ -113,12 +113,21 @@ export function isCipherEnvelope(v: unknown): boolean {
   );
 }
 
+/** A {@link isCipherEnvelope} whose `__loomEnc` is a KNOWN kernel cipher id (not merely shaped like one). */
+export function isKernelCipherEnvelope(v: unknown): boolean {
+  return isCipherEnvelope(v) && KNOWN_ENVELOPE_CIPHERS.has((v as { __loomEnc: string }).__loomEnc);
+}
+
 /**
  * Defence in depth for the transient quarantine fold (independent of its brand, which a spread copy
  * loses): a real fold's `variables._waitAnswers` never holds a ciphertext envelope (a node that
  * folds it has opened it), so a state that does is a fold past sealed payloads and must not be
  * persisted, whether or not the snapshot store seals (it would store ciphertext as a value).
  * Bounded walk: depth <= 8, 10 000 nodes.
+ *
+ * Only a KNOWN kernel cipher id ({@link KNOWN_ENVELOPE_CIPHERS}, "loom/aes-256-gcm") counts: user
+ * data that is merely `__loomEnc`-shaped with another value saves. Residual (ADR 0130 D9): an app
+ * value that carries the kernel cipher id in a wait answer is refused too.
  */
 export function assertNoCipherAnswers(state: unknown, where: string): void {
   const answers = (state as { variables?: { _waitAnswers?: unknown } } | null | undefined)
@@ -127,7 +136,7 @@ export function assertNoCipherAnswers(state: unknown, where: string): void {
   let budget = 10_000;
   const walk = (v: unknown, depth: number): boolean => {
     if (budget-- <= 0 || typeof v !== "object" || v === null) return false;
-    if (isCipherEnvelope(v)) return true;
+    if (isKernelCipherEnvelope(v)) return true;
     if (depth >= 8) return false;
     for (const c of Array.isArray(v) ? v : Object.values(v)) if (walk(c, depth + 1)) return true;
     return false;
@@ -252,18 +261,13 @@ export function opaqueToQuarantineFold(e: EventEnvelope, marker: SealMarker): bo
 export type QuarantineEventReader = Pick<EventStore, "read" | "readFrom" | "readRange" | "head">;
 
 /**
- * A sealing decorator (the crypto plugin) may expose the RAW envelopes it reads beneath its
- * decryption, under this well-known symbol (a read-only {@link QuarantineEventReader}). The
- * quarantine view prefers it when every marked envelope of a read is one the opaque rule admits, so
- * the KeyStore is never consulted for an event the rule steps over (a node WITHOUT the key must not
- * even ask). A decorator stacked above the crypto one that does not forward it just falls back to
- * the decrypting read (correct, but the key is asked).
+ * The inner store's AT-REST view (EventStore SPI 2.5.0 `readAtRest`): envelopes exactly as stored,
+ * never decrypted. The quarantine view prefers it when every marked envelope of a read is one the
+ * opaque rule admits, so the KeyStore is never consulted for an event the rule steps over (a node
+ * WITHOUT the key must not even ask). A store without it just falls back to the decrypting read.
  */
-export const RAW_ENVELOPE_READER: unique symbol = Symbol.for("loom.rawEnvelopeReader") as never;
-
 function rawReaderOf(store: EventStore): QuarantineEventReader | undefined {
-  const f = (store as unknown as Record<symbol, unknown>)[RAW_ENVELOPE_READER];
-  return typeof f === "function" ? (f as () => QuarantineEventReader).call(store) : undefined;
+  return store.readAtRest?.();
 }
 
 /** Event arrays the view returned with sealed values LEFT in place (never decrypted). */
@@ -278,6 +282,10 @@ export function readLeftOpaque(events: readonly EventEnvelope[]): boolean {
  * May a RAW (undecrypted) read be used as is? Every marked envelope must be one the opaque rule
  * steps over, and no unmarked envelope may carry a ciphertext envelope as a top-level payload field
  * (a pre-marker legacy row the decrypting store would have opened). O(events) property reads.
+ *
+ * Only TOP-LEVEL payload fields of an UNMARKED legacy row are inspected: a nested sealed path in
+ * such a row passes through as ciphertext, and the verb then decides on the ciphertext (it cannot
+ * read it, which is a refusal or a step-over, never a leak).
  */
 function rawReadAdmissible(events: readonly EventEnvelope[]): boolean {
   let anyMarked = false;
@@ -364,6 +372,7 @@ export class SealGuardedEventStore implements EventStore {
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
   readonly storeNow?: NonNullable<EventStore["storeNow"]>;
   readonly sealingCapability?: NonNullable<EventStore["sealingCapability"]>;
+  readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -382,6 +391,7 @@ export class SealGuardedEventStore implements EventStore {
       appendIfUnchanged: "forward",
       storeNow: "forward",
       sealingCapability: "forward",
+      readAtRest: "forward",
       copyPrefix: "forward", // copies the stored bytes verbatim in the inner store: nothing is read here
       deleteExecution: "forward",
       truncatePrefix: "forward",
@@ -562,9 +572,9 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
   }
 
   async save(snapshot: Snapshot): Promise<void> {
-    this.saveGuard?.(snapshot, this.inner);
     assertNotTransientFold(snapshot.state, "a snapshot");
     assertNoCipherAnswers(snapshot.state, "a snapshot");
+    this.saveGuard?.(snapshot, this.inner);
     return this.inner.save(snapshot);
   }
   loadLatest(executionId: string): Promise<Snapshot | null> {

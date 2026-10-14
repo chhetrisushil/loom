@@ -68,6 +68,7 @@ export class CoalescingEventStore implements EventStore {
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
   readonly storeNow?: NonNullable<EventStore["storeNow"]>;
   readonly sealingCapability?: NonNullable<EventStore["sealingCapability"]>;
+  readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -102,6 +103,7 @@ export class CoalescingEventStore implements EventStore {
       appendIfUnchanged: "forward",
       storeNow: "forward",
       sealingCapability: "forward",
+      readAtRest: "forward",
       copyPrefix: "forward",
       deleteExecution: "forward",
       truncatePrefix: "forward",

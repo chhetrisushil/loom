@@ -72,7 +72,11 @@ export type { EventEnvelope };
  *   that cannot open sealed data). Every decorator forwards, overrides or refuses it (it is listed
  *   in {@link OPTIONAL_EVENT_STORE_METHODS}); `ShardedEventStore` returns a capability only when
  *   every shard agrees. Also reserves the control stream prefix {@link QUARANTINE_STREAM_PREFIX}
- *   (`__loom_quarantine__:<chainId>`). Additive: no existing method changed, so a 2.4.0 store
+ *   (`__loom_quarantine__:<chainId>`). Also the optional `readAtRest(): AtRestEventReader` (ADR 0130
+ *   D9): a read-only view of the envelopes AS STORED (never decrypted), so the quarantine verbs can
+ *   step over a sealed value without asking the KeyStore; replaces a hidden symbol protocol. Every
+ *   decorator forwards it (`EncryptingEventStore` overrides it with its inner store's raw reads,
+ *   `ShardedEventStore` routes per stream). Additive: no existing method changed, so a 2.4.0 store
  *   conforms.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
@@ -140,6 +144,12 @@ export interface SealMarker {
   /** Sorted, deduped `EVENT_TYPE.dot.path` entries actually sealed in THIS envelope. */
   readonly covers: readonly string[];
 }
+
+/**
+ * The read-only, at-rest view of an {@link EventStore} (SPI 2.5.0, see {@link EventStore.readAtRest}):
+ * envelopes exactly as stored, never decrypted; no write, fence or subscribe.
+ */
+export type AtRestEventReader = Pick<EventStore, "read" | "readFrom" | "readRange" | "head">;
 
 /** What a store seals and therefore opens (EventStore SPI 2.5.0, see {@link EventStore.sealingCapability}). */
 export interface SealingCapability {
@@ -515,6 +525,17 @@ export interface EventStore {
    */
   sealingCapability?(): SealingCapability | undefined;
   /**
+   * OPTIONAL (SPI 2.5.0, ADR 0130 D9): a READ-ONLY view of the envelopes exactly AS STORED - a
+   * sealing decorator never decrypts what this view returns (a store that seals nothing may return
+   * its ordinary reads; it need not implement the method). It exists so a caller that has decided a
+   * sealed value is not its business (the quarantine verbs stepping over a `MESSAGE_CONSUMED.payload`
+   * seal) reads WITHOUT asking the KeyStore. No write, no fence, no subscribe. Every envelope it
+   * returns is byte-identical to what was appended through the store. A decorator forwards it (the
+   * sealing one overrides it with its inner store's raw reads); `ShardedEventStore` routes each
+   * call to the stream's shard, like `read`.
+   */
+  readAtRest?(): AtRestEventReader;
+  /**
    * OPTIONAL bulk copy of the prefix `[0..throughSequence]` of one execution's log
    * into another `executionId`, re-stamping `id` + `executionId` and merging
    * `metadata` into each copied event — WITHOUT round-tripping payloads through JS
@@ -646,6 +667,7 @@ export const OPTIONAL_EVENT_STORE_METHODS = [
   "appendIfUnchanged",
   "storeNow",
   "sealingCapability",
+  "readAtRest",
   "copyPrefix",
   "deleteExecution",
   "truncatePrefix",

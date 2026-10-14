@@ -26,10 +26,18 @@ function deepFreeze<V>(v: V, seen = new WeakSet<object>()): V {
  */
 export function markTransientFold<T extends object>(state: T): T {
   const src = state as { variables?: unknown };
-  const copy = {
-    ...state,
-    ...(src.variables !== undefined && { variables: deepFreeze(structuredClone(src.variables)) }),
-  } as T;
+  let variables: unknown;
+  if (src.variables !== undefined) {
+    try {
+      variables = deepFreeze(structuredClone(src.variables));
+    } catch (err) {
+      // A value structuredClone cannot copy (a function, a symbol key's owner...) is not foldable.
+      throw new Error(
+        `a quarantine fold holds a value that cannot be copied (${err instanceof Error ? err.message : String(err)}); the verb cannot decide on it`
+      );
+    }
+  }
+  const copy = { ...state, ...(variables !== undefined && { variables }) } as T;
   transient.add(copy);
   return Object.freeze(copy);
 }

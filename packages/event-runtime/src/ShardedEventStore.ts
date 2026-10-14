@@ -4,6 +4,7 @@ import { bucketOf } from "./SubscriberRegistry";
 import { compareExecutionIds } from "./executionIdOrder";
 import { type DecoratorPlan, installOptional } from "./installOptional";
 import {
+  type AtRestEventReader,
   type EventStore,
   type ExecutionPage,
   OPTIONAL_EVENT_STORE_METHODS,
@@ -202,6 +203,7 @@ export class ShardedEventStore implements EventStore {
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
   readonly storeNow?: NonNullable<EventStore["storeNow"]>;
   readonly sealingCapability?: NonNullable<EventStore["sealingCapability"]>;
+  readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
@@ -252,6 +254,22 @@ export class ShardedEventStore implements EventStore {
       // (undefined). Fails closed (ShardSealingMismatchError) on any disagreement, so "can open" and
       // "does seal" cannot diverge. When no shard has it the method is omitted.
       sealingCapability: () => commonSealing(this.shards.map((s) => s.sealingCapability?.())),
+      // ADR 0130 D9: the at-rest view routes each call to the stream's shard, like `read` (installed
+      // only when EVERY shard offers it, via commonOptional).
+      readAtRest: () => {
+        const via = <T>(id: string, f: (r: AtRestEventReader) => Promise<T>): Promise<T> =>
+          this.routeIndex(id).then((i) => f((this.shards[i] as EventStore).readAtRest!()));
+        const hasRange = this.shards.every((s) => s.readAtRest!().readRange !== undefined);
+        const hasHead = this.shards.every((s) => s.readAtRest!().head !== undefined);
+        return {
+          read: (id) => via(id, (r) => r.read(id)),
+          readFrom: (id, from) => via(id, (r) => r.readFrom(id, from)),
+          ...(hasRange && {
+            readRange: (id: string, a: number, b: number) => via(id, (r) => r.readRange!(id, a, b)),
+          }),
+          ...(hasHead && { head: (id: string) => via(id, (r) => r.head!(id)) }),
+        };
+      },
       deleteExecution: async (id) => {
         await (await this.route(id)).deleteExecution!(id);
         this.placementCache.delete(id);
