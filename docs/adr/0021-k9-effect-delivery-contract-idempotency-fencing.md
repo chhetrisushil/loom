@@ -104,4 +104,4 @@ if it was sealed during that await the call never starts; a park decided during 
 not block it: the draining step counts as in flight, so the park barrier waits for it and it runs
 to completion, journaling its result before `EXECUTION_SUSPENDED`, like any in-flight step). Undeclared (A2) and `idempotent: true` tools keep the
 write-behind hot path unchanged. A refused write (stale fence, storage error) throws before
-dispatch: the effect never runs and the run fails as any storage failure. Replay never drains.
+dispatch: the effect never runs and the run fails as any storage failure. When a non-terminal seal (a sealed-inbox refusal, a park-barrier give-up, a divergence) lands during the drain, the effect never starts but `STEP_STARTED` is already durable, so the frame stays running and a later recovery parks it `EFFECT_INDOUBT` (conservative; the operator's `retry-fresh` resolves it). A CANCEL seal instead settles the call (the abort throws), so the live handle and lease are released promptly rather than held for `parkDrainMs`. Replay never drains.
