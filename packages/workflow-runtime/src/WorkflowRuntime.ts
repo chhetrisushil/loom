@@ -23,7 +23,9 @@ import {
   appendBatchOf,
   headOf,
   inboxStreamsOfChain,
+  QUARANTINE_STREAM_PREFIX,
   isAnsweringKind,
+  quarantineStreamId,
   readRangeOf,
 } from "@loom/event-runtime";
 // Import the pure sequence helper from the browser-safe subpath, not the barrel:
@@ -35,6 +37,7 @@ import {
   FAILED_WHILE_PARKED,
   FLOW_DIVERGED_GATE,
   INBOX_DEDUPE_CAP,
+  QUARANTINE_FOLD_CAP,
   ReplayVM,
   knownEventTypes,
   normalizeSnapshotState,
@@ -76,6 +79,7 @@ import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import {
   DEFAULT_INBOX_MAX_BACKLOG,
   DEFAULT_INBOX_MAX_PAYLOAD_BYTES,
+  DISCARD_WAIT_ID,
   INBOX_STREAM_PREFIX,
   INBOX_TOPIC_SEQ_BASE,
   INBOX_TTL_ACTOR,
@@ -95,10 +99,13 @@ import {
   dedupeKeyOf,
   deleteInbox,
   discardFacts,
+  inboxDeliverable,
   inboxLayoutActive,
   inboxStreamId,
   inboxTopicStreamId,
   maxCursor,
+  quarantineQueue,
+  quarantineQueues,
   readRegisteredTopics,
   registerInboxTopic,
   retireInboxTopic,
@@ -124,6 +131,19 @@ import {
   rehydratePrincipal,
   storedPrincipalOf,
 } from "./principal";
+import {
+  DEFAULT_QUARANTINE_MAX,
+  appendQuarantineCopy,
+  assertQuarantineMax,
+  findQuarantineCopy,
+  readInboxEnvelope,
+  readQuarantineCopy,
+  readsAsRedacted,
+  retainedSpan,
+  skippedDuplicateFact,
+  trimQuarantine,
+} from "./quarantine";
+import type { CopyRead } from "./quarantine";
 import {
   SealGuardedEventStore,
   SealGuardedSnapshotStore,
@@ -156,13 +176,16 @@ import {
   InboxDiscardRefusedError,
   InboxFullError,
   InboxMessageRefusedError,
+  InboxQuarantineRefusedError,
   InboxTopicStreamsRequiredError,
   InputValidationError,
   OutcomeContendedError,
   OutcomeRefusedError,
+  QuarantineHeldError,
   ResumeContendedError,
   ResumePayloadValidationError,
   ResumeRefusedError,
+  SealedPayloadUnreadableError,
   StartFencedOutError,
   StateMigrationError,
   TIMER_FIRED,
@@ -180,12 +203,19 @@ import type {
   ForkOptions,
   ForkResult,
   InboxExpiryResult,
+  InboxMessage,
   InboxSource,
   LineageGrant,
+  QuarantineInboxInput,
+  QuarantineInboxOptions,
+  QuarantineInboxResult,
   RecordOutcomeInput,
   RecordOutcomeOptions,
   RecordOutcomeResult,
   RegisteredFlow,
+  ReleaseInboxInput,
+  ReleaseInboxOptions,
+  ReleaseInboxResult,
   ResumeAuthenticator,
   ResumeEvent,
   RunOptions,
@@ -371,6 +401,19 @@ export interface WorkflowRuntimeDeps {
   meterCeilings?: Readonly<Record<string, number>>;
   /** ADR 0110 D1 — the largest JSON payload `send` accepts, in bytes. Default 65 536. */
   inboxMaxPayloadBytes?: number;
+  /**
+   * ADR 0130 residuals D9 - held (quarantined) messages per chain; bounds the RETAINED span of the
+   * chain's quarantine stream and refuses `quarantineInbox` past it. Default 256, ceiling 1024 (the
+   * fold's own cap, which a fold cannot read from a setting).
+   */
+  inboxQuarantineMax?: number;
+  /**
+   * ADR 0130 residuals D9 - a node that CAN open a held message lifts the hold itself, lazily, at the
+   * delivery points (notify scan, timer poll, recovery, a live receive on the held topic) in ONE atomic
+   * batch with the delivery. Default `true`. A node-local policy, never read by the fold: `false`
+   * leaves every hold for an operator's `releaseInbox`.
+   */
+  inboxAutoRelease?: boolean;
   /**
    * ADR 0110 amendment, D10a — expire UNCONSUMED inbox messages after this many milliseconds
    * (a number for every topic, or `{ default?, topics? }`). OFF by default: with no TTL configured
@@ -909,6 +952,8 @@ export class WorkflowRuntime {
   private readonly inboxMaxBacklog: number;
   private readonly inboxMaxPayloadBytes: number;
   private readonly inboxMaxRetained: number;
+  private readonly inboxQuarantineMax: number;
+  private readonly inboxAutoRelease: boolean;
   private readonly inboxTtl: InboxTtlConfig | undefined;
   private readonly inboxTopicStreamsFlag: boolean;
   private readonly inboxMaxTopics: number;
@@ -1037,6 +1082,9 @@ export class WorkflowRuntime {
     assertPositiveInt("inboxMaxPayloadBytes", deps.inboxMaxPayloadBytes);
     assertTtlConfig(deps.inboxMessageTtlMs);
     assertPositiveInt("inboxMaxTopics", deps.inboxMaxTopics);
+    assertQuarantineMax(deps.inboxQuarantineMax);
+    this.inboxQuarantineMax = deps.inboxQuarantineMax ?? DEFAULT_QUARANTINE_MAX;
+    this.inboxAutoRelease = deps.inboxAutoRelease !== false;
     this.inboxTopicStreamsFlag = deps.inboxTopicStreams === true && this.inboxEnabled;
     this.inboxMaxTopics = deps.inboxMaxTopics ?? DEFAULT_INBOX_MAX_TOPICS;
     this.inboxTtl = deps.inboxMessageTtlMs;
@@ -4244,6 +4292,610 @@ export class WorkflowRuntime {
     };
   }
 
+  // ── ADR 0130 residuals D9 — quarantineInbox / releaseInbox ─────────────────────────────────
+
+  /**
+   * The shared prelude of the two operator verbs (modelled on `discardInboxCore`): the inbox is on,
+   * a PRINCIPAL is present (refused before anything is read, so it is no existence oracle, and the
+   * system grant does not stand in), the caller is authorized as `op` against the id addressed AND
+   * the resolved chain head's recorded owner. Returns the head.
+   */
+  private async operatorInboxHead(
+    verb: "quarantineInbox" | "releaseInbox",
+    op: ExecutionOp,
+    executionId: string,
+    options: { principal?: PrincipalChain; system?: SystemGrant } | undefined
+  ): Promise<NonNullable<Awaited<ReturnType<WorkflowRuntime["sendTarget"]>>>> {
+    this.assertInboxEnabled(`runtime.${verb}`);
+    assertNotReserved(executionId);
+    if (options?.principal === undefined) {
+      throw new ExecutionDeniedError(
+        op,
+        executionId,
+        `${verb} is an operator action and needs an authenticated principal`
+      );
+    }
+    const addressed = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    if (addressed === undefined) {
+      await this.denyMissing(op, executionId, options.principal, options.system);
+      throw new Error(`No execution found for id: ${executionId}`);
+    }
+    const denial = this.authzDenial(
+      op,
+      executionId,
+      addressed.workflowId,
+      options.principal,
+      options.system,
+      await this.ownerForAuthz(executionId, options.principal, options.system, { first: addressed })
+    );
+    if (denial !== undefined) {
+      await this.denyOp(
+        op,
+        executionId,
+        addressed.workflowId,
+        options.principal,
+        denial.reason,
+        undefined
+      );
+    }
+    const head = await this.sendTarget(executionId, { first: addressed });
+    if (head === null) throw new Error(`No execution found for id: ${executionId}`);
+    if (head.id !== executionId && head.status !== "hop-limit") {
+      const headDenial = this.authzDenial(
+        op,
+        head.id,
+        head.workflowId,
+        options.principal,
+        options.system,
+        await this.ownerForAuthz(head.id, options.principal, options.system, { first: head.first })
+      );
+      if (headDenial !== undefined) {
+        await this.denyOp(
+          op,
+          head.id,
+          head.workflowId,
+          options.principal,
+          headDenial.reason,
+          undefined
+        );
+      }
+    }
+    if (head.status === "hop-limit") {
+      throw new ChainHopLimitError(
+        executionId,
+        this.maxChainHops,
+        (await head.hopLimitOf?.()) ?? head.id
+      );
+    }
+    return head;
+  }
+
+  /** The owner's folded state, or the typed `InboxClosedError` for a finished owner. */
+  private async openOwnerState(executionId: string, headId: string): Promise<ExecutionState> {
+    const state = await this.foldState(headId);
+    if (state === null) throw new Error(`No execution found for id: ${executionId}`);
+    if (state.status === "completed" || state.status === "failed" || state.status === "cancelled") {
+      throw new InboxClosedError(headId, state.status);
+    }
+    if (state.status === "continued") {
+      throw new InboxClosedError(headId, "continued with no successor yet");
+    }
+    return state;
+  }
+
+  /**
+   * ADR 0130 residuals D9 — an OPERATOR holds a topic whose head message is sealed and not openable
+   * on THIS node. The message is copied still-sealed into `__loom_quarantine__:<chainId>` FIRST (a
+   * deterministic envelope id, so a retry reuses an orphan copy), then `INBOX_QUARANTINED` is
+   * journaled under the park's conditional fence (an ignorable kind, so the park stays unanswered):
+   * the cursor moves past the head, the topic is HELD for every node (later messages wait behind it,
+   * in their original order), and the owner's OTHER topics deliver again. A capable node lifts the
+   * hold by itself (auto-release) at its next delivery point; `releaseInbox` does it on demand.
+   * Nothing is quarantined automatically, and a message this node CAN open is refused (`not-sealed`).
+   * Authorized as `"quarantine"`; a principal is required. See `InboxQuarantineRefusedError`.
+   */
+  async quarantineInbox(
+    executionId: string,
+    input: QuarantineInboxInput,
+    options?: QuarantineInboxOptions
+  ): Promise<QuarantineInboxResult> {
+    return this.sealedOp("quarantine", executionId, options?.principal, options?.system, () =>
+      this.quarantineInboxCore(executionId, input, options)
+    );
+  }
+
+  private async quarantineInboxCore(
+    executionId: string,
+    input: QuarantineInboxInput,
+    options?: QuarantineInboxOptions
+  ): Promise<QuarantineInboxResult> {
+    const head = await this.operatorInboxHead(
+      "quarantineInbox",
+      "quarantine",
+      executionId,
+      options
+    );
+    const refuse = (
+      reason: "not-parked" | "contended" | "invalid" | "not-sealed",
+      detail: string
+    ): never => {
+      throw new InboxQuarantineRefusedError(head.id, reason, detail, "quarantineInbox");
+    };
+    const topic = input.topic;
+    const problem = topicProblem(topic);
+    if (problem !== undefined) refuse("invalid", `${problem}.`);
+    if (
+      input.reason !== undefined &&
+      (typeof input.reason !== "string" || input.reason.length > 256)
+    ) {
+      refuse("invalid", "reason must be a string of at most 256 characters.");
+    }
+    const state = await this.openOwnerState(executionId, head.id);
+    if (state.status !== "suspended") {
+      refuse(
+        "not-parked",
+        `the owner is ${state.status}; a hold is journaled in its log, which only a parked owner accepts. Retry once it parks.`
+      );
+    }
+    const chainId = chainIdOf(state, head.id);
+    // The topic's HEAD message: the first non-duplicate past the cursor (duplicates ahead of it are
+    // journaled in the same batch, as the notify scan does).
+    const cursors = { ...cursorsOf(state.variables) };
+    const recent = new Set(
+      (state.variables._inbox as { dedupe?: string[] } | undefined)?.dedupe ?? []
+    );
+    const skipped: Array<{ eventType: string; payload: unknown }> = [];
+    let headMsg: InboxMessage | undefined;
+    for (;;) {
+      const page = await this.inboxSource(chainId, topic, cursorFor(cursors, topic), NOTIFY_PAGE);
+      for (const m of page) {
+        const key = dedupeKeyOf(m);
+        if (recent.has(key)) {
+          skipped.push(skippedDuplicateFact(topic, key, m.inboxSeq, m.sender, DISCARD_WAIT_ID));
+          cursors[topic] = m.inboxSeq;
+          continue;
+        }
+        headMsg = m;
+        break;
+      }
+      if (headMsg !== undefined || page.length < NOTIFY_PAGE) break;
+      if (skipped.length >= NOTIFY_BATCH_CAP) {
+        refuse(
+          "invalid",
+          "too many duplicates ahead of the topic's head to journal in one batch; retry."
+        );
+      }
+    }
+    if (headMsg === undefined) refuse("invalid", `topic "${topic}" has no message to hold.`);
+    const msg = headMsg as InboxMessage;
+    // A REDACTED read is not evidence that the message is plain: this node holds no key for it. That
+    // is key-unavailable, never `not-sealed`, and there is nothing byte-exact to copy.
+    if (readsAsRedacted(msg.payload)) {
+      throw new SealedPayloadUnreadableError(head.id, msg.messageId, topic);
+    }
+    if (sealedEnvelopeIn(msg.payload) === "clean") {
+      refuse(
+        "not-sealed",
+        `message "${msg.messageId}" on topic "${topic}" is not sealed, or this node can open it: a quarantine is only for a message this node cannot open (use discardInbox to drop a message).`
+      );
+    }
+    const key = dedupeKeyOf(msg);
+    const original = await readInboxEnvelope(this.eventStore, chainId, topic, msg.inboxSeq);
+    if (original === undefined)
+      refuse("invalid", "the message left the inbox while it was being held.");
+    const live = Object.values(quarantineQueues(state.variables)).flat();
+    const heldAts = live.map((x) => x.heldAt);
+    await trimQuarantine(this.eventStore, chainId, heldAts).catch((e: unknown) =>
+      this.onStorageError?.(head.id, e)
+    );
+    if ((await findQuarantineCopy(this.eventStore, chainId, key)) === undefined) {
+      const span = retainedSpan(
+        await headOf(this.eventStore, quarantineStreamId(chainId)),
+        heldAts
+      );
+      if (span >= this.inboxQuarantineMax || live.length + 1 > QUARANTINE_FOLD_CAP) {
+        refuse(
+          "invalid",
+          `the chain's quarantine holds ${span} retained copies (inbox quarantineMax ${this.inboxQuarantineMax}); release or discard a held message first.`
+        );
+      }
+    }
+    const parkSeq = await this.locatePark(head.id, state, { events: undefined, complete: false });
+    if (parkSeq === undefined)
+      refuse("not-parked", "the owner has no unanswered park to journal under.");
+    // Copy FIRST (verbatim, still sealed), THEN the fact: a crash between leaves an orphan copy a
+    // retry reuses, never a cleared head without a retained payload.
+    const heldAt = await appendQuarantineCopy(
+      this.eventStore,
+      chainId,
+      original as EventEnvelope,
+      key
+    );
+    const operator = ownerOfChain(options?.principal) ?? {};
+    const facts = [
+      ...skipped,
+      {
+        eventType: "INBOX_QUARANTINED",
+        payload: {
+          topic,
+          inboxSeq: msg.inboxSeq,
+          key,
+          messageId: msg.messageId,
+          heldAt,
+          operator,
+          ...(input.reason !== undefined && { reason: input.reason }),
+        },
+      },
+    ];
+    const outcome = await this.advanceInbox(
+      head.id,
+      state,
+      parkSeq as number,
+      undefined,
+      facts,
+      true
+    );
+    if (outcome === "gone") refuse("not-parked", "the owner resumed while the hold was in flight.");
+    if (outcome === "contended") refuse("contended", "the owner's fence kept moving.");
+    if (outcome === "stale") {
+      refuse(
+        "invalid",
+        "the topic moved while the hold was in flight (a delivery, a discard or another hold won); the copy stays for a retry."
+      );
+    }
+    await this.afterHoldChange(head.id, chainId);
+    return {
+      executionId: head.id,
+      topic,
+      messageId: msg.messageId,
+      inboxSeq: msg.inboxSeq,
+      heldAt,
+    };
+  }
+
+  /**
+   * After a hold or release landed: leave the durable wake row (a capable node's poll reaches a
+   * parked owner nobody else would wake), forget the cached backlog verdicts, trim what the cursor
+   * freed, and run the notify path so THIS node delivers whatever the change made deliverable (the
+   * other topics after a hold, the topic's own backlog after a discard). A sealed refusal from that
+   * pass is the expected "held, awaiting a capable node": not an error of the verb.
+   */
+  private async afterHoldChange(executionId: string, chainId: string): Promise<void> {
+    if (this.timerStore !== undefined) {
+      await this.timerStore
+        .schedule({ executionId, wakeAt: INBOX_WAKE_AT })
+        .catch((e: unknown) => this.onStorageError?.(executionId, e));
+    }
+    this.inboxFull.delete(chainId);
+    this.inboxCounted.delete(chainId);
+    this.inboxTrimmed.delete(chainId);
+    const after = await this.foldState(executionId);
+    if (after !== null) {
+      await this.maybeTrimInbox(chainId, after);
+      await trimQuarantine(
+        this.eventStore,
+        chainId,
+        Object.values(quarantineQueues(after.variables))
+          .flat()
+          .map((x) => x.heldAt)
+      ).catch((e: unknown) => this.onStorageError?.(executionId, e));
+    }
+    try {
+      await this.notifyInbox(executionId);
+    } catch (err) {
+      if (!isSealedUnreadable(err)) this.onStorageError?.(executionId, err);
+    }
+  }
+
+  /** The release/discard fact for `key` journaled after `fromSeq`, if any (the idempotence check). */
+  private async findReleaseFact(
+    executionId: string,
+    fromSeq: number,
+    match: (p: { topic?: unknown; key?: unknown; messageId?: unknown }) => boolean
+  ): Promise<{ disposition: "deliver" | "discard" } | undefined> {
+    for (const e of await this.eventStore.readFrom(executionId, fromSeq)) {
+      if (e.eventType !== "INBOX_RELEASED") continue;
+      const p = e.payload as {
+        disposition?: unknown;
+        topic?: unknown;
+        key?: unknown;
+        messageId?: unknown;
+      };
+      if (match(p) && (p.disposition === "deliver" || p.disposition === "discard")) {
+        return { disposition: p.disposition };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * ADR 0130 residuals D9 — an OPERATOR releases the topic's OLDEST held message. `"deliver"` (the
+   * default, authorized as `"release"`) journals `INBOX_RELEASED{operator}` and runs the notify path,
+   * which delivers the message FIRST, from the quarantine copy, at its ORIGINAL `inboxSeq`, ahead of
+   * everything that arrived behind it: this node must be able to open the copy (a node that cannot,
+   * and a copy that reads as REDACTED, get a typed `SealedPayloadUnreadableError` and nothing is
+   * appended). `"discard"` (authorized as `"discard"`: it destroys the message) drops the entry and
+   * unblocks the topic and needs no ability to open it, the only exit when no node can. Anything
+   * but the topic's oldest held entry is `invalid`; a release that already happened is an idempotent
+   * no-op (`changed: false`). A principal is required.
+   */
+  async releaseInbox(
+    executionId: string,
+    input: ReleaseInboxInput,
+    options?: ReleaseInboxOptions
+  ): Promise<ReleaseInboxResult> {
+    const op: ExecutionOp = input?.disposition === "discard" ? "discard" : "release";
+    return this.sealedOp(op, executionId, options?.principal, options?.system, () =>
+      this.releaseInboxCore(op, executionId, input, options)
+    );
+  }
+
+  private async releaseInboxCore(
+    op: ExecutionOp,
+    executionId: string,
+    input: ReleaseInboxInput,
+    options?: ReleaseInboxOptions
+  ): Promise<ReleaseInboxResult> {
+    const head = await this.operatorInboxHead("releaseInbox", op, executionId, options);
+    const refuse = (reason: "not-parked" | "contended" | "invalid", detail: string): never => {
+      throw new InboxQuarantineRefusedError(head.id, reason, detail, "releaseInbox");
+    };
+    const disposition = input.disposition ?? "deliver";
+    if (disposition !== "deliver" && disposition !== "discard") {
+      refuse("invalid", 'disposition must be "deliver" or "discard".');
+    }
+    const topic = input.topic;
+    const problem = topicProblem(topic);
+    if (problem !== undefined) refuse("invalid", `${problem}.`);
+    const wanted = input.messageId;
+    if (
+      typeof wanted !== "string" ||
+      wanted.length === 0 ||
+      wanted.length > MAX_MESSAGE_ID_LENGTH
+    ) {
+      refuse("invalid", `messageId must be a string of 1 to ${MAX_MESSAGE_ID_LENGTH} characters.`);
+    }
+    if (
+      input.reason !== undefined &&
+      (typeof input.reason !== "string" || input.reason.length > 256)
+    ) {
+      refuse("invalid", "reason must be a string of at most 256 characters.");
+    }
+    const result = (changed: boolean): ReleaseInboxResult => ({
+      executionId: head.id,
+      topic,
+      messageId: wanted,
+      disposition,
+      changed,
+    });
+    const sameMessage = (p: { topic?: unknown; key?: unknown; messageId?: unknown }): boolean =>
+      p.topic === topic && (p.messageId === wanted || p.key === wanted);
+    // An earlier release of this message (the idempotent repeat), judged from the owner's log.
+    const earlier = async (): Promise<ReleaseInboxResult | undefined> => {
+      const done = await this.findReleaseFact(head.id, 0, sameMessage);
+      if (done === undefined) return undefined;
+      if (done.disposition === disposition) return result(false);
+      return refuse(
+        "invalid",
+        `message "${wanted}" was already ${done.disposition === "discard" ? "discarded" : "released for delivery"}.`
+      );
+    };
+    const terminal = (s: ExecutionState): boolean =>
+      s.status === "completed" ||
+      s.status === "failed" ||
+      s.status === "cancelled" ||
+      s.status === "continued";
+    const state0 = await this.foldState(head.id);
+    if (state0 === null) throw new Error(`No execution found for id: ${executionId}`);
+    if (terminal(state0)) {
+      const repeat = await earlier();
+      if (repeat !== undefined) return repeat;
+    }
+    const state = await this.openOwnerState(executionId, head.id);
+    const chainId = chainIdOf(state, head.id);
+    const queue = quarantineQueue(state.variables, topic);
+    if (queue === undefined) {
+      const repeat = await earlier();
+      if (repeat !== undefined) return repeat;
+      return refuse("invalid", `topic "${topic}" has no held message.`);
+    }
+    const first = queue[0] as (typeof queue)[number];
+    const copy = await readQuarantineCopy(this.eventStore, chainId, first);
+    const copyId = copy.ok ? copy.message.messageId : copy.message?.messageId;
+    if (wanted !== copyId && wanted !== first.key) {
+      // Not the oldest. Is it a younger held entry (releasing it first would deliver out of order)?
+      for (const younger of queue.slice(1)) {
+        const c = await readQuarantineCopy(this.eventStore, chainId, younger);
+        const id = c.ok ? c.message.messageId : c.message?.messageId;
+        if (wanted === id || wanted === younger.key) {
+          return refuse(
+            "invalid",
+            `message "${wanted}" is not the oldest held message of topic "${topic}": releasing it first would deliver it out of order.`
+          );
+        }
+      }
+      const repeat = await earlier();
+      if (repeat !== undefined) return repeat;
+      return refuse("invalid", `message "${wanted}" is not held on topic "${topic}".`);
+    }
+    const messageId = copyId ?? wanted;
+    if (first.state === "released") {
+      if (disposition === "discard") {
+        return refuse(
+          "invalid",
+          `message "${wanted}" is already released and awaits its delivery; it can no longer be discarded.`
+        );
+      }
+      // The release is durable but its delivery has not landed (a crash window): heal it now.
+      await this.afterHoldChange(head.id, chainId);
+      return result(false);
+    }
+    if (disposition === "deliver" && !copy.ok) throw this.copyRefusal(head.id, topic, first, copy);
+    if (state.status !== "suspended") {
+      refuse(
+        "not-parked",
+        `the owner is ${state.status}; a release is journaled in its log, which only a parked owner accepts. Retry once it parks.`
+      );
+    }
+    const parkSeq = await this.locatePark(head.id, state, { events: undefined, complete: false });
+    if (parkSeq === undefined)
+      refuse("not-parked", "the owner has no unanswered park to journal under.");
+    const operator = ownerOfChain(options?.principal) ?? {};
+    const facts = [
+      {
+        eventType: "INBOX_RELEASED",
+        payload: {
+          topic,
+          key: first.key,
+          messageId,
+          disposition,
+          operator,
+          ...(input.reason !== undefined && { reason: input.reason }),
+        },
+      },
+    ];
+    const outcome = await this.advanceInbox(
+      head.id,
+      state,
+      parkSeq as number,
+      undefined,
+      facts,
+      true
+    );
+    if (outcome === "contended") refuse("contended", "the owner's fence kept moving.");
+    if (outcome === "gone" || outcome === "stale") {
+      // Someone else moved the topic first: an auto-release, another release, a discard. Judge by
+      // what landed since this call's fold: the same disposition is an idempotent no-op.
+      const landed = await this.findReleaseFact(
+        head.id,
+        state.sequence + 1,
+        (p) => p.key === first.key
+      );
+      if (landed === undefined) {
+        if (outcome === "gone")
+          refuse("not-parked", "the owner resumed while the release was in flight.");
+        return refuse("invalid", "the topic moved while the release was in flight.");
+      }
+      if (landed.disposition === disposition) return result(false);
+      return refuse(
+        "invalid",
+        `message "${wanted}" was ${landed.disposition === "discard" ? "discarded" : "released"} concurrently.`
+      );
+    }
+    await this.afterHoldChange(head.id, chainId);
+    return result(true);
+  }
+
+  /** Copy the quarantine copies a fork's folded holds refer to into the fork's own chain (see `forkCore`). */
+  private async copyQuarantineForFork(
+    parentExecutionId: string,
+    childChain: string,
+    through: number
+  ): Promise<void> {
+    const first = (await readRangeOf(this.eventStore, parentExecutionId, 0, 0))[0];
+    const parentChain =
+      first === undefined ? parentExecutionId : chainIdOfFirst(first, parentExecutionId);
+    if (parentChain === childChain) return;
+    if (this.eventStore.copyPrefix === undefined) {
+      throw new InboxQuarantineRefusedError(
+        parentExecutionId,
+        "invalid",
+        "this execution HOLDS quarantined messages and the event store cannot copy the quarantine stream (no copyPrefix); a fork would carry holds whose copies it does not have.",
+        "fork"
+      );
+    }
+    await this.eventStore.copyPrefix(
+      quarantineStreamId(parentChain),
+      quarantineStreamId(childChain),
+      through,
+      { forkedFrom: quarantineStreamId(parentChain) }
+    );
+  }
+
+  /** The refusal for a held copy this node cannot deliver (sealed, REDACTED, missing or mismatched). */
+  private copyRefusal(
+    executionId: string,
+    topic: string,
+    entry: { key: string },
+    copy: Extract<CopyRead, { ok: false }>
+  ): SealedPayloadUnreadableError {
+    return new SealedPayloadUnreadableError(
+      executionId,
+      copy.message?.messageId ?? entry.key,
+      topic,
+      copy.why === "missing" || copy.why === "mismatch"
+    );
+  }
+
+  /**
+   * ADR 0130 residuals D9, "Delivery rule" - what a waited topic with a quarantine queue offers THIS
+   * node, from the folded state plus the copy. `deliver`: the message to consume FIRST (a released
+   * head, or a held head this node auto-releases in the same batch: `release` is then the fact to
+   * put in front of the consumption). `skip`: a held head this node will not lift (it cannot open
+   * the copy, or auto-release is off): the topic is passed over, no read, no refusal. `open`: no
+   * hold. A RELEASED head this node cannot deliver is the execution-wide refusal of D4.
+   */
+  private async heldDelivery(
+    executionId: string,
+    chainId: string,
+    state: ExecutionState,
+    topic: string
+  ): Promise<
+    | { kind: "open" }
+    | { kind: "skip"; err: QuarantineHeldError }
+    | {
+        kind: "deliver";
+        message: InboxMessage;
+        key: string;
+        release?: { eventType: string; payload: unknown };
+      }
+  > {
+    const first = quarantineQueue(state.variables, topic)?.[0];
+    if (first === undefined) return { kind: "open" };
+    const copy = await readQuarantineCopy(this.eventStore, chainId, first);
+    if (first.state === "released") {
+      if (!copy.ok) throw this.copyRefusal(executionId, topic, first, copy);
+      return { kind: "deliver", message: copy.message, key: first.key };
+    }
+    const rule = inboxDeliverable(state.variables, topic, copy.ok && this.inboxAutoRelease);
+    if (rule === "blocked" || !copy.ok) {
+      return {
+        kind: "skip",
+        err: new QuarantineHeldError(
+          executionId,
+          copy.ok ? copy.message.messageId : (copy.message?.messageId ?? first.key),
+          topic,
+          copy.ok ? "operator" : "capable-node"
+        ),
+      };
+    }
+    return {
+      kind: "deliver",
+      message: copy.message,
+      key: first.key,
+      release: {
+        eventType: "INBOX_RELEASED",
+        payload: {
+          topic,
+          key: first.key,
+          messageId: copy.message.messageId,
+          disposition: "deliver",
+          auto: true,
+        },
+      },
+    };
+  }
+
+  /** ADR 0130 residuals D9 - whether THIS node lifts a hold by itself (`kernel.inbox.autoRelease`). */
+  get inboxAutoReleaseOn(): boolean {
+    return this.inboxEnabled && this.inboxAutoRelease;
+  }
+
+  /** ADR 0130 residuals D9 - held messages per chain this node allows (`kernel.inbox.quarantineMax`). */
+  get inboxQuarantineLimit(): number {
+    return this.inboxQuarantineMax;
+  }
+
   /** Whether a message TTL is configured on a runtime with the inbox on (D10a; the `TimerService` then runs expiry passes). */
   get inboxTtlOn(): boolean {
     return this.inboxEnabled && this.inboxTtl !== undefined;
@@ -4894,8 +5546,12 @@ export class WorkflowRuntime {
     for (const [topic, cursor] of Object.entries(cursors)) {
       if (typeof cursor !== "number" || cursor < INBOX_TOPIC_SEQ_BASE) continue;
       const stream = inboxTopicStreamId(chainId, topic);
-      // A drained topic stops counting against the topic cap (once per cursor value).
-      if (this.inboxPruned.get(stream) !== cursor) {
+      // A drained topic stops counting against the topic cap (once per cursor value). A HELD topic
+      // is not drained (ADR 0130 residuals D9): its registry entry stays live while it holds entries.
+      if (
+        this.inboxPruned.get(stream) !== cursor &&
+        quarantineQueue(state.variables, topic) === undefined
+      ) {
         try {
           await this.pruneDrainedTopic(chainId, topic, cursor);
           rememberBounded(this.inboxPruned, stream, cursor);
@@ -4976,7 +5632,14 @@ export class WorkflowRuntime {
    * Returns whether it deleted the stream. Never throws.
    */
   async reclaimInbox(streamId: string): Promise<boolean> {
-    if (!this.inboxEnabled || !streamId.startsWith(INBOX_STREAM_PREFIX)) return false;
+    if (
+      !this.inboxEnabled ||
+      // ADR 0130 residuals D9: a quarantine stream is one of the chain's reserved streams too
+      // (an orphan copy of a terminal owner is reclaimed with the rest of the chain).
+      !(streamId.startsWith(INBOX_STREAM_PREFIX) || streamId.startsWith(QUARANTINE_STREAM_PREFIX))
+    ) {
+      return false;
+    }
     // Any of the chain's streams (legacy, a topic's, the registry) names the chain (ADR 0110 D10b).
     const chainId = inboxChainOf(streamId);
     if (chainId === undefined) return false;
@@ -5207,9 +5870,37 @@ export class WorkflowRuntime {
       // Exactly the fold's window: whatever it still holds is a duplicate (ADR 0110 D6).
       const recent = new Set(dedupe);
       let firstWait: SuspendWait | undefined;
+      // ADR 0130 residuals D9: a held topic this node will not lift is passed over (other topics are
+      // still scanned); when nothing else is deliverable it is reported as a sealed refusal.
+      let heldBlock: QuarantineHeldError | undefined;
       scan: for (const w of waits) {
         if (w.kind !== "inbox" || w.topic === undefined || answered(w)) continue;
         firstWait ??= w;
+        if (quarantineQueue(state.variables, w.topic) !== undefined) {
+          const d = await this.heldDelivery(executionId, chainId, state, w.topic);
+          if (d.kind === "skip") {
+            heldBlock ??= d.err;
+            continue;
+          }
+          if (d.kind === "deliver") {
+            // The held message is delivered FIRST, from its copy, at its original `inboxSeq`; an
+            // auto-release is the SAME atomic batch (release fact, consumption, then the park's answer).
+            if (d.release !== undefined) pre.push(d.release);
+            pre.push({
+              eventType: "MESSAGE_CONSUMED",
+              payload: {
+                waitId: w.waitId,
+                topic: w.topic,
+                messageId: d.key,
+                inboxSeq: d.message.inboxSeq,
+                sender: d.message.sender,
+                payload: d.message.payload,
+              },
+            });
+            target = w;
+            break;
+          }
+        }
         for (;;) {
           const msgs = await this.inboxSource(
             chainId,
@@ -5262,6 +5953,7 @@ export class WorkflowRuntime {
           const r = await this.advanceInbox(executionId, state, parkSeq, firstWait, pre);
           if (r === "contended") return contended();
         }
+        if (heldBlock !== undefined) throw heldBlock;
         return none;
       }
     }
@@ -5324,8 +6016,14 @@ export class WorkflowRuntime {
     parkSeq: number,
     /** The wait whose resume this stands in for; `undefined` for an operator discard (no wait). */
     wait: SuspendWait | undefined,
-    pre: ReadonlyArray<{ eventType: string; payload: unknown }>
-  ): Promise<"ok" | "contended" | "gone"> {
+    pre: ReadonlyArray<{ eventType: string; payload: unknown }>,
+    /**
+     * ADR 0130 residuals D9 - judge the batch against the state it will land on (`staleInboxBatch`)
+     * and answer `"stale"` instead of writing it. The quarantine/release verbs pass `true`; the
+     * discard and duplicate-advance callers leave it off and are byte-identical to before.
+     */
+    guard = false
+  ): Promise<"ok" | "contended" | "gone" | "stale"> {
     let fenced = await this.parkWasFenced(executionId, parkSeq);
     for (let attempt = 1; attempt <= NOTIFY_ATTEMPTS; attempt++) {
       try {
@@ -5352,6 +6050,7 @@ export class WorkflowRuntime {
                 return tail.length === 0 ? new ReplayVM([], state) : new ReplayVM(tail, state);
               })(),
             };
+        if (guard && staleInboxBatch(got.vm.getState(), pre)) return "stale";
         const journal = new ExecutionJournal(
           this.eventStore,
           { executionId, workflowId: state.workflowId },
@@ -6027,6 +6726,18 @@ export class WorkflowRuntime {
     // it can never land at a sequence the cursors already passed (it would be skipped forever and
     // trimmed). Replay of the copied prefix is untouched: the cursors stay what the fold computed.
     if (this.inboxEnabled) {
+      // ADR 0130 residuals D9 - the fork's folded `_quarantined` names copies in the PARENT chain's
+      // quarantine stream; the fork is a fresh chain, so the referenced prefix is copied (same
+      // sequence numbers, so `heldAt` stays valid) or the fork is refused BEFORE anything is
+      // written, never left with dangling holds.
+      const held = Object.values(quarantineQueues(forkState.variables)).flat();
+      if (held.length > 0) {
+        await this.copyQuarantineForFork(
+          parentExecutionId,
+          chainIdOf(forkState, childId),
+          Math.max(...held.map((h) => h.heldAt))
+        );
+      }
       // (ADR 0110 D10b: the legacy stream at the highest legacy cursor, each topic stream at its own.)
       const inherited = cursorsOf(forkState.variables);
       if (Object.keys(inherited).length > 0) {
@@ -7032,6 +7743,12 @@ export class WorkflowRuntime {
           enabled: this.inboxEnabled,
           chainId: chainIdOf(vm.peekState(), executionId),
           read: this.inboxSource,
+          // ADR 0130 residuals D9: the live run applies the SAME delivery rule as the notify scan.
+          quarantine: {
+            readCopy: (entry) =>
+              readQuarantineCopy(this.eventStore, chainIdOf(vm.peekState(), executionId), entry),
+            autoRelease: this.inboxAutoRelease,
+          },
         },
         continuation: {
           enabled: this.continueAsNewEnabled,

@@ -72,6 +72,9 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
       "packages/workflow-runtime/src/blankStream.ts",
       "packages/workflow-runtime/src/inbox.ts",
       "packages/workflow-runtime/src/placement.ts",
+      // ADR 0130 residuals D9: reads/writes the chain's quarantine + inbox streams (reserved control
+      // streams, exempt from the stream guard) through the runtime's store; never an owner's log.
+      "packages/workflow-runtime/src/quarantine.ts",
       "packages/workflow-runtime/src/recoverAbandoned.ts",
       "packages/workflow-runtime/src/sealGuard.ts",
     ]);

@@ -15,10 +15,8 @@ const RESERVED_NO_WRITER: Record<string, string> = {
   // Pre-existing exceptions (design §3, §7 question 12): reserved long before Wave 2.
   PARALLEL_STARTED: "none (reserved with a handler since before Wave 2)",
   STEP_RETRYING: "none (reserved with a handler since before Wave 2)",
-  // ADR 0130 residuals S1 (EVENT_SCHEMA 1.25.0): the shapes are frozen and the handlers present; the
-  // writers (quarantineInbox / releaseInbox / auto-release) land in slice S5.
-  INBOX_QUARANTINED: "ADR 0130 residuals S5 (quarantineInbox)",
-  INBOX_RELEASED: "ADR 0130 residuals S5 (releaseInbox, auto-release)",
+  // (ADR 0130 residuals S1 reserved INBOX_QUARANTINED / INBOX_RELEASED; slice S5 added their writers -
+  // quarantineInbox / releaseInbox / auto-release - and their rows were deleted, as this file requires.)
 };
 
 const ROOT = join(__dirname, "..", "..", "..");

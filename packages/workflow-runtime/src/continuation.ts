@@ -121,6 +121,8 @@ export function chainDeadlineOf(state: ExecutionState, executionId: string): num
 export interface CarriedState {
   resources?: unknown;
   inbox?: { cursors: Record<string, number>; dedupe: string[] };
+  /** ADR 0130 residuals D9: the held (quarantined) entries per topic - a hold survives a rotation. */
+  quarantined?: Record<string, unknown>;
   chainDeadline?: number;
 }
 
@@ -134,6 +136,9 @@ export function carriedOf(state: ExecutionState, chainDeadline: number | undefin
         cursors: (inbox.cursors ?? {}) as Record<string, number>,
         dedupe: Array.isArray(inbox.dedupe) ? (inbox.dedupe as string[]) : [],
       },
+    }),
+    ...(state.variables._quarantined !== undefined && {
+      quarantined: state.variables._quarantined as Record<string, unknown>,
     }),
     ...(chainDeadline !== undefined && { chainDeadline }),
   };

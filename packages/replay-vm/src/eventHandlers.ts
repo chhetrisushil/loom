@@ -223,7 +223,7 @@ export const KERNEL_STAMPED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "EXECUTION_CONTINUED",
   "MESSAGE_CONSUMED",
   "PARALLEL_COMPLETED",
-  // 1.25.0 (ADR 0130 residuals D9): reserved; no writer yet.
+  // 1.25.0 (ADR 0130 residuals D9): written by quarantineInbox / releaseInbox / auto-release (slice S5).
   "INBOX_QUARANTINED",
   "INBOX_RELEASED",
 ]);
@@ -851,7 +851,7 @@ const handlers: Record<string, Handler> = {
     return { ...state, variables, updatedAt: event.timestamp };
   },
 
-  // 1.25.0 (ADR 0130 residuals D9; RESERVED, no writer yet) — the topic's head message is HELD: the
+  // 1.25.0 (ADR 0130 residuals D9; written by `quarantineInbox`) — the topic's head message is HELD: the
   // cursor advances past the original entry (so it no longer pins the stream), the entry joins the
   // topic's FIFO queue `_quarantined[topic]`, and the dedupe window is NOT touched (the release
   // delivery must not read as a duplicate). Kernel-stamped envelopes only; a malformed fact, or one
@@ -905,7 +905,7 @@ const handlers: Record<string, Handler> = {
     };
   },
 
-  // 1.25.0 (ADR 0130 residuals D9; RESERVED, no writer yet) — the topic's OLDEST held entry is
+  // 1.25.0 (ADR 0130 residuals D9; written by `releaseInbox` and the capable-node auto-release) — the topic's OLDEST held entry is
   // released or dropped. EXACTLY ONE of `operator` (a manual release) / `auto` (an automatic one,
   // only with `deliver`) is present; a fact with both or neither is ignored, as is one that does not
   // name the topic's first entry while it is `held`. "deliver" marks it `released`; "discard" removes

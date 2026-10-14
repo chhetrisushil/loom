@@ -1,5 +1,9 @@
 import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore, inboxTopicStreamId } from "@loom/event-runtime";
+import {
+  InMemoryAsyncEventStore,
+  inboxTopicStreamId,
+  quarantineStreamId,
+} from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -338,7 +342,12 @@ describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)",
     });
     expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
     expect(await store.read(streamOf("a1"))).toEqual([]);
-    expect(order).toEqual(["shred", `delete ${streamOf("a1")}`]);
+    // ADR 0130 residuals D9: the chain's quarantine stream is named (and deleted) with the others.
+    expect(order).toEqual([
+      "shred",
+      `delete ${streamOf("a1")}`,
+      `delete ${quarantineStreamId("a1")}`,
+    ]);
   });
 
   it("ADR 0110 D10b: EVERY stream of the chain is purged — topic streams, the legacy one, then the registry LAST", async () => {
@@ -363,6 +372,9 @@ describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)",
       await store.append({ ...inboxMsg("a1", 2 ** 40), id: `${stream}-x`, executionId: stream });
     }
     await store.append(inboxMsg("a1"));
+    // ADR 0130 residuals D9: a held (quarantined) copy of the chain is an in-flight payload too.
+    const held = quarantineStreamId("a1");
+    await store.append({ ...inboxMsg("a1"), id: "quarantine:k", executionId: held });
     const rawDelete = store.deleteExecution!.bind(store);
     store.deleteExecution = async (id: string) => {
       order.push(`delete ${id}`);
@@ -374,7 +386,7 @@ describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)",
       shred,
     });
     expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
-    for (const stream of [hot, cold, streamOf("a1"), registry]) {
+    for (const stream of [hot, cold, streamOf("a1"), held, registry]) {
       expect(await store.read(stream)).toEqual([]);
     }
     // The topic streams first, the registry that names them last (a crash midway stays findable).
@@ -383,6 +395,7 @@ describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)",
       `delete ${hot}`,
       `delete ${cold}`,
       `delete ${streamOf("a1")}`,
+      `delete ${held}`,
       `delete ${registry}`,
     ]);
   });

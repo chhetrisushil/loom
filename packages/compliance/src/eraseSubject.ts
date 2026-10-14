@@ -271,11 +271,13 @@ export class EraseCoordinator {
   private async purgeInboxStreams(chains: readonly InboxStreams[]): Promise<void> {
     const remove = this.options.eventStore.deleteExecution?.bind(this.options.eventStore);
     if (remove === undefined) return;
-    for (const { legacy, registry, topics } of chains) {
+    for (const { legacy, registry, topics, quarantine } of chains) {
       // ADR 0110 D10b — EVERY stream of the chain: its per-topic streams, the legacy one and, last,
       // the registry that names the topic streams (a crash midway leaves them findable).
       for (const stream of topics) await remove(stream);
       await remove(legacy);
+      // ADR 0130 residuals D9: the chain's quarantine copies are in-flight payloads too.
+      await remove(quarantine);
       if (registry !== undefined) await remove(registry);
     }
   }
