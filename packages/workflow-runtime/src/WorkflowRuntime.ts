@@ -1316,17 +1316,29 @@ export class WorkflowRuntime {
     executionId: string,
     principal: PrincipalChain | undefined,
     system: SystemGrant | undefined,
-    body: () => Promise<T>
+    body: () => Promise<T>,
+    /**
+     * Translate and report, but fire no `onExecutionDenied`: a kernel-internal caller (no principal
+     * to deny) and a plain `query` (`loadState` never audits its ordinary denial either), so the
+     * sealed refusal is observably the same as the ordinary one.
+     */
+    internal = false
   ): Promise<T> {
     try {
       return await body();
     } catch (err) {
       if (!(err instanceof SealedStreamUnreadableError) || this.sealedRefused.has(err)) throw err;
-      const refusal = withSealedDetail(op, executionId, err);
+      // The denial an ORDINARY existing id of unknown owner gets for this very call: the policy's own
+      // verdict with no owner (an op-level rule such as `discard: "deny"` answers before ownership
+      // is ever looked at, so a fixed unknown-owner reason would tell a sealed stream apart). The
+      // workflow id is unreadable here, so an `allowWorkflows` list is the stated residual.
+      const reason =
+        this.authzDenial(op, executionId, "", principal, system)?.reason ?? UNKNOWN_OWNER_REASON;
+      const refusal = withSealedDetail(op, executionId, err, reason);
       this.sealedRefused.add(refusal);
       this.reportSealed(executionId, refusal);
       // A kernel-internal caller (the system grant) is not a caller being denied.
-      if (system === undefined || system !== this.systemGrantToken) {
+      if (!internal && (system === undefined || system !== this.systemGrantToken)) {
         this.onExecutionDenied?.(
           {
             op,
@@ -1334,7 +1346,7 @@ export class WorkflowRuntime {
             workflowId: "",
             ...(principal !== undefined && { principal }),
           },
-          UNKNOWN_OWNER_REASON
+          reason
         );
       }
       throw refusal;
@@ -2210,9 +2222,18 @@ export class WorkflowRuntime {
     executionId: string,
     options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<number | undefined> {
-    const state = await this.loadState(executionId, options);
-    if (state === null || state.status !== "suspended") return undefined;
-    return this.locatePark(executionId, state, { events: undefined, complete: false });
+    return this.sealedOp(
+      "query",
+      executionId,
+      options?.principal,
+      options?.system,
+      async () => {
+        const state = await this.loadState(executionId, options);
+        if (state === null || state.status !== "suspended") return undefined;
+        return this.locatePark(executionId, state, { events: undefined, complete: false });
+      },
+      true
+    );
   }
 
   // K12.2 — verify an approval-gating resume event. Returns an APPROVAL_GRANTED
@@ -2388,6 +2409,20 @@ export class WorkflowRuntime {
    * first later `acquireFence` (a fencing store refuses a MISSING token once one exists).
    */
   async acquireFence(
+    executionId: string,
+    options?: { principal?: PrincipalChain; system?: SystemGrant; gateAs?: "resume" }
+  ): Promise<number | undefined> {
+    // Gated as the op it enables: a stream this node cannot open is refused denial-shaped as THAT op.
+    return this.sealedOp(
+      options?.gateAs ?? "cancel",
+      executionId,
+      options?.principal,
+      options?.system,
+      () => this.acquireFenceCore(executionId, options)
+    );
+  }
+
+  private async acquireFenceCore(
     executionId: string,
     options?: { principal?: PrincipalChain; system?: SystemGrant; gateAs?: "resume" }
   ): Promise<number | undefined> {
@@ -2694,6 +2729,20 @@ export class WorkflowRuntime {
     resumeEvent?: ResumeEvent,
     options?: RunOptions
   ): Promise<ExecutionHandle> {
+    return this.sealedOp(
+      "resume",
+      preloadedState.executionId,
+      options?.principal,
+      options?.system,
+      () => this.restoreFromStateCore(preloadedState, resumeEvent, options)
+    );
+  }
+
+  private async restoreFromStateCore(
+    preloadedState: ExecutionState,
+    resumeEvent?: ResumeEvent,
+    options?: RunOptions
+  ): Promise<ExecutionHandle> {
     // ADR 0107 — the same ids `start` refuses: a blank identity (the journal refuses it too)
     // and the control streams.
     assertNotReserved(preloadedState.executionId);
@@ -2867,6 +2916,18 @@ export class WorkflowRuntime {
    * pair directly starts it as before.
    */
   async start<TIn = unknown, TOut = unknown>(
+    flow: RegisteredFlow<TIn, TOut> | FlowDefinition<TIn, TOut> | string,
+    input: TIn,
+    options?: RunOptions
+  ): Promise<ExecutionHandle> {
+    // A minted ulid cannot name an existing (sealed) stream; a caller-chosen id can.
+    if (options?.executionId === undefined) return this.startCore(flow, input, options);
+    return this.sealedOp("start", options.executionId, options.principal, options.system, () =>
+      this.startCore(flow, input, options)
+    );
+  }
+
+  private async startCore<TIn = unknown, TOut = unknown>(
     flow: RegisteredFlow<TIn, TOut> | FlowDefinition<TIn, TOut> | string,
     input: TIn,
     options?: RunOptions
@@ -3091,7 +3152,11 @@ export class WorkflowRuntime {
         try {
           exists = (await readRangeOf(this.eventStore, executionId, 0, 0)).length > 0;
         } catch (readErr: unknown) {
-          return refuse(readErr);
+          // A conflict at sequence 0 whose stream this node cannot open: it EXISTS. It gets the same
+          // error a plaintext existing id gets (ExecutionAlreadyExistsError), not a storage error
+          // that would reveal the stream is sealed (ADR 0130 residuals D7).
+          if (!isSealedUnreadable(readErr)) return refuse(readErr);
+          exists = true;
         }
         if (exists) throw new ExecutionAlreadyExistsError(executionId, err);
         if (attempt === 1) {
@@ -4222,6 +4287,17 @@ export class WorkflowRuntime {
    * - Off (`"off"`) unless a TTL is configured with the inbox on.
    */
   async expireInbox(executionId: string): Promise<InboxExpiryResult> {
+    return this.sealedOp(
+      "discard",
+      executionId,
+      undefined,
+      undefined,
+      () => this.expireInboxCore(executionId),
+      true
+    );
+  }
+
+  private async expireInboxCore(executionId: string): Promise<InboxExpiryResult> {
     if (!this.inboxTtlOn) return { status: "off", expired: 0 };
     const head = await this.sendTarget(executionId);
     if (head === null || head.status === "hop-limit") return { status: "closed", expired: 0 };
@@ -4936,6 +5012,20 @@ export class WorkflowRuntime {
     executionId: string,
     hint?: { parked?: ExecutionState }
   ): Promise<{ handle?: ExecutionHandle; contended: boolean }> {
+    return this.sealedOp(
+      "resume",
+      executionId,
+      undefined,
+      undefined,
+      () => this.notifyInboxDetailedCore(executionId, hint),
+      true
+    );
+  }
+
+  private async notifyInboxDetailedCore(
+    executionId: string,
+    hint?: { parked?: ExecutionState }
+  ): Promise<{ handle?: ExecutionHandle; contended: boolean }> {
     if (!this.inboxEnabled) return { contended: false };
     const running = this.notifying.get(executionId);
     if (running !== undefined) {
@@ -5288,6 +5378,17 @@ export class WorkflowRuntime {
       transformState?: (input: unknown) => unknown;
     } & Omit<RunOptions, "executionId" | "allowFlowCodeMismatch">
   ): Promise<ExecutionHandle> {
+    return this.sealedOp("resume", executionId, options.principal, options.system, () =>
+      this.resumeAsCore(executionId, newFlowId, resumeEvent, options)
+    );
+  }
+
+  private async resumeAsCore(
+    executionId: string,
+    newFlowId: string,
+    resumeEvent: ResumeEvent,
+    options: Parameters<WorkflowRuntime["resumeAs"]>[3]
+  ): Promise<ExecutionHandle> {
     // Before any read or append (see `start`): an invalid budget must leave the log untouched.
     assertValidBudget("deadlineMs", options.deadlineMs, "resumeAs options");
     assertNotReserved(executionId);
@@ -5511,8 +5612,13 @@ export class WorkflowRuntime {
     executionId: string,
     options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<ExecutionState | null> {
-    return this.sealedOp("query", executionId, options?.principal, options?.system, () =>
-      this.loadStateCore(executionId, options)
+    return this.sealedOp(
+      "query",
+      executionId,
+      options?.principal,
+      options?.system,
+      () => this.loadStateCore(executionId, options),
+      true
     );
   }
 
@@ -5652,6 +5758,16 @@ export class WorkflowRuntime {
    * {@link CompactedForkPointError} with nothing written.
    */
   async fork(
+    parentExecutionId: string,
+    atSequence: number,
+    opts?: ForkOptions
+  ): Promise<ForkResult> {
+    return this.sealedOp("query", parentExecutionId, opts?.principal, opts?.system, () =>
+      this.forkCore(parentExecutionId, atSequence, opts)
+    );
+  }
+
+  private async forkCore(
     parentExecutionId: string,
     atSequence: number,
     opts?: ForkOptions
@@ -6301,6 +6417,20 @@ export class WorkflowRuntime {
    * long the chain.
    */
   async followToHead(
+    executionId: string,
+    options?: { principal?: PrincipalChain; system?: SystemGrant }
+  ): Promise<{ executionId: string; state: ExecutionState; hops: number } | null> {
+    return this.sealedOp(
+      "query",
+      executionId,
+      options?.principal,
+      options?.system,
+      () => this.followToHeadCore(executionId, options),
+      true
+    );
+  }
+
+  private async followToHeadCore(
     executionId: string,
     options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<{ executionId: string; state: ExecutionState; hops: number } | null> {

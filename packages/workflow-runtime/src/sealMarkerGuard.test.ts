@@ -222,21 +222,16 @@ describe("fail closed: a stream this node cannot open is refused, nothing append
         }
       });
 
-      // A crypto node that merely lacks the KEY degrades a subscription to the raw envelope on its
-      // own (pre-existing behaviour of EncryptingEventStore.subscribe); the guard's promise is
-      // about a marker this node cannot open.
-      it.skipIf(reason === "key-unavailable")(
-        "a live subscriber is never handed an envelope this node cannot open",
-        async () => {
-          const { f, e, n } = await setup();
-          const got: EventEnvelope[] = [];
-          const off = await n.rt.events.subscribe(e, (ev) => got.push(ev));
-          const h = await f.capable.rt.resume(e, { eventType: "Go", payload: null });
-          await h.waitForCompletion();
-          off();
-          expect(got.filter((x) => x.metadata?.seal !== undefined)).toEqual([]);
-        }
-      );
+      it("a live subscriber is never handed an envelope this node cannot open", async () => {
+        const { f, e, n } = await setup();
+        const got: EventEnvelope[] = [];
+        const off = await n.rt.events.subscribe(e, (ev) => got.push(ev));
+        const h = await f.capable.rt.resume(e, { eventType: "Go", payload: null });
+        await h.waitForCompletion();
+        await new Promise((r) => setImmediate(r)); // let a wrong-key node's async key lookup settle
+        off();
+        expect(got.filter((x) => x.metadata?.seal !== undefined)).toEqual([]);
+      });
 
       it("the operator is told the real cause, first then every 16th; the caller sees only a denial", async () => {
         const { e, n } = await setup();
@@ -495,7 +490,9 @@ describe("backstop (b): an UNMARKED legacy stream whose principal record is itse
     const before = await inner.read(e);
     const err = await rejection(b.rt.loadState(e, { principal: T1 }));
     expect(err).toBeInstanceOf(SealedStreamUnreadableError);
-    expect(consulted()).toBe(0);
+    // The policy is asked ONLY to phrase the denial (its own verdict for an unknown owner, so an
+    // op-level rule reads the same as for any existing id); its "allowed" never admits the call.
+    expect(consulted()).toBeLessThanOrEqual(1);
     expect(await inner.read(e)).toEqual(before);
   });
 

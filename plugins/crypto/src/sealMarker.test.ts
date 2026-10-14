@@ -20,6 +20,11 @@ import { seededIvSource } from "./testing";
 
 const SECRET = "123-45-6789";
 
+async function until(pred: () => boolean): Promise<void> {
+  for (let i = 0; i < 2000 && !pred(); i++) await new Promise((r) => setImmediate(r));
+  expect(pred()).toBe(true);
+}
+
 function ev(
   executionId: string,
   sequence: number,
@@ -394,5 +399,64 @@ describe("deterministic cipher seam (testing subpath)", () => {
   it("the main entry does not export the seam", () => {
     expect(Object.keys(main)).not.toContain("seededIvSource");
     expect(Object.keys(main).some((k) => /ivsource/i.test(k))).toBe(false);
+  });
+});
+
+describe("review round: stale markers, wrong-key reads and subscriptions", () => {
+  const STALE = { v: 1, cipher: "loom/aes-256-gcm", covers: ["STEP_COMPLETED.output.ssn"] };
+
+  it("a re-append of a decrypted event carrying a stale marker, under a narrower config, stores no marker", async () => {
+    const { inner, store } = setup({ UNRELATED: ["x"] });
+    await store.append(ev("s1", 0, "STEP_COMPLETED", { output: { ssn: SECRET } }, { seal: STALE }));
+    await store.appendBatch!([
+      ev("s1", 1, "STEP_COMPLETED", { output: { ssn: SECRET } }, { seal: STALE, other: 1 }),
+    ]);
+    const stored = await inner.read("s1");
+    expect(stored[0]?.metadata?.seal).toBeUndefined();
+    expect(stored[1]?.metadata?.seal).toBeUndefined();
+    expect(stored[1]?.metadata?.other).toBe(1); // only the marker is stripped
+  });
+
+  it("a key store holding a DIFFERENT key for the subject reads as key-unavailable, not a raw cipher error", async () => {
+    const { inner } = setup();
+    const writer = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
+      sensitive: { STEP_COMPLETED: ["output.ssn"] },
+    });
+    await writer.append(ev("w1", 0, "STEP_COMPLETED", { output: { ssn: SECRET } }));
+    const other = new InMemoryKeyStore();
+    await other.getOrCreate("w1"); // a key exists, but it is not THE key
+    const reader = new EncryptingEventStore(inner, other, {
+      sensitive: { STEP_COMPLETED: ["output.ssn"] },
+    });
+    await expect(reader.read("w1")).rejects.toBeInstanceOf(KeyUnavailableError);
+  });
+
+  it("a wrong-key node's subscription is never handed a marked envelope's ciphertext", async () => {
+    const { inner } = setup();
+    const writer = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
+      sensitive: { STEP_COMPLETED: ["output.ssn"] },
+    });
+    const wrongEmpty = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
+      sensitive: { STEP_COMPLETED: ["output.ssn"] },
+    });
+    const wrongOther = new InMemoryKeyStore();
+    await wrongOther.getOrCreate("w2");
+    const wrongHeld = new EncryptingEventStore(inner, wrongOther, {
+      sensitive: { STEP_COMPLETED: ["output.ssn"] },
+    });
+    const got: EventEnvelope[] = [];
+    const capable: EventEnvelope[] = [];
+    const offs = [
+      await wrongEmpty.subscribe("w2", (e) => got.push(e)),
+      await wrongHeld.subscribe("w2", (e) => got.push(e)),
+      await writer.subscribe("w2", (e) => capable.push(e)),
+    ];
+    await writer.append(ev("w2", 0, "STEP_COMPLETED", { output: { ssn: SECRET } }));
+    // wait on the CONDITION (the capable node was delivered), then let the wrong nodes' async
+    // key lookups settle (they are microtask chains, done before the next macrotask)
+    await until(() => capable.length === 1);
+    await new Promise((r) => setImmediate(r));
+    for (const off of offs) off();
+    expect(got.filter((e) => JSON.stringify(e).includes("__loomEnc"))).toEqual([]);
   });
 });

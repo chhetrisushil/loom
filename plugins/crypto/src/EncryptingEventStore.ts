@@ -77,6 +77,12 @@ function splitExempt(eventType: string, paths: readonly string[]): [string[], st
 }
 
 /** Exactly the marker, with nothing smuggled beside `$shredded` (that would be data worth sealing). */
+function withoutSealMarker(envelope: EventEnvelope): EventEnvelope {
+  if (envelope.metadata?.seal === undefined) return envelope;
+  const { seal: _stale, ...rest } = envelope.metadata;
+  return { ...envelope, metadata: rest };
+}
+
 function isExactMarker(value: unknown): boolean {
   return isShredded(value) && !Array.isArray(value) && Object.keys(value as object).length === 1;
 }
@@ -160,8 +166,8 @@ export class EncryptingEventStore implements EventStore {
         const encrypted = await Promise.all(
           envelopes.map(async (envelope) => {
             const paths = pathsFor(this.sensitive, envelope.eventType);
-            if (paths === undefined || paths.length === 0) return envelope; // unmarked (A4)
-            if (!this.sealsAnything(envelope, paths)) return envelope;
+            if (paths === undefined || paths.length === 0) return withoutSealMarker(envelope); // unmarked (A4)
+            if (!this.sealsAnything(envelope, paths)) return withoutSealMarker(envelope);
             const subject = await this.sealSubjectFor(envelope);
             let key = keyFor.get(subject);
             if (key === undefined) {
@@ -186,7 +192,7 @@ export class EncryptingEventStore implements EventStore {
         const paths = pathsFor(this.sensitive, event.eventType);
         const sealed =
           paths === undefined || paths.length === 0 || !this.sealsAnything(event, paths)
-            ? event
+            ? withoutSealMarker(event)
             : this.encrypt(
                 event,
                 paths,
@@ -381,7 +387,10 @@ export class EncryptingEventStore implements EventStore {
   async append(envelope: EventEnvelope): Promise<void> {
     const paths = pathsFor(this.sensitive, envelope.eventType);
     if (paths === undefined || paths.length === 0 || !this.sealsAnything(envelope, paths)) {
-      return this.inner.append(envelope); // unmarked → verbatim (A4)
+      // Nothing is sealed here, so no marker may be claimed: a re-append of a decrypted event (a
+      // fork, a copy) can still carry the `metadata.seal` it was read with, under a config that
+      // now seals less. A stale marker would make a capable node refuse a stream it can read.
+      return this.inner.append(withoutSealMarker(envelope)); // otherwise verbatim (A4)
     }
     const key = await this.keys.getOrCreate(await this.sealSubjectFor(envelope));
     return this.inner.append(this.encrypt(envelope, paths, key));
@@ -431,7 +440,17 @@ export class EncryptingEventStore implements EventStore {
       return {
         ...e,
         payload: mapPaths(e.payload, paths, (v) => {
-          if (!inbox) return decryptValue(key, v);
+          if (!inbox) {
+            if (e.metadata?.seal === undefined) return decryptValue(key, v);
+            // A MARKED envelope this node's key cannot open (a key store holding a DIFFERENT key
+            // for the subject): that is the same fact as an absent key, "this node cannot open it",
+            // not a raw cipher failure the kernel could not tell from corruption (ADR 0130 D7).
+            try {
+              return decryptValue(key, v);
+            } catch {
+              throw new KeyUnavailableError(subjectId, executionId);
+            }
+          }
           // Only a DESTROYED key (above) reads as erased. A key that exists but cannot open the
           // ciphertext is corruption, a tampered row or a `subjectOf` that drifted: that must
           // not look like an erasure, so it is a typed error (a KeyStore must never re-mint a
@@ -446,7 +465,15 @@ export class EncryptingEventStore implements EventStore {
     });
   }
 
-  /** Does the log of `executionId` carry a `PAYLOAD_SHREDDED` tombstone for `subjectId`? Positive answers are cached (a tombstone is permanent). */
+  /**
+   * Does the log of `executionId` carry a `PAYLOAD_SHREDDED` tombstone for `subjectId`? Positive
+   * answers are cached (a tombstone is permanent).
+   *
+   * Cost, stated: a NEGATIVE answer is a full `inner.read` of the stream, paid on every
+   * key-unavailable read (nothing caches "no tombstone": one could appear at any moment). It is
+   * bounded because a refused stream is backed off by every kernel poller (`TimerService`,
+   * `recoverAbandoned`) and reported only first-then-every-16th; there is deliberately no cache.
+   */
   private async tombstoned(
     executionId: string,
     subjectId: string,
@@ -507,6 +534,8 @@ export class EncryptingEventStore implements EventStore {
         .then((subject) => this.keys.get(subject))
         .then((key) => {
           if (key === null) {
+            // A MARKED envelope (it holds sealed fields) is never handed on as raw ciphertext.
+            if (!inbox && event.metadata?.seal !== undefined) return;
             handler(
               inbox ? { ...event, payload: mapPaths(event.payload, paths, () => SHREDDED) } : event
             );
@@ -517,7 +546,9 @@ export class EncryptingEventStore implements EventStore {
             payload: mapPaths(event.payload, paths, (v) => decryptValue(key, v)),
           });
         })
-        .catch(() => handler(event));
+        .catch(() => {
+          if (event.metadata?.seal === undefined) handler(event); // marked: drop, never ciphertext
+        });
     });
   }
 
