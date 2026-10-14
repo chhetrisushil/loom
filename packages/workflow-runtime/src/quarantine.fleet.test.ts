@@ -5,7 +5,7 @@ import {
   InMemoryTimerStore,
   quarantineStreamId,
 } from "@loom/event-runtime";
-import { InMemoryKeyStore } from "@loom/plugin-crypto";
+import { InMemoryKeyStore, shredSubject } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
@@ -588,7 +588,7 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
     expect(await completed(a, e)).toEqual([["a", { v: "S1" }]]); // the held message outlived its TTL
   });
 
-  it("erasure: a shred destroys the original AND the copy; a release never delivers a redacted copy; the compliance deletion removes the quarantine stream", async () => {
+  it("key destruction (a bare `keys.destroy`, no tombstone): the key is gone for the original AND the copy; a release never delivers a redacted copy; the compliance deletion removes the quarantine stream", async () => {
     // test opt-out (ADR 0130 D8): a PLAINTEXT checkpoint keeps the owner foldable after the shred, which
     // is the only way to reach the copy-redaction path this test pins (the sealed twin follows).
     const s = await heldScene({ total: 2, plainSnaps: true });
@@ -618,7 +618,7 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
     expect(await quarantineHead(s.raw.eventStore, s.e)).toBeNull();
   });
 
-  it("erasure with a SEALED checkpoint (the default): the shred erases the owner's folded state too, so release/notify are refused and append nothing", async () => {
+  it("key destruction (no tombstone) with a SEALED checkpoint (the default): the folded state is unreadable too, so release/notify are refused and append nothing", async () => {
     const s = await heldScene({ total: 2 });
     await s.keys.destroy(s.e);
     const before = await kindsOf(s.raw.eventStore, s.e);
@@ -634,6 +634,29 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
     expect(consumedOf(await s.raw.eventStore.read(s.e))).toHaveLength(0);
     await deleteInbox(s.raw.eventStore, s.e);
     expect(await quarantineHead(s.raw.eventStore, s.e)).toBeNull();
+  });
+
+  it("REAL shred (`shredSubject`: key destroyed AND tombstone written) with a sealed checkpoint: quarantine, release (deliver + discard) raise PayloadShreddedError and append nothing", async () => {
+    const s = await heldScene({ total: 2, quarantine: false });
+    await shredSubject(s.keys, s.raw.eventStore, s.e, { snapshotStore: s.a.snapshotStore });
+    const before = await kindsOf(s.raw.eventStore, s.e);
+    const qhead = await quarantineHead(s.raw.eventStore, s.e);
+    const outcomes = [
+      await s.a.rt.quarantineInbox(s.e, { topic: "a" }, { principal: OP }).catch((x) => x),
+      await s.a.rt
+        .releaseInbox(s.e, { topic: "a", messageId: "a1" }, { principal: OP })
+        .catch((x) => x),
+      await s.a.rt
+        .releaseInbox(
+          s.e,
+          { topic: "a", messageId: "a1", disposition: "discard" },
+          { principal: OP }
+        )
+        .catch((x) => x),
+    ];
+    for (const o of outcomes) expect((o as Error).name, String(o)).toBe("PayloadShreddedError");
+    expect(await kindsOf(s.raw.eventStore, s.e)).toEqual(before);
+    expect(await quarantineHead(s.raw.eventStore, s.e)).toEqual(qhead);
   });
 
   it("an orphan quarantine copy of a TERMINAL owner is reclaimed by the recovery sweep", async () => {

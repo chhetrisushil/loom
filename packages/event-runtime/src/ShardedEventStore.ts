@@ -257,10 +257,11 @@ export class ShardedEventStore implements EventStore {
       // ADR 0130 D9: the at-rest view routes each call to the stream's shard, like `read` (installed
       // only when EVERY shard offers it, via commonOptional).
       readAtRest: () => {
+        const readers = this.shards.map((s) => (s as EventStore).readAtRest!());
+        const hasRange = readers.every((r) => r.readRange !== undefined);
+        const hasHead = readers.every((r) => r.head !== undefined);
         const via = <T>(id: string, f: (r: AtRestEventReader) => Promise<T>): Promise<T> =>
-          this.routeIndex(id).then((i) => f((this.shards[i] as EventStore).readAtRest!()));
-        const hasRange = this.shards.every((s) => s.readAtRest!().readRange !== undefined);
-        const hasHead = this.shards.every((s) => s.readAtRest!().head !== undefined);
+          this.routeIndex(id).then((i) => f(readers[i] as AtRestEventReader));
         return {
           read: (id) => via(id, (r) => r.read(id)),
           readFrom: (id, from) => via(id, (r) => r.readFrom(id, from)),

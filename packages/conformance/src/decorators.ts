@@ -241,7 +241,10 @@ export function runEventStoreDecoratorConformance(
 
     it("hands the inner store's at-rest view through (SPI 2.5.0)", async () => {
       const store = wrap(inner());
-      if (options.sealing === "own" || options.inner !== undefined) {
+      if (options.refused?.readAtRest !== undefined || refusalsOf(store).has("readAtRest")) {
+        // Refused with a reason (checked by the optional-surface test above): it must not be exposed.
+        expect(store.readAtRest).toBeUndefined();
+      } else if (options.sealing === "own" || options.inner !== undefined) {
         expect(store.readAtRest === undefined).toBe(false);
       } else {
         expect(await atRestForwardingProblems(label, store)).toEqual([]);
