@@ -147,9 +147,7 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
   });
 
   it("internal handlers test the brand, never a bare ExecutionDeniedError, for sealed refusals", () => {
-    for (const f of [
-      "packages/workflow-runtime/src/TimerService.ts",
-    ]) {
+    for (const f of ["packages/workflow-runtime/src/TimerService.ts"]) {
       const src = strip(read(f));
       expect(src, f).toMatch(/isSealedUnreadable\(/);
       expect(src, f).not.toMatch(/instanceof SealedPayloadUnreadableError/);
