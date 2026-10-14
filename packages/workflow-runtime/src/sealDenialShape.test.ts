@@ -1,4 +1,4 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { ExecutionState } from "@loom/core";
 import { type EventStore, InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
@@ -38,8 +38,10 @@ function node(store: EventStore, timers = new InMemoryTimerStore()) {
     {
       executionAuthorizer: executionAccessPolicy(),
       executionAuthz: { requirePrincipal: true },
-      onExecutionDenied: (r: { op: string; executionId: string; principal?: unknown }, reason?: string) =>
-        denied.push({ op: r.op, executionId: r.executionId, principal: r.principal, reason }),
+      onExecutionDenied: (
+        r: { op: string; executionId: string; principal?: unknown },
+        reason?: string
+      ) => denied.push({ op: r.op, executionId: r.executionId, principal: r.principal, reason }),
     },
     { eventStore: store, snapshotStore: new InMemoryAsyncSnapshotStore(), timers }
   );
@@ -84,7 +86,10 @@ describe("a sealed refusal is indistinguishable from an unknown-owner denial of 
       const plainInner = new InMemoryAsyncEventStore();
       const E = "shape-1";
       const f0 = secret();
-      const setup = build({}, { eventStore: plainInner, snapshotStore: new InMemoryAsyncSnapshotStore() });
+      const setup = build(
+        {},
+        { eventStore: plainInner, snapshotStore: new InMemoryAsyncSnapshotStore() }
+      );
       setup.rt.registerFlow(f0.definition, f0.runner);
       await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
       const base = node(plainInner);
@@ -99,11 +104,9 @@ describe("a sealed refusal is indistinguishable from an unknown-owner denial of 
       const incapable: EventStore =
         kind === "raw"
           ? inner
-          : new EncryptingEventStore(
-              inner,
-              kind === "wrongKey" ? new InMemoryKeyStore() : keys,
-              { sensitive: kind === "wrongKey" ? FULL : { UNRELATED: ["x"] } }
-            );
+          : new EncryptingEventStore(inner, kind === "wrongKey" ? new InMemoryKeyStore() : keys, {
+              sensitive: kind === "wrongKey" ? FULL : { UNRELATED: ["x"] },
+            });
       const before = JSON.stringify(await inner.read(E));
       const sealed = node(incapable);
 
@@ -111,16 +114,27 @@ describe("a sealed refusal is indistinguishable from an unknown-owner denial of 
         ["loadState", (n) => n.h.rt.loadState(E, { principal: STRANGER })],
         ["parkedAtSequence", (n) => n.h.rt.parkedAtSequence(E, { principal: STRANGER })],
         ["followToHead", (n) => n.h.rt.followToHead(E, { principal: STRANGER })],
-        ["resume", (n) => n.h.rt.resume(E, { eventType: "Go", payload: null }, { principal: STRANGER })],
+        [
+          "resume",
+          (n) => n.h.rt.resume(E, { eventType: "Go", payload: null }, { principal: STRANGER }),
+        ],
         [
           "resumeAs",
           (n) =>
-            n.h.rt.resumeAs(E, "secret", { eventType: "Go", payload: null }, {
-              strategy: "operator-ack",
-              principal: STRANGER,
-            }),
+            n.h.rt.resumeAs(
+              E,
+              "secret",
+              { eventType: "Go", payload: null },
+              {
+                strategy: "operator-ack",
+                principal: STRANGER,
+              }
+            ),
         ],
-        ["restoreFromState", (n) => n.h.rt.restoreFromState(fakeState(E), undefined, { principal: STRANGER })],
+        [
+          "restoreFromState",
+          (n) => n.h.rt.restoreFromState(fakeState(E), undefined, { principal: STRANGER }),
+        ],
         ["cancel", (n) => n.h.rt.cancel(E, "no", { principal: STRANGER })],
         ["acquireFence", (n) => n.h.rt.acquireFence(E, { principal: STRANGER })],
         ["fork", (n) => n.h.rt.fork(E, 1, { principal: STRANGER })],

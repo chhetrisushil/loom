@@ -1,5 +1,9 @@
-import { type EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore, InMemoryTimerStore, KeyUnavailableError } from "@loom/event-runtime";
+import type { EventEnvelope } from "@loom/core";
+import {
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+  KeyUnavailableError,
+} from "@loom/event-runtime";
 import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
@@ -22,7 +26,9 @@ async function shreddedWithSnapshot(opts: { withEvents: boolean }) {
   const inner = new InMemoryAsyncEventStore();
   const rawSnaps = new InMemoryAsyncSnapshotStore();
   const keys = new InMemoryKeyStore();
-  const events = new EncryptingEventStore(inner, keys, { sensitive: { STEP_COMPLETED: ["output"] } });
+  const events = new EncryptingEventStore(inner, keys, {
+    sensitive: { STEP_COMPLETED: ["output"] },
+  });
   const snaps = new EncryptingSnapshotStore(rawSnaps, keys, {
     sensitive: ["variables"],
     ...(opts.withEvents && { events: inner }),
@@ -47,7 +53,9 @@ async function shreddedWithSnapshot(opts: { withEvents: boolean }) {
 
 describe("a real crypto-shred is never reported as a missing key", () => {
   for (const withEvents of [false, true]) {
-    describe(withEvents ? "snapshot store given the raw log" : "snapshot store without `events`", () => {
+    describe(withEvents
+      ? "snapshot store given the raw log"
+      : "snapshot store without `events`", () => {
       it("loadState gives the erasure error, cancel works, nothing is denied or backed off", async () => {
         const { h, timers, denied } = await shreddedWithSnapshot({ withEvents });
         const err = await h.rt.loadState("x").then(

@@ -11,23 +11,27 @@ import { build, flow, settle } from "./__tests__/r2Harness";
 describe("a successor's live handle is awaitable from the moment its sequence 0 is durable", () => {
   it("awaitLiveHandle resolves the handle for a successor observed in the start window", async () => {
     const inner = new InMemoryAsyncEventStore();
-    let rt: ReturnType<typeof build>["rt"] | undefined;
-    const seen: Array<{ id: string; liveAtDurable: boolean; pending: Promise<unknown> | undefined }> = [];
+    const host: { rt?: ReturnType<typeof build>["rt"] } = {};
+    const seen: Array<{
+      id: string;
+      liveAtDurable: boolean;
+      pending: Promise<unknown> | undefined;
+    }> = [];
     const watching = Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {
       append: async (e: EventEnvelope) => {
         await inner.append(e);
-        if (e.sequence === 0 && e.executionId.includes("~") && rt !== undefined) {
+        if (e.sequence === 0 && e.executionId.includes("~") && host.rt !== undefined) {
           // the instant the successor's sequence 0 is durable, observed from outside
           seen.push({
             id: e.executionId,
-            liveAtDurable: rt.liveHandle(e.executionId) !== undefined,
-            pending: rt.awaitLiveHandle(e.executionId),
+            liveAtDurable: host.rt.liveHandle(e.executionId) !== undefined,
+            pending: host.rt.awaitLiveHandle(e.executionId),
           });
         }
       },
     });
     const h = build({ continueAsNewEnabled: true }, { eventStore: watching });
-    rt = h.rt;
+    host.rt = h.rt;
     const f = flow<{ gen?: number }, unknown>("hop", async (ctx, input) =>
       (input?.gen ?? 0) < 3 ? ctx.continueAsNew({ gen: (input?.gen ?? 0) + 1 }) : "done"
     );
