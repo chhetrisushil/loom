@@ -296,6 +296,12 @@ const SNAPSHOT_SEAL_CHECK = "snapshot-plaintext-under-encrypting-events";
  * Read structurally, as {@link encryptionKeyCheck}: the event store seals iff it reports a
  * `sealingCapability()` with covers, or exposes a `keys` KeyStore; the snapshot store is fine
  * iff `sealsWholeState === true` AND it shares the event store's KeyStore.
+ *
+ * Residual, by design: this reads the WIRING, not the data at rest. It cannot say how many
+ * plaintext snapshots a `sealState` store still holds, because `SnapshotStore` has no enumerating
+ * method (only point reads by execution id), so a census would be a full scan per backend. Old
+ * snapshots stay readable and are sealed by the next save; `legacyPlaintext: "refuse"` on the
+ * store is the way to forbid them once none remain.
  */
 function plaintextSnapshotCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
   if (loaded instanceof Error) {
@@ -350,13 +356,13 @@ function plaintextSnapshotCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
   }
   const hasKeys = typeof snapshotStore.keys === "object" && snapshotStore.keys !== null;
   const fix =
-    "Fix: build the snapshot store with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` using the SAME KeyStore as the event store, or set `security.crypto.allowPlaintextCheckpoints: true` to accept a plaintext checkpoint (for example on an encrypted volume).";
+    "Fix: build the snapshot store with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` using the SAME KeyStore as the event store, or, once ADR 0130 D8's kernel refusal lands (slice S3), set `security.crypto.allowPlaintextCheckpoints: true` to accept a plaintext checkpoint (for example on an encrypted volume). That option is not read by any release today; this check only honours it if a config already carries it.";
   if (allowed) {
     return {
       name: SNAPSHOT_SEAL_CHECK,
       status: "advisory",
       detail:
-        "the event store seals but the snapshot store does not seal the whole state; `allowPlaintextCheckpoints` is set, so this is accepted. The checkpoint holds the folded state (including `variables._waitAnswers`) in plaintext.",
+        "the event store seals but the snapshot store does not seal the whole state; `security.crypto.allowPlaintextCheckpoints` is set on this config (available from S3, ADR 0130 D8), so this is accepted. The checkpoint holds the folded state (including `variables._waitAnswers`) in plaintext.",
     };
   }
   if (hasKeys && snapshotStore.sealsWholeState !== true) {

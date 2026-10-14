@@ -209,7 +209,11 @@ one envelope (only `id`, `executionId`, `workflowId`, `sequence`, `createdAt` st
 shred makes the snapshot unreadable (`PayloadShreddedError`) along with the events. `loom doctor`
 reports `snapshot-plaintext-under-encrypting-events` (error for a plaintext or different-keys snapshot
 store, warning for static paths) and names `security.crypto.allowPlaintextCheckpoints` as the explicit
-opt-out. Snapshots already written in plaintext are not rewritten: they stay readable and the next
+opt-out available from S3 (ADR 0130 D8; no release reads it yet). The sealed state is bound to its
+execution id and sequence, so a row copied elsewhere or rolled back fails with `SnapshotUndecryptableError`;
+`legacyPlaintext: "refuse"` forbids unsealed rows once none remain (the doctor checks wiring only and
+cannot count plaintext snapshots still at rest). Pass the `EncryptingSnapshotStore` itself, not its inner
+store, to `sweepUnpinnedContent` (an erasing pass over the raw sealed rows throws `SealedSnapshotScanError`). Snapshots already written in plaintext are not rewritten: they stay readable and the next
 `save` seals the state.
 
 The sender recorded on a message (`tenant`, `actor`, `onBehalfOf`) is the SENDER's identity, not

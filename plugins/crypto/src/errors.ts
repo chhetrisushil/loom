@@ -64,3 +64,42 @@ export class OwnerUnresolvedError extends Error {
     Object.setPrototypeOf(this, OwnerUnresolvedError.prototype);
   }
 }
+
+/**
+ * A whole-state snapshot envelope (`sealState`) the subject's key, which EXISTS, could not open
+ * as the slot it was loaded from: a row copied from another execution, an older snapshot rolled
+ * into a newer sequence, an envelope without the binding marker, or corruption. Distinct from
+ * {@link PayloadShreddedError} so a defect never reads as an erasure.
+ */
+export class SnapshotUndecryptableError extends Error {
+  constructor(
+    readonly subjectId: string,
+    readonly executionId: string,
+    readonly sequence: number,
+    override readonly cause?: unknown
+  ) {
+    super(
+      `snapshot ${sequence} of execution "${executionId}" (subject "${subjectId}") could not be opened although the key exists: the sealed state is bound to its own execution id and sequence, so a row moved from another slot, a rolled-back snapshot, an unbound envelope or corruption all fail here`
+    );
+    this.name = "SnapshotUndecryptableError";
+    Object.setPrototypeOf(this, SnapshotUndecryptableError.prototype);
+  }
+}
+
+/**
+ * A `sealState` store configured with `legacyPlaintext: "refuse"` loaded a snapshot whose state is
+ * not a whole-state envelope (plaintext or static-path): a sealed deployment must not be
+ * downgraded by swapping a sealed row for a plaintext one.
+ */
+export class PlaintextSnapshotRefusedError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly sequence: number
+  ) {
+    super(
+      `snapshot ${sequence} of execution "${executionId}" is not sealed, and this store is configured with legacyPlaintext: "refuse". Re-save it through a sealState store, or set legacyPlaintext: "load" to read pre-sealState snapshots.`
+    );
+    this.name = "PlaintextSnapshotRefusedError";
+    Object.setPrototypeOf(this, PlaintextSnapshotRefusedError.prototype);
+  }
+}

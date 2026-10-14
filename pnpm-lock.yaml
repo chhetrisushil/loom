@@ -2394,6 +2394,9 @@ importers:
       '@loom/memory':
         specifier: workspace:*
         version: link:../../packages/memory
+      '@loom/plugin-crypto':
+        specifier: workspace:*
+        version: link:../../plugins/crypto
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.0

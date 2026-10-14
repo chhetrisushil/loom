@@ -16,6 +16,20 @@ interface EncEnvelope {
   iv: string;
   tag: string;
   data: string;
+  /**
+   * Optional, self-describing AAD marker: the VERSION of the context binding this envelope was
+   * sealed with. Present iff the sealer passed `aad`; the bound context itself (never stored)
+   * is supplied again on open. Absent on every field-level envelope (no AAD, as before).
+   */
+  aad?: string;
+}
+
+/** AES-GCM additional authenticated data: a versioned tag plus the context it binds. */
+export interface EnvelopeAad {
+  /** Format version tag, stored in the envelope (`aad`). */
+  v: string;
+  /** The bound context (not stored): authenticated, so a moved envelope fails to open. */
+  bind: string;
 }
 
 function isEnvelope(v: unknown): v is EncEnvelope {
@@ -24,9 +38,14 @@ function isEnvelope(v: unknown): v is EncEnvelope {
   );
 }
 
-export function encryptValue(key: Buffer, value: unknown): EncEnvelope {
+function aadBytes(v: string, bind: string): Buffer {
+  return Buffer.from(`${v}|${bind}`, "utf-8");
+}
+
+export function encryptValue(key: Buffer, value: unknown, aad?: EnvelopeAad): EncEnvelope {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
+  if (aad !== undefined) cipher.setAAD(aadBytes(aad.v, aad.bind));
   const plaintext = Buffer.from(JSON.stringify(value ?? null), "utf-8");
   const data = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return {
@@ -34,12 +53,27 @@ export function encryptValue(key: Buffer, value: unknown): EncEnvelope {
     iv: iv.toString("base64"),
     tag: cipher.getAuthTag().toString("base64"),
     data: data.toString("base64"),
+    ...(aad !== undefined && { aad: aad.v }),
   };
 }
 
-export function decryptValue(key: Buffer, envelope: unknown): unknown {
+/** The AAD marker of an envelope (`undefined` when it was sealed without AAD). */
+export function envelopeAad(envelope: unknown): string | undefined {
+  return isEnvelope(envelope) && typeof envelope.aad === "string" ? envelope.aad : undefined;
+}
+
+/**
+ * Open an envelope. `bind` is the context an AAD-sealed envelope was bound to; an envelope that
+ * carries the marker but is opened without one (or with another) fails authentication. An
+ * envelope with no marker ignores `bind` (the field-level path).
+ */
+export function decryptValue(key: Buffer, envelope: unknown, bind?: string): unknown {
   if (!isEnvelope(envelope)) return envelope; // not encrypted — passthrough
   const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(envelope.iv, "base64"));
+  if (envelope.aad !== undefined) {
+    if (bind === undefined) throw new Error("envelope is AAD-bound but no context was supplied");
+    decipher.setAAD(aadBytes(envelope.aad, bind));
+  }
   decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
   const plaintext = Buffer.concat([
     decipher.update(Buffer.from(envelope.data, "base64")),

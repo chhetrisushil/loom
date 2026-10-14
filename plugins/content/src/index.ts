@@ -41,6 +41,7 @@ export {
   ReclaimOrphansMarginError,
   ReclaimOrphansSnapshotAckError,
   ReclaimOrphansTouchError,
+  SealedSnapshotScanError,
   pinByEventKinds,
   sweepUnpinnedContent,
   type ContentSweepOptions,

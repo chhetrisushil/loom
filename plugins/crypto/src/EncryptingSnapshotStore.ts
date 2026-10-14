@@ -1,16 +1,42 @@
 import type { ExecutionState } from "@loom/core";
 import { type DecoratorPlan, installOptional } from "@loom/event-runtime";
 import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
-import { decryptValue, encryptValue, hasEnvelope, mapPaths } from "./crypto";
-import { PayloadShreddedError } from "./errors";
+import { decryptValue, encryptValue, envelopeAad, hasEnvelope, mapPaths } from "./crypto";
+import {
+  PayloadShreddedError,
+  PlaintextSnapshotRefusedError,
+  SnapshotUndecryptableError,
+} from "./errors";
 import type { KeyStore } from "./keystore";
 
 function isWholeStateEnvelope(state: unknown): boolean {
   return typeof state === "object" && state !== null && "__loomEnc" in state;
 }
 
+/** Versioned tag of the whole-state AAD binding; stored in the envelope (`aad`). */
+const SNAP_AAD_V = "loom-snap-v1";
+
+/** The context a whole-state envelope is bound to: the slot it lives in. */
+function slotOf(s: Pick<Snapshot, "executionId" | "sequence">): string {
+  return `${s.executionId}|${s.sequence}`;
+}
+
+/**
+ * Legacy opening (a snapshot written by a static-path store). In sealState mode the previous
+ * configuration's paths are unknown, so every envelope-shaped value is a candidate; a value that
+ * does not open under the subject key (an application's own ciphertext under another key) is left
+ * exactly as stored rather than failing the load with a raw GCM error. Residual, stated: an
+ * application value sealed with this same subject key by the same helper IS opened. Naming the
+ * old paths with `legacySensitive` removes that residual (only those paths are opened).
+ */
 function openAll(v: unknown, key: Buffer): unknown {
-  if (isWholeStateEnvelope(v)) return decryptValue(key, v);
+  if (isWholeStateEnvelope(v)) {
+    try {
+      return decryptValue(key, v);
+    } catch {
+      return v;
+    }
+  }
   if (Array.isArray(v)) return v.map((x) => openAll(x, key));
   if (typeof v === "object" && v !== null) {
     return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, openAll(x, key)]));
@@ -31,6 +57,20 @@ export interface EncryptingSnapshotStoreOptions {
    * structural marker `sealsWholeState: true`, read by `loom doctor` (and the kernel).
    */
   sealState?: true;
+  /**
+   * `sealState` only. What to do with a loaded state that is NOT a whole-state envelope
+   * (a pre-sealState plaintext or static-path snapshot, or one swapped in by someone with write
+   * access to the snapshot table): `"load"` (default, ADR 0130 D8 keeps old snapshots readable)
+   * returns it; `"refuse"` throws {@link PlaintextSnapshotRefusedError}. Use `"refuse"` once
+   * nothing legacy remains at rest, so a plaintext row cannot be substituted for a sealed one.
+   */
+  legacyPlaintext?: "load" | "refuse";
+  /**
+   * `sealState` only. The dot-paths a previous static-path configuration sealed. When given,
+   * legacy snapshots open ONLY those paths (any other envelope-shaped value is left as stored);
+   * when absent, every envelope-shaped value is tried and left as stored if it does not open.
+   */
+  legacySensitive?: readonly string[];
   /**
    * Sensitive dot-paths into the folded `ExecutionState` (typically under
    * `variables`, e.g. `["variables._input.ssn"]`). Snapshots fold plaintext, so
@@ -60,6 +100,8 @@ export class EncryptingSnapshotStore implements SnapshotStore {
    */
   readonly sealsWholeState?: true;
   private sensitive: readonly string[];
+  private readonly legacyPlaintext: "load" | "refuse";
+  private readonly legacySensitive: readonly string[] | undefined;
   private readonly subjectOf: (s: Pick<Snapshot, "executionId" | "workflowId">) => string;
 
   constructor(
@@ -79,12 +121,19 @@ export class EncryptingSnapshotStore implements SnapshotStore {
         );
       }
       this.sealsWholeState = true;
-    } else if (options.sensitive === undefined) {
+    } else if (options.legacyPlaintext !== undefined || options.legacySensitive !== undefined) {
+      throw new TypeError(
+        "EncryptingSnapshotStore: `legacyPlaintext` and `legacySensitive` only apply with `sealState: true`."
+      );
+    }
+    if (options.sealState !== true && options.sensitive === undefined) {
       throw new TypeError(
         "EncryptingSnapshotStore: pass `sealState: true` (recommended) or a `sensitive` path list."
       );
     }
     this.sensitive = [...(options.sensitive ?? [])];
+    this.legacyPlaintext = options.legacyPlaintext ?? "load";
+    this.legacySensitive = options.legacySensitive;
     this.subjectOf = options.subjectOf ?? ((s) => s.executionId);
     const plan = {
       // Deleting ciphertext only reduces data — and without it a retention sweep over an
@@ -128,28 +177,54 @@ export class EncryptingSnapshotStore implements SnapshotStore {
     }
     const key = await this.keys.getOrCreate(subject);
     if (this.sealsWholeState === true) {
-      return this.inner.save({ ...snapshot, state: encryptValue(key, snapshot.state) as never });
+      const sealed = encryptValue(key, snapshot.state, { v: SNAP_AAD_V, bind: slotOf(snapshot) });
+      return this.inner.save({ ...snapshot, state: sealed as never });
     }
     const state = mapPaths(snapshot.state, this.sensitive, (v) => encryptValue(key, v));
     return this.inner.save({ ...snapshot, state: state as ExecutionState });
   }
 
   private async decrypt(snapshot: Snapshot | null): Promise<Snapshot | null> {
-    if (snapshot === null || !hasEnvelope(snapshot.state)) return snapshot;
+    if (snapshot === null) return snapshot;
+    if (
+      this.sealsWholeState === true &&
+      this.legacyPlaintext === "refuse" &&
+      !isWholeStateEnvelope(snapshot.state)
+    ) {
+      throw new PlaintextSnapshotRefusedError(snapshot.executionId, snapshot.sequence);
+    }
+    if (!hasEnvelope(snapshot.state)) return snapshot;
     const subjectId = this.subjectOf(snapshot);
     const key = await this.keys.get(subjectId);
     if (key === null) throw new PayloadShreddedError(subjectId, snapshot.executionId);
     // A whole-state envelope is opened by EITHER mode (same keys): a store switched back to
-    // static paths must not hand the kernel a half-state.
+    // static paths must not hand the kernel a half-state. It is bound to its slot (executionId +
+    // sequence), and an envelope WITHOUT the binding marker is refused, never opened bare.
     if (isWholeStateEnvelope(snapshot.state)) {
-      return { ...snapshot, state: decryptValue(key, snapshot.state) as ExecutionState };
+      try {
+        if (envelopeAad(snapshot.state) !== SNAP_AAD_V) throw new Error("missing AAD binding");
+        return {
+          ...snapshot,
+          state: decryptValue(key, snapshot.state, slotOf(snapshot)) as ExecutionState,
+        };
+      } catch (err) {
+        throw new SnapshotUndecryptableError(
+          subjectId,
+          snapshot.executionId,
+          snapshot.sequence,
+          err
+        );
+      }
     }
-    // A snapshot written by a static-path store has no whole-state envelope; its paths are not
-    // ours to know in sealState mode, so open every nested envelope instead.
-    const state =
-      this.sealsWholeState === true
-        ? openAll(snapshot.state, key)
-        : mapPaths(snapshot.state, this.sensitive, (v) => decryptValue(key, v));
+    // A snapshot written by a static-path store has no whole-state envelope.
+    let state: unknown;
+    if (this.sealsWholeState !== true) {
+      state = mapPaths(snapshot.state, this.sensitive, (v) => decryptValue(key, v));
+    } else if (this.legacySensitive !== undefined) {
+      state = mapPaths(snapshot.state, this.legacySensitive, (v) => openAll(v, key));
+    } else {
+      state = openAll(snapshot.state, key);
+    }
     return { ...snapshot, state: state as ExecutionState };
   }
 

@@ -250,6 +250,54 @@ describe("loom doctor", () => {
     expect(find(result, SNAP)?.status).toBe("skipped");
   });
 
+  // The cases above probe the structural markers with fakes. These build the REAL decorators
+  // (behind TenantScoped*, the way an app wires them) so a change that stops a marker surviving
+  // a wrapper is caught here.
+  const realStores = (snapshotOptions: string, sameKeys = true) => {
+    const resolve = (rel: string) => JSON.stringify(join(__dirname, rel));
+    return timerConfig(
+      `(() => {
+        const c = require(${resolve("../../../plugins/crypto/dist/index.js")});
+        const ev = require(${resolve("../../../packages/event-runtime/dist/index.js")});
+        const sn = require(${resolve("../../../packages/snapshot-runtime/dist/index.js")});
+        const keys = new c.InMemoryKeyStore();
+        const snapKeys = ${sameKeys ? "keys" : "new c.InMemoryKeyStore()"};
+        const eventStore = new ev.TenantScopedEventStore(
+          new c.EncryptingEventStore(new ev.InMemoryAsyncEventStore(), keys, { sensitive: { STEP_COMPLETED: ["output.ssn"] } }), "acme");
+        const snapshotStore = new sn.TenantScopedSnapshotStore(
+          new c.EncryptingSnapshotStore(new sn.InMemoryAsyncSnapshotStore(), snapKeys, ${snapshotOptions}), "acme");
+        return { stores: { eventStore, snapshotStore }, schedules: [] };
+      })()`
+    );
+  };
+
+  it("real stores behind TenantScoped: sealState on the SAME keys is clean", async () => {
+    const { ws, config } = realStores("{ sealState: true }");
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("ok");
+  });
+
+  it("real stores behind TenantScoped: static paths warn, naming _waitAnswers", async () => {
+    const { ws, config } = realStores('{ sensitive: ["variables._input.ssn"] }');
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("advisory");
+    expect(text).toContain("_waitAnswers");
+  });
+
+  it("real stores behind TenantScoped: sealState on DIFFERENT keys is an error", async () => {
+    const { ws, config } = realStores("{ sealState: true }", false);
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("failed");
+  });
+
+  it("does not claim allowPlaintextCheckpoints works today", async () => {
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: { keys: { durable: true } }, snapshotStore: {} }, schedules: [] }"
+    );
+    const { text } = await cmdDoctor({ dir: ws, config });
+    expect(text).toContain("slice S3");
+  });
+
   it("skips when nothing encrypts — there is no key to depend on", async () => {
     const { ws, config } = timerConfig(
       "{ stores: { eventStore: {}, snapshotStore: {} }, schedules: [] }"
