@@ -466,6 +466,24 @@ stream's head; a repeat is a no-op. Each discarded message's id joins the dedupe
 is treated as a duplicate (up to the window's 1024 newest ids). A discard that races a delivery wins: the discarded
 message is never delivered.
 
+**A sealed message at the head blocks the whole execution: hold just its topic (ADR 0130 residuals D9).** A node that cannot
+open a sealed (encrypted) inbox payload refuses to deliver it, so until a node that can open it runs the execution's OTHER
+topics are stuck behind it on that node. An operator can hold only the topic instead:
+`runtime.quarantineInbox(executionId, { topic, reason? }, { principal })` (op `quarantine`, closed by default; the principal is
+REQUIRED) copies the sealed message, unchanged, into the chain's `__loom_quarantine__:<chainId>` stream and journals
+`INBOX_QUARANTINED`. From then on the topic is held for every node (later messages of that topic wait behind it, in their
+original order) and the other topics deliver. It is refused (`not-sealed`) for a message this node CAN open (it is a capability
+hold, not a moderation tool; use `discardInbox` for that), and nothing is ever quarantined automatically. A node that can open
+the message lifts the hold by itself at its next delivery point (a send's wake, the timer poll, `recoverAbandoned`, a flow
+reaching the topic) in one atomic batch with the delivery, ahead of everything that arrived behind it
+(`kernel.inbox.autoRelease`, default `true`; `false` leaves every hold for an operator).
+`runtime.releaseInbox(executionId, { topic, messageId, disposition? }, { principal })` does the same on demand
+(`"deliver"`, op `release`; the message must be the topic's OLDEST held one) or drops it (`"discard"`, op `discard`, no ability to
+open needed: the only exit when no capable node ever runs). `kernel.inbox.quarantineMax` (default 256, at most 1024) bounds the
+holds per chain. The cost is yours to weigh: a held topic blocks every node that cannot open the message, indefinitely if no
+capable node ever runs (the operator report is "held, awaiting a capable node", first then every 16th); a held message does
+not expire by TTL. Shredding the owner's key destroys the copy with the original.
+
 **Let a cold topic expire: `kernel.inbox.messageTtlMs` (ADR 0110 D10a, off by default).** A number (every topic) or
 `{ default?, topics: { cold: 60_000 } }`. A message still unconsumed that long after it was sent is discarded by the
 same journaled fact an operator discard writes (`reason: "expired"`, recorded as the runtime, not an operator), so it

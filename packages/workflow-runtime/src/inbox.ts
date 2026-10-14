@@ -34,7 +34,7 @@ export {
 };
 /** The stream's event kind. Not an `EVENT_SCHEMA` kind: it exists only in the control stream. */
 export const INBOX_MESSAGE_KIND = "INBOX_MESSAGE";
-const INBOX_WORKFLOW_ID = "__loom_inbox__";
+export const INBOX_WORKFLOW_ID = "__loom_inbox__";
 
 /**
  * The `TimerRecord.wakeAt` of an inbox wake row. A FIXED instant, so the store's per-
@@ -168,7 +168,7 @@ interface StoredMessage {
   sender: InboxMessage["sender"];
 }
 
-function asMessage(e: EventEnvelope): InboxMessage | undefined {
+export function asMessage(e: EventEnvelope): InboxMessage | undefined {
   if (e.eventType !== INBOX_MESSAGE_KIND) return undefined;
   const p = e.payload as Partial<StoredMessage> | null | undefined;
   if (p === null || typeof p !== "object") return undefined;
@@ -527,12 +527,13 @@ export async function deleteInbox(
   deep = false
 ): Promise<void> {
   if (store.deleteExecution === undefined) return;
-  const { legacy, registry, topics } = await (deep ? inboxStreamsOfChainDeep : inboxStreamsOfChain)(
-    store,
-    chainId
-  );
+  const { legacy, registry, topics, quarantine } = await (deep
+    ? inboxStreamsOfChainDeep
+    : inboxStreamsOfChain)(store, chainId);
   for (const stream of topics) await store.deleteExecution(stream);
   await store.deleteExecution(legacy);
+  // ADR 0130 residuals D9: the chain's quarantine copies go with it (sealed under the same owner key).
+  await store.deleteExecution(quarantine);
   if (registry !== undefined) await store.deleteExecution(registry);
 }
 
@@ -699,21 +700,135 @@ export async function firstRetained(
   return got[0]?.sequence;
 }
 
+// ── ADR 0130 residuals D9 - the per-topic quarantine hold, as the runtime reads it ────────────
+
+/** One entry of a topic's folded quarantine queue (`_quarantined[topic]`); the queue reads `released? held*`. */
+export interface QuarantineEntry {
+  key: string;
+  inboxSeq: number;
+  heldAt: number;
+  state: "held" | "released";
+}
+
+/** The folded quarantine queues (`_quarantined`), or an empty record. Read-only: never mutate the result. */
+export function quarantineQueues(
+  variables: Record<string, unknown>
+): Readonly<Record<string, readonly QuarantineEntry[]>> {
+  const q = variables._quarantined;
+  return q !== null && typeof q === "object" ? (q as Record<string, QuarantineEntry[]>) : {};
+}
+
+/** `topic`'s queue (own-property read: a topic is caller data), or `undefined` when it holds nothing. */
+export function quarantineQueue(
+  variables: Record<string, unknown>,
+  topic: string
+): readonly QuarantineEntry[] | undefined {
+  const all = quarantineQueues(variables);
+  if (!Object.hasOwn(all, topic)) return undefined;
+  const queue = all[topic];
+  return queue !== undefined && queue.length > 0 ? queue : undefined;
+}
+
+/** What the delivery rule says about a topic (ADR 0130 residuals D9, "Delivery rule"). */
+export type InboxDeliverable =
+  /** Held, and this node will not lift the hold: skip the topic entirely (no read, no refusal). */
+  | "blocked"
+  /** The topic's first entry is `released`: deliver ITS copy first, at its original `inboxSeq`. */
+  | { released: QuarantineEntry }
+  /** The topic's first entry is `held` and this node can open it: release and deliver in ONE batch. */
+  | { autoRelease: QuarantineEntry }
+  /** No hold on the topic: read it past its cursor as always. */
+  | "open";
+
 /**
- * Would a delivery batch record a consumption at or below its topic's cursor (ADR 0110 D8)? The
- * batch is judged in order against the folded cursors, each entry advancing its own topic, exactly
- * as the fold will apply it. A well-formed batch is strictly increasing per topic and above the
- * cursor; anything else was built from a fold that has since moved (an operator discard).
+ * THE delivery rule, from FOLDED state only (every node, the live run and the notify scan agree).
+ * `canOpen` says whether this node can open the first HELD copy AND may lift the hold by itself
+ * (it can read the copy, and `kernel.inbox.autoRelease` is on); it is consulted only for a `held`
+ * head, so a caller computes it lazily. A `released` head is delivered (or refused as sealed) by the
+ * delivery itself, never skipped.
+ */
+export function inboxDeliverable(
+  variables: Record<string, unknown>,
+  topic: string,
+  canOpen: boolean
+): InboxDeliverable {
+  const first = quarantineQueue(variables, topic)?.[0];
+  if (first === undefined) return "open";
+  if (first.state === "released") return { released: first };
+  return canOpen ? { autoRelease: first } : "blocked";
+}
+
+/**
+ * Would a delivery batch be wrong against the state it will land on (ADR 0110 D8, extended by ADR
+ * 0130 residuals D9)? The batch is judged in order against the folded cursors and quarantine queues,
+ * each entry advancing its own topic, exactly as the fold will apply it. A well-formed batch is
+ * strictly increasing per topic and above the cursor; anything else was built from a fold that has
+ * since moved (an operator discard, a quarantine, a release). Extended clauses:
+ * - a `MESSAGE_CONSUMED` for a HELD topic is stale unless it is the topic's first `released` entry
+ *   (matched by key) - the one delivery of a held message, at its original (at/below-cursor) `inboxSeq`;
+ *   a reserved discard fact (`__loom_discard__`, a message ABOVE the cursor) stays allowed;
+ * - an auto-release `INBOX_RELEASED` is stale when the topic's first entry is no longer that `held` key;
+ * - a (manual) release is stale likewise, and a `INBOX_QUARANTINED` is stale when its message is at or
+ *   below the topic's cursor (the delivery won).
  */
 export function staleInboxBatch(
   state: ExecutionState,
   pre: ReadonlyArray<{ eventType: string; payload: unknown }>
 ): boolean {
   const cursors = { ...cursorsOf(state.variables) };
+  const queues: Record<string, readonly QuarantineEntry[]> = {
+    ...quarantineQueues(state.variables),
+  };
+  const queueOf = (topic: string): readonly QuarantineEntry[] | undefined =>
+    Object.hasOwn(queues, topic) && (queues[topic]?.length ?? 0) > 0 ? queues[topic] : undefined;
   for (const e of pre) {
+    if (e.eventType === "INBOX_RELEASED") {
+      const p = e.payload as { topic?: unknown; key?: unknown; disposition?: unknown };
+      if (typeof p.topic !== "string" || typeof p.key !== "string") continue;
+      const queue = queueOf(p.topic);
+      const first = queue?.[0];
+      if (
+        queue === undefined ||
+        first === undefined ||
+        first.state !== "held" ||
+        first.key !== p.key
+      ) {
+        return true;
+      }
+      queues[p.topic] =
+        p.disposition === "discard"
+          ? queue.slice(1)
+          : [{ ...first, state: "released" }, ...queue.slice(1)];
+      continue;
+    }
+    if (e.eventType === "INBOX_QUARANTINED") {
+      const p = e.payload as { topic?: unknown; inboxSeq?: unknown; key?: unknown };
+      if (typeof p.topic !== "string" || typeof p.inboxSeq !== "number") continue;
+      if (p.inboxSeq <= cursorFor(cursors, p.topic)) return true;
+      cursors[p.topic] = p.inboxSeq;
+      queues[p.topic] = [
+        ...(queueOf(p.topic) ?? []),
+        { key: String(p.key), inboxSeq: p.inboxSeq, heldAt: -1, state: "held" },
+      ];
+      continue;
+    }
     if (e.eventType !== "MESSAGE_CONSUMED") continue;
-    const p = e.payload as { topic?: unknown; inboxSeq?: unknown };
+    const p = e.payload as {
+      topic?: unknown;
+      inboxSeq?: unknown;
+      waitId?: unknown;
+      messageId?: unknown;
+    };
     if (typeof p.topic !== "string" || typeof p.inboxSeq !== "number") continue;
+    const queue = queueOf(p.topic);
+    if (queue !== undefined && p.waitId !== DISCARD_WAIT_ID) {
+      const first = queue[0];
+      if (first !== undefined && first.state === "released" && first.key === p.messageId) {
+        queues[p.topic] = queue.slice(1); // the held message's delivery: the cursor does not move
+        continue;
+      }
+      return true; // anything else for a held topic was built before the hold
+    }
     if (p.inboxSeq <= cursorFor(cursors, p.topic)) return true;
     cursors[p.topic] = p.inboxSeq;
   }

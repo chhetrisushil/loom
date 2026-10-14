@@ -114,7 +114,7 @@ export function isReservedStream(executionId: string): boolean {
 export const INBOX_STREAM_PREFIX = "__loom_inbox__:";
 
 /**
- * RESERVED (SPI 2.5.0, ADR 0130 residuals D9; no writer yet): the control stream holding the
+ * (SPI 2.5.0, ADR 0130 residuals D9; written by `quarantineInbox`): the control stream holding the
  * verbatim copies of a chain's QUARANTINED inbox messages, `__loom_quarantine__:<chainId>`. It
  * belongs to the same chain as the inbox, so {@link inboxChainOf} maps it to the chain (the crypto
  * subject mapping, purge and delete-with-chain then cover it) and {@link InboxStreams.quarantine}

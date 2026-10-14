@@ -17,14 +17,17 @@ import {
 import { armDeadline, assertValidBudget, remainingBudget } from "./deadlineTimer";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import {
+  type QuarantineEntry,
   assertDeliverable,
   cursorFor,
   cursorsOf,
   dedupeKeyOf,
+  quarantineQueue,
   sealedEnvelopeIn,
   topicProblem,
 } from "./inbox";
 import { WaitsPark, markKernelHumanPark } from "./kernelPark";
+import type { CopyRead } from "./quarantine";
 import { discardDecisionId } from "./strayPassthroughs";
 import { SealedPayloadUnreadableError } from "./types";
 import {
@@ -332,6 +335,15 @@ export interface InboxBinding {
   /** The chain whose stream this execution reads (the execution itself until R1b continues one). */
   readonly chainId: string;
   readonly read: InboxSource;
+  /**
+   * ADR 0130 residuals D9 - how the live run reads a topic's held copy and whether this node lifts a
+   * hold by itself (`kernel.inbox.autoRelease`). Absent: the node predates quarantine and a held topic
+   * is simply skipped (it never delivers past a hold).
+   */
+  readonly quarantine?: {
+    readCopy(entry: QuarantineEntry): Promise<CopyRead>;
+    readonly autoRelease: boolean;
+  };
 }
 
 /** What the runtime hands the context to serve `continueAsNew` (ADR 0109). */
@@ -2089,6 +2101,18 @@ export class WorkflowContextImpl implements WorkflowContext {
       for (let pass = 0; pass < INBOX_READ_PASSES; pass++) {
         const waiting = this.waitsOnTopic(topic);
         if (waiting.length === 0) break;
+        // ADR 0130 residuals D9: a topic with a quarantine queue is delivered from the HELD copy,
+        // first, at its original position, or skipped; it is never read past its cursor.
+        const heldQueue = quarantineQueue(this.vm.peekState().variables, topic);
+        if (heldQueue !== undefined) {
+          const outcome = await this.deliverHeld(topic, heldQueue[0] as QuarantineEntry);
+          if (this.sealed || this.parkDecided) return delivered;
+          if (outcome === "delivered") {
+            delivered = true;
+            continue;
+          }
+          break;
+        }
         const cursor = cursorFor(cursorsOf(this.vm.peekState().variables), topic);
         const msgs = await binding.read(
           binding.chainId,
@@ -2140,6 +2164,56 @@ export class WorkflowContextImpl implements WorkflowContext {
       }
     }
     return delivered;
+  }
+
+  /**
+   * ADR 0130 residuals D9 - the live half of the delivery rule for a topic whose first quarantine entry
+   * is `entry`: a `released` entry is delivered from its copy (the release is already durable), a
+   * `held` entry this node can open is released AND delivered in ONE atomic batch (when auto-release
+   * is on). Anything this node cannot deliver is `"skip"`: the topic is passed over and the run parks
+   * on it; the post-park notify pass reports why. Never journals a sealed or REDACTED copy.
+   */
+  private async deliverHeld(topic: string, entry: QuarantineEntry): Promise<"delivered" | "skip"> {
+    const held = this.inboxBinding?.quarantine;
+    if (held === undefined) return "skip";
+    if (entry.state === "held" && !held.autoRelease) return "skip";
+    const copy = await held.readCopy(entry);
+    if (this.sealed || this.parkDecided || !copy.ok) return "skip";
+    const target = this.waitsOnTopic(topic)[0];
+    if (target === undefined) return "skip";
+    const consumed = {
+      waitId: target.arm.waitId,
+      topic,
+      messageId: entry.key,
+      inboxSeq: entry.inboxSeq,
+      sender: copy.message.sender,
+      payload: copy.message.payload,
+    };
+    if (entry.state === "held") {
+      if (this.isSealed("INBOX_RELEASED")) return "skip";
+      this.journal.commitAtomic([
+        {
+          eventType: "INBOX_RELEASED",
+          payload: {
+            topic,
+            key: entry.key,
+            messageId: copy.message.messageId,
+            disposition: "deliver",
+            auto: true,
+          },
+        },
+        { eventType: "MESSAGE_CONSUMED", payload: consumed },
+      ]);
+    } else {
+      this.commit("MESSAGE_CONSUMED", consumed);
+    }
+    this.dropPending(target.sel);
+    target.sel.resolve({
+      arm: target.arm.index,
+      kind: "inbox",
+      value: this.deliveredValue(target.arm, copy.message.payload),
+    });
+    return "delivered";
   }
 
   /** The unsettled inbox arms on `topic`, in registration order (one entry per arm). */

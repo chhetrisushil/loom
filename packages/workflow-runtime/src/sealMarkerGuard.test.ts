@@ -197,6 +197,25 @@ describe("fail closed: a stream this node cannot open is refused, nothing append
             () =>
               n.rt.discardInbox(e, { topic: "t", throughSeq: 1 }, { principal: { actor: "op" } }),
           ],
+          // ADR 0130 residuals D9: the quarantine verbs reach the owner's stream the same way
+          [
+            "quarantine",
+            () => n.rt.quarantineInbox(e, { topic: "t" }, { principal: { actor: "op" } }),
+          ],
+          [
+            "release",
+            () =>
+              n.rt.releaseInbox(e, { topic: "t", messageId: "m" }, { principal: { actor: "op" } }),
+          ],
+          [
+            "discard",
+            () =>
+              n.rt.releaseInbox(
+                e,
+                { topic: "t", messageId: "m", disposition: "discard" },
+                { principal: { actor: "op" } }
+              ),
+          ],
         ];
         for (const [op, call] of calls) {
           const r = await rejection(call());

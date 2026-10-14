@@ -551,8 +551,8 @@ export type ExecutionOp =
 // then runs the owner's remaining effects under the owner's grants instead of the forker's.
 // `"send"` (ADR 0110 D1) authorizes `runtime.send`, the only writer of an execution's inbox.
 // `"annotate"` (ADR 0116) authorizes `runtime.recordOutcome`, a late reward on a FINISHED execution.
-// `"quarantine"` / `"release"` (ADR 0130 residuals D9, RESERVED: type-only, no caller yet) will authorize
-// `quarantineInbox` and `releaseInbox("deliver")`; a `"discard"` disposition is judged as `"discard"`.
+// `"quarantine"` / `"release"` (ADR 0130 residuals D9) authorize `quarantineInbox` and
+// `releaseInbox("deliver")`; a `"discard"` disposition is judged as `"discard"`.
 // Both are closed by default in `executionAccessPolicy`, like `"discard"`.
 // `"discard"` (ADR 0110 amendment) authorizes `runtime.discardInbox`, an operator's journaled skip of
 // unconsumed inbox messages: it destroys messages a sender was told were accepted, so it is closed by
@@ -1334,6 +1334,101 @@ export class InboxDiscardRefusedError extends Error {
   }
 }
 
+/**
+ * ADR 0130 residuals D9 - what `runtime.quarantineInbox` takes. Holds the TOPIC's head message (the
+ * first non-duplicate above its cursor), which must be sealed and not openable on THIS node.
+ */
+export interface QuarantineInboxInput {
+  /** The topic to hold. Other topics keep flowing. */
+  topic: string;
+  /** Free text for the audit trail (journaled on the fact, at most 256 characters). */
+  reason?: string;
+}
+
+export interface QuarantineInboxOptions {
+  /**
+   * The authenticated operator, judged as `ExecutionOp` `"quarantine"` against the chain head's
+   * owner. REQUIRED at runtime (refused with `ExecutionDeniedError` before anything is read; the
+   * system grant does not stand in for an operator). Optional in the type only so the refusal is typed.
+   */
+  principal?: PrincipalChain;
+  /** The kernel-internal grant; does NOT replace `principal`. */
+  system?: SystemGrant;
+}
+
+export interface QuarantineInboxResult {
+  /** The execution the hold was journaled in (the chain's head). */
+  executionId: string;
+  topic: string;
+  /** The held message's sender-supplied id. */
+  messageId: string;
+  /** Its original position in the inbox stream (kept: a release delivers it with this sequence). */
+  inboxSeq: number;
+  /** Where its copy sits in the quarantine stream `__loom_quarantine__:<chainId>`. */
+  heldAt: number;
+}
+
+/** What `runtime.releaseInbox` takes (ADR 0130 residuals D9). */
+export interface ReleaseInboxInput {
+  topic: string;
+  /** The sender-supplied id of the topic's OLDEST held message. */
+  messageId: string;
+  /**
+   * `"deliver"` (default) journals a manual release and delivers the message FIRST, from the copy,
+   * at its original position: this node must be able to open it. `"discard"` drops the entry and
+   * unblocks the topic; it needs no ability to open the message (the exit when no node can).
+   */
+  disposition?: "deliver" | "discard";
+  /** Free text for the audit trail (journaled, at most 256 characters). */
+  reason?: string;
+}
+
+export interface ReleaseInboxOptions {
+  /**
+   * The authenticated operator, judged as `ExecutionOp` `"release"` (`"deliver"`) or `"discard"`
+   * (the `"discard"` disposition destroys the message). REQUIRED at runtime, as for `discardInbox`.
+   */
+  principal?: PrincipalChain;
+  system?: SystemGrant;
+}
+
+export interface ReleaseInboxResult {
+  executionId: string;
+  topic: string;
+  messageId: string;
+  disposition: "deliver" | "discard";
+  /** `false`: the release had already happened (idempotent repeat, or a concurrent release won): nothing was appended. */
+  changed: boolean;
+}
+
+/**
+ * `quarantineInbox` / `releaseInbox` refused with nothing appended. `reason` is stable:
+ * - `not-parked`: the owner is running (or resumed while the call was in flight); retry once it parks. `retryable`.
+ * - `contended`: the fence kept moving. `retryable`.
+ * - `invalid`: a bad topic or reason, no message to hold, the quarantine cap is reached, the message
+ *   is not the topic's OLDEST held one, or a concurrent change made the call stale.
+ * - `not-sealed`: `quarantineInbox` only - the head message is not sealed-and-unopenable on THIS node,
+ *   so there is nothing to hold (a quarantine is a capability hold, never a moderation hold; use
+ *   `discardInbox` to drop a message).
+ */
+export class InboxQuarantineRefusedError extends Error {
+  constructor(
+    readonly executionId: string,
+    readonly reason: "not-parked" | "contended" | "invalid" | "not-sealed",
+    detail: string,
+    readonly verb: "quarantineInbox" | "releaseInbox" | "fork" = "quarantineInbox"
+  ) {
+    super(
+      `${verb} on execution "${executionId}" refused (${reason}): ${detail} Nothing was appended.`
+    );
+    this.name = "InboxQuarantineRefusedError";
+    Object.setPrototypeOf(this, InboxQuarantineRefusedError.prototype);
+  }
+  get retryable(): boolean {
+    return this.reason === "not-parked" || this.reason === "contended";
+  }
+}
+
 /** ADR 0116 — a late reward for a decision of a FINISHED execution. */
 export interface RecordOutcomeInput {
   /** The `ctx.decide` decision the reward is for; it must exist in the execution's fold. */
@@ -1497,6 +1592,31 @@ export class SealedPayloadUnreadableError extends Error {
     );
     this.name = "SealedPayloadUnreadableError";
     Object.setPrototypeOf(this, SealedPayloadUnreadableError.prototype);
+  }
+}
+
+/**
+ * ADR 0130 residuals D9 - a waited topic is HELD (quarantined) and this node will not release it:
+ * it cannot open the held message ("held, awaiting a capable node") or auto-release is off on it
+ * ("held, awaiting an operator release"). A sealed refusal for the operator-report machinery (the
+ * wake row stays, the poll backs off, the first and every 16th is reported); nothing was appended and
+ * the other topics were still scanned.
+ */
+export class QuarantineHeldError extends SealedPayloadUnreadableError {
+  constructor(
+    executionId: string,
+    messageId: string,
+    topic: string,
+    readonly awaiting: "capable-node" | "operator"
+  ) {
+    super(executionId, messageId, topic, false);
+    this.message = `execution "${executionId}": topic "${topic}" is HELD (quarantined) at message "${messageId}", awaiting ${
+      awaiting === "capable-node"
+        ? "a capable node (one that can open it; or releaseInbox with disposition discard)"
+        : "an operator release (kernel.inbox.autoRelease is off on this node)"
+    }. Nothing was appended; the other topics were scanned.`;
+    this.name = "QuarantineHeldError";
+    Object.setPrototypeOf(this, QuarantineHeldError.prototype);
   }
 }
 

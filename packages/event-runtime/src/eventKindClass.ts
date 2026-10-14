@@ -30,7 +30,7 @@ export const EVENT_KIND_CLASS: Readonly<Record<EventKind, EventKindClass>> = {
   EXECUTION_DENIED: "ignorable", // unfenced, appended after a park (`recordExecutionDenied`)
   OUTCOME_RECORDED: "ignorable", // ADR 0116: terminal-only late attach, or a live emit
   MESSAGE_CONSUMED: "ignorable", // ADR 0110: written by the running owner; the RESUMED answers
-  // ADR 0130 residuals D9 (EVENT_SCHEMA 1.25.0, RESERVED: no writer yet): both land under the park's
+  // ADR 0130 residuals D9 (EVENT_SCHEMA 1.25.0; written by quarantineInbox / releaseInbox / auto-release): both land under the park's
   // conditional fence and leave the park unanswered, exactly like MESSAGE_CONSUMED.
   INBOX_QUARANTINED: "ignorable", // the topic's head is held; the park is not answered
   INBOX_RELEASED: "ignorable", // a held entry is released or dropped; the delivery's own facts answer

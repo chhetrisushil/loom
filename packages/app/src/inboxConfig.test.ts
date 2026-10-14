@@ -131,3 +131,32 @@ describe("kernel.features.inboxTopicStreams", () => {
     expect(() => mk(true, 0)).toThrow(/inboxMaxTopics/);
   });
 });
+
+// ADR 0130 residuals D9 - `kernel.inbox.quarantineMax` / `autoRelease` reach the runtime.
+describe("kernel.inbox.quarantineMax / autoRelease", () => {
+  const mk = (inbox?: { quarantineMax?: number; autoRelease?: boolean }) =>
+    defineConfig({
+      storage: { kind: "memory" },
+      autostart: false,
+      kernel: { features: { inbox: true }, ...(inbox !== undefined && { inbox }) },
+    });
+
+  it("default to 256 held messages and auto-release ON", async () => {
+    const app = mk();
+    expect(app.runtime.inboxQuarantineLimit).toBe(256);
+    expect(app.runtime.inboxAutoReleaseOn).toBe(true);
+    await app.close();
+  });
+
+  it("are honoured when configured (the opt-out is node-local)", async () => {
+    const app = mk({ quarantineMax: 1024, autoRelease: false });
+    expect(app.runtime.inboxQuarantineLimit).toBe(1024);
+    expect(app.runtime.inboxAutoReleaseOn).toBe(false);
+    await app.close();
+  });
+
+  it("a quarantineMax above the fold's cap (1024) is refused at composition", () => {
+    expect(() => mk({ quarantineMax: 1025 })).toThrow(/quarantineMax/);
+    expect(() => mk({ quarantineMax: 0 })).toThrow(/quarantineMax/);
+  });
+});

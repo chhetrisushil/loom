@@ -716,6 +716,19 @@ export interface LoomConfig {
       messageTtlMs?: number | { default?: number; topics?: Readonly<Record<string, number>> };
       /** ADR 0110 D10b — topics one chain may have per-topic streams for (its registry's size). Default 64. */
       maxTopics?: number;
+      /**
+       * ADR 0130 residuals D9 — held (quarantined) messages per chain: bounds the retained span of the
+       * chain's `__loom_quarantine__:` stream and refuses `quarantineInbox` past it. Default 256,
+       * ceiling 1024 (the fold's own cap; a larger value is refused at composition).
+       */
+      quarantineMax?: number;
+      /**
+       * ADR 0130 residuals D9 — a node that CAN open a held message lifts the hold itself, lazily, at
+       * the delivery points, in one atomic batch with the delivery. Default `true`. A node-local
+       * policy (never read by the fold): `false` leaves every hold for an operator's `releaseInbox`.
+       * With no capable node running, a held topic stays held until `releaseInbox` with `"discard"`.
+       */
+      autoRelease?: boolean;
     };
     /**
      * ADR 0115 (R15) — per-dimension override of the sanity ceiling on one `RESOURCE_METERED`
@@ -1356,6 +1369,12 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       }),
       ...(config.kernel.inbox?.messageTtlMs !== undefined && {
         inboxMessageTtlMs: config.kernel.inbox.messageTtlMs,
+      }),
+      ...(config.kernel.inbox?.quarantineMax !== undefined && {
+        inboxQuarantineMax: config.kernel.inbox.quarantineMax,
+      }),
+      ...(config.kernel.inbox?.autoRelease !== undefined && {
+        inboxAutoRelease: config.kernel.inbox.autoRelease,
       }),
     }),
     ...(config.errorClasses !== undefined && { errorClasses: config.errorClasses }),

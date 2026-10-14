@@ -4,6 +4,7 @@ import {
   type EventStore,
   KeyUnavailableError,
   type OptionalEventStoreMethod,
+  QUARANTINE_STREAM_PREFIX,
   type SealMarker,
   type SealingCapability,
   inboxChainOf,
@@ -16,6 +17,7 @@ import {
   decryptValue,
   encryptValue,
   hasEnvelope,
+  isEnvelope,
   mapPaths,
 } from "./crypto";
 import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
@@ -83,6 +85,25 @@ function withoutSealMarker(envelope: EventEnvelope): EventEnvelope {
   if (envelope.metadata?.seal === undefined) return envelope;
   const { seal: _stale, ...rest } = envelope.metadata;
   return { ...envelope, metadata: rest };
+}
+
+/**
+ * ADR 0130 residuals D9 - a quarantine copy (`__loom_quarantine__:<chainId>`) is a VERBATIM copy of an
+ * inbox message that was sealed when it was first stored: every marked value already IS a cipher
+ * envelope (and the envelope carries `metadata.seal`). Sealing it again would nest ciphertext inside
+ * ciphertext, and stripping the marker would make a capable node refuse a copy it can read, so such
+ * an envelope is stored exactly as given. Any other value in that stream is sealed as usual.
+ */
+function isPreSealedCopy(envelope: EventEnvelope, paths: readonly string[]): boolean {
+  if (!envelope.executionId.startsWith(QUARANTINE_STREAM_PREFIX)) return false;
+  let any = false;
+  let plain = false;
+  mapPaths(envelope.payload, paths, (v) => {
+    if (isEnvelope(v)) any = true;
+    else plain = true;
+    return v;
+  });
+  return any && !plain;
 }
 
 function isExactMarker(value: unknown): boolean {
@@ -169,6 +190,7 @@ export class EncryptingEventStore implements EventStore {
           envelopes.map(async (envelope) => {
             const paths = pathsFor(this.sensitive, envelope.eventType);
             if (paths === undefined || paths.length === 0) return withoutSealMarker(envelope); // unmarked (A4)
+            if (isPreSealedCopy(envelope, paths)) return envelope;
             if (!this.sealsAnything(envelope, paths)) return withoutSealMarker(envelope);
             const subject = await this.sealSubjectFor(envelope);
             let key = keyFor.get(subject);
@@ -193,13 +215,15 @@ export class EncryptingEventStore implements EventStore {
         if (event === null) return inner.appendIfUnchanged!(executionId, null, expect);
         const paths = pathsFor(this.sensitive, event.eventType);
         const sealed =
-          paths === undefined || paths.length === 0 || !this.sealsAnything(event, paths)
-            ? withoutSealMarker(event)
-            : this.encrypt(
-                event,
-                paths,
-                await this.keys.getOrCreate(await this.sealSubjectFor(event))
-              );
+          paths !== undefined && paths.length > 0 && isPreSealedCopy(event, paths)
+            ? event
+            : paths === undefined || paths.length === 0 || !this.sealsAnything(event, paths)
+              ? withoutSealMarker(event)
+              : this.encrypt(
+                  event,
+                  paths,
+                  await this.keys.getOrCreate(await this.sealSubjectFor(event))
+                );
         return inner.appendIfUnchanged!(executionId, sealed, expect);
       },
       storeNow: "forward", // a clock reading: no envelope to seal
@@ -388,6 +412,9 @@ export class EncryptingEventStore implements EventStore {
 
   async append(envelope: EventEnvelope): Promise<void> {
     const paths = pathsFor(this.sensitive, envelope.eventType);
+    if (paths !== undefined && paths.length > 0 && isPreSealedCopy(envelope, paths)) {
+      return this.inner.append(envelope); // a verbatim quarantine copy: already sealed, marker kept
+    }
     if (paths === undefined || paths.length === 0 || !this.sealsAnything(envelope, paths)) {
       // Nothing is sealed here, so no marker may be claimed: a re-append of a decrypted event (a
       // fork, a copy) can still carry the `metadata.seal` it was read with, under a config that
