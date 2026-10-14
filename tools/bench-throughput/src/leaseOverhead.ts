@@ -9,6 +9,10 @@ import {
 // nothing at I/O-bound durations, else fall back to lazy. See leaseOverheadLib.ts.
 //
 //   pnpm --filter @loom/bench-throughput bench:lease
+// LOOM_BENCH_PG_URL (postgres backend) MUST point at a THROWAWAY database: rows/tables are left
+// behind. The pool max is 32, so the conc-256 cells are pool-bound as well as write-bound. The
+// `execs` column is the count actually run (round(n / conc) * conc), not the configured n.
+//
 //   LOOM_BENCH_REPEATS=7 LOOM_BENCH_CONC=64 LOOM_BENCH_EXECS=3000 pnpm --filter ... bench:lease
 
 function intEnv(name: string, fallback: number): number {
@@ -25,6 +29,7 @@ async function main(): Promise<void> {
   // LOOM_BENCH_CONCS=16,64,256 sweeps concurrency (LOOM_BENCH_CONC=64 alone is the old single value).
   const concs = listEnv("LOOM_BENCH_CONCS", [String(intEnv("LOOM_BENCH_CONC", 64))]).map(Number);
   // LOOM_BENCH_BACKENDS=memory,sqlite,postgres ; postgres needs LOOM_BENCH_PG_URL (or LOOM_TEST_POSTGRES_URL).
+  // WARNING: LOOM_BENCH_PG_URL must be a THROWAWAY database (rows/tables are left behind).
   const backends = listEnv("LOOM_BENCH_BACKENDS", ["memory", "sqlite"]) as Backend[];
   const shapes = listEnv("LOOM_BENCH_SHAPES", ["noop", "io"]) as Shape[];
   const pgUrl = process.env.LOOM_BENCH_PG_URL ?? process.env.LOOM_TEST_POSTGRES_URL;

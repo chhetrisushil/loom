@@ -103,6 +103,9 @@ interface Stores {
 function makeStores(backend: Backend, pgUrl?: string): Stores {
   if (backend === "postgres") {
     if (pgUrl === undefined) throw new Error("the postgres backend needs pgUrl");
+    // The pool max is 32 for OFF and ON alike, so the concurrency-256 cells are pool-bound as well as
+    // write-bound (256 workers share 32 connections). pgUrl must name a THROWAWAY database: every run
+    // leaves its event/snapshot/lease rows (and any tables the stores create) behind.
     // One pool for the event, snapshot and lease stores (the real deployment shape), the same size
     // for OFF and ON. Unique execution ids per run, so no truncation is needed between runs.
     const pool = new Pool({ connectionString: pgUrl, max: 32 });
@@ -192,7 +195,8 @@ export async function measureLeaseOverhead(cfg: LeaseBenchConfig): Promise<Lease
     backend: cfg.backend,
     shape: cfg.shape,
     concurrency: cfg.concurrency,
-    executions: cfg.executions,
+    // The executions actually run per side: opsPerWorker is rounded, so this is not always the config.
+    executions: Math.max(1, Math.round(cfg.executions / cfg.concurrency)) * cfg.concurrency,
     ioMs: cfg.ioMs,
     off: mOff,
     on: mOn,
