@@ -36,8 +36,20 @@ class FakeStore implements LeaseStore {
       };
     }
   }
+  private holdP: Promise<void> | undefined;
+  /** The NEXT store call parks until the returned function is called. */
+  holdNext(): () => void {
+    let go!: () => void;
+    this.holdP = new Promise<void>((r) => {
+      go = r;
+    });
+    return go;
+  }
   private async gate(): Promise<void> {
     if (this.failing) throw new Error("store down");
+    const h = this.holdP;
+    this.holdP = undefined;
+    if (h) await h;
     if (this.hang) await new Promise(() => {});
   }
   private grant(id: string): Lease {
@@ -67,7 +79,7 @@ class FakeStore implements LeaseStore {
 
 function rig(batch: boolean, over: Partial<LeaseKeeperOptions> = {}) {
   const store = new FakeStore(batch);
-  const clock = { t: 1_000 };
+  const clock = { t: 1_000, skew: 0 };
   const timers: Array<{ fn: () => void; ms: number; stopped: boolean }> = [];
   const lost: Array<[string, LeaseLostError]> = [];
   const errors: unknown[] = [];
@@ -77,6 +89,7 @@ function rig(batch: boolean, over: Partial<LeaseKeeperOptions> = {}) {
     incarnation: "u1",
     ttlMs: 30_000,
     monotonicNow: () => clock.t,
+    wallNow: () => 1_700_000_000_000 + clock.t + clock.skew,
     every: (fn, ms) => {
       const t = { fn, ms, stopped: false };
       timers.push(t);
@@ -91,6 +104,11 @@ function rig(batch: boolean, over: Partial<LeaseKeeperOptions> = {}) {
   const renewTimer = timers[0] as (typeof timers)[number];
   const watchdog = timers[1] as (typeof timers)[number];
   return { store, clock, timers, lost, errors, keeper, renewTimer, watchdog };
+}
+
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 2000 && !cond(); i++) await new Promise((r) => setImmediate(r));
+  if (!cond()) throw new Error("until: condition never became true");
 }
 
 describe("LeaseKeeper", () => {
@@ -266,5 +284,217 @@ describe("LeaseKeeper", () => {
     for (let i = 0; i < 10; i++) void keeper.tick();
     await Promise.resolve();
     expect(store.calls.length).toBeLessThanOrEqual(3);
+  });
+
+  describe("review fixes (S7b round 2)", () => {
+    it("P1: acquire while the same id's release is IN FLIGHT waits for it (validNow implies a store row)", async () => {
+      const { keeper, store } = rig(true);
+      await keeper.acquire("x");
+      const go = store.holdNext();
+      const rel = keeper.release("x");
+      await until(() => store.calls.includes("releaseMany:1"));
+      const acq = keeper.acquire("x");
+      go();
+      await Promise.all([rel, acq]);
+      expect(await acq).toBe(true);
+      expect(keeper.validNow("x")).toBe(true);
+      expect(store.held.has("x")).toBe(true);
+    });
+
+    it("P1: acquire while the same id's release is only QUEUED cancels the release (renewal)", async () => {
+      const { keeper, store } = rig(true);
+      await keeper.acquire("x");
+      store.calls.length = 0;
+      const rel = keeper.release("x");
+      const acq = keeper.acquire("x");
+      await Promise.all([rel, acq]);
+      expect(await acq).toBe(true);
+      expect(store.calls.some((c) => c.startsWith("releaseMany"))).toBe(false);
+      expect(keeper.validNow("x")).toBe(true);
+      expect(store.held.has("x")).toBe(true);
+    });
+
+    it("P1: release before an in-flight acquire resolves leaves nothing held and the row released", async () => {
+      const { keeper, store, lost } = rig(true);
+      const go = store.holdNext();
+      const acq = keeper.acquire("a");
+      await until(() => store.calls.includes("acquireMany:1"));
+      const rel = keeper.release("a");
+      go();
+      expect(await acq).toBe(false);
+      await rel;
+      expect(keeper.size).toBe(0);
+      expect(keeper.validNow("a")).toBe(false);
+      expect(store.held.has("a")).toBe(false);
+      await keeper.tick();
+      expect(store.calls.some((c) => c.startsWith("renewMany"))).toBe(false);
+      expect(lost).toEqual([]);
+    });
+
+    it("P3-10: a stale 'not held' renew after release + re-acquire does not fire taken-over", async () => {
+      const { keeper, store, lost } = rig(true);
+      await keeper.acquire("a");
+      let answer!: () => void;
+      const parked = new Promise<void>((r) => {
+        answer = r;
+      });
+      (store as unknown as Record<string, unknown>).renewMany = async () => {
+        await parked;
+        return [] as string[];
+      };
+      const t = keeper.tick();
+      await keeper.release("a");
+      expect(await keeper.acquire("a")).toBe(true);
+      answer();
+      await t;
+      expect(lost).toEqual([]);
+      expect(keeper.validNow("a")).toBe(true);
+    });
+
+    it("P2-2: a held renew answered after the deadline is a deadline loss, reported once", async () => {
+      const { keeper, store, clock, lost } = rig(true);
+      await keeper.acquire("a"); // deadline 26_000
+      clock.t = 11_000;
+      const go = store.holdNext();
+      const t = keeper.tick();
+      await until(() => store.calls.includes("renewMany:1"));
+      clock.t = 27_000;
+      go();
+      await t;
+      expect(keeper.validNow("a")).toBe(false);
+      expect(lost.map(([id, e]) => [id, e.reason])).toEqual([["a", "deadline"]]);
+    });
+
+    it("P2-2: validNow reports the expiry transition itself, exactly once", async () => {
+      const { keeper, clock, lost, watchdog } = rig(true);
+      await keeper.acquire("a");
+      clock.t = 26_000;
+      expect(keeper.validNow("a")).toBe(false);
+      expect(lost.map(([, e]) => e.reason)).toEqual(["deadline"]);
+      expect(keeper.validNow("a")).toBe(false);
+      watchdog.fn();
+      expect(lost).toHaveLength(1);
+      expect(keeper.size).toBe(0);
+    });
+
+    it("P2-3: a failing later chunk does not reject or leak the earlier granted chunk", async () => {
+      const { keeper, store } = rig(true, { chunkSize: 1 });
+      const self = store as unknown as Record<string, unknown>;
+      self.acquireMany = async (ids: string[]) => {
+        if (ids.includes("b")) throw new Error("boom");
+        return ids.map((id) => {
+          store.held.add(id);
+          return { executionId: id, owner: "o", expiresAt: 0 };
+        });
+      };
+      const [a, b] = await Promise.allSettled([keeper.acquire("a"), keeper.acquire("b")]);
+      expect(a).toEqual({ status: "fulfilled", value: true });
+      expect(b.status).toBe("rejected");
+      expect(keeper.validNow("a")).toBe(true);
+      expect(store.held.has("a")).toBe(true);
+      expect(keeper.validNow("b")).toBe(false);
+    });
+
+    it("P2-4: one bad id in a coalesced batch rejects only that id and arms no quiet period", async () => {
+      const { keeper, store } = rig(true);
+      const self = store as unknown as Record<string, unknown>;
+      self.acquireMany = async (ids: string[]) => {
+        if (ids.includes("bad")) throw new Error("invalid byte sequence");
+        return ids.map((id) => {
+          store.held.add(id);
+          return { executionId: id, owner: "o", expiresAt: 0 };
+        });
+      };
+      const rs = await Promise.allSettled(["a", "bad", "c"].map((i) => keeper.acquire(i)));
+      expect(rs.map((r) => r.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
+      expect(keeper.size).toBe(2);
+      expect(await keeper.acquire("d")).toBe(true); // not quiet
+    });
+
+    it("P2-4: a NUL / empty / non-string id is rejected up front with a TypeError and no store call", async () => {
+      const { keeper, store } = rig(true);
+      await expect(keeper.acquire("a\u0000b")).rejects.toBeInstanceOf(TypeError);
+      await expect(keeper.acquire("")).rejects.toBeInstanceOf(TypeError);
+      await expect(keeper.acquire(7 as unknown as string)).rejects.toBeInstanceOf(TypeError);
+      expect(store.calls).toEqual([]);
+      expect(await keeper.acquire("ok")).toBe(true);
+    });
+
+    it("P2-5: a host suspend (monotonic stalls, wall clock advances) invalidates the lease", async () => {
+      const { keeper, clock, lost } = rig(true);
+      await keeper.acquire("a");
+      clock.skew += 26_000; // wall moved on; clock.t (monotonic) did not
+      expect(keeper.validNow("a")).toBe(false);
+      expect(lost.map(([, e]) => e.reason)).toEqual(["deadline"]);
+    });
+
+    // The two anchors are tested apart: "mono" freezes the wall clock, "wall" freezes the
+    // monotonic one, so neither can mask a mutation that anchors the other at the response.
+    for (const mode of ["mono", "wall"] as const) {
+      const make = () =>
+        mode === "mono" ? rig(true, { wallNow: () => 9_000_000_000_000 }) : rig(true);
+      const pass = (r: ReturnType<typeof rig>, ms: number) => {
+        if (mode === "mono") r.clock.t += ms;
+        else r.clock.skew += ms;
+      };
+      const setElapsed = (r: ReturnType<typeof rig>, sendT: number, ms: number) => {
+        if (mode === "mono") r.clock.t = sendT + ms;
+        else r.clock.skew = ms;
+      };
+
+      it(`P2-6 (${mode}): acquire deadline is anchored at the SEND, not the response`, async () => {
+        const r = make();
+        const go = r.store.holdNext();
+        const p = r.keeper.acquire("a"); // sent at t=1000
+        await until(() => r.store.calls.includes("acquireMany:1"));
+        pass(r, 8_000);
+        go();
+        expect(await p).toBe(true);
+        setElapsed(r, 1_000, 24_999);
+        expect(r.keeper.validNow("a")).toBe(true);
+        setElapsed(r, 1_000, 25_000);
+        expect(r.keeper.validNow("a")).toBe(false);
+      });
+
+      it(`P2-6 (${mode}): renew deadline is anchored at the SEND, not the response`, async () => {
+        const r = make();
+        await r.keeper.acquire("a");
+        r.clock.t = 11_000;
+        const go = r.store.holdNext();
+        const t = r.keeper.tick(); // sent at 11_000
+        await until(() => r.store.calls.includes("renewMany:1"));
+        pass(r, 8_000);
+        go();
+        await t;
+        setElapsed(r, 11_000, 24_999);
+        expect(r.keeper.validNow("a")).toBe(true);
+        setElapsed(r, 11_000, 25_000);
+        expect(r.keeper.validNow("a")).toBe(false);
+      });
+    }
+
+    it("P3-7: close during an in-flight acquire releases the granted row", async () => {
+      const { keeper, store } = rig(true);
+      const go = store.holdNext();
+      const p = keeper.acquire("a");
+      await until(() => store.calls.includes("acquireMany:1"));
+      const c = keeper.close();
+      go();
+      expect(await p).toBe(false);
+      await c;
+      expect(store.held.has("a")).toBe(false);
+      expect(keeper.size).toBe(0);
+    });
+
+    it("P3-8: invalid options are a TypeError", () => {
+      const mk = (o: Partial<LeaseKeeperOptions>) => () => rig(true, o);
+      expect(mk({ chunkSize: 0 })).toThrow(TypeError);
+      expect(mk({ chunkSize: 1.5 })).toThrow(TypeError);
+      expect(mk({ ttlMs: 0 })).toThrow(TypeError);
+      expect(mk({ ttlMs: Number.POSITIVE_INFINITY })).toThrow(TypeError);
+      expect(mk({ renewEveryMs: 0 })).toThrow(TypeError);
+      expect(mk({ renewEveryMs: 25_000 })).toThrow(TypeError); // must be < ttl - margin
+      expect(mk({ renewEveryMs: 24_999 })).not.toThrow();
+    });
   });
 });

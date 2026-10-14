@@ -15,6 +15,15 @@ import type { Lease, LeaseStore } from "@loom/event-runtime";
 // The deadline is measured from just BEFORE the request was sent, so only clock RATE drift
 // matters, never offset, and the TTL/6 margin covers it.
 //
+// The keeper keeps TWO anchors per id, monotonic and wall: the monotonic clock stops across a
+// host/VM suspend (CLOCK_MONOTONIC / mach_absolute_time) while the store's clock does not. The
+// lease is valid only while both are inside the window.
+//
+// Store-side residual: the store's own clock (Postgres `clock_timestamp()`, SQLite `Date.now()`)
+// is a wall clock and can step. An NTP step FORWARD of more than the margin (ttl/6, fixed per
+// ADR 0130 Q3(a)) on the store host expires live leases early, and the holder cannot see it.
+// That is a store-side residual the fence (not the lease) is there to absorb.
+//
 // Not wired into any driver yet (S7c).
 
 /** The lease this node held is gone, or could not be confirmed before its local deadline. */
@@ -75,6 +84,13 @@ export interface LeaseKeeperOptions {
   renewEveryMs?: number;
   /** Monotonic clock in ms. Default `performance.now()`. NEVER wall time. */
   monotonicNow?: () => number;
+  /**
+   * Wall clock in ms. Default `Date.now`. A SECOND anchor kept beside the monotonic one: the
+   * monotonic clock pauses across a host/VM suspend while the store's clock keeps going, so a
+   * lease is valid only while BOTH clocks are inside the window (a wall step forward can only
+   * cause a false loss, which is safe).
+   */
+  wallNow?: () => number;
   /** Repeating timer; returns its canceller. Default `setInterval` + `unref`. Injectable for tests. */
   every?: (fn: () => void, ms: number) => () => void;
   /** Fires once per id when it is lost; the id is already removed. */
@@ -91,11 +107,43 @@ interface Pending {
   reject: (err: unknown) => void;
 }
 
+/** A held lease: two anchors (monotonic, wall) and an epoch that identifies THIS grant. */
+interface Held {
+  mono: number;
+  wall: number;
+  epoch: number;
+}
+
+/** One id's part of an in-flight `acquireMany`; a release arriving meanwhile sets `cancelled`. */
+interface Flight {
+  cancelled: boolean;
+  done: Promise<void>;
+}
+
+/** A release that has not been sent yet (waiting for an in-flight acquire, or queued). */
+interface PendingRelease {
+  id: string;
+  resolvers: Array<() => void>;
+  cancelled: boolean;
+}
+
+interface Outcome {
+  id: string;
+  granted?: boolean;
+  mono?: number;
+  wall?: number;
+  err?: unknown;
+  failed?: boolean;
+}
+
 const defaultEvery = (fn: () => void, ms: number): (() => void) => {
   const t = setInterval(fn, ms);
   t.unref?.();
   return () => clearInterval(t);
 };
+
+const validId = (id: unknown): id is string =>
+  typeof id === "string" && id.length > 0 && !id.includes("\u0000");
 
 export class LeaseKeeper {
   readonly owner: string;
@@ -103,14 +151,22 @@ export class LeaseKeeper {
   readonly renewEveryMs: number;
   private readonly store: LeaseStore & BatchLeaseStore;
   private readonly now: () => number;
+  private readonly wallNow: () => number;
   private readonly margin: number;
   private readonly chunk: number;
   private readonly onLost: LeaseKeeperOptions["onLost"];
   private readonly onError: (err: unknown) => void;
-  /** id -> local monotonic deadline. Bounded by the live drivers: removed on release and loss. */
-  private readonly deadlines = new Map<string, number>();
+  /** id -> held lease. Bounded by the live drivers: removed on release and loss. */
+  private readonly held = new Map<string, Held>();
+  private epochCounter = 0;
   private acquireQueue: Pending[] = [];
-  private releaseQueue: Array<{ id: string; resolve: () => void }> = [];
+  private releaseQueue: PendingRelease[] = [];
+  /** Releases not yet sent (waiting or queued), per id: a same-owner acquire cancels one. */
+  private readonly pendingReleases = new Map<string, PendingRelease>();
+  /** Releases on the wire, per id: an acquire for the id waits for it. */
+  private readonly releasing = new Map<string, Promise<void>>();
+  /** Acquires on the wire, per id: a release marks them cancelled and goes after them. */
+  private readonly acquiring = new Map<string, Set<Flight>>();
   private acquireScheduled = false;
   private releaseScheduled = false;
   private quietUntil = Number.NEGATIVE_INFINITY;
@@ -121,11 +177,24 @@ export class LeaseKeeper {
   constructor(options: LeaseKeeperOptions) {
     this.store = options.store;
     this.ttlMs = options.ttlMs ?? 30_000;
-    this.renewEveryMs = options.renewEveryMs ?? Math.max(Math.floor(this.ttlMs / 3), 1);
+    if (!Number.isFinite(this.ttlMs) || this.ttlMs <= 0)
+      throw new TypeError("LeaseKeeper: ttlMs must be a finite number > 0");
     this.margin = Math.floor(this.ttlMs / 6);
+    this.renewEveryMs = options.renewEveryMs ?? Math.max(Math.floor(this.ttlMs / 3), 1);
+    if (
+      !Number.isFinite(this.renewEveryMs) ||
+      this.renewEveryMs <= 0 ||
+      this.renewEveryMs >= this.ttlMs - this.margin
+    )
+      throw new TypeError(
+        "LeaseKeeper: renewEveryMs must be > 0 and < ttlMs - margin (margin = floor(ttlMs / 6))"
+      );
+    this.chunk = options.chunkSize ?? 1000;
+    if (!Number.isInteger(this.chunk) || this.chunk < 1)
+      throw new TypeError("LeaseKeeper: chunkSize must be an integer >= 1");
     this.owner = `${options.nodeId}:${options.incarnation ?? randomUUID()}`;
     this.now = options.monotonicNow ?? (() => performance.now());
-    this.chunk = options.chunkSize ?? 1000;
+    this.wallNow = options.wallNow ?? (() => Date.now());
     this.onLost = options.onLost;
     this.onError = options.onError ?? (() => {});
     const every = options.every ?? defaultEvery;
@@ -139,29 +208,50 @@ export class LeaseKeeper {
 
   /** Number of leases currently held (bounded memory: released and lost ids are gone). */
   get size(): number {
-    return this.deadlines.size;
+    return this.held.size;
   }
 
   /**
-   * True only while the lease is held AND the local monotonic deadline has not passed. A clock
-   * compare, no I/O: the gate a driver checks before dispatching an effect or appending.
+   * True only while the lease is held AND neither local deadline (monotonic, wall) has passed.
+   * A clock compare, no I/O: the gate a driver checks before dispatching an effect or appending.
+   * Observing an expiry reports it (`onLost`, once) so the transition is never silent.
    */
   validNow(executionId: string): boolean {
-    const deadline = this.deadlines.get(executionId);
-    return deadline !== undefined && this.now() < deadline;
+    const h = this.held.get(executionId);
+    if (h === undefined) return false;
+    if (this.expired(h)) {
+      this.lose(executionId, "deadline");
+      return false;
+    }
+    return true;
   }
 
   /**
-   * Take the lease. `true` = held; `false` = another owner holds an unexpired one (stand down).
-   * Concurrent calls within a tick coalesce into one `acquireMany`. Rejects with
-   * {@link LeaseStoreQuietError} during the quiet period after a store error, or with the
-   * store's own error.
+   * Take the lease. `true` = held; `false` = another owner holds an unexpired one (stand down),
+   * or the caller released the id meanwhile. Concurrent calls within a tick coalesce into one
+   * `acquireMany`. Rejects with {@link LeaseStoreQuietError} during the quiet period after a
+   * store error, with a TypeError for an invalid id, or with the store's own error for that id.
+   *
+   * Per id, operations are serialised: an acquire for an id whose release is queued cancels the
+   * release (same owner: it is a renewal); one whose release is on the wire waits for it.
    */
   acquire(executionId: string): Promise<boolean> {
     if (this.closed) return Promise.reject(new Error("LeaseKeeper is closed"));
+    if (!validId(executionId))
+      return Promise.reject(
+        new TypeError("LeaseKeeper: executionId must be a non-empty string without NUL")
+      );
     if (this.validNow(executionId)) return Promise.resolve(true);
+    const wire = this.releasing.get(executionId);
+    if (wire) return wire.then(() => this.acquire(executionId));
     const remaining = this.quietUntil - this.now();
     if (remaining > 0) return Promise.reject(new LeaseStoreQuietError(Math.ceil(remaining)));
+    const superseded = this.pendingReleases.get(executionId);
+    if (superseded) {
+      superseded.cancelled = true;
+      this.pendingReleases.delete(executionId);
+      for (const r of superseded.resolvers) r();
+    }
     return new Promise<boolean>((resolve, reject) => {
       this.acquireQueue.push({ id: executionId, resolve, reject });
       if (!this.acquireScheduled) {
@@ -174,17 +264,35 @@ export class LeaseKeeper {
   /**
    * Give the lease up and wait for the store. The id leaves the held set immediately (no
    * `onLost` fires for a release). A failing release is reported to `onError`, never thrown:
-   * the lease just expires.
+   * the lease just expires. A release issued while an acquire for the id is on the wire is sent
+   * AFTER it, and that acquire resolves `false` without taking the id.
    */
   release(executionId: string): Promise<void> {
-    this.deadlines.delete(executionId);
-    if (this.closed) return Promise.resolve();
+    this.held.delete(executionId);
+    if (this.closed || !validId(executionId)) return Promise.resolve();
+    // An acquire still queued is simply withdrawn.
+    if (this.acquireQueue.some((p) => p.id === executionId)) {
+      const keep: Pending[] = [];
+      for (const p of this.acquireQueue) p.id === executionId ? p.resolve(false) : keep.push(p);
+      this.acquireQueue = keep;
+    }
     return new Promise<void>((resolve) => {
-      this.releaseQueue.push({ id: executionId, resolve });
-      if (!this.releaseScheduled) {
-        this.releaseScheduled = true;
-        queueMicrotask(() => void this.flushReleases());
+      const existing = this.pendingReleases.get(executionId);
+      if (existing) {
+        existing.resolvers.push(resolve);
+        return;
       }
+      const r: PendingRelease = { id: executionId, resolvers: [resolve], cancelled: false };
+      this.pendingReleases.set(executionId, r);
+      const flights = this.acquiring.get(executionId);
+      if (flights && flights.size > 0) {
+        const dones: Array<Promise<void>> = [];
+        for (const f of flights) {
+          f.cancelled = true;
+          dones.push(f.done);
+        }
+        void Promise.all(dones).then(() => this.queueRelease(r));
+      } else this.queueRelease(r);
     });
   }
 
@@ -196,22 +304,27 @@ export class LeaseKeeper {
     const pending = this.acquireQueue;
     this.acquireQueue = [];
     for (const p of pending) p.reject(new Error("LeaseKeeper is closed"));
-    const queued = this.releaseQueue;
+    const rels = [...this.pendingReleases.values()];
+    this.pendingReleases.clear();
     this.releaseQueue = [];
-    const ids = [...new Set([...this.deadlines.keys(), ...queued.map((q) => q.id)])];
-    this.deadlines.clear();
+    for (const r of rels) r.cancelled = true;
+    const ids = [...new Set([...this.held.keys(), ...rels.map((r) => r.id)])];
+    this.held.clear();
     await this.releaseIds(ids);
-    for (const q of queued) q.resolve();
+    for (const r of rels) for (const f of r.resolvers) f();
   }
 
   /** One renew round. Public so a test (or a host with its own scheduler) can drive it. */
   async tick(): Promise<void> {
     this.enforceDeadlines();
-    if (this.closed || this.deadlines.size === 0) return;
+    if (this.closed || this.held.size === 0) return;
     // A store that hangs must not stack unbounded calls; the watchdog still enforces deadlines.
     if (this.renewsInFlight >= 3) return;
-    const ids = [...this.deadlines.keys()];
-    const sentAt = this.now();
+    const epochs = new Map<string, number>();
+    for (const [id, h] of this.held) epochs.set(id, h.epoch);
+    const ids = [...epochs.keys()];
+    const sentMono = this.now();
+    const sentWall = this.wallNow();
     this.renewsInFlight++;
     try {
       const results = await Promise.all(
@@ -228,11 +341,21 @@ export class LeaseKeeper {
       for (const { c, held } of results) {
         if (!held) continue; // failure: no deadline extension, the watchdog decides
         for (const id of c) {
-          if (!this.deadlines.has(id)) continue; // released or lost meanwhile
-          if (held.has(id)) {
-            const next = sentAt + this.ttlMs - this.margin;
-            if (next > (this.deadlines.get(id) as number)) this.deadlines.set(id, next);
-          } else this.lose(id, "taken-over");
+          const h = this.held.get(id);
+          // Released, lost, or released and RE-acquired meanwhile: this answer is about a
+          // grant that no longer exists.
+          if (!h || h.epoch !== epochs.get(id)) continue;
+          if (!held.has(id)) {
+            this.lose(id, "taken-over");
+          } else if (this.expired(h)) {
+            // A confirmation that arrives after the deadline proves nothing about the gap.
+            this.lose(id, "deadline");
+          } else {
+            const mono = sentMono + this.ttlMs - this.margin;
+            if (mono > h.mono) h.mono = mono;
+            const wall = sentWall + this.ttlMs - this.margin;
+            if (wall > h.wall) h.wall = wall;
+          }
         }
       }
     } finally {
@@ -251,13 +374,16 @@ export class LeaseKeeper {
     return held;
   }
 
+  private expired(h: Held): boolean {
+    return this.now() >= h.mono || this.wallNow() >= h.wall;
+  }
+
   private enforceDeadlines(): void {
-    const t = this.now();
-    for (const [id, deadline] of this.deadlines) if (t >= deadline) this.lose(id, "deadline");
+    for (const [id, h] of [...this.held]) if (this.expired(h)) this.lose(id, "deadline");
   }
 
   private lose(id: string, reason: "taken-over" | "deadline"): void {
-    if (!this.deadlines.delete(id)) return;
+    if (!this.held.delete(id)) return;
     try {
       this.onLost(id, new LeaseLostError(id, this.owner, reason));
     } catch (err) {
@@ -270,60 +396,187 @@ export class LeaseKeeper {
     this.onError(err);
   }
 
+  /** One acquire call's outcome per id. A batch error is re-tried per id to isolate the offender. */
+  private async acquireChunk(
+    c: string[],
+    fails: { n: number; first?: unknown }
+  ): Promise<Outcome[]> {
+    const single = async (id: string): Promise<Outcome> => {
+      const mono = this.now();
+      const wall = this.wallNow();
+      try {
+        const l = this.store.acquireMany
+          ? (await this.store.acquireMany([id], this.owner, this.ttlMs))[0]
+          : await this.store.acquire(id, this.owner, this.ttlMs);
+        return { id, granted: Boolean(l), mono, wall };
+      } catch (err) {
+        fails.n++;
+        fails.first ??= err;
+        return { id, failed: true, err };
+      }
+    };
+    if (!this.store.acquireMany) {
+      // No batch method: every id is its own call and already isolated.
+      const mono = this.now();
+      const wall = this.wallNow();
+      const rs = await Promise.allSettled(
+        c.map((id) => this.store.acquire(id, this.owner, this.ttlMs))
+      );
+      return rs.map((r, i): Outcome => {
+        const id = c[i] as string;
+        if (r.status === "fulfilled") return { id, granted: r.value !== null, mono, wall };
+        fails.n++;
+        fails.first ??= r.reason;
+        return { id, failed: true, err: r.reason };
+      });
+    }
+    const mono = this.now();
+    const wall = this.wallNow();
+    try {
+      const got = new Set(
+        (await this.store.acquireMany(c, this.owner, this.ttlMs)).map((l) => l.executionId)
+      );
+      return c.map((id) => ({ id, granted: got.has(id), mono, wall }));
+    } catch (err) {
+      if (c.length === 1) {
+        fails.n++;
+        fails.first ??= err;
+        return [{ id: c[0] as string, failed: true, err }];
+      }
+      const out: Outcome[] = [];
+      for (const id of c) {
+        if (fails.n >= 2) out.push({ id, failed: true, err: fails.first });
+        else out.push(await single(id));
+      }
+      return out;
+    }
+  }
+
   private async flushAcquires(): Promise<void> {
     this.acquireScheduled = false;
     const batch = this.acquireQueue;
     this.acquireQueue = [];
     if (batch.length === 0) return;
-    const ids = [...new Set(batch.map((p) => p.id))];
-    const sentAt = this.now();
-    const granted = new Set<string>();
-    let failure: { err: unknown } | undefined;
-    for (const c of chunks(ids, this.chunk)) {
-      try {
-        if (this.store.acquireMany) {
-          for (const l of await this.store.acquireMany(c, this.owner, this.ttlMs))
-            granted.add(l.executionId);
-        } else {
-          const got = await Promise.all(
-            c.map((id) =>
-              this.store.acquire(id, this.owner, this.ttlMs).then((l) => (l ? id : null))
-            )
-          );
-          for (const id of got) if (id) granted.add(id);
-        }
-      } catch (err) {
-        failure = { err };
-        this.failed(err);
-        break;
-      }
-    }
-    for (const id of granted) {
-      if (this.closed) break;
-      this.deadlines.set(id, sentAt + this.ttlMs - this.margin);
-    }
+    const byId = new Map<string, Pending[]>();
     for (const p of batch) {
-      if (failure) p.reject(failure.err);
-      else p.resolve(granted.has(p.id) && !this.closed);
+      const l = byId.get(p.id);
+      if (l) l.push(p);
+      else byId.set(p.id, [p]);
+    }
+    const ids = [...byId.keys()];
+    let finish!: () => void;
+    const done = new Promise<void>((r) => {
+      finish = r;
+    });
+    const flights = new Map<string, Flight>();
+    for (const id of ids) {
+      const f: Flight = { cancelled: false, done };
+      flights.set(id, f);
+      const set = this.acquiring.get(id);
+      if (set) set.add(f);
+      else this.acquiring.set(id, new Set([f]));
+    }
+    const fails: { n: number; first?: unknown } = { n: 0 };
+    let succeeded = 0;
+    try {
+      for (const c of chunks(ids, this.chunk)) {
+        const outcomes: Outcome[] =
+          fails.n >= 2
+            ? c.map((id) => ({ id, failed: true, err: fails.first }))
+            : await this.acquireChunk(c, fails);
+        const toRelease: string[] = [];
+        const settle: Array<() => void> = [];
+        for (const o of outcomes) {
+          const ps = byId.get(o.id) as Pending[];
+          const flight = flights.get(o.id) as Flight;
+          if (o.failed) {
+            settle.push(...ps.map((p) => () => p.reject(o.err)));
+            continue;
+          }
+          succeeded++;
+          let result = false;
+          if (o.granted) {
+            if (this.closed) toRelease.push(o.id);
+            else if (!flight.cancelled) {
+              this.held.set(o.id, {
+                mono: (o.mono as number) + this.ttlMs - this.margin,
+                wall: (o.wall as number) + this.ttlMs - this.margin,
+                epoch: ++this.epochCounter,
+              });
+              result = true;
+            }
+            // cancelled: the release that cancelled us is sent after `done`.
+          }
+          settle.push(...ps.map((p) => () => p.resolve(result)));
+        }
+        if (toRelease.length > 0) await this.releaseIds(toRelease);
+        for (const s of settle) s();
+      }
+      // One failure among others that worked is the offender; anything else is the store.
+      if (fails.n >= 2 || (fails.n >= 1 && succeeded === 0)) this.failed(fails.first);
+    } finally {
+      for (const [id, f] of flights) {
+        const set = this.acquiring.get(id);
+        set?.delete(f);
+        if (set && set.size === 0) this.acquiring.delete(id);
+      }
+      finish();
+    }
+  }
+
+  private queueRelease(r: PendingRelease): void {
+    if (r.cancelled) return;
+    if (this.closed) {
+      r.cancelled = true;
+      for (const f of r.resolvers) f();
+      return;
+    }
+    this.releaseQueue.push(r);
+    if (!this.releaseScheduled) {
+      this.releaseScheduled = true;
+      queueMicrotask(() => void this.flushReleases());
     }
   }
 
   private async flushReleases(): Promise<void> {
     this.releaseScheduled = false;
-    const batch = this.releaseQueue;
+    const batch = this.releaseQueue.filter((r) => !r.cancelled);
     this.releaseQueue = [];
     if (batch.length === 0) return;
-    await this.releaseIds([...new Set(batch.map((q) => q.id))]);
-    for (const q of batch) q.resolve();
+    for (const r of batch)
+      if (this.pendingReleases.get(r.id) === r) this.pendingReleases.delete(r.id);
+    const ids = batch.map((r) => r.id);
+    const prevs: Array<Promise<void>> = [];
+    for (const id of ids) {
+      const p = this.releasing.get(id);
+      if (p) prevs.push(p);
+    }
+    const work: Promise<void> = Promise.all(prevs)
+      .then(() => this.releaseIds(ids))
+      .then(() => {
+        for (const id of ids) if (this.releasing.get(id) === work) this.releasing.delete(id);
+      });
+    for (const id of ids) this.releasing.set(id, work);
+    await work;
+    for (const r of batch) for (const f of r.resolvers) f();
   }
 
+  /** Best-effort: a failing chunk is re-tried per id so one bad id cannot strand the rest. */
   private async releaseIds(ids: string[]): Promise<void> {
+    const one = async (id: string): Promise<void> => {
+      try {
+        await this.store.release(id, this.owner);
+      } catch (err) {
+        this.onError(err);
+      }
+    };
     for (const c of chunks(ids, this.chunk)) {
       try {
         if (this.store.releaseMany) await this.store.releaseMany(c, this.owner);
         else await Promise.all(c.map((id) => this.store.release(id, this.owner)));
       } catch (err) {
         this.onError(err);
+        if (c.length > 1) for (const id of c) await one(id);
       }
     }
   }
