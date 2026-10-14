@@ -44,7 +44,6 @@ let n = 0;
 const id = () => `fl-${++n}-${Math.random().toString(36).slice(2, 6)}`;
 const memRaw = () => ({
   eventStore: new InMemoryAsyncEventStore() as EventStore,
-  snapshotStore: new InMemoryAsyncSnapshotStore(),
   timers: new InMemoryTimerStore(),
 });
 type Raw = ReturnType<typeof memRaw>;
@@ -126,13 +125,16 @@ async function heldScene(
     subjectOf?: (e: never) => string;
     quarantine?: boolean;
     plain?: Array<[string, string, unknown]>;
+    /** Checkpoint into a PLAINTEXT snapshot store (explicit ADR 0130 D8 opt-out; see the erasure test). */
+    plainSnaps?: boolean;
   } = {}
 ) {
   const raw = opts.raw ?? memRaw();
   const keys = new InMemoryKeyStore();
   const mkA = (deps: Record<string, unknown> = opts.a ?? {}, store?: EventStore) =>
-    build(deps, {
+    build(opts.plainSnaps === true ? { ...deps, allowPlaintextCheckpoints: true } : deps, {
       ...raw,
+      ...(opts.plainSnaps === true && { snapshotStore: new InMemoryAsyncSnapshotStore() }),
       eventStore: sealingStore(
         store ?? opts.sealedStore?.(raw) ?? raw.eventStore,
         keys,
@@ -587,7 +589,9 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
   });
 
   it("erasure: a shred destroys the original AND the copy; a release never delivers a redacted copy; the compliance deletion removes the quarantine stream", async () => {
-    const s = await heldScene({ total: 2 });
+    // test opt-out (ADR 0130 D8): a PLAINTEXT checkpoint keeps the owner foldable after the shred, which
+    // is the only way to reach the copy-redaction path this test pins (the sealed twin follows).
+    const s = await heldScene({ total: 2, plainSnaps: true });
     const copy = (await s.raw.eventStore.read(quarantineStreamId(s.e)))[1];
     expect(JSON.stringify(copy)).toContain("__loomEnc");
     expect(JSON.stringify(copy)).not.toContain("S1");
@@ -610,6 +614,22 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
       { principal: OP }
     );
     // reclaim / delete-with-chain covers the quarantine stream
+    await deleteInbox(s.raw.eventStore, s.e);
+    expect(await quarantineHead(s.raw.eventStore, s.e)).toBeNull();
+  });
+
+  it("erasure with a SEALED checkpoint (the default): the shred erases the owner's folded state too, so release/notify are refused and append nothing", async () => {
+    const s = await heldScene({ total: 2 });
+    await s.keys.destroy(s.e);
+    const before = await kindsOf(s.raw.eventStore, s.e);
+    const manual = await s.a.rt
+      .releaseInbox(s.e, { topic: "a", messageId: "a1" }, { principal: OP })
+      .catch((x) => x);
+    // the owner's CHECKPOINT shares the subject key, so the owner is unreadable before the copy is reached
+    expect(manual).toBeInstanceOf(ExecutionDeniedError);
+    expect(await s.a.rt.notifyInbox(s.e).catch((x) => x)).toBeInstanceOf(Error);
+    expect(await kindsOf(s.raw.eventStore, s.e)).toEqual(before);
+    expect(consumedOf(await s.raw.eventStore.read(s.e))).toHaveLength(0);
     await deleteInbox(s.raw.eventStore, s.e);
     expect(await quarantineHead(s.raw.eventStore, s.e)).toBeNull();
   });

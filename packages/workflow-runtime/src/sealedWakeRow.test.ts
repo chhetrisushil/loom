@@ -69,7 +69,6 @@ async function scenario(opts: { flow?: typeof f; latchC?: Latch; clock?: { t: nu
   const deps = clk === undefined ? {} : { now: () => clk.t };
   const raw = {
     eventStore: new InMemoryAsyncEventStore(),
-    snapshotStore: new InMemoryAsyncSnapshotStore(),
     timers: new InMemoryTimerStore(),
   };
   const keys = new InMemoryKeyStore();
@@ -82,18 +81,15 @@ async function scenario(opts: { flow?: typeof f; latchC?: Latch; clock?: { t: nu
   const b = build(deps, {
     ...raw,
     eventStore: legacyView(raw.eventStore),
-    snapshotStore: new InMemoryAsyncSnapshotStore(),
   });
   const c = build(deps, {
     ...raw,
     eventStore: sealedStore,
-    snapshotStore: new InMemoryAsyncSnapshotStore(),
     ...(opts.latchC !== undefined && { latch: opts.latchC }),
   });
   const d = build(deps, {
     ...raw,
     eventStore: sealedStore,
-    snapshotStore: new InMemoryAsyncSnapshotStore(),
   });
   for (const n of [a, b, c, d]) n.rt.registerFlow(fl.definition, fl.runner);
   const e = id();
@@ -330,7 +326,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     const timers = new InMemoryTimerStore();
     const raw = {
       eventStore: new InMemoryAsyncEventStore(),
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
       timers,
     };
     const timed = flow("tmd", async (ctx) => {
@@ -367,7 +362,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     const timers = new InMemoryTimerStore();
     const raw = {
       eventStore: new InMemoryAsyncEventStore(),
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
       timers,
     };
     const blocked = flow("blk", async (ctx) => {
@@ -420,7 +414,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
       {},
       {
         eventStore: new InMemoryAsyncEventStore(),
-        snapshotStore: new InMemoryAsyncSnapshotStore(),
         timers,
       }
     );
@@ -452,7 +445,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
       {},
       {
         eventStore: new InMemoryAsyncEventStore(),
-        snapshotStore: new InMemoryAsyncSnapshotStore(),
         timers,
       }
     );
@@ -480,7 +472,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
       {},
       {
         eventStore: new InMemoryAsyncEventStore(),
-        snapshotStore: new InMemoryAsyncSnapshotStore(),
         timers,
       }
     );
@@ -503,7 +494,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     const timers = new InMemoryTimerStore();
     const raw = {
       eventStore: new InMemoryAsyncEventStore(),
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
       timers,
     };
     const latch = new Latch();
@@ -641,7 +631,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
       {},
       {
         eventStore: s.raw.eventStore,
-        snapshotStore: new InMemoryAsyncSnapshotStore(),
         timers: s.raw.timers,
       }
     );
@@ -717,7 +706,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
   it("no timer store: the refusal still throws the typed error, writes no row, and recoverAbandoned still recovers", async () => {
     const raw = {
       eventStore: new InMemoryAsyncEventStore(),
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
     };
     const keys = new InMemoryKeyStore();
     const sealedStore = new EncryptingEventStore(raw.eventStore, keys, {
@@ -729,7 +717,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
       {},
       {
         eventStore: legacyView(raw.eventStore),
-        snapshotStore: new InMemoryAsyncSnapshotStore(),
         timers: null,
       }
     );

@@ -480,14 +480,15 @@ for (const backend of inboxBackends("quarantine")) {
       it("a quarantine on a RUNNING owner is `not-parked`, retryable, and appends nothing", async () => {
         const raw = backend.make();
         const { flow, Latch, slow } = await import("./__tests__/r2Harness");
-        const { build } = await import("./__tests__/r2Harness");
+        const { build, sealedSnapshots } = await import("./__tests__/r2Harness");
         const { sealingStore } = await import("./__tests__/quarantineHarness");
         const { InMemoryKeyStore } = await import("@loom/plugin-crypto");
         const latch = new Latch();
         const b = build({}, { ...raw, latch });
+        const sealing = sealingStore(raw.eventStore, new InMemoryKeyStore());
         const a = build(
           {},
-          { ...raw, eventStore: sealingStore(raw.eventStore, new InMemoryKeyStore()) }
+          { ...raw, eventStore: sealing, snapshotStore: sealedSnapshots(sealing, raw.snapshotStore) }
         );
         const f = flow("busy", async (ctx) => {
           await ctx.run(slow, {});

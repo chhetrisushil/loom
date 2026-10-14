@@ -24,7 +24,7 @@ const deciding = flow("decider", async (ctx) => {
 });
 
 async function drive(store: EventStore) {
-  const h = build({}, { eventStore: store, snapshotStore: new InMemoryAsyncSnapshotStore() });
+  const h = build({}, { eventStore: store });
   h.rt.registerFlow(deciding.definition, deciding.runner);
   await (await h.rt.start(deciding, {}, { executionId: "e" })).waitForCompletion();
   const first = await h.rt.recordOutcome("e", { decisionId: "route", key: "k", score: 0.5 });
@@ -122,7 +122,7 @@ describe("recordOutcome through store decorators", () => {
         };
       },
     }) as EventStore;
-    const h = build({}, { eventStore: store, snapshotStore: new InMemoryAsyncSnapshotStore() });
+    const h = build({}, { eventStore: store });
     h.rt.registerFlow(deciding.definition, deciding.runner);
     await (await h.rt.start(deciding, {}, { executionId: "e" })).waitForCompletion();
     expect(content.puts).toBe(0);

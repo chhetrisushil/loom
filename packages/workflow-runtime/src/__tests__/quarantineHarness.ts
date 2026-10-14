@@ -11,7 +11,8 @@ import { EncryptingEventStore, InMemoryKeyStore, type KeyStore } from "@loom/plu
 import type { WorkflowRuntimeDeps } from "../WorkflowRuntime";
 import { dedupeKeyOf, inboxStreamId, registerInboxTopic } from "../inbox";
 import type { Backend } from "./r2Backends";
-import { type Harness, build, flow } from "./r2Harness";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { type Harness, build, flow, sealedSnapshots } from "./r2Harness";
 
 // Shared fixtures for the ADR 0130 residuals S5 (quarantine) tests: a FLEET of runtimes over ONE set
 // of raw stores, a capable node (an EncryptingEventStore that seals and opens the inbox) and an
@@ -52,27 +53,43 @@ export function fleet(
   } = {}
 ): Fleet {
   const keys = opts.keys ?? new InMemoryKeyStore();
+  const sealing = sealingStore(raw.eventStore, keys, opts.subjectOf);
   const a = build(opts.a ?? {}, {
     ...raw,
-    eventStore: sealingStore(raw.eventStore, keys, opts.subjectOf),
+    eventStore: sealing,
+    // ADR 0130 D8: the capable node checkpoints through a sealState store on the same keys
+    snapshotStore: sealedSnapshots(sealing, raw.snapshotStore),
   });
-  const b = build(opts.b ?? {}, { ...raw });
+  // The INCAPABLE node cannot open a sealed checkpoint (it holds no keys), so it gets its OWN empty
+  // snapshot store and folds from the log: a sealed checkpoint it shared with `a` would refuse every
+  // operator op it runs (`foldState` reads the snapshot first). Finding reported with ADR 0130 D8: a
+  // key-less node sharing a snapshot table with sealed checkpoints cannot fold an execution.
+  const b = build(opts.b ?? {}, { ...raw, snapshotStore: new InMemoryAsyncSnapshotStore() });
   return {
     raw,
     keys,
     a,
     b,
-    a2: (deps) =>
-      build(deps ?? opts.a ?? {}, {
+    a2: (deps) => {
+      const es = sealingStore(raw.eventStore, keys, opts.subjectOf);
+      return build(deps ?? opts.a ?? {}, {
         ...raw,
-        eventStore: sealingStore(raw.eventStore, keys, opts.subjectOf),
-      }),
+        eventStore: es,
+        snapshotStore: sealedSnapshots(es, raw.snapshotStore),
+      });
+    },
   };
 }
 
 /** A node whose key store LACKS the owner's key: a wrong-key node (reads the inbox as REDACTED). */
 export function wrongKeyNode(raw: Raw, deps: Partial<WorkflowRuntimeDeps> = {}): Harness {
-  return build(deps, { ...raw, eventStore: sealingStore(raw.eventStore, new InMemoryKeyStore()) });
+  const es = sealingStore(raw.eventStore, new InMemoryKeyStore());
+  return build(deps, {
+    ...raw,
+    eventStore: es,
+    // its own wrong keys: it can checkpoint, but cannot open the owner's sealed checkpoints
+    snapshotStore: sealedSnapshots(es, raw.snapshotStore),
+  });
 }
 
 /**

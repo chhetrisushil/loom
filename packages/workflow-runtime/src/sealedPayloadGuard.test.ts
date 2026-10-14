@@ -31,7 +31,6 @@ const id = (): string => `sg-${++seq}-${Math.random().toString(36).slice(2, 6)}`
 function twoNodes(sensitive: Record<string, readonly string[]>) {
   const raw = {
     eventStore: new InMemoryAsyncEventStore(),
-    snapshotStore: new InMemoryAsyncSnapshotStore(),
     timers: new InMemoryTimerStore(),
   };
   const keys = new InMemoryKeyStore();
@@ -73,7 +72,7 @@ function legacyPlain(raw: ReturnType<typeof twoNodes>["raw"]) {
     appendIfUnchanged: (id, ev, expect) => inner.appendIfUnchanged!(id, ev, expect),
     close: () => inner.close(),
   };
-  return build({}, { ...raw, eventStore: view, snapshotStore: new InMemoryAsyncSnapshotStore() });
+  return build({}, { ...raw, eventStore: view });
 }
 
 const receiveFlow = () =>
@@ -448,7 +447,6 @@ describe("sealed-payload guard (ADR 0130)", () => {
       {
         eventStore: plainA.eventStore,
         timers: plainA.timers,
-        snapshotStore: new InMemoryAsyncSnapshotStore(),
       }
     );
     plainB.rt.registerFlow(f.definition, f.runner);

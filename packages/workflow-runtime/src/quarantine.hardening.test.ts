@@ -25,7 +25,6 @@ let n = 0;
 const id = () => `hd-${++n}-${Math.random().toString(36).slice(2, 6)}`;
 const memRaw = () => ({
   eventStore: new InMemoryAsyncEventStore() as EventStore,
-  snapshotStore: new InMemoryAsyncSnapshotStore(),
   timers: new InMemoryTimerStore(),
 });
 type Harness = ReturnType<typeof build>;

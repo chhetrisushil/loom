@@ -9,7 +9,7 @@ import {
 } from "@loom/plugin-crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { inboxBackends } from "./__tests__/r2Backends";
-import { build, eventsOf, flow, retirable, until } from "./__tests__/r2Harness";
+import { build, eventsOf, flow, retirable, sealedSnapshots, until } from "./__tests__/r2Harness";
 import { inboxStreamId } from "./inbox";
 import { InboxMessageRefusedError } from "./types";
 
@@ -53,6 +53,7 @@ for (const backend of inboxBackends("erase")) {
       const h = build(sealPrincipal ? { principalIdentity: "encrypted" } : {}, {
         ...raw,
         eventStore: store,
+        snapshotStore: sealedSnapshots(store, raw.snapshotStore),
       });
       const erase = (executionIds: string[]) =>
         shredSubject(keys, raw.eventStore, executionIds[0] as string, {
@@ -169,7 +170,10 @@ for (const backend of inboxBackends("erase")) {
         sensitive: SENSITIVE,
         subjectOf,
       });
-      const after = build({}, { ...raw, eventStore: sealedStore });
+      const after = build(
+        {},
+        { ...raw, eventStore: sealedStore, snapshotStore: sealedSnapshots(sealedStore, raw.snapshotStore) }
+      );
       after.rt.registerFlow(f.definition, f.runner);
       await after.rt.send(e, { topic: "b", payload: SECRET, messageId: "b1" });
       await until(async () => (await after.rt.loadState(e))?.status === "completed", 8000);

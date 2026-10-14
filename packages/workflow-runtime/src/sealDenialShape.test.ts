@@ -35,7 +35,7 @@ function node(
   store: EventStore,
   timers = new InMemoryTimerStore(),
   policy: Parameters<typeof executionAccessPolicy>[0] = { rules: { discard: "tenant" } },
-  snapshotStore: InMemoryAsyncSnapshotStore = new InMemoryAsyncSnapshotStore()
+  snapshotStore?: InMemoryAsyncSnapshotStore // omitted: the harness default (sealState over a sealing event store, ADR 0130 D8)
 ) {
   const denied: Denied[] = [];
   const f = secret();
@@ -51,7 +51,7 @@ function node(
         reason?: string
       ) => denied.push({ op: r.op, executionId: r.executionId, principal: r.principal, reason }),
     },
-    { eventStore: store, snapshotStore, timers }
+    { eventStore: store, ...(snapshotStore !== undefined && { snapshotStore }), timers }
   );
   h.rt.registerFlow(f.definition, f.runner);
   return { h, f, denied };
@@ -96,7 +96,7 @@ describe("a sealed refusal is indistinguishable from an unknown-owner denial of 
       const f0 = secret();
       const setup = build(
         {},
-        { eventStore: plainInner, snapshotStore: new InMemoryAsyncSnapshotStore() }
+        { eventStore: plainInner }
       );
       setup.rt.registerFlow(f0.definition, f0.runner);
       await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
@@ -187,7 +187,7 @@ describe("a sealed refusal is worded as the ordinary unknown-owner call of the s
     const f0 = secret();
     const setup = build(
       {},
-      { eventStore: plainInner, snapshotStore: new InMemoryAsyncSnapshotStore() }
+      { eventStore: plainInner }
     );
     setup.rt.registerFlow(f0.definition, f0.runner);
     await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
@@ -230,7 +230,7 @@ describe("a sealed refusal is worded as the ordinary unknown-owner call of the s
         const f0 = secret();
         const setup = build(
           {},
-          { eventStore: plainInner, snapshotStore: new InMemoryAsyncSnapshotStore() }
+          { eventStore: plainInner }
         );
         setup.rt.registerFlow(f0.definition, f0.runner);
         await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
@@ -273,7 +273,7 @@ describe("a sealed refusal is worded as the ordinary unknown-owner call of the s
       const f0 = secret();
       const setup = build(
         {},
-        { eventStore: plainInner, snapshotStore: new InMemoryAsyncSnapshotStore() }
+        { eventStore: plainInner }
       );
       setup.rt.registerFlow(f0.definition, f0.runner);
       await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
