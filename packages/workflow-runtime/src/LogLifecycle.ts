@@ -687,7 +687,8 @@ export class LogLifecycle {
    * Returns the sequence compacted through, or `null` when the store can't truncate (no
    * `truncatePrefix`), there is nothing to compact, or the execution is pinned (as above). Throws
    * {@link UnsafeCompactionError} when the event store encrypts at rest and the snapshot
-   * store does not share its KeyStore.
+   * store does not share its KeyStore, and {@link PlaintextCheckpointError} (ADR 0130 D8) when it
+   * shares the KeyStore but does not seal the WHOLE state (unless `allowPlaintextCheckpoints`).
    */
   async compact(executionId: string): Promise<number | null> {
     if (executionId === "") {
@@ -706,6 +707,13 @@ export class LogLifecycle {
     const eventKeys = keysOf(store);
     if (eventKeys !== undefined && keysOf(this.snapshotStore) !== eventKeys) {
       throw new UnsafeCompactionError(executionId);
+    }
+    // ADR 0130 D8 - the shared KeyStore is necessary but not sufficient: a static-path snapshot
+    // store on the same keys still writes the dynamic `_waitAnswers` in the clear. Typed refusal,
+    // before anything is read, saved or truncated.
+    if (this.options.allowPlaintextCheckpoints !== true) {
+      const reason = plaintextCheckpointReason(store, this.snapshotStore);
+      if (reason !== undefined) throw new PlaintextCheckpointError(reason, executionId);
     }
     const events = await store.read(executionId);
     if (events.length <= 1) return null; // nothing beyond the bootstrap to reclaim
