@@ -9,7 +9,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
-import { build, flow, until } from "./__tests__/r2Harness";
+import { build, echo, flow, until } from "./__tests__/r2Harness";
 
 // ADR 0130 D8 (kernel half) - when the event store seals, the kernel refuses a checkpoint into a
 // snapshot store that does not seal the WHOLE folded state under the SAME KeyStore. A checkpoint is
@@ -155,6 +155,59 @@ describe("kernel refusal of a plaintext checkpoint (ADR 0130 D8)", () => {
     const done = await h.rt.resume("late-1", { eventType: "Go", payload: null });
     await done.waitForCompletion();
     expect(await raw.loadLatest("late-1")).toBeNull();
+  });
+
+  it("a save-time breach is reported ONCE per execution, however many checkpoints are refused", async () => {
+    const keys = new InMemoryKeyStore();
+    const events = new EncryptingEventStore(new InMemoryAsyncEventStore(), keys, {
+      sensitive: {},
+      subjectOf: (e) => e.executionId,
+    });
+    const raw = new InMemoryAsyncSnapshotStore();
+    const h = build(
+      { allowPlaintextCheckpoints: false, snapshotEvery: 1 },
+      { eventStore: events, snapshotStore: raw }
+    );
+    const many = flow("many", async (ctx) => {
+      for (let i = 0; i < 6; i++) await ctx.run(echo, { i });
+      await ctx.suspend({ on: "Go" });
+      return null;
+    });
+    h.rt.registerFlow(many.definition, many.runner);
+    events.registerSensitive("INBOX_MESSAGE", ["payload"]);
+    const run = await h.rt.start(many, {}, { executionId: "rl-1" });
+    await run.waitForSuspend();
+    await h.rt.resume("rl-1", { eventType: "Go", payload: null }).then((r) => r.waitForCompletion());
+    await until(() => h.storageErrors.length > 0);
+    const refusals = h.storageErrors.filter((e) => (e as Error).name === "PlaintextCheckpointError");
+    expect(refusals).toHaveLength(1);
+    expect(await raw.loadLatest("rl-1")).toBeNull();
+  });
+
+  it("a fork whose seed checkpoint is refused at SAVE time still succeeds, seeds nothing, and reports it", async () => {
+    const keys = new InMemoryKeyStore();
+    const events = new EncryptingEventStore(new InMemoryAsyncEventStore(), keys, {
+      sensitive: {},
+      subjectOf: (e) => e.executionId,
+    });
+    const raw = new InMemoryAsyncSnapshotStore();
+    const h = build(
+      { allowPlaintextCheckpoints: false },
+      { eventStore: events, snapshotStore: raw }
+    );
+    h.rt.registerFlow(f.definition, f.runner);
+    const run = await h.rt.start(f, {}, { executionId: "fk-p" });
+    await run.waitForSuspend();
+    events.registerSensitive("INBOX_MESSAGE", ["payload"]); // now sealing: a plaintext seed is refused
+    const tip = (await events.read("fk-p")).at(-1)!.sequence;
+    const child = await h.rt.fork("fk-p", tip, { executionId: "fk-c" });
+    expect(child.executionId).toBe("fk-c");
+    expect(await raw.loadLatest("fk-c")).toBeNull();
+    expect(
+      h.storageErrors.some((e) => (e as Error).name === "PlaintextCheckpointError")
+    ).toBe(true);
+    // the child is a real execution: it folds from the copied log with no seed
+    expect((await h.rt.loadState("fk-c"))?.status).toBe("suspended");
   });
 
   it("crash-resume: with the refusal in force the execution recovers from the LOG alone", async () => {
