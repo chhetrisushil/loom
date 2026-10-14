@@ -18,7 +18,7 @@ import {
   planBlankStreamRepair,
   rehomedEnvelope,
 } from "./blankStream";
-import { plaintextCheckpointReason } from "./checkpointGuard";
+import { PlaintextCheckpointError, plaintextCheckpointReason } from "./checkpointGuard";
 import { chainIdOf, deleteInbox } from "./inbox";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 import { isWriteConflict } from "./writeConflict";
