@@ -449,6 +449,7 @@ export class WorkflowContextImpl implements WorkflowContext {
     return this.openParallels > 0;
   }
   private readonly divergence: DivergenceHooks | undefined;
+  private readonly dispatchGate: (() => void) | undefined;
   private continuation: ContinueAsNewSignal | undefined;
   private rejectContinue: ((err: unknown) => void) | undefined;
   /** Rejects with a {@link ContinueAsNewSignal} once a continuation was accepted (even if the flow swallowed the throw). */
@@ -521,9 +522,12 @@ export class WorkflowContextImpl implements WorkflowContext {
       meterCeilings?: Readonly<Record<string, number>>;
       /** ADR 0113 D3 — told which recorded steps the re-run asks for. */
       divergence?: DivergenceHooks;
+      /** ADR 0130 D11 — throws (a lost lease) when no effect may be dispatched any more. */
+      dispatchGate?: () => void;
     } = {}
   ) {
     this.divergence = opts.divergence;
+    this.dispatchGate = opts.dispatchGate;
     this.inboxBinding = opts.inbox;
     this.continuationBinding = opts.continuation;
     this.continueSignal = new Promise<never>((_resolve, reject) => {
@@ -1001,6 +1005,7 @@ export class WorkflowContextImpl implements WorkflowContext {
       this.inFlight++;
       let effectPromise: Promise<TOut>;
       try {
+        this.dispatchGate?.();
         effectPromise = this.effectRuntime.execute<TIn, TOut>(toolId, input, effectCtx);
       } catch (syncErr) {
         this.inFlight--;
@@ -1158,6 +1163,7 @@ export class WorkflowContextImpl implements WorkflowContext {
         // decision attribution + an ordinal for sites that mint ids. The ordinal is per
         // CONTEXT, not per decide(), so two live decide() calls sharing an id (e.g. under
         // Promise.all) still mint distinct keys.
+        this.dispatchGate?.();
         return this.effectRuntime.invokeTransient(toolId, input, {
           as: {
             workflowId: this.workflowId,

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Lease, LeaseStore } from "@loom/event-runtime";
+import type { LeaseStore } from "@loom/event-runtime";
 
 // ── One lease keeper per node (ADR 0130 D11, S7b) ─────────────────────────────
 //
@@ -24,7 +24,7 @@ import type { Lease, LeaseStore } from "@loom/event-runtime";
 // ADR 0130 Q3(a)) on the store host expires live leases early, and the holder cannot see it.
 // That is a store-side residual the fence (not the lease) is there to absorb.
 //
-// Not wired into any driver yet (S7c).
+// Wired into every driver by the runtime (ADR 0130 D11, S7c): `WorkflowRuntimeDeps.heartbeat`.
 
 /** The lease this node held is gone, or could not be confirmed before its local deadline. */
 export class LeaseLostError extends Error {
@@ -46,30 +46,27 @@ export class LeaseLostError extends Error {
   }
 }
 
+/**
+ * A driver stood down: another live owner holds an unexpired lease on the execution, so this
+ * attempt drives nothing and took no fence (ADR 0130 D11: lease BEFORE fence). It is a refusal,
+ * not a failure of the execution: nothing was appended. `isSupersededRefusal` (`@loom/worker-runtime`)
+ * settles it like a lost start race, so a dispatcher does not retry it.
+ */
+export class LeaseHeldError extends Error {
+  constructor(readonly executionId: string) {
+    super(
+      `execution "${executionId}" is being driven by another live owner (an unexpired lease); this attempt stood down and took no fence. Nothing was appended.`
+    );
+    this.name = "LeaseHeldError";
+  }
+}
+
 /** `acquire` was refused locally: the store errored recently and the keeper is in its quiet period. */
 export class LeaseStoreQuietError extends Error {
   constructor(readonly retryAfterMs: number) {
     super(`lease store errored recently; no acquire attempts for another ${retryAfterMs} ms`);
     this.name = "LeaseStoreQuietError";
   }
-}
-
-// Replaced by the S7a SPI types (`LeaseStore` 2.2.0) on merge. Structural, so a store with the
-// real methods satisfies it, and a 2.1.0 store simply lacks them.
-export interface BatchLeaseStore {
-  acquireMany?(
-    executionIds: readonly string[],
-    owner: string,
-    ttlMs: number,
-    now?: number
-  ): Promise<Lease[]>;
-  renewMany?(
-    executionIds: readonly string[],
-    owner: string,
-    ttlMs: number,
-    now?: number
-  ): Promise<string[]>;
-  releaseMany?(executionIds: readonly string[], owner: string): Promise<void>;
 }
 
 export interface LeaseKeeperOptions {
@@ -202,7 +199,7 @@ export class LeaseKeeper {
   readonly owner: string;
   readonly ttlMs: number;
   readonly renewEveryMs: number;
-  private readonly store: LeaseStore & BatchLeaseStore;
+  private readonly store: LeaseStore;
   private readonly now: () => number;
   private readonly wallNow: () => number;
   private readonly margin: number;

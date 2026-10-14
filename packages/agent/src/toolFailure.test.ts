@@ -96,6 +96,7 @@ const TERMINAL = new Set([
   "ShardSealingMismatchError",
   "PlaintextCheckpointError",
   "LeaseLostError",
+  "LeaseHeldError",
   "LeaseStoreQuietError",
   "AsyncContextUnavailableError",
   "StaleFenceError",

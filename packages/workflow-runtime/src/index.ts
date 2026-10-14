@@ -102,7 +102,9 @@ export {
   inboxStreamId,
   inboxTopicStreamId,
 } from "./inbox";
+export type { DriverLease, HeartbeatOptions } from "./driverLease";
 export {
+  LeaseHeldError,
   LeaseKeeper,
   LeaseLostError,
   LeaseStoreQuietError,

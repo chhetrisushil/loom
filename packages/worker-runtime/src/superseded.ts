@@ -75,7 +75,10 @@ export function isSupersededRefusal(err: unknown, executionId: string): boolean 
   if (
     name === "ExecutionAlreadyExistsError" ||
     name === "ExecutionSupersededError" ||
-    name === "StaleFenceError"
+    name === "StaleFenceError" ||
+    // ADR 0130 D11: a driver stood down (another live owner holds the lease) or lost its lease.
+    name === "LeaseHeldError" ||
+    name === "LeaseLostError"
   ) {
     return field(err, "executionId") === executionId;
   }

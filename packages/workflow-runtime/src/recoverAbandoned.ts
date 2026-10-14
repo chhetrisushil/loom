@@ -330,7 +330,13 @@ export async function recoverAbandoned(
     // Take ownership before re-driving, so two passes racing the same orphan do not both pay
     // for it. Losing the race means someone else is already on it.
     let held: HeldLease | undefined;
-    if (options.leases !== undefined) {
+    // ADR 0130 D11 (S7c): a runtime with a heartbeat keeper claims through it (shared owner, one timer).
+    let hold: { release(): Promise<void> } | undefined;
+    if (options.leases !== undefined && runtime.leaseKeeper !== undefined) {
+      const got = await runtime.acquireDriverLease(executionId);
+      if (got === null) continue;
+      hold = got;
+    } else if (options.leases !== undefined) {
       const ttlMs = options.leases.ttlMs ?? 60_000;
       const lease = await options.leases.store.acquire(executionId, options.leases.owner, ttlMs);
       if (lease === null) continue;
@@ -348,6 +354,11 @@ export async function recoverAbandoned(
     }
 
     try {
+      // ADR 0130 D11 (S7c): a dispatched re-drive is driven by the WORKER, which holds its own lease.
+      if (options.dispatcher !== undefined && hold !== undefined) {
+        await hold.release();
+        hold = undefined;
+      }
       // The shared routine (also the TimerService wake-row re-drive, ADR 0130 D10): re-checks the
       // status, fences, dispatches or resumes, settles, and classifies a sealed refusal.
       const r = await redriveAbandoned(runtime, executionId, {
@@ -376,6 +387,7 @@ export async function recoverAbandoned(
       // Stop renewing whatever happened: the re-drive has settled, failed, or thrown, and a
       // claim outliving the work it covers blocks whoever legitimately takes it next.
       held?.stop();
+      await hold?.release();
     }
   }
 

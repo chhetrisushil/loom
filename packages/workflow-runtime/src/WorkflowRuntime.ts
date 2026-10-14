@@ -75,6 +75,7 @@ import {
   assertValidBudget,
   remainingBudget,
 } from "./deadlineTimer";
+import { type DriverLease, DriverLeases, type HeartbeatOptions, NO_LEASE } from "./driverLease";
 import { UNKNOWN_OWNER_REASON } from "./executionAccessPolicy";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import {
@@ -123,6 +124,8 @@ import {
   ttlOfTopic,
 } from "./inbox";
 import { WaitsPark, isKernelHumanPark } from "./kernelPark";
+import { LeaseHeldError, LeaseLostError } from "./leaseKeeper";
+import type { LeaseKeeper } from "./leaseKeeper";
 import { COMPUTE_TARGET_KEY } from "./placement";
 import {
   type PrincipalCodec,
@@ -594,6 +597,17 @@ export interface WorkflowRuntimeDeps {
    * clock's timeline, not wall time.
    */
   now?: () => number;
+  /**
+   * ADR 0130 D11 (S7c) - heartbeat leases. Given, EVERY driver of an execution (`start`, `resume`,
+   * the `send`/notify winner, a continuation successor, a worker attempt) holds a lease through ONE
+   * per-runtime {@link LeaseKeeper} from before its first append until its suspend/terminal commit
+   * (released AWAITED before the handle resolves), lease BEFORE fence. A driver whose acquire finds
+   * another live owner stands down ({@link LeaseHeldError}) without taking the fence; a driver that
+   * loses its lease aborts its run (`LeaseLostError` on the abort signal and the handles), appends
+   * nothing, and is gated before every effect dispatch and every append. Absent or
+   * absent = no keeper and today's behaviour byte-for-byte (G2).
+   */
+  heartbeat?: HeartbeatOptions;
 }
 
 /**
@@ -1020,6 +1034,8 @@ export class WorkflowRuntime {
   private readonly lineageToken: LineageGrant = Object.freeze({ __loomLineageGrant: true });
   private readonly validateInput: boolean;
   private readonly now: () => number;
+  // ADR 0130 D11 (S7c) - the per-runtime heartbeat keeper behind every driver; undefined = unwired.
+  private readonly driverLeases: DriverLeases | undefined;
   private readonly onExecutionDenied:
     | ((request: ExecutionAuthzRequest, reason?: string) => void)
     | undefined;
@@ -1140,6 +1156,7 @@ export class WorkflowRuntime {
     this.onExecutionDenied = deps.onExecutionDenied;
     this.validateInput = deps.validateInput ?? false;
     this.now = deps.now ?? Date.now;
+    this.driverLeases = deps.heartbeat !== undefined ? new DriverLeases(deps.heartbeat) : undefined;
   }
 
   // ── C.1 — execution-lifecycle authorization helpers ────────────────────────
@@ -2934,38 +2951,48 @@ export class WorkflowRuntime {
       throw new ReservedSuccessorIdError(preloadedState.executionId);
     }
     if (restoredFirst === undefined) this.assertNotInboxStreamShaped(preloadedState.executionId);
-    // The durable fold as it exists BEFORE this restore (snapshot + tail of the existing log): it
-    // predates the caller's state, so it is what the log says about the running totals, the inbox
-    // cursors and the start time (which feeds the chain deadline).
-    const restoredDurable =
-      restoredFirst === undefined ? null : await this.foldState(preloadedState.executionId);
-    const vm = new ReplayVM(
-      [],
-      this.withLogIdentity(normalizeSnapshotState(preloadedState), restoredFirst, restoredDurable)
-    );
-    const originalInput = preloadedState.variables._input;
-    return this.execute(
-      preloadedState.executionId,
-      preloadedState.workflowId,
-      vm,
-      flow.runner as FlowRunner<unknown, unknown>,
-      originalInput,
-      resumeEvent
-        ? [
-            ...(restoreApproval !== undefined ? [restoreApproval] : []),
-            { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
-          ]
-        : [],
-      options?.fence,
-      options?.deadlineMs ?? flow.definition.deadlineMs,
-      // R3k (D2) — the effects run as the OWNER recorded in the log, never as the caller and
-      // never as whatever `preloadedState.variables._principal` claims (caller-supplied, so a
-      // doctored state cannot forge or strip the owner). `options.principal` stays the
-      // lifecycle caller, used above for authorization and the approval check.
-      await this.actingPrincipal(preloadedState.executionId, options?.principal, {
-        first: restoredFirst,
-      })
-    );
+    // ADR 0130 D11 (S7c) - restoring a state IS driving the execution on: lease before anything is
+    // appended. A stand-down (another live owner) appends nothing.
+    const lease = await this.takeDriverLease(preloadedState.executionId);
+    try {
+      // The durable fold as it exists BEFORE this restore (snapshot + tail of the existing log): it
+      // predates the caller's state, so it is what the log says about the running totals, the inbox
+      // cursors and the start time (which feeds the chain deadline).
+      const restoredDurable =
+        restoredFirst === undefined ? null : await this.foldState(preloadedState.executionId);
+      const vm = new ReplayVM(
+        [],
+        this.withLogIdentity(normalizeSnapshotState(preloadedState), restoredFirst, restoredDurable)
+      );
+      const originalInput = preloadedState.variables._input;
+      return this.execute(
+        preloadedState.executionId,
+        preloadedState.workflowId,
+        vm,
+        flow.runner as FlowRunner<unknown, unknown>,
+        originalInput,
+        resumeEvent
+          ? [
+              ...(restoreApproval !== undefined ? [restoreApproval] : []),
+              { eventType: resumeEvent.eventType, payload: resumeEvent.payload },
+            ]
+          : [],
+        options?.fence,
+        options?.deadlineMs ?? flow.definition.deadlineMs,
+        // R3k (D2) — the effects run as the OWNER recorded in the log, never as the caller and
+        // never as whatever `preloadedState.variables._principal` claims (caller-supplied, so a
+        // doctored state cannot forge or strip the owner). `options.principal` stays the
+        // lifecycle caller, used above for authorization and the approval check.
+        await this.actingPrincipal(preloadedState.executionId, options?.principal, {
+          first: restoredFirst,
+        }),
+        false,
+        lease
+      );
+    } catch (err) {
+      await lease.release();
+      throw err;
+    }
   }
 
   /**
@@ -3152,49 +3179,71 @@ export class WorkflowRuntime {
       }),
     };
 
-    // ADR 0103 — a CALLER-CHOSEN id can already exist (a redelivered trigger, a second node
-    // firing the same schedule occurrence), so its sequence 0 is made durable BEFORE the body
-    // runs: the store's uniqueness refuses a duplicate here, before any effect, fold or
-    // onEvent. A minted ulid cannot collide, so the default path pays no barrier and stays
-    // byte-identical (the journal writes sequence 0 behind the fold, as before).
-    if (options?.executionId !== undefined) {
-      bootstrap.durable = await this.writeBootstrap(
-        executionId,
-        definition.id,
-        bootstrap,
-        options.fence
-      );
+    // ADR 0130 D11 (S7c) - the heartbeat lease is taken BEFORE the first append (the caller-chosen
+    // id's durable sequence 0 included): a stream that exists was created by a driver that held one.
+    // Another live owner = stand down (a caller-chosen id reads as "already started elsewhere").
+    let lease: DriverLease = NO_LEASE;
+    if (this.driverLeases !== undefined) {
+      const got = await this.driverLeases.acquire(executionId);
+      if (got === null) {
+        const held = new LeaseHeldError(executionId);
+        throw options?.executionId !== undefined
+          ? new ExecutionAlreadyExistsError(executionId, held)
+          : held;
+      }
+      lease = got;
     }
-    // R3 — the start is committed (a caller-chosen id's sequence 0 is durable; a minted ulid
-    // cannot collide), so only now does the authorizer learn who owns the id.
-    this.notifyStarted(
-      executionId,
-      definition.id,
-      options?.principal,
-      options?.system,
-      options?.parentExecutionId,
-      false,
-      options?.lineage
-    );
-
-    // Identity-guarded: a synchronous throw below must remove only THIS start's entry, never a
-    // live execution's of the same id.
-    const startRecord = { record: principalRecord, parent };
-    this.startRecords.set(executionId, startRecord);
     try {
-      return this.execute(
+      // ADR 0103 — a CALLER-CHOSEN id can already exist (a redelivered trigger, a second node
+      // firing the same schedule occurrence), so its sequence 0 is made durable BEFORE the body
+      // runs: the store's uniqueness refuses a duplicate here, before any effect, fold or
+      // onEvent. A minted ulid cannot collide, so the default path pays no barrier and stays
+      // byte-identical (the journal writes sequence 0 behind the fold, as before).
+      if (options?.executionId !== undefined) {
+        bootstrap.durable = await this.writeBootstrap(
+          executionId,
+          definition.id,
+          bootstrap,
+          options.fence
+        );
+      }
+      // R3 — the start is committed (a caller-chosen id's sequence 0 is durable; a minted ulid
+      // cannot collide), so only now does the authorizer learn who owns the id.
+      this.notifyStarted(
         executionId,
         definition.id,
-        vm,
-        runner as FlowRunner<unknown, unknown>,
-        effectiveInput,
-        [bootstrap],
-        options?.fence,
-        options?.deadlineMs ?? definition.deadlineMs,
-        actingAs
+        options?.principal,
+        options?.system,
+        options?.parentExecutionId,
+        false,
+        options?.lineage
       );
+
+      // Identity-guarded: a synchronous throw below must remove only THIS start's entry, never a
+      // live execution's of the same id.
+      const startRecord = { record: principalRecord, parent };
+      this.startRecords.set(executionId, startRecord);
+      try {
+        return this.execute(
+          executionId,
+          definition.id,
+          vm,
+          runner as FlowRunner<unknown, unknown>,
+          effectiveInput,
+          [bootstrap],
+          options?.fence,
+          options?.deadlineMs ?? definition.deadlineMs,
+          actingAs,
+          false,
+          lease
+        );
+      } catch (err) {
+        if (this.startRecords.get(executionId) === startRecord)
+          this.startRecords.delete(executionId);
+        throw err;
+      }
     } catch (err) {
-      if (this.startRecords.get(executionId) === startRecord) this.startRecords.delete(executionId);
+      await lease.release();
       throw err;
     }
   }
@@ -3545,75 +3594,86 @@ export class WorkflowRuntime {
       approval
     );
 
-    // ADR 0110 D1 — only a resume that PASSED every refusal re-opens a terminal owner's inbox: a
-    // refused one (not-suspended, authz, replay-check, migration) must not leave a stream behind
-    // for an execution that stays terminal.
-    await this.reopenInbox(executionId, vm.getState());
-    // ADR 0118 D2 — the conditional fence is taken LAST, after every check that can refuse without
-    // appending: a fence acquired and then abandoned supersedes whoever holds the old one.
-    // R3k (D2) — the owner recorded at sequence 0, on every resume path (an approval, a timer
-    // wake, recovery, a remote worker): never the resumer. Computed BEFORE the acquire so the fence
-    // is strictly last (an await that can throw between acquire and append burns the token).
-    const acting = await this.actingPrincipal(executionId, options?.principal, {
-      first: firstEvent,
-    });
-    let runVm = vm;
-    let fence = options?.fence;
-    if (options?.fenceIfParkedAt !== undefined) {
-      const got = await this.acquireFenceIfParked(
-        executionId,
-        resumeEvent,
-        options.fenceIfParkedAt,
-        options.system,
-        { vm, events: allEvents ?? tailEvents },
-        inboxWake !== undefined
-      );
-      fence = got.fence;
-      runVm = got.vm;
-    }
-    // ADR 0110 D8 — the batch was built from an earlier fold. Whatever was appended since (a
-    // journaled operator discard is an ignorable kind, so the fence still holds) may have moved a
-    // cursor past a message in it; the fold would accept that consumption as an answer. Judge the
-    // batch against the cursors of the VM it will run from, and refold instead of writing it.
-    if (inboxWake !== undefined && staleInboxBatch(runVm.getState(), inboxWake.pre)) {
-      throw new StaleInboxBatch(executionId);
-    }
+    // ADR 0130 D11 (S7c) - the heartbeat lease comes BEFORE the fence and the first append (lease,
+    // then fence). Another live owner = stand down: nothing appended and, above all, no fence taken
+    // (a fence acquired and abandoned would supersede that live driver). The send/notify winner
+    // reaches here too (`inboxWake`). Taken after every refusal that appends nothing.
+    const lease = await this.takeDriverLease(executionId);
+    try {
+      // ADR 0110 D1 — only a resume that PASSED every refusal re-opens a terminal owner's inbox: a
+      // refused one (not-suspended, authz, replay-check, migration) must not leave a stream behind
+      // for an execution that stays terminal.
+      await this.reopenInbox(executionId, vm.getState());
+      // ADR 0118 D2 — the conditional fence is taken LAST, after every check that can refuse without
+      // appending: a fence acquired and then abandoned supersedes whoever holds the old one.
+      // R3k (D2) — the owner recorded at sequence 0, on every resume path (an approval, a timer
+      // wake, recovery, a remote worker): never the resumer. Computed BEFORE the acquire so the fence
+      // is strictly last (an await that can throw between acquire and append burns the token).
+      const acting = await this.actingPrincipal(executionId, options?.principal, {
+        first: firstEvent,
+      });
+      let runVm = vm;
+      let fence = options?.fence;
+      if (options?.fenceIfParkedAt !== undefined) {
+        const got = await this.acquireFenceIfParked(
+          executionId,
+          resumeEvent,
+          options.fenceIfParkedAt,
+          options.system,
+          { vm, events: allEvents ?? tailEvents },
+          inboxWake !== undefined
+        );
+        fence = got.fence;
+        runVm = got.vm;
+      }
+      // ADR 0110 D8 — the batch was built from an earlier fold. Whatever was appended since (a
+      // journaled operator discard is an ignorable kind, so the fence still holds) may have moved a
+      // cursor past a message in it; the fold would accept that consumption as an answer. Judge the
+      // batch against the cursors of the VM it will run from, and refold instead of writing it.
+      if (inboxWake !== undefined && staleInboxBatch(runVm.getState(), inboxWake.pre)) {
+        throw new StaleInboxBatch(executionId);
+      }
 
-    const bootstrap: BootstrapEvent[] = [
-      ...(approval !== undefined ? [approval] : []),
-      ...discardEvents,
-      ...(resolvedWait !== undefined
-        ? [
-            ...(inboxWake !== undefined
-              ? inboxWake.pre.map((e) => ({ ...e, atomic: true as const }))
-              : [{ eventType: resumeEvent.eventType, payload: resumePayload }]),
-            // ADR 0110 D3 — a wait-addressed resume: kernel-stamped, `{ waitId, payload }`.
-            {
-              eventType: "EXECUTION_RESUMED",
-              payload: { waitId: resolvedWait.waitId, payload: resumePayload },
-              metadata: { kernel: true },
-              ...(inboxWake !== undefined && { atomic: true as const }),
-            },
-          ]
-        : [
-            { eventType: resumeEvent.eventType, payload: resumePayload },
-            ...answerEvents(runVm.getState(), resumePayload),
-          ]),
-    ];
-    return this.execute(
-      executionId,
-      workflowId,
-      runVm,
-      resolved.runner as FlowRunner<unknown, unknown>,
-      effectiveInput,
-      inboxWake === undefined && this.isReopen(runVm)
-        ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence)
-        : bootstrap,
-      fence,
-      options?.deadlineMs ?? resolved.definition.deadlineMs,
-      acting,
-      inboxWake !== undefined
-    );
+      const bootstrap: BootstrapEvent[] = [
+        ...(approval !== undefined ? [approval] : []),
+        ...discardEvents,
+        ...(resolvedWait !== undefined
+          ? [
+              ...(inboxWake !== undefined
+                ? inboxWake.pre.map((e) => ({ ...e, atomic: true as const }))
+                : [{ eventType: resumeEvent.eventType, payload: resumePayload }]),
+              // ADR 0110 D3 — a wait-addressed resume: kernel-stamped, `{ waitId, payload }`.
+              {
+                eventType: "EXECUTION_RESUMED",
+                payload: { waitId: resolvedWait.waitId, payload: resumePayload },
+                metadata: { kernel: true },
+                ...(inboxWake !== undefined && { atomic: true as const }),
+              },
+            ]
+          : [
+              { eventType: resumeEvent.eventType, payload: resumePayload },
+              ...answerEvents(runVm.getState(), resumePayload),
+            ]),
+      ];
+      return this.execute(
+        executionId,
+        workflowId,
+        runVm,
+        resolved.runner as FlowRunner<unknown, unknown>,
+        effectiveInput,
+        inboxWake === undefined && this.isReopen(runVm)
+          ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence)
+          : bootstrap,
+        fence,
+        options?.deadlineMs ?? resolved.definition.deadlineMs,
+        acting,
+        inboxWake !== undefined,
+        lease
+      );
+    } catch (err) {
+      await lease.release();
+      throw err;
+    }
   }
 
   /**
@@ -6085,6 +6145,38 @@ export class WorkflowRuntime {
     return this.liveHandles.has(executionId) || this.startingSuccessors.has(executionId);
   }
 
+  /**
+   * ADR 0130 D11 (S7c) - this runtime's heartbeat keeper, or `undefined` when heartbeat is
+   * unwired. The poll and the sweep (`TimerService`, `recoverAbandoned`) claim through it.
+   */
+  get leaseKeeper(): LeaseKeeper | undefined {
+    return this.driverLeases?.keeper;
+  }
+
+  /**
+   * ADR 0130 D11 (S7c) - take a hold on `executionId`'s heartbeat lease: the claim a driver makes
+   * BEFORE it takes the fence. `null` = another live owner holds an unexpired lease (stand down: drive
+   * nothing, take no fence). Unwired, always a no-op hold. Holds are reference-counted: the keeper's
+   * lease is released when the last hold on the id is, and every run this runtime starts takes its own
+   * hold on top of a claimant's. Release the hold in a `finally`.
+   */
+  async acquireDriverLease(executionId: string): Promise<DriverLease | null> {
+    if (this.driverLeases === undefined) return NO_LEASE;
+    return this.driverLeases.acquire(executionId);
+  }
+
+  /** The driver's own hold: a stand-down is a {@link LeaseHeldError}, nothing appended, no fence taken. */
+  private async takeDriverLease(executionId: string): Promise<DriverLease> {
+    const lease = await this.acquireDriverLease(executionId);
+    if (lease === null) throw new LeaseHeldError(executionId);
+    return lease;
+  }
+
+  /** Stop the heartbeat keeper and release every lease still held (awaited). No-op when unwired. */
+  async closeHeartbeat(): Promise<void> {
+    await this.driverLeases?.close();
+  }
+
   /** The park is unanswered but could not be answered now: keep (or write) the durable due-now row. */
   private async markContended(executionId: string): Promise<{ contended: true }> {
     if (this.timerStore !== undefined) {
@@ -6271,6 +6363,8 @@ export class WorkflowRuntime {
     } catch (err) {
       if (err instanceof ResumeRefusedError) return none; // answered meanwhile / settled
       if (err instanceof ResumeContendedError) return contended();
+      // ADR 0130 D11: another live owner holds the lease - stand down, leave the durable row.
+      if (err instanceof LeaseHeldError) return contended();
       if (err instanceof StaleInboxBatch) return RETRY; // a cursor moved under the scan: refold
       const cause = err instanceof StorageWriteError ? err.cause : err;
       // The park was written unfenced but a fence has been acquired since (without an append):
@@ -6571,56 +6665,65 @@ export class WorkflowRuntime {
       approval
     );
 
-    await this.reopenInbox(executionId, state); // after every refusal (see `resume`)
-    const recorded = state.variables._flowHash;
-    // ADR 0118 D2 — last, after every refusal that appends nothing (see `resume`).
-    const acting = await this.actingPrincipal(executionId, options.principal, {
-      first: firstEvent,
-    });
-    let runVm = vm;
-    let fence = options.fence;
-    if (options.fenceIfParkedAt !== undefined) {
-      const got = await this.acquireFenceIfParked(
-        executionId,
-        resumeEvent,
-        options.fenceIfParkedAt,
-        options.system,
-        { vm, events: allEvents }
-      );
-      fence = got.fence;
-      runVm = got.vm;
-    }
-    const bootstrap: BootstrapEvent[] = [
-      ...(approval !== undefined ? [approval] : []),
-      ...discardEvents,
-      {
-        eventType: "EXECUTION_MIGRATED",
-        payload: {
-          toFlowId: newFlowId,
-          strategy: options.strategy,
-          ...(toHash !== undefined && { toHash }),
-          // ADR 0113 D2 — re-arm the body-fingerprint comparison against the code now run ("" = none).
-          toCodeHash: target.definition.codeFingerprint ?? "",
-          ...(typeof recorded === "string" && { fromHash: recorded }),
-          ...(stateMigrated && { migratedInput }),
+    // ADR 0130 D11 (S7c) - lease BEFORE the fence and the first append; a stand-down takes no fence.
+    const lease = await this.takeDriverLease(executionId);
+    try {
+      await this.reopenInbox(executionId, state); // after every refusal (see `resume`)
+      const recorded = state.variables._flowHash;
+      // ADR 0118 D2 — last, after every refusal that appends nothing (see `resume`).
+      const acting = await this.actingPrincipal(executionId, options.principal, {
+        first: firstEvent,
+      });
+      let runVm = vm;
+      let fence = options.fence;
+      if (options.fenceIfParkedAt !== undefined) {
+        const got = await this.acquireFenceIfParked(
+          executionId,
+          resumeEvent,
+          options.fenceIfParkedAt,
+          options.system,
+          { vm, events: allEvents }
+        );
+        fence = got.fence;
+        runVm = got.vm;
+      }
+      const bootstrap: BootstrapEvent[] = [
+        ...(approval !== undefined ? [approval] : []),
+        ...discardEvents,
+        {
+          eventType: "EXECUTION_MIGRATED",
+          payload: {
+            toFlowId: newFlowId,
+            strategy: options.strategy,
+            ...(toHash !== undefined && { toHash }),
+            // ADR 0113 D2 — re-arm the body-fingerprint comparison against the code now run ("" = none).
+            toCodeHash: target.definition.codeFingerprint ?? "",
+            ...(typeof recorded === "string" && { fromHash: recorded }),
+            ...(stateMigrated && { migratedInput }),
+          },
         },
-      },
-      { eventType: resumeEvent.eventType, payload: resumePayload },
-      ...answerEvents(runVm.getState(), resumePayload),
-    ];
-    return this.execute(
-      executionId,
-      workflowId,
-      runVm,
-      target.runner as FlowRunner<unknown, unknown>,
-      stateMigrated ? migratedInput : recordedInput,
-      this.isReopen(runVm)
-        ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence)
-        : bootstrap,
-      fence,
-      options.deadlineMs ?? target.definition.deadlineMs,
-      acting
-    );
+        { eventType: resumeEvent.eventType, payload: resumePayload },
+        ...answerEvents(runVm.getState(), resumePayload),
+      ];
+      return this.execute(
+        executionId,
+        workflowId,
+        runVm,
+        target.runner as FlowRunner<unknown, unknown>,
+        stateMigrated ? migratedInput : recordedInput,
+        this.isReopen(runVm)
+          ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence)
+          : bootstrap,
+        fence,
+        options.deadlineMs ?? target.definition.deadlineMs,
+        acting,
+        false,
+        lease
+      );
+    } catch (err) {
+      await lease.release();
+      throw err;
+    }
   }
 
   /**
@@ -7647,51 +7750,77 @@ export class WorkflowRuntime {
       },
       ...(computeTarget !== undefined && { metadata: { [COMPUTE_TARGET_KEY]: computeTarget } }),
     };
-    try {
-      bootstrap.durable = await this.writeBootstrap(successorId, workflowId, bootstrap, undefined);
-    } catch (err) {
-      if (!(err instanceof ExecutionAlreadyExistsError)) throw err;
-      const existing = (await readRangeOf(this.eventStore, successorId, 0, 0))[0];
-      const from = (existing?.payload as { continuedFrom?: { executionId?: unknown } } | null)
-        ?.continuedFrom?.executionId;
-      if (from === predecessorId) {
-        // A re-drive of a predecessor whose successor already started (ADR 0109 D2): no-op.
+    // ADR 0130 D11 (S7c) - the successor is leased BEFORE its EXECUTION_STARTED while the predecessor
+    // still holds its own (it releases at its CONTINUED commit): no instant exists at which a stream
+    // is `running` and unleased. Another live owner already driving the successor reads exactly like
+    // an existing sequence 0 of a re-driven predecessor: a no-op.
+    let succLease: DriverLease = NO_LEASE;
+    if (this.driverLeases !== undefined) {
+      const got = await this.driverLeases.acquire(successorId);
+      if (got === null) {
         return { successorId, chainId: chain.chainId, generation, handle: undefined };
       }
-      throw new ContinuationConflictError(
-        predecessorId,
-        successorId,
-        typeof from === "string" ? from : undefined
-      );
+      succLease = got;
     }
-    // The owner is the predecessor's (lineage trusted: the kernel's own start, like a fork's).
-    this.notifyStarted(successorId, workflowId, undefined, undefined, predecessorId, true);
-    const startRecord = { record, parent };
-    this.startRecords.set(successorId, startRecord);
     try {
-      const actingAs = await this.actingPrincipal(successorId, undefined, {
-        first: bootstrap.durable,
-      });
-      const vm = new ReplayVM([], {
-        executionId: successorId,
-        workflowId,
-        workflowVersion: registered?.definition.version ?? args.workflowVersion,
-      });
-      const handle = this.execute(
-        successorId,
-        workflowId,
-        vm,
-        runner,
-        args.carry,
-        [bootstrap],
-        undefined,
-        registered?.definition.deadlineMs,
-        actingAs
-      );
-      c.onHandle(handle);
-      return { successorId, chainId: chain.chainId, generation, handle };
+      try {
+        bootstrap.durable = await this.writeBootstrap(
+          successorId,
+          workflowId,
+          bootstrap,
+          undefined
+        );
+      } catch (err) {
+        if (!(err instanceof ExecutionAlreadyExistsError)) throw err;
+        const existing = (await readRangeOf(this.eventStore, successorId, 0, 0))[0];
+        const from = (existing?.payload as { continuedFrom?: { executionId?: unknown } } | null)
+          ?.continuedFrom?.executionId;
+        if (from === predecessorId) {
+          // A re-drive of a predecessor whose successor already started (ADR 0109 D2): no-op.
+          await succLease.release();
+          return { successorId, chainId: chain.chainId, generation, handle: undefined };
+        }
+        throw new ContinuationConflictError(
+          predecessorId,
+          successorId,
+          typeof from === "string" ? from : undefined
+        );
+      }
+      // The owner is the predecessor's (lineage trusted: the kernel's own start, like a fork's).
+      this.notifyStarted(successorId, workflowId, undefined, undefined, predecessorId, true);
+      const startRecord = { record, parent };
+      this.startRecords.set(successorId, startRecord);
+      try {
+        const actingAs = await this.actingPrincipal(successorId, undefined, {
+          first: bootstrap.durable,
+        });
+        const vm = new ReplayVM([], {
+          executionId: successorId,
+          workflowId,
+          workflowVersion: registered?.definition.version ?? args.workflowVersion,
+        });
+        const handle = this.execute(
+          successorId,
+          workflowId,
+          vm,
+          runner,
+          args.carry,
+          [bootstrap],
+          undefined,
+          registered?.definition.deadlineMs,
+          actingAs,
+          false,
+          succLease
+        );
+        c.onHandle(handle);
+        return { successorId, chainId: chain.chainId, generation, handle };
+      } catch (err) {
+        if (this.startRecords.get(successorId) === startRecord)
+          this.startRecords.delete(successorId);
+        throw err;
+      }
     } catch (err) {
-      if (this.startRecords.get(successorId) === startRecord) this.startRecords.delete(successorId);
+      await succLease.release();
       throw err;
     }
   }
@@ -7839,7 +7968,13 @@ export class WorkflowRuntime {
      * took the slot, or a stale fence) is reported through {@link inboxLanded} rather than as a
      * storage error: it is expected contention, not a fault.
      */
-    inboxDelivery = false
+    inboxDelivery = false,
+    /**
+     * ADR 0130 D11 (S7c) - the heartbeat hold the caller took BEFORE its fence and first append. The
+     * run owns it from here: released AWAITED before any handle settles, and a lost lease aborts the
+     * run. {@link NO_LEASE} (unwired) leaves every line below byte-identical (G2).
+     */
+    lease: DriverLease = NO_LEASE
   ): ExecutionHandle {
     // Backstop: `start`/`resume`/`resumeAs`/`restoreFromState` already validated the per-call
     // `options.deadlineMs` before appending anything; this covers the flow definition's own budget.
@@ -7848,20 +7983,42 @@ export class WorkflowRuntime {
     // on a FIRST run (a fresh start, or a recovery re-drive of one that never parked), never on a
     // resume from a park.
     const entryStatus = vm.peekState().status;
-    let resolveCompletion!: (state: ReturnType<typeof vm.getState>) => void;
-    let rejectCompletion!: (err: unknown) => void;
-    let resolveSuspend!: (state: ReturnType<typeof vm.getState>) => void;
-    let rejectSuspend!: (err: unknown) => void;
+    let resolveCompletionRaw!: (state: ReturnType<typeof vm.getState>) => void;
+    let rejectCompletionRaw!: (err: unknown) => void;
+    let resolveSuspendRaw!: (state: ReturnType<typeof vm.getState>) => void;
+    let rejectSuspendRaw!: (err: unknown) => void;
 
     const completionPromise = new Promise<ReturnType<typeof vm.getState>>((resolve, reject) => {
-      resolveCompletion = resolve;
-      rejectCompletion = reject;
+      resolveCompletionRaw = resolve;
+      rejectCompletionRaw = reject;
     });
 
     const suspendPromise = new Promise<ReturnType<typeof vm.getState>>((resolve, reject) => {
-      resolveSuspend = resolve;
-      rejectSuspend = reject;
+      resolveSuspendRaw = resolve;
+      rejectSuspendRaw = reject;
     });
+
+    // ADR 0130 D11 (S7c) - the lease is released at the suspend/terminal commit and that release is
+    // AWAITED before the handle settles (a prompt `send` winner is not blocked by our own stale
+    // lease). Unwired, the settlers are the raw resolvers, synchronously, as before.
+    const leased = lease !== NO_LEASE;
+    let releasing: Promise<void> | undefined;
+    const releaseOnce = (): Promise<void> => {
+      releasing ??= lease.release().catch(() => {});
+      return releasing;
+    };
+    const settleAfterRelease =
+      <A>(raw: (a: A) => void) =>
+      (a: A): void => {
+        void releaseOnce().then(() => raw(a));
+      };
+    const resolveCompletion = leased
+      ? settleAfterRelease(resolveCompletionRaw)
+      : resolveCompletionRaw;
+    const rejectCompletion = leased ? settleAfterRelease(rejectCompletionRaw) : rejectCompletionRaw;
+    const resolveSuspend = leased ? settleAfterRelease(resolveSuspendRaw) : resolveSuspendRaw;
+    const rejectSuspend = leased ? settleAfterRelease(rejectSuspendRaw) : rejectSuspendRaw;
+    let leaseLost: LeaseLostError | undefined;
 
     // A run has two terminal promises (suspend, completion) but a caller typically
     // awaits only one. Attach no-op guards so rejecting the un-awaited one (e.g. a
@@ -7964,7 +8121,11 @@ export class WorkflowRuntime {
       vm,
       this.onEvent,
       (err) => {
-        if (!(inboxDelivery && (isWriteConflict(err) || isStaleFence(err)))) {
+        // A lost lease is expected, not a storage fault: it was reported where it was detected.
+        if (
+          !(err instanceof LeaseLostError) &&
+          !(inboxDelivery && (isWriteConflict(err) || isStaleFence(err)))
+        ) {
           this.onStorageError?.(executionId, err);
         }
         if (!cancelled) controller.abort(err);
@@ -7973,6 +8134,28 @@ export class WorkflowRuntime {
       fence,
       this.now
     );
+
+    // ADR 0130 D11 (S7c) - the run's lease. Lost (taken over, or past the local self-fencing deadline;
+    // this may run SYNCHRONOUSLY inside `lease.valid()`): the journal is abandoned so NOTHING more is
+    // appended (no EXECUTION_FAILED/CANCELLED: another node may now own the log), the run's existing
+    // abort controller is aborted with the LeaseLostError (effects that honour the signal stop), and
+    // both handles reject with it (superseded, not failed). The write gate additionally refuses every
+    // append whose lease is no longer valid (a stall longer than the TTL), before it reaches the store.
+    if (leased) {
+      lease.onLost((err) => {
+        if (leaseLost !== undefined) return;
+        leaseLost = err;
+        journal.abandon(err);
+        controller.abort(err);
+        rejectCompletionRaw(err);
+        rejectSuspendRaw(err);
+      });
+      journal.setWriteGate(() =>
+        lease.valid()
+          ? undefined
+          : (leaseLost ?? new LeaseLostError(executionId, "released", "closed"))
+      );
+    }
 
     // Commit bootstrap events (EXECUTION_STARTED / resume+RESUMED / restore) so
     // they flow through the same sequencer + writer as everything else.
@@ -8054,6 +8237,13 @@ export class WorkflowRuntime {
         ...(this.meterCeilings !== undefined && { meterCeilings: this.meterCeilings }),
         ...(this.errorClasses !== undefined && { errorClasses: this.errorClasses }),
         ...(this.surface !== undefined && { surface: this.surface }),
+        // ADR 0130 D11 (S7c): no effect is dispatched under a lease that is no longer valid.
+        ...(leased && {
+          dispatchGate: () => {
+            if (!lease.valid())
+              throw leaseLost ?? new LeaseLostError(executionId, "released", "closed");
+          },
+        }),
         divergence,
         inbox: {
           enabled: this.inboxEnabled,
@@ -8094,7 +8284,7 @@ export class WorkflowRuntime {
       });
       // A zombie (an effect still running) must not append after the cancel record.
       ctx.seal({ cancel: true }); // keeps only STEP_CANCELLED of the steps the abort interrupts
-      rejectCompletion(err);
+      rejectCompletionRaw(err);
     };
 
     // K8.3 — execution deadline, anchored to the LOGGED EXECUTION_STARTED
@@ -8553,6 +8743,9 @@ export class WorkflowRuntime {
     if (bootstrapLanded !== undefined) this.inboxLanded.set(handle, bootstrapLanded);
     this.liveHandles.set(executionId, handle);
     void run().finally(() => {
+      // ADR 0130 D11 (S7c): the backstop for a path that returned without settling (a cancel); the
+      // settlers above already released on every other path (idempotent).
+      if (leased) void releaseOnce();
       clearDeadline?.();
       this.liveHandles.delete(executionId);
       this.startRecords.delete(executionId);
