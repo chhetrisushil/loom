@@ -2,6 +2,7 @@ import type { ExecutionState } from "@loom/core";
 import { DISPATCHER_SPI_VERSION, LocalDispatcher, SupervisingDispatcher } from "@loom/dispatcher";
 import { GrantTable } from "@loom/effect-runtime";
 import {
+  type AcquireOptions,
   BRANCH_REGISTRY_SPI_VERSION,
   CoalescingEventStore,
   EVENT_STORE_SPI_VERSION,
@@ -55,6 +56,7 @@ import {
   eventStoreNowProblem,
   eventStoreSealingProblem,
   incarnationAnchorProblem,
+  leaseBatchProblem,
   leaseExpiredDefaultProblem,
   leaseStoreNowProblem,
   runBranchRegistryConformance,
@@ -338,7 +340,65 @@ runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsy
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
 runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore", {
   clocked: (now) => new InMemoryLeaseStore({ now }),
+  spiVersion: "2.2.0",
 });
+
+// The 2.2.0 batch invariants must DISCRIMINATE, not merely pass on the reference store.
+describe("leaseBatchProblem discriminates", () => {
+  class RenewManyEchoes extends InMemoryLeaseStore {
+    // The classic bug: report the input, not the held set.
+    override async renewMany(ids: readonly string[], owner: string, ttl: number, now?: number) {
+      await super.renewMany(ids, owner, ttl, now);
+      return [...ids];
+    }
+  }
+  class IgnoresProof extends InMemoryLeaseStore {
+    // Steals on any steal flag, proof or not.
+    override async acquire(
+      id: string,
+      owner: string,
+      ttl: number,
+      now?: number,
+      o?: AcquireOptions
+    ) {
+      if (o?.steal !== undefined) {
+        const held = await this.get(id);
+        if (held !== null) await this.release(id, held.owner);
+      }
+      return super.acquire(id, owner, ttl, now);
+    }
+  }
+  it("fails a renewMany that echoes its input instead of the held set", async () => {
+    expect(await leaseBatchProblem(() => new RenewManyEchoes())).toMatch(/held set/);
+  });
+  it("fails a store that steals without validating the proof", async () => {
+    expect(await leaseBatchProblem(() => new IgnoresProof())).toMatch(/fence proof/);
+  });
+  it("fails a store that claims 2.2.0 but omits the batch methods", async () => {
+    const noBatch = () =>
+      Object.assign(new InMemoryLeaseStore(), {
+        acquireMany: undefined,
+        renewMany: undefined,
+        releaseMany: undefined,
+      });
+    expect(await leaseBatchProblem(noBatch)).toMatch(/must implement/);
+  });
+  it("passes the reference store", async () => {
+    expect(await leaseBatchProblem(() => new InMemoryLeaseStore())).toBeUndefined();
+  });
+});
+
+// A store claiming 2.1.0 is not asked for batch methods: a 2.1.0-shaped store passes the kit.
+runLeaseStoreConformance(
+  () =>
+    Object.assign(new InMemoryLeaseStore(), {
+      acquireMany: undefined,
+      renewMany: undefined,
+      releaseMany: undefined,
+    }),
+  "InMemoryLeaseStore (2.1.0 subset)",
+  { spiVersion: "2.1.0" }
+);
 
 // The kit's expired()-default case must DISCRIMINATE, not merely pass on the reference store
 // (L28 review: with wall-clock factories it passed the exact bug and failed a correct sim store).

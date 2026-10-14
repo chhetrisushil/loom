@@ -5,7 +5,7 @@
 > Card II is [the developer workflow](cheatsheet-dx.md).
 >
 > KERNEL ABI **1.3.0** · EVENT SCHEMA **1.25.0** · EventStore SPI **2.5.0** ·
-> BranchRegistry SPI **2.0.0** · LeaseStore SPI **2.1.0** · MemoryStore SPI **2.1.0**
+> BranchRegistry SPI **2.0.0** · LeaseStore SPI **2.2.0** · MemoryStore SPI **2.1.0**
 
 ## The ten syscalls
 
