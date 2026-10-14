@@ -2111,6 +2111,7 @@ export class WorkflowContextImpl implements WorkflowContext {
             delivered = true;
             continue;
           }
+          if (outcome === "dropped") continue; // a duplicate entry was dropped: the next pass reads the topic on
           break;
         }
         const cursor = cursorFor(cursorsOf(this.vm.peekState().variables), topic);
@@ -2173,14 +2174,50 @@ export class WorkflowContextImpl implements WorkflowContext {
    * is on). Anything this node cannot deliver is `"skip"`: the topic is passed over and the run parks
    * on it; the post-park notify pass reports why. Never journals a sealed or REDACTED copy.
    */
-  private async deliverHeld(topic: string, entry: QuarantineEntry): Promise<"delivered" | "skip"> {
+  private async deliverHeld(
+    topic: string,
+    entry: QuarantineEntry
+  ): Promise<"delivered" | "dropped" | "skip"> {
     const held = this.inboxBinding?.quarantine;
     if (held === undefined) return "skip";
     if (entry.state === "held" && !held.autoRelease) return "skip";
     const copy = await held.readCopy(entry);
-    if (this.sealed || this.parkDecided || !copy.ok) return "skip";
+    if (this.sealed || this.parkDecided) return "skip";
     const target = this.waitsOnTopic(topic)[0];
     if (target === undefined) return "skip";
+    // The held key was delivered meanwhile (a same-key message on another topic, or a retry): the
+    // window has it, so the entry is dropped by a consumption that delivers nothing (at most once),
+    // which needs no ability to open the copy. The run goes on to the topic's next message.
+    if (this.isDuplicate(entry.key)) {
+      if (entry.state === "held" && this.isSealed("INBOX_RELEASED")) return "skip";
+      const dup = {
+        waitId: target.arm.waitId,
+        topic,
+        messageId: entry.key,
+        inboxSeq: entry.inboxSeq,
+        sender: copy.ok ? copy.message.sender : (copy.message?.sender ?? {}),
+        payload: null,
+      };
+      if (entry.state === "held") {
+        this.journal.commitAtomic([
+          {
+            eventType: "INBOX_RELEASED",
+            payload: {
+              topic,
+              key: entry.key,
+              messageId: copy.ok ? copy.message.messageId : (copy.message?.messageId ?? entry.key),
+              disposition: "deliver",
+              auto: true,
+            },
+          },
+          { eventType: "MESSAGE_CONSUMED", payload: dup },
+        ]);
+      } else {
+        this.commit("MESSAGE_CONSUMED", dup);
+      }
+      return "dropped";
+    }
+    if (!copy.ok) return "skip";
     const consumed = {
       waitId: target.arm.waitId,
       topic,

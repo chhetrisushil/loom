@@ -141,11 +141,11 @@ describe("quarantine helpers", () => {
     expect(build({ inboxQuarantineMax: 1024 }).rt.inboxQuarantineLimit).toBe(1024);
     expect(build({}).rt.inboxQuarantineLimit).toBe(256);
   });
-  it("retained span counts orphans: head minus the oldest live copy", () => {
-    expect(retainedSpan(null, [])).toBe(0);
-    expect(retainedSpan(4, [])).toBe(1);
-    expect(retainedSpan(4, [2, 3])).toBe(3); // copies 2,3 and an orphan at 4
-    expect(retainedSpan(0, [0])).toBe(1);
+  it("retained span: head minus the oldest PINNED copy (live or in flight), 0 when nothing is pinned", () => {
+    expect(retainedSpan(null, null)).toBe(0);
+    expect(retainedSpan(4, null)).toBe(0);
+    expect(retainedSpan(4, 2)).toBe(3);
+    expect(retainedSpan(1, 1)).toBe(1);
   });
   it("a REDACTED read is recognised at any depth, and an unverifiable walk fails closed", () => {
     expect(readsAsRedacted({ $shredded: true })).toBe(true);

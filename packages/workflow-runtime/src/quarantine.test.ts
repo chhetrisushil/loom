@@ -111,17 +111,17 @@ for (const backend of inboxBackends("quarantine")) {
           topic: "a",
           messageId: "a1",
           inboxSeq: 0,
-          heldAt: 0,
+          heldAt: 1,
         });
 
         // The copy: same envelope bytes (payload still sealed, metadata.seal kept), deterministic id.
         const original = (await s.raw.eventStore.read(inboxStreamId(s.e)))[0];
-        const copy = (await s.raw.eventStore.read(q(s.e)))[0];
+        const copy = (await s.raw.eventStore.read(q(s.e)))[1]; // sequence 0 is the payload-free anchor
         expect(JSON.stringify(original?.payload)).toContain("__loomEnc");
         expect(copy?.payload).toEqual(original?.payload);
         expect(copy?.metadata?.seal).toEqual(original?.metadata?.seal);
         expect(copy?.metadata?.seal).toBeDefined();
-        expect(copy?.id).toBe(`quarantine:${s.e}:${keyOf("a1")}`);
+        expect(copy?.id).toBe(`quarantine:${s.e}:${keyOf("a1")}:0`); // chain, key, original inboxSeq
         expect(JSON.stringify(copy)).not.toContain(SECRET);
 
         // The fact: audit trail names the operator and reason; the fold holds the topic.
@@ -132,7 +132,7 @@ for (const backend of inboxBackends("quarantine")) {
           inboxSeq: 0,
           key: keyOf("a1"),
           messageId: "a1",
-          heldAt: 0,
+          heldAt: 1,
           operator: OP,
           reason: "key rotation",
         });
@@ -143,7 +143,7 @@ for (const backend of inboxBackends("quarantine")) {
         await parked(s.b, s.e);
         const st = await s.b.rt.loadState(s.e);
         expect(quarantinedOf(st).a).toEqual([
-          { key: keyOf("a1"), inboxSeq: 0, heldAt: 0, state: "held" },
+          { key: keyOf("a1"), inboxSeq: 0, heldAt: 1, state: "held" },
         ]);
         expect(cursorsOf(st?.variables ?? {}).a).toBe(0);
         await s.b.rt.notifyInbox(s.e).catch(() => undefined);
@@ -338,7 +338,7 @@ for (const backend of inboxBackends("quarantine")) {
         expect(
           (await kindsOf(s.raw.eventStore, s.e)).filter((k) => k === "INBOX_QUARANTINED")
         ).toHaveLength(1);
-        expect(await quarantineHead(s.raw.eventStore, s.e)).toBe(0);
+        expect(await quarantineHead(s.raw.eventStore, s.e)).toBe(1); // the anchor and the one copy
         expect(before.length).toBeLessThan((await kindsOf(s.raw.eventStore, s.e)).length);
       });
 
