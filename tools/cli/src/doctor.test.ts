@@ -305,7 +305,7 @@ describe("loom doctor", () => {
   it("ERRORS a static-path archive snapshot store under an encrypting event store; ok with sealState + shared keys", async () => {
     const cfg = (archive: string) =>
       timerConfig(
-        `(() => { const KEYS = { durable: true }; return { stores: { eventStore: { keys: KEYS }, snapshotStore: { keys: KEYS, sealsWholeState: true } }, lifecycle: { archiveSnapshotStore: ${archive} }, schedules: [] }; })()`
+        `(() => { const KEYS = { durable: true }; return { stores: { eventStore: { keys: KEYS, sealingCapability: () => ({ covers: ["INBOX_MESSAGE"] }) }, snapshotStore: { keys: KEYS, sealsWholeState: true } }, lifecycle: { archiveSnapshotStore: ${archive} }, schedules: [] }; })()`
       );
     const bad = cfg("{ keys: KEYS }");
     const { result } = await cmdDoctor({ dir: bad.ws, config: bad.config });
@@ -313,6 +313,21 @@ describe("loom doctor", () => {
     const good = cfg("{ keys: KEYS, sealsWholeState: true }");
     const g = await cmdDoctor({ dir: good.ws, config: good.config });
     expect(find(g.result, ARCH)?.status).toBe("ok");
+  });
+
+  it("agrees with LogLifecycle.archiveIsSafe: a static archive store on the shared keys is NOT 'failed' while the event store covers nothing (the retention gate would accept it)", async () => {
+    const mk = (eventStore: string) =>
+      timerConfig(
+        `(() => { const KEYS = { durable: true }; return { stores: { eventStore: ${eventStore}, snapshotStore: { keys: KEYS, sealsWholeState: true } }, lifecycle: { archiveSnapshotStore: { keys: KEYS } }, schedules: [] }; })()`
+      );
+    // keys exposed, nothing covered (yet): archiveIsSafe only checks key identity
+    const quiet = mk("{ keys: KEYS, sealingCapability: () => ({ covers: [] }) }");
+    const q = await cmdDoctor({ dir: quiet.ws, config: quiet.config });
+    expect(find(q.result, ARCH)?.status).not.toBe("failed");
+    // covers declared WITHOUT keys: archiveIsSafe checks sealsWholeState only (no key identity to compare)
+    const noKeys = mk("{ sealingCapability: () => ({ covers: ['X'] }) }");
+    const n = await cmdDoctor({ dir: noKeys.ws, config: noKeys.config });
+    expect(find(n.result, ARCH)?.status).toBe("failed"); // static archive store, sealing event store
   });
 
   it("skips when nothing encrypts — there is no key to depend on", async () => {
