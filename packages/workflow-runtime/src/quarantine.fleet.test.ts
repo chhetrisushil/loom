@@ -594,7 +594,8 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
     const s = await heldScene({ total: 2, plainSnaps: true });
     const copy = (await s.raw.eventStore.read(quarantineStreamId(s.e)))[1];
     expect(JSON.stringify(copy)).toContain("__loomEnc");
-    expect(JSON.stringify(copy)).not.toContain("S1");
+    // JSON-quoted: base64 ciphertext never contains `"`, so a random `S1` inside it cannot match (loom #581).
+    expect(JSON.stringify(copy)).not.toContain('"S1"');
     await s.keys.destroy(s.e); // the owner's subject
     const opened = (await s.a.eventStore.read(quarantineStreamId(s.e)))[1];
     expect(JSON.stringify(opened?.payload)).toContain("$shredded"); // non-loud: redacted, not thrown
