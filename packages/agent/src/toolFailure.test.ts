@@ -89,6 +89,8 @@ const TERMINAL = new Set([
   "StorageWriteError",
   "InboxTopicStreamsRequiredError",
   "SealedPayloadUnreadableError",
+  "SealedStreamUnreadableError",
+  "KeyUnavailableError",
   "ShardSealingMismatchError",
   "AsyncContextUnavailableError",
   "StaleFenceError",

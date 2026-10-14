@@ -71,6 +71,7 @@ import {
   assertValidBudget,
   remainingBudget,
 } from "./deadlineTimer";
+import { UNKNOWN_OWNER_REASON } from "./executionAccessPolicy";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import {
   DEFAULT_INBOX_MAX_BACKLOG,
@@ -124,6 +125,15 @@ import {
   storedPrincipalOf,
 } from "./principal";
 import {
+  SealGuardedEventStore,
+  SealGuardedSnapshotStore,
+  SealedStreamUnreadableError,
+  isSealedUnreadable,
+  principalLooksSealed,
+  sealedDetailOf,
+  withSealedDetail,
+} from "./sealGuard";
+import {
   type StrayPassthroughReport,
   StrayScanner,
   discardDecisionId,
@@ -152,7 +162,6 @@ import {
   ResumeContendedError,
   ResumePayloadValidationError,
   ResumeRefusedError,
-  SealedPayloadUnreadableError,
   StartFencedOutError,
   StateMigrationError,
   TIMER_FIRED,
@@ -709,6 +718,8 @@ const STRAY_WARNING_MEMORY = 4096;
 
 /** R3k round 2 (ADR 0111 D6) — how far up a `parent` chain an owner is looked for. */
 const MAX_LINEAGE_HOPS = 8;
+/** Bound on the per-execution sealed-refusal report counters. */
+const SEALED_REPORT_CAP = 1024;
 /** ADR 0116 — how many times a reopen re-slots its bootstrap over late outcomes that took its slot. */
 const REOPEN_ATTEMPTS = 3;
 /** ADR 0116 — bounded sequence-CAS attempts of `recordOutcome` before it reports contention. */
@@ -964,8 +975,15 @@ export class WorkflowRuntime {
   private readonly liveHandles = new Map<string, ExecutionHandle>();
 
   constructor(deps: WorkflowRuntimeDeps) {
-    this.eventStore = deps.eventStore;
-    this.snapshotStore = deps.snapshotStore;
+    // ADR 0130 residuals D7 - THE funnel: every read of a stored envelope into the fold, the replay
+    // VM, an authorization decision or a flow passes the seal guard (a marker this node cannot open,
+    // or a key it does not hold, is refused denial-shaped before anything is folded or appended).
+    // `packages/spec` pins that no kernel source reads the unguarded store.
+    const guardedEvents = new SealGuardedEventStore(deps.eventStore);
+    this.eventStore = guardedEvents;
+    this.snapshotStore = new SealGuardedSnapshotStore(deps.snapshotStore, async (id) => {
+      await readRangeOf(guardedEvents, id, 0, 0);
+    });
     this.effectRuntime = deps.effectRuntime;
     this.onEvent = deps.onEvent;
     this.branchRegistry = deps.branchRegistry;
@@ -1233,7 +1251,23 @@ export class WorkflowRuntime {
       return {};
     }
     try {
-      const recorded = await this.recordedPrincipal(executionId, known);
+      // ADR 0130 residuals D7 - a principal this node cannot open is refused BEFORE the policy is
+      // consulted (the policy would see `owner === undefined` and a lenient `unknownOwner` would
+      // admit a stranger). The seal guard already refuses a MARKED stream at this read; the
+      // backstop below catches an UNMARKED legacy stream whose principal record is itself a
+      // ciphertext envelope (an O(1) shape check on the small record, never a payload walk).
+      let knownFirst = known;
+      if (knownFirst === undefined && !this.startRecords.has(executionId)) {
+        knownFirst = { first: (await readRangeOf(this.eventStore, executionId, 0, 0))[0] };
+      }
+      if (knownFirst !== undefined && principalLooksSealed(knownFirst.first)) {
+        throw new SealedStreamUnreadableError("query", executionId, {
+          reason: "marker-unopenable",
+          sequence: 0,
+          covers: [],
+        });
+      }
+      const recorded = await this.recordedPrincipal(executionId, knownFirst);
       if (recorded.legacy) return {};
       const owner = ownerOfChain(recorded.chain);
       if (owner === undefined && recorded.chain !== undefined) return {}; // shredded / unrestorable / delegation-only: unknown
@@ -1245,9 +1279,72 @@ export class WorkflowRuntime {
         ...(owner !== undefined && { owner }),
         ...(parentOwner !== undefined && { parentOwner }),
       };
-    } catch {
+    } catch (err) {
+      // A stream this node cannot open is NOT an "unknown owner" for the policy to judge.
+      if (err instanceof SealedStreamUnreadableError) throw err;
       return {}; // an owner we cannot read is an unknown owner: the policy decides
     }
+  }
+
+  /**
+   * ADR 0130 residuals D7 - run a public op and turn a stream-level seal refusal into the
+   * DENIAL-SHAPED error of THAT op: `onExecutionDenied` fires with the generic reason, the operator
+   * channel gets the real cause (first then every 16th), and NOTHING is appended (no
+   * `EXECUTION_DENIED` fact: an incapable node must not write into a log it cannot read, and an
+   * unfenced append would let any stranger burn the owner's sequence numbers).
+   */
+  private async sealedOp<T>(
+    op: ExecutionOp,
+    executionId: string,
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined,
+    body: () => Promise<T>
+  ): Promise<T> {
+    try {
+      return await body();
+    } catch (err) {
+      if (!(err instanceof SealedStreamUnreadableError) || this.sealedRefused.has(err)) throw err;
+      const refusal = withSealedDetail(op, executionId, err);
+      this.sealedRefused.add(refusal);
+      this.reportSealed(executionId, refusal);
+      // A kernel-internal caller (the system grant) is not a caller being denied.
+      if (system === undefined || system !== this.systemGrantToken) {
+        this.onExecutionDenied?.(
+          {
+            op,
+            executionId,
+            workflowId: "",
+            ...(principal !== undefined && { principal }),
+          },
+          UNKNOWN_OWNER_REASON
+        );
+      }
+      throw refusal;
+    }
+  }
+
+  /** Refusals already translated by {@link sealedOp} (so a nested op does not double-report). */
+  private readonly sealedRefused = new WeakSet<Error>();
+  /** Per-execution refusal counts for first-then-every-16th operator reporting (bounded, LRU-ish). */
+  private readonly sealedReports = new Map<string, number>();
+
+  /** Operator report of a sealed refusal: the first, then only every 16th (not every poll). */
+  private reportSealed(executionId: string, err: SealedStreamUnreadableError): void {
+    const n = (this.sealedReports.get(executionId) ?? 0) + 1;
+    this.sealedReports.delete(executionId);
+    if (this.sealedReports.size >= SEALED_REPORT_CAP) {
+      const oldest = this.sealedReports.keys().next().value;
+      if (oldest !== undefined) this.sealedReports.delete(oldest);
+    }
+    this.sealedReports.set(executionId, n);
+    if (n !== 1 && n % 16 !== 0) return;
+    const d = sealedDetailOf(err);
+    this.onWarn(
+      `execution "${executionId}": REFUSED, this node cannot open the stream (${d?.reason ?? "unknown"}${
+        d?.sequence !== undefined ? ` at sequence ${d.sequence}` : ""
+      }${d?.covers !== undefined && d.covers.length > 0 ? `, sealed: ${d.covers.join(", ")}` : ""}). Nothing was appended. Run a node configured to open it (same sealed paths and key store).`
+    );
+    this.onStorageError?.(executionId, err);
   }
 
   /**
@@ -2412,6 +2509,17 @@ export class WorkflowRuntime {
     reason?: unknown,
     options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<boolean> {
+    return this.sealedOp("cancel", executionId, options?.principal, options?.system, () =>
+      this.cancelCore(executionId, reason, options)
+    );
+  }
+
+  /** `cancel` without the sealed-stream translation (see `sealedOp`). */
+  private async cancelCore(
+    executionId: string,
+    reason?: unknown,
+    options?: { principal?: PrincipalChain; system?: SystemGrant }
+  ): Promise<boolean> {
     assertNotReserved(executionId);
     const live = this.liveHandles.get(executionId);
     // ADR 0109 D4 — a cancel addressed to any generation reaches the chain's newest one (routed),
@@ -2984,7 +3092,9 @@ export class WorkflowRuntime {
     resumeEvent: ResumeEvent,
     options?: RunOptions
   ): Promise<ExecutionHandle> {
-    return this.resumeCore(executionId, resumeEvent, options);
+    return this.sealedOp("resume", executionId, options?.principal, options?.system, () =>
+      this.resumeCore(executionId, resumeEvent, options)
+    );
   }
 
   /**
@@ -3567,6 +3677,17 @@ export class WorkflowRuntime {
     message: SendMessage,
     options?: SendOptions
   ): Promise<SendResult> {
+    return this.sealedOp("send", executionId, options?.principal, options?.system, () =>
+      this.sendCore(executionId, message, options)
+    );
+  }
+
+  /** `send` without the sealed-stream translation (see `sealedOp`). */
+  private async sendCore(
+    executionId: string,
+    message: SendMessage,
+    options?: SendOptions
+  ): Promise<SendResult> {
     this.assertInboxEnabled("runtime.send");
     assertNotReserved(executionId);
     // Authorize FIRST, against the addressed id's recorded owner (which every generation of the
@@ -3835,6 +3956,17 @@ export class WorkflowRuntime {
    * - A finished owner is `InboxClosedError` (its stream is already gone).
    */
   async discardInbox(
+    executionId: string,
+    input: DiscardInboxInput,
+    options?: DiscardInboxOptions
+  ): Promise<DiscardInboxResult> {
+    return this.sealedOp("discard", executionId, options?.principal, options?.system, () =>
+      this.discardInboxCore(executionId, input, options)
+    );
+  }
+
+  /** `discardInbox` without the sealed-stream translation (see `sealedOp`). */
+  private async discardInboxCore(
     executionId: string,
     input: DiscardInboxInput,
     options?: DiscardInboxOptions
@@ -4166,6 +4298,17 @@ export class WorkflowRuntime {
    *   different `success`/`score` for the same pair is refused ({@link OutcomeRefusedError}).
    */
   async recordOutcome(
+    executionId: string,
+    outcome: RecordOutcomeInput,
+    options?: RecordOutcomeOptions
+  ): Promise<RecordOutcomeResult> {
+    return this.sealedOp("annotate", executionId, options?.principal, options?.system, () =>
+      this.recordOutcomeCore(executionId, outcome, options)
+    );
+  }
+
+  /** `recordOutcome` without the sealed-stream translation (see `sealedOp`). */
+  private async recordOutcomeCore(
     executionId: string,
     outcome: RecordOutcomeInput,
     options?: RecordOutcomeOptions
@@ -4844,7 +4987,7 @@ export class WorkflowRuntime {
       // ADR 0130: a sealed message this node cannot open leaves a durable due-now row (whichever
       // caller got here: the post-park read, a send's wake, a timer poll), so a node that CAN open
       // it picks the message up on its next poll without waiting for a new send. Then it reports.
-      if (err instanceof SealedPayloadUnreadableError) {
+      if (isSealedUnreadable(err)) {
         try {
           await this.markContended(executionId);
         } catch {
@@ -5347,6 +5490,16 @@ export class WorkflowRuntime {
    * duplicate effects, no restart.
    */
   async loadState(
+    executionId: string,
+    options?: { principal?: PrincipalChain; system?: SystemGrant }
+  ): Promise<ExecutionState | null> {
+    return this.sealedOp("query", executionId, options?.principal, options?.system, () =>
+      this.loadStateCore(executionId, options)
+    );
+  }
+
+  /** `loadState` without the sealed-stream translation (see `sealedOp`). */
+  private async loadStateCore(
     executionId: string,
     options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<ExecutionState | null> {
@@ -6880,6 +7033,19 @@ export class WorkflowRuntime {
           );
           rejectSuspend(sealedRefusal);
           rejectCompletion(sealedRefusal);
+          return;
+        }
+        // ADR 0130 residuals D7 - a read inside the attempt hit a stream this node cannot open: refuse
+        // the ATTEMPT, never fail the execution (a terminal EXECUTION_FAILED would strand it for a
+        // node that CAN open it).
+        if (isSealedUnreadable(err) && !cancelled && !journal.failed) {
+          ctx.seal();
+          await journal.drain().catch(() => {});
+          this.onWarn(
+            `execution "${executionId}": run attempt REFUSED, NOT failed: ${(err as Error).message}`
+          );
+          rejectSuspend(err);
+          rejectCompletion(err);
           return;
         }
         if (err instanceof ContinueAsNewSignal) {

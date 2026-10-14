@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
   type ExecutionEnumerable,
   type LeaseStore,
@@ -12,11 +12,8 @@ import { redriveDelayMs } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
-import {
-  EXECUTION_RECOVERED,
-  FlowReplayDivergenceError,
-  SealedPayloadUnreadableError,
-} from "./types";
+import { isSealedUnreadable } from "./sealGuard";
+import { EXECUTION_RECOVERED, FlowReplayDivergenceError } from "./types";
 
 // ── Recovering executions whose supervisor died ───────────────────────────────
 //
@@ -253,7 +250,19 @@ export async function recoverAbandoned(
     }
     summary.scanned++;
 
-    const state = await runtime.loadState(executionId, runtime.systemOptions());
+    if (sealedBackedOff(runtime, executionId)) continue; // ADR 0130: this node cannot open it
+    let state: ExecutionState | null;
+    try {
+      state = await runtime.loadState(executionId, runtime.systemOptions());
+    } catch (err) {
+      // ADR 0130 residuals D7 - a stream this node cannot open (a marker it cannot open, a key it
+      // does not hold): not recoverable HERE, and no reason to abort the pass. Back off, report
+      // (first then every 16th), and leave it for a capable node.
+      if (!isSealedUnreadable(err)) throw err;
+      sealedRefusalBackoff(runtime, executionId, err, options);
+      summary.failed++;
+      continue;
+    }
     if (state === null) continue;
     // ADR 0110 D5 — a PARKED execution with an inbox wait: any node's pass runs the notify path, so
     // a wake lost with a crashed sender or owner is not lost for good. Idempotent and fenced.
@@ -389,7 +398,7 @@ export async function recoverAbandoned(
         // ADR 0130 — the re-drive was refused because THIS node cannot open a recorded sealed
         // answer: not recovered. Report it (rate-limited) and skip the execution on this node for
         // a back-off window so the sweep does not re-drive it every pass.
-        if (refused instanceof SealedPayloadUnreadableError) {
+        if (isSealedUnreadable(refused)) {
           sealedRefusalBackoff(runtime, executionId, refused, options);
           summary.failed++;
           continue;
@@ -398,6 +407,9 @@ export async function recoverAbandoned(
       summary.recovered++;
       options.onRecovered?.(executionId);
     } catch (err) {
+      // ADR 0130 residuals D7 - a refusal from any read inside the re-drive (this node cannot open
+      // the stream): back off like the sealed-answer refusal, do not retry every pass.
+      if (isSealedUnreadable(err)) sealedRefusalBackoff(runtime, executionId, err, options);
       // Left in place; the next pass retries (at-least-once).
       summary.failed++;
       options.onError?.(executionId, err);
@@ -488,7 +500,7 @@ function sealedBackedOff(runtime: WorkflowRuntime, executionId: string): boolean
 function sealedRefusalBackoff(
   runtime: WorkflowRuntime,
   executionId: string,
-  err: SealedPayloadUnreadableError,
+  err: Error,
   options: RecoverAbandonedOptions
 ): void {
   let m = sealedBackoffs.get(runtime);

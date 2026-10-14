@@ -1429,7 +1429,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     for (const s of supervisors) if (await s.parkedOnChild(executionId)) return true;
     return false;
   };
-  const lifecycle = new LogLifecycle(stores.eventStore, stores.snapshotStore, {
+  // ADR 0130 residuals D7: compaction folds a log into a checkpoint, so it reads through the runtime's
+  // GUARDED store (a stream this node cannot open is refused, never checkpointed as ciphertext).
+  const lifecycle = new LogLifecycle(runtime.events, stores.snapshotStore, {
     ...(config.retention?.archive !== undefined && { archive: config.retention.archive }),
     pinned,
     ...(config.retention?.pinnedEventTypes !== undefined && {

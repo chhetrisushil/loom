@@ -1,13 +1,27 @@
 import type { ExecutionState } from "@loom/core";
-import { type DecoratorPlan, installOptional } from "@loom/event-runtime";
+import {
+  type DecoratorPlan,
+  type EventStore,
+  KeyUnavailableError,
+  installOptional,
+} from "@loom/event-runtime";
 import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
-import { decryptValue, encryptValue, envelopeAad, hasEnvelope, mapPaths } from "./crypto";
+import {
+  type IvSource,
+  assertIvSourceAllowed,
+  decryptValue,
+  encryptValue,
+  envelopeAad,
+  hasEnvelope,
+  mapPaths,
+} from "./crypto";
 import {
   PayloadShreddedError,
   PlaintextSnapshotRefusedError,
   SnapshotUndecryptableError,
 } from "./errors";
 import type { KeyStore } from "./keystore";
+import { recordsShred } from "./shred";
 
 function isWholeStateEnvelope(state: unknown): boolean {
   return typeof state === "object" && state !== null && "__loomEnc" in state;
@@ -81,6 +95,19 @@ export interface EncryptingSnapshotStoreOptions {
   sensitive?: readonly string[];
   /** The erasure subject for a snapshot; default the executionId (matches the event store). */
   subjectOf?: (snapshot: Pick<Snapshot, "executionId" | "workflowId">) => string;
+  /**
+   * Deterministic cipher seam (ADR 0130 residuals D7, simulation only): see
+   * `EncryptingEventStoreOptions.ivSource`. Build one with `seededIvSource` from
+   * `@loom/plugin-crypto/testing`. REFUSED when `NODE_ENV === "production"`.
+   */
+  ivSource?: IvSource;
+  /**
+   * The RAW event store beside this snapshot store. When a subject's key is gone, the log decides
+   * whether it was a real shred (a `PAYLOAD_SHREDDED` tombstone, which always sits ABOVE the latest
+   * snapshot) or this node merely lacks the key (`KeyUnavailableError`, ADR 0130 residuals D7).
+   * Without it only a shred folded into the snapshot is recognised.
+   */
+  events?: EventStore;
 }
 
 /**
@@ -103,6 +130,8 @@ export class EncryptingSnapshotStore implements SnapshotStore {
   private readonly legacyPlaintext: "load" | "refuse";
   private readonly legacySensitive: readonly string[] | undefined;
   private readonly subjectOf: (s: Pick<Snapshot, "executionId" | "workflowId">) => string;
+  private readonly ivSource: IvSource | undefined;
+  private readonly events: EventStore | undefined;
 
   constructor(
     private readonly inner: SnapshotStore,
@@ -135,6 +164,9 @@ export class EncryptingSnapshotStore implements SnapshotStore {
     this.legacyPlaintext = options.legacyPlaintext ?? "load";
     this.legacySensitive = options.legacySensitive;
     this.subjectOf = options.subjectOf ?? ((s) => s.executionId);
+    assertIvSourceAllowed(options.ivSource, "EncryptingSnapshotStore");
+    this.ivSource = options.ivSource;
+    this.events = options.events;
     const plan = {
       // Deleting ciphertext only reduces data — and without it a retention sweep over an
       // encrypted snapshot store orphaned every snapshot it should have removed.
@@ -177,10 +209,31 @@ export class EncryptingSnapshotStore implements SnapshotStore {
     }
     const key = await this.keys.getOrCreate(subject);
     if (this.sealsWholeState === true) {
-      const sealed = encryptValue(key, snapshot.state, { v: SNAP_AAD_V, bind: slotOf(snapshot) });
+      const sealed = encryptValue(
+        key,
+        snapshot.state,
+        { v: SNAP_AAD_V, bind: slotOf(snapshot) },
+        this.ivSource?.({
+          streamId: snapshot.executionId,
+          sequence: snapshot.sequence,
+          path: "state",
+        })
+      );
       return this.inner.save({ ...snapshot, state: sealed as never });
     }
-    const state = mapPaths(snapshot.state, this.sensitive, (v) => encryptValue(key, v));
+    let n = 0;
+    const state = mapPaths(snapshot.state, this.sensitive, (v) =>
+      encryptValue(
+        key,
+        v,
+        undefined,
+        this.ivSource?.({
+          streamId: snapshot.executionId,
+          sequence: snapshot.sequence,
+          path: `state#${n++}`,
+        })
+      )
+    );
     return this.inner.save({ ...snapshot, state: state as ExecutionState });
   }
 
@@ -196,7 +249,7 @@ export class EncryptingSnapshotStore implements SnapshotStore {
     if (!hasEnvelope(snapshot.state)) return snapshot;
     const subjectId = this.subjectOf(snapshot);
     const key = await this.keys.get(subjectId);
-    if (key === null) throw new PayloadShreddedError(subjectId, snapshot.executionId);
+    if (key === null) throw await this.keyGone(snapshot, subjectId);
     // A whole-state envelope is opened by EITHER mode (same keys): a store switched back to
     // static paths must not hand the kernel a half-state. It is bound to its slot (executionId +
     // sequence), and an envelope WITHOUT the binding marker is refused, never opened bare.
@@ -226,6 +279,35 @@ export class EncryptingSnapshotStore implements SnapshotStore {
       state = openAll(snapshot.state, key);
     }
     return { ...snapshot, state: state as ExecutionState };
+  }
+
+  /**
+   * ADR 0130 residuals D7. Key gone is a real shred only when it can be PROVED: the folded state
+   * records it (compaction folds the tombstone in), or the log holds a `PAYLOAD_SHREDDED` tombstone
+   * (needs `events`). Without `events` nothing can prove "no tombstone", so the old behaviour holds
+   * (PayloadShreddedError): claiming KeyUnavailableError would make a real shred read as a missing key.
+   *
+   * Cost: with `events`, each key-unavailable read does a full `events.read` of the stream. It is
+   * bounded by the kernel's back-off on a refused stream; there is deliberately no cache.
+   */
+  private async keyGone(snapshot: Snapshot, subjectId: string): Promise<Error> {
+    if (
+      this.events === undefined ||
+      recordsShred(snapshot.state, subjectId) ||
+      (await this.logRecordsShred(snapshot.executionId, subjectId))
+    ) {
+      return new PayloadShreddedError(subjectId, snapshot.executionId);
+    }
+    return new KeyUnavailableError(subjectId, snapshot.executionId);
+  }
+
+  private async logRecordsShred(executionId: string, subjectId: string): Promise<boolean> {
+    if (this.events === undefined) return false;
+    return (await this.events.read(executionId)).some(
+      (e) =>
+        e.eventType === "PAYLOAD_SHREDDED" &&
+        (e.payload as { subjectId?: unknown } | null)?.subjectId === subjectId
+    );
   }
 
   async loadLatest(executionId: string): Promise<Snapshot | null> {

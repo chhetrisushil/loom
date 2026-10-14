@@ -11,6 +11,23 @@ import { expandPaths, hasWildcard } from "@loom/classify";
 
 const ENC_TAG = "loom/aes-256-gcm";
 
+/** The algorithm id every sealed envelope carries; the `cipher` of a `metadata.seal` marker (ADR 0130 residuals D7). */
+export const CIPHER_ID = ENC_TAG;
+
+/**
+ * Where a deterministic cipher seam is asked for an IV: the stream, the envelope's sequence and the
+ * sealed path (a wildcard path that seals several values is asked once per value, suffixed `#n`).
+ * The seam itself ({@link IvSource}) is exported only from `@loom/plugin-crypto/testing`.
+ */
+export interface IvContext {
+  readonly streamId: string;
+  readonly sequence: number;
+  readonly path: string;
+}
+
+/** An IV source for the deterministic cipher seam (testing only; see `@loom/plugin-crypto/testing`). */
+export type IvSource = (ctx: IvContext) => Uint8Array;
+
 interface EncEnvelope {
   __loomEnc: typeof ENC_TAG;
   iv: string;
@@ -42,8 +59,16 @@ function aadBytes(v: string, bind: string): Buffer {
   return Buffer.from(`${v}|${bind}`, "utf-8");
 }
 
-export function encryptValue(key: Buffer, value: unknown, aad?: EnvelopeAad): EncEnvelope {
-  const iv = randomBytes(12);
+export function encryptValue(
+  key: Buffer,
+  value: unknown,
+  aad?: EnvelopeAad,
+  ivOverride?: Uint8Array,
+): EncEnvelope {
+  // Production default: a fresh random IV per value. `ivOverride` exists only for the deterministic
+  // cipher seam (testing subpath); a reused IV under AES-GCM breaks confidentiality.
+  const iv = ivOverride === undefined ? randomBytes(12) : Buffer.from(ivOverride);
+  if (iv.length !== 12) throw new RangeError("an AES-GCM IV must be exactly 12 bytes");
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   if (aad !== undefined) cipher.setAAD(aadBytes(aad.v, aad.bind));
   const plaintext = Buffer.from(JSON.stringify(value ?? null), "utf-8");
@@ -144,4 +169,16 @@ export function mapPaths(
     }
   }
   return out;
+}
+
+/**
+ * The deterministic cipher seam is for simulation only: a reused or predictable IV under AES-GCM
+ * breaks confidentiality. A custom IV source is refused when `NODE_ENV === "production"`.
+ */
+export function assertIvSourceAllowed(ivSource: IvSource | undefined, who: string): void {
+  if (ivSource !== undefined && process.env.NODE_ENV === "production") {
+    throw new Error(
+      `${who}: a custom \`ivSource\` is refused when NODE_ENV is "production" (a deterministic IV breaks AES-GCM confidentiality). It exists for seeded simulation only; see @loom/plugin-crypto/testing.`
+    );
+  }
 }

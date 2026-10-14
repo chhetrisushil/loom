@@ -33,6 +33,19 @@ function msg(stream: string, sequence: number, payload: unknown): EventEnvelope 
   };
 }
 
+/** The tombstone `shredSubject` writes into a shredded execution's log (appended to the RAW inner store). */
+function tombstone(stream: string, sequence: number, subject: string): EventEnvelope {
+  return {
+    id: `${stream}-shred-${sequence}`,
+    workflowId: "",
+    executionId: stream,
+    eventType: "PAYLOAD_SHREDDED",
+    sequence,
+    timestamp: 0,
+    payload: { subjectId: subject },
+  };
+}
+
 function setup(onShredded?: "throw" | "tolerate") {
   const inner = new InMemoryAsyncEventStore();
   const keys = new InMemoryKeyStore();
@@ -318,6 +331,9 @@ describe("EncryptingEventStore — a chain's inbox stream", () => {
     expect((step?.payload as { output: { a: unknown } }).output.a).toEqual(marker);
     // after the erasure the sealed step is unreadable (the old behaviour left it plaintext)
     await keys.destroy("alice");
+    // a REAL shred leaves its tombstone (shredSubject writes it); key gone with no tombstone is
+    // `KeyUnavailableError` (ADR 0130 residuals D7), covered in sealMarker.test.ts
+    await inner.append(tombstone("alice-1", 3, "alice"));
     await expect(store.read("alice-1")).rejects.toBeInstanceOf(PayloadShreddedError);
   });
 
@@ -366,7 +382,7 @@ describe("EncryptingEventStore — a chain's inbox stream", () => {
   });
 
   it("every other stream still fails loudly after a shred (the authoritative fold must not diverge)", async () => {
-    const { keys, store } = setup("throw");
+    const { inner, keys, store } = setup("throw");
     const step: EventEnvelope = {
       id: "alice-2-1",
       workflowId: "w",
@@ -378,6 +394,7 @@ describe("EncryptingEventStore — a chain's inbox stream", () => {
     };
     await store.append(step);
     await keys.destroy("alice");
+    await inner.append(tombstone("alice-2", 2, "alice"));
     await expect(store.read("alice-2")).rejects.toBeInstanceOf(PayloadShreddedError);
   });
 

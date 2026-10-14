@@ -5,6 +5,7 @@ import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
   InMemoryKeyStore,
+  shredSubject,
 } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import {
@@ -14,9 +15,12 @@ import {
   type FlowRunner,
   type PrincipalCodec,
   type RegisteredFlow,
+  SealedStreamUnreadableError,
+  UNKNOWN_OWNER_REASON,
   WorkflowRuntime,
   executionAccessPolicy,
 } from "@loom/workflow-runtime";
+import { sealedDetailOf } from "@loom/workflow-runtime/operator";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { defineConfig } from "./defineConfig";
@@ -102,7 +106,7 @@ const codec: PrincipalCodec = {
   },
 };
 
-async function boot(mode: Mode = "crypto", unknownOwner?: "allow") {
+async function boot(mode: Mode = "crypto", unknownOwner?: "allow", noPolicyB = false) {
   const raw = new InMemoryAsyncEventStore();
   const rawSnaps = new InMemoryAsyncSnapshotStore();
   const timerStore = new InMemoryTimerStore();
@@ -138,20 +142,32 @@ async function boot(mode: Mode = "crypto", unknownOwner?: "allow") {
   // Node B: the SAME stores through a store that cannot open the principal, the SAME policy, strict
   // (`requirePrincipal`), and the same identity mode, so it reads sequence 0 as written.
   const spyB = spyPolicy(unknownOwner);
+  // A wrong-key node is a CONFIGURED crypto node (it registers the same principal paths, so it
+  // CAN open the marker) whose KeyStore lacks the key.
   const eventsB =
     mode === "wrongKey"
-      ? new EncryptingEventStore(raw, new InMemoryKeyStore(), { sensitive: {} })
+      ? new EncryptingEventStore(raw, new InMemoryKeyStore(), {
+          sensitive: {
+            EXECUTION_STARTED: ["principal.identity"],
+            OUTCOME_RECORDED: ["recordedBy"],
+          },
+        })
       : raw;
   const snapsB =
     mode === "wrongKey"
       ? new EncryptingSnapshotStore(rawSnaps, new InMemoryKeyStore(), { sensitive: [] })
       : rawSnaps;
+  const denials: Array<string | undefined> = [];
+  const storageErrors: unknown[] = [];
   const b = new WorkflowRuntime({
+    onExecutionDenied: (_r, reason) => denials.push(reason),
+    onStorageError: (_i, e) => storageErrors.push(e),
+    onWarn: () => {},
     eventStore: eventsB,
     snapshotStore: snapsB,
     effectRuntime: new EffectRuntime([]),
     timerStore,
-    executionAuthorizer: spyB.authorizer,
+    ...(!noPolicyB && { executionAuthorizer: spyB.authorizer }),
     executionAuthz: { requirePrincipal: true },
     principalIdentity: sealed ? "encrypted" : "ref",
     ...(mode === "codecB" && { principalCodec: codec }),
@@ -160,7 +176,16 @@ async function boot(mode: Mode = "crypto", unknownOwner?: "allow") {
   b.registerFlow(parkDef, parkRunner);
   b.registerFlow(decideDef, decideRunner);
 
-  return { a, b, raw, rawSnaps, ownersB: spyB.owners, close: () => a.close() };
+  return {
+    a,
+    b,
+    raw,
+    rawSnaps,
+    ownersB: spyB.owners,
+    denials,
+    storageErrors,
+    close: () => a.close(),
+  };
 }
 
 type Ctx = Awaited<ReturnType<typeof boot>>;
@@ -194,7 +219,7 @@ function run(c: Ctx, op: Op, id: string, who: typeof T1) {
   }
 }
 
-/** Events a denied op may append: resume/cancel record one best-effort EXECUTION_DENIED; the rest write nothing. */
+/** Events a denied op may append (the codec path still writes the ordinary best-effort audit fact). */
 const APPENDED: Record<Op, string[]> = {
   loadState: [],
   send: [],
@@ -208,7 +233,7 @@ const WHO = [
   ["T2 (a stranger)", T2],
 ] as const;
 
-/** Every op is DENIED (typed, owner-unknown), the policy saw owner===undefined, and only the expected facts landed. */
+/** Every op is DENIED (typed, owner unknown), the policy saw owner===undefined, and only the expected facts landed. */
 function denyMatrix(title: string, mode: Mode) {
   describe(title, () => {
     for (const op of OPS) {
@@ -233,16 +258,80 @@ function denyMatrix(title: string, mode: Mode) {
         });
       }
     }
+  });
+}
 
-    // OUTCOME_RECORDED.recordedBy variant: a late reward on a finished execution (op "annotate").
+/** The ordinary unknown-owner denial of the SAME call: an anonymously started execution under the default deny policy. */
+async function ordinaryDenial(op: Op, who: typeof T1): Promise<Error> {
+  const c = await boot("crypto");
+  try {
+    const id = `ord-${op}`;
+    const h = await c.a.runtime.start(parkFlow, {}, { executionId: id });
+    await h.waitForSuspend();
+    // not sealed: the principal is anonymous, the log has no seal marker on a principal
+    const r = await outcomeOf(run(c, op, id, who));
+    expect(r.outcome).toBe("denied");
+    return r.error as Error;
+  } finally {
+    await c.close();
+  }
+}
+
+const REFUSAL_ENV = [
+  ["unknownOwner deny (default)", undefined, false],
+  ["unknownOwner allow", "allow", false],
+  ["no policy at all", undefined, true],
+] as const;
+
+/** A sealed principal this node cannot open is REFUSED, denial-shaped, whatever the policy. */
+function refusalMatrix(title: string, mode: "crypto" | "wrongKey", reason: string) {
+  describe(title, () => {
+    for (const [envName, unknownOwner, noPolicy] of REFUSAL_ENV) {
+      for (const op of OPS) {
+        for (const [n, who] of WHO) {
+          it(`${op} is REFUSED (ExecutionDeniedError + SealedStreamUnreadableError) for ${n} under ${envName}`, async () => {
+            const c = await boot(mode, unknownOwner, noPolicy);
+            try {
+              const id = `${mode}-${op}-${n.slice(0, 2)}-${envName.length}`;
+              await parked(c, id);
+              const before = await c.raw.read(id);
+              const r = await outcomeOf(run(c, op, id, who));
+              expect(r.outcome, String(r.error)).toBe("denied");
+              const err = r.error as SealedStreamUnreadableError;
+              expect(err).toBeInstanceOf(SealedStreamUnreadableError);
+              expect(err).toBeInstanceOf(ExecutionDeniedError);
+              expect(err.name).toBe("ExecutionDeniedError");
+              expect(err.reason).toBe(UNKNOWN_OWNER_REASON);
+              expect(sealedDetailOf(err)?.reason).toBe(reason);
+              // the authorizer is never consulted, the log is untouched, no EXECUTION_DENIED fact
+              expect(c.ownersB.filter((o) => o.executionId === id)).toEqual([]);
+              expect(await c.raw.read(id)).toEqual(before);
+              // caller-visible shape equals the ordinary denial of the same call
+              const ord = await ordinaryDenial(op, who);
+              expect(err.message.replace(id, "X")).toBe(ord.message.replace(`ord-${op}`, "X"));
+              expect(Object.keys(err).sort()).toEqual(Object.keys(ord).sort());
+              expect(JSON.stringify(err)).not.toMatch(
+                /covers|sequence|key-unavailable|marker-unopenable|__loomEnc/
+              );
+              expect(c.denials.at(-1)).toBe(UNKNOWN_OWNER_REASON);
+              expect(c.storageErrors.length).toBeGreaterThan(0);
+              expect(sealedDetailOf(c.storageErrors[0])?.reason).toBe(reason);
+            } finally {
+              await c.close();
+            }
+          });
+        }
+      }
+    }
+
     for (const [n, who] of WHO) {
-      it(`recordOutcome is DENIED (typed, owner unknown) for ${n}`, async () => {
+      it(`recordOutcome is REFUSED (denial-shaped, nothing appended) for ${n}`, async () => {
         const c = await boot(mode);
         try {
           const id = `${mode}-o-${n.slice(0, 2)}`;
           const h = await c.a.runtime.start(decideFlow, {}, { executionId: id, principal: T1 });
           await h.waitForCompletion();
-          const before = (await c.raw.read(id)).length;
+          const before = await c.raw.read(id);
           const r = await outcomeOf(() =>
             c.b.recordOutcome(
               id,
@@ -251,19 +340,32 @@ function denyMatrix(title: string, mode: Mode) {
             )
           );
           expect(r.outcome).toBe("denied");
-          expect((r.error as ExecutionDeniedError).reason).toMatch(/owner is unknown/);
-          // No EXECUTION_DENIED audit fact for "annotate" by design (WorkflowRuntime.recordOutcome
-          // passes recordAfterSequence undefined): the log is a finished execution's evidence and a
-          // denied writer must leave it untouched. Only the onExecutionDenied callback fires.
-          expect((await c.raw.read(id)).length).toBe(before);
-          const seen = c.ownersB.filter((o) => o.executionId === id && o.op === "annotate");
-          expect(seen.length).toBeGreaterThan(0);
-          for (const o of seen) expect(o.owner).toBeUndefined();
+          expect(r.error).toBeInstanceOf(SealedStreamUnreadableError);
+          expect((r.error as ExecutionDeniedError).reason).toBe(UNKNOWN_OWNER_REASON);
+          expect(sealedDetailOf(r.error)?.reason).toBe(reason);
+          expect(await c.raw.read(id)).toEqual(before);
+          expect(c.ownersB.filter((o) => o.executionId === id)).toEqual([]);
         } finally {
           await c.close();
         }
       });
     }
+
+    it("onExecutionDenied gets the GENERIC reason and the operator channel the real cause", async () => {
+      const c = await boot(mode);
+      try {
+        const id = `${mode}-ops`;
+        await parked(c, id);
+        const probe = c.b;
+        await outcomeOf(() => probe.loadState(id, { principal: T1 }));
+        expect(c.denials).toEqual([UNKNOWN_OWNER_REASON]);
+        expect(c.storageErrors).toHaveLength(1);
+        expect(JSON.stringify(c.denials)).not.toMatch(/sealed|key|marker/i);
+        expect(sealedDetailOf(c.storageErrors[0])?.reason).toBe(reason);
+      } finally {
+        await c.close();
+      }
+    });
   });
 }
 
@@ -304,42 +406,27 @@ describe("S0 — a sealed/opaque principal read by a node that cannot open it (s
     }
   });
 
-  // Note it also denies the legitimate owner (T1): closed, not correct.
-  denyMatrix("crypto: raw node WITHOUT the key", "crypto");
+  // S2 (ADR 0130 residuals D7): the kernel refuses a sealed principal itself, BEFORE the policy.
+  refusalMatrix("crypto: raw node WITHOUT the key", "crypto", "marker-unopenable");
 
-  // A node whose KeyStore cannot open the log (decrypt-failure path). OBSERVED: only cancel is a typed denial.
-  // The store throws PayloadShreddedError while reading the execution (snapshot or inbox stream)
-  // before / instead of the authorizer's verdict, so the op CRASHES: closed (nothing runs, nothing is
-  // appended), but with a store error rather than ExecutionDeniedError.
-  describe("crypto: node holding a DIFFERENT (empty) KeyStore (decrypt-failure path)", () => {
-    for (const op of OPS) {
-      for (const [n, who] of WHO) {
-        const name =
-          op === "cancel"
-            ? `cancel is DENIED (typed, owner unknown; cancel reads no decrypting stream first) for ${n}`
-            : `${op} CRASHES with PayloadShreddedError (not allowed, not typed-denied) for ${n}`;
-        it(name, async () => {
-          const c = await boot("wrongKey");
-          try {
-            const id = `wk-${op}-${n.slice(0, 2)}`;
-            await parked(c, id);
-            const before = await c.raw.read(id);
-            const r = await outcomeOf(run(c, op, id, who));
-            if (op === "cancel") {
-              expect(r.outcome).toBe("denied");
-              expect((r.error as ExecutionDeniedError).reason).toMatch(/owner is unknown/);
-              const added = (await c.raw.read(id)).slice(before.length).map((e) => e.eventType);
-              expect(added).toEqual(["EXECUTION_DENIED"]);
-              return;
-            }
-            expect(r.outcome).toBe("crashed");
-            expect((r.error as Error).name).toBe("PayloadShreddedError");
-            expect(await c.raw.read(id)).toEqual(before);
-          } finally {
-            await c.close();
-          }
-        });
-      }
+  // A configured crypto node whose KeyStore lacks the key: the same refusal (key-unavailable, never
+  // PayloadShreddedError), including cancel.
+  refusalMatrix("crypto: node holding a DIFFERENT (empty) KeyStore", "wrongKey", "key-unavailable");
+
+  it("control: after a REAL shred the same reads raise PayloadShreddedError (tombstone present), unchanged", async () => {
+    const c = await boot("wrongKey");
+    try {
+      const id = "shred-ctl";
+      await parked(c, id);
+      // the real shred: destroy node A's key and write the tombstone (what shredSubject does)
+      const aKeys = (c.a.runtime.events as unknown as { keys: InMemoryKeyStore }).keys;
+      await shredSubject(aKeys, c.raw, id, { snapshotStore: { loadLatest: async () => null } });
+      const r = await outcomeOf(() => c.b.loadState(id, { principal: T1 }));
+      // an erasure stays the erasure outcome, never a sealed refusal
+      expect((r.error as Error).name).toBe("PayloadShreddedError");
+      expect(sealedDetailOf(r.error)).toBeUndefined();
+    } finally {
+      await c.close();
     }
   });
 
@@ -374,23 +461,4 @@ describe("S0 — a sealed/opaque principal read by a node that cannot open it (s
     });
   });
   denyMatrix("principalCodec: node B has NO codec", "codec");
-
-  // The closed result rests on the policy's `unknownOwner: "deny"` default, NOT on the kernel
-  // recognising the envelope. A policy that opts into `unknownOwner: "allow"` is fail-OPEN on a
-  // sealed principal for a stranger. That is the operator's explicit choice, recorded here so S2
-  // knows the kernel itself offers no second line of defence.
-  it("with unknownOwner:'allow' a raw node ALLOWS T2 (a stranger) on loadState: closed only by the policy default", async () => {
-    const c = await boot("crypto", "allow");
-    try {
-      await parked(c, "open");
-      const before = await c.raw.read("open");
-      expect((await outcomeOf(run(c, "loadState", "open", T2))).outcome).toBe("allowed");
-      const seen = c.ownersB.filter((o) => o.executionId === "open");
-      expect(seen.length).toBeGreaterThan(0);
-      for (const o of seen) expect(o.owner).toBeUndefined();
-      expect(await c.raw.read("open")).toEqual(before);
-    } finally {
-      await c.close();
-    }
-  });
 });

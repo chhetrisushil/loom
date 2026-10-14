@@ -113,8 +113,8 @@ const KIT_SENSITIVE = { STEP_COMPLETED: ["sequence"] };
 runEventStoreDecoratorConformance(
   "EncryptingEventStore",
   (inner) => new EncryptingEventStore(inner, new InMemoryKeyStore(), { sensitive: KIT_SENSITIVE }),
-  // ADR 0130 residuals D7: the encrypting store owns its sealing capability (an `undefined` stub
-  // until the marker lands), so the kit checks its presence, not the reference store's value.
+  // ADR 0130 residuals D7: the encrypting store owns its sealing capability (live, from its
+  // sensitive map), so the kit checks its presence, not the reference store's value.
   { sealing: "own" }
 );
 runSnapshotStoreDecoratorConformance(

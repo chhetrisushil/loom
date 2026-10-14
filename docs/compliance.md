@@ -200,6 +200,37 @@ head. *Remedy:* before relying on the key for such a chain, cancel the owner and
 (its stream is then deleted), or delete the stream yourself; there is no re-seal API, and a
 parked owner's stream is never deleted by the default erasure (it still reads it); `parked: "shred"` cancels the owner first, so its stream is then deleted.
 
+### A node that cannot open a sealed stream (mixed fleets, ADR 0130 residuals D7)
+
+With `security.crypto`, the encrypting store stamps `metadata.seal` (`{ v, cipher, covers }`: the
+exact `EVENT_TYPE.path` entries sealed in THAT envelope) in the same append that seals a field. The
+kernel checks the marker before anything is folded, replayed, handed to a flow or authorised
+against. A node that cannot open it (a raw store, a crypto node whose `sensitive` map is narrower,
+an older config) or that lacks the key (a different or empty `KeyStore`) refuses the whole stream:
+nothing is appended, the execution is never failed, and a node that CAN open it completes it.
+
+- **The refusal looks like an ordinary denial.** The caller gets an `ExecutionDeniedError` with the
+  unknown-owner reason (`UNKNOWN_OWNER_REASON`), indistinguishable from the denial of an id that does
+  not exist, and `onExecutionDenied` fires with that generic reason. No `EXECUTION_DENIED` fact is
+  written (an incapable node must not write into a log it cannot read). The true cause
+  (`marker-unopenable` / `key-unavailable`, sequence, covered paths) goes to operators only:
+  `onStorageError` and the log, the first refusal and then every 16th, and `sealedDetailOf(err)` from
+  `@loom/workflow-runtime/operator`.
+- **A sealed principal is refused before the policy is consulted**, whatever `unknownOwner` says (a
+  lenient policy can no longer admit a stranger to a stream this node cannot read).
+- **Key gone is two different facts.** A real `shredSubject` leaves a `PAYLOAD_SHREDDED` tombstone:
+  reads keep raising `PayloadShreddedError`. No tombstone means this node's `KeyStore` lacks the key:
+  the store raises `KeyUnavailableError`, which the kernel turns into the refusal above. Between
+  `keys.destroy` and a failed tombstone write (`ShredIncompleteError`) a read reports key-unavailable
+  until the retry completes.
+- **Unmarked streams behave exactly as before.** A stream written without a marker (before 1.25.0,
+  or by a third-party sealer) makes no claim and is never refused for lacking one; the inbox shape
+  guard (ADR 0130 D2-D4) still covers inbox payloads. Pre-1.25.0 nodes ignore the marker and keep
+  today's exposure: upgrade every node, then rely on it.
+- Caveats, not residuals: with no authorizer, or `unknownOwner: "allow"`, a missing id is "not
+  found" rather than denied; a custom authorizer should return `UNKNOWN_OWNER_REASON` for an unknown
+  owner to be indistinguishable.
+
 **Snapshots: use `sealState`.** A snapshot's `variables._waitAnswers` holds an answered payload under a
 dynamic key (the `waitId`), which a static `sensitive` path cannot name, so a snapshot taken while an
 answered wait is in the fold holds that payload verbatim under a path-list `EncryptingSnapshotStore`.
