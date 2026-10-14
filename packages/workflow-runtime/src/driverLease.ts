@@ -35,11 +35,14 @@ export interface HeartbeatOptions
   ttlMs?: number;
   renewEveryMs?: number;
   /**
-   * `"stop"` (default, and the ONLY accepted value in S7c): a driver that cannot confirm a renewal
-   * stops at its deadline. `"continue"` is REJECTED at construction with a `TypeError`: it is not
-   * supported yet (ADR 0130 D11; it requires the poll to treat the fleet as heuristic, slice S7d).
+   * `"stop"` (default): a driver that cannot confirm a renewal stops at its deadline, so an expired
+   * lease is true evidence. `"continue"` (ADR 0130 D11 section 6, S7d): drivers keep running through a
+   * lease-store outage (no self-fence abort at the deadline; a driver that cannot even acquire a lease
+   * during the outage runs unleased); the fence still guards the log, but the lease no longer proves
+   * liveness, so this node's leases carry a heuristic owner marker and its poll's default re-drive is
+   * off (re-drive only with `isAbandoned`, as before S7).
    */
-  onStoreError?: "stop";
+  onStoreError?: "stop" | "continue";
   nodeId?: string;
 }
 
@@ -97,12 +100,17 @@ export class DriverLeases {
 
   constructor(deps: HeartbeatOptions) {
     const { leaseStore, onStoreError, nodeId, ...options } = deps;
-    if ((onStoreError as unknown) !== undefined && onStoreError !== "stop")
+    if (
+      (onStoreError as unknown) !== undefined &&
+      onStoreError !== "stop" &&
+      onStoreError !== "continue"
+    )
       throw new TypeError(
-        `heartbeat.onStoreError: "${String(onStoreError)}" is not supported yet (ADR 0130 D11; "continue" requires the poll to treat the fleet as heuristic, slice S7d); only "stop" is accepted`
+        `heartbeat.onStoreError: "${String(onStoreError)}" is not valid; expected "stop" or "continue"`
       );
     this.keeper = new LeaseKeeper({
       ...options,
+      ...(onStoreError !== undefined && { onStoreError }),
       store: leaseStore,
       nodeId: nodeId ?? PROCESS_NODE_ID,
       onLost: (id, err) => this.lost(id, err),
@@ -141,6 +149,11 @@ export class DriverLeases {
       ok = await this.keeper.acquire(executionId);
     } catch (err) {
       this.settlePending(executionId);
+      // "continue": a lease store that cannot be reached must not stop a NEW driver either. It drives
+      // UNLEASED (absent lease = no evidence, which is exactly what a heuristic fleet needs). Only a
+      // store failure qualifies: a bad id or a closed keeper still rejects.
+      if (this.keeper.heuristic && !(err instanceof TypeError) && !this.keeper.isClosed)
+        return NO_LEASE;
       throw err;
     }
     const hold: Hold = {

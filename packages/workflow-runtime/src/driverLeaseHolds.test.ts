@@ -1,7 +1,7 @@
 import { InMemoryLeaseStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { type DriverLease, DriverLeases } from "./driverLease";
-import { LeaseLostError } from "./leaseKeeper";
+import { LeaseLostError, isHeuristicOwner } from "./leaseKeeper";
 
 // DriverLeases (ADR 0130 D11, S7c): the reference-counted holds above the per-runtime keeper. Fake
 // clocks and hand-driven timers; every assertion is on the store row and the keeper's own view.
@@ -158,9 +158,29 @@ describe("DriverLeases - the acquire/release race (S7c review P2-1a)", () => {
 });
 
 describe("HeartbeatOptions.onStoreError (S7c review P2-3)", () => {
-  it("'continue' is rejected at construction until the poll can treat the fleet as heuristic (S7d)", () => {
-    expect(() => rig({ onStoreError: "continue" })).toThrow(TypeError);
-    expect(() => rig({ onStoreError: "continue" })).toThrow(/not supported yet/);
+  it("'continue' is accepted: the keeper is heuristic and its owner carries the marker", () => {
+    const { dl } = rig({ onStoreError: "continue" });
+    expect(dl.keeper.heuristic).toBe(true);
+    expect(isHeuristicOwner(dl.keeper.owner)).toBe(true);
+    expect(isHeuristicOwner(rig().dl.keeper.owner)).toBe(false);
+  });
+  it("an unknown value is rejected", () => {
+    expect(() => rig({ onStoreError: "sometimes" })).toThrow(TypeError);
+  });
+  it("'continue': a NEW driver whose acquire hits a store outage runs UNLEASED instead of failing; 'stop' rejects", async () => {
+    const down = new InMemoryLeaseStore();
+    down.acquire = async () => {
+      throw new Error("lease store down");
+    };
+    down.acquireMany = async () => {
+      throw new Error("lease store down");
+    };
+    const cont = rig({ onStoreError: "continue", leaseStore: down });
+    const hold = await cont.dl.acquire("e1");
+    expect(hold).not.toBeNull();
+    expect(hold?.valid()).toBe(true);
+    const stop = rig({ leaseStore: down });
+    await expect(stop.dl.acquire("e1")).rejects.toThrow(/lease store down/);
   });
   it("'stop' and absent are accepted", () => {
     expect(() => rig({ onStoreError: "stop" })).not.toThrow();

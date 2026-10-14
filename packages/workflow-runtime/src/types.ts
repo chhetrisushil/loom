@@ -458,6 +458,14 @@ export interface RunOptions {
    */
   fenceIfParkedAt?: number;
   /**
+   * ADR 0130 D11 (S7d), on a `resume` with `EXECUTION_RECOVERED`: the caller already made the recovery
+   * marker durable with `WorkflowRuntime.claimRecovery` (the conditional takeover), so the resume must
+   * NOT write a second one. Ignored for any other event.
+   *
+   * @internal Kernel plumbing for `redriveAbandoned`; not public API (ADR 0083).
+   */
+  recoveryClaimed?: boolean;
+  /**
    * K8.3 — wall-clock deadline for this run, anchored to the LOGGED
    * `EXECUTION_STARTED` timestamp — so recovery/resume never resets the clock,
    * and resuming an execution whose deadline already passed cancels it

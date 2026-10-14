@@ -3,6 +3,7 @@ import type { EventStore, LeaseStore, TimerRecord, TimerStore } from "@loom/even
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { INBOX_WAKE_AT } from "./inbox";
+import { collectGhostLeases, defaultLeaseEvidence, judgeLease } from "./leaseEvidence";
 import { LeaseHeldError, LeaseLostError } from "./leaseKeeper";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
@@ -51,6 +52,8 @@ export interface RedriveBackoff {
 }
 
 /** Bound on the in-process contended-wake backoff map. */
+/** Ghost-lease GC: expired leases examined per pass (ADR 0130 D11, S7d). */
+const GHOST_GC_BATCH = 100;
 const MAX_WAKE_BACKOFFS = 1024;
 
 /** Cap on a refusal row's `holds` counter (the back-off is capped well before this). */
@@ -309,6 +312,8 @@ export class TimerService {
    * restarts its count, which costs at most a few more attempts - the cap bounds the markers.
    */
   private readonly refusalAttempts = new Map<string, number>();
+  /** Lease-store read failures in the refusal re-drive, for the first-then-every-16th report. */
+  private evidenceErrors = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
   /**
@@ -412,8 +417,31 @@ export class TimerService {
         await this.fireDueOccurrences(schedule, now);
         this.maybeWarm(schedule, now);
       }
+      await this.collectGhosts();
     } finally {
       this.ticking = false;
+    }
+  }
+
+  /**
+   * ADR 0130 D11 (S7d) - garbage-collect GHOST leases (a lease whose holder died before its first
+   * append): bounded per pass ({@link GHOST_GC_BATCH} leases examined) and at most once per lease TTL
+   * on the keeper's monotonic clock. Never re-drives. A failure is reported (first, then every 16th)
+   * and retried next interval: a lease store that errors is the lease store's problem, not a reason to
+   * fail the poll.
+   */
+  private nextGhostGc = Number.NEGATIVE_INFINITY;
+  private ghostGcErrors = 0;
+  private async collectGhosts(): Promise<void> {
+    const keeper = this.runtime.leaseKeeper;
+    if (keeper === undefined) return;
+    const at = keeper.monotonicNow();
+    if (at < this.nextGhostGc) return;
+    this.nextGhostGc = at + keeper.ttlMs;
+    try {
+      await collectGhostLeases(this.runtime, { limit: GHOST_GC_BATCH });
+    } catch (err) {
+      if (this.ghostGcErrors++ % 16 === 0) this.onError?.("", err);
     }
   }
 
@@ -555,7 +583,14 @@ export class TimerService {
 
   /** Can this node act on a refusal row at all: an inbox, and the sweep's evidence configured. */
   private canJudgeRefusals(): boolean {
-    return this.runtime.inboxOn && (this.leases !== undefined || this.isAbandoned !== undefined);
+    return (
+      this.runtime.inboxOn &&
+      (this.leases !== undefined ||
+        this.isAbandoned !== undefined ||
+        // ADR 0130 D11 (S7d/S7e): heartbeat on + a cluster-visible lease store = an expired lease is
+        // evidence by default, no host predicate needed.
+        defaultLeaseEvidence(this.runtime))
+    );
   }
 
   /**
@@ -638,16 +673,28 @@ export class TimerService {
       await this.store.complete(executionId, wakeAt);
       return true;
     }
-    if (!(await this.abandonmentEvidence(executionId, state))) {
+    let abandoned: boolean;
+    try {
+      abandoned = await this.abandonmentEvidence(executionId, state);
+    } catch (err) {
+      // FAIL CLOSED (D11 section 6): a lease the store would not show is not "no lease". Report it
+      // (first, then every 16th), keep the row, spend none of its attempts, re-drive nothing.
+      if (this.evidenceErrors++ % 16 === 0) this.onError?.(executionId, err);
+      await this.holdRefusal(executionId, wakeAt, refused, state);
+      return true;
+    }
+    if (!abandoned) {
       await this.holdRefusal(executionId, wakeAt, refused, state);
       return true;
     }
     const leases = this.leases;
     let held: HeldLease | undefined;
     // ADR 0130 D11 (S7c): a runtime with a heartbeat keeper claims through it (one timer, shared
-    // owner); the keeper's claim is a reference-counted hold released in the `finally`.
+    // owner); the keeper's claim is a reference-counted hold released in the `finally`. S7d: every
+    // keeper runtime claims (an expired lease is acquirable by exactly one poller), not only one with
+    // an explicit `leases` option.
     let hold: { release(): Promise<void> } | undefined;
-    if (leases !== undefined && this.runtime.leaseKeeper !== undefined) {
+    if (this.runtime.leaseKeeper !== undefined) {
       const got = await this.runtime.acquireDriverLease(executionId);
       if (got === null) {
         await this.holdRefusal(executionId, wakeAt, refused, state);
@@ -676,6 +723,8 @@ export class TimerService {
         source: "wake",
         fenced: this.fenced,
         ifHeadAt: stamped,
+        // D11 section 4 step 4: with heartbeat leases the takeover is conditional on the head.
+        ...(this.runtime.leaseKeeper !== undefined && { conditional: true }),
       });
       if (r.outcome === "refused") {
         this.noteSealed(executionId, r.error);
@@ -738,23 +787,29 @@ export class TimerService {
   }
 
   /**
-   * The sweep's evidence, nothing weaker: the host's predicate and/or an EXISTING lease that has
-   * expired on the lease store's own clock. No predicate and no lease store -> no evidence.
+   * The evidence a refusal row's re-drive needs (ADR 0130 D10 + D11 section 4). In order:
+   *
+   *  1. VETO: an unexpired heartbeat lease (a driver that said it is alive inside the TTL) beats every
+   *     heuristic, `isAbandoned` included: never superseded.
+   *  2. LEASE EVIDENCE: an EXPIRED lease whose owner's leases are true evidence is abandonment, with no
+   *     host predicate needed, when it is trustworthy: either the host opted in with `leases` (the
+   *     sweep's contract), or this node runs heartbeat in `"stop"` mode over a cluster-visible store
+   *     (the default re-drive). `isAbandoned`, when also configured, still narrows it (both must hold).
+   *  3. HEURISTIC: no usable lease evidence (an absent lease, a `"continue"` owner's expired lease, a
+   *     store that is not cluster-visible): only the host's `isAbandoned` re-drives, as before S7. An
+   *     absent lease with an explicit `leases` option is no evidence at all (the S6 rule).
+   *  4. QUIET: right after a lease-store outage an expired lease is not acted on for one TTL.
+   *
+   * Throws {@link LeaseEvidenceError} when a store errors: the caller fails closed.
    */
   private async abandonmentEvidence(executionId: string, state: ExecutionState): Promise<boolean> {
-    const leases = this.leases;
-    if (leases === undefined && this.isAbandoned === undefined) return false;
-    if (leases !== undefined) {
-      const store = leases.store;
-      const lease =
-        store.get !== undefined
-          ? await store.get(executionId)
-          : ((await store.expired(undefined, 1000)).find((l) => l.executionId === executionId) ??
-            null);
-      if (lease === null) return false; // an ABSENT lease is no evidence
-      const now = store.storeNow !== undefined ? await store.storeNow() : Date.now();
-      if (lease.expiresAt > now) return false; // a live holder
-    }
+    const explicit = this.leases;
+    const j = await judgeLease(this.runtime, executionId, explicit?.store);
+    if (j.kind === "live" || j.kind === "quiet") return false;
+    const defaultOn = defaultLeaseEvidence(this.runtime);
+    const leaseEvidence = j.kind === "expired" && (explicit !== undefined || defaultOn);
+    if (explicit !== undefined && j.kind === "absent") return false; // an ABSENT lease is no evidence
+    if (!leaseEvidence && this.isAbandoned === undefined) return false;
     if (this.isAbandoned === undefined) return true;
     return this.isAbandoned({
       executionId,

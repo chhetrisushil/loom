@@ -270,6 +270,11 @@ export class InMemoryLeaseStore implements LeaseStore {
     return held !== undefined ? { ...held } : null;
   }
 
+  /** The store's own (injectable) clock: the one `expiresAt` is stamped and judged on (SPI 2.1.0). */
+  async storeNow(): Promise<number> {
+    return this.now();
+  }
+
   async release(executionId: string, owner: string): Promise<void> {
     const held = this.leases.get(executionId);
     if (held?.owner === owner) this.leases.delete(executionId);

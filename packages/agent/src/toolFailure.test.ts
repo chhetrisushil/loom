@@ -100,6 +100,7 @@ const TERMINAL = new Set([
   "LeaseStoreQuietError",
   "LeaseStoreTimeoutError",
   "StartLeaseHeldError",
+  "LeaseEvidenceError",
   "AsyncContextUnavailableError",
   "StaleFenceError",
   "ExecutionSupersededError",

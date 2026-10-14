@@ -3681,7 +3681,10 @@ export class WorkflowRuntime {
               },
             ]
           : [
-              { eventType: resumeEvent.eventType, payload: resumePayload },
+              // ADR 0130 D11 (S7d): a conditional takeover already made its recovery marker durable.
+              ...(options?.recoveryClaimed === true && resumeEvent.eventType === EXECUTION_RECOVERED
+                ? []
+                : [{ eventType: resumeEvent.eventType, payload: resumePayload }]),
               ...answerEvents(runVm.getState(), resumePayload),
             ]),
       ];
@@ -6232,6 +6235,50 @@ export class WorkflowRuntime {
    */
   async hasSequenceZero(executionId: string): Promise<boolean> {
     return (await readRangeOf(this.eventStore, executionId, 0, 0)).length > 0;
+  }
+
+  /**
+   * ADR 0130 D11 section 4 step 4 (S7d) - the CONDITIONAL TAKEOVER of a `running` execution: append
+   * its `EXECUTION_RECOVERED` marker with `appendIfUnchanged(head, fence, anchor)` BEFORE any fence is
+   * acquired, so exactly one contender wins and a driver that appended since `expectHead` (a "dead"
+   * one that was alive) makes this lose with nothing written and no token taken. `true` = the marker
+   * is durable (resume with `recoveryClaimed`); `false` = lost / gone / the head is not `expectHead`.
+   * A store without `appendIfUnchanged` cannot claim: `undefined` (the caller falls back to today's
+   * unconditional path).
+   *
+   * @internal Used by `redriveAbandoned`; not part of the public runtime API.
+   */
+  async claimRecovery(
+    executionId: string,
+    workflowId: string,
+    expectHead: number
+  ): Promise<boolean | undefined> {
+    const store = this.eventStore;
+    if (store.appendIfUnchanged === undefined) return undefined;
+    const seen = await store.appendIfUnchanged(executionId, null);
+    if (seen.appended || seen.head === null || seen.head !== expectHead) return false;
+    if (typeof seen.anchor !== "string") return undefined; // a decorator dropped the anchor: cannot prove
+    const envelope = ExecutionJournal.envelopeAt(
+      { executionId, workflowId },
+      seen.head + 1,
+      EXECUTION_RECOVERED,
+      {},
+      { now: this.now }
+    );
+    let result: Awaited<ReturnType<NonNullable<typeof store.appendIfUnchanged>>>;
+    try {
+      result = await store.appendIfUnchanged(executionId, envelope, {
+        head: seen.head,
+        fence: seen.fence,
+        anchor: seen.anchor,
+      });
+    } catch (err) {
+      if (isWriteConflict(err)) return false; // a slot / id race: someone else appended
+      throw err;
+    }
+    if (!result.appended) return false;
+    this.onEvent?.(envelope);
+    return true;
   }
 
   /** The driver's own hold: a stand-down is a {@link LeaseHeldError}, nothing appended, no fence taken. */
