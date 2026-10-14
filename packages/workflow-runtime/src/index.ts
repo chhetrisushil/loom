@@ -98,6 +98,12 @@ export {
   inboxTopicStreamId,
 } from "./inbox";
 export {
+  LeaseKeeper,
+  LeaseLostError,
+  LeaseStoreQuietError,
+  type LeaseKeeperOptions,
+} from "./leaseKeeper";
+export {
   orphanCensus,
   type CensusStateReader,
   type LeaseCoverage,
