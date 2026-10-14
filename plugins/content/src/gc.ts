@@ -408,6 +408,29 @@ export interface ContentSweepReport {
   snapshotStoresTouching: number;
   /** Of `snapshotStores`, how many are NOT branded. See `snapshotStoresTouching`. */
   snapshotStoresUnbranded: number;
+  /**
+   * Executions whose scanned snapshot `state` is a top-level `__loomEnc` envelope (an
+   * `EncryptingSnapshotStore({ sealState })` read RAW): the refs it cites are invisible to this
+   * scan. An erasing pass throws {@link SealedSnapshotScanError} instead; a `dryRun` lists them.
+   */
+  sealedSnapshots: string[];
+}
+
+/**
+ * An erasing sweep read a snapshot whose `state` is one sealed envelope (a `sealState`
+ * `EncryptingSnapshotStore` given as its RAW inner store). The scan cannot see the refs inside, so
+ * it would treat live blobs as unreferenced and erase them. Nothing was erased.
+ */
+export class SealedSnapshotScanError extends TypeError {
+  constructor(readonly executionIds: readonly string[]) {
+    const shown = executionIds.slice(0, 5).join(", ");
+    const more = executionIds.length > 5 ? ` (+${executionIds.length - 5} more)` : "";
+    super(
+      `sweepUnpinnedContent: ${executionIds.length} scanned snapshot(s) hold a sealed (whole-state encrypted) state (${shown}${more}), so the refs they cite are invisible and an erasing pass would delete live blobs: pass the decrypting snapshot store (the EncryptingSnapshotStore itself, not its inner store) in snapshotStores, or run with dryRun: true. Nothing was erased.`
+    );
+    this.name = "SealedSnapshotScanError";
+    Object.setPrototypeOf(this, SealedSnapshotScanError.prototype);
+  }
 }
 
 /**
@@ -540,6 +563,7 @@ export async function sweepUnpinnedContent(
   const loadBearing = new Set<string>();
   let executionsScanned = 0;
   const uncovered: string[] = [];
+  const sealedSnapshots: string[] = [];
 
   for (const eventStore of options.eventStores) {
     if (eventStore.listExecutions === undefined && eventStore.listExecutionsPage === undefined) {
@@ -575,11 +599,16 @@ export async function sweepUnpinnedContent(
         if (gap >= 0) uncovered.push(executionId); // a gap is log evidence
         continue;
       }
-      const pin = (snapshot: { state: unknown }): void =>
+      const pin = (snapshot: { state: unknown }): void => {
+        const st = snapshot.state;
+        if (typeof st === "object" && st !== null && "__loomEnc" in st) {
+          if (!sealedSnapshots.includes(executionId)) sealedSnapshots.push(executionId);
+        }
         visitCitedAddresses(snapshot.state, (address) => {
           if (!lastCited.has(address)) lastCited.set(address, Number.POSITIVE_INFINITY);
           pinned.add(address);
         });
+      };
       let covered = false;
       for (const snapshots of options.snapshotStores) {
         const latest = await snapshots.loadLatest(executionId);
@@ -628,6 +657,7 @@ export async function sweepUnpinnedContent(
       if (!covered) uncovered.push(executionId);
     }
   }
+  if (!dryRun && sealedSnapshots.length > 0) throw new SealedSnapshotScanError(sealedSnapshots);
   if (orphans && uncovered.length > 0) {
     const shown = uncovered.slice(0, 5).join(", ");
     const more = uncovered.length > 5 ? ` (+${uncovered.length - 5} more)` : "";
@@ -681,5 +711,6 @@ export async function sweepUnpinnedContent(
     orphansReclaimed,
     snapshotStoresTouching,
     snapshotStoresUnbranded,
+    sealedSnapshots,
   };
 }

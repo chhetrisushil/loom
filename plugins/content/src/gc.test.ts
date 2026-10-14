@@ -11,6 +11,7 @@ import {
   ReclaimOrphansMarginError,
   ReclaimOrphansSnapshotAckError,
   ReclaimOrphansTouchError,
+  SealedSnapshotScanError,
   pinByEventKinds,
   resetSnapshotUnwrappedWarning,
   sweepUnpinnedContent,
@@ -1655,6 +1656,55 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       const output = (base?.state as { frames: Record<string, { output: ClaimCheckEnvelope }> })
         .frames.poll?.output;
       expect(await content.get(output?.ref as { __loomContent: string })).not.toBeNull();
+    });
+
+    it("an ERASING pass over a sealState snapshot read RAW refuses (nothing deleted); a dry run reports it", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const cited = await content.put(bytes("a ref only the sealed checkpoint cites"));
+      const live = new InMemoryAsyncEventStore();
+      const raw = new InMemoryAsyncSnapshotStore();
+      const prefix = [
+        evt("sealed", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt(
+          "sealed",
+          1,
+          "STEP_COMPLETED",
+          { stepId: "s", output: envelopeFor(cited.__loomContent) },
+          OLD
+        ),
+      ];
+      for (const e of prefix) await live.append(e);
+      // What a sealState EncryptingSnapshotStore leaves at rest: ONE opaque envelope as `state`.
+      await raw.save({
+        id: "cp",
+        executionId: "sealed",
+        workflowId: "wf",
+        sequence: 1,
+        state: { __loomEnc: "loom/aes-256-gcm", iv: "x", tag: "y", data: "z" } as never,
+        createdAt: 0,
+      });
+      await live.truncatePrefix("sealed", 1);
+      clock.now = NOW;
+      const base = {
+        eventStores: [live],
+        snapshotStores: [raw],
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: TTL,
+        now: NOW,
+      };
+      const attempt = sweepUnpinnedContent({
+        ...base,
+        reclaimOrphans: { completeScan: true as const, snapshotsTouchContent: true as const },
+      });
+      await expect(attempt).rejects.toBeInstanceOf(SealedSnapshotScanError);
+      await expect(attempt).rejects.toThrow(/pass the decrypting snapshot store/);
+      // The plain TTL pass erases too, so it refuses as well.
+      await expect(sweepUnpinnedContent(base)).rejects.toBeInstanceOf(SealedSnapshotScanError);
+      expect(await content.get(cited)).not.toBeNull(); // nothing deleted
+      const dry = await sweepUnpinnedContent({ ...base, dryRun: true, reclaimOrphans: true });
+      expect(dry.sealedSnapshots).toEqual(["sealed"]);
+      expect(await content.get(cited)).not.toBeNull();
     });
 
     it("a run compacted at its tip (only sequence 0 left) with no snapshot found is uncovered â€” refused", async () => {

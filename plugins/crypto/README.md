@@ -26,6 +26,9 @@ const snapshotStore = new EncryptingSnapshotStore(innerSnaps, keys, {
   // Seal the WHOLE folded state as one envelope (ADR 0130 D8). This also covers the dynamic
   // `variables._waitAnswers.<waitId>` keys that no static path list can name.
   sealState: true,
+  // The envelope is bound (AES-GCM AAD) to executionId + sequence, so a moved or rolled-back row
+  // fails with SnapshotUndecryptableError. Once no pre-sealState snapshot remains, add
+  // `legacyPlaintext: "refuse"` so a plaintext row cannot be substituted for a sealed one.
   // Legacy alternative (mutually exclusive): sensitive: ["variables._input.ssn"],
 });
 

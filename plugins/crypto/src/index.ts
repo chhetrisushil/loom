@@ -1,5 +1,11 @@
 export { InMemoryKeyStore, type KeyStore } from "./keystore";
-export { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
+export {
+  OwnerUnresolvedError,
+  PayloadShreddedError,
+  PayloadUndecryptableError,
+  PlaintextSnapshotRefusedError,
+  SnapshotUndecryptableError,
+} from "./errors";
 export {
   EncryptingEventStore,
   type EncryptingEventStoreOptions,
@@ -11,5 +17,12 @@ export {
   type EncryptingSnapshotStoreOptions,
 } from "./EncryptingSnapshotStore";
 export { ShredIncompleteError, shredSubject, type ShredOptions } from "./shred";
-export { encryptValue, decryptValue, hasEnvelope, mapPaths } from "./crypto";
+export {
+  encryptValue,
+  decryptValue,
+  envelopeAad,
+  hasEnvelope,
+  mapPaths,
+  type EnvelopeAad,
+} from "./crypto";
 export { sensitivePathsFromSteps } from "./derive";

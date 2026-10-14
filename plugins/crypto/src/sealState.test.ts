@@ -5,7 +5,12 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore } from "./EncryptingEventStore";
 import { EncryptingSnapshotStore } from "./EncryptingSnapshotStore";
-import { PayloadShreddedError } from "./errors";
+import { decryptValue, encryptValue } from "./crypto";
+import {
+  PayloadShreddedError,
+  PlaintextSnapshotRefusedError,
+  SnapshotUndecryptableError,
+} from "./errors";
 import { InMemoryKeyStore } from "./keystore";
 import { shredSubject } from "./shred";
 
@@ -160,5 +165,160 @@ describe("EncryptingSnapshotStore sealState (ADR 0130 D8)", () => {
       subjectOf: () => "",
     });
     await expect(snaps.save(snapshot())).rejects.toBeInstanceOf(TypeError);
+  });
+  // ── P2-1a: AAD binding ────────────────────────────────────────────────────
+  it("binds the envelope to (executionId, sequence): the marker is self-describing", async () => {
+    const { snaps, inner } = make();
+    await snaps.save(snapshot("e1", 3));
+    const raw = (await inner.loadLatest("e1")) as Snapshot;
+    expect((raw.state as unknown as { aad?: string }).aad).toBe("loom-snap-v1");
+  });
+
+  it("refuses A's sealed row copied into B's slot with a typed error, not raw GCM text", async () => {
+    const { snaps, inner } = make();
+    await snaps.save(snapshot("A", 3));
+    const a = (await inner.loadLatest("A")) as Snapshot;
+    // Same subject key (a shared subjectOf), attacker re-labels the row as B / same sequence.
+    const shared = new EncryptingSnapshotStore(inner, make().keys, {
+      sealState: true,
+      subjectOf: () => "shared",
+    });
+    await shared.save(snapshot("A", 3));
+    const sharedA = (await inner.loadAt("A", 3)) as Snapshot;
+    await inner.save({ ...sharedA, id: "b-3", executionId: "B" });
+    const err = await shared.loadLatest("B").catch((e) => e);
+    expect(err).toBeInstanceOf(SnapshotUndecryptableError);
+    expect(String((err as Error).message)).not.toMatch(/unable to authenticate/i);
+    expect(a.state).toBeDefined();
+  });
+
+  it("refuses an older sealed snapshot rolled into a newer sequence slot", async () => {
+    const { snaps, inner } = make();
+    await snaps.save(snapshot("e1", 3));
+    const old = (await inner.loadAt("e1", 3)) as Snapshot;
+    await inner.save({ ...old, id: "s-9", sequence: 9 });
+    await expect(snaps.loadAt("e1", 9)).rejects.toBeInstanceOf(SnapshotUndecryptableError);
+    // The original row is untouched and still loads.
+    expect((await snaps.loadAt("e1", 3))?.state).toEqual(snapshot("e1", 3).state);
+  });
+
+  it("an envelope without the AAD marker is refused for a whole-state load", async () => {
+    const { snaps, inner, keys } = make();
+    const key = await keys.getOrCreate("e1");
+    const snap = snapshot("e1", 3);
+    await inner.save({ ...snap, state: encryptValue(key, snap.state) as never });
+    await expect(snaps.loadLatest("e1")).rejects.toBeInstanceOf(SnapshotUndecryptableError);
+  });
+
+  it("crypto: AAD is optional and backward compatible (no AAD = old behaviour)", () => {
+    const key = Buffer.alloc(32, 7);
+    const plain = encryptValue(key, { a: 1 });
+    expect("aad" in plain).toBe(false);
+    expect(decryptValue(key, plain)).toEqual({ a: 1 });
+    const bound = encryptValue(key, { a: 1 }, { v: "t1", bind: "x" });
+    expect(decryptValue(key, bound, "x")).toEqual({ a: 1 });
+    expect(() => decryptValue(key, bound, "y")).toThrow();
+    expect(() => decryptValue(key, bound)).toThrow();
+  });
+
+  // ── P2-1b: downgrade ──────────────────────────────────────────────────────
+  it("legacyPlaintext defaults to 'load': an envelope-free state loads", async () => {
+    const { snaps, inner } = make();
+    await inner.save(snapshot("old", 1));
+    expect((await snaps.loadLatest("old"))?.state).toEqual(snapshot("old", 1).state);
+  });
+
+  it("legacyPlaintext: 'refuse' throws a typed error on an envelope-free state", async () => {
+    const inner = new InMemoryAsyncSnapshotStore();
+    const keys = new InMemoryKeyStore();
+    const strict = new EncryptingSnapshotStore(inner, keys, {
+      sealState: true,
+      legacyPlaintext: "refuse",
+    });
+    await inner.save(snapshot("old", 1));
+    await expect(strict.loadLatest("old")).rejects.toBeInstanceOf(PlaintextSnapshotRefusedError);
+    await expect(strict.loadAt("old", 1)).rejects.toBeInstanceOf(PlaintextSnapshotRefusedError);
+    // Its own sealed snapshots still load.
+    await strict.save(snapshot("new", 2));
+    expect((await strict.loadLatest("new"))?.state).toEqual(snapshot("new", 2).state);
+  });
+
+  it("legacyPlaintext without sealState is a config error", () => {
+    expect(
+      () =>
+        new EncryptingSnapshotStore(new InMemoryAsyncSnapshotStore(), new InMemoryKeyStore(), {
+          sensitive: ["variables._input.ssn"],
+          legacyPlaintext: "refuse",
+        } as never)
+    ).toThrow(/legacyPlaintext/);
+  });
+
+  // ── P3-1: legacy opening of nested envelopes ─────────────────────────────
+  it("an app value sealed under a DIFFERENT key stays as it is (no raw GCM failure)", async () => {
+    const { snaps, inner, keys } = make();
+    const appKey = Buffer.alloc(32, 9);
+    const appCipher = encryptValue(appKey, "app-secret");
+    const snap = snapshot("app", 1);
+    // A legacy (static-path) row: input sealed under the subject key, plus an app ciphertext.
+    const subjectKey = await keys.getOrCreate("app");
+    const state = {
+      ...(snap.state as object),
+      variables: {
+        _input: { ssn: encryptValue(subjectKey, INPUT_SECRET) },
+        appBlob: appCipher,
+      },
+    };
+    await inner.save({ ...snap, state: state as never });
+    const loaded = await snaps.loadLatest("app");
+    const vars = (loaded?.state as unknown as { variables: Record<string, unknown> }).variables;
+    expect((vars._input as { ssn: string }).ssn).toBe(INPUT_SECRET);
+    expect(vars.appBlob).toEqual(appCipher);
+  });
+
+  it("legacySensitive restricts legacy opening to the named paths", async () => {
+    const inner = new InMemoryAsyncSnapshotStore();
+    const keys = new InMemoryKeyStore();
+    const key = await keys.getOrCreate("lp");
+    const snap = snapshot("lp", 1);
+    const other = encryptValue(key, "same-key-app-value");
+    const state = {
+      ...(snap.state as object),
+      variables: { _input: { ssn: encryptValue(key, INPUT_SECRET) }, other },
+    };
+    await inner.save({ ...snap, state: state as never });
+    const store = new EncryptingSnapshotStore(inner, keys, {
+      sealState: true,
+      legacySensitive: ["variables._input.ssn"],
+    });
+    const vars = (
+      (await store.loadLatest("lp"))?.state as unknown as { variables: Record<string, unknown> }
+    ).variables;
+    expect((vars._input as { ssn: string }).ssn).toBe(INPUT_SECRET);
+    expect(vars.other).toEqual(other); // not a path the old config named: left sealed
+  });
+
+  // ── P3-4: shred idempotence ──────────────────────────────────────────────
+  it("shredSubject run twice under sealState writes exactly one PAYLOAD_SHREDDED", async () => {
+    const innerEvents = new InMemoryAsyncEventStore();
+    const inner = new InMemoryAsyncSnapshotStore();
+    const keys = new InMemoryKeyStore();
+    const events = new EncryptingEventStore(innerEvents, keys, {
+      sensitive: { STEP_COMPLETED: ["output.ssn"] },
+    });
+    const snaps = new EncryptingSnapshotStore(inner, keys, { sealState: true });
+    await events.append({
+      id: "e1-0",
+      workflowId: "wf",
+      executionId: "e1",
+      eventType: "STEP_COMPLETED",
+      sequence: 0,
+      payload: { stepId: "s", output: { ssn: INPUT_SECRET } },
+      timestamp: 0,
+    } as never);
+    await snaps.save(snapshot());
+    await shredSubject(keys, innerEvents, "e1", { snapshotStore: snaps });
+    await shredSubject(keys, innerEvents, "e1", { snapshotStore: snaps });
+    const log = await innerEvents.read("e1");
+    expect(log.filter((e) => e.eventType === "PAYLOAD_SHREDDED")).toHaveLength(1);
   });
 });
