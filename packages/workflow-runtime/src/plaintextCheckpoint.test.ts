@@ -177,9 +177,13 @@ describe("kernel refusal of a plaintext checkpoint (ADR 0130 D8)", () => {
     events.registerSensitive("INBOX_MESSAGE", ["payload"]);
     const run = await h.rt.start(many, {}, { executionId: "rl-1" });
     await run.waitForSuspend();
-    await h.rt.resume("rl-1", { eventType: "Go", payload: null }).then((r) => r.waitForCompletion());
+    await h.rt
+      .resume("rl-1", { eventType: "Go", payload: null })
+      .then((r) => r.waitForCompletion());
     await until(() => h.storageErrors.length > 0);
-    const refusals = h.storageErrors.filter((e) => (e as Error).name === "PlaintextCheckpointError");
+    const refusals = h.storageErrors.filter(
+      (e) => (e as Error).name === "PlaintextCheckpointError"
+    );
     expect(refusals).toHaveLength(1);
     expect(await raw.loadLatest("rl-1")).toBeNull();
   });
@@ -203,9 +207,9 @@ describe("kernel refusal of a plaintext checkpoint (ADR 0130 D8)", () => {
     const child = await h.rt.fork("fk-p", tip, { executionId: "fk-c" });
     expect(child.executionId).toBe("fk-c");
     expect(await raw.loadLatest("fk-c")).toBeNull();
-    expect(
-      h.storageErrors.some((e) => (e as Error).name === "PlaintextCheckpointError")
-    ).toBe(true);
+    expect(h.storageErrors.some((e) => (e as Error).name === "PlaintextCheckpointError")).toBe(
+      true
+    );
     // the child is a real execution: it folds from the copied log with no seed
     expect((await h.rt.loadState("fk-c"))?.status).toBe("suspended");
   });

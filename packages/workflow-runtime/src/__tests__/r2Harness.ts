@@ -65,10 +65,10 @@ export class Latch {
  * event store's own KeyStore (plain `inner` when the event store exposes no `keys`).
  */
 export function sealedSnapshots(
-  eventStore: EventStore,
+  sealing: object, // the event store (read structurally for `keys`; not typed EventStore: it is not a decorator of one)
   inner: SnapshotStore = new InMemoryAsyncSnapshotStore()
 ): SnapshotStore {
-  const keys = (eventStore as { keys?: unknown }).keys;
+  const keys = (sealing as { keys?: unknown }).keys;
   if (typeof keys !== "object" || keys === null) return inner;
   return new EncryptingSnapshotStore(inner, keys as KeyStore, { sealState: true });
 }

@@ -5,7 +5,6 @@ import {
   quarantineStreamId,
 } from "@loom/event-runtime";
 import { InMemoryKeyStore } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import {
   OP,
