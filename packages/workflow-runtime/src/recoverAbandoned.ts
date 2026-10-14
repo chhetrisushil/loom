@@ -11,9 +11,9 @@ import type { TimerDispatcher } from "./TimerService";
 import { redriveDelayMs } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
-import { placementOf } from "./placement";
+import { isSealedBackedOff, noteSealedRefusal, redriveAbandoned } from "./redriveAbandoned";
 import { isSealedUnreadable } from "./sealGuard";
-import { EXECUTION_RECOVERED, FlowReplayDivergenceError } from "./types";
+import { EXECUTION_RECOVERED } from "./types";
 
 // ── Recovering executions whose supervisor died ───────────────────────────────
 //
@@ -345,64 +345,20 @@ export async function recoverAbandoned(
     }
 
     try {
-      // Re-check immediately before acting: the predicate may have awaited, and the
-      // execution may have completed or suspended in the meantime. Re-driving a settled
-      // execution is not corrupting (the worker's own recovery branch returns it as-is),
-      // but it is pointless work and a misleading `recovered` count.
-      const fresh = await runtime.loadState(executionId, runtime.systemOptions());
-      if (fresh === null || (fresh.status !== "running" && fresh.status !== "pending")) continue;
-
-      const fence = options.fenced
-        ? await runtime.acquireFence(executionId, runtime.systemOptions())
-        : undefined;
-      const resumeEvent = { eventType: EXECUTION_RECOVERED, payload: {} };
-
-      if (options.dispatcher !== undefined) {
-        // #392 — re-drive where the execution belongs, not on whichever node happens to be
-        // running the recovery pass. The recorded target is a HINT, and that matters more
-        // here than anywhere else: a node is often recovering an execution precisely
-        // BECAUSE its original lane went away, so the placement policy gets the last word
-        // and an unregistered target falls back rather than stranding the orphan.
-        const target = await placementOf(runtime.events, executionId);
-        await options.dispatcher.dispatch(
-          {
-            executionId,
-            workflowId: fresh.workflowId,
-            flowId: fresh.workflowId,
-            resumeEvent,
-            ...(fence !== undefined && { metadata: { fence } }),
-          },
-          target !== undefined ? { target } : undefined
-        );
-      } else {
-        const handle = await runtime.resume(executionId, resumeEvent, {
-          ...(fence !== undefined && { fence }),
-          ...runtime.systemOptions(),
-        });
-        // Settle before moving on, so the pass applies backpressure instead of stampeding
-        // every orphan into the runtime at once.
-        const refused = await Promise.race([
-          handle.waitForSuspend().then(
-            () => undefined,
-            (e: unknown) => e
-          ),
-          handle.waitForCompletion().then(
-            () => undefined,
-            (e: unknown) => e
-          ),
-        ]);
-        // ADR 0113 — a re-drive refused as diverged (`divergence: "fail"`) is PARKED on a reserved
-        // gate, which later passes skip; report it as failed through `onError` rather than counting
-        // a re-drive that went nowhere as recovered.
-        if (refused instanceof FlowReplayDivergenceError) throw refused;
-        // ADR 0130 — the re-drive was refused because THIS node cannot open a recorded sealed
-        // answer: not recovered. Report it (rate-limited) and skip the execution on this node for
-        // a back-off window so the sweep does not re-drive it every pass.
-        if (isSealedUnreadable(refused)) {
-          sealedRefusalBackoff(runtime, executionId, refused, options);
-          summary.failed++;
-          continue;
-        }
+      // The shared routine (also the TimerService wake-row re-drive, ADR 0130 D10): re-checks the
+      // status, fences, dispatches or resumes, settles, and classifies a sealed refusal.
+      const r = await redriveAbandoned(runtime, executionId, {
+        source: "sweep",
+        ...(options.fenced !== undefined && { fenced: options.fenced }),
+        ...(options.dispatcher !== undefined && { dispatcher: options.dispatcher }),
+      });
+      if (r.outcome === "skipped") continue;
+      if (r.outcome === "refused") {
+        // ADR 0130 - not recovered. Report (rate-limited) and skip the execution on this node for a
+        // back-off window so the sweep does not re-drive it every pass.
+        sealedRefusalBackoff(runtime, executionId, r.error, options);
+        summary.failed++;
+        continue;
       }
       summary.recovered++;
       options.onRecovered?.(executionId);
@@ -484,17 +440,10 @@ async function unproductiveRecoveries(
   return n;
 }
 
-// ADR 0130 — per-runtime back-off for executions this node refused as sealed-unreadable. Bounded
-// (oldest evicted; beyond the cap an execution is simply re-tried, i.e. periodic polling).
-const SEALED_CAP = 1024;
-const sealedBackoffs = new WeakMap<
-  WorkflowRuntime,
-  Map<string, { attempt: number; nextTryAt: number }>
->();
-
+// ADR 0130 - the per-runtime sealed back-off is SHARED with the TimerService wake-row re-drive
+// (redriveAbandoned.ts), so a refusal seen by either path suppresses the other for the window.
 function sealedBackedOff(runtime: WorkflowRuntime, executionId: string): boolean {
-  const e = sealedBackoffs.get(runtime)?.get(executionId);
-  return e !== undefined && e.nextTryAt > Date.now();
+  return isSealedBackedOff(runtime, executionId, Date.now());
 }
 
 function sealedRefusalBackoff(
@@ -503,22 +452,8 @@ function sealedRefusalBackoff(
   err: Error,
   options: RecoverAbandonedOptions
 ): void {
-  let m = sealedBackoffs.get(runtime);
-  if (m === undefined) {
-    m = new Map();
-    sealedBackoffs.set(runtime, m);
-  }
-  const attempt = (m.get(executionId)?.attempt ?? 0) + 1;
-  m.delete(executionId); // re-insert at the end: eviction order = recency
-  if (m.size >= SEALED_CAP) {
-    const oldest = m.keys().next().value;
-    if (oldest !== undefined) m.delete(oldest);
-  }
-  m.set(executionId, {
-    attempt,
-    nextTryAt:
-      Date.now() +
-      Math.max(1, redriveDelayMs(attempt, { baseMs: 1000, capMs: 60_000, random: () => 1 })),
-  });
-  if (attempt === 1 || attempt % 16 === 0) options.onError?.(executionId, err);
+  const report = noteSealedRefusal(runtime, executionId, Date.now(), (attempt) =>
+    redriveDelayMs(attempt, { baseMs: 1000, capMs: 60_000, random: () => 1 })
+  );
+  if (report) options.onError?.(executionId, err);
 }
