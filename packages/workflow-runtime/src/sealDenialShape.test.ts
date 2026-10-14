@@ -36,7 +36,10 @@ function node(store: EventStore, timers = new InMemoryTimerStore()) {
   const f = secret();
   const h = build(
     {
-      executionAuthorizer: executionAccessPolicy(),
+      // `discard` opened to `tenant` so the baseline is an OWNER denial: the default `discard: "deny"`
+      // is an op-level rule that answers before ownership, which a refusal that never consults the
+      // policy cannot reproduce (stated residual, ADR 0130 D7).
+      executionAuthorizer: executionAccessPolicy({ rules: { discard: "tenant" } }),
       executionAuthz: { requirePrincipal: true },
       onExecutionDenied: (
         r: { op: string; executionId: string; principal?: unknown },

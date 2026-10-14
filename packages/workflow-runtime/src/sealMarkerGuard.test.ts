@@ -490,9 +490,7 @@ describe("backstop (b): an UNMARKED legacy stream whose principal record is itse
     const before = await inner.read(e);
     const err = await rejection(b.rt.loadState(e, { principal: T1 }));
     expect(err).toBeInstanceOf(SealedStreamUnreadableError);
-    // The policy is asked ONLY to phrase the denial (its own verdict for an unknown owner, so an
-    // op-level rule reads the same as for any existing id); its "allowed" never admits the call.
-    expect(consulted()).toBeLessThanOrEqual(1);
+    expect(consulted()).toBe(0);
     expect(await inner.read(e)).toEqual(before);
   });
 

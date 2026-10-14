@@ -10,7 +10,11 @@ import {
   InMemoryKeyStore,
   shredSubject,
 } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
+import {
+  InMemoryAsyncSnapshotStore,
+  type Snapshot,
+  type SnapshotStore,
+} from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { build, echo, flow } from "./__tests__/r2Harness";
@@ -79,7 +83,6 @@ describe("a real crypto-shred is never reported as a missing key", () => {
         }
         expect(errors.some((e) => isSealedUnreadable(e))).toBe(false);
         await expect(h.rt.cancel("x")).resolves.toBeDefined();
-        expect((await h.rt.eventStore.read("x").catch(() => [])).length).toBeGreaterThanOrEqual(0);
       });
     });
   }
@@ -102,7 +105,7 @@ describe("a real crypto-shred is never reported as a missing key", () => {
     // a snapshot store that reports the key gone (it cannot prove a tombstone either way)
     const unavailable: SnapshotStore = {
       ...rawSnaps,
-      save: (s) => rawSnaps.save(s),
+      save: (snap: Snapshot) => rawSnaps.save(snap),
       loadLatest: async () => {
         throw new KeyUnavailableError("t", "t");
       },

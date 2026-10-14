@@ -113,7 +113,9 @@ async function boot(mode: Mode = "crypto", unknownOwner?: "allow", noPolicyB = f
   const keys = new InMemoryKeyStore();
   const sealed = mode === "crypto" || mode === "wrongKey";
   const events = sealed ? new EncryptingEventStore(raw, keys, { sensitive: {} }) : raw;
-  const snaps = sealed ? new EncryptingSnapshotStore(rawSnaps, keys, { sensitive: [] }) : rawSnaps;
+  const snaps = sealed
+    ? new EncryptingSnapshotStore(rawSnaps, keys, { sensitive: [], events: raw })
+    : rawSnaps;
   const spyA = spyPolicy(unknownOwner);
 
   // Node A: defineConfig. Crypto registers the principal identity + recordedBy paths; the codec
@@ -155,7 +157,10 @@ async function boot(mode: Mode = "crypto", unknownOwner?: "allow", noPolicyB = f
       : raw;
   const snapsB =
     mode === "wrongKey"
-      ? new EncryptingSnapshotStore(rawSnaps, new InMemoryKeyStore(), { sensitive: [] })
+      ? new EncryptingSnapshotStore(rawSnaps, new InMemoryKeyStore(), {
+          sensitive: [],
+          events: raw, // the raw log decides shredded vs key-unavailable (ADR 0130 residuals D7)
+        })
       : rawSnaps;
   const denials: Array<string | undefined> = [];
   const storageErrors: unknown[] = [];
@@ -313,7 +318,10 @@ function refusalMatrix(title: string, mode: "crypto" | "wrongKey", reason: strin
               expect(JSON.stringify(err)).not.toMatch(
                 /covers|sequence|key-unavailable|marker-unopenable|__loomEnc/
               );
-              expect(c.denials.at(-1)).toBe(UNKNOWN_OWNER_REASON);
+              // as the ordinary denial of the same call: a plain `query` never fires the audit
+              // callback, every other op fires it with the generic reason
+              if (op === "loadState") expect(c.denials).toEqual([]);
+              else expect(c.denials.at(-1)).toBe(UNKNOWN_OWNER_REASON);
               expect(c.storageErrors.length).toBeGreaterThan(0);
               expect(sealedDetailOf(c.storageErrors[0])?.reason).toBe(reason);
             } finally {
@@ -357,7 +365,7 @@ function refusalMatrix(title: string, mode: "crypto" | "wrongKey", reason: strin
         const id = `${mode}-ops`;
         await parked(c, id);
         const probe = c.b;
-        await outcomeOf(() => probe.loadState(id, { principal: T1 }));
+        await outcomeOf(() => probe.send(id, { topic: "t", payload: "x" }, { principal: T1 }));
         expect(c.denials).toEqual([UNKNOWN_OWNER_REASON]);
         expect(c.storageErrors).toHaveLength(1);
         expect(JSON.stringify(c.denials)).not.toMatch(/sealed|key|marker/i);
