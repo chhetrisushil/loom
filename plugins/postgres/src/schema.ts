@@ -619,6 +619,9 @@ const DDL_REST = `
       END IF;
     END
     $timers_refused$;
+    -- ADR 0130 D10: a PARTIAL index over the (rare) refusal rows only; a plain timer pays nothing
+    -- for it, and a scan for refusal rows never walks the plain ones.
+    CREATE INDEX IF NOT EXISTS idx_timers_refused ON timers (wake_at ASC) WHERE refused IS NOT NULL;
 
     -- #380 — durable ownership of a RUNNING execution. One row per execution: a lease is
     -- exclusive by definition, so the primary key is the mutual exclusion.

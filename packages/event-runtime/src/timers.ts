@@ -35,11 +35,19 @@ export interface TimerRecord {
    * Optional and additive: a plain wake carries none. A node that predates the field reads the row
    * as a plain wake it can never match to a park and retires it as obsolete (fail safe: never re-driven).
    *
+   * `holds` (optional, absent = 0) counts how many times a poller has HELD the row (rescheduled it
+   * to a later instant because it could not act yet). It is part of the row's own data so the next
+   * instant is a DETERMINISTIC function of the row (`wakeAt` + back-off(holds + 1), no node-local
+   * jitter): N pollers that read the same row all write the SAME successor key, so concurrent
+   * holders converge on one row instead of multiplying it.
+   *
    * `schedule` UPSERTS it like `redrive`: re-scheduling an existing `(executionId, wakeAt)` never
-   * clears a stamp already set, and a record that carries one sets it (a LATER head replaces an
-   * earlier one). A store must keep a `refused` row distinguishable from a plain one through `due`.
+   * clears a stamp already set, and a record that carries one sets it. On a same-key upsert the
+   * stored stamp keeps the MAX `head` and the MAX `holds` of the two (never last-writer-wins: two
+   * nodes writing in the same millisecond must not move a head backwards). A store must keep a
+   * `refused` row distinguishable from a plain one through `due`.
    */
-  refused?: { head: number };
+  refused?: { head: number; holds?: number };
 }
 
 export interface TimerStore {
@@ -75,6 +83,20 @@ export interface TimerStore {
 }
 
 /** Reference in-memory {@link TimerStore} (tests, ephemeral apps). */
+/** Same-key upsert of a refusal stamp: the MAX head and the MAX holds (absent holds stays absent). */
+function mergeRefused(
+  prior: TimerRecord["refused"],
+  next: TimerRecord["refused"]
+): TimerRecord["refused"] {
+  if (next === undefined) return prior;
+  if (prior === undefined) return next;
+  const holds =
+    prior.holds === undefined && next.holds === undefined
+      ? undefined
+      : Math.max(prior.holds ?? 0, next.holds ?? 0);
+  return { head: Math.max(prior.head, next.head), ...(holds !== undefined && { holds }) };
+}
+
 export class InMemoryTimerStore implements TimerStore {
   private readonly timers = new Map<string, TimerRecord>();
 
@@ -86,7 +108,8 @@ export class InMemoryTimerStore implements TimerStore {
     const key = this.key(timer.executionId, timer.wakeAt);
     // Upsert (ADR 0118 D4): a flagged row is never downgraded by a plain schedule.
     const redrive = timer.redrive ?? this.timers.get(key)?.redrive;
-    const refused = timer.refused ?? this.timers.get(key)?.refused;
+    const prior = this.timers.get(key)?.refused;
+    const refused = mergeRefused(prior, timer.refused);
     this.timers.set(key, {
       executionId: timer.executionId,
       wakeAt: timer.wakeAt,

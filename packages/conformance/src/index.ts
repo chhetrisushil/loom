@@ -1957,6 +1957,46 @@ export function runTimerStoreConformance(factory: () => TimerStore, label = "Tim
       await s.close();
     });
 
+    it("schedule keeps the MAX head and MAX holds on a same-key upsert, whichever writer lands last (ADR 0130 D10)", async () => {
+      const s = factory();
+      await s.schedule({ executionId: "a", wakeAt: 100, refused: { head: 9, holds: 1 } });
+      await s.schedule({ executionId: "a", wakeAt: 100, refused: { head: 5, holds: 3 } });
+      await s.schedule({ executionId: "b", wakeAt: 100, refused: { head: 5 } });
+      await s.schedule({ executionId: "b", wakeAt: 100, refused: { head: 2 } });
+      await s.schedule({ executionId: "c", wakeAt: 100, refused: { head: 2, holds: 4 } });
+      await s.schedule({ executionId: "c", wakeAt: 100, refused: { head: 8 } });
+      const due = await s.due(500);
+      expect(due.find((t) => t.executionId === "a")?.refused).toEqual({ head: 9, holds: 3 });
+      expect(due.find((t) => t.executionId === "b")?.refused).toEqual({ head: 5 });
+      expect(due.find((t) => t.executionId === "c")?.refused).toEqual({ head: 8, holds: 4 });
+      await s.close();
+    });
+
+    it("concurrent holders of one refusal row converge on ONE successor row (schedule-successor-then-complete is idempotent) (ADR 0130 D10)", async () => {
+      const s = factory();
+      await s.schedule({ executionId: "x", wakeAt: 100, refused: { head: 4 } });
+      let at = 100;
+      let holds = 0;
+      for (let gen = 0; gen < 6; gen++) {
+        const [row] = await s.due(Number.MAX_SAFE_INTEGER);
+        at = (row as { wakeAt: number }).wakeAt;
+        holds = (row as { refused?: { holds?: number } }).refused?.holds ?? 0;
+        // four holders that all read the SAME row before any completes it
+        await Promise.all(
+          [0, 1, 2, 3].map(async () => {
+            await s.schedule({
+              executionId: "x",
+              wakeAt: at + 10 * (holds + 1),
+              refused: { head: 4, holds: holds + 1 },
+            });
+            await s.complete("x", at);
+          })
+        );
+        expect(await s.due(Number.MAX_SAFE_INTEGER)).toHaveLength(1);
+      }
+      await s.close();
+    });
+
     it("due({ refused: false }) excludes refusal rows BEFORE the limit, so they cannot starve real timers (ADR 0130 D10)", async () => {
       const s = factory();
       for (let i = 0; i < 4; i++) {
