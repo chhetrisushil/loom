@@ -363,8 +363,9 @@ export interface HeartbeatConfig {
   store?: LeaseStore;
   /**
    * What a driver does when the lease store is unreachable. `"stop"` (default): abort at its
-   * self-fencing deadline, so an expired lease stays true evidence. `"continue"`: keep running
-   * (the fence still protects the log) but the lease no longer proves liveness.
+   * self-fencing deadline, so an expired lease stays true evidence. `"continue"` (keep running; the
+   * fence still protects the log, but the lease no longer proves liveness) is NOT SUPPORTED YET: it
+   * needs the poll to treat such a fleet as heuristic (ADR 0130 D11, slice S7d), so it throws.
    */
   onStoreError?: "stop" | "continue";
 }
@@ -449,10 +450,12 @@ function resolveHeartbeat(
         ? "defineConfig: durability.heartbeat.ttlMs is too small: the default renew cadence max(floor(ttlMs / 3), 1) must be < ttlMs - floor(ttlMs / 6)"
         : "defineConfig: durability.heartbeat.renewEveryMs must be < ttlMs - floor(ttlMs / 6)"
     );
-  if (hb.onStoreError !== undefined && hb.onStoreError !== "stop" && hb.onStoreError !== "continue")
+  if (hb.onStoreError === "continue")
     throw new TypeError(
-      'defineConfig: durability.heartbeat.onStoreError must be "stop" or "continue"'
+      'defineConfig: durability.heartbeat.onStoreError "continue" is not supported yet (ADR 0130 D11: it needs the poll to treat the fleet as heuristic, slice S7d); use "stop"'
     );
+  if (hb.onStoreError !== undefined && hb.onStoreError !== "stop")
+    throw new TypeError('defineConfig: durability.heartbeat.onStoreError must be "stop"');
   if (hb.store !== undefined && !isLeaseStore(hb.store))
     throw new TypeError("defineConfig: durability.heartbeat.store must be a LeaseStore");
 
