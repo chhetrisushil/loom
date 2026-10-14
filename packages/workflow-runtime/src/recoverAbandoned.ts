@@ -296,6 +296,12 @@ export async function recoverAbandoned(
     }
     if (state.status !== "running" && state.status !== "pending") continue;
     summary.candidates++;
+    // Defence in depth (ADR 0130 D11 review): THIS node is driving it (or starting it). Whatever a
+    // heuristic or a lease says, re-driving what we drive ourselves is a double-enter - the keeper
+    // answers TRUE for a lease its own owner already holds, so the claim below would not stop it.
+    // Only with heartbeat leases: a keeper-less sweep keeps its documented power to supersede a hung
+    // in-process run (fenced), which the placement/recovery contract relies on.
+    if (runtime.leaseKeeper !== undefined && runtime.drivesLocally(executionId)) continue;
 
     // With leases, reaching here IS the evidence: this id came from `expired()`. A predicate
     // may still narrow it, and is asked when given — so it never becomes a lie.

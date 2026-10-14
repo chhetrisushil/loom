@@ -148,14 +148,28 @@ export function defaultLeaseEvidence(runtime: WorkflowRuntime): boolean {
   return keeper !== undefined && !keeper.heuristic && keeper.leaseStore.scope === "cluster";
 }
 
+/** Pages a rotating GC scan may reach past the front of the expired list (bounds one pass's read). */
+const GHOST_MAX_PAGES = 64;
+const ghostPage = new WeakMap<WorkflowRuntime, number>();
+
 /**
  * ADR 0130 D11 section 1: a lease with NO stream (a driver acquired it, then died before its first
- * append) is a ghost. It is garbage-collected, never re-driven. Scans at most `limit` expired leases
- * (soonest-expired first) and returns how many ghosts it deleted. A lease whose stream exists is an
- * orphan, not a ghost, and is left to the poll and the sweep. To delete, the node takes the (expired)
- * row first and re-checks that no stream appeared: a start that is merely slow loses its lease to the
- * takeover, and its own write gate then refuses it before it appends. No-op without a keeper.
- * Errors are the caller's (the poll reports them).
+ * append) is a ghost. It is garbage-collected, never re-driven. Examines at most `limit` expired
+ * leases per call and returns how many ghosts it deleted. A lease whose stream exists is an orphan,
+ * not a ghost, and is left to the poll and the sweep.
+ *
+ * The expired list is soonest-first with no cursor in the store SPI, so orphans (which are never
+ * deleted here) would pin the front window forever. The scan therefore ROTATES: a pass that collected
+ * nothing and filled its window moves to the next page on the next call (up to {@link GHOST_MAX_PAGES}
+ * pages deep, then back to the front), so a ghost behind any number of orphans is reached in a
+ * bounded number of passes. A pass that collected something stays on its page (the list shifted).
+ *
+ * Skipped, never touched: a `"continue"` owner's lease (that starter may still be alive: its expired
+ * lease proves nothing), and a lease whose stream read throws (unknown is treated as an orphan). To
+ * delete, the node takes the (expired) row FIRST, unrenewed, and re-checks that no stream appeared. If
+ * one did (a slow start), the row is left to EXPIRE as an orphan's lease, never deleted, so a running
+ * stream keeps an expiring lease the default re-drive can judge. No-op without a keeper. A failing
+ * `expired()` read is the caller's (the poll reports it).
  */
 export async function collectGhostLeases(
   runtime: WorkflowRuntime,
@@ -164,16 +178,27 @@ export async function collectGhostLeases(
   const keeper = runtime.leaseKeeper;
   if (keeper === undefined) return 0;
   const limit = options.limit ?? 100;
+  const page = ghostPage.get(runtime) ?? 0;
+  const want = limit * (page + 1);
+  const rows = await keeper.leaseStore.expired(undefined, want);
+  const window = rows.slice(page * limit);
   let collected = 0;
-  for (const lease of await keeper.leaseStore.expired(undefined, limit)) {
-    if (await runtime.hasSequenceZero(lease.executionId)) continue; // a real stream: an orphan
-    const hold = await runtime.acquireDriverLease(lease.executionId);
-    if (hold === null) continue; // someone took it meanwhile: alive, not ours
+  for (const lease of window) {
+    if (isHeuristicOwner(lease.owner)) continue; // may still be starting: proves nothing
+    const id = lease.executionId;
     try {
-      if (!(await runtime.hasSequenceZero(lease.executionId))) collected++;
-    } finally {
-      await hold.release();
+      if (await runtime.hasSequenceZero(id)) continue; // a real stream: an orphan
+      // Take the expired row WITHOUT the keeper: nothing renews it, so if we leave it, it expires.
+      const mine = await keeper.leaseStore.acquire(id, keeper.owner, keeper.ttlMs);
+      if (mine === null) continue; // someone took it meanwhile: alive, not ours
+      if (await runtime.hasSequenceZero(id)) continue; // a stream appeared: leave the row to expire
+      await keeper.leaseStore.release(id, keeper.owner);
+      collected++;
+    } catch {
+      // one lease's store fault must not abort the pass or starve the rest: treat it as an orphan
     }
   }
+  const filled = rows.length >= want && window.length >= limit;
+  ghostPage.set(runtime, collected === 0 && filled && page + 1 < GHOST_MAX_PAGES ? page + 1 : 0);
   return collected;
 }
