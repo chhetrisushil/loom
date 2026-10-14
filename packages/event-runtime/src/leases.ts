@@ -298,6 +298,8 @@ export function assertSteal(options: AcquireOptions | undefined): boolean {
 /** `acquireMany` takes no `steal`: a fence belongs to one execution. THROWS `TypeError`, changing nothing. */
 export function assertNoBatchSteal(options: AcquireOptions | undefined): void {
   if ((options?.steal as unknown) !== undefined) {
-    throw new TypeError("acquireMany does not accept `steal`: a fence belongs to one execution; steal through acquire()");
+    throw new TypeError(
+      "acquireMany does not accept `steal`: a fence belongs to one execution; steal through acquire()"
+    );
   }
 }

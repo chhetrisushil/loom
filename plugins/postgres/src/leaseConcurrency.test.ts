@@ -49,9 +49,12 @@ if (PG_URL === undefined) {
   });
 
   // Deterministic PRNG so a failure reproduces.
-  const rng = (seed: number) => () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return seed / 2 ** 32;
+  const rng = (seed0: number) => {
+    let seed = seed0;
+    return () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 2 ** 32;
+    };
   };
   const subset = (rand: () => number): string[] => {
     const shuffled = [...all].sort(() => rand() - 0.5); // SHUFFLED: callers do not sort
