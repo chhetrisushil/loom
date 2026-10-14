@@ -12,7 +12,6 @@ import type { AcquireOptions, LeaseStore } from "@loom/event-runtime";
 import {
   DuplicateEnvelopeIdError,
   DuplicateSequenceError,
-  LEASE_STORE_SPI_VERSION,
   headOf,
   readRangeOf,
 } from "@loom/event-runtime";
@@ -1725,7 +1724,14 @@ export function runLeaseStoreConformance(
         expect(await store.acquire("x", "node-a", 1000, 100)).toBeNull();
         expect(await store.acquire("x", "node-a", 1000, 100, {})).toBeNull();
         // A steal flag that is not a proof is a programming error, never a silent steal.
-        for (const bad of [true, {}, { fence: -1 }, { fence: 0 }, { fence: 1.5 }, { fence: Number.NaN }]) {
+        for (const bad of [
+          true,
+          {},
+          { fence: -1 },
+          { fence: 0 },
+          { fence: 1.5 },
+          { fence: Number.NaN },
+        ]) {
           await expect(
             store.acquire("x", "node-a", 1000, 100, { steal: bad } as unknown as AcquireOptions)
           ).rejects.toThrow(TypeError);
@@ -1747,25 +1753,28 @@ export function runLeaseStoreConformance(
       }
     );
 
-    batch("acquireMany REJECTS steal (a fence belongs to one execution): TypeError, nothing changed", async () => {
-      const store = factory();
-      await store.acquire("a", "node-b", 10_000, 0);
-      await store.acquire("b", "node-b", 10_000, 0);
-      expect(await store.acquireMany?.(["a", "b"], "node-a", 1000, 100)).toEqual([]);
-      for (const steal of [true, { fence: 2 }]) {
-        await expect(
-          store.acquireMany?.(["a", "b", "free"], "node-a", 1000, 100, {
-            steal,
-          } as unknown as AcquireOptions)
-        ).rejects.toThrow(TypeError);
+    batch(
+      "acquireMany REJECTS steal (a fence belongs to one execution): TypeError, nothing changed",
+      async () => {
+        const store = factory();
+        await store.acquire("a", "node-b", 10_000, 0);
+        await store.acquire("b", "node-b", 10_000, 0);
+        expect(await store.acquireMany?.(["a", "b"], "node-a", 1000, 100)).toEqual([]);
+        for (const steal of [true, { fence: 2 }]) {
+          await expect(
+            store.acquireMany?.(["a", "b", "free"], "node-a", 1000, 100, {
+              steal,
+            } as unknown as AcquireOptions)
+          ).rejects.toThrow(TypeError);
+        }
+        if (store.get !== undefined) {
+          expect((await store.get("a"))?.owner).toBe("node-b");
+          expect(await store.get("free")).toBeNull(); // nothing granted before the rejection
+        }
+        expect(await store.renew("a", "node-b", 1000, 200)).toBe(true);
+        await store.close();
       }
-      if (store.get !== undefined) {
-        expect((await store.get("a"))?.owner).toBe("node-b");
-        expect(await store.get("free")).toBeNull(); // nothing granted before the rejection
-      }
-      expect(await store.renew("a", "node-b", 1000, 200)).toBe(true);
-      await store.close();
-    });
+    );
 
     batch("batch expiry is judged on the STORE clock, not the caller's (skew)", async () => {
       if (options.clocked !== undefined) {
