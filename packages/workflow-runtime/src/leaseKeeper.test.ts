@@ -411,6 +411,93 @@ describe("LeaseKeeper", () => {
       expect(await keeper.acquire("d")).toBe(true); // not quiet
     });
 
+    describe("round 3 (P3 fixes)", () => {
+      const failingIds = (store: FakeStore, bad: Set<string>, mk: (id: string) => Error) => {
+        (store as unknown as Record<string, unknown>).acquireMany = async (ids: string[]) => {
+          for (const id of ids) if (bad.has(id)) throw mk(id);
+          return ids.map((id) => {
+            store.held.add(id);
+            return { executionId: id, owner: "o", expiresAt: 0 };
+          });
+        };
+      };
+
+      it("P3-a: a lone id-specific error rejects only that id; the next id still acquires", async () => {
+        const { keeper, store } = rig(true);
+        failingIds(store, new Set(["bad"]), () => new Error("value too long for type"));
+        await expect(keeper.acquire("bad")).rejects.toThrow(/too long/);
+        expect(await keeper.acquire("good")).toBe(true);
+      });
+
+      it("P3-a: a connectivity-class error is store-wide and arms the quiet period", async () => {
+        for (const mk of [
+          () => Object.assign(new Error("connect failed"), { code: "ECONNREFUSED" }),
+          () => Object.assign(new Error("terminating connection"), { code: "57P01" }),
+          () => Object.assign(new Error("db locked"), { code: "SQLITE_BUSY" }),
+          () => new Error("timeout exceeded when trying to connect"),
+          () =>
+            new Error("outer", { cause: Object.assign(new Error("x"), { code: "ECONNRESET" }) }),
+        ]) {
+          const { keeper, store } = rig(true);
+          failingIds(store, new Set(["a"]), mk);
+          await expect(keeper.acquire("a")).rejects.toBeDefined();
+          await expect(keeper.acquire("b")).rejects.toBeInstanceOf(LeaseStoreQuietError);
+        }
+      });
+
+      it("P3-a: lone failures on two consecutive flushes with DIFFERENT ids arm the quiet period", async () => {
+        const { keeper, store } = rig(true);
+        failingIds(store, new Set(["bad1", "bad2"]), () => new Error("constraint violated"));
+        await expect(keeper.acquire("bad1")).rejects.toThrow();
+        await expect(keeper.acquire("bad2")).rejects.toThrow();
+        await expect(keeper.acquire("good")).rejects.toBeInstanceOf(LeaseStoreQuietError);
+      });
+
+      it("P3-a: the same id failing twice, or a clean flush between, does not arm", async () => {
+        const { keeper, store } = rig(true);
+        failingIds(store, new Set(["bad1", "bad2"]), () => new Error("constraint violated"));
+        await expect(keeper.acquire("bad1")).rejects.toThrow();
+        await expect(keeper.acquire("bad1")).rejects.toThrow();
+        expect(await keeper.acquire("ok")).toBe(true);
+        await expect(keeper.acquire("bad2")).rejects.toThrow();
+        expect(await keeper.acquire("good")).toBe(true);
+      });
+
+      it("P3-b: a grant answered after its own deadline is not held, resolves false, and is released", async () => {
+        const { keeper, store, clock, lost } = rig(true);
+        const go = store.holdNext();
+        const acq = keeper.acquire("a");
+        await until(() => store.calls.includes("acquireMany:1"));
+        clock.t += 26_000; // ttl - margin
+        go();
+        expect(await acq).toBe(false);
+        expect(keeper.size).toBe(0);
+        expect(keeper.validNow("a")).toBe(false);
+        await until(() => store.calls.includes("releaseMany:1"));
+        expect(store.held.has("a")).toBe(false);
+        expect(lost).toEqual([]); // never held, so never lost
+      });
+
+      it("P3-c: a release() while an acquire is parked behind an on-the-wire release stays effective", async () => {
+        const { keeper, store, lost } = rig(true);
+        await keeper.acquire("x");
+        const go = store.holdNext();
+        const rel1 = keeper.release("x");
+        await until(() => store.calls.includes("releaseMany:1"));
+        const acq = keeper.acquire("x"); // parks behind the wire
+        const rel2 = keeper.release("x"); // must withdraw it and stay effective
+        expect(await acq).toBe(false);
+        go();
+        await Promise.all([rel1, rel2]);
+        expect(keeper.validNow("x")).toBe(false);
+        expect(keeper.size).toBe(0);
+        expect(store.held.has("x")).toBe(false);
+        await keeper.tick();
+        expect(lost).toEqual([]);
+        expect(store.calls.filter((c) => c.startsWith("acquireMany")).length).toBe(1);
+      });
+    });
+
     it("P2-4: a NUL / empty / non-string id is rejected up front with a TypeError and no store call", async () => {
       const { keeper, store } = rig(true);
       await expect(keeper.acquire("a\u0000b")).rejects.toBeInstanceOf(TypeError);

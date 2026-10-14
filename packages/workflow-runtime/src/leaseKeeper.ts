@@ -127,6 +127,12 @@ interface PendingRelease {
   cancelled: boolean;
 }
 
+/** An acquire parked behind an on-the-wire release of the same id. */
+interface Parked {
+  resolve: (held: boolean | Promise<boolean>) => void;
+  cancelled: boolean;
+}
+
 interface Outcome {
   id: string;
   granted?: boolean;
@@ -141,6 +147,53 @@ const defaultEvery = (fn: () => void, ms: number): (() => void) => {
   t.unref?.();
   return () => clearInterval(t);
 };
+
+const CONNECTIVITY_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ECONNABORTED",
+  "ETIMEDOUT",
+  "EPIPE",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENETDOWN",
+  "SQLITE_BUSY",
+  "SQLITE_LOCKED",
+]);
+
+/**
+ * An error that says the STORE (not one id) is unwell: connection refused/reset, timeouts, pool
+ * exhaustion, Postgres admin shutdown / connection-exception / too-many-connections classes,
+ * SQLITE_BUSY / SQLITE_LOCKED (after the busy timeout). Looks through `cause` and aggregates.
+ */
+export function isStoreWideError(err: unknown, depth = 0): boolean {
+  if (err === null || typeof err !== "object" || depth > 4) return false;
+  const e = err as {
+    code?: unknown;
+    name?: unknown;
+    message?: unknown;
+    cause?: unknown;
+    errors?: unknown;
+  };
+  if (typeof e.code === "string") {
+    const code = e.code;
+    if (CONNECTIVITY_CODES.has(code)) return true;
+    if (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED")) return true;
+    if (code.startsWith("08") || code.startsWith("57P") || code === "53300") return true;
+  }
+  if (e.name === "TimeoutError") return true;
+  if (
+    typeof e.message === "string" &&
+    /timed? ?out|timeout|connection (terminated|refused|reset|closed|lost)|pool|ECONN|ETIMEDOUT|database is locked/i.test(
+      e.message
+    )
+  )
+    return true;
+  if (isStoreWideError(e.cause, depth + 1)) return true;
+  return Array.isArray(e.errors) && e.errors.some((x) => isStoreWideError(x, depth + 1));
+}
 
 const validId = (id: unknown): id is string =>
   typeof id === "string" && id.length > 0 && !id.includes("\u0000");
@@ -167,6 +220,10 @@ export class LeaseKeeper {
   private readonly releasing = new Map<string, Promise<void>>();
   /** Acquires on the wire, per id: a release marks them cancelled and goes after them. */
   private readonly acquiring = new Map<string, Set<Flight>>();
+  /** Acquires parked behind an on-the-wire release, per id: a later release() withdraws them. */
+  private readonly parked = new Map<string, Parked[]>();
+  /** The id of the previous flush's lone failure (consecutive different ids = store-wide). */
+  private loneFailure: string | undefined;
   private acquireScheduled = false;
   private releaseScheduled = false;
   private quietUntil = Number.NEGATIVE_INFINITY;
@@ -215,6 +272,10 @@ export class LeaseKeeper {
    * True only while the lease is held AND neither local deadline (monotonic, wall) has passed.
    * A clock compare, no I/O: the gate a driver checks before dispatching an effect or appending.
    * Observing an expiry reports it (`onLost`, once) so the transition is never silent.
+   *
+   * NOTE for callers: `onLost` (and so any abort listener a driver hangs on it) may run
+   * SYNCHRONOUSLY inside this call, before it returns `false`. Do not call it while holding a
+   * lock the listener needs, and expect re-entrancy.
    */
   validNow(executionId: string): boolean {
     const h = this.held.get(executionId);
@@ -243,7 +304,23 @@ export class LeaseKeeper {
       );
     if (this.validNow(executionId)) return Promise.resolve(true);
     const wire = this.releasing.get(executionId);
-    if (wire) return wire.then(() => this.acquire(executionId));
+    if (wire) {
+      return new Promise<boolean>((resolve) => {
+        const p: Parked = { resolve, cancelled: false };
+        const list = this.parked.get(executionId);
+        if (list) list.push(p);
+        else this.parked.set(executionId, [p]);
+        void wire.then(() => {
+          const l = this.parked.get(executionId);
+          if (l) {
+            const i = l.indexOf(p);
+            if (i >= 0) l.splice(i, 1);
+            if (l.length === 0) this.parked.delete(executionId);
+          }
+          if (!p.cancelled) resolve(this.acquire(executionId));
+        });
+      });
+    }
     const remaining = this.quietUntil - this.now();
     if (remaining > 0) return Promise.reject(new LeaseStoreQuietError(Math.ceil(remaining)));
     const superseded = this.pendingReleases.get(executionId);
@@ -270,6 +347,16 @@ export class LeaseKeeper {
   release(executionId: string): Promise<void> {
     this.held.delete(executionId);
     if (this.closed || !validId(executionId)) return Promise.resolve();
+    // An acquire parked behind an on-the-wire release is withdrawn too: it must not run later
+    // and undo this release.
+    const parked = this.parked.get(executionId);
+    if (parked) {
+      this.parked.delete(executionId);
+      for (const p of parked) {
+        p.cancelled = true;
+        p.resolve(false);
+      }
+    }
     // An acquire still queued is simply withdrawn.
     if (this.acquireQueue.some((p) => p.id === executionId)) {
       const keep: Pending[] = [];
@@ -399,8 +486,14 @@ export class LeaseKeeper {
   /** One acquire call's outcome per id. A batch error is re-tried per id to isolate the offender. */
   private async acquireChunk(
     c: string[],
-    fails: { n: number; first?: unknown }
+    fails: { n: number; first?: unknown; firstId?: string; wide?: boolean }
   ): Promise<Outcome[]> {
+    const note = (id: string, err: unknown): void => {
+      fails.n++;
+      if (fails.n === 1) fails.firstId = id;
+      fails.first ??= err;
+      if (isStoreWideError(err)) fails.wide = true;
+    };
     const single = async (id: string): Promise<Outcome> => {
       const mono = this.now();
       const wall = this.wallNow();
@@ -410,8 +503,7 @@ export class LeaseKeeper {
           : await this.store.acquire(id, this.owner, this.ttlMs);
         return { id, granted: Boolean(l), mono, wall };
       } catch (err) {
-        fails.n++;
-        fails.first ??= err;
+        note(id, err);
         return { id, failed: true, err };
       }
     };
@@ -425,8 +517,7 @@ export class LeaseKeeper {
       return rs.map((r, i): Outcome => {
         const id = c[i] as string;
         if (r.status === "fulfilled") return { id, granted: r.value !== null, mono, wall };
-        fails.n++;
-        fails.first ??= r.reason;
+        note(id, r.reason);
         return { id, failed: true, err: r.reason };
       });
     }
@@ -439,8 +530,7 @@ export class LeaseKeeper {
       return c.map((id) => ({ id, granted: got.has(id), mono, wall }));
     } catch (err) {
       if (c.length === 1) {
-        fails.n++;
-        fails.first ??= err;
+        note(c[0] as string, err);
         return [{ id: c[0] as string, failed: true, err }];
       }
       const out: Outcome[] = [];
@@ -476,8 +566,7 @@ export class LeaseKeeper {
       if (set) set.add(f);
       else this.acquiring.set(id, new Set([f]));
     }
-    const fails: { n: number; first?: unknown } = { n: 0 };
-    let succeeded = 0;
+    const fails: { n: number; first?: unknown; firstId?: string; wide?: boolean } = { n: 0 };
     try {
       for (const c of chunks(ids, this.chunk)) {
         const outcomes: Outcome[] =
@@ -493,14 +582,19 @@ export class LeaseKeeper {
             settle.push(...ps.map((p) => () => p.reject(o.err)));
             continue;
           }
-          succeeded++;
           let result = false;
           if (o.granted) {
+            const mono = (o.mono as number) + this.ttlMs - this.margin;
+            const wall = (o.wall as number) + this.ttlMs - this.margin;
             if (this.closed) toRelease.push(o.id);
-            else if (!flight.cancelled) {
+            else if (!flight.cancelled && (this.now() >= mono || this.wallNow() >= wall)) {
+              // Answered after its own deadline: holding it would only fire onLost("deadline")
+              // on first use. Give the row back and report "not held".
+              toRelease.push(o.id);
+            } else if (!flight.cancelled) {
               this.held.set(o.id, {
-                mono: (o.mono as number) + this.ttlMs - this.margin,
-                wall: (o.wall as number) + this.ttlMs - this.margin,
+                mono,
+                wall,
                 epoch: ++this.epochCounter,
               });
               result = true;
@@ -512,8 +606,17 @@ export class LeaseKeeper {
         if (toRelease.length > 0) await this.releaseIds(toRelease);
         for (const s of settle) s();
       }
-      // One failure among others that worked is the offender; anything else is the store.
-      if (fails.n >= 2 || (fails.n >= 1 && succeeded === 0)) this.failed(fails.first);
+      // Only a store-wide error (connectivity class), two failures in one flush, or lone
+      // failures on two consecutive flushes with DIFFERENT ids arm the quiet period; a single
+      // id-specific rejection (length limit, constraint, bad byte) rejects just that id.
+      if (fails.n === 0) this.loneFailure = undefined;
+      else if (fails.n >= 2 || fails.wide) {
+        this.loneFailure = undefined;
+        this.failed(fails.first);
+      } else if (this.loneFailure !== undefined && this.loneFailure !== fails.firstId) {
+        this.loneFailure = undefined;
+        this.failed(fails.first);
+      } else this.loneFailure = fails.firstId;
     } finally {
       for (const [id, f] of flights) {
         const set = this.acquiring.get(id);
