@@ -915,6 +915,14 @@ export class WorkflowContextImpl implements WorkflowContext {
       this.scopesEnabled ? { metadata: { kernel: true } } : undefined
     );
 
+    // K9.3 — STEP_STARTED is the pre-effect marker the in-doubt guard above reads on recovery, so
+    // for a tool declared `idempotent: false` it must be DURABLE before the effect can have any
+    // external side effect (the journal is write-behind). One awaited store round trip, on those
+    // steps only; undeclared and `idempotent: true` tools keep the write-behind hot path. A
+    // refused write (stale fence, storage error) throws here, so the effect is never dispatched
+    // and the run fails like any other storage failure (the journal already aborted the run).
+    if (this.effectRuntime.declaredIdempotence(toolId) === false) await this.journal.drain();
+
     // K8.3 — declared step deadline (`timeoutMs`), anchored to the step's FIRST
     // logged start so a crash-recovery re-run resumes the countdown rather than
     // resetting it. Enforcement is kernel-side: the step signal aborts (for

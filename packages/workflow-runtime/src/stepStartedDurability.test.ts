@@ -1,7 +1,7 @@
-import { step$ } from "@loom/core";
+import { StorageWriteError, step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { DuplicateSequenceError, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -23,6 +23,7 @@ import type { FlowRunner, RegisteredFlow } from "./types";
 
 const io = { inputSchema: z.object({}), outputSchema: z.object({ ok: z.boolean() }) };
 const stepA = step$({ id: "a", name: "A", toolId: "tool-a", ...io });
+const stepB = step$({ id: "b", name: "B", toolId: "tool-b", ...io });
 
 const until = async (cond: () => boolean, what: string, timeoutMs = 5_000): Promise<void> => {
   const deadline = Date.now() + timeoutMs;
@@ -32,14 +33,31 @@ const until = async (cond: () => boolean, what: string, timeoutMs = 5_000): Prom
   }
 };
 
-/** Delegates everything to `inner`, except a STEP_STARTED append, which never acks (a crash). */
-function holdStepStarted(inner: InMemoryAsyncEventStore, order: string[]): InMemoryAsyncEventStore {
-  return new Proxy(inner, {
+/**
+ * Delegates everything to `inner`, except a STEP_STARTED append: `hold` parks it until
+ * `release()` (never, if the process "dies" first), `refuse` rejects it with a stale-fence style
+ * write conflict. Every append issued is recorded in `order`.
+ */
+function stepStartedStore(
+  inner: InMemoryAsyncEventStore,
+  order: string[],
+  mode: "hold" | "refuse"
+): { store: InMemoryAsyncEventStore; release: () => void } {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const store = new Proxy(inner, {
     get(target, prop, receiver) {
       if (prop === "append") {
-        return (envelope: EventEnvelope, ...rest: unknown[]) => {
+        return async (envelope: EventEnvelope, ...rest: unknown[]) => {
           order.push(`append:${envelope.eventType}`);
-          if (envelope.eventType === "STEP_STARTED") return new Promise<void>(() => {});
+          if (envelope.eventType === "STEP_STARTED") {
+            if (mode === "refuse") {
+              throw new DuplicateSequenceError(envelope.executionId, envelope.sequence);
+            }
+            await gate;
+          }
           return (target.append as (...a: unknown[]) => Promise<void>)(envelope, ...rest);
         };
       }
@@ -47,23 +65,41 @@ function holdStepStarted(inner: InMemoryAsyncEventStore, order: string[]): InMem
       return typeof v === "function" ? v.bind(target) : v;
     },
   });
+  return { store, release };
 }
 
-function boot(eventStore: InMemoryAsyncEventStore, opts: { hang: boolean; order?: string[] }) {
+function boot(
+  eventStore: InMemoryAsyncEventStore,
+  opts: {
+    hang: boolean;
+    order?: string[];
+    /** Registered idempotence of `tool-a` / `tool-b` (default `false`; `undefined` = undeclared). */
+    idempotent?: boolean | undefined;
+    fanOut?: boolean;
+  }
+) {
+  const toolOpts =
+    opts.idempotent === undefined && "idempotent" in opts
+      ? {}
+      : { idempotent: opts.idempotent ?? false };
   const ran: string[] = [];
   const effects = new EffectRuntime();
   effects.register(
     "tool-a",
-    new ToolEffect(
-      async () => {
-        ran.push("a");
-        opts.order?.push("effect:a");
-        // The process dies while the (external) effect is in flight.
-        if (opts.hang) await new Promise<void>(() => {});
-        return { ok: true };
-      },
-      { idempotent: false }
-    )
+    new ToolEffect(async () => {
+      ran.push("a");
+      opts.order?.push("effect:a");
+      // The process dies while the (external) effect is in flight.
+      if (opts.hang) await new Promise<void>(() => {});
+      return { ok: true };
+    }, toolOpts)
+  );
+  effects.register(
+    "tool-b",
+    new ToolEffect(async () => {
+      ran.push("b");
+      return { ok: true };
+    }, toolOpts)
   );
   const runtime = new WorkflowRuntime({
     eventStore,
@@ -72,7 +108,14 @@ function boot(eventStore: InMemoryAsyncEventStore, opts: { hang: boolean; order?
     onWarn: () => {},
   });
   const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) =>
-    ctx.run(stepA, {});
+    opts.fanOut === true
+      ? (
+          await ctx.parallel([
+            [stepA, {}],
+            [stepB, {}],
+          ])
+        )[0]
+      : ctx.run(stepA, {});
   const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
     _tag: "FlowDefinition",
     id: "pay",
@@ -80,7 +123,7 @@ function boot(eventStore: InMemoryAsyncEventStore, opts: { hang: boolean; order?
     version: "1.0.0",
     inputSchema: io.inputSchema,
     outputSchema: io.outputSchema,
-    steps: [stepA],
+    steps: [stepA, stepB],
   };
   const flow: RegisteredFlow<Record<string, never>, { ok: boolean }> = { definition, runner };
   runtime.registerFlow(definition, runner);
@@ -88,36 +131,90 @@ function boot(eventStore: InMemoryAsyncEventStore, opts: { hang: boolean; order?
 }
 
 describe("K9.3: STEP_STARTED must be durable before a non-idempotent effect runs", () => {
-  // BUG: the effect body runs while its own STEP_STARTED is still only in the journal's
-  // write-behind queue. A crash in that window leaves a log with no STEP_STARTED, so recovery
-  // sees no "running" frame, skips the EFFECT_INDOUBT park and re-runs the effect. Remove
-  // `.fails` once executeLive awaits the STEP_STARTED append for `idempotent: false` steps.
-  it.fails(
-    "a crash after the effect ran but before STEP_STARTED was acked parks in doubt, not re-runs",
-    async () => {
+  it("a crash after the effect ran parks in doubt on recovery, not re-runs", async () => {
+    const durable = new InMemoryAsyncEventStore();
+
+    // Process A: the effect body runs and the process dies while it is in flight.
+    const a = boot(durable, { hang: true });
+    void a.runtime.start(a.flow, {}, { executionId: "pay-1" });
+    await until(() => a.ran.length === 1, "process A's effect to run");
+    // The effect ran, so its STEP_STARTED must already be in the durable log.
+    expect((await durable.read("pay-1")).map((e) => e.eventType)).toContain("STEP_STARTED");
+
+    // Process B: fresh runtime over the same durable log.
+    const b = boot(durable, { hang: false });
+    await recoverAbandoned(b.runtime, { source: durable, isAbandoned: () => true });
+    const logB = (await durable.read("pay-1")).map((e) => e.eventType);
+
+    expect(logB).toContain("EFFECT_INDOUBT");
+    expect(b.ran).toEqual([]); // the non-idempotent effect must NOT run a second time
+  });
+
+  it("an idempotent:false effect does not start while its STEP_STARTED append is unacked", async () => {
+    const durable = new InMemoryAsyncEventStore();
+    const order: string[] = [];
+    const held = stepStartedStore(durable, order, "hold");
+    const a = boot(held.store, { hang: false, order });
+    const handle = await a.runtime.start(a.flow, {}, { executionId: "pay-2" });
+    await until(() => order.includes("append:STEP_STARTED"), "the held STEP_STARTED append");
+    // The append is in flight and unacked: the effect has not been dispatched.
+    expect(a.ran).toEqual([]);
+    expect((await durable.read("pay-2")).map((e) => e.eventType)).toEqual(["EXECUTION_STARTED"]);
+    held.release();
+    await handle.waitForCompletion();
+    expect(a.ran).toEqual(["a"]);
+    expect(order.indexOf("append:STEP_STARTED")).toBeLessThan(order.indexOf("effect:a"));
+  });
+
+  it("a refused STEP_STARTED write never runs the effect and fails the run as a storage failure", async () => {
+    const durable = new InMemoryAsyncEventStore();
+    const order: string[] = [];
+    const refused = stepStartedStore(durable, order, "refuse");
+    const a = boot(refused.store, { hang: false, order });
+    const handle = await a.runtime.start(a.flow, {}, { executionId: "pay-3" });
+    const err = await handle.waitForCompletion().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(StorageWriteError);
+    expect((err as StorageWriteError).cause).toBeInstanceOf(DuplicateSequenceError);
+    expect(a.ran).toEqual([]); // the effect was never dispatched
+    expect(order).not.toContain("effect:a");
+  });
+
+  it.each([
+    ["undeclared", undefined],
+    ["idempotent:true", true],
+  ] as const)(
+    "a %s effect keeps the write-behind hot path (starts before STEP_STARTED is acked)",
+    async (_name, idempotent) => {
       const durable = new InMemoryAsyncEventStore();
       const order: string[] = [];
-
-      // Process A: STEP_STARTED's append never acks; the effect body runs and hangs.
-      const a = boot(holdStepStarted(durable, order), { hang: true, order });
-      void a.runtime.start(a.flow, {}, { executionId: "pay-1" });
-      await until(() => a.ran.length === 1, "process A's effect to run");
-      // Process A is now abandoned: never drained, never resumed. This is a legal crash point.
-
-      // Whatever the journal had queued is lost with the process: only `durable` survives.
-      await until(() => order.includes("append:STEP_STARTED"), "the held STEP_STARTED append");
-      // Observed order: append:EXECUTION_STARTED, effect:a, append:STEP_STARTED (never acked) —
-      // the effect body ran BEFORE the append of its own STEP_STARTED was even issued.
-      expect(order.indexOf("effect:a")).toBeLessThan(order.indexOf("append:STEP_STARTED"));
-      expect((await durable.read("pay-1")).map((e) => e.eventType)).toEqual(["EXECUTION_STARTED"]);
-
-      // Process B: fresh runtime over the same durable log.
-      const b = boot(durable, { hang: false });
-      await recoverAbandoned(b.runtime, { source: durable, isAbandoned: () => true });
-      const logB = (await durable.read("pay-1")).map((e) => e.eventType);
-
-      expect(logB).toContain("EFFECT_INDOUBT");
-      expect(b.ran).toEqual([]); // the non-idempotent effect must NOT run a second time
+      const held = stepStartedStore(durable, order, "hold");
+      const a = boot(held.store, {
+        hang: false,
+        order,
+        ...(idempotent === undefined ? { idempotent: undefined } : { idempotent }),
+      });
+      const handle = await a.runtime.start(a.flow, {}, { executionId: "hot-1" });
+      // The effect ran while its STEP_STARTED append is still held: no drain on this path.
+      await until(() => a.ran.length === 1, "the effect to start");
+      expect((await durable.read("hot-1")).map((e) => e.eventType)).not.toContain("STEP_STARTED");
+      held.release();
+      await handle.waitForCompletion();
     }
   );
+
+  it("a ctx.parallel fan-out of idempotent:false steps dispatches none before STEP_STARTED is durable", async () => {
+    const durable = new InMemoryAsyncEventStore();
+    const order: string[] = [];
+    const held = stepStartedStore(durable, order, "hold");
+    const a = boot(held.store, { hang: false, order, fanOut: true });
+    const handle = await a.runtime.start(a.flow, {}, { executionId: "fan-1" });
+    await until(() => order.includes("append:STEP_STARTED"), "the held STEP_STARTED append");
+    expect(a.ran).toEqual([]); // neither branch's effect started
+    held.release();
+    await handle.waitForCompletion();
+    expect([...a.ran].sort()).toEqual(["a", "b"]);
+  });
 });

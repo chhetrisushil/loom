@@ -90,3 +90,15 @@ Adopted per the [K9 evaluation](../requirements/2026-07-10-kernel-hardening-eval
 - **A5 — contract completeness**: the K9.1 documentation also states that *metered facts
   are at-least-once under recovery* — budgets may over-count after crashes (conservative
   direction; never under-counts).
+
+## Amendment (2026-10-15) — A3: STEP_STARTED is the pre-effect marker
+
+A3's "no pre-effect durable marker" is superseded for `idempotent: false` tools. `STEP_STARTED`
+IS the pre-effect marker the in-doubt guard reads on recovery, but the journal is write-behind
+(fold now, append later), so the effect could run before its `STEP_STARTED` was durable; a crash
+in that gap left no "running" frame and the non-idempotent effect was silently re-run. Now
+`executeLive` awaits the journal's durable tail after committing `STEP_STARTED` and before the
+dispatch gate and effect dispatch, **only** when the tool is declared `idempotent: false`. Cost:
+one awaited store round trip on those steps. Undeclared (A2) and `idempotent: true` tools keep the
+write-behind hot path unchanged. A refused write (stale fence, storage error) throws before
+dispatch: the effect never runs and the run fails as any storage failure. Replay never drains.
