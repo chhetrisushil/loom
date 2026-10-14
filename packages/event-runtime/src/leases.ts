@@ -44,11 +44,17 @@ export interface Lease {
  * The proof a caller must hold to `steal` a lease: the fence it won with a CONDITIONAL fence
  * acquisition (`acquireFenceIf`, i.e. proof the execution is parked). The store cannot verify it
  * against the event log (the lease store is deliberately a separate, dumb SPI); it can only refuse
- * a steal that does not even carry one, so a flag cannot be passed by accident. The caller's
- * contract is that it passes the fence it actually won.
+ * a steal that does not even carry one, so a flag cannot be passed by accident.
+ *
+ * The proof is SHAPE-ONLY. Callers MUST pass a fence actually won via `acquireFenceIf` /
+ * `acquireFence` for THIS execution. A bogus steal is a liveness attack, never log corruption:
+ * the live owner's next `renew` fails (`LeaseLostError`), but the fence is the write guard
+ * (ADR 0130 D11 section 4), so the stale owner's appends are still rejected. An explicit `now`
+ * bypasses the expiry gate on every backend (pre-existing): production callers must never pass
+ * `now`, and on Postgres should omit it so the DATABASE clock rules.
  */
 export interface StealProof {
-  /** The fence value the caller won: a non-negative safe integer. */
+  /** The fence value the caller won: a positive safe integer (0 is the inert park token, ADR 0118). */
   fence: number;
 }
 
@@ -58,8 +64,11 @@ export interface AcquireOptions {
    * Take the lease even though ANOTHER owner holds it unexpired (a slow release left a stale row
    * behind a driver that has already proved the execution is parked). Valid ONLY with a
    * {@link StealProof}; anything else (`true`, `{}`, a negative or fractional fence) THROWS
-   * `TypeError` and changes nothing. A steal never resurrects: it only replaces a row that exists,
-   * and the displaced owner's next `renew`/`renewMany` reports it lost (`false` / absent).
+   * `TypeError` and changes nothing. After a release (no row), a steal is just an acquire. The
+   * displaced owner's next `renew`/`renewMany` reports it lost (`false` / absent).
+   *
+   * Single-id `acquire` ONLY: a fence belongs to one execution, so `acquireMany` REJECTS `steal`
+   * with `TypeError` (nothing changes).
    */
   steal?: StealProof;
 }
@@ -86,8 +95,8 @@ export interface LeaseStore {
   /**
    * OPTIONAL (SPI 2.2.0): `acquire` for many executions in ONE round trip. Returns the leases
    * granted; an id another owner holds unexpired is simply absent (the batch form of `null`).
-   * Duplicate ids count once. Per id the semantics are exactly {@link acquire}'s, and `now`,
-   * `options` apply to the whole batch. Empty input returns `[]` without touching the store.
+   * Duplicate ids count once. Per id the semantics are exactly {@link acquire}'s, and `now`
+   * applies to the whole batch. `options.steal` THROWS `TypeError` (steals go through `acquire`). Empty input returns `[]` without touching the store.
    */
   acquireMany?(
     executionIds: readonly string[],
@@ -200,10 +209,10 @@ export class InMemoryLeaseStore implements LeaseStore {
     options?: AcquireOptions
   ): Promise<Lease[]> {
     assertTtl(ttlMs);
-    assertSteal(options);
+    assertNoBatchSteal(options);
     const out: Lease[] = [];
     for (const id of new Set(executionIds)) {
-      const lease = await this.acquire(id, owner, ttlMs, now, options);
+      const lease = await this.acquire(id, owner, ttlMs, now);
       if (lease !== null) out.push(lease);
     }
     return out;
@@ -278,10 +287,17 @@ export function assertSteal(options: AcquireOptions | undefined): boolean {
   const steal = options?.steal as unknown;
   if (steal === undefined) return false;
   const fence = (steal as { fence?: unknown } | null)?.fence;
-  if (typeof fence !== "number" || !Number.isSafeInteger(fence) || fence < 0) {
+  if (typeof fence !== "number" || !Number.isSafeInteger(fence) || fence < 1) {
     throw new TypeError(
-      "lease steal requires a conditional-fence proof: { steal: { fence: <non-negative integer> } }"
+      "lease steal requires a conditional-fence proof: { steal: { fence: <positive integer> } }"
     );
   }
   return true;
+}
+
+/** `acquireMany` takes no `steal`: a fence belongs to one execution. THROWS `TypeError`, changing nothing. */
+export function assertNoBatchSteal(options: AcquireOptions | undefined): void {
+  if ((options?.steal as unknown) !== undefined) {
+    throw new TypeError("acquireMany does not accept `steal`: a fence belongs to one execution; steal through acquire()");
+  }
 }

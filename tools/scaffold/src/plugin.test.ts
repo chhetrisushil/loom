@@ -95,6 +95,19 @@ describe("pluginFiles", () => {
     expect(files["loom-plugin-foo/package.json"]).toContain("@loom/memory");
   });
 
+  it("scaffolds the lease store's OPTIONAL batch methods as prose, and passes no spiVersion", () => {
+    // A 2.1.0-shaped store (no batch methods) must pass the kit with no options, and a generated
+    // throwing stub would advertise batch support the store lacks.
+    const files = pluginFiles("lease", "foo", { firstParty: false });
+    const index = files["loom-plugin-foo/src/index.ts"]!;
+    const body = index.slice(index.indexOf("export class"));
+    for (const m of ["acquireMany", "renewMany", "releaseMany"]) {
+      expect(index, `${m} must be explained`).toContain(m);
+      expect(body, `${m} must not be emitted as a member`).not.toContain(`${m}(`);
+    }
+    expect(files["loom-plugin-foo/src/index.test.ts"]).not.toContain("spiVersion");
+  });
+
   it("scaffolds memory's OPTIONAL methods as prose, never as throwing stubs", () => {
     // The runtime tests for `replace`/`search`/`close` and falls back when they are
     // absent, so presence IS the feature flag: a generated stub that throws would

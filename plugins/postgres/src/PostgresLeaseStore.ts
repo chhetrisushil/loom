@@ -2,6 +2,7 @@ import {
   type AcquireOptions,
   type Lease,
   type LeaseStore,
+  assertNoBatchSteal,
   assertSteal,
   assertTtl,
 } from "@loom/event-runtime";
@@ -119,7 +120,7 @@ export class PostgresLeaseStore implements LeaseStore {
     options?: AcquireOptions
   ): Promise<Lease[]> {
     assertTtl(ttlMs);
-    const steal = assertSteal(options);
+    assertNoBatchSteal(options);
     const ids = [...new Set(executionIds)].sort();
     if (ids.length === 0) return [];
     const ttl = Math.ceil(ttlMs);
@@ -130,9 +131,9 @@ export class PostgresLeaseStore implements LeaseStore {
        SELECT id, $2, (SELECT n FROM t) + $3::bigint
        FROM unnest($1::text[]) AS u(id) ORDER BY id
        ON CONFLICT (execution_id) DO UPDATE SET owner = EXCLUDED.owner, expires_at = EXCLUDED.expires_at
-       WHERE leases.owner = $2 OR leases.expires_at <= (SELECT n FROM t) OR $5::boolean
+       WHERE leases.owner = $2 OR leases.expires_at <= (SELECT n FROM t)
        RETURNING execution_id, owner, expires_at`,
-      [ids, owner, ttl, now ?? null, steal]
+      [ids, owner, ttl, now ?? null]
     );
     return rows.map(rowToLease);
   }

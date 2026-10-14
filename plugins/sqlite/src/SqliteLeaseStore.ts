@@ -2,6 +2,7 @@ import {
   type AcquireOptions,
   type Lease,
   type LeaseStore,
+  assertNoBatchSteal,
   assertSteal,
   assertTtl,
 } from "@loom/event-runtime";
@@ -44,13 +45,22 @@ export class SqliteLeaseStore implements LeaseStore {
   ): Promise<Lease | null> {
     assertTtl(ttlMs);
     const steal = assertSteal(options);
-    return this.acquireOne(executionId, owner, ttlMs, now, steal);
+    return this.acquireOne(this.acquireStmt(), executionId, owner, ttlMs, now, steal);
   }
 
   // One statement, so two processes on the same file cannot both win: the insert takes a
   // free row, and the conflict clause takes it only when it is ours, already expired, or the
-  // caller holds a steal proof (validated by `acquire`/`acquireMany` before this runs).
+  // caller holds a steal proof (validated by `acquire` before this runs; never in a batch).
+  private acquireStmt(): Database.Statement<[string, string, number, string, number, number]> {
+    return this.db.prepare<[string, string, number, string, number, number]>(
+      `INSERT INTO leases (execution_id, owner, expires_at) VALUES (?, ?, ?)
+       ON CONFLICT(execution_id) DO UPDATE SET owner = excluded.owner, expires_at = excluded.expires_at
+       WHERE leases.owner = ? OR leases.expires_at <= ? OR ? = 1`
+    );
+  }
+
   private acquireOne(
+    stmt: ReturnType<SqliteLeaseStore["acquireStmt"]>,
     executionId: string,
     owner: string,
     ttlMs: number,
@@ -58,17 +68,11 @@ export class SqliteLeaseStore implements LeaseStore {
     steal: boolean
   ): Lease | null {
     const expiresAt = now + ttlMs;
-    const info = this.db
-      .prepare<[string, string, number, string, number, number]>(
-        `INSERT INTO leases (execution_id, owner, expires_at) VALUES (?, ?, ?)
-         ON CONFLICT(execution_id) DO UPDATE SET owner = excluded.owner, expires_at = excluded.expires_at
-         WHERE leases.owner = ? OR leases.expires_at <= ? OR ? = 1`
-      )
-      .run(executionId, owner, expiresAt, owner, now, steal ? 1 : 0);
+    const info = stmt.run(executionId, owner, expiresAt, owner, now, steal ? 1 : 0);
     return info.changes > 0 ? { executionId, owner, expiresAt } : null;
   }
 
-  /** Many leases in one transaction (SPI 2.2.0): per id exactly {@link acquire}, atomically. */
+  /** Many leases in one transaction (SPI 2.2.0): per id exactly {@link acquire}, atomically. `steal` is rejected. */
   async acquireMany(
     executionIds: readonly string[],
     owner: string,
@@ -77,12 +81,13 @@ export class SqliteLeaseStore implements LeaseStore {
     options?: AcquireOptions
   ): Promise<Lease[]> {
     assertTtl(ttlMs);
-    const steal = assertSteal(options);
+    assertNoBatchSteal(options);
     const ids = [...new Set(executionIds)];
+    const stmt = this.acquireStmt();
     return this.db.transaction(() => {
       const out: Lease[] = [];
       for (const id of ids) {
-        const lease = this.acquireOne(id, owner, ttlMs, now, steal);
+        const lease = this.acquireOne(stmt, id, owner, ttlMs, now, false);
         if (lease !== null) out.push(lease);
       }
       return out;
