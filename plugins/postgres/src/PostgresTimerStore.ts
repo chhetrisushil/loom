@@ -6,6 +6,7 @@ interface TimerRow {
   execution_id: string;
   wake_at: string; // BIGINT → string from node-postgres
   redrive: { attempt: number } | null; // JSONB → parsed by node-postgres
+  refused: { head: number } | null; // JSONB (ADR 0130 D10)
 }
 
 /**
@@ -33,13 +34,15 @@ export class PostgresTimerStore implements TimerStore {
     // Upsert (ADR 0118 D4): `DO NOTHING` would drop the re-drive flag when it lands on an existing
     // plain row; this never downgrades a flagged one and lets a flagged record flag a plain one.
     await this.pool.query(
-      `INSERT INTO timers (execution_id, wake_at, redrive) VALUES ($1, $2, $3::jsonb)
+      `INSERT INTO timers (execution_id, wake_at, redrive, refused) VALUES ($1, $2, $3::jsonb, $4::jsonb)
        ON CONFLICT (execution_id, wake_at)
-       DO UPDATE SET redrive = COALESCE(EXCLUDED.redrive, timers.redrive)`,
+       DO UPDATE SET redrive = COALESCE(EXCLUDED.redrive, timers.redrive),
+                     refused = COALESCE(EXCLUDED.refused, timers.refused)`,
       [
         timer.executionId,
         timer.wakeAt,
         timer.redrive !== undefined ? JSON.stringify(timer.redrive) : null,
+        timer.refused !== undefined ? JSON.stringify(timer.refused) : null,
       ]
     );
   }
@@ -47,19 +50,20 @@ export class PostgresTimerStore implements TimerStore {
   async due(
     now: number,
     limit = 100,
-    options?: { redrive?: boolean; inbox?: boolean }
+    options?: { redrive?: boolean; inbox?: boolean; refused?: boolean }
   ): Promise<TimerRecord[]> {
     await this.ready;
     const { rows } = await this.pool.query<TimerRow>(
-      `SELECT execution_id, wake_at, redrive FROM timers WHERE wake_at <= $1${
+      `SELECT execution_id, wake_at, redrive, refused FROM timers WHERE wake_at <= $1${
         options?.redrive === false ? " AND redrive IS NULL" : ""
-      }${options?.inbox === false ? " AND (wake_at <> -1 OR redrive IS NOT NULL)" : ""} ORDER BY wake_at ASC LIMIT $2`,
+      }${options?.refused === false ? " AND refused IS NULL" : ""}${options?.inbox === false ? " AND (wake_at <> -1 OR redrive IS NOT NULL)" : ""} ORDER BY wake_at ASC LIMIT $2`,
       [now, limit]
     );
     return rows.map((r) => ({
       executionId: r.execution_id,
       wakeAt: Number(r.wake_at),
       ...(r.redrive !== null && { redrive: r.redrive }),
+      ...(r.refused !== null && { refused: r.refused }),
     }));
   }
 

@@ -5,6 +5,7 @@ interface TimerRow {
   execution_id: string;
   wake_at: number;
   redrive: string | null;
+  refused: string | null;
 }
 
 /**
@@ -38,9 +39,11 @@ export class SqliteTimerStore implements TimerStore {
       this.db
         .transaction(() => {
           const columns = this.db.pragma("table_info(timers)") as { name: string }[];
-          if (!columns.some((c) => c.name === "redrive")) {
+          // `redrive` (ADR 0118 D4) and `refused` (ADR 0130 D10), both nullable TEXT (JSON).
+          for (const column of ["redrive", "refused"]) {
+            if (columns.some((c) => c.name === column)) continue;
             try {
-              this.db.exec("ALTER TABLE timers ADD COLUMN redrive TEXT");
+              this.db.exec(`ALTER TABLE timers ADD COLUMN ${column} TEXT`);
             } catch (err) {
               if (!/duplicate column name/i.test(String((err as Error).message))) throw err;
             }
@@ -55,35 +58,39 @@ export class SqliteTimerStore implements TimerStore {
 
   async schedule(timer: TimerRecord): Promise<void> {
     this.db
-      .prepare<[string, number, string | null]>(
-        // Upsert (ADR 0118 D4): a flagged row is never downgraded, a plain one gains the flag.
-        `INSERT INTO timers (execution_id, wake_at, redrive) VALUES (?, ?, ?)
+      .prepare<[string, number, string | null, string | null]>(
+        // Upsert (ADR 0118 D4, ADR 0130 D10): a flagged row is never downgraded, a plain one gains
+        // the flag, and a later `refused` head replaces an earlier one.
+        `INSERT INTO timers (execution_id, wake_at, redrive, refused) VALUES (?, ?, ?, ?)
          ON CONFLICT (execution_id, wake_at)
-         DO UPDATE SET redrive = COALESCE(excluded.redrive, timers.redrive)`
+         DO UPDATE SET redrive = COALESCE(excluded.redrive, timers.redrive),
+                       refused = COALESCE(excluded.refused, timers.refused)`
       )
       .run(
         timer.executionId,
         timer.wakeAt,
-        timer.redrive !== undefined ? JSON.stringify(timer.redrive) : null
+        timer.redrive !== undefined ? JSON.stringify(timer.redrive) : null,
+        timer.refused !== undefined ? JSON.stringify(timer.refused) : null
       );
   }
 
   async due(
     now: number,
     limit = 100,
-    options?: { redrive?: boolean; inbox?: boolean }
+    options?: { redrive?: boolean; inbox?: boolean; refused?: boolean }
   ): Promise<TimerRecord[]> {
     const rows = this.db
       .prepare<[number, number]>(
-        `SELECT execution_id, wake_at, redrive FROM timers WHERE wake_at <= ?${
+        `SELECT execution_id, wake_at, redrive, refused FROM timers WHERE wake_at <= ?${
           options?.redrive === false ? " AND redrive IS NULL" : ""
-        }${options?.inbox === false ? " AND (wake_at <> -1 OR redrive IS NOT NULL)" : ""} ORDER BY wake_at ASC LIMIT ?`
+        }${options?.refused === false ? " AND refused IS NULL" : ""}${options?.inbox === false ? " AND (wake_at <> -1 OR redrive IS NOT NULL)" : ""} ORDER BY wake_at ASC LIMIT ?`
       )
       .all(now, limit) as TimerRow[];
     return rows.map((r) => ({
       executionId: r.execution_id,
       wakeAt: r.wake_at,
       ...(r.redrive !== null && { redrive: JSON.parse(r.redrive) as { attempt: number } }),
+      ...(r.refused !== null && { refused: JSON.parse(r.refused) as { head: number } }),
     }));
   }
 

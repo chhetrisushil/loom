@@ -27,6 +27,19 @@ export interface TimerRecord {
    * one through `due`.
    */
   redrive?: { attempt: number };
+  /**
+   * ADR 0130 D10 - marks a REPLAY-REFUSAL row: a node that could not open a sealed recorded answer
+   * refused to run a `running` execution and left this row so a node that CAN picks it up. `head` is
+   * the execution's log head at the refusal; the timer poll re-drives only while the log still sits
+   * there. `wakeAt` is an ordinary instant (when the poll should look next), never an encoded stamp.
+   * Optional and additive: a plain wake carries none. A node that predates the field reads the row
+   * as a plain wake it can never match to a park and retires it as obsolete (fail safe: never re-driven).
+   *
+   * `schedule` UPSERTS it like `redrive`: re-scheduling an existing `(executionId, wakeAt)` never
+   * clears a stamp already set, and a record that carries one sets it (a LATER head replaces an
+   * earlier one). A store must keep a `refused` row distinguishable from a plain one through `due`.
+   */
+  refused?: { head: number };
 }
 
 export interface TimerStore {
@@ -45,11 +58,16 @@ export interface TimerStore {
    * and must leave those rows for a node that can, but they sort first (instant -1), so a batch of
    * them would starve every real timer behind it. The sentinel is -1, an instant no timed
    * park uses, so a flag-off node still fires every real timer (including `ctx.sleep(0)` at clock 0).
+   *
+   * `options.refused === false` (ADR 0130 D10) EXCLUDES replay-refusal rows BEFORE the limit: a node
+   * with no abandonment evidence configured (or no inbox) cannot act on them, and must not fetch
+   * - let alone read the execution of - one per row. A store that ignores the option is still
+   * correct (the service skips such rows itself); it only keeps that starvation window.
    */
   due(
     now: number,
     limit?: number,
-    options?: { redrive?: boolean; inbox?: boolean }
+    options?: { redrive?: boolean; inbox?: boolean; refused?: boolean }
   ): Promise<TimerRecord[]>;
   /** Remove a fired (or obsolete) timer. Unknown timers are a no-op. */
   complete(executionId: string, wakeAt: number): Promise<void>;
@@ -68,28 +86,35 @@ export class InMemoryTimerStore implements TimerStore {
     const key = this.key(timer.executionId, timer.wakeAt);
     // Upsert (ADR 0118 D4): a flagged row is never downgraded by a plain schedule.
     const redrive = timer.redrive ?? this.timers.get(key)?.redrive;
+    const refused = timer.refused ?? this.timers.get(key)?.refused;
     this.timers.set(key, {
       executionId: timer.executionId,
       wakeAt: timer.wakeAt,
       ...(redrive !== undefined && { redrive: { ...redrive } }),
+      ...(refused !== undefined && { refused: { ...refused } }),
     });
   }
 
   async due(
     now: number,
     limit = 100,
-    options?: { redrive?: boolean; inbox?: boolean }
+    options?: { redrive?: boolean; inbox?: boolean; refused?: boolean }
   ): Promise<TimerRecord[]> {
     return [...this.timers.values()]
       .filter(
         (t) =>
           t.wakeAt <= now &&
           (options?.redrive !== false || t.redrive === undefined) &&
+          (options?.refused !== false || t.refused === undefined) &&
           (options?.inbox !== false || t.wakeAt !== -1 || t.redrive !== undefined)
       )
       .sort((a, b) => a.wakeAt - b.wakeAt)
       .slice(0, limit)
-      .map((t) => ({ ...t }));
+      .map((t) => ({
+        ...t,
+        ...(t.redrive !== undefined && { redrive: { ...t.redrive } }),
+        ...(t.refused !== undefined && { refused: { ...t.refused } }),
+      }));
   }
 
   async complete(executionId: string, wakeAt: number): Promise<void> {

@@ -59,5 +59,35 @@ if (PG_URL === undefined) {
         await store.close();
       }
     });
+
+    it("a redrive-era timers table (no `refused`) gains it, keeps its rows, and round-trips a refusal row (ADR 0130 D10)", async () => {
+      await pool.query("DROP TABLE IF EXISTS timers");
+      await pool.query(`CREATE TABLE timers (
+        execution_id TEXT NOT NULL, wake_at BIGINT NOT NULL, redrive JSONB,
+        PRIMARY KEY (execution_id, wake_at))`);
+      await pool.query("INSERT INTO timers (execution_id, wake_at) VALUES ('old', 50)");
+      // `migrate` is memoized per pool: a fresh pool on the same schema runs it again
+      const fresh = new Pool({
+        connectionString: PG_URL,
+        options: `-c search_path=${SCHEMA}`,
+        max: 2,
+      });
+      await migrate(fresh);
+      await migrate(fresh); // idempotent
+      const store = new PostgresTimerStore(fresh);
+      try {
+        await store.schedule({ executionId: "r", wakeAt: 60, refused: { head: 7 } });
+        expect(await store.due(100)).toEqual([
+          { executionId: "old", wakeAt: 50 },
+          { executionId: "r", wakeAt: 60, refused: { head: 7 } },
+        ]);
+        expect(await store.due(100, 10, { refused: false })).toEqual([
+          { executionId: "old", wakeAt: 50 },
+        ]);
+      } finally {
+        await store.close();
+        await fresh.end();
+      }
+    });
   });
 }

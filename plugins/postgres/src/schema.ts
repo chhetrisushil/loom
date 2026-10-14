@@ -571,6 +571,7 @@ const DDL_REST = `
       execution_id TEXT NOT NULL,
       wake_at BIGINT NOT NULL,
       redrive JSONB,
+      refused JSONB,
       PRIMARY KEY (execution_id, wake_at)
     );
     CREATE INDEX IF NOT EXISTS idx_timers_wake ON timers (wake_at ASC);
@@ -598,6 +599,26 @@ const DDL_REST = `
       END IF;
     END
     $timers_redrive$;
+    -- ADR 0130 D10: \`refused\` stamps a replay-refusal row with the log head at refusal. Same
+    -- guarded add as \`redrive\` (catalog first, one real ALTER under the migration lock timeout).
+    DO $timers_refused$
+    DECLARE
+      caller_lock_timeout text := current_setting('lock_timeout');
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'timers' AND column_name = 'refused'
+      ) THEN
+        PERFORM set_config(
+          'lock_timeout',
+          COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
+          true
+        );
+        ALTER TABLE timers ADD COLUMN IF NOT EXISTS refused JSONB;
+        PERFORM set_config('lock_timeout', caller_lock_timeout, true);
+      END IF;
+    END
+    $timers_refused$;
 
     -- #380 — durable ownership of a RUNNING execution. One row per execution: a lease is
     -- exclusive by definition, so the primary key is the mutual exclusion.
