@@ -749,14 +749,17 @@ export async function appendBatchOf(
  * The tip of an execution's log through the optional {@link EventStore.head} fast-path,
  * falling back to reading it. `null` means the execution has no events at all.
  */
-export async function headOf(store: EventStore, executionId: string): Promise<number | null> {
+export async function headOf(
+  store: Pick<EventStore, "read" | "head">,
+  executionId: string
+): Promise<number | null> {
   if (store.head) return store.head(executionId);
   const events = await store.read(executionId);
   return events.length === 0 ? null : (events[events.length - 1]?.sequence ?? null);
 }
 
 export async function readRangeOf(
-  store: EventStore,
+  store: Pick<EventStore, "read" | "readFrom" | "readRange">,
   executionId: string,
   fromSequence: number,
   toSequence: number

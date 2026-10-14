@@ -16,6 +16,49 @@ describe("transient fold brand", () => {
     expect(() => assertNotTransientFold(state(), "somewhere")).not.toThrow();
   });
 
+  it("deep-freezes the variables, never freezing the structure it was folded from", () => {
+    const source = { executionId: "x", variables: { _waitAnswers: { w: { payload: { n: 1 } } } } };
+    const t = markTransientFold(source as never) as typeof source;
+    expect(Object.isFrozen(t.variables._waitAnswers.w.payload)).toBe(true);
+    expect(() => {
+      (t.variables._waitAnswers.w.payload as { n: number }).n = 2;
+    }).toThrow(TypeError);
+    expect(Object.isFrozen(source.variables)).toBe(false);
+    expect(Object.isFrozen(source)).toBe(false);
+  });
+
+  it("a COPY loses the brand, but the snapshot store still refuses a ciphertext wait answer", async () => {
+    const inner = new InMemoryAsyncSnapshotStore();
+    const guarded = new SealGuardedSnapshotStore(inner, async () => undefined);
+    const t = markTransientFold({
+      executionId: "x",
+      variables: { _waitAnswers: { w: { kind: "inbox", payload: { __loomEnc: "ZZ" } } } },
+    } as never);
+    const copy = { ...(t as object) };
+    expect(isTransientFold(copy)).toBe(false); // the brand does not survive a spread
+    await expect(
+      guarded.save({
+        id: "i",
+        executionId: "x",
+        workflowId: "w",
+        sequence: 1,
+        state: copy,
+        createdAt: 0,
+      } as never)
+    ).rejects.toThrow(/sealed|ciphertext/i);
+    expect(await inner.loadLatest("x")).toBeNull();
+    // a plaintext answer is saved as before
+    await guarded.save({
+      id: "j",
+      executionId: "x",
+      workflowId: "w",
+      sequence: 2,
+      state: { executionId: "x", variables: { _waitAnswers: { w: { payload: "plain" } } } },
+      createdAt: 0,
+    } as never);
+    expect((await inner.loadLatest("x"))?.sequence).toBe(2);
+  });
+
   it("the guarded snapshot store refuses to save a transient state", async () => {
     const inner = new InMemoryAsyncSnapshotStore();
     const guarded = new SealGuardedSnapshotStore(inner, async () => undefined);
@@ -46,7 +89,7 @@ describe("opaqueToQuarantineFold: the exact covered-field rule", () => {
       payload: { __loomEnc: "x" },
     }
   ) => ({ eventType, payload }) as never;
-  const marker = (covers: string[]) => ({ v: 1, cipher: "c", covers }) as never;
+  const marker = (covers: string[]) => ({ v: 1, cipher: "loom/aes-256-gcm", covers }) as never;
 
   it("admits only MESSAGE_CONSUMED whose covers are payload / payload.*", () => {
     expect(
@@ -55,6 +98,12 @@ describe("opaqueToQuarantineFold: the exact covered-field rule", () => {
     expect(
       opaqueToQuarantineFold(env("MESSAGE_CONSUMED", []), marker(["MESSAGE_CONSUMED.payload.ssn"]))
     ).toBe(true);
+  });
+
+  it("refuses a marker whose cipher is not a known envelope cipher", () => {
+    const mc = env("MESSAGE_CONSUMED", []);
+    const m = { v: 1, cipher: "evil/rot13", covers: ["MESSAGE_CONSUMED.payload"] } as never;
+    expect(opaqueToQuarantineFold(mc, m)).toBe(false);
   });
 
   it("refuses any other covered path, other event type, empty covers, or a sealed routing field", () => {

@@ -9,10 +9,29 @@
 
 const transient = new WeakSet<object>();
 
-/** Brand `state` as a transient quarantine fold and freeze it (shallow). Returns the same object. */
+function deepFreeze<V>(v: V, seen = new WeakSet<object>()): V {
+  if (typeof v !== "object" || v === null || seen.has(v)) return v;
+  seen.add(v);
+  for (const k of Reflect.ownKeys(v)) deepFreeze((v as Record<PropertyKey, unknown>)[k], seen);
+  return Object.freeze(v);
+}
+
+/**
+ * Brand a transient quarantine fold and freeze it DEEP. Returns a NEW object: its `variables` are a
+ * private structured clone (so freezing never touches a structure shared with a snapshot store or a
+ * replay seed), frozen all the way down, so no handler can mutate a ciphertext value into place.
+ * The brand is on the returned object only: a spread copy loses it, which is why
+ * `SealGuardedSnapshotStore.save` independently refuses a state whose `_waitAnswers` hold a
+ * ciphertext envelope (`assertNoCipherAnswers`).
+ */
 export function markTransientFold<T extends object>(state: T): T {
-  transient.add(state);
-  return Object.freeze(state);
+  const src = state as { variables?: unknown };
+  const copy = {
+    ...state,
+    ...(src.variables !== undefined && { variables: deepFreeze(structuredClone(src.variables)) }),
+  } as T;
+  transient.add(copy);
+  return Object.freeze(copy);
 }
 
 /** True iff `state` is (the very object of) a transient quarantine fold. */

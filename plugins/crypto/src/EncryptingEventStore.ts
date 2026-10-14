@@ -139,6 +139,14 @@ function pathsFor(
 
 const OWNER_WORKFLOW_CACHE = 1024;
 
+/**
+ * ADR 0130 S5b: the well-known symbol under which this store exposes the RAW (undecrypted)
+ * envelopes it reads from its inner store, as a READ-ONLY reader. The kernel's quarantine verbs use
+ * it to read an owner's log past a sealed `MESSAGE_CONSUMED.payload` WITHOUT asking the KeyStore.
+ * Not part of the EventStore SPI and not a general raw-read door: it returns what is at rest.
+ */
+export const RAW_ENVELOPE_READER: unique symbol = Symbol.for("loom.rawEnvelopeReader") as never;
+
 export class EncryptingEventStore implements EventStore {
   private readonly sensitive: Record<string, readonly string[]>;
   private readonly subjectOf: (e: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
@@ -527,6 +535,17 @@ export class EncryptingEventStore implements EventStore {
       this.shreddedSeen.add(memo);
     }
     return found;
+  }
+
+  /** The raw, read-only view beneath the decryption (see {@link RAW_ENVELOPE_READER}). */
+  [RAW_ENVELOPE_READER](): Pick<EventStore, "read" | "readFrom" | "readRange" | "head"> {
+    const inner = this.inner;
+    return {
+      read: (id) => inner.read(id),
+      readFrom: (id, from) => inner.readFrom(id, from),
+      ...(inner.readRange !== undefined && { readRange: (id, a, b) => inner.readRange!(id, a, b) }),
+      ...(inner.head !== undefined && { head: (id) => inner.head!(id) }),
+    };
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {

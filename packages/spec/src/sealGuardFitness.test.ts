@@ -161,6 +161,35 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
   });
 });
 
+/** The class method (2-space indented declaration) enclosing source offset `at`. */
+function enclosingMethod(src: string, at: number): string {
+  const decl = [
+    ...src.slice(0, at).matchAll(/\n {2}(?:private |public |protected )?(?:async )?(\w+)\s*\(/g),
+  ].at(-1);
+  return decl?.[1] ?? "?";
+}
+
+/** `callee <- method` for every `this.callee(...)` whose arguments carry a quarantine verb. */
+function verbPasses(src: string, callees: readonly string[]): string[] {
+  const out = new Set<string>();
+  const re = new RegExp(`this\\.(${callees.join("|")})\\(`, "g");
+  for (const m of src.matchAll(re)) {
+    let depth = 1;
+    let i = m.index + m[0].length;
+    const start = i;
+    while (depth > 0 && i < src.length) {
+      const c = src[i++];
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+    }
+    const args = src.slice(start, i - 1);
+    if (/\bverb\b|\blogFoldFor\b|"quarantineInbox"|"releaseInbox"/.test(args)) {
+      out.add(`${m[1]} <- ${enclosingMethod(src, m.index)}`);
+    }
+  }
+  return [...out].sort();
+}
+
 // User ruling 2026-10-14 (read past sealed payloads): the quarantine verbs' log fold may step over a
 // `MESSAGE_CONSUMED.payload` seal. The bypass read must be reachable from the quarantine verbs ONLY,
 // and the state folded through it must be unable to reach a snapshot or a restore.
@@ -201,6 +230,7 @@ describe("the opaque quarantine read is reachable only from the quarantine verbs
       "findReleaseFact",
       "findReleaseFactBack",
       "foldFromCompleteLog",
+      "foldState", // the no-snapshot and plaintext-snapshot tail reads (S5b round 3)
     ]);
     const callers: string[] = [];
     for (const m of src.matchAll(/this\.quarantineReadsFor\(/g)) {
@@ -229,11 +259,74 @@ describe("the opaque quarantine read is reachable only from the quarantine verbs
     }
   });
 
+  // P3-3: the callee NAMES above say where the bypass is read, not who may TURN IT ON. A verb value
+  // is the switch, so every call that passes one (a `verb` / `logFoldFor` variable or a verb literal
+  // in its arguments) is pinned to the method that is allowed to make it.
+  it("only the pinned methods pass a quarantine verb to a verb-accepting method", () => {
+    const src = strip(read(RT));
+    const callees = [
+      "operatorInboxHead",
+      "openOwnerState",
+      "afterHoldChange",
+      "findReleaseFactBack",
+      "findReleaseFact",
+      "sendTarget",
+      "classifyTip",
+      "locatePark",
+      "foldState",
+      "foldFromCompleteLog",
+    ];
+    const passes = verbPasses(src, callees);
+    expect(passes).toEqual([
+      "afterHoldChange <- quarantineInboxCore",
+      "afterHoldChange <- releaseInboxCore",
+      "classifyTip <- sendTarget",
+      "findReleaseFact <- releaseInboxCore",
+      "findReleaseFactBack <- releaseInboxCore",
+      "foldFromCompleteLog <- foldState",
+      "foldState <- afterHoldChange",
+      "foldState <- findReleaseFactBack",
+      "foldState <- openOwnerState",
+      "foldState <- releaseInboxCore",
+      "foldState <- sendTarget",
+      "locatePark <- quarantineInboxCore",
+      "locatePark <- releaseInboxCore",
+      "openOwnerState <- quarantineInboxCore",
+      "openOwnerState <- releaseInboxCore",
+      "operatorInboxHead <- quarantineInboxCore",
+      "operatorInboxHead <- releaseInboxCore",
+      "sendTarget <- operatorInboxHead",
+    ]);
+    // the verb cores are reached from their public verb only
+    const callersOf = (name: string): string[] =>
+      [...src.matchAll(new RegExp(`this\\.${name}\\(`, "g"))].map((m) =>
+        enclosingMethod(src, m.index)
+      );
+    expect(callersOf("quarantineInboxCore")).toEqual(["quarantineInbox"]);
+    expect(callersOf("releaseInboxCore")).toEqual(["releaseInbox"]);
+  });
+
+  it("the pin catches a new caller (a scratch method passing a verb is reported)", () => {
+    const real = strip(read(RT));
+    const planted = real.replace(
+      /\n {2}private async classifyTip\(/,
+      `\n  private async plantedProbe(id: string): Promise<void> {\n    await this.classifyTip(id, "quarantineInbox");\n  }\n\n  private async classifyTip(`
+    );
+    expect(planted).not.toBe(real);
+    expect(verbPasses(planted, ["classifyTip"])).toContain("classifyTip <- plantedProbe");
+    expect(verbPasses(real, ["classifyTip"])).not.toContain("classifyTip <- plantedProbe");
+  });
+
   it("a state folded past sealed payloads is branded transient, minted in one place, and refused by snapshots and restore", () => {
     const src = strip(read(RT));
     expect(src.match(/markTransientFold\(/g)).toHaveLength(1);
-    const fold = src.slice(src.indexOf("private async foldFromCompleteLog("));
-    expect(fold.slice(0, fold.indexOf("\n  }\n"))).toMatch(/markTransientFold\(/);
+    const mint = src.slice(src.indexOf("private transientQuarantineFold("));
+    expect(mint.slice(0, mint.indexOf("\n  }\n"))).toMatch(/markTransientFold\(/);
+    // its only callers: the verbs' fold paths (the whole-log fold and the two view-read folds)
+    const minters = [...src.matchAll(/this\.transientQuarantineFold\(/g)].map((m) =>
+      enclosingMethod(src, m.index)
+    );
+    expect(minters.sort()).toEqual(["foldFromCompleteLog", "foldState", "foldState"]);
     expect(src).toMatch(/assertNotTransientFold\(preloadedState, "restoreFromState"\)/);
     const sg = strip(read("packages/workflow-runtime/src/sealGuard.ts"));
     expect(sg).toMatch(
