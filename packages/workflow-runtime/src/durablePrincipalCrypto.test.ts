@@ -46,7 +46,7 @@ function boot(
     sensitive: {},
     ...(tolerant && { onShredded: "tolerate" as const }),
   });
-  const snaps = new EncryptingSnapshotStore(rawSnaps, keys, { sensitive: [], events: raw });
+  const snaps = new EncryptingSnapshotStore(rawSnaps, keys, { sensitive: [] });
   events.registerSensitive("EXECUTION_STARTED", EVENT_PATHS);
   snaps.registerSensitive(STATE_PATHS);
   const seen: Array<PrincipalChain | undefined> = [];

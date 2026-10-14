@@ -982,7 +982,25 @@ export class WorkflowRuntime {
     const guardedEvents = new SealGuardedEventStore(deps.eventStore);
     this.eventStore = guardedEvents;
     this.snapshotStore = new SealGuardedSnapshotStore(deps.snapshotStore, async (id) => {
-      await readRangeOf(guardedEvents, id, 0, 0);
+      // A key-unavailable snapshot load asks the LOG whether it was a real shred. Read the WHOLE
+      // stream (a tombstone sits ABOVE the snapshot, not at sequence 0): the guarded read raises the
+      // store's own erasure error when it can see the shred, and a `PAYLOAD_SHREDDED` fact in what
+      // it returns is the erasure outcome too (named like the crypto plugin's error, which the
+      // cancel / recordedPrincipal paths already match by name). Rare path, bounded by the back-off.
+      const stream = await guardedEvents.read(id);
+      let tomb: EventEnvelope | undefined;
+      for (let i = stream.length - 1; i >= 0 && tomb === undefined; i--) {
+        if (stream[i]!.eventType === "PAYLOAD_SHREDDED") tomb = stream[i];
+      }
+      if (tomb !== undefined) {
+        const subjectId = (tomb.payload as { subjectId?: unknown } | null)?.subjectId;
+        throw Object.assign(
+          new Error(
+            `execution "${id}" was crypto-shredded (PAYLOAD_SHREDDED in its log${typeof subjectId === "string" ? ` for subject "${subjectId}"` : ""})`
+          ),
+          { name: "PayloadShreddedError", subjectId, executionId: id }
+        );
+      }
     });
     this.effectRuntime = deps.effectRuntime;
     this.onEvent = deps.onEvent;
