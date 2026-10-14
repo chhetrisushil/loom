@@ -19,6 +19,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LIFECYCLE_STREAM, LogLifecycle, UnsafeCompactionError } from "./LogLifecycle";
+import { PlaintextCheckpointError } from "./checkpointGuard";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
@@ -384,6 +385,29 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     await expect(new LogLifecycle(app.eventStore, otherKeys).compact("ec-2")).rejects.toThrow(
       UnsafeCompactionError
     );
+  });
+
+  it("NEGATIVE (ADR 0130 D8) - compact REFUSES a static-path snapshot store on the SAME keys (it would write _waitAnswers in plaintext), and touches nothing", async () => {
+    const app = encryptedApp();
+    const handle = await app.runtime.start(app.flow, { n: SECRET }, { executionId: "ec-sp" });
+    await handle.waitForCompletion();
+    const before = await app.rawEvents.read("ec-sp");
+    const rawStatic = new SqliteSnapshotStore(":memory:");
+    // same KeyStore, but a static path list: NOT sealsWholeState
+    const staticStore = new EncryptingSnapshotStore(rawStatic, app.keys, {
+      sensitive: ["variables._input.n"],
+    });
+    await expect(new LogLifecycle(app.eventStore, staticStore).compact("ec-sp")).rejects.toThrow(
+      PlaintextCheckpointError
+    );
+    expect(await rawStatic.loadLatest("ec-sp")).toBeNull();
+    expect(await app.rawEvents.read("ec-sp")).toEqual(before);
+    // the explicit opt-out still compacts (a plaintext checkpoint the operator accepted)
+    expect(
+      await new LogLifecycle(app.eventStore, staticStore, {
+        allowPlaintextCheckpoints: true,
+      }).compact("ec-sp")
+    ).not.toBeNull();
   });
 
   it("the guard sees through a decorator stacked above the encrypting store (Coalescing(Encrypting(sqlite)))", async () => {
