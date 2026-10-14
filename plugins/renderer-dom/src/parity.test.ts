@@ -566,7 +566,8 @@ describe("renderer parity: state-level facts on dom / react / terminal", () => {
         loading: "⋯",
       };
       const g = glyph[r.expect.state];
-      if (g !== undefined) expect(term, "terminal glyph").toContain(g);
+      // Anchored to the line start: a bare `~`/`⋯` anywhere would let two glyphs swap unnoticed.
+      if (g !== undefined) expect(term, "terminal glyph").toMatch(new RegExp(`^\\s*${g} `, "m"));
       else expect(term, "terminal ready has no marker").not.toMatch(/[✗○~⋯]/);
       if (r.expect.degraded === null) expect(term).not.toContain("degraded from");
       else expect(term).toContain(`(degraded from ${r.expect.degraded})`);
