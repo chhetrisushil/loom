@@ -129,6 +129,25 @@ describe("ShardedEventStore: the sealing capability fails closed on disagreement
     expect(() => sharded.sealingCapability?.()).toThrow(ShardSealingMismatchError);
   });
 
+  it("covers compare as SETS: another order or a duplicate agrees; a subset still throws", () => {
+    const agree = new ShardedEventStore([
+      new Sealing(capability("c", ["A.x", "B.y"])),
+      new Sealing(capability("c", ["B.y", "A.x", "A.x"])),
+    ]);
+    expect(agree.sealingCapability?.()?.covers).toEqual(["A.x", "B.y"]);
+    const subset = new ShardedEventStore([
+      new Sealing(capability("c", ["A.x", "A.x"])),
+      new Sealing(capability("c", ["A.x", "B.y"])),
+    ]);
+    expect(() => subset.sealingCapability?.()).toThrow(ShardSealingMismatchError);
+    // The reverse order: same length, every element known to the first shard, still a subset.
+    const reversed = new ShardedEventStore([
+      new Sealing(capability("c", ["A.x", "B.y"])),
+      new Sealing(capability("c", ["A.x", "A.x"])),
+    ]);
+    expect(() => reversed.sealingCapability?.()).toThrow(ShardSealingMismatchError);
+  });
+
   it("DIFFERENT cipher throws, and the error names the shards without key material", () => {
     const sharded = new ShardedEventStore([
       new Sealing(capability("c", ["A.x"])),

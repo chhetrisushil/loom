@@ -168,12 +168,7 @@ function commonSealing(
   const covers = new Set(first.covers);
   const all: SealingCapability[] = [];
   for (const c of caps) {
-    if (
-      c === undefined ||
-      c.cipher !== first.cipher ||
-      c.covers.length !== first.covers.length ||
-      !c.covers.every((e) => covers.has(e))
-    ) {
+    if (c === undefined || c.cipher !== first.cipher || !sameSet(covers, c.covers)) {
       throw new ShardSealingMismatchError(caps);
     }
     all.push(c);
@@ -183,6 +178,12 @@ function commonSealing(
     covers: first.covers,
     opens: (marker) => all.every((c) => c.opens(marker)),
   };
+}
+
+/** `covers` is a set of paths: order and duplicates carry no meaning, so compare as sets. */
+function sameSet(a: ReadonlySet<string>, b: readonly string[]): boolean {
+  const bs = new Set(b);
+  return bs.size === a.size && [...bs].every((e) => a.has(e));
 }
 
 const shardAnchor = (shard: number, inner: string): string => `s${shard}/${inner}`;
