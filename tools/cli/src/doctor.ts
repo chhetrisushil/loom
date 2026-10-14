@@ -326,16 +326,20 @@ function archiveSnapshotCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
   if (!eventSeals) {
     return { name: ARCHIVE_SEAL_CHECK, status: "skipped", detail: "the event store seals nothing" };
   }
-  const sharesKeys =
-    typeof eventStore?.keys === "object" &&
-    eventStore.keys !== null &&
-    archive.keys === eventStore.keys;
-  if (archive.sealsWholeState === true && sharesKeys) {
+  // Mirror `LogLifecycle.archiveIsSafe` exactly, so this message is never false: the key-identity rule
+  // applies only when the event store exposes `keys`; the whole-state rule only when it COVERS something.
+  const eventKeys =
+    typeof eventStore?.keys === "object" && eventStore.keys !== null ? eventStore.keys : undefined;
+  const coversSomething = covers !== undefined && covers.length > 0;
+  const keysOk = eventKeys === undefined || archive.keys === eventKeys;
+  const wholeOk = !coversSomething || archive.sealsWholeState === true;
+  if (keysOk && wholeOk) {
     return {
       name: ARCHIVE_SEAL_CHECK,
       status: "ok",
-      detail:
-        "the archive snapshot store seals the whole folded state under the event store's KeyStore",
+      detail: coversSomething
+        ? "the archive snapshot store seals the whole folded state under the event store's KeyStore"
+        : "the archive snapshot store shares the event store's KeyStore; the event store covers no path right now (once it does, the archive store must also seal the WHOLE state)",
     };
   }
   const allowed =
