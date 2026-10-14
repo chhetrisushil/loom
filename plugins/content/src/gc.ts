@@ -412,8 +412,15 @@ export interface ContentSweepReport {
    * Executions whose scanned snapshot `state` is a top-level `__loomEnc` envelope (an
    * `EncryptingSnapshotStore({ sealState })` read RAW): the refs it cites are invisible to this
    * scan. An erasing pass throws {@link SealedSnapshotScanError} instead; a `dryRun` lists them.
+   * The check looks at the TOP-LEVEL `__loomEnc` key of `state` only, not a nested envelope.
    */
   sealedSnapshots: string[];
+  /**
+   * Executions whose snapshot load threw `PayloadShreddedError` (their subject was crypto-shredded
+   * under a `sealState` store): the snapshot is erased, so it cites no readable refs and is skipped.
+   * Blobs another live owner cites stay pinned by it. Any OTHER load error still aborts the pass.
+   */
+  shreddedSnapshots: string[];
 }
 
 /**
@@ -564,6 +571,7 @@ export async function sweepUnpinnedContent(
   let executionsScanned = 0;
   const uncovered: string[] = [];
   const sealedSnapshots: string[] = [];
+  const shreddedSnapshots: string[] = [];
 
   for (const eventStore of options.eventStores) {
     if (eventStore.listExecutions === undefined && eventStore.listExecutionsPage === undefined) {
@@ -611,46 +619,55 @@ export async function sweepUnpinnedContent(
       };
       let covered = false;
       for (const snapshots of options.snapshotStores) {
-        const latest = await snapshots.loadLatest(executionId);
-        if (latest !== null && latest.sequence >= 1) pin(latest);
-        if (bootstrapOnly) {
-          // Compacted at the tip: the checkpoint IS the latest snapshot.
-          if (latest !== null && latest.sequence >= 1) covered = true;
-          continue;
-        }
-        // The checkpoint: the LOWEST snapshot in [gap, tip] — any snapshot at or above the gap
-        // covers a lost checkpoint, exactly as `compact` accepts a base at or above it. A
-        // compaction's own sits exactly at `gap` (one read). A child forked from a compacted
-        // parent copies the gap, and its lowest snapshot is its fork seed, whose sequence the
-        // copied envelopes record (`metadata.forkSequence`): one exact read. Only a log with
-        // neither walks the snapshots down from the tip.
-        let checkpoint = await snapshots.loadLatestBefore(executionId, gap);
-        const forkSequence = (events[0]!.metadata as { forkSequence?: unknown } | undefined)
-          ?.forkSequence;
-        if (
-          (checkpoint === null || checkpoint.sequence !== gap) &&
-          typeof forkSequence === "number" &&
-          forkSequence >= gap
-        ) {
-          const seed =
-            snapshots.loadAt !== undefined
-              ? await snapshots.loadAt(executionId, forkSequence)
-              : await snapshots.loadLatestBefore(executionId, forkSequence);
-          checkpoint = seed !== null && seed.sequence === forkSequence ? seed : checkpoint;
-        }
-        if (checkpoint === null || checkpoint.sequence < gap) {
-          checkpoint = null;
-          let s = await snapshots.loadLatestBefore(executionId, tipSequence);
-          while (s !== null && s.sequence >= gap) {
-            checkpoint = s;
-            s =
-              s.sequence > gap
-                ? await snapshots.loadLatestBefore(executionId, s.sequence - 1)
-                : null;
+        try {
+          const latest = await snapshots.loadLatest(executionId);
+          if (latest !== null && latest.sequence >= 1) pin(latest);
+          if (bootstrapOnly) {
+            // Compacted at the tip: the checkpoint IS the latest snapshot.
+            if (latest !== null && latest.sequence >= 1) covered = true;
+            continue;
           }
-        }
-        if (checkpoint !== null) {
-          pin(checkpoint);
+          // The checkpoint: the LOWEST snapshot in [gap, tip] — any snapshot at or above the gap
+          // covers a lost checkpoint, exactly as `compact` accepts a base at or above it. A
+          // compaction's own sits exactly at `gap` (one read). A child forked from a compacted
+          // parent copies the gap, and its lowest snapshot is its fork seed, whose sequence the
+          // copied envelopes record (`metadata.forkSequence`): one exact read. Only a log with
+          // neither walks the snapshots down from the tip.
+          let checkpoint = await snapshots.loadLatestBefore(executionId, gap);
+          const forkSequence = (events[0]!.metadata as { forkSequence?: unknown } | undefined)
+            ?.forkSequence;
+          if (
+            (checkpoint === null || checkpoint.sequence !== gap) &&
+            typeof forkSequence === "number" &&
+            forkSequence >= gap
+          ) {
+            const seed =
+              snapshots.loadAt !== undefined
+                ? await snapshots.loadAt(executionId, forkSequence)
+                : await snapshots.loadLatestBefore(executionId, forkSequence);
+            checkpoint = seed !== null && seed.sequence === forkSequence ? seed : checkpoint;
+          }
+          if (checkpoint === null || checkpoint.sequence < gap) {
+            checkpoint = null;
+            let s = await snapshots.loadLatestBefore(executionId, tipSequence);
+            while (s !== null && s.sequence >= gap) {
+              checkpoint = s;
+              s =
+                s.sequence > gap
+                  ? await snapshots.loadLatestBefore(executionId, s.sequence - 1)
+                  : null;
+            }
+          }
+          if (checkpoint !== null) {
+            pin(checkpoint);
+            covered = true;
+          }
+        } catch (err) {
+          // Only a CONFIRMED crypto-shred (matched by name: content does not import plugin-crypto)
+          // means the snapshot is erased. Anything else (key unavailable, undecryptable, I/O)
+          // propagates: dropping refs for data that still exists would delete live blobs.
+          if (!(err instanceof Error) || err.name !== "PayloadShreddedError") throw err;
+          if (!shreddedSnapshots.includes(executionId)) shreddedSnapshots.push(executionId);
           covered = true;
         }
       }
@@ -712,5 +729,6 @@ export async function sweepUnpinnedContent(
     snapshotStoresTouching,
     snapshotStoresUnbranded,
     sealedSnapshots,
+    shreddedSnapshots,
   };
 }
