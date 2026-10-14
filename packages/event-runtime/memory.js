@@ -6,4 +6,6 @@
 module.exports = {
   ...require("./dist/InMemoryAsyncEventStore"),
   ...require("./dist/InMemoryBranchRegistry"),
+  // ADR 0130 D11: leases.ts has no imports, so the in-memory lease store is browser-safe too.
+  InMemoryLeaseStore: require("./dist/leases").InMemoryLeaseStore,
 };

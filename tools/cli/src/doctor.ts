@@ -149,6 +149,17 @@ export async function cmdDoctor(opts: {
     checks.push(...timerChecks(await loadedApp(config)));
   }
 
+  // 4b. ADR 0130 D11 heartbeat leases: is the liveness evidence cluster-visible and true?
+  if (config === undefined) {
+    checks.push({
+      name: HEARTBEAT_CHECK,
+      status: "skipped",
+      detail: "no built config module found — pass --config <module> exporting a LoomApp",
+    });
+  } else {
+    checks.push(heartbeatCheck(await loadedApp(config)));
+  }
+
   // 5. Encrypted-at-rest durability: are the keys going to outlive the process?
   if (config === undefined) {
     checks.push({
@@ -478,6 +489,58 @@ function appLoader(): (configPath: string) => Promise<Partial<LoomApp> | Error> 
       err instanceof Error ? err : new Error(String(err))
     );
     return loaded;
+  };
+}
+
+const HEARTBEAT_CHECK = "heartbeat leases (ADR 0130 D11)";
+
+/**
+ * Heartbeat leases make "a lease existed and expired" evidence of an abandoned driver. That is
+ * only true when every node sees the same lease table, and only while a store outage cannot
+ * leave a live driver holding an expired lease.
+ */
+function heartbeatCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
+  if (loaded instanceof Error)
+    return { name: HEARTBEAT_CHECK, status: "failed", detail: String(loaded) };
+  const hb = loaded.heartbeat;
+  if (hb === undefined)
+    return {
+      name: HEARTBEAT_CHECK,
+      status: "skipped",
+      detail: "this app does not report a heartbeat decision (built with an older @loom/app)",
+    };
+  if (!hb.enabled && hb.source === "off")
+    return {
+      name: HEARTBEAT_CHECK,
+      status: "skipped",
+      detail:
+        "`durability.heartbeat.enabled: false` — drivers hold no lease; behaviour as before ADR 0130 D11",
+    };
+  if (!hb.enabled)
+    return {
+      name: HEARTBEAT_CHECK,
+      status: "advisory",
+      detail:
+        "heartbeat disabled: a durable event store and no cluster-visible lease store could be derived (the storage preset exposes no `leaseStore`). Drivers hold no lease, so the poll re-drive keeps needing a host `isAbandoned`. Use a preset that exposes `leaseStore`, or set `durability.heartbeat.store`",
+    };
+  if (hb.storeInMemory && !hb.eventStoreInMemory)
+    return {
+      name: HEARTBEAT_CHECK,
+      status: "failed",
+      detail:
+        "an in-memory lease store beside a durable event store: meaningless evidence across nodes — every other node sees no lease for this node's executions. Use the co-located lease store (`leaseStore` from the storage preset) or a shared one",
+    };
+  if (hb.onStoreError === "continue")
+    return {
+      name: HEARTBEAT_CHECK,
+      status: "advisory",
+      detail:
+        '`onStoreError: "continue"` — drivers keep running through a lease-store outage, so an expired lease no longer proves liveness; the poll must treat this fleet as heuristic. The fence still protects the log',
+    };
+  return {
+    name: HEARTBEAT_CHECK,
+    status: "ok",
+    detail: `heartbeat leases on (${hb.source})`,
   };
 }
 
