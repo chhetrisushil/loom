@@ -643,23 +643,30 @@ const DDL_REST = `
     DECLARE
       caller_lock_timeout text := current_setting('lock_timeout');
     BEGIN
-      IF EXISTS (
-        SELECT 1 FROM pg_class
-        WHERE oid = to_regclass('leases') AND reloptions IS NULL
-      ) THEN
-        PERFORM set_config(
-          'lock_timeout',
-          COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
-          true
-        );
-        ALTER TABLE leases SET (
-          fillfactor = 70,
-          autovacuum_vacuum_scale_factor = 0.02,
-          autovacuum_vacuum_threshold = 50,
-          autovacuum_analyze_scale_factor = 0.05
-        );
-        PERFORM set_config('lock_timeout', caller_lock_timeout, true);
-      END IF;
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM pg_class
+          WHERE oid = to_regclass('leases') AND reloptions IS NULL
+        ) THEN
+          PERFORM set_config(
+            'lock_timeout',
+            COALESCE(NULLIF(current_setting('loom.migration_lock_timeout', true), ''), '2s'),
+            true
+          );
+          ALTER TABLE leases SET (
+            fillfactor = 70,
+            autovacuum_vacuum_scale_factor = 0.02,
+            autovacuum_vacuum_threshold = 50,
+            autovacuum_analyze_scale_factor = 0.05
+          );
+          PERFORM set_config('lock_timeout', caller_lock_timeout, true);
+        END IF;
+      EXCEPTION
+        -- Optional tuning must never take the event log down: fail soft, a later boot retries.
+        WHEN lock_not_available OR query_canceled OR deadlock_detected OR insufficient_privilege THEN
+          RAISE WARNING 'loom: the ADR 0130 leases storage options (fillfactor/autovacuum) could not be applied (%: %). The table works untuned; a later boot retries.',
+            SQLSTATE, SQLERRM;
+      END;
     END
     $leases_storage$;
 
