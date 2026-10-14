@@ -119,14 +119,14 @@ describe("durability.heartbeat -- derivation", () => {
     expect(app.heartbeat.onStoreError).toBe("stop");
   });
 
-  it('onStoreError "continue" is refused until the poll can treat the fleet as heuristic (S7d)', () => {
-    expect(() =>
-      defineConfig({
-        ...base,
-        storage: { kind: "memory" },
-        durability: { heartbeat: { onStoreError: "continue" } },
-      })
-    ).toThrow(/not supported yet/);
+  it('onStoreError "continue" is accepted and carried into the resolved status', () => {
+    const app = defineConfig({
+      ...base,
+      storage: { kind: "memory" },
+      durability: { heartbeat: { onStoreError: "continue" } },
+    });
+    expect(app.heartbeat.onStoreError).toBe("continue");
+    expect(app.runtime.leaseKeeper?.heuristic).toBe(true);
   });
 });
 
@@ -293,22 +293,28 @@ describe("durability.heartbeat -- wired into the runtime", () => {
     expect(app.runtime.leaseKeeper).toBeUndefined();
   });
 
-  it('onStoreError "continue" is refused at defineConfig (and by the runtime): consistent on both layers', () => {
+  it('onStoreError "continue" reaches the runtime: its keeper is heuristic, an unknown value throws on both layers', () => {
+    const app = defineConfig({
+      ...base,
+      storage: { kind: "memory" },
+      durability: { heartbeat: { onStoreError: "continue" } },
+    });
+    expect(app.runtime.leaseKeeper?.heuristic).toBe(true);
     expect(() =>
       defineConfig({
         ...base,
         storage: { kind: "memory" },
-        durability: { heartbeat: { onStoreError: "continue" } },
+        durability: { heartbeat: { onStoreError: "sometimes" as never } },
       })
-    ).toThrow(/continue/);
+    ).toThrow(/stop.*continue/);
     expect(
       () =>
         new WorkflowRuntime({
           eventStore: new InMemoryAsyncEventStore(),
           snapshotStore: new InMemoryAsyncSnapshotStore(),
-          heartbeat: { leaseStore: new InMemoryLeaseStore(), onStoreError: "continue" },
+          heartbeat: { leaseStore: new InMemoryLeaseStore(), onStoreError: "sometimes" as never },
         } as never)
-    ).toThrow(/continue/);
+    ).toThrow(/stop.*continue/);
   });
 });
 

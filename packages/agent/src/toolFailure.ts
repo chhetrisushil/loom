@@ -63,6 +63,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "LeaseStoreQuietError",
   "LeaseStoreTimeoutError",
   "StartLeaseHeldError",
+  // a lease-store read failed while judging abandonment: the re-drive did NOT happen (fail closed, ADR 0130 D11 S7d)
+  "LeaseEvidenceError",
   // the environment cannot host the runtime's scopes (no AsyncLocalStorage): no retry helps
   "AsyncContextUnavailableError",
   // fencing / supersession: this execution no longer owns its log; a leaked egress or spawn bound

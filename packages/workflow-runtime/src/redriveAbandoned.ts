@@ -110,6 +110,18 @@ export interface RedriveOptions {
    * worker that drives the execution takes its own lease). Not called for an in-process resume.
    */
   beforeDispatch?: () => Promise<void>;
+  /**
+   * ADR 0130 D11 section 4 (S7d) - the CONDITIONAL TAKEOVER. Set by a caller whose runtime holds
+   * heartbeat leases. The re-drive first makes its `EXECUTION_RECOVERED` marker durable with
+   * `appendIfUnchanged(head, fence)` on the head it just read, BEFORE any fence is acquired: a driver
+   * that was not really abandoned and appended since makes the claim lose (`skipped`, nothing written,
+   * no token taken), and of N contenders exactly one wins. Only then does it acquire the fence and
+   * drive; the resume does not write a second marker. A store without `appendIfUnchanged` falls back
+   * to the unconditional path. A DISPATCHED re-drive is not claimed here (the worker's own resume
+   * writes the marker, under the lease the worker takes): it keeps the S7c ordering, lease then fence
+   * then dispatch, and the poll's `ifHeadAt` guard.
+   */
+  conditional?: boolean;
 }
 
 /**
@@ -137,11 +149,19 @@ export async function redriveAbandoned(
       return { outcome: "skipped" }; // something appended since the refusal: not ours to re-drive
     }
     let fence: number | undefined;
+    const ifHeadAt = options.ifHeadAt;
+    let claimed = false;
+    if (options.conditional === true && options.dispatcher === undefined) {
+      // D11 section 4 step 4: the marker is appended conditionally on the head we just read.
+      const won = await runtime.claimRecovery(executionId, fresh.workflowId, fresh.sequence);
+      if (won === false) return { outcome: "skipped" };
+      claimed = won === true;
+    }
     if (options.fenced) {
-      if (options.ifHeadAt === undefined) {
+      if (ifHeadAt === undefined || claimed) {
         fence = await runtime.acquireFence(executionId, runtime.systemOptions());
       } else {
-        const got = await acquireFenceAtHead(runtime, executionId, options.ifHeadAt);
+        const got = await acquireFenceAtHead(runtime, executionId, ifHeadAt);
         if (got === "lost") return { outcome: "skipped" };
         fence = got;
       }
@@ -167,6 +187,7 @@ export async function redriveAbandoned(
     }
     const handle = await runtime.resume(executionId, resumeEvent, {
       ...(fence !== undefined && { fence }),
+      ...(claimed && { recoveryClaimed: true }),
       ...runtime.systemOptions(),
     });
     // Settle before moving on, so the caller applies backpressure instead of stampeding.

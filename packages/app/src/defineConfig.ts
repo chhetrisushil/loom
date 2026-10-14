@@ -368,9 +368,11 @@ export interface HeartbeatConfig {
   store?: LeaseStore;
   /**
    * What a driver does when the lease store is unreachable. `"stop"` (default): abort at its
-   * self-fencing deadline, so an expired lease stays true evidence. `"continue"` (keep running; the
-   * fence still protects the log, but the lease no longer proves liveness) is NOT SUPPORTED YET: it
-   * needs the poll to treat such a fleet as heuristic (ADR 0130 D11, slice S7d), so it throws.
+   * self-fencing deadline, so an expired lease stays true evidence. `"continue"`: keep running (the
+   * fence still protects the log), but the lease no longer proves liveness, so this node's leases
+   * are HEURISTIC (an owner marker every node reads): the poll's default re-drive is off for such a
+   * fleet and a refused execution is re-driven only with a host `isAbandoned` (ADR 0130 D11, S7d).
+   * Set it fleet-wide: a `"stop"` node still re-drives by default on a `"stop"` peer's expired leases.
    */
   onStoreError?: "stop" | "continue";
 }
@@ -443,12 +445,10 @@ function resolveHeartbeat(
         ? "defineConfig: durability.heartbeat.ttlMs is too small: the default renew cadence max(floor(ttlMs / 3), 1) must be < ttlMs - floor(ttlMs / 6)"
         : "defineConfig: durability.heartbeat.renewEveryMs must be < ttlMs - floor(ttlMs / 6)"
     );
-  if (hb.onStoreError === "continue")
+  if (hb.onStoreError !== undefined && hb.onStoreError !== "stop" && hb.onStoreError !== "continue")
     throw new TypeError(
-      'defineConfig: durability.heartbeat.onStoreError "continue" is not supported yet (ADR 0130 D11: it needs the poll to treat the fleet as heuristic, slice S7d); use "stop"'
+      'defineConfig: durability.heartbeat.onStoreError must be "stop" or "continue"'
     );
-  if (hb.onStoreError !== undefined && hb.onStoreError !== "stop")
-    throw new TypeError('defineConfig: durability.heartbeat.onStoreError must be "stop"');
   if (hb.store !== undefined && !isLeaseStore(hb.store))
     throw new TypeError("defineConfig: durability.heartbeat.store must be a LeaseStore");
 
@@ -1373,8 +1373,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
             leaseStore: heartbeat.store,
             ...(heartbeat.ttlMs !== undefined && { ttlMs: heartbeat.ttlMs }),
             ...(heartbeat.renewEveryMs !== undefined && { renewEveryMs: heartbeat.renewEveryMs }),
-            // "continue" is refused by resolveHeartbeat (and by the runtime), so the resolved value is "stop".
-            onStoreError: "stop",
+            onStoreError: heartbeat.onStoreError,
           },
         }
       : {};

@@ -104,12 +104,15 @@ export {
   inboxTopicStreamId,
 } from "./inbox";
 export type { DriverLease, HeartbeatOptions } from "./driverLease";
+export { LeaseEvidenceError, collectGhostLeases } from "./leaseEvidence";
 export {
+  HEURISTIC_OWNER_SUFFIX,
   LeaseHeldError,
   LeaseKeeper,
   LeaseLostError,
   LeaseStoreQuietError,
   LeaseStoreTimeoutError,
+  isHeuristicOwner,
   type LeaseKeeperOptions,
 } from "./leaseKeeper";
 export {

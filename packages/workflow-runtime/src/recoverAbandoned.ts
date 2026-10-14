@@ -9,6 +9,8 @@ import {
 import type { TimerDispatcher } from "./TimerService";
 import { redriveDelayMs } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
+import { judgeLease } from "./leaseEvidence";
+import { isHeuristicOwner } from "./leaseKeeper";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import {
   isSealedBackedOff,
@@ -224,7 +226,10 @@ export async function recoverAbandoned(
   }
 
   const expiredChains = new Set<string>();
-  for await (const executionId of candidateIds(options)) {
+  // ADR 0130 D11 (S7d): the owner of each expired lease the scan listed (lease mode), to tell a
+  // `"continue"` node's heuristic lease from true evidence.
+  const expiredOwners = new Map<string, string>();
+  for await (const executionId of candidateIds(options, expiredOwners)) {
     // A dry run recovers nothing, so `recovered` would never reach the limit and the scan
     // would run to the end of the store. Bound the mode that is actually counting.
     if ((options.dryRun === true ? summary.candidates : summary.recovered) >= limit) break;
@@ -306,6 +311,26 @@ export async function recoverAbandoned(
             sequence: state.sequence,
           });
     if (!claimed) continue;
+    // ADR 0130 D11 (S7d), lease mode: an expired lease of a `"continue"` node proves nothing; with no
+    // predicate to vouch for it the execution is left alone (a predicate, when given, WAS asked above).
+    if (options.isAbandoned === undefined && isHeuristicOwner(expiredOwners.get(executionId) ?? ""))
+      continue;
+    // The lease VETO (ADR 0130 D11 section 4) and the fail-closed read: a heuristic never preempts a
+    // driver that heartbeats, and a lease store that errors is not "no lease". Only a runtime with a
+    // heartbeat keeper (or lease mode) has leases to read; unwired it is today's pass, byte for byte.
+    if (
+      options.dryRun !== true &&
+      (runtime.leaseKeeper !== undefined || options.leases !== undefined)
+    ) {
+      try {
+        const j = await judgeLease(runtime, executionId, options.leases?.store);
+        if (j.kind === "live" || j.kind === "quiet") continue;
+      } catch (err) {
+        summary.failed++;
+        options.onError?.(executionId, err);
+        continue;
+      }
+    }
 
     if (maxRecoveries !== undefined) {
       const recoveries = await unproductiveRecoveries(
@@ -332,8 +357,17 @@ export async function recoverAbandoned(
     let held: HeldLease | undefined;
     // ADR 0130 D11 (S7c): a runtime with a heartbeat keeper claims through it (shared owner, one timer).
     let hold: { release(): Promise<void> } | undefined;
-    if (options.leases !== undefined && runtime.leaseKeeper !== undefined) {
-      const got = await runtime.acquireDriverLease(executionId);
+    if (runtime.leaseKeeper !== undefined) {
+      // Lease BEFORE fence (D11 section 1): a conditional takeover below must never fence out a
+      // driver that heartbeats. S7d: every keeper runtime claims, not only lease mode.
+      let got: Awaited<ReturnType<typeof runtime.acquireDriverLease>>;
+      try {
+        got = await runtime.acquireDriverLease(executionId);
+      } catch (err) {
+        summary.failed++; // fail closed: a lease that cannot be confirmed is not "free"
+        options.onError?.(executionId, err);
+        continue;
+      }
       if (got === null) continue;
       hold = got;
     } else if (options.leases !== undefined) {
@@ -358,6 +392,8 @@ export async function recoverAbandoned(
       // status, fences, dispatches or resumes, settles, and classifies a sealed refusal.
       const r = await redriveAbandoned(runtime, executionId, {
         source: "sweep",
+        // ADR 0130 D11 section 4 step 4: with heartbeat leases the takeover is conditional on the head.
+        ...(runtime.leaseKeeper !== undefined && { conditional: true }),
         ...(options.fenced !== undefined && { fenced: options.fenced }),
         ...(options.dispatcher !== undefined && { dispatcher: options.dispatcher }),
         // ADR 0130 D11 (S7c): a dispatched re-drive is driven by the WORKER, which holds its own lease.
@@ -404,13 +440,17 @@ export async function recoverAbandoned(
  * What to consider. With a lease store the candidate set is exactly the expired leases —
  * narrower and cheaper than walking every execution, and the reason the predicate can go.
  */
-async function* candidateIds(options: RecoverAbandonedOptions): AsyncGenerator<string> {
+async function* candidateIds(
+  options: RecoverAbandonedOptions,
+  owners: Map<string, string>
+): AsyncGenerator<string> {
   if (options.leases !== undefined) {
     for (const lease of await options.leases.store.expired(
       // The store's OWN clock (L28): it stamped `expiresAt` in acquire/renew, so it must judge it.
       undefined,
       options.pageSize ?? 1000
     )) {
+      owners.set(lease.executionId, lease.owner);
       yield lease.executionId;
     }
     return;

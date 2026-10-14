@@ -85,8 +85,26 @@ export class LeaseStoreTimeoutError extends Error {
   }
 }
 
+/**
+ * Marks an owner whose node runs `onStoreError: "continue"` (ADR 0130 D11 section 6). Such a node's
+ * drivers keep running through a lease-store outage, so an EXPIRED lease of theirs no longer proves the
+ * driver is gone: every reader treats it as a heuristic (never as evidence). The marker travels in the
+ * owner string, the one field every node reads, so a stop-mode poller needs no config about its peers.
+ */
+export const HEURISTIC_OWNER_SUFFIX = "~continue";
+/** Is `owner` a node that runs `onStoreError: "continue"`? */
+export const isHeuristicOwner = (owner: string): boolean => owner.endsWith(HEURISTIC_OWNER_SUFFIX);
+
 export interface LeaseKeeperOptions {
   store: LeaseStore;
+  /**
+   * What a driver does when the lease store is unreachable (ADR 0130 D11 section 6). `"stop"`
+   * (default): the self-fencing deadline aborts it, so an expired lease stays TRUE evidence.
+   * `"continue"`: the deadline is not enforced, drivers run through an outage (the fence still guards
+   * the log; a lease the store reports taken over still stops the driver), and the owner carries
+   * {@link HEURISTIC_OWNER_SUFFIX} so its expired leases are never evidence.
+   */
+  onStoreError?: "stop" | "continue";
   /** This node's id; the owner is `<nodeId>:<incarnation>`. */
   nodeId: string;
   /** A fresh uuid per process start by default, so a restarted pod never inherits its predecessor's leases. */
@@ -233,6 +251,7 @@ export class LeaseKeeper {
   readonly ttlMs: number;
   readonly renewEveryMs: number;
   private readonly store: LeaseStore;
+  private readonly continueOnError: boolean;
   private readonly now: () => number;
   private readonly wallNow: () => number;
   private readonly margin: number;
@@ -291,7 +310,16 @@ export class LeaseKeeper {
     this.chunk = options.chunkSize ?? 1000;
     if (!Number.isInteger(this.chunk) || this.chunk < 1)
       throw new TypeError("LeaseKeeper: chunkSize must be an integer >= 1");
-    this.owner = `${options.nodeId}:${options.incarnation ?? randomUUID()}`;
+    if (
+      (options.onStoreError as unknown) !== undefined &&
+      options.onStoreError !== "stop" &&
+      options.onStoreError !== "continue"
+    )
+      throw new TypeError('LeaseKeeper: onStoreError must be "stop" or "continue"');
+    this.continueOnError = options.onStoreError === "continue";
+    this.owner = `${options.nodeId}:${options.incarnation ?? randomUUID()}${
+      this.continueOnError ? HEURISTIC_OWNER_SUFFIX : ""
+    }`;
     this.now = options.monotonicNow ?? (() => performance.now());
     this.wallNow = options.wallNow ?? (() => Date.now());
     this.onLost = options.onLost;
@@ -303,6 +331,25 @@ export class LeaseKeeper {
     this.stopTimers.push(
       every(() => this.enforceDeadlines(), Math.max(Math.floor(this.ttlMs / 12), 1))
     );
+  }
+
+  /** The lease store this keeper writes to (readers of the evidence consult the SAME one). */
+  get leaseStore(): LeaseStore {
+    return this.store;
+  }
+
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
+  /** `onStoreError: "continue"`: this node's leases are heuristic (see {@link HEURISTIC_OWNER_SUFFIX}). */
+  get heuristic(): boolean {
+    return this.continueOnError;
+  }
+
+  /** The keeper's monotonic clock (injectable), for readers that need a quiet period on the same timeline. */
+  monotonicNow(): number {
+    return this.now();
   }
 
   /** Number of leases currently held (bounded memory: released and lost ids are gone). */
@@ -538,6 +585,9 @@ export class LeaseKeeper {
   }
 
   private expired(h: Held): boolean {
+    // "continue": the deadline is the one thing an outage must not enforce; a lease the store reports
+    // taken over (`renewMany` omits it) still ends the hold in `tick`.
+    if (this.continueOnError) return false;
     return this.now() >= h.mono || this.wallNow() >= h.wall;
   }
 

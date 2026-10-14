@@ -535,20 +535,20 @@ function heartbeatCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
       name: HEARTBEAT_CHECK,
       status: "advisory",
       detail:
-        '`onStoreError: "continue"` — drivers keep running through a lease-store outage, so an expired lease no longer proves liveness; the poll must treat this fleet as heuristic. The fence still protects the log',
+        "`onStoreError: \"continue\"` — drivers keep running through a lease-store outage, so an expired lease no longer proves liveness: this fleet's leases are HEURISTIC, the poll's default re-drive is OFF for it, and a refused execution is re-driven only with a host `isAbandoned` (an unexpired lease still vetoes it). The fence still protects the log",
     };
   const scope = hb.scope ?? "unknown";
   if (scope === "host")
     return {
       name: HEARTBEAT_CHECK,
       status: "advisory",
-      detail: `lease store is visible to ONE host only: evidence holds only if every node shares it (${hb.source}, scope host)`,
+      detail: `lease store is visible to ONE host only: evidence holds only if every node shares it, so the poll's default re-drive stays OFF (${hb.source}, scope host)`,
     };
   if (scope === "unknown")
     return {
       name: HEARTBEAT_CHECK,
       status: "advisory",
-      detail: `lease store scope is unknown (it declares no \`scope\`): cannot tell whether every node sees the same leases (${hb.source})`,
+      detail: `lease store scope is unknown (it declares no \`scope\`): cannot tell whether every node sees the same leases, so the poll's default re-drive stays OFF (${hb.source})`,
     };
   return {
     name: HEARTBEAT_CHECK,
