@@ -5,6 +5,7 @@ import {
   type EventStore,
   InMemoryAsyncEventStore,
   InMemoryLeaseStore,
+  InMemoryTimerStore,
   type LeaseStore,
 } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
@@ -110,6 +111,12 @@ export interface Rig {
   clock: Clock;
   events: InMemoryAsyncEventStore;
   leases: InMemoryLeaseStore;
+  /** The lease store's own clock runs `skew.ms` ahead of the nodes' wall clocks (default 0). */
+  skew: { ms: number };
+  /** The shared timer store the pollers (TimerService) drain; `refusalRow` seeds a D10 re-drive candidate. */
+  timers: InMemoryTimerStore;
+  /** Park a refusal row stamped at the execution's current head: the poll's re-drive candidate. */
+  refusalRow(id: string): Promise<void>;
   probe: Probe;
   flow: RegisteredFlow<In, { ok: boolean }>;
   /** A flow that continues-as-new once (n=0 -> n=1), then runs step c. */
@@ -135,7 +142,12 @@ export function rig(): Rig {
   const clock: Clock = { mono: 1_000, wall: 1_700_000_000_000 };
   const events = new InMemoryAsyncEventStore();
   const snapshots = new InMemoryAsyncSnapshotStore();
-  const leases = new InMemoryLeaseStore({ now: () => clock.wall });
+  const skew = { ms: 0 };
+  const leases = new InMemoryLeaseStore({ now: () => clock.wall + skew.ms });
+  // The in-memory store says `scope: "process"`; a fleet shares ONE store, so declare it cluster-visible
+  // (what S7d's default re-drive on expired-lease evidence requires).
+  Object.defineProperty(leases, "scope", { value: "cluster" });
+  const timers = new InMemoryTimerStore();
   const probe = new Probe();
   const timeline: string[] = [];
   const recorded = recordLeases(leases, timeline);
@@ -170,6 +182,12 @@ export function rig(): Rig {
     clock,
     events,
     leases,
+    skew,
+    timers,
+    refusalRow: async (id) => {
+      const head = (await events.head?.(id)) as number;
+      await timers.schedule({ executionId: id, wakeAt: 1, refused: { head } });
+    },
     probe,
     flow,
     rot,

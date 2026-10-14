@@ -5,11 +5,17 @@ import { flow$, step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
 import type { EventStore, LeaseStore } from "@loom/event-runtime";
+import {
+  PostgresEventStore,
+  PostgresLeaseStore,
+  PostgresSnapshotStore,
+} from "@loom/plugin-postgres";
 import { SqliteEventStore, SqliteLeaseStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
+import { Pool } from "pg";
 import { z } from "zod";
 import { drive } from "./harness";
 
@@ -30,7 +36,7 @@ import { drive } from "./harness";
 const io = z.object({ i: z.number() });
 const out = z.object({ ok: z.boolean() });
 
-export type Backend = "memory" | "sqlite";
+export type Backend = "memory" | "sqlite" | "postgres";
 export type Shape = "noop" | "io";
 
 export interface LeaseBenchConfig {
@@ -40,6 +46,8 @@ export interface LeaseBenchConfig {
   executions: number;
   ioMs: number;
   repeats: number;
+  /** Required for the `postgres` backend: event, snapshot and lease stores all live here. */
+  pgUrl?: string;
 }
 
 export interface LeaseBenchRow {
@@ -55,6 +63,12 @@ export interface LeaseBenchRow {
   overheadPct: number;
   offSamples: number[];
   onSamples: number[];
+  /** Overhead % of each interleaved OFF/ON pair (same repeat), in repeat order. */
+  pairedPct: number[];
+  /** Median / min / max of `pairedPct`: the spread the medians-ratio hides. */
+  pairedMedianPct: number;
+  pairedMinPct: number;
+  pairedMaxPct: number;
 }
 
 const median = (xs: number[]): number =>
@@ -83,9 +97,25 @@ interface Stores {
   snaps: SnapshotStore;
   leases: LeaseStore;
   cleanup(): void;
+  close?(): Promise<void>;
 }
 
-function makeStores(backend: Backend): Stores {
+function makeStores(backend: Backend, pgUrl?: string): Stores {
+  if (backend === "postgres") {
+    if (pgUrl === undefined) throw new Error("the postgres backend needs pgUrl");
+    // One pool for the event, snapshot and lease stores (the real deployment shape), the same size
+    // for OFF and ON. Unique execution ids per run, so no truncation is needed between runs.
+    const pool = new Pool({ connectionString: pgUrl, max: 32 });
+    return {
+      events: new PostgresEventStore(pool),
+      snaps: new PostgresSnapshotStore(pool),
+      leases: new PostgresLeaseStore(pool),
+      cleanup() {},
+      async close() {
+        await pool.end();
+      },
+    };
+  }
   if (backend === "memory")
     return {
       events: new InMemoryAsyncEventStore(),
@@ -105,7 +135,7 @@ function makeStores(backend: Backend): Stores {
 }
 
 async function once(cfg: LeaseBenchConfig, heartbeat: boolean, tag: string): Promise<number> {
-  const stores = makeStores(cfg.backend);
+  const stores = makeStores(cfg.backend, cfg.pgUrl);
   const effects = new EffectRuntime();
   effects.register(
     "work",
@@ -137,6 +167,7 @@ async function once(cfg: LeaseBenchConfig, heartbeat: boolean, tag: string): Pro
     return m.opsPerSec;
   } finally {
     await runtime.closeHeartbeat();
+    await stores.close?.();
     stores.cleanup();
   }
 }
@@ -154,6 +185,7 @@ export async function measureLeaseOverhead(cfg: LeaseBenchConfig): Promise<Lease
       (hb ? on : off).push(v);
     }
   }
+  const paired = off.map((o, i) => ((o - (on[i] as number)) / o) * 100);
   const mOff = median(off);
   const mOn = median(on);
   return {
@@ -167,5 +199,9 @@ export async function measureLeaseOverhead(cfg: LeaseBenchConfig): Promise<Lease
     overheadPct: ((mOff - mOn) / mOff) * 100,
     offSamples: off,
     onSamples: on,
+    pairedPct: paired,
+    pairedMedianPct: median(paired),
+    pairedMinPct: Math.min(...paired),
+    pairedMaxPct: Math.max(...paired),
   };
 }
