@@ -1374,6 +1374,12 @@ export interface ReleaseInboxInput {
   /** The sender-supplied id of the topic's OLDEST held message. */
   messageId: string;
   /**
+   * The message's sender, when the same `messageId` was used by several senders (the dedupe key is
+   * the sender together with the id). Without it the id alone names the message, and an id that more
+   * than one sender released is refused as ambiguous instead of answering for the wrong sender.
+   */
+  sender?: { tenant?: string; actor?: string; onBehalfOf?: string };
+  /**
    * `"deliver"` (default) journals a manual release and delivers the message FIRST, from the copy,
    * at its original position: this node must be able to open it. `"discard"` drops the entry and
    * unblocks the topic; it needs no ability to open the message (the exit when no node can).

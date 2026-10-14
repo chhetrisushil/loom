@@ -15,6 +15,7 @@ import {
   readRangeOf,
 } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
+import { QUARANTINE_FOLD_CAP } from "@loom/replay-vm";
 import { SealedPayloadUnreadableError } from "./types";
 import type { InboxMessage, InboxSource } from "./types";
 
@@ -769,7 +770,16 @@ export function inboxDeliverable(
  *   a reserved discard fact (`__loom_discard__`, a message ABOVE the cursor) stays allowed;
  * - an auto-release `INBOX_RELEASED` is stale when the topic's first entry is no longer that `held` key;
  * - a (manual) release is stale likewise, and a `INBOX_QUARANTINED` is stale when its message is at or
- *   below the topic's cursor (the delivery won).
+ *   below the topic's cursor (the delivery won), or when the fold would IGNORE it for the cap (the
+ *   chain already holds {@link QUARANTINE_FOLD_CAP} entries: a concurrent quarantiner took the last
+ *   slot; the verb would otherwise report a hold the fold silently dropped).
+ *
+ * DEFENCE IN DEPTH, not the only guard: the cursor clause alone already catches every batch built before
+ * a hold (a held topic's cursor sits at the hold's `inboxSeq`, so a pre-hold delivery is at or below
+ * it), and a redundant auto-release fact is ignored by the fold. The two extended clauses (a
+ * `MESSAGE_CONSUMED` for a held topic, an `INBOX_RELEASED` that does not name the first held key) only
+ * shape the verbs' and the notifier's ANSWER (`stale` = refold and retry, `changed: false` / `invalid`)
+ * instead of appending facts the fold would ignore.
  */
 export function staleInboxBatch(
   state: ExecutionState,
@@ -805,6 +815,9 @@ export function staleInboxBatch(
       const p = e.payload as { topic?: unknown; inboxSeq?: unknown; key?: unknown };
       if (typeof p.topic !== "string" || typeof p.inboxSeq !== "number") continue;
       if (p.inboxSeq <= cursorFor(cursors, p.topic)) return true;
+      let total = 0;
+      for (const q of Object.values(queues)) total += q.length;
+      if (total + 1 > QUARANTINE_FOLD_CAP) return true;
       cursors[p.topic] = p.inboxSeq;
       queues[p.topic] = [
         ...(queueOf(p.topic) ?? []),

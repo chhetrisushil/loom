@@ -86,9 +86,11 @@ import {
   INBOX_WAKE_AT,
   type InboxTtlConfig,
   MAX_MESSAGE_ID_LENGTH,
+  type QuarantineEntry,
   WAITS_PARK_ON,
   activateInboxLayout,
   appendInboxMessage,
+  asMessage,
   assertDeliverable,
   assertTtlConfig,
   chainIdOf,
@@ -141,6 +143,7 @@ import {
   readsAsRedacted,
   retainedSpan,
   skippedDuplicateFact,
+  stampOf,
   trimQuarantine,
 } from "./quarantine";
 import type { CopyRead } from "./quarantine";
@@ -886,6 +889,9 @@ class StaleInboxBatch extends Error {
   }
 }
 
+/** ADR 0130 D9 - events a release's idempotent-repeat search examines (backwards from the tail), and its read chunk. */
+const RELEASE_SEARCH_BUDGET = 4096;
+const RELEASE_SEARCH_CHUNK = 64;
 const RETRY = Symbol("notify-retry");
 const RETRY_FENCED = Symbol("notify-retry-fenced");
 const NOTIFY_ATTEMPTS = 4;
@@ -953,6 +959,8 @@ export class WorkflowRuntime {
   private readonly inboxMaxPayloadBytes: number;
   private readonly inboxMaxRetained: number;
   private readonly inboxQuarantineMax: number;
+  /** Chains whose quarantine stream this node knows may hold copies (see `trimQuarantineOf`); bounded. */
+  private readonly quarantineChains = new Map<string, true>();
   private readonly inboxAutoRelease: boolean;
   private readonly inboxTtl: InboxTtlConfig | undefined;
   private readonly inboxTopicStreamsFlag: boolean;
@@ -4444,12 +4452,27 @@ export class WorkflowRuntime {
     const recent = new Set(
       (state.variables._inbox as { dedupe?: string[] } | undefined)?.dedupe ?? []
     );
+    // A key already HELD (any topic, any state) is not held a second time: the hold does not add it to the
+    // dedupe window, so a second hold of the same id would be a second copy whose release delivers the
+    // message twice. It cannot be skipped as a duplicate either (a duplicate fact would put the key in the
+    // window and turn the held delivery itself into a duplicate). It is refused; the retry is a
+    // duplicate once the held one is delivered, and the ordinary delivery path then drops it.
+    const heldKeys = new Set<string>();
+    for (const queue of Object.values(quarantineQueues(state.variables))) {
+      for (const x of queue) heldKeys.add(x.key);
+    }
     const skipped: Array<{ eventType: string; payload: unknown }> = [];
     let headMsg: InboxMessage | undefined;
     for (;;) {
       const page = await this.inboxSource(chainId, topic, cursorFor(cursors, topic), NOTIFY_PAGE);
       for (const m of page) {
         const key = dedupeKeyOf(m);
+        if (!recent.has(key) && heldKeys.has(key)) {
+          refuse(
+            "invalid",
+            `a message with the same id as "${m.messageId}" is already held; it becomes a duplicate once the held one is delivered. Release the held message first.`
+          );
+        }
         if (recent.has(key)) {
           skipped.push(skippedDuplicateFact(topic, key, m.inboxSeq, m.sender, DISCARD_WAIT_ID));
           cursors[topic] = m.inboxSeq;
@@ -4484,15 +4507,25 @@ export class WorkflowRuntime {
     if (original === undefined)
       refuse("invalid", "the message left the inbox while it was being held.");
     const live = Object.values(quarantineQueues(state.variables)).flat();
-    const heldAts = live.map((x) => x.heldAt);
-    await trimQuarantine(this.eventStore, chainId, heldAts).catch((e: unknown) =>
-      this.onStorageError?.(head.id, e)
-    );
-    if ((await findQuarantineCopy(this.eventStore, chainId, key)) === undefined) {
-      const span = retainedSpan(
-        await headOf(this.eventStore, quarantineStreamId(chainId)),
-        heldAts
-      );
+    // Free what is positively disposed of (never an in-flight copy: see `trimQuarantine`), then bound
+    // the span that is left. A copy of THIS message already in the stream (a crashed attempt) is reused.
+    const trimmed = await trimQuarantine(
+      this.eventStore,
+      chainId,
+      live,
+      cursorsOf(state.variables)
+    ).catch((e: unknown) => {
+      this.onStorageError?.(head.id, e);
+      return undefined;
+    });
+    if ((await findQuarantineCopy(this.eventStore, chainId, key, msg.inboxSeq)) === undefined) {
+      const span =
+        trimmed === undefined
+          ? retainedSpan(
+              await headOf(this.eventStore, quarantineStreamId(chainId)),
+              live.length === 0 ? null : Math.min(...live.map((x) => x.heldAt))
+            )
+          : retainedSpan(trimmed.head, trimmed.oldestPinned);
       if (span >= this.inboxQuarantineMax || live.length + 1 > QUARANTINE_FOLD_CAP) {
         refuse(
           "invalid",
@@ -4509,7 +4542,9 @@ export class WorkflowRuntime {
       this.eventStore,
       chainId,
       original as EventEnvelope,
-      key
+      key,
+      topic,
+      msg.inboxSeq
     );
     const operator = ownerOfChain(options?.principal) ?? {};
     const facts = [
@@ -4572,13 +4607,6 @@ export class WorkflowRuntime {
     const after = await this.foldState(executionId);
     if (after !== null) {
       await this.maybeTrimInbox(chainId, after);
-      await trimQuarantine(
-        this.eventStore,
-        chainId,
-        Object.values(quarantineQueues(after.variables))
-          .flat()
-          .map((x) => x.heldAt)
-      ).catch((e: unknown) => this.onStorageError?.(executionId, e));
     }
     try {
       await this.notifyInbox(executionId);
@@ -4606,6 +4634,86 @@ export class WorkflowRuntime {
       }
     }
     return undefined;
+  }
+
+  /**
+   * The most recent release/discard fact matching `match`, searched BACKWARDS from the owner's tail in
+   * bounded chunks (the idempotent repeat of a release follows the release closely; the log is never
+   * read from sequence 0), then in the continued predecessors (a release journaled before a
+   * continue-as-new). `budget` events are examined in all. `ambiguous` is true when facts for more than
+   * one distinct key matched within the chunk that holds the newest match (several senders reused the message id).
+   */
+  private async findReleaseFactBack(
+    state: ExecutionState,
+    headId: string,
+    match: (p: { topic?: unknown; key?: unknown; messageId?: unknown }) => boolean,
+    budgetEvents = RELEASE_SEARCH_BUDGET
+  ): Promise<{ disposition: "deliver" | "discard"; ambiguous: boolean } | undefined> {
+    let budget = budgetEvents;
+    let found: { disposition: "deliver" | "discard" } | undefined;
+    const keys = new Set<string>();
+    let executionId: string | undefined = headId;
+    let current: ExecutionState | undefined = state;
+    for (let hop = 0; executionId !== undefined && hop <= this.maxChainHops; hop++) {
+      let to = await headOf(this.eventStore, executionId);
+      while (to !== null && to >= 0 && budget > 0) {
+        const from = Math.max(0, to - RELEASE_SEARCH_CHUNK + 1);
+        const events = await readRangeOf(this.eventStore, executionId, from, to);
+        budget -= to - from + 1;
+        for (let i = events.length - 1; i >= 0; i--) {
+          const e = events[i] as EventEnvelope;
+          if (e.eventType !== "INBOX_RELEASED") continue;
+          const p = e.payload as {
+            disposition?: unknown;
+            topic?: unknown;
+            key?: unknown;
+            messageId?: unknown;
+          };
+          if (!match(p) || (p.disposition !== "deliver" && p.disposition !== "discard")) continue;
+          found ??= { disposition: p.disposition };
+          keys.add(String(p.key));
+        }
+        if (found !== undefined) break; // the chunk that holds the newest match is the whole answer
+        to = from - 1;
+      }
+      if (budget <= 0 || found !== undefined) break;
+      // The predecessor: the state of this link names it (the successor's EXECUTION_STARTED).
+      const prior: string | undefined = (
+        current !== undefined ? chainOfState(current, executionId) : undefined
+      )?.continuedFrom?.executionId;
+      if (prior === undefined) break;
+      executionId = prior;
+      current = (await this.foldState(prior)) ?? undefined;
+    }
+    return found === undefined ? undefined : { ...found, ambiguous: keys.size > 1 };
+  }
+
+  /**
+   * ADR 0130 residuals D9 - free the quarantine copies a disposal left behind (a release consumed, a
+   * discard, a delivery that won the race). Runs wherever the inbox trim runs (every park and every verb),
+   * for a chain that holds entries now, or whose held copies this node read or wrote earlier
+   * (`_quarantined` is deleted when it empties, so the chain is remembered until its stream is clear). Never frees a copy that is live or
+   * in flight: see `trimQuarantine`. A node that restarted after the last disposal and never sees another
+   * hold keeps the freed-by-nobody copies until the next hold or release on the chain, or until the
+   * chain's terminal cleanup.
+   */
+  /** Read a held copy, and remember the chain: whichever node delivers a held message frees its copy later. */
+  private readHeldCopy(chainId: string, entry: QuarantineEntry): Promise<CopyRead> {
+    rememberBounded(this.quarantineChains, chainId, true);
+    return readQuarantineCopy(this.eventStore, chainId, entry);
+  }
+
+  private async trimQuarantineOf(chainId: string, state: ExecutionState): Promise<void> {
+    const live = Object.values(quarantineQueues(state.variables)).flat();
+    if (live.length === 0 && !this.quarantineChains.has(chainId)) return;
+    try {
+      const r = await trimQuarantine(this.eventStore, chainId, live, cursorsOf(state.variables));
+      if (live.length > 0 || r.oldestPinned !== null)
+        rememberBounded(this.quarantineChains, chainId, true);
+      else this.quarantineChains.delete(chainId);
+    } catch (err) {
+      this.onStorageError?.(chainId, err);
+    }
   }
 
   /**
@@ -4668,12 +4776,28 @@ export class WorkflowRuntime {
       disposition,
       changed,
     });
+    // With a `sender` the message is exactly one dedupe key; without, the message id alone names it and
+    // an id several senders reused is ambiguous (never silently the wrong sender's message).
+    const wantedKey =
+      input.sender === undefined
+        ? undefined
+        : dedupeKeyOf({ messageId: wanted, sender: input.sender });
     const sameMessage = (p: { topic?: unknown; key?: unknown; messageId?: unknown }): boolean =>
-      p.topic === topic && (p.messageId === wanted || p.key === wanted);
-    // An earlier release of this message (the idempotent repeat), judged from the owner's log.
+      p.topic === topic &&
+      (wantedKey !== undefined ? p.key === wantedKey : p.messageId === wanted || p.key === wanted);
+    // An earlier release of this message (the idempotent repeat), judged from the owner's log: searched
+    // backwards from the tail (bounded) and through the continued predecessors, never from sequence 0.
     const earlier = async (): Promise<ReleaseInboxResult | undefined> => {
-      const done = await this.findReleaseFact(head.id, 0, sameMessage);
+      const at = await this.foldState(head.id);
+      if (at === null) return undefined;
+      const done = await this.findReleaseFactBack(at, head.id, sameMessage);
       if (done === undefined) return undefined;
+      if (done.ambiguous) {
+        return refuse(
+          "invalid",
+          `several senders released a message with id "${wanted}" on topic "${topic}"; name the sender to tell them apart.`
+        );
+      }
       if (done.disposition === disposition) return result(false);
       return refuse(
         "invalid",
@@ -4700,14 +4824,16 @@ export class WorkflowRuntime {
       return refuse("invalid", `topic "${topic}" has no held message.`);
     }
     const first = queue[0] as (typeof queue)[number];
-    const copy = await readQuarantineCopy(this.eventStore, chainId, first);
+    const copy = await this.readHeldCopy(chainId, first);
     const copyId = copy.ok ? copy.message.messageId : copy.message?.messageId;
-    if (wanted !== copyId && wanted !== first.key) {
+    const isWanted = (entry: { key: string }, id: string | undefined): boolean =>
+      wantedKey !== undefined ? entry.key === wantedKey : wanted === id || wanted === entry.key;
+    if (!isWanted(first, copyId)) {
       // Not the oldest. Is it a younger held entry (releasing it first would deliver out of order)?
       for (const younger of queue.slice(1)) {
-        const c = await readQuarantineCopy(this.eventStore, chainId, younger);
+        const c = await this.readHeldCopy(chainId, younger);
         const id = c.ok ? c.message.messageId : c.message?.messageId;
-        if (wanted === id || wanted === younger.key) {
+        if (isWanted(younger, id)) {
           return refuse(
             "invalid",
             `message "${wanted}" is not the oldest held message of topic "${topic}": releasing it first would deliver it out of order.`
@@ -4786,30 +4912,56 @@ export class WorkflowRuntime {
     return result(true);
   }
 
-  /** Copy the quarantine copies a fork's folded holds refer to into the fork's own chain (see `forkCore`). */
+  /**
+   * Copy the quarantine copies a fork's folded holds refer to into the fork's own chain (see `forkCore`).
+   * Every referenced `heldAt` is verified against the parent's quarantine stream FIRST (it exists, and is
+   * the entry's message: same key, same original position), and a hold that does not resolve refuses the
+   * fork typed before anything is written, so a fork never carries a dangling hold.
+   */
   private async copyQuarantineForFork(
     parentExecutionId: string,
     childChain: string,
-    through: number
-  ): Promise<void> {
+    held: readonly QuarantineEntry[]
+  ): Promise<boolean> {
     const first = (await readRangeOf(this.eventStore, parentExecutionId, 0, 0))[0];
     const parentChain =
       first === undefined ? parentExecutionId : chainIdOfFirst(first, parentExecutionId);
-    if (parentChain === childChain) return;
+    if (parentChain === childChain) return false;
+    const refuse = (detail: string): never => {
+      throw new InboxQuarantineRefusedError(parentExecutionId, "invalid", detail, "fork");
+    };
     if (this.eventStore.copyPrefix === undefined) {
-      throw new InboxQuarantineRefusedError(
-        parentExecutionId,
-        "invalid",
-        "this execution HOLDS quarantined messages and the event store cannot copy the quarantine stream (no copyPrefix); a fork would carry holds whose copies it does not have.",
-        "fork"
+      refuse(
+        "this execution HOLDS quarantined messages and the event store cannot copy the quarantine stream (no copyPrefix); a fork would carry holds whose copies it does not have."
       );
     }
-    await this.eventStore.copyPrefix(
-      quarantineStreamId(parentChain),
+    const stream = quarantineStreamId(parentChain);
+    const through = Math.max(...held.map((h) => h.heldAt));
+    const present = new Map<number, EventEnvelope>();
+    for (const c of await readRangeOf(this.eventStore, stream, 0, through)) {
+      present.set(c.sequence, c);
+    }
+    for (const h of held) {
+      const env = present.get(h.heldAt);
+      const message = env === undefined ? undefined : asMessage(env);
+      if (
+        env === undefined ||
+        message === undefined ||
+        dedupeKeyOf(message) !== h.key ||
+        stampOf(env)?.inboxSeq !== h.inboxSeq
+      ) {
+        refuse(
+          `the quarantine stream has no matching copy at heldAt ${h.heldAt} for a held message of this execution; a fork would carry a hold whose copy does not exist. Discard the held message first.`
+        );
+      }
+    }
+    await (this.eventStore.copyPrefix as NonNullable<EventStore["copyPrefix"]>)(
+      stream,
       quarantineStreamId(childChain),
       through,
-      { forkedFrom: quarantineStreamId(parentChain) }
+      { forkedFrom: stream }
     );
+    return true;
   }
 
   /** The refusal for a held copy this node cannot deliver (sealed, REDACTED, missing or mismatched). */
@@ -4849,10 +5001,46 @@ export class WorkflowRuntime {
         key: string;
         release?: { eventType: string; payload: unknown };
       }
+    | {
+        /** The held key was delivered meanwhile (the dedupe window has it): drop the entry, deliver nothing. */
+        kind: "duplicate";
+        key: string;
+        inboxSeq: number;
+        sender: InboxMessage["sender"];
+        release?: { eventType: string; payload: unknown };
+      }
   > {
     const first = quarantineQueue(state.variables, topic)?.[0];
     if (first === undefined) return { kind: "open" };
-    const copy = await readQuarantineCopy(this.eventStore, chainId, first);
+    const copy = await this.readHeldCopy(chainId, first);
+    // A held key is not in the window when it was held; a same-key message on another topic (or a
+    // release that raced one) can put it there since. Delivering it again would break at-most-once, so
+    // the entry is dropped by a duplicate consumption: it needs no ability to open the copy.
+    const dedupe = (state.variables._inbox as { dedupe?: string[] } | undefined)?.dedupe;
+    if (
+      dedupe?.includes(first.key) === true &&
+      (first.state === "released" || this.inboxAutoRelease)
+    ) {
+      const sender = copy.ok ? copy.message.sender : (copy.message?.sender ?? {});
+      return {
+        kind: "duplicate",
+        key: first.key,
+        inboxSeq: first.inboxSeq,
+        sender,
+        ...(first.state === "held" && {
+          release: {
+            eventType: "INBOX_RELEASED",
+            payload: {
+              topic,
+              key: first.key,
+              messageId: copy.ok ? copy.message.messageId : (copy.message?.messageId ?? first.key),
+              disposition: "deliver",
+              auto: true,
+            },
+          },
+        }),
+      };
+    }
     if (first.state === "released") {
       if (!copy.ok) throw this.copyRefusal(executionId, topic, first, copy);
       return { kind: "deliver", message: copy.message, key: first.key };
@@ -5523,6 +5711,7 @@ export class WorkflowRuntime {
    */
   private async maybeTrimInbox(chainId: string, state: ExecutionState): Promise<void> {
     if (!this.inboxEnabled || state.variables._inbox === undefined) return;
+    await this.trimQuarantineOf(chainId, state);
     const cursors = cursorsOf(state.variables);
     const max = maxCursor(cursors);
     if (max > (this.inboxTrimmed.get(chainId) ?? -1) + 1) {
@@ -5881,6 +6070,27 @@ export class WorkflowRuntime {
           if (d.kind === "skip") {
             heldBlock ??= d.err;
             continue;
+          }
+          if (d.kind === "duplicate") {
+            // Drop the entry (release, if still held, then a consumption that delivers nothing) in one
+            // atomic batch with whatever duplicates the scan already collected, then refold: the topic
+            // is open (or holds its next entry) on the next pass.
+            if (d.release !== undefined) pre.push(d.release);
+            pre.push({
+              eventType: "MESSAGE_CONSUMED",
+              payload: {
+                waitId: w.waitId,
+                topic: w.topic,
+                messageId: d.key,
+                inboxSeq: d.inboxSeq,
+                sender: d.sender,
+                payload: null,
+              },
+            });
+            const r = await this.advanceInbox(executionId, state, parkSeq, w, pre, true);
+            if (r === "contended") return contended();
+            if (r === "gone") return none;
+            return RETRY;
           }
           if (d.kind === "deliver") {
             // The held message is delivered FIRST, from its copy, at its original `inboxSeq`; an
@@ -6725,43 +6935,58 @@ export class WorkflowRuntime {
     // the stream's allocation above every inherited cursor BEFORE the child exists, so a `send` to
     // it can never land at a sequence the cursors already passed (it would be skipped forever and
     // trimmed). Replay of the copied prefix is untouched: the cursors stay what the fold computed.
-    if (this.inboxEnabled) {
-      // ADR 0130 residuals D9 - the fork's folded `_quarantined` names copies in the PARENT chain's
-      // quarantine stream; the fork is a fresh chain, so the referenced prefix is copied (same
-      // sequence numbers, so `heldAt` stays valid) or the fork is refused BEFORE anything is
-      // written, never left with dangling holds.
-      const held = Object.values(quarantineQueues(forkState.variables)).flat();
-      if (held.length > 0) {
-        await this.copyQuarantineForFork(
-          parentExecutionId,
-          chainIdOf(forkState, childId),
-          Math.max(...held.map((h) => h.heldAt))
-        );
-      }
-      // (ADR 0110 D10b: the legacy stream at the highest legacy cursor, each topic stream at its own.)
-      const inherited = cursorsOf(forkState.variables);
-      if (Object.keys(inherited).length > 0) {
-        await seedInboxFloors(this.eventStore, chainIdOf(forkState, childId), inherited, this.now);
-      }
-    }
-
-    if (this.eventStore.copyPrefix) {
-      // Fast path: bulk-copy the prefix in the store (no per-event JS re-serialize).
-      await this.eventStore.copyPrefix(parentExecutionId, childId, atSequence, forkMeta);
-      // Fire live projections from the in-memory prefix we already read.
-      if (this.onEvent) {
-        for (const e of parentEvents) {
-          if (e.sequence > atSequence) break;
-          this.onEvent(restamp(e));
+    // The child's quarantine stream, once written: removed again if the fork fails before it exists.
+    let childQuarantine: string | undefined;
+    try {
+      if (this.inboxEnabled) {
+        // ADR 0130 residuals D9 - the fork's folded `_quarantined` names copies in the PARENT chain's
+        // quarantine stream; the fork is a fresh chain, so the referenced prefix is copied (same
+        // sequence numbers, so `heldAt` stays valid) or the fork is refused BEFORE anything is
+        // written, never left with dangling holds.
+        const held = Object.values(quarantineQueues(forkState.variables)).flat();
+        if (held.length > 0) {
+          const childChainId = chainIdOf(forkState, childId);
+          if (await this.copyQuarantineForFork(parentExecutionId, childChainId, held)) {
+            childQuarantine = quarantineStreamId(childChainId);
+          }
+        }
+        // (ADR 0110 D10b: the legacy stream at the highest legacy cursor, each topic stream at its own.)
+        const inherited = cursorsOf(forkState.variables);
+        if (Object.keys(inherited).length > 0) {
+          await seedInboxFloors(
+            this.eventStore,
+            chainIdOf(forkState, childId),
+            inherited,
+            this.now
+          );
         }
       }
-    } else {
-      for (const e of parentEvents) {
-        if (e.sequence > atSequence) break;
-        const copy = restamp(e);
-        await this.eventStore.append(copy);
-        this.onEvent?.(copy);
+
+      if (this.eventStore.copyPrefix) {
+        // Fast path: bulk-copy the prefix in the store (no per-event JS re-serialize).
+        await this.eventStore.copyPrefix(parentExecutionId, childId, atSequence, forkMeta);
+        // Fire live projections from the in-memory prefix we already read.
+        if (this.onEvent) {
+          for (const e of parentEvents) {
+            if (e.sequence > atSequence) break;
+            this.onEvent(restamp(e));
+          }
+        }
+      } else {
+        for (const e of parentEvents) {
+          if (e.sequence > atSequence) break;
+          const copy = restamp(e);
+          await this.eventStore.append(copy);
+          this.onEvent?.(copy);
+        }
       }
+    } catch (err) {
+      // A failed fork must not strand the child's quarantine copies: nothing references that stream
+      // (the child never existed, so the reclaim sweep cannot find it either).
+      if (childQuarantine !== undefined) {
+        await this.eventStore.deleteExecution?.(childQuarantine).catch(() => undefined);
+      }
+      throw err;
     }
 
     // 3. Seed the child snapshot at the fork point so resume(child) folds an
@@ -7745,8 +7970,7 @@ export class WorkflowRuntime {
           read: this.inboxSource,
           // ADR 0130 residuals D9: the live run applies the SAME delivery rule as the notify scan.
           quarantine: {
-            readCopy: (entry) =>
-              readQuarantineCopy(this.eventStore, chainIdOf(vm.peekState(), executionId), entry),
+            readCopy: (entry) => this.readHeldCopy(chainIdOf(vm.peekState(), executionId), entry),
             autoRelease: this.inboxAutoRelease,
           },
         },

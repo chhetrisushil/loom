@@ -374,7 +374,7 @@ describe("races across nodes (paused notifier)", () => {
       b2.rt.quarantineInbox(s.e, { topic: "a" }, { principal: OP }),
     ]);
     expect(await eventsByKind(s.raw.eventStore, s.e, "INBOX_QUARANTINED")).toHaveLength(1);
-    expect((await s.raw.eventStore.read(quarantineStreamId(s.e))).length).toBe(1);
+    expect((await s.raw.eventStore.read(quarantineStreamId(s.e))).length).toBe(2); // anchor + one copy
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
   });
 });
@@ -403,11 +403,11 @@ describe("crash points (fault store)", () => {
       .quarantineInbox(s.e, { topic: "a" }, { principal: OP })
       .catch((x) => x);
     expect(isCrash(err)).toBe(true);
-    expect(await quarantineHead(s.inner.eventStore, s.e)).toBe(0); // the orphan
+    expect(await quarantineHead(s.inner.eventStore, s.e)).toBe(1); // the orphan (after the anchor)
     expect(await eventsByKind(s.inner.eventStore, s.e, "INBOX_QUARANTINED")).toHaveLength(0);
     const again = await s.b.rt.quarantineInbox(s.e, { topic: "a" }, { principal: OP });
-    expect(again.heldAt).toBe(0);
-    expect((await s.inner.eventStore.read(quarantineStreamId(s.e))).length).toBe(1); // no duplicate copy
+    expect(again.heldAt).toBe(1);
+    expect((await s.inner.eventStore.read(quarantineStreamId(s.e))).length).toBe(2); // no duplicate copy
     expect(await eventsByKind(s.inner.eventStore, s.e, "INBOX_QUARANTINED")).toHaveLength(1);
   });
 
@@ -588,11 +588,11 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
 
   it("erasure: a shred destroys the original AND the copy; a release never delivers a redacted copy; the compliance deletion removes the quarantine stream", async () => {
     const s = await heldScene({ total: 2 });
-    const copy = (await s.raw.eventStore.read(quarantineStreamId(s.e)))[0];
+    const copy = (await s.raw.eventStore.read(quarantineStreamId(s.e)))[1];
     expect(JSON.stringify(copy)).toContain("__loomEnc");
     expect(JSON.stringify(copy)).not.toContain("S1");
     await s.keys.destroy(s.e); // the owner's subject
-    const [opened] = await s.a.eventStore.read(quarantineStreamId(s.e));
+    const opened = (await s.a.eventStore.read(quarantineStreamId(s.e)))[1];
     expect(JSON.stringify(opened?.payload)).toContain("$shredded"); // non-loud: redacted, not thrown
     const before = await kindsOf(s.raw.eventStore, s.e);
     const manual = await s.a.rt
@@ -668,9 +668,9 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
     const at = (await s.a.rt.loadState(s.e))?.sequence as number;
     const child = await s.a.rt.fork(s.e, at);
     const copied = await raw.eventStore.read(quarantineStreamId(child.executionId));
-    expect(copied.map((c) => c.sequence)).toEqual([0]);
-    expect(copied[0]?.payload).toEqual(
-      (await raw.eventStore.read(quarantineStreamId(s.e)))[0]?.payload
+    expect(copied.map((c) => c.sequence)).toEqual([0, 1]); // the anchor and the held copy
+    expect(copied[1]?.payload).toEqual(
+      (await raw.eventStore.read(quarantineStreamId(s.e)))[1]?.payload
     );
     const held = (
       (await s.a.rt.loadState(child.executionId))?.variables._quarantined as Record<
@@ -678,7 +678,7 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
         Array<{ heldAt: number }>
       >
     ).a;
-    expect(held?.[0]?.heldAt).toBe(0); // the fold of the fork is valid: its heldAt resolves in ITS chain
+    expect(held?.[0]?.heldAt).toBe(1); // the fold of the fork is valid: its heldAt resolves in ITS chain
     await s.a.rt.notifyInbox(child.executionId); // auto-release in the fork, from the fork's own copy
     expect(await completed(s.a, child.executionId)).toEqual([["a", { v: "S1" }]]);
     // the parent is untouched: still held
@@ -847,17 +847,45 @@ describe("seeded fleet scenario (capable + incapable nodes, random crash points)
         const auto = rand() < 0.5;
         const a = build({ inboxAutoRelease: auto }, { ...raw, eventStore: sealed });
         const b = build({}, { ...raw });
+        // A SLOW incapable node: it lingers after its copy lands and before its fact does (a quarantiner
+        // contending on the park fence), the window in which another hold's trim must not free the copy.
+        let lingerN = seed; // (not rand(): the delay's call order is timing-dependent)
+        const lingering = new Proxy(raw.eventStore, {
+          get(target, prop) {
+            const v = Reflect.get(target, prop, target) as unknown;
+            if (typeof v !== "function") return v;
+            const fn = (v as (...x: unknown[]) => Promise<unknown>).bind(target);
+            if (prop !== "append") return fn;
+            return async (...x: unknown[]) => {
+              const out = await fn(...x);
+              if (
+                String((x[0] as { executionId: string }).executionId).startsWith(
+                  "__loom_quarantine__:"
+                )
+              ) {
+                await new Promise((res) => setTimeout(res, (++lingerN * 7) % 12));
+              }
+              return out;
+            };
+          },
+        }) as EventStore;
+        const bSlow = build({}, { ...raw, eventStore: lingering });
         const topics = ["a", "b"];
         const sent: Record<string, string[]> = { a: [], b: [] };
         const total = 6 + Math.floor(rand() * 4);
         const f = collector(total, topics);
-        for (const h of [a, b]) h.rt.registerFlow(f.definition, f.runner);
+        for (const h of [a, b, bSlow]) h.rt.registerFlow(f.definition, f.runner);
         const e = id();
         await (await (capableUp ? a : b).rt.start(f, {}, { executionId: e })).waitForSuspend();
         await until(async () => (await b.rt.loadState(e))?.status === "suspended");
         const swallow = <T>(p: Promise<T>) => p.catch(() => undefined);
         let nextMsg = 0;
-        const send = async () => {
+        let sendLock: Promise<unknown> = Promise.resolve(); // `put` allocates a slot: concurrent sends take turns
+        const send = (): Promise<unknown> => {
+          sendLock = sendLock.then(sendNow);
+          return sendLock;
+        };
+        const sendNow = async () => {
           if (nextMsg >= total) return;
           const topic = topics[Math.floor(rand() * topics.length)] as string;
           const mid = `${topic}${++nextMsg}`;
@@ -870,22 +898,15 @@ describe("seeded fleet scenario (capable + incapable nodes, random crash points)
           });
         };
         const ops = 28 + Math.floor(rand() * 10);
-        for (let i = 0; i < ops; i++) {
+        // One random operation. Two of them are sometimes launched TOGETHER (below), so the in-flight
+        // windows of the verbs (a copy appended whose fact has not landed, a trim racing a hold, an
+        // auto-release racing a manual one) are reachable, not just sequential histories.
+        const step = async (i: number): Promise<void> => {
           const r = rand();
-          if (rand() < 0.12) {
-            // crash the owner's log or the quarantine copy, never a sender's inbox append
-            fs.arm({
-              match: (evs) =>
-                evs.some(
-                  (x) => x.executionId === e || x.executionId.startsWith("__loom_quarantine__:")
-                ),
-              when: rand() < 0.5 ? "before" : "after",
-            });
-          }
           if (r < 0.32) await send();
           else if (r < 0.64)
             await swallow(
-              b.rt.quarantineInbox(
+              (rand() < 0.5 ? b : bSlow).rt.quarantineInbox(
                 e,
                 { topic: topics[Math.floor(rand() * 2)] as string },
                 { principal: OP }
@@ -908,6 +929,20 @@ describe("seeded fleet scenario (capable + incapable nodes, random crash points)
             if (mid !== undefined)
               await swallow(a.rt.releaseInbox(e, { topic: t, messageId: mid }, { principal: OP }));
           }
+        };
+        for (let i = 0; i < ops; i++) {
+          if (rand() < 0.12) {
+            // crash the owner's log or the quarantine copy, never a sender's inbox append
+            fs.arm({
+              match: (evs) =>
+                evs.some(
+                  (x) => x.executionId === e || x.executionId.startsWith("__loom_quarantine__:")
+                ),
+              when: rand() < 0.5 ? "before" : "after",
+            });
+          }
+          if (rand() < 0.45) await Promise.all([step(i), step(i)]);
+          else await step(i);
           await new Promise((res) => setTimeout(res, 0));
         }
         // quiesce: no more faults, send the rest, then let the capable node (if any) drain
