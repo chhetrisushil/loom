@@ -6005,6 +6005,10 @@ export class WorkflowRuntime {
    * ADR 0130 D10 - a replay refusal leaves a REFUSAL row stamped with the log head (see
    * `TimerRecord.refused`, an ordinary `wakeAt` of now). A timer-store row only; best effort (a failure to write it must not mask the
    * typed refusal, and the sweep still recovers the execution).
+   *
+   * `lastRefusalAt` is per process and resets on restart: harmless unless the wall clock goes
+   * backwards across the restart (two stamps could then share a `(executionId, wakeAt)` key, and
+   * the upsert keeps the max head).
    */
   private lastRefusalAt = 0;
 

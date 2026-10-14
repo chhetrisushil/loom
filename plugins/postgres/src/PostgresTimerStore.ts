@@ -6,7 +6,7 @@ interface TimerRow {
   execution_id: string;
   wake_at: string; // BIGINT → string from node-postgres
   redrive: { attempt: number } | null; // JSONB → parsed by node-postgres
-  refused: { head: number } | null; // JSONB (ADR 0130 D10)
+  refused: { head: number; holds?: number } | null; // JSONB (ADR 0130 D10)
 }
 
 /**
@@ -37,7 +37,17 @@ export class PostgresTimerStore implements TimerStore {
       `INSERT INTO timers (execution_id, wake_at, redrive, refused) VALUES ($1, $2, $3::jsonb, $4::jsonb)
        ON CONFLICT (execution_id, wake_at)
        DO UPDATE SET redrive = COALESCE(EXCLUDED.redrive, timers.redrive),
-                     refused = COALESCE(EXCLUDED.refused, timers.refused)`,
+                     refused = CASE
+                       WHEN EXCLUDED.refused IS NULL THEN timers.refused
+                       WHEN timers.refused IS NULL THEN EXCLUDED.refused
+                       WHEN EXCLUDED.refused->'holds' IS NULL AND timers.refused->'holds' IS NULL
+                       THEN jsonb_build_object('head', GREATEST((EXCLUDED.refused->>'head')::bigint,
+                                                                (timers.refused->>'head')::bigint))
+                       ELSE jsonb_build_object('head', GREATEST((EXCLUDED.refused->>'head')::bigint,
+                                                                (timers.refused->>'head')::bigint),
+                                               'holds', GREATEST(COALESCE((EXCLUDED.refused->>'holds')::bigint, 0),
+                                                                 COALESCE((timers.refused->>'holds')::bigint, 0)))
+                     END`,
       [
         timer.executionId,
         timer.wakeAt,

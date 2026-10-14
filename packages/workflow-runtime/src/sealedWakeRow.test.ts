@@ -379,11 +379,12 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     const poller = build({}, raw);
     for (const n of [owner, poller]) n.rt.registerFlow(blocked.definition, blocked.runner);
     const N = 250;
+    const now = Date.now();
     const handles = [];
     for (let i = 0; i < N; i++) {
       handles.push(await owner.rt.start(blocked, {}, { executionId: `h-${i}` }));
       const head = (await raw.eventStore.head!(`h-${i}`)) as number;
-      await timers.schedule(refusalRow(`h-${i}`, head, 1));
+      await timers.schedule(refusalRow(`h-${i}`, head, now)); // a real refusal row is stamped at ~now
     }
     const loads = { n: 0 };
     const realLoad = poller.rt.loadState.bind(poller.rt);
@@ -392,7 +393,6 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
       return realLoad(...a);
     }) as typeof poller.rt.loadState;
     // evidence configured but the predicate says no: every row is HELD
-    const now = Date.now();
     const svc = new TimerService(poller.rt, timers, {
       isAbandoned: () => false,
       redriveBackoff: BACKOFF,
@@ -469,6 +469,73 @@ describe("ADR 0130 D10 - replay refusal leaves a stamped wake row; the poll re-d
     await new TimerService(n.rt, timers, { isAbandoned: () => true }).tick(Date.now() + 10_000);
     await until(async () => (await n.rt.loadState("sl-1"))?.status === "completed");
   });
+
+  it("P2: a stamp merged onto a real timer's key survives every HOLD branch (drivesLocally forced): the timer still fires", async () => {
+    const sl = flow("sl2", async (ctx) => {
+      await ctx.sleepUntil(Date.now() + 50);
+      return "woke";
+    });
+    const timers = new InMemoryTimerStore();
+    const n = build(
+      {},
+      {
+        eventStore: new InMemoryAsyncEventStore(),
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        timers,
+      }
+    );
+    n.rt.registerFlow(sl.definition, sl.runner);
+    const h = await n.rt.start(sl, {}, { executionId: "sl-2" });
+    await h.waitForSuspend();
+    const [row] = await timers.due(Number.MAX_SAFE_INTEGER);
+    const wakeAt = (row as { wakeAt: number }).wakeAt;
+    await timers.schedule({ executionId: "sl-2", wakeAt, refused: { head: 99 } });
+    n.rt.drivesLocally = () => true; // the hold branch that used to complete the key
+    await new TimerService(n.rt, timers, { isAbandoned: () => true }).tick(Date.now() + 10_000);
+    await until(async () => (await n.rt.loadState("sl-2"))?.status === "completed");
+  });
+
+  it("P1: N concurrent pollers holding the same refusal row converge on ONE successor row, generation after generation", async () => {
+    const blocked = flow("blk-p1", async (ctx) => {
+      await ctx.run(slow, {});
+      return "ok";
+    });
+    const timers = new InMemoryTimerStore();
+    const raw = {
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      timers,
+    };
+    const latch = new Latch();
+    const owner = build({}, { ...raw, latch });
+    owner.rt.registerFlow(blocked.definition, blocked.runner);
+    const handle = await owner.rt.start(blocked, {}, { executionId: "p1" });
+    const head = (await raw.eventStore.head!("p1")) as number;
+    let t = 1_000_000;
+    await timers.schedule({ executionId: "p1", wakeAt: t, refused: { head } });
+    const services = [0, 1, 2, 3].map(() => {
+      const n = build({}, raw);
+      n.rt.registerFlow(blocked.definition, blocked.runner);
+      n.rt.drivesLocally = () => true; // forced hold, every tick
+      return new TimerService(n.rt, timers, {
+        isAbandoned: () => true,
+        // a real (jittered) source: node-local jitter must NOT decide the successor's key
+        redriveBackoff: { baseMs: 100, capMs: 1_000 },
+        now: () => t,
+      });
+    });
+    for (let gen = 0; gen < 12; gen++) {
+      const [row] = await timers.due(Number.MAX_SAFE_INTEGER);
+      t = (row as { wakeAt: number }).wakeAt;
+      await Promise.all(services.map((s) => s.tick(t)));
+      const rows = (await timers.due(Number.MAX_SAFE_INTEGER)).filter(
+        (r) => r.executionId === "p1"
+      );
+      expect(rows).toHaveLength(1);
+    }
+    latch.release();
+    await handle.waitForCompletion();
+  }, 30_000);
 
   it("(f) the poll's attempts are bounded (cap, then retire + ONE report) and its markers cannot exhaust a capable sweep's maxRecoveries", async () => {
     const clk = { t: 20_000_000 };

@@ -51,6 +51,9 @@ export interface RedriveBackoff {
 /** Bound on the in-process contended-wake backoff map. */
 const MAX_WAKE_BACKOFFS = 1024;
 
+/** Cap on a refusal row's `holds` counter (the back-off is capped well before this). */
+const MAX_REFUSAL_HOLDS = 16;
+
 /** Attempts a contended resume is re-driven before the service gives up (ADR 0118 D4). */
 export const DEFAULT_MAX_REDRIVE_ATTEMPTS = 8;
 
@@ -297,8 +300,6 @@ export class TimerService {
    * restarts its count, which costs at most a few more attempts - the cap bounds the markers.
    */
   private readonly refusalAttempts = new Map<string, number>();
-  /** Holds of a refusal row per execution (bounded): only grows the next back-off delay. */
-  private readonly holdAttempts = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
   /**
@@ -555,11 +556,14 @@ export class TimerService {
    *  - the fence is taken CONDITIONALLY on that head (`redriveAbandoned` `ifHeadAt`), so exactly one
    *    contender wins and a driver that appended makes the poll back off;
    *  - the attempt cap (and `maxRecoveries`) has room: the markers a poll appends are bounded.
-   * A row this node may not act on yet is HELD by RESCHEDULING it in the store to `now + back-off`
-   * (the same `refused` stamp, a later instant): it is not due again until then, on any node, so a
+   * A row this node may not act on yet is HELD by RESCHEDULING it in the store to `wakeAt + back-off(holds + 1)`
+   * (the same head, `holds` + 1, a DETERMINISTIC later instant with no node-local jitter, so N pollers
+   * write the SAME successor row): it is not due again until then, on any node, so a
    * held row costs no read and cannot crowd a real timer out of `due()`. A sealed refusal backs off
    * on the runtime's shared clock (first-then-every-16th report); the refusal itself wrote the
    * successor row at the new head.
+   *
+   * The "is this a real timer's key" test runs FIRST, before any hold branch (a hold completes its key).
    *
    * Returns `false` when the row is NOT a refusal row after all (a stamp that landed on a real
    * timer's own `(executionId, wakeAt)` key): the caller then judges it as the ordinary wake it is.
@@ -567,34 +571,34 @@ export class TimerService {
   private async fireRefused(
     executionId: string,
     wakeAt: number,
-    stamped: number
+    refused: { head: number; holds?: number }
   ): Promise<boolean> {
-    if (isSealedBackedOff(this.runtime, executionId, this.runtime.clock())) {
-      await this.holdRefusal(executionId, wakeAt, stamped);
-      return true;
-    }
-    if (this.runtime.drivesLocally(executionId)) {
-      await this.holdRefusal(executionId, wakeAt, stamped);
-      return true;
-    }
-    let state: ExecutionState | null;
-    try {
-      state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
-    } catch (err) {
-      if (isSealedUnreadable(err)) {
+    const stamped = refused.head;
+    // Is this execution parked on THIS very wakeAt (a stamp merged onto a real timer's own key)?
+    // Judged BEFORE any hold branch: a hold completes the key, which would delete the real timer.
+    // A node that is backed off from a sealed execution skips the read (it cannot judge it anyway).
+    let state: ExecutionState | null = null;
+    let unreadable = isSealedBackedOff(this.runtime, executionId, this.runtime.clock());
+    if (!unreadable) {
+      try {
+        state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
+      } catch (err) {
+        if (!isSealedUnreadable(err)) {
+          this.onError?.(executionId, err);
+          await this.failRefusal(executionId, wakeAt, refused);
+          return true;
+        }
         this.noteSealed(executionId, err);
-        await this.holdRefusal(executionId, wakeAt, stamped);
-        return true;
+        unreadable = true;
       }
-      this.onError?.(executionId, err);
-      await this.failRefusal(executionId, wakeAt, stamped);
+    }
+    if (state !== null && ownsRealTimer(state, wakeAt)) return false;
+    if (unreadable || this.runtime.drivesLocally(executionId)) {
+      await this.holdRefusal(executionId, wakeAt, refused, state);
       return true;
     }
-    // A stamp on the row of a real timer of this very park: not a refusal row, judge it as a timer.
-    if (state?.status === "suspended" && state.suspendedOn?.wakeAt === wakeAt) return false;
     // Not running (settled, parked, gone) or the log moved on since the refusal: the row is stale.
     if (state === null || state.status !== "running" || state.sequence !== stamped) {
-      this.holdAttempts.delete(executionId);
       if (state?.status === "suspended" && this.runtime.hasInboxWake(state)) {
         await this.store.schedule({ executionId, wakeAt: INBOX_WAKE_AT }); // the ordinary notify path
       }
@@ -613,13 +617,12 @@ export class TimerService {
         )) >= this.maxRecoveries);
     if (exhausted) {
       this.refusalAttempts.delete(executionId);
-      this.holdAttempts.delete(executionId);
       this.onError?.(executionId, new RedriveExhaustedError(executionId, attempts));
       await this.store.complete(executionId, wakeAt);
       return true;
     }
     if (!(await this.abandonmentEvidence(executionId, state))) {
-      await this.holdRefusal(executionId, wakeAt, stamped);
+      await this.holdRefusal(executionId, wakeAt, refused, state);
       return true;
     }
     const leases = this.leases;
@@ -628,7 +631,7 @@ export class TimerService {
       // Claim it (an expired lease is acquirable by anyone): two pollers do not both pay for it.
       const lease = await leases.store.acquire(executionId, leases.owner, this.leaseTtlMs);
       if (lease === null) {
-        await this.holdRefusal(executionId, wakeAt, stamped);
+        await this.holdRefusal(executionId, wakeAt, refused, state);
         return true;
       }
       held = renewWhileHeld(
@@ -649,7 +652,7 @@ export class TimerService {
       });
       if (r.outcome === "refused") {
         this.noteSealed(executionId, r.error);
-        await this.holdRefusal(executionId, wakeAt, stamped);
+        await this.holdRefusal(executionId, wakeAt, refused, state);
         return true;
       }
       if (r.outcome === "skipped") {
@@ -658,7 +661,6 @@ export class TimerService {
         return true;
       }
       clearSealedBackoff(this.runtime, executionId);
-      this.holdAttempts.delete(executionId);
       this.refusalAttempts.delete(executionId);
       const after = await this.runtime.loadState(executionId, this.runtime.systemOptions());
       if (after === null || after.status === "running") return true; // still being driven: the row goes stale
@@ -667,11 +669,11 @@ export class TimerService {
     } catch (err) {
       if (isSealedUnreadable(err)) {
         this.noteSealed(executionId, err);
-        await this.holdRefusal(executionId, wakeAt, stamped);
+        await this.holdRefusal(executionId, wakeAt, refused, state);
         return true;
       }
       this.onError?.(executionId, err);
-      await this.failRefusal(executionId, wakeAt, stamped);
+      await this.failRefusal(executionId, wakeAt, refused);
     } finally {
       held?.stop();
     }
@@ -682,16 +684,19 @@ export class TimerService {
    * A refusal row's judgement THREW (a store error, a failed re-drive): count it against the attempt
    * cap, then either retire + report once, or reschedule it with the re-drive back-off.
    */
-  private async failRefusal(executionId: string, wakeAt: number, head: number): Promise<void> {
+  private async failRefusal(
+    executionId: string,
+    wakeAt: number,
+    refused: { head: number; holds?: number }
+  ): Promise<void> {
     this.noteRefusalAttempt(executionId);
     if ((this.refusalAttempts.get(executionId) ?? 0) >= this.maxRedriveAttempts) {
       this.refusalAttempts.delete(executionId);
-      this.holdAttempts.delete(executionId);
       this.onError?.(executionId, new RedriveExhaustedError(executionId, this.maxRedriveAttempts));
       await this.store.complete(executionId, wakeAt);
       return;
     }
-    await this.holdRefusal(executionId, wakeAt, head);
+    await this.holdRefusal(executionId, wakeAt, refused);
   }
 
   private noteRefusalAttempt(executionId: string): void {
@@ -734,24 +739,33 @@ export class TimerService {
   }
 
   /**
-   * Hold a refusal row we may not act on yet: write the SAME stamp at `now + back-off` (a later
-   * instant, uncapped back-off, no report), then retire the row we read. Schedule-then-complete, so
-   * a crash in between leaves two idempotent rows rather than none. The per-execution attempt count
-   * only grows the delay; it is bounded in memory and never decides whether a row is looked at.
+   * Hold a refusal row we may not act on yet: write the SAME stamp (`holds` + 1) at a later instant,
+   * then retire the row we read. Schedule-then-complete, so a crash in between leaves two idempotent
+   * rows rather than none.
+   *
+   * The successor's key is a DETERMINISTIC function of the row we read: `wakeAt + back-off(holds + 1)`
+   * with NO jitter (the back-off's ceiling, capped). N pollers on N nodes that read the same row
+   * therefore upsert the SAME successor, and the blind `complete` of the old row is idempotent: rows
+   * never multiply per generation (a node-local jittered instant gave each poller its own row).
+   *
+   * Defence in depth: never touch a key a real timer owns (the caller already routes such a row to
+   * the ordinary timer path; `state` is what it read, absent when the state was unreadable here).
    */
-  private async holdRefusal(executionId: string, wakeAt: number, head: number): Promise<void> {
-    const attempt = Math.min((this.holdAttempts.get(executionId) ?? 0) + 1, 16);
-    this.holdAttempts.delete(executionId); // re-insert at the end: eviction order = recency
-    if (this.holdAttempts.size >= MAX_WAKE_BACKOFFS) {
-      const oldest = this.holdAttempts.keys().next().value;
-      if (oldest !== undefined) this.holdAttempts.delete(oldest);
-    }
-    this.holdAttempts.set(executionId, attempt);
-    const next = Math.max(
-      this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
-      wakeAt + 1
-    );
-    await this.store.schedule({ executionId, wakeAt: next, refused: { head } });
+  private async holdRefusal(
+    executionId: string,
+    wakeAt: number,
+    refused: { head: number; holds?: number },
+    state: ExecutionState | null = null
+  ): Promise<void> {
+    if (state !== null && ownsRealTimer(state, wakeAt)) return;
+    const holds = Math.min((refused.holds ?? 0) + 1, MAX_REFUSAL_HOLDS);
+    // `random: () => 1` is the ceiling of the full-jitter draw: the deterministic end of the schedule.
+    const delay = Math.max(1, redriveDelayMs(holds, { ...this.redriveBackoff, random: () => 1 }));
+    await this.store.schedule({
+      executionId,
+      wakeAt: wakeAt + delay,
+      refused: { head: refused.head, holds },
+    });
     await this.store.complete(executionId, wakeAt);
   }
 
@@ -857,7 +871,7 @@ export class TimerService {
     executionId: string,
     wakeAt: number,
     redrive?: { attempt: number },
-    refused?: { head: number }
+    refused?: { head: number; holds?: number }
   ): Promise<void> {
     // ADR 0130 D10 - a replay-refusal row is judged on EVIDENCE, before any lease is claimed: acquiring
     // the lease first would erase the very thing (an existing, expired lease) that proves abandonment.
@@ -865,7 +879,7 @@ export class TimerService {
       // A node that cannot judge it (flag-off, or no evidence configured; a store that ignored
       // `due({ refused: false })`) must not retire it as obsolete: a node that can still needs it.
       if (!this.canJudgeRefusals()) return;
-      if (await this.fireRefused(executionId, wakeAt, refused.head)) return;
+      if (await this.fireRefused(executionId, wakeAt, refused)) return;
       // else: the stamp sits on a real timer's own row; fall through and judge it as the timer
     }
     // #380 — claim the execution before waking it. `null` means another node holds it and is
@@ -1060,6 +1074,14 @@ export class TimerService {
       }
     }
   }
+}
+
+/** Is `state` parked on a REAL timer at `wakeAt` (the park's own, or one arm of a multi-wait)? */
+function ownsRealTimer(state: ExecutionState, wakeAt: number): boolean {
+  return (
+    state.status === "suspended" &&
+    (state.suspendedOn?.wakeAt === wakeAt || pendingTimerWait(state, wakeAt) !== undefined)
+  );
 }
 
 /**

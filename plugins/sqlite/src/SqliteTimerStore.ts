@@ -50,6 +50,11 @@ export class SqliteTimerStore implements TimerStore {
           }
         })
         .immediate();
+      // ADR 0130 D10 - a PARTIAL index over the (rare) refusal rows only: a scan for them
+      // (`due` with refusal rows wanted) never walks the plain timers, and a plain row pays nothing.
+      this.db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_timers_refused ON timers (wake_at ASC) WHERE refused IS NOT NULL"
+      );
     } catch (err) {
       this.db.close(); // don't leak the file handle if setup fails on a bad/locked file
       throw err;
@@ -60,11 +65,22 @@ export class SqliteTimerStore implements TimerStore {
     this.db
       .prepare<[string, number, string | null, string | null]>(
         // Upsert (ADR 0118 D4, ADR 0130 D10): a flagged row is never downgraded, a plain one gains
-        // the flag, and a later `refused` head replaces an earlier one.
+        // the flag, and a same-key `refused` upsert keeps the MAX head / MAX holds (never last-writer-wins).
         `INSERT INTO timers (execution_id, wake_at, redrive, refused) VALUES (?, ?, ?, ?)
          ON CONFLICT (execution_id, wake_at)
          DO UPDATE SET redrive = COALESCE(excluded.redrive, timers.redrive),
-                       refused = COALESCE(excluded.refused, timers.refused)`
+                       refused = CASE
+                         WHEN excluded.refused IS NULL THEN timers.refused
+                         WHEN timers.refused IS NULL THEN excluded.refused
+                         WHEN json_extract(excluded.refused, '$.holds') IS NULL
+                          AND json_extract(timers.refused, '$.holds') IS NULL
+                         THEN json_object('head', max(json_extract(excluded.refused, '$.head'),
+                                                      json_extract(timers.refused, '$.head')))
+                         ELSE json_object('head', max(json_extract(excluded.refused, '$.head'),
+                                                      json_extract(timers.refused, '$.head')),
+                                          'holds', max(COALESCE(json_extract(excluded.refused, '$.holds'), 0),
+                                                       COALESCE(json_extract(timers.refused, '$.holds'), 0)))
+                       END`
       )
       .run(
         timer.executionId,
@@ -90,7 +106,9 @@ export class SqliteTimerStore implements TimerStore {
       executionId: r.execution_id,
       wakeAt: r.wake_at,
       ...(r.redrive !== null && { redrive: JSON.parse(r.redrive) as { attempt: number } }),
-      ...(r.refused !== null && { refused: JSON.parse(r.refused) as { head: number } }),
+      ...(r.refused !== null && {
+        refused: JSON.parse(r.refused) as { head: number; holds?: number },
+      }),
     }));
   }
 
