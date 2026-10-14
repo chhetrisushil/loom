@@ -400,7 +400,7 @@ What shipped, where the text above left a choice open:
 
 ## D11 — Heartbeat leases (Accepted 2026-10-14, user)
 
-- Status: **Accepted 2026-10-14 (user): option (a), the recommendation, for every decision question below.** Nothing is implemented yet. Requested by the user after the S6 (D10) review. Slices: `.superpowers/plans/2026-10-14-adr-0130-residuals.md` "## S7" (local, not committed).
+- Status: **Accepted 2026-10-14 (user): option (a), the recommendation, for every decision question below.** Slices S7a-S7c are implemented (see 9). Requested by the user after the S6 (D10) review. Slices: `.superpowers/plans/2026-10-14-adr-0130-residuals.md` "## S7" (local, not committed).
 - Placement: **kernel** (the runtime is the only thing that knows when a driver starts and stops driving) plus **1P** (`LeaseStore` backends in `plugins/postgres` and `plugins/sqlite`). No 3P part. ADR 0083 (second-consumer rule) is satisfied: the consumers are `TimerService.fire`, `recoverAbandoned`, the D10 poll, `orphanCensus` and "only one node should run this execution". ADR 0004's 2026-09-14 amendment deferred exactly this ("a `LeaseStore`/heartbeat SPI ... waits for a second, unrelated consumer"); the `LeaseStore` SPI and `renewWhileHeld` shipped later (#380, L5a), and this ADR is the "lease every run" step that amendment and `orphanCensus` (#408) left open.
 
 ### Problem
@@ -509,6 +509,19 @@ Deterministic tests only (wait on conditions, injected clocks; `*.perf.test.ts` 
 - **Integration (sqlite, pg not needed locally):** every driver path (`start`, `resume`, `send` winner, `runAgentOnce`, worker-runtime attempt) holds and releases a lease; park and terminal release before the handle resolves; D10 poll re-drives only on expired evidence; `isAbandoned` is vetoed by an unexpired lease.
 - **Perf (`*.perf.test.ts`, S7f):** lease overhead on `tools/bench-throughput` against the gate in 5; batching statement count (a count, not a time).
 - **Enforcement pin (`packages/spec`):** a test that every `WorkflowRuntime` drive entry point calls the keeper (the vacuous-check pattern: a new driver path that forgets to lease must fail a test).
+
+### 9. As built in S7c (review round 2026-10-14)
+
+- **Bounded store calls.** Every keeper `acquire`/`release` call is raced against `storeTimeoutMs` (default `min(TTL/6, 1000)` ms, within the self-fencing margin). A release that times out settles anyway (the lease expires on its own), is reported through `onError` (`LeaseStoreTimeoutError`), and an acquire parked behind it stops waiting; an acquire that times out REJECTS like any store error and arms the quiet period, so a hung store can never wedge a handle or block a `start` forever. A late answer is ignored (a late grant simply expires; a late release is owner-conditional).
+- **Ghost leases lose no start.** A caller-chosen `start` (and a continue-as-new successor, and `LocalWorkerRuntime.allocate`) that finds another owner's unexpired lease reads sequence 0: present means a real stream (`ExecutionAlreadyExistsError`, "another node won"); absent means the holder may be a ghost (it leased, then died before its bootstrap), so the start stands down with the RETRYABLE `StartLeaseHeldError`, which `isSupersededRefusal` does NOT settle (same rule as `StartFencedOutError`). `TimerService` keeps the schedule cursor and retries the occurrence on the next poll.
+- **Write-gate window.** The gate checks the lease immediately before an append reaches the store; the window it cannot close is the append's own in-flight latency, covered by the TTL/6 margin (the fence is the guard past it). The bootstrap appends that bypass the journal (a caller-chosen `start`, a successor, a reopen) check `lease.valid()` themselves immediately before writing.
+- **Deliberately unleased writes.** Cancel-by-id, `cancelForward` and denial/control records are kill/control writes: they must work against a stuck or lease-less driver and are never gated on a lease.
+- **One lease store per runtime.** When a runtime has a heartbeat keeper, `TimerService`'s own `leases` store and `owner` are IGNORED for claiming (its presence only switches claiming on); the keeper's store and owner (`<nodeId>:<incarnation>`) are what other nodes see. A doctor check should read the keeper's store, not `timers.leases`.
+- **Timer wakes.** An in-process wake whose run loses its lease before the wake took durable effect keeps its timer row (`LeaseLostError`), so the next poll judges it; a wake that did land finds its park answered and retires as obsolete.
+- **Poller fences.** A poller/sweep that dispatches takes its (unconditional) fence while it STILL holds the claim and releases the claim only before the dispatch, so a node that leases and begins driving in the gap is never fenced out under its valid lease.
+- **`onStoreError: "continue"` is not supported in S7c.** It is rejected at construction (`TypeError`): it requires the poll to treat the fleet as heuristic (slice S7d). `"stop"` is the only accepted value.
+- **Holds.** `DriverLeases` counts a pending acquire synchronously (a concurrent last-release defers the keeper release until it settles), remembers a loss for a listener that attaches after it (delivered immediately on attach), and `LeaseKeeper.close()` reports `LeaseLostError("closed")` for every id still held, so a closed keeper aborts its runs with the keeper's real owner.
+- `runtime.closeHeartbeat()` exists for the host; `WorkflowRuntime` has no `close()` of its own to wire it into.
 
 ### Decision questions (user) — answered 2026-10-14: (a) for all ten
 

@@ -69,6 +69,22 @@ export class LeaseStoreQuietError extends Error {
   }
 }
 
+/**
+ * A lease-store call (acquire / release) did not answer within the keeper's bound
+ * (`storeTimeoutMs`, default `min(ttl/6, 1000)` ms). Reported through `onError` for a release (the
+ * lease just expires on its own); it REJECTS an acquire, which is treated as a store error (the
+ * quiet period starts), so a hung store can never block a `start` forever.
+ */
+export class LeaseStoreTimeoutError extends Error {
+  constructor(
+    readonly operation: string,
+    readonly timeoutMs: number
+  ) {
+    super(`lease store ${operation} did not answer within ${timeoutMs} ms`);
+    this.name = "LeaseStoreTimeoutError";
+  }
+}
+
 export interface LeaseKeeperOptions {
   store: LeaseStore;
   /** This node's id; the owner is `<nodeId>:<incarnation>`. */
@@ -90,6 +106,17 @@ export interface LeaseKeeperOptions {
   wallNow?: () => number;
   /** Repeating timer; returns its canceller. Default `setInterval` + `unref`. Injectable for tests. */
   every?: (fn: () => void, ms: number) => () => void;
+  /**
+   * One-shot timer; returns its canceller. Default `setTimeout` + `unref`. Injectable for tests. Bounds
+   * every acquire/release call to the store (see `storeTimeoutMs`).
+   */
+  after?: (fn: () => void, ms: number) => () => void;
+  /**
+   * Longest an acquire or release may wait on the store before it is abandoned (ADR 0130 D11).
+   * Default `min(ttl/6, 1000)` ms; it must stay within the TTL/6 margin so a settle never outlives
+   * the self-fencing slack.
+   */
+  storeTimeoutMs?: number;
   /** Fires once per id when it is lost; the id is already removed. */
   onLost: (executionId: string, err: LeaseLostError) => void;
   /** Store errors and failed releases (never thrown). */
@@ -145,6 +172,12 @@ const defaultEvery = (fn: () => void, ms: number): (() => void) => {
   return () => clearInterval(t);
 };
 
+const defaultAfter = (fn: () => void, ms: number): (() => void) => {
+  const t = setTimeout(fn, ms);
+  t.unref?.();
+  return () => clearTimeout(t);
+};
+
 const CONNECTIVITY_CODES = new Set([
   "ECONNREFUSED",
   "ECONNRESET",
@@ -180,7 +213,7 @@ export function isStoreWideError(err: unknown, depth = 0): boolean {
     if (code.startsWith("SQLITE_BUSY") || code.startsWith("SQLITE_LOCKED")) return true;
     if (code.startsWith("08") || code.startsWith("57P") || code === "53300") return true;
   }
-  if (e.name === "TimeoutError") return true;
+  if (e.name === "TimeoutError" || e.name === "LeaseStoreTimeoutError") return true;
   if (
     typeof e.message === "string" &&
     /timed? ?out|timeout|connection (terminated|refused|reset|closed|lost)|pool|ECONN|ETIMEDOUT|database is locked/i.test(
@@ -203,6 +236,8 @@ export class LeaseKeeper {
   private readonly now: () => number;
   private readonly wallNow: () => number;
   private readonly margin: number;
+  private readonly after: (fn: () => void, ms: number) => () => void;
+  private readonly storeTimeoutMs: number;
   private readonly chunk: number;
   private readonly onLost: LeaseKeeperOptions["onLost"];
   private readonly onError: (err: unknown) => void;
@@ -243,6 +278,10 @@ export class LeaseKeeper {
       throw new TypeError(
         "LeaseKeeper: renewEveryMs must be > 0 and < ttlMs - margin (margin = floor(ttlMs / 6))"
       );
+    this.after = options.after ?? defaultAfter;
+    this.storeTimeoutMs = options.storeTimeoutMs ?? Math.max(1, Math.min(this.margin, 1000));
+    if (!Number.isFinite(this.storeTimeoutMs) || this.storeTimeoutMs <= 0)
+      throw new TypeError("LeaseKeeper: storeTimeoutMs must be a finite number > 0");
     this.chunk = options.chunkSize ?? 1000;
     if (!Number.isInteger(this.chunk) || this.chunk < 1)
       throw new TypeError("LeaseKeeper: chunkSize must be an integer >= 1");
@@ -393,6 +432,9 @@ export class LeaseKeeper {
     this.releaseQueue = [];
     for (const r of rels) r.cancelled = true;
     const ids = [...new Set([...this.held.keys(), ...rels.map((r) => r.id)])];
+    // Every driver still holding a lease is told (onLost "closed"): a run must not keep driving,
+    // or hold a hold, on a lease nothing renews any more.
+    for (const id of [...this.held.keys()]) this.lose(id, "closed");
     this.held.clear();
     await this.releaseIds(ids);
     for (const r of rels) for (const f of r.resolvers) f();
@@ -466,7 +508,7 @@ export class LeaseKeeper {
     for (const [id, h] of [...this.held]) if (this.expired(h)) this.lose(id, "deadline");
   }
 
-  private lose(id: string, reason: "taken-over" | "deadline"): void {
+  private lose(id: string, reason: "taken-over" | "deadline" | "closed"): void {
     if (!this.held.delete(id)) return;
     try {
       this.onLost(id, new LeaseLostError(id, this.owner, reason));
@@ -478,6 +520,37 @@ export class LeaseKeeper {
   private failed(err: unknown): void {
     this.quietUntil = this.now() + this.ttlMs;
     this.onError(err);
+  }
+
+  /**
+   * Race a store call against the keeper's bound. A call that never answers rejects with
+   * {@link LeaseStoreTimeoutError}; its late result (if it ever comes) is ignored, and the row it
+   * may have written simply expires.
+   */
+  private bounded<T>(operation: string, call: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let p: Promise<T>;
+      try {
+        p = call();
+      } catch (err) {
+        reject(err);
+        return;
+      }
+      const cancel = this.after(
+        () => reject(new LeaseStoreTimeoutError(operation, this.storeTimeoutMs)),
+        this.storeTimeoutMs
+      );
+      p.then(
+        (v) => {
+          cancel();
+          resolve(v);
+        },
+        (e: unknown) => {
+          cancel();
+          reject(e);
+        }
+      );
+    });
   }
 
   /** One acquire call's outcome per id. A batch error is re-tried per id to isolate the offender. */
@@ -496,8 +569,16 @@ export class LeaseKeeper {
       const wall = this.wallNow();
       try {
         const l = this.store.acquireMany
-          ? (await this.store.acquireMany([id], this.owner, this.ttlMs))[0]
-          : await this.store.acquire(id, this.owner, this.ttlMs);
+          ? (
+              await this.bounded("acquire", () =>
+                (this.store.acquireMany as NonNullable<LeaseStore["acquireMany"]>)(
+                  [id],
+                  this.owner,
+                  this.ttlMs
+                )
+              )
+            )[0]
+          : await this.bounded("acquire", () => this.store.acquire(id, this.owner, this.ttlMs));
         return { id, granted: Boolean(l), mono, wall };
       } catch (err) {
         note(id, err);
@@ -509,7 +590,7 @@ export class LeaseKeeper {
       const mono = this.now();
       const wall = this.wallNow();
       const rs = await Promise.allSettled(
-        c.map((id) => this.store.acquire(id, this.owner, this.ttlMs))
+        c.map((id) => this.bounded("acquire", () => this.store.acquire(id, this.owner, this.ttlMs)))
       );
       return rs.map((r, i): Outcome => {
         const id = c[i] as string;
@@ -521,8 +602,13 @@ export class LeaseKeeper {
     const mono = this.now();
     const wall = this.wallNow();
     try {
+      const acquireMany = this.store.acquireMany;
       const got = new Set(
-        (await this.store.acquireMany(c, this.owner, this.ttlMs)).map((l) => l.executionId)
+        (
+          await this.bounded("acquire", () =>
+            acquireMany.call(this.store, c, this.owner, this.ttlMs)
+          )
+        ).map((l) => l.executionId)
       );
       return c.map((id) => ({ id, granted: got.has(id), mono, wall }));
     } catch (err) {
@@ -661,22 +747,33 @@ export class LeaseKeeper {
     for (const r of batch) for (const f of r.resolvers) f();
   }
 
-  /** Best-effort: a failing chunk is re-tried per id so one bad id cannot strand the rest. */
+  /**
+   * Best-effort: a failing chunk is re-tried per id so one bad id cannot strand the rest. Every
+   * store call is bounded: a release the store never answers is abandoned (reported through
+   * `onError`; the lease expires on its own) so the handle that awaits it, and any acquire parked
+   * behind it, settle. A TIMED-OUT chunk is not retried per id (the store is not answering).
+   */
   private async releaseIds(ids: string[]): Promise<void> {
     const one = async (id: string): Promise<void> => {
       try {
-        await this.store.release(id, this.owner);
+        await this.bounded("release", () => this.store.release(id, this.owner));
       } catch (err) {
         this.onError(err);
       }
     };
     for (const c of chunks(ids, this.chunk)) {
       try {
-        if (this.store.releaseMany) await this.store.releaseMany(c, this.owner);
-        else await Promise.all(c.map((id) => this.store.release(id, this.owner)));
+        if (this.store.releaseMany) {
+          const releaseMany = this.store.releaseMany;
+          await this.bounded("release", () => releaseMany.call(this.store, c, this.owner));
+        } else
+          await this.bounded("release", () =>
+            Promise.all(c.map((id) => this.store.release(id, this.owner))).then(() => undefined)
+          );
       } catch (err) {
         this.onError(err);
-        if (c.length > 1) for (const id of c) await one(id);
+        if (c.length > 1 && !(err instanceof LeaseStoreTimeoutError))
+          for (const id of c) await one(id);
       }
     }
   }

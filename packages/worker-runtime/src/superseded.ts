@@ -47,6 +47,9 @@ function field(value: unknown, key: string): unknown {
  * Exactly three shapes, each REQUIRED to name `executionId` so an error about some other
  * execution never qualifies:
  *  - `ExecutionAlreadyExistsError` — a start lost the sequence-0 race (ADR 0103);
+ *  - `LeaseHeldError` / `LeaseLostError` (ADR 0130 D11), bare or as the `cause` of a
+ *    `StorageWriteError` (a write the lease gate refused) — a live owner holds the lease, or this
+ *    driver lost its own;
  *  - `StaleFenceError`, bare or as the `cause` of a `StorageWriteError` — this attempt's token
  *    was superseded by a newer `acquireFence` (a redispatch, a recovery pass, a fenced wake or a
  *    cancel). The id check matters: a coalesced batch rejects every caller in it with ONE
@@ -54,7 +57,8 @@ function field(value: unknown, key: string): unknown {
  *    writer's refusal and, for this one, a genuine storage failure — retryable;
  *  - `ExecutionSupersededError` — the wire form of either.
  *
- * Not included: `StartFencedOutError` (`@loom/workflow-runtime`) — a start refused on the fence
+ * Not included: `StartLeaseHeldError` (a caller-chosen start that found a lease but NO sequence 0, a
+ * possible ghost; same reasoning) and `StartFencedOutError` (`@loom/workflow-runtime`) — a start refused on the fence
  * with sequence 0 still absent. Its newer token's holder has written nothing and may be dead, so
  * settling would lose the start outright; it stays retryable.
  *
@@ -84,8 +88,14 @@ export function isSupersededRefusal(err: unknown, executionId: string): boolean 
   }
   if (name === "StorageWriteError") {
     const cause = field(err, "cause");
+    // ADR 0130 D11: a write refused because the lease behind it was lost (or held by another) is the
+    // same "another holder owns it" as a stale fence, when it names this execution.
+    const causeName = field(cause, "name");
     return (
-      field(cause, "name") === "StaleFenceError" && field(cause, "executionId") === executionId
+      (causeName === "StaleFenceError" ||
+        causeName === "LeaseLostError" ||
+        causeName === "LeaseHeldError") &&
+      field(cause, "executionId") === executionId
     );
   }
   return false;

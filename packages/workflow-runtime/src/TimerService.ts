@@ -3,7 +3,7 @@ import type { EventStore, LeaseStore, TimerRecord, TimerStore } from "@loom/even
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { INBOX_WAKE_AT } from "./inbox";
-import { LeaseHeldError } from "./leaseKeeper";
+import { LeaseHeldError, LeaseLostError } from "./leaseKeeper";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
 import type { AbandonedCandidate } from "./recoverAbandoned";
@@ -19,6 +19,7 @@ import {
   ExecutionAlreadyExistsError,
   ResumeContendedError,
   ResumeRefusedError,
+  StartLeaseHeldError,
   TIMER_FIRED,
 } from "./types";
 
@@ -215,6 +216,10 @@ export interface TimerServiceOptions {
    *
    * With a lease store, a node that cannot acquire the lease skips the fire and leaves the
    * timer for whoever holds it. Unwired, behaviour is unchanged.
+   *
+   * ADR 0130 D11 (S7c): when the runtime has a heartbeat keeper (`WorkflowRuntimeDeps.heartbeat`),
+   * claiming goes through the KEEPER's store and owner, and this `store`/`owner` are IGNORED (their
+   * presence only switches claiming on). A diagnostic must read the keeper's store, not this one.
    */
   leases?: {
     store: LeaseStore;
@@ -431,12 +436,16 @@ export class TimerService {
     for (let i = 0; i < this.batch; i++) {
       const occurrence = nextOccurrence(schedule.spec, schedule.cursor);
       if (occurrence > now) return;
-      await this.startOccurrence(schedule.def, occurrence);
+      // ADR 0130 D11: a ghost-leased occurrence is RETRIED (the cursor stays), not skipped.
+      if ((await this.startOccurrence(schedule.def, occurrence)) === "retry") return;
       schedule.cursor = occurrence;
     }
   }
 
-  private async startOccurrence(def: ScheduleDefinition, occurrence: number): Promise<void> {
+  private async startOccurrence(
+    def: ScheduleDefinition,
+    occurrence: number
+  ): Promise<"done" | "retry"> {
     // A2 — the deterministic occurrence id: every node computes the same one,
     // so dedup needs no coordination. `loadState` is the cheap fast path for an
     // occurrence that is visibly started; the raced remainder (two nodes checking
@@ -446,7 +455,7 @@ export class TimerService {
     const executionId = `${def.id}@${occurrence}`;
     try {
       const existing = await this.runtime.loadState(executionId, this.runtime.systemOptions());
-      if (existing !== null) return; // already started (this node or another)
+      if (existing !== null) return "done"; // already started (this node or another)
       const flow = this.runtime.getFlow(def.flowId);
       if (!flow) {
         throw new Error(`schedule "${def.id}": no flow registered for flowId "${def.flowId}"`);
@@ -466,9 +475,13 @@ export class TimerService {
         handle.waitForCompletion().catch(() => undefined),
       ]);
     } catch (err) {
-      if (err instanceof ExecutionAlreadyExistsError) return; // another node won the race
+      if (err instanceof ExecutionAlreadyExistsError) return "done"; // another node won the race
+      // ADR 0130 D11: another owner leased the occurrence but wrote no sequence 0 (a ghost, or a start
+      // still in flight): nothing was started, so retry on the next poll once the lease is gone.
+      if (err instanceof StartLeaseHeldError) return "retry";
       this.onError?.(executionId, err);
     }
+    return "done";
   }
 
   /**
@@ -974,20 +987,22 @@ export class TimerService {
         };
 
         if (this.dispatcher !== undefined) {
-          // ADR 0130 D11 (S7c): the WORKER is the driver and holds its own lease (lease, then fence),
-          // possibly under another owner: this poller's claim must not block it.
-          if (hold !== undefined) {
-            await hold.release();
-            hold = undefined;
-          }
           // K9.4 — in fenced deployments, acquire a newer token first so a
           // duplicate cross-node fire loses at the store instead of double-writing.
           // (ADR 0118 as-built: this path keeps the UNCONDITIONAL acquire — the worker SPI's
           // `allocate` acquires its own token per dispatch, so a conditional fence here would
           // need a `WorkerRequest` extension; a named follow-up.)
+          // ADR 0130 D11 (S7c): the fence is taken while this poller STILL holds the claim: an
+          // unconditional acquire with no lease would fence out a node that leased and began driving
+          // in the gap. Only then is the claim released - the WORKER is the driver and takes its own
+          // lease (possibly under another owner), which this poller's claim must not block.
           const fence = this.fenced
             ? await this.runtime.acquireFence(executionId, this.runtime.systemOptions())
             : undefined;
+          if (hold !== undefined) {
+            await hold.release();
+            hold = undefined;
+          }
           // #392 — the wake goes back to where the execution belongs. The recorded target
           // is a HINT handed to the placement policy, which may route elsewhere: a lane
           // that has since been retired must not strand what named it. Dispatch settles
@@ -1060,10 +1075,20 @@ export class TimerService {
           this.wakeBackoff.delete(executionId);
           // Wait for the run to settle (suspend again, complete, or fail) so the
           // timer is only retired once the wake durably took effect.
-          await Promise.race([
-            handle.waitForSuspend().catch(() => undefined),
-            handle.waitForCompletion().catch(() => undefined),
+          const settled = await Promise.race([
+            handle.waitForSuspend().then(
+              () => undefined,
+              (e: unknown) => e
+            ),
+            handle.waitForCompletion().then(
+              () => undefined,
+              (e: unknown) => e
+            ),
           ]);
+          // ADR 0130 D11: the lease was lost before the wake took durable effect (it may never have
+          // landed): the row STAYS, and the next poll judges it against the log (a wake that did land
+          // finds its park answered and retires as obsolete).
+          if (settled instanceof LeaseLostError) return;
         }
       }
       // Fired — or obsolete (resumed by other means, terminal, unknown): retire it.

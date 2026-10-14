@@ -3,7 +3,7 @@ import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import type { ExecutionPackage } from "@loom/worker-runtime";
-import { LeaseHeldError, WorkflowRuntime } from "@loom/workflow-runtime";
+import { LeaseHeldError, StartLeaseHeldError, WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -77,10 +77,25 @@ describe("LocalWorkerRuntime holds a heartbeat lease (S7c)", () => {
     expect(await r.leases.get("e1")).toBeNull();
   });
 
-  it("stands down without taking the fence when another live owner holds the lease", async () => {
+  it("stands down without taking the fence when another live owner holds the lease on a REAL stream", async () => {
     const r = rig();
+    const h = await r.runtime.start(reg, {}, { executionId: "e2" }); // a real stream (sequence 0)
+    await h.waitForCompletion();
     await r.leases.acquire("e2", "other:1", 60_000);
+    r.calls.length = 0;
     await expect(r.worker.allocate({ executionId: "e2" })).rejects.toBeInstanceOf(LeaseHeldError);
+    expect(r.calls.some((c) => c.startsWith("fence:"))).toBe(false);
+  });
+
+  it("a lease held with NO sequence 0 (a ghost) is a RETRYABLE stand-down, not a superseded refusal (S7c review P1-2)", async () => {
+    const r = rig();
+    await r.leases.acquire("e4", "crashed:1", 60_000);
+    const err = await r.worker.allocate({ executionId: "e4" }).then(
+      () => undefined,
+      (e: Error) => e
+    );
+    expect(err).toBeInstanceOf(StartLeaseHeldError);
+    expect(err).not.toBeInstanceOf(LeaseHeldError);
     expect(r.calls.some((c) => c.startsWith("fence:"))).toBe(false);
   });
 

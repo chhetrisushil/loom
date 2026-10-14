@@ -354,17 +354,23 @@ export async function recoverAbandoned(
     }
 
     try {
-      // ADR 0130 D11 (S7c): a dispatched re-drive is driven by the WORKER, which holds its own lease.
-      if (options.dispatcher !== undefined && hold !== undefined) {
-        await hold.release();
-        hold = undefined;
-      }
       // The shared routine (also the TimerService wake-row re-drive, ADR 0130 D10): re-checks the
       // status, fences, dispatches or resumes, settles, and classifies a sealed refusal.
       const r = await redriveAbandoned(runtime, executionId, {
         source: "sweep",
         ...(options.fenced !== undefined && { fenced: options.fenced }),
         ...(options.dispatcher !== undefined && { dispatcher: options.dispatcher }),
+        // ADR 0130 D11 (S7c): a dispatched re-drive is driven by the WORKER, which holds its own lease.
+        // The claim is kept across this sweep's own fence acquisition and released only before the
+        // dispatch (a lease B takes in a gap before the fence would be fenced out).
+        ...(options.dispatcher !== undefined &&
+          hold !== undefined && {
+            beforeDispatch: async () => {
+              const h = hold;
+              hold = undefined;
+              await h?.release();
+            },
+          }),
       });
       if (r.outcome === "skipped") continue;
       if (r.outcome === "refused") {

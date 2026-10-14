@@ -44,3 +44,29 @@ describe("isSupersededRefusal (L20)", () => {
     expect(err.executionId).toBe("e");
   });
 });
+
+describe("isSupersededRefusal - heartbeat leases (ADR 0130 D11, S7c review)", () => {
+  const lost = (executionId: string) => named("LeaseLostError", { executionId });
+  const held = (executionId: string) => named("LeaseHeldError", { executionId });
+
+  it("a StorageWriteError whose cause is a Lease{Lost,Held}Error naming the id is a refusal, as for StaleFenceError", () => {
+    for (const cause of [lost("e"), held("e")]) {
+      const err = new StorageWriteError(cause);
+      expect(isSupersededRefusal(err, "e")).toBe(true);
+      expect(isSupersededRefusal(err, "other")).toBe(false); // names another execution: genuine failure
+    }
+  });
+
+  it("a bare Lease{Lost,Held}Error naming the id is a refusal", () => {
+    for (const err of [lost("e"), held("e")]) {
+      expect(isSupersededRefusal(err, "e")).toBe(true);
+      expect(isSupersededRefusal(err, "other")).toBe(false);
+    }
+  });
+
+  it("StartLeaseHeldError (a possible ghost lease) is RETRYABLE: never settled as superseded", () => {
+    const err = named("StartLeaseHeldError", { executionId: "e" });
+    expect(isSupersededRefusal(err, "e")).toBe(false);
+    expect(isSupersededRefusal(new StorageWriteError(err), "e")).toBe(false);
+  });
+});

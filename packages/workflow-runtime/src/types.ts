@@ -828,6 +828,24 @@ export class StartFencedOutError extends Error {
   }
 }
 
+/**
+ * ADR 0130 D11 (S7c) - a caller-chosen `start()` stood down because another owner holds an unexpired
+ * lease on the id, but sequence 0 is ABSENT: that owner may be a ghost (it leased, then died before its
+ * bootstrap), so nothing is started and nothing is written, and the start is RETRYABLE (the lease
+ * expires on its own). Deliberately NOT an {@link ExecutionAlreadyExistsError} and NOT in
+ * `isSupersededRefusal`'s settled set (same reason as {@link StartFencedOutError}): reading it as "another
+ * node won" would lose the start outright, with nothing in the log for anyone to find.
+ */
+export class StartLeaseHeldError extends Error {
+  constructor(readonly executionId: string) {
+    super(
+      `start of execution "${executionId}" stood down: another owner holds an unexpired lease but has written no sequence 0 (it may have died first); nothing ran — retry the start once the lease expires`
+    );
+    this.name = "StartLeaseHeldError";
+    Object.setPrototypeOf(this, StartLeaseHeldError.prototype);
+  }
+}
+
 export { SnapshotIdentityMismatchError } from "@loom/snapshot-runtime";
 
 /**
