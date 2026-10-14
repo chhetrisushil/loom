@@ -76,6 +76,8 @@ function boot(
     /** Registered idempotence of `tool-a` / `tool-b` (default `false`; `undefined` = undeclared). */
     idempotent?: boolean | undefined;
     fanOut?: boolean;
+    /** The flow starts the step and returns without awaiting it. */
+    fireAndForget?: boolean;
   }
 ) {
   const toolOpts =
@@ -107,8 +109,12 @@ function boot(
     effectRuntime: effects,
     onWarn: () => {},
   });
-  const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) =>
-    opts.fanOut === true
+  const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
+    if (opts.fireAndForget === true) {
+      void ctx.run(stepA, {}).catch(() => {});
+      return { ok: true };
+    }
+    return opts.fanOut === true
       ? (
           await ctx.parallel([
             [stepA, {}],
@@ -116,6 +122,7 @@ function boot(
           ])
         )[0]
       : ctx.run(stepA, {});
+  };
   const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
     _tag: "FlowDefinition",
     id: "pay",
@@ -131,23 +138,68 @@ function boot(
 }
 
 describe("K9.3: STEP_STARTED must be durable before a non-idempotent effect runs", () => {
-  it("a crash after the effect ran parks in doubt on recovery, not re-runs", async () => {
+  it("a crash in the gap (STEP_STARTED unacked) never ran the effect, so recovery runs it exactly once, not in doubt", async () => {
     const durable = new InMemoryAsyncEventStore();
+    const order: string[] = [];
 
-    // Process A: the effect body runs and the process dies while it is in flight.
+    // Process A: the STEP_STARTED append is never acked (the process dies first). With the fix the
+    // effect is not dispatched; without it the effect would run with no durable marker.
+    const held = stepStartedStore(durable, order, "hold");
+    const a = boot(held.store, { hang: false, order });
+    void a.runtime.start(a.flow, {}, { executionId: "pay-gap" });
+    await until(() => order.includes("append:STEP_STARTED"), "the held STEP_STARTED append");
+    // Abandon A (never release): its effect never ran and the durable log is only the start.
+    expect(a.ran).toEqual([]);
+    expect((await durable.read("pay-gap")).map((e) => e.eventType)).toEqual(["EXECUTION_STARTED"]);
+
+    // Process B: a fresh runtime over the same UNDERLYING store.
+    const b = boot(durable, { hang: false });
+    await recoverAbandoned(b.runtime, { source: durable, isAbandoned: () => true });
+    let types: string[] = [];
+    const deadline = Date.now() + 5_000;
+    while (!types.includes("EXECUTION_COMPLETED") && Date.now() < deadline) {
+      types = (await durable.read("pay-gap")).map((e) => e.eventType);
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    expect(types).toContain("EXECUTION_COMPLETED");
+    expect(types).not.toContain("EFFECT_INDOUBT");
+    expect(b.ran).toEqual(["a"]); // exactly once: A's effect never ran
+    expect(a.ran).toEqual([]);
+  });
+
+  // Pins the RECOVERY half only: given a durable STEP_STARTED and an effect that ran (and a crash
+  // before its terminal event), a fresh process parks EFFECT_INDOUBT and does not re-run. It does
+  // not depend on the drain (the plain store's append lands first); the gap test above does.
+  it("STEP_STARTED durable + effect ran + crash: recovery parks in doubt, does not re-run", async () => {
+    const durable = new InMemoryAsyncEventStore();
     const a = boot(durable, { hang: true });
     void a.runtime.start(a.flow, {}, { executionId: "pay-1" });
     await until(() => a.ran.length === 1, "process A's effect to run");
-    // The effect ran, so its STEP_STARTED must already be in the durable log.
     expect((await durable.read("pay-1")).map((e) => e.eventType)).toContain("STEP_STARTED");
 
-    // Process B: fresh runtime over the same durable log.
     const b = boot(durable, { hang: false });
     await recoverAbandoned(b.runtime, { source: durable, isAbandoned: () => true });
     const logB = (await durable.read("pay-1")).map((e) => e.eventType);
 
     expect(logB).toContain("EFFECT_INDOUBT");
-    expect(b.ran).toEqual([]); // the non-idempotent effect must NOT run a second time
+    expect(b.ran).toEqual([]);
+  });
+
+  it("a context sealed while STEP_STARTED is being made durable never dispatches the effect", async () => {
+    const durable = new InMemoryAsyncEventStore();
+    const order: string[] = [];
+    const held = stepStartedStore(durable, order, "hold");
+    const a = boot(held.store, { hang: false, order, fireAndForget: true });
+    const handle = await a.runtime.start(a.flow, {}, { executionId: "seal-1" });
+    await until(() => order.includes("append:STEP_STARTED"), "the held STEP_STARTED append");
+    // The flow returned without awaiting the step; its terminal commit sealed the context while
+    // the drain is still pending.
+    held.release();
+    await handle.waitForCompletion();
+    // Nothing further can settle the (never-starting) step; give a stray dispatch every chance.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(a.ran).toEqual([]);
+    expect(order).not.toContain("effect:a");
   });
 
   it("an idempotent:false effect does not start while its STEP_STARTED append is unacked", async () => {

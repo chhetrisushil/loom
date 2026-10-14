@@ -921,7 +921,21 @@ export class WorkflowContextImpl implements WorkflowContext {
     // steps only; undeclared and `idempotent: true` tools keep the write-behind hot path. A
     // refused write (stale fence, storage error) throws here, so the effect is never dispatched
     // and the run fails like any other storage failure (the journal already aborted the run).
-    if (this.effectRuntime.declaredIdempotence(toolId) === false) await this.journal.drain();
+    if (this.effectRuntime.declaredIdempotence(toolId) === false) {
+      // The drain window counts as in flight (like the dispatch below), so a sibling flow-level
+      // emit is stamped exactly as it was when commit + dispatch were synchronous. Decremented on
+      // every exit (ack, throw); the dispatch below takes over the count synchronously.
+      this.inFlight++;
+      try {
+        await this.journal.drain();
+      } finally {
+        this.inFlight--;
+      }
+      // The drain yielded: a park or terminal seal may have landed (sealed inbox payload, terminal
+      // commit, a park barrier that gave up). Same rule as step entry above - a frozen/sealed/parked
+      // context starts no NEW work, and the call simply never starts (the resume re-issues it).
+      if (this.frozen || this.sealed || scopeIsParked(scope)) return new Promise<TOut>(() => {});
+    }
 
     // K8.3 — declared step deadline (`timeoutMs`), anchored to the step's FIRST
     // logged start so a crash-recovery re-run resumes the countdown rather than
