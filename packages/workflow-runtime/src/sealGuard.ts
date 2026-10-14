@@ -303,6 +303,17 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
     installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }
 
+  private saveGuard?: (snapshot: Snapshot, store: SnapshotStore) => void;
+
+  /**
+   * ADR 0130 D8: run `guard` before EVERY save with the store the save goes to. It throws
+   * `PlaintextCheckpointError` when the event store seals and the checkpoint would not be sealed;
+   * the callers' best-effort checkpoint `catch` surfaces it as `onStorageError`.
+   */
+  guardSaves(guard: (snapshot: Snapshot, store: SnapshotStore) => void): void {
+    this.saveGuard = guard;
+  }
+
   private async check(
     executionId: string,
     load: Promise<Snapshot | null>
@@ -328,7 +339,8 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
     return snapshot;
   }
 
-  save(snapshot: Snapshot): Promise<void> {
+  async save(snapshot: Snapshot): Promise<void> {
+    this.saveGuard?.(snapshot, this.inner);
     return this.inner.save(snapshot);
   }
   loadLatest(executionId: string): Promise<Snapshot | null> {

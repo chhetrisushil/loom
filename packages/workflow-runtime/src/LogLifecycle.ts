@@ -18,6 +18,7 @@ import {
   planBlankStreamRepair,
   rehomedEnvelope,
 } from "./blankStream";
+import { plaintextCheckpointReason } from "./checkpointGuard";
 import { chainIdOf, deleteInbox } from "./inbox";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
 import { isWriteConflict } from "./writeConflict";
@@ -239,6 +240,11 @@ export function assertPinnedEventTypes(types: readonly unknown[]): asserts types
 }
 
 export class LogLifecycle {
+  /** The archive's snapshot store, if any: what `loom doctor` reads to judge it (ADR 0130 D8). */
+  get archiveSnapshotStore(): SnapshotStore | undefined {
+    return this.options.archive?.snapshotStore;
+  }
+
   constructor(
     private readonly eventStore: EventStore,
     private readonly snapshotStore: SnapshotStore,
@@ -266,6 +272,11 @@ export class LogLifecycle {
        * Once per execution per `LogLifecycle` instance. Default: `console.warn`.
        */
       onWarn?: (message: string) => void;
+      /**
+       * ADR 0130 D8 - the same escape hatch as `WorkflowRuntime`'s: accept an ARCHIVE snapshot store
+       * that does not seal the whole state under the event store's KeyStore. Off by default.
+       */
+      allowPlaintextCheckpoints?: boolean;
     } = {}
   ) {
     assertPinnedEventTypes(options.pinnedEventTypes ?? []);
@@ -435,6 +446,14 @@ export class LogLifecycle {
       const target = keysOf(archive.snapshotStore);
       if (eventKeys !== undefined && target !== eventKeys) return false;
       if (snapshotKeys !== undefined && target !== snapshotKeys) return false;
+      // ADR 0130 D8 - a static-path archive store on the same keys still receives the plaintext
+      // `_waitAnswers`: when the source seals, the archive snapshot store must seal the WHOLE state.
+      if (
+        this.options.allowPlaintextCheckpoints !== true &&
+        plaintextCheckpointReason(this.eventStore, archive.snapshotStore) !== undefined
+      ) {
+        return false;
+      }
     }
     return true;
   }

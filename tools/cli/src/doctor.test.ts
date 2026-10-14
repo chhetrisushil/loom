@@ -290,12 +290,29 @@ describe("loom doctor", () => {
     expect(find(result, SNAP)?.status).toBe("failed");
   });
 
-  it("does not claim allowPlaintextCheckpoints works today", async () => {
+  it("names the kernel refusal and the allowPlaintextCheckpoints escape (ADR 0130 D8)", async () => {
     const { ws, config } = timerConfig(
       "{ stores: { eventStore: { keys: { durable: true } }, snapshotStore: {} }, schedules: [] }"
     );
     const { text } = await cmdDoctor({ dir: ws, config });
-    expect(text).toContain("slice S3");
+    expect(text).toContain("The kernel refuses to boot");
+    expect(text).not.toContain("slice S3");
+    expect(text).not.toContain("not read by any release");
+  });
+
+  const ARCH = "archive-snapshot-plaintext-under-encrypting-events";
+
+  it("ERRORS a static-path archive snapshot store under an encrypting event store; ok with sealState + shared keys", async () => {
+    const cfg = (archive: string) =>
+      timerConfig(
+        `(() => { const KEYS = { durable: true }; return { stores: { eventStore: { keys: KEYS }, snapshotStore: { keys: KEYS, sealsWholeState: true } }, lifecycle: { archiveSnapshotStore: ${archive} }, schedules: [] }; })()`
+      );
+    const bad = cfg("{ keys: KEYS }");
+    const { result } = await cmdDoctor({ dir: bad.ws, config: bad.config });
+    expect(find(result, ARCH)?.status).toBe("failed");
+    const good = cfg("{ keys: KEYS, sealsWholeState: true }");
+    const g = await cmdDoctor({ dir: good.ws, config: good.config });
+    expect(find(g.result, ARCH)?.status).toBe("ok");
   });
 
   it("skips when nothing encrypts — there is no key to depend on", async () => {

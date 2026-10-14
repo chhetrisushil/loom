@@ -94,6 +94,7 @@ const TERMINAL = new Set([
   "SealedStreamUnreadableError",
   "KeyUnavailableError",
   "ShardSealingMismatchError",
+  "PlaintextCheckpointError",
   "LeaseLostError",
   "LeaseStoreQuietError",
   "AsyncContextUnavailableError",

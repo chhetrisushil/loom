@@ -31,6 +31,15 @@ export interface SensitiveSnapshotRegistry {
 export interface PrincipalCryptoOptions {
   events: SensitivePathRegistry;
   snapshots?: SensitiveSnapshotRegistry;
+  /**
+   * ADR 0130 D8 - accept a plaintext checkpoint. By default the kernel REFUSES one (the runtime throws
+   * `PlaintextCheckpointError` at construction, and `LogLifecycle` refuses an unsafe archive) when the
+   * event store seals payloads and the snapshot store does not seal the whole folded state under the
+   * same KeyStore. `true` is the explicit opt-out for a snapshot store on an encrypted volume, and the
+   * migration path for a deployment that cannot move to `EncryptingSnapshotStore({ sealState: true })`
+   * yet. Off by default; `loom doctor` downgrades its finding to an advisory when set.
+   */
+  allowPlaintextCheckpoints?: boolean;
 }
 
 /** The identity subset's event-payload paths (`EXECUTION_STARTED.principal.identity.*`). */
