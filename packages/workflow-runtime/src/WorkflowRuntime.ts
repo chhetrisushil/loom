@@ -157,6 +157,7 @@ import {
   sealedDetailOf,
   withSealedDetail,
 } from "./sealGuard";
+import { PlaintextCheckpointError, assertCheckpointSealed } from "./checkpointGuard";
 import {
   type StrayPassthroughReport,
   StrayScanner,
@@ -461,6 +462,15 @@ export interface WorkflowRuntimeDeps {
    * means fewer writes but a longer worst-case replay.
    */
   snapshotEvery?: number;
+  /**
+   * ADR 0130 D8 - escape hatch for the kernel's refusal of a plaintext checkpoint. By default, when
+   * the event store seals payloads (`sealingCapability()` has covers), a snapshot store that does not
+   * seal the whole folded state under the SAME KeyStore makes this constructor throw
+   * `PlaintextCheckpointError`. `true` accepts plaintext checkpoints (a snapshot store on an
+   * encrypted volume, or a migration in progress). Set by `defineConfig` from
+   * `security.crypto.allowPlaintextCheckpoints`.
+   */
+  allowPlaintextCheckpoints?: boolean;
   /**
    * K12.2 — verifies approval-type resume events. When set, a resume whose
    * event the authenticator rejects is REFUSED (a forged approval never
@@ -1035,7 +1045,11 @@ export class WorkflowRuntime {
     // `packages/spec` pins that no kernel source reads the unguarded store.
     const guardedEvents = new SealGuardedEventStore(deps.eventStore);
     this.eventStore = guardedEvents;
-    this.snapshotStore = new SealGuardedSnapshotStore(deps.snapshotStore, async (id) => {
+    // ADR 0130 D8 - fail fast: a sealing log beside a checkpoint store that does not seal the whole
+    // state (under the same keys) is refused here; every `save` re-checks (stores can change late).
+    const allowPlaintext = deps.allowPlaintextCheckpoints === true;
+    if (!allowPlaintext) assertCheckpointSealed(deps.eventStore, deps.snapshotStore);
+    const guardedSnapshots = new SealGuardedSnapshotStore(deps.snapshotStore, async (id) => {
       // A key-unavailable snapshot load asks the LOG whether it was a real shred. Read the WHOLE
       // stream (a tombstone sits ABOVE the snapshot, not at sequence 0): the guarded read raises the
       // store's own erasure error when it can see the shred, and a `PAYLOAD_SHREDDED` fact in what
@@ -1056,6 +1070,12 @@ export class WorkflowRuntime {
         );
       }
     });
+    if (!allowPlaintext) {
+      guardedSnapshots.guardSaves((snap, store) =>
+        assertCheckpointSealed(deps.eventStore, store, snap.executionId)
+      );
+    }
+    this.snapshotStore = guardedSnapshots;
     this.effectRuntime = deps.effectRuntime;
     this.onEvent = deps.onEvent;
     this.branchRegistry = deps.branchRegistry;
@@ -7041,7 +7061,14 @@ export class WorkflowRuntime {
       state: forkState,
       createdAt: Date.now(),
     };
-    await this.snapshotStore.save(seed);
+    try {
+      await this.snapshotStore.save(seed);
+    } catch (err: unknown) {
+      // ADR 0130 D8: the seed is an optimisation (resume folds the copied prefix without it), so a
+      // refused plaintext checkpoint skips it instead of failing a fork whose child already exists.
+      if (!(err instanceof PlaintextCheckpointError)) throw err;
+      this.onStorageError?.(childId, err);
+    }
 
     // 3b. Re-register the forked gate's durable wake.
     //

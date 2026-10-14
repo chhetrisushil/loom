@@ -39,6 +39,11 @@ export {
 export { PrincipalUnrestorableError } from "./principal";
 export { SealedStreamUnreadableError, isSealedUnreadable } from "./sealGuard";
 export {
+  PlaintextCheckpointError,
+  plaintextCheckpointReason,
+  type PlaintextCheckpointReason,
+} from "./checkpointGuard";
+export {
   CarryTooLargeError,
   ChainHopLimitError,
   ContinuationConflictError,

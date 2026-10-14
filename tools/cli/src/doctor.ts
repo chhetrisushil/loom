@@ -160,6 +160,7 @@ export async function cmdDoctor(opts: {
     const loaded = await loadedApp(config);
     checks.push(encryptionKeyCheck(loaded));
     checks.push(plaintextSnapshotCheck(loaded));
+    checks.push(archiveSnapshotCheck(loaded));
   }
 
   // 6. Claim-check reach-through (CC-5) over the source tree.
@@ -286,6 +287,75 @@ function encryptionKeyCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
 }
 
 const SNAPSHOT_SEAL_CHECK = "snapshot-plaintext-under-encrypting-events";
+const ARCHIVE_SEAL_CHECK = "archive-snapshot-plaintext-under-encrypting-events";
+
+/**
+ * ADR 0130 D8 - the retention ARCHIVE snapshot store gets the same rule as the runtime's: when the
+ * event store seals, an archive snapshot store must report `sealsWholeState === true` AND share the
+ * event store's KeyStore, or `LogLifecycle` refuses the archive as `unsafe-archive`.
+ */
+function archiveSnapshotCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
+  if (loaded instanceof Error) {
+    return { name: ARCHIVE_SEAL_CHECK, status: "failed", detail: String(loaded) };
+  }
+  const archive = (loaded.lifecycle as { archiveSnapshotStore?: unknown } | undefined)
+    ?.archiveSnapshotStore as { keys?: unknown; sealsWholeState?: unknown } | undefined;
+  const eventStore = loaded.stores?.eventStore as
+    | { keys?: unknown; sealingCapability?: () => { covers?: readonly unknown[] } | undefined }
+    | undefined;
+  if (archive === undefined) {
+    return {
+      name: ARCHIVE_SEAL_CHECK,
+      status: "skipped",
+      detail: "no archive snapshot store is wired",
+    };
+  }
+  let covers: readonly unknown[] | undefined;
+  try {
+    covers = eventStore?.sealingCapability?.()?.covers;
+  } catch (err) {
+    return {
+      name: ARCHIVE_SEAL_CHECK,
+      status: "failed",
+      detail: `the event store's sealingCapability() threw: ${String(err)}`,
+    };
+  }
+  const eventSeals =
+    (covers !== undefined && covers.length > 0) ||
+    (typeof eventStore?.keys === "object" && eventStore.keys !== null);
+  if (!eventSeals) {
+    return { name: ARCHIVE_SEAL_CHECK, status: "skipped", detail: "the event store seals nothing" };
+  }
+  const sharesKeys =
+    typeof eventStore?.keys === "object" &&
+    eventStore.keys !== null &&
+    archive.keys === eventStore.keys;
+  if (archive.sealsWholeState === true && sharesKeys) {
+    return {
+      name: ARCHIVE_SEAL_CHECK,
+      status: "ok",
+      detail:
+        "the archive snapshot store seals the whole folded state under the event store's KeyStore",
+    };
+  }
+  const allowed =
+    (loaded as { security?: { crypto?: { allowPlaintextCheckpoints?: unknown } } }).security?.crypto
+      ?.allowPlaintextCheckpoints === true;
+  const fix =
+    "Fix: build the archive snapshot store with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` over the SAME KeyStore as the event store, or set `security.crypto.allowPlaintextCheckpoints: true`.";
+  if (allowed) {
+    return {
+      name: ARCHIVE_SEAL_CHECK,
+      status: "advisory",
+      detail: `the archive snapshot store does not seal the whole state under the event store's KeyStore; \`allowPlaintextCheckpoints\` is set, so retention will archive plaintext checkpoints. ${fix}`,
+    };
+  }
+  return {
+    name: ARCHIVE_SEAL_CHECK,
+    status: "failed",
+    detail: `the event store seals payloads but the archive snapshot store does not seal the whole state under its KeyStore: retention refuses to archive ("unsafe-archive"), so nothing is reclaimed. ${fix}`,
+  };
+}
 
 /**
  * ADR 0130 D8 — an event store that seals payloads beside a snapshot store that does not seal
@@ -356,13 +426,13 @@ function plaintextSnapshotCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
   }
   const hasKeys = typeof snapshotStore.keys === "object" && snapshotStore.keys !== null;
   const fix =
-    "Fix: build the snapshot store with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` using the SAME KeyStore as the event store, or, once ADR 0130 D8's kernel refusal lands (slice S3), set `security.crypto.allowPlaintextCheckpoints: true` to accept a plaintext checkpoint (for example on an encrypted volume). That option is not read by any release today; this check only honours it if a config already carries it.";
+    "Fix: build the snapshot store with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` using the SAME KeyStore as the event store, or set `security.crypto.allowPlaintextCheckpoints: true` to accept a plaintext checkpoint (for example on an encrypted volume, or while migrating). Without one of the two, the kernel refuses to boot (ADR 0130 D8).";
   if (allowed) {
     return {
       name: SNAPSHOT_SEAL_CHECK,
       status: "advisory",
       detail:
-        "the event store seals but the snapshot store does not seal the whole state; `security.crypto.allowPlaintextCheckpoints` is set on this config (available from S3, ADR 0130 D8), so this is accepted. The checkpoint holds the folded state (including `variables._waitAnswers`) in plaintext.",
+        "the event store seals but the snapshot store does not seal the whole state; `security.crypto.allowPlaintextCheckpoints` is set on this config (ADR 0130 D8), so the kernel accepts it. The checkpoint holds the folded state (including `variables._waitAnswers`) in plaintext.",
     };
   }
   if (hasKeys && snapshotStore.sealsWholeState !== true) {
@@ -375,7 +445,7 @@ function plaintextSnapshotCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
   return {
     name: SNAPSHOT_SEAL_CHECK,
     status: "failed",
-    detail: `the event store seals payloads but the snapshot store ${hasKeys ? "does not share its KeyStore" : "is plaintext"}: the checkpoint writes the folded state (including \`variables._waitAnswers\`) unsealed, and a shred cannot erase it. A later release refuses to boot on this. ${fix}`,
+    detail: `the event store seals payloads but the snapshot store ${hasKeys ? "does not share its KeyStore" : "is plaintext"}: the checkpoint writes the folded state (including \`variables._waitAnswers\`) unsealed, and a shred cannot erase it. The kernel refuses to boot on this (ADR 0130 D8). ${fix}`,
   };
 }
 

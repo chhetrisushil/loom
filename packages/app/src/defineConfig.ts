@@ -860,6 +860,11 @@ export interface LoomApp {
   /** R9 — whether `security.strict` was enabled. */
   strict: boolean;
   /**
+   * ADR 0130 D8 - the crypto posture this app was composed with, present only when
+   * `security.crypto` was given. `loom doctor` reads `crypto.allowPlaintextCheckpoints` from here.
+   */
+  security?: { crypto?: { allowPlaintextCheckpoints: boolean } };
+  /**
    * R9 — the resolved autonomy envelope, present when any bound is in force. Hand
    * `app.envelope.spawn` to `superviseChildren({ limits })` (the supervisor is app-owned, so
    * `defineConfig` cannot start it for you) and to `boundOrchestration` in flows.
@@ -1334,6 +1339,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     ...(config.timers !== undefined && { timerStore: config.timers.store }),
     ...(config.validateInput !== undefined && { validateInput: config.validateInput }),
     ...(config.snapshotEvery !== undefined && { snapshotEvery: config.snapshotEvery }),
+    // ADR 0130 D8 - the explicit opt-out of the kernel's refusal of a plaintext checkpoint.
+    ...(config.crypto?.allowPlaintextCheckpoints === true && { allowPlaintextCheckpoints: true }),
     ...(config.kernel?.meterCeilings !== undefined && {
       meterCeilings: config.kernel.meterCeilings,
     }),
@@ -1506,6 +1513,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     }),
     ...(config.onWarn !== undefined && { onWarn: config.onWarn }),
     ...(stores.branchRegistry !== undefined && { branchRegistry: stores.branchRegistry }),
+    ...(config.crypto?.allowPlaintextCheckpoints === true && { allowPlaintextCheckpoints: true }),
   });
 
   config.catalog?.registerInto(runtime);
@@ -1695,6 +1703,11 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     strict,
     ...(envelopeActive && { envelope: { spawn, ledger } }),
     ...(killSwitch !== undefined && { killSwitch }),
+    ...(config.crypto !== undefined && {
+      security: {
+        crypto: { allowPlaintextCheckpoints: config.crypto.allowPlaintextCheckpoints === true },
+      },
+    }),
     stores,
     tools,
     skills,
