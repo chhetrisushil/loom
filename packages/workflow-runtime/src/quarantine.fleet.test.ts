@@ -946,7 +946,7 @@ describe("seeded fleet scenario (capable + incapable nodes, random crash points)
         const log = await inner.eventStore.read(e);
         const view = await a.eventStore.read(e).catch(() => log); // A's opened view when readable
         const consumed = consumedOf(view).filter(
-          (c) => c.payload !== null && c.waitId !== ("__loom_discard__" as never)
+          (c) => c.payload !== null && c.waitId !== "__loom_discard__"
         );
         // (1) at most once
         const ids = consumed.map((c) => c.messageId);

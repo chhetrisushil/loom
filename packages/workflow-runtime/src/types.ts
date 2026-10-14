@@ -1425,7 +1425,8 @@ export class InboxQuarantineRefusedError extends Error {
     Object.setPrototypeOf(this, InboxQuarantineRefusedError.prototype);
   }
   get retryable(): boolean {
-    return this.reason === "not-parked" || this.reason === "contended";
+    // (the shape of InboxDiscardRefusedError: a transient refusal is retryable, a rule violation is not)
+    return this.reason !== "invalid" && this.reason !== "not-sealed";
   }
 }
 
