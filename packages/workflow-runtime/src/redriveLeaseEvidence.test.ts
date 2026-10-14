@@ -451,7 +451,7 @@ describe("a won claim followed by a failure is not stranded (review P3-3)", () =
     const c = s.node("c", { eventStore: store });
     lapse(s);
     const errors: unknown[] = [];
-    // isAbandoned: the failed attempt released the lease row, so the retry's evidence is the host's
+    // the failed attempt forgot its lease (row kept, expiring): it vetoes isAbandoned until it lapses
     const svc = new TimerService(c.rt, s.raw.timers, {
       fenced: true,
       isAbandoned: () => true,
@@ -465,7 +465,66 @@ describe("a won claim followed by a failure is not stranded (review P3-3)", () =
     );
     expect(rows).toHaveLength(1);
     expect(rows[0]?.refused?.head).toBe(s.rowHead + 1); // re-stamped at the new head
+    lapse(s);
     await pollUntil(svc, async () => (await status(s, c.rt)) === "completed");
+  });
+});
+
+describe("a failure after a won claim leaves the lease to EXPIRE (round 3: forget, not release)", () => {
+  function failingFence(s: Stuck, times: number) {
+    const inner = s.raw.eventStore as InMemoryAsyncEventStore;
+    let left = times;
+    return new Proxy(inner, {
+      get(t, p) {
+        if (p === "acquireFence") {
+          return async (...a: [string]) => {
+            if (left > 0) {
+              left--;
+              throw new Error("fence store down");
+            }
+            return t.acquireFence?.(...a);
+          };
+        }
+        const v = Reflect.get(t, p, t);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    }) as unknown as EventStore;
+  }
+
+  it("poll: acquireFence throws once after the marker landed: the lease row is STILL there (expiring), and after the TTL a later poll re-drives to completion with NO isAbandoned", async () => {
+    const s = await stuck();
+    const c = s.node("c", { eventStore: failingFence(s, 1) });
+    lapse(s);
+    const errors: unknown[] = [];
+    const svc = new TimerService(c.rt, s.raw.timers, {
+      fenced: true,
+      onError: (_i, e) => errors.push(e),
+    });
+    await svc.tick(FAR);
+    expect(errors).toHaveLength(1);
+    expect(await s.count("EXECUTION_RECOVERED")).toBe(1); // the claim WAS won
+    // the lease row was forgotten, not deleted: it expires on its own and IS the retry's evidence
+    expect(await s.leases.get(s.e)).not.toBeNull();
+    expect(c.rt.leaseKeeper?.validNow(s.e)).toBe(false);
+    lapse(s);
+    await pollUntil(svc, async () => (await status(s, c.rt)) === "completed");
+    expect(errors).toHaveLength(1);
+  });
+
+  it("sweep: the same failure leaves the lease row to expire, and a later lease-mode sweep (no predicate) re-drives", async () => {
+    const s = await stuck();
+    const c = s.node("c", { eventStore: failingFence(s, 1) });
+    lapse(s);
+    const opts = { leases: { store: s.leases, owner: "c" }, fenced: true } as const;
+    const first = await recoverAbandoned(c.rt, opts);
+    expect(first.failed).toBe(1);
+    expect(await s.count("EXECUTION_RECOVERED")).toBe(1);
+    expect(await s.leases.get(s.e)).not.toBeNull();
+    lapse(s);
+    await until(async () => {
+      await recoverAbandoned(c.rt, opts);
+      return (await status(s, c.rt)) === "completed";
+    });
   });
 });
 

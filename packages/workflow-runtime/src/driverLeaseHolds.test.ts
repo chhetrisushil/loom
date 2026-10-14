@@ -187,3 +187,74 @@ describe("HeartbeatOptions.onStoreError (S7c review P2-3)", () => {
     expect(() => rig()).not.toThrow();
   });
 });
+
+describe("DriverLeases - forget (S7d round 3)", () => {
+  it("the last hold forgetting leaves the ROW to expire: not renewed, not valid, and it IS expired evidence after the TTL", async () => {
+    const { dl, row, clock, store } = rig();
+    const a = must(await dl.acquire("e1"));
+    a.forget();
+    expect(a.valid()).toBe(false);
+    expect(dl.keeper.size).toBe(0);
+    expect(await row("e1")).not.toBeNull();
+    clock.wall += 31_000;
+    clock.mono += 31_000;
+    expect((await store.expired(clock.wall)).map((l) => l.executionId)).toContain("e1");
+  });
+
+  it("with another hold live, forget does not stop the lease; the intent applies when the LAST goes", async () => {
+    const { dl, row } = rig();
+    const a = must(await dl.acquire("e1"));
+    const b = must(await dl.acquire("e1"));
+    a.forget();
+    expect(b.valid()).toBe(true);
+    expect(dl.keeper.size).toBe(1);
+    await b.release();
+    expect(dl.keeper.size).toBe(0);
+    expect(await row("e1")).not.toBeNull(); // forgotten, not deleted
+  });
+
+  it("forget is idempotent and a release afterwards is a no-op", async () => {
+    const { dl, row } = rig();
+    const a = must(await dl.acquire("e1"));
+    a.forget();
+    a.forget();
+    await a.release();
+    expect(await row("e1")).not.toBeNull();
+  });
+
+  it("a forget is not sticky: a later hold that releases normally deletes the row", async () => {
+    const { dl, row } = rig();
+    const a = must(await dl.acquire("e1"));
+    a.forget();
+    const b = must(await dl.acquire("e1"));
+    expect(b.valid()).toBe(true);
+    await b.release();
+    expect(await row("e1")).toBeNull();
+  });
+
+  it("a forget while a concurrent acquire is pending defers to it and still forgets (row kept)", async () => {
+    const { dl, row } = rig();
+    const a = must(await dl.acquire("e1"));
+    const pendingB = dl.acquire("e1"); // counted synchronously, mid-flight
+    a.forget();
+    const b = must(await pendingB);
+    expect(b.valid()).toBe(true); // the pending acquire relied on the lease: it was not dropped
+    await b.release(); // last hold, forget intent still stands
+    expect(await row("e1")).not.toBeNull();
+    expect(dl.keeper.size).toBe(0);
+  });
+
+  it("a lost lease clears the intent (the next driver's release deletes normally)", async () => {
+    const { dl, row, takeOver, store, clock } = rig();
+    const a = must(await dl.acquire("e1"));
+    const b = must(await dl.acquire("e1"));
+    a.forget();
+    await takeOver("e1");
+    expect(b.valid()).toBe(false);
+    await store.release("e1", "other:node");
+    clock.wall += 1;
+    const c = must(await dl.acquire("e1"));
+    await c.release();
+    expect(await row("e1")).toBeNull();
+  });
+});

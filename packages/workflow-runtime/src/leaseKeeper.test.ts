@@ -739,3 +739,64 @@ describe("LeaseKeeper.close reports the loss (S7c review P2-1c)", () => {
     expect(lost).toEqual([]);
   });
 });
+
+describe("LeaseKeeper.forget (S7d round 3)", () => {
+  it("drops the id with NO store call: no renew after, validNow false, no onLost, the row stays", async () => {
+    const { keeper, store, lost } = rig(true);
+    await Promise.all(["a", "b"].map((i) => keeper.acquire(i)));
+    store.calls.length = 0;
+    keeper.forget("a");
+    expect(store.calls).toEqual([]);
+    expect(keeper.validNow("a")).toBe(false);
+    expect(keeper.size).toBe(1);
+    expect(store.held.has("a")).toBe(true); // the row is untouched
+    await keeper.tick();
+    expect(store.calls).toEqual(["renewMany:1"]); // only "b"
+    expect(lost).toEqual([]);
+  });
+
+  it("forgetting the only held id stops renewing it entirely; forgetting an unknown id is a no-op", async () => {
+    const { keeper, store } = rig(true);
+    await keeper.acquire("a");
+    keeper.forget("a");
+    keeper.forget("nope");
+    store.calls.length = 0;
+    await keeper.tick();
+    expect(store.calls).toEqual([]);
+  });
+
+  it("a forgotten id re-acquires (the row is still ours, or expired): a fresh grant with a new deadline", async () => {
+    const { keeper, store, clock } = rig(true);
+    await keeper.acquire("a");
+    keeper.forget("a");
+    clock.t += 31_000; // past the TTL: the forgotten lease would have expired
+    expect(await keeper.acquire("a")).toBe(true);
+    expect(keeper.validNow("a")).toBe(true);
+    expect(store.calls.at(-1)).toBe("acquireMany:1");
+  });
+
+  it("a forgotten id is not released on close and not reported lost", async () => {
+    const { keeper, store, lost } = rig(true);
+    await keeper.acquire("a");
+    keeper.forget("a");
+    store.calls.length = 0;
+    await keeper.close();
+    expect(lost).toEqual([]);
+    expect(store.calls).toEqual([]);
+    expect(store.held.has("a")).toBe(true);
+  });
+
+  it("an in-flight renew answer for a forgotten id is ignored (no onLost, no resurrection)", async () => {
+    const { keeper, store, lost } = rig(true);
+    await keeper.acquire("a");
+    const go = store.holdNext();
+    const tick = keeper.tick();
+    await until(() => store.calls.includes("renewMany:1"));
+    keeper.forget("a");
+    store.held.delete("a"); // the store would report it not held
+    go();
+    await tick;
+    expect(lost).toEqual([]);
+    expect(keeper.validNow("a")).toBe(false);
+  });
+});
