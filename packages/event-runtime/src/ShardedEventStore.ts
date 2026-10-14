@@ -105,6 +105,12 @@ function commonOptional(shards: readonly EventStore[]): EventStore {
       surface[method] = (first[method] as (...a: unknown[]) => unknown).bind(first);
     }
   }
+  // ADR 0130 D7/D8 exception: `sealingCapability` is offered when ANY shard has it, because a shard
+  // lacking the method seals nothing and must be judged (commonSealing), not silently hide a sealing
+  // shard by making the whole store look like it does not seal.
+  if (shards.some((s) => typeof s.sealingCapability === "function")) {
+    surface.sealingCapability = () => undefined;
+  }
   return surface as unknown as EventStore;
 }
 
@@ -240,10 +246,11 @@ export class ShardedEventStore implements EventStore {
       },
       // One clock for the fleet: every shard has it (commonOptional), read from the first shard.
       storeNow: "forward",
-      // ADR 0130 residuals D7/D8: a stream may sit on any shard, so shards must agree. Installed only
-      // when every shard has the method (commonOptional); fails closed (ShardSealingMismatchError)
-      // on any disagreement, so "can open" and "does seal" cannot diverge.
-      sealingCapability: () => commonSealing(this.shards.map((s) => s.sealingCapability!())),
+      // ADR 0130 residuals D7/D8: a stream may sit on any shard, so shards must agree. Installed when
+      // ANY shard has the method (commonOptional); a shard lacking it counts as sealing nothing
+      // (undefined). Fails closed (ShardSealingMismatchError) on any disagreement, so "can open" and
+      // "does seal" cannot diverge. When no shard has it the method is omitted.
+      sealingCapability: () => commonSealing(this.shards.map((s) => s.sealingCapability?.())),
       deleteExecution: async (id) => {
         await (await this.route(id)).deleteExecution!(id);
         this.placementCache.delete(id);
