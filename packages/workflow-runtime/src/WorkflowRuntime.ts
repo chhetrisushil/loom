@@ -49,6 +49,7 @@ import { ExecutionJournal } from "./ExecutionJournal";
 import { highestMissing } from "./LogLifecycle";
 import { WorkflowContextImpl } from "./WorkflowContext";
 import type { SurfaceFactory } from "./WorkflowContext";
+import { PlaintextCheckpointError, assertCheckpointSealed } from "./checkpointGuard";
 import {
   ChainHopLimitError,
   type ChainIdentity,
@@ -157,7 +158,6 @@ import {
   sealedDetailOf,
   withSealedDetail,
 } from "./sealGuard";
-import { PlaintextCheckpointError, assertCheckpointSealed } from "./checkpointGuard";
 import {
   type StrayPassthroughReport,
   StrayScanner,
@@ -1048,7 +1048,7 @@ export class WorkflowRuntime {
     // ADR 0130 D8 - fail fast: a sealing log beside a checkpoint store that does not seal the whole
     // state (under the same keys) is refused here; every `save` re-checks (stores can change late).
     const allowPlaintext = deps.allowPlaintextCheckpoints === true;
-    if (!allowPlaintext) assertCheckpointSealed(deps.eventStore, deps.snapshotStore);
+    if (!allowPlaintext) assertCheckpointSealed(guardedEvents, deps.snapshotStore);
     const guardedSnapshots = new SealGuardedSnapshotStore(deps.snapshotStore, async (id) => {
       // A key-unavailable snapshot load asks the LOG whether it was a real shred. Read the WHOLE
       // stream (a tombstone sits ABOVE the snapshot, not at sequence 0): the guarded read raises the
@@ -1072,7 +1072,7 @@ export class WorkflowRuntime {
     });
     if (!allowPlaintext) {
       guardedSnapshots.guardSaves((snap, store) =>
-        assertCheckpointSealed(deps.eventStore, store, snap.executionId)
+        assertCheckpointSealed(guardedEvents, store, snap.executionId)
       );
     }
     this.snapshotStore = guardedSnapshots;

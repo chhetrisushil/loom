@@ -104,6 +104,10 @@ export function build(
     snapshotStore,
     effectRuntime: effects,
     inboxEnabled: true,
+    // ADR 0130 D8: these tests exercise inbox/seal behaviour over a sealing event store beside the
+    // plain in-memory snapshot store; the checkpoint refusal has its own test (plaintextCheckpoint.test.ts,
+    // which passes `allowPlaintextCheckpoints: false`).
+    allowPlaintextCheckpoints: true,
     ...(timers !== undefined && { timerStore: timers }),
     onWarn: (m: string) => warnings.push(m),
     onStorageError: (_id: string, e: unknown) => storageErrors.push(e),

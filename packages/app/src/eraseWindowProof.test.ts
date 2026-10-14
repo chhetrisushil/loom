@@ -64,7 +64,7 @@ async function boot(opts: { bare?: boolean; destroyed?: (s: string) => boolean }
     autostart: false,
     security: {
       strict: false,
-      crypto: { events },
+      crypto: { events, allowPlaintextCheckpoints: true }, // ADR 0130 D8: not under test
       compliance: {
         subjectOf: (e) =>
           e.eventType === "EXECUTION_STARTED"

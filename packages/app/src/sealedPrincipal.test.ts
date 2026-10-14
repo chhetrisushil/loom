@@ -132,6 +132,7 @@ async function boot(mode: Mode = "crypto", unknownOwner?: "allow", noPolicyB = f
             crypto: {
               events: events as EncryptingEventStore,
               snapshots: snaps as EncryptingSnapshotStore,
+              allowPlaintextCheckpoints: true, // ADR 0130 D8: static-path snapshots are under test
             },
           }
         : { principalCodec: codec }),
@@ -177,6 +178,7 @@ async function boot(mode: Mode = "crypto", unknownOwner?: "allow", noPolicyB = f
     principalIdentity: sealed ? "encrypted" : "ref",
     ...(mode === "codecB" && { principalCodec: codec }),
     inboxEnabled: true,
+    allowPlaintextCheckpoints: true, // ADR 0130 D8: not under test here
   });
   b.registerFlow(parkDef, parkRunner);
   b.registerFlow(decideDef, decideRunner);
