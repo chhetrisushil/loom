@@ -18,6 +18,9 @@
       "path": "../../plugins/a2a"
     },
     {
+      "path": "../../plugins/crypto"
+    },
+    {
       "path": "../agent-surface"
     },
     {
