@@ -61,6 +61,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "LeaseLostError",
   "LeaseHeldError",
   "LeaseStoreQuietError",
+  "LeaseStoreTimeoutError",
+  "StartLeaseHeldError",
   // the environment cannot host the runtime's scopes (no AsyncLocalStorage): no retry helps
   "AsyncContextUnavailableError",
   // fencing / supersession: this execution no longer owns its log; a leaked egress or spawn bound

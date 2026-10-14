@@ -7,7 +7,7 @@ import type {
   WorkerRequest,
   WorkerRuntime,
 } from "@loom/worker-runtime";
-import { ChainHopLimitError, LeaseHeldError } from "@loom/workflow-runtime";
+import { ChainHopLimitError, LeaseHeldError, StartLeaseHeldError } from "@loom/workflow-runtime";
 import type { RunOptions, SystemGrant, WorkflowRuntime } from "@loom/workflow-runtime";
 
 type Principal = NonNullable<RunOptions["principal"]>;
@@ -73,7 +73,13 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // ADR 0130 D11 (S7c): this attempt is a driver - the heartbeat lease comes BEFORE the fence. Another
     // live owner = stand down (a superseded refusal, not a failed attempt): no fence is taken.
     const hold = await this.runtime.acquireDriverLease(request.executionId);
-    if (hold === null) throw new LeaseHeldError(request.executionId);
+    if (hold === null) {
+      // A leased id with NO sequence 0 (a start package) may be facing a ghost lease: retryable, never
+      // "superseded" (the start would be lost outright). A real stream stands down.
+      if (!(await this.runtime.hasSequenceZero(request.executionId)))
+        throw new StartLeaseHeldError(request.executionId);
+      throw new LeaseHeldError(request.executionId);
+    }
     let fence: number | undefined;
     try {
       fence = await this.runtime.acquireFence(request.executionId, {

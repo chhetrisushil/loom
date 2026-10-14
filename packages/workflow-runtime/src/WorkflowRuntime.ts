@@ -194,6 +194,7 @@ import {
   ResumeRefusedError,
   SealedPayloadUnreadableError,
   StartFencedOutError,
+  StartLeaseHeldError,
   StateMigrationError,
   TIMER_FIRED,
 } from "./types";
@@ -3187,9 +3188,13 @@ export class WorkflowRuntime {
       const got = await this.driverLeases.acquire(executionId);
       if (got === null) {
         const held = new LeaseHeldError(executionId);
-        throw options?.executionId !== undefined
-          ? new ExecutionAlreadyExistsError(executionId, held)
-          : held;
+        if (options?.executionId === undefined) throw held;
+        // A caller-chosen id: the lease holder may be a GHOST (leased, died before its sequence 0).
+        // Sequence 0 present = a real stream, "already started elsewhere"; absent = nothing is there
+        // to have been won, so the start is RETRYABLE (the ghost lease expires on its own).
+        if (await this.hasSequenceZero(executionId))
+          throw new ExecutionAlreadyExistsError(executionId, held);
+        throw new StartLeaseHeldError(executionId);
       }
       lease = got;
     }
@@ -3200,6 +3205,8 @@ export class WorkflowRuntime {
       // onEvent. A minted ulid cannot collide, so the default path pays no barrier and stays
       // byte-identical (the journal writes sequence 0 behind the fold, as before).
       if (options?.executionId !== undefined) {
+        // ADR 0130 D11: the bootstrap bypasses the journal (and its write gate): check the lease here.
+        if (!lease.valid()) throw lease.lossError();
         bootstrap.durable = await this.writeBootstrap(
           executionId,
           definition.id,
@@ -3662,7 +3669,7 @@ export class WorkflowRuntime {
         resolved.runner as FlowRunner<unknown, unknown>,
         effectiveInput,
         inboxWake === undefined && this.isReopen(runVm)
-          ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence)
+          ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence, lease)
           : bootstrap,
         fence,
         options?.deadlineMs ?? resolved.definition.deadlineMs,
@@ -3707,7 +3714,8 @@ export class WorkflowRuntime {
     workflowId: string,
     vm: ReplayVM,
     events: BootstrapEvent[],
-    fence: number | undefined
+    fence: number | undefined,
+    lease: DriverLease = NO_LEASE
   ): Promise<BootstrapEvent[]> {
     const store = this.eventStore;
     if (
@@ -3719,6 +3727,8 @@ export class WorkflowRuntime {
       return events;
     }
     for (let attempt = 0; attempt < REOPEN_ATTEMPTS; attempt++) {
+      // ADR 0130 D11: this append bypasses the journal (and so its write gate): check the lease here.
+      if (!lease.valid()) throw lease.lossError();
       const at = vm.peekState().sequence;
       const envelopes = events.map((e, i) =>
         ExecutionJournal.envelopeAt(
@@ -6165,6 +6175,14 @@ export class WorkflowRuntime {
     return this.driverLeases.acquire(executionId);
   }
 
+  /**
+   * ADR 0130 D11 - does `executionId` have a sequence 0 (a real stream, as opposed to a ghost lease)?
+   * Public so a worker runtime's `allocate` applies the same stand-down rule as `start`.
+   */
+  async hasSequenceZero(executionId: string): Promise<boolean> {
+    return (await readRangeOf(this.eventStore, executionId, 0, 0)).length > 0;
+  }
+
   /** The driver's own hold: a stand-down is a {@link LeaseHeldError}, nothing appended, no fence taken. */
   private async takeDriverLease(executionId: string): Promise<DriverLease> {
     const lease = await this.acquireDriverLease(executionId);
@@ -6712,7 +6730,7 @@ export class WorkflowRuntime {
         target.runner as FlowRunner<unknown, unknown>,
         stateMigrated ? migratedInput : recordedInput,
         this.isReopen(runVm)
-          ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence)
+          ? await this.landReopenBootstrap(executionId, workflowId, runVm, bootstrap, fence, lease)
           : bootstrap,
         fence,
         options.deadlineMs ?? target.definition.deadlineMs,
@@ -7758,12 +7776,17 @@ export class WorkflowRuntime {
     if (this.driverLeases !== undefined) {
       const got = await this.driverLeases.acquire(successorId);
       if (got === null) {
+        // Another live owner. A real successor stream = already started elsewhere (a no-op); no
+        // sequence 0 = a ghost lease, so this continuation must be retried, not dropped.
+        if (!(await this.hasSequenceZero(successorId))) throw new StartLeaseHeldError(successorId);
         return { successorId, chainId: chain.chainId, generation, handle: undefined };
       }
       succLease = got;
     }
     try {
       try {
+        // ADR 0130 D11: the successor's bootstrap bypasses the journal's write gate: check the lease.
+        if (!succLease.valid()) throw succLease.lossError();
         bootstrap.durable = await this.writeBootstrap(
           successorId,
           workflowId,
@@ -8150,11 +8173,7 @@ export class WorkflowRuntime {
         rejectCompletionRaw(err);
         rejectSuspendRaw(err);
       });
-      journal.setWriteGate(() =>
-        lease.valid()
-          ? undefined
-          : (leaseLost ?? new LeaseLostError(executionId, "released", "closed"))
-      );
+      journal.setWriteGate(() => (lease.valid() ? undefined : (leaseLost ?? lease.lossError())));
     }
 
     // Commit bootstrap events (EXECUTION_STARTED / resume+RESUMED / restore) so
@@ -8240,8 +8259,7 @@ export class WorkflowRuntime {
         // ADR 0130 D11 (S7c): no effect is dispatched under a lease that is no longer valid.
         ...(leased && {
           dispatchGate: () => {
-            if (!lease.valid())
-              throw leaseLost ?? new LeaseLostError(executionId, "released", "closed");
+            if (!lease.valid()) throw leaseLost ?? lease.lossError();
           },
         }),
         divergence,

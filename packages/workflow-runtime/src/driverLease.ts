@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { LeaseStore } from "@loom/event-runtime";
-import { LeaseKeeper, type LeaseKeeperOptions, type LeaseLostError } from "./leaseKeeper";
+import { LeaseKeeper, type LeaseKeeperOptions, LeaseLostError } from "./leaseKeeper";
 
 // ── The runtime's drivers hold heartbeat leases (ADR 0130 D11, S7c) ─────────────────────────────
 //
@@ -35,10 +35,11 @@ export interface HeartbeatOptions
   ttlMs?: number;
   renewEveryMs?: number;
   /**
-   * `"stop"` (default): a driver that cannot confirm a renewal stops at its deadline. `"continue"` is
-   * accepted but NOT yet honoured by the keeper (S7c ships "stop" only); it behaves as "stop".
+   * `"stop"` (default, and the ONLY accepted value in S7c): a driver that cannot confirm a renewal
+   * stops at its deadline. `"continue"` is REJECTED at construction with a `TypeError`: it is not
+   * supported yet (ADR 0130 D11; it requires the poll to treat the fleet as heuristic, slice S7d).
    */
-  onStoreError?: "stop" | "continue";
+  onStoreError?: "stop";
   nodeId?: string;
 }
 
@@ -61,6 +62,11 @@ export interface DriverLease {
   onLost(listener: (err: LeaseLostError) => void): void;
   /** True while the lease is held AND inside both local deadlines (a clock compare, no I/O). */
   valid(): boolean;
+  /**
+   * The error to fail with when {@link valid} is false: the real loss this hold was told (taken over,
+   * deadline, keeper closed), else a deadline loss naming the keeper's real owner.
+   */
+  lossError(): LeaseLostError;
 }
 
 /** The hold of an unwired runtime: always valid, never lost, nothing to release. */
@@ -68,6 +74,7 @@ export const NO_LEASE: DriverLease = Object.freeze({
   release: () => Promise.resolve(),
   onLost: () => {},
   valid: () => true,
+  lossError: () => new LeaseLostError("", "", "closed"),
 });
 
 interface Hold {
@@ -75,15 +82,25 @@ interface Hold {
   dead: boolean;
   released: boolean;
   listener: ((err: LeaseLostError) => void) | undefined;
+  /** The loss this hold was told, kept for a listener that attaches afterwards. */
+  lostErr: LeaseLostError | undefined;
 }
 
 export class DriverLeases {
   readonly keeper: LeaseKeeper;
   /** id -> live holds. Bounded by the live drivers: an entry leaves with its last hold. */
   private readonly holds = new Map<string, Set<Hold>>();
+  /** id -> acquires awaiting the keeper: their hold is not registered yet, but they count. */
+  private readonly pending = new Map<string, number>();
+  /** ids whose last registered hold was released while an acquire was pending: release afterwards. */
+  private readonly deferredRelease = new Set<string>();
 
   constructor(deps: HeartbeatOptions) {
-    const { leaseStore, onStoreError: _onStoreError, nodeId, ...options } = deps;
+    const { leaseStore, onStoreError, nodeId, ...options } = deps;
+    if ((onStoreError as unknown) !== undefined && onStoreError !== "stop")
+      throw new TypeError(
+        `heartbeat.onStoreError: "${String(onStoreError)}" is not supported yet (ADR 0130 D11; "continue" requires the poll to treat the fleet as heuristic, slice S7d); only "stop" is accepted`
+      );
     this.keeper = new LeaseKeeper({
       ...options,
       store: leaseStore,
@@ -93,11 +110,13 @@ export class DriverLeases {
   }
 
   private lost(id: string, err: LeaseLostError): void {
+    this.deferredRelease.delete(id); // the keeper no longer holds it: nothing to release afterwards
     const set = this.holds.get(id);
     if (set === undefined) return;
     this.holds.delete(id);
     for (const h of set) {
       h.dead = true;
+      h.lostErr = err;
       const l = h.listener;
       h.listener = undefined;
       try {
@@ -114,23 +133,69 @@ export class DriverLeases {
    * `LeaseStoreQuietError`) when the lease cannot be confirmed: the caller drives nothing.
    */
   async acquire(executionId: string): Promise<DriverLease | null> {
-    const ok = await this.keeper.acquire(executionId);
-    if (!ok) return null;
-    const hold: Hold = { id: executionId, dead: false, released: false, listener: undefined };
-    let set = this.holds.get(executionId);
-    if (set === undefined) {
-      set = new Set();
-      this.holds.set(executionId, set);
+    // Counted BEFORE the await: a concurrent last-release must not drop the lease this acquire is
+    // about to rely on (the keeper answers `true` for a lease it already holds, one tick later).
+    this.pending.set(executionId, (this.pending.get(executionId) ?? 0) + 1);
+    let ok: boolean;
+    try {
+      ok = await this.keeper.acquire(executionId);
+    } catch (err) {
+      this.settlePending(executionId);
+      throw err;
     }
-    set.add(hold);
+    const hold: Hold = {
+      id: executionId,
+      dead: false,
+      released: false,
+      listener: undefined,
+      lostErr: undefined,
+    };
+    if (ok) {
+      let set = this.holds.get(executionId);
+      if (set === undefined) {
+        set = new Set();
+        this.holds.set(executionId, set);
+      }
+      set.add(hold);
+      // Lost in the very tick it was granted (a stall past its deadline): the hold is born dead and
+      // tells its first listener immediately.
+      if (!this.keeper.validNow(executionId) && !hold.dead) {
+        set.delete(hold);
+        if (set.size === 0) this.holds.delete(executionId);
+        hold.dead = true;
+        hold.lostErr = new LeaseLostError(executionId, this.keeper.owner, "deadline");
+      }
+    }
+    this.settlePending(executionId);
+    if (!ok) return null;
     return {
       release: () => this.release(hold),
       onLost: (listener) => {
-        if (hold.dead) return;
+        if (hold.dead) {
+          // Lost before the driver attached: deliver it NOW (never a silent no-op).
+          if (hold.lostErr !== undefined && !hold.released) {
+            hold.released = true;
+            listener(hold.lostErr);
+          }
+          return;
+        }
         hold.listener = listener;
       },
       valid: () => !hold.dead && this.keeper.validNow(executionId),
+      lossError: () =>
+        hold.lostErr ?? new LeaseLostError(executionId, this.keeper.owner, "deadline"),
     };
+  }
+
+  /** An acquire finished: if its release was deferred and no hold remains, release now. */
+  private settlePending(id: string): void {
+    const n = (this.pending.get(id) ?? 1) - 1;
+    if (n > 0) {
+      this.pending.set(id, n);
+      return;
+    }
+    this.pending.delete(id);
+    if (this.deferredRelease.delete(id) && !this.holds.has(id)) void this.keeper.release(id);
   }
 
   private release(hold: Hold): Promise<void> {
@@ -143,6 +208,11 @@ export class DriverLeases {
     set.delete(hold);
     if (set.size > 0) return Promise.resolve();
     this.holds.delete(hold.id);
+    if ((this.pending.get(hold.id) ?? 0) > 0) {
+      // An acquire is mid-flight on this id: it counts on the lease. Whoever finishes last releases.
+      this.deferredRelease.add(hold.id);
+      return Promise.resolve();
+    }
     return this.keeper.release(hold.id);
   }
 

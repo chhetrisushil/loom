@@ -32,6 +32,7 @@ export {
   ResumeContendedError,
   ResumeRefusedError,
   StartFencedOutError,
+  StartLeaseHeldError,
   StateMigrationError,
   StepTimeoutError,
   TIMER_FIRED,
@@ -108,6 +109,7 @@ export {
   LeaseKeeper,
   LeaseLostError,
   LeaseStoreQuietError,
+  LeaseStoreTimeoutError,
   type LeaseKeeperOptions,
 } from "./leaseKeeper";
 export {

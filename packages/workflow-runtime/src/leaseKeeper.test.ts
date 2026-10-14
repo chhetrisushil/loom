@@ -585,3 +585,108 @@ describe("LeaseKeeper", () => {
     });
   });
 });
+
+// ── S7c fix round: bounded store calls, close reports the loss ───────────────────────────────────
+describe("LeaseKeeper - bounded store calls (S7c review P1-1)", () => {
+  /** A hand-driven one-shot timer: `fire()` runs the first pending timeout. */
+  function afterRig(over: Partial<LeaseKeeperOptions> = {}) {
+    const pending: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+    const r = rig(true, {
+      after: (fn: () => void, ms: number) => {
+        const t = { fn, ms, cancelled: false };
+        pending.push(t);
+        return () => {
+          t.cancelled = true;
+        };
+      },
+      ...over,
+    } as Partial<LeaseKeeperOptions>);
+    const fire = (): void => {
+      const t = pending.find((p) => !p.cancelled);
+      if (!t) throw new Error("no pending timeout");
+      t.cancelled = true;
+      t.fn();
+    };
+    return { ...r, pending, fire };
+  }
+
+  it("a release the store never answers settles at the timeout, reports through onError, and the lease is gone locally", async () => {
+    const { keeper, store, errors, pending, fire } = afterRig();
+    await keeper.acquire("x");
+    store.holdNext(); // never released: the next call (the release) hangs forever
+    const rel = keeper.release("x");
+    await until(() => store.calls.includes("releaseMany:1"));
+    expect(pending.some((p) => !p.cancelled && p.ms === 1000)).toBe(true); // min(ttl/6, 1000)
+    fire();
+    await rel; // settles although the store never answered
+    expect(errors.length).toBe(1);
+    expect((errors[0] as Error).name).toBe("LeaseStoreTimeoutError");
+    expect(keeper.validNow("x")).toBe(false);
+  });
+
+  it("an acquire parked behind a timed-out release stops waiting and acquires", async () => {
+    const { keeper, store, fire } = afterRig();
+    await keeper.acquire("x");
+    store.holdNext();
+    const rel = keeper.release("x");
+    await until(() => store.calls.includes("releaseMany:1"));
+    const acq = keeper.acquire("x"); // parked behind the on-the-wire release
+    fire();
+    await rel;
+    expect(await acq).toBe(true);
+    expect(keeper.validNow("x")).toBe(true);
+  });
+
+  it("a successful store call cancels its timeout (no leaked timers)", async () => {
+    const { keeper, pending } = afterRig();
+    await keeper.acquire("x");
+    await keeper.release("x");
+    expect(pending.length).toBeGreaterThan(0);
+    expect(pending.every((p) => p.cancelled)).toBe(true);
+  });
+
+  it("an acquire the store never answers is bounded: it rejects, arms the quiet period, and start is not blocked forever", async () => {
+    const { keeper, store, errors, fire } = afterRig();
+    store.holdNext();
+    const acq = keeper.acquire("a");
+    await until(() => store.calls.includes("acquireMany:1"));
+    fire();
+    await expect(acq).rejects.toMatchObject({ name: "LeaseStoreTimeoutError" });
+    expect(errors.length).toBeGreaterThan(0);
+    await expect(keeper.acquire("b")).rejects.toBeInstanceOf(LeaseStoreQuietError);
+    expect(keeper.validNow("a")).toBe(false);
+  });
+
+  it("the timeout is configurable (storeTimeoutMs)", async () => {
+    const { keeper, store, pending } = afterRig({
+      storeTimeoutMs: 250,
+    } as Partial<LeaseKeeperOptions>);
+    store.holdNext();
+    void keeper.acquire("a").catch(() => {});
+    await until(() => store.calls.includes("acquireMany:1"));
+    expect(pending.some((p) => p.ms === 250)).toBe(true);
+  });
+});
+
+describe("LeaseKeeper.close reports the loss (S7c review P2-1c)", () => {
+  it("close() fires onLost('closed') for every id still held, with the keeper's real owner", async () => {
+    const { keeper, lost } = rig(true);
+    await Promise.all(["a", "b"].map((i) => keeper.acquire(i)));
+    await keeper.close();
+    expect(lost.map(([id]) => id).sort()).toEqual(["a", "b"]);
+    for (const [id, err] of lost) {
+      expect(err).toBeInstanceOf(LeaseLostError);
+      expect(err.reason).toBe("closed");
+      expect(err.executionId).toBe(id);
+      expect(err.owner).toBe(keeper.owner);
+    }
+  });
+
+  it("a released id is not reported lost on close", async () => {
+    const { keeper, lost } = rig(true);
+    await keeper.acquire("a");
+    await keeper.release("a");
+    await keeper.close();
+    expect(lost).toEqual([]);
+  });
+});

@@ -104,6 +104,12 @@ export interface RedriveOptions {
    * unconditional acquire (the documented residual).
    */
   ifHeadAt?: number;
+  /**
+   * ADR 0130 D11 (S7c): called after the fence is taken and BEFORE a dispatch, so a caller holding
+   * the heartbeat claim keeps it across its own fence acquisition and releases it only now (the
+   * worker that drives the execution takes its own lease). Not called for an in-process resume.
+   */
+  beforeDispatch?: () => Promise<void>;
 }
 
 /**
@@ -146,6 +152,7 @@ export async function redriveAbandoned(
       // #392 - re-drive where the execution belongs, not on whichever node runs the pass. The
       // recorded target is a HINT: the placement policy gets the last word.
       const target = await placementOf(runtime.events, executionId);
+      await options.beforeDispatch?.();
       await options.dispatcher.dispatch(
         {
           executionId,
