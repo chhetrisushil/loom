@@ -69,4 +69,39 @@ if (PG_URL === undefined) {
       }
     }, 30_000);
   });
+
+  describe("migrate into a second schema whose search_path also lists the first", () => {
+    it("creates every idx_* index in BOTH schemas (the probe looks in the table's own schema)", async () => {
+      const A = `${SCHEMA}_a`;
+      const B = `${SCHEMA}_b`;
+      const admin = new Pool({ connectionString: PG_URL });
+      const pa = new Pool({ connectionString: PG_URL, options: `-c search_path=${A}`, max: 2 });
+      const pb = new Pool({ connectionString: PG_URL, options: `-c search_path=${B},${A}`, max: 2 });
+      try {
+        for (const s of [A, B]) {
+          await admin.query(`DROP SCHEMA IF EXISTS ${s} CASCADE`);
+          await admin.query(`CREATE SCHEMA ${s}`);
+        }
+        await migrate(pa);
+        await migrate(pb);
+        const count = async (s: string) =>
+          Number(
+            (
+              await admin.query(
+                "SELECT count(*)::int AS n FROM pg_indexes WHERE schemaname = $1 AND indexname LIKE 'idx\\_%'",
+                [s],
+              )
+            ).rows[0].n,
+          );
+        const na = await count(A);
+        expect(na).toBeGreaterThan(5);
+        expect(await count(B)).toBe(na);
+      } finally {
+        await pa.end();
+        await pb.end();
+        for (const s of [A, B]) await admin.query(`DROP SCHEMA IF EXISTS ${s} CASCADE`);
+        await admin.end();
+      }
+    }, 30_000);
+  });
 }
