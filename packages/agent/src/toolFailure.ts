@@ -44,6 +44,11 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "InboxTopicStreamsRequiredError",
   // a sealed inbox payload this node cannot open: retrying on the same node cannot help (ADR 0130)
   "SealedPayloadUnreadableError",
+  // a stream this node cannot open (a seal marker it cannot open, a key it does not hold), refused
+  // DENIAL-SHAPED (it is an ExecutionDeniedError to the caller); and the store error behind the key
+  // case. No retry on this node helps (ADR 0130 residuals D7)
+  "SealedStreamUnreadableError",
+  "KeyUnavailableError",
   // shards disagree about sealing: a misconfiguration, no retry helps (ADR 0130 residuals D7/D8)
   "ShardSealingMismatchError",
   // the environment cannot host the runtime's scopes (no AsyncLocalStorage): no retry helps
@@ -59,7 +64,19 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
 
 const MAX_CAUSE_DEPTH = 5;
 
+/** The brand `@loom/workflow-runtime` puts on both sealed refusals (`isSealedUnreadable`). */
+const SEALED_UNREADABLE = Symbol.for("loom.sealedUnreadable");
+
 function isTerminalOne(err: unknown): boolean {
+  // ADR 0130 residuals D7 - checked BEFORE any generic ExecutionDeniedError handling: a sealed
+  // refusal is an ExecutionDeniedError to its caller, but it is a node-level fact, never feedback.
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    (err as Record<symbol, unknown>)[SEALED_UNREADABLE] === true
+  ) {
+    return true;
+  }
   if (
     err instanceof SuspendError ||
     err instanceof CapabilityDeniedError ||

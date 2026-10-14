@@ -6,6 +6,7 @@ import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
   InMemoryKeyStore,
+  shredSubject,
 } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
@@ -45,7 +46,7 @@ function boot(
     sensitive: {},
     ...(tolerant && { onShredded: "tolerate" as const }),
   });
-  const snaps = new EncryptingSnapshotStore(rawSnaps, keys, { sensitive: [] });
+  const snaps = new EncryptingSnapshotStore(rawSnaps, keys, { sensitive: [], events: raw });
   events.registerSensitive("EXECUTION_STARTED", EVENT_PATHS);
   snaps.registerSensitive(STATE_PATHS);
   const seen: Array<PrincipalChain | undefined> = [];
@@ -113,7 +114,9 @@ describe("identity under crypto", () => {
     const a = boot(undefined, true);
     const run = await a.runtime.start(a.flow, {}, { executionId: "e2", principal: alice });
     await run.waitForSuspend();
-    await a.keys.destroy("e2"); // erasure = key destruction
+    // erasure = key destruction plus its tombstone (what shredSubject does; a key that is merely
+    // absent, with no tombstone, is "key-unavailable" since ADR 0130 residuals D7)
+    await shredSubject(a.keys, a.raw, "e2", { snapshotStore: a.rawSnaps });
 
     const b = boot({ raw: a.raw, rawSnaps: a.rawSnaps, keys: a.keys }, true);
     const resumed = await b.runtime

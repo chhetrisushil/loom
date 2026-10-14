@@ -130,7 +130,32 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     let id = state.executionId;
     // `followToHead` routes to the chain's newest generation however many times it rotated (a flow
     // that rotates ten times and then completes is a completion, not a failure), verifying links.
-    while (current.status === "continued") {
+    // The kernel starts a successor in-process: its sequence 0 is durable a few ticks BEFORE its
+    // live handle is registered, so a head reading `running` with no handle yet is that window (or
+    // a chain driven elsewhere). Re-read it, bounded, rather than reporting a mid-flight head.
+    let running = 0;
+    while (
+      current.status === "continued" ||
+      (current.status === "running" && id !== state.executionId && running < 400)
+    ) {
+      if (current.status === "running") {
+        running++;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const live = this.runtime.liveHandle(id);
+        if (live !== undefined) {
+          try {
+            await Promise.race([
+              live.waitForSuspend().then(() => undefined),
+              live.waitForCompletion().then(() => undefined),
+            ]);
+          } catch {
+            // a cancel / failure rejects the completion: the folded state below is authoritative
+          }
+        }
+        const fresh = await this.runtime.loadState(id, this.identity(pkg.principal));
+        if (fresh !== null) current = fresh;
+        continue;
+      }
       let head: Awaited<ReturnType<WorkflowRuntime["followToHead"]>>;
       try {
         head = await this.runtime.followToHead(id, this.identity(pkg.principal));
@@ -143,18 +168,6 @@ export class LocalWorkerRuntime implements WorkerRuntime {
       if (head === null || head.executionId === id) break; // an unreadable / unverifiable successor
       id = head.executionId;
       current = head.state;
-      const live = this.runtime.liveHandle(id);
-      if (live !== undefined && current.status === "running") {
-        try {
-          await Promise.race([
-            live.waitForSuspend().then(() => undefined),
-            live.waitForCompletion().then(() => undefined),
-          ]);
-        } catch {
-          // a cancel / failure rejects the completion: the folded state below is authoritative
-        }
-        current = live.getState();
-      }
     }
     return current === state ? state : { ...current, executionId: pkg.executionId };
   }

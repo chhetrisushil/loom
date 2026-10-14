@@ -1,7 +1,8 @@
 import { unwrapTainted } from "@loom/classify";
+import type { EventEnvelope } from "@loom/core";
 import { step$ } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
+import { type EventStore, InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
@@ -42,6 +43,37 @@ function twoNodes(sensitive: Record<string, readonly string[]>) {
   const sealed = build({}, { ...raw, eventStore: sealedStore });
   const plain = build({}, { ...raw });
   return { raw, sealed, plain };
+}
+
+/**
+ * The same raw stores seen as an UNMARKED log: a writer that sealed fields without stamping
+ * `metadata.seal` (a pre-1.25.0 node, a third-party sealing decorator). Such an envelope makes NO
+ * claim, so the stream-level guard (ADR 0130 residuals D7) does not apply and the per-payload
+ * delivery guard (D2-D4) is the line of defence these tests pin. A MARKED stream is refused earlier
+ * and wholesale; that is covered in sealMarkerGuard.test.ts.
+ */
+function legacyPlain(raw: ReturnType<typeof twoNodes>["raw"]) {
+  const strip = (events: EventEnvelope[]): EventEnvelope[] =>
+    events.map((e) => {
+      if (e.metadata?.seal === undefined) return e;
+      const { seal: _seal, ...rest } = e.metadata;
+      return { ...e, metadata: rest };
+    });
+  const inner = raw.eventStore;
+  const view: EventStore = {
+    append: (e) => inner.append(e),
+    appendBatch: (es) => inner.appendBatch!(es),
+    read: async (id) => strip(await inner.read(id)),
+    readFrom: async (id, from) => strip(await inner.readFrom(id, from)),
+    readRange: async (id, from, to) => strip(await inner.readRange!(id, from, to)),
+    head: (id) => inner.head!(id),
+    subscribe: (id, h) => inner.subscribe(id, h),
+    acquireFence: (id) => inner.acquireFence!(id),
+    acquireFenceIf: (id, x) => inner.acquireFenceIf!(id, x),
+    appendIfUnchanged: (id, ev, expect) => inner.appendIfUnchanged!(id, ev, expect),
+    close: () => inner.close(),
+  };
+  return build({}, { ...raw, eventStore: view, snapshotStore: new InMemoryAsyncSnapshotStore() });
 }
 
 const receiveFlow = () =>
@@ -243,7 +275,7 @@ describe("sealed-payload guard (ADR 0130)", () => {
       const { raw, sealed } = twoNodes({ INBOX_MESSAGE: ["payload"] });
       // The plain node folds from the log: its own snapshot store (a shared one would hand it the
       // capable node's plaintext checkpoint, the residual ADR 0130 documents).
-      const plain = build({}, { ...raw, snapshotStore: new InMemoryAsyncSnapshotStore() });
+      const plain = legacyPlain(raw);
       const f = replayFlow(swallow);
       sealed.rt.registerFlow(f.definition, f.runner);
       plain.rt.registerFlow(f.definition, f.runner);
@@ -293,7 +325,7 @@ describe("sealed-payload guard (ADR 0130)", () => {
 
   it("a flow that swallows the replay refusal dispatches NO new effect and starts NO child", async () => {
     const { raw, sealed } = await refusedRunning();
-    const plain = build({}, { ...raw, snapshotStore: new InMemoryAsyncSnapshotStore() });
+    const plain = legacyPlain(raw);
     let probed = 0;
     let spawned = 0;
     plain.effects.register(
@@ -350,7 +382,7 @@ describe("sealed-payload guard (ADR 0130)", () => {
 
   it("recoverAbandoned reports a sealed refusal as failed (not recovered) and backs off", async () => {
     const { raw, sealed } = twoNodes({ INBOX_MESSAGE: ["payload"] });
-    const plain = build({}, { ...raw, snapshotStore: new InMemoryAsyncSnapshotStore() });
+    const plain = legacyPlain(raw);
     const f = replayFlow();
     sealed.rt.registerFlow(f.definition, f.runner);
     plain.rt.registerFlow(f.definition, f.runner);

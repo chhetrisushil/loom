@@ -9,6 +9,11 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./testing.d.ts",
+      "require": "./testing.js",
+      "default": "./testing.js"
     }
   },
   "scripts": {

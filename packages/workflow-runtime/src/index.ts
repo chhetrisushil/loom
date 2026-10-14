@@ -35,6 +35,7 @@ export {
   TIMER_FIRED,
 } from "./types";
 export { PrincipalUnrestorableError } from "./principal";
+export { SealedStreamUnreadableError, isSealedUnreadable } from "./sealGuard";
 export {
   CarryTooLargeError,
   ChainHopLimitError,

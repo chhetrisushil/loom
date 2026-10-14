@@ -5,11 +5,11 @@ import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { INBOX_WAKE_AT } from "./inbox";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
+import { isSealedUnreadable } from "./sealGuard";
 import {
   ExecutionAlreadyExistsError,
   ResumeContendedError,
   ResumeRefusedError,
-  SealedPayloadUnreadableError,
   TIMER_FIRED,
 } from "./types";
 
@@ -522,24 +522,33 @@ export class TimerService {
       // another, so a message that landed between the last read and the retire is delivered here.
       await this.lastLook(executionId, wakeAt, settle);
     } catch (err) {
-      if (!(err instanceof SealedPayloadUnreadableError)) throw err;
+      if (!isSealedUnreadable(err)) throw err;
       // ADR 0130: the head message is sealed and this node cannot open it. Keep the row (a capable
       // node needs it) but stop hammering: exponential back-off with no attempt cap, and report
       // the first refusal and then only every 16th, not every poll.
-      const attempt = (this.sealedBackoff.get(executionId)?.attempt ?? 0) + 1;
-      this.sealedBackoff.delete(executionId); // re-insert at the end: eviction order = recency
-      if (this.sealedBackoff.size >= MAX_WAKE_BACKOFFS) {
-        const oldest = this.sealedBackoff.keys().next().value;
-        if (oldest !== undefined) this.sealedBackoff.delete(oldest);
-      }
-      this.sealedBackoff.set(executionId, {
-        attempt,
-        nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
-      });
-      if (attempt === 1 || attempt % 16 === 0) this.onError?.(executionId, err);
+      this.noteSealed(executionId, err);
       // The row was retired only if the throw came from the post-retire look: re-write it.
       await this.store.schedule({ executionId, wakeAt });
     }
+  }
+
+  /**
+   * ADR 0130 - this node cannot open what the wake needs. Keep the row (a capable node needs it)
+   * but stop hammering: exponential back-off with no attempt cap, and report the first refusal and
+   * then only every 16th, not every poll.
+   */
+  private noteSealed(executionId: string, err: Error): void {
+    const attempt = (this.sealedBackoff.get(executionId)?.attempt ?? 0) + 1;
+    this.sealedBackoff.delete(executionId); // re-insert at the end: eviction order = recency
+    if (this.sealedBackoff.size >= MAX_WAKE_BACKOFFS) {
+      const oldest = this.sealedBackoff.keys().next().value;
+      if (oldest !== undefined) this.sealedBackoff.delete(oldest);
+    }
+    this.sealedBackoff.set(executionId, {
+      attempt,
+      nextTryAt: this.now() + Math.max(1, redriveDelayMs(attempt, this.redriveBackoff)),
+    });
+    if (attempt === 1 || attempt % 16 === 0) this.onError?.(executionId, err);
   }
 
   private async lastLook(
@@ -762,6 +771,12 @@ export class TimerService {
       }
       await this.store.complete(executionId, wakeAt);
     } catch (err) {
+      // ADR 0130 residuals D7 - a stream this node cannot open: leave the row for a capable node,
+      // back off, and report first-then-every-16th (not every poll).
+      if (isSealedUnreadable(err)) {
+        this.noteSealed(executionId, err);
+        return;
+      }
       // Leave the timer in place; the next poll retries (at-least-once).
       this.onError?.(executionId, err);
     } finally {

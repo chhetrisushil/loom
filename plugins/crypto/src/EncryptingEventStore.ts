@@ -2,11 +2,22 @@ import type { EventEnvelope } from "@loom/core";
 import {
   type DecoratorPlan,
   type EventStore,
+  KeyUnavailableError,
   type OptionalEventStoreMethod,
+  type SealMarker,
+  type SealingCapability,
   inboxChainOf,
   installOptional,
 } from "@loom/event-runtime";
-import { decryptValue, encryptValue, hasEnvelope, mapPaths } from "./crypto";
+import {
+  CIPHER_ID,
+  type IvSource,
+  assertIvSourceAllowed,
+  decryptValue,
+  encryptValue,
+  hasEnvelope,
+  mapPaths,
+} from "./crypto";
 import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import type { KeyStore } from "./keystore";
 
@@ -35,6 +46,13 @@ export interface EncryptingEventStoreOptions {
    *    placeholder is not the original value, so a resume off it would diverge.
    */
   onShredded?: "throw" | "tolerate";
+  /**
+   * Deterministic cipher seam (ADR 0130 residuals D7, simulation only): derive each AES-GCM IV from
+   * `(stream, sequence, path)` instead of `randomBytes(12)`. Build one with `seededIvSource` from
+   * `@loom/plugin-crypto/testing`. REFUSED when `NODE_ENV === "production"`: a predictable IV breaks
+   * GCM confidentiality.
+   */
+  ivSource?: IvSource;
 }
 
 /** K10-R4 — the placeholder a tolerant read substitutes for an erased sensitive field. */
@@ -96,6 +114,9 @@ export class EncryptingEventStore implements EventStore {
   private readonly sensitive: Record<string, readonly string[]>;
   private readonly subjectOf: (e: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
   private readonly onShredded: "throw" | "tolerate";
+  private readonly ivSource: IvSource | undefined;
+  /** Streams (and subjects) whose `PAYLOAD_SHREDDED` tombstone has been seen: a tombstone is permanent. */
+  private readonly shreddedSeen = new Set<string>();
   // Every optional capability is decided in the plan below (ADR 0074 Amendment), and each is
   // installed only when the inner store has it, so a capability probe (`if (store.copyPrefix)`)
   // behaves identically.
@@ -128,6 +149,8 @@ export class EncryptingEventStore implements EventStore {
     this.sensitive = { ...options.sensitive };
     this.subjectOf = options.subjectOf ?? ((e) => e.executionId);
     this.onShredded = options.onShredded ?? "throw";
+    assertIvSourceAllowed(options.ivSource, "EncryptingEventStore");
+    this.ivSource = options.ivSource;
     const plan = {
       // One key lookup per DISTINCT subject in the batch, not one per envelope: a coalesced
       // batch is many executions, and `keys.getOrCreate` is a real lookup (a KMS or table).
@@ -172,7 +195,9 @@ export class EncryptingEventStore implements EventStore {
         return inner.appendIfUnchanged!(executionId, sealed, expect);
       },
       storeNow: "forward", // a clock reading: no envelope to seal
-      sealingCapability: () => undefined, // ADR 0130 residuals D7 (S2 overrides): until the marker is stamped this store claims no capability
+      // Installed unconditionally below: this decorator OWNS the answer (what it seals, live), so
+      // it is offered whether or not the inner store has the method.
+      sealingCapability: () => this.capability(),
       // copyPrefix copies CIPHERTEXT verbatim in the inner store — a fork must
       // resolve to the parent's subject (A2) for the copied prefix to stay readable.
       copyPrefix: "forward",
@@ -190,6 +215,29 @@ export class EncryptingEventStore implements EventStore {
       listExecutionsPage: "forward",
     } satisfies DecoratorPlan<EventStore, OptionalEventStoreMethod>;
     installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
+    (this as { sealingCapability?: EventStore["sealingCapability"] }).sealingCapability = () =>
+      this.capability();
+  }
+
+  /**
+   * ADR 0130 residuals D7 - what this node seals and therefore opens, LIVE from the sensitive map
+   * (so `registerSensitive` is reflected). `undefined` while nothing is marked: such a node seals
+   * nothing and opens nothing. `covers` is sorted and deduped `EVENT_TYPE.path`.
+   */
+  private capability(): SealingCapability | undefined {
+    const covers: string[] = [];
+    for (const type of Object.keys(this.sensitive)) {
+      for (const path of this.sensitive[type] ?? []) covers.push(`${type}.${path}`);
+    }
+    if (covers.length === 0) return undefined;
+    const sorted = [...new Set(covers)].sort();
+    const mine = new Set(sorted);
+    return {
+      cipher: CIPHER_ID,
+      covers: sorted,
+      opens: (marker: SealMarker): boolean =>
+        marker.v === 1 && marker.cipher === CIPHER_ID && marker.covers.every((c) => mine.has(c)),
+    };
   }
 
   /**
@@ -300,12 +348,34 @@ export class EncryptingEventStore implements EventStore {
     return any;
   }
 
+  /**
+   * Seal the marked fields and stamp `metadata.seal` in the SAME envelope (ADR 0130 residuals D7):
+   * `covers` lists exactly the `EVENT_TYPE.path` entries in which at least one value was sealed in
+   * THIS envelope, sorted and deduped. The caller guarantees `sealsAnything`, so the marker is never
+   * stamped on an envelope that sealed nothing.
+   */
   private encrypt(envelope: EventEnvelope, paths: readonly string[], key: Buffer): EventEnvelope {
     const [exempt, rest] = splitExempt(envelope.eventType, paths);
-    const first = mapPaths(envelope.payload, exempt, (v) =>
-      isExactMarker(v) ? v : encryptValue(key, v)
-    );
-    return { ...envelope, payload: mapPaths(first, rest, (v) => encryptValue(key, v)) };
+    const covers = new Set<string>();
+    const seal = (path: string, v: unknown, n: number): unknown => {
+      covers.add(`${envelope.eventType}.${path}`);
+      const iv = this.ivSource?.({
+        streamId: envelope.executionId,
+        sequence: envelope.sequence,
+        path: n === 0 ? path : `${path}#${n}`,
+      });
+      return encryptValue(key, v, undefined, iv);
+    };
+    let payload: unknown = envelope.payload;
+    for (const path of exempt) {
+      payload = mapPaths(payload, [path], (v) => (isExactMarker(v) ? v : seal(path, v, 0)));
+    }
+    for (const path of rest) {
+      let n = 0;
+      payload = mapPaths(payload, [path], (v) => seal(path, v, n++));
+    }
+    const marker: SealMarker = { v: 1, cipher: CIPHER_ID, covers: [...covers].sort() };
+    return { ...envelope, payload, metadata: { ...envelope.metadata, seal: marker } };
   }
 
   async append(envelope: EventEnvelope): Promise<void> {
@@ -344,8 +414,15 @@ export class EncryptingEventStore implements EventStore {
       });
       // The error carries the REDACTED view, so a lifecycle op that needs no sealed field (an
       // operator `cancel` of an erased owner) can fold it; an authoritative fold still fails.
-      if (this.onShredded === "throw" && !inbox)
+      if (this.onShredded === "throw" && !inbox) {
+        // ADR 0130 residuals D7: "key gone" is two different facts. A real shred leaves a durable
+        // PAYLOAD_SHREDDED tombstone (erasure, unchanged); no tombstone means this node's KeyStore
+        // simply lacks the key (misconfiguration), which must never read as an erasure.
+        if (!(await this.tombstoned(executionId, subjectId, events))) {
+          throw new KeyUnavailableError(subjectId, executionId);
+        }
         throw new PayloadShreddedError(subjectId, executionId, redacted);
+      }
       return redacted;
     }
     return events.map((e, i) => {
@@ -367,6 +444,29 @@ export class EncryptingEventStore implements EventStore {
         }),
       };
     });
+  }
+
+  /** Does the log of `executionId` carry a `PAYLOAD_SHREDDED` tombstone for `subjectId`? Positive answers are cached (a tombstone is permanent). */
+  private async tombstoned(
+    executionId: string,
+    subjectId: string,
+    seen: readonly EventEnvelope[]
+  ): Promise<boolean> {
+    const hit = (e: EventEnvelope): boolean =>
+      e.eventType === "PAYLOAD_SHREDDED" &&
+      (e.payload as { subjectId?: unknown } | null)?.subjectId === subjectId;
+    const memo = `${executionId}\u0000${subjectId}`;
+    if (this.shreddedSeen.has(memo)) return true;
+    let found = seen.some(hit);
+    if (!found) found = (await this.inner.read(executionId)).some(hit);
+    if (found) {
+      if (this.shreddedSeen.size >= OWNER_WORKFLOW_CACHE) {
+        const oldest = this.shreddedSeen.values().next().value;
+        if (oldest !== undefined) this.shreddedSeen.delete(oldest);
+      }
+      this.shreddedSeen.add(memo);
+    }
+    return found;
   }
 
   async read(executionId: string): Promise<EventEnvelope[]> {

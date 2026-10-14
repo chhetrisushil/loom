@@ -9,6 +9,11 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./operator": {
+      "types": "./operator.d.ts",
+      "require": "./operator.js",
+      "default": "./operator.js"
     }
   },
   "scripts": {

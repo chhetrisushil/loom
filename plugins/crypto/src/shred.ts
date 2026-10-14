@@ -1,5 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
-import { type EventStore, headOf, isReservedStream } from "@loom/event-runtime";
+import { type EventStore, headOf, isKeyUnavailable, isReservedStream } from "@loom/event-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { PayloadShreddedError } from "./errors";
 import type { KeyStore } from "./keystore";
@@ -42,7 +42,7 @@ export interface ShredOptions {
 type Resolution = { done: true } | { done: false; sequence: number };
 
 /** Whether a folded state records this subject's shred (a compacted-away tombstone). */
-function recordsShred(state: unknown, subjectId: string): boolean {
+export function recordsShred(state: unknown, subjectId: string): boolean {
   const shredded = (state as { variables?: { _shredded?: { subjectId?: unknown } } } | undefined)
     ?.variables?._shredded;
   return shredded?.subjectId === subjectId;
@@ -69,7 +69,9 @@ async function resolve(
           ? await snapshots.loadLatestSealed(executionId)
           : await snapshots.loadLatest(executionId);
     } catch (err) {
-      if (!(err instanceof PayloadShreddedError)) throw err;
+      // Key gone: a retry after the key was destroyed (the snapshot may predate the shred, so it
+      // cannot record it, and reads as key-unavailable, ADR 0130 residuals D7).
+      if (!(err instanceof PayloadShreddedError) && !isKeyUnavailable(err)) throw err;
       throw new TypeError(
         `shredSubject("${subjectId}"): the snapshot store refused to read "${executionId}" because the key is already destroyed (a retry), and it does not offer loadLatestSealed (SnapshotStore SPI 1.1.0). Pass a store that does — EncryptingSnapshotStore does, and TenantScopedSnapshotStore forwards it — or the raw snapshot store, or tombstoneSequenceOf. No sequence was guessed; nothing was written.`
       );
