@@ -261,6 +261,9 @@ importers:
       '@loom/plugin-a2a':
         specifier: workspace:*
         version: link:../../plugins/a2a
+      '@loom/plugin-crypto':
+        specifier: workspace:*
+        version: link:../../plugins/crypto
       '@loom/projection-runtime':
         specifier: workspace:*
         version: link:../projection-runtime
@@ -292,9 +295,6 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../llm
-      '@loom/plugin-crypto':
-        specifier: workspace:*
-        version: link:../../plugins/crypto
       '@loom/scaffold':
         specifier: workspace:*
         version: link:../../tools/scaffold

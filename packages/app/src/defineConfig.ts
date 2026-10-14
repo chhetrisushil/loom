@@ -59,6 +59,7 @@ import type { AgentCard } from "@loom/plugin-a2a";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
+import { EncryptingSnapshotStore, type KeyStore } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime/memory";
 import {
   composeAdapters,
@@ -145,7 +146,12 @@ export type StorageConfig =
   | {
       kind: "custom";
       eventStore: EventStore;
-      snapshotStore: SnapshotStore;
+      /**
+       * Omit for the in-memory default. ADR 0130 D8: when the event store encrypts (it exposes its
+       * `keys`), the default is built with `sealState` on the SAME KeyStore, so the checkpoint is
+       * sealed too; an EXPLICIT store that does not seal is refused at boot.
+       */
+      snapshotStore?: SnapshotStore;
       branchRegistry?: BranchRegistry;
     };
 
@@ -983,6 +989,18 @@ function keyStoreProof(crypto: unknown): DestructionProof | undefined {
   return typeof keys?.wasDestroyed === "function" ? keys.wasDestroyed.bind(keys) : undefined;
 }
 
+/**
+ * ADR 0130 D8 (user ruling 2026-10-14): the in-memory default checkpoint store for a custom event
+ * store. When that store encrypts (structural `keys`), the default seals the WHOLE folded state under
+ * the same KeyStore instead of being refused at boot; otherwise it is the plain in-memory store.
+ */
+function defaultSnapshotStore(eventStore: EventStore): SnapshotStore {
+  const inner = new InMemoryAsyncSnapshotStore();
+  const keys = (eventStore as { keys?: unknown }).keys;
+  if (typeof keys !== "object" || keys === null) return inner;
+  return new EncryptingSnapshotStore(inner, keys as KeyStore, { sealState: true });
+}
+
 function buildStores(storage: StorageConfig): LoomStores {
   if (storage.kind === "custom") {
     // Bring your own backend — used verbatim. Concrete backends arrive this way via
@@ -990,7 +1008,7 @@ function buildStores(storage: StorageConfig): LoomStores {
     // `@loom/app` stays free of any vendor dependency (ADR 0043).
     return {
       eventStore: storage.eventStore,
-      snapshotStore: storage.snapshotStore,
+      snapshotStore: storage.snapshotStore ?? defaultSnapshotStore(storage.eventStore),
       ...(storage.branchRegistry !== undefined && { branchRegistry: storage.branchRegistry }),
     };
   }
