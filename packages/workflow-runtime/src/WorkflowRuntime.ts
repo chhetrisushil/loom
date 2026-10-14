@@ -1455,7 +1455,6 @@ export class WorkflowRuntime {
   /** Per-execution refusal counts for first-then-every-16th operator reporting (bounded, LRU-ish). */
   private readonly sealedReports = new Map<string, number>();
 
-  /** Operator report of a sealed refusal: the first, then only every 16th (not every poll). */
   /**
    * ADR 0130 D8 - a checkpoint is saved on every cadence tick, settle and suspend, so a standing
    * `PlaintextCheckpointError` would flood `onStorageError`. The first refusal of an execution is
@@ -1478,6 +1477,7 @@ export class WorkflowRuntime {
   }
   private readonly checkpointRefusals = new Map<string, number>();
 
+  /** Operator report of a sealed refusal: the first, then only every 16th (not every poll). */
   private reportSealed(executionId: string, err: SealedStreamUnreadableError): void {
     const n = (this.sealedReports.get(executionId) ?? 0) + 1;
     this.sealedReports.delete(executionId);

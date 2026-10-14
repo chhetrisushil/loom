@@ -99,6 +99,10 @@ export function build(
   // EncryptingEventStore) gets a `sealState` snapshot store on the SAME KeyStore, so every suite over a
   // sealing log runs with sealed checkpoints (the snapshot-load path D7/D8 changed). A test that needs a
   // plaintext store passes `allowPlaintextCheckpoints: true` explicitly (with a reason).
+  // KNOWN GAP (ADR 0130 slice S5b): a node that cannot open the data cannot open a sealed checkpoint either,
+  // so it cannot fold the owner; until S5b's log-fold fallback lands, the incapable-node fixtures in the
+  // quarantine / sealedWakeRow / sealMarkerGuard suites give that node its OWN empty snapshot store. That is
+  // a workaround, not the intended design - remove it when S5b merges.
   const snapshotStore = opts.snapshotStore ?? sealedSnapshots(eventStore);
   const timers = opts.timers === null ? undefined : (opts.timers ?? new InMemoryTimerStore());
   const warnings: string[] = [];
