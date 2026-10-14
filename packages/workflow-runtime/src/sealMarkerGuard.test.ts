@@ -52,7 +52,7 @@ function fleet(sensitive: Sensitive) {
   const timers = new InMemoryTimerStore();
   const keys = new InMemoryKeyStore();
   const mk = (store: EventStore) =>
-    build({}, { eventStore: store, snapshotStore: new InMemoryAsyncSnapshotStore(), timers });
+    build({}, { eventStore: store, timers });
   const capable = mk(new EncryptingEventStore(inner, keys, { sensitive }));
   const raw = mk(inner);
   const wrongKey = mk(new EncryptingEventStore(inner, new InMemoryKeyStore(), { sensitive }));
@@ -292,7 +292,7 @@ describe("an unmarked stream behaves exactly as today (legacy streams must not b
       readRange: async (i: string, a: number, b: number) =>
         strip(await f.inner.readRange!(i, a, b)),
     });
-    const node = build({}, { eventStore: legacy, snapshotStore: new InMemoryAsyncSnapshotStore() });
+    const node = build({}, { eventStore: legacy });
     const state = await node.rt.loadState(e); // does not throw: no claim was made
     expect(state?.status).toBe("suspended");
   });
@@ -438,7 +438,7 @@ describe("a node with a SUPERSET sensitive map opens an older, narrower marker",
       sensitive: { EXECUTION_STARTED: ["input"], STEP_COMPLETED: ["output"] },
     });
     const mk = (s: EventStore) =>
-      build({}, { eventStore: s, snapshotStore: new InMemoryAsyncSnapshotStore() });
+      build({}, { eventStore: s });
     const counter = { runs: 0 };
     const fl = secretFlow(counter);
     const a = mk(narrow);
@@ -467,7 +467,7 @@ describe("backstop (b): an UNMARKED legacy stream whose principal record is itse
     });
     const a = build(
       { principalIdentity: sealPrincipal ? "encrypted" : "verbatim" },
-      { eventStore: enc, snapshotStore: new InMemoryAsyncSnapshotStore() }
+      { eventStore: enc }
     );
     const fl = flow("p", async (ctx) => {
       await ctx.suspend({ on: "Go" });
@@ -501,7 +501,7 @@ describe("backstop (b): an UNMARKED legacy stream whose principal record is itse
         },
         executionAuthz: { requirePrincipal: true },
       },
-      { eventStore: legacy, snapshotStore: new InMemoryAsyncSnapshotStore() }
+      { eventStore: legacy }
     );
     return { e, b, inner, consulted: () => asked.length, asked };
   }
@@ -536,7 +536,7 @@ describe("DST/crash: a crash after a sealed append, recovered by a raw node and 
     return k;
   };
   const mk = (store: EventStore) =>
-    build({}, { eventStore: store, snapshotStore: new InMemoryAsyncSnapshotStore() });
+    build({}, { eventStore: store });
   const sealed = (inner: EventStore) =>
     new EncryptingEventStore(inner, keys(), { sensitive, ivSource: seededIvSource("dst-1") });
   const fl = () =>

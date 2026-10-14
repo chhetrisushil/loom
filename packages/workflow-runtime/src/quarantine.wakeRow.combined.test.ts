@@ -23,7 +23,6 @@ describe("S5 quarantine hold + S6 refusal row on one execution", () => {
   it("an incapable poller neither loops nor double-drives; a capable node auto-releases in order and completes", async () => {
     const raw = {
       eventStore: new InMemoryAsyncEventStore() as EventStore,
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
       timers: new InMemoryTimerStore(),
     };
     const keys = new InMemoryKeyStore();

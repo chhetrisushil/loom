@@ -7,6 +7,7 @@ import {
   InMemoryTimerStore,
   type TimerStore,
 } from "@loom/event-runtime";
+import { EncryptingSnapshotStore, type KeyStore } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
 import { z } from "zod";
 import { WorkflowRuntime } from "../WorkflowRuntime";
@@ -59,6 +60,19 @@ export class Latch {
   }
 }
 
+/**
+ * The checkpoint store a sealing event store needs: `inner` wrapped in a `sealState` store on the
+ * event store's own KeyStore (plain `inner` when the event store exposes no `keys`).
+ */
+export function sealedSnapshots(
+  eventStore: EventStore,
+  inner: SnapshotStore = new InMemoryAsyncSnapshotStore()
+): SnapshotStore {
+  const keys = (eventStore as { keys?: unknown }).keys;
+  if (typeof keys !== "object" || keys === null) return inner;
+  return new EncryptingSnapshotStore(inner, keys as KeyStore, { sealState: true });
+}
+
 export interface Harness {
   rt: WorkflowRuntime;
   eventStore: EventStore;
@@ -81,7 +95,11 @@ export function build(
   } = {}
 ): Harness {
   const eventStore = opts.eventStore ?? new InMemoryAsyncEventStore();
-  const snapshotStore = opts.snapshotStore ?? new InMemoryAsyncSnapshotStore();
+  // ADR 0130 D8: mirror the defineConfig default - an event store that exposes `keys` (an
+  // EncryptingEventStore) gets a `sealState` snapshot store on the SAME KeyStore, so every suite over a
+  // sealing log runs with sealed checkpoints (the snapshot-load path D7/D8 changed). A test that needs a
+  // plaintext store passes `allowPlaintextCheckpoints: true` explicitly (with a reason).
+  const snapshotStore = opts.snapshotStore ?? sealedSnapshots(eventStore);
   const timers = opts.timers === null ? undefined : (opts.timers ?? new InMemoryTimerStore());
   const warnings: string[] = [];
   const storageErrors: unknown[] = [];
@@ -104,10 +122,6 @@ export function build(
     snapshotStore,
     effectRuntime: effects,
     inboxEnabled: true,
-    // ADR 0130 D8: these tests exercise inbox/seal behaviour over a sealing event store beside the
-    // plain in-memory snapshot store; the checkpoint refusal has its own test (plaintextCheckpoint.test.ts,
-    // which passes `allowPlaintextCheckpoints: false`).
-    allowPlaintextCheckpoints: true,
     ...(timers !== undefined && { timerStore: timers }),
     onWarn: (m: string) => warnings.push(m),
     onStorageError: (_id: string, e: unknown) => storageErrors.push(e),

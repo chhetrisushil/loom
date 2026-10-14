@@ -63,13 +63,11 @@ describe("a wrong-key node without `events` on the snapshot store", () => {
     const f0 = secret();
     const setup = build({ snapshotEvery: 1 } as never, {
       eventStore: plainInner,
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
     });
     setup.rt.registerFlow(f0.definition, f0.runner);
     await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
     const base = strict({
       eventStore: plainInner,
-      snapshotStore: new InMemoryAsyncSnapshotStore(),
     });
 
     // node A: real keys, a snapshot after every event
@@ -78,7 +76,7 @@ describe("a wrong-key node without `events` on the snapshot store", () => {
     const keys = new InMemoryKeyStore();
     const a = build({ snapshotEvery: 1 } as never, {
       eventStore: new EncryptingEventStore(inner, keys, { sensitive: FULL }),
-      snapshotStore: new EncryptingSnapshotStore(rawSnaps, keys, { sensitive: ["variables"] }),
+      snapshotStore: new EncryptingSnapshotStore(rawSnaps, keys, { sealState: true }),
       timers: new InMemoryTimerStore(),
     });
     const fa = secret();
@@ -90,7 +88,7 @@ describe("a wrong-key node without `events` on the snapshot store", () => {
     const wrong = new InMemoryKeyStore();
     const b = strict({
       eventStore: new EncryptingEventStore(inner, wrong, { sensitive: FULL }),
-      snapshotStore: new EncryptingSnapshotStore(rawSnaps, wrong, { sensitive: ["variables"] }),
+      snapshotStore: new EncryptingSnapshotStore(rawSnaps, wrong, { sealState: true }),
       timers: new InMemoryTimerStore(),
     });
 

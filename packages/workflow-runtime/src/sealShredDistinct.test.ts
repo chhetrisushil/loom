@@ -34,7 +34,7 @@ async function shreddedWithSnapshot(opts: { withEvents: boolean }) {
     sensitive: { STEP_COMPLETED: ["output"] },
   });
   const snaps = new EncryptingSnapshotStore(rawSnaps, keys, {
-    sensitive: ["variables"],
+    sealState: true, // ADR 0130 D8: the kernel refuses a checkpoint that is not whole-state sealed
     ...(opts.withEvents && { events: inner }),
   });
   const timers = new InMemoryTimerStore();
