@@ -2,7 +2,13 @@ export { TenantScopedEventStore } from "./TenantScopedEventStore";
 export { CoalescingEventStore } from "./CoalescingEventStore";
 export type { InboxStreams } from "./types";
 export type { CoalescingEventStoreOptions } from "./CoalescingEventStore";
-export { KEY_UNAVAILABLE_CODE, KeyUnavailableError, isKeyUnavailable } from "./keyUnavailable";
+export {
+  KEY_UNAVAILABLE_CODE,
+  KeyUnavailableError,
+  erasureWindowView,
+  isKeyUnavailable,
+  recordsErasureIntent,
+} from "./keyUnavailable";
 export { ShardSealingMismatchError, ShardedEventStore } from "./ShardedEventStore";
 export type { MigrationResult, ShardedEventStoreOptions } from "./ShardedEventStore";
 export { ShardPlan, DEFAULT_BUCKETS } from "./ShardPlan";

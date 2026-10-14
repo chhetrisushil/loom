@@ -1,6 +1,6 @@
 import { EraseCoordinator, SubjectIndex, exportSubject } from "@loom/compliance";
 import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, isKeyUnavailable } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { EncryptingEventStore } from "./EncryptingEventStore";
 import { InMemoryKeyStore } from "./keystore";
@@ -85,4 +85,88 @@ describe("eraseSubject / exportSubject in the ShredIncomplete window", () => {
       expect(JSON.stringify(out)).not.toContain("123-45-6789");
     });
   }
+});
+
+// ADR 0130 D7 (round 4) - the retry window needs DURABLE EVIDENCE that this erasure began. A node
+// whose key store lacks the key (wrong key, partitioned key store) reads exactly like the window
+// (key null, no tombstone) and must never be mistaken for it.
+describe("a node that never had the key is not in the retry window", () => {
+  async function wrongKeyWorld() {
+    const w = await windowWorld("throw");
+    const wrongKeys = new InMemoryKeyStore(); // the capable node's key is not here
+    const wrongStore = new EncryptingEventStore(w.inner, wrongKeys, {
+      sensitive: SENSITIVE,
+      onShredded: "throw",
+    });
+    const shred = (_s: string, executionIds: readonly string[]) =>
+      shredSubject(wrongKeys, w.inner, "e1", {
+        subjectId: "e1",
+        executionIds: [...executionIds],
+        snapshotStore: NO_SNAPSHOTS,
+      });
+    return { ...w, wrongKeys, wrongStore, shred };
+  }
+
+  it("eraseSubject rejects, appends nothing, and leaves the capable node's key and data intact", async () => {
+    const w = await wrongKeyWorld();
+    const before = JSON.stringify(await w.inner.read("e1"));
+    const coord = new EraseCoordinator({
+      index: w.index,
+      eventStore: w.wrongStore,
+      shred: w.shred,
+    });
+    const err = await coord.eraseSubject(w.subject).then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(isKeyUnavailable(err)).toBe(true);
+    expect(JSON.stringify(await w.inner.read("e1"))).toBe(before); // log identical
+    expect(await w.keys.get("e1")).not.toBeNull(); // the capable node's key is intact
+    const readable = await w.store.read("e1");
+    expect(JSON.stringify(readable)).toContain("123-45-6789"); // and it still reads the data
+  });
+
+  it("shredSubject on that node refuses: no intent, no tombstone, nothing destroyed", async () => {
+    const w = await wrongKeyWorld();
+    const before = JSON.stringify(await w.inner.read("e1"));
+    await expect(w.shred("ann", ["e1"])).rejects.toSatisfy(isKeyUnavailable);
+    expect(JSON.stringify(await w.inner.read("e1"))).toBe(before);
+    expect(await w.keys.get("e1")).not.toBeNull();
+  });
+
+  it("exportSubject rejects instead of returning a redacted export as if erased", async () => {
+    const w = await wrongKeyWorld();
+    await expect(
+      exportSubject(w.subject, { index: w.index, eventStore: w.wrongStore })
+    ).rejects.toSatisfy(isKeyUnavailable);
+  });
+});
+
+describe("the erase intent makes the retry crash-safe at every point", () => {
+  it("a crash after the intent but before the key's destruction: the retry completes", async () => {
+    const w = await windowWorld("throw");
+    let crash = true;
+    const realDestroy = w.keys.destroy.bind(w.keys);
+    w.keys.destroy = async (id: string) => {
+      if (crash) {
+        crash = false;
+        throw new Error("crash before destroy");
+      }
+      return realDestroy(id);
+    };
+    const coord = new EraseCoordinator({ index: w.index, eventStore: w.store, shred: w.shred });
+    await expect(coord.eraseSubject(w.subject)).rejects.toThrow("crash before destroy");
+    expect(await w.keys.get("e1")).not.toBeNull(); // intent written, key still present
+    const log = await w.inner.read("e1");
+    expect(log.filter((e) => e.eventType === "ERASURE_PENDING")).toHaveLength(1);
+    expect(await tombstones(w.inner)).toHaveLength(0);
+    // the retry sees the key present: destroys it (the flaky store fails the FIRST tombstone), then
+    // the window retry completes on the intent alone
+    await expect(coord.eraseSubject(w.subject)).rejects.toBeInstanceOf(ShredIncompleteError);
+    expect((await coord.eraseSubject(w.subject)).outcome).toBe("erased");
+    expect(await tombstones(w.inner)).toHaveLength(1);
+    expect(
+      (await w.inner.read("e1")).filter((e) => e.eventType === "ERASURE_PENDING")
+    ).toHaveLength(1);
+  });
 });

@@ -1,6 +1,14 @@
 import type { EventEnvelope } from "@loom/core";
-import { type EventStore, headOf, isKeyUnavailable, isReservedStream } from "@loom/event-runtime";
+import {
+  type EventStore,
+  KeyUnavailableError,
+  headOf,
+  isKeyUnavailable,
+  isReservedStream,
+  recordsErasureIntent,
+} from "@loom/event-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
+import { hasEnvelope } from "./crypto";
 import { PayloadShreddedError } from "./errors";
 import type { KeyStore } from "./keystore";
 
@@ -39,7 +47,32 @@ export interface ShredOptions {
 }
 
 /** What step 1 learns about one execution: already tombstoned, or where its tombstone goes. */
-type Resolution = { done: true } | { done: false; sequence: number };
+type Resolution =
+  | { done: true }
+  | {
+      done: false;
+      /** Where the tombstone goes. */
+      sequence: number;
+      /** Set when this log does not yet hold the erase intent: it goes at `sequence - 1`. */
+      intentSequence?: number;
+      /** Whether the log (tail or compacted snapshot state) already records the intent. */
+      hasIntent: boolean;
+      /** Whether the log (tail or latest snapshot) holds sealed (encrypted) data. */
+      sealed: boolean;
+    };
+
+/** Whether a folded state records this subject's erase intent (an `ERASURE_PENDING` folded by compaction). */
+function recordsIntentInState(state: unknown, subjectId: string): boolean {
+  const audit = (state as { variables?: { _erasure?: unknown } } | undefined)?.variables?._erasure;
+  return (
+    Array.isArray(audit) &&
+    audit.some(
+      (a) =>
+        (a as { op?: unknown; subjectId?: unknown } | null)?.op === "pending" &&
+        (a as { subjectId?: unknown }).subjectId === subjectId
+    )
+  );
+}
 
 /** Whether a folded state records this subject's shred (a compacted-away tombstone). */
 export function recordsShred(state: unknown, subjectId: string): boolean {
@@ -88,12 +121,25 @@ async function resolve(
   ) {
     return { done: true };
   }
+  const hasIntent =
+    recordsErasureIntent(tail, subjectId) ||
+    (latest !== null && recordsIntentInState(latest.state, subjectId));
+  const sealed =
+    tail.some((e) => hasEnvelope(e.payload)) || (latest !== null && hasEnvelope(latest.state));
+  let next: number;
   if (options.tombstoneSequenceOf !== undefined) {
-    return { done: false, sequence: await options.tombstoneSequenceOf(executionId) };
+    next = await options.tombstoneSequenceOf(executionId);
+  } else {
+    const head =
+      tail.length > 0
+        ? tail[tail.length - 1]!.sequence
+        : ((await headOf(store, executionId)) ?? -1);
+    next = Math.max(head, latest?.sequence ?? -1) + 1;
   }
-  const head =
-    tail.length > 0 ? tail[tail.length - 1]!.sequence : ((await headOf(store, executionId)) ?? -1);
-  return { done: false, sequence: Math.max(head, latest?.sequence ?? -1) + 1 };
+  // No intent yet: it takes `next`, the tombstone follows it.
+  return hasIntent
+    ? { done: false, sequence: next, hasIntent, sealed }
+    : { done: false, sequence: next + 1, intentSequence: next, hasIntent, sealed };
 }
 
 /** Thrown when some tombstones could not be written. Re-running `shredSubject` completes them. */
@@ -167,10 +213,27 @@ export async function shredSubject(
   //    compaction — is skipped: that is what makes a re-run (key already gone) write exactly
   //    the missing ones (ADR 0106).
   const pending: EventEnvelope[] = [];
+  const intents: EventEnvelope[] = [];
+  const lackIntent: string[] = [];
   for (const exId of executionIds) {
     const resolution = await resolve(rawEventStore, exId, subjectId, options);
     if (resolution.done) continue;
     const sequence = resolution.sequence;
+    if (!resolution.hasIntent) {
+      if (resolution.sealed) lackIntent.push(exId);
+      intents.push({
+        id: `${exId}-erase-intent-${resolution.intentSequence}`,
+        workflowId: "",
+        executionId: exId,
+        eventType: "ERASURE_PENDING",
+        sequence: resolution.intentSequence!,
+        timestamp: 0,
+        payload: {
+          subjectId,
+          ...(options.reason !== undefined && { reason: options.reason }),
+        },
+      });
+    }
     pending.push({
       id: `${exId}-shred-${sequence}`,
       workflowId: "",
@@ -184,6 +247,20 @@ export async function shredSubject(
       },
     });
   }
+
+  // 1b. ADR 0130 D7 (round 4): the key being absent is NOT, by itself, evidence that an erasure of
+  //     this subject began here. A node whose key store never had the key (a wrong key, a
+  //     partitioned key store) reads the same, and destroying a no-op key then tombstoning would
+  //     falsely claim an erasure while the real key lives on capable nodes. Only a durable erase
+  //     intent in the log proves the retry window; without it, REFUSE: nothing is written or destroyed.
+  if (lackIntent.length > 0 && (await keys.get(subjectId)) === null) {
+    throw new KeyUnavailableError(subjectId, lackIntent[0]);
+  }
+  //     Intent first, then destroy, then tombstone: a crash after the intent leaves the key
+  //     present (the retry destroys it); a crash after the destroy leaves intent + no tombstone
+  //     (the retry window, which the intent proves). An intent that cannot be written aborts
+  //     BEFORE anything irreversible. `ERASURE_PENDING` is an existing, ignorable, pure-audit kind.
+  for (const intent of intents) await rawEventStore.append(intent);
 
   // 2. Destroy the key — the erasure is effective even if a tombstone append below fails
   //    (the data is already unrecoverable). Destroying an absent key is a no-op.
