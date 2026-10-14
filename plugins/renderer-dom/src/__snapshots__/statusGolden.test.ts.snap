@@ -1,0 +1,51 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`dom status golden > contract outranks pending 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="error"><div data-binding-marker="error" role="alert">✗ CPU: unlucky</div></div></div></div>"`;
+
+exports[`dom status golden > contract outranks stale 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="error"><div data-binding-marker="error" role="alert">✗ CPU: unlucky</div></div></div></div>"`;
+
+exports[`dom status golden > contract skipped under empty 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="empty"><div data-binding-marker="empty" role="status">○ CPU: no data</div></div></div></div>"`;
+
+exports[`dom status golden > degraded + error 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="error" data-source-type="T" data-source-version="1" data-degraded="Trend@2 › Spark@1" title="T@1 shown as MetricCard (degraded from Trend@2 › Spark@1)"><div data-binding-marker="error" role="alert">✗ CPU: down</div></div></div></div>"`;
+
+exports[`dom status golden > degraded + ready 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="ready" data-source-type="T" data-source-version="1" data-degraded="Trend@2" title="T@1 shown as MetricCard (degraded from Trend@2)"><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > degraded + stale value 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="stale" data-source-type="T" data-source-version="1" data-degraded="Trend@2 › Spark@1" title="T@1 shown as MetricCard (degraded from Trend@2 › Spark@1)"><span data-binding-marker="stale">~</span><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > degraded empty list 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="ready" data-source-type="T" data-source-version="1"><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > empty 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="empty"><div data-binding-marker="empty" role="status">○ CPU: none</div></div></div></div>"`;
+
+exports[`dom status golden > empty no finding 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="empty"><div data-binding-marker="empty" role="status">○ CPU: no data</div></div></div></div>"`;
+
+exports[`dom status golden > error + value 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="error"><div data-binding-marker="error" role="alert">✗ CPU: down</div></div></div></div>"`;
+
+exports[`dom status golden > error no finding 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="error"><div data-binding-marker="error" role="alert">✗ CPU: error</div></div></div></div>"`;
+
+exports[`dom status golden > error outranks stale finding 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="error"><div data-binding-marker="error" role="alert">✗ CPU: hard</div></div></div></div>"`;
+
+exports[`dom status golden > inert, degraded 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-source-type="T" data-source-version="1" data-degraded="Trend@2 › Spark@1" title="T@1 shown as MetricCard (degraded from Trend@2 › Spark@1)"><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > inert, no source 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard"><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > inert, source only 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-source-type="T" data-source-version="1"><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > malformed degradedFrom 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard"><div data-placeholder="error">[Renderer for MetricCard failed]</div></div></div></div>"`;
+
+exports[`dom status golden > pending + value 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="pending"><span data-binding-marker="pending">⋯</span><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > pending no value (loading) 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="loading"><div data-binding-marker="loading">…</div></div></div></div>"`;
+
+exports[`dom status golden > ready 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="ready"><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > redacted 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-binding-state="redacted"><div data-binding-marker="redacted" role="status">⊘ redacted</div></div></div></div>"`;
+
+exports[`dom status golden > stale + value 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="stale"><span data-binding-marker="stale" title="old">~</span><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > stale no finding no value 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="stale"><div data-binding-marker="stale">~ CPU: stale — no value</div></div></div></div>"`;
+
+exports[`dom status golden > stale no value 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="stale"><div data-binding-marker="stale">~ CPU: old — no value</div></div></div></div>"`;
+
+exports[`dom status golden > status unwritten + value 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="ready"><div><div class="metric-title">CPU</div><div class="metric-value">5</div></div></div></div></div>"`;
+
+exports[`dom status golden > status unwritten no value 1`] = `"<h1>Golden</h1><div data-blueprint-notes=""></div><div data-blueprint-root=""><div style="display: flex; flex-direction: column;" data-layout="stack"><div data-widget-id="m" data-widget-kind="MetricCard" data-binding-state="loading"><div data-binding-marker="loading">…</div></div></div></div>"`;

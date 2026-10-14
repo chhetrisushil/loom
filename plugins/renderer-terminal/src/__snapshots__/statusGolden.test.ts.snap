@@ -1,0 +1,201 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`terminal status golden > contract outranks pending 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+✗ CPU: unlucky
+"
+`;
+
+exports[`terminal status golden > contract outranks stale 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+✗ CPU: unlucky
+"
+`;
+
+exports[`terminal status golden > contract skipped under empty 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+○ CPU: no data
+"
+`;
+
+exports[`terminal status golden > degraded + error 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+✗ CPU: down (degraded from Trend@2 › Spark@1)
+"
+`;
+
+exports[`terminal status golden > degraded + ready 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+CPU: 5 (degraded from Trend@2)
+"
+`;
+
+exports[`terminal status golden > degraded + stale value 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+~ CPU: 5 (degraded from Trend@2 › Spark@1)
+"
+`;
+
+exports[`terminal status golden > degraded empty list 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+CPU: 5
+"
+`;
+
+exports[`terminal status golden > empty 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+○ CPU: none
+"
+`;
+
+exports[`terminal status golden > empty no finding 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+○ CPU: no data
+"
+`;
+
+exports[`terminal status golden > error + value 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+✗ CPU: down
+"
+`;
+
+exports[`terminal status golden > error no finding 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+✗ CPU: error
+"
+`;
+
+exports[`terminal status golden > error outranks stale finding 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+✗ CPU: hard
+"
+`;
+
+exports[`terminal status golden > inert, degraded 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+CPU: 5 (degraded from Trend@2 › Spark@1)
+"
+`;
+
+exports[`terminal status golden > inert, no source 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+CPU: 5
+"
+`;
+
+exports[`terminal status golden > inert, source only 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+CPU: 5
+"
+`;
+
+exports[`terminal status golden > malformed degradedFrom 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+[Renderer for MetricCard failed]
+"
+`;
+
+exports[`terminal status golden > pending + value 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+⋯ CPU: 5
+"
+`;
+
+exports[`terminal status golden > pending no value (loading) 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+⋯ CPU
+"
+`;
+
+exports[`terminal status golden > ready 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+CPU: 5
+"
+`;
+
+exports[`terminal status golden > redacted 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+⊘ redacted
+"
+`;
+
+exports[`terminal status golden > stale + value 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+~ CPU: 5
+"
+`;
+
+exports[`terminal status golden > stale no finding no value 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+~ CPU: — (stale)
+"
+`;
+
+exports[`terminal status golden > stale no value 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+~ CPU: — (old)
+"
+`;
+
+exports[`terminal status golden > status unwritten + value 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+CPU: 5
+"
+`;
+
+exports[`terminal status golden > status unwritten no value 1`] = `
+"════════════════════════
+  Golden
+════════════════════════
+⋯ CPU
+"
+`;

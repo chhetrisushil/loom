@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BindingStatus, Widget } from "./types";
-import { describeWidgetStatus } from "./widgetStatus";
+import { describeWidgetFrame, describeWidgetStatus } from "./widgetStatus";
 import { MetricCard } from "./widgets";
 
 const channel = MetricCard({
@@ -154,5 +154,90 @@ describe("describeWidgetStatus: the canonical matrix", () => {
         undefined
       ).tag
     ).toBe("invalid");
+  });
+});
+
+describe("describeWidgetFrame", () => {
+  const w = (extra: object = {}): Widget =>
+    ({
+      _tag: "Widget",
+      id: "w",
+      kind: "MetricCard",
+      title: "CPU",
+      props: {},
+      binding: { projectionId: "p", path: "v", status: { path: "s" } },
+      ...extra,
+    }) as never;
+  const frame = (widget: Widget, value: unknown, status?: BindingStatus) => {
+    const d = describeWidgetStatus(widget, value, status);
+    if (d.tag === "invalid") throw new Error("invalid");
+    return describeWidgetFrame(widget, d);
+  };
+
+  it("error is an alert row with the label and message", () => {
+    const f = frame(w(), 1, { state: "error", finding: { code: "c", message: "down" } });
+    expect(f.state).toBe("error");
+    expect(f.marker).toMatchObject({
+      name: "error",
+      role: "alert",
+      text: "✗ CPU: down",
+      block: true,
+    });
+  });
+  it("empty is a polite status row", () => {
+    expect(frame(w(), undefined, { state: "empty" }).marker).toMatchObject({
+      name: "empty",
+      role: "status",
+      text: "○ CPU: no data",
+    });
+  });
+  it("stale beside a value is a glyph with the finding as tooltip; without one it is a row", () => {
+    const st: BindingStatus = { state: "stale", finding: { code: "c", message: "old" } };
+    expect(frame(w(), 1, st).marker).toMatchObject({
+      name: "stale",
+      block: false,
+      tooltip: "old",
+      text: undefined,
+    });
+    expect(frame(w(), undefined, st).marker).toMatchObject({
+      block: true,
+      text: "~ CPU: old — no value",
+    });
+  });
+  it("pending and loading are glyph markers; ready and inert have none", () => {
+    expect(frame(w(), 1, { state: "pending" }).marker).toMatchObject({
+      name: "pending",
+      glyph: "⋯",
+      block: false,
+    });
+    expect(frame(w(), undefined, { state: "pending" }).marker).toMatchObject({
+      name: "loading",
+      glyph: "…",
+      block: true,
+    });
+    expect(frame(w(), 1, { state: "ready" }).marker).toBeUndefined();
+    expect(frame(w({ binding: undefined }), 1).state).toBeUndefined();
+  });
+  it("source facts and the degraded tooltip", () => {
+    const f = frame(
+      w({ source: { type: "T", version: "1", degradedFrom: [{ type: "A", version: "2" }] } }),
+      1,
+      { state: "ready" }
+    );
+    expect(f).toMatchObject({ sourceType: "T", sourceVersion: "1", degraded: "A@2" });
+    expect(f.tooltip).toBe("T@1 shown as MetricCard (degraded from A@2)");
+  });
+  it("redacted is the constant marker with no source facts", () => {
+    const f = frame(
+      w({ title: "SECRET", source: { type: "SECRET", version: "9", redacted: true } }),
+      1
+    );
+    expect(f).toMatchObject({
+      state: "redacted",
+      sourceType: undefined,
+      degraded: undefined,
+      tooltip: undefined,
+    });
+    expect(f.marker).toMatchObject({ role: "status", text: "⊘ redacted" });
   });
 });

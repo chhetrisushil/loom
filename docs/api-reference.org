@@ -1545,6 +1545,8 @@ function resolveWidgetStatus(widget: Widget, stateMap: Map<string, unknown>): Bi
 function describeWidgetStatus(widget: Widget, value: unknown, status: BindingStatus | undefined, check?: WidgetValueCheck): WidgetStatusDescriptor
 // the status matrix (redacted > error > empty > contract > stale > pending/loading > ready) as one pure decision the React, terminal and DOM renderers draw from (ADR 0127);
 // tag: "inert" | "redacted" | "error" | "empty" | "stale" | "pending" | "loading" | "ready", plus message, finding, hasValue, showBody, degradedChain; a malformed source.degradedFrom is { tag: "invalid" } (never a throw)
+function describeWidgetFrame(widget: Widget, d: Exclude<WidgetStatusDescriptor, { tag: "invalid" }>): WidgetStatusFrame
+// what every surface says about a decided status (ADR 0127): data-binding-state, the marker (name, ARIA role alert|status, glyph, line, tooltip, block|inline), data-source-*, the degraded chain and its tooltip; renderers draw it in their own medium and add no vocabulary
 function upgradeBlueprint(bp: Blueprint): Blueprint   // current-major artifact from any readable one; identity on 2.0.0 through 2.5.0 input
 function blueprintIrVersion(bp: Blueprint): string    // bp.irVersion ?? "1.0.0"
 

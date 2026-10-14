@@ -124,3 +124,108 @@ export function describeWidgetStatus(
     ...base,
   };
 }
+
+// ── What every surface says about a decided status: the frame facts ───────────
+//
+// `describeWidgetStatus` decides WHICH state wins; this names WHAT is shown for it — the
+// `data-binding-state` value, the marker's name / ARIA role / glyph / line, the `data-source-*`
+// attributes and the degraded-from tooltip. A renderer draws these in its own medium (DOM
+// elements, React elements, text) and adds nothing of its own to the vocabulary. Pure; reads only
+// its arguments. Consumers: `@loom/plugin-renderer-react`, `-terminal`, `-dom` (ADR 0127).
+
+/** The marker one status draws. `text` is the whole line for the markers that carry one. */
+export interface WidgetStatusMarker {
+  /** `data-binding-marker`. */
+  readonly name: Exclude<WidgetShownState, "ready">;
+  /** `alert` for error; `status` for empty and redacted (a polite live region); otherwise none. */
+  readonly role: "alert" | "status" | undefined;
+  readonly glyph: string;
+  /** `glyph title: message` (error, empty), `… — no value` (stale, no value); else undefined. */
+  readonly text: string | undefined;
+  /** A stale marker beside a drawn value is glyph-only and carries the finding as its tooltip. */
+  readonly tooltip: string | undefined;
+  /** Block-level (a row) vs inline (a glyph beside the body). */
+  readonly block: boolean;
+}
+
+export interface WidgetStatusFrame {
+  /** `data-binding-state`; undefined for an inert widget. */
+  readonly state: WidgetShownState | undefined;
+  readonly sourceType: string | undefined;
+  readonly sourceVersion: string | undefined;
+  /** `data-degraded`: the chain, outermost first. */
+  readonly degraded: string | undefined;
+  /** The `title` attribute of a degraded widget. */
+  readonly tooltip: string | undefined;
+  /** The marker to draw before the body, or undefined (inert, ready). */
+  readonly marker: WidgetStatusMarker | undefined;
+}
+
+/**
+ * The surface-independent facts of a decided status. A redacted widget yields the constant marker
+ * and no source/degraded facts (nothing of the widget may reach the output).
+ */
+export function describeWidgetFrame(
+  widget: Widget,
+  d: Exclude<WidgetStatusDescriptor, { tag: "invalid" }>
+): WidgetStatusFrame {
+  if (d.tag === "redacted") {
+    return {
+      state: "redacted",
+      sourceType: undefined,
+      sourceVersion: undefined,
+      degraded: undefined,
+      tooltip: undefined,
+      marker: {
+        name: "redacted",
+        role: "status",
+        glyph: "⊘",
+        text: `⊘ ${d.message}`,
+        tooltip: undefined,
+        block: true,
+      },
+    };
+  }
+  const label = widget.title ?? widget.kind;
+  const degraded = d.degradedChain;
+  let marker: WidgetStatusMarker | undefined;
+  const row = (
+    name: WidgetStatusMarker["name"],
+    role: WidgetStatusMarker["role"],
+    glyph: string,
+    text: string | undefined,
+    block: boolean,
+    tooltip?: string
+  ): WidgetStatusMarker => ({ name, role, glyph, text, tooltip, block });
+  switch (d.tag) {
+    case "error":
+      marker = row("error", "alert", "✗", `✗ ${label}: ${d.message}`, true);
+      break;
+    case "empty":
+      marker = row("empty", "status", "○", `○ ${label}: ${d.message}`, true);
+      break;
+    case "stale":
+      marker = d.hasValue
+        ? row("stale", undefined, "~", undefined, false, d.finding)
+        : row("stale", undefined, "~", `~ ${label}: ${d.message} — no value`, true);
+      break;
+    case "pending":
+      marker = row("pending", undefined, "⋯", undefined, false);
+      break;
+    case "loading":
+      marker = row("loading", undefined, "…", undefined, true);
+      break;
+    default:
+      marker = undefined;
+  }
+  return {
+    state: d.tag === "inert" ? undefined : d.tag,
+    sourceType: widget.source?.type,
+    sourceVersion: widget.source?.version,
+    degraded,
+    tooltip: degraded
+      ? `${widget.source?.type}@${widget.source?.version} shown as ${widget.kind} (degraded from ${degraded})`
+      : undefined,
+    marker,
+  };
+}

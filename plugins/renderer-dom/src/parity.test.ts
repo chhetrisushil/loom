@@ -424,3 +424,152 @@ describe("renderer parity: the status matrix on dom / react / terminal", () => {
     });
   });
 });
+
+// State-level parity (ADR 0127 residual): for each status, the DOM, React and terminal surfaces
+// expose the same FACTS for the same Blueprint — the state, the marker, its role semantics and the
+// degraded-from chain — against a hand-written table, not against the shared decision itself, so
+// a surface that drifts from the matrix (or a shared change nobody meant) fails here.
+describe("renderer parity: state-level facts on dom / react / terminal", () => {
+  const f = (message: string) => ({ code: "c", message });
+  const chain = [
+    { type: "Trend", version: "2" },
+    { type: "Spark", version: "1" },
+  ];
+  const make = (source?: unknown) =>
+    blueprint$({
+      id: "facts",
+      title: "Facts",
+      layout: stack({
+        children: [
+          {
+            ...MetricCard({
+              id: "m",
+              title: "CPU",
+              binding: { projectionId: "p", path: "v", status: { path: "s" } },
+            }),
+            ...(source !== undefined && { source }),
+          } as never,
+        ],
+      }),
+      projections: ["p"],
+    });
+  const check = (_w: unknown, v: unknown) =>
+    v === 13 ? { code: "bad", message: "unlucky" } : undefined;
+  const rows: {
+    name: string;
+    state: Record<string, unknown>;
+    source?: unknown;
+    check?: boolean;
+    expect: {
+      state: string;
+      marker: string | null;
+      role: string | null;
+      degraded: string | null;
+    };
+  }[] = [
+    {
+      name: "error",
+      state: { v: 5, s: { state: "error", finding: f("x") } },
+      expect: { state: "error", marker: "error", role: "alert", degraded: null },
+    },
+    {
+      name: "empty",
+      state: { s: { state: "empty" } },
+      expect: { state: "empty", marker: "empty", role: "status", degraded: null },
+    },
+    {
+      name: "stale+value",
+      state: { v: 5, s: { state: "stale" } },
+      expect: { state: "stale", marker: "stale", role: null, degraded: null },
+    },
+    {
+      name: "stale, no value",
+      state: { s: { state: "stale" } },
+      expect: { state: "stale", marker: "stale", role: null, degraded: null },
+    },
+    {
+      name: "pending",
+      state: { v: 5, s: { state: "pending" } },
+      expect: { state: "pending", marker: "pending", role: null, degraded: null },
+    },
+    {
+      name: "loading",
+      state: { s: { state: "pending" } },
+      expect: { state: "loading", marker: "loading", role: null, degraded: null },
+    },
+    {
+      name: "ready",
+      state: { v: 5, s: { state: "ready" } },
+      expect: { state: "ready", marker: null, role: null, degraded: null },
+    },
+    {
+      name: "contract outranks stale",
+      state: { v: 13, s: { state: "stale" } },
+      check: true,
+      expect: { state: "error", marker: "error", role: "alert", degraded: null },
+    },
+    {
+      name: "error outranks the contract check",
+      state: { v: 13, s: { state: "error" } },
+      check: true,
+      expect: { state: "error", marker: "error", role: "alert", degraded: null },
+    },
+    {
+      name: "empty outranks the contract check",
+      state: { v: 13, s: { state: "empty" } },
+      check: true,
+      expect: { state: "empty", marker: "empty", role: "status", degraded: null },
+    },
+    {
+      name: "degraded chain + error",
+      state: { v: 5, s: { state: "error" } },
+      source: { type: "T", version: "1", degradedFrom: chain },
+      expect: { state: "error", marker: "error", role: "alert", degraded: "Trend@2 › Spark@1" },
+    },
+    {
+      name: "degraded chain + ready",
+      state: { v: 5, s: { state: "ready" } },
+      source: { type: "T", version: "1", degradedFrom: chain },
+      expect: { state: "ready", marker: null, role: null, degraded: "Trend@2 › Spark@1" },
+    },
+  ];
+  for (const r of rows) {
+    it(r.name, () => {
+      const bp = make(r.source);
+      const stateMap = new Map<string, unknown>([["p", r.state]]);
+      const opts = r.check ? { check } : {};
+      for (const [surface, host] of [
+        ["dom", renderBlueprintToDom(bp, stateMap, opts)],
+        ["react", renderReact(bp, stateMap, r.check ? check : undefined)],
+      ] as const) {
+        const frame = host.querySelector("[data-binding-state]");
+        expect(frame?.getAttribute("data-binding-state"), `${surface} state`).toBe(r.expect.state);
+        const m = host.querySelector("[data-binding-marker]");
+        expect(m?.getAttribute("data-binding-marker") ?? null, `${surface} marker`).toBe(
+          r.expect.marker
+        );
+        expect(m?.getAttribute("role") ?? null, `${surface} role`).toBe(r.expect.role);
+        expect(frame?.getAttribute("data-degraded") ?? null, `${surface} degraded`).toBe(
+          r.expect.degraded
+        );
+      }
+      const term = renderBlueprintToString(bp, stateMap, {
+        registry: defaultTerminalRegistry,
+        ...opts,
+      });
+      // The terminal has no attributes: its facts are the glyph (state) and the chain suffix.
+      const glyph: Record<string, string | undefined> = {
+        error: "✗",
+        empty: "○",
+        stale: "~",
+        pending: "⋯",
+        loading: "⋯",
+      };
+      const g = glyph[r.expect.state];
+      if (g !== undefined) expect(term, "terminal glyph").toContain(g);
+      else expect(term, "terminal ready has no marker").not.toMatch(/[✗○~⋯]/);
+      if (r.expect.degraded === null) expect(term).not.toContain("degraded from");
+      else expect(term).toContain(`(degraded from ${r.expect.degraded})`);
+    });
+  }
+});
