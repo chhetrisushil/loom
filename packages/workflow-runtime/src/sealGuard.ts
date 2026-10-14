@@ -41,8 +41,14 @@ const details = new WeakMap<object, SealedDetail>();
  * read only through `sealedDetailOf` (the `@loom/workflow-runtime/operator` entry).
  */
 export class SealedStreamUnreadableError extends ExecutionDeniedError {
-  constructor(op: ExecutionOp, executionId: string, detail: SealedDetail) {
-    super(op, executionId, UNKNOWN_OWNER_REASON);
+  constructor(
+    op: ExecutionOp,
+    executionId: string,
+    detail: SealedDetail,
+    /** Caller-visible wording only (see `WorkflowRuntime.sealedOp`); never changes whether it refuses. */
+    reason: string = UNKNOWN_OWNER_REASON
+  ) {
+    super(op, executionId, reason);
     // The parent resets the prototype to its own; restore this class's (name stays the parent's).
     Object.setPrototypeOf(this, SealedStreamUnreadableError.prototype);
     details.set(this, detail);
@@ -76,12 +82,14 @@ export function sealedDetailOf(err: unknown): SealedDetail | undefined {
 export function withSealedDetail(
   op: ExecutionOp,
   executionId: string,
-  from: SealedStreamUnreadableError
+  from: SealedStreamUnreadableError,
+  reason?: string
 ): SealedStreamUnreadableError {
   return new SealedStreamUnreadableError(
     op,
     executionId,
-    sealedDetailOf(from) ?? { reason: "marker-unopenable" }
+    sealedDetailOf(from) ?? { reason: "marker-unopenable" },
+    reason
   );
 }
 

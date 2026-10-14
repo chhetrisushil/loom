@@ -1328,7 +1328,8 @@ export class WorkflowRuntime {
       return await body();
     } catch (err) {
       if (!(err instanceof SealedStreamUnreadableError) || this.sealedRefused.has(err)) throw err;
-      const refusal = withSealedDetail(op, executionId, err);
+      const reason = this.sealedWording(op, executionId, principal, system);
+      const refusal = withSealedDetail(op, executionId, err, reason);
       this.sealedRefused.add(refusal);
       this.reportSealed(executionId, refusal);
       // A kernel-internal caller (the system grant) is not a caller being denied.
@@ -1340,10 +1341,32 @@ export class WorkflowRuntime {
             workflowId: "",
             ...(principal !== undefined && { principal }),
           },
-          UNKNOWN_OWNER_REASON
+          reason
         );
       }
       throw refusal;
+    }
+  }
+
+  /**
+   * The caller-visible WORDING of a sealed refusal (user ruling 2026-10-14): what the same op gets
+   * for an ordinary existing execution with an UNKNOWN owner. The policy is consulted with the owner
+   * UNSET (exactly that input), never with the sealed principal, and only to phrase the error: the
+   * refusal is unconditional, so a verdict of "allowed" (e.g. `unknownOwner: "allow"`) falls back to
+   * the generic unknown-owner wording. The workflow is unreadable here, so it is `""`.
+   */
+  private sealedWording(
+    op: ExecutionOp,
+    executionId: string,
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined
+  ): string {
+    try {
+      return (
+        this.authzDenial(op, executionId, "", principal, system, {})?.reason ?? UNKNOWN_OWNER_REASON
+      );
+    } catch {
+      return UNKNOWN_OWNER_REASON;
     }
   }
 
@@ -4587,6 +4610,9 @@ export class WorkflowRuntime {
    * successor's sequence 0 can be observed, so a head the log shows always resolves here: to its
    * handle when this runtime drives it, to `undefined` when it does not (driven elsewhere, or
    * already settled).
+   *
+   * @internal Used only by the in-process worker (`LocalWorkerRuntime`); not part of the public
+   * runtime API, not documented in the API reference, and free to change.
    */
   awaitLiveHandle(executionId: string): Promise<ExecutionHandle | undefined> {
     const live = this.liveHandles.get(executionId);

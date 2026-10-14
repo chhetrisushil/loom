@@ -202,6 +202,29 @@ describe("key gone: KeyUnavailableError (no tombstone) vs PayloadShreddedError (
     return { inner, keys, writer };
   }
 
+  it('onShredded: "tolerate" redacts only beside a tombstone; a wrong-key node still refuses', async () => {
+    const { inner, keys } = await sealedStream();
+    const sensitive = { STEP_COMPLETED: ["output.ssn"] };
+    // a wrong-key node (key absent, NO tombstone): must not fold a redacted view as "erased"
+    const wrong = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
+      sensitive,
+      onShredded: "tolerate",
+    });
+    for (const read of [
+      () => wrong.read("x"),
+      () => wrong.readFrom("x", 0),
+      () => wrong.readRange!("x", 0, 0),
+    ]) {
+      await expect(read()).rejects.toBeInstanceOf(KeyUnavailableError);
+    }
+    // a REAL shred (tombstone) is still tolerated: the redacted view is returned
+    await shredSubject(keys, inner, "x", { snapshotStore: { loadLatest: async () => null } });
+    const tolerant = new EncryptingEventStore(inner, keys, { sensitive, onShredded: "tolerate" });
+    const seen = await tolerant.read("x");
+    expect(JSON.stringify(seen)).not.toContain(SECRET);
+    expect(JSON.stringify(seen)).toContain("$shredded");
+  });
+
   it("a node whose KeyStore lacks the key raises KeyUnavailableError (stable code), carrying no ciphertext", async () => {
     const { inner } = await sealedStream();
     const wrong = new EncryptingEventStore(inner, new InMemoryKeyStore(), {
@@ -275,12 +298,12 @@ describe("key gone: KeyUnavailableError (no tombstone) vs PayloadShreddedError (
       state: state(),
       createdAt: 0,
     });
-    // WITHOUT `events` nothing can prove "no tombstone": the old PayloadShreddedError stands (a real
-    // shred must never read as a missing key).
+    // WITHOUT `events` the store cannot see a tombstone, and a merely-absent key must never read as
+    // an erasure of a live execution: key-unavailable (the kernel probe finds a real tombstone).
     const noLog = new EncryptingSnapshotStore(innerSnaps, new InMemoryKeyStore(), {
       sensitive: ["variables._input.ssn"],
     });
-    await expect(noLog.loadLatest("s")).rejects.toBeInstanceOf(PayloadShreddedError);
+    await expect(noLog.loadLatest("s")).rejects.toBeInstanceOf(KeyUnavailableError);
     // WITH the raw log, an empty log proves there is no tombstone: key-unavailable
     const wrong = new EncryptingSnapshotStore(innerSnaps, new InMemoryKeyStore(), {
       sensitive: ["variables._input.ssn"],

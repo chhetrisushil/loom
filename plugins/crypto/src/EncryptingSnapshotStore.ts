@@ -98,14 +98,17 @@ export interface EncryptingSnapshotStoreOptions {
   /**
    * Deterministic cipher seam (ADR 0130 residuals D7, simulation only): see
    * `EncryptingEventStoreOptions.ivSource`. Build one with `seededIvSource` from
-   * `@loom/plugin-crypto/testing`. REFUSED when `NODE_ENV === "production"`.
+   * `@loom/plugin-crypto/testing`. Allowed only under `NODE_ENV=test` or `VITEST` (fail closed).
    */
   ivSource?: IvSource;
   /**
    * The RAW event store beside this snapshot store. When a subject's key is gone, the log decides
    * whether it was a real shred (a `PAYLOAD_SHREDDED` tombstone, which always sits ABOVE the latest
    * snapshot) or this node merely lacks the key (`KeyUnavailableError`, ADR 0130 residuals D7).
-   * Without it only a shred folded into the snapshot is recognised.
+   * Optional: without it only a shred folded into the snapshot is recognised, any other absent key
+   * reads as `KeyUnavailableError` (a denial in the kernel, whose own probe reads the log and
+   * surfaces a real shred as `PayloadShreddedError`). A caller outside the kernel that needs the
+   * exact error (the content GC, a tool reading snapshots directly) passes it.
    */
   events?: EventStore;
 }
@@ -284,15 +287,19 @@ export class EncryptingSnapshotStore implements SnapshotStore {
   /**
    * ADR 0130 residuals D7. Key gone is a real shred only when it can be PROVED: the folded state
    * records it (compaction folds the tombstone in), or the log holds a `PAYLOAD_SHREDDED` tombstone
-   * (needs `events`). Without `events` nothing can prove "no tombstone", so the old behaviour holds
-   * (PayloadShreddedError): claiming KeyUnavailableError would make a real shred read as a missing key.
+   * (needs `events`). Otherwise it is `KeyUnavailableError` (this node cannot open it), which the
+   * kernel turns into the generic denial: a merely-absent key must never read as an erasure of a
+   * LIVE execution. Without `events` this store cannot see a tombstone ABOVE the snapshot, so a
+   * snapshot taken before a real shred reads as key-unavailable here; the kernel's own probe reads
+   * the whole log first and surfaces the real `PayloadShreddedError` (and the content GC accepts
+   * either error, but only beside the execution's own tombstone). `events` is an optimisation that
+   * lets a caller without that probe get the exact error.
    *
    * Cost: with `events`, each key-unavailable read does a full `events.read` of the stream. It is
    * bounded by the kernel's back-off on a refused stream; there is deliberately no cache.
    */
   private async keyGone(snapshot: Snapshot, subjectId: string): Promise<Error> {
     if (
-      this.events === undefined ||
       recordsShred(snapshot.state, subjectId) ||
       (await this.logRecordsShred(snapshot.executionId, subjectId))
     ) {

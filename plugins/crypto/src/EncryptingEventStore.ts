@@ -43,13 +43,15 @@ export interface EncryptingEventStoreOptions {
    *  - `"tolerate"`: replace each sensitive field with a `{ $shredded: true }` placeholder
    *    ({@link SHREDDED}) so OFF-log consumers — deploy-sim, eval, subject export — can
    *    process an erased log without crashing. NEVER use for the authoritative fold: the
-   *    placeholder is not the original value, so a resume off it would diverge.
+   *    placeholder is not the original value, so a resume off it would diverge. It redacts only
+   *    a REAL shred (a `PAYLOAD_SHREDDED` tombstone in the log); a key that is merely absent on
+   *    this node still raises `KeyUnavailableError` (ADR 0130 residuals D7).
    */
   onShredded?: "throw" | "tolerate";
   /**
    * Deterministic cipher seam (ADR 0130 residuals D7, simulation only): derive each AES-GCM IV from
    * `(stream, sequence, path)` instead of `randomBytes(12)`. Build one with `seededIvSource` from
-   * `@loom/plugin-crypto/testing`. REFUSED when `NODE_ENV === "production"`: a predictable IV breaks
+   * `@loom/plugin-crypto/testing`. Allowed only under `NODE_ENV=test` or `VITEST` (fail closed): a predictable IV breaks
    * GCM confidentiality.
    */
   ivSource?: IvSource;
@@ -423,14 +425,18 @@ export class EncryptingEventStore implements EventStore {
       });
       // The error carries the REDACTED view, so a lifecycle op that needs no sealed field (an
       // operator `cancel` of an erased owner) can fold it; an authoritative fold still fails.
-      if (this.onShredded === "throw" && !inbox) {
+      if (!inbox) {
         // ADR 0130 residuals D7: "key gone" is two different facts. A real shred leaves a durable
         // PAYLOAD_SHREDDED tombstone (erasure, unchanged); no tombstone means this node's KeyStore
-        // simply lacks the key (misconfiguration), which must never read as an erasure.
+        // simply lacks the key (misconfiguration), which must never read as an erasure, in EITHER
+        // mode: `tolerate` redacts only a real shred, else a wrong-key node would fold a redacted
+        // view and treat a live execution as erased, bypassing the sealed denial.
         if (!(await this.tombstoned(executionId, subjectId, events))) {
           throw new KeyUnavailableError(subjectId, executionId);
         }
-        throw new PayloadShreddedError(subjectId, executionId, redacted);
+        if (this.onShredded === "throw") {
+          throw new PayloadShreddedError(subjectId, executionId, redacted);
+        }
       }
       return redacted;
     }

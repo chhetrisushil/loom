@@ -325,6 +325,7 @@ function encryptedApp(keys = new InMemoryKeyStore()) {
   });
   const snapshotStore = new EncryptingSnapshotStore(rawSnaps, keys, {
     sensitive: ["variables._input.n"],
+    events: rawEvents, // outside the kernel the exact erasure error needs the raw log (ADR 0130 D7)
   });
   const effects = new EffectRuntime();
   for (const id of ["t1", "t2", "t3"]) effects.register(id, new ToolEffect(async () => ({ n: 0 })));
@@ -416,6 +417,7 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
       }),
       snapshotStore: new EncryptingSnapshotStore(rawArchiveSnaps, app.keys, {
         sensitive: ["variables._input.n"],
+        events: rawArchive, // the exact erasure error outside the kernel needs the raw log (ADR 0130 D7)
       }),
     };
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, { archive });

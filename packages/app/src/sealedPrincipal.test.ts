@@ -308,8 +308,11 @@ function refusalMatrix(title: string, mode: "crypto" | "wrongKey", reason: strin
               expect(err.name).toBe("ExecutionDeniedError");
               expect(err.reason).toBe(UNKNOWN_OWNER_REASON);
               expect(sealedDetailOf(err)?.reason).toBe(reason);
-              // the authorizer is never consulted, the log is untouched, no EXECUTION_DENIED fact
-              expect(c.ownersB.filter((o) => o.executionId === id)).toEqual([]);
+              // the authorizer never DECIDES: it is asked at most to word the error, with the owner
+              // UNSET (never the sealed principal); the log is untouched, no EXECUTION_DENIED fact
+              for (const o of c.ownersB.filter((o) => o.executionId === id)) {
+                expect(o.owner).toBeUndefined();
+              }
               expect(await c.raw.read(id)).toEqual(before);
               // caller-visible shape equals the ordinary denial of the same call
               const ord = await ordinaryDenial(op, who);
@@ -352,7 +355,9 @@ function refusalMatrix(title: string, mode: "crypto" | "wrongKey", reason: strin
           expect((r.error as ExecutionDeniedError).reason).toBe(UNKNOWN_OWNER_REASON);
           expect(sealedDetailOf(r.error)?.reason).toBe(reason);
           expect(await c.raw.read(id)).toEqual(before);
-          expect(c.ownersB.filter((o) => o.executionId === id)).toEqual([]);
+          for (const o of c.ownersB.filter((o) => o.executionId === id)) {
+            expect(o.owner).toBeUndefined(); // asked only to word the error, owner unset
+          }
         } finally {
           await c.close();
         }

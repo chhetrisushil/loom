@@ -124,8 +124,10 @@ describe("K10.2 / A1 — shredding covers snapshots (no erasure theater)", () =>
     const innerSnaps = new InMemoryAsyncSnapshotStore();
     const keys = new InMemoryKeyStore();
     const events = new EncryptingEventStore(innerEvents, keys, { sensitive: SENSITIVE });
+    // `events`: a caller outside the kernel gets the exact erasure error only with the raw log.
     const snaps = new EncryptingSnapshotStore(innerSnaps, keys, {
       sensitive: ["variables._input.ssn"],
+      events: innerEvents,
     });
 
     await events.append(ev("e1", 0, "EXECUTION_STARTED", { input: { ssn: "secret" } }));
@@ -376,7 +378,8 @@ describe("ADR 0106 — shredSubject is retry-safe and takes the app's ENCRYPTING
     });
     const opts = { subjectId: "subj", executionIds: ["a", "b"], snapshotStore: snaps };
     await expect(shredSubject(keys, flaky, "a", opts)).rejects.toBeInstanceOf(ShredIncompleteError);
-    await expect(snaps.loadLatest("b")).rejects.toBeInstanceOf(PayloadShreddedError); // key gone
+    // key gone, no tombstone yet on "b": the documented retry window reads as key-unavailable
+    await expect(snaps.loadLatest("b")).rejects.toBeInstanceOf(KeyUnavailableError);
     await shredSubject(keys, flaky, "a", opts);
     for (const id of ["a", "b"]) {
       const t = await tombstones(inner, id);
