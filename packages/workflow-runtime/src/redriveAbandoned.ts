@@ -1,3 +1,5 @@
+import type { EventEnvelope } from "@loom/core";
+import { readRangeOf } from "@loom/event-runtime";
 import type { TimerDispatcher } from "./TimerService";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { placementOf } from "./placement";
@@ -13,10 +15,14 @@ import { EXECUTION_RECOVERED, FlowReplayDivergenceError } from "./types";
 // refusal seen by either suppresses the other for the window (a node that cannot open the stream
 // is not asked again by the other path).
 //
-// The routine decides nothing about WHETHER the execution is abandoned: the sweep proves it with
-// `isAbandoned` / an expired lease, the poll with the lease it claimed before firing. Neither may
-// call this on evidence weaker than that; a live lease holder is never superseded.
+// The routine decides nothing about WHETHER the execution is abandoned: BOTH callers prove it with
+// the same evidence, the host's `isAbandoned` predicate or an EXISTING lease that has expired (never
+// an absent one; no normal driver holds a lease, so "I acquired it" proves nothing). Neither may
+// call this on weaker evidence.
 
+// Bounded: at most SEALED_CAP executions are remembered per runtime; the oldest is evicted (recency
+// order). An evicted execution is simply asked again - one extra refusal, then it is back in the map
+// - so the bound costs a retry, never correctness.
 const SEALED_CAP = 1024;
 
 interface BackoffEntry {
@@ -88,6 +94,16 @@ export interface RedriveOptions {
   fenced?: boolean;
   /** Re-drive through a placement seam instead of in this process (#392). */
   dispatcher?: TimerDispatcher;
+  /**
+   * The wake-row poll's guard (ADR 0130 D10): act only while the log head still equals this
+   * sequence (the head at the replay refusal), and take the fence CONDITIONALLY on it, so exactly
+   * one contender wins and any driver that appended makes this back off (`skipped`, nothing
+   * written). The fence is observed first (`appendIfUnchanged(id, null)`), then taken with
+   * `acquireFenceIf({ fence: observed, parkSeq: head })`: a rival acquirer or an answering event
+   * makes it stale. A store without those primitives falls back to a head re-check and the
+   * unconditional acquire (the documented residual).
+   */
+  ifHeadAt?: number;
 }
 
 /**
@@ -111,9 +127,19 @@ export async function redriveAbandoned(
     if (fresh === null || (fresh.status !== "running" && fresh.status !== "pending")) {
       return { outcome: "skipped" };
     }
-    const fence = options.fenced
-      ? await runtime.acquireFence(executionId, runtime.systemOptions())
-      : undefined;
+    if (options.ifHeadAt !== undefined && fresh.sequence !== options.ifHeadAt) {
+      return { outcome: "skipped" }; // something appended since the refusal: not ours to re-drive
+    }
+    let fence: number | undefined;
+    if (options.fenced) {
+      if (options.ifHeadAt === undefined) {
+        fence = await runtime.acquireFence(executionId, runtime.systemOptions());
+      } else {
+        const got = await acquireFenceAtHead(runtime, executionId, options.ifHeadAt);
+        if (got === "lost") return { outcome: "skipped" };
+        fence = got;
+      }
+    }
     const resumeEvent = { eventType: EXECUTION_RECOVERED, payload: {} };
 
     if (options.dispatcher !== undefined) {
@@ -159,4 +185,68 @@ export async function redriveAbandoned(
     if (isSealedUnreadable(err)) return { outcome: "refused", error: err };
     throw err;
   }
+}
+
+/**
+ * The conditional fence of the wake-row re-drive: `"lost"` when the head moved or a rival acquired
+ * first (nothing written, the loser backs off), else the token (`undefined` for a store that does
+ * not fence).
+ */
+async function acquireFenceAtHead(
+  runtime: WorkflowRuntime,
+  executionId: string,
+  head: number
+): Promise<number | "lost" | undefined> {
+  const store = runtime.events;
+  if (store.appendIfUnchanged === undefined || store.acquireFenceIf === undefined) {
+    // No conditional primitive: head re-check (done by the caller) + the unconditional acquire.
+    return runtime.acquireFence(executionId, runtime.systemOptions());
+  }
+  const seen = await store.appendIfUnchanged(executionId, null);
+  if (seen.appended || seen.head !== head) return "lost";
+  const got = await store.acquireFenceIf(executionId, { fence: seen.fence, parkSeq: head });
+  if ("stale" in got) return "lost";
+  return got.fence;
+}
+
+/** A re-drive that got somewhere: a step finished, or the flow reached (or passed) a gate. */
+const PROGRESS = new Set(["STEP_COMPLETED", "EXECUTION_SUSPENDED", "EXECUTION_RESUMED"]);
+const TAIL_PAGE = 256;
+
+/**
+ * `EXECUTION_RECOVERED` events since the log's last progress event, counted up to `cap` (enough
+ * to decide). With `readRange` it reads the tail backwards in pages from `head`, so the cost is
+ * the events since progress, not the log. A store without `readRange` would turn each page into
+ * a `readFrom` to the END of the log (quadratic in the tail), so it gets ONE bounded read
+ * instead: the last `cap × TAIL_PAGE` events. A re-drive that writes more than `TAIL_PAGE`
+ * events between recoveries can then be undercounted — one more re-drive, never a false skip.
+ */
+export async function unproductiveRecoveries(
+  runtime: WorkflowRuntime,
+  executionId: string,
+  head: number,
+  cap: number
+): Promise<number> {
+  const store = runtime.events;
+  let n = 0;
+  // Returns the count once decided, or undefined to keep reading.
+  const scan = (page: readonly EventEnvelope[]): number | undefined => {
+    for (let i = page.length - 1; i >= 0; i--) {
+      const type = (page[i] as EventEnvelope).eventType;
+      if (PROGRESS.has(type)) return n;
+      if (type === EXECUTION_RECOVERED && ++n >= cap) return n;
+    }
+    return undefined;
+  };
+  if (store.readRange === undefined) {
+    const window = await store.readFrom(executionId, Math.max(0, head - cap * TAIL_PAGE + 1));
+    return scan(window) ?? n;
+  }
+  for (let hi = head; hi >= 0; hi -= TAIL_PAGE) {
+    const page = await readRangeOf(store, executionId, Math.max(0, hi - TAIL_PAGE + 1), hi);
+    if (page.length === 0) break; // below a truncated prefix
+    const decided = scan(page);
+    if (decided !== undefined) return decided;
+  }
+  return n;
 }

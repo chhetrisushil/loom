@@ -1,15 +1,17 @@
-import type { ScheduleDefinition } from "@loom/core";
+import type { ExecutionState, ScheduleDefinition } from "@loom/core";
 import type { EventStore, LeaseStore, TimerRecord, TimerStore } from "@loom/event-runtime";
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
-import { INBOX_WAKE_AT } from "./inbox";
+import { INBOX_WAKE_AT, refusalHeadOf } from "./inbox";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
+import type { AbandonedCandidate } from "./recoverAbandoned";
 import {
   clearSealedBackoff,
   isSealedBackedOff,
   noteSealedRefusal,
   redriveAbandoned,
+  unproductiveRecoveries,
 } from "./redriveAbandoned";
 import { isSealedUnreadable } from "./sealGuard";
 import {
@@ -123,6 +125,21 @@ export interface TimerServiceOptions {
   maxRedriveAttempts?: number;
   /** Backoff for the NEXT re-drive row of a still-contended execution. Default 200 ms base, 30 s cap. */
   redriveBackoff?: RedriveBackoff;
+  /**
+   * ADR 0130 D10 - the host's abandonment predicate, the SAME one `recoverAbandoned` takes. The poll
+   * re-drives a `running` execution that a replay refusal left a wake row for ONLY on evidence of
+   * abandonment: this predicate, or (with `leases`) an EXISTING lease that has expired (never an
+   * absent lease: no normal driver holds one). With `leases` AND this, both must hold, as in the
+   * sweep. With NEITHER the poll keeps the row but cannot prove abandonment, so recovery comes from
+   * a configured `recoverAbandoned` sweep.
+   */
+  isAbandoned?: (candidate: AbandonedCandidate) => boolean | Promise<boolean>;
+  /**
+   * ADR 0105, applied to the wake-row re-drive too: skip (retire the row, report once) an execution
+   * whose last `maxRecoveries` re-drives made no progress. Default: unbounded; the attempt cap
+   * (`maxRedriveAttempts`) bounds the poll regardless.
+   */
+  maxRecoveries?: number;
   /**
    * T1.2 — durable cron schedules (`schedule$`), statically wired (P5). Each
    * due occurrence starts its flow with the deterministic executionId
@@ -272,6 +289,14 @@ export class TimerService {
   private readonly redrivers: Redriver[];
   private readonly maxRedriveAttempts: number;
   private readonly redriveBackoff: RedriveBackoff;
+  private readonly isAbandoned: TimerServiceOptions["isAbandoned"];
+  private readonly maxRecoveries: number | undefined;
+  /**
+   * ADR 0130 D10 - wake-row re-drives this process has had REFUSED, per execution (bounded, oldest
+   * evicted): at `maxRedriveAttempts` the row is retired and reported once. An evicted execution
+   * restarts its count, which costs at most a few more attempts - the cap bounds the markers.
+   */
+  private readonly refusalAttempts = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
   /**
@@ -310,6 +335,8 @@ export class TimerService {
     this.redrivers = [...(options.redrivers ?? [])];
     this.maxRedriveAttempts = options.maxRedriveAttempts ?? DEFAULT_MAX_REDRIVE_ATTEMPTS;
     this.redriveBackoff = options.redriveBackoff ?? {};
+    this.isAbandoned = options.isAbandoned;
+    this.maxRecoveries = options.maxRecoveries;
     this.warmLeadMs = options.warmLeadMs ?? 0;
     this.now = options.now ?? runtime.clock;
     // Cron cursors start at construction time: no catch-up of occurrences that
@@ -356,7 +383,9 @@ export class TimerService {
     try {
       // A node with no re-driver cannot judge a re-drive row: ask the store to leave them out BEFORE
       // the batch limit, or a batch of them starves every plain wake behind it.
-      const due = await this.store.due(now, this.batch, {
+      // Held refusal rows sort FIRST (negative instants) and stay due while we back off, so ask for
+      // `batch` rows PAST the ones this node is holding: they cannot starve a real timer.
+      const due = await this.store.due(now, this.batch + this.heldRows(), {
         ...(this.redrivers.length === 0 && { redrive: false }),
         // Likewise a flag-off node: inbox rows sort first (instant 0) and it cannot judge them.
         ...(!this.runtime.inboxOn && { inbox: false }),
@@ -501,47 +530,178 @@ export class TimerService {
     });
   }
 
+  /** Rows this node is currently backing off (held refusal rows and contended wakes), bounded. */
+  private heldRows(): number {
+    const t = this.now();
+    let n = 0;
+    for (const e of this.wakeBackoff.values()) if (e.nextTryAt > t) n++;
+    return n;
+  }
+
   /**
-   * ADR 0130 D10 - the inbox wake row of a `running` execution: a replay refusal on some node left
-   * it so a node that CAN open the stream picks the execution up. The execution is stuck unless
-   * another node is live on it, so:
-   *  - no lease store, or this process drives it: we cannot PROVE it abandoned. Never supersede a
-   *    possibly live holder: keep the row, uncapped back-off, no write.
-   *  - otherwise (`fire` holds the lease it claimed, which a live holder would have blocked):
-   *    re-drive through the routine the sweep shares. A sealed refusal keeps the row and backs off
-   *    (no attempt cap, first-then-every-16th report). A non-sealed failure uses the capped
-   *    `wakeBackoff`. Success hands back to the ordinary rules: a parked execution runs the notify
-   *    path, a terminal one retires the row.
+   * ADR 0130 D10 - a REFUSAL row (`wakeAt = -2 - head`): a replay refusal on some node left it so a
+   * node that CAN open the stream picks the `running` execution up. Only such a row is a re-drive
+   * candidate; every other row on a running execution (a contended notify pass, an ambiguous-tail
+   * send) takes the ordinary inbox path and is retired. The execution is re-driven only when ALL of:
+   *  - this node is not driving it, nor starting it (`drivesLocally`);
+   *  - the log head still equals the stamped head (nothing appended since the refusal: a driver
+   *    that moved the log makes the row stale and it is retired);
+   *  - there is EVIDENCE of abandonment, the sweep's own: the host's `isAbandoned`, or an EXISTING
+   *    lease that has expired (an absent lease is not evidence: no normal driver holds one). No
+   *    evidence configured -> the row is HELD (uncapped back-off, no write) and recovery comes from
+   *    a configured sweep;
+   *  - the fence is taken CONDITIONALLY on that head (`redriveAbandoned` `ifHeadAt`), so exactly one
+   *    contender wins and a driver that appended makes the poll back off;
+   *  - the attempt cap (and `maxRecoveries`) has room: the markers a poll appends are bounded.
+   * A sealed refusal keeps the row and backs off on the runtime's shared clock (first-then-every-16th
+   * report); the refusal itself wrote the successor row at the new head.
    */
-  private async fireRunning(executionId: string, wakeAt: number): Promise<void> {
-    if (this.leases === undefined || this.runtime.liveHandle(executionId) !== undefined) {
+  private async fireRefused(executionId: string, wakeAt: number, stamped: number): Promise<void> {
+    const backoff = this.wakeBackoff.get(executionId);
+    if (backoff !== undefined && backoff.nextTryAt > this.now()) return; // holding: no read, no write
+    if (isSealedBackedOff(this.runtime, executionId, this.runtime.clock())) {
+      this.holdRow(executionId); // counted by `heldRows`, so it cannot starve the batch
+      return;
+    }
+    if (this.runtime.drivesLocally(executionId)) {
       this.holdRow(executionId);
       return;
     }
+    let state: ExecutionState | null;
     try {
+      state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
+    } catch (err) {
+      if (isSealedUnreadable(err)) {
+        this.noteSealed(executionId, err);
+        this.holdRow(executionId);
+        return;
+      }
+      this.onError?.(executionId, err);
+      await this.bumpWakeBackoff(executionId, wakeAt);
+      return;
+    }
+    // Not running (settled, parked, gone) or the log moved on since the refusal: the row is stale.
+    if (state === null || state.status !== "running" || state.sequence !== stamped) {
+      this.wakeBackoff.delete(executionId);
+      if (state?.status === "suspended" && this.runtime.hasInboxWake(state)) {
+        await this.store.schedule({ executionId, wakeAt: INBOX_WAKE_AT }); // the ordinary notify path
+      }
+      await this.store.complete(executionId, wakeAt);
+      return;
+    }
+    const attempts = this.refusalAttempts.get(executionId) ?? 0;
+    const exhausted =
+      attempts >= this.maxRedriveAttempts ||
+      (this.maxRecoveries !== undefined &&
+        (await unproductiveRecoveries(
+          this.runtime,
+          executionId,
+          state.sequence,
+          this.maxRecoveries
+        )) >= this.maxRecoveries);
+    if (exhausted) {
+      this.refusalAttempts.delete(executionId);
+      this.wakeBackoff.delete(executionId);
+      this.onError?.(executionId, new RedriveExhaustedError(executionId, attempts));
+      await this.store.complete(executionId, wakeAt);
+      return;
+    }
+    if (!(await this.abandonmentEvidence(executionId, state))) {
+      this.holdRow(executionId);
+      return;
+    }
+    const leases = this.leases;
+    let held: HeldLease | undefined;
+    if (leases !== undefined) {
+      // Claim it (an expired lease is acquirable by anyone): two pollers do not both pay for it.
+      const lease = await leases.store.acquire(executionId, leases.owner, this.leaseTtlMs);
+      if (lease === null) {
+        this.holdRow(executionId);
+        return;
+      }
+      held = renewWhileHeld(
+        leases.store,
+        executionId,
+        leases.owner,
+        this.leaseTtlMs,
+        this.leaseRenewEveryMs,
+        (err) => this.onError?.(executionId, err)
+      );
+    }
+    try {
+      this.noteRefusalAttempt(executionId);
       const r = await redriveAbandoned(this.runtime, executionId, {
         source: "wake",
         fenced: this.fenced,
+        ifHeadAt: stamped,
       });
       if (r.outcome === "refused") {
         this.noteSealed(executionId, r.error);
+        this.holdRow(executionId);
+        return;
+      }
+      if (r.outcome === "skipped") {
+        // lost the conditional fence, or it changed under us: not an attempt, the next poll decides
+        this.refusalAttempts.set(executionId, Math.max(0, attempts));
         return;
       }
       clearSealedBackoff(this.runtime, executionId);
       this.wakeBackoff.delete(executionId);
-      if (r.outcome === "skipped") return; // changed under us: the next poll applies the ordinary rules
+      this.refusalAttempts.delete(executionId);
       const after = await this.runtime.loadState(executionId, this.runtime.systemOptions());
-      if (after === null || after.status === "running") return; // still being driven: keep the row
+      if (after === null || after.status === "running") return; // still being driven: the row goes stale
       if (this.runtime.hasInboxWake(after)) await this.fireInbox(executionId, wakeAt);
       else await this.store.complete(executionId, wakeAt);
     } catch (err) {
       if (isSealedUnreadable(err)) {
         this.noteSealed(executionId, err);
+        this.holdRow(executionId);
         return;
       }
       this.onError?.(executionId, err);
       await this.bumpWakeBackoff(executionId, wakeAt);
+    } finally {
+      held?.stop();
     }
+  }
+
+  private noteRefusalAttempt(executionId: string): void {
+    const n = (this.refusalAttempts.get(executionId) ?? 0) + 1;
+    this.refusalAttempts.delete(executionId); // re-insert at the end: eviction order = recency
+    if (this.refusalAttempts.size >= MAX_WAKE_BACKOFFS) {
+      const oldest = this.refusalAttempts.keys().next().value;
+      if (oldest !== undefined) this.refusalAttempts.delete(oldest);
+    }
+    this.refusalAttempts.set(executionId, n);
+  }
+
+  /**
+   * The sweep's evidence, nothing weaker: the host's predicate and/or an EXISTING lease that has
+   * expired on the lease store's own clock. No predicate and no lease store -> no evidence.
+   */
+  private async abandonmentEvidence(executionId: string, state: ExecutionState): Promise<boolean> {
+    const leases = this.leases;
+    if (leases === undefined && this.isAbandoned === undefined) return false;
+    if (leases !== undefined) {
+      const store = leases.store;
+      const lease =
+        store.get !== undefined
+          ? await store.get(executionId)
+          : ((await store.expired(undefined, 1000)).find((l) => l.executionId === executionId) ??
+            null);
+      if (lease === null) return false; // an ABSENT lease is no evidence
+      const now = store.storeNow !== undefined ? await store.storeNow() : Date.now();
+      if (lease.expiresAt > now) return false; // a live holder
+    }
+    if (this.isAbandoned === undefined) return true;
+    return this.isAbandoned({
+      executionId,
+      workflowId: state.workflowId,
+      status: state.status,
+      updatedAt: state.updatedAt,
+      startedAt: state.startedAt,
+      sequence: state.sequence,
+    });
   }
 
   /** Keep a wake row we may not act on: bounded uncapped back-off, no report, no write. */
@@ -609,7 +769,7 @@ export class TimerService {
     // The back-off is shared with `recoverAbandoned` (per runtime): a refusal seen by either path
     // suppresses the other for the window.
     if (
-      noteSealedRefusal(this.runtime, executionId, this.now(), (attempt) =>
+      noteSealedRefusal(this.runtime, executionId, this.runtime.clock(), (attempt) =>
         redriveDelayMs(attempt, this.redriveBackoff)
       )
     ) {
@@ -662,6 +822,16 @@ export class TimerService {
     wakeAt: number,
     redrive?: { attempt: number }
   ): Promise<void> {
+    // ADR 0130 D10 - a replay-refusal row is judged on EVIDENCE, before any lease is claimed: acquiring
+    // the lease first would erase the very thing (an existing, expired lease) that proves abandonment.
+    if (redrive === undefined) {
+      const stamped = refusalHeadOf(wakeAt);
+      if (stamped !== undefined) {
+        // A flag-off node (mixed fleet) cannot judge it and must not retire it as obsolete.
+        if (this.runtime.inboxOn) await this.fireRefused(executionId, wakeAt, stamped);
+        return;
+      }
+    }
     // #380 — claim the execution before waking it. `null` means another node holds it and is
     // presumably firing this same timer; skip WITHOUT completing it, so a wake is never lost
     // if that node dies between the claim and the resume. Its lease expires; we try again.
@@ -690,7 +860,7 @@ export class TimerService {
       }
       const backoff = this.wakeBackoff.get(executionId);
       if (backoff !== undefined && backoff.nextTryAt > this.now()) return; // backing off: no acquire
-      if (isSealedBackedOff(this.runtime, executionId, this.now())) return; // ADR 0130 (shared w/ the sweep)
+      if (isSealedBackedOff(this.runtime, executionId, this.runtime.clock())) return; // ADR 0130 (shared w/ the sweep, ONE clock: the runtime's)
       const state = await this.runtime.loadState(executionId, this.runtime.systemOptions());
       // ADR 0110 D5 — the inbox wake row: run the notify path (read past the cursors, consume,
       // resume), then re-check after retiring the row so a send that coalesced into it just before
@@ -700,12 +870,6 @@ export class TimerService {
         // A node with the inbox flag OFF cannot run the notify path, and must not retire the row as
         // obsolete: a node with it on (a mixed fleet mid-rollout) still needs it. Leave it be.
         if (!this.runtime.inboxOn) return;
-        // ADR 0130 D10: a `running` execution carrying the wake row is stuck behind a replay
-        // refusal; the notify path would find no park and retire the row.
-        if (state?.status === "running") {
-          await this.fireRunning(executionId, wakeAt);
-          return;
-        }
         await this.fireInbox(executionId, wakeAt);
         return;
       }
