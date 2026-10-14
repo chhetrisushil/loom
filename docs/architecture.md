@@ -555,6 +555,7 @@ Each subsection is a decision, *why* it was made, and what it buys you. The dist
 - **Decision.** One journal per execution owns sequence allocation and is the only appender; the in-memory fold is synchronous, the durable write is an async ordered tail.
 - **Reasoning.** A single allocator makes gaps/duplicates structurally impossible; separating the sync fold from the async write keeps the flow fast while preserving order and surfacing storage failures at barriers.
 - **Advantages.** Correct order with no locks; a backend never needs a read-then-write to allocate a sequence (so network stores like Postgres plug in cleanly); write failures abort deterministically.
+- **Non-idempotent steps.** The write-behind tail is drained (an awaited store round trip) after `STEP_STARTED` and before an `idempotent: false` effect is dispatched, so the in-doubt marker is durable before any side effect ([ADR 0021](adr/0021-k9-effect-delivery-contract-idempotency-fencing.md) A3 amendment).
 
 ### D4 — Orchestration is a plain async function, not a DSL (P4)
 
