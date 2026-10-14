@@ -157,7 +157,9 @@ export async function cmdDoctor(opts: {
       detail: "no built config module found — pass --config <module> exporting a LoomApp",
     });
   } else {
-    checks.push(encryptionKeyCheck(await loadedApp(config)));
+    const loaded = await loadedApp(config);
+    checks.push(encryptionKeyCheck(loaded));
+    checks.push(plaintextSnapshotCheck(loaded));
   }
 
   // 6. Claim-check reach-through (CC-5) over the source tree.
@@ -281,6 +283,94 @@ function encryptionKeyCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
   }
 
   return { name: KEYS_CHECK, status: "ok", detail: `${where} encrypts with a durable KeyStore` };
+}
+
+const SNAPSHOT_SEAL_CHECK = "snapshot-plaintext-under-encrypting-events";
+
+/**
+ * ADR 0130 D8 — an event store that seals payloads beside a snapshot store that does not seal
+ * the WHOLE folded state leaves the sealed data in plaintext in the checkpoint: a static
+ * `sensitive` path list cannot name the dynamic `variables._waitAnswers.<waitId>` keys. Ships
+ * BEFORE the kernel refuses to boot on it, so an operator can see it first.
+ *
+ * Read structurally, as {@link encryptionKeyCheck}: the event store seals iff it reports a
+ * `sealingCapability()` with covers, or exposes a `keys` KeyStore; the snapshot store is fine
+ * iff `sealsWholeState === true` AND it shares the event store's KeyStore.
+ */
+function plaintextSnapshotCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
+  if (loaded instanceof Error) {
+    return { name: SNAPSHOT_SEAL_CHECK, status: "failed", detail: String(loaded) };
+  }
+  const eventStore = loaded.stores?.eventStore as
+    | { keys?: unknown; sealingCapability?: () => { covers?: readonly unknown[] } | undefined }
+    | undefined;
+  const snapshotStore = loaded.stores?.snapshotStore as
+    | { keys?: unknown; sealsWholeState?: unknown }
+    | undefined;
+  let covers: readonly unknown[] | undefined;
+  try {
+    covers = eventStore?.sealingCapability?.()?.covers;
+  } catch (err) {
+    return {
+      name: SNAPSHOT_SEAL_CHECK,
+      status: "failed",
+      detail: `the event store's sealingCapability() threw: ${String(err)}`,
+    };
+  }
+  const eventSeals =
+    (covers !== undefined && covers.length > 0) ||
+    (typeof eventStore?.keys === "object" && eventStore.keys !== null);
+  if (!eventSeals) {
+    return {
+      name: SNAPSHOT_SEAL_CHECK,
+      status: "skipped",
+      detail: "the event store seals nothing — a plaintext checkpoint leaks nothing sealed",
+    };
+  }
+  if (snapshotStore === undefined) {
+    return {
+      name: SNAPSHOT_SEAL_CHECK,
+      status: "ok",
+      detail: "the event store seals and no snapshot store is wired (no checkpoint to leak)",
+    };
+  }
+  const allowed =
+    (loaded as { security?: { crypto?: { allowPlaintextCheckpoints?: unknown } } }).security?.crypto
+      ?.allowPlaintextCheckpoints === true;
+  const sharesKeys =
+    typeof eventStore?.keys === "object" &&
+    eventStore.keys !== null &&
+    snapshotStore.keys === eventStore.keys;
+  if (snapshotStore.sealsWholeState === true && sharesKeys) {
+    return {
+      name: SNAPSHOT_SEAL_CHECK,
+      status: "ok",
+      detail: "the snapshot store seals the whole folded state under the event store's KeyStore",
+    };
+  }
+  const hasKeys = typeof snapshotStore.keys === "object" && snapshotStore.keys !== null;
+  const fix =
+    "Fix: build the snapshot store with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` using the SAME KeyStore as the event store, or set `security.crypto.allowPlaintextCheckpoints: true` to accept a plaintext checkpoint (for example on an encrypted volume).";
+  if (allowed) {
+    return {
+      name: SNAPSHOT_SEAL_CHECK,
+      status: "advisory",
+      detail:
+        "the event store seals but the snapshot store does not seal the whole state; `allowPlaintextCheckpoints` is set, so this is accepted. The checkpoint holds the folded state (including `variables._waitAnswers`) in plaintext.",
+    };
+  }
+  if (hasKeys && snapshotStore.sealsWholeState !== true) {
+    return {
+      name: SNAPSHOT_SEAL_CHECK,
+      status: "advisory",
+      detail: `the snapshot store encrypts only static \`sensitive\` paths. Those cannot name the dynamic \`variables._waitAnswers.<waitId>\` keys, so a resumed wait's answer stays plaintext in the checkpoint. ${fix}`,
+    };
+  }
+  return {
+    name: SNAPSHOT_SEAL_CHECK,
+    status: "failed",
+    detail: `the event store seals payloads but the snapshot store ${hasKeys ? "does not share its KeyStore" : "is plaintext"}: the checkpoint writes the folded state (including \`variables._waitAnswers\`) unsealed, and a shred cannot erase it. A later release refuses to boot on this. ${fix}`,
+  };
 }
 
 const TIMER_CHECK = "durable timers (can this deployment wake?)";

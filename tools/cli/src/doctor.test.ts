@@ -178,6 +178,78 @@ describe("loom doctor", () => {
     expect(find(result, "encryption keys")?.status).toBe("ok");
   });
 
+  // ── plaintext snapshot under an encrypting event store (ADR 0130 D8) ───────
+
+  const SNAP = "snapshot-plaintext-under-encrypting-events";
+
+  it("ERRORS an encrypting event store beside a plaintext snapshot store", async () => {
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: { keys: { durable: true } }, snapshotStore: {} }, schedules: [] }"
+    );
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("failed");
+    expect(result.ok).toBe(false);
+    expect(text).toContain("sealState");
+    expect(text).toContain("_waitAnswers");
+    expect(text).toContain("allowPlaintextCheckpoints");
+  });
+
+  it("detects sealing by the event store's sealingCapability too (no keys probe)", async () => {
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: { sealingCapability: () => ({ cipher: 'c', covers: ['x'] }) }, snapshotStore: {} }, schedules: [] }"
+    );
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("failed");
+  });
+
+  it("is clean for a sealState snapshot store on the same KeyStore", async () => {
+    const { ws, config } = timerConfig(
+      `(() => { const keys = { durable: true };
+        return { stores: { eventStore: { keys }, snapshotStore: { keys, sealsWholeState: true } }, schedules: [] }; })()`
+    );
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("ok");
+  });
+
+  it("ERRORS a sealState snapshot store on DIFFERENT keys", async () => {
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: { keys: { durable: true } }, snapshotStore: { keys: { durable: true }, sealsWholeState: true } }, schedules: [] }"
+    );
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("failed");
+  });
+
+  it("WARNS (advisory) on static sensitive paths, naming _waitAnswers", async () => {
+    const { ws, config } = timerConfig(
+      `(() => { const keys = { durable: true };
+        return { stores: { eventStore: { keys }, snapshotStore: { keys } }, schedules: [] }; })()`
+    );
+    const { result, text } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("advisory");
+    expect(text).toContain("_waitAnswers");
+  });
+
+  it("downgrades to info (advisory) when allowPlaintextCheckpoints is set", async () => {
+    const { ws, config } = timerConfig(
+      `{ security: { crypto: { allowPlaintextCheckpoints: true } },
+         stores: { eventStore: { keys: { durable: true } }, snapshotStore: {} }, schedules: [] }`
+    );
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("advisory");
+    // Accepted explicitly, so not a failure (other checks may fail on this minimal config).
+    expect(result.checks.filter((c) => c.status === "failed").map((c) => c.name)).not.toContain(
+      SNAP
+    );
+  });
+
+  it("skips when the event store seals nothing", async () => {
+    const { ws, config } = timerConfig(
+      "{ stores: { eventStore: {}, snapshotStore: {} }, schedules: [] }"
+    );
+    const { result } = await cmdDoctor({ dir: ws, config });
+    expect(find(result, SNAP)?.status).toBe("skipped");
+  });
+
   it("skips when nothing encrypts — there is no key to depend on", async () => {
     const { ws, config } = timerConfig(
       "{ stores: { eventStore: {}, snapshotStore: {} }, schedules: [] }"
