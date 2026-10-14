@@ -4,7 +4,6 @@ import { step$ } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
 import { type EventStore, InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { TimerService } from "./TimerService";

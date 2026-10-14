@@ -9,7 +9,6 @@ import {
 } from "@loom/event-runtime";
 import { ContentResolvingEventStore, InMemoryContentStore } from "@loom/plugin-content";
 import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { build, flow } from "./__tests__/r2Harness";
 

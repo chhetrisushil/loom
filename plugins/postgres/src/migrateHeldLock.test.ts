@@ -76,7 +76,11 @@ if (PG_URL === undefined) {
       const B = `${SCHEMA}_b`;
       const admin = new Pool({ connectionString: PG_URL });
       const pa = new Pool({ connectionString: PG_URL, options: `-c search_path=${A}`, max: 2 });
-      const pb = new Pool({ connectionString: PG_URL, options: `-c search_path=${B},${A}`, max: 2 });
+      const pb = new Pool({
+        connectionString: PG_URL,
+        options: `-c search_path=${B},${A}`,
+        max: 2,
+      });
       try {
         for (const s of [A, B]) {
           await admin.query(`DROP SCHEMA IF EXISTS ${s} CASCADE`);
@@ -89,9 +93,9 @@ if (PG_URL === undefined) {
             (
               await admin.query(
                 "SELECT count(*)::int AS n FROM pg_indexes WHERE schemaname = $1 AND indexname LIKE 'idx\\_%'",
-                [s],
+                [s]
               )
-            ).rows[0].n,
+            ).rows[0].n
           );
         const na = await count(A);
         expect(na).toBeGreaterThan(5);

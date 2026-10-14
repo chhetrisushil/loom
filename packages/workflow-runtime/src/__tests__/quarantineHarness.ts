@@ -8,10 +8,10 @@ import {
   quarantineStreamId,
 } from "@loom/event-runtime";
 import { EncryptingEventStore, InMemoryKeyStore, type KeyStore } from "@loom/plugin-crypto";
+import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
 import type { WorkflowRuntimeDeps } from "../WorkflowRuntime";
 import { dedupeKeyOf, inboxStreamId, registerInboxTopic } from "../inbox";
 import type { Backend } from "./r2Backends";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { type Harness, build, flow, sealedSnapshots } from "./r2Harness";
 
 // Shared fixtures for the ADR 0130 residuals S5 (quarantine) tests: a FLEET of runtimes over ONE set
@@ -82,7 +82,10 @@ export function fleet(
 }
 
 /** A node whose key store LACKS the owner's key: a wrong-key node (reads the inbox as REDACTED). */
-export function wrongKeyNode(raw: Raw, deps: Partial<WorkflowRuntimeDeps> = {}): Harness {
+export function wrongKeyNode(
+  raw: Pick<Raw, "eventStore" | "timers"> & { snapshotStore?: SnapshotStore },
+  deps: Partial<WorkflowRuntimeDeps> = {}
+): Harness {
   const es = sealingStore(raw.eventStore, new InMemoryKeyStore());
   return build(deps, {
     ...raw,

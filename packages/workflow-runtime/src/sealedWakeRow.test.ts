@@ -7,7 +7,6 @@ import {
   InMemoryTimerStore,
 } from "@loom/event-runtime";
 import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { RedriveExhaustedError, TimerService } from "./TimerService";
 import { Latch, build, flow, slow, until } from "./__tests__/r2Harness";

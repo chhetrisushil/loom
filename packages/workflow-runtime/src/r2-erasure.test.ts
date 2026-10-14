@@ -172,7 +172,11 @@ for (const backend of inboxBackends("erase")) {
       });
       const after = build(
         {},
-        { ...raw, eventStore: sealedStore, snapshotStore: sealedSnapshots(sealedStore, raw.snapshotStore) }
+        {
+          ...raw,
+          eventStore: sealedStore,
+          snapshotStore: sealedSnapshots(sealedStore, raw.snapshotStore),
+        }
       );
       after.rt.registerFlow(f.definition, f.runner);
       await after.rt.send(e, { topic: "b", payload: SECRET, messageId: "b1" });

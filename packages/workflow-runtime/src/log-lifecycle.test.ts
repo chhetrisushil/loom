@@ -19,8 +19,8 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LIFECYCLE_STREAM, LogLifecycle, UnsafeCompactionError } from "./LogLifecycle";
-import { PlaintextCheckpointError } from "./checkpointGuard";
 import { WorkflowRuntime } from "./WorkflowRuntime";
+import { PlaintextCheckpointError } from "./checkpointGuard";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
 const inputSchema = z.object({ n: z.number() });

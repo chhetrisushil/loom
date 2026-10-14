@@ -94,10 +94,7 @@ describe("a sealed refusal is indistinguishable from an unknown-owner denial of 
       const plainInner = new InMemoryAsyncEventStore();
       const E = "shape-1";
       const f0 = secret();
-      const setup = build(
-        {},
-        { eventStore: plainInner }
-      );
+      const setup = build({}, { eventStore: plainInner });
       setup.rt.registerFlow(f0.definition, f0.runner);
       await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
       const base = node(plainInner);
@@ -185,10 +182,7 @@ describe("a sealed refusal is worded as the ordinary unknown-owner call of the s
     const E = "shape-op";
     const plainInner = new InMemoryAsyncEventStore();
     const f0 = secret();
-    const setup = build(
-      {},
-      { eventStore: plainInner }
-    );
+    const setup = build({}, { eventStore: plainInner });
     setup.rt.registerFlow(f0.definition, f0.runner);
     await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
     const base = node(plainInner, new InMemoryTimerStore(), policy);
@@ -228,10 +222,7 @@ describe("a sealed refusal is worded as the ordinary unknown-owner call of the s
         const E = "shape-wf";
         const plainInner = new InMemoryAsyncEventStore();
         const f0 = secret();
-        const setup = build(
-          {},
-          { eventStore: plainInner }
-        );
+        const setup = build({}, { eventStore: plainInner });
         setup.rt.registerFlow(f0.definition, f0.runner);
         await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
         const base = node(plainInner, new InMemoryTimerStore(), policy);
@@ -271,10 +262,7 @@ describe("a sealed refusal is worded as the ordinary unknown-owner call of the s
       const E = "shape-snap";
       const plainInner = new InMemoryAsyncEventStore();
       const f0 = secret();
-      const setup = build(
-        {},
-        { eventStore: plainInner }
-      );
+      const setup = build({}, { eventStore: plainInner });
       setup.rt.registerFlow(f0.definition, f0.runner);
       await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
       const base = node(plainInner, new InMemoryTimerStore(), policy);

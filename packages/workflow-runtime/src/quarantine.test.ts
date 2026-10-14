@@ -488,7 +488,11 @@ for (const backend of inboxBackends("quarantine")) {
         const sealing = sealingStore(raw.eventStore, new InMemoryKeyStore());
         const a = build(
           {},
-          { ...raw, eventStore: sealing, snapshotStore: sealedSnapshots(sealing, raw.snapshotStore) }
+          {
+            ...raw,
+            eventStore: sealing,
+            snapshotStore: sealedSnapshots(sealing, raw.snapshotStore),
+          }
         );
         const f = flow("busy", async (ctx) => {
           await ctx.run(slow, {});

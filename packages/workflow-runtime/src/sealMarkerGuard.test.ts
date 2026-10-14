@@ -6,7 +6,6 @@ import type { EventEnvelope } from "@loom/core";
 import { type EventStore, InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
 import { seededIvSource } from "@loom/plugin-crypto/testing";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { Latch, build, crashingStore, echo, flow, until } from "./__tests__/r2Harness";
@@ -51,8 +50,7 @@ function fleet(sensitive: Sensitive) {
   const inner = new InMemoryAsyncEventStore();
   const timers = new InMemoryTimerStore();
   const keys = new InMemoryKeyStore();
-  const mk = (store: EventStore) =>
-    build({}, { eventStore: store, timers });
+  const mk = (store: EventStore) => build({}, { eventStore: store, timers });
   const capable = mk(new EncryptingEventStore(inner, keys, { sensitive }));
   const raw = mk(inner);
   const wrongKey = mk(new EncryptingEventStore(inner, new InMemoryKeyStore(), { sensitive }));
@@ -437,8 +435,7 @@ describe("a node with a SUPERSET sensitive map opens an older, narrower marker",
     const wide = new EncryptingEventStore(inner, keys, {
       sensitive: { EXECUTION_STARTED: ["input"], STEP_COMPLETED: ["output"] },
     });
-    const mk = (s: EventStore) =>
-      build({}, { eventStore: s });
+    const mk = (s: EventStore) => build({}, { eventStore: s });
     const counter = { runs: 0 };
     const fl = secretFlow(counter);
     const a = mk(narrow);
@@ -535,8 +532,7 @@ describe("DST/crash: a crash after a sealed append, recovered by a raw node and 
     k.get = async () => fixedKey;
     return k;
   };
-  const mk = (store: EventStore) =>
-    build({}, { eventStore: store });
+  const mk = (store: EventStore) => build({}, { eventStore: store });
   const sealed = (inner: EventStore) =>
     new EncryptingEventStore(inner, keys(), { sensitive, ivSource: seededIvSource("dst-1") });
   const fl = () =>
