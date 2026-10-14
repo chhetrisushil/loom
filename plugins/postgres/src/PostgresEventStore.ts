@@ -578,6 +578,15 @@ export class PostgresEventStore implements EventStore {
     return Number(rows[0]?.now);
   }
 
+  /**
+   * SPI 2.5.0 (ADR 0130 residuals D7) - this store seals nothing and so opens nothing: the row it
+   * returns is whatever a sealing decorator above it wrote. Declared (rather than omitted) so the
+   * decorator kit's "the inner store offers every optional method" holds over Postgres.
+   */
+  sealingCapability(): undefined {
+    return undefined;
+  }
+
   async head(executionId: string): Promise<number | null> {
     await this.ready;
     const { rows } = await this.pool.query<{ tip: string | number | null }>(

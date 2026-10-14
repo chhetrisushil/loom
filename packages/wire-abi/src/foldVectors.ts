@@ -734,6 +734,175 @@ export const FOLD_VECTORS: FoldVector[] = [
       frames: {},
     },
   },
+  {
+    // ADR 0130 residuals D9 (EVENT_SCHEMA 1.25.0, RESERVED): a kernel-stamped INBOX_QUARANTINED holds
+    // the topic's head. The cursor advances (the original entry no longer pins the stream), the entry
+    // joins the topic's queue as `held`, and the dedupe window is NOT touched.
+    name: "ADR 0130: INBOX_QUARANTINED advances the cursor, queues the entry, leaves the dedupe window",
+    events: [
+      ev("v15", 0, "EXECUTION_STARTED", { input: {} }),
+      ev(
+        "v15",
+        1,
+        "INBOX_QUARANTINED",
+        {
+          topic: "chat",
+          inboxSeq: 3,
+          key: "k3",
+          messageId: "m3",
+          heldAt: 0,
+          operator: { actor: "op" },
+        },
+        { kernel: true }
+      ),
+    ],
+    expected: {
+      status: "running",
+      sequence: 1,
+      variables: {
+        _input: {},
+        _inbox: { cursors: { chat: 3 }, dedupe: [] },
+        _quarantined: { chat: [{ key: "k3", inboxSeq: 3, heldAt: 0, state: "held" }] },
+      },
+      frames: {},
+    },
+  },
+  {
+    // …then a manual release marks it `released` (still ahead of everything above the cursor), and the
+    // delivery's MESSAGE_CONSUMED (whose messageId is the dedupe key) drops it WITHOUT moving the cursor.
+    name: "ADR 0130: INBOX_RELEASED deliver, then MESSAGE_CONSUMED of its key, drops the entry",
+    events: [
+      ev("v16", 0, "EXECUTION_STARTED", { input: {} }),
+      ev(
+        "v16",
+        1,
+        "INBOX_QUARANTINED",
+        {
+          topic: "chat",
+          inboxSeq: 3,
+          key: "k3",
+          messageId: "m3",
+          heldAt: 0,
+          operator: { actor: "op" },
+        },
+        { kernel: true }
+      ),
+      ev(
+        "v16",
+        2,
+        "INBOX_RELEASED",
+        { topic: "chat", key: "k3", messageId: "m3", disposition: "deliver", auto: true },
+        { kernel: true }
+      ),
+      ev(
+        "v16",
+        3,
+        "MESSAGE_CONSUMED",
+        { waitId: "#0", topic: "chat", messageId: "k3", inboxSeq: 3, sender: {}, payload: "hello" },
+        { kernel: true }
+      ),
+    ],
+    expected: {
+      status: "running",
+      sequence: 3,
+      variables: {
+        _input: {},
+        _inbox: { cursors: { chat: 3 }, dedupe: ["k3"] },
+        _quarantined: {},
+        _waitAnswers: { "#0": { kind: "inbox", name: "chat", payload: "hello" } },
+      },
+      frames: {},
+    },
+  },
+  {
+    // A release naming both `operator` and `auto`, or neither, is ignored; so is an unstamped one.
+    name: "ADR 0130: an INBOX_RELEASED with both or neither of operator/auto, or unstamped, is ignored",
+    events: [
+      ev("v17", 0, "EXECUTION_STARTED", { input: {} }),
+      ev(
+        "v17",
+        1,
+        "INBOX_QUARANTINED",
+        {
+          topic: "chat",
+          inboxSeq: 3,
+          key: "k3",
+          messageId: "m3",
+          heldAt: 0,
+          operator: { actor: "op" },
+        },
+        { kernel: true }
+      ),
+      ev(
+        "v17",
+        2,
+        "INBOX_RELEASED",
+        {
+          topic: "chat",
+          key: "k3",
+          messageId: "m3",
+          disposition: "deliver",
+          auto: true,
+          operator: { actor: "op" },
+        },
+        { kernel: true }
+      ),
+      ev(
+        "v17",
+        3,
+        "INBOX_RELEASED",
+        { topic: "chat", key: "k3", messageId: "m3", disposition: "deliver" },
+        { kernel: true }
+      ),
+      ev("v17", 4, "INBOX_RELEASED", {
+        topic: "chat",
+        key: "k3",
+        messageId: "m3",
+        disposition: "deliver",
+        operator: { actor: "op" },
+      }),
+    ],
+    expected: {
+      status: "running",
+      sequence: 4,
+      variables: {
+        _input: {},
+        _inbox: { cursors: { chat: 3 }, dedupe: [] },
+        _quarantined: { chat: [{ key: "k3", inboxSeq: 3, heldAt: 0, state: "held" }] },
+      },
+      frames: {},
+    },
+  },
+  {
+    // D7: the envelope key `metadata.seal` is a marker the FOLD never reads, so the same log with and
+    // without it folds to the same state (this vector is the "with" half of the pair, v1 above is the
+    // "without").
+    name: "ADR 0130: metadata.seal is ignored by the fold (same state as the log without it)",
+    events: [
+      ev(
+        "v18",
+        0,
+        "EXECUTION_STARTED",
+        { input: { n: 1 } },
+        { seal: { v: 1, cipher: "loom/aes-256-gcm", covers: ["STEP_COMPLETED.output"] } }
+      ),
+      ev("v18", 1, "STEP_STARTED", { stepId: "a", input: { n: 1 } }),
+      ev(
+        "v18",
+        2,
+        "STEP_COMPLETED",
+        { stepId: "a", output: { n: 2 } },
+        { seal: { v: 1, cipher: "loom/aes-256-gcm", covers: ["STEP_COMPLETED.output"] } }
+      ),
+      ev("v18", 3, "EXECUTION_COMPLETED", { output: { n: 2 } }),
+    ],
+    expected: {
+      status: "completed",
+      sequence: 3,
+      variables: { _input: { n: 1 }, _output: { n: 2 } },
+      frames: { a: { status: "completed", attempts: 1 } },
+    },
+  },
 ];
 
 /** Run the reference fold over every vector; returns per-vector pass/fail + detail. */

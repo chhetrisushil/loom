@@ -29,6 +29,18 @@ describe("kernelManifest", () => {
     expect(m.kernelAbi.syscalls.length).toBeGreaterThan(0);
     expect(m.eventSchema.eventTypes.length).toBeGreaterThan(0);
   });
+
+  it("ADR 0130 residuals S1 reserves EVENT_SCHEMA 1.25.0 / EventStore SPI 2.5.0 and changes NOTHING in the kernel ABI", () => {
+    const m = kernelManifest();
+    expect(m.eventSchema.version).toBe("1.25.0");
+    expect(m.spis.eventStore).toBe("2.5.0");
+    // KERNEL_ABI is the syscall surface: the new facts are folded kinds, not syscalls, and the new
+    // ops are type-only. Both the version and the table must be exactly what they were.
+    expect(m.kernelAbi.version).toBe("1.3.0");
+    expect(m.kernelAbi.syscalls).toHaveLength(14);
+    expect(m.spis.snapshotStore).toBe("1.1.0");
+    expect(m.wireAbi.version).toBe("1.0.0");
+  });
 });
 
 describe("capability maturity — evidence is real (badges can't rot)", () => {
@@ -402,18 +414,19 @@ describe("checkCompatibility", () => {
   it("refuses a 1.x EventStore (SPI 2.x, ADR 0108: pinned id order + id cursors)", () => {
     // A 1.5.0 store may page in any order with an opaque cursor, which ShardedEventStore and
     // TenantScopedEventStore can no longer tolerate — the reason the bump is MAJOR. 2.1.0,
-    // 2.2.0, 2.3.0 and 2.4.0 are MINORs (acquireFenceIf; appendIfUnchanged; the incarnation anchor MUST; storeNow):
-    // a 2.0.0 store still conforms.
-    expect(kernelManifest().spis.eventStore).toBe("2.4.0");
+    // 2.2.0, 2.3.0, 2.4.0 and 2.5.0 are MINORs (acquireFenceIf; appendIfUnchanged; the incarnation anchor
+    // MUST; storeNow; sealingCapability): a 2.0.0 store still conforms.
+    expect(kernelManifest().spis.eventStore).toBe("2.5.0");
     const report = checkCompatibility({ eventStoreSpi: "1.5.0" });
     expect(report.ok).toBe(false);
     expect(report.issues).toEqual([
-      expect.objectContaining({ component: "eventStoreSpi", expected: "2.4.0", actual: "1.5.0" }),
+      expect.objectContaining({ component: "eventStoreSpi", expected: "2.5.0", actual: "1.5.0" }),
     ]);
     expect(checkCompatibility({ eventStoreSpi: "2.0.0" }).ok).toBe(true);
     expect(checkCompatibility({ eventStoreSpi: "2.1.0" }).ok).toBe(true);
     expect(checkCompatibility({ eventStoreSpi: "2.2.0" }).ok).toBe(true);
     expect(checkCompatibility({ eventStoreSpi: "2.3.0" }).ok).toBe(true);
+    expect(checkCompatibility({ eventStoreSpi: "2.4.0" }).ok).toBe(true);
   });
 
   it("accepts a same-major (MINOR-bumped) deployment", () => {

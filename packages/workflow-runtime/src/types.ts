@@ -544,11 +544,16 @@ export type ExecutionOp =
   | "actAsOwner"
   | "send"
   | "annotate"
-  | "discard";
+  | "discard"
+  | "quarantine"
+  | "release";
 // `"actAsOwner"` (ADR 0111 D7) authorizes `fork(…, { actAs: "owner" })` on the PARENT: the fork
 // then runs the owner's remaining effects under the owner's grants instead of the forker's.
 // `"send"` (ADR 0110 D1) authorizes `runtime.send`, the only writer of an execution's inbox.
 // `"annotate"` (ADR 0116) authorizes `runtime.recordOutcome`, a late reward on a FINISHED execution.
+// `"quarantine"` / `"release"` (ADR 0130 residuals D9, RESERVED: type-only, no caller yet) will authorize
+// `quarantineInbox` and `releaseInbox("deliver")`; a `"discard"` disposition is judged as `"discard"`.
+// Both are closed by default in `executionAccessPolicy`, like `"discard"`.
 // `"discard"` (ADR 0110 amendment) authorizes `runtime.discardInbox`, an operator's journaled skip of
 // unconsumed inbox messages: it destroys messages a sender was told were accepted, so it is closed by
 // default (`executionAccessPolicy` maps it to `"deny"`) and an integrator opens it for its operators.

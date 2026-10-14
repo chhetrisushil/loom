@@ -223,6 +223,9 @@ export const KERNEL_STAMPED_EVENT_TYPES: ReadonlySet<string> = new Set([
   "EXECUTION_CONTINUED",
   "MESSAGE_CONSUMED",
   "PARALLEL_COMPLETED",
+  // 1.25.0 (ADR 0130 residuals D9): reserved; no writer yet.
+  "INBOX_QUARANTINED",
+  "INBOX_RELEASED",
 ]);
 
 function isKernelWritten(event: EventEnvelope): boolean {
@@ -235,6 +238,13 @@ function isPlain(v: unknown): v is Record<string, unknown> {
 
 /** Every inbox dedupe window the fold keeps is capped here; the runtime may apply a smaller one. */
 export const INBOX_DEDUPE_CAP = 1024;
+/**
+ * 1.25.0 (ADR 0130 residuals D9) — the fold keeps at most this many quarantined entries in total
+ * (`_quarantined`, across topics). A fold cannot read a runtime setting (the lesson of ADR 0110 D6),
+ * so the ceiling is a fold constant; the runtime's own `quarantineMax` (default 256) may be raised
+ * to it, never above. A fact that would exceed it is ignored.
+ */
+export const QUARANTINE_FOLD_CAP = 1024;
 /** ADR 0115 D2 — custom metering dimension names, count and per-value ceiling. */
 export const CUSTOM_DIMENSION_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
 export const CUSTOM_DIMENSION_MAX = 32;
@@ -359,6 +369,70 @@ function seedInbox(
   return { cursors, dedupe };
 }
 
+/** One held (or released, not yet delivered) inbox message of a topic's quarantine queue (1.25.0). */
+interface QuarantineEntry {
+  key: string;
+  inboxSeq: number;
+  heldAt: number;
+  state: "held" | "released";
+}
+type Quarantined = Record<string, QuarantineEntry[]>;
+
+function quarantinedOf(state: ExecutionState): Quarantined | undefined {
+  const q = state.variables._quarantined;
+  return isPlain(q) ? (q as Quarantined) : undefined;
+}
+
+function quarantineTotal(q: Quarantined | undefined): number {
+  let n = 0;
+  if (q !== undefined) for (const queue of Object.values(q)) n += queue.length;
+  return n;
+}
+
+/**
+ * A validated `_quarantined` seed from `continuedFrom.carried.quarantined` (1.25.0); invalid parts
+ * are ignored, never thrown. A topic's queue must read `released* held*` (the shape release
+ * preserves); a queue that does not is dropped whole. The total is capped at {@link QUARANTINE_FOLD_CAP}.
+ */
+function seedQuarantined(raw: unknown): Quarantined | undefined {
+  if (!isPlain(raw)) return undefined;
+  const out: Quarantined = {};
+  let total = 0;
+  for (const [topic, queue] of Object.entries(raw)) {
+    if (!safeMapKey(topic) || !Array.isArray(queue)) continue;
+    const entries: QuarantineEntry[] = [];
+    let sawHeld = false;
+    let ok = true;
+    for (const e of queue as unknown[]) {
+      if (
+        !isPlain(e) ||
+        typeof e.key !== "string" ||
+        e.key.length === 0 ||
+        !Number.isSafeInteger(e.inboxSeq) ||
+        (e.inboxSeq as number) < 0 ||
+        !Number.isSafeInteger(e.heldAt) ||
+        (e.heldAt as number) < 0 ||
+        (e.state !== "held" && e.state !== "released") ||
+        (sawHeld && e.state === "released")
+      ) {
+        ok = false;
+        break;
+      }
+      if (e.state === "held") sawHeld = true;
+      entries.push({
+        key: e.key,
+        inboxSeq: e.inboxSeq as number,
+        heldAt: e.heldAt as number,
+        state: e.state,
+      });
+    }
+    if (!ok || entries.length === 0 || total + entries.length > QUARANTINE_FOLD_CAP) continue;
+    total += entries.length;
+    out[topic] = entries;
+  }
+  return total > 0 ? out : undefined;
+}
+
 /** The chain identity a `forkChain` stamp or the start payload names; `undefined` if malformed. */
 function chainIdentity(v: unknown): { chainId: string; generation: number } | undefined {
   if (!isPlain(v)) return undefined;
@@ -455,6 +529,9 @@ const handlers: Record<string, Handler> = {
     if (resources !== undefined) vars._resources = resources;
     const inbox = seedInbox(carriedFrom?.inbox);
     if (inbox !== undefined) vars._inbox = inbox;
+    // 1.25.0 (ADR 0130 residuals D9) — the quarantine queues ride the same carry as the inbox.
+    const quarantined = seedQuarantined(carriedFrom?.quarantined);
+    if (quarantined !== undefined) vars._quarantined = quarantined;
     return {
       ...state,
       status: "running",
@@ -738,7 +815,135 @@ const handlers: Record<string, Handler> = {
       }
       variables._waitAnswers = answers;
     }
+    // 1.25.0 (ADR 0130 residuals D9) — gated on `_quarantined`: a log that never quarantines folds
+    // byte-identically. Delivering the topic's first RELEASED entry (matched by its dedupe key, which
+    // is this fact's `messageId`) drops it from the queue; the cursor already sits at or above its
+    // original `inboxSeq`, so it does not move.
+    const held = quarantinedOf(state);
+    if (held !== undefined && Object.hasOwn(held, p.topic)) {
+      const queue = held[p.topic] as QuarantineEntry[];
+      const first = queue[0];
+      if (first !== undefined && first.state === "released" && first.key === p.messageId) {
+        const next = ownedRecord(held);
+        if (queue.length === 1) delete next[p.topic];
+        else next[p.topic] = queue.slice(1);
+        variables._quarantined = next;
+      }
+    }
     return { ...state, variables, updatedAt: event.timestamp };
+  },
+
+  // 1.25.0 (ADR 0130 residuals D9; RESERVED, no writer yet) — the topic's head message is HELD: the
+  // cursor advances past the original entry (so it no longer pins the stream), the entry joins the
+  // topic's FIFO queue `_quarantined[topic]`, and the dedupe window is NOT touched (the release
+  // delivery must not read as a duplicate). Kernel-stamped envelopes only; a malformed fact, or one
+  // that would take the total past QUARANTINE_FOLD_CAP, is ignored.
+  INBOX_QUARANTINED: (state, event) => {
+    if (!isKernelWritten(event)) return state;
+    const p = event.payload as Record<string, unknown> | null;
+    if (
+      !isPlain(p) ||
+      !safeMapKey(p.topic) ||
+      !Number.isSafeInteger(p.inboxSeq) ||
+      (p.inboxSeq as number) < 0 ||
+      typeof p.key !== "string" ||
+      p.key.length === 0 ||
+      typeof p.messageId !== "string" ||
+      !Number.isSafeInteger(p.heldAt) ||
+      (p.heldAt as number) < 0 ||
+      !isPlain(p.operator)
+    ) {
+      return state;
+    }
+    const prior = quarantinedOf(state);
+    if (quarantineTotal(prior) + 1 > QUARANTINE_FOLD_CAP) return state;
+    const inbox = state.variables._inbox as
+      | { cursors?: Record<string, number>; dedupe?: string[] }
+      | undefined;
+    const cursors = ownedRecord(inbox?.cursors);
+    const was = Object.hasOwn(cursors, p.topic) ? (cursors[p.topic] as number) : -1;
+    cursors[p.topic] = Math.max(was, p.inboxSeq as number);
+    const quarantined = ownedRecord(prior);
+    const queue = Object.hasOwn(quarantined, p.topic)
+      ? (quarantined[p.topic] as QuarantineEntry[])
+      : [];
+    quarantined[p.topic] = [
+      ...queue,
+      {
+        key: p.key,
+        inboxSeq: p.inboxSeq as number,
+        heldAt: p.heldAt as number,
+        state: "held",
+      },
+    ];
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _inbox: { cursors, dedupe: inbox?.dedupe ?? [] },
+        _quarantined: quarantined,
+      },
+      updatedAt: event.timestamp,
+    };
+  },
+
+  // 1.25.0 (ADR 0130 residuals D9; RESERVED, no writer yet) — the topic's OLDEST held entry is
+  // released or dropped. EXACTLY ONE of `operator` (a manual release) / `auto` (an automatic one,
+  // only with `deliver`) is present; a fact with both or neither is ignored, as is one that does not
+  // name the topic's first entry while it is `held`. "deliver" marks it `released`; "discard" removes
+  // it and adds its key to the dedupe window (a sender's retry of that id is then a duplicate).
+  INBOX_RELEASED: (state, event) => {
+    if (!isKernelWritten(event)) return state;
+    const p = event.payload as Record<string, unknown> | null;
+    if (
+      !isPlain(p) ||
+      !safeMapKey(p.topic) ||
+      typeof p.key !== "string" ||
+      p.key.length === 0 ||
+      typeof p.messageId !== "string" ||
+      (p.disposition !== "deliver" && p.disposition !== "discard")
+    ) {
+      return state;
+    }
+    const hasOperator = p.operator !== undefined;
+    const hasAuto = p.auto !== undefined;
+    if (hasOperator === hasAuto) return state; // both, or neither
+    if (hasOperator && !isPlain(p.operator)) return state;
+    if (hasAuto && (p.auto !== true || p.disposition !== "deliver")) return state;
+    const prior = quarantinedOf(state);
+    if (prior === undefined || !Object.hasOwn(prior, p.topic)) return state;
+    const queue = prior[p.topic] as QuarantineEntry[];
+    const first = queue[0];
+    if (first === undefined || first.state !== "held" || first.key !== p.key) return state;
+    const quarantined = ownedRecord(prior);
+    if (p.disposition === "deliver") {
+      quarantined[p.topic] = [{ ...first, state: "released" }, ...queue.slice(1)];
+      return {
+        ...state,
+        variables: { ...state.variables, _quarantined: quarantined },
+        updatedAt: event.timestamp,
+      };
+    }
+    if (queue.length === 1) delete quarantined[p.topic];
+    else quarantined[p.topic] = queue.slice(1);
+    const inbox = state.variables._inbox as
+      | { cursors?: Record<string, number>; dedupe?: string[] }
+      | undefined;
+    const window = inbox?.dedupe;
+    let dedupe = window;
+    if (window?.includes(first.key) !== true) {
+      dedupe = appendAudit(window, first.key);
+      if (dedupe.length > INBOX_DEDUPE_CAP) dedupe.splice(0, dedupe.length - INBOX_DEDUPE_CAP);
+    }
+    return {
+      ...state,
+      variables: {
+        ...state.variables,
+        _inbox: { cursors: inbox?.cursors ?? {}, dedupe: dedupe ?? [] },
+        _quarantined: quarantined,
+      },
+      updatedAt: event.timestamp,
+    };
   },
 
   EXECUTION_SUSPENDED: (state, event) => {
@@ -1514,7 +1719,23 @@ export function getHandler(eventType: string): Handler | undefined {
 //   Descriptive only: `getDecision` still returns just `choice`. A snapshot written by a 1.23 fold
 //   has no `seq` on its absorbed entries; those are LEGACY and read in map order (no migration, the
 //   same documented exception to snapshot+tail == full fold as 1.21.0). Log bytes are unchanged.
-export const EVENT_SCHEMA_VERSION = "1.24.0";
+// 1.25.0: ADR 0130 residuals (D7-D9), RESERVED - shapes frozen, handlers present, NO writer yet, so
+//   a log written before this version replays byte-identically. (1) The envelope key
+//   `metadata.seal` (`{ v: 1, cipher, covers }`, D7: a sealing decorator's marker): the fold
+//   IGNORES it, so state equals the same log without it. (2) New kinds `INBOX_QUARANTINED`
+//   (`{ topic, inboxSeq, key, messageId, heldAt, operator, reason? }` -> cursor advance by `max`,
+//   an entry pushed onto `_quarantined[topic]`, the dedupe window untouched) and `INBOX_RELEASED`
+//   (`{ topic, key, messageId, disposition: "deliver" | "discard", operator? | auto?, reason? }`:
+//   exactly one of `operator` / `auto`, `auto` only with `deliver`; a fact with both or neither is
+//   ignored; acts only on the topic's FIRST entry while `held`), BOTH folded only from a
+//   kernel-stamped envelope (`metadata.kernel === true`) and both `ignorable` for the park fence.
+//   (3) The fold variable `_quarantined` (`{ [topic]: Array<{ key, inboxSeq, heldAt, state }> }`,
+//   queue shape `released* held*`, at most QUARANTINE_FOLD_CAP = 1024 entries in total). (4)
+//   `MESSAGE_CONSUMED` additionally drops the topic's first `released` entry whose `key` equals the
+//   fact's `messageId`, gated on `_quarantined` existing. (5) `EXECUTION_STARTED.continuedFrom.
+//   carried.quarantined`, a validated seed (invalid parts ignored). Byte-identity: a log carrying
+//   none of these shapes folds exactly as under 1.24.0.
+export const EVENT_SCHEMA_VERSION = "1.25.0";
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();

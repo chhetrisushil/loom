@@ -8,6 +8,7 @@ import {
   type ExecutionPage,
   OPTIONAL_EVENT_STORE_METHODS,
   type OptionalEventStoreMethod,
+  type SealingCapability,
   appendBatchOf,
   headOf,
 } from "./types";
@@ -114,6 +115,28 @@ function commonOptional(shards: readonly EventStore[]): EventStore {
  * with a bare incarnation (digits) nor with the legacy `<timestamp>:<id>` marker (digits first),
  * and an observation taken on one shard never equals the anchor of another.
  */
+/**
+ * The sealing capability of a fleet of shards: `undefined` unless every shard has one with the same
+ * cipher; then the `covers` that every shard has, and an `opens` that every shard must agree to.
+ */
+function intersectSealing(
+  caps: readonly (SealingCapability | undefined)[]
+): SealingCapability | undefined {
+  const first = caps[0];
+  if (first === undefined) return undefined;
+  const all: SealingCapability[] = [];
+  for (const c of caps) {
+    if (c === undefined || c.cipher !== first.cipher) return undefined;
+    all.push(c);
+  }
+  const covers = first.covers.filter((entry) => all.every((c) => c.covers.includes(entry)));
+  return {
+    cipher: first.cipher,
+    covers,
+    opens: (marker) => all.every((c) => c.opens(marker)),
+  };
+}
+
 const shardAnchor = (shard: number, inner: string): string => `s${shard}/${inner}`;
 /** The inner anchor if `anchor` was issued by `shard`; otherwise the string unchanged, which no
  * inner store can have issued (it starts with `s`), so the shard answers `moved`. */
@@ -129,6 +152,7 @@ export class ShardedEventStore implements EventStore {
   readonly acquireFenceIf?: NonNullable<EventStore["acquireFenceIf"]>;
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
   readonly storeNow?: NonNullable<EventStore["storeNow"]>;
+  readonly sealingCapability?: NonNullable<EventStore["sealingCapability"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
@@ -174,6 +198,10 @@ export class ShardedEventStore implements EventStore {
       },
       // One clock for the fleet: every shard has it (commonOptional), read from the first shard.
       storeNow: "forward",
+      // ADR 0130 residuals D7: a stream may sit on any shard, so the node can open only what EVERY
+      // shard opens. Installed only when every shard has the method (commonOptional); undefined
+      // unless every shard reports a capability of the SAME cipher, then the intersection.
+      sealingCapability: () => intersectSealing(this.shards.map((s) => s.sealingCapability!())),
       deleteExecution: async (id) => {
         await (await this.route(id)).deleteExecution!(id);
         this.placementCache.delete(id);

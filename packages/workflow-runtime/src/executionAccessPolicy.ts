@@ -101,7 +101,16 @@ const DEFAULT_RULES: Record<ExecutionOp, ExecutionScope> = {
   send: "tenant",
   annotate: "owner",
   discard: "deny",
+  quarantine: "deny",
+  release: "deny",
 };
+
+/**
+ * The reason the default policy gives for an execution whose owner it cannot establish. Exported
+ * from one module so a refusal that must be indistinguishable from this denial (ADR 0130 residuals
+ * D7: a sealed stream this node cannot open) reuses the exact string instead of a copy that could drift.
+ */
+export const UNKNOWN_OWNER_REASON = "the execution's owner is unknown to this policy";
 
 const deny = (reason: string): ExecutionAuthzVerdict => ({ allowed: false, reason });
 const allow: ExecutionAuthzVerdict = { allowed: true };
@@ -168,9 +177,7 @@ export function executionAccessPolicy(options: ExecutionAccessOptions = {}): Exe
         if (resolved !== undefined) candidates.push(resolved);
       }
       if (candidates.length === 0) {
-        return options.unknownOwner === "allow"
-          ? allow
-          : deny("the execution's owner is unknown to this policy");
+        return options.unknownOwner === "allow" ? allow : deny(UNKNOWN_OWNER_REASON);
       }
       let refusal = "";
       for (const owner of candidates) {

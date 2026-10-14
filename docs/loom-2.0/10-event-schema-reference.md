@@ -427,6 +427,28 @@ execution `status` (a denial / quota / safety breach fails the STEP via the ordi
   wins). A `messageId` already in the window is a duplicate: the cursor advances, nothing is
   delivered. Malformed or reserved names are ignored.
 
+#### `INBOX_QUARANTINED`
+- **Introduced:** 1.25.0 - ADR 0130 residuals D9 ([ADR 0130](../adr/0130-sealed-payload-delivery-guard.md)).
+  **Reserved: no kernel writer yet** (`quarantineInbox` lands in a later slice).
+- **Payload:** `{ topic, inboxSeq, key, messageId, heldAt, operator, reason? }` (`key` is the 64-hex dedupe
+  key, `heldAt` the sequence of the verbatim copy in `__loom_quarantine__:<chainId>`).
+- **Marker:** folds ONLY a `metadata.kernel === true` envelope; unstamped is a no-op. Classed `ignorable`
+  for the park fence (like `MESSAGE_CONSUMED`).
+- **Folds into:** the topic's cursor advances by `max`, an entry `{ key, inboxSeq, heldAt, state: "held" }`
+  is pushed onto `variables._quarantined[topic]`, and the dedupe window is NOT touched. Ignored when the
+  total number of entries would pass 1 024 (`QUARANTINE_FOLD_CAP`) or the payload is malformed.
+
+#### `INBOX_RELEASED`
+- **Introduced:** 1.25.0 - ADR 0130 residuals D9. **Reserved: no kernel writer yet.**
+- **Payload:** `{ topic, key, messageId, disposition: "deliver" | "discard", operator?, auto?: true, reason? }`.
+  EXACTLY ONE of `operator` / `auto` is present, and `auto` only with `"deliver"`; a fact with both or
+  neither is ignored.
+- **Marker:** folds ONLY a `metadata.kernel === true` envelope; unstamped is a no-op. Classed `ignorable`.
+- **Folds into:** acts only on the topic's FIRST `_quarantined` entry while it is `held` and its `key` matches:
+  `"deliver"` marks it `released`; `"discard"` removes it and adds its key to the dedupe window. A
+  following `MESSAGE_CONSUMED` whose `messageId` equals the first `released` entry's `key` drops that entry
+  (the cursor does not move). Queue shape is always `released* held*`.
+
 #### `ERASURE_PENDING`
 - **Introduced:** 1.14.0 — T3-R4.5 deferred-erasure protocol ([ADR 0022](../adr/0022-k10-log-lifecycle-retention-redaction-encryption.md)).
   Written by the `EraseCoordinator` (`@loom/compliance`) to a reserved control stream
@@ -489,7 +511,7 @@ optional field and a MINOR bump), never an edit in place.
 | `EXECUTION_STARTED` | `principal: { v: 1, ref?, identity?, delegation? }` (a fork's `forkedBy` envelope metadata wins) | `_principal` | 0111 |
 | | `parent: string` | `_parent` | 0111 |
 | | `chainId`, `generation`, `continuedFrom: { executionId, carried? }` (a fork's `forkChain` metadata wins and drops `continuedFrom`) | `_chain = { chainId, generation, continuedFrom? }` | 0109 |
-| | `continuedFrom.carried.{resources, inbox}` (validated; an invalid carry is ignored, never thrown; not applied to a fork; `resources` includes `exceeded`/`reason`, so a rotation cannot reset a quota) | seeds `_resources`, `_inbox`; `chainDeadline` stays in `_chain.continuedFrom.carried` | 0109 D3 |
+| | `continuedFrom.carried.{resources, inbox, quarantined}` (validated; `quarantined` is 1.25.0, reserved: a per-topic queue shaped `released* held*`, 1 024 entries at most; an invalid carry is ignored, never thrown; not applied to a fork; `resources` includes `exceeded`/`reason`, so a rotation cannot reset a quota) | seeds `_resources`, `_inbox`; `chainDeadline` stays in `_chain.continuedFrom.carried` | 0109 D3 |
 | | `codeHash: string` | `_codeHash` | 0113 |
 | `EXECUTION_SUSPENDED` | `condition.waits[]: { waitId, kind: "gate"|"inbox"|"timer", on?, topic?, viewDigest?, correlationKey?, wakeAt? }`, **honoured only on a kernel-stamped park** (the runtime's commit site strips `waits` from every userspace park; the R2 writer adds it afterwards and stamps the event). Unstamped, the fold drops it from `suspendedOn` too | stamped: the well-formed entries are kept in `suspendedOn.waits` (the table a wait-addressed resume reads) and `_waits[waitId] = { kind: "timer", wakeAt }` is set at the FIRST park that lists the timer arm; malformed entries are skipped, never thrown | 0110 D4 |
 | `EXECUTION_RESUMED` | a **wait-addressed** resume: `metadata.kernel === true` and payload `{ waitId, payload }`, unwrapped by the fold | `_waitAnswers[waitId] = { kind, name, payload }` (kind and name from the park's wait; first answer wins); drops `_waits[waitId]`; never enters `_resumePayloads`. Naming no wait of the current park: status-only re-open | 0110 D3 |
@@ -503,9 +525,13 @@ optional field and a MINOR bump), never an edit in place.
 
 **Envelope metadata the fold reads (1.23.0):** `flowEmit` (1.19.0), and now `kernel` (the kinds and
 shapes marked above fold only a kernel-stamped envelope; the journal stamps `kernel: true` on
-`EXECUTION_CONTINUED`, `MESSAGE_CONSUMED` and `PARALLEL_COMPLETED`; the R2 / `recordOutcome` writers stamp a park carrying `waits`, a wait-addressed resume and an outcome carrying `recordedBy`/`late` through the commit's metadata), `forkChain` and `forkedBy`
+`EXECUTION_CONTINUED`, `MESSAGE_CONSUMED`, `PARALLEL_COMPLETED`, and (1.25.0, reserved) `INBOX_QUARANTINED` / `INBOX_RELEASED`; the R2 / `recordOutcome` writers stamp a park carrying `waits`, a wait-addressed resume and an outcome carrying `recordedBy`/`late` through the commit's metadata), `forkChain` and `forkedBy`
 (read from the `EXECUTION_STARTED` envelope: a fork leaves its chain and acts as the forker). No
 ingress accepts caller metadata, so the stamp cannot be forged.
+
+**Envelope metadata the fold IGNORES (1.25.0):** `seal` (`{ v: 1, cipher, covers }`, ADR 0130 residuals D7): the marker a sealing
+store decorator will stamp on an envelope in which it sealed a field. Reserved - no writer yet, and the fold never reads it, so a log
+with the key folds to the same state as the same log without it. The kernel's delivery guard, not the fold, is its reader.
 
 ## 3. Execution status transitions
 
@@ -599,7 +625,7 @@ replay across deploys (`@loom/deploy-sim` guards this at the flow level). K5 nam
 that set (`packages/replay-vm/src/eventHandlers.ts`).
 
 ```ts
-export const EVENT_SCHEMA_VERSION = "1.24.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104); 1.21.0 STEP_FAILED folds the step's frame only — the execution fails only on EXECUTION_FAILED — and _failedWhileParked keeps a null resume after a while-parked failure status-only (ADR 0105) — all NO new event kinds; 1.22.0 EVENTS_REHOMED — the blank-stream repair's lifecycle fact (ADR 0107); 1.23.0 Wave 2 W2-0 — every fold handler and reserved shape for ADRs 0109–0116 / 0118 with NO writer yet: EXECUTION_CONTINUED, MESSAGE_CONSUMED, a PARALLEL_COMPLETED payload, additive EXECUTION_STARTED / EXECUTION_SUSPENDED / EXECUTION_RESUMED / RESOURCE_METERED / OUTCOME_RECORDED fields, and the envelope metadata the fold now reads (`kernel`, `forkChain`, `forkedBy`); 1.24.0 `_decisions[id].seq` — the envelope sequence of the first record of each decision, so decision order survives a checkpoint (ADR 0128; additive, legacy snapshots read in map order)
+export const EVENT_SCHEMA_VERSION = "1.25.0"; // …1.13.0 EXECUTION_ARCHIVED/EXECUTION_DELETED (K10.1); 1.14.0 ERASURE_PENDING (T3-R4.5); 1.15.0 EXECUTION_MIGRATED.migratedInput (K11.5 state migration, ADR 0056); 1.16.0 _resumePayloads ordered fold (multi-gate suspend, ADR 0057); 1.17.0 STEP_FAILED.channel/payload — typed failure channels folded into frame errorChannel/errorPayload, replay-substituted (DE-4, ADR 0060); 1.18.0 DECISION_RECORDED.context/policy — the observation a policy saw + its propensity, descriptive only (T2, ADR 0079); 1.19.0 _flowEmits: per-content-digest counts from the envelope stamp metadata.flowEmit — flow-level emits append once per execution (ADR 0102); 1.20.0 a null EXECUTION_RESUMED answering no suspend point adds no gate passthrough, and a human park names its step (EXECUTION_SUSPENDED.condition.stepId) (ADR 0104); 1.21.0 STEP_FAILED folds the step's frame only — the execution fails only on EXECUTION_FAILED — and _failedWhileParked keeps a null resume after a while-parked failure status-only (ADR 0105) — all NO new event kinds; 1.22.0 EVENTS_REHOMED — the blank-stream repair's lifecycle fact (ADR 0107); 1.23.0 Wave 2 W2-0 — every fold handler and reserved shape for ADRs 0109–0116 / 0118 with NO writer yet: EXECUTION_CONTINUED, MESSAGE_CONSUMED, a PARALLEL_COMPLETED payload, additive EXECUTION_STARTED / EXECUTION_SUSPENDED / EXECUTION_RESUMED / RESOURCE_METERED / OUTCOME_RECORDED fields, and the envelope metadata the fold now reads (`kernel`, `forkChain`, `forkedBy`); 1.24.0 `_decisions[id].seq` — the envelope sequence of the first record of each decision, so decision order survives a checkpoint (ADR 0128; additive, legacy snapshots read in map order); 1.25.0 ADR 0130 residuals, RESERVED with NO writer yet: INBOX_QUARANTINED / INBOX_RELEASED, `_quarantined`, `EXECUTION_STARTED.continuedFrom.carried.quarantined`, and the ignored envelope key `metadata.seal`
 
 export function knownEventTypes(): string[] {
   return Object.keys(handlers).sort();
@@ -615,14 +641,15 @@ export function knownEventTypes(): string[] {
   that must be deliberate. A conformance test pins `knownEventTypes()` so the set cannot drift
   silently.
 
-The complete pinned set (the 30 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
+The complete pinned set (the 34 handlers in `eventHandlers.ts`, sorted as `knownEventTypes()`
 returns them):
 
 `APPROVAL_GRANTED`, `DECISION_RECORDED`, `EFFECT_DENIED`, `EFFECT_INDOUBT`, `EGRESS_DENIED`,
 `ERASURE_PENDING`, `EVENTS_REHOMED`, `EXECUTION_ARCHIVED`, `EXECUTION_CANCELLED`,
-`EXECUTION_COMPLETED`,
+`EXECUTION_COMPLETED`, `EXECUTION_CONTINUED`,
 `EXECUTION_DELETED`, `EXECUTION_DENIED`, `EXECUTION_FAILED`, `EXECUTION_MIGRATED`,
-`EXECUTION_RESUMED`, `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`, `OUTCOME_RECORDED`,
+`EXECUTION_RESUMED`, `EXECUTION_STARTED`, `EXECUTION_SUSPENDED`, `INBOX_QUARANTINED`,
+`INBOX_RELEASED`, `MESSAGE_CONSUMED`, `OUTCOME_RECORDED`,
 `PARALLEL_COMPLETED`, `PARALLEL_STARTED`, `PAYLOAD_SHREDDED`, `QUOTA_EXCEEDED`,
 `RESOURCE_METERED`, `SAFETY_BLOCKED`, `STEP_CANCELLED`, `STEP_COMPLETED`, `STEP_FAILED`,
 `STEP_RETRYING`, `STEP_STARTED`, `TIMER_FIRED`.

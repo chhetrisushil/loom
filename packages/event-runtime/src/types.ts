@@ -65,6 +65,15 @@ export type { EventEnvelope };
  *   single-process store (memory, SQLite) need not implement it; a caller then falls back to its
  *   injected clock. Values must be finite, non-negative, and non-decreasing across sequential
  *   calls. Additive: no existing method changed, so a 2.3.0 store conforms.
+ * 2.5.0: the optional `sealingCapability(): SealingCapability | undefined` (ADR 0130 residuals D7,
+ *   RESERVED - no behaviour yet): what this node's store seals AND therefore opens, so the kernel
+ *   can compare it to a `metadata.seal` marker ({@link SealMarker}) on a stored envelope. Absent, or
+ *   returning `undefined`, means "seals nothing, opens nothing" (the correct reading for a store
+ *   that cannot open sealed data). Every decorator forwards, overrides or refuses it (it is listed
+ *   in {@link OPTIONAL_EVENT_STORE_METHODS}); `ShardedEventStore` returns a capability only when
+ *   every shard agrees. Also reserves the control stream prefix {@link QUARANTINE_STREAM_PREFIX}
+ *   (`__loom_quarantine__:<chainId>`). Additive: no existing method changed, so a 2.4.0 store
+ *   conforms.
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -74,7 +83,7 @@ export type { EventEnvelope };
  * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
  * fitness test makes every in-repo decorator run it).
  */
-export const EVENT_STORE_SPI_VERSION = "2.4.0";
+export const EVENT_STORE_SPI_VERSION = "2.5.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -103,6 +112,43 @@ export function isReservedStream(executionId: string): boolean {
  * depending on the workflow runtime.
  */
 export const INBOX_STREAM_PREFIX = "__loom_inbox__:";
+
+/**
+ * RESERVED (SPI 2.5.0, ADR 0130 residuals D9; no writer yet): the control stream holding the
+ * verbatim copies of a chain's QUARANTINED inbox messages, `__loom_quarantine__:<chainId>`. It
+ * belongs to the same chain as the inbox, so {@link inboxChainOf} maps it to the chain (the crypto
+ * subject mapping, purge and delete-with-chain then cover it) and {@link InboxStreams.quarantine}
+ * names it. Reserved by prefix like every `__loom_` stream.
+ */
+export const QUARANTINE_STREAM_PREFIX = "__loom_quarantine__:";
+
+/** The reserved stream holding `chainId`'s quarantined messages (see {@link QUARANTINE_STREAM_PREFIX}). */
+export function quarantineStreamId(chainId: string): string {
+  return `${QUARANTINE_STREAM_PREFIX}${chainId}`;
+}
+
+/**
+ * The seal marker an envelope may carry at `metadata.seal` (EVENT_SCHEMA 1.25.0, ADR 0130
+ * residuals D7; RESERVED - no writer yet, the fold ignores it). Written by a sealing store
+ * decorator in the SAME append that seals fields, on exactly the envelopes in which at least one
+ * field was sealed.
+ */
+export interface SealMarker {
+  readonly v: 1;
+  /** The algorithm id the sealed envelopes carry, e.g. `loom/aes-256-gcm`. */
+  readonly cipher: string;
+  /** Sorted, deduped `EVENT_TYPE.dot.path` entries actually sealed in THIS envelope. */
+  readonly covers: readonly string[];
+}
+
+/** What a store seals and therefore opens (EventStore SPI 2.5.0, see {@link EventStore.sealingCapability}). */
+export interface SealingCapability {
+  readonly cipher: string;
+  /** Every `EVENT_TYPE.path` this node's store seals AND therefore opens. */
+  readonly covers: readonly string[];
+  /** True iff this node can open an envelope stamped with `marker` (same cipher, every entry of `marker.covers` is opened here). */
+  opens(marker: SealMarker): boolean;
+}
 
 /**
  * The chain an execution belongs to, read from its sequence 0 alone (the fold's own rule: a valid `forkChain` stamp wins,
@@ -178,6 +224,11 @@ export function hasInboxStreamShape(id: string): boolean {
  * (legacy, per-topic and registry alike) to the same subject as its owner.
  */
 export function inboxChainOf(executionId: string): string | undefined {
+  if (executionId.startsWith(QUARANTINE_STREAM_PREFIX)) {
+    // ADR 0130 residuals D9 (reserved): the quarantine copy belongs to the chain, under the same owner subject.
+    const quarantined = executionId.slice(QUARANTINE_STREAM_PREFIX.length);
+    return quarantined.length > 0 ? quarantined : undefined;
+  }
   if (!executionId.startsWith(INBOX_STREAM_PREFIX)) return undefined;
   let chain = executionId.slice(INBOX_STREAM_PREFIX.length);
   if (chain.endsWith(INBOX_REGISTRY_SUFFIX)) chain = chain.slice(0, -INBOX_REGISTRY_SUFFIX.length);
@@ -193,6 +244,8 @@ export interface InboxStreams {
   registry: string | undefined;
   /** One stream per registered topic. */
   topics: string[];
+  /** The chain's quarantine stream (ADR 0130 residuals D9, reserved: always named, whether or not it holds anything). */
+  quarantine: string;
 }
 
 /**
@@ -220,6 +273,7 @@ export async function inboxStreamsOfChain(
     legacy: `${INBOX_STREAM_PREFIX}${chainId}`,
     registry: entries.length > 0 ? registry : undefined,
     topics,
+    quarantine: quarantineStreamId(chainId),
   };
 }
 
@@ -263,6 +317,7 @@ export async function inboxStreamsOfChainDeep(
     legacy: found.legacy,
     registry: hasRegistry ? registry : undefined,
     topics: found.topics,
+    quarantine: found.quarantine,
   };
 }
 
@@ -451,6 +506,15 @@ export interface EventStore {
    */
   storeNow?(): Promise<number>;
   /**
+   * OPTIONAL (SPI 2.5.0, ADR 0130 residuals D7; RESERVED - declared and forwarded, no caller yet):
+   * what this store seals AND therefore opens. Absent, or returning `undefined`: it seals nothing
+   * and opens nothing. Must be stable for an unchanged configuration (`cipher`, sorted deduped
+   * `covers`), and `opens(marker)` true iff the cipher is equal and every `marker.covers` entry is
+   * in `covers`. A decorator that does not seal forwards it; `ShardedEventStore` returns the
+   * intersection across shards (undefined unless every shard agrees on the cipher).
+   */
+  sealingCapability?(): SealingCapability | undefined;
+  /**
    * OPTIONAL bulk copy of the prefix `[0..throughSequence]` of one execution's log
    * into another `executionId`, re-stamping `id` + `executionId` and merging
    * `metadata` into each copied event — WITHOUT round-tripping payloads through JS
@@ -581,6 +645,7 @@ export const OPTIONAL_EVENT_STORE_METHODS = [
   "acquireFenceIf",
   "appendIfUnchanged",
   "storeNow",
+  "sealingCapability",
   "copyPrefix",
   "deleteExecution",
   "truncatePrefix",

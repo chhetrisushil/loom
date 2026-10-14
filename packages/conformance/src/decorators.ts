@@ -3,6 +3,7 @@ import {
   InMemoryAsyncEventStore,
   OPTIONAL_EVENT_STORE_METHODS,
   type OptionalEventStoreMethod,
+  type SealingCapability,
   refusalsOf,
 } from "@loom/event-runtime";
 import {
@@ -81,6 +82,34 @@ export class ReferenceEventStore extends InMemoryAsyncEventStore {
   storeNow(): Promise<number> {
     return Promise.resolve(Date.now());
   }
+
+  /**
+   * SPI 2.5.0 (ADR 0130 residuals D7): a DEFINED capability, so a decorator that drops the method or
+   * swallows its value is caught (an in-memory store really seals nothing; this is a fixture).
+   */
+  sealingCapability(): SealingCapability {
+    return REFERENCE_SEALING;
+  }
+}
+
+const REFERENCE_SEALING: SealingCapability = {
+  cipher: "loom/reference",
+  covers: ["STEP_COMPLETED.output"],
+  opens: (marker) =>
+    marker.cipher === "loom/reference" &&
+    marker.covers.every((entry) => entry === "STEP_COMPLETED.output"),
+};
+
+/** EventStore decorator kit options: the shared ones plus how the decorator treats `sealingCapability`. */
+export interface EventDecoratorConformanceOptions
+  extends DecoratorConformanceOptions<OptionalEventStoreMethod, EventStore> {
+  /**
+   * `"forwards"` (default): the decorator seals nothing itself, so `sealingCapability()` over the
+   * reference store must return the reference's own cipher and `covers`, and `opens` must agree.
+   * `"own"`: the decorator computes its own capability (an encrypting store); only its presence is
+   * checked here, its value is the decorator's own tests'.
+   */
+  sealing?: "forwards" | "own";
 }
 
 /** Whether `store` carries the structural encryption marker (`keys`) an encrypting store has. */
@@ -104,7 +133,7 @@ function markedInner<T extends object>(inner: T): T {
 export function runEventStoreDecoratorConformance(
   label: string,
   wrap: (inner: EventStore) => EventStore,
-  options: DecoratorConformanceOptions<OptionalEventStoreMethod, EventStore> = {}
+  options: EventDecoratorConformanceOptions = {}
 ): void {
   const inner = options.inner ?? (() => new ReferenceEventStore());
   describe(`${label} decorator conformance (optional EventStore SPI)`, () => {
@@ -121,6 +150,21 @@ export function runEventStoreDecoratorConformance(
       expect(
         optionalSurfaceProblems(label, store, OPTIONAL_EVENT_STORE_METHODS, options.refused)
       ).toEqual([]);
+      await store.close();
+    });
+
+    it("hands the inner store's sealing capability through unchanged unless it owns the answer (SPI 2.5.0)", async () => {
+      const store = wrap(inner());
+      const got = store.sealingCapability?.();
+      if (options.sealing === "own" || options.inner !== undefined) {
+        // Its own answer (or an inner of the author's choosing): presence was checked above.
+        expect(store.sealingCapability === undefined).toBe(false);
+      } else {
+        expect(got?.cipher).toBe(REFERENCE_SEALING.cipher);
+        expect(got?.covers).toEqual(REFERENCE_SEALING.covers);
+        expect(got?.opens({ v: 1, cipher: "loom/reference", covers: [] })).toBe(true);
+        expect(got?.opens({ v: 1, cipher: "other", covers: [] })).toBe(false);
+      }
       await store.close();
     });
 

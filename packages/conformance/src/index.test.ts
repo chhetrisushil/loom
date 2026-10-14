@@ -11,6 +11,7 @@ import {
   InMemoryTimerStore,
   OPTIONAL_EVENT_STORE_METHODS,
   ProfilingEventStore,
+  type SealingCapability,
   ShardPlan,
   ShardedEventStore,
   TenantScopedEventStore,
@@ -51,6 +52,7 @@ import {
 import {
   type ContentStoreLike,
   eventStoreNowProblem,
+  eventStoreSealingProblem,
   incarnationAnchorProblem,
   leaseExpiredDefaultProblem,
   leaseStoreNowProblem,
@@ -254,6 +256,7 @@ describe("the decorator kit rejects a decorator that drops an optional method", 
     acquireFenceIf: inner.acquireFenceIf.bind(inner),
     appendIfUnchanged: inner.appendIfUnchanged.bind(inner),
     storeNow: inner.storeNow.bind(inner),
+    sealingCapability: inner.sealingCapability.bind(inner),
     copyPrefix: inner.copyPrefix.bind(inner),
     deleteExecution: inner.deleteExecution.bind(inner),
     truncatePrefix: inner.truncatePrefix.bind(inner),
@@ -390,6 +393,63 @@ describe("eventStoreNowProblem discriminates", () => {
     expect(await eventStoreNowProblem(() => new Honest())).toBeUndefined();
     expect(await eventStoreNowProblem(() => new InMemoryAsyncEventStore())).toBeUndefined();
   });
+});
+// EventStore.sealingCapability() (SPI 2.5.0, ADR 0130 residuals D7) must be stable and self-consistent; a
+// capability that flaps, is unsorted, accepts a foreign cipher or refuses its own must FAIL, an honest one
+// PASS, and a store without it (or one that returns undefined) conforms.
+describe("eventStoreSealingProblem discriminates", () => {
+  type Cap = SealingCapability;
+  const honest = (cipher = "c", covers: string[] = ["A.x", "B.y"]): Cap => ({
+    cipher,
+    covers,
+    opens: (m) => m.cipher === cipher && m.covers.every((c) => covers.includes(c)),
+  });
+  const withCap = (next: () => Cap | undefined) =>
+    class extends InMemoryAsyncEventStore {
+      sealingCapability() {
+        return next();
+      }
+    };
+  it("passes an honest capability, a store that returns undefined, and a store without the method", async () => {
+    const Honest = withCap(() => honest());
+    expect(await eventStoreSealingProblem(() => new Honest())).toBeUndefined();
+    const None = withCap(() => undefined);
+    expect(await eventStoreSealingProblem(() => new None())).toBeUndefined();
+    expect(await eventStoreSealingProblem(() => new InMemoryAsyncEventStore())).toBeUndefined();
+  });
+  it("fails an unstable value, bad covers, a bad cipher and a wrong opens()", async () => {
+    let calls = 0;
+    const Flaps = withCap(() => honest(calls++ % 2 === 0 ? "a" : "b"));
+    expect(await eventStoreSealingProblem(() => new Flaps())).toMatch(/not stable/);
+    let seen = 0;
+    const Vanishes = withCap(() => (seen++ % 2 === 0 ? honest() : undefined));
+    expect(await eventStoreSealingProblem(() => new Vanishes())).toMatch(
+      /changed between two calls/
+    );
+    const Unsorted = withCap(() => honest("c", ["B.y", "A.x"]));
+    expect(await eventStoreSealingProblem(() => new Unsorted())).toMatch(/sorted and deduped/);
+    const Dupes = withCap(() => honest("c", ["A.x", "A.x"]));
+    expect(await eventStoreSealingProblem(() => new Dupes())).toMatch(/sorted and deduped/);
+    const NoCipher = withCap(() => honest(""));
+    expect(await eventStoreSealingProblem(() => new NoCipher())).toMatch(/non-empty string/);
+    const OpensAll = withCap(() => ({ ...honest(), opens: () => true }));
+    expect(await eventStoreSealingProblem(() => new OpensAll())).toMatch(/different cipher/);
+    const OpensNone = withCap(() => ({ ...honest(), opens: () => false }));
+    expect(await eventStoreSealingProblem(() => new OpensNone())).toMatch(/refuses a marker/);
+    const IgnoresCovers = withCap(() => ({ ...honest(), opens: (m) => m.cipher === "c" }));
+    expect(await eventStoreSealingProblem(() => new IgnoresCovers())).toMatch(/does not list/);
+  });
+  // A store that claims 2.4.0 predates the method: the 2.5.0 case is skipped, so this deliberately
+  // broken capability does not fail it (while the default claim, 2.5.0, would).
+  it("a broken capability FAILS the default claim", async () => {
+    const Broken = withCap(() => ({ ...honest(), opens: () => false }));
+    expect(await eventStoreSealingProblem(() => new Broken())).toMatch(/refuses a marker/);
+  });
+  runEventStoreConformance(
+    () => new (withCap(() => ({ ...honest(), opens: () => false })))(),
+    "BrokenSealingStore (claims 2.4.0)",
+    { eventStoreSpi: "2.4.0" }
+  );
 });
 runExecutionDispatcherConformance(() => new LocalDispatcher(new FakeWorker()), "LocalDispatcher", {
   overWorker: (worker) => new LocalDispatcher(worker, { maxAttempts: 3 }),
