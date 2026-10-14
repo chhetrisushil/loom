@@ -379,14 +379,14 @@ describe("deterministic cipher seam (testing subpath)", () => {
         sensitive: {},
         ivSource: seededIvSource("x"),
       });
-    expect(mk).toThrow(/NODE_ENV.*production/);
+    expect(mk).toThrow(/allowed only in a test run/);
     expect(
       () =>
         new EncryptingSnapshotStore(new InMemoryAsyncSnapshotStore(), new InMemoryKeyStore(), {
           sensitive: [],
           ivSource: seededIvSource("x"),
         })
-    ).toThrow(/production/);
+    ).toThrow(/allowed only in a test run/);
     // the default (no seam) is fine in production
     expect(
       () =>
@@ -394,6 +394,54 @@ describe("deterministic cipher seam (testing subpath)", () => {
           sensitive: {},
         })
     ).not.toThrow();
+  });
+
+  it("a PLAIN function is refused even under vitest; a branded one is allowed under vitest", () => {
+    const mk = (ivSource: unknown) => () =>
+      new EncryptingEventStore(new InMemoryAsyncEventStore(), new InMemoryKeyStore(), {
+        sensitive: {},
+        ivSource: ivSource as never,
+      });
+    expect(mk(() => new Uint8Array(12))).toThrow(/must be minted by @loom\/plugin-crypto\/testing/);
+    expect(mk(Object.assign(() => new Uint8Array(12), { __loomTestingIvSource: true }))).toThrow(
+      /must be minted/
+    ); // a forged brand property is not the brand
+    expect(mk(seededIvSource("ok"))).not.toThrow();
+    expect(
+      () =>
+        new EncryptingSnapshotStore(new InMemoryAsyncSnapshotStore(), new InMemoryKeyStore(), {
+          sensitive: [],
+          ivSource: (() => new Uint8Array(12)) as never,
+        })
+    ).toThrow(/must be minted/);
+  });
+
+  it("a branded source is refused with NODE_ENV unset and no VITEST (fail closed)", () => {
+    const prevVitest = process.env.VITEST;
+    try {
+      // biome-ignore lint/performance/noDelete: an unset env var must be absent, not "undefined"
+      delete process.env.NODE_ENV;
+      // biome-ignore lint/performance/noDelete: see above
+      delete process.env.VITEST;
+      expect(
+        () =>
+          new EncryptingEventStore(new InMemoryAsyncEventStore(), new InMemoryKeyStore(), {
+            sensitive: {},
+            ivSource: seededIvSource("x"),
+          })
+      ).toThrow(/allowed only in a test run/);
+      // NODE_ENV=test alone is enough
+      process.env.NODE_ENV = "test";
+      expect(
+        () =>
+          new EncryptingEventStore(new InMemoryAsyncEventStore(), new InMemoryKeyStore(), {
+            sensitive: {},
+            ivSource: seededIvSource("x"),
+          })
+      ).not.toThrow();
+    } finally {
+      if (prevVitest !== undefined) process.env.VITEST = prevVitest;
+    }
   });
 
   it("the main entry does not export the seam", () => {
