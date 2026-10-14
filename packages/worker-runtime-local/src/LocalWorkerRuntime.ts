@@ -7,7 +7,7 @@ import type {
   WorkerRequest,
   WorkerRuntime,
 } from "@loom/worker-runtime";
-import { ChainHopLimitError } from "@loom/workflow-runtime";
+import { ChainHopLimitError, LeaseHeldError } from "@loom/workflow-runtime";
 import type { RunOptions, SystemGrant, WorkflowRuntime } from "@loom/workflow-runtime";
 
 type Principal = NonNullable<RunOptions["principal"]>;
@@ -46,6 +46,8 @@ export interface LocalWorkerRuntimeOptions {
  */
 export class LocalWorkerRuntime implements WorkerRuntime {
   private leaseCounter = 0;
+  /** ADR 0130 D11 (S7c): the heartbeat hold of each allocated lease, released with it. */
+  private readonly holds = new Map<string, { release(): Promise<void> }>();
   private readonly system: SystemGrant | undefined;
   readonly runsAsSystem: boolean;
 
@@ -68,12 +70,24 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     // owns concurrency limits), so a lease is a correlation token — plus, on a
     // fencing store (K9.4), the monotonic token that makes this dispatch the
     // execution's sole legitimate writer until someone allocates a newer one.
-    const fence = await this.runtime.acquireFence(request.executionId, {
-      ...this.identity(request.principal),
-      gateAs: "resume",
-    });
+    // ADR 0130 D11 (S7c): this attempt is a driver - the heartbeat lease comes BEFORE the fence. Another
+    // live owner = stand down (a superseded refusal, not a failed attempt): no fence is taken.
+    const hold = await this.runtime.acquireDriverLease(request.executionId);
+    if (hold === null) throw new LeaseHeldError(request.executionId);
+    let fence: number | undefined;
+    try {
+      fence = await this.runtime.acquireFence(request.executionId, {
+        ...this.identity(request.principal),
+        gateAs: "resume",
+      });
+    } catch (err) {
+      await hold.release();
+      throw err;
+    }
+    const leaseId = `local-${request.executionId}-${++this.leaseCounter}`;
+    this.holds.set(leaseId, hold);
     return {
-      leaseId: `local-${request.executionId}-${++this.leaseCounter}`,
+      leaseId,
       ...(fence !== undefined && { fence }),
       ...(request.metadata !== undefined && { metadata: request.metadata }),
     };
@@ -202,8 +216,11 @@ export class LocalWorkerRuntime implements WorkerRuntime {
     return null;
   }
 
-  async release(_lease: WorkerLease): Promise<void> {
-    // No-op: nothing to reclaim in-process.
+  async release(lease: WorkerLease): Promise<void> {
+    // Nothing to reclaim in-process but the heartbeat hold (a no-op hold when heartbeat is unwired).
+    const hold = this.holds.get(lease.leaseId);
+    this.holds.delete(lease.leaseId);
+    await hold?.release();
   }
 
   /**

@@ -83,6 +83,22 @@ export class ExecutionJournal {
   }
 
   /**
+   * ADR 0130 D11 (S7c) - a check run at WRITE time, right before each durable append: it returns the
+   * error to fail with (a lost lease) or `undefined`. A refused write reaches the store never; it
+   * becomes the journal's first write error (so nothing after it is written either).
+   */
+  private writeGate: (() => Error | undefined) | undefined;
+
+  setWriteGate(gate: (() => Error | undefined) | undefined): void {
+    this.writeGate = gate;
+  }
+
+  /** Stop writing for good without reporting a storage fault (the lease was lost). */
+  abandon(err: Error): void {
+    this.firstWriteError ??= err;
+  }
+
+  /**
    * The ONE envelope builder, shared by {@link commit} and {@link bootstrapEnvelope} so the
    * two can never drift: a caller-chosen-id start (ADR 0103) writes its sequence 0 through
    * `bootstrapEnvelope` BEFORE a journal exists, and that envelope must be byte-identical to
@@ -263,6 +279,8 @@ export class ExecutionJournal {
           settle("dropped");
           return;
         }
+        const refused = this.writeGate?.();
+        if (refused !== undefined) throw refused;
         const store = this.store;
         if (store.appendBatch === undefined) {
           throw new Error("commitAtomic needs an EventStore with an atomic appendBatch");
@@ -331,6 +349,8 @@ export class ExecutionJournal {
     this.tail = this.tail
       .then(() => {
         if (this.firstWriteError !== undefined) return; // stop after first failure
+        const refused = this.writeGate?.();
+        if (refused !== undefined) throw refused;
         return this.store.append(envelope);
       })
       .catch((err: unknown) => {

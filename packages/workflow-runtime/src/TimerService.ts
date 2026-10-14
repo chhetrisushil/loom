@@ -3,6 +3,7 @@ import type { EventStore, LeaseStore, TimerRecord, TimerStore } from "@loom/even
 import type { WorkflowRuntime } from "./WorkflowRuntime";
 import { type CronSpec, nextOccurrence, parseCron } from "./cron";
 import { INBOX_WAKE_AT } from "./inbox";
+import { LeaseHeldError } from "./leaseKeeper";
 import { type HeldLease, defaultRenewEvery, renewWhileHeld } from "./leaseRenewal";
 import { placementOf } from "./placement";
 import type { AbandonedCandidate } from "./recoverAbandoned";
@@ -627,7 +628,17 @@ export class TimerService {
     }
     const leases = this.leases;
     let held: HeldLease | undefined;
-    if (leases !== undefined) {
+    // ADR 0130 D11 (S7c): a runtime with a heartbeat keeper claims through it (one timer, shared
+    // owner); the keeper's claim is a reference-counted hold released in the `finally`.
+    let hold: { release(): Promise<void> } | undefined;
+    if (leases !== undefined && this.runtime.leaseKeeper !== undefined) {
+      const got = await this.runtime.acquireDriverLease(executionId);
+      if (got === null) {
+        await this.holdRefusal(executionId, wakeAt, refused, state);
+        return true;
+      }
+      hold = got;
+    } else if (leases !== undefined) {
       // Claim it (an expired lease is acquirable by anyone): two pollers do not both pay for it.
       const lease = await leases.store.acquire(executionId, leases.owner, this.leaseTtlMs);
       if (lease === null) {
@@ -676,6 +687,7 @@ export class TimerService {
       await this.failRefusal(executionId, wakeAt, refused);
     } finally {
       held?.stop();
+      await hold?.release();
     }
     return true;
   }
@@ -887,7 +899,13 @@ export class TimerService {
     // if that node dies between the claim and the resume. Its lease expires; we try again.
     const leases = this.leases;
     let held: HeldLease | undefined;
-    if (leases !== undefined) {
+    let hold: { release(): Promise<void> } | undefined;
+    if (leases !== undefined && this.runtime.leaseKeeper !== undefined) {
+      // ADR 0130 D11 (S7c): claim through the runtime's heartbeat keeper (see `fireRefused`).
+      const got = await this.runtime.acquireDriverLease(executionId);
+      if (got === null) return;
+      hold = got;
+    } else if (leases !== undefined) {
       const lease = await leases.store.acquire(executionId, leases.owner, this.leaseTtlMs);
       if (lease === null) return;
       // Hold it for as long as the wake takes — see `renewWhileHeld` for why this is not
@@ -956,6 +974,12 @@ export class TimerService {
         };
 
         if (this.dispatcher !== undefined) {
+          // ADR 0130 D11 (S7c): the WORKER is the driver and holds its own lease (lease, then fence),
+          // possibly under another owner: this poller's claim must not block it.
+          if (hold !== undefined) {
+            await hold.release();
+            hold = undefined;
+          }
           // K9.4 — in fenced deployments, acquire a newer token first so a
           // duplicate cross-node fire loses at the store instead of double-writing.
           // (ADR 0118 as-built: this path keeps the UNCONDITIONAL acquire — the worker SPI's
@@ -1062,6 +1086,8 @@ export class TimerService {
         this.noteSealed(executionId, err);
         return;
       }
+      // ADR 0130 D11: another live owner holds the lease - quiet, the row stays for the next poll.
+      if (err instanceof LeaseHeldError) return;
       // Leave the timer in place; the next poll retries (at-least-once).
       this.onError?.(executionId, err);
     } finally {
@@ -1069,7 +1095,8 @@ export class TimerService {
       // again, completed, or failed, and holding the lease longer would block whoever legitimately
       // wakes it next.
       held?.stop();
-      if (leases !== undefined) {
+      if (hold !== undefined) await hold.release();
+      else if (leases !== undefined) {
         await leases.store.release(executionId, leases.owner).catch(() => undefined);
       }
     }
