@@ -1,7 +1,11 @@
+import { step$ } from "@loom/core";
+import { ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
 import type { EventStore, LeaseStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { defineConfig } from "./defineConfig";
 
 // ADR 0130 D11 -- `durability.heartbeat`. The config resolves WHICH lease store the drivers
@@ -215,3 +219,103 @@ describe("durability.heartbeat -- scope (cluster visibility)", () => {
     expect(app.heartbeat.clusterVisible).toBe(false);
   });
 });
+
+// ADR 0130 D11 (S7c wiring) -- the resolved config actually reaches the runtime's drivers.
+describe("durability.heartbeat -- wired into the runtime", () => {
+  const io = z.object({}).passthrough();
+  const hold = step$({
+    id: "hold",
+    name: "hold",
+    toolId: "hold",
+    inputSchema: io,
+    outputSchema: io,
+  });
+  const definition = {
+    _tag: "FlowDefinition" as const,
+    id: "hb-flow",
+    name: "hb-flow",
+    version: "1.0.0",
+    inputSchema: io,
+    outputSchema: io,
+    steps: [hold],
+  };
+  const runner = async (ctx: { run: (s: unknown, i: unknown) => Promise<unknown> }) => {
+    await ctx.run(hold, {});
+    return { ok: true };
+  };
+
+  function rig(heartbeat?: { enabled?: boolean }) {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let entered!: () => void;
+    const inStep = new Promise<void>((r) => {
+      entered = r;
+    });
+    const app = defineConfig({
+      ...base,
+      storage: { kind: "memory" },
+      ...(heartbeat !== undefined && { durability: { heartbeat } }),
+      execution: {
+        registerEffects: (fx) =>
+          fx.register(
+            "hold",
+            new ToolEffect(async () => {
+              entered();
+              await gate;
+              return {};
+            })
+          ),
+      },
+    });
+    app.runtime.registerFlow(definition as never, runner as never);
+    return { app, release, inStep };
+  }
+
+  it("default ON: the in-memory lease store holds a row while a step is in flight, and releases at the end", async () => {
+    const { app, release, inStep } = rig();
+    const store = app.heartbeat.store as LeaseStore;
+    expect(app.runtime.leaseKeeper).toBeDefined();
+    const handle = await app.runtime.start({ definition, runner } as never, {});
+    await inStep;
+    expect(await store.get(handle.executionId)).not.toBeNull();
+    expect(app.runtime.leaseKeeper?.validNow(handle.executionId)).toBe(true);
+    release();
+    await handle.waitForCompletion();
+    await until(async () => (await store.get(handle.executionId)) === null);
+    expect(app.runtime.leaseKeeper?.size).toBe(0);
+  });
+
+  it("enabled:false leaves the runtime without a keeper", () => {
+    const { app } = rig({ enabled: false });
+    expect(app.heartbeat.enabled).toBe(false);
+    expect(app.runtime.leaseKeeper).toBeUndefined();
+  });
+
+  it('onStoreError "continue" is refused at defineConfig (and by the runtime): consistent on both layers', () => {
+    expect(() =>
+      defineConfig({
+        ...base,
+        storage: { kind: "memory" },
+        durability: { heartbeat: { onStoreError: "continue" } },
+      })
+    ).toThrow(/continue/);
+    expect(
+      () =>
+        new WorkflowRuntime({
+          eventStore: new InMemoryAsyncEventStore(),
+          snapshotStore: new InMemoryAsyncSnapshotStore(),
+          heartbeat: { leaseStore: new InMemoryLeaseStore(), onStoreError: "continue" as never },
+        })
+    ).toThrow(/continue/);
+  });
+});
+
+async function until(cond: () => Promise<boolean>): Promise<void> {
+  for (let i = 0; i < 400; i++) {
+    if (await cond()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("until: condition not met");
+}
