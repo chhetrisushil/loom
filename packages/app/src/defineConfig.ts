@@ -70,7 +70,12 @@ import {
 import type { TelemetryAdapter } from "@loom/telemetry";
 import { type VerificationReport, runVerification, verify as runVerify } from "@loom/verify";
 import { LogLifecycle, TimerService, WorkflowRuntime } from "@loom/workflow-runtime";
-import type { PrincipalCodec, PrincipalResolver, TimerDispatcher } from "@loom/workflow-runtime";
+import type {
+  HeartbeatOptions,
+  PrincipalCodec,
+  PrincipalResolver,
+  TimerDispatcher,
+} from "@loom/workflow-runtime";
 import type {
   ArchiveStores,
   ExecutionAuthorizer,
@@ -389,18 +394,6 @@ export interface HeartbeatStatus {
   onStoreError: "stop" | "continue";
   ttlMs?: number;
   renewEveryMs?: number;
-}
-
-/**
- * Local structural twin of the runtime's `WorkflowRuntimeDeps.heartbeat`; replaced by
- * @loom/workflow-runtime `HeartbeatOptions` when S7c merges.
- */
-interface RuntimeHeartbeatDeps {
-  leaseStore: LeaseStore;
-  ttlMs?: number;
-  renewEveryMs?: number;
-  onStoreError?: "stop" | "continue";
-  nodeId?: string;
 }
 
 const HEARTBEAT_KEYS = new Set(["enabled", "ttlMs", "renewEveryMs", "store", "onStoreError"]);
@@ -1373,14 +1366,15 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   const stores = buildStores(config.storage, warnOut);
   // ADR 0130 D11 -- validated and resolved at boot, before any runtime exists.
   const heartbeat = resolveHeartbeat(config.heartbeat, config.storage);
-  const heartbeatDeps: { heartbeat?: RuntimeHeartbeatDeps } =
+  const heartbeatDeps: { heartbeat?: HeartbeatOptions } =
     heartbeat.enabled && heartbeat.store !== undefined
       ? {
           heartbeat: {
             leaseStore: heartbeat.store,
             ...(heartbeat.ttlMs !== undefined && { ttlMs: heartbeat.ttlMs }),
             ...(heartbeat.renewEveryMs !== undefined && { renewEveryMs: heartbeat.renewEveryMs }),
-            ...(heartbeat.onStoreError !== "stop" && { onStoreError: heartbeat.onStoreError }),
+            // "continue" is refused by resolveHeartbeat (and by the runtime), so the resolved value is "stop".
+            onStoreError: "stop",
           },
         }
       : {};
