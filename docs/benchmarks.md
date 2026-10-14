@@ -526,6 +526,11 @@ LOOM_BENCH_BACKENDS=memory,sqlite,postgres LOOM_BENCH_CONCS=16,64,256 LOOM_BENCH
 LOOM_BENCH_PG_URL=postgres://... pnpm --filter @loom/bench-throughput bench:lease
 ```
 
+`LOOM_BENCH_PG_URL` must point at a **throwaway** database: every run leaves its event, snapshot and
+lease rows (and the stores' tables) behind. The Postgres pool is capped at 32 connections for OFF and
+ON alike, so the conc-256 cells are pool-bound as well as write-bound. The `execs` column is the
+count actually run (`round(n / conc) * conc`), not the configured `n`.
+
 (`LOOM_BENCH_SHAPES`, `LOOM_BENCH_EXECS` / `_SQLITE_EXECS` / `_PG_EXECS` / `_IO_EXECS`, `LOOM_BENCH_IO_MS`
 also apply.) The non-blocking assertion form is `leaseOverhead.perf.test.ts` (`pnpm test:perf`).
 Batching itself is pinned deterministically (call counts, not time) by
@@ -583,7 +588,7 @@ sustains, so that cell is write-bound and reads like a no-op cell.
 ### Does the gate hold?
 
 - **Postgres (durable) no-op: NOT met.** Median overhead is 25-30% at every concurrency (16: 30.2%,
-  64: 24.6%, 256: 25.2%), and the OFF/ON samples barely overlap (e.g. conc 16: OFF 5.1-6.0K vs ON
+  64: 24.6%, 256: 25.2%), and the OFF/ON samples mostly do not overlap (the paired min at conc 16 is -10.3%; e.g. conc 16: OFF 5.1-6.0K vs ON
   3.8-4.2K exec/s). This is not noise. Each execution pays two extra lease statements (one
   group-committed acquire, one release) on top of a handful of event-store statements, and on a
   write-bound store that is a large share of the work. On the numbers, Q8's fallback ("lazy leasing")

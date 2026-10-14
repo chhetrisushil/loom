@@ -426,10 +426,16 @@ describe("lease DST - a live silent driver and an aggressive isAbandoned", () =>
     const { r, a, b, h, sweep, errors } = await silentLive("twin");
     // Without the veto the sweep re-enters step b and then blocks on the gate, so race it against that
     // entry instead of awaiting it: a regression fails fast here, not on a 30 s timeout.
+    let swept = false; // stops the losing `until` once the sweep wins the race
     const sum = await Promise.race([
-      sweep,
-      until(() => r.probe.count("live", "b") === 2, "the sweep re-entered step b").then(() => null),
+      sweep.finally(() => {
+        swept = true;
+      }),
+      until(() => swept || r.probe.count("live", "b") === 2, "the sweep re-entered step b").then(
+        () => (swept ? undefined : null)
+      ),
     ]);
+    if (sum === undefined) throw new Error("unreachable: the sweep settled first");
     expect(sum, "the twin's sweep re-drove a live driver").not.toBeNull();
     if (sum === null) return;
     expect(sum.recovered).toBe(0);
@@ -517,7 +523,20 @@ describe("lease DST - S7d consumers (poll default re-drive, ghost GC)", () => {
 
     // Not before the lease lapses (a stalled-but-unexpired lease is a veto).
     advance(r.clock, TTL - 1_000);
-    for (let i = 0; i < 3; i++) await svc.tick(FAR);
+    for (let i = 0; i < 3; i++) {
+      // A premature re-drive would block this tick on the step b gate until vitest's timeout; race the
+      // tick against the re-entry so a regression fails fast with a message instead.
+      let ticked = false;
+      const early = await Promise.race([
+        svc.tick(FAR).finally(() => {
+          ticked = true;
+        }),
+        until(() => ticked || r.probe.count("poll", "b") > 1, "an early re-drive").then(() =>
+          ticked ? undefined : "early"
+        ),
+      ]);
+      expect(early === "early", "the poll re-drove before the lease lapsed").toBe(false);
+    }
     expect(r.probe.count("poll", "b")).toBe(1);
     expect(await statusOf(b, "poll")).toBe("running");
 
@@ -563,7 +582,9 @@ describe("lease DST - entitlement window", () => {
   // node's, so the row is expired on the store's clock while the node's own deadline (monotonic AND
   // wall) has not been reached - it has not observed its expiry (`validNow` is still true). Another
   // node then takes over (evidence sweep -> conditional takeover, then the fence). The stale node's
-  // write must be REFUSED: one driver per range of the log.
+  // write must be REFUSED: one driver per committed range of the log. This does NOT claim that no
+  // side effect overlaps: inside the window both drivers are entitled, so step b's EFFECT runs twice
+  // concurrently (accepted at-least-once); only the log is protected.
   for (const ahead of [DEADLINE_MARGIN + 1, DEADLINE_MARGIN + 5_000]) {
     it(`store clock +${ahead}ms ahead: a node that has not observed its expiry cannot commit after the takeover`, async () => {
       const r = rig();
@@ -583,7 +604,6 @@ describe("lease DST - entitlement window", () => {
       const markers = (await r.logOf("win")).filter((e) => e.eventType === "EXECUTION_RECOVERED");
       expect(markers).toHaveLength(1); // the conditional takeover landed exactly once
       const markerSeq = markers[0]?.sequence as number;
-      const headAtTakeover = (await r.logOf("win")).length;
 
       r.probe.gate("win").open(); // both drivers' step b return; A's write races B's
       const aRes = await settleOf(h.waitForCompletion());
@@ -591,11 +611,27 @@ describe("lease DST - entitlement window", () => {
       await sweep;
       expect(await statusOf(b, "win")).toBe("completed");
 
-      // One driver per range: A added nothing after the takeover marker (the log grew only by B's
-      // work, each step completing exactly once, gap-free), and A's stale write was attempted
-      // (the audit saw it) but never landed.
+      // One driver per range of the LOG: A's stale write was attempted (the audit saw it) and REFUSED
+      // by the store's sequence fence (it lost the slot to B's marker), and everything after the
+      // marker is exactly B's run of the rest of the flow, each step completing once, gap-free.
       const log = await r.logOf("win");
-      expect(markerSeq).toBeLessThan(headAtTakeover);
+      expect(String((aRes as { error?: unknown }).error)).toMatch(/duplicate sequence/);
+      expect(
+        log
+          .filter((e) => e.sequence > markerSeq)
+          .map((e) => `${e.eventType}:${(e.payload as { stepId?: string }).stepId ?? ""}`)
+      ).toEqual([
+        "STEP_STARTED:b",
+        "STEP_COMPLETED:b",
+        "STEP_STARTED:c",
+        "STEP_COMPLETED:c",
+        "EXECUTION_COMPLETED:",
+      ]);
+      // The fence protects the LOG, not side effects: A is still entitled (it has not observed its
+      // expiry) while B re-enters step b, so the effect overlaps. That is the accepted at-least-once
+      // window of ADR 0004, and the detector reports it here (step c overlaps too, as observed:
+      // A's runner is still entitled and keeps going beside B; the log stays single-writer regardless).
+      expect(r.probe.doubleEntries).toEqual(["win/b", "win/c"]);
       expect(log.filter((e) => e.eventType === "STEP_COMPLETED")).toHaveLength(3);
       expect(log.map((e) => e.sequence)).toEqual(log.map((_, i) => i));
       await expectLogInvariants(r, "win");
