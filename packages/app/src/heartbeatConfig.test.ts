@@ -108,11 +108,21 @@ describe("durability.heartbeat -- derivation", () => {
     const app = defineConfig({
       ...base,
       storage: { kind: "memory" },
-      durability: { heartbeat: { ttlMs: 12_000, renewEveryMs: 3_000, onStoreError: "continue" } },
+      durability: { heartbeat: { ttlMs: 12_000, renewEveryMs: 3_000, onStoreError: "stop" } },
     });
     expect(app.heartbeat.ttlMs).toBe(12_000);
     expect(app.heartbeat.renewEveryMs).toBe(3_000);
-    expect(app.heartbeat.onStoreError).toBe("continue");
+    expect(app.heartbeat.onStoreError).toBe("stop");
+  });
+
+  it('onStoreError "continue" is refused until the poll can treat the fleet as heuristic (S7d)', () => {
+    expect(() =>
+      defineConfig({
+        ...base,
+        storage: { kind: "memory" },
+        durability: { heartbeat: { onStoreError: "continue" } },
+      })
+    ).toThrow(/not supported yet/);
   });
 });
 
