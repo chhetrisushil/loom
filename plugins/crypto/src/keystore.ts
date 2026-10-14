@@ -31,6 +31,19 @@ export interface KeyStore {
    */
   destroy(subjectId: string): Promise<void>;
   /**
+   * OPTIONAL (ADR 0130 D7, round 5) - proof of destruction. `true` ONLY if THIS store destroyed
+   * (tombstoned) the subject's key: a `destroy` call recorded it, durably when the store is. A
+   * subject never minted here, or minted and still alive, is `false`.
+   *
+   * The log can prove an erase INTENT, never that the key died; a retry of `shredSubject` on a
+   * node whose key store merely lacks the key (wrong key, partitioned store) must not report an
+   * erasure that never happened while the real key lives on. Only the key store can say. Without
+   * this method, `shredSubject` completes a window retry only under the operator's explicit
+   * `force: "key-destroyed-elsewhere"`, and `eraseSubject` / `exportSubject` only with an explicit
+   * `destroyed` proof. Implement it on any store that can persist a tombstone.
+   */
+  wasDestroyed?(subjectId: string): Promise<boolean>;
+  /**
    * Does this store survive a restart? **Declare it.**
    *
    * Losing a key is indistinguishable from shredding the subject: the log is still there,
@@ -69,6 +82,10 @@ export class InMemoryKeyStore implements KeyStore {
 
   async get(subjectId: string): Promise<Buffer | null> {
     return this.keys.get(subjectId) ?? null;
+  }
+
+  async wasDestroyed(subjectId: string): Promise<boolean> {
+    return this.destroyed.has(subjectId);
   }
 
   async destroy(subjectId: string): Promise<void> {

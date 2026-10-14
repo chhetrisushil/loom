@@ -230,6 +230,18 @@ nothing is appended, the execution is never failed, and a node that CAN open it 
   none, so `eraseSubject`/`exportSubject` rethrow `KeyUnavailableError` and `shredSubject` refuses
   with it, writing and destroying nothing, whenever sealed data is present and the key is absent. A
   window left by a pre-intent version has no intent and must be completed by hand.
+  **Intent is not destruction (round 5).** A dangling intent (a crash before `keys.destroy`, or
+  intent N of M failed) leaves the key ALIVE on the node that wrote it, and a retry on a wrong-key
+  node would see the intent. So the retry also needs the KEY STORE's proof: the optional
+  `KeyStore.wasDestroyed(subjectId)`, true only if THIS store destroyed the key. `shredSubject`
+  throws `KeyUnavailableError` (writing nothing) when the key is absent, an intent is present and
+  `wasDestroyed` is missing or false; `EraseCoordinator({ destroyed })`, `exportSubject({ destroyed })`
+  and `compliance.erase.destroyed` take the same proof (`(s) => keys.wasDestroyed(s)`) and refuse
+  without it. The operator's override, for a key store that cannot answer, is
+  `shredSubject(..., { force: "key-destroyed-elsewhere" })` and `destroyed: () => true`: an
+  assertion that the key was destroyed in the authoritative store, and a wrong one writes a false
+  tombstone. Third-party key stores (KMS, vault, HSM) should implement `wasDestroyed` and persist the
+  destroy tombstone.
 - **Unmarked streams behave exactly as before.** A stream written without a marker (before 1.25.0,
   or by a third-party sealer) makes no claim and is never refused for lacking one; the inbox shape
   guard (ADR 0130 D2-D4) still covers inbox payloads. Pre-1.25.0 nodes ignore the marker and keep

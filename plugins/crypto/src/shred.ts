@@ -44,6 +44,14 @@ export interface ShredOptions {
    * fix rather than guessing a sequence.
    */
   snapshotStore?: Pick<SnapshotStore, "loadLatest" | "loadLatestSealed">;
+  /**
+   * ADR 0130 D7 (round 5) - OPERATOR OVERRIDE. A retry that finds the key absent and an erase
+   * intent in the log completes ONLY if `keys.wasDestroyed(subject)` is true: the log proves
+   * intent, never destruction. For a key store that cannot answer, pass
+   * `"key-destroyed-elsewhere"` to assert, as the operator, that the key was destroyed in the
+   * authoritative store. A wrong assertion writes a FALSE tombstone while the key lives on.
+   */
+  force?: "key-destroyed-elsewhere";
 }
 
 /** What step 1 learns about one execution: already tombstoned, or where its tombstone goes. */
@@ -215,10 +223,12 @@ export async function shredSubject(
   const pending: EventEnvelope[] = [];
   const intents: EventEnvelope[] = [];
   const lackIntent: string[] = [];
+  const windowed: string[] = []; // intent present, sealed data, tombstone missing
   for (const exId of executionIds) {
     const resolution = await resolve(rawEventStore, exId, subjectId, options);
     if (resolution.done) continue;
     const sequence = resolution.sequence;
+    if (resolution.hasIntent && resolution.sealed) windowed.push(exId);
     if (!resolution.hasIntent) {
       if (resolution.sealed) lackIntent.push(exId);
       intents.push({
@@ -255,6 +265,19 @@ export async function shredSubject(
   //     intent in the log proves the retry window; without it, REFUSE: nothing is written or destroyed.
   if (lackIntent.length > 0 && (await keys.get(subjectId)) === null) {
     throw new KeyUnavailableError(subjectId, lackIntent[0]);
+  }
+  //     Round 5: intent is not destruction. A DANGLING intent (a crash before `destroy`, or intent N
+  //     of M failed) leaves the key ALIVE on the node that wrote it; a retry on a wrong-key node
+  //     would see the intent, destroy nothing, and tombstone. When the key is absent and the
+  //     window is entered on intent alone, proceed ONLY on the key store's own proof
+  //     (`wasDestroyed`) or the operator's explicit `force`.
+  if (
+    windowed.length > 0 &&
+    options.force !== "key-destroyed-elsewhere" &&
+    (await keys.get(subjectId)) === null &&
+    (await keys.wasDestroyed?.(subjectId)) !== true
+  ) {
+    throw new KeyUnavailableError(subjectId, windowed[0]);
   }
   //     Intent first, then destroy, then tombstone: a crash after the intent leaves the key
   //     present (the retry destroys it); a crash after the destroy leaves intent + no tombstone

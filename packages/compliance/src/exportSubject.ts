@@ -1,5 +1,5 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
-import { type EventStore, erasureWindowView } from "@loom/event-runtime";
+import { type DestructionProof, type EventStore, erasureWindowView } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import type { SubjectIndex } from "./SubjectIndex";
 
@@ -38,6 +38,14 @@ export interface ExportSubjectOptions {
   includeEvents?: boolean;
   /** T3-R2.4 — scope the export to a tenant (default: the single partition). */
   tenant?: string;
+  /**
+   * ADR 0130 D7 (round 5) - proof that the key store destroyed the subject's key
+   * (`(s) => keys.wasDestroyed(s)`, or `() => true` as the operator's assertion that it was
+   * destroyed in the authoritative store). Without it, a stream whose key is unavailable is
+   * REFUSED (`KeyUnavailableError`) even if the log records an erase intent: a dangling intent
+   * (the key still lives elsewhere) is not an erasure.
+   */
+  destroyed?: DestructionProof;
 }
 
 /**
@@ -61,7 +69,7 @@ export async function exportSubject(
     } catch (err) {
       // The ShredIncomplete window (key destroyed, tombstone not yet written): the redacted view,
       // only with the log's durable erase intent. A node that lacks the key is not an erasure.
-      const window = erasureWindowView(err);
+      const window = await erasureWindowView(err, options.destroyed);
       if (window === undefined) throw err;
       events = [...window];
     }

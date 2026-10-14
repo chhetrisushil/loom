@@ -283,7 +283,15 @@ export interface SecurityOptions {
      * executions are all terminal, else parked (durable `ERASURE_PENDING`) and auto-completed
      * when the last live execution terminates — never shredding a fold in flight.
      */
-    erase?: { shred: Shredder };
+    erase?: {
+      shred: Shredder;
+      /**
+       * ADR 0130 D7 (round 5) - proof the key store destroyed a subject's key
+       * (`(s) => keys.wasDestroyed(s)`). Needed to resume an erasure in the ShredIncomplete window
+       * and for `exportSubject` to read it; without it a key-unavailable stream is refused.
+       */
+      destroyed?: (subjectId: string) => boolean | Promise<boolean>;
+    };
   };
 }
 
@@ -1239,6 +1247,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
           eventStore: stores.eventStore,
           snapshotStore: stores.snapshotStore,
           shred: config.compliance.erase.shred,
+          ...(config.compliance.erase.destroyed !== undefined && {
+            destroyed: config.compliance.erase.destroyed,
+          }),
           // `parked: "shred"` cancels each parked owner first, under the runtime's own authority.
           // `runtime` is assigned below; nothing erases before defineConfig returns.
           cancel: (executionId, reason) =>
@@ -1684,6 +1695,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         eventStore: stores.eventStore,
         ...(options?.includeEvents !== undefined && { includeEvents: options.includeEvents }),
         ...(options?.tenant !== undefined && { tenant: options.tenant }),
+        ...(config.compliance?.erase?.destroyed !== undefined && {
+          destroyed: config.compliance.erase.destroyed,
+        }),
       });
     },
     eraseSubject(subjectId, tenant, options) {

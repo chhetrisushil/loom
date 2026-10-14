@@ -739,6 +739,11 @@ const SEAMS: Record<string, SeamDef> = {
         "  destroy(_subjectId: string): Promise<void> {",
         '    throw new Error("not implemented");',
         "  }",
+        "  // OPTIONAL: true only if THIS store destroyed the subject's key (persist the tombstone),",
+        "  // so a shredSubject retry can prove destruction instead of trusting the log's intent.",
+        "  wasDestroyed(_subjectId: string): Promise<boolean> {",
+        '    throw new Error("not implemented");',
+        "  }",
         "}",
         "",
       ].join("\n");

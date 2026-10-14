@@ -61,11 +61,24 @@ export function recordsErasureIntent(
 }
 
 /**
- * The retry window, decided: a {@link KeyUnavailableError} carrying a redacted view is the genuine
- * ShredIncomplete window ONLY when that view records this subject's erase intent. Returns the
- * redacted view in that case, `undefined` otherwise (the caller rethrows).
+ * ADR 0130 D7 (round 5) - proof that the KEY STORE destroyed `subjectId`'s key (`KeyStore.wasDestroyed`,
+ * or the operator's explicit assertion `() => true`). The log proves intent, never destruction.
  */
-export function erasureWindowView(err: unknown): readonly EventEnvelope[] | undefined {
+export type DestructionProof = (subjectId: string) => boolean | Promise<boolean>;
+
+/**
+ * The retry window, decided: a {@link KeyUnavailableError} carrying a redacted view is the genuine
+ * ShredIncomplete window ONLY when that view records this subject's erase intent AND `destroyed`
+ * proves the key store destroyed the key (a dangling intent whose key still lives elsewhere is not
+ * the window). No proof, or a false one, fails closed. Returns the redacted view in that case,
+ * `undefined` otherwise (the caller rethrows).
+ */
+export async function erasureWindowView(
+  err: unknown,
+  destroyed?: DestructionProof
+): Promise<readonly EventEnvelope[] | undefined> {
   if (!isKeyUnavailable(err) || !err.redacted) return undefined;
-  return recordsErasureIntent(err.redacted, err.subjectId) ? err.redacted : undefined;
+  if (!recordsErasureIntent(err.redacted, err.subjectId)) return undefined;
+  if (destroyed === undefined || (await destroyed(err.subjectId)) !== true) return undefined;
+  return err.redacted;
 }

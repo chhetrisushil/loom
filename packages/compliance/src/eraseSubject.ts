@@ -1,5 +1,6 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
+  type DestructionProof,
   type EventStore,
   type InboxStreams,
   chainIdOfFirst,
@@ -59,6 +60,14 @@ export interface EraseCoordinatorOptions {
   eventStore: Pick<EventStore, "read" | "append"> &
     Partial<Pick<EventStore, "deleteExecution" | "listExecutionsPage">>;
   shred: Shredder;
+  /**
+   * ADR 0130 D7 (round 5) - proof that the key store destroyed a subject's key
+   * (`(s) => keys.wasDestroyed(s)`; `() => true` is the operator's assertion that it was destroyed
+   * in the authoritative store, for a store without `wasDestroyed`). Required to resume an erasure
+   * in the ShredIncomplete window: the log proves INTENT, not destruction, so without it a
+   * retry that reads `KeyUnavailableError` is refused rather than reported as erased.
+   */
+  destroyed?: DestructionProof;
   /**
    * Cancel one PARKED execution under the coordinator's own authority (a system / compliance
    * grant, never a caller's), journaled with the given reason (`"erased"`), through the runtime's
@@ -317,7 +326,7 @@ export class EraseCoordinator {
       // redacted view (plaintext status and tip) lets the retry judge liveness and complete, but
       // ONLY when the log records this subject's durable erase intent: without it the node merely
       // lacks the key (wrong key, partitioned key store) and the error is rethrown.
-      const window = erasureWindowView(err);
+      const window = await erasureWindowView(err, this.options.destroyed);
       if (window !== undefined) return [...window];
       throw err;
     }

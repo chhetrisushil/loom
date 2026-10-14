@@ -2,6 +2,7 @@ export { TenantScopedEventStore } from "./TenantScopedEventStore";
 export { CoalescingEventStore } from "./CoalescingEventStore";
 export type { InboxStreams } from "./types";
 export type { CoalescingEventStoreOptions } from "./CoalescingEventStore";
+export type { DestructionProof } from "./keyUnavailable";
 export {
   KEY_UNAVAILABLE_CODE,
   KeyUnavailableError,

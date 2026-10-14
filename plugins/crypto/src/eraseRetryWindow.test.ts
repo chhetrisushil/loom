@@ -65,6 +65,7 @@ describe("eraseSubject / exportSubject in the ShredIncomplete window", () => {
         index: w.index,
         eventStore: w.store,
         shred: w.shred,
+        destroyed: (s) => w.keys.wasDestroyed(s),
       });
       await expect(coord.eraseSubject(w.subject)).rejects.toBeInstanceOf(ShredIncompleteError);
       expect(await tombstones(w.inner)).toHaveLength(0); // the window: key gone, no tombstone
@@ -78,9 +79,18 @@ describe("eraseSubject / exportSubject in the ShredIncomplete window", () => {
 
     it(`${mode}: exportSubject in the window returns the redacted export instead of failing`, async () => {
       const w = await windowWorld(mode);
-      const coord = new EraseCoordinator({ index: w.index, eventStore: w.store, shred: w.shred });
+      const coord = new EraseCoordinator({
+        index: w.index,
+        eventStore: w.store,
+        shred: w.shred,
+        destroyed: (s) => w.keys.wasDestroyed(s),
+      });
       await expect(coord.eraseSubject(w.subject)).rejects.toBeInstanceOf(ShredIncompleteError);
-      const out = await exportSubject(w.subject, { index: w.index, eventStore: w.store });
+      const out = await exportSubject(w.subject, {
+        index: w.index,
+        eventStore: w.store,
+        destroyed: (s) => w.keys.wasDestroyed(s),
+      });
       expect(out.executions).toHaveLength(1);
       expect(JSON.stringify(out)).not.toContain("123-45-6789");
     });
@@ -154,7 +164,12 @@ describe("the erase intent makes the retry crash-safe at every point", () => {
       }
       return realDestroy(id);
     };
-    const coord = new EraseCoordinator({ index: w.index, eventStore: w.store, shred: w.shred });
+    const coord = new EraseCoordinator({
+      index: w.index,
+      eventStore: w.store,
+      shred: w.shred,
+      destroyed: (s) => w.keys.wasDestroyed(s),
+    });
     await expect(coord.eraseSubject(w.subject)).rejects.toThrow("crash before destroy");
     expect(await w.keys.get("e1")).not.toBeNull(); // intent written, key still present
     const log = await w.inner.read("e1");
@@ -168,5 +183,115 @@ describe("the erase intent makes the retry crash-safe at every point", () => {
     expect(
       (await w.inner.read("e1")).filter((e) => e.eventType === "ERASURE_PENDING")
     ).toHaveLength(1);
+  });
+});
+
+// ADR 0130 D7 (round 5) - the log proves INTENT, never destruction. A DANGLING intent (node A wrote
+// ERASURE_PENDING then crashed before keys.destroy; the key lives on A) plus a retry on a wrong-key
+// node B must not complete: only the key store can prove it destroyed the key.
+describe("a dangling intent on a wrong-key node is not proof of destruction", () => {
+  async function danglingWorld() {
+    const w = await windowWorld("throw");
+    // node A: intent written, then the destroy crashed -> key alive on A
+    const realDestroy = w.keys.destroy.bind(w.keys);
+    w.keys.destroy = async () => {
+      throw new Error("crash before destroy");
+    };
+    await expect(w.shred("ann", ["e1"])).rejects.toThrow("crash before destroy");
+    w.keys.destroy = realDestroy;
+    // node B: fresh key store, same raw log
+    const bKeys = new InMemoryKeyStore();
+    const bStore = new EncryptingEventStore(w.inner, bKeys, {
+      sensitive: SENSITIVE,
+      onShredded: "throw",
+    });
+    const bShred = (_s: string, ids: readonly string[], force?: boolean) =>
+      shredSubject(bKeys, w.inner, "e1", {
+        subjectId: "e1",
+        executionIds: [...ids],
+        snapshotStore: NO_SNAPSHOTS,
+        ...(force && { force: "key-destroyed-elsewhere" as const }),
+      });
+    return { ...w, bKeys, bStore, bShred };
+  }
+
+  it("shredSubject refuses and writes nothing; A's key stays intact", async () => {
+    const w = await danglingWorld();
+    const before = JSON.stringify(await w.inner.read("e1"));
+    await expect(w.bShred("ann", ["e1"])).rejects.toSatisfy(isKeyUnavailable);
+    expect(JSON.stringify(await w.inner.read("e1"))).toBe(before);
+    expect(await w.keys.get("e1")).not.toBeNull();
+  });
+
+  it("eraseSubject refuses on B", async () => {
+    const w = await danglingWorld();
+    const before = JSON.stringify(await w.inner.read("e1"));
+    const coord = new EraseCoordinator({
+      index: w.index,
+      eventStore: w.bStore,
+      shred: (_s, ids) => w.bShred("ann", ids),
+      destroyed: (s) => w.bKeys.wasDestroyed(s),
+    });
+    await expect(coord.eraseSubject(w.subject)).rejects.toSatisfy(isKeyUnavailable);
+    expect(JSON.stringify(await w.inner.read("e1"))).toBe(before);
+    expect(await w.keys.get("e1")).not.toBeNull();
+  });
+
+  it("exportSubject refuses on B", async () => {
+    const w = await danglingWorld();
+    await expect(
+      exportSubject(w.subject, {
+        index: w.index,
+        eventStore: w.bStore,
+        destroyed: (s) => w.bKeys.wasDestroyed(s),
+      })
+    ).rejects.toSatisfy(isKeyUnavailable);
+  });
+
+  it("the node that destroyed the key (wasDestroyed true) completes with exactly one tombstone", async () => {
+    const w = await windowWorld("throw");
+    const coord = new EraseCoordinator({
+      index: w.index,
+      eventStore: w.store,
+      shred: w.shred,
+      destroyed: (s) => w.keys.wasDestroyed(s),
+    });
+    await expect(coord.eraseSubject(w.subject)).rejects.toBeInstanceOf(ShredIncompleteError);
+    expect(await w.keys.wasDestroyed("e1")).toBe(true);
+    const out = await exportSubject(w.subject, {
+      index: w.index,
+      eventStore: w.store,
+      destroyed: (s) => w.keys.wasDestroyed(s),
+    });
+    expect(out.executions).toHaveLength(1);
+    expect((await coord.eraseSubject(w.subject)).outcome).toBe("erased");
+    expect(await tombstones(w.inner)).toHaveLength(1);
+  });
+
+  it("a key store WITHOUT wasDestroyed in the window refuses, then completes with the force option", async () => {
+    const w = await windowWorld("throw");
+    // the destroying node's store, stripped of the proof method
+    const bare = {
+      getOrCreate: (s: string) => w.keys.getOrCreate(s),
+      get: (s: string) => w.keys.get(s),
+      destroy: (s: string) => w.keys.destroy(s),
+    };
+    const raw = Object.assign(Object.create(w.inner) as InMemoryAsyncEventStore, {
+      append: (e: EventEnvelope) => w.inner.append(e),
+    });
+    const run = (force?: boolean) =>
+      shredSubject(bare, raw, "e1", {
+        subjectId: "e1",
+        executionIds: ["e1"],
+        snapshotStore: NO_SNAPSHOTS,
+        ...(force && { force: "key-destroyed-elsewhere" as const }),
+      });
+    // first attempt: tombstone write fails -> window (key gone, intent present)
+    await expect(w.shred("ann", ["e1"])).rejects.toBeInstanceOf(ShredIncompleteError);
+    const before = JSON.stringify(await w.inner.read("e1"));
+    await expect(run()).rejects.toSatisfy(isKeyUnavailable);
+    expect(JSON.stringify(await w.inner.read("e1"))).toBe(before);
+    await run(true);
+    expect(await tombstones(w.inner)).toHaveLength(1);
   });
 });
