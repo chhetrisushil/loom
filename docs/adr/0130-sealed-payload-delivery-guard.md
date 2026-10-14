@@ -396,9 +396,9 @@ What shipped, where the text above left a choice open:
 - A plaintext snapshot already at rest is not rewritten.
 - LeaseKeeper (S7b) store-side clock residual: the holder self-fences on its own clocks (monotonic AND wall, valid only while both are inside `ttl - ttl/6`; the margin is fixed at ttl/6, Q3(a)), but the lease EXPIRY is decided by the store's clock (Postgres `clock_timestamp()`, SQLite `Date.now()`), a wall clock that can step. An NTP step FORWARD of more than the margin on the store host expires live leases early and the holder cannot observe it; the fence remains the only write guard.
 
-## D11 — Heartbeat leases (Proposed, 2026-10-14)
+## D11 — Heartbeat leases (Accepted 2026-10-14, user)
 
-- Status: **Proposed. Every decision below is the user's.** Nothing is implemented. Requested by the user after the S6 (D10) review. Slices: `.superpowers/plans/2026-10-14-adr-0130-residuals.md` "## S7" (local, not committed).
+- Status: **Accepted 2026-10-14 (user): option (a), the recommendation, for every decision question below.** Nothing is implemented yet. Requested by the user after the S6 (D10) review. Slices: `.superpowers/plans/2026-10-14-adr-0130-residuals.md` "## S7" (local, not committed).
 - Placement: **kernel** (the runtime is the only thing that knows when a driver starts and stops driving) plus **1P** (`LeaseStore` backends in `plugins/postgres` and `plugins/sqlite`). No 3P part. ADR 0083 (second-consumer rule) is satisfied: the consumers are `TimerService.fire`, `recoverAbandoned`, the D10 poll, `orphanCensus` and "only one node should run this execution". ADR 0004's 2026-09-14 amendment deferred exactly this ("a `LeaseStore`/heartbeat SPI ... waits for a second, unrelated consumer"); the `LeaseStore` SPI and `renewWhileHeld` shipped later (#380, L5a), and this ADR is the "lease every run" step that amendment and `orphanCensus` (#408) left open.
 
 ### Problem
@@ -508,7 +508,7 @@ Deterministic tests only (wait on conditions, injected clocks; `*.perf.test.ts` 
 - **Perf (`*.perf.test.ts`, S7f):** lease overhead on `tools/bench-throughput` against the gate in 5; batching statement count (a count, not a time).
 - **Enforcement pin (`packages/spec`):** a test that every `WorkflowRuntime` drive entry point calls the keeper (the vacuous-check pattern: a new driver path that forgets to lease must fail a test).
 
-### Decision questions (user)
+### Decision questions (user) — answered 2026-10-14: (a) for all ten
 
 1. **Which drivers lease, and when?** (a) **Every driver, eager acquire before the first append, awaited release at park/terminal (recommended).** (b) Lazy acquire after a grace period (cheaper for short runs, but a crash inside the grace window is unevidenced). (c) Per-flow opt-in only.
 2. **Lease store default.** (a) **Co-located with the event store, derived by `defineConfig`; in-memory only when the event store is in-memory; otherwise disabled with a doctor finding (fail-closed) (recommended).** (b) Always in-memory (evidence meaningless across nodes). (c) Required explicit config, no default.
