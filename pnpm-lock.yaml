@@ -1725,6 +1725,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime
     devDependencies:
+      '@loom/compliance':
+        specifier: workspace:*
+        version: link:../../packages/compliance
       '@loom/conformance':
         specifier: workspace:*
         version: link:../../packages/conformance

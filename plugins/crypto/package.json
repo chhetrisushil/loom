@@ -31,6 +31,7 @@
     "@loom/snapshot-runtime": "workspace:*"
   },
   "devDependencies": {
+    "@loom/compliance": "workspace:*",
     "@loom/conformance": "workspace:*",
     "@loom/replay-vm": "workspace:*",
     "@types/node": "^22.0.0",

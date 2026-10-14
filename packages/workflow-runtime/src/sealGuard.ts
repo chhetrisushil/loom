@@ -29,6 +29,12 @@ export interface SealedDetail {
   readonly reason: "marker-unopenable" | "key-unavailable";
   readonly sequence?: number;
   readonly covers?: readonly string[];
+  /**
+   * The stream's workflow id, read from the PLAINTEXT `EventEnvelope.workflowId` column (or the
+   * snapshot index field) that raised the refusal, so the refusal can be worded as the ordinary
+   * call of that workflow (an `allowWorkflows` policy must not tell a sealed id from an ordinary one).
+   */
+  readonly workflowId?: string;
 }
 
 const details = new WeakMap<object, SealedDetail>();
@@ -168,6 +174,7 @@ export function assertStreamReadable(
       reason: "marker-unopenable",
       sequence: e.sequence,
       covers: marker === "malformed" ? [] : [...marker.covers],
+      workflowId: e.workflowId,
     });
   }
 }
@@ -175,7 +182,11 @@ export function assertStreamReadable(
 /** Translate a crypto store's `KeyUnavailableError` into the denial-shaped refusal; rethrow anything else. */
 function translate(executionId: string, err: unknown): never {
   if (isKeyUnavailable(err)) {
-    throw new SealedStreamUnreadableError("query", executionId, { reason: "key-unavailable" });
+    const workflowId = (err as { workflowId?: unknown }).workflowId;
+    throw new SealedStreamUnreadableError("query", executionId, {
+      reason: "key-unavailable",
+      ...(typeof workflowId === "string" && workflowId !== "" && { workflowId }),
+    });
   }
   throw err;
 }
@@ -311,6 +322,7 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
         reason: "marker-unopenable",
         sequence: snapshot.sequence,
         covers: [],
+        workflowId: snapshot.workflowId,
       });
     }
     return snapshot;
