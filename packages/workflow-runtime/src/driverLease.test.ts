@@ -526,15 +526,21 @@ describe("S7c review P1-1 - a store that never answers cannot wedge a handle or 
     });
     await untilAsync(() => r.calls.includes(`lease.release:${id}`));
     const parked = r.rt.acquireDriverLease(id); // parks behind the on-the-wire release
+    const parkedOutcome = parked.then(
+      (l) => l,
+      (e: Error) => e
+    );
     expect(settled).toBe(false);
     await untilAsync(() => t.open().length > 0);
     t.fire();
     await h.waitForCompletion(); // hangs forever without the bound
     expect(errors.some((e) => (e as Error).name === "LeaseStoreTimeoutError")).toBe(true);
     r.leases.releaseGate = undefined;
-    const got = await parked; // not parked behind the timed-out release any more
-    expect(got).not.toBeNull();
-    await got?.release();
+    // The original release is STILL unanswered (it may yet be applied), so the re-acquire waits
+    // for it one more bound and then rejects instead of landing a row that release could delete.
+    await untilAsync(() => t.open().length > 0);
+    t.fire();
+    expect(((await parkedOutcome) as Error).name).toBe("LeaseStoreTimeoutError");
   });
 
   it("an acquire the store never answers rejects at the timeout instead of blocking start forever", async () => {
@@ -786,6 +792,22 @@ describe("S7c review P2-4 - disabled really is byte-identical, and the contract 
     const on = await log(true);
     const off = await log(false);
     expect(on.length).toBeGreaterThan(1);
+    expect(on).toEqual(off);
+  });
+
+  it("R3-P3: a flow that parks on a wait and is resumed has an identical event log with heartbeat ON and OFF", async () => {
+    const log = async (heartbeat: boolean) => {
+      const r = rig({ heartbeat });
+      r.rt.registerFlow(parks.definition, parks.runner);
+      await (await r.rt.start(parks, {}, { executionId: "golden-3" })).waitForSuspend();
+      await untilAsync(async () => (await r.rt.loadState("golden-3"))?.suspendedOn?.on === "Go");
+      const h = await r.rt.resume("golden-3", { eventType: "Go", payload: null });
+      await h.waitForCompletion();
+      return (await r.events.read("golden-3")).map((e: EventEnvelope) => JSON.stringify(e));
+    };
+    const on = await log(true);
+    const off = await log(false);
+    expect(on.length).toBeGreaterThan(3);
     expect(on).toEqual(off);
   });
 

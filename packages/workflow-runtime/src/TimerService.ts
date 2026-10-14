@@ -220,6 +220,9 @@ export interface TimerServiceOptions {
    * ADR 0130 D11 (S7c): when the runtime has a heartbeat keeper (`WorkflowRuntimeDeps.heartbeat`),
    * claiming goes through the KEEPER's store and owner, and this `store`/`owner` are IGNORED (their
    * presence only switches claiming on). A diagnostic must read the keeper's store, not this one.
+   * A "ghost lease" start stand-down (`StartLeaseHeldError`) is retried by the CALLER (the next poll),
+   * unbounded: a live holder that never writes sequence 0 keeps renewing, so it blocks that schedule
+   * head until the holder dies. Accepted (ADR 0130 D11 section 9).
    */
   leases?: {
     store: LeaseStore;
