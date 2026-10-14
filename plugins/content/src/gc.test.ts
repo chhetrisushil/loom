@@ -1812,6 +1812,43 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         expect(await t.content.get(t.shared)).not.toBeNull();
       });
 
+      // A snapshot store without the raw log cannot see the tombstone above a pre-shred snapshot, so
+      // it reports the shredded subject's snapshot as KeyUnavailableError (ADR 0130 D7, round 2).
+      class KeyGoneError extends Error {
+        constructor() {
+          super("key unavailable");
+          this.name = "KeyUnavailableError";
+        }
+      }
+
+      it("KeyUnavailableError BESIDE the execution's tombstone is a confirmed shred: skipped, reported", async () => {
+        const t = await setup();
+        const report = await run(
+          t,
+          { gone: () => new KeyGoneError() },
+          { reclaimOrphans: { completeScan: true as const, snapshotsTouchContent: true as const } }
+        );
+        expect(report.shreddedSnapshots).toEqual(["gone"]);
+        expect(await t.content.get(t.liveOnly)).not.toBeNull();
+        expect(await t.content.get(t.shared)).not.toBeNull();
+        expect(await t.content.get(t.sole)).toBeNull();
+      });
+
+      it("KeyUnavailableError WITHOUT the tombstone aborts, nothing erased (fail closed)", async () => {
+        const t = await setup(false);
+        await expect(
+          run(
+            t,
+            { gone: () => new KeyGoneError() },
+            {
+              reclaimOrphans: { completeScan: true as const, snapshotsTouchContent: true as const },
+            }
+          )
+        ).rejects.toThrow("key unavailable");
+        expect(await t.content.get(t.sole)).not.toBeNull();
+        expect(await t.content.get(t.shared)).not.toBeNull();
+      });
+
       it("any other snapshot error still aborts the pass, nothing erased", async () => {
         const t = await setup();
         class SnapshotUndecryptableError extends Error {}

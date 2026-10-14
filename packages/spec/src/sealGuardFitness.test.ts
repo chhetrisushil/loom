@@ -90,6 +90,41 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
     expect(src).toMatch(/new LogLifecycle\(runtime\.events,/);
   });
 
+  it("packages/app reads the RAW store only at the pinned, deliberate sites (compliance paths see their data with the keys)", () => {
+    // `stores.eventStore` is the unguarded store. The runtime wraps it itself; the two compliance
+    // paths (EraseCoordinator, exportSubject) read it raw ON PURPOSE and carry a comment saying why;
+    // `runAgentOnce` is a dev helper reading its own just-finished run. A NEW raw reader in
+    // packages/app fails here until someone decides it is deliberate.
+    const raw = sourceFiles("packages/app/src")
+      .map((f) => ({ f, src: strip(read(f)) }))
+      .filter(({ src }) => /\bstores\.eventStore\b/.test(src));
+    expect(raw.map((r) => r.f)).toEqual([
+      "packages/app/src/defineConfig.ts",
+      "packages/app/src/runAgentOnce.ts",
+    ]);
+    const dc = strip(read("packages/app/src/defineConfig.ts"));
+    // each use is attributed to the NEAREST preceding constructor / call that takes it
+    const owners: Array<[string, RegExp]> = [
+      ["EraseCoordinator", /new EraseCoordinator\(/g],
+      ["WorkflowRuntime", /new WorkflowRuntime\(/g],
+      ["exportSubject", /exportSubjectData\(/g],
+    ];
+    const kinds = [...dc.matchAll(/\bstores\.eventStore\b(\.close\(\))?/g)].map((m) => {
+      if (m[1] !== undefined) return "close";
+      let best: [number, string] = [-1, `UNPINNED at ${m.index}`];
+      for (const [name, re] of owners) {
+        for (const o of dc.matchAll(re)) {
+          if ((o.index ?? 0) < (m.index ?? 0) && (o.index ?? 0) > best[0])
+            best = [o.index ?? 0, name];
+        }
+      }
+      return best[1];
+    });
+    expect(kinds).toEqual(["EraseCoordinator", "WorkflowRuntime", "exportSubject", "close"]);
+    const withComment = read("packages/app/src/defineConfig.ts");
+    expect(withComment.match(/DELIBERATELY the raw store/g)).toHaveLength(2);
+  });
+
   it("the seal check runs before the policy: ownerForAuthz reads and refuses before authzDenial", () => {
     const src = read("packages/workflow-runtime/src/WorkflowRuntime.ts");
     const i = src.indexOf("private async ownerForAuthz(");

@@ -8,6 +8,10 @@ import { build, flow, settle } from "./__tests__/r2Harness";
 // window used to see `running` with no handle and had to spin on ticks. The runtime now exposes the
 // in-flight start (`awaitLiveHandle`), registered BEFORE sequence 0 can be observed.
 
+/** The runtime's in-flight successor starts (private bookkeeping, asserted to drain on every exit). */
+const pendingStarts = (rt: unknown): number =>
+  (rt as { startingSuccessors: Map<string, unknown> }).startingSuccessors.size;
+
 describe("a successor's live handle is awaitable from the moment its sequence 0 is durable", () => {
   it("awaitLiveHandle resolves the handle for a successor observed in the start window", async () => {
     const inner = new InMemoryAsyncEventStore();
@@ -45,6 +49,32 @@ describe("a successor's live handle is awaitable from the moment its sequence 0 
       expect(handle?.executionId, s.id).toBe(s.id);
     }
     // nothing pending is left behind, and an unknown id has no handle
+    expect(pendingStarts(h.rt)).toBe(0);
     expect(await h.rt.awaitLiveHandle("never-started")).toBeUndefined();
+  });
+
+  it("nothing is left pending when the successor's start FAILS (sequence 0 refused)", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    let refused = 0;
+    const failing = Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {
+      append: async (e: EventEnvelope) => {
+        if (e.sequence === 0 && e.executionId.includes("~")) {
+          refused++;
+          throw new Error("disk full");
+        }
+        return inner.append(e);
+      },
+    });
+    const h = build({ continueAsNewEnabled: true }, { eventStore: failing });
+    const f = flow<{ gen?: number }, unknown>("hop", async (ctx, input) =>
+      (input?.gen ?? 0) < 1 ? ctx.continueAsNew({ gen: 1 }) : "done"
+    );
+    h.rt.registerFlow(f.definition, f.runner);
+    await settle(await h.rt.start(f, {}, { executionId: "chain-fail" })).catch(() => undefined);
+    expect(refused).toBeGreaterThanOrEqual(1); // the failing exit path really ran
+    expect(pendingStarts(h.rt)).toBe(0);
+    for (const id of (await inner.read("chain-fail")).map((e) => e.executionId)) {
+      expect(await h.rt.awaitLiveHandle(id)).toBeUndefined();
+    }
   });
 });

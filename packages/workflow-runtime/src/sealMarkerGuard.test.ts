@@ -468,13 +468,15 @@ describe("backstop (b): an UNMARKED legacy stream whose principal record is itse
       readFrom: async (i: string, n: number) => strip(await inner.readFrom(i, n)),
       readRange: async (i: string, x: number, y: number) => strip(await inner.readRange!(i, x, y)),
     });
-    let consulted = 0;
+    // ADR 0130 D7: the refusal never DECIDES on the policy; the policy is asked (owner UNSET, never
+    // the sealed principal) only to word the error, so an allow-everything policy is still refused.
+    const asked: Array<{ owner?: unknown; parentOwner?: unknown }> = [];
     const b = build(
       {
         principalIdentity: sealPrincipal ? "encrypted" : "verbatim",
         executionAuthorizer: {
-          authorize: () => {
-            consulted++;
+          authorize: (r: { owner?: unknown; parentOwner?: unknown }) => {
+            asked.push(r);
             return { allowed: true };
           },
         },
@@ -482,15 +484,19 @@ describe("backstop (b): an UNMARKED legacy stream whose principal record is itse
       },
       { eventStore: legacy, snapshotStore: new InMemoryAsyncSnapshotStore() }
     );
-    return { e, b, inner, consulted: () => consulted };
+    return { e, b, inner, consulted: () => asked.length, asked };
   }
 
   it("a ciphertext principal is refused denial-shaped BEFORE the policy (even a policy that allows everything)", async () => {
-    const { e, b, inner, consulted } = await legacyPrincipalStream(true);
+    const { e, b, inner, asked } = await legacyPrincipalStream(true);
     const before = await inner.read(e);
     const err = await rejection(b.rt.loadState(e, { principal: T1 }));
     expect(err).toBeInstanceOf(SealedStreamUnreadableError);
-    expect(consulted()).toBe(0);
+    // asked only to phrase the error, with the owner UNSET: the sealed principal never reaches it
+    for (const r of asked) {
+      expect(r.owner).toBeUndefined();
+      expect(r.parentOwner).toBeUndefined();
+    }
     expect(await inner.read(e)).toEqual(before);
   });
 

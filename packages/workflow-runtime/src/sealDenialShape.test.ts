@@ -4,7 +4,7 @@ import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { build, echo, flow } from "./__tests__/r2Harness";
-import { executionAccessPolicy } from "./executionAccessPolicy";
+import { UNKNOWN_OWNER_REASON, executionAccessPolicy } from "./executionAccessPolicy";
 import { isSealedUnreadable } from "./sealGuard";
 import { sealedDetailOf } from "./sealGuard";
 
@@ -31,7 +31,11 @@ const secret = () =>
 type Denied = { op: string; executionId: string; principal: unknown; reason: unknown };
 
 /** A node over `store`, with a strict authorizer; records every audit callback. */
-function node(store: EventStore, timers = new InMemoryTimerStore()) {
+function node(
+  store: EventStore,
+  timers = new InMemoryTimerStore(),
+  policy: Parameters<typeof executionAccessPolicy>[0] = { rules: { discard: "tenant" } }
+) {
   const denied: Denied[] = [];
   const f = secret();
   const h = build(
@@ -39,7 +43,7 @@ function node(store: EventStore, timers = new InMemoryTimerStore()) {
       // `discard` opened to `tenant` so the baseline is an OWNER denial: the default `discard: "deny"`
       // is an op-level rule that answers before ownership, which a refusal that never consults the
       // policy cannot reproduce (stated residual, ADR 0130 D7).
-      executionAuthorizer: executionAccessPolicy({ rules: { discard: "tenant" } }),
+      executionAuthorizer: executionAccessPolicy(policy),
       executionAuthz: { requirePrincipal: true },
       onExecutionDenied: (
         r: { op: string; executionId: string; principal?: unknown },
@@ -170,4 +174,61 @@ describe("a sealed refusal is indistinguishable from an unknown-owner denial of 
       expect(JSON.stringify(await inner.read(E))).toBe(before); // nothing appended, ever
     });
   }
+});
+
+// ADR 0130 D7 (user ruling 2026-10-14): the sealed refusal is PHRASED by consulting the policy with
+// the owner UNSET (what an ordinary unknown-owner execution produces), never the sealed principal;
+// the refusal itself is unconditional.
+describe("a sealed refusal is worded as the ordinary unknown-owner call of the same op", () => {
+  async function world(policy: Parameters<typeof executionAccessPolicy>[0]) {
+    const E = "shape-op";
+    const plainInner = new InMemoryAsyncEventStore();
+    const f0 = secret();
+    const setup = build(
+      {},
+      { eventStore: plainInner, snapshotStore: new InMemoryAsyncSnapshotStore() }
+    );
+    setup.rt.registerFlow(f0.definition, f0.runner);
+    await (await setup.rt.start(f0, {}, { executionId: E })).waitForSuspend();
+    const base = node(plainInner, new InMemoryTimerStore(), policy);
+    const inner = new InMemoryAsyncEventStore();
+    const keys = new InMemoryKeyStore();
+    const owner = node(new EncryptingEventStore(inner, keys, { sensitive: FULL }));
+    await (
+      await owner.h.rt.start(owner.f, {}, { executionId: E, principal: OWNER })
+    ).waitForSuspend();
+    const sealed = node(inner, new InMemoryTimerStore(), policy);
+    return { E, base, sealed, inner };
+  }
+
+  it("discard: deny gives the op-level 'not permitted' wording, as the ordinary call does", async () => {
+    const { E, base, sealed, inner } = await world({ rules: { discard: "deny" } });
+    const before = JSON.stringify(await inner.read(E));
+    const call = (n: ReturnType<typeof node>) =>
+      n.h.rt.discardInbox(E, { topic: "t", throughSeq: 1 }, { principal: STRANGER });
+    const want = await rejection(call(base));
+    const got = await rejection(call(sealed));
+    expect((want as Error).message).toContain("not permitted");
+    expect(shape(got)).toEqual(shape(want));
+    expect(sealed.denied).toEqual(base.denied);
+    expect(isSealedUnreadable(got)).toBe(true);
+    expect(JSON.stringify(await inner.read(E))).toBe(before);
+  });
+
+  it("unknownOwner: allow still refuses, with the generic unknown-owner wording", async () => {
+    const { E, base, sealed } = await world({
+      unknownOwner: "allow",
+      rules: { discard: "deny" },
+    });
+    // the ordinary call on a plaintext unknown-owner id is ALLOWED by this policy
+    expect(await base.h.rt.loadState(E, { principal: STRANGER })).not.toBeNull();
+    const got = await rejection(sealed.h.rt.loadState(E, { principal: STRANGER }));
+    expect(isSealedUnreadable(got)).toBe(true);
+    expect((got as Error).message).toContain(UNKNOWN_OWNER_REASON);
+    // an op the policy denies outright keeps ITS wording even here
+    const d = await rejection(
+      sealed.h.rt.discardInbox(E, { topic: "t", throughSeq: 1 }, { principal: STRANGER })
+    );
+    expect((d as Error).message).toContain("not permitted");
+  });
 });

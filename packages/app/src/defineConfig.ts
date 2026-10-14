@@ -1233,6 +1233,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     subjectIndex !== undefined && config.compliance?.erase !== undefined
       ? new EraseCoordinator({
           index: subjectIndex,
+          // DELIBERATELY the raw store, not `runtime.events` (ADR 0130 D7): erasure is a compliance
+          // path that must see its subject's data WITH this app's keys, and the seal guard would
+          // refuse a stream this node cannot open. Pinned in `sealGuardFitness.test.ts`.
           eventStore: stores.eventStore,
           snapshotStore: stores.snapshotStore,
           shred: config.compliance.erase.shred,
@@ -1674,6 +1677,10 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       }
       return exportSubjectData(subjectId, {
         index: subjectIndex,
+        // DELIBERATELY the raw store, not `runtime.events` (ADR 0130 D7): a subject export is a
+        // compliance path that must read the subject's data WITH this app's keys; the seal guard
+        // would refuse (denial-shaped) a stream this node cannot open. Pinned in
+        // `sealGuardFitness.test.ts`.
         eventStore: stores.eventStore,
         ...(options?.includeEvents !== undefined && { includeEvents: options.includeEvents }),
         ...(options?.tenant !== undefined && { tenant: options.tenant }),

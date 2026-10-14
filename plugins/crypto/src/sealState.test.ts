@@ -88,7 +88,10 @@ describe("EncryptingSnapshotStore sealState (ADR 0130 D8)", () => {
     const events = new EncryptingEventStore(innerEvents, keys, {
       sensitive: { STEP_COMPLETED: ["output.ssn"] },
     });
-    const snaps = new EncryptingSnapshotStore(inner, keys, { sealState: true });
+    const snaps = new EncryptingSnapshotStore(inner, keys, {
+      sealState: true,
+      events: innerEvents, // outside the kernel the exact erasure error needs the raw log
+    });
     await events.append({
       id: "e1-0",
       workflowId: "wf",

@@ -941,6 +941,18 @@ describe("ADR 0107 (B) — review round 2", () => {
       });
     }
     await keys.destroy("");
+    // A REAL shred leaves its durable tombstone (a tolerant store redacts only beside one; a key
+    // that is merely absent is key-unavailable, ADR 0130 D7).
+    const last = (await app.raw.read("")).at(-1)?.sequence ?? -1;
+    await app.raw.append({
+      id: "tomb-blank",
+      workflowId: "",
+      executionId: "",
+      eventType: "PAYLOAD_SHREDDED",
+      sequence: last + 1,
+      timestamp: 1,
+      payload: { subjectId: "" },
+    } as never);
     const census = await app.life.blankStreamCensus();
     expect(census.shredded).toBe(true);
     await expect(
