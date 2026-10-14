@@ -196,8 +196,14 @@ describe("K9.3: STEP_STARTED must be durable before a non-idempotent effect runs
     // the drain is still pending.
     held.release();
     await handle.waitForCompletion();
-    // Nothing further can settle the (never-starting) step; give a stray dispatch every chance.
-    await new Promise((r) => setTimeout(r, 50));
+    // The held append has resolved (waitForCompletion drained the journal, STEP_STARTED included).
+    // Condition, not a timer: the STEP_STARTED is in the durable log, then a few store round trips
+    // and microtask hops let the post-drain continuation (the code under test) run.
+    expect((await durable.read("seal-1")).map((e) => e.eventType)).toContain("STEP_STARTED");
+    for (let i = 0; i < 5; i++) {
+      await durable.read("seal-1");
+      for (let j = 0; j < 20; j++) await Promise.resolve();
+    }
     expect(a.ran).toEqual([]);
     expect(order).not.toContain("effect:a");
   });
@@ -269,4 +275,89 @@ describe("K9.3: STEP_STARTED must be durable before a non-idempotent effect runs
     await handle.waitForCompletion();
     expect([...a.ran].sort()).toEqual(["a", "b"]);
   });
+
+  // A park DECIDED while a non-idempotent step is still draining its STEP_STARTED: the step is
+  // in flight (it holds activeWork), so the park barrier waits for it and it runs to completion,
+  // journaling its result BEFORE EXECUTION_SUSPENDED. No parkDrainMs (30 s) stall, no stranded
+  // STEP_STARTED, so resume never parks EFFECT_INDOUBT.
+  it.each([
+    ["a sibling ctx.suspend", "suspend"],
+    ["a ctx.parallel branch that suspends", "parallel"],
+  ] as const)(
+    "%s while a non-idempotent step drains: the step completes before EXECUTION_SUSPENDED, no stall, no in-doubt on resume",
+    async (_name, kind) => {
+      const durable = new InMemoryAsyncEventStore();
+      const order: string[] = [];
+      const held = stepStartedStore(durable, order, "hold");
+      const ran: string[] = [];
+      const effects = new EffectRuntime();
+      effects.register(
+        "tool-a",
+        new ToolEffect(
+          async () => {
+            ran.push("a");
+            return { ok: true };
+          },
+          { idempotent: false }
+        )
+      );
+      const runtime = new WorkflowRuntime({
+        eventStore: held.store,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        effectRuntime: effects,
+        onWarn: () => {},
+      });
+      const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) => {
+        if (kind === "suspend") {
+          void ctx.run(stepA, {}).catch(() => {});
+          await ctx.suspend({ on: "Approval" });
+        } else {
+          await ctx.parallel([
+            async () => ctx.run(stepA, {}),
+            async () => ctx.suspend({ on: "Approval" }),
+          ]);
+        }
+        return { ok: true };
+      };
+      const definition: FlowDefinition<Record<string, never>, { ok: boolean }> = {
+        _tag: "FlowDefinition",
+        id: "park-drain",
+        name: "park-drain",
+        version: "1.0.0",
+        inputSchema: io.inputSchema,
+        outputSchema: io.outputSchema,
+        steps: [stepA],
+      };
+      runtime.registerFlow(definition, runner);
+      const flow: RegisteredFlow<Record<string, never>, { ok: boolean }> = { definition, runner };
+      const id = `park-drain-${kind}`;
+      void runtime.start(flow, {}, { executionId: id });
+      await until(() => order.includes("append:STEP_STARTED"), "the held STEP_STARTED append");
+      expect(ran).toEqual([]);
+      held.release();
+      const types = async () => (await durable.read(id)).map((e) => e.eventType);
+      // Bounded far below parkDrainMs (30 s): a drain-stranded step would stall past this.
+      const deadline = Date.now() + 4_000;
+      let log = await types();
+      while (!log.includes("EXECUTION_SUSPENDED")) {
+        if (Date.now() > deadline) {
+          throw new Error(`timed out waiting for EXECUTION_SUSPENDED; log=${log.join(",")}`);
+        }
+        await new Promise((r) => setTimeout(r, 2));
+        log = await types();
+      }
+      expect(ran).toEqual(["a"]);
+      expect(log.indexOf("STEP_COMPLETED")).toBeGreaterThan(-1);
+      expect(log.indexOf("STEP_COMPLETED")).toBeLessThan(log.indexOf("EXECUTION_SUSPENDED"));
+      expect(log).not.toContain("EFFECT_INDOUBT");
+      // Resume: the step is already complete, so it is neither re-run nor parked in doubt.
+      const handle = await runtime.resume(id, { eventType: "Approval", payload: {} });
+      await handle.waitForCompletion();
+      const after = await types();
+      expect(after).not.toContain("EFFECT_INDOUBT");
+      expect(after).toContain("EXECUTION_COMPLETED");
+      expect(ran).toEqual(["a"]);
+    },
+    10_000
+  );
 });
