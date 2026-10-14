@@ -77,7 +77,7 @@ export function encryptValue(
   key: Buffer,
   value: unknown,
   aad?: EnvelopeAad,
-  ivOverride?: Uint8Array,
+  ivOverride?: Uint8Array
 ): EncEnvelope {
   // Production default: a fresh random IV per value. `ivOverride` exists only for the deterministic
   // cipher seam (testing subpath); a reused IV under AES-GCM breaks confidentiality.
