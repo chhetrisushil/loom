@@ -19,7 +19,7 @@ import {
 } from "./__tests__/quarantineHarness";
 import { inboxBackends } from "./__tests__/r2Backends";
 import { build, echo, flow, until } from "./__tests__/r2Harness";
-import { isSealedUnreadable } from "./sealGuard";
+import { SealGuardedEventStore, isSealedUnreadable } from "./sealGuard";
 import { InboxQuarantineRefusedError } from "./types";
 
 // ADR 0130 S5b round 3 (P3-1): the quarantine verbs read the owner's log past a sealed
@@ -29,32 +29,16 @@ import { InboxQuarantineRefusedError } from "./types";
 
 const [memory] = inboxBackends("quarantine-logfold-reads");
 
-/**
- * Counts every ask, and which of them came from the OWNER-LOG walks (the fold, the tip walk, the park
- * walk, the release-fact search): the inbox and quarantine streams share the owner's subject, so
- * the subject cannot tell the two apart, the (async) call stack can.
- */
+/** Records every ask of the KeyStore (a node WITHOUT the key must not even ask for a stepped-over seal). */
 class SpyKeys implements KeyStore {
   readonly asked: string[] = [];
-  readonly ownerLogAsks: string[] = [];
-  private note(): void {
-    // the default 10 frames would cut the walk's name off behind the crypto decorator's own frames
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 200;
-    const stack = new Error().stack ?? "";
-    Error.stackTraceLimit = limit;
-    const m = /(foldState|foldFromCompleteLog|classifyTip|locatePark|findReleaseFact)/.exec(stack);
-    if (m !== null) this.ownerLogAsks.push(m[1] as string);
-  }
   readonly inner = new InMemoryKeyStore();
   getOrCreate(s: string) {
     this.asked.push(s);
-    this.note();
     return this.inner.getOrCreate(s);
   }
   get(s: string) {
     this.asked.push(s);
-    this.note();
     return this.inner.get(s);
   }
   destroy(s: string) {
@@ -164,8 +148,43 @@ describe("the owner fold past a sealed MESSAGE_CONSUMED on every read path (P3-1
       { principal: OP }
     );
     expect(r).toMatchObject({ disposition: "discard", changed: true });
-    expect(wrong.ownerLogAsks).toEqual([]);
+    // (that no key is asked is pinned at the VIEW level below: the stack of an awaited decrypt is not a reliable witness)
     expect(await eventsByKind(s.raw.eventStore, s.e, "INBOX_RELEASED")).toHaveLength(1);
+  });
+
+  it("VIEW LEVEL: read / readFrom / readRange / head of an admitted owner stream ask a key-less crypto node for NOTHING; without the at-rest reader they ask", async () => {
+    const s = await scene();
+    const total = (await s.raw.eventStore.read(s.e)).length;
+    const asksFor = async (withAtRest: boolean): Promise<string[]> => {
+      const spy = new SpyKeys(); // holds NO key for the owner
+      const store = new EncryptingEventStore(s.raw.eventStore, spy, {
+        sensitive: { ...SENSITIVE },
+        subjectOf: (e: { executionId: string }) => e.executionId,
+      } as never);
+      if (!withAtRest) (store as { readAtRest?: unknown }).readAtRest = undefined;
+      const view = new SealGuardedEventStore(store).quarantineReadView();
+      const calls = [
+        () => view.read(s.e),
+        () => view.readFrom(s.e, 0),
+        () => view.readRange!(s.e, 0, total - 1),
+        () => view.head!(s.e),
+      ];
+      for (const call of calls) {
+        // with the at-rest reader every call answers; without it a key-less node's decrypting read may
+        // be refused (it asked for the key, which is the point), so only the asks are compared
+        const out = await call().catch((x) => x);
+        if (withAtRest) expect(out).not.toBeInstanceOf(Error);
+      }
+      return spy.asked;
+    };
+    expect(await asksFor(true)).toEqual([]);
+    expect((await asksFor(false)).length).toBeGreaterThan(0);
+  });
+
+  it("the guarded runtime view does not hand out the at-rest reader (D7)", async () => {
+    const s = await scene();
+    expect(s.a.rt.events.readAtRest).toBeUndefined();
+    expect((s.a.rt.events as { inner?: unknown }).inner).toBeDefined();
   });
 
   it("POSITIVE CONTROL: with the at-rest reader absent the same verb asks the KeyStore MORE (so a zero-asks pin cannot go stale silently)", async () => {

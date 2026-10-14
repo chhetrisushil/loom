@@ -281,7 +281,6 @@ describe("the log fold reads past a sealed payload it does not interpret (user r
 
   it("quarantine and discard-release work on the incapable node; no key is asked; no state escapes; the general fold still refuses", async () => {
     const s = await sealedHistoryScene();
-    s.keys.asks = 0;
     const q = await s.b.rt.quarantineInbox(s.e, { topic: "a" }, { principal: OP });
     expect(q).toMatchObject({ executionId: s.e, topic: "a", messageId: "a1" });
     const r = await s.b.rt.releaseInbox(
@@ -290,7 +289,8 @@ describe("the log fold reads past a sealed payload it does not interpret (user r
       { principal: OP }
     );
     expect(r).toMatchObject({ disposition: "discard", changed: true });
-    expect(s.keys.asks).toBe(0);
+    // (node B is a plain node with no KeyStore at all; that a crypto node WITHOUT the key asks nothing is
+    // pinned at the view level in quarantine.logFold.reads.test.ts)
     // nothing returned carries ciphertext, plaintext, or a state
     for (const out of [q, r]) {
       const json = JSON.stringify(out);

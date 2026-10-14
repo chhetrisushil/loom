@@ -80,6 +80,14 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
     ]);
   });
 
+  it("the at-rest reader is reached ONLY from sealGuard.ts (a kernel read of it elsewhere walks past the seal guard)", () => {
+    const users = KERNEL.filter((f) => /\breadAtRest\b/.test(strip(read(f))));
+    expect(users).toEqual(["packages/workflow-runtime/src/sealGuard.ts"]);
+    const src = strip(read("packages/workflow-runtime/src/sealGuard.ts"));
+    expect(src).toMatch(/readAtRest:\s*\{\s*refuse:/); // the guarded decorator does not forward it
+    expect(src.match(/\.readAtRest\?\.\(\)/g)).toHaveLength(1);
+  });
+
   it("WorkflowRuntime assigns its event store ONLY as a SealGuardedEventStore and never reads deps.eventStore", () => {
     const src = strip(read("packages/workflow-runtime/src/WorkflowRuntime.ts"));
     expect(src).toMatch(/new SealGuardedEventStore\(deps\.eventStore\)/);

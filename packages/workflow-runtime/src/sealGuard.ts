@@ -372,7 +372,6 @@ export class SealGuardedEventStore implements EventStore {
   readonly appendIfUnchanged?: NonNullable<EventStore["appendIfUnchanged"]>;
   readonly storeNow?: NonNullable<EventStore["storeNow"]>;
   readonly sealingCapability?: NonNullable<EventStore["sealingCapability"]>;
-  readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
@@ -391,7 +390,12 @@ export class SealGuardedEventStore implements EventStore {
       appendIfUnchanged: "forward",
       storeNow: "forward",
       sealingCapability: "forward",
-      readAtRest: "forward",
+      // REFUSED (ADR 0130 D9): the at-rest view is ciphertext as stored and reading it is a way past the
+      // seal guard (D7). Only the quarantine view's own reads reach it, via `this.inner`, never through here.
+      readAtRest: {
+        refuse:
+          "the guarded view never hands out the at-rest (unguarded) reads; the quarantine view reads them from its inner store",
+      },
       copyPrefix: "forward", // copies the stored bytes verbatim in the inner store: nothing is read here
       deleteExecution: "forward",
       truncatePrefix: "forward",

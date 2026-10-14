@@ -532,7 +532,10 @@ export interface EventStore {
    * seal) reads WITHOUT asking the KeyStore. No write, no fence, no subscribe. Every envelope it
    * returns is byte-identical to what was appended through the store. A decorator forwards it (the
    * sealing one overrides it with its inner store's raw reads); `ShardedEventStore` routes each
-   * call to the stream's shard, like `read`.
+   * call to the stream's shard, like `read`. "As stored" includes UNRESOLVED content refs (a
+   * `ContentResolvingEventStore` above it never resolves them), so an admitted transient fold sees
+   * `ContentRef`s and erased content does not raise `ContentMissingError` on this path; harmless for
+   * routing fields unless an app externalizes one.
    */
   readAtRest?(): AtRestEventReader;
   /**
