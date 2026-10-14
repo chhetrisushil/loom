@@ -994,21 +994,61 @@ function keyStoreProof(crypto: unknown): DestructionProof | undefined {
  * store. When that store encrypts (structural `keys`), the default seals the WHOLE folded state under
  * the same KeyStore instead of being refused at boot; otherwise it is the plain in-memory store.
  */
-function defaultSnapshotStore(eventStore: EventStore): SnapshotStore {
+function defaultSnapshotStore(eventStore: EventStore, warn: (m: string) => void): SnapshotStore {
   const inner = new InMemoryAsyncSnapshotStore();
   const keys = (eventStore as { keys?: unknown }).keys;
-  if (typeof keys !== "object" || keys === null) return inner;
-  return new EncryptingSnapshotStore(inner, keys as KeyStore, { sealState: true });
+  if (keys === undefined) {
+    // A node-local, unbounded, volatile checkpoint store under a durable log: a restart forgets every
+    // checkpoint and each resume replays the whole log. Said once, at boot, with the fix.
+    if (!isInMemoryEventStore(eventStore)) {
+      warn(
+        "storage.snapshotStore was omitted for a custom event store that is not in-memory: the default is a node-local, unbounded InMemoryAsyncSnapshotStore, so checkpoints are lost on restart and never shared between nodes. Pass a durable snapshotStore (for an encrypting event store: one built with `new EncryptingSnapshotStore(inner, keys, { sealState: true })` over the event store's KeyStore)."
+      );
+    }
+    return inner;
+  }
+  if (!isKeyStore(keys)) {
+    warn(
+      "the event store exposes a `keys` marker that is not a KeyStore (getOrCreate/get/destroy): the sealed default snapshot store is NOT built, so a sealing event store will refuse every checkpoint (ADR 0130 D8). Pass an explicit sealState snapshot store."
+    );
+    return inner;
+  }
+  // The default keys snapshots by executionId. An event store whose `subjectOf` maps elsewhere is not
+  // visible from here (the field is private and decorators do not carry it): pass an explicit
+  // `EncryptingSnapshotStore({ subjectOf })` in that case (docs/compliance.md).
+  return new EncryptingSnapshotStore(inner, keys, { sealState: true });
 }
 
-function buildStores(storage: StorageConfig): LoomStores {
+function isKeyStore(keys: unknown): keys is KeyStore {
+  const k = keys as Record<string, unknown> | null;
+  return (
+    typeof k === "object" &&
+    k !== null &&
+    typeof k.getOrCreate === "function" &&
+    typeof k.get === "function" &&
+    typeof k.destroy === "function"
+  );
+}
+
+/** Best-effort: an `InMemoryAsyncEventStore`, or decorators (`.inner`/`.store`) over one. */
+function isInMemoryEventStore(store: unknown): boolean {
+  let cur: unknown = store;
+  for (let depth = 0; depth < 8 && typeof cur === "object" && cur !== null; depth++) {
+    if (cur instanceof InMemoryAsyncEventStore) return true;
+    const o = cur as { inner?: unknown; store?: unknown };
+    cur = o.inner ?? o.store;
+  }
+  return false;
+}
+
+function buildStores(storage: StorageConfig, warn: (m: string) => void): LoomStores {
   if (storage.kind === "custom") {
     // Bring your own backend — used verbatim. Concrete backends arrive this way via
     // a store plugin's preset (`sqliteStorage()`, `postgresStorage()`, …), so
     // `@loom/app` stays free of any vendor dependency (ADR 0043).
     return {
       eventStore: storage.eventStore,
-      snapshotStore: storage.snapshotStore ?? defaultSnapshotStore(storage.eventStore),
+      snapshotStore: storage.snapshotStore ?? defaultSnapshotStore(storage.eventStore, warn),
       ...(storage.branchRegistry !== undefined && { branchRegistry: storage.branchRegistry }),
     };
   }
@@ -1162,7 +1202,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   const ledger = new BudgetLedger();
   const spawn = resolveSpawn(config.envelope?.spawn, strict);
   const envelopeActive = Object.keys(spawn).length > 0 || budgetConfigured(config.envelope, strict);
-  const stores = buildStores(config.storage);
+  const stores = buildStores(config.storage, warnOut);
   // Present only when CONFIGURED — see LoomStores.memoryStore for why the distinction is
   // the useful part.
   if (config.memoryStore !== undefined) stores.memoryStore = config.memoryStore;
