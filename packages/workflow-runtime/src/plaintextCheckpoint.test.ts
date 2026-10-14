@@ -105,7 +105,10 @@ describe("kernel refusal of a plaintext checkpoint (ADR 0130 D8)", () => {
     const { keys, events } = sealed();
     const raw = new InMemoryAsyncSnapshotStore();
     const snaps = new EncryptingSnapshotStore(raw, keys, { sealState: true });
-    const h = build({}, { eventStore: events, snapshotStore: snaps });
+    const h = build(
+      { allowPlaintextCheckpoints: false },
+      { eventStore: events, snapshotStore: snaps }
+    );
     h.rt.registerFlow(f.definition, f.runner);
     const run = await h.rt.start(f, {}, { executionId: "ok-1" });
     await run.waitForSuspend();
@@ -131,10 +134,14 @@ describe("kernel refusal of a plaintext checkpoint (ADR 0130 D8)", () => {
   it("a save-time breach (the store starts sealing AFTER construction) does not fail the run and writes nothing", async () => {
     const keys = new InMemoryKeyStore();
     const events = new EncryptingEventStore(new InMemoryAsyncEventStore(), keys, {
+      sensitive: {},
       subjectOf: (e) => e.executionId,
     }); // seals nothing yet: boots with a plaintext snapshot store
     const raw = new InMemoryAsyncSnapshotStore();
-    const h = build({}, { eventStore: events, snapshotStore: raw });
+    const h = build(
+      { allowPlaintextCheckpoints: false },
+      { eventStore: events, snapshotStore: raw }
+    );
     h.rt.registerFlow(f.definition, f.runner);
     events.registerSensitive("INBOX_MESSAGE", ["payload"]); // the capability is live
     const run = await h.rt.start(f, {}, { executionId: "late-1" });
@@ -154,14 +161,20 @@ describe("kernel refusal of a plaintext checkpoint (ADR 0130 D8)", () => {
     const { keys, events } = sealed();
     const raw = new InMemoryAsyncSnapshotStore();
     const snaps = new EncryptingSnapshotStore(raw, keys, { sealState: true });
-    const a = build({}, { eventStore: events, snapshotStore: snaps });
+    const a = build(
+      { allowPlaintextCheckpoints: false },
+      { eventStore: events, snapshotStore: snaps }
+    );
     a.rt.registerFlow(f.definition, f.runner);
     const run = await a.rt.start(f, {}, { executionId: "crash-1" });
     await run.waitForSuspend();
     // node A "dies"; wipe every checkpoint it wrote: only the log remains
     await (raw as { deleteExecution?: (id: string) => Promise<void> }).deleteExecution?.("crash-1");
     expect(await raw.loadLatest("crash-1")).toBeNull();
-    const b = build({}, { eventStore: events, snapshotStore: snaps });
+    const b = build(
+      { allowPlaintextCheckpoints: false },
+      { eventStore: events, snapshotStore: snaps }
+    );
     b.rt.registerFlow(f.definition, f.runner);
     await b.rt.send("crash-1", { topic: "y", payload: { ssn: SECRET }, messageId: "m1" });
     await until(async () => (await b.rt.loadState("crash-1"))?.suspendedOn?.on === "Go");
@@ -186,7 +199,10 @@ describe("the archive snapshot store follows the same rule (LogLifecycle)", () =
     const snaps = new EncryptingSnapshotStore(new InMemoryAsyncSnapshotStore(), keys, {
       sealState: true,
     });
-    const h = build({}, { eventStore: events, snapshotStore: snaps });
+    const h = build(
+      { allowPlaintextCheckpoints: false },
+      { eventStore: events, snapshotStore: snaps }
+    );
     h.rt.registerFlow(done.definition, done.runner);
     const run = await h.rt.start(done, {}, { executionId: "arc-1" });
     await run.waitForCompletion();

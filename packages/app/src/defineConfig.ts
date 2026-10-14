@@ -56,10 +56,10 @@ import {
 } from "@loom/middleware";
 import { toAgentCard } from "@loom/plugin-a2a";
 import type { AgentCard } from "@loom/plugin-a2a";
+import { EncryptingSnapshotStore, type KeyStore } from "@loom/plugin-crypto";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
-import { EncryptingSnapshotStore, type KeyStore } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime/memory";
 import {
   composeAdapters,

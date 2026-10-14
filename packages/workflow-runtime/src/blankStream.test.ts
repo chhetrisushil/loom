@@ -72,6 +72,7 @@ function boot(
     effectRuntime: effects,
     now: () => 1_000,
     onWarn: () => {},
+    allowPlaintextCheckpoints: true, // ADR 0130 D8: not under test here
     ...extra,
   });
   runtime.registerFlow(definition, runner);

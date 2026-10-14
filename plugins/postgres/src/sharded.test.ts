@@ -338,8 +338,10 @@ if (PG_URL === undefined) {
           'ALTER TABLE events ALTER COLUMN execution_id TYPE TEXT COLLATE "default"'
         );
         expect(await collation(admin)).not.toBe("C");
-        // Hold a table the migration touches AFTER the conversion (its CREATE INDEX IF NOT
-        // EXISTS takes a SHARE lock). Released after 10 s, so an unbounded wait would succeed.
+        // Hold a table the migration touches AFTER the conversion. Indexes are created behind a
+        // catalog probe now, so drop one to make the CREATE INDEX (a SHARE lock) really run.
+        // Released after 10 s, so an unbounded wait would succeed.
+        await admin.query("DROP INDEX idx_snapshots_exec");
         await holder.query("BEGIN");
         await holder.query("LOCK TABLE snapshots IN ACCESS EXCLUSIVE MODE");
         release = setTimeout(() => void holder.query("ROLLBACK").catch(() => {}), 10_000);

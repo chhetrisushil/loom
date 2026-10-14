@@ -1295,6 +1295,7 @@ interface LoomApp {
   projectionRuntime: ProjectionRuntime;
   bus: InProcessA2ABus;
   strict: boolean;                                              // R9: security.strict was enabled
+  security?: { crypto?: { allowPlaintextCheckpoints: boolean } };  // ADR 0130 D8: present when security.crypto was given
   envelope?: { spawn: SpawnLimits; ledger: BudgetLedger };      // R9: pass spawn to superviseChildren({ limits })
   killSwitch?: KillSwitchRegistry;                              // R9: stop effects system/tenant/flow-wide
   stores: {                                                     // optional ones present only when CONFIGURED

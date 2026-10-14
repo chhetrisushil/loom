@@ -262,12 +262,27 @@ one envelope (only `id`, `executionId`, `workflowId`, `sequence`, `createdAt` st
 shred makes the snapshot unreadable (`PayloadShreddedError`) along with the events. `loom doctor`
 reports `snapshot-plaintext-under-encrypting-events` (error for a plaintext or different-keys snapshot
 store, warning for static paths) and names `security.crypto.allowPlaintextCheckpoints` as the explicit
-opt-out available from S3 (ADR 0130 D8; no release reads it yet). The sealed state is bound to its
+opt-out (ADR 0130 D8). The sealed state is bound to its
 execution id and sequence, so a row copied elsewhere or rolled back fails with `SnapshotUndecryptableError`;
 `legacyPlaintext: "refuse"` forbids unsealed rows once none remain (the doctor checks wiring only and
 cannot count plaintext snapshots still at rest). Pass the `EncryptingSnapshotStore` itself, not its inner
 store, to `sweepUnpinnedContent` (an erasing pass over the raw sealed rows throws `SealedSnapshotScanError`). Snapshots already written in plaintext are not rewritten: they stay readable and the next
 `save` seals the state.
+
+**The kernel refuses a plaintext checkpoint (ADR 0130 D8).** When the event store seals payloads
+(`sealingCapability()` reports covers), `new WorkflowRuntime` / `defineConfig` throws
+`PlaintextCheckpointError` (`reason: "not-sealed"` or `"keys-not-shared"`) unless the snapshot store reports
+`sealsWholeState` AND shares the event store's `KeyStore`: a plaintext store, a static-`sensitive`-path
+`EncryptingSnapshotStore` and a `sealState` store under other keys are all refused, and the message names both
+ways out. The rule is re-checked at every `save` (a store can start sealing after construction): the
+breach reaches `onStorageError`, nothing is written and the run is unaffected, because a checkpoint is an
+optimisation and a resume folds the log. `LogLifecycle` applies it to the retention ARCHIVE snapshot store
+too (`unsafe-archive`). With `storage: { kind: "custom", eventStore }` and NO `snapshotStore`, the in-memory
+default is built with `sealState` on the event store's `KeyStore` instead of being refused. The explicit
+opt-out is `security.crypto.allowPlaintextCheckpoints: true` (also exposed as
+`app.security.crypto.allowPlaintextCheckpoints`; `loom doctor` downgrades its findings to advisories): use it
+for a snapshot store on an encrypted volume, or to keep booting while you migrate. Plaintext snapshots already
+written are not rewritten or deleted.
 
 The sender recorded on a message (`tenant`, `actor`, `onBehalfOf`) is the SENDER's identity, not
 the owner's, and is not sealed by the inbox path: declare `INBOX_MESSAGE` / `MESSAGE_CONSUMED`

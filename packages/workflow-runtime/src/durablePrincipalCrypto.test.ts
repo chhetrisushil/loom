@@ -72,6 +72,7 @@ function boot(
     effectRuntime: effects,
     principalIdentity: "encrypted",
     snapshotEvery: 1,
+    allowPlaintextCheckpoints: true, // ADR 0130 D8: static-path snapshot store is what is under test
   });
   const runner: FlowRunner<unknown, { ok: boolean }> = async (ctx) => {
     await ctx.suspend({ on: "Go" });

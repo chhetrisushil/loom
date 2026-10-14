@@ -324,7 +324,7 @@ function encryptedApp(keys = new InMemoryKeyStore()) {
     sensitive: { EXECUTION_STARTED: ["input.n"] },
   });
   const snapshotStore = new EncryptingSnapshotStore(rawSnaps, keys, {
-    sensitive: ["variables._input.n"],
+    sealState: true, // ADR 0130 D8: the kernel refuses a checkpoint that is not whole-state sealed
     events: rawEvents, // outside the kernel the exact erasure error needs the raw log (ADR 0130 D7)
   });
   const effects = new EffectRuntime();
@@ -346,13 +346,10 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     expect(await life.compact("ec-1")).toBe(before.at(-1)!.sequence - 1);
     expect((await app.rawEvents.read("ec-1")).length).toBeLessThan(before.length);
 
-    // The checkpoint is at rest as CIPHERTEXT at the declared path. (Only the declared paths:
-    // whether `sensitive` covers every copy of a value in the fold — step inputs in `frames`,
-    // say — cannot be checked structurally; ADR 0022 and `loom doctor` say so.)
+    // The checkpoint is at rest as ONE sealed envelope (`sealState`, ADR 0130 D8): no plaintext
+    // anywhere in the stored row, whichever path the value took through the fold.
     const raw = await app.rawSnaps.loadLatest("ec-1");
-    const rawInput = (raw?.state.variables._input as { n: unknown }).n;
-    expect(rawInput).not.toBe(SECRET);
-    expect(JSON.stringify(rawInput)).not.toContain(String(SECRET));
+    expect(JSON.stringify(raw?.state)).not.toContain(String(SECRET));
     expect((await app.snapshotStore.loadLatest("ec-1"))?.state.variables._input).toEqual({
       n: SECRET,
     });
@@ -416,7 +413,7 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
         sensitive: { EXECUTION_STARTED: ["input.n"] },
       }),
       snapshotStore: new EncryptingSnapshotStore(rawArchiveSnaps, app.keys, {
-        sensitive: ["variables._input.n"],
+        sealState: true, // ADR 0130 D8: an archive checkpoint is whole-state sealed too
         events: rawArchive, // the exact erasure error outside the kernel needs the raw log (ADR 0130 D7)
       }),
     };
@@ -431,8 +428,7 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
     expect(JSON.stringify(archivedStart.input.n)).not.toContain(String(SECRET));
     const archivedSnap = await rawArchiveSnaps.loadLatest("er-1");
     expect(archivedSnap).not.toBeNull();
-    const archivedSnapInput = (archivedSnap?.state.variables._input as { n: unknown }).n;
-    expect(JSON.stringify(archivedSnapInput)).not.toContain(String(SECRET));
+    expect(JSON.stringify(archivedSnap?.state)).not.toContain(String(SECRET));
     expect((await archive.eventStore.read("er-1"))[0]?.payload).toMatchObject({
       input: { n: SECRET },
     });
