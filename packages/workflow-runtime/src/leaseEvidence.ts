@@ -186,6 +186,7 @@ export async function collectGhostLeases(
   for (const lease of window) {
     if (isHeuristicOwner(lease.owner)) continue; // may still be starting: proves nothing
     const id = lease.executionId;
+    if (runtime.drivesLocally(id)) continue; // this node is (still) starting it: never collect our own driver's row
     try {
       if (await runtime.hasSequenceZero(id)) continue; // a real stream: an orphan
       // Take the expired row WITHOUT the keeper: nothing renews it, so if we leave it, it expires.
