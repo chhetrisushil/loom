@@ -46,7 +46,7 @@ await app.stores.eventStore.close?.();
 - A Postgres store is **fail-closed on lost writes**: a write that cannot be made durable fails the
   run rather than continuing (`StorageWriteError`; observe it with `observability.onStorageError`).
 - Timer rows (`PostgresTimerStore`) belong in the **same database** as the log, so one backup
-  captures the full kernel state ([user guide](user-guide.md), "Durable timers").
+  captures the full kernel state ([user guide](user-guide/delivery-versioning-and-recovery.md#durable-timers-t1), "Durable timers").
 
 Reference: [user guide, section 9 (configuration)](user-guide.md),
 [plugins](plugins.md).
@@ -142,7 +142,7 @@ execution only on the evidence above and only while the log has not moved since 
 is a maintenance pass you schedule (cron, a Kubernetes Job, a leader-elected ticker). Keep
 `fenced: true` so a predecessor that is not really dead loses at the store. Be generous with any
 time-based threshold: a wrongly preempted live worker's in-flight effect may still land
-([user guide](user-guide.md), "Recovering executions whose supervisor died").
+([user guide](user-guide/delivery-versioning-and-recovery.md#recovering-executions-whose-supervisor-died-adr-0004), "Recovering executions whose supervisor died").
 
 **The CLI.**
 
