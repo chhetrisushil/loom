@@ -49,6 +49,8 @@ export interface LeaseBenchConfig {
   repeats: number;
   /** Required for the `postgres` backend: event, snapshot and lease stores all live here. */
   pgUrl?: string;
+  /** `caller` (default): a caller-chosen executionId, which pays the durable sequence-0 bootstrap barrier; `minted`: the runtime mints the ulid. */
+  ids?: "caller" | "minted";
 }
 
 export type LeaseMode = "off" | "eager" | "lazy";
@@ -174,7 +176,11 @@ async function once(cfg: LeaseBenchConfig, mode: LeaseMode, tag: string): Promis
       opsPerWorker: Math.max(1, Math.round(cfg.executions / cfg.concurrency)),
       warmupPerWorker: 2,
       op: async ({ global }) => {
-        const h = await runtime.start(flow, { i: global }, { executionId: `${tag}-${global}` });
+        const h = await runtime.start(
+          flow,
+          { i: global },
+          cfg.ids === "minted" ? undefined : { executionId: `${tag}-${global}` }
+        );
         await h.waitForCompletion();
       },
     });

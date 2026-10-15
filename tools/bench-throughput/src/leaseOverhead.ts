@@ -39,6 +39,8 @@ async function main(): Promise<void> {
   const ioExecutions = intEnv("LOOM_BENCH_IO_EXECS", 1500);
   const ioMs = intEnv("LOOM_BENCH_IO_MS", 20);
   const repeats = intEnv("LOOM_BENCH_REPEATS", 5);
+  // LOOM_BENCH_IDS=caller (default) | minted: caller-chosen ids pay the sequence-0 bootstrap barrier.
+  const ids = process.env.LOOM_BENCH_IDS === "minted" ? "minted" : "caller";
   const rows: LeaseBenchRow[] = [];
   for (const concurrency of concs)
     for (const backend of backends)
@@ -59,11 +61,12 @@ async function main(): Promise<void> {
             executions: n,
             ioMs,
             repeats,
+            ids,
             ...(pgUrl !== undefined && { pgUrl }),
           })
         );
       }
-  console.log(`repeats=${repeats} ioMs=${ioMs}`);
+  console.log(`repeats=${repeats} ioMs=${ioMs} ids=${ids}`);
   console.log(
     "| backend | shape | conc | execs | off exec/s | eager exec/s | lazy exec/s | eager overhead % | lazy overhead % | eager paired med (min..max) % | lazy paired med (min..max) % | off samples | eager samples | lazy samples |"
   );

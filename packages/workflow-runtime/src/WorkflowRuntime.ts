@@ -3222,15 +3222,12 @@ export class WorkflowRuntime {
     // Another live owner = stand down (a caller-chosen id reads as "already started elsewhere").
     let lease: DriverLease = NO_LEASE;
     if (this.driverLeases !== undefined) {
-      // S7g (user ruling 2026-10-15): lazy applies ONLY to a fresh start. A minted id cannot have a
-      // stream or a leftover lease row; a caller-chosen id is classified from the DURABLE log (never
-      // from caller input): sequence 0 present = the stream exists (a redelivered trigger, a
-      // re-start), so a predecessor may have left a row and the lease is taken EAGERLY.
-      const fresh =
-        options?.executionId === undefined || !(await this.hasSequenceZero(executionId));
-      const got = fresh
-        ? await this.driverLeases.acquireFresh(executionId)
-        : await this.driverLeases.acquire(executionId);
+      // S7g (user ruling 2026-10-15): lazy applies ONLY to a fresh start, and EVERY `start` is one.
+      // A minted id cannot have a stream or a row; a caller-chosen id that already has a stream is
+      // refused by `writeBootstrap` below (sequence 0's uniqueness, ADR 0103) before the body, any
+      // effect or any lease-store call, so a start never DRIVES an existing stream. No extra durable
+      // read classifies the id. (resume-like entries are eager and never come through here.)
+      const got = await this.driverLeases.acquireFresh(executionId);
       if (got === null) {
         const held = new LeaseHeldError(executionId);
         if (options?.executionId === undefined) throw held;

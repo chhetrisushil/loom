@@ -614,8 +614,10 @@ The S7f result above failed the D11 gate on the durable backend (eager: 25-30% n
 Postgres), so the default became **lazy** acquisition: a run takes no lease until it has been driving for
 `lazyGraceMs` (default TTL/3 = 10 s). (Amended 2026-10-15 after review: lazy applies to a FRESH `start` only;
 resume, resumeAs, restoreFromState, the send/notify winner and continue-as-new successors are eager in both
-modes. This bench starts fresh one-step flows and never resumes, so its numbers are the fresh-start path and
-are unchanged by that ruling; the eager resume cost is the S7f protocol, priced by the S7f tables.) The bench (`bench:lease`) now measures three modes per repeat,
+modes. This bench starts fresh one-step flows and never resumes, so its numbers are the fresh-start path (the
+tables directly below were taken with CALLER-CHOSEN ids before the round-2 re-run in the last subsection; the
+intermediate commit that added a classifying `hasSequenceZero` read to every caller-chosen start was removed in
+round 2, since a start never drives an existing stream: see the re-run); the eager resume cost is the S7f protocol, priced by the S7f tables.) The bench (`bench:lease`) now measures three modes per repeat,
 interleaved with a rotating order: heartbeat **off**, **eager** (a lease before every run's first
 append) and **lazy** (the default). The flow is one step, so with the 10 s grace a lazy run never
 leases: this prices the cost a short execution pays for lazy mode (a grace timer set and cleared, no
@@ -676,3 +678,35 @@ repeat's OFF/LAZY pair, as a median and a min..max range.
   run. The spread is wide (the machine was not idle), so only the direction is firm.
 - What lazy does NOT measure: the cost a run pays once it outlives the grace. That path is the eager
   protocol (S7f's I/O-bound rows: 1-2% where the store is not saturated).
+
+### Round-2 re-run (after removing the classifying read; both id styles)
+
+Review found that a classifying `hasSequenceZero` read on every caller-chosen `start` made the sentence above
+false. The read is gone: every `start` goes lazy, and an existing stream is refused by the sequence-0 bootstrap
+(ADR 0103) before any effect, with the loser's grace timer cancelled and no lease row written (tested, including
+two racing lazy starts of one id on two nodes). Re-measured on Postgres 17 (loopback, throwaway cluster, own
+`loombench` database), Apple M2, desktop not idle, N = 5 repeats, OFF/EAGER/LAZY interleaved, medians, 3,000
+executions per cell (`LOOM_BENCH_IDS=caller|minted`, new in this round). **Caller-chosen ids** (`executionId`
+supplied, which pays the sequence-0 barrier in all three modes) and **minted ids** (runtime-minted ulid):
+
+| ids | shape | conc | off exec/s | eager exec/s | lazy exec/s | eager overhead | lazy overhead | lazy paired median (min..max) |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| caller | noop | 16 | 5,842 | 4,095 | 5,830 | 29.9% | 0.2% | 1.0 (-5.6..31.9)% |
+| caller | noop | 64 | 5,974 | 4,109 | 5,840 | 31.2% | 2.3% | 2.3 (-1.7..36.1)% |
+| caller | noop | 256 | 5,812 | 3,912 | 5,462 | 32.7% | 6.0% | -0.5 (-6.7..30.6)% |
+| caller | io | 16 | 591 | 562 | 587 | 4.8% | 0.7% | 3.8 (-3.9..6.2)% |
+| caller | io | 64 | 2,750 | 2,652 | 2,729 | 3.6% | 0.8% | 0.9 (-1.8..31.3)% |
+| caller | io | 256 | 5,317 | 3,900 | 5,302 | 26.6% | 0.3% | 0.6 (-60.3..1.1)% |
+| minted | noop | 16 | 4,983 | 3,795 | 5,329 | 23.9% | -6.9% | -6.7 (-15.6..2.3)% |
+| minted | noop | 64 | 5,061 | 3,824 | 5,247 | 24.4% | -3.7% | -2.0 (-6.6..22.1)% |
+| minted | noop | 256 | 4,701 | 2,853 | 4,395 | 39.3% | 6.5% | 5.5 (-12.2..14.8)% |
+| minted | io | 16 | 607 | 603 | 608 | 0.6% | -0.3% | -0.3 (-1.2..1.8)% |
+| minted | io | 64 | 2,794 | 2,711 | 2,796 | 2.9% | -0.1% | -0.1 (-0.6..5.9)% |
+| minted | io | 256 | 4,394 | 2,935 | 4,703 | 33.2% | -7.0% | -2.5 (-114.0..39.8)% |
+
+Both id styles meet the gate on Postgres: lazy is at most 6.5% on the no-op ceiling and at most 0.8% at
+I/O-bound concurrency 16 and 64 (the 256 cell is write-bound and reads like a no-op cell). Eager is 24-39%,
+reproducing S7f. Some lazy samples are single outliers (the paired max columns, e.g. 31.9%, are one slow repeat
+in the same run, where the OFF side was also noisy); the medians and the id-style comparison are the firm part.
+Caller vs minted does not differ for lazy beyond noise, which is the point: caller-chosen starts pay no extra
+read for lazy classification.
