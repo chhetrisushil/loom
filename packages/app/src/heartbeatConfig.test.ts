@@ -244,7 +244,11 @@ describe("durability.heartbeat -- wired into the runtime", () => {
     return { ok: true };
   };
 
-  function rig(heartbeat?: { enabled?: boolean }) {
+  function rig(heartbeat?: {
+    enabled?: boolean;
+    acquire?: "eager" | "lazy";
+    lazyGraceMs?: number;
+  }) {
     let release!: () => void;
     const gate = new Promise<void>((r) => {
       release = r;
@@ -273,8 +277,41 @@ describe("durability.heartbeat -- wired into the runtime", () => {
     return { app, release, inStep };
   }
 
-  it("default ON: the in-memory lease store holds a row while a step is in flight, and releases at the end", async () => {
+  it("default is LAZY (ADR 0130 D11, S7g): no lease row while a run is young; one appears after the grace", async () => {
+    const { app, release, inStep } = rig({ lazyGraceMs: 1 });
+    expect(app.heartbeat.acquire).toBe("lazy");
+    const store = app.heartbeat.store as InMemoryLeaseStore;
+    const handle = await app.runtime.start({ definition, runner } as never, {});
+    await inStep;
+    await until(async () => (await store.get(handle.executionId)) !== null);
+    release();
+    await handle.waitForCompletion();
+    await until(async () => (await store.get(handle.executionId)) === null);
+  });
+
+  it("a long default grace leaves a short run entirely unleased", async () => {
     const { app, release, inStep } = rig();
+    const store = app.heartbeat.store as InMemoryLeaseStore;
+    const handle = await app.runtime.start({ definition, runner } as never, {});
+    await inStep;
+    expect(await store.get(handle.executionId)).toBeNull(); // TTL/3 = 10 s has not passed
+    release();
+    await handle.waitForCompletion();
+    expect(app.runtime.leaseKeeper?.size).toBe(0);
+  });
+
+  it("acquire / lazyGraceMs are validated and surfaced on app.heartbeat", () => {
+    const mk = (heartbeat: Record<string, unknown>) =>
+      defineConfig({ ...base, storage: { kind: "memory" }, durability: { heartbeat } as never });
+    expect(mk({ acquire: "eager" }).heartbeat.acquire).toBe("eager");
+    expect(mk({ lazyGraceMs: 500 }).heartbeat.lazyGraceMs).toBe(500);
+    expect(() => mk({ acquire: "sometimes" })).toThrow(/acquire.*eager.*lazy/);
+    expect(() => mk({ lazyGraceMs: -1 })).toThrow(/lazyGraceMs/);
+    expect(() => mk({ lazyGraceMs: "soon" })).toThrow(/lazyGraceMs/);
+  });
+
+  it('acquire:"eager": the in-memory lease store holds a row while a step is in flight, and releases at the end', async () => {
+    const { app, release, inStep } = rig({ acquire: "eager" });
     const store = app.heartbeat.store as InMemoryLeaseStore;
     expect(app.runtime.leaseKeeper).toBeDefined();
     const handle = await app.runtime.start({ definition, runner } as never, {});

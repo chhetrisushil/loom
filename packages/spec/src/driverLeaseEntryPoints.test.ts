@@ -53,7 +53,7 @@ function driversOf(code: string): Array<{ name: string; leases: boolean; passes:
     const call = code.slice(m.index, i);
     out.push({
       name,
-      leases: /takeDriverLease\(|driverLeases\.acquire\(/.test(body),
+      leases: /takeDriverLease\(|driverLeases\.acquire(?:Run)?\(/.test(body),
       passes: /\blease\b|\bsuccLease\b/.test(call),
     });
   }

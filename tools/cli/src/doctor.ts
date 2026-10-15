@@ -553,7 +553,12 @@ function heartbeatCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
   return {
     name: HEARTBEAT_CHECK,
     status: "ok",
-    detail: `heartbeat leases on (${hb.source}, scope ${scope})`,
+    detail:
+      (hb.acquire as string | undefined) === undefined
+        ? `heartbeat leases on (${hb.source}, scope ${scope})`
+        : hb.acquire === "eager"
+          ? `heartbeat leases on, eager (${hb.source}, scope ${scope}): every run leases before its first append`
+          : `heartbeat leases on, lazy (${hb.source}, scope ${scope}): a run leases only after ${hb.lazyGraceMs ?? hb.renewEveryMs ?? "TTL/3"} ms, so a driver that dies inside that window left no lease and is re-driven only with a host \`isAbandoned\`; set \`durability.heartbeat.acquire: "eager"\` to lease every run`,
   };
 }
 

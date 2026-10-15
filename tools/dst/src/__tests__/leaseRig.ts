@@ -21,6 +21,11 @@ import { z } from "zod";
 
 export const TTL = 30_000;
 
+/** WHEN a run takes its lease (ADR 0130 D11, S7g): the DST suite runs every scenario in both modes. */
+export type AcquireMode = "eager" | "lazy";
+/** Lazy mode's grace period in the rig (a marker value so the hand-driven `after` can recognise it). */
+export const GRACE = 7_777;
+
 const io = {
   inputSchema: z.object({ id: z.string(), n: z.number().optional() }),
   outputSchema: z.object({ ok: z.boolean() }),
@@ -102,15 +107,23 @@ export interface Node {
   readonly unleasedAppends: string[];
   /** Run the node's keeper renew round once (the hand-driven timer). */
   tick(): Promise<void>;
+  /**
+   * Lazy mode: the grace period of every run this node is driving has elapsed (fire the captured grace
+   * timers, then let the group-committed acquires settle). A no-op in eager mode.
+   */
+  grace(): Promise<void>;
   errors: unknown[];
 }
 
 export type In = { id: string; n?: number | undefined };
 
 export interface Rig {
+  mode: AcquireMode;
   clock: Clock;
   events: InMemoryAsyncEventStore;
   leases: InMemoryLeaseStore;
+  /** The same store with every acquire/release recorded on `timeline` (what the nodes use by default). */
+  recordedLeases: LeaseStore;
   /** The lease store's own clock runs `skew.ms` ahead of the nodes' wall clocks (default 0). */
   skew: { ms: number };
   /** The shared timer store the pollers (TimerService) drain; `refusalRow` seeds a D10 re-drive candidate. */
@@ -130,6 +143,8 @@ export interface Rig {
 export interface NodeOptions {
   leaseStore?: LeaseStore;
   eventStore?: EventStore;
+  /** Lazy mode: do NOT elapse the run's grace window on entering step b (default true). */
+  autoGrace?: boolean;
   /** An unleased legacy node (no `heartbeat`). */
   legacy?: boolean;
   ttlMs?: number;
@@ -138,7 +153,7 @@ export interface NodeOptions {
   extra?: Record<string, unknown>;
 }
 
-export function rig(): Rig {
+export function rig(mode: AcquireMode = "eager"): Rig {
   const clock: Clock = { mono: 1_000, wall: 1_700_000_000_000 };
   const events = new InMemoryAsyncEventStore();
   const snapshots = new InMemoryAsyncSnapshotStore();
@@ -150,7 +165,10 @@ export function rig(): Rig {
   const timers = new InMemoryTimerStore();
   const probe = new Probe();
   const timeline: string[] = [];
-  const recorded = recordLeases(leases, timeline);
+  // (owner|id) pairs whose lease this rig saw GRANTED and not yet released: in lazy mode a driver may
+  // append unleased inside its grace window, but never once it has acquired and lost the row.
+  const heldBy = new Set<string>();
+  const recorded = recordLeases(leases, timeline, heldBy);
   const definition: FlowDefinition<In, { ok: boolean }> = {
     _tag: "FlowDefinition",
     id: "leased-dst",
@@ -179,9 +197,11 @@ export function rig(): Rig {
   };
   const rot = { definition: rotDef, runner: rotRunner } as RegisteredFlow<In, { ok: boolean }>;
   return {
+    mode,
     clock,
     events,
     leases,
+    recordedLeases: recorded,
     skew,
     timers,
     refusalRow: async (id) => {
@@ -202,8 +222,12 @@ export function rig(): Rig {
       ] as const) {
         effects.register(
           tool,
-          new ToolEffect(async (input: In) =>
-            probe.around(
+          new ToolEffect(async (input: In) => {
+            // Lazy mode: reaching step b models a run that has outlived its grace window, so its lease
+            // exists before the scenario's "inside step b" condition can be observed.
+            if (mode === "lazy" && step === "b" && opts.autoGrace !== false)
+              await self.node?.grace();
+            return probe.around(
               input.id,
               step,
               () => entitled(input.id),
@@ -211,8 +235,8 @@ export function rig(): Rig {
                 if (step === "b") await probe.gate(input.id).promise;
                 return { ok: true };
               }
-            )
-          )
+            );
+          })
         );
       }
       const errors: unknown[] = [];
@@ -230,6 +254,7 @@ export function rig(): Rig {
               timeline,
               audit: (id) =>
                 leases.get?.(id).then((row) => {
+                  if (mode === "lazy" && !heldBy.has(`${name}:i1|${id}`)) return; // still in its grace window
                   if (
                     row === null ||
                     row === undefined ||
@@ -239,6 +264,7 @@ export function rig(): Rig {
                     unleasedAppends.push(id);
                 }),
             });
+      const graceTimers: Array<{ fn: () => void; cancelled: boolean; fired: boolean }> = [];
       const rt = new WorkflowRuntime({
         eventStore: audited as never,
         snapshotStore: snapshots,
@@ -256,7 +282,16 @@ export function rig(): Rig {
                 monotonicNow: () => clock.mono,
                 wallNow: () => clock.wall,
                 every: () => () => {},
-                after: () => () => {},
+                after: (fn: () => void, ms: number) => {
+                  if (ms !== GRACE) return () => {};
+                  const t = { fn, cancelled: false, fired: false };
+                  graceTimers.push(t);
+                  return () => {
+                    t.cancelled = true;
+                  };
+                },
+                acquire: mode,
+                lazyGraceMs: GRACE,
                 onError: (e: unknown) => errors.push(e),
                 ...opts.heartbeat,
               },
@@ -274,6 +309,15 @@ export function rig(): Rig {
         unleasedAppends,
         tick: async () => {
           if (node.alive) await rt.leaseKeeper?.tick();
+        },
+        grace: async () => {
+          if (!node.alive) return;
+          for (const t of graceTimers)
+            if (!t.cancelled && !t.fired) {
+              t.fired = true;
+              t.fn();
+            }
+          await settle();
         },
       };
       self.node = node;
@@ -343,23 +387,36 @@ export function auditAppends(opts: {
 }
 
 /** Record every acquire/release (single and batch) of a lease store on `timeline`. */
-export function recordLeases(store: LeaseStore, timeline: string[]): LeaseStore {
+export function recordLeases(
+  store: LeaseStore,
+  timeline: string[],
+  heldBy: Set<string> = new Set()
+): LeaseStore {
   return new Proxy(store, {
     get(target, prop) {
       const v = Reflect.get(target, prop, target);
       if (typeof v !== "function") return v;
       const p = String(prop);
       if (p === "acquire" || p === "release") {
-        return (...args: unknown[]) => {
+        return async (...args: unknown[]) => {
           timeline.push(`lease.${p}:${String(args[0])}`);
-          return (v as (...a: unknown[]) => unknown).apply(target, args);
+          const out = await (v as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+          const key = `${String(args[1])}|${String(args[0])}`;
+          if (p === "acquire" && out !== null && out !== undefined) heldBy.add(key);
+          if (p === "release") heldBy.delete(key);
+          return out;
         };
       }
       if (p === "acquireMany" || p === "releaseMany") {
-        return (...args: unknown[]) => {
+        return async (...args: unknown[]) => {
           for (const id of args[0] as string[])
             timeline.push(`lease.${p.replace("Many", "")}:${id}`);
-          return (v as (...a: unknown[]) => unknown).apply(target, args);
+          const out = await (v as (...a: unknown[]) => Promise<unknown>).apply(target, args);
+          if (p === "acquireMany") {
+            for (const l of out as Array<{ executionId: string; owner: string }>)
+              heldBy.add(`${l.owner}|${l.executionId}`);
+          } else for (const id of args[0] as string[]) heldBy.delete(`${String(args[1])}|${id}`);
+          return out;
         };
       }
       return v.bind(target);
