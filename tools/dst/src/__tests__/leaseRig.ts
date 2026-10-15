@@ -96,6 +96,8 @@ export class Probe {
 export interface Clock {
   mono: number;
   wall: number;
+  /** Run synchronously by {@link advance}: a node fires the keeper timers that have come due. */
+  onAdvance?: Array<() => void>;
 }
 
 export interface Node {
@@ -154,7 +156,7 @@ export interface NodeOptions {
 }
 
 export function rig(mode: AcquireMode = "eager"): Rig {
-  const clock: Clock = { mono: 1_000, wall: 1_700_000_000_000 };
+  const clock: Clock = { mono: 1_000, wall: 1_700_000_000_000, onAdvance: [] };
   const events = new InMemoryAsyncEventStore();
   const snapshots = new InMemoryAsyncSnapshotStore();
   const skew = { ms: 0 };
@@ -168,7 +170,9 @@ export function rig(mode: AcquireMode = "eager"): Rig {
   // (owner|id) pairs whose lease this rig saw GRANTED and not yet released: in lazy mode a driver may
   // append unleased inside its grace window, but never once it has acquired and lost the row.
   const heldBy = new Set<string>();
-  const recorded = recordLeases(leases, timeline, heldBy);
+  // (owner|id) pairs EVER granted: a lazy driver may append unleased until its first grant, never after.
+  const everHeld = new Set<string>();
+  const recorded = recordLeases(leases, timeline, heldBy, everHeld);
   const definition: FlowDefinition<In, { ok: boolean }> = {
     _tag: "FlowDefinition",
     id: "leased-dst",
@@ -222,7 +226,7 @@ export function rig(mode: AcquireMode = "eager"): Rig {
       ] as const) {
         effects.register(
           tool,
-          new ToolEffect(async (input: In) => {
+          new ToolEffect(async (input: In, ctx) => {
             // Lazy mode: reaching step b models a run that has outlived its grace window, so its lease
             // exists before the scenario's "inside step b" condition can be observed.
             if (mode === "lazy" && step === "b" && opts.autoGrace !== false)
@@ -230,7 +234,7 @@ export function rig(mode: AcquireMode = "eager"): Rig {
             return probe.around(
               input.id,
               step,
-              () => entitled(input.id),
+              () => entitled(input.id, ctx?.signal),
               async () => {
                 if (step === "b") await probe.gate(input.id).promise;
                 return { ok: true };
@@ -242,9 +246,16 @@ export function rig(mode: AcquireMode = "eager"): Rig {
       const errors: unknown[] = [];
       const unleasedAppends: string[] = [];
       const self: { node?: Node } = {};
-      const entitled = (id: string): boolean =>
-        self.node?.alive === true &&
-        (opts.legacy === true || self.node.rt.leaseKeeper?.validNow(id) === true);
+      // Eager: entitled while alive and the lease is valid. Lazy: a run still in its grace window (no
+      // lease yet, not told it lost one) is entitled too, so the double-entry detector SEES lazy-grace
+      // runs; once the hold is told it lost (deadline, taken-over, closed: the abort signal fires, and
+      // `validNow` itself delivers an expiry synchronously) it is not.
+      const entitled = (id: string, signal?: AbortSignal): boolean => {
+        if (self.node?.alive !== true) return false;
+        if (opts.legacy === true) return true;
+        if (self.node.rt.leaseKeeper?.validNow(id) === true) return true;
+        return mode === "lazy" && signal?.aborted !== true;
+      };
       const base = opts.eventStore ?? events;
       const audited =
         opts.legacy === true
@@ -254,7 +265,9 @@ export function rig(mode: AcquireMode = "eager"): Rig {
               timeline,
               audit: (id) =>
                 leases.get?.(id).then((row) => {
-                  if (mode === "lazy" && !heldBy.has(`${name}:i1|${id}`)) return; // still in its grace window
+                  // Lazy: still in its grace window = never granted yet. After a grant (even a released
+                  // one) every append must be under a live row, so a post-release append is caught.
+                  if (mode === "lazy" && !everHeld.has(`${name}:i1|${id}`)) return;
                   if (
                     row === null ||
                     row === undefined ||
@@ -265,6 +278,11 @@ export function rig(mode: AcquireMode = "eager"): Rig {
                 }),
             });
       const graceTimers: Array<{ fn: () => void; cancelled: boolean; fired: boolean }> = [];
+      // Keeper timers that are neither the grace period nor the store-call bound (the lazy run's
+      // self-fence): virtual, fired by `advance` when their due time passes.
+      const dueTimers: Array<{ fn: () => void; due: number; cancelled: boolean; fired: boolean }> =
+        [];
+      const storeBoundMs = Math.max(1, Math.min(Math.floor((opts.ttlMs ?? TTL) / 6), 1000));
       const rt = new WorkflowRuntime({
         eventStore: audited as never,
         snapshotStore: snapshots,
@@ -283,7 +301,14 @@ export function rig(mode: AcquireMode = "eager"): Rig {
                 wallNow: () => clock.wall,
                 every: () => () => {},
                 after: (fn: () => void, ms: number) => {
-                  if (ms !== GRACE) return () => {};
+                  if (ms === storeBoundMs) return () => {};
+                  if (ms !== GRACE) {
+                    const t = { fn, due: clock.mono + ms, cancelled: false, fired: false };
+                    dueTimers.push(t);
+                    return () => {
+                      t.cancelled = true;
+                    };
+                  }
                   const t = { fn, cancelled: false, fired: false };
                   graceTimers.push(t);
                   return () => {
@@ -321,6 +346,14 @@ export function rig(mode: AcquireMode = "eager"): Rig {
         },
       };
       self.node = node;
+      clock.onAdvance?.push(() => {
+        if (!node.alive) return;
+        for (const t of dueTimers)
+          if (!t.cancelled && !t.fired && clock.mono >= t.due) {
+            t.fired = true;
+            t.fn();
+          }
+      });
       return node;
     },
   };
@@ -330,6 +363,7 @@ export function rig(mode: AcquireMode = "eager"): Rig {
 export function advance(c: Clock, ms: number): void {
   c.mono += ms;
   c.wall += ms;
+  for (const f of c.onAdvance ?? []) f();
 }
 
 /** Let queued microtasks and the keeper's group-commit flushes settle (a bounded drain, no timers). */
@@ -390,7 +424,8 @@ export function auditAppends(opts: {
 export function recordLeases(
   store: LeaseStore,
   timeline: string[],
-  heldBy: Set<string> = new Set()
+  heldBy: Set<string> = new Set(),
+  everHeld: Set<string> = new Set()
 ): LeaseStore {
   return new Proxy(store, {
     get(target, prop) {
@@ -402,7 +437,10 @@ export function recordLeases(
           timeline.push(`lease.${p}:${String(args[0])}`);
           const out = await (v as (...a: unknown[]) => Promise<unknown>).apply(target, args);
           const key = `${String(args[1])}|${String(args[0])}`;
-          if (p === "acquire" && out !== null && out !== undefined) heldBy.add(key);
+          if (p === "acquire" && out !== null && out !== undefined) {
+            heldBy.add(key);
+            everHeld.add(key);
+          }
           if (p === "release") heldBy.delete(key);
           return out;
         };
@@ -413,8 +451,10 @@ export function recordLeases(
             timeline.push(`lease.${p.replace("Many", "")}:${id}`);
           const out = await (v as (...a: unknown[]) => Promise<unknown>).apply(target, args);
           if (p === "acquireMany") {
-            for (const l of out as Array<{ executionId: string; owner: string }>)
+            for (const l of out as Array<{ executionId: string; owner: string }>) {
               heldBy.add(`${l.owner}|${l.executionId}`);
+              everHeld.add(`${l.owner}|${l.executionId}`);
+            }
           } else for (const id of args[0] as string[]) heldBy.delete(`${String(args[1])}|${id}`);
           return out;
         };
@@ -430,13 +470,16 @@ export type StoreMode =
   | "hang-renew"
   | "lose-renew-response"
   | "drop-release"
-  | "lose-release-response";
+  | "lose-release-response"
+  | "lose-acquire-response";
 
 /**
  * A lease store the test can break. `down`: every call rejects like a refused connection.
  * `hang-renew`: a renew never answers and is NOT applied; `lose-renew-response`: it IS applied, then never
  * answers (the caller crashes mid-renew). `drop-release`: a release
  * errors WITHOUT applying. `lose-release-response`: a release APPLIES, then errors (the reply is lost).
+ * `lose-acquire-response`: an acquire APPLIES (the row is written), then errors (the reply is lost): the
+ * caller cannot tell whether it holds the lease.
  */
 export interface Flaky {
   store: LeaseStore;
@@ -464,6 +507,11 @@ export function flaky(inner: LeaseStore): Flaky {
         if (f.mode === "lose-renew-response" && isRenew) {
           await call();
           return new Promise(() => {});
+        }
+        const isAcquire = p === "acquire" || p === "acquireMany";
+        if (f.mode === "lose-acquire-response" && isAcquire) {
+          await call();
+          throw refused();
         }
         if (f.mode === "drop-release" && isRelease) throw refused();
         if (f.mode === "lose-release-response" && isRelease) {

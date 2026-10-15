@@ -143,9 +143,16 @@ export interface LeaseKeeperOptions {
   chunkSize?: number;
 }
 
+/**
+ * Why an acquire did not take the lease (ADR 0130 D11, S7g). `foreign`: the STORE confirmed another
+ * owner's unexpired row. `late`: the store answered after the grant's own deadline, so the row was
+ * handed back (best effort). `cancelled`: a release for the id overtook it. `closed`: the keeper closed.
+ */
+export type AcquireOutcome = "held" | "foreign" | "late" | "cancelled" | "closed";
+
 interface Pending {
   id: string;
-  resolve: (held: boolean) => void;
+  resolve: (outcome: AcquireOutcome) => void;
   reject: (err: unknown) => void;
 }
 
@@ -171,7 +178,7 @@ interface PendingRelease {
 
 /** An acquire parked behind an on-the-wire release of the same id. */
 interface Parked {
-  resolve: (held: boolean | Promise<boolean>) => void;
+  resolve: (outcome: AcquireOutcome | Promise<AcquireOutcome>) => void;
   cancelled: boolean;
 }
 
@@ -352,6 +359,16 @@ export class LeaseKeeper {
     return this.now();
   }
 
+  /** The keeper's wall clock (injectable): the second anchor of every deadline. */
+  wallClock(): number {
+    return this.wallNow();
+  }
+
+  /** The self-fencing margin (`floor(ttl / 6)`): a driver stops this long before its row can expire. */
+  get marginMs(): number {
+    return this.margin;
+  }
+
   /**
    * Run `fn` once after `ms` on the keeper's (injectable, unref'd) one-shot timer; returns its
    * canceller. The lazy driver hold (ADR 0130 D11, S7g) uses it for its grace period, so a test that
@@ -394,16 +411,26 @@ export class LeaseKeeper {
    * Per id, operations are serialised: an acquire for an id whose release is queued cancels the
    * release (same owner: it is a renewal); one whose release is on the wire waits for it.
    */
-  acquire(executionId: string): Promise<boolean> {
+  acquire(executionId: string, opts?: { ignoreQuiet?: boolean }): Promise<boolean> {
+    return this.acquireOutcome(executionId, opts).then((o) => o === "held");
+  }
+
+  /**
+   * {@link acquire} with the reason a `false` answer carries (see {@link AcquireOutcome}). `ignoreQuiet`
+   * lets ONE caller through the quiet period after a store error: the lazy run's confirming re-acquire
+   * (ADR 0130 D11, S7g), which must land before the run's self-fencing deadline. It never bypasses a
+   * closed keeper, a bad id or an on-the-wire release.
+   */
+  acquireOutcome(executionId: string, opts?: { ignoreQuiet?: boolean }): Promise<AcquireOutcome> {
     if (this.closed) return Promise.reject(new Error("LeaseKeeper is closed"));
     if (!validId(executionId))
       return Promise.reject(
         new TypeError("LeaseKeeper: executionId must be a non-empty string without NUL")
       );
-    if (this.validNow(executionId)) return Promise.resolve(true);
+    if (this.validNow(executionId)) return Promise.resolve("held");
     const wire = this.releasing.get(executionId);
     if (wire) {
-      return new Promise<boolean>((resolve) => {
+      return new Promise<AcquireOutcome>((resolve) => {
         const p: Parked = { resolve, cancelled: false };
         const list = this.parked.get(executionId);
         if (list) list.push(p);
@@ -415,7 +442,7 @@ export class LeaseKeeper {
             if (i >= 0) l.splice(i, 1);
             if (l.length === 0) this.parked.delete(executionId);
           }
-          if (!p.cancelled) resolve(this.acquire(executionId));
+          if (!p.cancelled) resolve(this.acquireOutcome(executionId, opts));
         });
       });
     }
@@ -424,7 +451,7 @@ export class LeaseKeeper {
       // A release the store has not answered may still be applied. Sending the acquire now could
       // land a row that release then deletes (validNow true with no row). Wait for it to settle,
       // at most one more storeTimeoutMs; a store that still does not answer rejects the acquire.
-      return new Promise<boolean>((resolve, reject) => {
+      return new Promise<AcquireOutcome>((resolve, reject) => {
         const p: Parked = { resolve, cancelled: false };
         const list = this.parked.get(executionId);
         if (list) list.push(p);
@@ -446,19 +473,20 @@ export class LeaseKeeper {
         void late.then(() => {
           cancel();
           unpark();
-          if (!p.cancelled) resolve(this.acquire(executionId));
+          if (!p.cancelled) resolve(this.acquireOutcome(executionId, opts));
         });
       });
     }
     const remaining = this.quietUntil - this.now();
-    if (remaining > 0) return Promise.reject(new LeaseStoreQuietError(Math.ceil(remaining)));
+    if (remaining > 0 && opts?.ignoreQuiet !== true)
+      return Promise.reject(new LeaseStoreQuietError(Math.ceil(remaining)));
     const superseded = this.pendingReleases.get(executionId);
     if (superseded) {
       superseded.cancelled = true;
       this.pendingReleases.delete(executionId);
       for (const r of superseded.resolvers) r();
     }
-    return new Promise<boolean>((resolve, reject) => {
+    return new Promise<AcquireOutcome>((resolve, reject) => {
       this.acquireQueue.push({ id: executionId, resolve, reject });
       if (!this.acquireScheduled) {
         this.acquireScheduled = true;
@@ -483,13 +511,14 @@ export class LeaseKeeper {
       this.parked.delete(executionId);
       for (const p of parked) {
         p.cancelled = true;
-        p.resolve(false);
+        p.resolve("cancelled");
       }
     }
     // An acquire still queued is simply withdrawn.
     if (this.acquireQueue.some((p) => p.id === executionId)) {
       const keep: Pending[] = [];
-      for (const p of this.acquireQueue) p.id === executionId ? p.resolve(false) : keep.push(p);
+      for (const p of this.acquireQueue)
+        p.id === executionId ? p.resolve("cancelled") : keep.push(p);
       this.acquireQueue = keep;
     }
     return new Promise<void>((resolve) => {
@@ -778,22 +807,25 @@ export class LeaseKeeper {
             settle.push(...ps.map((p) => () => p.reject(o.err)));
             continue;
           }
-          let result = false;
+          let result: AcquireOutcome = o.granted ? "cancelled" : "foreign";
           if (o.granted) {
             const mono = (o.mono as number) + this.ttlMs - this.margin;
             const wall = (o.wall as number) + this.ttlMs - this.margin;
-            if (this.closed) toRelease.push(o.id);
-            else if (!flight.cancelled && (this.now() >= mono || this.wallNow() >= wall)) {
+            if (this.closed) {
+              toRelease.push(o.id);
+              result = "closed";
+            } else if (!flight.cancelled && (this.now() >= mono || this.wallNow() >= wall)) {
               // Answered after its own deadline: holding it would only fire onLost("deadline")
               // on first use. Give the row back and report "not held".
               toRelease.push(o.id);
+              result = "late";
             } else if (!flight.cancelled) {
               this.held.set(o.id, {
                 mono,
                 wall,
                 epoch: ++this.epochCounter,
               });
-              result = true;
+              result = "held";
             }
             // cancelled: the release that cancelled us is sent after `done`.
           }

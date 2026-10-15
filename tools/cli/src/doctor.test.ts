@@ -546,6 +546,10 @@ describe("loom doctor -- heartbeat leases", () => {
     const eager = await run({ ...base, acquire: "eager" });
     expect(eager?.status).toBe("ok");
     expect(eager?.detail).toMatch(/eager.*every run leases before its first append/);
+    // no explicit grace: the actual milliseconds are computed (never the literal "TTL/3")
+    const dflt = await run({ ...base, acquire: "lazy", ttlMs: 30_000 });
+    expect(dflt?.detail).toMatch(/after 10000 ms/);
+    expect(dflt?.detail).not.toMatch(/TTL\/3/);
   });
   it("negatives: co-located + stop, in-memory beside in-memory, and enabled:false are quiet", async () => {
     expect(

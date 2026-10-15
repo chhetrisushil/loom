@@ -558,7 +558,7 @@ function heartbeatCheck(loaded: Partial<LoomApp> | Error): DoctorCheck {
         ? `heartbeat leases on (${hb.source}, scope ${scope})`
         : hb.acquire === "eager"
           ? `heartbeat leases on, eager (${hb.source}, scope ${scope}): every run leases before its first append`
-          : `heartbeat leases on, lazy (${hb.source}, scope ${scope}): a run leases only after ${hb.lazyGraceMs ?? hb.renewEveryMs ?? "TTL/3"} ms, so a driver that dies inside that window left no lease and is re-driven only with a host \`isAbandoned\`; set \`durability.heartbeat.acquire: "eager"\` to lease every run`,
+          : `heartbeat leases on, lazy (${hb.source}, scope ${scope}): a FRESH start leases only after ${hb.lazyGraceMs ?? hb.renewEveryMs ?? Math.max(Math.floor((hb.ttlMs ?? 30_000) / 3), 1)} ms (resume, restore, successors and re-drives lease eagerly), so a fresh driver that dies inside that window left no lease and is re-driven only with a host \`isAbandoned\`; set \`durability.heartbeat.acquire: "eager"\` to lease every run`,
   };
 }
 

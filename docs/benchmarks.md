@@ -612,7 +612,10 @@ Postgres would tighten the figures; this run did not have either.
 
 The S7f result above failed the D11 gate on the durable backend (eager: 25-30% no-op overhead on
 Postgres), so the default became **lazy** acquisition: a run takes no lease until it has been driving for
-`lazyGraceMs` (default TTL/3 = 10 s). The bench (`bench:lease`) now measures three modes per repeat,
+`lazyGraceMs` (default TTL/3 = 10 s). (Amended 2026-10-15 after review: lazy applies to a FRESH `start` only;
+resume, resumeAs, restoreFromState, the send/notify winner and continue-as-new successors are eager in both
+modes. This bench starts fresh one-step flows and never resumes, so its numbers are the fresh-start path and
+are unchanged by that ruling; the eager resume cost is the S7f protocol, priced by the S7f tables.) The bench (`bench:lease`) now measures three modes per repeat,
 interleaved with a rotating order: heartbeat **off**, **eager** (a lease before every run's first
 append) and **lazy** (the default). The flow is one step, so with the 10 s grace a lazy run never
 leases: this prices the cost a short execution pays for lazy mode (a grace timer set and cleared, no

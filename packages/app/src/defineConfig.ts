@@ -376,13 +376,16 @@ export interface HeartbeatConfig {
    */
   onStoreError?: "stop" | "continue";
   /**
-   * WHEN a run takes its lease (ADR 0130 D11 amendment 2026-10-15, S7g). `"lazy"` (DEFAULT): a run
-   * takes no lease until it has gone `lazyGraceMs` (default the renew cadence, TTL/3) unleased, so a
-   * short execution costs the lease store nothing (the eager default measured 25-30% no-op overhead on
-   * Postgres, past the 10% gate). The price: a driver that dies INSIDE the grace window left no lease,
-   * and an absent lease is no evidence, so that crash is re-driven only with a host `isAbandoned`;
-   * and an `isAbandoned` heuristic is not vetoed during the window. `"eager"`: every run leases before
-   * its first append (always the case for the poll's / sweep's re-drive claim and a timer fire).
+   * WHEN a run takes its lease (ADR 0130 D11 amendment 2026-10-15, S7g). `"lazy"` (DEFAULT): a FRESH
+   * start (a new execution id whose stream does not exist yet) takes no lease until it has gone
+   * `lazyGraceMs` (default the renew cadence, TTL/3) unleased, so a short execution costs the lease
+   * store nothing (the eager default measured 25-30% no-op overhead on Postgres, past the 10% gate).
+   * Every other entry (resume, resumeAs, restoreFromState, the send/notify winner, a continue-as-new
+   * successor, a start on an existing stream, the poll's / sweep's re-drive claim, a timer fire) is
+   * ALWAYS eager. The price: a fresh driver that dies INSIDE the grace window left no lease, and an
+   * absent lease is no evidence, so that crash is re-driven only with a host `isAbandoned`; and an
+   * `isAbandoned` heuristic is not vetoed during the window. `"eager"`: every run leases before its
+   * first append.
    */
   acquire?: "eager" | "lazy";
   /** Lazy mode: the unleased grace period of a run, in ms. Default the renew cadence (TTL/3). */

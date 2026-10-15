@@ -1303,7 +1303,7 @@ interface LoomApp {
     branchRegistry?: BranchRegistry; memoryStore?: MemoryStore;
     timerStore?: TimerStore; leaseStore?: LeaseStore;            // absent = not wired, not "empty"
   };
-  heartbeat: HeartbeatStatus;                                   // ADR 0130 D11: which lease store the drivers heartbeat into (+ scope, clusterVisible), or why disabled; `acquire` is `"lazy"` (default: a run leases after `lazyGraceMs`) or `"eager"`
+  heartbeat: HeartbeatStatus;                                   // ADR 0130 D11: which lease store the drivers heartbeat into (+ scope, clusterVisible), or why disabled; `acquire` is `"lazy"` (default: a FRESH start leases after `lazyGraceMs`; resume, restore and successors always lease eagerly) or `"eager"`
   tools: ToolDefinition[];                                      // from toolModules (metadata)
   skills: SkillRegistry;                                        // app.skills.find(query) — offline selection
   schedules: ScheduleDefinition[];                              // from scheduleModules + timers.schedules
