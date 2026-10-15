@@ -79,8 +79,8 @@ defineConfig({
 |---|---|---|
 | `ttlMs` | 30 000 | Not a bound on run time: a lease is renewed for the whole run. Longer TTL = slower detection of a dead node, fewer false stops during a store hiccup. |
 | `renewEveryMs` | `max(floor(ttlMs/3), 1)` | `defineConfig` throws a `TypeError` if the cadence is not below the self-fencing deadline `ttlMs - floor(ttlMs/6)`. |
-| `acquire` | `"lazy"` | Lazy applies **only to a fresh `start`** (a new execution id): it takes its lease after `lazyGraceMs`, so a short run never touches the lease store. **Every resume-like entry is eager**: `resume` (incl. the `send`/notify winner), `resumeAs`, `restoreFromState`, a continue-as-new successor, a `start` onto an existing stream, the poll/sweep re-drive claim, a timer fire, a local worker attempt. `"eager"` leases every run before its first append (it measured 25-30% overhead on Postgres, which is why lazy is the default). |
-| `lazyGraceMs` | TTL/3 | The unleased window of a fresh run. A fresh driver that dies inside it left no lease, and an absent lease is never evidence, so only a host `isAbandoned` re-drives that crash. |
+| `acquire` | `"lazy"` | Lazy applies to **every `start`**, a caller-chosen id included: it takes its lease after `lazyGraceMs`, so a short run never touches the lease store. A `start` onto an id whose stream already exists is refused at the sequence-0 bootstrap with `ExecutionAlreadyExistsError` before the body runs. **Every resume-like entry is eager**: `resume` (incl. the `send`/notify winner), `resumeAs`, `restoreFromState`, a continue-as-new successor, the poll/sweep re-drive claim, a timer fire, a local worker attempt. Residual (ADR 0130 D11 amendment): a ghost lease row left by a failed start whose release also failed can be met by an immediate retry of the same caller-chosen id, which then loses it (`taken-over`) and stops; the row's expiry makes the execution recoverable, and `acquire: "eager"` closes it. `"eager"` leases every run before its first append (it measured 25-30% overhead on Postgres, which is why lazy is the default). |
+| `lazyGraceMs` | TTL/3 | The unleased window of a `start`. A fresh driver that dies inside it left no lease, and an absent lease is never evidence, so only a host `isAbandoned` re-drives that crash. |
 | `onStoreError` | `"stop"` | `"stop"`: a driver that cannot confirm a renewal aborts at its self-fencing deadline (appends nothing), so an expired lease stays true evidence. `"continue"`: drivers keep running through a lease-store outage (the fence still guards the log) but their leases stop proving liveness. |
 
 **Set `onStoreError` fleet-wide.** A `"continue"` node marks its lease owner as heuristic, so every
@@ -183,9 +183,14 @@ context in [data-protection-patterns.md](data-protection-patterns.md). The opera
    reports the mismatch before you boot.
 2. **Request**: `await app.eraseSubject(subjectId)`. The result is `erased`, `parked` or `unknown`.
 3. **Parked is not failed.** Erasure never shreds an execution that is still in flight. It records a
-   durable `ERASURE_PENDING` fact and completes when the last live execution terminates. A
-   *suspended* execution is live; either cancel it or pass `{ parked: "shred" }` (cancels each
-   suspended owner first). A running owner always defers: re-issue once it parks.
+   durable `ERASURE_PENDING` fact. With the default `{ parked: "defer" }` it then **completes by
+   itself**, with no re-issue, when the subject's last live execution reaches a terminal event. A
+   *suspended* execution is live, so a flow parked forever blocks it forever: cancel it, or pass
+   `{ parked: "shred" }`, which cancels each suspended owner (reason `"erased"`) and then shreds. That
+   mode relies on the `erase.cancel` hook, which `defineConfig` wires by default (a hand-built
+   `EraseCoordinator` without `cancel` throws). A *running* owner defers even under `"shred"`, and
+   the parked request then only completes if no suspended owner remains, so **re-issue
+   `eraseSubject` with `{ parked: "shred" }` once the running owner parks**.
 4. **Quiesce new work for the subject** before erasing: a run started while the erasure executes is
    not covered, and its sealed writes fail loudly once the key is destroyed.
 5. **Proof of destruction.** `shredSubject` writes intent (`ERASURE_PENDING` on each log), destroys the
@@ -216,13 +221,17 @@ Loom does not ship a backup tool; this is what must be true of yours.
 | **Snapshot store** | An optimisation while the log is complete (a lost snapshot is re-folded from the log). It is **required** for a log that has been compacted, because compaction truncates the log behind a checkpoint ([ADR 0106](adr/0106-compaction-integrity.md)). Back it up in the same snapshot as the event store. |
 | **Timer, lease and branch rows** | Keep them in the event store's database so one backup captures them. Leases are ephemeral: a restored lease is expired by the time it matters and is harmless. |
 | **Content store** | The log holds content **addresses**, not bytes. A log restored without its content store has dangling refs. Back the content store up with, or just after, the log, and run `sweepUnpinnedContent` with a `dryRun` first; erasing requires the completeness acknowledgement and every store passed ([user guide](user-guide.md), retention). |
-| **Key store** | Back it up separately, and understand the trade: a key backup that outlives `shredSubject` defeats erasure. Restoring an old key store resurrects destroyed keys; re-run the erasure after any restore and keep the destruction record outside the restore set. |
+| **Key store** | Two opposite hazards, so snapshot it **together with** the event store. Too NEW: a key backup that outlives `shredSubject` defeats erasure, and restoring it resurrects destroyed keys. Too OLD: a key-store backup older than the log backup lacks every key created since, so those sealed streams are unreadable after the restore (nodes refuse delivery, and `loom doctor` will not necessarily flag it). Keep the out-of-band destruction record outside the restore set. |
 | **Read models** | Derived; rebuild from the log instead of restoring. |
 
 Rules of thumb:
 
 - **Consistency**: take the event store, snapshot store and timer rows from the same instant (one
   database, one backup), so a snapshot never describes a log position the restored log lacks.
+  Take the key store in the same instant, or just after the log backup, but never older than it
+  (a stale key store makes new sealed streams unreadable). After a restore, re-run every erasure
+  recorded after the backup point, from the out-of-band destruction record, so keys shredded since
+  are destroyed again.
 - **Incarnation**: a store assigns each execution stream an incarnation anchor, so a late write
   that observed a stream which was since deleted and re-created is refused rather than applied
   ([ADR 0129](adr/0129-creation-marker-incarnation.md)).
