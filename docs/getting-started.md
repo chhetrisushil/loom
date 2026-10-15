@@ -54,6 +54,12 @@ and build `loom` first. Run an example with `pnpm --filter @loom/<name> start` f
 
 ## 2. Your first flow
 
+The scaffold already ships a `greet` flow (`app/flows/greet/flow.ts`, registered in `app/config.ts`).
+Sections 2 to 7 build **new** flows (`helloFlow`, then `approveFlow`) in files you add under `src/`:
+create each file, then add the flow to the `flows` array of your `defineConfig` (in `app/config.ts`),
+or use the `defineConfig` snippets below in a scratch script. Section 6 also needs
+`@loom/testing` added to the app's `devDependencies` (the scaffold does not include it).
+
 A flow has two parts:
 
 1. **Steps** — units of work (`step$`), optionally with a co-located `handler$`.
@@ -295,6 +301,10 @@ describe("approve flow", () => {
 The in-memory default forgets everything on restart. For a durable, multi-node deployment swap the
 storage preset; the flows do not change:
 
+First add `@loom/plugin-postgres` to the app's `package.json` dependencies (`"@loom/plugin-postgres": "workspace:*"`)
+and run `pnpm install`; the scaffold's dependencies are `@loom/app`, `core`, `effect-runtime`, `middleware`,
+`workflow-runtime`, `agent-surface` (and `@loom/cli` as a dev dependency), which do not include it.
+
 ```ts
 import { postgresStorage } from "@loom/plugin-postgres";
 
@@ -313,8 +323,13 @@ const app = defineConfig({
 - Before you deploy, run the pre-flight checks against your built config:
 
 ```bash
-npx loom doctor --config ./dist/loom.config.js
+NODE_OPTIONS="--import tsx" npx loom doctor --config ./loom.config.ts
 ```
+
+  The scaffold has no build step: `loom.config.ts` at the app root re-exports the app from
+  `app/config.ts`, and `tsx` (a scaffold dev dependency) runs it directly. The CLI loads the config
+  module with `require`, so `--import tsx` registers the TypeScript loader for it. If you compile
+  your config instead, point `--config` at the compiled `.js`. Importing the config starts nothing.
 
   `doctor` runs every check whose input it can find and tells you which it skipped. It reports the
   heartbeat decision (`heartbeat leases on`, scope `cluster` for Postgres), whether timers can wake,
