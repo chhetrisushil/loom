@@ -14,6 +14,8 @@ export interface AgentStepConfig {
   effectRuntime: EffectRuntime;
   maxIterations?: number;
   systemPrompt?: string;
+  /** Opt out of the K9.3 refusal of `idempotent: false` tools; see `AgentConfig.acceptAtLeastOnce`. */
+  acceptAtLeastOnce?: boolean;
 }
 
 /**
@@ -29,6 +31,7 @@ export function agentStep$(config: AgentStepConfig): StepDefinition<AgentInput, 
     effectRuntime: config.effectRuntime,
     ...(config.maxIterations !== undefined && { maxIterations: config.maxIterations }),
     ...(config.systemPrompt !== undefined && { systemPrompt: config.systemPrompt }),
+    ...(config.acceptAtLeastOnce !== undefined && { acceptAtLeastOnce: config.acceptAtLeastOnce }),
   });
 
   return step$({

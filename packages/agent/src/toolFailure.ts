@@ -28,6 +28,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   // safety and budget: not something the model can fix; fed back it spins to maxIterations
   "SafetyViolationError",
   "KillSwitchEngagedError",
+  // AgentRunner refused an idempotent:false tool (K9.3): a configuration error, not tool feedback
+  "IdempotentToolRefusedError",
   "QuotaExceededError",
   "RateLimitExceededError",
   // the run is being stopped, or no longer matches its log

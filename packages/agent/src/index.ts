@@ -1,4 +1,4 @@
-export { AGENT_INTERRUPTED, AgentRunner } from "./AgentRunner";
+export { AGENT_INTERRUPTED, AgentRunner, IdempotentToolRefusedError } from "./AgentRunner";
 export type { AgentConfig, InterruptedAgentRun } from "./AgentRunner";
 export { SkillRegistry } from "./SkillRegistry";
 export type { SkillMatch } from "./SkillRegistry";

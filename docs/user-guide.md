@@ -567,6 +567,8 @@ const dbaAgent = agent$({
 
 `agentLoop$` is the canonical loop (R10, [ADR 0121](adr/0121-one-canonical-agent-loop.md)). `AgentRunner` and `agentStep$` are deprecated: they still work, unchanged, and the migration is in the ADR. What each costs, so the choice is informed:
 
+> **`idempotent: false` tools.** `AgentRunner` / `agentStep$` / `asEffect()` run nested tool calls inside one outer frame, so the K9.3 in-doubt protection ([ADR 0021](adr/0021-k9-effect-delivery-contract-idempotency-fencing.md)) does not reach them and they REFUSE such a tool (`IdempotentToolRefusedError`, before it runs) unless you pass `acceptAtLeastOnce: true` (a crash then re-runs it). Use `agentLoop$` for these tools. See the ADR 0121 amendment of 2026-10-15.
+
 **`agentStep$` (deprecated) — one opaque frame.** The whole loop is a single `step$`, so the execution log gets one `STEP_STARTED`/`STEP_COMPLETED` pair no matter how many turns it took. Cheap, and the right choice when a turn is not worth recovering individually. The costs are structural, because a step *handler* receives `StepHandlerContext` — `emit`, and nothing else:
 
 - a crash at turn 39 re-runs all 39, since the frame is the unit of recovery;
