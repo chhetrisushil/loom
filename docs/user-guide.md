@@ -1842,7 +1842,9 @@ Two opt-in tools manage this window:
 
 **1. Idempotency key (K9.2).** Every effect invocation receives a deterministic
 `ctx.idempotencyKey` — `executionId:stepId` — that is **stable across crash-recovery re-runs
-of the same logical attempt**. Pass it to your provider so a re-run deduplicates:
+of the same logical attempt**. (Under `AgentRunner`, each nested tool call gets a derived key,
+`<outer>:t<turn>:c<position>:<hash of tool name + canonical input>`: the same call at the same position
+re-runs with the same key, a different call, even at the same position, gets a different one.) Pass it to your provider so a re-run deduplicates:
 
 ```ts
 const charge = new ToolEffect(async (input, ctx) => {

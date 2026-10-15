@@ -222,7 +222,103 @@ describe("AgentRunner derives a distinct idempotency key per nested call", () =>
     expect(await run("outer-key", true)).toEqual(first);
   });
 
+  it("same position, different tool or different input => different key; identical call on re-run => same key", async () => {
+    const other = tool$({
+      id: "refund",
+      name: "Refund",
+      description: "r",
+      inputSchema: z.object({ n: z.number() }),
+      outputSchema: z.object({ ok: z.boolean() }),
+    });
+    const ag = agent$({ id: "two", name: "Two", tools: [pay, other] });
+    const keyOf = async (name: string, input: unknown) => {
+      const keys: (string | undefined)[] = [];
+      const effects = new EffectRuntime();
+      for (const id of ["pay", "refund"]) {
+        effects.register(
+          id,
+          new ToolEffect(async (_i: unknown, c: EffectContext) => {
+            keys.push(c.idempotencyKey);
+            return { ok: true };
+          })
+        );
+      }
+      const { provider } = scripted([{ name, input }]);
+      await new AgentRunner({ definition: ag, provider, effectRuntime: effects }).run(
+        { prompt: "x" },
+        ctxOf("outer-key")
+      );
+      return keys[0];
+    };
+    const base = await keyOf("pay", { n: 1, m: 2 });
+    expect(await keyOf("refund", { n: 1, m: 2 })).not.toBe(base); // different tool
+    expect(await keyOf("pay", { n: 2, m: 2 })).not.toBe(base); // different input
+    expect(await keyOf("pay", { m: 2, n: 1 })).toBe(base); // same call, key order irrelevant
+    expect(await keyOf("pay", { n: 1, m: 2 })).toBe(base); // identical re-run
+  });
+
+  it("two IDENTICAL calls in one turn get different keys (by position)", async () => {
+    const { effects, counter } = payRuntime(true);
+    const { provider } = scripted([
+      { name: "pay", input: { n: 1 } },
+      { name: "pay", input: { n: 1 } },
+    ]);
+    await new AgentRunner({ definition: agent, provider, effectRuntime: effects }).run(
+      { prompt: "pay" },
+      ctxOf("outer-key")
+    );
+    expect(counter.keys).toHaveLength(2);
+    expect(counter.keys[0]).not.toBe(counter.keys[1]);
+  });
+
   it("no outer key means no key is invented", async () => {
     expect(await run(undefined)).toEqual([undefined, undefined]);
   });
+});
+
+describe("AgentRunner refuses a batch BEFORE dispatching any sibling (K9.3)", () => {
+  const ordinary = tool$({
+    id: "note",
+    name: "Note",
+    description: "n",
+    inputSchema: z.object({ n: z.number() }),
+    outputSchema: z.object({ ok: z.boolean() }),
+  });
+  const ag = agent$({ id: "mixed", name: "Mixed", tools: [ordinary, pay] });
+
+  it.each([
+    ["sequential", false],
+    ["parallel", true],
+    ["parallel limit 1", 1],
+  ] as const)(
+    "%s: [ordinary, idempotent:false] is refused with the ordinary side-effect counter 0",
+    async (_n, parallelTools) => {
+      const effects = new EffectRuntime();
+      const note = { n: 0 };
+      effects.register(
+        "note",
+        new ToolEffect(async () => {
+          note.n++;
+          return { ok: true };
+        })
+      );
+      effects.register("pay", new ToolEffect(async () => ({ ok: true }), {}));
+      const { provider, seen } = scripted([
+        { name: "note", input: { n: 1 } },
+        { name: "pay", input: { n: 1 } },
+      ]);
+      const runner = new AgentRunner({
+        definition: ag,
+        provider,
+        effectRuntime: effects,
+        parallelTools,
+      });
+      effects.register("pay", new ToolEffect(async () => ({ ok: true }), { idempotent: false }));
+      await expect(runner.run({ prompt: "x" }, ctxOf())).rejects.toBeInstanceOf(
+        IdempotentToolRefusedError
+      );
+      expect(note.n).toBe(0);
+      expect(seen.requests).toHaveLength(1);
+    }
+  );
 });
