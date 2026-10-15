@@ -58,13 +58,13 @@ export interface HeartbeatOptions
    */
   onStoreError?: "stop" | "continue";
   /**
-   * WHEN a run takes its lease (ADR 0130 D11 option 2, S7g). `"lazy"` (DEFAULT): a FRESH START (a new
-   * execution id whose stream does not exist yet: `start`, which `runAgentOnce` calls) takes NO lease
+   * WHEN a run takes its lease (ADR 0130 D11 option 2, S7g). `"lazy"` (DEFAULT): a FRESH START (every
+   * `start`, which `runAgentOnce` calls; a caller-chosen id whose stream exists is refused at the
+   * sequence-0 bootstrap before the body runs, so a start never drives an existing stream) takes NO lease
    * while it is young; only a run still going after {@link lazyGraceMs} acquires one (so a short
    * execution costs the lease store nothing). Every other entry is EAGER in both modes, because a
    * predecessor's leftover lease row may exist: `resume` (the `send`/notify winner included),
-   * `resumeAs`, `restoreFromState`, a continue-as-new successor, a start on an id whose stream already
-   * exists, and the claims whose lease IS the evidence (the poll's and the sweep's re-drive, a timer
+   * `resumeAs`, `restoreFromState`, a continue-as-new successor, and the claims whose lease IS the evidence (the poll's and the sweep's re-drive, a timer
    * fire, a local worker attempt). `"eager"`: every run leases before its first append (S7c).
    *
    * What lazy gives up: a fresh run that dies INSIDE its grace window left no lease, and an absent

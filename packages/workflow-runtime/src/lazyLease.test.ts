@@ -8,6 +8,7 @@ import { z } from "zod";
 import { WorkflowRuntime, type WorkflowRuntimeDeps } from "./WorkflowRuntime";
 import { Latch, until } from "./__tests__/r2Harness";
 import { LeaseHeldError, LeaseLostError } from "./leaseKeeper";
+import { ExecutionAlreadyExistsError } from "./types";
 import type { FlowRunner, RegisteredFlow } from "./types";
 
 // ADR 0130 D11 option 2 (S7g): the DEFAULT acquire mode is LAZY. A run takes no lease until it has
@@ -67,11 +68,18 @@ class SpyLeases extends InMemoryLeaseStore {
   }
 }
 
-function rig(opts: { latch?: Latch; hb?: Record<string, unknown> } = {}) {
+function rig(
+  opts: {
+    latch?: Latch;
+    hb?: Record<string, unknown>;
+    events?: InMemoryAsyncEventStore;
+    leases?: SpyLeases;
+  } = {}
+) {
   const clock = { mono: 1_000, wall: 1_700_000_000_000 };
   const graceTimers: Array<{ fn: () => void; cancelled: boolean; fired: boolean }> = [];
-  const leases = new SpyLeases({ now: () => clock.wall });
-  const events = new InMemoryAsyncEventStore();
+  const leases = opts.leases ?? new SpyLeases({ now: () => clock.wall });
+  const events = opts.events ?? new InMemoryAsyncEventStore();
   const effects = new EffectRuntime();
   const seen = { sawAbort: undefined as unknown };
   effects.register("echo", new ToolEffect(async (i: unknown) => i));
@@ -372,17 +380,54 @@ describe("S7g - lazy heartbeat leases (the default)", () => {
     void hl;
   });
 
-  it("a start on a caller-chosen id whose stream already exists is EAGER (classified from the log): a live foreign row stands it down", async () => {
+  it("a start on a caller-chosen id whose stream already exists is refused at the bootstrap, before any effect, with no lease row and no live grace timer", async () => {
     const r = rig();
     const id = newId();
     const h = await r.rt.start(quick, {}, { executionId: id });
     await h.waitForCompletion(); // the stream now exists
-    await r.leases.acquire(id, "other:node", 30_000, r.clock.wall);
     const before = r.leases.calls.length;
-    await expect(r.rt.start(quick, {}, { executionId: id })).rejects.toThrow();
-    // eager: the stand-down came from an acquire call on the wire, not a delayed one
-    expect(r.leases.calls.slice(before).some((c) => c.startsWith("acquire:"))).toBe(true);
-    expect(r.graceTimers.filter((t) => !t.cancelled).length).toBe(0);
+    const logged = (await r.events.read(id)).length;
+    await expect(r.rt.start(quick, {}, { executionId: id })).rejects.toBeInstanceOf(
+      ExecutionAlreadyExistsError
+    );
+    expect(r.leases.calls.slice(before)).toEqual([]); // lazy: the lease store never heard of it
+    expect(r.graceTimers.filter((t) => !t.cancelled).length).toBe(0); // the loser's timer is cancelled
+    expect((await r.events.read(id)).length).toBe(logged); // nothing appended, nothing ran
+    expect(await r.leases.get(id)).toBeNull();
+  });
+
+  it("two lazy starts of the same caller id on different nodes: exactly one wins sequence 0, the loser is refused with no lease row and a cancelled timer", async () => {
+    const latch = new Latch();
+    const events = new InMemoryAsyncEventStore();
+    const a = rig({ latch, events });
+    const b = rig({ events, leases: a.leases });
+    const id = newId();
+    const results = await Promise.allSettled([
+      a.rt.start(longRun, {}, { executionId: id }),
+      b.rt.start(longRun, {}, { executionId: id }),
+    ]);
+    const won = results.filter((x) => x.status === "fulfilled");
+    const lost = results.filter((x) => x.status === "rejected");
+    expect(won.length).toBe(1);
+    expect(lost.length).toBe(1);
+    expect((lost[0] as PromiseRejectedResult).reason).toBeInstanceOf(ExecutionAlreadyExistsError);
+    const starts = (await events.read(id)).filter((e: EventEnvelope) => e.sequence === 0);
+    expect(starts.length).toBe(1);
+    const loser = results[0]?.status === "rejected" ? a : b;
+    const winner = loser === a ? b : a;
+    // the loser: no live grace timer, and the lease store never saw an acquire for it
+    expect(loser.graceTimers.length).toBe(1);
+    expect(loser.graceTimers.every((t) => t.cancelled)).toBe(true);
+    loser.fireGrace();
+    await Promise.resolve();
+    expect(a.leases.calls).toEqual([]); // neither node has written a row (the winner is still in its grace)
+    expect(await a.leases.get(id)).toBeNull();
+    // the winner is unaffected: its timer is live and it acquires after the grace
+    expect(winner.graceTimers.some((t) => !t.cancelled)).toBe(true);
+    latch.release();
+    await (won[0] as PromiseFulfilledResult<{ waitForCompletion(): Promise<unknown> }>).value
+      .waitForCompletion()
+      .catch(() => {});
   });
 
   it("a run hooks onto a claimant's lease immediately (no second acquire, no grace)", async () => {
