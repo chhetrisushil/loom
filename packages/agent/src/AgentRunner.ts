@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { tainted, unwrapTainted } from "@loom/classify";
 import type { AgentDefinition, ToolDefinition } from "@loom/core";
-import { TypedFailure, fail, loadInstructions } from "@loom/core";
+import { TypedFailure, canonicalJson, fail, loadInstructions } from "@loom/core";
 import type { EffectContext, EffectRuntime } from "@loom/effect-runtime";
 import { LlmEffect } from "@loom/effect-runtime";
 import type {
@@ -91,6 +92,10 @@ export interface AgentConfig {
    * already ran. The runner therefore REFUSES such a tool (terminal `IdempotentToolRefusedError`, before
    * the effect runs) and points at `agentLoop$`, whose per-tool frames give the protection.
    *
+   * The refusal reads the REGISTRY-declared flag (`EffectRuntime.declaredIdempotence`), so a `ToolDefinition`
+   * marked `idempotent: false` whose registered effect is undeclared is NOT refused: declare both.
+   * The whole batch of a turn is checked before ANY call of it is dispatched.
+   *
    * `acceptAtLeastOnce: true` is the explicit, app-owned opt-out: the tool runs, with at-least-once
    * re-run on recovery. Only set it for a tool whose re-run you have made safe another way.
    */
@@ -117,6 +122,33 @@ export class IdempotentToolRefusedError extends Error {
   }
 }
 export type { InterruptedAgentRun } from "./interrupted";
+
+/**
+ * The per-call idempotency key: `<outer>:t<turn>:c<position>:<h>`, `h` = the first 16 hex of sha256 over
+ * the tool name + canonical JSON (sorted keys) of its input. A crash re-run re-asks the model, which may
+ * pick a different call at the same turn/position; the hash makes that a different key, so a provider
+ * deduping on it never returns one call's result for another. Same position AND same call => same key.
+ */
+function nestedCallKey(
+  outer: string,
+  turn: number,
+  position: number,
+  name: string,
+  input: unknown
+): string {
+  let canonical: string;
+  try {
+    canonical = canonicalJson(input);
+  } catch {
+    // Not canonicalisable (non-finite / too deep): fall back to an unambiguous but order-sensitive form.
+    canonical = `~${String(input)}`;
+  }
+  const h = createHash("sha256")
+    .update(JSON.stringify([name, canonical]), "utf8")
+    .digest("hex")
+    .slice(0, 16);
+  return `${outer}:t${turn}:c${position}:${h}`;
+}
 
 /**
  * @deprecated R10 (ADR 0121) — `agentLoop$` is the canonical agent loop: per-turn durable frames, mid-loop
@@ -278,13 +310,26 @@ export class AgentRunner {
 
         const toolCalls = screened.calls;
 
+        // K9.3 — pre-check the WHOLE batch before dispatching ANY call, so an ordinary sibling never
+        // runs (sequential) or starts (parallel) ahead of a refused call. Menu refusals and oversized
+        // inputs are fed back, not run, so they are not counted here.
+        if (this.config.acceptAtLeastOnce !== true) {
+          const refused = new Set<string>();
+          toolCalls.forEach((tc, i) => {
+            if (screened.oversized.has(i) || menu.check(tc.name, tc.input) !== undefined) return;
+            if (effectRuntime.declaredIdempotence(tc.name) === false) refused.add(tc.name);
+          });
+          if (refused.size > 0) throw new IdempotentToolRefusedError([...refused]);
+        }
+
         // Execute a single tool call, swallowing errors into a result object so a
         // failing tool never rejects the batch (keeps behaviour identical between
         // sequential and parallel modes).
         const runToolCall = async (
-          toolCall: (typeof toolCalls)[number]
+          toolCall: (typeof toolCalls)[number],
+          position: number
         ): Promise<{ output: unknown; isError: boolean }> => {
-          if (screened.oversized.has(toolCalls.indexOf(toolCall))) {
+          if (screened.oversized.has(position)) {
             return { output: OVERSIZED_INPUT_REFUSAL, isError: true };
           }
           // R4 — refusal is a result fed back to the model, never an execution.
@@ -303,14 +348,21 @@ export class AgentRunner {
             }
             // A distinct key per nested call. Every call used to inherit the outer step's key, so a
             // provider deduping on it collapsed two distinct calls into one. Derived from the outer
-            // key + (turn, position in the turn): the model's tool-call id is provider-generated and a
-            // re-run re-asks the model, so it is NOT stable across a re-run; the position is.
+            // key + (turn, position) + a hash of (name, canonical input): the model's tool-call id is
+            // provider-generated, and a re-run re-asks the model, which may choose a DIFFERENT call at
+            // the same position. Same position + same call => same key; a different call => a different key.
             const toolCtx: EffectContext =
               outerCtx.idempotencyKey === undefined
                 ? outerCtx
                 : {
                     ...outerCtx,
-                    idempotencyKey: `${outerCtx.idempotencyKey}:t${iterations}:c${toolCalls.indexOf(toolCall)}`,
+                    idempotencyKey: nestedCallKey(
+                      outerCtx.idempotencyKey,
+                      iterations,
+                      position,
+                      toolCall.name,
+                      toolCall.input
+                    ),
                   };
             return {
               output: await effectRuntime.execute(toolCall.name, toolCall.input, toolCtx),
@@ -342,14 +394,14 @@ export class AgentRunner {
             typeof this.parallelTools === "number" ? this.parallelTools : toolCalls.length;
           // parallelLimit preserves input order in the result array.
           toolOutputs = await parallelLimit(
-            toolCalls.map((tc) => () => runToolCall(tc)),
+            toolCalls.map((tc, i) => () => runToolCall(tc, i)),
             { limit, ...(ctx.signal !== undefined && { signal: ctx.signal }) }
           );
         } else {
           toolOutputs = [];
-          for (const toolCall of toolCalls) {
+          for (const [i, toolCall] of toolCalls.entries()) {
             throwIfAborted(ctx.signal);
-            toolOutputs.push(await runToolCall(toolCall));
+            toolOutputs.push(await runToolCall(toolCall, i));
           }
         }
 

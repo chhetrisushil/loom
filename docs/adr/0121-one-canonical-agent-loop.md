@@ -221,9 +221,15 @@ of D6/D7, closed as follows (user ruling: refuse, with an explicit opt-out):
    in both places before the effect runs. The message names `agentLoop$`, whose per-tool frames give the in-doubt protection.
 2. `acceptAtLeastOnce: true` (on `AgentConfig` and `AgentStepConfig`) is the app's explicit opt-out: the tool runs with today's
    re-run-on-recovery behaviour. Undeclared and `idempotent: true` tools are unchanged.
-3. Each nested call now gets its own `idempotencyKey` when the outer step has one: `<outer>:t<turn>:c<position in the turn>`. Before, every
-   call inherited the outer key, so a provider deduping on it could collapse two distinct calls. The model's tool-call id was not used:
-   it is provider-generated and a re-run re-asks the model, so it is not stable; (turn, position) is, and is identical on a re-run.
+   The check also runs over the WHOLE batch of a turn before ANY call of it is dispatched (after the oversized / menu screens), so an
+   ordinary sibling neither runs (sequential) nor starts (parallel) ahead of a refused call. It reads the REGISTRY-declared flag
+   (`declaredIdempotence`), so a `ToolDefinition` marked `idempotent: false` whose registered effect is undeclared is not refused: declare both.
+3. Each nested call now gets its own `idempotencyKey` when the outer step has one: `<outer>:t<turn>:c<position>:<hash>`, `hash` = the first
+   16 hex of sha256 over the tool name + `canonicalJson` (sorted keys) of the input. Before, every call inherited the outer key, so a provider
+   deduping on it could collapse two distinct calls. The model's tool-call id was not used: it is provider-generated and not stable across a
+   re-run. Position alone is not enough either: a re-run re-asks the model, which may pick a different call at the same (turn, position), and a
+   provider deduping on the key would return the earlier call's result. Property: same position and same call give the same key; a different
+   call (tool or input), or the same call at another position, gives a different key.
 
 Breaking for an app combining `AgentRunner` / `agentStep$` with an `idempotent: false` tool: migrate to `agentLoop$`, or pass `acceptAtLeastOnce: true`.
 
