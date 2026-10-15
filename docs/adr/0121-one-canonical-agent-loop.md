@@ -31,7 +31,7 @@ against `main` at `d3fe58b3`:
 | **H8c** `agentLoop$` never writes memory (`recall` only) | **still true** | fixed (D4) |
 | abort / partial capture: `agentLoop$` has no `signal` handling; `AgentRunner` has `AGENT_INTERRUPTED` | **still true** | fixed (D3) |
 | **H4** `reasoning` model call not journaled, so a resume re-calls the model | **partly fixed by R9**: `reasoningToolId` journals each call as a frame, but it is opt-in; the default (`reasoning` alone) still called the provider directly, un-journaled, and had no crash test | fixed for the default path (D5); crash/resume tests for both paths |
-| **H3** no example consumer of `agentLoop$` | **still true** (every `loom-examples` agent uses `AgentRunner`) | in-repo end-to-end test here; the `loom-examples` example is a companion change (D8) |
+| **H3** no example consumer of `agentLoop$` | **stale**: no `loom-examples` source uses `AgentRunner` or `agentStep$` (only two READMEs mention them; `agent-loop-triage` states it uses neither) | in-repo end-to-end test here; the `loom-examples` example is a companion change (D8) |
 | the "two routing paths inside (3)" footgun | R9 added the ring for `reasoning`; `modelToolId` vs `reasoning` remains a choice | documented; both paths now journal the response |
 
 ## Decision
@@ -206,6 +206,26 @@ agentLoop$(ctx, {
 - **Mandatory `reasoningToolId`.** See D5.
 - **A hard `signal` cut of an in-flight `ctx.execute`.** Racing the await would leave a step that completes after the body
   threw. The kernel cancel already aborts an in-flight effect; `signal` is checked at the boundaries.
+
+## Amendment (2026-10-15) — the single-frame runner does not carry K9.3
+
+`AgentRunner` (and `agentStep$` / `asEffect()`, which wrap it) runs every nested tool call through `effectRuntime.execute`
+inside ONE outer journaled step; the nested calls write no `STEP_*` events. The K9.3 contract ([ADR 0021](0021-k9-effect-delivery-contract-idempotency-fencing.md)
+A3: `STEP_STARTED` durable before an `idempotent: false` effect, `EFFECT_INDOUBT` on recovery) is per frame, so it does not
+cover them: a crash re-runs the whole agent including every tool that already fired. This is a gap in the "no behaviour change" parity
+of D6/D7, closed as follows (user ruling: refuse, with an explicit opt-out):
+
+1. `AgentRunner` REFUSES a tool declared `idempotent: false` (`effectRuntime.declaredIdempotence(id) === false`) with the terminal
+   `IdempotentToolRefusedError` (`retryable = false`, listed in `TERMINAL_ERROR_NAMES`, never fed back to the model). Checked in the
+   constructor over the agent's and every registered skill's tools, and again at the call site for a tool reached only at run time;
+   in both places before the effect runs. The message names `agentLoop$`, whose per-tool frames give the in-doubt protection.
+2. `acceptAtLeastOnce: true` (on `AgentConfig` and `AgentStepConfig`) is the app's explicit opt-out: the tool runs with today's
+   re-run-on-recovery behaviour. Undeclared and `idempotent: true` tools are unchanged.
+3. Each nested call now gets its own `idempotencyKey` when the outer step has one: `<outer>:t<turn>:c<position in the turn>`. Before, every
+   call inherited the outer key, so a provider deduping on it could collapse two distinct calls. The model's tool-call id was not used:
+   it is provider-generated and a re-run re-asks the model, so it is not stable; (turn, position) is, and is identical on a re-run.
+
+Breaking for an app combining `AgentRunner` / `agentStep$` with an `idempotent: false` tool: migrate to `agentLoop$`, or pass `acceptAtLeastOnce: true`.
 
 ## Tests
 

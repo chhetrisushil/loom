@@ -84,12 +84,38 @@ export interface AgentConfig {
    * makes deliberately (R7).
    */
   onDelta?: (delta: string) => void;
+  /**
+   * K9.3 (ADR 0021, ADR 0121 note 2026-10-15) — the runner runs every nested tool call inside ONE
+   * outer journaled step and writes no STEP_* events for them, so a tool declared `idempotent: false`
+   * gets none of the in-doubt protection: a crash re-runs the whole agent, re-firing every tool that
+   * already ran. The runner therefore REFUSES such a tool (terminal `IdempotentToolRefusedError`, before
+   * the effect runs) and points at `agentLoop$`, whose per-tool frames give the protection.
+   *
+   * `acceptAtLeastOnce: true` is the explicit, app-owned opt-out: the tool runs, with at-least-once
+   * re-run on recovery. Only set it for a tool whose re-run you have made safe another way.
+   */
+  acceptAtLeastOnce?: boolean;
   // ADR 0119 — guarded (delta validators, inspectsOutput fail-closed) only when the runner
   // runs as an effect: `asEffect()` / `ctx.run`. A direct `run()` (incl. `agentStep$`) has
   // no effect middleware, so this sink then receives RAW model text.
 }
 
 export { AGENT_INTERRUPTED } from "./interrupted";
+
+/**
+ * K9.3 — `AgentRunner` refuses a tool declared `idempotent: false` (its single outer frame cannot give
+ * the tool in-doubt protection). Terminal: it fails the run and is never fed back to the model.
+ */
+export class IdempotentToolRefusedError extends Error {
+  override readonly name = "IdempotentToolRefusedError";
+  /** Not retryable: nothing the model or a retry can change. Read by `isTerminalToolError`. */
+  readonly retryable = false;
+  constructor(readonly toolIds: readonly string[]) {
+    super(
+      `AgentRunner refuses tool(s) declared idempotent:false: ${toolIds.join(", ")}. A runner runs nested tool calls inside one outer step with no STEP_* frames of their own, so a crash re-runs the whole agent and re-fires them with no EFFECT_INDOUBT protection (K9.3, ADR 0021). Use agentLoop$ (one frame per tool call), or pass acceptAtLeastOnce: true to knowingly accept at-least-once re-run.`
+    );
+  }
+}
 export type { InterruptedAgentRun } from "./interrupted";
 
 /**
@@ -114,6 +140,19 @@ export class AgentRunner {
       throw new Error(
         "AgentRunner cannot run an effect-backed skillSelector (llmSkillSelector({ toolId })): it has no execution to journal the call in. Use agentLoop$, or llmSkillSelector(provider)."
       );
+    }
+    if (config.acceptAtLeastOnce !== true) {
+      // K9.3 pre-flight over the tools known now (agent + every skill's); a tool reached only at run
+      // time (dynamic menu, later registration) is refused at the call site.
+      const refused = new Set<string>();
+      const consider = (tools: readonly ToolDefinition[] | undefined) => {
+        for (const t of tools ?? []) {
+          if (config.effectRuntime.declaredIdempotence(t.id) === false) refused.add(t.id);
+        }
+      };
+      consider(config.definition.tools);
+      for (const skill of config.skills?.all() ?? []) consider(skill.tools);
+      if (refused.size > 0) throw new IdempotentToolRefusedError([...refused]);
     }
     this.maxIterations = config.maxIterations ?? 10;
     this.parallelTools = config.parallelTools ?? false;
@@ -254,7 +293,25 @@ export class AgentRunner {
             if (refusal !== undefined) return { output: refusal, isError: true };
             // ADR 0119 — the model's guarded delta channel is THIS turn's; a tool call gets
             // its own pipe (and its own configured `deltaSink`), never the parent's.
-            const { onDelta: _parentDelta, ...toolCtx } = ctx;
+            const { onDelta: _parentDelta, ...outerCtx } = ctx;
+            // K9.3 — refuse BEFORE the effect runs (terminal: thrown past the feedback catch below).
+            if (
+              this.config.acceptAtLeastOnce !== true &&
+              effectRuntime.declaredIdempotence(toolCall.name) === false
+            ) {
+              throw new IdempotentToolRefusedError([toolCall.name]);
+            }
+            // A distinct key per nested call. Every call used to inherit the outer step's key, so a
+            // provider deduping on it collapsed two distinct calls into one. Derived from the outer
+            // key + (turn, position in the turn): the model's tool-call id is provider-generated and a
+            // re-run re-asks the model, so it is NOT stable across a re-run; the position is.
+            const toolCtx: EffectContext =
+              outerCtx.idempotencyKey === undefined
+                ? outerCtx
+                : {
+                    ...outerCtx,
+                    idempotencyKey: `${outerCtx.idempotencyKey}:t${iterations}:c${toolCalls.indexOf(toolCall)}`,
+                  };
             return {
               output: await effectRuntime.execute(toolCall.name, toolCall.input, toolCtx),
               isError: false,
