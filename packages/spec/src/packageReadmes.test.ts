@@ -1,12 +1,4 @@
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -15,7 +7,7 @@ import { GENERATED_MARKER, plan, workspacePackages } from "../../../scripts/pack
 // ── Fitness function: every workspace package has a README, and generated ones cannot drift ──
 //
 // An audit found 59 of 75 workspace packages with no README.md: a reader landing on
-// `plugins/mcp` on GitHub saw a bare file list. `scripts/package-readmes.mjs` generates a
+// `plugins/beta` on GitHub saw a bare file list. `scripts/package-readmes.mjs` generates a
 // short README (name, description, entry points from `exports`, api-reference link) for every
 // package that has no hand-written one. A hand-written README (no GENERATED_MARKER) is never
 // overwritten. This guard asserts, for every package under packages/, plugins/, tools/:
@@ -63,7 +55,7 @@ describe("package READMEs (fitness)", () => {
   it("every package has a README titled with its name, and generated ones are current", () => {
     expect(
       violations(REPO_ROOT),
-      "run `node scripts/package-readmes.mjs` (generated) or fix the hand-written README title"
+      "run `node scripts/package-readmes.mjs` (generated), fix the hand-written README title, or delete the first (marker) line of a generated README to hand-write it"
     ).toEqual([]);
   });
 
@@ -76,15 +68,30 @@ describe("package READMEs (fitness)", () => {
 
   // The proof the guard fires: plant each defect in a scratch copy of two packages + the reference.
   describe("fires on planted defects", () => {
+    // Synthetic workspace: nothing depends on a real package staying generated or hand-written.
     function scratch(): string {
       const root = mkdtempSync(join(tmpdir(), "readme-guard-"));
       mkdirSync(join(root, "docs"), { recursive: true });
-      cpSync(join(REPO_ROOT, "docs/api-reference.org"), join(root, "docs/api-reference.org"));
-      for (const rel of ["packages/saga", "plugins/mcp"]) {
+      writeFileSync(
+        join(root, "docs/api-reference.org"),
+        "** ~@loom/alpha~ - alpha\n** ~@loom/plugin-beta~ - beta\n"
+      );
+      const fixtures = [
+        { rel: "packages/alpha", name: "@loom/alpha" },
+        { rel: "plugins/beta", name: "@loom/plugin-beta" },
+      ];
+      for (const { rel, name } of fixtures) {
         mkdirSync(join(root, rel), { recursive: true });
-        cpSync(join(REPO_ROOT, rel, "package.json"), join(root, rel, "package.json"));
-        cpSync(join(REPO_ROOT, rel, "README.md"), join(root, rel, "README.md"));
+        writeFileSync(
+          join(root, rel, "package.json"),
+          JSON.stringify({
+            name,
+            description: `${name} fixture`,
+            exports: { ".": "./dist/index.js" },
+          })
+        );
       }
+      for (const e of plan(root) as Entry[]) writeFileSync(e.file, e.text);
       return root;
     }
 
@@ -100,33 +107,31 @@ describe("package READMEs (fitness)", () => {
     it("a missing README, a wrong title and a stale generated README are each reported", () => {
       const root = scratch();
       try {
-        rmSync(join(root, "packages/saga/README.md"));
-        const pg = join(root, "plugins/mcp/README.md");
+        rmSync(join(root, "packages/alpha/README.md"));
+        const pg = join(root, "plugins/beta/README.md");
         writeFileSync(
           pg,
-          readFileSync(pg, "utf8").replace("# @loom/plugin-mcp", "# something else")
+          readFileSync(pg, "utf8").replace("# @loom/plugin-beta", "# something else")
         );
         expect(violations(root).sort()).toEqual(
           [
-            'plugins/mcp: README title "something else" does not name @loom/plugin-mcp',
-            "packages/saga: no README.md",
-            "plugins/mcp/README.md: generated README is stale",
+            'plugins/beta: README title "something else" does not name @loom/plugin-beta',
+            "packages/alpha: no README.md",
+            "plugins/beta/README.md: generated README is stale",
           ].sort()
         );
 
         // stale: description changes after generation
-        writeFileSync(
-          join(root, "packages/saga/README.md"),
-          readFileSync(join(REPO_ROOT, "packages/saga/README.md"))
-        );
-        const pj = join(root, "plugins/mcp/package.json");
+        const alpha = join(root, "packages/alpha/README.md");
+        writeFileSync(alpha, (plan(root) as Entry[]).find((e) => e.file === alpha)?.text ?? "");
+        const pj = join(root, "plugins/beta/package.json");
         const pkg = JSON.parse(readFileSync(pj, "utf8"));
         const fresh = (plan(root) as Entry[]).find((e) => e.file === pg);
         writeFileSync(pg, fresh?.text ?? "");
         expect(violations(root)).toEqual([]);
         pkg.description = `${pkg.description} (changed)`;
         writeFileSync(pj, JSON.stringify(pkg));
-        expect(violations(root)).toEqual(["plugins/mcp/README.md: generated README is stale"]);
+        expect(violations(root)).toEqual(["plugins/beta/README.md: generated README is stale"]);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }

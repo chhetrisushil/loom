@@ -31,8 +31,8 @@ from a checkout, run `pnpm link:global` at the repo root (`pnpm unlink:global` r
 
 ```bash
 # persist to SQLite first: defineConfig({ storage: sqliteStorage({ dir: ".loom" }), ... })
-npx loom logs .loom/events.db <executionId>            # print the event timeline
-npx loom debug .loom/events.db <executionId> --at 3    # fold the state as of sequence 3
+npx loom logs --db .loom/events.db <executionId>         # print the event timeline
+npx loom debug --db .loom/events.db <executionId> --at 3 # fold the state as of sequence 3
 npx loom doctor --config ./loom.config.ts              # every pre-flight check that can run
 ```
 
@@ -45,7 +45,7 @@ if (!report.ok) process.exit(1);
 
 ## Key concepts
 
-- `<store>` names where a command reads storage (a `.db` path or a config module); the full grammar,
+- Store-reading commands take `--db <events.db>` (SQLite shorthand) or `--config <module>` (your app's stores, any backend); the full grammar,
   the exit codes and scripting notes are in the CLI usage guide.
 - Commands that mutate (`recover`, `branches retire|prune`, `retention run`, `sweep content`,
   `repair ...`) are dry runs unless you pass `--apply`.
