@@ -75,9 +75,9 @@ const runner: FlowRunner<In, Out> = async (ctx, input) => {
   return { result: b };
 };
 
-export const myFlow: RegisteredFlow<In, Out> = {
+export const myFlow: RegisteredFlow = {
   definition: flow$({ id: "my-flow", name: "My Flow", version: "1.0.0", inputSchema, outputSchema, steps: [stepA, stepB] }),
-  runner,
+  runner: runner as FlowRunner<unknown, unknown>, // widened so `flows: [myFlow]` accepts it
 };
 ```
 

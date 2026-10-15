@@ -68,7 +68,7 @@ const runner: FlowRunner<In, Out> = async (ctx, input) => {
   return { summary: found.summary };
 };
 
-export const investigateFlow: RegisteredFlow<In, Out> = {
+export const investigateFlow: RegisteredFlow = {
   definition: flow$({
     id: "investigate-incident",
     name: "Investigate Incident",
@@ -77,7 +77,8 @@ export const investigateFlow: RegisteredFlow<In, Out> = {
     outputSchema: z.object({ summary: z.string() }),
     steps: [investigateStep],
   }),
-  runner,
+  // `flows` holds runners of every input/output type, so widen this one (the scaffold does the same).
+  runner: runner as FlowRunner<unknown, unknown>,
 };
 ```
 

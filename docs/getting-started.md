@@ -94,7 +94,7 @@ const runner: FlowRunner<{ name: string }, { message: string }> = async (ctx, in
 };
 
 // A RegisteredFlow bundles the declarative definition with its runner.
-export const helloFlow: RegisteredFlow<{ name: string }, { message: string }> = {
+export const helloFlow: RegisteredFlow = {
   definition: flow$({
     id: "hello",
     name: "Hello",
@@ -103,7 +103,8 @@ export const helloFlow: RegisteredFlow<{ name: string }, { message: string }> = 
     outputSchema: z.object({ message: z.string() }),
     steps: [greetStep],
   }),
-  runner,
+  // `flows` holds runners of every input/output type, so widen this one (the scaffold does the same).
+  runner: runner as FlowRunner<unknown, unknown>,
 };
 ```
 
@@ -188,10 +189,7 @@ const runner: FlowRunner<{ target: string }, { applied: boolean; approvedBy?: st
     return { applied, approvedBy: decision.approvedBy };
   };
 
-export const approveFlow: RegisteredFlow<
-  { target: string },
-  { applied: boolean; approvedBy?: string }
-> = {
+export const approveFlow: RegisteredFlow = {
   definition: flow$({
     id: "approve",
     name: "Approve & Apply",
@@ -203,7 +201,7 @@ export const approveFlow: RegisteredFlow<
     // so a wrongly-shaped approval is refused rather than becoming a permanent fold input.
     resumeSchemas: { ApprovalGranted: ApprovalDecision },
   }),
-  runner,
+  runner: runner as FlowRunner<unknown, unknown>,
 };
 ```
 
