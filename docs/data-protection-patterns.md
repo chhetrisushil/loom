@@ -90,4 +90,4 @@ takes an explicit `contentStore.delete(ref)` for each ref you know to be theirs 
 Consequences of D5–D7).
 
 See also: [data-classification.md](data-classification.md), [compliance.md](compliance.md),
-[user-guide.md → Log lifecycle](user-guide.md), ADRs 0022/0046/0054/0055.
+[user-guide → Log lifecycle](user-guide/log-and-read-models.md#log-lifecycle-crypto-shredding-retention--compaction-k10), ADRs 0022/0046/0054/0055.
