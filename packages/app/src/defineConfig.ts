@@ -375,6 +375,18 @@ export interface HeartbeatConfig {
    * Set it fleet-wide: a `"stop"` node still re-drives by default on a `"stop"` peer's expired leases.
    */
   onStoreError?: "stop" | "continue";
+  /**
+   * WHEN a run takes its lease (ADR 0130 D11 amendment 2026-10-15, S7g). `"lazy"` (DEFAULT): a run
+   * takes no lease until it has gone `lazyGraceMs` (default the renew cadence, TTL/3) unleased, so a
+   * short execution costs the lease store nothing (the eager default measured 25-30% no-op overhead on
+   * Postgres, past the 10% gate). The price: a driver that dies INSIDE the grace window left no lease,
+   * and an absent lease is no evidence, so that crash is re-driven only with a host `isAbandoned`;
+   * and an `isAbandoned` heuristic is not vetoed during the window. `"eager"`: every run leases before
+   * its first append (always the case for the poll's / sweep's re-drive claim and a timer fire).
+   */
+  acquire?: "eager" | "lazy";
+  /** Lazy mode: the unleased grace period of a run, in ms. Default the renew cadence (TTL/3). */
+  lazyGraceMs?: number;
 }
 
 /**
@@ -394,11 +406,22 @@ export interface HeartbeatStatus {
   clusterVisible: boolean;
   eventStoreInMemory: boolean;
   onStoreError: "stop" | "continue";
+  /** When a run takes its lease: `"lazy"` (default) or `"eager"` (ADR 0130 D11, S7g). */
+  acquire: "eager" | "lazy";
+  lazyGraceMs?: number;
   ttlMs?: number;
   renewEveryMs?: number;
 }
 
-const HEARTBEAT_KEYS = new Set(["enabled", "ttlMs", "renewEveryMs", "store", "onStoreError"]);
+const HEARTBEAT_KEYS = new Set([
+  "enabled",
+  "ttlMs",
+  "renewEveryMs",
+  "store",
+  "onStoreError",
+  "acquire",
+  "lazyGraceMs",
+]);
 
 function isLeaseStore(v: unknown): v is LeaseStore {
   const o = v as Record<string, unknown> | null;
@@ -433,6 +456,15 @@ function resolveHeartbeat(
       throw new TypeError(`defineConfig: durability.heartbeat.${name} must be a finite number > 0`);
     return v;
   };
+  if (hb.acquire !== undefined && hb.acquire !== "eager" && hb.acquire !== "lazy")
+    throw new TypeError('defineConfig: durability.heartbeat.acquire must be "eager" or "lazy"');
+  if (
+    hb.lazyGraceMs !== undefined &&
+    (typeof hb.lazyGraceMs !== "number" || !Number.isFinite(hb.lazyGraceMs) || hb.lazyGraceMs < 0)
+  )
+    throw new TypeError(
+      "defineConfig: durability.heartbeat.lazyGraceMs must be a finite number >= 0"
+    );
   const ttlMs = positive("ttlMs");
   const renewEveryMs = positive("renewEveryMs");
   // Same bound the runtime's LeaseKeeper enforces, caught at boot rather than at first drive.
@@ -458,6 +490,8 @@ function resolveHeartbeat(
   const common = {
     eventStoreInMemory,
     onStoreError,
+    acquire: (hb.acquire as "eager" | "lazy" | undefined) ?? "lazy",
+    ...(hb.lazyGraceMs !== undefined && { lazyGraceMs: hb.lazyGraceMs as number }),
     ...(ttlMs !== undefined && { ttlMs }),
     ...(renewEveryMs !== undefined && { renewEveryMs }),
   };
@@ -1374,6 +1408,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
             ...(heartbeat.ttlMs !== undefined && { ttlMs: heartbeat.ttlMs }),
             ...(heartbeat.renewEveryMs !== undefined && { renewEveryMs: heartbeat.renewEveryMs }),
             onStoreError: heartbeat.onStoreError,
+            acquire: heartbeat.acquire,
+            ...(heartbeat.lazyGraceMs !== undefined && { lazyGraceMs: heartbeat.lazyGraceMs }),
           },
         }
       : {};

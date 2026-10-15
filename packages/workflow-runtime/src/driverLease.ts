@@ -43,6 +43,24 @@ export interface HeartbeatOptions
    * off (re-drive only with `isAbandoned`, as before S7).
    */
   onStoreError?: "stop" | "continue";
+  /**
+   * WHEN a run takes its lease (ADR 0130 D11 option 2, S7g). `"lazy"` (DEFAULT): a run (`start`,
+   * `resume`, the `send`/notify winner, `runAgentOnce`, a continuation successor) takes NO lease while
+   * it is young; only a run still going after {@link lazyGraceMs} acquires one (so a short execution
+   * costs the lease store nothing). The lease stays EAGER for the claims whose lease IS the evidence or
+   * the mutual exclusion: the poll's and the sweep's re-drive, a timer fire, a local worker attempt.
+   * `"eager"`: every run leases before its first append (the S7c behaviour).
+   *
+   * What lazy gives up: a driver that dies INSIDE its grace window left no lease, and an absent lease
+   * is no evidence, so that crash is recovered only by a host `isAbandoned` (as before S7), and a
+   * lease cannot veto a heuristic during the window.
+   */
+  acquire?: "eager" | "lazy";
+  /**
+   * Lazy mode: how long a run goes unleased before it acquires. Default `renewEveryMs` (ttl/3, 10 s).
+   * Must be a finite number >= 0 (`0` acquires on the next timer turn).
+   */
+  lazyGraceMs?: number;
   nodeId?: string;
 }
 
@@ -100,6 +118,12 @@ interface Hold {
 
 export class DriverLeases {
   readonly keeper: LeaseKeeper;
+  /** `"lazy"` (default) or `"eager"`: when a RUN takes its lease (see {@link HeartbeatOptions.acquire}). */
+  readonly mode: "eager" | "lazy";
+  /** Lazy mode: the unleased grace period of a run, in ms. */
+  readonly graceMs: number;
+  /** Lazy holds still in their grace window or acquiring: cancelled on close. */
+  private readonly lazyHolds = new Set<{ cancel(): void }>();
   /** id -> live holds. Bounded by the live drivers: an entry leaves with its last hold. */
   private readonly holds = new Map<string, Set<Hold>>();
   /** id -> acquires awaiting the keeper: their hold is not registered yet, but they count. */
@@ -110,7 +134,17 @@ export class DriverLeases {
   private readonly forgetOnLast = new Set<string>();
 
   constructor(deps: HeartbeatOptions) {
-    const { leaseStore, onStoreError, nodeId, ...options } = deps;
+    const { leaseStore, onStoreError, nodeId, acquire, lazyGraceMs, ...options } = deps;
+    if ((acquire as unknown) !== undefined && acquire !== "eager" && acquire !== "lazy")
+      throw new TypeError(
+        `heartbeat.acquire: "${String(acquire)}" is not valid; expected "eager" or "lazy"`
+      );
+    if (
+      lazyGraceMs !== undefined &&
+      (typeof lazyGraceMs !== "number" || !Number.isFinite(lazyGraceMs) || lazyGraceMs < 0)
+    )
+      throw new TypeError("heartbeat.lazyGraceMs must be a finite number >= 0");
+    this.mode = acquire ?? "lazy";
     if (
       (onStoreError as unknown) !== undefined &&
       onStoreError !== "stop" &&
@@ -126,6 +160,7 @@ export class DriverLeases {
       nodeId: nodeId ?? PROCESS_NODE_ID,
       onLost: (id, err) => this.lost(id, err),
     });
+    this.graceMs = lazyGraceMs ?? this.keeper.renewEveryMs;
   }
 
   private lost(id: string, err: LeaseLostError): void {
@@ -219,6 +254,159 @@ export class DriverLeases {
     };
   }
 
+  /**
+   * The hold a RUN takes (ADR 0130 D11 option 2, S7g). Eager mode = {@link acquire}. Lazy mode: a hold
+   * that costs NOTHING until the run has gone {@link graceMs} unleased, then acquires; released before
+   * that it never touches the store. Same shape as an eager hold, with these differences:
+   *
+   *  - It never stands down at the start (`null` only comes from the eager path): the fence and the
+   *    store's sequence-0 uniqueness already guard the log.
+   *  - When the delayed acquire finds another live owner (`null`) the run is a duplicate of a driver
+   *    that is live elsewhere: it is told the lease is LOST ("taken-over"), appends nothing more.
+   *  - When the delayed acquire cannot reach the store, the run keeps driving UNLEASED (an absent lease
+   *    is no evidence, never false evidence) and retries after another grace period.
+   *  - When a claimant (poll, sweep, timer fire) already holds the id's lease, the run hooks onto it
+   *    now (no store call: the keeper already holds it), so it is told if the claimant's lease is lost.
+   */
+  async acquireRun(executionId: string): Promise<DriverLease | null> {
+    if (this.mode === "eager") return this.acquire(executionId);
+    if (this.holds.has(executionId) || (this.pending.get(executionId) ?? 0) > 0)
+      return this.acquire(executionId);
+    return this.lazyHold(executionId);
+  }
+
+  private lazyHold(executionId: string): DriverLease {
+    type Phase = "grace" | "acquiring" | "held" | "done" | "lost";
+    let phase: Phase = "grace";
+    let inner: DriverLease | undefined;
+    let flight: Promise<void> | undefined;
+    let lostErr: LeaseLostError | undefined;
+    let listener: ((err: LeaseLostError) => void) | undefined;
+    let forgetWhenHeld = false;
+    let cancelTimer: () => void = () => {};
+    const entry = {
+      cancel: () => {
+        cancelTimer();
+        if (phase === "grace") phase = "done";
+      },
+    };
+    const fail = (err: LeaseLostError): void => {
+      if (phase === "done" || phase === "lost") return;
+      phase = "lost";
+      lostErr = err;
+      this.lazyHolds.delete(entry);
+      const l = listener;
+      listener = undefined;
+      try {
+        l?.(err);
+      } catch {
+        // a listener fault must not stop the run from unwinding
+      }
+    };
+    const acquireNow = async (): Promise<void> => {
+      phase = "acquiring";
+      let got: DriverLease | null;
+      try {
+        got = await this.acquire(executionId);
+      } catch (err) {
+        // `acquire` already maps a "continue" store outage to an unleased NO_LEASE; what reaches here
+        // is the store failing (or its quiet period) under "stop", a bad id, or a closed keeper. A lazy
+        // run is ALREADY driving and unleased, and an absent lease is no evidence (never FALSE
+        // evidence), so a store outage is not a reason to stop it: it carries on unleased and retries
+        // after another grace. (An eager start, with nothing driven yet, rightly refuses instead.)
+        if (this.keeper.isClosed) {
+          fail(new LeaseLostError(executionId, this.keeper.owner, "closed"));
+        } else if ((phase as Phase) === "acquiring" && !(err instanceof TypeError)) {
+          phase = "grace";
+          arm();
+        } else if ((phase as Phase) === "acquiring") {
+          phase = "grace"; // a bad id never leases; stay unleased and never retry
+        }
+        return;
+      }
+      if ((phase as Phase) === "done") {
+        // Released while the acquire was on the wire: hand the lease straight back (or let it lapse).
+        if (got !== null) {
+          if (forgetWhenHeld) got.forget();
+          else await got.release().catch(() => {});
+        }
+        return;
+      }
+      if (got === null) {
+        fail(new LeaseLostError(executionId, this.keeper.owner, "taken-over"));
+        return;
+      }
+      inner = got;
+      phase = "held";
+      this.lazyHolds.delete(entry);
+      got.onLost((err) => {
+        phase = "lost";
+        lostErr = err;
+        const l = listener;
+        listener = undefined;
+        l?.(err);
+      });
+    };
+    const arm = (): void => {
+      cancelTimer = this.keeper.schedule(() => {
+        if (phase !== "grace") return;
+        flight = acquireNow();
+      }, this.graceMs);
+    };
+    arm();
+    this.lazyHolds.add(entry);
+    return {
+      release: async () => {
+        if (phase === "grace") {
+          entry.cancel();
+          this.lazyHolds.delete(entry);
+          return;
+        }
+        if (phase === "acquiring") {
+          phase = "done";
+          this.lazyHolds.delete(entry);
+          await flight; // the in-flight acquire hands the lease back itself
+          return;
+        }
+        if (phase === "held") {
+          phase = "done";
+          await inner?.release();
+          return;
+        }
+        phase = "done";
+      },
+      forget: () => {
+        if (phase === "grace") {
+          entry.cancel();
+          this.lazyHolds.delete(entry);
+        } else if (phase === "acquiring") {
+          forgetWhenHeld = true;
+          phase = "done";
+          this.lazyHolds.delete(entry);
+        } else if (phase === "held") {
+          phase = "done";
+          inner?.forget();
+        }
+      },
+      onLost: (l) => {
+        if (lostErr !== undefined) {
+          l(lostErr);
+          return;
+        }
+        listener = l;
+      },
+      valid: () => {
+        if (phase === "lost") return false;
+        if (phase === "held") return inner?.valid() ?? false;
+        return true;
+      },
+      lossError: () =>
+        lostErr ??
+        inner?.lossError() ??
+        new LeaseLostError(executionId, this.keeper.owner, "deadline"),
+    };
+  }
+
   /** An acquire finished: if its release was deferred and no hold remains, release now. */
   private settlePending(id: string): void {
     const n = (this.pending.get(id) ?? 1) - 1;
@@ -259,6 +447,8 @@ export class DriverLeases {
   }
 
   close(): Promise<void> {
+    for (const h of this.lazyHolds) h.cancel();
+    this.lazyHolds.clear();
     return this.keeper.close();
   }
 }

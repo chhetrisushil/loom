@@ -3222,7 +3222,7 @@ export class WorkflowRuntime {
     // Another live owner = stand down (a caller-chosen id reads as "already started elsewhere").
     let lease: DriverLease = NO_LEASE;
     if (this.driverLeases !== undefined) {
-      const got = await this.driverLeases.acquire(executionId);
+      const got = await this.driverLeases.acquireRun(executionId);
       if (got === null) {
         const held = new LeaseHeldError(executionId);
         if (options?.executionId === undefined) throw held;
@@ -3642,7 +3642,13 @@ export class WorkflowRuntime {
     // then fence). Another live owner = stand down: nothing appended and, above all, no fence taken
     // (a fence acquired and abandoned would supersede that live driver). The send/notify winner
     // reaches here too (`inboxWake`). Taken after every refusal that appends nothing.
-    const lease = await this.takeDriverLease(executionId);
+    // S7g: a recovery drive of a `running` execution (EXECUTION_RECOVERED, or any resume of a state that
+    // is not parked) is the one case where a LIVE driver may exist: it keeps the eager stand-down even
+    // in lazy mode (rare, so the lease call costs nothing measurable).
+    const lease = await this.takeDriverLease(
+      executionId,
+      resumeEvent.eventType === EXECUTION_RECOVERED || vm.getState().status !== "suspended"
+    );
     try {
       // ADR 0110 D1 — only a resume that PASSED every refusal re-opens a terminal owner's inbox: a
       // refused one (not-suspended, authz, replay-check, migration) must not leave a stream behind
@@ -6296,9 +6302,21 @@ export class WorkflowRuntime {
     return true;
   }
 
+  /**
+   * ADR 0130 D11 option 2 (S7g) - the hold a RUN takes: eager (`heartbeat.acquire: "eager"`) or, by
+   * default, LAZY (no store call until the run has gone `lazyGraceMs` unleased). The claimants (poll,
+   * sweep, timer fire, local worker) keep {@link acquireDriverLease}, which is always eager.
+   */
+  private async acquireRunLease(executionId: string): Promise<DriverLease | null> {
+    if (this.driverLeases === undefined) return NO_LEASE;
+    return this.driverLeases.acquireRun(executionId);
+  }
+
   /** The driver's own hold: a stand-down is a {@link LeaseHeldError}, nothing appended, no fence taken. */
-  private async takeDriverLease(executionId: string): Promise<DriverLease> {
-    const lease = await this.acquireDriverLease(executionId);
+  private async takeDriverLease(executionId: string, eager = false): Promise<DriverLease> {
+    const lease = await (eager
+      ? this.acquireDriverLease(executionId)
+      : this.acquireRunLease(executionId));
     if (lease === null) throw new LeaseHeldError(executionId);
     return lease;
   }
@@ -7986,7 +8004,7 @@ export class WorkflowRuntime {
     // an existing sequence 0 of a re-driven predecessor: a no-op.
     let succLease: DriverLease = NO_LEASE;
     if (this.driverLeases !== undefined) {
-      const got = await this.driverLeases.acquire(successorId);
+      const got = await this.driverLeases.acquireRun(successorId);
       if (got === null) {
         // Another live owner. A real successor stream = already started elsewhere (a no-op); no
         // sequence 0 = a ghost lease, so this continuation must be retried, not dropped.

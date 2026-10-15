@@ -5,8 +5,8 @@ import {
   measureLeaseOverhead,
 } from "./leaseOverheadLib";
 
-// ADR 0130 D11 / Q8 gate: eager heartbeat leasing costs <= 10% on the no-op throughput ceiling and
-// nothing at I/O-bound durations, else fall back to lazy. See leaseOverheadLib.ts.
+// ADR 0130 D11 / Q8 gate: heartbeat leasing costs <= 10% on the no-op throughput ceiling and
+// nothing at I/O-bound durations. Measures OFF vs EAGER vs LAZY (the S7g default). See leaseOverheadLib.ts.
 //
 //   pnpm --filter @loom/bench-throughput bench:lease
 // LOOM_BENCH_PG_URL (postgres backend) MUST point at a THROWAWAY database: rows/tables are left
@@ -65,14 +65,14 @@ async function main(): Promise<void> {
       }
   console.log(`repeats=${repeats} ioMs=${ioMs}`);
   console.log(
-    "| backend | shape | conc | execs | off exec/s | on exec/s | overhead % (median ratio) | paired median % | paired min..max % | off samples | on samples |"
+    "| backend | shape | conc | execs | off exec/s | eager exec/s | lazy exec/s | eager overhead % | lazy overhead % | eager paired med (min..max) % | lazy paired med (min..max) % | off samples | eager samples | lazy samples |"
   );
-  console.log("|---|---|---:|---:|---:|---:|---:|---:|---|---|---|");
+  console.log("|---|---|---:|---:|---:|---:|---:|---:|---:|---|---|---|---|---|");
   const r0 = (x: number) => Math.round(x).toLocaleString("en-US");
   const f1 = (x: number) => x.toFixed(1);
   for (const r of rows)
     console.log(
-      `| ${r.backend} | ${r.shape} | ${r.concurrency} | ${r.executions} | ${r0(r.off)} | ${r0(r.on)} | ${f1(r.overheadPct)} | ${f1(r.pairedMedianPct)} | ${f1(r.pairedMinPct)}..${f1(r.pairedMaxPct)} | ${r.offSamples.map(r0).join(" ")} | ${r.onSamples.map(r0).join(" ")} |`
+      `| ${r.backend} | ${r.shape} | ${r.concurrency} | ${r.executions} | ${r0(r.off)} | ${r0(r.eager)} | ${r0(r.lazy)} | ${f1(r.eagerOverheadPct)} | ${f1(r.lazyOverheadPct)} | ${f1(r.eagerPairedMedianPct)} (${f1(r.eagerPairedMinPct)}..${f1(r.eagerPairedMaxPct)}) | ${f1(r.lazyPairedMedianPct)} (${f1(r.lazyPairedMinPct)}..${f1(r.lazyPairedMaxPct)}) | ${r.offSamples.map(r0).join(" ")} | ${r.eagerSamples.map(r0).join(" ")} | ${r.lazySamples.map(r0).join(" ")} |`
     );
 }
 

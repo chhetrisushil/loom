@@ -352,6 +352,15 @@ export class LeaseKeeper {
     return this.now();
   }
 
+  /**
+   * Run `fn` once after `ms` on the keeper's (injectable, unref'd) one-shot timer; returns its
+   * canceller. The lazy driver hold (ADR 0130 D11, S7g) uses it for its grace period, so a test that
+   * injects `after` drives the grace window on the same virtual clock.
+   */
+  schedule(fn: () => void, ms: number): () => void {
+    return this.after(fn, ms);
+  }
+
   /** Number of leases currently held (bounded memory: released and lost ids are gone). */
   get size(): number {
     return this.held.size;

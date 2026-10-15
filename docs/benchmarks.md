@@ -603,7 +603,73 @@ sustains, so that cell is write-bound and reads like a no-op cell.
   denominator. Nobody runs durable workloads on this configuration; it is the upper bound on the
   ratio, not the gate.
 
-The eager/lazy default is unchanged by this change. These numbers say the Q8 decision needs to be
+(S7g, below, takes that decision: the default became lazy.) These numbers say the Q8 decision needs to be
 taken on the durable-backend result above (accept the cost, batch more aggressively than the current
 group commit, or fall back to lazy leasing). A re-run on a fully idle machine and against a networked
 Postgres would tighten the figures; this run did not have either.
+
+## S7g: lazy heartbeat leases (ADR 0130 D11 amendment, 2026-10-15)
+
+The S7f result above failed the D11 gate on the durable backend (eager: 25-30% no-op overhead on
+Postgres), so the default became **lazy** acquisition: a run takes no lease until it has been driving for
+`lazyGraceMs` (default TTL/3 = 10 s). The bench (`bench:lease`) now measures three modes per repeat,
+interleaved with a rotating order: heartbeat **off**, **eager** (a lease before every run's first
+append) and **lazy** (the default). The flow is one step, so with the 10 s grace a lazy run never
+leases: this prices the cost a short execution pays for lazy mode (a grace timer set and cleared, no
+store call), which is the ceiling shape the gate is about. A run that outlives the grace pays the
+eager cost from then on (one group-committed acquire, renewals, one release), amortised over a run long
+enough to be I/O-bound, where the S7f table shows it is within noise.
+
+```
+LOOM_BENCH_BACKENDS=memory,sqlite,postgres LOOM_BENCH_CONCS=16,64,256 LOOM_BENCH_REPEATS=7 \
+LOOM_BENCH_EXECS=6000 LOOM_BENCH_SQLITE_EXECS=2000 LOOM_BENCH_PG_EXECS=3000 \
+LOOM_BENCH_PG_URL=postgres://... pnpm --filter @loom/bench-throughput bench:lease
+```
+
+Same machine and caveats as above (Apple M2, 8 cores, macOS, Node v24.18.0, PostgreSQL 17 on loopback
+as a throwaway cluster with its own throwaway database, 2026-10-15; the desktop was not idle). N = 7
+repeats per cell, OFF/EAGER/LAZY interleaved, medians. "Overhead" is (median OFF - median mode) /
+median OFF; a negative value means the mode measured faster than OFF (noise). Paired = the same
+repeat's OFF/LAZY pair, as a median and a min..max range.
+
+### No-op (the throughput ceiling)
+
+| backend | conc | off exec/s | eager exec/s | lazy exec/s | eager overhead | lazy overhead | lazy paired median (min..max) |
+|---|---:|---:|---:|---:|---:|---:|---|
+| postgres | 16 | 5,759 | 4,170 | 6,012 | 27.6% | -4.4% | -5.6 (-11.7..2.4)% |
+| postgres | 64 | 5,265 | 3,774 | 5,256 | 28.3% | 0.2% | 1.0 (-10.6..7.9)% |
+| postgres | 256 | 5,163 | 3,898 | 5,335 | 24.5% | -3.3% | -1.5 (-12.2..10.0)% |
+| sqlite | 16 | 5,969 | 5,383 | 5,782 | 9.8% | 3.1% | 1.7 (-11.4..9.7)% |
+| sqlite | 64 | 6,007 | 5,708 | 6,104 | 5.0% | -1.6% | -2.0 (-26.5..1.0)% |
+| sqlite | 256 | 5,766 | 5,709 | 6,022 | 1.0% | -4.4% | -2.3 (-5.5..0.1)% |
+| memory | 16 | 106,019 | 75,614 | 87,260 | 28.7% | 17.7% | 13.7 (-10.7..84.1)% |
+| memory | 64 | 75,383 | 62,542 | 74,342 | 17.0% | 1.4% | -0.9 (-34.4..72.3)% |
+| memory | 256 | 68,955 | 59,886 | 65,870 | 13.2% | 4.5% | 7.7 (-89.7..19.3)% |
+
+### I/O-bound (20 ms effect)
+
+| backend | conc | off exec/s | eager exec/s | lazy exec/s | eager overhead | lazy overhead | lazy paired median (min..max) |
+|---|---:|---:|---:|---:|---:|---:|---|
+| postgres | 16 | 543 | 520 | 537 | 4.2% | 1.1% | 0.7 (-1.7..5.1)% |
+| postgres | 64 | 2,522 | 2,502 | 2,523 | 0.8% | -0.0% | -2.4 (-16.5..12.9)% |
+| postgres | 256 | 5,207 | 3,792 | 5,244 | 27.2% | -0.7% | 0.3 (-25.6..27.2)% |
+| sqlite | 16 | 699 | 699 | 701 | -0.0% | -0.3% | -0.1 (-1.4..1.4)% |
+| sqlite | 64 | 2,745 | 2,693 | 2,775 | 1.9% | -1.1% | -0.3 (-7.6..1.2)% |
+| sqlite | 256 | 5,726 | 4,179 | 5,607 | 27.0% | 2.1% | 2.2 (-7.3..4.6)% |
+| memory | 16 | 726 | 721 | 725 | 0.8% | 0.2% | 0.2 (-0.3..1.8)% |
+| memory | 64 | 2,875 | 2,772 | 2,848 | 3.6% | 0.9% | 1.0 (-0.7..2.2)% |
+| memory | 256 | 10,610 | 10,379 | 10,669 | 2.2% | -0.6% | 0.3 (-17.3..13.4)% |
+
+### Does the gate hold with lazy as the default?
+
+- **Postgres (durable) no-op: MET.** Lazy overhead is -4.4%, 0.2% and -3.3% at concurrency 16, 64 and
+  256 (paired medians -5.6%, 1.0%, -1.5%), i.e. indistinguishable from heartbeat off, against eager's
+  27.6%, 28.3% and 24.5% in the same run. The eager figure reproduces S7f.
+- **Postgres I/O-bound: MET** (lazy 1.1%, 0.0%, -0.7%; eager 4.2%, 0.8%, 27.2% at the write-bound 256 cell).
+- **SQLite: MET** (lazy 3.1%, -1.6%, -4.4% no-op; -0.3%, -1.1%, 2.1% I/O-bound).
+- **In-memory no-op, the worst case for a ratio: the gate is not read here.** Lazy is 17.7% at conc 16
+  (paired median 13.7%, range -10.7..84%), 1.4% at 64 and 4.5% at 256; eager is 28.7%, 17.0%, 13.2%.
+  At ~100K exec/s the per-run grace timer (set, cleared) is a visible fraction of a ~10 microsecond
+  run. The spread is wide (the machine was not idle), so only the direction is firm.
+- What lazy does NOT measure: the cost a run pays once it outlives the grace. That path is the eager
+  protocol (S7f's I/O-bound rows: 1-2% where the store is not saturated).

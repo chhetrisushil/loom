@@ -145,6 +145,7 @@ function rig(
       ? undefined
       : {
           leaseStore: leases,
+          acquire: "eager" as const, // these S7c tests pin the eager protocol; lazy has lazyLease.test.ts
           nodeId: opts.nodeId ?? "n1",
           incarnation: "i1",
           ttlMs: 30_000,

@@ -531,6 +531,22 @@ describe("loom doctor -- heartbeat leases", () => {
     expect(ok?.status).toBe("ok");
     expect(ok?.detail).toMatch(/cluster/);
   });
+  it("names the acquire mode: lazy (default) warns about the grace window, eager does not", async () => {
+    const base = {
+      enabled: true,
+      source: "co-located",
+      storeInMemory: false,
+      eventStoreInMemory: false,
+      onStoreError: "stop",
+      scope: "cluster",
+    };
+    const lazy = await run({ ...base, acquire: "lazy", lazyGraceMs: 4000 });
+    expect(lazy?.status).toBe("ok");
+    expect(lazy?.detail).toMatch(/lazy.*after 4000 ms.*inside that window left no lease/);
+    const eager = await run({ ...base, acquire: "eager" });
+    expect(eager?.status).toBe("ok");
+    expect(eager?.detail).toMatch(/eager.*every run leases before its first append/);
+  });
   it("negatives: co-located + stop, in-memory beside in-memory, and enabled:false are quiet", async () => {
     expect(
       (

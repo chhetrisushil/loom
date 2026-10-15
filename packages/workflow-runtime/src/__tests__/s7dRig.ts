@@ -40,6 +40,7 @@ export function heartbeatFor(
 ): HeartbeatOptions {
   return {
     leaseStore: store,
+    acquire: "eager", // the S7d protocol tests pin eager leases; lazy mode is covered in the DST rig
     nodeId,
     incarnation: "i1",
     ttlMs: TTL,
