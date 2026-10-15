@@ -144,8 +144,8 @@ describe("DriverLeases - the acquire/release race (S7c review P2-1a)", () => {
   it("a release deferred for a pending acquire still happens if that acquire fails", async () => {
     const { dl, store, row } = rig();
     const first = must(await dl.acquire("e1"));
-    const keeperAcquire = dl.keeper.acquire.bind(dl.keeper);
-    dl.keeper.acquire = (id: string) => keeperAcquire(id).then(() => false); // the pending one is refused
+    const keeperAcquire = dl.keeper.acquireOutcome.bind(dl.keeper);
+    dl.keeper.acquireOutcome = (id: string) => keeperAcquire(id).then(() => "foreign" as const); // the pending one is refused
     const pending = dl.acquire("e1");
     await first.release();
     expect(await pending).toBeNull();

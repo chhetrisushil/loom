@@ -173,7 +173,7 @@ describe("S7g - lazy heartbeat leases (the default)", () => {
     expect((err as LeaseLostError).reason).toBe("taken-over");
     expect(r.seen.sawAbort).toBeInstanceOf(LeaseLostError);
     latch.release();
-    for (let i = 0; i < 100; i++) await new Promise((x) => setImmediate(x));
+    // The handle already rejected with the loss: the run has unwound, so the log cannot grow.
     expect((await r.events.read(id)).length).toBe(logged);
     // the other owner's lease is untouched
     expect((await r.leases.get(id))?.owner).toBe("other:node");
@@ -202,7 +202,7 @@ describe("S7g - lazy heartbeat leases (the default)", () => {
     expect((await r.events.read(id)).length).toBe(logged);
   });
 
-  it("the delayed acquire cannot reach the store: the run keeps driving unleased and retries after another grace", async () => {
+  it("the delayed acquire's outcome is UNKNOWN (store error): the confirming retry bypasses the quiet period and leases the run before its deadline", async () => {
     const latch = new Latch();
     const r = rig({ latch });
     let down = true;
@@ -214,20 +214,130 @@ describe("S7g - lazy heartbeat leases (the default)", () => {
     const h = await r.rt.start(longRun, {});
     const id = h.executionId;
     await latch.entered;
-    r.fireGrace(); // the first attempt fails
+    r.fireGrace(); // the first attempt fails: the row MAY exist
     await until(() => r.graceTimers.filter((t) => !t.cancelled && !t.fired).length === 1);
-    expect(await r.leases.get(id)).toBeNull(); // unleased: absent = no evidence, never false evidence
+    expect(await r.leases.get(id)).toBeNull(); // (not applied here)
     down = false;
-    r.clock.mono += 40_000; // clear the keeper's quiet period after the error
-    r.clock.wall += 40_000;
-    r.fireGrace(); // the retry
+    r.fireGrace(); // the retry: inside the keeper's quiet period, but a confirming re-acquire bypasses it
     await until(async () => (await r.leases.get(id)) !== null);
+    // confirmed: the self-fence is gone, the run is an ordinary leased run past the old deadline
+    r.clock.mono += 24_000;
+    r.clock.wall += 24_000;
+    expect(r.rt.leaseKeeper?.validNow(id)).toBe(true);
     latch.release();
     await h.waitForCompletion();
     expect(await r.leases.get(id)).toBeNull();
   });
 
-  it("resume of a SUSPENDED execution is lazy; a recovery drive of a RUNNING one keeps the eager stand-down", async () => {
+  it("an unknown acquire outcome that no retry confirms self-fences the run at send time + ttl - margin (never drives past a row's possible expiry)", async () => {
+    const latch = new Latch();
+    const r = rig({ latch });
+    const orig = r.leases.acquireMany.bind(r.leases);
+    // The row is APPLIED, then the reply is lost: exactly the "self-made row" hazard.
+    r.leases.acquireMany = async (...a: Parameters<typeof orig>) => {
+      await orig(...a);
+      throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+    };
+    const h = await r.rt.start(longRun, {});
+    const id = h.executionId;
+    await latch.entered;
+    await until(async () =>
+      (await r.events.read(id)).some((e: EventEnvelope) => e.eventType === "STEP_STARTED")
+    );
+    r.fireGrace();
+    await until(async () => (await r.leases.get(id)) !== null); // the row exists though nobody knows
+    const logged = (await r.events.read(id)).length;
+    r.clock.mono += 24_999; // still inside send + ttl - margin (25 000)
+    r.clock.wall += 24_999;
+    r.fireGrace(); // the retry also fails unknown: it must NOT extend the deadline
+    await until(() => r.graceTimers.filter((t) => !t.cancelled && !t.fired).length === 1);
+    r.clock.mono += 2;
+    r.clock.wall += 2;
+    latch.release();
+    const err = await h.waitForCompletion().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(LeaseLostError);
+    expect((err as LeaseLostError).reason).toBe("deadline");
+    expect((await r.events.read(id)).length).toBe(logged);
+  });
+
+  it("an acquire that provably sent nothing (the keeper's quiet period) leaves the run UNLEASED, not fenced: no evidence, never false evidence", async () => {
+    const latch = new Latch();
+    const r = rig({ latch });
+    const down = (): never => {
+      throw Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" });
+    };
+    const orig = r.leases.acquireMany.bind(r.leases);
+    let failing = true;
+    r.leases.acquireMany = async (...a: Parameters<typeof orig>) => {
+      if (failing) down();
+      return orig(...a);
+    };
+    // two failures in one flush arm the quiet period for a TTL
+    const keeper = r.rt.leaseKeeper;
+    await Promise.allSettled([keeper?.acquire("q1"), keeper?.acquire("q2")]);
+    failing = false;
+    const h = await r.rt.start(longRun, {});
+    const id = h.executionId;
+    await latch.entered;
+    r.fireGrace(); // LeaseStoreQuietError: nothing sent
+    await until(() => r.graceTimers.filter((t) => !t.cancelled && !t.fired).length === 1);
+    r.clock.mono += 28_000; // past send + ttl - margin, still inside the quiet period
+    r.clock.wall += 28_000;
+    expect(r.rt.leaseKeeper?.validNow(id)).toBe(false); // unleased
+    latch.release();
+    await h.waitForCompletion(); // completes: nothing fenced it
+    expect(await r.leases.get(id)).toBeNull();
+  });
+
+  it("a LATE answer (after the grant's own deadline) is its own reason, `deadline`, never `taken-over`: the run self-fences instead of being left unleased", async () => {
+    const latch = new Latch();
+    const r = rig({ latch });
+    let answer!: () => void;
+    const slowReply = new Promise<void>((res) => {
+      answer = res;
+    });
+    const orig = r.leases.acquireMany.bind(r.leases);
+    r.leases.acquireMany = async (...a: Parameters<typeof orig>) => {
+      const got = await orig(...a);
+      await slowReply; // applied, but the reply is stalled past the deadline
+      return got;
+    };
+    const h = await r.rt.start(longRun, {});
+    const id = h.executionId;
+    await latch.entered;
+    r.fireGrace();
+    await until(async () => (await r.leases.get(id)) !== null); // the row is written, the reply pending
+    r.clock.mono += 26_000;
+    r.clock.wall += 26_000;
+    answer();
+    latch.release();
+    const err = await h.waitForCompletion().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(LeaseLostError);
+    expect((err as LeaseLostError).reason).toBe("deadline");
+  });
+
+  it("closing the runtime tells a run still in its grace window `closed`, and an acquire resolved false by the close is not reported taken-over", async () => {
+    const latch = new Latch();
+    const r = rig({ latch });
+    const h = await r.rt.start(longRun, {});
+    await latch.entered;
+    await r.rt.closeHeartbeat();
+    latch.release();
+    const err = await h.waitForCompletion().then(
+      () => undefined,
+      (e: unknown) => e
+    );
+    expect(err).toBeInstanceOf(LeaseLostError);
+    expect((err as LeaseLostError).reason).toBe("closed");
+  });
+
+  it("resume is EAGER (a predecessor's row may exist); only a fresh start is lazy; a recovery drive of a RUNNING one stands down", async () => {
     const r = rig();
     const waits = flow("waits", async (ctx) => {
       await ctx.suspend({ on: "Go" });
@@ -239,7 +349,8 @@ describe("S7g - lazy heartbeat leases (the default)", () => {
     expect(r.leases.calls).toEqual([]); // parked inside the grace window: the store never heard of it
     const h = await r.rt.resume(id, { eventType: "Go", payload: null });
     await h.waitForCompletion();
-    expect(r.leases.calls).toEqual([]);
+    expect(r.leases.calls.some((c) => c.startsWith("acquire:"))).toBe(true); // the resume leased eagerly
+    expect(r.leases.calls.some((c) => c.startsWith("release:"))).toBe(true);
     // a RUNNING execution under a live foreign lease: a recovery resume stands down (no fence, no append)
     const live = newId();
     const latch = new Latch();
@@ -259,6 +370,19 @@ describe("S7g - lazy heartbeat leases (the default)", () => {
     expect((await r2.leases.get(live))?.owner).toBe("other:node");
     latch.release();
     void hl;
+  });
+
+  it("a start on a caller-chosen id whose stream already exists is EAGER (classified from the log): a live foreign row stands it down", async () => {
+    const r = rig();
+    const id = newId();
+    const h = await r.rt.start(quick, {}, { executionId: id });
+    await h.waitForCompletion(); // the stream now exists
+    await r.leases.acquire(id, "other:node", 30_000, r.clock.wall);
+    const before = r.leases.calls.length;
+    await expect(r.rt.start(quick, {}, { executionId: id })).rejects.toThrow();
+    // eager: the stand-down came from an acquire call on the wire, not a delayed one
+    expect(r.leases.calls.slice(before).some((c) => c.startsWith("acquire:"))).toBe(true);
+    expect(r.graceTimers.filter((t) => !t.cancelled).length).toBe(0);
   });
 
   it("a run hooks onto a claimant's lease immediately (no second acquire, no grace)", async () => {

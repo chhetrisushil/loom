@@ -248,10 +248,10 @@ for (const mode of ["eager", "lazy"] as const) {
   });
 
   describe(`[${mode}] lease DST - continue-as-new handoff`, () => {
-    // Lazy mode gives up "no unleased running instant" BY DESIGN (ADR 0130 D11 option 2): a short chain
-    // never touches the lease store. The lazy variant pins exactly that.
+    // S7g ruling 2026-10-15: a successor is a HANDOFF from a possibly leased predecessor, so it leases
+    // EAGERLY even in lazy mode (the predecessor itself, a fresh start, is lazy and may stay unleased).
     it.runIf(mode === "lazy")(
-      "a short chain finishes inside its grace windows without one lease store call",
+      "the successor is leased EAGERLY before its first append, though the predecessor (a fresh start) never was",
       async () => {
         const r = rig();
         const a = r.node("a");
@@ -262,12 +262,15 @@ for (const mode of ["eager", "lazy"] as const) {
           .map((c) => c.split(":")[1] as string)
           .find((id) => id !== "cn");
         expect(succ).toBeDefined();
-        await until(
-          async () => (await statusOf(a, succ as string)) === "completed",
-          "successor completes"
+        const succId = succ as string;
+        await until(async () => (await statusOf(a, succId)) === "completed", "successor completes");
+        const idx = (c: string) => r.timeline.findIndex((x) => x === c);
+        expect(idx(`lease.acquire:${succId}`)).toBeGreaterThanOrEqual(0);
+        expect(idx(`lease.acquire:${succId}`)).toBeLessThan(
+          idx(`append:${succId}:EXECUTION_STARTED`)
         );
+        expect(idx("lease.acquire:cn")).toBe(-1); // the predecessor finished inside its grace window
         expect(await statusOf(a, "cn")).toBe("continued");
-        expect(r.timeline.filter((c) => c.startsWith("lease."))).toEqual([]);
         expect(a.rt.leaseKeeper?.size).toBe(0);
         expectClean(r, [a]);
       }
@@ -306,7 +309,7 @@ for (const mode of ["eager", "lazy"] as const) {
 
   describe(`[${mode}] lease DST - outage and the quiet period`, () => {
     it.runIf(mode === "lazy")(
-      "a store outage costs a lazy run nothing at start; the delayed acquire fails soft, the run carries on unleased and leases once the store is back",
+      "a store outage costs a lazy run nothing at start; the delayed acquire (outcome unknown) is retried past the quiet period and leases the run before its deadline",
       async () => {
         const r = rig();
         const f = flaky(r.recordedLeases);
@@ -317,21 +320,46 @@ for (const mode of ["eager", "lazy"] as const) {
         const hs = await Promise.all(ids.map((id) => a.rt.start(r.flow, { id }, E(id))));
         expect(storeCalls()).toBe(0); // an eager start would have been refused 20 times
         await until(() => ids.every((id) => r.probe.count(id, "b") === 1), "all inside step b");
-        // step b's entry elapsed each run's grace: the acquires failed against the outage, softly
+        // step b's entry elapsed each run's grace: the acquires failed against the outage
         expect(storeCalls()).toBeGreaterThan(0);
         expect(storeCalls()).toBeLessThanOrEqual(4); // group-committed, then the quiet period
-        expect(await r.leases.get?.("burst-0")).toBeNull(); // unleased: absent = no evidence
-        // heal; the keeper stays quiet for a TTL, then the retry after the next grace leases them
+        expect(await r.leases.get?.("burst-0")).toBeNull(); // not applied here
+        // heal; the confirming re-acquire bypasses the quiet period and lands BEFORE the deadline
         f.mode = "up";
-        advance(r.clock, TTL + 1);
+        advance(r.clock, 12_000);
         await a.grace();
         await until(
           async () => (await r.leases.get?.("burst-0")) !== null,
           "the retry leased the run"
         );
+        advance(r.clock, 13_000); // past the first send + ttl - margin: confirmed runs are NOT fenced
         for (const id of ids) r.probe.gate(id).open();
         for (const h of hs) expect((await settleOf(h.waitForCompletion())).ok).toBe(true);
         expect(a.rt.leaseKeeper?.size).toBe(0);
+        expectClean(r, [a]);
+      }
+    );
+
+    it.runIf(mode === "lazy")(
+      "an outage that outlasts the deadline stops every lazy run whose acquire outcome is unknown (onStoreError stop): none drives past the possible row",
+      async () => {
+        const r = rig();
+        const f = flaky(r.recordedLeases);
+        const a = r.node("a", { leaseStore: f.store });
+        f.mode = "down";
+        const ids = Array.from({ length: 5 }, (_, i) => `out-${i}`);
+        const hs = await Promise.all(ids.map((id) => a.rt.start(r.flow, { id }, E(id))));
+        await until(() => ids.every((id) => r.probe.count(id, "b") === 1), "all inside step b");
+        advance(r.clock, DEADLINE + 1); // the self-fencing timers come due
+        for (const id of ids) r.probe.gate(id).open();
+        for (const h of hs) {
+          const res = await settleOf(h.waitForCompletion());
+          expect(res.ok).toBe(false);
+          if (!res.ok) {
+            expect(res.error).toBeInstanceOf(LeaseLostError);
+            expect((res.error as LeaseLostError).reason).toBe("deadline");
+          }
+        }
         expectClean(r, [a]);
       }
     );
@@ -387,6 +415,11 @@ for (const mode of ["eager", "lazy"] as const) {
     // Lazy: the start does not stand down (sequence-0 uniqueness is the start guard), the delayed
     // acquire finds the dead holder's unexpired row, the run is told it is superseded and stops, and the
     // row's expiry is then ordinary expired-lease evidence for the sweep.
+    //
+    // PINNED RESIDUAL (ADR 0130 D11 amendment, S7g): a fresh start has no stream, so the lazy ruling
+    // cannot see a ghost row (a failed start's lease whose release also failed) that an immediate
+    // same-id retry then reuses. The retry drives until its grace, loses the delayed acquire
+    // (`taken-over`) and stops; the row's expiry then makes it recoverable. This pins that behaviour.
     it.runIf(mode === "lazy")(
       "a ghost row under a caller-chosen start: the start proceeds, the delayed acquire loses (taken-over) and appends nothing more, the expired row then recovers it",
       async () => {
@@ -434,6 +467,108 @@ for (const mode of ["eager", "lazy"] as const) {
         expect(await statusOf(b, "ghost")).toBe("completed");
         for (const st of ["a", "b", "c"]) expect(r.probe.count("ghost", st)).toBe(1);
         expectClean(r, [b]);
+      }
+    );
+  });
+
+  describe(`[${mode}] lease DST - S7g review round (lazy only for a fresh start; unknown outcomes)`, () => {
+    // P1-2: resumeAs and restoreFromState drive a running execution on, so they are EAGER in both modes.
+    it("resumeAs and restoreFromState onto an execution another node is driving stand down (LeaseHeldError); step b is entered once", async () => {
+      const r = rig();
+      const a = r.node("a");
+      const b = r.node("b");
+      const h = await a.rt.start(r.flow, { id: "mig" }, E("mig"));
+      await until(() => r.probe.count("mig", "b") === 1, "inside step b");
+      expect((await r.leases.get?.("mig"))?.owner).toBe("a:i1"); // a is leased (lazy: acquired at its grace)
+      const logged = (await r.logOf("mig")).length;
+      const state = await a.rt.loadState("mig");
+      expect(state).toBeDefined();
+      const viaResumeAs = await settleOf(
+        b.rt.resumeAs(
+          "mig",
+          "leased-dst",
+          { eventType: "EXECUTION_RECOVERED", payload: {} },
+          { strategy: "operator-ack" }
+        )
+      );
+      expect(viaResumeAs.ok).toBe(false);
+      if (!viaResumeAs.ok) expect(viaResumeAs.error).toBeInstanceOf(LeaseHeldError);
+      const viaRestore = await settleOf(
+        b.rt.restoreFromState(state as never, { eventType: "EXECUTION_RECOVERED", payload: {} })
+      );
+      expect(viaRestore.ok).toBe(false);
+      if (!viaRestore.ok) expect(viaRestore.error).toBeInstanceOf(LeaseHeldError);
+      expect((await r.logOf("mig")).length).toBe(logged); // no fence, nothing appended
+      expect(r.probe.count("mig", "b")).toBe(1);
+      r.probe.gate("mig").open();
+      expect((await settleOf(h.waitForCompletion())).ok).toBe(true);
+      expectClean(r, [a, b]);
+    });
+
+    // P1-1(2): a resume is EAGER, so a predecessor's leftover row is stood down on while it lives and
+    // overwritten once it expired - as in eager mode. (The reviewer's repro: a lazy resume that skipped
+    // the acquire drove the execution beside the row's owner.)
+    it.runIf(mode === "lazy")(
+      "a resume over another owner's row with 1 s left stands down, then takes over once it expired (eager semantics)",
+      async () => {
+        const r = rig();
+        const a = r.node("a", { autoGrace: false });
+        const b = r.node("b");
+        await a.rt.start(r.flow, { id: "left" }, E("left"));
+        await until(() => r.probe.count("left", "b") === 1, "inside step b (still in its grace)");
+        a.alive = false; // a died inside its grace window: no row of its own
+        await r.leases.acquire("left", "old:node", 1_000, r.clock.wall);
+        const logged = (await r.logOf("left")).length;
+        const res = await settleOf(
+          b.rt.resume("left", { eventType: "EXECUTION_RECOVERED", payload: {} })
+        );
+        expect(res.ok).toBe(false);
+        if (!res.ok) expect(res.error).toBeInstanceOf(LeaseHeldError);
+        expect((await r.logOf("left")).length).toBe(logged);
+        expect(r.probe.count("left", "b")).toBe(1);
+        advance(r.clock, 1_500); // old:node's row lapsed
+        const again = await b.rt.resume("left", { eventType: "EXECUTION_RECOVERED", payload: {} });
+        await until(() => r.probe.count("left", "b") === 2, "the resume took over and entered b");
+        r.probe.gate("left").open();
+        await again.waitForCompletion();
+        expect(await statusOf(b, "left")).toBe("completed");
+        expectClean(r, [a, b]);
+      }
+    );
+
+    // P1-1(1): a delayed lazy acquire whose reply is LOST applied a row nobody knows about. Without the
+    // self-fence the run drives past the row's expiry, an evidence sweep reads the expired row as "driver
+    // gone" and re-enters step b while the first driver is alive (a double entry).
+    it.runIf(mode === "lazy")(
+      "a lazy acquire whose reply is lost (row applied, ECONNREFUSED): the run self-fences before the row can expire, so the evidence sweep's re-entry is never a double entry",
+      async () => {
+        const r = rig();
+        const f = flaky(r.recordedLeases);
+        const a = r.node("a", { leaseStore: f.store, autoGrace: false });
+        const b = r.node("b");
+        f.mode = "lose-acquire-response";
+        const h = await a.rt.start(r.flow, { id: "own" }, E("own"));
+        await until(() => r.probe.count("own", "b") === 1, "inside step b (in its grace)");
+        await a.grace(); // the acquire APPLIES, the reply is lost
+        expect((await r.leases.get?.("own"))?.owner).toBe("a:i1"); // a row nobody confirmed
+        advance(r.clock, 1_000);
+        await a.grace(); // the confirming retries (inside the quiet period) also lose their reply
+        await a.grace();
+        expect(r.probe.count("own", "b")).toBe(1);
+        advance(r.clock, TTL + 1); // past the row's expiry (and a's deadline: its fence timer fired)
+        const sweep = evidenceSweep(b, r);
+        await until(() => r.probe.count("own", "b") === 2, "the sweep re-entered step b");
+        expect(r.probe.doubleEntries).toEqual([]);
+        r.probe.gate("own").open();
+        expect((await sweep).recovered).toBe(1);
+        const res = await settleOf(h.waitForCompletion());
+        expect(res.ok).toBe(false);
+        if (!res.ok) {
+          expect(res.error).toBeInstanceOf(LeaseLostError);
+          expect((res.error as LeaseLostError).reason).toBe("deadline");
+        }
+        expect(await statusOf(b, "own")).toBe("completed");
+        expectClean(r, [a, b]);
       }
     );
   });
@@ -798,7 +933,16 @@ for (const mode of ["eager", "lazy"] as const) {
     }
   });
 
-  const coverage = { runs: 0, crashes: 0, flips: 0, sweeps: 0, recoveredRuns: 0, started: 0 };
+  const coverage = {
+    runs: 0,
+    crashes: 0,
+    flips: 0,
+    sweeps: 0,
+    recoveredRuns: 0,
+    started: 0,
+    inGraceOps: 0,
+    lazyGraceSeeds: 0,
+  };
 
   describe(`[${mode}] lease DST - N-node chaos`, () => {
     // Three-plus nodes over one event store and one (breakable) lease store. A seeded op stream: start,
@@ -808,12 +952,17 @@ for (const mode of ["eager", "lazy"] as const) {
     for (let s = 1n; s <= 30n; s++) {
       it(`seed ${s}`, async () => {
         const rng = splitmix64(s);
+        // Lazy mode: a separate stream decides, per seed, whether runs elapse their grace on entering
+        // step b (leased, as before) or stay IN their grace window while the chaos ops hit.
+        const lazyRng = splitmix64(s + 1000n);
+        const autoGrace = mode === "eager" || lazyRng.bool(0.5);
+        if (mode === "lazy" && !autoGrace) coverage.lazyGraceSeeds++;
         const r = rig();
         const f = flaky(r.recordedLeases);
         const nodes: Node[] = [];
         let nodeSeq = 0;
         const spawn = () => {
-          const n = r.node(`n${nodeSeq++}`, { leaseStore: f.store });
+          const n = r.node(`n${nodeSeq++}`, { leaseStore: f.store, autoGrace });
           nodes.push(n);
           return n;
         };
@@ -822,6 +971,7 @@ for (const mode of ["eager", "lazy"] as const) {
         const ids: string[] = [];
         const pending: Array<Promise<unknown>> = [];
         const track = <T>(p: Promise<T>) => pending.push(p.catch(() => undefined));
+        const opened = new Set<string>();
 
         for (let step = 0; step < 45; step++) {
           const n = rng.pick(live());
@@ -842,7 +992,11 @@ for (const mode of ["eager", "lazy"] as const) {
               advance(r.clock, 1_000 + rng.int(14_000));
               break;
             case 5:
-              if (ids.length > 0) r.probe.gate(rng.pick(ids)).open();
+              if (ids.length > 0) {
+                const gid = rng.pick(ids);
+                opened.add(gid);
+                r.probe.gate(gid).open();
+              }
               break;
             case 6:
               if (live().length > 1 && rng.bool(0.5)) {
@@ -858,7 +1012,15 @@ for (const mode of ["eager", "lazy"] as const) {
               coverage.sweeps++;
               track(evidenceSweep(n, r));
           }
+          if (mode === "lazy" && !autoGrace && lazyRng.bool(0.15))
+            await lazyRng.pick(live()).grace();
           await settle(5);
+          if (mode === "lazy") {
+            for (const id of ids) {
+              const unleased = (await r.leases.get?.(id)) == null;
+              if (r.probe.count(id, "b") > 0 && !opened.has(id) && unleased) coverage.inGraceOps++;
+            }
+          }
         }
 
         // Heal, release every gate, and let evidence-based recovery finish what the chaos broke.
@@ -869,6 +1031,21 @@ for (const mode of ["eager", "lazy"] as const) {
           advance(r.clock, TTL + 1);
           await settle(5);
           await settleOf(evidenceSweep(closer, r));
+          if (mode === "lazy") {
+            // A driver that died INSIDE its grace window left no lease, so no evidence re-drives it
+            // (documented), and a run its driver stopped (self-fence, taken-over) left none either: the
+            // host predicate is the fallback. Healed, every gate is open and the clock is a TTL on, so
+            // abandoned = nobody holds an unexpired row on it (a recovered run holds its claimant's).
+            await settleOf(
+              recoverAbandoned(closer.rt, {
+                source: r.events,
+                isAbandoned: async (c) => {
+                  const row = await r.leases.get?.(c.executionId);
+                  return row == null || row.expiresAt <= r.clock.wall;
+                },
+              })
+            );
+          }
           await closer.tick();
           const states = await Promise.all(ids.map((id) => statusOf(closer, id)));
           if (states.every((st) => st === undefined || st === "completed")) break;
@@ -897,6 +1074,10 @@ for (const mode of ["eager", "lazy"] as const) {
       expect(coverage.sweeps).toBeGreaterThan(20);
       expect(coverage.started).toBeGreaterThan(30);
       expect(coverage.recoveredRuns).toBeGreaterThan(5);
+      if (mode === "lazy") {
+        expect(coverage.lazyGraceSeeds).toBeGreaterThan(5); // seeds whose runs stay in their grace window
+        expect(coverage.inGraceOps).toBeGreaterThan(10); // chaos ops that hit a run still unleased
+      }
     });
   });
 
