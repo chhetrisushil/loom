@@ -181,7 +181,12 @@ interface ExecutionState {
 }
 #+end_src
 
-*Reserved ~variables~ keys (2.0):* ~_decisions~ (logged ~ctx.decide~ choices, P9), ~_denials~ (capability ~EFFECT_DENIED~ audit, K2), ~_resources~ (metered totals ~{ tokens, costUsd, ms, count, exceeded? }~, K3), ~_blocked~ (behavioral-safety ~SAFETY_BLOCKED~ audit, K6), ~_indoubt~ (parked ~EFFECT_INDOUBT~ deliveries, K9), and ~_shredded~ (crypto-shred ~PAYLOAD_SHREDDED~ tombstones, K10). The full 13-key table is in the [[file:loom-2.0/10-event-schema-reference.md][event-schema reference]].
+*Reserved ~variables~ keys (2.0):* ~_decisions~ (logged ~ctx.decide~ choices, P9), ~_denials~
+(capability ~EFFECT_DENIED~ audit, K2), ~_resources~ (metered totals
+~{ tokens, costUsd, ms, count, exceeded? }~, K3), ~_blocked~ (behavioral-safety ~SAFETY_BLOCKED~
+audit, K6), ~_indoubt~ (parked ~EFFECT_INDOUBT~ deliveries, K9), and ~_shredded~ (crypto-shred
+~PAYLOAD_SHREDDED~ tombstones, K10). The full 13-key table is in the
+[[file:loom-2.0/10-event-schema-reference.md][event-schema reference]].
 
 *Tasks & the process-control-block (2.0).* A step generalizes to a *task*; the minimal ~Execution~ PCB and its out-of-core ~ExecutionPolicy~ sidecar carry scheduling/compute/memory intent without bloating the core.
 
@@ -217,7 +222,11 @@ function executionFromState(state: ExecutionState, opts?: { parent?: string; chi
 
 ** ~runAgentOnce~ (@loom/app)
 
-Scripts and tests only; production runs ~agentLoop$~ in a registered flow on durable storage. Builds a throwaway in-memory ~defineConfig~ app plus a one-off flow, runs ~agentLoop$~ to completion (or to a park) and returns the result and the events. It goes through ~defineConfig~ (so ~config.security~ applies), registers the model as a ring effect, and rejects with ~agentLoop$~'s own error for a config it refuses.
+Scripts and tests only; production runs ~agentLoop$~ in a registered flow on durable storage. Builds
+a throwaway in-memory ~defineConfig~ app plus a one-off flow, runs ~agentLoop$~ to completion (or to
+a park) and returns the result and the events. It goes through ~defineConfig~ (so ~config.security~
+applies), registers the model as a ring effect, and rejects with ~agentLoop$~'s own error for a
+config it refuses.
 
 #+begin_src typescript
 function runAgentOnce(options: RunAgentOnceOptions): Promise<RunAgentOnceResult>
@@ -484,9 +493,27 @@ class WorkflowRuntime {
 }
 #+end_src
 
-*Flow-code versioning for in-flight executions (2.0, K11).* Each flow carries a ~flowContentHash~ (structural fingerprint over step bindings + durable policies, emitted by ~@loom/compiler~ and pinned into ~EXECUTION_STARTED~). A resume whose flow code no longer matches the pinned hash throws ~FlowCodeMismatchError~ rather than replaying against drifted code; ~resumeAs~ deliberately migrates such a run — ~"replay-check"~ verifies every recorded step still exists in the new flow (refuses with ~FlowMigrationCheckError~ otherwise), ~"operator-ack"~ vouches without the check. Either way it records a durable, replay-deterministic ~EXECUTION_MIGRATED~ verdict.
+*Flow-code versioning for in-flight executions (2.0, K11).* Each flow carries a ~flowContentHash~
+(structural fingerprint over step bindings + durable policies, emitted by ~@loom/compiler~ and
+pinned into ~EXECUTION_STARTED~). A resume whose flow code no longer matches the pinned hash throws
+~FlowCodeMismatchError~ rather than replaying against drifted code; ~resumeAs~ deliberately migrates
+such a run — ~"replay-check"~ verifies every recorded step still exists in the new flow (refuses
+with ~FlowMigrationCheckError~ otherwise), ~"operator-ack"~ vouches without the check. Either way it
+records a durable, replay-deterministic ~EXECUTION_MIGRATED~ verdict.
 
-*Body-aware fingerprint and divergence detection (ADR 0113, R7).* ~flowContentHash~ is SHA-256 (~sha256:~; a recorded legacy ~fnv1a:~ value is still accepted via ~flowHashMatches~). ~FlowDefinition.codeFingerprint~ (toolchain-supplied, optional) is recorded as ~EXECUTION_STARTED.codeHash~ and compared on resume: a different value throws ~FlowCodeMismatchError~ (~kind: "code"~) unless ~compatibleWith~ lists the recorded one. ~WorkflowRuntimeDeps.divergence~ / ~kernel.divergence~ (~"off" | "warn" | "fail"~, default ~warn~, ~fail~ under ~security.strict~) controls the replay-divergence detector, which raises ~FlowReplayDivergenceError~ (a ~FlowDivergenceError~) before a step's effect, a park, a continuation or completion when a recorded completed step was never asked for; in ~fail~ mode the execution parks on the reserved gate ~__loom_diverged__~ and ~retryDiverged(id)~ re-runs it. ~kernel.features.sha256FlowHash~ (default off) makes new starts record ~sha256:~ instead of ~fnv1a:~. ~"replay-check"~ treats ~base#…~ ids as family ~base~ and honours ~FlowDefinition.stepFamilies~.
+*Body-aware fingerprint and divergence detection (ADR 0113, R7).* ~flowContentHash~ is SHA-256
+(~sha256:~; a recorded legacy ~fnv1a:~ value is still accepted via ~flowHashMatches~).
+~FlowDefinition.codeFingerprint~ (toolchain-supplied, optional) is recorded as
+~EXECUTION_STARTED.codeHash~ and compared on resume: a different value throws
+~FlowCodeMismatchError~ (~kind: "code"~) unless ~compatibleWith~ lists the recorded one.
+~WorkflowRuntimeDeps.divergence~ / ~kernel.divergence~ (~"off" | "warn" | "fail"~, default ~warn~,
+~fail~ under ~security.strict~) controls the replay-divergence detector, which raises
+~FlowReplayDivergenceError~ (a ~FlowDivergenceError~) before a step's effect, a park, a continuation
+or completion when a recorded completed step was never asked for; in ~fail~ mode the execution parks
+on the reserved gate ~__loom_diverged__~ and ~retryDiverged(id)~ re-runs it.
+~kernel.features.sha256FlowHash~ (default off) makes new starts record ~sha256:~ instead of
+~fnv1a:~. ~"replay-check"~ treats ~base#…~ ids as family ~base~ and honours
+~FlowDefinition.stepFamilies~.
 
 ~WorkflowRuntime~ is also exported as *~ExecutionRuntime~ (2.0)* — the same class, renamed for the execution-kernel framing.
 
@@ -517,33 +544,243 @@ interface ExecutionContext {
 }
 #+end_src
 
-*Durable timers (2.0, T1).* ~ctx.sleep~/~ctx.sleepUntil~ suspend the execution with the absolute wake time recorded in the log; a wired ~TimerService~ fires a durable ~TIMER_FIRED~ resume, so a sleep survives restarts and replays deterministically (the scheduled time is in the log — wall-clock drift never enters the fold). Without a timer service the suspension is still durable and resumable by any node. Declare cron-driven starts with ~schedule$~ (see [[#authoring][~@loom/core~ builders]]) and wire both via ~defineConfig({ timers })~.
+*Durable timers (2.0, T1).* ~ctx.sleep~/~ctx.sleepUntil~ suspend the execution with the absolute
+wake time recorded in the log; a wired ~TimerService~ fires a durable ~TIMER_FIRED~ resume, so a
+sleep survives restarts and replays deterministically (the scheduled time is in the log — wall-clock
+drift never enters the fold). Without a timer service the suspension is still durable and resumable
+by any node. Declare cron-driven starts with ~schedule$~ (see [[#authoring][~@loom/core~ builders]])
+and wire both via ~defineConfig({ timers })~.
 
-*Recovering an abandoned execution ([[file:adr/0004-failure-recovery.md][ADR 0004]]).* A dead or wedged *worker* is redispatched by the dispatcher (~executeTimeoutMs~) and resumes idempotently. A dead *supervisor* is not covered — detection lives in its process — so ~recoverAbandoned(runtime, { source, isAbandoned })~ (~@loom/workflow-runtime~) enumerates ~running~/~pending~ executions and resumes the ones your predicate claims, via the same ~EXECUTION_RECOVERED~ resume the worker uses. A re-drive answers no gate ([[file:adr/0104-recovery-never-answers-a-gate.md][ADR 0104]]): the recovered flow parks at the next ~ctx.suspend~ it reaches until a resume names that gate. ~isAbandoned~ is REQUIRED: a running execution on a healthy node is byte-identical in the log to an orphaned one, so only the deployment can decide. Run it from a cron or Job, not as a service. A step failure the flow caught leaves the execution ~running~, so it is recovered too ([[file:adr/0105-a-caught-step-failure-is-not-the-executions.md][ADR 0105]]); ~maxRecoveries~ skips a claimed execution whose last N re-drives made no progress (consecutive ~EXECUTION_RECOVERED~ events since the last ~STEP_COMPLETED~ / ~EXECUTION_SUSPENDED~ / ~EXECUTION_RESUMED~; ≥ 1, default unbounded) and reports it in ~summary.exhausted~ / ~onExhausted~, so a poison execution stops costing every pass. ~reconcileTimers(runtime, { source, timers })~ re-arms the timer row of every execution suspended on a ~wakeAt~ (idempotent — ~schedule~ dedupes); run it once after upgrading to EVENT_SCHEMA 1.21.0, whose predecessor let ~TimerService~ retire the row of a timed park a parallel sibling's failure had folded to ~failed~. A sealed-payload replay refusal ([[file:adr/0130-sealed-payload-delivery-guard.md][ADR 0130]] D10) leaves a refusal row (a timer-store row carrying ~TimerRecord.refused: { head }~, no log append); a ~TimerService~ re-drives that ~running~ execution on a node that can open it, but only on the sweep's own evidence (its ~isAbandoned~ option, or with ~leases~ an existing expired lease) and only while the log has not moved since the refusal, through the same internal re-drive routine as ~recoverAbandoned~ and one shared sealed back-off. ~isAbandoned~ on the poll carries the sweep's contract (a sweep-grade predicate). With neither ~isAbandoned~ nor ~leases~ the poll cannot prove abandonment and fetches no refusal rows (~due({ refused: false })~), and the sweep recovers.
+*Recovering an abandoned execution ([[file:adr/0004-failure-recovery.md][ADR 0004]]).* A dead or
+wedged *worker* is redispatched by the dispatcher (~executeTimeoutMs~) and resumes idempotently. A
+dead *supervisor* is not covered — detection lives in its process — so
+~recoverAbandoned(runtime, { source, isAbandoned })~ (~@loom/workflow-runtime~) enumerates
+~running~/~pending~ executions and resumes the ones your predicate claims, via the same
+~EXECUTION_RECOVERED~ resume the worker uses. A re-drive answers no gate
+([[file:adr/0104-recovery-never-answers-a-gate.md][ADR 0104]]): the recovered flow parks at the next
+~ctx.suspend~ it reaches until a resume names that gate. ~isAbandoned~ is REQUIRED: a running
+execution on a healthy node is byte-identical in the log to an orphaned one, so only the deployment
+can decide. Run it from a cron or Job, not as a service. A step failure the flow caught leaves the
+execution ~running~, so it is recovered too
+([[file:adr/0105-a-caught-step-failure-is-not-the-executions.md][ADR 0105]]); ~maxRecoveries~ skips
+a claimed execution whose last N re-drives made no progress (consecutive ~EXECUTION_RECOVERED~
+events since the last ~STEP_COMPLETED~ / ~EXECUTION_SUSPENDED~ / ~EXECUTION_RESUMED~; ≥ 1, default
+unbounded) and reports it in ~summary.exhausted~ / ~onExhausted~, so a poison execution stops
+costing every pass. ~reconcileTimers(runtime, { source, timers })~ re-arms the timer row of every
+execution suspended on a ~wakeAt~ (idempotent — ~schedule~ dedupes); run it once after upgrading to
+EVENT_SCHEMA 1.21.0, whose predecessor let ~TimerService~ retire the row of a timed park a parallel
+sibling's failure had folded to ~failed~. A sealed-payload replay refusal
+([[file:adr/0130-sealed-payload-delivery-guard.md][ADR 0130]] D10) leaves a refusal row (a
+timer-store row carrying ~TimerRecord.refused: { head }~, no log append); a ~TimerService~ re-drives
+that ~running~ execution on a node that can open it, but only on the sweep's own evidence (its
+~isAbandoned~ option, or with ~leases~ an existing expired lease) and only while the log has not
+moved since the refusal, through the same internal re-drive routine as ~recoverAbandoned~ and one
+shared sealed back-off. ~isAbandoned~ on the poll carries the sweep's contract (a sweep-grade
+predicate). With neither ~isAbandoned~ nor ~leases~ the poll cannot prove abandonment and fetches no
+refusal rows (~due({ refused: false })~), and the sweep recovers.
 
-*Start-once for a caller-chosen id ([[file:adr/0103-durable-bootstrap-for-caller-chosen-ids.md][ADR 0103]]).* ~start(flow, input, { executionId })~ makes the execution's ~EXECUTION_STARTED~ durable BEFORE the flow body runs, so a duplicate start (a redelivered trigger, two nodes firing the same schedule occurrence) rejects with ~ExecutionAlreadyExistsError~ and nothing runs — no effect, no fold, no ~onEvent~. Catch it to treat the duplicate as "already started"; there is no separate ~startOnce~. Any other failure of that write rejects with ~StorageWriteError~ — including a start refused on the fence twice with sequence 0 still absent, whose cause is ~StartFencedOutError~ (a newer token's holder wrote nothing and may be dead, so the start stays retryable; L20). A minted ULID cannot collide, so ~start~ without an ~executionId~ pays no extra write and is byte-identical to before. ~onEvent~ otherwise stays pre-durability for every later event: a consumer that must act only on durable facts reads them back (the ADR 0058 catch-up shape).
+*Start-once for a caller-chosen id
+([[file:adr/0103-durable-bootstrap-for-caller-chosen-ids.md][ADR 0103]]).*
+~start(flow, input, { executionId })~ makes the execution's ~EXECUTION_STARTED~ durable BEFORE the
+flow body runs, so a duplicate start (a redelivered trigger, two nodes firing the same schedule
+occurrence) rejects with ~ExecutionAlreadyExistsError~ and nothing runs — no effect, no fold, no
+~onEvent~. Catch it to treat the duplicate as "already started"; there is no separate ~startOnce~.
+Any other failure of that write rejects with ~StorageWriteError~ — including a start refused on the
+fence twice with sequence 0 still absent, whose cause is ~StartFencedOutError~ (a newer token's
+holder wrote nothing and may be dead, so the start stays retryable; L20). A minted ULID cannot
+collide, so ~start~ without an ~executionId~ pays no extra write and is byte-identical to before.
+~onEvent~ otherwise stays pre-durability for every later event: a consumer that must act only on
+durable facts reads them back (the ADR 0058 catch-up shape).
 
-*Durable placement (#392).* ~start(flow, input, { computeTarget })~ records the compute lane on the execution's ~EXECUTION_STARTED~ anchor (envelope metadata — descriptive, never folded, so replay is untouched), and ~placementOf(eventStore, executionId)~ (~@loom/workflow-runtime~) reads it back in one point-read. ~TimerService~ and ~recoverAbandoned~ accept a ~dispatcher~ and re-drive to that lane instead of resuming in-process; a fork inherits its parent's lane and ~fork(…, { computeTarget })~ overrides it. A HINT, not a pin: ~PlacementDispatcher~ falls back for an unregistered target (and warns once), because a retired lane must not strand the executions that named it.
+*Durable placement (#392).* ~start(flow, input, { computeTarget })~ records the compute lane on the
+execution's ~EXECUTION_STARTED~ anchor (envelope metadata — descriptive, never folded, so replay is
+untouched), and ~placementOf(eventStore, executionId)~ (~@loom/workflow-runtime~) reads it back in
+one point-read. ~TimerService~ and ~recoverAbandoned~ accept a ~dispatcher~ and re-drive to that
+lane instead of resuming in-process; a fork inherits its parent's lane and
+~fork(…, { computeTarget })~ overrides it. A HINT, not a pin: ~PlacementDispatcher~ falls back for
+an unregistered target (and warns once), because a retired lane must not strand the executions that
+named it.
 
-*What is stuck, and is anything watching it.* ~orphanCensus(runtime, { source, leases?, buckets? })~ (~@loom/workflow-runtime~) is the READ-ONLY pass beside the acting ones: no predicate, no writes, no policy — a predicate is what a census must not need, since the question it answers is whether YOURS is right. It bands ~running~/~pending~ executions by age (cumulative, with a sample of ids) and, given a lease store, classifies each as ~held~ / ~expired~ / ~none~. `none` is the one to watch: a stuck execution nothing ever leased cannot be recovered from evidence at all. Clocks: lease expiry is judged on ~options.now ?? leases.storeNow?.() ?? Date.now()~ (the store's own clock when it has one), while execution ages use the wall clock or ~now~. ~LeaseStore.storeNow?()~ is optional since SPI 2.1.0 and implemented by ~PostgresLeaseStore~ (DB time), so a census run from a skewed host still judges leases on the clock that stamped them.
+*What is stuck, and is anything watching it.* ~orphanCensus(runtime, { source, leases?, buckets? })~
+(~@loom/workflow-runtime~) is the READ-ONLY pass beside the acting ones: no predicate, no writes, no
+policy — a predicate is what a census must not need, since the question it answers is whether YOURS
+is right. It bands ~running~/~pending~ executions by age (cumulative, with a sample of ids) and,
+given a lease store, classifies each as ~held~ / ~expired~ / ~none~. `none` is the one to watch: a
+stuck execution nothing ever leased cannot be recovered from evidence at all. Clocks: lease expiry
+is judged on ~options.now ?? leases.storeNow?.() ?? Date.now()~ (the store's own clock when it has
+one), while execution ages use the wall clock or ~now~. ~LeaseStore.storeNow?()~ is optional since
+SPI 2.1.0 and implemented by ~PostgresLeaseStore~ (DB time), so a census run from a skewed host
+still judges leases on the clock that stamped them.
 
-*Batch and steal (LeaseStore SPI 2.2.0, ADR 0130 D11).* ~LeaseStore~ gains the OPTIONAL ~acquireMany(ids, owner, ttlMs, now?, options?)~ (the leases granted; an id another owner holds is absent), ~renewMany(ids, owner, ttlMs, now?)~ (returns the HELD set, the ids still owned after the call, never its input, and never resurrects a released or taken lease) and ~releaseMany(ids, owner)~, and ~acquire~ (single id ONLY: ~acquireMany~ rejects ~steal~ with ~TypeError~, a fence belongs to one execution) takes ~{ steal: { fence } }~ (a positive integer; the proof is shape-only, so pass a fence actually won, never an explicit ~now~ in production): a lease another owner holds UNEXPIRED may be taken only with a conditional-fence proof (the fence won by ~acquireFenceIf~); any other ~steal~ value throws ~TypeError~ and changes nothing, and the displaced owner's next renew reports it lost. ~InMemoryLeaseStore~, ~SqliteLeaseStore~ and ~PostgresLeaseStore~ implement all of it (Postgres: one multi-row statement per call, ~ANY($ids)~, database clock, and ~fillfactor~ / autovacuum options on the ~leases~ table); the kit runs the batch cases for a store that implements any batch method (then all three are required) and forces them with ~spiVersion: "2.2.0"~, so a 2.1.0-shaped store passes with no options. ~sqliteStorage()~ and ~postgresStorage()~ return a co-located ~leaseStore~ next to ~eventStore~ (accessor only, lazy and closed with the event store on SQLite; ~defineConfig~ does not read it yet).
+*Batch and steal (LeaseStore SPI 2.2.0, ADR 0130 D11).* ~LeaseStore~ gains the OPTIONAL
+~acquireMany(ids, owner, ttlMs, now?, options?)~ (the leases granted; an id another owner holds is
+absent), ~renewMany(ids, owner, ttlMs, now?)~ (returns the HELD set, the ids still owned after the
+call, never its input, and never resurrects a released or taken lease) and
+~releaseMany(ids, owner)~, and ~acquire~ (single id ONLY: ~acquireMany~ rejects ~steal~ with
+~TypeError~, a fence belongs to one execution) takes ~{ steal: { fence } }~ (a positive integer; the
+proof is shape-only, so pass a fence actually won, never an explicit ~now~ in production): a lease
+another owner holds UNEXPIRED may be taken only with a conditional-fence proof (the fence won by
+~acquireFenceIf~); any other ~steal~ value throws ~TypeError~ and changes nothing, and the displaced
+owner's next renew reports it lost. ~InMemoryLeaseStore~, ~SqliteLeaseStore~ and
+~PostgresLeaseStore~ implement all of it (Postgres: one multi-row statement per call, ~ANY($ids)~,
+database clock, and ~fillfactor~ / autovacuum options on the ~leases~ table); the kit runs the batch
+cases for a store that implements any batch method (then all three are required) and forces them
+with ~spiVersion: "2.2.0"~, so a 2.1.0-shaped store passes with no options. ~sqliteStorage()~ and
+~postgresStorage()~ return a co-located ~leaseStore~ next to ~eventStore~ (accessor only, lazy and
+closed with the event store on SQLite; ~defineConfig~ does not read it yet).
 
-*Heartbeat lease keeper (ADR 0130 D11 S7b/S7c; wired into every driver through ~WorkflowRuntimeDeps.heartbeat~ ={ leaseStore, ttlMs?, renewEveryMs?, onStoreError?, nodeId? }= (~HeartbeatOptions~, with ~acquire?: "eager" | "lazy"~ (default lazy) and ~lazyGraceMs?~): ~start~, ~resume~, ~resumeAs~, ~restoreFromState~, the ~send~/notify winner, a continue-as-new successor and ~LocalWorkerRuntime~ take a lease BEFORE the fence (eagerly, except that a fresh ~start~ is lazy by default) and release it awaited at the suspend/terminal commit; another live owner = ~LeaseHeldError~ (stand down, no fence); a lost lease aborts the run with ~LeaseLostError~, appends nothing and gates every dispatch and append; ~runtime.leaseKeeper~, ~runtime.acquireDriverLease(id)~, ~runtime.closeHeartbeat()~).* ~new LeaseKeeper({ store, nodeId, ttlMs?, renewEveryMs?, onLost, ... })~ (~@loom/workflow-runtime~) is the one-per-node form of ~renewWhileHeld~: ~acquire(id)~ / ~release(id)~ are group-committed, one batched renew runs per tick (~renewMany~ when the store has it, single-id calls otherwise), ~validNow(id)~ is the no-I/O gate (a local monotonic deadline of ~lastRenewSent + ttl - ttl/6~), and ~onLost(id, LeaseLostError)~ fires on a renew that no longer holds the id or when the deadline passes with no confirmed renewal. A store error opens a one-TTL quiet period (~LeaseStoreQuietError~); every acquire/release store call is bounded by ~storeTimeoutMs~ (default ~min(ttl/6, 1000)~ ms, ~LeaseStoreTimeoutError~). A caller-chosen ~start~ that finds a lease but no sequence 0 (a ghost) rejects with the retryable ~StartLeaseHeldError~. ~onStoreError: "continue"~ (S7d) lets drivers run through a lease-store outage (no deadline abort; a taken-over lease still stops them; a new driver whose acquire hits the outage runs unleased) and marks the keeper's owner with ~HEURISTIC_OWNER_SUFFIX~ (~isHeuristicOwner(owner)~), so its expired leases are never evidence on any node. *Lease consumers (S7d):* an unexpired lease vetoes ~isAbandoned~ on the poll and on ~recoverAbandoned~; with heartbeat on in stop mode over a cluster-visible store the ~TimerService~ refusal re-drive runs by default on an expired lease (an absent lease is never evidence); ~redriveAbandoned~ takes ~{ conditional: true }~ (the runtime's internal ~claimRecovery~ appends the ~EXECUTION_RECOVERED~ marker with ~appendIfUnchanged~ before the fence; ~RunOptions.recoveryClaimed~ stops the resume from writing a second); ~collectGhostLeases(runtime, { limit? })~ deletes expired leases that have no stream (the poll runs it, bounded, once per TTL); a lease-store read error fails closed as ~LeaseEvidenceError~ (a one-TTL quiet period follows recovery).
+*Heartbeat lease keeper (ADR 0130 D11 S7b/S7c; wired into every driver through
+~WorkflowRuntimeDeps.heartbeat~ ={ leaseStore, ttlMs?, renewEveryMs?, onStoreError?, nodeId? }=
+(~HeartbeatOptions~, with ~acquire?: "eager" | "lazy"~ (default lazy) and ~lazyGraceMs?~): ~start~,
+~resume~, ~resumeAs~, ~restoreFromState~, the ~send~/notify winner, a continue-as-new successor and
+~LocalWorkerRuntime~ take a lease BEFORE the fence (eagerly, except that a fresh ~start~ is lazy by
+default) and release it awaited at the suspend/terminal commit; another live owner =
+~LeaseHeldError~ (stand down, no fence); a lost lease aborts the run with ~LeaseLostError~, appends
+nothing and gates every dispatch and append; ~runtime.leaseKeeper~,
+~runtime.acquireDriverLease(id)~, ~runtime.closeHeartbeat()~).*
+~new LeaseKeeper({ store, nodeId, ttlMs?, renewEveryMs?, onLost, ... })~ (~@loom/workflow-runtime~)
+is the one-per-node form of ~renewWhileHeld~: ~acquire(id)~ / ~release(id)~ are group-committed, one
+batched renew runs per tick (~renewMany~ when the store has it, single-id calls otherwise),
+~validNow(id)~ is the no-I/O gate (a local monotonic deadline of ~lastRenewSent + ttl - ttl/6~), and
+~onLost(id, LeaseLostError)~ fires on a renew that no longer holds the id or when the deadline
+passes with no confirmed renewal. A store error opens a one-TTL quiet period
+(~LeaseStoreQuietError~); every acquire/release store call is bounded by ~storeTimeoutMs~ (default
+~min(ttl/6, 1000)~ ms, ~LeaseStoreTimeoutError~). A caller-chosen ~start~ that finds a lease but no
+sequence 0 (a ghost) rejects with the retryable ~StartLeaseHeldError~. ~onStoreError: "continue"~
+(S7d) lets drivers run through a lease-store outage (no deadline abort; a taken-over lease still
+stops them; a new driver whose acquire hits the outage runs unleased) and marks the keeper's owner
+with ~HEURISTIC_OWNER_SUFFIX~ (~isHeuristicOwner(owner)~), so its expired leases are never evidence
+on any node. *Lease consumers (S7d):* an unexpired lease vetoes ~isAbandoned~ on the poll and on
+~recoverAbandoned~; with heartbeat on in stop mode over a cluster-visible store the ~TimerService~
+refusal re-drive runs by default on an expired lease (an absent lease is never evidence);
+~redriveAbandoned~ takes ~{ conditional: true }~ (the runtime's internal ~claimRecovery~ appends the
+~EXECUTION_RECOVERED~ marker with ~appendIfUnchanged~ before the fence; ~RunOptions.recoveryClaimed~
+stops the resume from writing a second); ~collectGhostLeases(runtime, { limit? })~ deletes expired
+leases that have no stream (the poll runs it, bounded, once per TTL); a lease-store read error fails
+closed as ~LeaseEvidenceError~ (a one-TTL quiet period follows recovery).
 
-*Retiring an abandoned branch.* Retention never reclaims an execution while a live descendant branch still has events (R5.3) — and a branch nobody answered is suspended forever, so a forked parent returns ~blocked-by-branch~ on every sweep, permanently. ~retireAbandonedBranches(runtime, registry, parentId, { isAbandoned })~ (~@loom/workflow-runtime~) walks that parent's direct children, offers the non-terminal ones to your predicate, and ~cancel()~s the ones it claims — a durable ~EXECUTION_CANCELLED~, not a deletion, so *why* the branch ended survives. Ordinary retention then collects the branch on its own TTL and the parent behind it. ~isAbandoned~ is REQUIRED, for the same reason ~recoverAbandoned~'s is: a branch parked on a human gate is someone's open question, not garbage. The summary reports what it left alone.
+*Retiring an abandoned branch.* Retention never reclaims an execution while a live descendant branch
+still has events (R5.3) — and a branch nobody answered is suspended forever, so a forked parent
+returns ~blocked-by-branch~ on every sweep, permanently.
+~retireAbandonedBranches(runtime, registry, parentId, { isAbandoned })~ (~@loom/workflow-runtime~)
+walks that parent's direct children, offers the non-terminal ones to your predicate, and ~cancel()~s
+the ones it claims — a durable ~EXECUTION_CANCELLED~, not a deletion, so *why* the branch ended
+survives. Ordinary retention then collects the branch on its own TTL and the parent behind it.
+~isAbandoned~ is REQUIRED, for the same reason ~recoverAbandoned~'s is: a branch parked on a human
+gate is someone's open question, not garbage. The summary reports what it left alone.
 
-*Fail-closed execution authorization (R3, 1P half).* ~executionAuthorizer~ gates ~start~/~resume~/~cancel~/~loadState~, but only for a call that carries a ~principal~: a call with none skipped it, so an edge that forgot to attach one was wide open. ~WorkflowRuntimeDeps.executionAuthz: { requirePrincipal: true }~ (set by ~security.strict~; ~strict: { requirePrincipal: false }~ opts out) makes the authorizer see the principal-less request (~principal: undefined~) so the policy decides. Off (default) is byte-identical. The kernel's own principal-less machinery — ~TimerService~ (wakes, schedule starts), ~recoverAbandoned~, ~retireAbandonedBranches~, the ~superviseChildren~ child start and parent resume — presents ~runtime.systemOptions()~ (~{ system }~, or ~{}~ when the mode is off): an identity-compared per-instance grant, not a principal, never recorded and never reaching an effect's authorization. A clone, JSON copy or another runtime's grant is refused. It is an in-process capability: never hand it to request-derived code. Observers that read state (~orphanCensus~, ~reconcileTimers~, ~liveQuery~) take ~runtime.systemStateReader()~. ~executionAccessPolicy(options)~ (~@loom/workflow-runtime~) is the reference ~ExecutionAuthorizer~: per-op ~rules~ (~"owner" | "tenant" | "any" | "deny"~; defaults ~start: "any"~, the rest ~"tenant"~), ~allowWorkflows~, ~requireTenant~, ~allowAnonymous~ (default false), ~resolveOwner~ (legacy logs only), ~unknownOwner~, the op ~actAsOwner~ (default deny) and the op ~send~ (default ~"tenant"~: ~runtime.send~, the only writer of an execution's inbox, is judged against the OWNER of the chain head like a resume, ADR 0110). The principal is durable (R3k, ADR 0111): the kernel records it on ~EXECUTION_STARTED~ and hands the owner to the policy as ~ExecutionAuthzRequest.owner~ (read from sequence 0), so there is no in-process owner table (~ownerOf~ / ~adopt~ / ~maxTracked~ are gone) and ownership survives restarts; the internal paths bypass only the lifecycle gate, and the flow's EFFECTS run as the recorded owner on every path (~options.principal~ is only the lifecycle caller). A principal-less supervisor child has no owner. ~PrincipalCodec~ / ~PrincipalResolver~ / ~security.principalCodec~ / ~security.crypto~ control how the record is written and rebuilt; a fork acts as the forker (~fork(…, { actAs: "owner" })~ is op ~actAsOwner~). ~fork~ (~query~ parent + ~start~ child), ~restoreFromState~ (~resume~) and ~acquireFence~ (~cancel~ / ~start~) take ~{ principal, system }~ and are gated. ~LocalWorkerRuntime~ holds NO system grant by default: a dispatched package acts as ~ExecutionPackage.principal~ (Dispatcher SPI 1.2.0); ~new LocalWorkerRuntime(runtime, { system })~ is the explicit opt-in for kernel re-drive targets (~runsAsSystem~; ~createWorkerServer~ then requires ~authorize~). ~InProcessA2ABus~ (~options.principal~ / ~DispatchOptions.principal~), ~executeGraph~ (~options.principal~), ~createLoomCarrier~/~handleRpc~ (~resolvePrincipal~ on every ~execution.*~ method) and ~createA2AServer~ (~resolvePrincipal~) attach the caller; without one the call is anonymous and refused under strict.
+*Fail-closed execution authorization (R3, 1P half).* ~executionAuthorizer~ gates
+~start~/~resume~/~cancel~/~loadState~, but only for a call that carries a ~principal~: a call with
+none skipped it, so an edge that forgot to attach one was wide open.
+~WorkflowRuntimeDeps.executionAuthz: { requirePrincipal: true }~ (set by ~security.strict~;
+~strict: { requirePrincipal: false }~ opts out) makes the authorizer see the principal-less request
+(~principal: undefined~) so the policy decides. Off (default) is byte-identical. The kernel's own
+principal-less machinery — ~TimerService~ (wakes, schedule starts), ~recoverAbandoned~,
+~retireAbandonedBranches~, the ~superviseChildren~ child start and parent resume — presents
+~runtime.systemOptions()~ (~{ system }~, or ~{}~ when the mode is off): an identity-compared
+per-instance grant, not a principal, never recorded and never reaching an effect's authorization. A
+clone, JSON copy or another runtime's grant is refused. It is an in-process capability: never hand
+it to request-derived code. Observers that read state (~orphanCensus~, ~reconcileTimers~,
+~liveQuery~) take ~runtime.systemStateReader()~. ~executionAccessPolicy(options)~
+(~@loom/workflow-runtime~) is the reference ~ExecutionAuthorizer~: per-op ~rules~
+(~"owner" | "tenant" | "any" | "deny"~; defaults ~start: "any"~, the rest ~"tenant"~),
+~allowWorkflows~, ~requireTenant~, ~allowAnonymous~ (default false), ~resolveOwner~ (legacy logs
+only), ~unknownOwner~, the op ~actAsOwner~ (default deny) and the op ~send~ (default ~"tenant"~:
+~runtime.send~, the only writer of an execution's inbox, is judged against the OWNER of the chain
+head like a resume, ADR 0110). The principal is durable (R3k, ADR 0111): the kernel records it on
+~EXECUTION_STARTED~ and hands the owner to the policy as ~ExecutionAuthzRequest.owner~ (read from
+sequence 0), so there is no in-process owner table (~ownerOf~ / ~adopt~ / ~maxTracked~ are gone) and
+ownership survives restarts; the internal paths bypass only the lifecycle gate, and the flow's
+EFFECTS run as the recorded owner on every path (~options.principal~ is only the lifecycle caller).
+A principal-less supervisor child has no owner. ~PrincipalCodec~ / ~PrincipalResolver~ /
+~security.principalCodec~ / ~security.crypto~ control how the record is written and rebuilt; a fork
+acts as the forker (~fork(…, { actAs: "owner" })~ is op ~actAsOwner~). ~fork~ (~query~ parent +
+~start~ child), ~restoreFromState~ (~resume~) and ~acquireFence~ (~cancel~ / ~start~) take
+~{ principal, system }~ and are gated. ~LocalWorkerRuntime~ holds NO system grant by default: a
+dispatched package acts as ~ExecutionPackage.principal~ (Dispatcher SPI 1.2.0);
+~new LocalWorkerRuntime(runtime, { system })~ is the explicit opt-in for kernel re-drive targets
+(~runsAsSystem~; ~createWorkerServer~ then requires ~authorize~). ~InProcessA2ABus~
+(~options.principal~ / ~DispatchOptions.principal~), ~executeGraph~ (~options.principal~),
+~createLoomCarrier~/~handleRpc~ (~resolvePrincipal~ on every ~execution.*~ method) and
+~createA2AServer~ (~resolvePrincipal~) attach the caller; without one the call is anonymous and
+refused under strict.
 
-*Retention and compaction of an encrypted log (ADR 0022 Amendment).* ~LogLifecycle.compact~ throws ~UnsafeCompactionError~ when the event store encrypts at rest (exposes ~keys~) and the snapshot store does not share that same KeyStore — the checkpoint is the DECRYPTED fold, so a plaintext one would survive a key shred. ~applyRetention~ / ~evaluate~ return ~"unsafe-archive"~ (a ~RetentionOutcome~) when a configured archive does not share the source's keys. Both refuse before anything is read, copied or truncated. A compacted execution is judged on its snapshot plus the surviving suffix, so it is reclaimable.
+*Retention and compaction of an encrypted log (ADR 0022 Amendment).* ~LogLifecycle.compact~ throws
+~UnsafeCompactionError~ when the event store encrypts at rest (exposes ~keys~) and the snapshot
+store does not share that same KeyStore — the checkpoint is the DECRYPTED fold, so a plaintext one
+would survive a key shred. ~applyRetention~ / ~evaluate~ return ~"unsafe-archive"~ (a
+~RetentionOutcome~) when a configured archive does not share the source's keys. Both refuse before
+anything is read, copied or truncated. A compacted execution is judged on its snapshot plus the
+surviving suffix, so it is reclaimable.
 
-*Compaction integrity (ADR 0106).* The checkpoint is named for its execution (a blank one used to send every event a later resume appended to execution ~""~), a log compacted before is folded ON its checkpoint (~CompactionCheckpointMissingError~ when that checkpoint is gone, nothing touched), and ~new LogLifecycle(events, snapshots, { pinnedEventTypes })~ keeps the app's pinned-kind events in place through compaction (~EventStore.truncatePrefixKeeping~, SPI 1.5.0). A store without that method can never compact past the first kept event, and ~onWarn~ says so. Compaction never removes the tip when it keeps events, so a checkpoint is always the log's highest missing sequence (the tip rule). Every kernel-written kind and every non-string is refused in ~pinnedEventTypes~. ~compact~ consults the ~pinned~ predicate only when ~pinnedEventTypes~ is empty (then a pinned execution is left uncompacted); with kinds declared, a pinned execution compacts around them. ~compactionExempt~ (consulted always) keeps a whole log uncompacted. ~compact~ refuses reserved control streams. ~shredSubject~ places its tombstone after the folded tip (pass a ~snapshotStore~, raw or the app's encrypting one, tenant-scoped or not; required on a compactable store) and is retry-safe, and ~EraseCoordinator~ takes a ~snapshotStore~ so a compacted terminal execution is not read as live. A snapshot whose non-blank identity names another execution is refused (~SnapshotIdentityMismatchError~); a blank one is filled. ~reconstructAt~ refuses a position inside compacted history (~CompactedHistoryError~). ~fork~ of a compacted parent is served exactly — every event between the nearest snapshot and the fork point survives, or a snapshot sits exactly at it (a ~[0]~ log's checkpoint is forkable: the range is the folded tip) — or refused with ~CompactedForkPointError~ (~reason~, ~forkableFrom~..~forkableThrough~) and nothing written ([[file:adr/0107-compacted-fork-points-and-the-blank-stream.md][ADR 0107]]). ~LogLifecycle.blankStreamCensus()~ / ~rehomeBlankStream({ apply, assign })~ (~loom repair blank-stream~) re-home the events the pre-0106 bug wrote to execution ~""~ where a snapshot proves their owner (one batch per execution, under a new fence when the execution is fenced; ~failed~ lists what moved since the census), journal ~EVENTS_REHOMED~, and list the rest with candidates rather than guess; ~""~ is reserved (~isReservedStream("")~).
+*Compaction integrity (ADR 0106).* The checkpoint is named for its execution (a blank one used to
+send every event a later resume appended to execution ~""~), a log compacted before is folded ON its
+checkpoint (~CompactionCheckpointMissingError~ when that checkpoint is gone, nothing touched), and
+~new LogLifecycle(events, snapshots, { pinnedEventTypes })~ keeps the app's pinned-kind events in
+place through compaction (~EventStore.truncatePrefixKeeping~, SPI 1.5.0). A store without that
+method can never compact past the first kept event, and ~onWarn~ says so. Compaction never removes
+the tip when it keeps events, so a checkpoint is always the log's highest missing sequence (the tip
+rule). Every kernel-written kind and every non-string is refused in ~pinnedEventTypes~. ~compact~
+consults the ~pinned~ predicate only when ~pinnedEventTypes~ is empty (then a pinned execution is
+left uncompacted); with kinds declared, a pinned execution compacts around them. ~compactionExempt~
+(consulted always) keeps a whole log uncompacted. ~compact~ refuses reserved control streams.
+~shredSubject~ places its tombstone after the folded tip (pass a ~snapshotStore~, raw or the app's
+encrypting one, tenant-scoped or not; required on a compactable store) and is retry-safe, and
+~EraseCoordinator~ takes a ~snapshotStore~ so a compacted terminal execution is not read as live. A
+snapshot whose non-blank identity names another execution is refused
+(~SnapshotIdentityMismatchError~); a blank one is filled. ~reconstructAt~ refuses a position inside
+compacted history (~CompactedHistoryError~). ~fork~ of a compacted parent is served exactly — every
+event between the nearest snapshot and the fork point survives, or a snapshot sits exactly at it (a
+~[0]~ log's checkpoint is forkable: the range is the folded tip) — or refused with
+~CompactedForkPointError~ (~reason~, ~forkableFrom~..~forkableThrough~) and nothing written
+([[file:adr/0107-compacted-fork-points-and-the-blank-stream.md][ADR 0107]]).
+~LogLifecycle.blankStreamCensus()~ / ~rehomeBlankStream({ apply, assign })~
+(~loom repair blank-stream~) re-home the events the pre-0106 bug wrote to execution ~""~ where a
+snapshot proves their owner (one batch per execution, under a new fence when the execution is
+fenced; ~failed~ lists what moved since the census), journal ~EVENTS_REHOMED~, and list the rest
+with candidates rather than guess; ~""~ is reserved (~isReservedStream("")~).
 
-*Holding a topic whose head is sealed ([[file:adr/0130-sealed-payload-delivery-guard.md][ADR 0130]] residuals D9).* ~runtime.quarantineInbox(executionId, { topic, reason? }, { principal })~ (op ~quarantine~) and ~runtime.releaseInbox(executionId, { topic, messageId, sender?, disposition? }, { principal })~ (op ~release~, or ~discard~ for ~disposition: "discard"~) are the operator verbs of the per-topic hold. Both default to ~"deny"~ in ~executionAccessPolicy~ like ~discard~, REQUIRE a ~principal~ (refused with ~ExecutionDeniedError~ before anything is read), and refuse with ~InboxQuarantineRefusedError~ (~reason~: ~not-parked~ | ~contended~ | ~invalid~ | ~not-sealed~ | ~checkpoint-unreadable-log-compacted~, ~verb~: ~quarantineInbox~ | ~releaseInbox~ | ~fork~) with nothing appended. ~quarantineInbox~ copies the topic's sealed head into the reserved ~__loom_quarantine__:<chainId>~ stream FIRST (deterministic id ~quarantine:<chainId>:<key>:<inboxSeq>~; sequence 0 of that stream is a payload-free anchor), then journals ~INBOX_QUARANTINED~ under the park's conditional fence; the topic is then held for every node, in original order, and a node that can open the copy releases it by itself (~INBOX_RELEASED { auto: true }~ + ~MESSAGE_CONSUMED~ at the original ~inboxSeq~ in ONE batch; ~WorkflowRuntimeDeps.inboxAutoRelease~ / ~kernel.inbox.autoRelease~, default ~true~). ~WorkflowRuntimeDeps.inboxQuarantineMax~ / ~kernel.inbox.quarantineMax~ (default 256, ceiling 1024) bounds the held copies per chain; ~runtime.inboxAutoReleaseOn~ / ~runtime.inboxQuarantineLimit~ report the node's settings. On a node that cannot open the owner's SEALED checkpoint the two verbs (only they) fold the owner from the complete log; a compacted log is ~checkpoint-unreadable-log-compacted~ (run the verb on a capable node). That log is read PAST a seal whose ~covers~ lists only ~MESSAGE_CONSUMED.payload[.…]~ (an opaque ciphertext value the fold copies and never interprets; never decrypted, no key asked); any other covered field is still the ordinary denial. The state so folded is transient: used to decide the verb, never journaled, returned, cached or snapshotted. A held topic no node here can open is reported as ~QuarantineHeldError~ (a ~SealedPayloadUnreadableError~). Types: ~QuarantineInboxInput/Options/Result~, ~ReleaseInboxInput/Options/Result~.
+*Holding a topic whose head is sealed ([[file:adr/0130-sealed-payload-delivery-guard.md][ADR 0130]]
+residuals D9).* ~runtime.quarantineInbox(executionId, { topic, reason? }, { principal })~ (op
+~quarantine~) and ~runtime.releaseInbox(executionId, { topic, messageId, sender?, disposition? }, {
+principal })~ (op ~release~, or ~discard~ for ~disposition: "discard"~) are the operator verbs of
+the per-topic hold. Both default to ~"deny"~ in ~executionAccessPolicy~ like ~discard~, REQUIRE a
+~principal~ (refused with ~ExecutionDeniedError~ before anything is read), and refuse with
+~InboxQuarantineRefusedError~ (~reason~: ~not-parked~ | ~contended~ | ~invalid~ | ~not-sealed~ |
+~checkpoint-unreadable-log-compacted~, ~verb~: ~quarantineInbox~ | ~releaseInbox~ | ~fork~) with
+nothing appended. ~quarantineInbox~ copies the topic's sealed head into the reserved
+~__loom_quarantine__:<chainId>~ stream FIRST (deterministic id
+~quarantine:<chainId>:<key>:<inboxSeq>~; sequence 0 of that stream is a payload-free anchor), then
+journals ~INBOX_QUARANTINED~ under the park's conditional fence; the topic is then held for every
+node, in original order, and a node that can open the copy releases it by itself
+(~INBOX_RELEASED { auto: true }~ + ~MESSAGE_CONSUMED~ at the original ~inboxSeq~ in ONE batch;
+~WorkflowRuntimeDeps.inboxAutoRelease~ / ~kernel.inbox.autoRelease~, default ~true~).
+~WorkflowRuntimeDeps.inboxQuarantineMax~ / ~kernel.inbox.quarantineMax~ (default 256, ceiling 1024)
+bounds the held copies per chain; ~runtime.inboxAutoReleaseOn~ / ~runtime.inboxQuarantineLimit~
+report the node's settings. On a node that cannot open the owner's SEALED checkpoint the two verbs
+(only they) fold the owner from the complete log; a compacted log is
+~checkpoint-unreadable-log-compacted~ (run the verb on a capable node). That log is read PAST a seal
+whose ~covers~ lists only ~MESSAGE_CONSUMED.payload[.…]~ (an opaque ciphertext value the fold copies
+and never interprets; never decrypted, no key asked); any other covered field is still the ordinary
+denial. The state so folded is transient: used to decide the verb, never journaled, returned, cached
+or snapshotted. A held topic no node here can open is reported as ~QuarantineHeldError~ (a
+~SealedPayloadUnreadableError~). Types: ~QuarantineInboxInput/Options/Result~,
+~ReleaseInboxInput/Options/Result~.
 
-*Collecting the registry.* After retention reclaims a branch, two rows outlive it. ~LogLifecycle~ forgets the fork edge as it deletes the execution (optional ~removeLineage~ — dead edges otherwise make every future sweep walk them). ~pruneBranchRefs(eventStore, registry, { pageSize?, limit?, protect? })~ (~@loom/workflow-runtime~) pages over ~listRefs~ and deletes refs whose execution has no events — a dangling ref is not merely untidy, since promoting one leaves ~main~ naming an execution nobody can read. It takes NO predicate: unlike "is this branch abandoned", "the execution is gone" is a fact. ~main~ is protected by default and reported as dangling instead.
+*Collecting the registry.* After retention reclaims a branch, two rows outlive it. ~LogLifecycle~
+forgets the fork edge as it deletes the execution (optional ~removeLineage~ — dead edges otherwise
+make every future sweep walk them).
+~pruneBranchRefs(eventStore, registry, { pageSize?, limit?, protect? })~ (~@loom/workflow-runtime~)
+pages over ~listRefs~ and deletes refs whose execution has no events — a dangling ref is not merely
+untidy, since promoting one leaves ~main~ naming an execution nobody can read. It takes NO
+predicate: unlike "is this branch abandoned", "the execution is gone" is a fact. ~main~ is protected
+by default and reported as dangling instead.
 
-*Cancellation, deadlines & bounded effects (2.0, K8).* A step's ~timeoutMs~ bounds a single effect; a flow's ~deadlineMs~ (see ~FlowDefinition~) bounds the whole run against the logged ~EXECUTION_STARTED~ timestamp (never reset by recovery). Breach — or ~handle.cancel()~ / ~ExecutionRuntime.cancel()~ — aborts in-flight effects via ~EffectContext.signal~ and records a kernel-driven ~EXECUTION_CANCELLED~.
+*Cancellation, deadlines & bounded effects (2.0, K8).* A step's ~timeoutMs~ bounds a single effect;
+a flow's ~deadlineMs~ (see ~FlowDefinition~) bounds the whole run against the logged
+~EXECUTION_STARTED~ timestamp (never reset by recovery). Breach — or ~handle.cancel()~ /
+~ExecutionRuntime.cancel()~ — aborts in-flight effects via ~EffectContext.signal~ and records a
+kernel-driven ~EXECUTION_CANCELLED~.
 
 *The kernel ABI (2.0, K1).* The syscall surface is named and versioned; a conformance test pins it.
 
@@ -695,14 +932,27 @@ class SqliteBranchRegistry { constructor(dbPath: string) }
 
 *Browser-safe subpath:* ~import { InMemoryAsyncEventStore } from "@loom/event-runtime/memory"~ imports only the in-memory store — no ~better-sqlite3~.
 
-*Tenant isolation (2.0, K12.5).* ~TenantScopedEventStore~ wraps any ~EventStore~ and key-prefixes every execution id with the tenant on the way in / un-prefixes on the way out, so a store scoped to tenant A can only ever *address* keys under A — reading or subscribing across tenants is impossible by construction, not by a filter. Fork stays in-tenant. ~@loom/snapshot-runtime~ ships the matching ~TenantScopedSnapshotStore~. Postgres row-level security is an optional hardening layer on top.
+*Tenant isolation (2.0, K12.5).* ~TenantScopedEventStore~ wraps any ~EventStore~ and key-prefixes
+every execution id with the tenant on the way in / un-prefixes on the way out, so a store scoped to
+tenant A can only ever *address* keys under A — reading or subscribing across tenants is impossible
+by construction, not by a filter. Fork stays in-tenant. ~@loom/snapshot-runtime~ ships the matching
+~TenantScopedSnapshotStore~. Postgres row-level security is an optional hardening layer on top.
 
 #+begin_src typescript
 class TenantScopedEventStore    implements EventStore    { constructor(inner: EventStore, tenant: string) }
 class TenantScopedSnapshotStore implements SnapshotStore { constructor(inner: SnapshotStore, tenant: string) }  // @loom/snapshot-runtime
 #+end_src
 
-*Writing a store decorator (ADR 0074 Amendment).* A decorator must decide EVERY optional SPI method: forward it, override it, or refuse it with a reason. One that silently drops a method takes the capability away from everything above it — four in-repo decorators dropped ~appendBatch~, so ~Coalescing(TenantScoped(backend))~ never batched. ~installOptional~ installs a plan whose type maps the whole optional union to REQUIRED keys, so a plan that omits a method (including a future one) does not compile — the kit catches a decorator that uses no plan at all; each method is installed only when the inner store has it (capability probes unchanged), refusals are recorded, and the structural encryption marker (~keys~) is carried up so ~LogLifecycle~'s key rule and ~loom doctor~ still see an encrypting store below. ~runEventStoreDecoratorConformance~ (~@loom/conformance~) is the check.
+*Writing a store decorator (ADR 0074 Amendment).* A decorator must decide EVERY optional SPI method:
+forward it, override it, or refuse it with a reason. One that silently drops a method takes the
+capability away from everything above it — four in-repo decorators dropped ~appendBatch~, so
+~Coalescing(TenantScoped(backend))~ never batched. ~installOptional~ installs a plan whose type maps
+the whole optional union to REQUIRED keys, so a plan that omits a method (including a future one)
+does not compile — the kit catches a decorator that uses no plan at all; each method is installed
+only when the inner store has it (capability probes unchanged), refusals are recorded, and the
+structural encryption marker (~keys~) is carried up so ~LogLifecycle~'s key rule and ~loom doctor~
+still see an encrypting store below. ~runEventStoreDecoratorConformance~ (~@loom/conformance~) is
+the check.
 
 #+begin_src typescript
 type OptionalEventStoreMethod = "appendBatch" | "readRange" | "head" | "acquireFence" | "copyPrefix"
@@ -887,7 +1137,12 @@ class InMemoryReadModelStore implements ReadModelStore {}
 
 Hash-chains every event into its ~metadata~, which the fold ignores — so replay is byte-identical whether or not it is wired, and any later edit, insert, reorder or drop is detectable out of band.
 
-*Who can check it (#382).* An ~hmacSecret~ makes the log tamper-EVIDENT: verification needs the same secret, so anyone able to check it could also re-chain and re-sign it. A ~signer~ makes it third-party VERIFIABLE — an auditor holds only ~verifier~ and cannot author an entry. The two are mutually exclusive (different promises), ~keyId~ keeps history verifiable across rotation, an unknown key is rejected rather than skipped, and ~signaturesChecked~ says whether authorship was checked at all so a hash-only pass cannot be over-read.
+*Who can check it (#382).* An ~hmacSecret~ makes the log tamper-EVIDENT: verification needs the same
+secret, so anyone able to check it could also re-chain and re-sign it. A ~signer~ makes it
+third-party VERIFIABLE — an auditor holds only ~verifier~ and cannot author an entry. The two are
+mutually exclusive (different promises), ~keyId~ keeps history verifiable across rotation, an
+unknown key is rejected rather than skipped, and ~signaturesChecked~ says whether authorship was
+checked at all so a hash-only pass cannot be over-read.
 
 #+begin_src typescript
 function hashChainedEventStore(inner: EventStore, options?: {
@@ -961,7 +1216,15 @@ interface Warmer { warm(toolId: string): void; }
 
 A denied effect never runs: it emits ~EFFECT_DENIED~ (folds into ~variables._denials~) and throws ~CapabilityDeniedError~, failing the step. All three options are opt-in — omit them and ~execute~ is the unchanged zero-overhead path.
 
-*Identity, tenancy & delegated authority (2.0, K12).* A ~CapabilityRequest~ can carry a ~PrincipalChain~ (tenant / actor / on-behalf-of / a verifiable delegation). ~DelegationAuthorizer~ honors a *signed, attenuated* delegation only after verifying its HMAC and intersecting its grants with the callee's own authority (~base~, required) — a delegate can never invoke an effect the delegator lacked, nor one the callee lacks (no ambient escalation). Attenuation only narrows. The HMAC secret is *symmetric*, so the signature stops a third party forging a grant set in transit but cannot stop the verifier minting its own; the intersection is what bounds the callee. Cross-organisation delegation is out of scope — see [[file:adr/0024-k12-identity-tenancy-delegated-authority.md][ADR 0024]].
+*Identity, tenancy & delegated authority (2.0, K12).* A ~CapabilityRequest~ can carry a
+~PrincipalChain~ (tenant / actor / on-behalf-of / a verifiable delegation). ~DelegationAuthorizer~
+honors a *signed, attenuated* delegation only after verifying its HMAC and intersecting its grants
+with the callee's own authority (~base~, required) — a delegate can never invoke an effect the
+delegator lacked, nor one the callee lacks (no ambient escalation). Attenuation only narrows. The
+HMAC secret is *symmetric*, so the signature stops a third party forging a grant set in transit but
+cannot stop the verifier minting its own; the intersection is what bounds the callee.
+Cross-organisation delegation is out of scope — see
+[[file:adr/0024-k12-identity-tenancy-delegated-authority.md][ADR 0024]].
 
 #+begin_src typescript
 interface PrincipalChain { tenant?: string; actor?: string; onBehalfOf?: string; delegation?: DelegatedGrant; [k: string]: unknown; }
@@ -995,7 +1258,12 @@ new LazyEffect(spec: HandlerSpec)                // kind "tool" — resolves an 
 :CUSTOM_ID: kernel-hardening
 :END:
 
-The kernel-hardening rings (K1–K12) and kernel services (T1–T2) turn Loom into something that *earns* the word "kernel." Every ring is opt-in and byte-identical to Loom 1.x when unwired (P10); each new verdict folds like any other event (P9). Most rings surface through packages already documented above — this section is the index, plus the three packages that exist only for hardening. See the architecture narrative in [[file:architecture.md][§5.7]] and the ring-by-ring detail in [[file:loom-2.0/04-kernel-hardening.md][04 — Kernel Hardening]].
+The kernel-hardening rings (K1–K12) and kernel services (T1–T2) turn Loom into something that
+*earns* the word "kernel." Every ring is opt-in and byte-identical to Loom 1.x when unwired (P10);
+each new verdict folds like any other event (P9). Most rings surface through packages already
+documented above — this section is the index, plus the three packages that exist only for hardening.
+See the architecture narrative in [[file:architecture.md][§5.7]] and the ring-by-ring detail in
+[[file:loom-2.0/04-kernel-hardening.md][04 — Kernel Hardening]].
 
 | Ring | Concern | Where in this reference | Durable fact |
 |------+---------+-------------------------+--------------|
@@ -1016,7 +1284,11 @@ The kernel-hardening rings (K1–K12) and kernel services (T1–T2) turn Loom in
 
 ** ~@loom/isolate~ — data-plane isolation & brokered egress (K7)
 
-Runs an untrusted tool in a separate child process — its own authority domain. The tool's code is a *module the child loads*, never a closure over parent state; the child's env is scrubbed to exactly the credentials declared for that one tool; all network I/O is brokered kernel-side against a static allowlist (resolve-and-pin, so a DNS rebind can't redirect it), and ~ctx.signal~/~timeoutMs~ SIGKILLs the child.
+Runs an untrusted tool in a separate child process — its own authority domain. The tool's code is a
+*module the child loads*, never a closure over parent state; the child's env is scrubbed to exactly
+the credentials declared for that one tool; all network I/O is brokered kernel-side against a static
+allowlist (resolve-and-pin, so a DNS rebind can't redirect it), and ~ctx.signal~/~timeoutMs~
+SIGKILLs the child.
 
 #+begin_src typescript
 class IsolatedToolEffect implements Effect {          // kind "tool" — drop-in for ToolEffect
@@ -1048,7 +1320,13 @@ class EgressDeniedError extends Error { readonly toolId: string; readonly target
 
 ** ~@loom/plugin-crypto~ — encryption-at-rest & crypto-shredding (K10)
 
-Wraps any ~EventStore~/~SnapshotStore~ to encrypt *marked* payload fields (dot-paths per event type) under a per-subject key on append and decrypt on read (AES-256-GCM; unmarked events stored verbatim — zero overhead). Erasure is by key destruction: ~shredSubject~ destroys the key (irreversible for everything encrypted under it, in events *and* snapshots) and appends a durable ~PAYLOAD_SHREDDED~ tombstone. A later decrypting read of a shredded execution throws ~PayloadShreddedError~ — replay fails *loudly*, never silently diverges. Optional store capabilities (fencing, ~readRange~, ~copyPrefix~) are forwarded, so it composes with K9.4 and ~fork()~.
+Wraps any ~EventStore~/~SnapshotStore~ to encrypt *marked* payload fields (dot-paths per event type)
+under a per-subject key on append and decrypt on read (AES-256-GCM; unmarked events stored verbatim
+— zero overhead). Erasure is by key destruction: ~shredSubject~ destroys the key (irreversible for
+everything encrypted under it, in events *and* snapshots) and appends a durable ~PAYLOAD_SHREDDED~
+tombstone. A later decrypting read of a shredded execution throws ~PayloadShreddedError~ — replay
+fails *loudly*, never silently diverges. Optional store capabilities (fencing, ~readRange~,
+~copyPrefix~) are forwarded, so it composes with K9.4 and ~fork()~.
 
 #+begin_src typescript
 class EncryptingEventStore    implements EventStore    { constructor(inner: EventStore,    keys: KeyStore, options: EncryptingEventStoreOptions) }
@@ -1767,7 +2045,41 @@ function createLlmEffect<TIn = string, TOut = string>(options: {
 }): LlmEffect<TIn, TOut>
 #+end_src
 
-*Content parts and tool turns (R5, [[file:adr/0120-llm-content-parts-and-tool-threading.md][ADR 0120]]).* A message's ~content~ is a ~string~ (text only, unchanged) or an array of parts: ~{ type: "text" }~, ~{ type: "image" | "audio" | "file", mediaType, source }~ with ~source~ either ~{ kind: "ref", ref: { address, size? } }~ (a ContentStore claim-check) or ~{ kind: "data", data }~ (base64, at most ~MAX_INLINE_BYTES~ = 64 KiB), ~{ type: "tool_use", id, name, input }~ (assistant messages) and ~{ type: "tool_result", toolUseId, content, isError? }~ (user messages; there is no ~tool~ role). ~textOf~ / ~toParts~ read either form (~textOf~ throws ~TaintedContentError~ on a ~tainted()~ wrapper at the top level, in a text part or in ~tool_result~ content); ~assistantMessageOf(response)~ builds the assistant turn a tool result answers. A provider declares ~capabilities~ (~{ image?, audio?, file? }~, each a list of media types, ~"image/*"~ and ~"*"~ allowed); absent means text and tool calls only, and ~assertRequestSupported~ throws ~UnsupportedModalityError~ before any network call (~createLlmEffect~, ~AgentRunner~, ~ReasoningRuntime~ and each shipped provider all run it). ~guardRequest~ also enforces structure: ~tool_use~ only in ~assistant~, ~tool_result~ only in ~user~ and only for an earlier ~tool_use~ id, media only in ~user~, well-formed media types, inline data under the cap (~InvalidLlmRequestError~, ~OversizedInlinePartError~); ~OversizedInlinePartError.scope~ is ~"part"~ (the per-part cap) or ~"request"~ (the per-request inline total); a media part marked ~untrusted: { origin }~ is bracketed by the same ~<untrusted-input>~ fence as text and refused outside ~user~. ~resolveRequestContent~ / ~ContentResolver~ turn refs into bytes inside the effect (a resolver authorizes against a SET of owning tenants, since content-addressed dedupe makes identical bytes one blob; ADR 0120 "Authorizing under dedupe"; ~UnresolvedContentError~ when absent or over ~maxResolvedBytes~); the journaled request carries the address only. Streaming adds ~LlmStreamChunk.toolDelta~ (tool-call input fragments; transient; the assembled call still arrives on the terminal chunk). Exported: ~LlmContentPart~ and the part types, ~LlmCapabilities~, ~MediaTypeSet~, ~UnsupportedModalityError~, ~InvalidLlmRequestError~, ~OversizedInlinePartError~, ~UnresolvedContentError~, ~TaintedContentError~, ~MAX_INLINE_BYTES~, ~MAX_RESOLVED_BYTES~, ~assertRequestSupported~, ~mediaTypeAccepted~, ~capabilitiesForModel(model, base, allow)~ (the allowlist the shipped providers use: ~base~ only when the model id matches, else ~{}~), ~GEMINI_CAPABILITIES~, ~GEMINI_MEDIA_MODELS~, ~requestMediaParts~, ~resolveRequestContent~, ~inlineData~, ~validateMediaPart~, ~textOf~, ~toParts~, ~hasStructuredParts~, ~assistantMessageOf~, ~base64ByteLength~. In ~@loom/agent~: ~mediaResult(parts)~ (what a tool declared ~returnsMedia: true~ returns to hand the model an image/file; never honoured for a tainted output), ~isMediaResult~, ~toolResultPart~, and ~createAgentModelEffect(provider, { resolveContent, onToolDelta })~ / ~AgentConfig.resolveContent~.
+*Content parts and tool turns (R5,
+[[file:adr/0120-llm-content-parts-and-tool-threading.md][ADR 0120]]).* A message's ~content~ is a
+~string~ (text only, unchanged) or an array of parts: ~{ type: "text" }~,
+~{ type: "image" | "audio" | "file", mediaType, source }~ with ~source~ either
+~{ kind: "ref", ref: { address, size? } }~ (a ContentStore claim-check) or ~{ kind: "data", data }~
+(base64, at most ~MAX_INLINE_BYTES~ = 64 KiB), ~{ type: "tool_use", id, name, input }~ (assistant
+messages) and ~{ type: "tool_result", toolUseId, content, isError? }~ (user messages; there is no
+~tool~ role). ~textOf~ / ~toParts~ read either form (~textOf~ throws ~TaintedContentError~ on a
+~tainted()~ wrapper at the top level, in a text part or in ~tool_result~ content);
+~assistantMessageOf(response)~ builds the assistant turn a tool result answers. A provider declares
+~capabilities~ (~{ image?, audio?, file? }~, each a list of media types, ~"image/*"~ and ~"*"~
+allowed); absent means text and tool calls only, and ~assertRequestSupported~ throws
+~UnsupportedModalityError~ before any network call (~createLlmEffect~, ~AgentRunner~,
+~ReasoningRuntime~ and each shipped provider all run it). ~guardRequest~ also enforces structure:
+~tool_use~ only in ~assistant~, ~tool_result~ only in ~user~ and only for an earlier ~tool_use~ id,
+media only in ~user~, well-formed media types, inline data under the cap (~InvalidLlmRequestError~,
+~OversizedInlinePartError~); ~OversizedInlinePartError.scope~ is ~"part"~ (the per-part cap) or
+~"request"~ (the per-request inline total); a media part marked ~untrusted: { origin }~ is bracketed
+by the same ~<untrusted-input>~ fence as text and refused outside ~user~. ~resolveRequestContent~ /
+~ContentResolver~ turn refs into bytes inside the effect (a resolver authorizes against a SET of
+owning tenants, since content-addressed dedupe makes identical bytes one blob; ADR 0120 "Authorizing
+under dedupe"; ~UnresolvedContentError~ when absent or over ~maxResolvedBytes~); the journaled
+request carries the address only. Streaming adds ~LlmStreamChunk.toolDelta~ (tool-call input
+fragments; transient; the assembled call still arrives on the terminal chunk). Exported:
+~LlmContentPart~ and the part types, ~LlmCapabilities~, ~MediaTypeSet~, ~UnsupportedModalityError~,
+~InvalidLlmRequestError~, ~OversizedInlinePartError~, ~UnresolvedContentError~,
+~TaintedContentError~, ~MAX_INLINE_BYTES~, ~MAX_RESOLVED_BYTES~, ~assertRequestSupported~,
+~mediaTypeAccepted~, ~capabilitiesForModel(model, base, allow)~ (the allowlist the shipped providers
+use: ~base~ only when the model id matches, else ~{}~), ~GEMINI_CAPABILITIES~,
+~GEMINI_MEDIA_MODELS~, ~requestMediaParts~, ~resolveRequestContent~, ~inlineData~,
+~validateMediaPart~, ~textOf~, ~toParts~, ~hasStructuredParts~, ~assistantMessageOf~,
+~base64ByteLength~. In ~@loom/agent~: ~mediaResult(parts)~ (what a tool declared
+~returnsMedia: true~ returns to hand the model an image/file; never honoured for a tainted output),
+~isMediaResult~, ~toolResultPart~, and
+~createAgentModelEffect(provider, { resolveContent, onToolDelta })~ / ~AgentConfig.resolveContent~.
 
 Providers talk to vendor HTTP APIs over ~fetch~ — no vendor SDK dependency. In tests, use the VCR providers from [[#dx][~@loom/testing~]].
 
@@ -1810,7 +2122,9 @@ class AgentRunner {
     systemPrompt?: string; memory?: MemoryRuntime;
     parallelTools?: boolean | number;  // default false; true = all, number = cap
     skills?: SkillRegistry; skillSelector?: SkillSelector;
+    acceptAtLeastOnce?: boolean;    // K9.3 (ADR 0021): default false = REFUSE an idempotent:false tool (IdempotentToolRefusedError, terminal, checked for the WHOLE turn's batch before any call is dispatched); true = run it with at-least-once re-run on recovery
   })
+  // each nested tool call gets ctx.idempotencyKey = `<outer>:t<turn>:c<position>:<first 16 hex of sha256(name + canonical input)>`
   run(input: AgentInput, ctx: EffectContext): Promise<AgentOutput>
   asEffect(): LlmEffect<AgentInput, AgentOutput>
 }
@@ -1876,7 +2190,47 @@ function registerReasoningRoutes(effects: { register(id, effect) }, reasoning: R
 
 Emits ~SKILLS_SELECTED~ / ~AGENT_TOOL_CALL~ / ~AGENT_COMPLETED~ events via ~ctx.emit~.
 
-*Tool menu (every loop: ~AgentRunner~, ~agentStep$~, ~agentLoop$~).* The model sees each tool's real argument structure: ~LlmToolSpec.inputSchema~ is the JSON Schema of the tool's Zod ~inputSchema~ (~toolInputJsonSchema~; a hand-written converter that degrades to ={}= for what it cannot express). A tool call the model returns is executed only if its name is on the agent's menu (the definition's tools plus the selected skills' tools) AND its input passes the tool's ~inputSchema~. Otherwise nothing runs and the model receives a structured result =\{ error: { code: "tool_not_on_menu" | "invalid_tool_input", message, issues? } }= (issues capped at 5, 200 chars each) so it can recover; the refusal is a pure function of the model output and the static menu and nothing is appended. *Replay:* an in-flight ~agentLoop$~ execution whose log (written before R4) recorded an off-menu or invalid-input call replays a refusal in its place, so its ~toolCallLog~ and later transcript diverge; drain in-flight ~agentLoop$~ executions before upgrading (~agentStep$~ / ~AgentRunner~ are single-step and unaffected). The gate sits after the ~needsApproval~ gate (moving it would break resume ordering); the policy receives ~onMenu~ as a third argument so a host can return =false= (or, on the deprecated ~requireApproval~, =true=) to skip prompting a human for a call that will be refused anyway. A tool with no ~inputSchema~ (untyped callers) is not input-validated. Validation is a SHAPE check, not sanitisation: unknown keys pass unless the schema is ~.strict()~, and transformed / coerced / preprocessed values are checked but the RAW input is what runs. Schemas used as tool inputs must be pure: an impure refinement makes refusals nondeterministic on replay. A schema fault (async or throwing refinement) or an input deeper than 64 levels / 100k nodes is a refusal (~invalid_tool_input~, fixed message), never a throw; echoed tool names and paths are capped at 200 chars. The converter omits what it cannot state without being tighter than the validator: ~default~ values, ~pattern~ for regexes with flags, a non-coercing ~z.date()~, bigint literals, recursive lazies past their first expansion; a non-object root is sent as a bare ={type: object}= (non-object tool inputs are validated but not described). *Third-party JSON Schema (R4b).* ~ToolDefinition.jsonInputSchema~ (set by ~@loom/plugin-mcp~ from the server's ~inputSchema~) is sent in place of the Zod-derived schema, after ~sanitizeJsonSchema~: keyword allowlist, depth 16 / 1000 nodes / 64KB, remote ~$ref~ dropped, cyclic or oversized refused (a bare ={type: object}= and a ~LOOM_AGENT_TOOL_SCHEMA~ warning per tool; the run continues). The text that remains is constrained, not just capped: property and ~$defs~ keys must match ~^[A-Za-z0-9_.-]{1,64}$~ (else the entry is dropped), ~enum~/~const~ strings are at most 64 chars without control/zero-width/bidi characters, ~format~ is from the standard list, ~pattern~ must compile, a ~$ref~ must name a kept ~$defs~ entry, and a 4096-character total budget refuses the whole schema. ~description~/~title~ text, and the tool's own description (replaced by a fixed "Third-party tool; description withheld"), are stripped unless the operator opts in (~registerInto({ trustDescriptions: true })~ / ~trustJsonSchemaText~, capped at 1000 chars, warns once per tool): they are instructions to a model and a plain string carries no taint for ~guardRequest~ to refuse (ADR 0085). ~@loom/plugin-mcp~ skips tools whose name is not ~^[A-Za-z0-9_-]{1,64}$~. An MCP tool shape-checks its own call (object, ~required~, top-level property types) INSIDE its effect and returns the refusal as the recorded result, so replay never re-evaluates a live schema; deeper validation is the server's. Exported: ~buildToolMenu~, ~toolInputJsonSchema~, ~toolSpecFor~, ~sanitizeJsonSchema~, ~validateToolInput~.
+*Tool menu (every loop: ~AgentRunner~, ~agentStep$~, ~agentLoop$~).* The model sees each tool's real
+argument structure: ~LlmToolSpec.inputSchema~ is the JSON Schema of the tool's Zod ~inputSchema~
+(~toolInputJsonSchema~; a hand-written converter that degrades to ={}= for what it cannot express).
+A tool call the model returns is executed only if its name is on the agent's menu (the definition's
+tools plus the selected skills' tools) AND its input passes the tool's ~inputSchema~. Otherwise
+nothing runs and the model receives a structured result
+=\{ error: { code: "tool_not_on_menu" | "invalid_tool_input", message, issues? } }= (issues capped
+at 5, 200 chars each) so it can recover; the refusal is a pure function of the model output and the
+static menu and nothing is appended. *Replay:* an in-flight ~agentLoop$~ execution whose log
+(written before R4) recorded an off-menu or invalid-input call replays a refusal in its place, so
+its ~toolCallLog~ and later transcript diverge; drain in-flight ~agentLoop$~ executions before
+upgrading (~agentStep$~ / ~AgentRunner~ are single-step and unaffected). The gate sits after the
+~needsApproval~ gate (moving it would break resume ordering); the policy receives ~onMenu~ as a
+third argument so a host can return =false= (or, on the deprecated ~requireApproval~, =true=) to
+skip prompting a human for a call that will be refused anyway. A tool with no ~inputSchema~ (untyped
+callers) is not input-validated. Validation is a SHAPE check, not sanitisation: unknown keys pass
+unless the schema is ~.strict()~, and transformed / coerced / preprocessed values are checked but
+the RAW input is what runs. Schemas used as tool inputs must be pure: an impure refinement makes
+refusals nondeterministic on replay. A schema fault (async or throwing refinement) or an input
+deeper than 64 levels / 100k nodes is a refusal (~invalid_tool_input~, fixed message), never a
+throw; echoed tool names and paths are capped at 200 chars. The converter omits what it cannot state
+without being tighter than the validator: ~default~ values, ~pattern~ for regexes with flags, a
+non-coercing ~z.date()~, bigint literals, recursive lazies past their first expansion; a non-object
+root is sent as a bare ={type: object}= (non-object tool inputs are validated but not described).
+*Third-party JSON Schema (R4b).* ~ToolDefinition.jsonInputSchema~ (set by ~@loom/plugin-mcp~ from
+the server's ~inputSchema~) is sent in place of the Zod-derived schema, after ~sanitizeJsonSchema~:
+keyword allowlist, depth 16 / 1000 nodes / 64KB, remote ~$ref~ dropped, cyclic or oversized refused
+(a bare ={type: object}= and a ~LOOM_AGENT_TOOL_SCHEMA~ warning per tool; the run continues). The
+text that remains is constrained, not just capped: property and ~$defs~ keys must match
+~^[A-Za-z0-9_.-]{1,64}$~ (else the entry is dropped), ~enum~/~const~ strings are at most 64 chars
+without control/zero-width/bidi characters, ~format~ is from the standard list, ~pattern~ must
+compile, a ~$ref~ must name a kept ~$defs~ entry, and a 4096-character total budget refuses the
+whole schema. ~description~/~title~ text, and the tool's own description (replaced by a fixed
+"Third-party tool; description withheld"), are stripped unless the operator opts in
+(~registerInto({ trustDescriptions: true })~ / ~trustJsonSchemaText~, capped at 1000 chars, warns
+once per tool): they are instructions to a model and a plain string carries no taint for
+~guardRequest~ to refuse (ADR 0085). ~@loom/plugin-mcp~ skips tools whose name is not
+~^[A-Za-z0-9_-]{1,64}$~. An MCP tool shape-checks its own call (object, ~required~, top-level
+property types) INSIDE its effect and returns the refusal as the recorded result, so replay never
+re-evaluates a live schema; deeper validation is the server's. Exported: ~buildToolMenu~,
+~toolInputJsonSchema~, ~toolSpecFor~, ~sanitizeJsonSchema~, ~validateToolInput~.
 
 #+begin_src typescript
 // F4 — which skills did agentLoop$ select? A pure reader over events (a live log, a replay, an audit export).
@@ -2258,9 +2612,20 @@ class ConversationHub {
 type LiveEvent = { type: "delta"; conversationId; turn; text } | { type: "reset"; conversationId; turn }
 #+end_src
 
-=ConversationConfig= REQUIRES =key= (the HMAC secret every inbox envelope is signed with, both modes) and takes =maxEnvelopeAgeMs?= (1 h) and =maxInvalidRecords?= (50). =createConversations= REFUSES a runtime whose policy is not owner-scoped for query / send / cancel / resume / actAsOwner: pass =policy= (the =executionAccessPolicy(...)= object; it exposes read-only =scopes=) or =runtimePolicyIsOwnerScoped: true=; it also takes =principalFor=, =maxQueuedPerAsker= (8) and, for a shared conversation, =effects=. =ConversationConfig= also takes =shared?: SharedConfig= and =onError?(errorId, err, { conversationId, turn })= (the host's log of the real error behind a failed turn). =BudgetConfig= takes =maxSummaryTokens?= (default a quarter of the window).
+=ConversationConfig= REQUIRES =key= (the HMAC secret every inbox envelope is signed with, both
+modes) and takes =maxEnvelopeAgeMs?= (1 h) and =maxInvalidRecords?= (50). =createConversations=
+REFUSES a runtime whose policy is not owner-scoped for query / send / cancel / resume / actAsOwner:
+pass =policy= (the =executionAccessPolicy(...)= object; it exposes read-only =scopes=) or
+=runtimePolicyIsOwnerScoped: true=; it also takes =principalFor=, =maxQueuedPerAsker= (8) and, for a
+shared conversation, =effects=. =ConversationConfig= also takes =shared?: SharedConfig= and
+=onError?(errorId, err, { conversationId, turn })= (the host's log of the real error behind a failed
+turn). =BudgetConfig= takes =maxSummaryTokens?= (default a quarter of the window).
 
-Errors: =ConversationNotFoundError=, =InvalidTurnError=, =InvalidCursorError=, =SubscriberLimitError=; authorization failures are the runtime's own (=ExecutionDeniedError=). Message statuses: a user turn is =complete= or =rejected= (=malformed=, =too-long=, =prompt-too-large=); a reply is =complete=, =interrupted= (the partial, possibly empty) or =failed=. User text is untrusted: render it as text.
+Errors: =ConversationNotFoundError=, =InvalidTurnError=, =InvalidCursorError=,
+=SubscriberLimitError=; authorization failures are the runtime's own (=ExecutionDeniedError=).
+Message statuses: a user turn is =complete= or =rejected= (=malformed=, =too-long=,
+=prompt-too-large=); a reply is =complete=, =interrupted= (the partial, possibly empty) or =failed=.
+User text is untrusted: render it as text.
 
 ** ~@loom/plugin-conversation-sse~ — the end-user gateway
 
@@ -2282,7 +2647,14 @@ function createConversationSseServer(o: {
 }): { start(): Promise<void>; stop(): Promise<void>; readonly url: string; readonly connections: number; readonly http: http.Server }
 #+end_src
 
-Shared mode adds =GET /conversations/:id/participants=, =POST …/participants= and =POST …/participants/remove=. Routes: =POST /conversations= (the server mints the id), =GET /conversations/:id=, =POST /conversations/:id/turns= (={ text, messageId?, editOf? }=), =POST /conversations/:id/close=, =GET /conversations/:id/history?limit&cursor&direction=, =GET /conversations/:id/events= (SSE; =Last-Event-ID= or =?cursor=). SSE events: =status=, =partial=, =message= (SSE =id= = the history cursor), =delta=, =reset=, =closed=, =reconnect=, =error=. Every refusal for a conversation the caller may not touch is the same =404=. See ADR 0122 D6 for the security model.
+Shared mode adds =GET /conversations/:id/participants=, =POST …/participants= and
+=POST …/participants/remove=. Routes: =POST /conversations= (the server mints the id),
+=GET /conversations/:id=, =POST /conversations/:id/turns= (={ text, messageId?, editOf? }=),
+=POST /conversations/:id/close=, =GET /conversations/:id/history?limit&cursor&direction=,
+=GET /conversations/:id/events= (SSE; =Last-Event-ID= or =?cursor=). SSE events: =status=,
+=partial=, =message= (SSE =id= = the history cursor), =delta=, =reset=, =closed=, =reconnect=,
+=error=. Every refusal for a conversation the caller may not touch is the same =404=. See ADR 0122
+D6 for the security model.
 
 ** ~@loom/memory~ — agent memory
 
@@ -2507,7 +2879,15 @@ function isSupersededRefusal(err: unknown, executionId: string): boolean;
 class ExecutionSupersededError extends Error { readonly executionId: string; readonly cause?: unknown; }  // the wire form
 #+end_src
 
-*Superseded is not failed (L20, ADR 0004 amendment).* ~isSupersededRefusal~ is true for an ~ExecutionAlreadyExistsError~, a ~StaleFenceError~ (bare or as a ~StorageWriteError~'s cause) or an ~ExecutionSupersededError~ — each only when it names THIS execution. A dispatcher MUST NOT retry it: every attempt fences, so the retry would fence the winner out and the two would ping-pong. It transfers ownership to the newer fence holder without checking that holder is alive, so a deployment MUST run ~recoverAbandoned~ to re-drive dead holders; a caller that needs the outcome awaits the execution by id. A start refused on the fence with sequence 0 still absent is ~StartFencedOutError~ (~@loom/workflow-runtime~) instead — its holder wrote nothing and may be dead, so it stays retryable.
+*Superseded is not failed (L20, ADR 0004 amendment).* ~isSupersededRefusal~ is true for an
+~ExecutionAlreadyExistsError~, a ~StaleFenceError~ (bare or as a ~StorageWriteError~'s cause) or an
+~ExecutionSupersededError~ — each only when it names THIS execution. A dispatcher MUST NOT retry it:
+every attempt fences, so the retry would fence the winner out and the two would ping-pong. It
+transfers ownership to the newer fence holder without checking that holder is alive, so a deployment
+MUST run ~recoverAbandoned~ to re-drive dead holders; a caller that needs the outcome awaits the
+execution by id. A start refused on the fence with sequence 0 still absent is ~StartFencedOutError~
+(~@loom/workflow-runtime~) instead — its holder wrote nothing and may be dead, so it stays
+retryable.
 
 Implementations: ~new LocalWorkerRuntime(runtime: WorkflowRuntime, { system? })~ (in-process; no system grant unless ~system~ is passed), ~new RemoteWorkerRuntime(baseUrl: string, { fetchImpl? })~ (HTTP → ~POST {baseUrl}/execute~).
 
@@ -2668,7 +3048,11 @@ interface ChangeSpec { name: string; capabilities: CapabilityChange[]; planner: 
 interface FilePlan { creates; edits; deletes; skips; regenRegistration: boolean; }
 #+end_src
 
-Grammar: "create a <name>" · "(add )?step <name>" · "delete <name>" / "delete step <s> from <flow>" · "grant <tool> to <cap>" · "use <model> first" · "elevate to <model>" · "(pause|wait) for approval" · "generate ui" · "deploy on <target>". Safety gate: a handler body is overwritten only while it still hashes to the generated stub. Every apply records a replayable ~.loom/appgen/<ts>.spec.json~ lockfile. See [[file:loom-2.0/05-capabilities-agents-intelligence-dx.md][the DX deep-dive]].
+Grammar: "create a <name>" · "(add )?step <name>" · "delete <name>" / "delete step <s> from <flow>"
+· "grant <tool> to <cap>" · "use <model> first" · "elevate to <model>" · "(pause|wait) for approval"
+· "generate ui" · "deploy on <target>". Safety gate: a handler body is overwritten only while it
+still hashes to the generated stub. Every apply records a replayable ~.loom/appgen/<ts>.spec.json~
+lockfile. See [[file:loom-2.0/05-capabilities-agents-intelligence-dx.md][the DX deep-dive]].
 
 ** ~@loom/appgen-model~ — optional local-model planner *(2.0)*
 

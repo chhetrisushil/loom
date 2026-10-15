@@ -70,8 +70,17 @@ pnpm --filter @loom/db-observability start
 
 - **`agent-swarm`** — a dynamic agent swarm wired from user intent (release-audit):
   record-plan → `PLAN_COMPOSED`, then a parallel `executeGraph` fan-out. Offline.
-- **`db-command-center`** (+ **`-server`**, **`-wc`**) — an intent → planner → A2A
-  agentic app with a React UI, an A2A server surface, and a web-component surface.
+- **`db-command-center`** — an intent → planner → A2A agentic app with a React UI.
+- **`db-command-center-server`** — the same command center split into a real server and a thin
+  client: the durable runtime (SQLite event and snapshot stores, in-process A2A bus, three domain
+  agents) runs on a Node server, and a Web Components client renders and drives it over HTTP + SSE.
+  The production topology: the isomorphic core executes server-side, bridged to the client by the
+  resumability seam (`serializeProjections` → `seedState`) plus a live patch stream; stores are
+  swappable. Offline (`DemoLlmProvider`).
+- **`db-command-center-wc`** — the same agentic backend rendered with vanilla Web Components, the
+  clearest bring-your-own-renderer demo: backend, flows and blueprints are reused verbatim and only
+  the render layer changes. One Custom Element per widget kind, each subscribed to exactly its
+  bound projection path (granular updates without a reconciler). Offline.
 - **`a2a-mesh`**, **`agent-network`** — agent-to-agent mesh / networking with
   `@loom/plugin-a2a` and `A2AEffect`. `a2a-mesh` shows that a peer's card description is
   withheld from the model-facing spec ("Third-party tool; description withheld") unless the
@@ -271,6 +280,47 @@ pnpm --filter @loom/db-observability start
   `audience-withheld` finding server-side; `handleInventory` lists no classified handle, and a
   broadcast-scoped hydration store (`HydrationScope.audience`) never shares state with the agent's
   own surface. Headless, offline.
+- **`blueprint-status`** — a plain loom app (no loom-ui, no LLM, headless) on Blueprint IR 2: a
+  service health board where the app's own projection folds provider events into
+  `{ values, status }` and each widget binds both paths, so loom's terminal renderer reads the
+  status channel, grid-cell spans and `source` provenance (`degradedFrom`) from the Blueprint alone.
+  The channel is opt-in, the app's value contract sits in loom's `check` seam, and a test pins the
+  canonical status matrix row by row (ADR 0097).
+- **`experience-kinds`** — loom-ui's framework kinds (`Kpi`, `Table`, `StatusCard`, `Note`,
+  `TimeSeries`) in a warehouse-operations board: one `Experience` authored as operations over a
+  `genesis`, compiled for `web` and `terminal`, and hydrated from a `HydrationStore` whose sample
+  values are checked against each kind's value contract. Locale-aware numbers, a right-hand axis,
+  localized `Note` text resolved at compile; no consumer-specific code.
+- **`experience-layout`** — loom-ui placement and section titles in a branch-library board
+  (Blueprint IR 2.1.0, ADR 0098): explicit grid lines and row spans versus document-order flow,
+  titled sections that become `<section aria-label>` on the web and underlined headings in the
+  terminal, and a revision that swaps two widgets' rows by restyling their grid lines with no remount.
+- **`experience-stepped`** — loom-ui's container-renderer seam (`DomRenderOptions.containers`,
+  Blueprint IR 2.2.0 `Layout.role`, ADR 0099): a bike-share onboarding whose app registers its own
+  renderer for the `"stepper"` role (progress dots, Back/Next, `aria-live` readout) while the adapter
+  keeps mount, keyed reconcile and focus. Covers `setRole` to and from a plain list, zero-mutation
+  no-op updates and appending a step without remounting the others.
+- **`experience-recompose`** — loom-ui slice 6a: an agent revision lands while the user types.
+  `handle.update(next)` reconciles a revised Blueprint onto the live DOM by widget id, so the
+  focused textarea keeps its element, text, selection and focus, a relabelled metric is patched in
+  place, the dropped badge is disposed, and hydration recomposes in the same step. Headless
+  (happy-dom) with a scripted planner and a fake tool.
+- **`experience-board-edit`** — loom-ui operations and planner accounting on a greenhouse board:
+  `setPlacement` resize from a widget action, `removeProvider` refused while a node still binds the
+  handle, a planner revision that cleans up after itself while keeping the user's resize, token
+  usage recorded inside the plan's `ctx.decide` and replayed with no model call, `setTitle` on the
+  root, and lineage that folds back from genesis. Headless, offline.
+- **`order-lines`** — loom-ui's empty binding state (ADR 0100): an order-detail board whose "top
+  order's lines" widget depends on an upstream step. An out-of-range index into a real, empty array
+  publishes the handle `empty` ("No data": the dependent tool is never called and nothing is cached
+  or repaired), while a wrong key (`unresolved-step-reference`) is an `error`; the two are kept apart
+  on purpose on both the web and terminal surfaces.
+- **`split-hydration`** — loom-ui split hydration in a weather-station board whose browser never
+  sees a provider: the server holds the `Experience` and returns the compiled Blueprint plus
+  `handleInventory` (priority, overridable param names, opaque keyed revision), and the client's
+  `SplitHydrationController` loads values through a JSON-boundary `HandleLoader` (`loadMany`
+  required). Widgets bound to the same upstream step share one call, and no provider detail crosses
+  the boundary.
 - **`appgen-brownfield`**, **`appgen-models`** — AI-driven app generation
   (`@loom/appgen`).
 
