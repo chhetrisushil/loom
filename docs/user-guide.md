@@ -2,7 +2,11 @@
 
 A **topic-by-topic reference** with runnable examples. Unlike the sequential [Usage](usage.md) tutorial, jump to any section. For the *why* behind these designs, see [Architecture](architecture.md).
 
-> **Loom 2.0.** Sections 1–14 are the durable core (unchanged and always valid). Sections **15–20** cover the execution-kernel evolution — the Reasoning Runtime, tiered memory, the kernel-hardening rings (grants / quotas / supervision), event intelligence, AI-native codegen, and capability governance. Everything in 2.0 is **additive and opt-in**. Full data-structure/algorithm/diagram detail lives in [`loom-2.0/`](loom-2.0/00-overview.md).
+> **Loom 2.0.** Sections 1–14 are the durable core (unchanged and always valid). Sections **15–20**
+> cover the execution-kernel evolution — the Reasoning Runtime, tiered memory, the kernel-hardening
+> rings (grants / quotas / supervision), event intelligence, AI-native codegen, and capability
+> governance. Everything in 2.0 is **additive and opt-in**. Full data-structure/algorithm/diagram
+> detail lives in [`loom-2.0/`](loom-2.0/00-overview.md).
 
 ## Contents
 
@@ -355,7 +359,12 @@ flow$({
 })
 ```
 
-A payload that does not satisfy its gate's schema is refused with `ResumePayloadValidationError`, naming the offending field; **nothing is appended** and the execution stays suspended, so a corrected payload still lands. The *parsed* value (Zod defaults and transforms applied) is what gets recorded — the same principle `validateInput` applies at `start()`. Declared per flow rather than at the `ctx.suspend` call site so the schema resolves without running the flow body, which is what makes refuse-before-append possible.
+A payload that does not satisfy its gate's schema is refused with `ResumePayloadValidationError`,
+naming the offending field; **nothing is appended** and the execution stays suspended, so a
+corrected payload still lands. The *parsed* value (Zod defaults and transforms applied) is what gets
+recorded — the same principle `validateInput` applies at `start()`. Declared per flow rather than at
+the `ctx.suspend` call site so the schema resolves without running the flow body, which is what
+makes refuse-before-append possible.
 
 Opt-in by presence: no map, or no entry for that event type, is exactly today's behaviour. `resumeAs` validates against the **target** flow's map, since that is the code being resumed onto.
 
@@ -371,7 +380,12 @@ Opt-in by presence: no map, or no entry for that event type, is exactly today's 
 >
 > Prefer modelling the extra fields — you get validation as well as retention. Reach for `.passthrough()` when the payload legitimately carries an open envelope you do not own (an A2UI `functionResponse`, a webhook body) and cannot enumerate. Because the stripped write is durable, this is not something you can fix after the fact: the events are already folded.
 >
-> **And model what callers actually send, not what the gate name suggests.** Grep your `runtime.resume` call sites first. In the examples repo, a gate named `ApprovalGranted` turned out to receive `{ approvedBy, approvedAt }` with no `approved` field at all, and another received a bare `{ approved }` from one caller and `{ approved, approvedBy }` from a second — the "obvious" schema would have refused every real resume those apps send. A cast hid that for as long as it existed; a schema is where it surfaces.
+> **And model what callers actually send, not what the gate name suggests.** Grep your
+> `runtime.resume` call sites first. In the examples repo, a gate named `ApprovalGranted` turned out
+> to receive `{ approvedBy, approvedAt }` with no `approved` field at all, and another received a
+> bare `{ approved }` from one caller and `{ approved, approvedBy }` from a second — the "obvious"
+> schema would have refused every real resume those apps send. A cast hid that for as long as it
+> existed; a schema is where it surfaces.
 
 **Mechanics.** On resume the runner re-runs from the top. Every step that already completed is replayed from its logged `STEP_COMPLETED` (the effect does not run again); when execution reaches the original `suspend()`, that call *returns the resume payload* and the flow proceeds. This is deterministic replay (see [Architecture §4.3](architecture.md#43-suspend--resume)).
 
@@ -397,7 +411,12 @@ Worth setting once executions get long: measured at a 102-event log it is 4.76 m
 
 ### Child workflows (`@loom/orchestration`)
 
-Spawn another flow as a **separate child execution** — its own durable log, its own replay, its own failure — and durably await its result from the parent. Built entirely from `ctx.decide` + `ctx.suspend` + `runtime.resume` (one suspend/resume cycle per await): **no new syscall, no new event type**. A `superviseChildren` supervisor, wired into the runtime's `onEvent`, turns each spawn into a running child and each child's completion back into a parent resume.
+Spawn another flow as a **separate child execution** — its own durable log, its own replay, its own
+failure — and durably await its result from the parent. Built entirely from `ctx.decide` +
+`ctx.suspend` + `runtime.resume` (one suspend/resume cycle per await):
+**no new syscall, no new event type**. A `superviseChildren` supervisor, wired into the runtime's
+`onEvent`, turns each spawn into a running child and each child's completion back into a parent
+resume.
 
 ```ts
 import {
@@ -437,7 +456,12 @@ const built = await awaitAll<Built>(ctx, { key: "build", children: [...] });
 
 **Replay-safe by construction.** Each spawn is fixed by one `ctx.decide`, and child ids are deterministic — `<parentId>::<key>` for `awaitChild`, `<parentId>::<key>#<i>` for the `awaitChildren`/`awaitAll` fan-out — so a recovery re-run never starts a second child, and the id scheme composes for nested children. `maxDepth` bounds recursive re-entry.
 
-**Failure propagation composes up the tree.** An uncaught `childFailed` (from `awaitChild`/`awaitAll`) fails the parent; if that parent is itself a child, the failure climbs one level up through the same mechanism. `childFailed` is a typed failure (channel `CHILD_FAILED`) carrying `{ childId, status, error?/reason? }` — catch it to settle with a fallback, or let it propagate. Use `awaitChildren` when partial failure is acceptable (the parent weighs the settled results); use `awaitAll` when the set must all succeed.
+**Failure propagation composes up the tree.** An uncaught `childFailed` (from
+`awaitChild`/`awaitAll`) fails the parent; if that parent is itself a child, the failure climbs one
+level up through the same mechanism. `childFailed` is a typed failure (channel `CHILD_FAILED`)
+carrying `{ childId, status, error?/reason? }` — catch it to settle with a fallback, or let it
+propagate. Use `awaitChildren` when partial failure is acceptable (the parent weighs the settled
+results); use `awaitAll` when the set must all succeed.
 
 Composed from existing primitives, so it stays outside the kernel (P10). See the runnable **`child-orchestration`** example in the sibling [`loom-examples`](examples.md) repo (a release pipeline: `awaitChildren` builds → `awaitAll` smoke gate → `awaitChild` publish).
 
@@ -460,15 +484,47 @@ const resumed = await runtime.resume(fork.executionId, {
 const outcome = (await resumed.waitForCompletion()).variables._output;
 ```
 
-**Forking a timed gate.** If the fork point is a suspension carrying a deadline (`suspend({ timeout })` or `ctx.sleep`), the branch gets its own timer row so its deadline fires independently of the parent's — a timer is keyed by execution, so without this a branch would carry a deadline nothing could fire. The branch **inherits the recorded wake time**; it cannot re-base it, because a timer fires only when it matches the `wakeAt` in the log and the copied prefix is byte-identical by design. A branch that needs its own deadline resumes the gate and suspends again with a fresh `timeout`.
+**Forking a timed gate.** If the fork point is a suspension carrying a deadline
+(`suspend({ timeout })` or `ctx.sleep`), the branch gets its own timer row so its deadline fires
+independently of the parent's — a timer is keyed by execution, so without this a branch would carry
+a deadline nothing could fire. The branch **inherits the recorded wake time**; it cannot re-base it,
+because a timer fires only when it matches the `wakeAt` in the log and the copied prefix is
+byte-identical by design. A branch that needs its own deadline resumes the gate and suspends again
+with a fresh `timeout`.
 
-**Forking a compacted parent.** Compaction removes the events below its checkpoint, so not every sequence of a compacted execution can be forked any more. `fork` serves a fork point exactly or refuses it ([ADR 0107](adr/0107-compacted-fork-points-and-the-blank-stream.md)). It is exact when every event between the nearest snapshot and the fork point survived, or when a snapshot sits exactly at it. A log compacted through its tip (`[0]`) can therefore be forked at its checkpoint: the range is the folded tip, not the last event. Anything else throws `CompactedForkPointError` with nothing written. Its `forkableFrom..forkableThrough` names the span you can fork instead, and sequence 0 always works. A fork at a checkpoint whose own event was compacted away is also refused when pinned events survive below it (`reason: "checkpoint-above-prefix"`), because that child's log would read as never compacted.
+**Forking a compacted parent.** Compaction removes the events below its checkpoint, so not every
+sequence of a compacted execution can be forked any more. `fork` serves a fork point exactly or
+refuses it ([ADR 0107](adr/0107-compacted-fork-points-and-the-blank-stream.md)). It is exact when
+every event between the nearest snapshot and the fork point survived, or when a snapshot sits
+exactly at it. A log compacted through its tip (`[0]`) can therefore be forked at its checkpoint:
+the range is the folded tip, not the last event. Anything else throws `CompactedForkPointError` with
+nothing written. Its `forkableFrom..forkableThrough` names the span you can fork instead, and
+sequence 0 always works. A fork at a checkpoint whose own event was compacted away is also refused
+when pinned events survive below it (`reason: "checkpoint-above-prefix"`), because that child's log
+would read as never compacted.
 
-**Branches and retention.** A losing branch stays durable and independently resumable — that is the audit trail. It also *blocks its parent*: retention never reclaims an execution while a live descendant branch still has events, and a branch nobody answered is suspended forever, so the parent is never reclaimed either. Retiring an abandoned branch is what unblocks the chain — `retireAbandonedBranches(runtime, registry, parentId, { isAbandoned })` cancels the ones your predicate claims (a durable `EXECUTION_CANCELLED`, not a deletion), after which ordinary retention collects the branch on its TTL and the parent behind it. `isAbandoned` is required: a branch parked on a human gate is someone's open question, and only you know whether that person is still coming.
+**Branches and retention.** A losing branch stays durable and independently resumable — that is the
+audit trail. It also *blocks its parent*: retention never reclaims an execution while a live
+descendant branch still has events, and a branch nobody answered is suspended forever, so the parent
+is never reclaimed either. Retiring an abandoned branch is what unblocks the chain —
+`retireAbandonedBranches(runtime, registry, parentId, { isAbandoned })` cancels the ones your
+predicate claims (a durable `EXECUTION_CANCELLED`, not a deletion), after which ordinary retention
+collects the branch on its TTL and the parent behind it. `isAbandoned` is required: a branch parked
+on a human gate is someone's open question, and only you know whether that person is still coming.
 
-After retention has collected a branch, two registry rows outlive it: `LogLifecycle` forgets the fork edge as it deletes the execution (optional `removeLineage`), and `pruneBranchRefs(eventStore, registry)` sweeps refs that point at nothing — a dangling ref is not merely untidy, because promoting one leaves `main` naming an execution nobody can read. That sweep needs no predicate: "the execution is gone" is a fact rather than a judgement. It protects `main` by default and reports it instead.
+After retention has collected a branch, two registry rows outlive it: `LogLifecycle` forgets the
+fork edge as it deletes the execution (optional `removeLineage`), and
+`pruneBranchRefs(eventStore, registry)` sweeps refs that point at nothing — a dangling ref is not
+merely untidy, because promoting one leaves `main` naming an execution nobody can read. That sweep
+needs no predicate: "the execution is gone" is a fact rather than a judgement. It protects `main` by
+default and reports it instead.
 
-**Promoting from more than one place.** `promote(from, to)` is last-write-wins: two nodes promoting different winners onto `main` both succeed, and the loser silently becomes what `main` names. Pass `{ expect }` to make it a compare-and-set — the executionId `to` must name right now, or `null` for "must not exist yet". A mismatch throws `BranchPromotionConflictError` and nothing moves, so you re-read and decide rather than retrying blind. `listRefs({ limit, after })` pages the ref table by name, which matters because forking is cheap and refs are never collected.
+**Promoting from more than one place.** `promote(from, to)` is last-write-wins: two nodes promoting
+different winners onto `main` both succeed, and the loser silently becomes what `main` names. Pass
+`{ expect }` to make it a compare-and-set — the executionId `to` must name right now, or `null` for
+"must not exist yet". A mismatch throws `BranchPromotionConflictError` and nothing moves, so you
+re-read and decide rather than retrying blind. `listRefs({ limit, after })` pages the ref table by
+name, which matters because forking is cheap and refs are never collected.
 
 The `BranchRegistry` provides git-style refs — `putRef`, `moveTip`, `promote(from, to)`, `children`, `getLineage`:
 
@@ -477,7 +533,11 @@ await branchRegistry.putRef({ name: "main", executionId: parentId, tip: forkPoin
 await branchRegistry.promote("commit", "main"); // pointer move, no merge
 ```
 
-**Pattern (fork → simulate → compare → promote).** Fork per strategy, run concurrently with `parallelLimit`, compare the projected outcomes, then commit the winner via a fresh fork resumed with `simulate:false`. Losing branches stay immutable — a full audit trail. Full worked example: `incident-war-room` (in the [examples catalogue](examples.md)) and the [Usage tutorial §10](usage.md#step-10--branch-fork--simulate--promote).
+**Pattern (fork → simulate → compare → promote).** Fork per strategy, run concurrently with
+`parallelLimit`, compare the projected outcomes, then commit the winner via a fresh fork resumed
+with `simulate:false`. Losing branches stay immutable — a full audit trail. Full worked example:
+`incident-war-room` (in the [examples catalogue](examples.md)) and the
+[Usage tutorial §10](usage.md#step-10--branch-fork--simulate--promote).
 
 ---
 
@@ -503,7 +563,15 @@ Register surfaces via `defineConfig({ surfaces: ["mission", "telemetry"] })`, or
 
 ### Exposing a surface over A2UI (external clients)
 
-`@loom/plugin-a2ui` projects an agent surface onto the real **A2UI (Agent-to-UI) wire protocol v1.0**, so any A2UI-compliant client (web/mobile/desktop) can render a Loom-driven UI without executing code. A 1P plugin, kernel untouched ([ADR 0069](adr/0069-a2ui-egress-adapter.md), [ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md)): it folds `SURFACE_PATCH` events and emits A2UI `createSurface` / `updateDataModel` / `deleteSurface` messages (translating Loom's *delta* patches into A2UI's *absolute* value-replacement), ingests the client's inbound `action`, and supports the **`callFunction` bidirectional RPC** (see below). Only continuous two-way *binding sync* is out of scope.
+`@loom/plugin-a2ui` projects an agent surface onto the real
+**A2UI (Agent-to-UI) wire protocol v1.0**, so any A2UI-compliant client (web/mobile/desktop) can
+render a Loom-driven UI without executing code. A 1P plugin, kernel untouched
+([ADR 0069](adr/0069-a2ui-egress-adapter.md),
+[ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md)): it folds `SURFACE_PATCH` events and
+emits A2UI `createSurface` / `updateDataModel` / `deleteSurface` messages (translating Loom's
+*delta* patches into A2UI's *absolute* value-replacement), ingests the client's inbound `action`,
+and supports the **`callFunction` bidirectional RPC** (see below). Only continuous two-way *binding
+sync* is out of scope.
 
 ```ts
 import { A2UISurfaceBridge, column, text, badge, bind } from "@loom/plugin-a2ui";
@@ -528,10 +596,19 @@ onClientMessage((m) => {
 
 It ships a default component catalog (`Text`/`Column`/`Row`/`List`/`Badge`/`Button`) plus `defineCatalog` for your own.
 
-**`callFunction` (bidirectional RPC).** The agent can also ask the client to run a named catalog function and answer with a `functionResponse` — reconciled with Loom's replay grain by the client's *result* re-entering as a recorded fact (no client-side effect runtime needed), keyed by a deterministic `callId`. Two grains ([ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md); runnable as `a2ui-callfunction` in the sibling [`loom-examples`](examples.md) repo):
+**`callFunction` (bidirectional RPC).** The agent can also ask the client to run a named catalog
+function and answer with a `functionResponse` — reconciled with Loom's replay grain by the client's
+*result* re-entering as a recorded fact (no client-side effect runtime needed), keyed by a
+deterministic `callId`. Two grains ([ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md);
+runnable as `a2ui-callfunction` in the sibling [`loom-examples`](examples.md) repo):
 
 - **Grain A** — a read, via a `ctx.suspend` gate: `bridge.callFunction(name, args, { callId })` → client answers → `bridge.ingestFunctionResponse(msg)` → `runtime.resume`. The `callId` must be deterministic **and** call-site-unique (e.g. `` `${executionId}:getLocale#1` ``).
-- **Grain B** — a side effect, via a delegated effect: `registerA2UICallFunction(app.effectRuntime, transport)`, then `await ctx.execute({ toolId: A2UI_CALL_FUNCTION_TOOL_ID, … }, input)`. Declared `idempotent: false`, so a crash mid-call parks at `EFFECT_INDOUBT` for an operator verdict. The `callId` is `ctx.idempotencyKey` (unique per step); a side-effecting client function must dedup on it (effects are at-least-once).
+- **Grain B** — a side effect, via a delegated effect:
+  `registerA2UICallFunction(app.effectRuntime, transport)`, then
+  `await ctx.execute({ toolId: A2UI_CALL_FUNCTION_TOOL_ID, … }, input)`. Declared
+  `idempotent: false`, so a crash mid-call parks at `EFFECT_INDOUBT` for an operator verdict. The
+  `callId` is `ctx.idempotencyKey` (unique per step); a side-effecting client function must dedup on
+  it (effects are at-least-once).
 
 See `apps/playground` (the **A2UI** tab) for a live end-to-end wiring, and the [API reference](api-reference.org) for the full surface.
 
@@ -567,7 +644,16 @@ const dbaAgent = agent$({
 
 `agentLoop$` is the canonical loop (R10, [ADR 0121](adr/0121-one-canonical-agent-loop.md)). `AgentRunner` and `agentStep$` are deprecated: they still work, unchanged, and the migration is in the ADR. What each costs, so the choice is informed:
 
-> **`idempotent: false` tools.** `AgentRunner` / `agentStep$` / `asEffect()` run nested tool calls inside one outer frame, so the K9.3 in-doubt protection ([ADR 0021](adr/0021-k9-effect-delivery-contract-idempotency-fencing.md)) does not reach them and they REFUSE such a tool (`IdempotentToolRefusedError`, before it runs) unless you pass `acceptAtLeastOnce: true` (a crash then re-runs it). Use `agentLoop$` for these tools. See the ADR 0121 amendment of 2026-10-15.
+> **`idempotent: false` tools.** `AgentRunner` / `agentStep$` / `asEffect()` run nested tool calls
+> inside one outer frame, so the K9.3 in-doubt protection
+> ([ADR 0021](adr/0021-k9-effect-delivery-contract-idempotency-fencing.md)) does not reach them and
+> they REFUSE such a tool (`IdempotentToolRefusedError`, before it runs) unless you pass
+> `acceptAtLeastOnce: true` (a crash then re-runs it). The check covers the WHOLE batch of a turn
+> before any call of it is dispatched, so an ordinary sibling never runs ahead of a refused one. A
+> runner's nested tool calls each get a per-call idempotency key,
+> `<outer>:t<turn>:c<position>:<hash of tool name + canonical input>` (the same call at the same
+> position re-runs with the same key; a different call, even at the same position, gets a different
+> one). Use `agentLoop$` for these tools. See the ADR 0121 amendment of 2026-10-15.
 
 **`agentStep$` (deprecated) — one opaque frame.** The whole loop is a single `step$`, so the execution log gets one `STEP_STARTED`/`STEP_COMPLETED` pair no matter how many turns it took. Cheap, and the right choice when a turn is not worth recovering individually. The costs are structural, because a step *handler* receives `StepHandlerContext` — `emit`, and nothing else:
 
@@ -630,7 +716,11 @@ agentLoop$(ctx, {
 }, input);
 ```
 
-Step ids do not change with `parallelTools` (`<loop>#turn:<i>:tool:<j>`), results reach the model in its order, and approvals are collected, in order, before any call of the turn starts. An untyped tool failure is re-run on replay (the kernel's rule for a failed step); a tool that must fail exactly once throws a `TypedFailure` on a declared channel. A `reasoning` model response is journaled as a decision, so a resumed run makes no model call for a completed turn.
+Step ids do not change with `parallelTools` (`<loop>#turn:<i>:tool:<j>`), results reach the model in
+its order, and approvals are collected, in order, before any call of the turn starts. An untyped
+tool failure is re-run on replay (the kernel's rule for a failed step); a tool that must fail
+exactly once throws a `TypedFailure` on a declared channel. A `reasoning` model response is
+journaled as a decision, so a resumed run makes no model call for a completed turn.
 
 ### Pausing for a human
 
@@ -645,7 +735,13 @@ agentLoop$(ctx, {
 }, input);
 ```
 
-`needsApproval` returns `true` to park and `false` to run. It replaces `requireApproval`, which read backwards (an auto-approve policy: `true` proceeds, `false` parks) and is now a deprecated alias with its old polarity: `requireApproval: (c) => c.name !== "x"` is `needsApproval: (c) => c.name === "x"`. The recorded log is identical, so old logs replay unchanged; using the alias emits one `LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED` warning, and supplying both throws `AgentLoopConfigError`. A `kind: "human"` tool parks by itself for its answer; the approval policy is independent of that.
+`needsApproval` returns `true` to park and `false` to run. It replaces `requireApproval`, which read
+backwards (an auto-approve policy: `true` proceeds, `false` parks) and is now a deprecated alias
+with its old polarity: `requireApproval: (c) => c.name !== "x"` is
+`needsApproval: (c) => c.name === "x"`. The recorded log is identical, so old logs replay unchanged;
+using the alias emits one `LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED` warning, and supplying both
+throws `AgentLoopConfigError`. A `kind: "human"` tool parks by itself for its answer; the approval
+policy is independent of that.
 
 Pair the gate with `flow$({ resumeSchemas })` so the resume payload is parsed before it lands — see [§4 Suspend & resume](#4-suspend--resume) and [ADR 0077](adr/0077-typed-resume-payloads.md).
 
@@ -665,11 +761,20 @@ agentLoop$(ctx, {
 
 `recallLimit` matters more than it looks: without it, every remembered entry reaches the prompt and conversation length becomes a hard wall rather than a cost curve.
 
-Use `reasoning` **or** `modelToolId`, not both. The Reasoning Runtime routes and elevates across model tiers and records every choice, and the response is journaled (R10), so a resume does not re-ask — but without `reasoningToolId` it makes the model call through its own routes, so the request is still guarded at the prompt boundary while K2, metering and K9 in-doubt do not apply to it. `modelToolId` (or `reasoning` + `reasoningToolId`) gets the full ring.
+Use `reasoning` **or** `modelToolId`, not both. The Reasoning Runtime routes and elevates across
+model tiers and records every choice, and the response is journaled (R10), so a resume does not
+re-ask — but without `reasoningToolId` it makes the model call through its own routes, so the
+request is still guarded at the prompt boundary while K2, metering and K9 in-doubt do not apply to
+it. `modelToolId` (or `reasoning` + `reasoningToolId`) gets the full ring.
 
 ### Large tool menus: `toolSearch` ([ADR 0125](adr/0125-tool-search.md))
 
-With a few hundred tools (an MCP server catalogue) a full menu costs tokens every turn and degrades tool choice. `toolSearch` offers the model a `search_tools` meta-tool instead: it searches the host-offered `catalog` (the agent's own `definition.tools` and the selected skills' tools stay on the menu from turn 0) and adds the best matches to its menu for the following turns. **It is not worth enabling below about 30 tools** (the menu is cheaper than the extra round trip), and it is off by default.
+With a few hundred tools (an MCP server catalogue) a full menu costs tokens every turn and degrades
+tool choice. `toolSearch` offers the model a `search_tools` meta-tool instead: it searches the
+host-offered `catalog` (the agent's own `definition.tools` and the selected skills' tools stay on
+the menu from turn 0) and adds the best matches to its menu for the following turns.
+**It is not worth enabling below about 30 tools** (the menu is cheaper than the extra round trip),
+and it is off by default.
 
 ```ts
 import { agentLoop$ } from "@loom/agent";
@@ -700,9 +805,38 @@ What you get and what you do not:
 - **Authority is unchanged.** Only `toolSearch.catalog` can ever be found or loaded by a search (the agent's own tools and the selected skills' tools are already on the menu); a loaded tool still passes the menu gate, input validation, `requireApproval` and the effect ring. A tool outside that set is never returned or callable.
 - **Replay-safe.** Each search is one recorded decision (`<loop>#turn:<i>:tool:<j>:search`), so a resume ranks nothing and reproduces the same menu. The menu is append-only (`search_tools`, then `definition.tools`, the selected skills' tools and `alwaysLoaded`, then searched tools in search order), which keeps the prompt prefix cacheable.
 - **Bounded.** Query 512 characters / 16 distinct terms; `maxPerSearch`, `maxLoaded`, `maxSearches`, optional `maxMenuChars`. `fitToWindow` does not count tools: reserve for `alwaysLoaded` plus `maxLoaded` specs.
-- **Close the vocabulary gap with aliases, not a bigger description.** Ranking is lexical BM25F (name > aliases = tags > description). Users say "bill the customer"; the tool is `charge_invoice`: give it `aliases`. For an MCP/A2A tool use `toolSearch.annotations` (host-written, trusted); a remote server's own tags and aliases are never trusted vocabulary, its description is not ranked on unless you set `trustJsonSchemaText`, and a result that names a third-party tool is tainted. "Third party" means a tool a plugin marked `origin: "remote"` (the MCP and A2A plugins do), or one with a `jsonInputSchema`, or `kind: "a2a"`; a tool whose description is itself tainted is listed but never loaded. The same rule applies to the tool spec the model is shown ([D14](adr/0125-tool-search.md)): an un-vouched remote tool, A2A included, appears with the fixed description `Third-party tool; description withheld` unless you set `trustJsonSchemaText`. This is the recommended fix before semantic ranking.
-- **Give your ranker the vocabulary, and the stoplist ([D15](adr/0125-tool-search.md)).** `toolSearch.ranker` (and `skillActivation.skillRanker`) can be a factory, `(docs) => ToolRanker`, called once on the first search with the sanitized docs `{ id, description?, tags, aliases }` of the tools (or skills) this run can search: your annotations, first-party tags/aliases, vouched descriptions, and never an un-vouched remote tool's text, so you do not re-implement the trust policy. For a ranker you build once and share across runs, build it from `toolSearchDocs(catalog, { annotations })`. A factory that throws is `search_unavailable` and is retried on the next search; replay never calls it. The built-in ranker ignores common English words in the QUERY ("bill the customer" no longer matches an alias just because it contains "the"); tune it with `toolSearch.stopwords` (`[]` turns it off, at most 256 entries). The default list drops "can", "or" and "it" from mixed queries; the index is unchanged, so an all-stopword query keeps its terms. Set `stopwords: []` or your own list if those words carry intent in your domain (a multi-word entry splits into separate words). A factory must be synchronous and return a ranker with a string `kind`: an `async` factory or a class passed as `ranker` is refused or reported (`LOOM_AGENT_RANKER_FACTORY`), not silently unavailable. That changes live result order; recorded searches replay as before.
-- **Plug in your own ranker** (`toolSearch.ranker`, a `ToolRanker`), e.g. an embedding model: its answer is recorded, so it replays identically. A ranker (and `skillActivation.skillRanker`) is read for at most the `limit` hits it was asked for; anything past that is ignored, so a sloppy ranker cannot make a search expensive. `Bm25ToolRanker` is exported for other consumers (the loom-ui planner can rank capabilities with it: `description: intent`).
+- **Close the vocabulary gap with aliases, not a bigger description.** Ranking is lexical BM25F
+  (name > aliases = tags > description). Users say "bill the customer"; the tool is
+  `charge_invoice`: give it `aliases`. For an MCP/A2A tool use `toolSearch.annotations`
+  (host-written, trusted); a remote server's own tags and aliases are never trusted vocabulary, its
+  description is not ranked on unless you set `trustJsonSchemaText`, and a result that names a
+  third-party tool is tainted. "Third party" means a tool a plugin marked `origin: "remote"` (the
+  MCP and A2A plugins do), or one with a `jsonInputSchema`, or `kind: "a2a"`; a tool whose
+  description is itself tainted is listed but never loaded. The same rule applies to the tool spec
+  the model is shown ([D14](adr/0125-tool-search.md)): an un-vouched remote tool, A2A included,
+  appears with the fixed description `Third-party tool; description withheld` unless you set
+  `trustJsonSchemaText`. This is the recommended fix before semantic ranking.
+- **Give your ranker the vocabulary, and the stoplist ([D15](adr/0125-tool-search.md)).**
+  `toolSearch.ranker` (and `skillActivation.skillRanker`) can be a factory, `(docs) => ToolRanker`,
+  called once on the first search with the sanitized docs `{ id, description?, tags, aliases }` of
+  the tools (or skills) this run can search: your annotations, first-party tags/aliases, vouched
+  descriptions, and never an un-vouched remote tool's text, so you do not re-implement the trust
+  policy. For a ranker you build once and share across runs, build it from
+  `toolSearchDocs(catalog, { annotations })`. A factory that throws is `search_unavailable` and is
+  retried on the next search; replay never calls it. The built-in ranker ignores common English
+  words in the QUERY ("bill the customer" no longer matches an alias just because it contains
+  "the"); tune it with `toolSearch.stopwords` (`[]` turns it off, at most 256 entries). The default
+  list drops "can", "or" and "it" from mixed queries; the index is unchanged, so an all-stopword
+  query keeps its terms. Set `stopwords: []` or your own list if those words carry intent in your
+  domain (a multi-word entry splits into separate words). A factory must be synchronous and return a
+  ranker with a string `kind`: an `async` factory or a class passed as `ranker` is refused or
+  reported (`LOOM_AGENT_RANKER_FACTORY`), not silently unavailable. That changes live result order;
+  recorded searches replay as before.
+- **Plug in your own ranker** (`toolSearch.ranker`, a `ToolRanker`), e.g. an embedding model: its
+  answer is recorded, so it replays identically. A ranker (and `skillActivation.skillRanker`) is
+  read for at most the `limit` hits it was asked for; anything past that is ignored, so a sloppy
+  ranker cannot make a search expensive. `Bm25ToolRanker` is exported for other consumers (the
+  loom-ui planner can rank capabilities with it: `description: intent`).
 
 ### Activating skills mid-loop: `skillActivation` ([ADR 0125](adr/0125-tool-search.md) D11)
 
@@ -718,11 +852,47 @@ agentLoop$(ctx, {
 - **The instructions come back as the tool result**, not as a system message: the turn-0 prompt (and its prompt cache) never changes. The skill's tools join the menu from the next step (deduped, append-only), so they are callable without a search; `toolSearch` will not offer them again.
 - **Bounded and deterministic.** The index lists the first `maxIndex` (50) skills by id, within `maxIndexBytes` (8 KiB; the rest are summarised as `+N more` and cannot be activated; an id over 64 characters or with control characters is not offered); only listed skills can be activated; `maxActive` (5) per run; `maxInstructionBytes` (32 KiB) per skill.
 - **Selection is relevance, not authorization.** The default `catalog` (the `skills` registry) makes EVERY registry skill reachable by the model; its tools still pass the menu gate, approval hook and effect ring when called, but restrict what can be reached with an explicit `catalog: [...]`.
-- **Recorded.** Each activation is a decision `<loop>#turn:<i>:tool:<j>:skill` (`source: "agent-skill-activation"`), so a resume re-applies it without re-deciding. An unknown or over-cap call is an error result (`unknown_skill`, `skill_limit_reached`) that records nothing; an oversized or tainted-instruction call is an error result (`instructions_too_large`, `instructions_refused`) whose verdict is recorded, so a resume reproduces it even if the registry changed; an activation whose text became undeliverable since it was recorded stands (tools join) and returns `instructions_unavailable`. The record also carries a sha256 `digest` of the instructions delivered ([D14](adr/0125-tool-search.md)): if the registry text differs on a resume, or when you re-activate an already-active skill, nothing new is delivered; the result is the typed error `instructions_changed` (the skill's tools stay on the menu, nothing is recorded) and a `LOOM_AGENT_SKILL_CHANGED` process warning is emitted. Records written before the digest existed behave as before.
-- **Large registries: `discovery` ([D12](adr/0125-tool-search.md)).** The index is capped, so with hundreds of skills the tail cannot be activated. Set `skillActivation: { discovery: "search" }` (needs `toolSearch`) and the prompt carries one fixed line instead of the index; the model finds skills with `search_tools`, which returns them under `skills` (`{ kind: "skill", id, description }`, beside the unchanged `tools`) and then calls `activate_skill({ name })`. Search is a convenience, not an authorization step: `activate_skill` accepts any catalog skill (minus upfront-selected ones) by id, found or not. `"both"` with a tiny `maxIndexBytes` is allowed (search covers everything) and `"search"` ignores `maxIndexBytes`. A search never loads a skill or its tools. `"both"` keeps the index and adds search; the default `"index"` is today's behaviour. Skill hits share the `maxPerSearch` page, already-active and upfront-selected skills are not hits. A custom `toolSearch.ranker` works with it ([D13](adr/0125-tool-search.md)): it ranks TOOLS only and never sees a skill; skills are ranked separately by the built-in BM25F over skill docs, or by your own `skillActivation: { discovery: "search", skillRanker }` (same `ToolRanker` interface, returns raw skill ids). The page interleaves the two lists by rank position, tool first (t1, s1, t2, s2, ...) up to `maxPerSearch`, a kind that runs out giving its share to the other; scores are never mixed. A ranker that throws is `search_unavailable` (nothing recorded), and replay calls neither ranker.
+- **Recorded.** Each activation is a decision `<loop>#turn:<i>:tool:<j>:skill`
+  (`source: "agent-skill-activation"`), so a resume re-applies it without re-deciding. An unknown or
+  over-cap call is an error result (`unknown_skill`, `skill_limit_reached`) that records nothing; an
+  oversized or tainted-instruction call is an error result (`instructions_too_large`,
+  `instructions_refused`) whose verdict is recorded, so a resume reproduces it even if the registry
+  changed; an activation whose text became undeliverable since it was recorded stands (tools join)
+  and returns `instructions_unavailable`. The record also carries a sha256 `digest` of the
+  instructions delivered ([D14](adr/0125-tool-search.md)): if the registry text differs on a resume,
+  or when you re-activate an already-active skill, nothing new is delivered; the result is the typed
+  error `instructions_changed` (the skill's tools stay on the menu, nothing is recorded) and a
+  `LOOM_AGENT_SKILL_CHANGED` process warning is emitted. Records written before the digest existed
+  behave as before.
+- **Large registries: `discovery` ([D12](adr/0125-tool-search.md)).** The index is capped, so with
+  hundreds of skills the tail cannot be activated. Set `skillActivation: { discovery: "search" }`
+  (needs `toolSearch`) and the prompt carries one fixed line instead of the index; the model finds
+  skills with `search_tools`, which returns them under `skills`
+  (`{ kind: "skill", id, description }`, beside the unchanged `tools`) and then calls
+  `activate_skill({ name })`. Search is a convenience, not an authorization step: `activate_skill`
+  accepts any catalog skill (minus upfront-selected ones) by id, found or not. `"both"` with a tiny
+  `maxIndexBytes` is allowed (search covers everything) and `"search"` ignores `maxIndexBytes`. A
+  search never loads a skill or its tools. `"both"` keeps the index and adds search; the default
+  `"index"` is today's behaviour. Skill hits share the `maxPerSearch` page, already-active and
+  upfront-selected skills are not hits. A custom `toolSearch.ranker` works with it
+  ([D13](adr/0125-tool-search.md)): it ranks TOOLS only and never sees a skill; skills are ranked
+  separately by the built-in BM25F over skill docs, or by your own
+  `skillActivation: { discovery: "search", skillRanker }` (same `ToolRanker` interface, returns raw
+  skill ids). The page interleaves the two lists by rank position, tool first (t1, s1, t2, s2, ...)
+  up to `maxPerSearch`, a kind that runs out giving its share to the other; scores are never mixed.
+  A ranker that throws is `search_unavailable` (nothing recorded), and replay calls neither ranker.
 - **Skills are host author text.** Register them yourself; never build the catalog from a remote declaration. Compaction may fold an activation result into its summary; the skill's tools stay on the menu, and calling `activate_skill` for an already-active skill re-delivers its instructions (nothing recorded, no tools, not counted against `maxActive`).
 
-- **Which skills ran: `selectedSkillsOf`.** The selection is not an event; it is recorded as decisions whose ids are internal. Read it with the supported helper, a pure function over events (works on a live log, a replay or an audit export): `selectedSkillsOf(await store.read(executionId))` returns `{ upfront, activated, byLoop }`, `upfront` being the skill ids the selector NAMED before turn 0 (an id the registry did not have is listed too, though the loop skipped it, so it is not strictly "which skills ran") and `activated` those the model loaded with `activate_skill` (a refused activation is not listed). Pass `{ loopId }` to read one loop. `byLoop` is an ordinary object. A decision with no `source` whose id ends in `#skills` is read as `agentLoop$`'s; one your app records itself with another `source` is not.
+- **Which skills ran: `selectedSkillsOf`.** The selection is not an event; it is recorded as
+  decisions whose ids are internal. Read it with the supported helper, a pure function over events
+  (works on a live log, a replay or an audit export):
+  `selectedSkillsOf(await store.read(executionId))` returns `{ upfront, activated, byLoop }`,
+  `upfront` being the skill ids the selector NAMED before turn 0 (an id the registry did not have is
+  listed too, though the loop skipped it, so it is not strictly "which skills ran") and `activated`
+  those the model loaded with `activate_skill` (a refused activation is not listed). Pass
+  `{ loopId }` to read one loop. `byLoop` is an ordinary object. A decision with no `source` whose
+  id ends in `#skills` is read as `agentLoop$`'s; one your app records itself with another `source`
+  is not.
 
 ### Bounding what the log carries
 
@@ -758,7 +928,11 @@ Three things worth knowing:
 
 - **The delta sink is transient.** Route it to `@loom/live-query` or `progressHub` and per-token is free. Route it to `ctx.stream` and every delta becomes a **durable event** — use `chunkDeltas` to emit at sentence granularity instead of per token.
 - **An interrupted turn keeps its work.** A stop mid-generation fails on the `agentInterrupted` channel carrying `{ content, iterations, toolCallLog }` — the partial text *and* the tool calls already paid for, rather than discarding both.
-- **A runaway generation can be severed while it generates** (K8.4). Pass `guard: streamTokenBudget({ maxTokens })` to `createLlmEffect` and a breach emits `QUOTA_EXCEEDED` and aborts the call mid-stream, instead of letting it finish and denying the next one. The token count is an *estimate* from the text so far — severing at roughly the right point beats exact accounting that arrives after the money is spent.
+- **A runaway generation can be severed while it generates** (K8.4). Pass
+  `guard: streamTokenBudget({ maxTokens })` to `createLlmEffect` and a breach emits `QUOTA_EXCEEDED`
+  and aborts the call mid-stream, instead of letting it finish and denying the next one. The token
+  count is an *estimate* from the text so far — severing at roughly the right point beats exact
+  accounting that arrives after the money is spent.
 
 
 ### Conversations: chat, barge-in and streaming (`@loom/conversation`, [ADR 0122](adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md))
@@ -788,10 +962,26 @@ await conversations.sendTurn(conversationId, "Plan a trip", { principal, message
 const latest = await conversations.history(conversationId, { principal, direction: "backward", limit: 20 });
 ```
 
-- **Barge-in.** Sending a message while a turn runs interrupts that turn; the execution is never cancelled, the partial reply is kept as an `interrupted` message and is part of the next turn's context. The signal is a store subscription *outside* the flow (a registered `ctx.receive` is not woken mid-step), read by the loop only through its recorded checkpoints, so a restart replays it. A client's retry of the same `messageId` is not a barge-in. Without `bargeIn` the conversation queues instead.
+- **Barge-in.** Sending a message while a turn runs interrupts that turn; the execution is never
+  cancelled, the partial reply is kept as an `interrupted` message and is part of the next turn's
+  context. The signal is a store subscription *outside* the flow (a registered `ctx.receive` is not
+  woken mid-step), read by the loop only through its recorded checkpoints, so a restart replays it.
+  A client's retry of the same `messageId` is not a barge-in. Without `bargeIn` the conversation
+  queues instead.
 - **History** is the log: every message is a decision, `history` reads them with bounded range reads across all generations (`maxScan` caps the work of one call; `nextCursor` continues). Cursors are `<generation>.<sequence>`.
-- **Budgeting.** The prompt is fitted to `contextWindow` (minus `reserveOutputTokens`) by dropping the oldest *whole turns*; `counter` is pluggable (the default heuristic over-counts non-ASCII on purpose). The verdict is recorded, so replay never re-decides it. With `summarizerToolId`, dropped turns fold into a rolling summary (the same effect contract as `agentLoop$` `compaction.toolId`; both inputs may carry `tainted()` wrappers, so read each message with `summarizerText` from `@loom/conversation`), delivered fenced in a user message, never the system prompt. In-run growth is still `agent.compaction`'s job.
-- **Trust.** The turn runs as the conversation's owner, and **only the owner may talk to it**: the identity that started it (tenant, actor and `onBehalfOf` all equal; a delegate is a different identity) may send, close, read and stream; anyone else, a same-tenant colleague included, gets the same not-found as for a conversation that does not exist. User text is untrusted data (tainted `conversation:user`); render it as text. A failed turn records only a fixed reason and an `errorId`; pass `onError` to get the real error.
+- **Budgeting.** The prompt is fitted to `contextWindow` (minus `reserveOutputTokens`) by dropping
+  the oldest *whole turns*; `counter` is pluggable (the default heuristic over-counts non-ASCII on
+  purpose). The verdict is recorded, so replay never re-decides it. With `summarizerToolId`, dropped
+  turns fold into a rolling summary (the same effect contract as `agentLoop$` `compaction.toolId`;
+  both inputs may carry `tainted()` wrappers, so read each message with `summarizerText` from
+  `@loom/conversation`), delivered fenced in a user message, never the system prompt. In-run growth
+  is still `agent.compaction`'s job.
+- **Trust.** The turn runs as the conversation's owner, and **only the owner may talk to it**: the
+  identity that started it (tenant, actor and `onBehalfOf` all equal; a delegate is a different
+  identity) may send, close, read and stream; anyone else, a same-tenant colleague included, gets
+  the same not-found as for a conversation that does not exist. User text is untrusted data (tainted
+  `conversation:user`); render it as text. A failed turn records only a fixed reason and an
+  `errorId`; pass `onError` to get the real error.
 
 **Sharing a conversation (shared mode).** To let several people use one chat, say who: participants, not tenants. Each turn runs as the person who asked (their grants, their quotas), the answer is classified by the tools it used, and a viewer not cleared for that class sees a bare placeholder instead of the answer, in history, on the stream and in the model's context.
 
@@ -817,7 +1007,17 @@ const conversations = createConversations({
 await conversations.addParticipant(id, { actor: "bob", tenant: "acme" }, { principal: owner });
 ```
 
-The service principal only coordinates (grant it the `conversation.turn` effect and the summarizer); each turn execution starts as the asker. Build the runtime with `executionAccessPolicy({ rules: { query: "owner", send: "owner", cancel: "owner", resume: "owner" } })`: the coordinator's log holds the unfiltered transcript, so a policy that lets a tenant peer read it defeats the filtering (construction refuses it). A sender who presents a delegation is refused unless you supply `principalFor`. Rotate the envelope key with `key: next, previousKeys: [old]`, then drop `previousKeys` after `maxEnvelopeAgeMs` (do it while conversations are quiet: an in-flight turn is restarted under its new id). Turns queue first-come; a participant's follow-up interrupts only their own turn. Removing a participant is effective on their next request and ends their open streams at the next re-authorization. `requireApproval` stays unsupported (the future rule is in ADR 0122 D10.8).
+The service principal only coordinates (grant it the `conversation.turn` effect and the summarizer);
+each turn execution starts as the asker. Build the runtime with `executionAccessPolicy({ rules: {
+query: "owner", send: "owner", cancel: "owner", resume: "owner" } })`: the coordinator's log holds
+the unfiltered transcript, so a policy that lets a tenant peer read it defeats the filtering
+(construction refuses it). A sender who presents a delegation is refused unless you supply
+`principalFor`. Rotate the envelope key with `key: next, previousKeys: [old]`, then drop
+`previousKeys` after `maxEnvelopeAgeMs` (do it while conversations are quiet: an in-flight turn is
+restarted under its new id). Turns queue first-come; a participant's follow-up interrupts only their
+own turn. Removing a participant is effective on their next request and ends their open streams at
+the next re-authorization. `requireApproval` stays unsupported (the future rule is in ADR 0122
+D10.8).
 
 `history` reads `direction: "forward"` (oldest first) unless you pass `"backward"`; the SSE `/history` route takes the same `?direction=forward|backward` and defaults to forward, so a chat UI that wants the latest messages first must ask for `backward` and order the page to match (see the plugin README).
 
@@ -825,7 +1025,16 @@ For a browser, put `@loom/plugin-conversation-sse` in front: authenticated JSON 
 
 `manageParticipants` is judged inside a recorded decision in the conversation body: if it throws or rejects, the decision throws and the whole shared conversation fails (the same as `directory.list`). It should not throw; return `false` on a transient error.
 
-Tests and trusted bridges that write to the inbox directly build a valid envelope with `signInboxEnvelope(key, body)` (same signer as `sendTurn`). It needs the conversation's `key`, which is the authority of a trusted bridge: a key holder can speak as ANY participant in shared mode, edit that asker's turns, bypass the client-only checks (`maxQueuedPerAsker`, the delegated-sender rule), write to every conversation the runtime `send` policy admits, and push the staleness floor forward with an `iat` up to 60 s ahead. It cannot sign for another conversation, replay an id, use a stale `iat`, speak as another owner in owner mode, name a non-participant in shared mode, close a shared conversation unless the closer is the owner, the service principal or a `manageParticipants` manager, send a turn over `maxTurnChars` (the body rejects it), or send a malformed body (`InvalidEnvelopeError`, thrown by the signer). Keep the key server-side.
+Tests and trusted bridges that write to the inbox directly build a valid envelope with
+`signInboxEnvelope(key, body)` (same signer as `sendTurn`). It needs the conversation's `key`, which
+is the authority of a trusted bridge: a key holder can speak as ANY participant in shared mode, edit
+that asker's turns, bypass the client-only checks (`maxQueuedPerAsker`, the delegated-sender rule),
+write to every conversation the runtime `send` policy admits, and push the staleness floor forward
+with an `iat` up to 60 s ahead. It cannot sign for another conversation, replay an id, use a stale
+`iat`, speak as another owner in owner mode, name a non-participant in shared mode, close a shared
+conversation unless the closer is the owner, the service principal or a `manageParticipants`
+manager, send a turn over `maxTurnChars` (the body rejects it), or send a malformed body
+(`InvalidEnvelopeError`, thrown by the signer). Keep the key server-side.
 
 ### Dynamic MCP dispatch & sandboxed reshaping (ADR 0063/0064)
 
@@ -1087,7 +1296,13 @@ const runner: FlowRunner = async (ctx) => {
 
 Arguments are checked against each capability's input schema before anything runs; arguments that contain `$from` are checked once they resolve, and a step whose arguments or preconditions fail is a typed failure that does not run the capability. A step's failure is recorded, so a resume does not re-run it. Failure text and step outputs reach the reviser only as fenced, untrusted `user` content.
 
-Long-horizon goals live in a store, not in an execution: `registerGoalEffects(effects, new DurableGoalStore(durableStateStore))`, then in a flow `const goals = goalsClient(ctx); await goals.create({ id: "g1", title }); await runGoal(ctx, goals, "g1", { catalog, plan: { model } })`. Goals belong to the execution's authenticated principal (ADR 0111); another principal cannot read, change or detect them. `ctx.continueAsNew` carries the goal id, the store holds the goal. Planning-depth migration notes: `plan()` and `dispatchPlan` keep working unchanged; moving a flow to `planGoal` is a body change (ADR 0113).
+Long-horizon goals live in a store, not in an execution:
+`registerGoalEffects(effects, new DurableGoalStore(durableStateStore))`, then in a flow `const goals
+= goalsClient(ctx); await goals.create({ id: "g1", title }); await runGoal(ctx, goals, "g1", {
+catalog, plan: { model } })`. Goals belong to the execution's authenticated principal (ADR 0111);
+another principal cannot read, change or detect them. `ctx.continueAsNew` carries the goal id, the
+store holds the goal. Planning-depth migration notes: `plan()` and `dispatchPlan` keep working
+unchanged; moving a flow to `planGoal` is a body change (ADR 0113).
 
 `@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. The default backing store is in-memory, so an agent that restarts remembers nothing — pass `memoryStore: new SqliteMemoryStore(".loom/events.db")` (or `new PostgresMemoryStore(url)`) to point memory at the same database as the event log, so one backup captures both.
 
@@ -1208,7 +1423,11 @@ defineConfig({
 });
 ```
 
-**Migrating.** These options used to sit at the top level. Passing one there now throws at `defineConfig`, naming the option and its new home — a message rather than a silent no-op, because an ignored `security` option is the kind of failure a passing test suite will not show you. TypeScript rejects it on an object literal; the runtime check is what catches a config assembled dynamically, or any JavaScript caller.
+**Migrating.** These options used to sit at the top level. Passing one there now throws at
+`defineConfig`, naming the option and its new home — a message rather than a silent no-op, because
+an ignored `security` option is the kind of failure a passing test suite will not show you.
+TypeScript rejects it on an object literal; the runtime check is what catches a config assembled
+dynamically, or any JavaScript caller.
 
 ```ts
 // before                          // now
@@ -1382,7 +1601,13 @@ const { output, events } = await runAgentOnce({
 });
 ```
 
-Pass `principal` to run as a given caller (it reaches `runtime.start`, so a `GrantTable` in `config.security` sees it). Supplying `provider` AND a `registerEffects` that registers the same model effect is a config error. It is for scripts and tests: nothing survives the call, and a run that parks on an approval returns `status: "suspended"` rather than being resumed. Production puts `agentLoop$` in a registered flow on durable storage. It does not relax anything: it goes through `defineConfig` (so `config.security` applies), the model call is an effect in the ring, and a `loop` config `agentLoop$` refuses rejects with `agentLoop$`'s own error.
+Pass `principal` to run as a given caller (it reaches `runtime.start`, so a `GrantTable` in
+`config.security` sees it). Supplying `provider` AND a `registerEffects` that registers the same
+model effect is a config error. It is for scripts and tests: nothing survives the call, and a run
+that parks on an approval returns `status: "suspended"` rather than being resumed. Production puts
+`agentLoop$` in a registered flow on durable storage. It does not relax anything: it goes through
+`defineConfig` (so `config.security` applies), the model call is an effect in the ring, and a `loop`
+config `agentLoop$` refuses rejects with `agentLoop$`'s own error.
 
 ## 11. The `loom` CLI
 
@@ -1402,16 +1627,40 @@ loom inspect --db <path> [--port N]             web inspector (timeline + slider
 
 (Plus `profile` / `introspect` / `optimize`, `learn report|eval`, `compat` / `kernel-manifest`, `census` / `recover` / `branches retire|prune` / `retention run` / `sweep content` / `compliance report`, `knowledge sync|list|search`, `lint claim-check`, `dev`, and the `plugin …` family — the CLI guide has all of them.)
 
-- **The maintenance passes are commands, not just functions.** `census` (read-only), `recover`, `branches retire`, `branches prune` and `retention run` are **dry by default** and act only under `--apply`. Each refuses where loom cannot decide for you: `recover` wants either `timers.leases` or an explicit `--stale`, and `branches retire` wants `--stale`, because a branch parked on a human gate is an open question rather than garbage. The preview comes from the pass itself, so it cannot disagree with what `--apply` would do.
+- **The maintenance passes are commands, not just functions.** `census` (read-only), `recover`,
+  `branches retire`, `branches prune` and `retention run` are **dry by default** and act only under
+  `--apply`. Each refuses where loom cannot decide for you: `recover` wants either `timers.leases`
+  or an explicit `--stale`, and `branches retire` wants `--stale`, because a branch parked on a
+  human gate is an open question rather than garbage. The preview comes from the pass itself, so it
+  cannot disagree with what `--apply` would do.
 
 - **`logs` / `debug` / `inspect`** read one execution's log. `debug --at N` folds the exact state at sequence *N* (time-travel); `inspect` serves a web timeline with a slider using the same fold.
-- **Every storage-backed command takes `--config <module>` or `--db <path>`.** `--db` is the SQLite shorthand — a dev machine with loose files, no app load needed. `--config` points at your app's config module and uses **the stores it wired**, whatever they are: SQLite, Postgres, or any backend that passes the conformance kits (ADR 0033). That is what makes these commands usable on a real deployment — leases and placement exist because more than one node is running, and a multi-node deployment is not a file you can pass to `--db`.
+- **Every storage-backed command takes `--config <module>` or `--db <path>`.** `--db` is the SQLite
+  shorthand — a dev machine with loose files, no app load needed. `--config` points at your app's
+  config module and uses **the stores it wired**, whatever they are: SQLite, Postgres, or any
+  backend that passes the conformance kits (ADR 0033). That is what makes these commands usable on a
+  real deployment — leases and placement exist because more than one node is running, and a
+  multi-node deployment is not a file you can pass to `--db`.
 
   Importing a config module to read it **starts nothing**: the CLI asks for build-without-start, so pointing a diagnostic at production cannot fire due timers or scheduled flows as a side effect. (An app can request the same thing itself with `defineConfig({ autostart: false })`, then call `app.start()` when it means to run.)
 
   What a command cannot consult, it says: without `--leases`, `census` reports coverage as *not asked* rather than zero; without a `branchRegistry`, `retention` says the live-descendant guard is **off** rather than quietly skipping it.
-- **`gen` / `new`** implement the folder convention via **build-time codegen** (a static `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)). **`appgen`** turns a natural-language intent into a static Loom app *in the same folder convention* (`app/flows/<id>/flow.ts` + `app/loom.gen.ts` + `app/config.ts`, or a full project) via [`@loom/appgen`](../tools/appgen) — deterministic and offline, with no model call at generate time or in the output.
-- **`doctor`** is the front door for the pre-flight gates — the flow-graph check, the `@loom/verify` rules, the memory store (durable? can it retrieve by relevance?), and the claim-check lint. It discovers each one's input, runs what it can, and **names what it skipped and why** — a skipped check never reads as a pass. It also checks what the composition wired for timers: whether this deployment can wake at all (schedules with no `TimerStore` can never fire), and whether anything **owns** a wake (`timers.leases`). The second is reported as an *advisory* — a defect on two nodes, fine on one, and `doctor` cannot see which you run, so it states the consequence and leaves the judgement with you instead of failing on a guess. Build with the Loom compiler and `verify` gets the manifest's three source analyses (non-determinism, loop identity, runner-body reach) injected automatically; nothing is hand-plumbed.
+- **`gen` / `new`** implement the folder convention via **build-time codegen** (a static
+  `loom.gen.ts`), not runtime globbing ([ADR 0011](adr/0011-folder-convention-codegen.md)).
+  **`appgen`** turns a natural-language intent into a static Loom app *in the same folder
+  convention* (`app/flows/<id>/flow.ts` + `app/loom.gen.ts` + `app/config.ts`, or a full project)
+  via [`@loom/appgen`](../tools/appgen) — deterministic and offline, with no model call at generate
+  time or in the output.
+- **`doctor`** is the front door for the pre-flight gates — the flow-graph check, the `@loom/verify`
+  rules, the memory store (durable? can it retrieve by relevance?), and the claim-check lint. It
+  discovers each one's input, runs what it can, and **names what it skipped and why** — a skipped
+  check never reads as a pass. It also checks what the composition wired for timers: whether this
+  deployment can wake at all (schedules with no `TimerStore` can never fire), and whether anything
+  **owns** a wake (`timers.leases`). The second is reported as an *advisory* — a defect on two
+  nodes, fine on one, and `doctor` cannot see which you run, so it states the consequence and leaves
+  the judgement with you instead of failing on a guess. Build with the Loom compiler and `verify`
+  gets the manifest's three source analyses (non-determinism, loop identity, runner-body reach)
+  injected automatically; nothing is hand-plumbed.
 - **`eval` / `deploy check` / `check` / `verify`** are CI gates (§12).
 
 For a command-by-command walkthrough with flags, exit codes, and example output, see the **[CLI Usage Guide](usage-cli.md)**.
@@ -1429,7 +1678,11 @@ Both replay the durable log — the log *is* the fixture.
 { "name": "happy path", "log": [ /* EventEnvelope[] */ ], "expect": { "status": "completed", "stepsCompleted": ["investigate", "apply"] } }
 ```
 
-**Deploy simulation** (`@loom/deploy-sim`, `loom deploy check`): replay historical logs against your **new** flow definitions to catch resume-incompatibility *before* promoting — a removed step or missing flow is flagged breaking; a suspended carry-over is a warning. This catches what type-checking can't: whether in-flight executions can still finish after a deploy ([ADR 0008](adr/0008-evals-and-deploy-simulation.md)).
+**Deploy simulation** (`@loom/deploy-sim`, `loom deploy check`): replay historical logs against your
+**new** flow definitions to catch resume-incompatibility *before* promoting — a removed step or
+missing flow is flagged breaking; a suspended carry-over is a warning. This catches what
+type-checking can't: whether in-flight executions can still finish after a deploy
+([ADR 0008](adr/0008-evals-and-deploy-simulation.md)).
 
 ---
 
@@ -1459,15 +1712,34 @@ Workers reference flows/effects **by id** from a statically-wired registry — s
 Determinism is what makes resume, fork, and replay trustworthy. Keep these in mind:
 
 - **Put non-determinism inside effects, not orchestration.** Wall-clock reads, randomness, and I/O belong in a `handler`/Effect (whose result is logged), *not* in the runner's control flow. A runner must reach the same suspend/step sequence on replay.
-- **For advisory/orchestration-level non-determinism, use `ctx.decide` (P9).** A model route, a memory recall, or a learned ranking that affects *what runs* should be wrapped in `ctx.decide(id, …)` so the choice is recorded and served on replay. This is the 2.0 escape hatch: the runtime may improve run-to-run, but any single run stays reproducible. Memory recall that affects outcomes: pass `ctx.decide` to `TieredMemory.recall({ decide })` (§16).
+- **For advisory/orchestration-level non-determinism, use `ctx.decide` (P9).** A model route, a
+  memory recall, or a learned ranking that affects *what runs* should be wrapped in
+  `ctx.decide(id, …)` so the choice is recorded and served on replay. This is the 2.0 escape hatch:
+  the runtime may improve run-to-run, but any single run stays reproducible. Memory recall that
+  affects outcomes: pass `ctx.decide` to `TieredMemory.recall({ decide })` (§16).
 - **Don't branch orchestration on unlogged external state.** If the runner does `if (Date.now() % 2)` it may diverge on replay. Fetch the value in a step, then branch on the step's (logged) output.
 - **Effects run once; replays serve from the log.** Don't rely on a side effect happening again during resume — it won't.
 - **Keep wiring static.** Register flows/effects explicitly (or via `loom gen`). No runtime globbing or env-conditional registration, or a remote worker/replay can't reconstruct the same graph (P5).
 - **Middleware must be replay-safe too.** Retries/jitter use deterministic hashing, not `Math.random`. Follow suit in custom middleware on replayable paths.
 - **Snapshots are an optimization, not truth.** The log is authoritative; snapshots only shorten the fold. Never store data *only* in a snapshot.
-- **Keep user-driven reads out of the log (ADR 0073).** A UI paginating a table or refetching a surface is driven by a human clicking, so its count and order are a function of user behaviour — journaling it makes replay one too. Declare such tools `mode: "ambient"` and call them through `invokeTransient`; `ctx.execute` then refuses them. Note this is a *boundary check*, not a durability class: an ambient tool may not enter an execution at all, so there is still exactly one replay model (§3).
-- **A resume knows less than you think.** `resume()` refuses stale flow *code* (K11), stale *input* (K11.5) and forged *approvals* (K12.2) — but it cannot know which version of the data a human was looking at when they decided, because the execution knows when *it* suspended, not what was on screen. For gates that stay open a long time, carry that provenance yourself (§7's `seenSequence`/`isStale`) and decide in-domain.
-- **The step-identity rule (ADR 0061).** Frames are keyed by step id, so `ctx.run` in a loop must mint a deterministic distinct id per iteration — `` `${id}#${index}` `` — or iteration 2+ silently replays iteration 1's output. The sequence of ids must be a pure function of *logged* inputs (the interpreter pattern: a statically compiled flow walking runtime-loaded plan data is fully replayable under this rule). `fanout$(ctx, baseStep, items)` (`@loom/orchestration`) does the minting for parallel fan-out; the compiler's `analyzeLoopIdentity` lint flags violations (manifest warnings via `loomPlugin()`/`loom check`, or `verify: { lint: { loopIdentityByFlow } }` at boot).
+- **Keep user-driven reads out of the log (ADR 0073).** A UI paginating a table or refetching a
+  surface is driven by a human clicking, so its count and order are a function of user behaviour —
+  journaling it makes replay one too. Declare such tools `mode: "ambient"` and call them through
+  `invokeTransient`; `ctx.execute` then refuses them. Note this is a *boundary check*, not a
+  durability class: an ambient tool may not enter an execution at all, so there is still exactly one
+  replay model (§3).
+- **A resume knows less than you think.** `resume()` refuses stale flow *code* (K11), stale *input*
+  (K11.5) and forged *approvals* (K12.2) — but it cannot know which version of the data a human was
+  looking at when they decided, because the execution knows when *it* suspended, not what was on
+  screen. For gates that stay open a long time, carry that provenance yourself (§7's
+  `seenSequence`/`isStale`) and decide in-domain.
+- **The step-identity rule (ADR 0061).** Frames are keyed by step id, so `ctx.run` in a loop must
+  mint a deterministic distinct id per iteration — `` `${id}#${index}` `` — or iteration 2+ silently
+  replays iteration 1's output. The sequence of ids must be a pure function of *logged* inputs (the
+  interpreter pattern: a statically compiled flow walking runtime-loaded plan data is fully
+  replayable under this rule). `fanout$(ctx, baseStep, items)` (`@loom/orchestration`) does the
+  minting for parallel fan-out; the compiler's `analyzeLoopIdentity` lint flags violations (manifest
+  warnings via `loomPlugin()`/`loom check`, or `verify: { lint: { loopIdentityByFlow } }` at boot).
 
 ---
 
@@ -1575,7 +1847,14 @@ policy$({
 });
 ```
 
-Evaluation is **deny-wins**; a policy composes **under** the `authorizer` (both must allow — defense in depth), so it can tighten a grant but never widen it, and a flow with no governing policy is unaffected. Enforcement keys on `workflowId` (the flow is the unit of authority, like `GrantTable`). Policies come from three places: each flow's `policies` (`flows` / `flowModules`), app-global `config.policies`, and **agent-attached** `agent$({ policies })` — a capability-bound agent runs a flow (via `capabilityAgents`), so its policies bind to that flow's `workflowId` and are enforced whenever the agent runs it. *(A flow supplied only through a `catalog` but not wired to a policy source uses the grant model.)*
+Evaluation is **deny-wins**; a policy composes **under** the `authorizer` (both must allow — defense
+in depth), so it can tighten a grant but never widen it, and a flow with no governing policy is
+unaffected. Enforcement keys on `workflowId` (the flow is the unit of authority, like `GrantTable`).
+Policies come from three places: each flow's `policies` (`flows` / `flowModules`), app-global
+`config.policies`, and **agent-attached** `agent$({ policies })` — a capability-bound agent runs a
+flow (via `capabilityAgents`), so its policies bind to that flow's `workflowId` and are enforced
+whenever the agent runs it. *(A flow supplied only through a `catalog` but not wired to a policy
+source uses the grant model.)*
 
 ### Effect classes: a static ceiling beside the runtime floor (ADR 0084)
 
@@ -1608,11 +1887,41 @@ verified** rather than passing clean. See [`loom verify`](usage-cli.md#loom-veri
 The kernel's defaults are permissive — a missing authorizer allows every effect, nothing bounds a run's duration, spawn depth or spend. `defineConfig({ security: { strict: true } })` is the baseline for agents that act unattended; the full table of defaults and the reasoning behind each is in [usage.md, Step 11](usage.md#step-11--harden-it-grants-quotas-safety-secrets--isolation).
 
 - **What strict refuses.** `defineConfig` throws, listing every problem, without `security.authorizer` and `security.executionAuthorizer`, and if `checks.verify` is `"off"`. Not strict, you get one advisory via `observability.onWarn`; `strict: false` silences it.
-- **Fail-closed execution authz (R3).** Under strict a principal-less `start`/`resume`/`cancel`/`loadState` is handed to `security.executionAuthorizer` with `principal: undefined` instead of skipping it; `executionAccessPolicy` (`@loom/workflow-runtime`) is the reference policy (owner/tenant/any/deny per op, workflow allow-list, `allowAnonymous` default false). Timers, recovery and the child supervisor present `runtime.systemOptions()`; `LocalWorkerRuntime` does NOT by default: a dispatched package acts as its `principal` (an explicit `{ system }` option is for kernel re-drive targets only, and a worker-server in front of one needs `authorize`). `fork`, `restoreFromState` and `acquireFence` are gated like `resume`/`cancel`. Ownership is the principal the kernel records on `EXECUTION_STARTED` (R3k, ADR 0111) and hands to the policy as `request.owner`: it survives restarts, recovery and remote workers, and `resolveOwner` is consulted only for a log that predates it. The flow's effects run as that owner on every path; `options.principal` is only the lifecycle caller. Details in [usage.md, Step 11](usage.md#step-11--harden-it-grants-quotas-safety-secrets--isolation).
-- **The envelope** (`execution.envelope`): `spawn: { maxDepth, maxFanOut }` (hand `app.envelope.spawn` to `superviseChildren({ limits })`; `boundOrchestration(limits)` gives the parent-side refusal before anything durable happens), `budget: { perExecution, perAgent, perTenant, pricing }` (via `nestedBudgetMiddleware`, which meters on its own — do not also install `meteringMiddleware`), and `rateLimit` (`rateLimitMiddleware`: a token bucket, process-local, wall-clock driven, so it lives at the effect layer and never in the fold).
+- **Fail-closed execution authz (R3).** Under strict a principal-less
+  `start`/`resume`/`cancel`/`loadState` is handed to `security.executionAuthorizer` with
+  `principal: undefined` instead of skipping it; `executionAccessPolicy` (`@loom/workflow-runtime`)
+  is the reference policy (owner/tenant/any/deny per op, workflow allow-list, `allowAnonymous`
+  default false). Timers, recovery and the child supervisor present `runtime.systemOptions()`;
+  `LocalWorkerRuntime` does NOT by default: a dispatched package acts as its `principal` (an
+  explicit `{ system }` option is for kernel re-drive targets only, and a worker-server in front of
+  one needs `authorize`). `fork`, `restoreFromState` and `acquireFence` are gated like
+  `resume`/`cancel`. Ownership is the principal the kernel records on `EXECUTION_STARTED` (R3k, ADR 0111)
+  and hands to the policy as `request.owner`: it survives restarts, recovery and remote workers, and
+  `resolveOwner` is consulted only for a log that predates it. The flow's effects run as that owner
+  on every path; `options.principal` is only the lifecycle caller. Details in
+  [usage.md, Step 11](usage.md#step-11--harden-it-grants-quotas-safety-secrets--isolation).
+- **The envelope** (`execution.envelope`): `spawn: { maxDepth, maxFanOut }` (hand
+  `app.envelope.spawn` to `superviseChildren({ limits })`; `boundOrchestration(limits)` gives the
+  parent-side refusal before anything durable happens),
+  `budget: { perExecution, perAgent, perTenant, pricing }` (via `nestedBudgetMiddleware`, which
+  meters on its own — do not also install `meteringMiddleware`), and `rateLimit`
+  (`rateLimitMiddleware`: a token bucket, process-local, wall-clock driven, so it lives at the
+  effect layer and never in the fold).
 - **Kill switch** (`security.killSwitch`, or `app.killSwitch` under strict): `InMemoryKillSwitch` has `stopAll` / `stopTenant` / `stopWorkflow` and their `resume*`; a `KillSwitchRegistry` over a shared store stops across processes. It is the outermost middleware and fails closed if the registry throws. It stops the next effect only — it does not cancel running executions or their children.
-- **Closing the model-call bypasses.** `agentLoop$({ reasoning })` and `llmSkillSelector(provider)` call a provider directly, outside authorization, metering and the kill switch. Use `reasoningToolId` (with `registerReasoningRoutes(effects, reasoning)`) so each routed call is a journaled effect frame, and `llmSkillSelector({ toolId })` so the selection is one; `requireEffectRing: true` refuses the direct spellings. A skill-selection or reasoning call made this way is charged to the execution and served from the log on replay.
-- **Refusals are typed and non-retryable**: `QuotaExceededError`, `RateLimitExceededError`, `KillSwitchEngagedError`, `SpawnLimitExceededError` (each also carries `retryable: false`, which `retryMiddleware`'s default classifier honours). They are recorded as ordinary `STEP_FAILED`, so do not catch-and-continue past one (replay would re-run the step live). The strict default deadline applies to executions *started* under strict and is not durable across a resume; tenant scoping and spawn caps are best-effort until R3, budget does not see `ctx.decide`/`invokeTransient` spend, and strict does not reach remote workers — the full list is in [usage.md, Step 11](usage.md#step-11--harden-it-grants-quotas-safety-secrets--isolation).
+- **Closing the model-call bypasses.** `agentLoop$({ reasoning })` and `llmSkillSelector(provider)`
+  call a provider directly, outside authorization, metering and the kill switch. Use
+  `reasoningToolId` (with `registerReasoningRoutes(effects, reasoning)`) so each routed call is a
+  journaled effect frame, and `llmSkillSelector({ toolId })` so the selection is one;
+  `requireEffectRing: true` refuses the direct spellings. A skill-selection or reasoning call made
+  this way is charged to the execution and served from the log on replay.
+- **Refusals are typed and non-retryable**: `QuotaExceededError`, `RateLimitExceededError`,
+  `KillSwitchEngagedError`, `SpawnLimitExceededError` (each also carries `retryable: false`, which
+  `retryMiddleware`'s default classifier honours). They are recorded as ordinary `STEP_FAILED`, so
+  do not catch-and-continue past one (replay would re-run the step live). The strict default
+  deadline applies to executions *started* under strict and is not durable across a resume; tenant
+  scoping and spawn caps are best-effort until R3, budget does not see
+  `ctx.decide`/`invokeTransient` spend, and strict does not reach remote workers — the full list is
+  in [usage.md, Step 11](usage.md#step-11--harden-it-grants-quotas-safety-secrets--isolation).
 
 ### Resource accounting & quotas (K3)
 
@@ -1939,13 +2248,62 @@ await runtime.resumeAs(executionId, "my-flow", { eventType: "Approval", payload 
 
 ### Editing a flow body under a running execution (ADR 0113, R7)
 
-The structural hash above is **body-blind**: a flow is a function re-run from the top on every resume, and an edit that changes which step ids it asks for (a changed branch condition, an inserted or dropped `ctx.run`) leaves the hash unchanged while the new body walks a different id sequence over the old log. Old frames are orphaned and an effect that already ran under one id runs again under another. Three things close that, none of which hashes `toString()`:
+The structural hash above is **body-blind**: a flow is a function re-run from the top on every
+resume, and an edit that changes which step ids it asks for (a changed branch condition, an inserted
+or dropped `ctx.run`) leaves the hash unchanged while the new body walks a different id sequence
+over the old log. Old frames are orphaned and an effect that already ran under one id runs again
+under another. Three things close that, none of which hashes `toString()`:
 
-1. **The hash can be SHA-256** (`sha256:<hex>`, a small pure-JS digest in `@loom/core`; no `node:crypto`). Both forms are always read: a log that recorded the old 32-bit `fnv1a:` value is compared against the legacy hash of the registered code. New starts keep recording `fnv1a:` until `kernel.features.sha256FlowHash` is on (a node that predates ADR 0113 refuses a `sha256:` recording), so turn it on once every node reads both; `security.strict` does not.
-2. **An opt-in body fingerprint.** `flow$({ codeFingerprint })` takes a content hash of the flow body *as built*, supplied by your toolchain or by you; it is recorded as `EXECUTION_STARTED.codeHash` (folded as `_codeHash`). On resume or recovery a different value is a `FlowCodeMismatchError` (`kind: "code"`) unless the registered flow lists the recorded one in `compatibleWith: ["…"]`, your explicit assertion, reviewed in the diff that adds it, that the edit is replay-compatible. Absent on either side means "no fingerprint": nothing changes. (`@loom/compiler` does not produce one yet.) A migration records the target's fingerprint (`toCodeHash`), so a migrated execution is held to the code it now runs, and a continuation's successor records the fingerprint of the code registered *now*, so `continueAsNew` is the clean re-version point.
-3. **A replay-divergence detector.** Before a step starts, a park, a continuation, and at completion, every step the log records as completed must have been asked for by the re-run (flow-level emits and a decision's record are not gated; a decider is transient and may run). If not, the code changed shape under the execution. `kernel.divergence` (or `WorkflowRuntimeDeps.divergence`) picks the reaction: `"warn"` (default) reports once per run through `onWarn` and proceeds; `"fail"` raises `FlowDivergenceError` (a `FlowReplayDivergenceError` naming the skipped steps) **before** the step's effect, and **parks the execution on the reserved gate `__loom_diverged__`** (no `EXECUTION_FAILED`; recovery and timers leave it alone; `onWarn` is called, `recoverAbandoned` reports it as `failed` through `onError`). After you fix the code, pin the original, list the fingerprint in `compatibleWith`, or migrate with `resumeAs`, call `runtime.retryDiverged(id)` (a `resume` at that gate: same authorization; the answer is status-only). **Upgrade note:** do not call it, or answer that gate, until every node runs R7: an older node folds the null resume into `_resumePayloads`. `"off"` is silent. `security.strict` defaults it to `"fail"`. The check is **membership only**: a pure reorder is fine; a step whose frame the log already holds (an untyped failure re-run live) is judged only against the frames recorded before it; a step that starts inside an open `ctx.parallel` scope is judged against the recorded frames outside the scope that precede it (the scope's own frames compare as a set at close; with `kernel.features.scopes` on the kernel records each step's scope path, otherwise a lower-rank floor applies); a decision served from the log exempts exactly the steps its decider ran (recorded as `innerSteps`, always written; only a record WITHOUT the field, a pre-R7 log, falls back to the `<decisionId>:` / `<decisionId>#` naming convention). A decider must await the steps it runs: one it detaches is not recorded and will be reported as skipped on resume. Known limits: scope paths are positional, so a function-branch `parallel` inserted before a recorded one can run a new step before the refusal; an execution with any frame lacking a scope path (scopes turned on mid-life) uses the weaker floor; past 4096 inner steps or 64 KiB of their ids a served decision also exempts the frames first started during it. frames before an `EXECUTION_MIGRATED` are exempt. After a migration, a snapshot hides *when* it happened, so the detector then checks only the frames completed since that snapshot (fail-open). The cost is O(1) amortised per append.
+1. **The hash can be SHA-256** (`sha256:<hex>`, a small pure-JS digest in `@loom/core`; no
+   `node:crypto`). Both forms are always read: a log that recorded the old 32-bit `fnv1a:` value is
+   compared against the legacy hash of the registered code. New starts keep recording `fnv1a:` until
+   `kernel.features.sha256FlowHash` is on (a node that predates ADR 0113 refuses a `sha256:`
+   recording), so turn it on once every node reads both; `security.strict` does not.
+2. **An opt-in body fingerprint.** `flow$({ codeFingerprint })` takes a content hash of the flow
+   body *as built*, supplied by your toolchain or by you; it is recorded as
+   `EXECUTION_STARTED.codeHash` (folded as `_codeHash`). On resume or recovery a different value is
+   a `FlowCodeMismatchError` (`kind: "code"`) unless the registered flow lists the recorded one in
+   `compatibleWith: ["…"]`, your explicit assertion, reviewed in the diff that adds it, that the
+   edit is replay-compatible. Absent on either side means "no fingerprint": nothing changes.
+   (`@loom/compiler` does not produce one yet.) A migration records the target's fingerprint
+   (`toCodeHash`), so a migrated execution is held to the code it now runs, and a continuation's
+   successor records the fingerprint of the code registered *now*, so `continueAsNew` is the clean
+   re-version point.
+3. **A replay-divergence detector.** Before a step starts, a park, a continuation, and at
+   completion, every step the log records as completed must have been asked for by the re-run
+   (flow-level emits and a decision's record are not gated; a decider is transient and may run). If
+   not, the code changed shape under the execution. `kernel.divergence` (or
+   `WorkflowRuntimeDeps.divergence`) picks the reaction: `"warn"` (default) reports once per run
+   through `onWarn` and proceeds; `"fail"` raises `FlowDivergenceError` (a
+   `FlowReplayDivergenceError` naming the skipped steps) **before** the step's effect, and
+   **parks the execution on the reserved gate `__loom_diverged__`** (no `EXECUTION_FAILED`; recovery
+   and timers leave it alone; `onWarn` is called, `recoverAbandoned` reports it as `failed` through
+   `onError`). After you fix the code, pin the original, list the fingerprint in `compatibleWith`,
+   or migrate with `resumeAs`, call `runtime.retryDiverged(id)` (a `resume` at that gate: same
+   authorization; the answer is status-only). **Upgrade note:** do not call it, or answer that gate,
+   until every node runs R7: an older node folds the null resume into `_resumePayloads`. `"off"` is
+   silent. `security.strict` defaults it to `"fail"`. The check is **membership only**: a pure
+   reorder is fine; a step whose frame the log already holds (an untyped failure re-run live) is
+   judged only against the frames recorded before it; a step that starts inside an open
+   `ctx.parallel` scope is judged against the recorded frames outside the scope that precede it (the
+   scope's own frames compare as a set at close; with `kernel.features.scopes` on the kernel records
+   each step's scope path, otherwise a lower-rank floor applies); a decision served from the log
+   exempts exactly the steps its decider ran (recorded as `innerSteps`, always written; only a
+   record WITHOUT the field, a pre-R7 log, falls back to the `<decisionId>:` / `<decisionId>#`
+   naming convention). A decider must await the steps it runs: one it detaches is not recorded and
+   will be reported as skipped on resume. Known limits: scope paths are positional, so a
+   function-branch `parallel` inserted before a recorded one can run a new step before the refusal;
+   an execution with any frame lacking a scope path (scopes turned on mid-life) uses the weaker
+   floor; past 4096 inner steps or 64 KiB of their ids a served decision also exempts the frames
+   first started during it. frames before an `EXECUTION_MIGRATED` are exempt. After a migration, a
+   snapshot hides *when* it happened, so the detector then checks only the frames completed since
+   that snapshot (fail-open). The cost is O(1) amortised per append.
 
-`resumeAs(…, { strategy: "replay-check" })` also understands **step families**: a recorded id `base#suffix` (every ADR 0061 `id#n` mint, `agentLoop$`'s `<loop>#turn:<n>:tool:<j>`) passes when `base` is a declared step, and `flow$({ stepFamilies: ["x", /^tool\./] })` covers ids that do not follow the `#` convention. A vanished family still fails, reported once per family with a frame count rather than one name per dynamic frame.
+`resumeAs(…, { strategy: "replay-check" })` also understands **step families**: a recorded id
+`base#suffix` (every ADR 0061 `id#n` mint, `agentLoop$`'s `<loop>#turn:<n>:tool:<j>`) passes when
+`base` is a declared step, and `flow$({ stepFamilies: ["x", /^tool\./] })` covers ids that do not
+follow the `#` convention. A vanished family still fails, reported once per family with a frame
+count rather than one name per dynamic frame.
 
 ### Durable timers (T1)
 
@@ -2200,7 +2558,24 @@ sweep (mark-and-sweep, no mutable index). Over a store with ContentStore SPI 1.3
 in-memory) every erase is conditional on the blob's touch time, so a blob re-cited mid-sweep is
 kept, whether the re-cite is a `put` or a fork/append that carries the ref (SPI 1.4.0 `touch`, which `ContentResolvingEventStore` calls). `reclaimOrphans: { completeScan: true }` also reclaims blobs nothing cites any more; the
 acknowledgement is required to erase (a bare `true` throws `ReclaimOrphansAckError`; a `dryRun` is exempt and is how you check) because you are asserting
-that you passed every archive, every snapshot store and every `roots` source, and in the right ORDER: each live store before its archive. A citation that enters a log without a `put` (a fork's `copyPrefix`; an `append` that keeps a ref already in its payload) is protected by ContentStore SPI 1.4.0 `touch`: `ContentResolvingEventStore` touches those refs, so a fork made mid-sweep makes the conditional delete refuse. To erase, the content store must implement `touch` (SQLite, in-memory and `CachingContentStore` do) or `reclaimOrphans` throws `ReclaimOrphansTouchError`; a `dryRun` is exempt. The log must be written through a `ContentResolvingEventStore` over that store, and its snapshot store wrapped in a `ContentTouchingSnapshotStore` (a fork of a compacted parent keeps its pre-compaction refs only in the seed snapshot). loom does not build either wrapper for you, so an erasing pass given `snapshotStores` must assert it: `reclaimOrphans: { completeScan: true, snapshotsTouchContent: true }` (else `ReclaimOrphansSnapshotAckError`; the CLI flag is `--snapshots-touch-content`), and the store needs `touchClock` as well (`ReclaimOrphansClockError`). The guarantee is the TTL's: the touch before a write protects while the write takes less than the margin between the store's clock and the sweep's cutoff, and the touch after it is only a best-effort extension (failures reach `onTouchError`), so an erasing `reclaimOrphans` pass refuses `olderThanMs <= 0` or a margin under 60 s (`ReclaimOrphansMarginError`). Run `dryRun` first. `roots` pins addresses held in your own tables (ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
+that you passed every archive, every snapshot store and every `roots` source, and in the right
+ORDER: each live store before its archive. A citation that enters a log without a `put` (a fork's
+`copyPrefix`; an `append` that keeps a ref already in its payload) is protected by ContentStore SPI
+1.4.0 `touch`: `ContentResolvingEventStore` touches those refs, so a fork made mid-sweep makes the
+conditional delete refuse. To erase, the content store must implement `touch` (SQLite, in-memory and
+`CachingContentStore` do) or `reclaimOrphans` throws `ReclaimOrphansTouchError`; a `dryRun` is
+exempt. The log must be written through a `ContentResolvingEventStore` over that store, and its
+snapshot store wrapped in a `ContentTouchingSnapshotStore` (a fork of a compacted parent keeps its
+pre-compaction refs only in the seed snapshot). loom does not build either wrapper for you, so an
+erasing pass given `snapshotStores` must assert it:
+`reclaimOrphans: { completeScan: true, snapshotsTouchContent: true }` (else
+`ReclaimOrphansSnapshotAckError`; the CLI flag is `--snapshots-touch-content`), and the store needs
+`touchClock` as well (`ReclaimOrphansClockError`). The guarantee is the TTL's: the touch before a
+write protects while the write takes less than the margin between the store's clock and the sweep's
+cutoff, and the touch after it is only a best-effort extension (failures reach `onTouchError`), so
+an erasing `reclaimOrphans` pass refuses `olderThanMs <= 0` or a margin under 60 s
+(`ReclaimOrphansMarginError`). Run `dryRun` first. `roots` pins addresses held in your own tables
+(ADR 0055 D5–D7). The joint rule the perpetual-agents series fixed:
 *findings and their evidence are permanent; runs are archivable; raw telemetry is disposable.*
 Give the same kinds to `retention.pinnedEventTypes` so compaction keeps those events in place
 too (ADR 0106): a pinned execution then compacts around its findings. (With no
@@ -2531,7 +2906,11 @@ counterfactual steps and the gate correctly refuses — which reads like "the ca
 
 ## 19. AI-native codegen (`appgen`)
 
-*(Loom 2.0, P11 — `@loom/appgen`. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md).)* Turn a natural-language intent into a change to a Loom app, then emit **plain, static, inspectable TypeScript you own** — there is no runtime interpretation of NL. `appgen` is **brownfield-aware**: it scans what already exists and applies a *delta*, in four stages with NL understanding isolated to exactly one:
+*(Loom 2.0, P11 — `@loom/appgen`. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md).)* Turn a
+natural-language intent into a change to a Loom app, then emit
+**plain, static, inspectable TypeScript you own** — there is no runtime interpretation of NL.
+`appgen` is **brownfield-aware**: it scans what already exists and applies a *delta*, in four stages
+with NL understanding isolated to exactly one:
 
 1. **scan** — `scanApp(dir)` → a compact `AppModel` (flows, steps, gates, and whether each handler is still a generated stub or hand-edited). Never raw file contents.
 2. **plan** — `planChangesDeterministic(intent, appModel)` → a `ChangeSpec` tagging each capability/step `create | extend | modify | delete`. The only stage that reads NL; a local model can drive it instead (see below).
@@ -2547,11 +2926,21 @@ const plan = applyChanges(changeSpec, appModel); // { creates, edits, deletes, s
 // A CLI/editor writes the plan; output is ordinary Loom code with TODO handlers to fill in.
 ```
 
-From the CLI: `loom appgen "<intent>" [--dry-run] [--yes] [--check] [--from-spec <file>] [--model <gguf>]`. `--dry-run` renders a real unified diff; each apply records a replayable `.loom/appgen/<ts>.spec.json` lockfile (`--from-spec` reproduces it with no model). The intent grammar adds `delete <name>`, `delete step <s> from <flow>`, and `grant <tool> to <cap>` to the base directives. See [`docs/usage-cli.md`](usage-cli.md#loom-appgen-intent----from-file----from-spec-file---dir--flags).
+From the CLI: `loom appgen "<intent>" [--dry-run] [--yes] [--check] [--from-spec <file>] [--model <gguf>]`.
+`--dry-run` renders a real unified diff; each apply records a replayable
+`.loom/appgen/<ts>.spec.json` lockfile (`--from-spec` reproduces it with no model). The intent
+grammar adds `delete <name>`, `delete step <s> from <flow>`, and `grant <tool> to <cap>` to the base
+directives. See
+[`docs/usage-cli.md`](usage-cli.md#loom-appgen-intent----from-file----from-spec-file---dir--flags).
 
 The generated app follows the same folder convention as `create-loom-app` / `loom new` / `loom gen` (reusing `@loom/scaffold`). The deterministic parser is a small **directive grammar**; the only "understanding" is that one stage producing a `ChangeSpec`, and codegen stays pure and template-based (P4/P5 preserved).
 
-**Optional local model.** `@loom/appgen-model` swaps a small on-device Gemma model into the plan stage (`--model <gguf>`): grammar-constrained JSON, a cheap-first elevation ladder ([`@loom/reasoning`](../packages/reasoning)), and a self-repair loop that re-prompts on a semantically invalid plan. It is entirely optional — if the model is missing, too weak, or produces an invalid plan, appgen falls back to the deterministic parser, so you always get a valid `ChangeSpec`.
+**Optional local model.** `@loom/appgen-model` swaps a small on-device Gemma model into the plan
+stage (`--model <gguf>`): grammar-constrained JSON, a cheap-first elevation ladder
+([`@loom/reasoning`](../packages/reasoning)), and a self-repair loop that re-prompts on a
+semantically invalid plan. It is entirely optional — if the model is missing, too weak, or produces
+an invalid plan, appgen falls back to the deterministic parser, so you always get a valid
+`ChangeSpec`.
 
 ---
 

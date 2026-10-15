@@ -3,7 +3,11 @@
 
 *The execution kernel for intelligent software — durable, event-sourced, deterministic.*
 
-Loom treats an intelligent workflow as a *process that unfolds over time*, not a request that returns once. Every decision it makes is appended to an immutable event log — so any execution can *pause for a human, resume on another machine, replay bit-for-bit for debugging, fork to explore alternatives,* and be *evaluated against its own history*. You write the intelligence in plain TypeScript; Loom provides the durable spine that makes it trustworthy in production.
+Loom treats an intelligent workflow as a *process that unfolds over time*, not a request that
+returns once. Every decision it makes is appended to an immutable event log — so any execution can
+*pause for a human, resume on another machine, replay bit-for-bit for debugging, fork to explore
+alternatives,* and be *evaluated against its own history*. You write the intelligence in plain
+TypeScript; Loom provides the durable spine that makes it trustworthy in production.
 
 #+begin_quote
 *The durable event log is the moat.* Durability, resumability, deterministic replay, branching, evals, and time-travel debugging are all just different lenses on one append-only log.
@@ -19,7 +23,12 @@ Loom treats an intelligent workflow as a *process that unfolds over time*, not a
 - 🧮  *The interpreter pattern* — a statically compiled flow may issue ~ctx.run~ over runtime-loaded plan data (a blueprint, a runbook) and stay fully replayable under the step-identity rule (~`${id}#${index}`~, linted by the compiler; ADR 0061). ~fanout$~ gives runtime-sized deterministic parallelism.
 - 🌱  *Git-style branching* — fork an in-flight execution, simulate alternatives concurrently, and promote a winner. Branch-only, no merge.
 - 🤖  *Agentic, end to end* — LLMs, ReAct agents, MCP tools (incl. schema-hash-pinned *dynamic dispatch* with typed drift repair, ADR 0063), sandboxed LLM-authored code (QuickJS, ADR 0064), and agent-to-agent calls are all durable, replayable *effects*. *Reasoning* adds cheap-first model routing with confidence-based elevation; *tiered memory* adds working/semantic/procedural recall.
-- 🛡️  *A real kernel* — a versioned syscall ABI, a capability *protection ring* (ungranted effects are denied), *resource accounting + quotas* (tokens/$/latency), and *fault supervision* (circuit breakers). Hardened end to end (K1–K12, T1–T2): behavioral safety, data-plane isolation + brokered egress, idempotency/fencing, encryption-at-rest + crypto-shredding, flow-code versioning, identity/tenancy + delegation, durable timers, and a language-neutral wire ABI — every ring opt-in and byte-identical when unwired.
+- 🛡️ *A real kernel* — a versioned syscall ABI, a capability *protection ring* (ungranted effects
+  are denied), *resource accounting + quotas* (tokens/$/latency), and *fault supervision* (circuit
+  breakers). Hardened end to end (K1–K12, T1–T2): behavioral safety, data-plane isolation + brokered
+  egress, idempotency/fencing, encryption-at-rest + crypto-shredding, flow-code versioning,
+  identity/tenancy + delegation, durable timers, and a language-neutral wire ABI — every ring opt-in
+  and byte-identical when unwired.
 - 📈  *Scale out* — the same interfaces on single-node SQLite or a network Postgres store with cross-node live subscribe (~LISTEN/NOTIFY~).
 - 🎨  *Bring your own renderer* — the same backend renders in React, Angular, Web Components, or the terminal.
 - 🧩  *One composition root* — ~defineConfig~ wires an app from a static config; the ~loom~ CLI, testing kit, evals, deploy-simulation, and a pluggable-compute seam surround it.
@@ -28,9 +37,17 @@ Loom treats an intelligent workflow as a *process that unfolds over time*, not a
 
 * Quick start
 
+Loom is not published to npm yet, so today you build it from a checkout and scaffold inside the workspace:
+
 #+begin_src sh
-npm create loom-app@latest my-app && cd my-app && pnpm install
+git clone git@github.com:chhetrisushil/loom.git && cd loom
+pnpm install && pnpm build
+node tools/create-loom-app/dist/index.js apps/my-app   # scaffolds into the workspace
+pnpm install && cd apps/my-app && pnpm test
 #+end_src
+
+Once published, this becomes ~npm create loom-app@latest my-app~. Details and the sibling repos are in
+[[file:docs/getting-started.md][Getting Started]].
 
 Define a flow — schema-checked steps plus an ordinary ~async~ runner:
 
@@ -88,7 +105,11 @@ const decision = await ctx.suspend<{ approved: boolean }>({ on: "ApprovalGranted
 await app.runtime.resume(executionId, { eventType: "ApprovalGranted", payload: { approved: true } });
 #+end_src
 
-→ New to Loom? Read [[file:docs/getting-started.md][Getting Started]] (5 minutes), then study ~examples/loom-starter~ — the canonical app wiring ~defineConfig~, the folder convention, effect middleware, testing, evals, and deploy-simulation.
+→ New to Loom? Read [[file:docs/getting-started.md][Getting Started]] (5 minutes), then study
+~examples/loom-starter~ in the sibling
+[[https://github.com/chhetrisushil/loom-examples][loom-examples]] repo (checked out beside this one,
+at ~../loom-examples/examples/loom-starter/~) — the canonical app wiring ~defineConfig~, the folder
+convention, effect middleware, testing, evals, and deploy-simulation.
 
 -----
 
@@ -250,7 +271,12 @@ Storage backends are *presets* (~sqliteStorage()~, ~postgresStorage()~, …) tha
 | ~@loom/learning~           | The continuous-learning *substrate* (ADR 0080) — trajectories, SNIPS off-policy evaluation with unit-level ESS, a promotion gate, and the 3P ~Policy~ SPI. The learning *algorithm* stays third-party. Since ADR 0124: a scoped policy registry with shadow/canary/rollback, content-addressed prompt/model versions, doubly-robust + bootstrap evaluation, and a taint/erasure-aware JSONL export |
 | ~@loom/live-query~ · ~@loom/fair-scheduler~ | Live cross-execution queries over the log (ADR 0040) · per-tenant fair scheduling (ADR 0038) |
 
-/The principal is durable (ADR 0111)./ The kernel records the principal on ~EXECUTION_STARTED~ and rehydrates it on every path, so a flow's effects run as its /owner/ — after an approval, a timer wake, crash recovery, a remote worker re-drive and a supervised child's start — not as whoever resumed it; ~options.principal~ is only the lifecycle caller. A fork acts as the forker. Executions started before 1.23.0 keep the old behaviour. See [[file:docs/usage.md][docs/usage.md]], the CHANGELOG (Security) and [[file:docs/adr/0111-durable-principal.md][ADR 0111]].
+/The principal is durable (ADR 0111)./ The kernel records the principal on ~EXECUTION_STARTED~ and
+rehydrates it on every path, so a flow's effects run as its /owner/ — after an approval, a timer
+wake, crash recovery, a remote worker re-drive and a supervised child's start — not as whoever
+resumed it; ~options.principal~ is only the lifecycle caller. A fork acts as the forker. Executions
+started before 1.23.0 keep the old behaviour. See [[file:docs/usage.md][docs/usage.md]], the
+CHANGELOG (Security) and [[file:docs/adr/0111-durable-principal.md][ADR 0111]].
 
 *DX & tooling* (~tools/~)
 
@@ -350,10 +376,47 @@ Start at [[file:docs/README.md][docs/README.md]] (the index), then:
 - [[file:docs/loom-2.0/00-overview.md][Loom 2.0 deep-dives]] — the execution-kernel evolution in full: data structures, algorithms, and diagrams for every subsystem, plus the [[file:docs/loom-2.0/10-event-schema-reference.md][event-schema reference]] and [[file:docs/loom-2.0/04-kernel-hardening.md][kernel hardening]] (K1–K12, T1–T2)
 - [[file:docs/plugins.md][Plugins]] — the 1P/3P plugin model, authoring guide, and the current first-party inventory
 - [[file:docs/data-classification.md][Data classification]] — the confidentiality markers *and* the ADR 0085 integrity axis (~tainted()~, refused in every prompt instruction position)
+- [[file:docs/operations.md][Operations]] — the operator runbook: Postgres store, heartbeat leases, failure recovery, erasure, backups, and the pre-flight ~loom doctor~ checklist
 - [[file:docs/scaling.md][Scaling]] — measured capacity, which regime a workload is in, and what each further change is waiting on
 - [[file:docs/spec/loom-kernel-specification.md][Kernel specification]] — the normative spec (syscall ABI, event model incl. typed failure channels, SPI contracts) + the [[file:docs/spec/compatibility-matrix.md][compatibility matrix]]
 - [[file:docs/api-reference.org][API Reference]] — exhaustive per-package API, including [[file:docs/api-reference.org][Kernel hardening & security]]
-- [[file:docs/adr/][ADRs]] — the decision history (0001–0130; [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][0016]] Loom 2.0 · [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][0043]] plugin packaging · [[file:docs/adr/0051-perpetual-agents-placement-schedule-remodel.md][0051–0057]] perpetual agents · [[file:docs/adr/0060-typed-failure-channels.md][0060–0065]] the GenUI dynamic-execution series · [[file:docs/adr/0069-a2ui-egress-adapter.md][0069–0070]] A2UI egress + ~callFunction~ · [[file:docs/adr/0071-read-only-replay-inspector.md][0071]] the replay inspector · [[file:docs/adr/0072-mcp-apps-ui-extension-placement.md][0072–0073]] MCP Apps and the effect-mode boundary · [[file:docs/adr/0074-storage-scale-out-decorators.md][0074–0075]] storage scale-out · [[file:docs/adr/0078-exploration-in-the-routing-seam.md][0078–0080]] the learning substrate · [[file:docs/adr/0083-second-consumer-rule.md][0083]] the second-consumer rule · [[file:docs/adr/0084-effect-classes-static-ceiling-k2-floor.md][0084–0086]] effect classes, the integrity axis, and runner-body reach analysis · [[file:docs/adr/0087-durable-agent-loop.md][0087]] the durable agent loop · [[file:docs/adr/0088-blueprint-conformance.md][0088]] blueprint conformance · [[file:docs/adr/0090-knowledge-is-retrieval-over-memory.md][0090–0091]] knowledge as retrieval over a mutable corpus · [[file:docs/adr/0093-read-model-row-purge.md][0093]] row-granular purge · [[file:docs/adr/0094-blueprint-node-identity.md][0094–0095]] node identity and the binding-semantics pin · [[file:docs/adr/0096-blueprint-stable-rendering-ir.md][0096]] the Blueprint as a stable rendering IR · [[file:docs/adr/0097-blueprint-ir-2.md][0097]] Blueprint IR 2.0.0 · [[file:docs/adr/0098-blueprint-ir-placement-and-titles.md][0098]] cell placement and layout titles · [[file:docs/adr/0099-blueprint-ir-layout-roles.md][0099]] layout roles · [[file:docs/adr/0100-blueprint-ir-empty-binding-state.md][0100]] the ~empty~ binding state · [[file:docs/adr/0101-blueprint-ir-layout-ids.md][0101]] layout ids · [[file:docs/adr/0102-flow-emits-append-once.md][0102]] flow-level emits append once per execution, matched by content · [[file:docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md][0103]] start-once for a caller-chosen execution id · [[file:docs/adr/0104-recovery-never-answers-a-gate.md][0104]] recovery never answers a gate · [[file:docs/adr/0105-a-caught-step-failure-is-not-the-executions.md][0105]] a caught step failure is not the execution's · [[file:docs/adr/0106-compaction-integrity.md][0106]] compaction integrity · [[file:docs/adr/0107-compacted-fork-points-and-the-blank-stream.md][0107]] compacted fork points and the blank-stream repair · [[file:docs/adr/0108-execution-id-order-and-fail-soft-migrations.md][0108]] one order for execution ids and fail-soft boot migrations · [[file:docs/adr/0123-planning-depth-plan-graphs-replanning-and-goals.md][0123]] planning depth — plan DAGs, replanning, goals · [[file:docs/adr/0124-learning-lifecycle.md][0124]] the learning lifecycle — registry, rollout, versions, intervals, export, embeddings, LLM evals)
+- [[file:docs/adr/][ADRs]] — the decision history (0001–0130;
+  [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][0016]] Loom 2.0 ·
+  [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][0043]] plugin packaging ·
+  [[file:docs/adr/0051-perpetual-agents-placement-schedule-remodel.md][0051–0057]] perpetual agents
+  · [[file:docs/adr/0060-typed-failure-channels.md][0060–0065]] the GenUI dynamic-execution series ·
+  [[file:docs/adr/0069-a2ui-egress-adapter.md][0069–0070]] A2UI egress + ~callFunction~ ·
+  [[file:docs/adr/0071-read-only-replay-inspector.md][0071]] the replay inspector ·
+  [[file:docs/adr/0072-mcp-apps-ui-extension-placement.md][0072–0073]] MCP Apps and the effect-mode
+  boundary · [[file:docs/adr/0074-storage-scale-out-decorators.md][0074–0075]] storage scale-out ·
+  [[file:docs/adr/0078-exploration-in-the-routing-seam.md][0078–0080]] the learning substrate ·
+  [[file:docs/adr/0083-second-consumer-rule.md][0083]] the second-consumer rule ·
+  [[file:docs/adr/0084-effect-classes-static-ceiling-k2-floor.md][0084–0086]] effect classes, the
+  integrity axis, and runner-body reach analysis ·
+  [[file:docs/adr/0087-durable-agent-loop.md][0087]] the durable agent loop ·
+  [[file:docs/adr/0088-blueprint-conformance.md][0088]] blueprint conformance ·
+  [[file:docs/adr/0090-knowledge-is-retrieval-over-memory.md][0090–0091]] knowledge as retrieval
+  over a mutable corpus · [[file:docs/adr/0093-read-model-row-purge.md][0093]] row-granular purge ·
+  [[file:docs/adr/0094-blueprint-node-identity.md][0094–0095]] node identity and the
+  binding-semantics pin · [[file:docs/adr/0096-blueprint-stable-rendering-ir.md][0096]] the
+  Blueprint as a stable rendering IR · [[file:docs/adr/0097-blueprint-ir-2.md][0097]] Blueprint IR
+  2.0.0 · [[file:docs/adr/0098-blueprint-ir-placement-and-titles.md][0098]] cell placement and
+  layout titles · [[file:docs/adr/0099-blueprint-ir-layout-roles.md][0099]] layout roles ·
+  [[file:docs/adr/0100-blueprint-ir-empty-binding-state.md][0100]] the ~empty~ binding state ·
+  [[file:docs/adr/0101-blueprint-ir-layout-ids.md][0101]] layout ids ·
+  [[file:docs/adr/0102-flow-emits-append-once.md][0102]] flow-level emits append once per execution,
+  matched by content · [[file:docs/adr/0103-durable-bootstrap-for-caller-chosen-ids.md][0103]]
+  start-once for a caller-chosen execution id ·
+  [[file:docs/adr/0104-recovery-never-answers-a-gate.md][0104]] recovery never answers a gate ·
+  [[file:docs/adr/0105-a-caught-step-failure-is-not-the-executions.md][0105]] a caught step failure
+  is not the execution's · [[file:docs/adr/0106-compaction-integrity.md][0106]] compaction integrity
+  · [[file:docs/adr/0107-compacted-fork-points-and-the-blank-stream.md][0107]] compacted fork points
+  and the blank-stream repair ·
+  [[file:docs/adr/0108-execution-id-order-and-fail-soft-migrations.md][0108]] one order for
+  execution ids and fail-soft boot migrations ·
+  [[file:docs/adr/0123-planning-depth-plan-graphs-replanning-and-goals.md][0123]] planning depth —
+  plan DAGs, replanning, goals · [[file:docs/adr/0124-learning-lifecycle.md][0124]] the learning
+  lifecycle — registry, rollout, versions, intervals, export, embeddings, LLM evals)
 - [[file:docs/presentation/loom-deck.md][Presentation]] — the flagship deck, plus the [[file:docs/presentation/loom-2.0-deck.md][Loom 2.0 deck]] (Marp)
 
 -----

@@ -15,15 +15,40 @@ This guide takes you from zero to a **durable flow that runs, pauses for a human
 
 ## 1. Scaffold an app
 
+Loom's `@loom/*` packages are **not published to npm yet**, so today you build the framework from a
+checkout and scaffold your app inside its pnpm workspace (`apps/*` is a workspace glob):
+
 ```bash
-npm create loom-app@latest my-app
-cd my-app
-pnpm install
+git clone git@github.com:chhetrisushil/loom.git
+cd loom
+pnpm install && pnpm build          # `pnpm build:fast` is quicker for the edit-rebuild loop
+node tools/create-loom-app/dist/index.js apps/my-app
+pnpm install                        # links the new app to the workspace packages
+cd apps/my-app && pnpm test         # the scaffold ships a passing test
 ```
 
-This wires a minimal app through `defineConfig` — a runtime, in-memory stores, and a projection surface — so you can run immediately.
+(`pnpm link:global` at the repo root also puts `create-loom-app` and `loom` on your PATH.) The app
+declares its `@loom/*` dependencies as `workspace:*`, which is why it has to live inside the checkout.
 
-> Working inside this monorepo instead? Everything below works against the workspace packages; run `pnpm install && pnpm build` at the repo root first.
+> **Once published**, this collapses to `npm create loom-app@latest my-app && cd my-app && pnpm install`.
+> That command does not work yet.
+
+This wires a minimal app through `defineConfig` — a runtime, in-memory stores, and a projection
+surface — so you can run immediately.
+
+**The sibling repos.** The framework repo is deliberately focused; related code lives beside it:
+
+```
+workspace/
+├── loom/            # the framework (this repo):  pnpm install && pnpm build
+├── loom-plugins/    # third-party plugins. Only the `learning-router` example needs it.
+└── loom-examples/   # runnable example apps:      git clone, then pnpm install
+```
+
+`loom-examples` consumes this repo's unpublished packages from `../loom` through pnpm `overrides`
+with `link:` paths (not `workspace:*`, git or npm dependencies), so check it out **next to** `loom`
+and build `loom` first. Run an example with `pnpm --filter @loom/<name> start` from that repo; the
+[examples catalogue](examples.md) says which one teaches what.
 
 ---
 
@@ -265,6 +290,40 @@ describe("approve flow", () => {
 
 ---
 
+## 7. Going persistent: Postgres, heartbeat, doctor
+
+The in-memory default forgets everything on restart. For a durable, multi-node deployment swap the
+storage preset; the flows do not change:
+
+```ts
+import { postgresStorage } from "@loom/plugin-postgres";
+
+const app = defineConfig({
+  storage: postgresStorage({ url: process.env.DATABASE_URL! }),
+  surfaces: ["default"],
+  flows: [approveFlow],
+  durability: { heartbeat: { ttlMs: 30_000 } },   // optional: these are the defaults
+});
+```
+
+- The preset creates its schema on first connect and also provides a **lease store in the same
+  database**. With it, every driver holds a renewed *heartbeat lease*, so an execution whose driver
+  died can be told apart from one that is merely quiet and is re-driven safely. It is on by default
+  whenever the store can supply leases; you only set `durability.heartbeat` to tune it.
+- Before you deploy, run the pre-flight checks against your built config:
+
+```bash
+npx loom doctor --config ./dist/loom.config.js
+```
+
+  `doctor` runs every check whose input it can find and tells you which it skipped. It reports the
+  heartbeat decision (`heartbeat leases on`, scope `cluster` for Postgres), whether timers can wake,
+  whether agent memory is durable, and whether encrypted logs have matching snapshots.
+
+The full runbook (pool sizing, lease tuning, recovery, erasure, backups) is **[Operations](operations.md)**.
+
+---
+
 ## Where to go next
 
 | You want to… | Read |
@@ -273,6 +332,7 @@ describe("approve flow", () => {
 | Look up a specific feature (fork, A2A, middleware, projections…) | **[User Guide](user-guide.md)** |
 | Understand *why* Loom is built this way | **[Architecture](architecture.md)** |
 | See the ideas as a deck | **[Presentation](presentation/loom-deck.md)** |
+| Run it in production (Postgres, leases, recovery, backups) | **[Operations](operations.md)** |
 | Study runnable apps | [examples catalogue](examples.md) → sibling `loom-examples` repo — start with `loom-starter`, then `incident-war-room` |
 
 **The three moves to remember:**

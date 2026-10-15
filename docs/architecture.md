@@ -4,7 +4,11 @@
 >
 > **Make intelligent, long-running, human-in-the-loop software as durable, inspectable, and reproducible as a database transaction — without giving up the flexibility of code.**
 >
-> Loom treats an agentic workflow as a *process* that unfolds over time, not a request that returns once. Every decision it makes is recorded as an immutable fact, so any execution can be paused for a human, resumed on another machine, replayed bit-for-bit for debugging, forked to explore alternatives, and evaluated against its own history. The intelligence is yours to write in plain TypeScript; Loom provides the durable spine that makes it trustworthy in production.
+> Loom treats an agentic workflow as a *process* that unfolds over time, not a request that returns
+> once. Every decision it makes is recorded as an immutable fact, so any execution can be paused for
+> a human, resumed on another machine, replayed bit-for-bit for debugging, forked to explore
+> alternatives, and evaluated against its own history. The intelligence is yours to write in plain
+> TypeScript; Loom provides the durable spine that makes it trustworthy in production.
 
 ---
 
@@ -31,7 +35,11 @@ Modern applications increasingly embed *intelligence* — LLM calls, tool use, m
 - **need to be explained** after the fact ("*why* did the agent do that?");
 - **want to explore alternatives** ("what if we tried the other remediation?").
 
-The dominant tools force a bad trade. A **request/response framework** is easy to write but forgets everything the moment a process dies and cannot pause for a human. A **heavyweight workflow engine** is durable but pushes you into a restrictive DSL, an external server, and a deployment model that fights your UI. Neither gives you deterministic *replay* — the ability to reconstruct exactly what happened — which is precisely what you need when an AI does something surprising.
+The dominant tools force a bad trade. A **request/response framework** is easy to write but forgets
+everything the moment a process dies and cannot pause for a human. A **heavyweight workflow engine**
+is durable but pushes you into a restrictive DSL, an external server, and a deployment model that
+fights your UI. Neither gives you deterministic *replay* — the ability to reconstruct exactly what
+happened — which is precisely what you need when an AI does something surprising.
 
 Loom's thesis: **the durable event log is the moat.** If every meaningful thing that happens is appended to an ordered, immutable log, then durability, resumability, replay, branching, evaluation, and time-travel debugging are all just *different lenses on the same log*. Build that spine well, keep the authoring surface plain TypeScript, and everything else composes.
 
@@ -68,7 +76,11 @@ Execution state is never stored directly. It is **derived** by folding an append
 
 ### P2 — Replay is deterministic and pure
 
-Reconstructing state from events is a **pure fold** — the same events always produce the same state, with no side effects, no clock, no randomness. Determinism is a hard constraint, not a nicety: a resume on a fresh machine, a fork, and a replay-for-debugging must all reconstruct *identical* state. This is why the replay engine is a pure function and why library code avoids `Date.now()`/`Math.random()` on paths that must be reproducible (hashing is used instead).
+Reconstructing state from events is a **pure fold** — the same events always produce the same state,
+with no side effects, no clock, no randomness. Determinism is a hard constraint, not a nicety: a
+resume on a fresh machine, a fork, and a replay-for-debugging must all reconstruct *identical*
+state. This is why the replay engine is a pure function and why library code avoids
+`Date.now()`/`Math.random()` on paths that must be reproducible (hashing is used instead).
 
 ### P3 — Suspension is a first-class, normal outcome
 
@@ -80,7 +92,11 @@ Loom does **not** invent a workflow DSL. A flow's orchestration is an ordinary `
 
 ### P5 — Wiring is static and replay-safe
 
-Everything that determines *what runs* — flow registration, effect registration, middleware, surfaces — is wired **statically at build/boot time**, from explicit imports. No runtime filesystem globbing, no environment-conditional registration. A resume, a remote worker, or a replay must be able to reconstruct an identical set of flows and effects, which is only possible if wiring is deterministic. (Folder conventions are honored via **build-time codegen**, not runtime discovery.)
+Everything that determines *what runs* — flow registration, effect registration, middleware,
+surfaces — is wired **statically at build/boot time**, from explicit imports. No runtime filesystem
+globbing, no environment-conditional registration. A resume, a remote worker, or a replay must be
+able to reconstruct an identical set of flows and effects, which is only possible if wiring is
+deterministic. (Folder conventions are honored via **build-time codegen**, not runtime discovery.)
 
 ### P6 — Composition over inheritance; sugar over replacement
 
@@ -96,15 +112,39 @@ The durable runtime has **no environment assumptions**. Storage, compute placeme
 
 ### P9 — Non-determinism is allowed, but only when logged *(Loom 2.0)*
 
-A runtime may route between models, elevate to a stronger one, learn, or optimize — but every such choice is emitted as a durable decision event (`DECISION_RECORDED`) and served from the log on replay, exactly as completed effects are. Replay therefore stays a pure fold (**P2 is untouched**): a given execution reconstructs bit-for-bit forever, even as *outcomes improve run-to-run*. This evolves P2 to admit intelligence without regressing determinism. See [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+A runtime may route between models, elevate to a stronger one, learn, or optimize — but every such
+choice is emitted as a durable decision event (`DECISION_RECORDED`) and served from the log on
+replay, exactly as completed effects are. Replay therefore stays a pure fold (**P2 is untouched**):
+a given execution reconstructs bit-for-bit forever, even as *outcomes improve run-to-run*. This
+evolves P2 to admit intelligence without regressing determinism. See
+[ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
 ### P10 — Minimal kernel; intelligence lives in an advisory plane *(Loom 2.0)*
 
-The durable core stays small and boring (execution + event log + determinism + effect isolation). Everything "smart" — scheduling, reasoning, memory, prediction, optimization — is an **optional, composable module** in an ephemeral advisory plane that can affect *outcomes* only through logged decisions (P9) or *latency* only through off-log warming, and is **never a hidden input to the fold**. You never pay for a runtime you did not opt into; the simple path (`ctx.run`) stays a one-liner and the zero-overhead default is preserved. See [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+The durable core stays small and boring (execution + event log + determinism + effect isolation).
+Everything "smart" — scheduling, reasoning, memory, prediction, optimization — is an
+**optional, composable module** in an ephemeral advisory plane that can affect *outcomes* only
+through logged decisions (P9) or *latency* only through off-log warming, and is
+**never a hidden input to the fold**. You never pay for a runtime you did not opt into; the simple
+path (`ctx.run`) stays a one-liner and the zero-overhead default is preserved. See
+[ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
 ### P11 — AI-native DX: natural language compiles to code, not runtime *(Loom 2.0)*
 
-Natural language is a **build-time** convenience, never a runtime input. `@loom/appgen` is **brownfield-aware**: it scans the existing app (`scanApp` → `AppModel`), plans a *delta* from an intent via a deterministic, offline directive parser (`planChangesDeterministic` → `ChangeSpec`, the only stage that reads NL), then applies it with surgical, formatting-preserving edits (`applyChanges`) — new flows from templates, existing ones edited only where a handler still hashes to the generated stub. The output is ordinary `flow$`/`step$` wired through `defineConfig` in the folder convention. There is no runtime interpretation of NL: the only "understanding" step is the swappable planner producing a spec, and codegen is pure and template-based (**P4/P5 preserved**). The plan stage is **provider-agnostic** — `loom appgen --model <spec>` reasons with the model of your choice (`anthropic:` / `openai:` / `gemini:` via `@loom/llm`, or a local `.gguf` via the optional [`@loom/appgen-model`](../tools/appgen-model)), and always falls back to the deterministic parser. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md), [ADR 0050](adr/0050-appgen-model-provider-agnostic.md), and [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+Natural language is a **build-time** convenience, never a runtime input. `@loom/appgen` is
+**brownfield-aware**: it scans the existing app (`scanApp` → `AppModel`), plans a *delta* from an
+intent via a deterministic, offline directive parser (`planChangesDeterministic` → `ChangeSpec`, the
+only stage that reads NL), then applies it with surgical, formatting-preserving edits
+(`applyChanges`) — new flows from templates, existing ones edited only where a handler still hashes
+to the generated stub. The output is ordinary `flow$`/`step$` wired through `defineConfig` in the
+folder convention. There is no runtime interpretation of NL: the only "understanding" step is the
+swappable planner producing a spec, and codegen is pure and template-based (**P4/P5 preserved**).
+The plan stage is **provider-agnostic** — `loom appgen --model <spec>` reasons with the model of
+your choice (`anthropic:` / `openai:` / `gemini:` via `@loom/llm`, or a local `.gguf` via the
+optional [`@loom/appgen-model`](../tools/appgen-model)), and always falls back to the deterministic
+parser. See [ADR 0042](adr/0042-ai-native-brownfield-appgen.md),
+[ADR 0050](adr/0050-appgen-model-provider-agnostic.md), and
+[ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
 ---
 
@@ -143,7 +183,11 @@ flowchart TB
   C4 --> E4
 ```
 
-**Reading the diagram:** you author flows/steps/agents as functions. `WorkflowRuntime` runs them; the `ExecutionJournal` turns every meaningful moment into a sequenced, durably-written event; the `ReplayVM` folds those events into state. Side effects are quarantined behind `EffectRuntime`. Everything below the core is an interface with swappable adapters — that's what makes the same code run in a test, a browser, or the cloud.
+**Reading the diagram:** you author flows/steps/agents as functions. `WorkflowRuntime` runs them;
+the `ExecutionJournal` turns every meaningful moment into a sequenced, durably-written event; the
+`ReplayVM` folds those events into state. Side effects are quarantined behind `EffectRuntime`.
+Everything below the core is an interface with swappable adapters — that's what makes the same code
+run in a test, a browser, or the cloud.
 
 ---
 
@@ -204,17 +248,41 @@ stateDiagram-v2
   completed --> [*]
 ```
 
-Crucially, on resume the flow function **re-runs from the top**, but every already-completed step is served from the log (its `STEP_COMPLETED` event is replayed, the effect is *not* re-executed) — so effects happen exactly once and the suspend point is reached deterministically. This is P2 (deterministic replay) doing the heavy lifting. The same holds for the flow's own `ctx.emit`/`ctx.stream`/`surface(ctx)` calls: each is served from the log only when the log proves it was already made (a stamped emit of the same content in the same gate segment, with every syscall of the segment so far served), so a domain event or a surface patch made before a gate is appended once per execution, not once per resume — and an emit loom cannot match is appended, never dropped ([ADR 0102](adr/0102-flow-emits-append-once.md)).
+Crucially, on resume the flow function **re-runs from the top**, but every already-completed step is
+served from the log (its `STEP_COMPLETED` event is replayed, the effect is *not* re-executed) — so
+effects happen exactly once and the suspend point is reached deterministically. This is P2
+(deterministic replay) doing the heavy lifting. The same holds for the flow's own
+`ctx.emit`/`ctx.stream`/`surface(ctx)` calls: each is served from the log only when the log proves
+it was already made (a stamped emit of the same content in the same gate segment, with every syscall
+of the segment so far served), so a domain event or a surface patch made before a gate is appended
+once per execution, not once per resume — and an emit loom cannot match is appended, never dropped
+([ADR 0102](adr/0102-flow-emits-append-once.md)).
 
 ### 4.3.1 Step identity & the interpreter pattern
 
 Replay's substitution is keyed by **step id** (`frames[stepId]`) — not by log position. That single fact is both the freedom and the obligation of dynamic flows ([ADR 0061](adr/0061-step-identity-interpreter-guardrails.md)):
 
-> The sequence of durable-step identities an execution produces must be a **pure function of logged inputs** (flow input, step outputs, decisions, resume payloads). A step invoked more than once with different intent must mint a deterministic distinct id — `` `${id}#${index}` `` for loops, `` `${id}#retry:${n}` `` for deliberate re-tries (saga uses `#compensate:${i}`). Reusing an id returns/substitutes the **first recorded outcome** — completed output and typed failures alike ([ADR 0060](adr/0060-typed-failure-channels.md)).
+> The sequence of durable-step identities an execution produces must be a
+> **pure function of logged inputs** (flow input, step outputs, decisions, resume payloads). A step
+> invoked more than once with different intent must mint a deterministic distinct id — ``
+> `${id}#${index}` `` for loops, `` `${id}#retry:${n}` `` for deliberate re-tries (saga uses
+> `#compensate:${i}`). Reusing an id returns/substitutes the **first recorded outcome** — completed
+> output and typed failures alike ([ADR 0060](adr/0060-typed-failure-channels.md)).
 
-The freedom: a statically compiled **interpreter flow** may issue `ctx.run` inside loops bounded by runtime-loaded data (a blueprint, a runbook) and remain fully replayable — the id sequence re-derives identically from the logged input, crash recovery re-executes only the frames that never completed, and `flowContentHash` (K11.1) is unaffected because dynamic steps are deliberately outside the structural hash (ADR 0113: `replay-check` treats `id#n` as family `id`, and the replay-divergence detector watches the body's id sequence against the log). Dynamic steps bind a static `toolId` to a registered effect; the effect registry, not the compiler manifest, is their load-bearing map.
+The freedom: a statically compiled **interpreter flow** may issue `ctx.run` inside loops bounded by
+runtime-loaded data (a blueprint, a runbook) and remain fully replayable — the id sequence
+re-derives identically from the logged input, crash recovery re-executes only the frames that never
+completed, and `flowContentHash` (K11.1) is unaffected because dynamic steps are deliberately
+outside the structural hash (ADR 0113: `replay-check` treats `id#n` as family `id`, and the
+replay-divergence detector watches the body's id sequence against the log). Dynamic steps bind a
+static `toolId` to a registered effect; the effect registry, not the compiler manifest, is their
+load-bearing map.
 
-The obligation: a loop that *reuses* one id is silently wrong — iteration 2+ is served iteration 1's memoized output. The compiler's `analyzeLoopIdentity` pass flags loop-scoped `ctx.run`/`ctx.execute` whose id cannot vary per iteration (surfaced through `@loom/verify`'s determinism rule and the compiler manifest's `loopIdentity` warnings), and the kernel's interpreter crash-matrix test pins the contract.
+The obligation: a loop that *reuses* one id is silently wrong — iteration 2+ is served iteration 1's
+memoized output. The compiler's `analyzeLoopIdentity` pass flags loop-scoped `ctx.run`/`ctx.execute`
+whose id cannot vary per iteration (surfaced through `@loom/verify`'s determinism rule and the
+compiler manifest's `loopIdentity` warnings), and the kernel's interpreter crash-matrix test pins
+the contract.
 
 Typed failures ([ADR 0060](adr/0060-typed-failure-channels.md)) are the failure twin of the memoized success — recorded once, substituted forever:
 
@@ -277,9 +345,39 @@ This is the same mechanism behind time-travel debugging and deploy-simulation: r
 
 ### 5.2 Effects & middleware (`@loom/effect-runtime`, `@loom/middleware`)
 
-All side effects — tool calls, LLM calls, human waits, agent-to-agent calls — go through the **`EffectRuntime`**, keyed by `toolId`. This is the isolation boundary that makes replay possible: during replay, completed effects are served from the log, not re-executed. It is also the **authority boundary** (Loom 2.0 K2): given an optional `CapabilityAuthorizer` (e.g. a least-privilege `GrantTable`), the `EffectRuntime` authorizes every invocation and *denies* ungranted effects — the effect never runs, an `EFFECT_DENIED` fact is logged (P9), and a `CapabilityDeniedError` fails the step. This is the one protection ring a library can enforce; it is opt-in, so omitting an authorizer keeps the permissive default. The imperative `GrantTable` has a **declarative companion**, `policy$`: a `PolicyAuthorizer` enforces `policy$` definitions (deny-wins allow/deny effect lists + glob matchers on effect id / tenant / step) through the *same* ring. Policies attach to a flow (`flow$({ policies })`), an agent (`agent$({ policies })`, bound to the flow it runs), or app-globally (`defineConfig({ security: { policies } })`), and compose **under** any authorizer — defense-in-depth: a policy can tighten a grant, never widen it ([ADR 0048](adr/0048-declarative-policy-enforcement.md)).
+All side effects — tool calls, LLM calls, human waits, agent-to-agent calls — go through the
+**`EffectRuntime`**, keyed by `toolId`. This is the isolation boundary that makes replay possible:
+during replay, completed effects are served from the log, not re-executed. It is also the
+**authority boundary** (Loom 2.0 K2): given an optional `CapabilityAuthorizer` (e.g. a
+least-privilege `GrantTable`), the `EffectRuntime` authorizes every invocation and *denies*
+ungranted effects — the effect never runs, an `EFFECT_DENIED` fact is logged (P9), and a
+`CapabilityDeniedError` fails the step. This is the one protection ring a library can enforce; it is
+opt-in, so omitting an authorizer keeps the permissive default. The imperative `GrantTable` has a
+**declarative companion**, `policy$`: a `PolicyAuthorizer` enforces `policy$` definitions (deny-wins
+allow/deny effect lists + glob matchers on effect id / tenant / step) through the *same* ring.
+Policies attach to a flow (`flow$({ policies })`), an agent (`agent$({ policies })`, bound to the
+flow it runs), or app-globally (`defineConfig({ security: { policies } })`), and compose **under**
+any authorizer — defense-in-depth: a policy can tighten a grant, never widen it
+([ADR 0048](adr/0048-declarative-policy-enforcement.md)).
 
-**Middleware** wraps effect execution with cross-cutting concerns (retries with backoff, resource metering, and later logging/idempotency/tracing) as a composable `(ctx, input, next) => …` chain — the same shape as HTTP middleware, applied to effects ([ADR 0006](adr/0006-config-and-effect-middleware.md)). `meteringMiddleware` (Loom 2.0 K3) meters each effect's tokens/cost/time as a durable `RESOURCE_METERED` fact and enforces per-execution budgets by admission control (over-budget ⇒ the next effect is denied) — the scarce resource for intelligent software being tokens/$/latency, not CPU. `safetyMiddleware` (Loom 2.1 K6) is the same shape applied to *behavior*: pluggable validators check an effect's input before it runs and its output before it propagates, and a violation is a durable `SAFETY_BLOCKED` fact that fails the step — so the kernel governs not just *who* may act and *how much* it costs, but *whether the action/output is safe* ([ADR 0017](adr/0017-k6-behavioral-safety-ring.md)). `claimCheckMiddleware` ([ADR 0054](adr/0054-claim-check-middleware.md)) keeps the log itself lean: an effect result over an inline cap is stored content-addressed and the log records `{ ref, size, digest }` **as the value** — the fold never resolves it, so replay never touches the content store and bulk telemetry stays out of the authoritative log (the digest, a per-tool declared pure projection, is what orchestration may branch on). Stream-typed results (`streamResult`, ADR 0059) extend the same contract to payloads too large for memory: the tool streams into the content store inside the effect and the envelope is still the recorded value.
+**Middleware** wraps effect execution with cross-cutting concerns (retries with backoff, resource
+metering, and later logging/idempotency/tracing) as a composable `(ctx, input, next) => …` chain —
+the same shape as HTTP middleware, applied to effects
+([ADR 0006](adr/0006-config-and-effect-middleware.md)). `meteringMiddleware` (Loom 2.0 K3) meters
+each effect's tokens/cost/time as a durable `RESOURCE_METERED` fact and enforces per-execution
+budgets by admission control (over-budget ⇒ the next effect is denied) — the scarce resource for
+intelligent software being tokens/$/latency, not CPU. `safetyMiddleware` (Loom 2.1 K6) is the same
+shape applied to *behavior*: pluggable validators check an effect's input before it runs and its
+output before it propagates, and a violation is a durable `SAFETY_BLOCKED` fact that fails the step
+— so the kernel governs not just *who* may act and *how much* it costs, but *whether the
+action/output is safe* ([ADR 0017](adr/0017-k6-behavioral-safety-ring.md)). `claimCheckMiddleware`
+([ADR 0054](adr/0054-claim-check-middleware.md)) keeps the log itself lean: an effect result over an
+inline cap is stored content-addressed and the log records `{ ref, size, digest }` **as the value**
+— the fold never resolves it, so replay never touches the content store and bulk telemetry stays out
+of the authoritative log (the digest, a per-tool declared pure projection, is what orchestration may
+branch on). Stream-typed results (`streamResult`, ADR 0059) extend the same contract to payloads too
+large for memory: the tool streams into the content store inside the effect and the envelope is
+still the recorded value.
 
 ```mermaid
 flowchart LR
@@ -297,9 +395,27 @@ Every middleware after `retryMiddleware` is opt-in; the authorizer, metering, sa
 
 ### 5.3 Projections & UI (`@loom/projection-runtime`, `@loom/agent-surface`, `@loom/blueprint-runtime`, renderers)
 
-State for humans is a **read model**, folded from the same events by the `ProjectionRuntime` — completely decoupled from durability. Flows push UI updates via `surface(ctx).set/merge/append` (the **agent-surface** patch protocol — Loom's native surface mechanism, *not* the external Google A2UI wire protocol despite the historical name), which fold into **surfaces**. Surfaces render through pluggable renderers (React, terminal) — **bring-your-own-renderer**. For interop, `@loom/plugin-a2ui` projects a surface onto the real **A2UI (Agent-to-UI) wire protocol v1.0** so any A2UI-compliant client can render it — egress, the inbound `action` leg, and the `callFunction` bidirectional RPC (the agent invokes a named client function; its result re-enters as a recorded fact, keyed by a deterministic `callId`), kernel untouched ([ADR 0069](adr/0069-a2ui-egress-adapter.md), [ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md)). The durable log never depends on the UI.
+State for humans is a **read model**, folded from the same events by the `ProjectionRuntime` —
+completely decoupled from durability. Flows push UI updates via `surface(ctx).set/merge/append` (the
+**agent-surface** patch protocol — Loom's native surface mechanism, *not* the external Google A2UI
+wire protocol despite the historical name), which fold into **surfaces**. Surfaces render through
+pluggable renderers (React, terminal) — **bring-your-own-renderer**. For interop,
+`@loom/plugin-a2ui` projects a surface onto the real **A2UI (Agent-to-UI) wire protocol v1.0** so
+any A2UI-compliant client can render it — egress, the inbound `action` leg, and the `callFunction`
+bidirectional RPC (the agent invokes a named client function; its result re-enters as a recorded
+fact, keyed by a deterministic `callId`), kernel untouched
+([ADR 0069](adr/0069-a2ui-egress-adapter.md),
+[ADR 0070](adr/0070-a2ui-callfunction-bidirectional-rpc.md)). The durable log never depends on the
+UI.
 
-A projection can be declared with **`projection$`** and discovered by `loom gen`. When the compiler builds one, it extracts the whole `handlers` fold-map into its own `import()` chunk and records the handled event-type keys — so the fold code loads **on demand**, event-type-gated: a projection whose events never fire never loads its code (the same lazy-chunk mechanism as `handler$`/`instructions$`, [ADR 0049](adr/0049-projection-on-demand-fold-code.md)). At the config level, `defineConfig({ agentSurface: true })` registers **one agent surface per `agent$`** (`surfaceId = agent.id`) so each agent drives its own panel, and `a2a: true` derives each agent's discoverable A2A card — both from the same `agent$` definitions, no hand-wired cards/surfaces.
+A projection can be declared with **`projection$`** and discovered by `loom gen`. When the compiler
+builds one, it extracts the whole `handlers` fold-map into its own `import()` chunk and records the
+handled event-type keys — so the fold code loads **on demand**, event-type-gated: a projection whose
+events never fire never loads its code (the same lazy-chunk mechanism as `handler$`/`instructions$`,
+[ADR 0049](adr/0049-projection-on-demand-fold-code.md)). At the config level,
+`defineConfig({ agentSurface: true })` registers **one agent surface per `agent$`**
+(`surfaceId = agent.id`) so each agent drives its own panel, and `a2a: true` derives each agent's
+discoverable A2A card — both from the same `agent$` definitions, no hand-wired cards/surfaces.
 
 ```mermaid
 flowchart LR
@@ -317,12 +433,33 @@ The intelligence pipeline, all composable and all running *inside* durable flows
 - **`@loom/agent`** — a ReAct-style tool-using loop; a `SkillRegistry` selects `skill$` skills whose instruction bodies load lazily.
 - **`@loom/plugin-mcp`** — Model Context Protocol client for external tools.
 - **`@loom/plugin-a2a`** — Agent-to-Agent protocol (client + server): call external agents (ADK, LangGraph, CrewAI) and expose Loom flows to them; `LoomAgentExecutor` adapts a flow into a stateless A2A task ([ADR 0007](adr/0007-manifest-and-a2a-adapter.md)). `defineConfig({ a2a: true })` auto-advertises every `agent$` as a discoverable card (no hand-built card table).
-- **`@loom/reasoning`** — the decision seam's policy side (M3, [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md)): model routing, elevation and confidence, plus the exploration strategies (`ucb1`, `epsilonGreedy`) a learned router draws from ([ADR 0078](adr/0078-exploration-in-the-routing-seam.md)). Every choice it makes goes through `ctx.decide`, so it is advisory at author time and a recorded fact at run time.
+- **`@loom/reasoning`** — the decision seam's policy side (M3,
+  [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md)): model routing, elevation
+  and confidence, plus the exploration strategies (`ucb1`, `epsilonGreedy`) a learned router draws
+  from ([ADR 0078](adr/0078-exploration-in-the-routing-seam.md)). Every choice it makes goes through
+  `ctx.decide`, so it is advisory at author time and a recorded fact at run time.
 - **`@loom/capability`** — flows exposed as intent-addressable capabilities.
 - **`@loom/intent`** — routes natural-language intent to a capability.
 - **`@loom/planner`** — turns a goal into a plan: the original flat `PlannerRuntime.plan`, and (R16, [ADR 0123](adr/0123-planning-depth-plan-graphs-replanning-and-goals.md)) `planGoal` / `executePlan` / `makeReviser` for journaled, validated plan DAGs with argument bindings and bounded replanning, plus a principal-scoped `GoalStore` (`runGoal`).
-- **`@loom/memory`** — (R18, [ADR 0124](adr/0124-learning-lifecycle.md): an optional `EmbeddingProvider`/`VectorIndex` SPI and `EmbeddingMemoryStore`, a semantic `MemoryStore` over any store) scoped, TTL/size-bounded agent memory, over a pluggable `MemoryStore` (in-memory by default; `SqliteMemoryStore`/`PostgresMemoryStore` make it survive a restart and add relevance `search`, which `TieredMemory.recallRelevant` turns into a recorded decision). An entry carries an optional caller-assigned `id` that every backend must round-trip, and the optional `remove` deletes by it — the verb a MUTABLE corpus needs, since `search` ranks within one key while a document is a subset of it ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md), `MEMORY_STORE_SPI_VERSION` 2.1.0 — 2.1.0 bounds the QUERY: a term-based backend derives its terms with `queryTerms`, deduplicated and capped, because OR-ing one word 20,000 times cannot change which entries match and took SQLite 32.7 seconds to say so).
-- **`@loom/knowledge`** — document corpora over a memory tier ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md)): `KnowledgeBase` upserts and `sync`s DOCUMENTS onto the PASSAGES they are searched in (so a revision supersedes its predecessor rather than duplicating it), `groundedRequest` assembles a prompt that keeps retrieved passages in the one position `guardRequest` accepts, and `checkCitations` rejects a citation to a document that was never retrieved. It owns no storage and no ranking — both are the `MemoryStore`'s. A corpus may have several writers (`source`): a reconcile only ever deletes its own documents, so what an agent learned from feedback survives the nightly sync of an authored corpus.
+- **`@loom/memory`** — (R18, [ADR 0124](adr/0124-learning-lifecycle.md): an optional
+  `EmbeddingProvider`/`VectorIndex` SPI and `EmbeddingMemoryStore`, a semantic `MemoryStore` over
+  any store) scoped, TTL/size-bounded agent memory, over a pluggable `MemoryStore` (in-memory by
+  default; `SqliteMemoryStore`/`PostgresMemoryStore` make it survive a restart and add relevance
+  `search`, which `TieredMemory.recallRelevant` turns into a recorded decision). An entry carries an
+  optional caller-assigned `id` that every backend must round-trip, and the optional `remove`
+  deletes by it — the verb a MUTABLE corpus needs, since `search` ranks within one key while a
+  document is a subset of it ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md),
+  `MEMORY_STORE_SPI_VERSION` 2.1.0 — 2.1.0 bounds the QUERY: a term-based backend derives its terms
+  with `queryTerms`, deduplicated and capped, because OR-ing one word 20,000 times cannot change
+  which entries match and took SQLite 32.7 seconds to say so).
+- **`@loom/knowledge`** — document corpora over a memory tier
+  ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md)): `KnowledgeBase` upserts and
+  `sync`s DOCUMENTS onto the PASSAGES they are searched in (so a revision supersedes its predecessor
+  rather than duplicating it), `groundedRequest` assembles a prompt that keeps retrieved passages in
+  the one position `guardRequest` accepts, and `checkCitations` rejects a citation to a document
+  that was never retrieved. It owns no storage and no ranking — both are the `MemoryStore`'s. A
+  corpus may have several writers (`source`): a reconcile only ever deletes its own documents, so
+  what an agent learned from feedback survives the nightly sync of an authored corpus.
 - **`@loom/orchestrator`** — composable `decideApproval` (risk gate) + `dispatchPlan` primitives ([ADR 0013](adr/0013-orchestrator-primitives.md)).
 
 ### 5.5 Compute & distribution (`@loom/dispatcher`, `@loom/worker-runtime*`, `@loom/plugin-worker-remote`, `@loom/plugin-worker-server`, `@loom/plugin-cloudrun`, `@loom/graph-executor`, `@loom/scheduler`)
@@ -350,7 +487,11 @@ Every one of these is *a different lens on the durable log*:
 - **`@loom/eval`** — replay a recorded log as a test fixture; diff/score runs ([ADR 0008](adr/0008-evals-and-deploy-simulation.md)); and (R18, [ADR 0124](adr/0124-learning-lifecycle.md)) an LLM evaluation harness — `runEvalSuite` with exact/regex/JSON-Schema/LLM-judge graders (the judge through the decide scope), a replay-only `CassetteProvider`, and `compareReports` for regressions.
 - **`@loom/deploy-sim`** — replay historical logs against *new* flow definitions to catch breaking changes before promoting.
 - **`@loom/testing`** — `createTestApp`, `waitForPhase`, `captureGolden`, and a VCR LLM provider ([ADR 0009](adr/0009-testing-kit.md)).
-- **`@loom/cli`** (`loom`) — `logs` (tail the log), `debug` (time-travel to any sequence), `eval`, `check`, `gen`/`new` (build-time codegen — `gen` discovers all seven convention folders: flows, agents, tools, skills, schedules, memories, projections, [ADR 0011](adr/0011-folder-convention-codegen.md)), `appgen` (brownfield NL → code, model-of-your-choice), `deploy check`, `inspect` (web timeline + slider) ([ADRs 0010–0014](adr/)).
+- **`@loom/cli`** (`loom`) — `logs` (tail the log), `debug` (time-travel to any sequence), `eval`,
+  `check`, `gen`/`new` (build-time codegen — `gen` discovers all seven convention folders: flows,
+  agents, tools, skills, schedules, memories, projections,
+  [ADR 0011](adr/0011-folder-convention-codegen.md)), `appgen` (brownfield NL → code,
+  model-of-your-choice), `deploy check`, `inspect` (web timeline + slider) ([ADRs 0010–0014](adr/)).
 - **`@loom/appgen`** (+ optional `@loom/appgen-model`) — brownfield-aware NL → code: scan → plan (provider-agnostic, [ADR 0050](adr/0050-appgen-model-provider-agnostic.md)) → surgical apply → validate; the NL stage is isolated and the output is plain, statically-wired code (P11).
 - **`@loom/compiler`** — optional Vite plugin/CLI: `handler$`/`instructions$`/`projection$` extraction into lazy chunks, flow-graph analysis, resumability metadata.
 
@@ -358,8 +499,20 @@ Every one of these is *a different lens on the durable log*:
 
 The rings noted inline above (K2/K3/K6) are part of a larger set that makes Loom *earn* the word "kernel." Each ring is opt-in and byte-identical to Loom 1.x when unwired (P10), and each new durable verdict is folded like any other event (P9). The full set is implemented:
 
-- **K1** — versioned syscall ABI (`KERNEL_ABI`, `packages/workflow-runtime/src/abi.ts`); **K2** — capability grants / authority ring (`EFFECT_DENIED`); **K3** — resource metering & quotas (`RESOURCE_METERED`/`QUOTA_EXCEEDED`); **K4** — fault supervision (`SupervisingDispatcher`, restart/backoff + circuit breaker); **K5** — event-schema ABI governance (`EVENT_SCHEMA_VERSION`, `knownEventTypes()`); **K6** — behavioral safety (`safetyMiddleware`, `SAFETY_BLOCKED`).
-- **K7** — data-plane isolation & brokered egress (`@loom/isolate`, child-process boundary, `EGRESS_DENIED`); **K8** — cancellation, deadlines & bounded effects; **K9** — effect-delivery contract: idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing; **K10** — log lifecycle: retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption (`@loom/plugin-crypto`), and the K10.6 pin seam (`PinPredicate` + pinned content GC — findings' evidence outlives raw-telemetry TTL and run archival, ADR 0055); **K11** — flow-code versioning for in-flight executions (`flowContentHash`, `EXECUTION_MIGRATED`) plus K11.5 contract-versioned state migration on `resumeAs` (the recorded `migratedInput` replaces the folded input, ADR 0056); **K12** — identity, tenancy & delegated authority (`APPROVAL_GRANTED`).
+- **K1** — versioned syscall ABI (`KERNEL_ABI`, `packages/workflow-runtime/src/abi.ts`); **K2** —
+  capability grants / authority ring (`EFFECT_DENIED`); **K3** — resource metering & quotas
+  (`RESOURCE_METERED`/`QUOTA_EXCEEDED`); **K4** — fault supervision (`SupervisingDispatcher`,
+  restart/backoff + circuit breaker); **K5** — event-schema ABI governance (`EVENT_SCHEMA_VERSION`,
+  `knownEventTypes()`); **K6** — behavioral safety (`safetyMiddleware`, `SAFETY_BLOCKED`).
+- **K7** — data-plane isolation & brokered egress (`@loom/isolate`, child-process boundary,
+  `EGRESS_DENIED`); **K8** — cancellation, deadlines & bounded effects; **K9** — effect-delivery
+  contract: idempotency keys, in-doubt parking (`EFFECT_INDOUBT`), fencing; **K10** — log lifecycle:
+  retention, crypto-shredding (`PAYLOAD_SHREDDED`), redaction & at-rest encryption
+  (`@loom/plugin-crypto`), and the K10.6 pin seam (`PinPredicate` + pinned content GC — findings'
+  evidence outlives raw-telemetry TTL and run archival, ADR 0055); **K11** — flow-code versioning
+  for in-flight executions (`flowContentHash`, `EXECUTION_MIGRATED`) plus K11.5 contract-versioned
+  state migration on `resumeAs` (the recorded `migratedInput` replaces the folded input, ADR 0056);
+  **K12** — identity, tenancy & delegated authority (`APPROVAL_GRANTED`).
 - **T1** — durable timers & scheduled executions (`ctx.sleep`/`sleepUntil`, `TIMER_FIRED`, `schedule$` cron); **T2** — wire-level kernel ABI (`@loom/wire-abi`, a JSON-RPC projection of K1 for language neutrality).
 
 ```mermaid
@@ -386,7 +539,12 @@ flowchart TB
   Svc --> Log
 ```
 
-Each ring is a distinct plane — *authority* (K2/K12), *resource* (K3), *behavior* (K6), *data* (K7/K10), and *lifecycle* (K8/K9/K11) — and each verdict is an ordinary folded event, so the log is the audit trail with no extra machinery. See **[04 — Kernel Hardening](loom-2.0/04-kernel-hardening.md)** for the ring-by-ring detail, the **[API reference → Kernel hardening & security](api-reference.org#kernel-hardening)** for each ring's export surface, and [ADRs 0016–0026](adr/).
+Each ring is a distinct plane — *authority* (K2/K12), *resource* (K3), *behavior* (K6), *data*
+(K7/K10), and *lifecycle* (K8/K9/K11) — and each verdict is an ordinary folded event, so the log is
+the audit trail with no extra machinery. See
+**[04 — Kernel Hardening](loom-2.0/04-kernel-hardening.md)** for the ring-by-ring detail, the **[API
+reference → Kernel hardening & security](api-reference.org#kernel-hardening)** for each ring's
+export surface, and [ADRs 0016–0026](adr/).
 
 ### 5.8 The three-direction arc — simulation testing, coordination, multi-tenant isolation
 
@@ -527,7 +685,12 @@ flowchart TB
 
 > **Adapter packages carry the `plugin-` prefix and live in [`plugins/`](../plugins/), not `packages/`** — the 1P/3P separation of [ADR 0043](adr/0043-plugin-packaging-and-1p-3p-separation.md). A CI guard fails the build if a kernel or SPI package takes a dependency on one. See [the plugin guide](plugins.md) for the full first-party inventory.
 
-> **Loom 2.0.** The packages in **bold-new** groups above — `reasoning`, `plugin-postgres`, `analytics`, `appgen` — plus deepenings of `workflow-runtime`, `effect-runtime`, `middleware`, `dispatcher`, `memory`, `capability`, and `agent`, constitute the **execution-kernel evolution**. Its full data structures, algorithms, and diagrams live in [`docs/loom-2.0/`](loom-2.0/00-overview.md); the decision record is [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
+> **Loom 2.0.** The packages in **bold-new** groups above — `reasoning`, `plugin-postgres`,
+> `analytics`, `appgen` — plus deepenings of `workflow-runtime`, `effect-runtime`, `middleware`,
+> `dispatcher`, `memory`, `capability`, and `agent`, constitute the **execution-kernel evolution**.
+> Its full data structures, algorithms, and diagrams live in
+> [`docs/loom-2.0/`](loom-2.0/00-overview.md); the decision record is
+> [ADR 0016](adr/0016-loom-2.0-execution-runtime-and-decision-seam.md).
 
 ---
 
@@ -642,5 +805,113 @@ Being honest about the edges:
 - **[User Guide](user-guide.md)** — every feature area with examples.
 - **[Data classification](data-classification.md)** — field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6).
 - **[Compliance](compliance.md)** — data-subject rights: subject index, export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3).
-- **[ADRs](adr/)** — the full decision history (0001–0130; 0016–0026 cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series; 0036–0041 the three-direction arc; 0042 the AI-native brownfield `appgen`; 0043–0044 the plugin packaging + 1P/3P separation; 0046 the content-store seam; 0047 the `tools/*` dev-tooling tier; 0051–0057 the perpetual-agents series — schedule-driven agents with durable carry state, claim-checked effect data, pinned retention, state migration on resume, and the multi-gate suspend fix; 0058–0059 the db-copilot infrastructure follow-on — durable cross-execution read models and streaming content ingestion; 0060–0065 the GenUI dynamic-execution series — typed failure channels, the step-identity/interpreter contract, batched content resolution, MCP dynamic dispatch with schema-hash pinning, the QuickJS sandbox plugin, and the group-commit deferral; 0066 the transient-effect-invocation façade (`invokeTransient`); 0067 the reactive-graph-resumability rejection; 0068 the projection-selector subscription (`subscribeSelector`); 0069–0070 the agent-surface rename and the A2UI egress adapter with `callFunction` bidirectional RPC; 0071 the read-only replay inspector; 0072 MCP Apps placement — ingress fidelity, an MCP server, and `ui://` egress as one static content-pinned template, with the host role rejected; 0073 the effect-mode boundary (`journaled` vs `ambient`) that keeps user-driven enrichment reads out of the log; 0074–0075 storage scale-out decorators and shard rebalancing; 0076–0077 two boundaries that looked enforced and were not (wildcard classification paths, typed resume payloads); 0078–0080 the learning substrate — exploration in the routing seam, `context`/`policy.propensity` on `DECISION_RECORDED` (EVENT_SCHEMA 1.18.0), and `@loom/learning` with the third-party `Policy` SPI; 0081–0082 the Companion workload's two kernel promotions, both refused; 0083 the second-consumer rule, an outward gate on first-party surface; 0084 effect classes — a declared, statically-checked ceiling on what a flow may reach, beside K2's runtime floor; 0085 the integrity axis — untrusted content as a value wrapper, refused in every prompt instruction position; 0086 runner-body reach analysis, which closed the 'reachable = declared steps' bound and proved two suspension-safety checks wrong once they could fire; 0087 the durable agent loop — `agentLoop$` as a runner body, so a turn is a frame and skills/memory/routing go through the decision seam; 0088 blueprint conformance — `validateBlueprint`/`catalogCoverage` over a declared widget catalogue; 0089 the sandbox worker pool; 0090 knowledge is retrieval over memory, not a construct — durable MemoryStore backends, `search` as one optional verb, and the refusals that keep knowledge in application code; 0091 the correction to 0090's premise — a corpus is MUTABLE, so entry identity plus `remove` (MemoryStore SPI 2.0.0) and `@loom/knowledge` for the document↔passage mapping, while the `knowledge$` construct stays rejected; 0092 adaptive operator profiles — placement only, with the expiry that would have made a fold impure moved into an event and the resolved profile journaled by VALUE; 0093 row-granular `purge` on the read-model store SPI (1.1.0), so erasing one subject costs one subject rather than a whole-model rebuild; 0094 node identity across a structural change — `preservesNodes` over id sets, because the second consumer's components are a flat list rather than a tree; 0095 the binding-semantics pin — a composed surface's content address freezes a binding's NAME, so what that name MEANT is declared (`version`) and compared (`checkVersionPins`) rather than assumed; 0096 the Blueprint as loom's stable rendering IR — `BLUEPRINT_IR_VERSION` beside a shape manifest that `tsc` checks against the types and a test pins by digest per version, and a kind-aware terminal renderer whose default registry covers the catalogue; 0097 Blueprint IR 2.0.0 — grid cells, loom-owned binding status, widget source, binding sensitivity, with a reader-side normaliser for 1.0.0 artifacts; 0098 Blueprint IR 2.1.0 — optional grid-cell placement (`row`/`rowSpan`/`column`) and a `title` on every layout, a minor bump that reads 2.0.0 artifacts as they are; 0099 Blueprint IR 2.2.0 — an optional `role` on every layout, the open container axis `Widget.kind` is for widgets, which loom's own renderers ignore; 0100 Blueprint IR 2.3.0 — an `empty` binding state, so a widget whose upstream answered with nothing shows "no data" rather than an error, degrading to the loading row on an older reader; 0101 Blueprint IR 2.4.0 — an optional `id` on every layout, one node-id namespace with widget ids, so a container keeps its identity (and the state under it) when a recompose inserts or reorders containers, with `preservesBlueprintNodes` covering it; 0102 a kernel replay fix — flow-level `ctx.emit`/`stream`/`ui` append once per execution, matched by content digest against the log (never by timing; an unprovable match appends), rather than once per re-run (EVENT_SCHEMA 1.19.0, KERNEL_ABI unchanged); 0103 a kernel fix — a `start()` with a caller-chosen execution id makes its `EXECUTION_STARTED` durable before the body runs, so a duplicate start is refused with `ExecutionAlreadyExistsError` before any effect runs (EVENT_SCHEMA and KERNEL_ABI unchanged); 0104 a gate is answered only by a resume addressed to it — a crash re-drive, an in-doubt verdict, a human step's answer, a migration and userspace kernel-type emits no longer open the NEXT gate, pre-0104 logs replay as written and are flagged (EVENT_SCHEMA 1.20.0); 0105 a kernel fold fix — a step failure the flow catches no longer folds the EXECUTION to `failed` (only `EXECUTION_FAILED` does), so a crash after the catch is recoverable, cancellable and not pruned as finished, a parked execution whose sibling failed stays resumable (a `null` resume after that failure stays status-only, so no snapshot changes a gate's answer), and pre-1.21.0 snapshots are repaired on read (EVENT_SCHEMA 1.21.0, KERNEL_ABI unchanged); 0106 compaction integrity — a checkpoint names its execution, a re-compaction folds on the earlier checkpoint, and an app's pinned event kinds survive compaction in place (EventStore SPI 1.5.0, `truncatePrefixKeeping`); 0107 its two residuals — a fork point inside compacted history is served exactly from a snapshot sitting at it or refused (`CompactedForkPointError`), and the events the pre-0106 bug wrote to execution `""` are re-homed where a snapshot proves their owner and listed, never guessed, where none does (`loom repair blank-stream`; EVENT_SCHEMA 1.22.0 `EVENTS_REHOMED`), with `""` now reserved. 0108 one order for execution ids — code point order with id cursors (EventStore SPI 2.0.0), a `COLLATE "C"` Postgres column, and a fail-soft policy for boot migrations that take an exclusive lock. 0109–0116 and 0118 the Wave 2 coordinated kernel design (each Accepted at its item PR; 0109, 0110, 0111, 0112, 0114, 0115, 0116 and 0118 are) — bounded history and continue-as-new (0109, behind a `kernel.features` flag), a durable inbox with kernel waits on inbox topics, gates and timers, an authorized `runtime.send` and concurrent waits (0110, behind `kernel.features.inbox`), the durable principal (0111), structured concurrency (0112), a body-aware code fingerprint with replay-divergence detection (0113), `surface(ctx)` leaving the kernel (0114), open effect/task/metering vocabularies (0115), late outcome attach (0116) and a conditional acquire-if-parked fence (0118), planned as ONE bump (KERNEL_ABI 1.3.0, EVENT_SCHEMA 1.23.0, EventStore SPI 2.1.0); 0117 approvals bound to what the approver saw; 0119 streaming deltas through `DecideScope.invokeTransient` — a per-call live-only sink on `EffectContext.onDelta`, governed identically to the non-streaming call (additive 1P, EVENT_SCHEMA and KERNEL_ABI unchanged); 0121 one canonical agent loop — `agentLoop$` gains tool-error feedback, `parallelTools`, `signal`/deadlines, memory `writeBack` and a journaled `reasoning` response, and `AgentRunner`/`agentStep$` are deprecated (1P `@loom/agent`, kernel unchanged). 0122 a conversation layer, a streaming transport and token-aware budgeting — a dialogue is one chained execution (`conversation$`, `@loom/conversation`) whose user turns arrive on the inbox, a new turn barges in on a running one through a host-side signal read only at `agentLoop$`'s recorded checkpoints, the transcript is a set of decisions read back with bounded range reads across rotations, the prompt is fitted to a window by a recorded verdict, and `@loom/plugin-conversation-sse` is the authenticated, resumable SSE gateway (1P, kernel unchanged).; 0123 planning depth — a plan is a validated DAG of steps with arguments, `$from` bindings, dependencies and preconditions, planned as a recorded decision with no silent fallback, driven by a dependency-aware wave executor over concurrent scopes, revised by a bounded replanner that never re-runs completed steps, and tied to a principal-scoped durable goal store (all in `@loom/planner`, kernel unchanged); 0124 the learning lifecycle — a principal-scoped policy registry (immutable versions, promotion only through a passing verdict, shadow/canary/full rollouts with a deterministic unit split recorded in the decision, one-write rollback), content-addressed prompt/model versions recorded in the decision's policy stamp, doubly-robust evaluation with seeded bootstrap intervals and a CI-lower-bound gate, a scoped, taint- and erasure-aware JSONL trajectory/preference export, an embedding SPI with a reference index and a semantic `MemoryStore`, and an LLM eval harness (1P `@loom/learning`/`@loom/memory`/`tools/eval`, kernel unchanged); 0125 tool search — an opt-in `search_tools` meta-tool in `agentLoop$` whose results are a recorded decision, over only the tools the run is already authorized for, ranked by a bounded deterministic BM25F index (name > aliases/tags > description) behind a pluggable `ToolRanker`, with trusted author/host aliases closing the vocabulary gap and remote descriptions kept tainted and unranked (1P `@loom/agent`, kernel unchanged); 0126 Unicode lexical scoring, prompt overrides and schedule time zones (R19) — the capability/skill keyword scorers tokenize any script (ASCII byte-identical, skill selection already recorded), the planner/intent prompts are overridable with the untrusted-content note always appended, and `schedule$({ timeZone })` reads cron on an IANA zone's wall clock with a stated DST rule (1P, kernel unchanged); 0127 `@loom/plugin-renderer-dom` — a framework-free DOM renderer for the Blueprint (a web surface without React or loom-ui): the terminal renderer's API plus a live, keyed-reconcile `mountBlueprint`, the same eight kinds as React and terminal asserted by a parity test, every element built through an allowlisting `h()` so data is never parsed as markup (1P plugin, kernel unchanged). 0128 (Accepted) carrying decision order through checkpoints (a recorded `seq` on each folded decision; EVENT_SCHEMA 1.24.0); 0129 (Accepted) closing the `creationMarker` ABA with a store-assigned incarnation kept out of the envelope (EventStore SPI 2.3.0); 0130 (Accepted) the kernel guard that refuses to deliver a sealed (`__loomEnc`) inbox payload to a node that cannot open it (parks, never journals the envelope; `send` refuses a forged one; no schema or SPI change).
+- **[ADRs](adr/)** — the full decision history (0001–0130), one line per range:
+  - **0016–0026** cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series
+  - **0036–0041** the three-direction arc
+  - **0042** the AI-native brownfield `appgen`
+  - **0043–0044** the plugin packaging + 1P/3P separation
+  - **0046** the content-store seam
+  - **0047** the `tools/*` dev-tooling tier
+  - **0051–0057** the perpetual-agents series — schedule-driven agents with durable carry state, claim-checked effect data, pinned retention, state migration on resume, and the multi-gate suspend fix
+  - **0058–0059** the db-copilot infrastructure follow-on — durable cross-execution read models and streaming content ingestion
+  - **0060–0065** the GenUI dynamic-execution series — typed failure channels, the step-identity/interpreter contract, batched content resolution, MCP dynamic dispatch with schema-hash pinning, the QuickJS sandbox plugin, and the group-commit deferral
+  - **0066** the transient-effect-invocation façade (`invokeTransient`)
+  - **0067** the reactive-graph-resumability rejection
+  - **0068** the projection-selector subscription (`subscribeSelector`)
+  - **0069–0070** the agent-surface rename and the A2UI egress adapter with `callFunction` bidirectional RPC
+  - **0071** the read-only replay inspector
+  - **0072** MCP Apps placement — ingress fidelity, an MCP server, and `ui://` egress as one static content-pinned template, with the host role rejected
+  - **0073** the effect-mode boundary (`journaled` vs `ambient`) that keeps user-driven enrichment reads out of the log
+  - **0074–0075** storage scale-out decorators and shard rebalancing
+  - **0076–0077** two boundaries that looked enforced and were not (wildcard classification paths, typed resume payloads)
+  - **0078–0080** the learning substrate — exploration in the routing seam, `context`/`policy.propensity` on `DECISION_RECORDED` (EVENT_SCHEMA 1.18.0), and `@loom/learning` with the third-party `Policy` SPI
+  - **0081–0082** the Companion workload's two kernel promotions, both refused
+  - **0083** the second-consumer rule, an outward gate on first-party surface
+  - **0084** effect classes — a declared, statically-checked ceiling on what a flow may reach, beside K2's runtime floor
+  - **0085** the integrity axis — untrusted content as a value wrapper, refused in every prompt instruction position
+  - **0086** runner-body reach analysis, which closed the 'reachable = declared steps' bound and proved two suspension-safety checks wrong once they could fire
+  - **0087** the durable agent loop — `agentLoop$` as a runner body, so a turn is a frame and skills/memory/routing go through the decision seam
+  - **0088** blueprint conformance — `validateBlueprint`/`catalogCoverage` over a declared widget catalogue
+  - **0089** the sandbox worker pool
+  - **0090** knowledge is retrieval over memory, not a construct — durable MemoryStore backends, `search` as one optional verb, and the refusals that keep knowledge in application code
+  - **0091** the correction to 0090's premise — a corpus is MUTABLE, so entry identity plus `remove` (MemoryStore SPI 2.0.0) and `@loom/knowledge` for the document↔passage mapping, while the `knowledge$` construct stays rejected
+  - **0092** adaptive operator profiles — placement only, with the expiry that would have made a fold impure moved into an event and the resolved profile journaled by VALUE
+  - **0093** row-granular `purge` on the read-model store SPI (1.1.0), so erasing one subject costs one subject rather than a whole-model rebuild
+  - **0094** node identity across a structural change — `preservesNodes` over id sets, because the second consumer's components are a flat list rather than a tree
+  - **0095** the binding-semantics pin — a composed surface's content address freezes a binding's NAME, so what that name MEANT is declared (`version`) and compared (`checkVersionPins`) rather than assumed
+  - **0096** the Blueprint as loom's stable rendering IR — `BLUEPRINT_IR_VERSION` beside a shape manifest that `tsc` checks against the types and a test pins by digest per version, and a kind-aware terminal renderer whose default registry covers the catalogue
+  - **0097** Blueprint IR 2.0.0 — grid cells, loom-owned binding status, widget source, binding sensitivity, with a reader-side normaliser for 1.0.0 artifacts
+  - **0098** Blueprint IR 2.1.0 — optional grid-cell placement (`row`/`rowSpan`/`column`) and a `title` on every layout, a minor bump that reads 2.0.0 artifacts as they are
+  - **0099** Blueprint IR 2.2.0 — an optional `role` on every layout, the open container axis `Widget.kind` is for widgets, which loom's own renderers ignore
+  - **0100** Blueprint IR 2.3.0 — an `empty` binding state, so a widget whose upstream answered with nothing shows "no data" rather than an error, degrading to the loading row on an older reader
+  - **0101** Blueprint IR 2.4.0 — an optional `id` on every layout, one node-id namespace with widget ids, so a container keeps its identity (and the state under it) when a recompose inserts or reorders containers, with `preservesBlueprintNodes` covering it
+  - **0102** a kernel replay fix — flow-level `ctx.emit`/`stream`/`ui` append once per execution, matched by content digest against the log (never by timing; an unprovable match appends), rather than once per re-run (EVENT_SCHEMA 1.19.0, KERNEL_ABI unchanged)
+  - **0103** a kernel fix — a `start()` with a caller-chosen execution id makes its `EXECUTION_STARTED` durable before the body runs, so a duplicate start is refused with `ExecutionAlreadyExistsError` before any effect runs (EVENT_SCHEMA and KERNEL_ABI unchanged)
+  - **0104** a gate is answered only by a resume addressed to it — a crash re-drive, an in-doubt verdict, a human step's answer, a migration and userspace kernel-type emits no longer open the NEXT gate, pre-0104 logs replay as written and are flagged (EVENT_SCHEMA 1.20.0)
+  - **0105** a kernel fold fix — a step failure the flow catches no longer folds the EXECUTION to
+    `failed` (only `EXECUTION_FAILED` does), so a crash after the catch is recoverable, cancellable
+    and not pruned as finished, a parked execution whose sibling failed stays resumable (a `null`
+    resume after that failure stays status-only, so no snapshot changes a gate's answer), and
+    pre-1.21.0 snapshots are repaired on read (EVENT_SCHEMA 1.21.0, KERNEL_ABI unchanged)
+  - **0106** compaction integrity — a checkpoint names its execution, a re-compaction folds on the earlier checkpoint, and an app's pinned event kinds survive compaction in place (EventStore SPI 1.5.0, `truncatePrefixKeeping`)
+  - **0107** its two residuals — a fork point inside compacted history is served exactly from a snapshot sitting at it or refused (`CompactedForkPointError`), and the events the pre-0106 bug wrote to execution `""` are re-homed where a snapshot proves their owner and listed, never guessed, where none does (`loom repair blank-stream`; EVENT_SCHEMA 1.22.0 `EVENTS_REHOMED`), with `""` now reserved
+  - **0108** one order for execution ids — code point order with id cursors (EventStore SPI 2.0.0), a `COLLATE "C"` Postgres column, and a fail-soft policy for boot migrations that take an exclusive lock
+  - **0109–0116 and 0118** the Wave 2 coordinated kernel design (each Accepted at its item PR; 0109,
+    0110, 0111, 0112, 0114, 0115, 0116 and 0118 are) — bounded history and continue-as-new (0109,
+    behind a `kernel.features` flag), a durable inbox with kernel waits on inbox topics, gates and
+    timers, an authorized `runtime.send` and concurrent waits (0110, behind
+    `kernel.features.inbox`), the durable principal (0111), structured concurrency (0112), a
+    body-aware code fingerprint with replay-divergence detection (0113), `surface(ctx)` leaving the
+    kernel (0114), open effect/task/metering vocabularies (0115), late outcome attach (0116) and a
+    conditional acquire-if-parked fence (0118), planned as ONE bump (KERNEL_ABI 1.3.0, EVENT_SCHEMA
+    1.23.0, EventStore SPI 2.1.0)
+  - **0117** approvals bound to what the approver saw
+  - **0119** streaming deltas through `DecideScope.invokeTransient` — a per-call live-only sink on `EffectContext.onDelta`, governed identically to the non-streaming call (additive 1P, EVENT_SCHEMA and KERNEL_ABI unchanged)
+  - **0121** one canonical agent loop — `agentLoop$` gains tool-error feedback, `parallelTools`, `signal`/deadlines, memory `writeBack` and a journaled `reasoning` response, and `AgentRunner`/`agentStep$` are deprecated (1P `@loom/agent`, kernel unchanged)
+  - **0122** a conversation layer, a streaming transport and token-aware budgeting — a dialogue is
+    one chained execution (`conversation$`, `@loom/conversation`) whose user turns arrive on the
+    inbox, a new turn barges in on a running one through a host-side signal read only at
+    `agentLoop$`'s recorded checkpoints, the transcript is a set of decisions read back with bounded
+    range reads across rotations, the prompt is fitted to a window by a recorded verdict, and
+    `@loom/plugin-conversation-sse` is the authenticated, resumable SSE gateway (1P, kernel
+    unchanged)
+  - **0123** planning depth — a plan is a validated DAG of steps with arguments, `$from` bindings,
+    dependencies and preconditions, planned as a recorded decision with no silent fallback, driven
+    by a dependency-aware wave executor over concurrent scopes, revised by a bounded replanner that
+    never re-runs completed steps, and tied to a principal-scoped durable goal store (all in
+    `@loom/planner`, kernel unchanged)
+  - **0124** the learning lifecycle — a principal-scoped policy registry (immutable versions,
+    promotion only through a passing verdict, shadow/canary/full rollouts with a deterministic unit
+    split recorded in the decision, one-write rollback), content-addressed prompt/model versions
+    recorded in the decision's policy stamp, doubly-robust evaluation with seeded bootstrap
+    intervals and a CI-lower-bound gate, a scoped, taint- and erasure-aware JSONL
+    trajectory/preference export, an embedding SPI with a reference index and a semantic
+    `MemoryStore`, and an LLM eval harness (1P `@loom/learning`/`@loom/memory`/`tools/eval`, kernel
+    unchanged)
+  - **0125** tool search — an opt-in `search_tools` meta-tool in `agentLoop$` whose results are a
+    recorded decision, over only the tools the run is already authorized for, ranked by a bounded
+    deterministic BM25F index (name > aliases/tags > description) behind a pluggable `ToolRanker`,
+    with trusted author/host aliases closing the vocabulary gap and remote descriptions kept tainted
+    and unranked (1P `@loom/agent`, kernel unchanged)
+  - **0126** Unicode lexical scoring, prompt overrides and schedule time zones (R19) — the
+    capability/skill keyword scorers tokenize any script (ASCII byte-identical, skill selection
+    already recorded), the planner/intent prompts are overridable with the untrusted-content note
+    always appended, and `schedule$({ timeZone })` reads cron on an IANA zone's wall clock with a
+    stated DST rule (1P, kernel unchanged)
+  - **0127** `@loom/plugin-renderer-dom` — a framework-free DOM renderer for the Blueprint (a web surface without React or loom-ui): the terminal renderer's API plus a live, keyed-reconcile `mountBlueprint`, the same eight kinds as React and terminal asserted by a parity test, every element built through an allowlisting `h()` so data is never parsed as markup (1P plugin, kernel unchanged)
+  - **0128** carrying decision order through checkpoints (a recorded `seq` on each folded decision; EVENT_SCHEMA 1.24.0)
+  - **0129** closing the `creationMarker` ABA with a store-assigned incarnation kept out of the envelope (EventStore SPI 2.3.0)
+  - **0130** the sealed-payload delivery guard and its residuals, all Accepted: the kernel refuses
+    to deliver a sealed (`__loomEnc`) inbox payload to a node that cannot open it (parks, never
+    journals the envelope; `send` refuses a forged one); a per-envelope capability marker
+    `metadata.seal` (D7; EVENT_SCHEMA 1.25.0); whole-state snapshot sealing (`sealState`) with the
+    kernel refusing a plaintext checkpoint (D8, `PlaintextCheckpointError`); a journaled per-topic
+    hold, `quarantineInbox`/`releaseInbox` (D9); a replay refusal that leaves a wake row the poll
+    re-drives (D10); and heartbeat leases (D11, slices S7a-S7g) — every driver holds a renewed lease
+    from a store co-located with the event store (`durability.heartbeat`, `LeaseStore` SPI 2.2.0,
+    `LeaseKeeper`), so an expired lease is evidence of an abandoned driver: an unexpired lease
+    vetoes `isAbandoned`, the timer poll re-drives by default on an expired lease over a
+    cluster-visible store, ghost leases are garbage-collected, and acquisition is lazy for a fresh
+    `start` by default (S7g amendment of 2026-10-15: eager measured 25-30% no-op overhead on
+    Postgres). Residual risks stay documented in the ADR. Operating it: [operations](operations.md)
 - **[Presentation](presentation/loom-deck.md)** — the deck.
