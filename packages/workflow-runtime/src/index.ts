@@ -11,6 +11,7 @@ export {
   ExecutionCancelledError,
   SnapshotIdentityMismatchError,
   ExecutionDeniedError,
+  ExecutionStoreUnavailableError,
   ExecutionNotTerminalError,
   OutcomeContendedError,
   OutcomeRefusedError,

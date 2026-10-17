@@ -9,18 +9,46 @@ import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
   InMemoryKeyStore,
+  PayloadShreddedError,
   shredSubject,
 } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { build, echo, flow } from "./__tests__/r2Harness";
-import { executionAccessPolicy } from "./executionAccessPolicy";
+import { UNKNOWN_OWNER_REASON, executionAccessPolicy } from "./executionAccessPolicy";
+import { ExecutionStoreUnavailableError } from "./index";
+import { isSealedUnreadable } from "./sealGuard";
 
 // The C.1 authorizer decides FIRST, from sequence 0 alone. Folding (or reading any later data)
 // before the verdict let a caller the authorizer would deny tell, from WHICH error the fold raised
 // (PayloadShreddedError, a sealed refusal, a checkpoint failure...), that an execution exists and
 // what became of it. A denied caller must get the denial an ordinary execution gives, whatever the
 // state of the log; an authorized caller keeps today's errors.
+
+// WHICH WORLD EXERCISES WHICH OP. Measured by running this file against the PRE-change runtime
+// (949a0667); a cell that PASSED there is vacuous for that op (it pins the contract, it does not guard
+// a regression), and is listed so the matrix is not read as more coverage than it is:
+//
+//   world                              fails pre-change (a real regression guard)
+//   shredded, principal plaintext      loadState, parkedAtSequence, followToHead, resume, resumeAs
+//                                      VACUOUS: restoreFromState (errors via the same gate it always
+//                                      had), cancel (folds the redacted view), acquireFence, fork,
+//                                      send, discardInbox, quarantineInbox, releaseInbox, recordOutcome
+//                                      (they read only sequence 0, which is plaintext here)
+//   shredded, principal SEALED         every op except cancel and restoreFromState (even the anchor
+//                                      read raised the erasure error)
+//   sealed stream, wrong key           the error CLASS was already ordinary for every op (the seal
+//                                      guard, ADR 0130 D7); the cells fail pre-change only on the
+//                                      `onExecutionDenied` workflow id, which was "" and is now the
+//                                      plaintext one the refusal carries. VACUOUS for loadState,
+//                                      parkedAtSequence, followToHead (never audited a denial).
+//   checkpoint key unavailable /       loadState, parkedAtSequence, followToHead, resume, resumeAs,
+//   checkpoint of another identity     cancel (audit placement). VACUOUS for the seq-0-only ops.
+//
+// AUDIT FACT: a denied resume / resumeAs / cancel appends a best-effort EXECUTION_DENIED at the folded
+// tip. Where the fold itself is unreadable (the shredded worlds, the sealed world) that fact is
+// SKIPPED rather than surface the fold's error, so the added-events list is [] there instead of the
+// baseline's ["EXECUTION_DENIED"]; everywhere else the two worlds append the same kinds.
 
 const SECRET = "123-45-6789";
 const OWNER = { actor: "alice", tenant: "t1" };
@@ -47,23 +75,37 @@ const secret = () =>
     return null;
   });
 
-type Denied = { op: string; executionId: string; principal: unknown; reason: unknown };
+type Denied = {
+  op: string;
+  executionId: string;
+  workflowId: unknown;
+  principal: unknown;
+  reason: unknown;
+};
 
 function node(
   store: EventStore,
   snapshotStore?: SnapshotStore,
-  extra: Record<string, unknown> = {}
+  extra: Record<string, unknown> = {},
+  mk: () => ReturnType<typeof secret> = secret
 ) {
   const denied: Denied[] = [];
-  const f = secret();
+  const f = mk();
   const h = build(
     {
       executionAuthorizer: executionAccessPolicy(POLICY),
       executionAuthz: { requirePrincipal: true },
       onExecutionDenied: (
-        r: { op: string; executionId: string; principal?: unknown },
+        r: { op: string; executionId: string; workflowId?: unknown; principal?: unknown },
         reason?: string
-      ) => denied.push({ op: r.op, executionId: r.executionId, principal: r.principal, reason }),
+      ) =>
+        denied.push({
+          op: r.op,
+          executionId: r.executionId,
+          workflowId: r.workflowId,
+          principal: r.principal,
+          reason,
+        }),
       ...extra,
     } as never,
     {
@@ -106,22 +148,26 @@ const fakeState = (id: string) =>
     variables: {},
   }) as never;
 
-/** Every authorizer-gated public op, as the STRANGER. */
-const OPS: Array<[string, (n: Node) => Promise<unknown>]> = [
-  ["loadState", (n) => n.h.rt.loadState(E, { principal: STRANGER })],
-  ["parkedAtSequence", (n) => n.h.rt.parkedAtSequence(E, { principal: STRANGER })],
-  ["followToHead", (n) => n.h.rt.followToHead(E, { principal: STRANGER })],
-  ["resume", (n) => n.h.rt.resume(E, { eventType: "Go", payload: null }, { principal: STRANGER })],
+type Who = typeof OWNER;
+/** Every authorizer-gated public op, as `who` (the STRANGER unless a test says otherwise). */
+const OPS: Array<[string, (n: Node, who?: Who) => Promise<unknown>]> = [
+  ["loadState", (n, who = STRANGER) => n.h.rt.loadState(E, { principal: who })],
+  ["parkedAtSequence", (n, who = STRANGER) => n.h.rt.parkedAtSequence(E, { principal: who })],
+  ["followToHead", (n, who = STRANGER) => n.h.rt.followToHead(E, { principal: who })],
+  [
+    "resume",
+    (n, who = STRANGER) => n.h.rt.resume(E, { eventType: "Go", payload: null }, { principal: who }),
+  ],
   [
     "resumeAs",
-    (n) =>
+    (n, who = STRANGER) =>
       n.h.rt.resumeAs(
         E,
         "secret",
         { eventType: "Go", payload: null },
         {
           strategy: "operator-ack",
-          principal: STRANGER,
+          principal: who,
           // runs on the recorded input: it must never be called for a denied caller
           transformState: (i: unknown) => {
             transformCalls.push(i);
@@ -132,29 +178,30 @@ const OPS: Array<[string, (n: Node) => Promise<unknown>]> = [
   ],
   [
     "restoreFromState",
-    (n) => n.h.rt.restoreFromState(fakeState(E), undefined, { principal: STRANGER }),
+    (n, who = STRANGER) => n.h.rt.restoreFromState(fakeState(E), undefined, { principal: who }),
   ],
-  ["cancel", (n) => n.h.rt.cancel(E, "no", { principal: STRANGER })],
-  ["acquireFence", (n) => n.h.rt.acquireFence(E, { principal: STRANGER })],
-  ["fork", (n) => n.h.rt.fork(E, 1, { principal: STRANGER })],
-  ["send", (n) => n.h.rt.send(E, { topic: "t", payload: "x" }, { principal: STRANGER })],
+  ["cancel", (n, who = STRANGER) => n.h.rt.cancel(E, "no", { principal: who })],
+  ["acquireFence", (n, who = STRANGER) => n.h.rt.acquireFence(E, { principal: who })],
+  ["fork", (n, who = STRANGER) => n.h.rt.fork(E, 1, { principal: who })],
+  ["send", (n, who = STRANGER) => n.h.rt.send(E, { topic: "t", payload: "x" }, { principal: who })],
   [
     "discardInbox",
-    (n) => n.h.rt.discardInbox(E, { topic: "t", throughSeq: 1 }, { principal: STRANGER }),
+    (n, who = STRANGER) =>
+      n.h.rt.discardInbox(E, { topic: "t", throughSeq: 1 }, { principal: who }),
   ],
-  ["quarantineInbox", (n) => n.h.rt.quarantineInbox(E, { topic: "t" }, { principal: STRANGER })],
+  [
+    "quarantineInbox",
+    (n, who = STRANGER) => n.h.rt.quarantineInbox(E, { topic: "t" }, { principal: who }),
+  ],
   [
     "releaseInbox",
-    (n) => n.h.rt.releaseInbox(E, { topic: "t", messageId: "m" }, { principal: STRANGER }),
+    (n, who = STRANGER) =>
+      n.h.rt.releaseInbox(E, { topic: "t", messageId: "m" }, { principal: who }),
   ],
   [
     "recordOutcome",
-    (n) =>
-      n.h.rt.recordOutcome(
-        E,
-        { decisionId: "d", key: "k", success: true },
-        { principal: STRANGER }
-      ),
+    (n, who = STRANGER) =>
+      n.h.rt.recordOutcome(E, { decisionId: "d", key: "k", success: true }, { principal: who }),
   ],
 ];
 const transformCalls: unknown[] = [];
@@ -220,87 +267,148 @@ async function sealedWorld() {
   };
 }
 
-/** Run every op as the stranger against `subject` and the ordinary `baseline`; demand identity. */
+type World = { inner: InMemoryAsyncEventStore; n: Node };
+
+/**
+ * One op as the stranger against `subject` and the ordinary `baseline`; demand identity.
+ * `auditSkipped`: the ops whose best-effort EXECUTION_DENIED is skipped (nothing appended) because
+ * the subject's fold is unreadable, where the baseline appends its fact.
+ */
 async function expectIndistinguishable(
-  subject: { inner: InMemoryAsyncEventStore; n: Node },
-  baseline: { inner: InMemoryAsyncEventStore; n: Node }
+  name: string,
+  call: (n: Node) => Promise<unknown>,
+  subject: World,
+  baseline: World,
+  auditSkipped: ReadonlySet<string>
 ) {
-  for (const [name, call] of OPS) {
-    subject.n.denied.length = 0;
-    baseline.n.denied.length = 0;
-    transformCalls.length = 0;
-    const beforeSubject = await kindsOf(subject.inner);
-    const beforeBaseline = await kindsOf(baseline.inner);
-    const want = await rejection(call(baseline.n));
-    const got = await rejection(call(subject.n));
-    expect(want, `${name}: the ordinary execution refuses`).toBeInstanceOf(Error);
-    expect(nameOf(want), `${name}: the baseline is the authorizer's denial`).toBe(
-      "ExecutionDeniedError"
-    );
-    expect(got, `${name}: refuses`).toBeInstanceOf(Error);
-    expect(shape(got), name).toEqual(shape(want));
-    expect(subject.n.denied, name).toEqual(baseline.n.denied);
-    expect(transformCalls, `${name}: the caller's code never saw the recorded input`).toEqual([]);
-    // nothing but the best-effort EXECUTION_DENIED audit of a write op (resume / cancel) is added
-    const added = (await kindsOf(subject.inner)).slice(beforeSubject.length);
-    expect(
-      added.every((k) => k === "EXECUTION_DENIED"),
-      `${name}: only audit facts may be appended, got ${added.join(",")}`
-    ).toBe(true);
-    if (!["resume", "resumeAs", "cancel"].includes(name)) expect(added, name).toEqual([]);
-    const addedBase = (await kindsOf(baseline.inner)).slice(beforeBaseline.length);
-    expect(addedBase.every((k) => k === "EXECUTION_DENIED")).toBe(true);
-  }
+  transformCalls.length = 0;
+  const beforeSubject = await kindsOf(subject.inner);
+  const beforeBaseline = await kindsOf(baseline.inner);
+  const want = await rejection(call(baseline.n));
+  const got = await rejection(call(subject.n));
+  expect(want, `${name}: the ordinary execution refuses`).toBeInstanceOf(Error);
+  expect(nameOf(want), `${name}: the baseline is the authorizer's denial`).toBe(
+    "ExecutionDeniedError"
+  );
+  expect(got, `${name}: refuses`).toBeInstanceOf(Error);
+  expect(shape(got), name).toEqual(shape(want));
+  // the audit callback too, workflow id included
+  expect(subject.n.denied, name).toEqual(baseline.n.denied);
+  expect(transformCalls, `${name}: the caller's code never saw the recorded input`).toEqual([]);
+  const added = (await kindsOf(subject.inner)).slice(beforeSubject.length);
+  const addedBase = (await kindsOf(baseline.inner)).slice(beforeBaseline.length);
+  const writesAudit = ["resume", "resumeAs", "cancel"].includes(name);
+  const skipped = auditSkipped.has(name);
+  // a read or an inbox/outcome/fence op appends NOTHING; a write op only its audit fact
+  expect(addedBase, `${name}: baseline appends`).toEqual(writesAudit ? ["EXECUTION_DENIED"] : []);
+  expect(added, `${name}: appended events`).toEqual(skipped ? [] : addedBase);
+}
+
+/**
+ * [world name, subject factory, baseline factory, ops whose audit fact is skipped (unreadable fold)].
+ * The baseline is the ordinary execution the world must be indistinguishable from.
+ */
+const RESUME_ONLY: ReadonlySet<string> = new Set(["resume", "resumeAs"]);
+const AUDITING_OPS: ReadonlySet<string> = new Set(["resume", "resumeAs", "cancel"]);
+const WORLDS: Array<[string, () => Promise<World>, () => Promise<World>, ReadonlySet<string>]> = [
+  // shreddedWorld(false): the recorded principal is PLAINTEXT, so sequence 0 reads fine and the owner
+  // is known: the ordinary comparison is an execution OWNED by `OWNER` (another tenant's denial).
+  // `cancel` folds the REDACTED view (an erased owner is still cancellable), so it keeps its audit fact;
+  // `resume` / `resumeAs` fold strictly and skip it.
+  [
+    "crypto-shredded, principal plaintext",
+    () => shreddedWorld(false),
+    () => plainWorld(OWNER),
+    RESUME_ONLY,
+  ],
+  // shreddedWorld(true): the principal is sealed and shredded too: the owner is UNKNOWN, so the
+  // comparison is an execution started with no principal (the unknown-owner denial).
+  [
+    "crypto-shredded, principal sealed",
+    () => shreddedWorld(true),
+    () => plainWorld(undefined),
+    RESUME_ONLY,
+  ],
+  [
+    "sealed stream this node cannot open",
+    () => sealedWorld(),
+    () => plainWorld(undefined),
+    AUDITING_OPS,
+  ],
+  [
+    "checkpoint key unavailable",
+    keyUnavailableCheckpointWorld,
+    () => plainWorld(OWNER),
+    AUDITING_OPS,
+  ],
+  ["checkpoint of another identity", foreignCheckpointWorld, () => plainWorld(OWNER), AUDITING_OPS],
+];
+
+async function keyUnavailableCheckpointWorld(): Promise<World> {
+  const plain = await plainWorld(OWNER);
+  const rawSnaps = new InMemoryAsyncSnapshotStore();
+  const broken: SnapshotStore = {
+    ...rawSnaps,
+    save: (s: never) => rawSnaps.save(s),
+    loadLatest: async () => {
+      throw new KeyUnavailableError("alice", E, "secret");
+    },
+    loadAt: async () => null,
+    loadLatestBefore: async () => null,
+    close: async () => {},
+  } as never;
+  // the same plaintext log, read through a node whose checkpoint store throws on every load
+  return { inner: plain.inner, n: node(plain.inner, broken) };
+}
+
+async function foreignCheckpointWorld(): Promise<World> {
+  const plain = await plainWorld(OWNER);
+  const snaps = new InMemoryAsyncSnapshotStore();
+  // a checkpoint for E whose recorded identity names a DIFFERENT execution
+  await snaps.save({
+    executionId: E,
+    sequence: 1,
+    state: { executionId: "someone-else", workflowId: "secret", workflowVersion: "1.0.0" },
+  } as never);
+  return { inner: plain.inner, n: node(plain.inner, snaps) };
 }
 
 describe("a denied caller learns nothing from the state of the log", () => {
-  it("a crypto-shredded execution (checkpoint and steps sealed) reads as an ordinary denial", async () => {
-    await expectIndistinguishable(await shreddedWorld(false), await plainWorld(OWNER));
-  });
+  for (const [world, subject, baseline, auditSkipped] of WORLDS) {
+    describe(world, () => {
+      for (const [name, call] of OPS) {
+        it(`${name} reads as the ordinary denial`, async () => {
+          await expectIndistinguishable(
+            name,
+            call,
+            await subject(),
+            await baseline(),
+            auditSkipped
+          );
+        });
+      }
+    });
+  }
+});
 
-  it("a shredded execution whose RECORDED PRINCIPAL is sealed too: the unknown-owner denial", async () => {
-    // the owner is unreadable, so the ordinary comparison is an execution started with no principal
-    await expectIndistinguishable(await shreddedWorld(true), await plainWorld(undefined));
-  });
-
-  it("a sealed stream this node cannot open reads as an ordinary unknown-owner denial", async () => {
-    await expectIndistinguishable(await sealedWorld(), await plainWorld(undefined));
-  });
-
-  it("a checkpoint whose key is unavailable (no tombstone) reads as an ordinary denial", async () => {
-    const plain = await plainWorld(OWNER);
-    const rawSnaps = new InMemoryAsyncSnapshotStore();
-    const broken: SnapshotStore = {
-      ...rawSnaps,
-      save: (s: never) => rawSnaps.save(s),
-      loadLatest: async () => {
-        throw new KeyUnavailableError("alice", E, "secret");
-      },
-      loadAt: async () => null,
-      loadLatestBefore: async () => null,
-      close: async () => {},
-    } as never;
-    const inner = plain.inner;
-    // the same plaintext log, read through a node whose checkpoint store throws on every load
-    await expectIndistinguishable({ inner, n: node(inner, broken) }, await plainWorld(OWNER));
-  });
-
-  it("a checkpoint recording another execution's identity reads as an ordinary denial", async () => {
-    const plain = await plainWorld(OWNER);
-    const snaps = new InMemoryAsyncSnapshotStore();
-    const writer = build({ snapshotEvery: 1 }, { eventStore: plain.inner, snapshotStore: snaps });
-    const f = secret();
-    writer.rt.registerFlow(f.definition, f.runner);
-    // a checkpoint for E whose recorded identity names a DIFFERENT execution
-    await snaps.save({
-      executionId: E,
-      sequence: 1,
-      state: { executionId: "someone-else", workflowId: "secret", workflowVersion: "1.0.0" },
-    } as never);
-    await expectIndistinguishable(
-      { inner: plain.inner, n: node(plain.inner, snaps) },
-      await plainWorld(OWNER)
-    );
+describe("the denial REASON still tells an unknown owner from an owned execution (documented residual)", () => {
+  // ADR 0039 amendment, "Reason oracle": the error CLASS, message shape, callback and appended events
+  // of a shredded / sealed / unreadable execution are the ordinary denial's. The REASON TEXT is the
+  // policy's own and is not redesigned: an execution whose owner is unknown (erased principal, sealed
+  // stream, legacy log) is refused with UNKNOWN_OWNER_REASON, an execution with a recorded owner of
+  // another tenant with "belongs to another tenant". This test PINS that difference.
+  it("a stranger is told 'owner unknown' for an erased principal and 'another tenant' for an owned one", async () => {
+    const erased = await shreddedWorld(true);
+    const owned = await plainWorld(OWNER);
+    const loadState = OPS.find(([name]) => name === "loadState")![1];
+    const a = await rejection(loadState(erased.n));
+    const b = await rejection(loadState(owned.n));
+    expect(nameOf(a)).toBe("ExecutionDeniedError");
+    expect(nameOf(b)).toBe("ExecutionDeniedError");
+    expect((a as { reason?: unknown }).reason).toBe(UNKNOWN_OWNER_REASON);
+    expect((b as { reason?: unknown }).reason).toBe("the execution belongs to another tenant");
+    // everything but the reason (and so the message that quotes it) is the same
+    expect(Object.keys(a as object).sort()).toEqual(Object.keys(b as object).sort());
   });
 });
 
@@ -374,5 +482,373 @@ describe("resumeAs hands the recorded input to the caller code only once authori
     const err = await rejection(resumeAs(w.n));
     expect(nameOf(err)).toBe("ExecutionDeniedError");
     expect(transformCalls).toEqual([]);
+  });
+});
+
+/** Count the reads a node makes of a store, by kind (sequence-0 point reads apart from other ranges). */
+function counted(inner: EventStore) {
+  const counts = { read: 0, readFrom: 0, seq0: 0, otherRange: 0, loadLatest: 0 };
+  const store = new Proxy(inner, {
+    get(target, prop, receiver) {
+      const v = Reflect.get(target, prop, receiver);
+      if (typeof v !== "function") return v;
+      return (...args: unknown[]) => {
+        if (prop === "read") counts.read++;
+        if (prop === "readFrom") counts.readFrom++;
+        if (prop === "readRange") {
+          if (args[1] === 0 && args[2] === 0) counts.seq0++;
+          else counts.otherRange++;
+        }
+        return (v as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  }) as unknown as EventStore;
+  const reset = () => {
+    counts.read = counts.readFrom = counts.seq0 = counts.otherRange = counts.loadLatest = 0;
+  };
+  return { store, counts, reset };
+}
+
+describe("an authorized call makes no more sequence-0 reads than before the verdict moved first", () => {
+  // The verdict needs sequence 0 BEFORE the fold, so it is ONE indexed point read; every path then
+  // reuses that envelope instead of reading it again. Counts are deterministic (a counting proxy over
+  // the in-memory store); the expected numbers are those of the PRE-change runtime (949a0667) on the
+  // same script, measured with this very test, so "no more than before" is a hard-coded comparison:
+  //   loadState (snapshot present)      before: 2 (the fold's existence anchor + the owner read) -> 1
+  //   resume, CARRIED stray scanner     before: 1 (the carried path's own read of sequence 0) -> 1
+  //   resume, first (uncarried) call    before: 0 (the full read supplies sequence 0) -> now 1: the
+  //                                     inherent cost of a verdict that precedes the full read
+  //   resumeAs                          before: 0 (same) -> now 1, same reason (it reads the whole log)
+  const twice = () =>
+    flow("secret", async (ctx) => {
+      await ctx.run(echo, { ssn: SECRET });
+      await ctx.suspend({ on: "Go" });
+      await ctx.suspend({ on: "Go2" });
+      return null;
+    });
+
+  async function script() {
+    const c = counted(new InMemoryAsyncEventStore());
+    const n = node(c.store, new InMemoryAsyncSnapshotStore(), { snapshotEvery: 1 }, twice);
+    await (await n.h.rt.start(n.f, {}, { executionId: E, principal: OWNER })).waitForSuspend();
+    return { c, n };
+  }
+
+  it("loadState: one sequence-0 read where there were two", async () => {
+    const { c, n } = await script();
+    c.reset();
+    await n.h.rt.loadState(E, { principal: OWNER });
+    // before: { read: 0, readFrom: 1, seq0: 2 }. The verdict's anchor is handed to the fold, which
+    // used to re-read it as its existence check, and to the owner lookup.
+    expect(c.counts).toEqual({ read: 0, readFrom: 1, seq0: 1, otherRange: 0, loadLatest: 0 });
+  });
+
+  it("resume: the carried (hot) path reads sequence 0 once, as before; the first call pays one point read", async () => {
+    const { c, n } = await script();
+    c.reset();
+    const h1 = await n.h.rt.resume(E, { eventType: "Go", payload: null }, { principal: OWNER });
+    await h1.waitForSuspend();
+    // before: { read: 1, readFrom: 1, seq0: 0 }; the only addition is the verdict's point read
+    expect(c.counts).toEqual({ read: 1, readFrom: 1, seq0: 1, otherRange: 0, loadLatest: 0 });
+    c.reset();
+    const h2 = await n.h.rt.resume(E, { eventType: "Go2", payload: null }, { principal: OWNER });
+    await h2.waitForCompletion?.();
+    // before: { read: 2, readFrom: 1, seq0: 1, otherRange: 1 }: the carried path's own read of
+    // sequence 0 is now the verdict's (`gated.first` is threaded into the scan), so the total is equal
+    expect(c.counts).toEqual({ read: 2, readFrom: 1, seq0: 1, otherRange: 1, loadLatest: 0 });
+  });
+});
+
+/** A store whose sequence-0 point read (the authorizer's anchor) fails while `fault.on` is set. */
+function faulty(inner: EventStore, fail: () => unknown) {
+  const fault = { on: false };
+  const store = new Proxy(inner, {
+    get(target, prop, receiver) {
+      const v = Reflect.get(target, prop, receiver);
+      if (typeof v !== "function") return v;
+      return (...args: unknown[]) => {
+        if (fault.on && prop === "readRange" && args[1] === 0 && args[2] === 0) {
+          return Promise.reject(fail());
+        }
+        return (v as (...a: unknown[]) => unknown).apply(target, args);
+      };
+    },
+  }) as unknown as EventStore;
+  return { store, fault };
+}
+
+describe("a sequence-0 read that fails for a reason that is not an erasure is retryable, never a denial", () => {
+  const CAUSE = "ECONNRESET db-primary.internal:5432 (tenant t1, workflow secret)";
+
+  async function faultyWorld() {
+    const inner = new InMemoryAsyncEventStore();
+    const f = faulty(inner, () => new Error(CAUSE));
+    const reports: unknown[] = [];
+    const n = node(f.store, undefined, {
+      onStorageError: (_id: string, e: unknown) => reports.push(e),
+    });
+    await (await n.h.rt.start(n.f, {}, { executionId: E, principal: OWNER })).waitForSuspend();
+    return { inner, f, n, reports };
+  }
+
+  for (const [name, call] of OPS) {
+    it(`${name}: the owner and a stranger get the SAME sanitized retryable error`, async () => {
+      const w = await faultyWorld();
+      const before = await kindsOf(w.inner);
+      w.f.fault.on = true;
+      const owner = await rejection(call(w.n, OWNER));
+      const stranger = await rejection(call(w.n, STRANGER));
+      w.f.fault.on = false;
+      expect(nameOf(owner), "owner").toBe("ExecutionStoreUnavailableError");
+      expect(owner).toBeInstanceOf(ExecutionStoreUnavailableError);
+      expect((owner as { retryable?: unknown }).retryable).toBe(true);
+      expect(shape(stranger)).toEqual(shape(owner));
+      // no execution-derived detail, no cause, nothing of the fault
+      for (const e of [owner, stranger]) {
+        expect(Object.keys(e as object).sort()).toEqual(["executionId", "name", "op", "retryable"]);
+        expect((e as Error).message).not.toContain("ECONNRESET");
+        expect((e as Error).message).not.toContain("secret");
+        expect((e as { cause?: unknown }).cause).toBeUndefined();
+      }
+      // not a denial: no audit callback, no EXECUTION_DENIED, nothing appended, no caller code run
+      expect(w.n.denied).toEqual([]);
+      expect(await kindsOf(w.inner)).toEqual(before);
+      expect(transformCalls).toEqual([]);
+      // the operator channel gets the real cause
+      expect(w.reports.map((r) => (r as Error).message)).toContain(CAUSE);
+    });
+  }
+
+  it("a missing id under a storage fault is NOT judged to exist (and not denied): retryable", async () => {
+    const w = await faultyWorld();
+    w.f.fault.on = true;
+    const err = await rejection(w.n.h.rt.loadState("never-started", { principal: OWNER }));
+    expect(nameOf(err)).toBe("ExecutionStoreUnavailableError");
+    w.f.fault.on = false;
+    expect(await w.n.h.rt.loadState("never-started", { principal: OWNER })).toBeNull();
+  });
+
+  it("the same owner succeeds once the fault clears", async () => {
+    const w = await faultyWorld();
+    w.f.fault.on = true;
+    await rejection(w.n.h.rt.loadState(E, { principal: OWNER }));
+    w.f.fault.on = false;
+    expect((await w.n.h.rt.loadState(E, { principal: OWNER }))?.status).toBe("suspended");
+  });
+
+  describe("KeyUnavailableError at sequence 0", () => {
+    // Through the runtime's real stack the seal guard (in front of every read) turns a
+    // KeyUnavailableError into the denial-shaped sealed refusal (ADR 0130 D7), so the owner and a
+    // stranger get the unknown-owner denial and `readAnchor` never sees the raw error.
+    it("through the seal guard it is the sealed, denial-shaped refusal (unchanged)", async () => {
+      const inner = new InMemoryAsyncEventStore();
+      const f = faulty(inner, () => new KeyUnavailableError("alice", E, "secret"));
+      const n = node(f.store);
+      await (await n.h.rt.start(n.f, {}, { executionId: E, principal: OWNER })).waitForSuspend();
+      f.fault.on = true;
+      for (const who of [OWNER, STRANGER]) {
+        const err = await rejection(n.h.rt.loadState(E, { principal: who }));
+        expect(nameOf(err)).toBe("ExecutionDeniedError");
+        expect(isSealedUnreadable(err)).toBe(true);
+      }
+    });
+
+    // The defensive branch of `readAnchor` (a raw KeyUnavailableError reaching it, e.g. a future
+    // store layering that bypasses the guard): reached by swapping the runtime's store for the raw one.
+    const rawThrowing = (err: unknown): EventStore =>
+      ({
+        readRange: async () => {
+          throw err;
+        },
+        read: async () => {
+          throw err;
+        },
+        readFrom: async () => {
+          throw err;
+        },
+      }) as never;
+    const pending = (subjectId: string): EventEnvelope =>
+      ({
+        id: `${E}-0`,
+        workflowId: "secret",
+        executionId: E,
+        eventType: "ERASURE_PENDING",
+        sequence: 0,
+        timestamp: 0,
+        payload: { subjectId },
+      }) as never;
+
+    it("WITHOUT erasure proof it is retryable (the owner is not denied)", async () => {
+      for (const err of [
+        new KeyUnavailableError("alice", E, "secret"),
+        new KeyUnavailableError("alice", E, "secret", [pending("someone-else")]),
+      ]) {
+        const n = node(new InMemoryAsyncEventStore());
+        (n.h.rt as unknown as { eventStore: EventStore }).eventStore = rawThrowing(err);
+        const owner = await rejection(n.h.rt.loadState(E, { principal: OWNER }));
+        const stranger = await rejection(n.h.rt.loadState(E, { principal: STRANGER }));
+        expect(nameOf(owner)).toBe("ExecutionStoreUnavailableError");
+        expect(shape(stranger)).toEqual(shape(owner));
+        expect(n.denied).toEqual([]);
+      }
+    });
+
+    it("WITH the erase intent proven it is the unreadable (unknown-owner) path, workflow id from the redacted view", async () => {
+      const n = node(new InMemoryAsyncEventStore());
+      (n.h.rt as unknown as { eventStore: EventStore }).eventStore = rawThrowing(
+        new KeyUnavailableError("alice", E, "secret", [pending("alice")])
+      );
+      // a denied cancel: the audit callback carries the plaintext workflow id
+      const err = await rejection(n.h.rt.cancel(E, "x", { principal: STRANGER }));
+      expect(nameOf(err)).toBe("ExecutionDeniedError");
+      expect((err as { reason?: unknown }).reason).toBe(UNKNOWN_OWNER_REASON);
+      expect(n.denied.map((d) => d.workflowId)).toEqual(["secret"]);
+    });
+  });
+
+  describe("the workflow id of an unreadable sequence 0", () => {
+    const view = (workflowId: string): EventEnvelope[] =>
+      [
+        {
+          id: `${E}-0`,
+          workflowId,
+          executionId: E,
+          eventType: "EXECUTION_STARTED",
+          sequence: 0,
+          timestamp: 0,
+          payload: {},
+        },
+      ] as never;
+    const shredded = (redacted?: EventEnvelope[]) => new PayloadShreddedError("alice", E, redacted);
+
+    async function denyCancel(err: unknown) {
+      const n = node(new InMemoryAsyncEventStore());
+      (n.h.rt as unknown as { eventStore: EventStore }).eventStore = {
+        readRange: async () => {
+          throw err;
+        },
+      } as never;
+      const r = await rejection(n.h.rt.cancel(E, "x", { principal: STRANGER }));
+      expect(nameOf(r)).toBe("ExecutionDeniedError");
+      return n.denied.map((d) => d.workflowId);
+    }
+
+    it("is the envelope's plaintext column, read from the redacted view the erasure error carries", async () => {
+      expect(await denyCancel(shredded(view("secret")))).toEqual(["secret"]);
+    });
+
+    it("is the empty string only for a third-party decorator whose erasure error carries no view (documented)", async () => {
+      expect(await denyCancel(shredded(undefined))).toEqual([""]);
+    });
+  });
+});
+
+describe("an AUTHORIZED caller keeps the old error where the verdict alone lets it through", () => {
+  // `unknownOwner: "allow"` admits an execution whose principal is erased. acquireFence and fork used
+  // to throw PayloadShreddedError there (they read sequence 0 unguarded); they still do.
+  const allow = {
+    executionAuthorizer: executionAccessPolicy({ ...POLICY, unknownOwner: "allow" }),
+  };
+
+  async function erasedWorld() {
+    const inner = new InMemoryAsyncEventStore();
+    const keys = new InMemoryKeyStore();
+    const events = new EncryptingEventStore(inner, keys, {
+      sensitive: { STEP_COMPLETED: ["output"], EXECUTION_STARTED: PRINCIPAL_PATHS },
+    });
+    const opts = { principalIdentity: "encrypted", ...allow };
+    const w = node(events, undefined, opts);
+    await (await w.h.rt.start(w.f, {}, { executionId: E, principal: OWNER })).waitForSuspend();
+    await shredSubject(keys, inner, E, { snapshotStore: { loadLatest: async () => null } });
+    return node(events, undefined, opts);
+  }
+
+  it("acquireFence", async () => {
+    const n = await erasedWorld();
+    expect(nameOf(await rejection(n.h.rt.acquireFence(E, { principal: OWNER })))).toBe(
+      "PayloadShreddedError"
+    );
+  });
+
+  it("fork", async () => {
+    const n = await erasedWorld();
+    expect(nameOf(await rejection(n.h.rt.fork(E, 1, { principal: OWNER })))).toBe(
+      "PayloadShreddedError"
+    );
+  });
+});
+
+describe("a 'missing' id never shows what an ORPHAN checkpoint would say", () => {
+  // A retention sweep against a snapshot store without `deleteExecution` leaves a checkpoint behind
+  // for an id with no log. Its load can fail (corrupt, key gone). A caller the authorizer is asked
+  // about must get what any missing id gets; the kernel's system grant keeps the real error.
+  const BOOM = "orphan checkpoint exploded";
+  const orphanNode = () => {
+    const raw = new InMemoryAsyncSnapshotStore();
+    const broken: SnapshotStore = {
+      ...raw,
+      save: (s: never) => raw.save(s),
+      loadLatest: async (id: string) => {
+        if (id === "orphan") throw new Error(BOOM);
+        return null;
+      },
+      loadAt: async () => null,
+      loadLatestBefore: async () => null,
+      close: async () => {},
+    } as never;
+    return node(new InMemoryAsyncEventStore(), broken);
+  };
+  const same = (a: unknown, b: unknown, ida: string, idb: string) => {
+    const sa = shape(a);
+    const sb = shape(b);
+    return {
+      a: {
+        ...sa,
+        message: sa.message.replaceAll(ida, "ID"),
+        executionId: sa.executionId === ida ? "ID" : sa.executionId,
+      },
+      b: {
+        ...sb,
+        message: sb.message.replaceAll(idb, "ID"),
+        executionId: sb.executionId === idb ? "ID" : sb.executionId,
+      },
+    };
+  };
+
+  it("loadState: an identified caller gets null, as for a truly missing id", async () => {
+    const n = orphanNode();
+    expect(await n.h.rt.loadState("orphan", { principal: STRANGER })).toBeNull();
+    expect(await n.h.rt.loadState("nope", { principal: STRANGER })).toBeNull();
+  });
+
+  it("loadState: an anonymous caller (strict) gets the same denial for an orphan and a missing id", async () => {
+    const n = orphanNode();
+    const a = await rejection(n.h.rt.loadState("orphan", {}));
+    const b = await rejection(n.h.rt.loadState("nope", {}));
+    expect(nameOf(a)).toBe("ExecutionDeniedError");
+    const s = same(a, b, "orphan", "nope");
+    expect(s.a).toEqual(s.b);
+    expect(String((a as Error).message)).not.toContain(BOOM);
+  });
+
+  it("resume: the same not-found for an orphan and a missing id", async () => {
+    const n = orphanNode();
+    const go = (id: string, who: Who | undefined) =>
+      rejection(
+        n.h.rt.resume(id, { eventType: "Go", payload: null }, who ? { principal: who } : {})
+      );
+    for (const who of [STRANGER, undefined]) {
+      const a = await go("orphan", who);
+      const b = await go("nope", who);
+      const s = same(a, b, "orphan", "nope");
+      expect(s.a).toEqual(s.b);
+      expect(String((a as Error).message)).not.toContain(BOOM);
+    }
+  });
+
+  it("the kernel's system grant keeps the real checkpoint error", async () => {
+    const n = orphanNode();
+    const err = await rejection(n.h.rt.loadState("orphan", n.h.rt.systemOptions()));
+    expect((err as Error).message).toBe(BOOM);
   });
 });

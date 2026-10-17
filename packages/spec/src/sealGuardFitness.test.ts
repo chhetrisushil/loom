@@ -251,8 +251,9 @@ describe("the opaque quarantine read is reachable only from the quarantine verbs
     expect(callers.length).toBeGreaterThan(0);
     for (const c of callers) expect(allowed.has(c), c).toBe(true);
     expect(new Set(callers)).toEqual(allowed);
-    // a second `foldState` argument (the verb) is passed only in the verbs' own paths
-    const verbArgs = [...src.matchAll(/this\.foldState\(\s*[\w.!]+\s*,\s*([^)]+)\)/g)].map((m) =>
+    // a second `foldState` argument (the verb) is passed only in the verbs' own paths (a third, the
+    // authorizer's already-read sequence 0, passes `undefined` here: no verb)
+    const verbArgs = [...src.matchAll(/this\.foldState\(\s*[\w.!]+\s*,\s*([^,)]+)[,)]/g)].map((m) =>
       (m[1] ?? "").trim()
     );
     expect(verbArgs.length).toBeGreaterThan(0);
@@ -261,6 +262,7 @@ describe("the opaque quarantine read is reachable only from the quarantine verbs
         "verb",
         "logFoldFor",
         "opts.logFoldFor",
+        "undefined",
         '"releaseInbox"',
         '"quarantineInbox"',
       ]).toContain(a);

@@ -17,7 +17,9 @@ import {
   RESERVED_STREAM_PREFIX,
   hasInboxStreamShape,
   inboxChainOf,
+  isKeyUnavailable,
   isReservedStream,
+  recordsErasureIntent,
 } from "@loom/event-runtime";
 import {
   QUARANTINE_STREAM_PREFIX,
@@ -179,6 +181,7 @@ import {
   ExecutionCancelledError,
   ExecutionDeniedError,
   ExecutionNotTerminalError,
+  ExecutionStoreUnavailableError,
   FlowCodeMismatchError,
   FlowMigrationCheckError,
   FlowReplayDivergenceError,
@@ -1435,6 +1438,28 @@ export class WorkflowRuntime {
   }
 
   /**
+   * {@link ownerForAuthz} for an op that has no anchor in hand (a live `cancel`, `restoreFromState`):
+   * sequence 0 is read through {@link readAnchor}, so a storage fault is the sanitized retryable
+   * {@link ExecutionStoreUnavailableError} instead of `ownerForAuthz`'s catch-all "unknown owner"
+   * (which would deny the legitimate owner). A live start's own record (not yet journalled) is used
+   * as before, with no read.
+   */
+  private async ownerAtAnchor(
+    op: ExecutionOp,
+    executionId: string,
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined
+  ): Promise<AuthzOwners> {
+    if (!this.authzApplies(principal, system) || this.startRecords.has(executionId)) {
+      return this.ownerForAuthz(executionId, principal, system);
+    }
+    const anchor = await this.readAnchor(op, executionId);
+    return anchor.unreadable
+      ? this.ownerForAuthz(executionId, principal, system)
+      : this.ownerForAuthz(executionId, principal, system, { first: anchor.first });
+  }
+
+  /**
    * ADR 0130 residuals D7 - run a public op and turn a stream-level seal refusal into the
    * DENIAL-SHAPED error of THAT op: `onExecutionDenied` fires with the generic reason, the operator
    * channel gets the real cause (first then every 16th), and NOTHING is appended (no
@@ -1468,7 +1493,8 @@ export class WorkflowRuntime {
           {
             op,
             executionId,
-            workflowId: "",
+            // the plaintext workflow id the refusal carries (`""` only if the store gave none)
+            workflowId: sealedDetailOf(err)?.workflowId ?? "",
             ...(principal !== undefined && { principal }),
           },
           reason
@@ -1679,14 +1705,25 @@ export class WorkflowRuntime {
   /**
    * Sequence 0, read for the AUTHORIZER and nothing else (the verdict comes BEFORE any fold). It is
    * the only data an authorization decision needs: the plaintext workflow id and the recorded
-   * principal. A sequence 0 this node cannot decode (a crypto-shredded principal under a strict
-   * store, a decrypt or storage fault) is `unreadable`: it still EXISTS, its workflow id is taken
-   * from the redacted view the error carries when there is one (else `""`), and its owner is
-   * unknown, so the policy decides exactly as for any unknown-owner execution and the caller never
-   * sees a status-revealing error. A stream-level SEAL refusal propagates: `sealedOp` turns it into
-   * the denial-shaped refusal of the op (ADR 0130 residuals D7).
+   * principal. A sequence 0 this node cannot decode BECAUSE OF AN ERASURE is `unreadable`: a
+   * `PayloadShreddedError` (a crypto-shredded principal under a strict store), or a
+   * `KeyUnavailableError` whose redacted view records the erase intent (the ShredIncomplete window).
+   * It still EXISTS: its workflow id is the envelope's plaintext column, taken from the redacted view
+   * the error carries (else the error's own `workflowId`, else `""` for a third-party decorator that
+   * carries neither), and its owner is unknown, so the policy decides exactly as for any
+   * unknown-owner execution and the caller never sees a status-revealing error.
+   *
+   * ANY OTHER failure (a storage fault, a key service blip, a `KeyUnavailableError` without the
+   * erasure intent) is NOT evidence about the execution: it propagates as the sanitized, retryable
+   * {@link ExecutionStoreUnavailableError} (identical for the owner and a stranger, no detail; the
+   * real cause goes to `onStorageError`). Judging it "unreadable" would deny the legitimate owner
+   * with a false denial and report a missing id as existing. A stream-level SEAL refusal propagates
+   * untouched: `sealedOp` turns it into the denial-shaped refusal of the op (ADR 0130 residuals D7).
    */
-  private async readAnchor(executionId: string): Promise<{
+  private async readAnchor(
+    op: ExecutionOp,
+    executionId: string
+  ): Promise<{
     first: EventEnvelope | undefined;
     unreadable: boolean;
     workflowId: string;
@@ -1696,8 +1733,28 @@ export class WorkflowRuntime {
       return { first, unreadable: false, workflowId: first?.workflowId ?? "" };
     } catch (err) {
       if (isSealedUnreadable(err)) throw err;
-      const redacted = (err as { redacted?: readonly EventEnvelope[] } | null)?.redacted;
-      const workflowId = redacted?.find((e) => e.sequence === 0)?.workflowId;
+      const e = err as {
+        name?: unknown;
+        redacted?: readonly EventEnvelope[];
+        workflowId?: unknown;
+        subjectId?: unknown;
+      } | null;
+      const erased =
+        e?.name === "PayloadShreddedError" ||
+        (isKeyUnavailable(err) &&
+          recordsErasureIntent(
+            err.redacted ?? [],
+            typeof err.subjectId === "string" ? err.subjectId : undefined
+          ));
+      if (!erased) {
+        this.onStorageError?.(executionId, err);
+        throw new ExecutionStoreUnavailableError(op, executionId);
+      }
+      const view = e?.redacted;
+      const workflowId =
+        view?.find((x) => x.sequence === 0)?.workflowId ??
+        view?.[0]?.workflowId ??
+        (typeof e?.workflowId === "string" ? e.workflowId : undefined);
       return { first: undefined, unreadable: true, workflowId: workflowId ?? "" };
     }
   }
@@ -1725,7 +1782,7 @@ export class WorkflowRuntime {
     | undefined
   > {
     if (!this.authzApplies(principal, system)) return undefined;
-    const anchor = await this.readAnchor(executionId);
+    const anchor = await this.readAnchor(op, executionId);
     const missing = anchor.first === undefined && !anchor.unreadable;
     if (missing) return { ...anchor, missing, denial: undefined };
     const owners = anchor.unreadable
@@ -2709,7 +2766,7 @@ export class WorkflowRuntime {
     if (this.authzApplies(options?.principal, options?.system)) {
       // Sequence 0 only (see `readAnchor`): an unreadable one still EXISTS, so it is judged as the
       // op it enables with an unknown owner, never as a free id and never with a status-revealing error.
-      const anchor = await this.readAnchor(executionId);
+      const anchor = await this.readAnchor(options?.gateAs ?? "cancel", executionId);
       const workflowId = anchor.workflowId || undefined;
       const exists = anchor.unreadable || workflowId !== undefined;
       // `gateAs: "resume"` — a dispatcher fencing an EXISTING execution to RESUME it (not to kill
@@ -2740,6 +2797,10 @@ export class WorkflowRuntime {
           undefined
         );
       }
+      // An AUTHORIZED caller (no denial above) whose anchor was unreadable gets the very error it
+      // got before the authorizer moved first: re-read, so a fence is never taken on an erased
+      // execution just because `unknownOwner: "allow"` let the verdict through.
+      if (anchor.unreadable) await readRangeOf(this.eventStore, executionId, 0, 0);
     }
     return this.fenceOf(executionId);
   }
@@ -2894,7 +2955,7 @@ export class WorkflowRuntime {
           gate.workflowId,
           options?.principal,
           options?.system,
-          await this.ownerForAuthz(executionId, options?.principal, options?.system)
+          await this.ownerAtAnchor("cancel", executionId, options?.principal, options?.system)
         );
         if (cancelDenial !== undefined) {
           await this.denyOp(
@@ -3065,7 +3126,12 @@ export class WorkflowRuntime {
       preloadedState.workflowId,
       options?.principal,
       options?.system,
-      await this.ownerForAuthz(preloadedState.executionId, options?.principal, options?.system)
+      await this.ownerAtAnchor(
+        "resume",
+        preloadedState.executionId,
+        options?.principal,
+        options?.system
+      )
     );
     if (restoreDenial !== undefined) {
       await this.denyOp(
@@ -3579,7 +3645,19 @@ export class WorkflowRuntime {
         await this.denialTipOf(executionId)
       );
     }
-    const snapshot = await this.snapshotStore.loadLatest(executionId);
+    // The id has no sequence 0 (the authorizer judged it missing): whatever the checkpoint load or
+    // the read raises for it (an ORPHAN checkpoint) reads as not found, never as a status-revealing
+    // error. A caller the authorizer is not consulted for (`gated` undefined) keeps the real error.
+    const asNotFound = async <T>(read: () => Promise<T>): Promise<T> => {
+      if (gated?.missing !== true) return read();
+      try {
+        return await read();
+      } catch {
+        await this.denyMissing("resume", executionId, options?.principal, options?.system);
+        throw new Error(`No execution found for id: ${executionId}`);
+      }
+    };
+    const snapshot = await asNotFound(() => this.snapshotStore.loadLatest(executionId));
     let allEvents: EventEnvelope[] | undefined;
     let firstEvent: EventEnvelope | undefined;
     // Events the carried scanner has not seen yet (fast path only).
@@ -3613,7 +3691,8 @@ export class WorkflowRuntime {
         }
       }
       if (contiguous) {
-        firstEvent = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+        // The authorizer's anchor IS sequence 0 (read moments ago): no second point read.
+        firstEvent = gated?.first ?? (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
         if (firstEvent !== undefined) {
           scanTail = fresh;
           tailEvents = tail.filter((e) => e.sequence > snapshot.sequence);
@@ -3622,7 +3701,7 @@ export class WorkflowRuntime {
       if (firstEvent === undefined) this.strayScans.delete(executionId);
     }
     if (firstEvent === undefined) {
-      allEvents = await this.eventStore.read(executionId);
+      allEvents = await asNotFound(() => this.eventStore.read(executionId));
       firstEvent = allEvents[0];
     }
     if (firstEvent === undefined) {
@@ -6782,7 +6861,14 @@ export class WorkflowRuntime {
         await this.denialTipOf(executionId)
       );
     }
-    const allEvents = await this.eventStore.read(executionId);
+    // No sequence 0 at the gate: a read error for this "missing" id reads as not found (see `resume`).
+    let allEvents: EventEnvelope[];
+    try {
+      allEvents = await this.eventStore.read(executionId);
+    } catch (err) {
+      if (gated?.missing !== true) throw err;
+      allEvents = [];
+    }
     if (allEvents.length === 0) {
       await this.denyMissing("resume", executionId, options.principal, options.system);
       throw new Error(`No execution found for id: ${executionId}`);
@@ -7043,7 +7129,17 @@ export class WorkflowRuntime {
     if (verdict?.denial !== undefined) {
       throw new ExecutionDeniedError("query", executionId, verdict.denial.reason);
     }
-    const state = await this.foldState(executionId);
+    let state: ExecutionState | null;
+    try {
+      state = await this.foldState(executionId, undefined, verdict?.first);
+    } catch (err) {
+      // No sequence 0 at the gate: this id is "missing" to the authorizer, so whatever the fold
+      // raises for it (an ORPHAN checkpoint a sweep left behind: a foreign identity, a key-unavailable
+      // load) must not tell a caller the id once existed. It reads as not found. A caller the
+      // authorizer is not consulted for (the kernel's system grant) keeps the real error.
+      if (verdict?.missing !== true) throw err;
+      state = null;
+    }
     if (state === null) {
       await this.denyMissing("query", executionId, options?.principal, options?.system);
       return null;
@@ -7125,7 +7221,12 @@ export class WorkflowRuntime {
   private async foldState(
     executionId: string,
     /** ADR 0130 D9 / S5b: the quarantine verb folding for an operator; see {@link foldFromCompleteLog}. */
-    logFoldFor?: QuarantineVerb
+    logFoldFor?: QuarantineVerb,
+    /**
+     * Sequence 0, when the caller already read it (the authorizer's anchor): spares the existence
+     * point read on the snapshot path. `undefined` = read it here, as always.
+     */
+    knownAnchor?: EventEnvelope
   ): Promise<ExecutionState | null> {
     // ADR 0107 — `""` is no execution, whatever a pre-0106 bug left in its stream.
     if (executionId === "") return null;
@@ -7145,7 +7246,10 @@ export class WorkflowRuntime {
     if (snapshot !== null) {
       // Confirm the execution still exists before trusting the snapshot (orphan case
       // above). One row, not the log.
-      const anchor = await readRangeOf(this.eventStore, executionId, 0, 0);
+      const anchor =
+        knownAnchor !== undefined
+          ? [knownAnchor]
+          : await readRangeOf(this.eventStore, executionId, 0, 0);
       if (anchor.length === 0) return null;
       const tail = await reads.readFrom(executionId, snapshot.sequence + 1);
       const folded = new ReplayVM(
@@ -7298,7 +7402,7 @@ export class WorkflowRuntime {
     // beyond sequence 0 or written. Both used to be skipped. Sequence 0 only (see `readAnchor`): an
     // unreadable one still EXISTS and is judged with an unknown owner.
     if (this.authzApplies(opts?.principal, opts?.system)) {
-      const anchor = await this.readAnchor(parentExecutionId);
+      const anchor = await this.readAnchor("query", parentExecutionId);
       const parentWorkflowId = anchor.workflowId || undefined;
       if (parentWorkflowId === undefined && !anchor.unreadable) {
         await this.denyMissing("query", parentExecutionId, opts?.principal, opts?.system);
@@ -7365,6 +7469,9 @@ export class WorkflowRuntime {
             );
           }
         }
+        // An AUTHORIZED caller (every verdict above passed, e.g. `unknownOwner: "allow"`) whose
+        // anchor was unreadable gets the very error it got before the authorizer moved first.
+        if (anchor.unreadable) await readRangeOf(this.eventStore, parentExecutionId, 0, 0);
       }
     }
     if (opts?.executionId !== undefined) await this.assertCreatable(opts.executionId);
