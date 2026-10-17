@@ -1,6 +1,7 @@
 import { pascal } from "@loom/scaffold";
 import type { AppModel } from "./appModel";
 import { parseIntent } from "./parseIntent";
+import { newIdSlug, existingIdSlug as slug } from "./slug";
 import type { CapabilitySpec, ComputeSpec, ReasoningSpec } from "./types";
 
 // ── ChangeSpec: AppSpec extended with brownfield ops ─────────────────────────
@@ -44,15 +45,6 @@ export interface ChangeSpec {
   planner: "deterministic" | "model";
   /** Reasoning-ladder elevations taken while planning (mirrors DECISION_RECORDED). */
   elevations?: { from: string; to: string; reason: string }[];
-}
-
-function slug(text: string): string {
-  return (
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "app"
-  );
 }
 
 /**
@@ -158,7 +150,8 @@ export function planChangesDeterministic(intent: string, appModel: AppModel): Ch
         .split(/\s*(?:,|and)\s*/)
         .map(slug)
         .filter((t) => t.length > 0);
-      const capId = slug(m[2]);
+      const legacyCap = slug(m[2]);
+      const capId = byId.has(legacyCap) ? legacyCap : newIdSlug(m[2]);
       const c = ensureCap(capId, byId.has(capId) ? "extend" : "create", s);
       c.wireGrants = [...(c.wireGrants ?? []), ...tools];
     }

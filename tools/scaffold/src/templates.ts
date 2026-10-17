@@ -1,19 +1,19 @@
-import { generateRegistration, pascal } from "./codegen";
-import { markdownText } from "./emit";
+import { generateRegistration, pascalIdent } from "./codegen";
+import { markdownText, tsStringLiteral } from "./emit";
 import { type FlowTemplate, templateFiles } from "./flowTemplates";
 
 // ── Per-file templates (used by `loom new`, following the folder convention) ──
 
 /** `app/flows/<name>/flow.ts` — a self-contained echo flow. */
 export function flowFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { flow$, handler$, step$ } from "@loom/core";',
     'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
     'import { z } from "zod";',
     "",
     `const ${P}Step = step$({`,
-    `  id: "${name}-step",`,
+    `  id: ${tsStringLiteral(`${name}-step`)},`,
     `  name: "${P}",`,
     "  inputSchema: z.object({ input: z.string() }),",
     "  outputSchema: z.object({ output: z.string() }),",
@@ -25,7 +25,7 @@ export function flowFile(name: string): string {
     "",
     `export const ${P}Flow: RegisteredFlow = {`,
     "  definition: flow$({",
-    `    id: "${name}",`,
+    `    id: ${tsStringLiteral(name)},`,
     `    name: "${P}",`,
     '    version: "1.0.0",',
     "    inputSchema: z.object({ input: z.string() }),",
@@ -44,13 +44,13 @@ export function flowFile(name: string): string {
  * fresh scaffold; replace the input/assertion as you change the flow.
  */
 export function flowTestFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { createTestApp } from "@loom/testing";',
     'import { describe, expect, it } from "vitest";',
     `import { ${P}Flow } from "./flow";`,
     "",
-    `describe("${name}", () => {`,
+    `describe(${tsStringLiteral(name)}, () => {`,
     '  it("runs the flow end to end", async () => {',
     `    const app = createTestApp({ flows: [${P}Flow] });`,
     "    try {",
@@ -68,7 +68,7 @@ export function flowTestFile(name: string): string {
 
 /** `app/flows/<name>/flow.ts` — a schedule-driven sentinel starter (@loom/plugin-sentinel). */
 export function sentinelFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     "// The perpetual-agent pattern (ADRs 0051-0057): a schedule over bounded runs.",
     "// Wire preset.schedule into defineConfig({ timers }), preset.middleware into",
@@ -83,7 +83,7 @@ export function sentinelFile(name: string): string {
     "const stateSchema = z.object({ wakes: z.number() }); // TODO: your carry-state contract",
     "",
     `export const ${P}Preset = sentinelPreset<z.infer<typeof stateSchema>>({`,
-    `  id: "${name}",`,
+    `  id: ${tsStringLiteral(name)},`,
     '  cron: "0 */6 * * *", // TODO: cadence',
     "  state: { schema: stateSchema },",
     "  stateStore: undefined as never, // TODO: durable-state backend (sqlite/postgres)",
@@ -106,7 +106,7 @@ export function sentinelFile(name: string): string {
     "",
     `export const ${P}Flow: RegisteredFlow = {`,
     "  definition: flow$({",
-    `    id: "${name}-flow",`,
+    `    id: ${tsStringLiteral(`${name}-flow`)},`,
     `    name: "${P} sentinel",`,
     '    version: "1.0.0",',
     "    inputSchema: io,",
@@ -121,15 +121,15 @@ export function sentinelFile(name: string): string {
 
 /** `app/tools/<name>.ts` — a tool definition stub. */
 export function toolFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { tool$ } from "@loom/core";',
     'import { z } from "zod";',
     "",
     `export const ${P}Tool = tool$({`,
-    `  id: "${name}",`,
+    `  id: ${tsStringLiteral(name)},`,
     `  name: "${P}",`,
-    `  description: "TODO: describe ${name}.",`,
+    `  description: ${tsStringLiteral(`TODO: describe ${name}.`)},`,
     '  kind: "tool",',
     "  inputSchema: z.object({}),",
     "  outputSchema: z.object({}),",
@@ -147,14 +147,14 @@ export function toolFile(name: string): string {
 
 /** `app/agents/<name>.ts` — an agent definition stub. */
 export function agentFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { agent$ } from "@loom/core";',
     "",
     `export const ${P}Agent = agent$({`,
-    `  id: "${name}",`,
+    `  id: ${tsStringLiteral(name)},`,
     `  name: "${P}",`,
-    `  description: "TODO: describe ${name}.",`,
+    `  description: ${tsStringLiteral(`TODO: describe ${name}.`)},`,
     "  tools: [],",
     "});",
     "",
@@ -163,16 +163,16 @@ export function agentFile(name: string): string {
 
 /** `app/skills/<name>.ts` — a skill definition stub (instructions stay lazy). */
 export function skillFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { instructions$, skill$ } from "@loom/core";',
     "",
     `export const ${P}Skill = skill$({`,
-    `  id: "${name}",`,
+    `  id: ${tsStringLiteral(name)},`,
     `  name: "${P}",`,
-    `  description: "TODO: describe ${name}.",`,
+    `  description: ${tsStringLiteral(`TODO: describe ${name}.`)},`,
     "  tags: [],",
-    `  instructions: instructions$("TODO: write the ${name} instructions."),`,
+    `  instructions: instructions$(${tsStringLiteral(`TODO: write the ${name} instructions.`)}),`,
     "});",
     "",
   ].join("\n");
@@ -180,12 +180,12 @@ export function skillFile(name: string): string {
 
 /** `app/schedules/<name>.ts` — a cron schedule stub (points at a flow to start). */
 export function scheduleFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { schedule$ } from "@loom/core";',
     "",
     `export const ${P}Schedule = schedule$({`,
-    `  id: "${name}",`,
+    `  id: ${tsStringLiteral(name)},`,
     '  cron: "0 * * * *", // hourly (UTC); 5-field cron',
     `  flowId: "TODO-flow-id", // the registered flow each occurrence starts`,
     "});",
@@ -195,12 +195,12 @@ export function scheduleFile(name: string): string {
 
 /** `app/memories/<name>.ts` — a named memory definition stub. */
 export function memoryFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { memory$ } from "@loom/core";',
     "",
     `export const ${P}Memory = memory$({`,
-    `  id: "${name}",`,
+    `  id: ${tsStringLiteral(name)},`,
     `  name: "${P}",`,
     "  // ttlMs / maxEntries bound each scope; omit for unbounded.",
     "});",
@@ -210,12 +210,12 @@ export function memoryFile(name: string): string {
 
 /** `app/projections/<name>.ts` — a projection stub (handlers fold events; loaded on demand). */
 export function projectionFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { projection$ } from "@loom/core";',
     "",
     `export const ${P}Projection = projection$({`,
-    `  id: "${name}",`,
+    `  id: ${tsStringLiteral(name)},`,
     `  name: "${P}",`,
     "  initialState: { count: 0 },",
     "  // The fold map: one reducer per event type. The @loom/compiler plugin extracts this",

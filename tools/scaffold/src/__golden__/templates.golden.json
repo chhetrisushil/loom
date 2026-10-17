@@ -1,0 +1,370 @@
+{
+  "flow/echo/greet": [
+    {
+      "path": "app/flows/greet/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst GreetStep = step$({\n  id: \"greet-step\",\n  name: \"Greet\",\n  inputSchema: z.object({ input: z.string() }),\n  outputSchema: z.object({ output: z.string() }),\n  handler: handler$(async (i: { input: string }) => ({ output: i.input })),\n});\n\nconst runner: FlowRunner<{ input: string }, { output: string }> = (ctx, input) =>\n  ctx.run(GreetStep, input) as Promise<{ output: string }>;\n\nexport const GreetFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"greet\",\n    name: \"Greet\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ input: z.string() }),\n    outputSchema: z.object({ output: z.string() }),\n    steps: [GreetStep],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    },
+    {
+      "path": "app/flows/greet/flow.test.ts",
+      "content": "import { createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { GreetFlow } from \"./flow\";\n\ndescribe(\"greet\", () => {\n  it(\"runs the flow end to end\", async () => {\n    const app = createTestApp({ flows: [GreetFlow] });\n    try {\n      const handle = await app.runtime.start(GreetFlow, { input: \"hello\" });\n      const state = await handle.waitForCompletion();\n      expect(state.variables._output).toEqual({ output: \"hello\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/approval/greet": [
+    {
+      "path": "app/flows/greet/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\n// The gate's contract. `resume()` parses the payload against `resumeSchemas` BEFORE it is\n// appended, so a wrongly-shaped approval is refused instead of becoming a permanent fact.\nconst GreetDecision = z.object({ approved: z.boolean(), approvedBy: z.string() });\n\nconst GreetApply = step$({\n  id: \"greet-apply\",\n  name: \"Greet apply\",\n  inputSchema: z.object({ target: z.string() }),\n  outputSchema: z.object({ applied: z.boolean() }),\n  handler: handler$(async (_i: { target: string }) => ({ applied: true })),\n});\n\ntype GreetOut = { status: \"applied\" | \"rejected\" | \"expired\"; approvedBy?: string };\n\nconst runner: FlowRunner<{ target: string }, GreetOut> = async (ctx, input) => {\n  // Durable checkpoint: the execution parks in storage (it survives a restart) until someone\n  // answers the gate or the timeout passes. A timeout resumes with a TIMER_FIRED payload\n  // ({ wakeAt }), which is not a decision - so parse what came back.\n  const answer = await ctx.suspend<unknown>({\n    on: \"ApprovalGranted\",\n    correlationKey: input.target,\n    timeout: 24 * 60 * 60 * 1000, // 24h\n  });\n  const parsed = GreetDecision.safeParse(answer);\n  if (!parsed.success) return { status: \"expired\" };\n  const decision = parsed.data;\n  if (!decision.approved) return { status: \"rejected\", approvedBy: decision.approvedBy };\n  await ctx.run(GreetApply, { target: input.target });\n  return { status: \"applied\", approvedBy: decision.approvedBy };\n};\n\nexport const GreetFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"greet\",\n    name: \"Greet\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ target: z.string() }),\n    outputSchema: z.object({ status: z.enum([\"applied\", \"rejected\", \"expired\"]), approvedBy: z.string().optional() }),\n    steps: [GreetApply],\n    resumeSchemas: { ApprovalGranted: GreetDecision },\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n\n// WHO may approve is not decided here. In production wire `security.resumeAuthenticator`\n// (and an `executionAuthorizer`) in defineConfig - see app/security.ts in a scaffolded app -\n// so `resume()` only accepts a verified approver. The test below runs permissive on purpose.\n"
+    },
+    {
+      "path": "app/flows/greet/flow.test.ts",
+      "content": "import { advanceTime, createTestApp, resumeWith } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { GreetFlow } from \"./flow\";\n\ndescribe(\"greet\", () => {\n  it(\"applies once approved\", async () => {\n    const app = createTestApp({ flows: [GreetFlow] });\n    try {\n      const handle = await app.runtime.start(GreetFlow, { target: \"prod-db\" });\n      await handle.waitForSuspend();\n      const resumed = await resumeWith(app.runtime, handle.executionId, {\n        eventType: \"ApprovalGranted\",\n        payload: { approved: true, approvedBy: \"ada\" },\n      });\n      const state = await resumed.waitForCompletion();\n      expect(state.variables._output).toEqual({ status: \"applied\", approvedBy: \"ada\" });\n    } finally {\n      await app.close();\n    }\n  });\n\n  it(\"expires after 24h with no answer (time travel, no real waiting)\", async () => {\n    const app = createTestApp({ clock: true, flows: [GreetFlow] });\n    try {\n      const handle = await app.runtime.start(GreetFlow, { target: \"prod-db\" });\n      await handle.waitForSuspend();\n      await advanceTime(app, 24 * 60 * 60 * 1000);\n      const state = await app.runtime.loadState(handle.executionId);\n      expect(state?.status).toBe(\"completed\");\n      expect(state?.variables._output).toEqual({ status: \"expired\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/timer/greet": [
+    {
+      "path": "app/flows/greet/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst GreetRemind = step$({\n  id: \"greet-remind\",\n  name: \"Greet remind\",\n  inputSchema: z.object({ who: z.string() }),\n  outputSchema: z.object({ reminded: z.string() }),\n  handler: handler$(async (i: { who: string }) => ({ reminded: i.who })),\n});\n\nconst runner: FlowRunner<{ who: string }, { reminded: string }> = async (ctx, input) => {\n  // A DURABLE sleep: the execution parks in storage and a TimerService wakes it. It survives a\n  // restart and holds no process memory. For an absolute instant use `ctx.sleepUntil(epochMs)`.\n  await ctx.sleep(24 * 60 * 60 * 1000); // 1 day\n  return (await ctx.run(GreetRemind, { who: input.who })) as { reminded: string };\n};\n\nexport const GreetFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"greet\",\n    name: \"Greet\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ who: z.string() }),\n    outputSchema: z.object({ reminded: z.string() }),\n    steps: [GreetRemind],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n\n// Timers only fire where a TimerService runs: in defineConfig pass\n// `timers: { store: new InMemoryTimerStore() }` (or the Sqlite/Postgres store beside your\n// event store). A scaffolded app does not wire one yet.\n"
+    },
+    {
+      "path": "app/flows/greet/flow.test.ts",
+      "content": "import { advanceTime, createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { GreetFlow } from \"./flow\";\n\nconst DAY = 24 * 60 * 60 * 1000;\n\ndescribe(\"greet\", () => {\n  it(\"waits a day, then reminds (time travel, no real waiting)\", async () => {\n    // `clock: true` gives the app a controllable clock and a timer store; advanceTime moves the\n    // clock and fires what became due through the real TimerService.\n    const app = createTestApp({ clock: true, flows: [GreetFlow] });\n    try {\n      const handle = await app.runtime.start(GreetFlow, { who: \"ada\" });\n      await handle.waitForSuspend();\n\n      await advanceTime(app, DAY - 1); // not due yet\n      expect((await app.runtime.loadState(handle.executionId))?.status).toBe(\"suspended\");\n\n      await advanceTime(app, 1); // due\n      const state = await app.runtime.loadState(handle.executionId);\n      expect(state?.status).toBe(\"completed\");\n      expect(state?.variables._output).toEqual({ reminded: \"ada\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/saga/greet": [
+    {
+      "path": "app/flows/greet/flow.ts",
+      "content": "import { flow$, step$ } from \"@loom/core\";\nimport { withSaga } from \"@loom/saga\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\n// Saga steps are TOOL steps: each names a `toolId` whose effect you register on the app\n// (`app.effectRuntime.register(toolId, new ToolEffect(...))`). A compensator runs under a\n// derived step id, so it must resolve through its `toolId`, not through an inline `handler$`.\nexport const GreetTools = [\"reserve\", \"unreserve\", \"charge\", \"refund\", \"ship\"].map((t) => `greet-${t}`);\n\n// Under `security.strict` (the scaffolded app) a flow may only run the tools it is granted:\n// in app/security.ts add `...GreetGrants` to the `GrantTable({ ... })`, e.g.\n//   import { GreetGrants } from \"./flows/greet/flow\";\n//   export const authorizer = new GrantTable({ greet: [\"greet-step\"], ...GreetGrants });\nexport const GreetGrants = { \"greet\": GreetTools };\n\nconst empty = z.object({});\nconst stepOf = (tool: string) =>\n  step$({\n    id: `greet-${tool}`,\n    name: tool,\n    toolId: `greet-${tool}`,\n    inputSchema: empty,\n    outputSchema: empty,\n  });\n\n// Forward steps and their compensators (undo what the forward step did).\nconst reserve = stepOf(\"reserve\");\nconst unreserve = stepOf(\"unreserve\");\nconst charge = stepOf(\"charge\");\nconst refund = stepOf(\"refund\");\nconst ship = stepOf(\"ship\");\n\nconst runner: FlowRunner<{ orderId: string }, { ok: boolean }> = (ctx) =>\n  // On any failure inside the scope, the registered compensators run in REVERSE as ordinary\n  // replay-safe steps. A suspension is not a failure: it never rolls back.\n  withSaga(ctx, async (saga) => {\n    await saga.run(reserve, {}, unreserve);\n    await saga.run(charge, {}, refund);\n    await ctx.run(ship, {}); // if the carrier fails, refund then unreserve run\n    return { ok: true };\n  });\n\nexport const GreetFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"greet\",\n    name: \"Greet\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ orderId: z.string() }),\n    outputSchema: z.object({ ok: z.boolean() }),\n    steps: [reserve, unreserve, charge, refund, ship],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    },
+    {
+      "path": "app/flows/greet/flow.test.ts",
+      "content": "import { ToolEffect } from \"@loom/effect-runtime\";\nimport { createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { GreetFlow, GreetTools } from \"./flow\";\n\n// Stand-ins for the real side effects: record each call, fail `ship` on demand.\nfunction build(failShipping: boolean) {\n  const ledger: string[] = [];\n  const app = createTestApp({ flows: [GreetFlow] });\n  for (const toolId of GreetTools) {\n    const label = toolId.slice(\"greet-\".length);\n    app.effectRuntime.register(\n      toolId,\n      new ToolEffect(async () => {\n        if (label === \"ship\" && failShipping) throw new Error(\"carrier unavailable\");\n        ledger.push(label);\n        return {};\n      })\n    );\n  }\n  return { app, ledger };\n}\n\ndescribe(\"greet\", () => {\n  it(\"keeps the work when every step succeeds\", async () => {\n    const { app, ledger } = build(false);\n    try {\n      const handle = await app.runtime.start(GreetFlow, { orderId: \"o-1\" });\n      const state = await handle.waitForCompletion();\n      expect(state.variables._output).toEqual({ ok: true });\n      expect(ledger).toEqual([\"reserve\", \"charge\", \"ship\"]);\n    } finally {\n      await app.close();\n    }\n  });\n\n  it(\"undoes the work in reverse when a later step fails\", async () => {\n    const { app, ledger } = build(true);\n    try {\n      const handle = await app.runtime.start(GreetFlow, { orderId: \"o-1\" });\n      await handle.waitForCompletion().catch(() => undefined); // the flow itself fails\n      expect(ledger).toEqual([\"reserve\", \"charge\", \"refund\", \"unreserve\"]);\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "agent/echo/greet": [
+    {
+      "path": "app/agents/greet.ts",
+      "content": "import { agent$ } from \"@loom/core\";\n\nexport const GreetAgent = agent$({\n  id: \"greet\",\n  name: \"Greet\",\n  description: \"TODO: describe greet.\",\n  tools: [],\n});\n"
+    }
+  ],
+  "tool/echo/greet": [
+    {
+      "path": "app/tools/greet.ts",
+      "content": "import { tool$ } from \"@loom/core\";\nimport { z } from \"zod\";\n\nexport const GreetTool = tool$({\n  id: \"greet\",\n  name: \"Greet\",\n  description: \"TODO: describe greet.\",\n  kind: \"tool\",\n  inputSchema: z.object({}),\n  outputSchema: z.object({}),\n  // Typed failure channels (ADR 0060) — declare EXPECTED failure modes so the\n  // effect can `fail(\"notFound\", { id })`: the failure is recorded with its\n  // validated payload, flows branch on it deterministically, and replay\n  // substitutes it without re-invoking the effect. Undeclared failures keep\n  // legacy retry semantics. Pass the same map to the registered effect:\n  //   new ToolEffect(fn, { errors: { notFound: z.object({ id: z.string() }) } })\n  // errors: { notFound: z.object({ id: z.string() }) },\n});\n"
+    }
+  ],
+  "skill/echo/greet": [
+    {
+      "path": "app/skills/greet.ts",
+      "content": "import { instructions$, skill$ } from \"@loom/core\";\n\nexport const GreetSkill = skill$({\n  id: \"greet\",\n  name: \"Greet\",\n  description: \"TODO: describe greet.\",\n  tags: [],\n  instructions: instructions$(\"TODO: write the greet instructions.\"),\n});\n"
+    }
+  ],
+  "schedule/echo/greet": [
+    {
+      "path": "app/schedules/greet.ts",
+      "content": "import { schedule$ } from \"@loom/core\";\n\nexport const GreetSchedule = schedule$({\n  id: \"greet\",\n  cron: \"0 * * * *\", // hourly (UTC); 5-field cron\n  flowId: \"TODO-flow-id\", // the registered flow each occurrence starts\n});\n"
+    }
+  ],
+  "memory/echo/greet": [
+    {
+      "path": "app/memories/greet.ts",
+      "content": "import { memory$ } from \"@loom/core\";\n\nexport const GreetMemory = memory$({\n  id: \"greet\",\n  name: \"Greet\",\n  // ttlMs / maxEntries bound each scope; omit for unbounded.\n});\n"
+    }
+  ],
+  "projection/echo/greet": [
+    {
+      "path": "app/projections/greet.ts",
+      "content": "import { projection$ } from \"@loom/core\";\n\nexport const GreetProjection = projection$({\n  id: \"greet\",\n  name: \"Greet\",\n  initialState: { count: 0 },\n  // The fold map: one reducer per event type. The @loom/compiler plugin extracts this\n  // into its own chunk, loaded on demand the first time a handled event fires.\n  handlers: {\n    STEP_COMPLETED: (state, _event) => ({ count: state.count + 1 }),\n  },\n});\n"
+    }
+  ],
+  "sentinel/echo/greet": [
+    {
+      "path": "app/flows/greet/flow.ts",
+      "content": "// The perpetual-agent pattern (ADRs 0051-0057): a schedule over bounded runs.\n// Wire preset.schedule into defineConfig({ timers }), preset.middleware into\n// effectMiddleware, call preset.register(app.effectRuntime), and feed\n// preset.pinnedEventTypes to `loom sweep content --pin`.\nimport { flow$ } from \"@loom/core\";\nimport { isClaimCheck } from \"@loom/middleware\";\nimport { sentinelPreset } from \"@loom/plugin-sentinel\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst stateSchema = z.object({ wakes: z.number() }); // TODO: your carry-state contract\n\nexport const GreetPreset = sentinelPreset<z.infer<typeof stateSchema>>({\n  id: \"greet\",\n  cron: \"0 */6 * * *\", // TODO: cadence\n  state: { schema: stateSchema },\n  stateStore: undefined as never, // TODO: durable-state backend (sqlite/postgres)\n  contentStore: undefined as never, // TODO: content backend (SqliteContentStore)\n});\n\nconst io = z.object({}).passthrough();\n\nconst runner: FlowRunner<Record<string, unknown>, Record<string, unknown>> = async (ctx) => {\n  const carried = await GreetPreset.state.load(ctx);\n  // TODO: observe via your tool$ (recorded; over-cap results go by reference):\n  // const read = await ctx.execute(readTask, { at: Preset.occurrenceOf(ctx.executionId) });\n  // if (isClaimCheck(read) && (read.digest as YourDigest).metric > threshold) {\n  //   ctx.emit(\"FINDING_RECORDED\", { evidence: [read.ref] /* + your schema */ });\n  // }\n  void isClaimCheck;\n  await GreetPreset.state.save(ctx, { wakes: (carried.value?.wakes ?? 0) + 1 }, carried.revision);\n  return { ok: true };\n};\n\nexport const GreetFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"greet-flow\",\n    name: \"Greet sentinel\",\n    version: \"1.0.0\",\n    inputSchema: io,\n    outputSchema: io,\n    steps: [],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    }
+  ],
+  "notes/echo/greet": [],
+  "notes/approval/greet": [
+    "approval: wire `timers: { store }` in defineConfig so the 24h timeout can fire (the test provides one), and `security.resumeAuthenticator` to decide who may approve."
+  ],
+  "notes/timer/greet": [
+    "timer: wire `timers: { store }` in defineConfig so the sleep can wake (the test provides one)."
+  ],
+  "notes/saga/greet": [
+    "saga: the steps are tool steps. Under `security.strict` add `...GreetGrants` (from ./flows/greet/flow) to the GrantTable in app/security.ts, and register an effect per tool id in `GreetTools` on app.effectRuntime (the test stubs them)."
+  ],
+  "flow/echo/order-intake": [
+    {
+      "path": "app/flows/order-intake/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst OrderIntakeStep = step$({\n  id: \"order-intake-step\",\n  name: \"OrderIntake\",\n  inputSchema: z.object({ input: z.string() }),\n  outputSchema: z.object({ output: z.string() }),\n  handler: handler$(async (i: { input: string }) => ({ output: i.input })),\n});\n\nconst runner: FlowRunner<{ input: string }, { output: string }> = (ctx, input) =>\n  ctx.run(OrderIntakeStep, input) as Promise<{ output: string }>;\n\nexport const OrderIntakeFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"order-intake\",\n    name: \"OrderIntake\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ input: z.string() }),\n    outputSchema: z.object({ output: z.string() }),\n    steps: [OrderIntakeStep],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    },
+    {
+      "path": "app/flows/order-intake/flow.test.ts",
+      "content": "import { createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { OrderIntakeFlow } from \"./flow\";\n\ndescribe(\"order-intake\", () => {\n  it(\"runs the flow end to end\", async () => {\n    const app = createTestApp({ flows: [OrderIntakeFlow] });\n    try {\n      const handle = await app.runtime.start(OrderIntakeFlow, { input: \"hello\" });\n      const state = await handle.waitForCompletion();\n      expect(state.variables._output).toEqual({ output: \"hello\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/approval/order-intake": [
+    {
+      "path": "app/flows/order-intake/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\n// The gate's contract. `resume()` parses the payload against `resumeSchemas` BEFORE it is\n// appended, so a wrongly-shaped approval is refused instead of becoming a permanent fact.\nconst OrderIntakeDecision = z.object({ approved: z.boolean(), approvedBy: z.string() });\n\nconst OrderIntakeApply = step$({\n  id: \"order-intake-apply\",\n  name: \"OrderIntake apply\",\n  inputSchema: z.object({ target: z.string() }),\n  outputSchema: z.object({ applied: z.boolean() }),\n  handler: handler$(async (_i: { target: string }) => ({ applied: true })),\n});\n\ntype OrderIntakeOut = { status: \"applied\" | \"rejected\" | \"expired\"; approvedBy?: string };\n\nconst runner: FlowRunner<{ target: string }, OrderIntakeOut> = async (ctx, input) => {\n  // Durable checkpoint: the execution parks in storage (it survives a restart) until someone\n  // answers the gate or the timeout passes. A timeout resumes with a TIMER_FIRED payload\n  // ({ wakeAt }), which is not a decision - so parse what came back.\n  const answer = await ctx.suspend<unknown>({\n    on: \"ApprovalGranted\",\n    correlationKey: input.target,\n    timeout: 24 * 60 * 60 * 1000, // 24h\n  });\n  const parsed = OrderIntakeDecision.safeParse(answer);\n  if (!parsed.success) return { status: \"expired\" };\n  const decision = parsed.data;\n  if (!decision.approved) return { status: \"rejected\", approvedBy: decision.approvedBy };\n  await ctx.run(OrderIntakeApply, { target: input.target });\n  return { status: \"applied\", approvedBy: decision.approvedBy };\n};\n\nexport const OrderIntakeFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"order-intake\",\n    name: \"OrderIntake\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ target: z.string() }),\n    outputSchema: z.object({ status: z.enum([\"applied\", \"rejected\", \"expired\"]), approvedBy: z.string().optional() }),\n    steps: [OrderIntakeApply],\n    resumeSchemas: { ApprovalGranted: OrderIntakeDecision },\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n\n// WHO may approve is not decided here. In production wire `security.resumeAuthenticator`\n// (and an `executionAuthorizer`) in defineConfig - see app/security.ts in a scaffolded app -\n// so `resume()` only accepts a verified approver. The test below runs permissive on purpose.\n"
+    },
+    {
+      "path": "app/flows/order-intake/flow.test.ts",
+      "content": "import { advanceTime, createTestApp, resumeWith } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { OrderIntakeFlow } from \"./flow\";\n\ndescribe(\"order-intake\", () => {\n  it(\"applies once approved\", async () => {\n    const app = createTestApp({ flows: [OrderIntakeFlow] });\n    try {\n      const handle = await app.runtime.start(OrderIntakeFlow, { target: \"prod-db\" });\n      await handle.waitForSuspend();\n      const resumed = await resumeWith(app.runtime, handle.executionId, {\n        eventType: \"ApprovalGranted\",\n        payload: { approved: true, approvedBy: \"ada\" },\n      });\n      const state = await resumed.waitForCompletion();\n      expect(state.variables._output).toEqual({ status: \"applied\", approvedBy: \"ada\" });\n    } finally {\n      await app.close();\n    }\n  });\n\n  it(\"expires after 24h with no answer (time travel, no real waiting)\", async () => {\n    const app = createTestApp({ clock: true, flows: [OrderIntakeFlow] });\n    try {\n      const handle = await app.runtime.start(OrderIntakeFlow, { target: \"prod-db\" });\n      await handle.waitForSuspend();\n      await advanceTime(app, 24 * 60 * 60 * 1000);\n      const state = await app.runtime.loadState(handle.executionId);\n      expect(state?.status).toBe(\"completed\");\n      expect(state?.variables._output).toEqual({ status: \"expired\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/timer/order-intake": [
+    {
+      "path": "app/flows/order-intake/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst OrderIntakeRemind = step$({\n  id: \"order-intake-remind\",\n  name: \"OrderIntake remind\",\n  inputSchema: z.object({ who: z.string() }),\n  outputSchema: z.object({ reminded: z.string() }),\n  handler: handler$(async (i: { who: string }) => ({ reminded: i.who })),\n});\n\nconst runner: FlowRunner<{ who: string }, { reminded: string }> = async (ctx, input) => {\n  // A DURABLE sleep: the execution parks in storage and a TimerService wakes it. It survives a\n  // restart and holds no process memory. For an absolute instant use `ctx.sleepUntil(epochMs)`.\n  await ctx.sleep(24 * 60 * 60 * 1000); // 1 day\n  return (await ctx.run(OrderIntakeRemind, { who: input.who })) as { reminded: string };\n};\n\nexport const OrderIntakeFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"order-intake\",\n    name: \"OrderIntake\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ who: z.string() }),\n    outputSchema: z.object({ reminded: z.string() }),\n    steps: [OrderIntakeRemind],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n\n// Timers only fire where a TimerService runs: in defineConfig pass\n// `timers: { store: new InMemoryTimerStore() }` (or the Sqlite/Postgres store beside your\n// event store). A scaffolded app does not wire one yet.\n"
+    },
+    {
+      "path": "app/flows/order-intake/flow.test.ts",
+      "content": "import { advanceTime, createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { OrderIntakeFlow } from \"./flow\";\n\nconst DAY = 24 * 60 * 60 * 1000;\n\ndescribe(\"order-intake\", () => {\n  it(\"waits a day, then reminds (time travel, no real waiting)\", async () => {\n    // `clock: true` gives the app a controllable clock and a timer store; advanceTime moves the\n    // clock and fires what became due through the real TimerService.\n    const app = createTestApp({ clock: true, flows: [OrderIntakeFlow] });\n    try {\n      const handle = await app.runtime.start(OrderIntakeFlow, { who: \"ada\" });\n      await handle.waitForSuspend();\n\n      await advanceTime(app, DAY - 1); // not due yet\n      expect((await app.runtime.loadState(handle.executionId))?.status).toBe(\"suspended\");\n\n      await advanceTime(app, 1); // due\n      const state = await app.runtime.loadState(handle.executionId);\n      expect(state?.status).toBe(\"completed\");\n      expect(state?.variables._output).toEqual({ reminded: \"ada\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/saga/order-intake": [
+    {
+      "path": "app/flows/order-intake/flow.ts",
+      "content": "import { flow$, step$ } from \"@loom/core\";\nimport { withSaga } from \"@loom/saga\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\n// Saga steps are TOOL steps: each names a `toolId` whose effect you register on the app\n// (`app.effectRuntime.register(toolId, new ToolEffect(...))`). A compensator runs under a\n// derived step id, so it must resolve through its `toolId`, not through an inline `handler$`.\nexport const OrderIntakeTools = [\"reserve\", \"unreserve\", \"charge\", \"refund\", \"ship\"].map((t) => `order-intake-${t}`);\n\n// Under `security.strict` (the scaffolded app) a flow may only run the tools it is granted:\n// in app/security.ts add `...OrderIntakeGrants` to the `GrantTable({ ... })`, e.g.\n//   import { OrderIntakeGrants } from \"./flows/order-intake/flow\";\n//   export const authorizer = new GrantTable({ greet: [\"greet-step\"], ...OrderIntakeGrants });\nexport const OrderIntakeGrants = { \"order-intake\": OrderIntakeTools };\n\nconst empty = z.object({});\nconst stepOf = (tool: string) =>\n  step$({\n    id: `order-intake-${tool}`,\n    name: tool,\n    toolId: `order-intake-${tool}`,\n    inputSchema: empty,\n    outputSchema: empty,\n  });\n\n// Forward steps and their compensators (undo what the forward step did).\nconst reserve = stepOf(\"reserve\");\nconst unreserve = stepOf(\"unreserve\");\nconst charge = stepOf(\"charge\");\nconst refund = stepOf(\"refund\");\nconst ship = stepOf(\"ship\");\n\nconst runner: FlowRunner<{ orderId: string }, { ok: boolean }> = (ctx) =>\n  // On any failure inside the scope, the registered compensators run in REVERSE as ordinary\n  // replay-safe steps. A suspension is not a failure: it never rolls back.\n  withSaga(ctx, async (saga) => {\n    await saga.run(reserve, {}, unreserve);\n    await saga.run(charge, {}, refund);\n    await ctx.run(ship, {}); // if the carrier fails, refund then unreserve run\n    return { ok: true };\n  });\n\nexport const OrderIntakeFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"order-intake\",\n    name: \"OrderIntake\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ orderId: z.string() }),\n    outputSchema: z.object({ ok: z.boolean() }),\n    steps: [reserve, unreserve, charge, refund, ship],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    },
+    {
+      "path": "app/flows/order-intake/flow.test.ts",
+      "content": "import { ToolEffect } from \"@loom/effect-runtime\";\nimport { createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { OrderIntakeFlow, OrderIntakeTools } from \"./flow\";\n\n// Stand-ins for the real side effects: record each call, fail `ship` on demand.\nfunction build(failShipping: boolean) {\n  const ledger: string[] = [];\n  const app = createTestApp({ flows: [OrderIntakeFlow] });\n  for (const toolId of OrderIntakeTools) {\n    const label = toolId.slice(\"order-intake-\".length);\n    app.effectRuntime.register(\n      toolId,\n      new ToolEffect(async () => {\n        if (label === \"ship\" && failShipping) throw new Error(\"carrier unavailable\");\n        ledger.push(label);\n        return {};\n      })\n    );\n  }\n  return { app, ledger };\n}\n\ndescribe(\"order-intake\", () => {\n  it(\"keeps the work when every step succeeds\", async () => {\n    const { app, ledger } = build(false);\n    try {\n      const handle = await app.runtime.start(OrderIntakeFlow, { orderId: \"o-1\" });\n      const state = await handle.waitForCompletion();\n      expect(state.variables._output).toEqual({ ok: true });\n      expect(ledger).toEqual([\"reserve\", \"charge\", \"ship\"]);\n    } finally {\n      await app.close();\n    }\n  });\n\n  it(\"undoes the work in reverse when a later step fails\", async () => {\n    const { app, ledger } = build(true);\n    try {\n      const handle = await app.runtime.start(OrderIntakeFlow, { orderId: \"o-1\" });\n      await handle.waitForCompletion().catch(() => undefined); // the flow itself fails\n      expect(ledger).toEqual([\"reserve\", \"charge\", \"refund\", \"unreserve\"]);\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "agent/echo/order-intake": [
+    {
+      "path": "app/agents/order-intake.ts",
+      "content": "import { agent$ } from \"@loom/core\";\n\nexport const OrderIntakeAgent = agent$({\n  id: \"order-intake\",\n  name: \"OrderIntake\",\n  description: \"TODO: describe order-intake.\",\n  tools: [],\n});\n"
+    }
+  ],
+  "tool/echo/order-intake": [
+    {
+      "path": "app/tools/order-intake.ts",
+      "content": "import { tool$ } from \"@loom/core\";\nimport { z } from \"zod\";\n\nexport const OrderIntakeTool = tool$({\n  id: \"order-intake\",\n  name: \"OrderIntake\",\n  description: \"TODO: describe order-intake.\",\n  kind: \"tool\",\n  inputSchema: z.object({}),\n  outputSchema: z.object({}),\n  // Typed failure channels (ADR 0060) — declare EXPECTED failure modes so the\n  // effect can `fail(\"notFound\", { id })`: the failure is recorded with its\n  // validated payload, flows branch on it deterministically, and replay\n  // substitutes it without re-invoking the effect. Undeclared failures keep\n  // legacy retry semantics. Pass the same map to the registered effect:\n  //   new ToolEffect(fn, { errors: { notFound: z.object({ id: z.string() }) } })\n  // errors: { notFound: z.object({ id: z.string() }) },\n});\n"
+    }
+  ],
+  "skill/echo/order-intake": [
+    {
+      "path": "app/skills/order-intake.ts",
+      "content": "import { instructions$, skill$ } from \"@loom/core\";\n\nexport const OrderIntakeSkill = skill$({\n  id: \"order-intake\",\n  name: \"OrderIntake\",\n  description: \"TODO: describe order-intake.\",\n  tags: [],\n  instructions: instructions$(\"TODO: write the order-intake instructions.\"),\n});\n"
+    }
+  ],
+  "schedule/echo/order-intake": [
+    {
+      "path": "app/schedules/order-intake.ts",
+      "content": "import { schedule$ } from \"@loom/core\";\n\nexport const OrderIntakeSchedule = schedule$({\n  id: \"order-intake\",\n  cron: \"0 * * * *\", // hourly (UTC); 5-field cron\n  flowId: \"TODO-flow-id\", // the registered flow each occurrence starts\n});\n"
+    }
+  ],
+  "memory/echo/order-intake": [
+    {
+      "path": "app/memories/order-intake.ts",
+      "content": "import { memory$ } from \"@loom/core\";\n\nexport const OrderIntakeMemory = memory$({\n  id: \"order-intake\",\n  name: \"OrderIntake\",\n  // ttlMs / maxEntries bound each scope; omit for unbounded.\n});\n"
+    }
+  ],
+  "projection/echo/order-intake": [
+    {
+      "path": "app/projections/order-intake.ts",
+      "content": "import { projection$ } from \"@loom/core\";\n\nexport const OrderIntakeProjection = projection$({\n  id: \"order-intake\",\n  name: \"OrderIntake\",\n  initialState: { count: 0 },\n  // The fold map: one reducer per event type. The @loom/compiler plugin extracts this\n  // into its own chunk, loaded on demand the first time a handled event fires.\n  handlers: {\n    STEP_COMPLETED: (state, _event) => ({ count: state.count + 1 }),\n  },\n});\n"
+    }
+  ],
+  "sentinel/echo/order-intake": [
+    {
+      "path": "app/flows/order-intake/flow.ts",
+      "content": "// The perpetual-agent pattern (ADRs 0051-0057): a schedule over bounded runs.\n// Wire preset.schedule into defineConfig({ timers }), preset.middleware into\n// effectMiddleware, call preset.register(app.effectRuntime), and feed\n// preset.pinnedEventTypes to `loom sweep content --pin`.\nimport { flow$ } from \"@loom/core\";\nimport { isClaimCheck } from \"@loom/middleware\";\nimport { sentinelPreset } from \"@loom/plugin-sentinel\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst stateSchema = z.object({ wakes: z.number() }); // TODO: your carry-state contract\n\nexport const OrderIntakePreset = sentinelPreset<z.infer<typeof stateSchema>>({\n  id: \"order-intake\",\n  cron: \"0 */6 * * *\", // TODO: cadence\n  state: { schema: stateSchema },\n  stateStore: undefined as never, // TODO: durable-state backend (sqlite/postgres)\n  contentStore: undefined as never, // TODO: content backend (SqliteContentStore)\n});\n\nconst io = z.object({}).passthrough();\n\nconst runner: FlowRunner<Record<string, unknown>, Record<string, unknown>> = async (ctx) => {\n  const carried = await OrderIntakePreset.state.load(ctx);\n  // TODO: observe via your tool$ (recorded; over-cap results go by reference):\n  // const read = await ctx.execute(readTask, { at: Preset.occurrenceOf(ctx.executionId) });\n  // if (isClaimCheck(read) && (read.digest as YourDigest).metric > threshold) {\n  //   ctx.emit(\"FINDING_RECORDED\", { evidence: [read.ref] /* + your schema */ });\n  // }\n  void isClaimCheck;\n  await OrderIntakePreset.state.save(ctx, { wakes: (carried.value?.wakes ?? 0) + 1 }, carried.revision);\n  return { ok: true };\n};\n\nexport const OrderIntakeFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"order-intake-flow\",\n    name: \"OrderIntake sentinel\",\n    version: \"1.0.0\",\n    inputSchema: io,\n    outputSchema: io,\n    steps: [],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    }
+  ],
+  "notes/echo/order-intake": [],
+  "notes/approval/order-intake": [
+    "approval: wire `timers: { store }` in defineConfig so the 24h timeout can fire (the test provides one), and `security.resumeAuthenticator` to decide who may approve."
+  ],
+  "notes/timer/order-intake": [
+    "timer: wire `timers: { store }` in defineConfig so the sleep can wake (the test provides one)."
+  ],
+  "notes/saga/order-intake": [
+    "saga: the steps are tool steps. Under `security.strict` add `...OrderIntakeGrants` (from ./flows/order-intake/flow) to the GrantTable in app/security.ts, and register an effect per tool id in `OrderIntakeTools` on app.effectRuntime (the test stubs them)."
+  ],
+  "flow/echo/a1": [
+    {
+      "path": "app/flows/a1/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst A1Step = step$({\n  id: \"a1-step\",\n  name: \"A1\",\n  inputSchema: z.object({ input: z.string() }),\n  outputSchema: z.object({ output: z.string() }),\n  handler: handler$(async (i: { input: string }) => ({ output: i.input })),\n});\n\nconst runner: FlowRunner<{ input: string }, { output: string }> = (ctx, input) =>\n  ctx.run(A1Step, input) as Promise<{ output: string }>;\n\nexport const A1Flow: RegisteredFlow = {\n  definition: flow$({\n    id: \"a1\",\n    name: \"A1\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ input: z.string() }),\n    outputSchema: z.object({ output: z.string() }),\n    steps: [A1Step],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    },
+    {
+      "path": "app/flows/a1/flow.test.ts",
+      "content": "import { createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { A1Flow } from \"./flow\";\n\ndescribe(\"a1\", () => {\n  it(\"runs the flow end to end\", async () => {\n    const app = createTestApp({ flows: [A1Flow] });\n    try {\n      const handle = await app.runtime.start(A1Flow, { input: \"hello\" });\n      const state = await handle.waitForCompletion();\n      expect(state.variables._output).toEqual({ output: \"hello\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/approval/a1": [
+    {
+      "path": "app/flows/a1/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\n// The gate's contract. `resume()` parses the payload against `resumeSchemas` BEFORE it is\n// appended, so a wrongly-shaped approval is refused instead of becoming a permanent fact.\nconst A1Decision = z.object({ approved: z.boolean(), approvedBy: z.string() });\n\nconst A1Apply = step$({\n  id: \"a1-apply\",\n  name: \"A1 apply\",\n  inputSchema: z.object({ target: z.string() }),\n  outputSchema: z.object({ applied: z.boolean() }),\n  handler: handler$(async (_i: { target: string }) => ({ applied: true })),\n});\n\ntype A1Out = { status: \"applied\" | \"rejected\" | \"expired\"; approvedBy?: string };\n\nconst runner: FlowRunner<{ target: string }, A1Out> = async (ctx, input) => {\n  // Durable checkpoint: the execution parks in storage (it survives a restart) until someone\n  // answers the gate or the timeout passes. A timeout resumes with a TIMER_FIRED payload\n  // ({ wakeAt }), which is not a decision - so parse what came back.\n  const answer = await ctx.suspend<unknown>({\n    on: \"ApprovalGranted\",\n    correlationKey: input.target,\n    timeout: 24 * 60 * 60 * 1000, // 24h\n  });\n  const parsed = A1Decision.safeParse(answer);\n  if (!parsed.success) return { status: \"expired\" };\n  const decision = parsed.data;\n  if (!decision.approved) return { status: \"rejected\", approvedBy: decision.approvedBy };\n  await ctx.run(A1Apply, { target: input.target });\n  return { status: \"applied\", approvedBy: decision.approvedBy };\n};\n\nexport const A1Flow: RegisteredFlow = {\n  definition: flow$({\n    id: \"a1\",\n    name: \"A1\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ target: z.string() }),\n    outputSchema: z.object({ status: z.enum([\"applied\", \"rejected\", \"expired\"]), approvedBy: z.string().optional() }),\n    steps: [A1Apply],\n    resumeSchemas: { ApprovalGranted: A1Decision },\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n\n// WHO may approve is not decided here. In production wire `security.resumeAuthenticator`\n// (and an `executionAuthorizer`) in defineConfig - see app/security.ts in a scaffolded app -\n// so `resume()` only accepts a verified approver. The test below runs permissive on purpose.\n"
+    },
+    {
+      "path": "app/flows/a1/flow.test.ts",
+      "content": "import { advanceTime, createTestApp, resumeWith } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { A1Flow } from \"./flow\";\n\ndescribe(\"a1\", () => {\n  it(\"applies once approved\", async () => {\n    const app = createTestApp({ flows: [A1Flow] });\n    try {\n      const handle = await app.runtime.start(A1Flow, { target: \"prod-db\" });\n      await handle.waitForSuspend();\n      const resumed = await resumeWith(app.runtime, handle.executionId, {\n        eventType: \"ApprovalGranted\",\n        payload: { approved: true, approvedBy: \"ada\" },\n      });\n      const state = await resumed.waitForCompletion();\n      expect(state.variables._output).toEqual({ status: \"applied\", approvedBy: \"ada\" });\n    } finally {\n      await app.close();\n    }\n  });\n\n  it(\"expires after 24h with no answer (time travel, no real waiting)\", async () => {\n    const app = createTestApp({ clock: true, flows: [A1Flow] });\n    try {\n      const handle = await app.runtime.start(A1Flow, { target: \"prod-db\" });\n      await handle.waitForSuspend();\n      await advanceTime(app, 24 * 60 * 60 * 1000);\n      const state = await app.runtime.loadState(handle.executionId);\n      expect(state?.status).toBe(\"completed\");\n      expect(state?.variables._output).toEqual({ status: \"expired\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/timer/a1": [
+    {
+      "path": "app/flows/a1/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst A1Remind = step$({\n  id: \"a1-remind\",\n  name: \"A1 remind\",\n  inputSchema: z.object({ who: z.string() }),\n  outputSchema: z.object({ reminded: z.string() }),\n  handler: handler$(async (i: { who: string }) => ({ reminded: i.who })),\n});\n\nconst runner: FlowRunner<{ who: string }, { reminded: string }> = async (ctx, input) => {\n  // A DURABLE sleep: the execution parks in storage and a TimerService wakes it. It survives a\n  // restart and holds no process memory. For an absolute instant use `ctx.sleepUntil(epochMs)`.\n  await ctx.sleep(24 * 60 * 60 * 1000); // 1 day\n  return (await ctx.run(A1Remind, { who: input.who })) as { reminded: string };\n};\n\nexport const A1Flow: RegisteredFlow = {\n  definition: flow$({\n    id: \"a1\",\n    name: \"A1\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ who: z.string() }),\n    outputSchema: z.object({ reminded: z.string() }),\n    steps: [A1Remind],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n\n// Timers only fire where a TimerService runs: in defineConfig pass\n// `timers: { store: new InMemoryTimerStore() }` (or the Sqlite/Postgres store beside your\n// event store). A scaffolded app does not wire one yet.\n"
+    },
+    {
+      "path": "app/flows/a1/flow.test.ts",
+      "content": "import { advanceTime, createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { A1Flow } from \"./flow\";\n\nconst DAY = 24 * 60 * 60 * 1000;\n\ndescribe(\"a1\", () => {\n  it(\"waits a day, then reminds (time travel, no real waiting)\", async () => {\n    // `clock: true` gives the app a controllable clock and a timer store; advanceTime moves the\n    // clock and fires what became due through the real TimerService.\n    const app = createTestApp({ clock: true, flows: [A1Flow] });\n    try {\n      const handle = await app.runtime.start(A1Flow, { who: \"ada\" });\n      await handle.waitForSuspend();\n\n      await advanceTime(app, DAY - 1); // not due yet\n      expect((await app.runtime.loadState(handle.executionId))?.status).toBe(\"suspended\");\n\n      await advanceTime(app, 1); // due\n      const state = await app.runtime.loadState(handle.executionId);\n      expect(state?.status).toBe(\"completed\");\n      expect(state?.variables._output).toEqual({ reminded: \"ada\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/saga/a1": [
+    {
+      "path": "app/flows/a1/flow.ts",
+      "content": "import { flow$, step$ } from \"@loom/core\";\nimport { withSaga } from \"@loom/saga\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\n// Saga steps are TOOL steps: each names a `toolId` whose effect you register on the app\n// (`app.effectRuntime.register(toolId, new ToolEffect(...))`). A compensator runs under a\n// derived step id, so it must resolve through its `toolId`, not through an inline `handler$`.\nexport const A1Tools = [\"reserve\", \"unreserve\", \"charge\", \"refund\", \"ship\"].map((t) => `a1-${t}`);\n\n// Under `security.strict` (the scaffolded app) a flow may only run the tools it is granted:\n// in app/security.ts add `...A1Grants` to the `GrantTable({ ... })`, e.g.\n//   import { A1Grants } from \"./flows/a1/flow\";\n//   export const authorizer = new GrantTable({ greet: [\"greet-step\"], ...A1Grants });\nexport const A1Grants = { \"a1\": A1Tools };\n\nconst empty = z.object({});\nconst stepOf = (tool: string) =>\n  step$({\n    id: `a1-${tool}`,\n    name: tool,\n    toolId: `a1-${tool}`,\n    inputSchema: empty,\n    outputSchema: empty,\n  });\n\n// Forward steps and their compensators (undo what the forward step did).\nconst reserve = stepOf(\"reserve\");\nconst unreserve = stepOf(\"unreserve\");\nconst charge = stepOf(\"charge\");\nconst refund = stepOf(\"refund\");\nconst ship = stepOf(\"ship\");\n\nconst runner: FlowRunner<{ orderId: string }, { ok: boolean }> = (ctx) =>\n  // On any failure inside the scope, the registered compensators run in REVERSE as ordinary\n  // replay-safe steps. A suspension is not a failure: it never rolls back.\n  withSaga(ctx, async (saga) => {\n    await saga.run(reserve, {}, unreserve);\n    await saga.run(charge, {}, refund);\n    await ctx.run(ship, {}); // if the carrier fails, refund then unreserve run\n    return { ok: true };\n  });\n\nexport const A1Flow: RegisteredFlow = {\n  definition: flow$({\n    id: \"a1\",\n    name: \"A1\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ orderId: z.string() }),\n    outputSchema: z.object({ ok: z.boolean() }),\n    steps: [reserve, unreserve, charge, refund, ship],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    },
+    {
+      "path": "app/flows/a1/flow.test.ts",
+      "content": "import { ToolEffect } from \"@loom/effect-runtime\";\nimport { createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { A1Flow, A1Tools } from \"./flow\";\n\n// Stand-ins for the real side effects: record each call, fail `ship` on demand.\nfunction build(failShipping: boolean) {\n  const ledger: string[] = [];\n  const app = createTestApp({ flows: [A1Flow] });\n  for (const toolId of A1Tools) {\n    const label = toolId.slice(\"a1-\".length);\n    app.effectRuntime.register(\n      toolId,\n      new ToolEffect(async () => {\n        if (label === \"ship\" && failShipping) throw new Error(\"carrier unavailable\");\n        ledger.push(label);\n        return {};\n      })\n    );\n  }\n  return { app, ledger };\n}\n\ndescribe(\"a1\", () => {\n  it(\"keeps the work when every step succeeds\", async () => {\n    const { app, ledger } = build(false);\n    try {\n      const handle = await app.runtime.start(A1Flow, { orderId: \"o-1\" });\n      const state = await handle.waitForCompletion();\n      expect(state.variables._output).toEqual({ ok: true });\n      expect(ledger).toEqual([\"reserve\", \"charge\", \"ship\"]);\n    } finally {\n      await app.close();\n    }\n  });\n\n  it(\"undoes the work in reverse when a later step fails\", async () => {\n    const { app, ledger } = build(true);\n    try {\n      const handle = await app.runtime.start(A1Flow, { orderId: \"o-1\" });\n      await handle.waitForCompletion().catch(() => undefined); // the flow itself fails\n      expect(ledger).toEqual([\"reserve\", \"charge\", \"refund\", \"unreserve\"]);\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "agent/echo/a1": [
+    {
+      "path": "app/agents/a1.ts",
+      "content": "import { agent$ } from \"@loom/core\";\n\nexport const A1Agent = agent$({\n  id: \"a1\",\n  name: \"A1\",\n  description: \"TODO: describe a1.\",\n  tools: [],\n});\n"
+    }
+  ],
+  "tool/echo/a1": [
+    {
+      "path": "app/tools/a1.ts",
+      "content": "import { tool$ } from \"@loom/core\";\nimport { z } from \"zod\";\n\nexport const A1Tool = tool$({\n  id: \"a1\",\n  name: \"A1\",\n  description: \"TODO: describe a1.\",\n  kind: \"tool\",\n  inputSchema: z.object({}),\n  outputSchema: z.object({}),\n  // Typed failure channels (ADR 0060) — declare EXPECTED failure modes so the\n  // effect can `fail(\"notFound\", { id })`: the failure is recorded with its\n  // validated payload, flows branch on it deterministically, and replay\n  // substitutes it without re-invoking the effect. Undeclared failures keep\n  // legacy retry semantics. Pass the same map to the registered effect:\n  //   new ToolEffect(fn, { errors: { notFound: z.object({ id: z.string() }) } })\n  // errors: { notFound: z.object({ id: z.string() }) },\n});\n"
+    }
+  ],
+  "skill/echo/a1": [
+    {
+      "path": "app/skills/a1.ts",
+      "content": "import { instructions$, skill$ } from \"@loom/core\";\n\nexport const A1Skill = skill$({\n  id: \"a1\",\n  name: \"A1\",\n  description: \"TODO: describe a1.\",\n  tags: [],\n  instructions: instructions$(\"TODO: write the a1 instructions.\"),\n});\n"
+    }
+  ],
+  "schedule/echo/a1": [
+    {
+      "path": "app/schedules/a1.ts",
+      "content": "import { schedule$ } from \"@loom/core\";\n\nexport const A1Schedule = schedule$({\n  id: \"a1\",\n  cron: \"0 * * * *\", // hourly (UTC); 5-field cron\n  flowId: \"TODO-flow-id\", // the registered flow each occurrence starts\n});\n"
+    }
+  ],
+  "memory/echo/a1": [
+    {
+      "path": "app/memories/a1.ts",
+      "content": "import { memory$ } from \"@loom/core\";\n\nexport const A1Memory = memory$({\n  id: \"a1\",\n  name: \"A1\",\n  // ttlMs / maxEntries bound each scope; omit for unbounded.\n});\n"
+    }
+  ],
+  "projection/echo/a1": [
+    {
+      "path": "app/projections/a1.ts",
+      "content": "import { projection$ } from \"@loom/core\";\n\nexport const A1Projection = projection$({\n  id: \"a1\",\n  name: \"A1\",\n  initialState: { count: 0 },\n  // The fold map: one reducer per event type. The @loom/compiler plugin extracts this\n  // into its own chunk, loaded on demand the first time a handled event fires.\n  handlers: {\n    STEP_COMPLETED: (state, _event) => ({ count: state.count + 1 }),\n  },\n});\n"
+    }
+  ],
+  "sentinel/echo/a1": [
+    {
+      "path": "app/flows/a1/flow.ts",
+      "content": "// The perpetual-agent pattern (ADRs 0051-0057): a schedule over bounded runs.\n// Wire preset.schedule into defineConfig({ timers }), preset.middleware into\n// effectMiddleware, call preset.register(app.effectRuntime), and feed\n// preset.pinnedEventTypes to `loom sweep content --pin`.\nimport { flow$ } from \"@loom/core\";\nimport { isClaimCheck } from \"@loom/middleware\";\nimport { sentinelPreset } from \"@loom/plugin-sentinel\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst stateSchema = z.object({ wakes: z.number() }); // TODO: your carry-state contract\n\nexport const A1Preset = sentinelPreset<z.infer<typeof stateSchema>>({\n  id: \"a1\",\n  cron: \"0 */6 * * *\", // TODO: cadence\n  state: { schema: stateSchema },\n  stateStore: undefined as never, // TODO: durable-state backend (sqlite/postgres)\n  contentStore: undefined as never, // TODO: content backend (SqliteContentStore)\n});\n\nconst io = z.object({}).passthrough();\n\nconst runner: FlowRunner<Record<string, unknown>, Record<string, unknown>> = async (ctx) => {\n  const carried = await A1Preset.state.load(ctx);\n  // TODO: observe via your tool$ (recorded; over-cap results go by reference):\n  // const read = await ctx.execute(readTask, { at: Preset.occurrenceOf(ctx.executionId) });\n  // if (isClaimCheck(read) && (read.digest as YourDigest).metric > threshold) {\n  //   ctx.emit(\"FINDING_RECORDED\", { evidence: [read.ref] /* + your schema */ });\n  // }\n  void isClaimCheck;\n  await A1Preset.state.save(ctx, { wakes: (carried.value?.wakes ?? 0) + 1 }, carried.revision);\n  return { ok: true };\n};\n\nexport const A1Flow: RegisteredFlow = {\n  definition: flow$({\n    id: \"a1-flow\",\n    name: \"A1 sentinel\",\n    version: \"1.0.0\",\n    inputSchema: io,\n    outputSchema: io,\n    steps: [],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    }
+  ],
+  "notes/echo/a1": [],
+  "notes/approval/a1": [
+    "approval: wire `timers: { store }` in defineConfig so the 24h timeout can fire (the test provides one), and `security.resumeAuthenticator` to decide who may approve."
+  ],
+  "notes/timer/a1": [
+    "timer: wire `timers: { store }` in defineConfig so the sleep can wake (the test provides one)."
+  ],
+  "notes/saga/a1": [
+    "saga: the steps are tool steps. Under `security.strict` add `...A1Grants` (from ./flows/a1/flow) to the GrantTable in app/security.ts, and register an effect per tool id in `A1Tools` on app.effectRuntime (the test stubs them)."
+  ],
+  "flow/echo/x-2-y": [
+    {
+      "path": "app/flows/x-2-y/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst X2YStep = step$({\n  id: \"x-2-y-step\",\n  name: \"X2Y\",\n  inputSchema: z.object({ input: z.string() }),\n  outputSchema: z.object({ output: z.string() }),\n  handler: handler$(async (i: { input: string }) => ({ output: i.input })),\n});\n\nconst runner: FlowRunner<{ input: string }, { output: string }> = (ctx, input) =>\n  ctx.run(X2YStep, input) as Promise<{ output: string }>;\n\nexport const X2YFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"x-2-y\",\n    name: \"X2Y\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ input: z.string() }),\n    outputSchema: z.object({ output: z.string() }),\n    steps: [X2YStep],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    },
+    {
+      "path": "app/flows/x-2-y/flow.test.ts",
+      "content": "import { createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { X2YFlow } from \"./flow\";\n\ndescribe(\"x-2-y\", () => {\n  it(\"runs the flow end to end\", async () => {\n    const app = createTestApp({ flows: [X2YFlow] });\n    try {\n      const handle = await app.runtime.start(X2YFlow, { input: \"hello\" });\n      const state = await handle.waitForCompletion();\n      expect(state.variables._output).toEqual({ output: \"hello\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/approval/x-2-y": [
+    {
+      "path": "app/flows/x-2-y/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\n// The gate's contract. `resume()` parses the payload against `resumeSchemas` BEFORE it is\n// appended, so a wrongly-shaped approval is refused instead of becoming a permanent fact.\nconst X2YDecision = z.object({ approved: z.boolean(), approvedBy: z.string() });\n\nconst X2YApply = step$({\n  id: \"x-2-y-apply\",\n  name: \"X2Y apply\",\n  inputSchema: z.object({ target: z.string() }),\n  outputSchema: z.object({ applied: z.boolean() }),\n  handler: handler$(async (_i: { target: string }) => ({ applied: true })),\n});\n\ntype X2YOut = { status: \"applied\" | \"rejected\" | \"expired\"; approvedBy?: string };\n\nconst runner: FlowRunner<{ target: string }, X2YOut> = async (ctx, input) => {\n  // Durable checkpoint: the execution parks in storage (it survives a restart) until someone\n  // answers the gate or the timeout passes. A timeout resumes with a TIMER_FIRED payload\n  // ({ wakeAt }), which is not a decision - so parse what came back.\n  const answer = await ctx.suspend<unknown>({\n    on: \"ApprovalGranted\",\n    correlationKey: input.target,\n    timeout: 24 * 60 * 60 * 1000, // 24h\n  });\n  const parsed = X2YDecision.safeParse(answer);\n  if (!parsed.success) return { status: \"expired\" };\n  const decision = parsed.data;\n  if (!decision.approved) return { status: \"rejected\", approvedBy: decision.approvedBy };\n  await ctx.run(X2YApply, { target: input.target });\n  return { status: \"applied\", approvedBy: decision.approvedBy };\n};\n\nexport const X2YFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"x-2-y\",\n    name: \"X2Y\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ target: z.string() }),\n    outputSchema: z.object({ status: z.enum([\"applied\", \"rejected\", \"expired\"]), approvedBy: z.string().optional() }),\n    steps: [X2YApply],\n    resumeSchemas: { ApprovalGranted: X2YDecision },\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n\n// WHO may approve is not decided here. In production wire `security.resumeAuthenticator`\n// (and an `executionAuthorizer`) in defineConfig - see app/security.ts in a scaffolded app -\n// so `resume()` only accepts a verified approver. The test below runs permissive on purpose.\n"
+    },
+    {
+      "path": "app/flows/x-2-y/flow.test.ts",
+      "content": "import { advanceTime, createTestApp, resumeWith } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { X2YFlow } from \"./flow\";\n\ndescribe(\"x-2-y\", () => {\n  it(\"applies once approved\", async () => {\n    const app = createTestApp({ flows: [X2YFlow] });\n    try {\n      const handle = await app.runtime.start(X2YFlow, { target: \"prod-db\" });\n      await handle.waitForSuspend();\n      const resumed = await resumeWith(app.runtime, handle.executionId, {\n        eventType: \"ApprovalGranted\",\n        payload: { approved: true, approvedBy: \"ada\" },\n      });\n      const state = await resumed.waitForCompletion();\n      expect(state.variables._output).toEqual({ status: \"applied\", approvedBy: \"ada\" });\n    } finally {\n      await app.close();\n    }\n  });\n\n  it(\"expires after 24h with no answer (time travel, no real waiting)\", async () => {\n    const app = createTestApp({ clock: true, flows: [X2YFlow] });\n    try {\n      const handle = await app.runtime.start(X2YFlow, { target: \"prod-db\" });\n      await handle.waitForSuspend();\n      await advanceTime(app, 24 * 60 * 60 * 1000);\n      const state = await app.runtime.loadState(handle.executionId);\n      expect(state?.status).toBe(\"completed\");\n      expect(state?.variables._output).toEqual({ status: \"expired\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/timer/x-2-y": [
+    {
+      "path": "app/flows/x-2-y/flow.ts",
+      "content": "import { flow$, handler$, step$ } from \"@loom/core\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst X2YRemind = step$({\n  id: \"x-2-y-remind\",\n  name: \"X2Y remind\",\n  inputSchema: z.object({ who: z.string() }),\n  outputSchema: z.object({ reminded: z.string() }),\n  handler: handler$(async (i: { who: string }) => ({ reminded: i.who })),\n});\n\nconst runner: FlowRunner<{ who: string }, { reminded: string }> = async (ctx, input) => {\n  // A DURABLE sleep: the execution parks in storage and a TimerService wakes it. It survives a\n  // restart and holds no process memory. For an absolute instant use `ctx.sleepUntil(epochMs)`.\n  await ctx.sleep(24 * 60 * 60 * 1000); // 1 day\n  return (await ctx.run(X2YRemind, { who: input.who })) as { reminded: string };\n};\n\nexport const X2YFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"x-2-y\",\n    name: \"X2Y\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ who: z.string() }),\n    outputSchema: z.object({ reminded: z.string() }),\n    steps: [X2YRemind],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n\n// Timers only fire where a TimerService runs: in defineConfig pass\n// `timers: { store: new InMemoryTimerStore() }` (or the Sqlite/Postgres store beside your\n// event store). A scaffolded app does not wire one yet.\n"
+    },
+    {
+      "path": "app/flows/x-2-y/flow.test.ts",
+      "content": "import { advanceTime, createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { X2YFlow } from \"./flow\";\n\nconst DAY = 24 * 60 * 60 * 1000;\n\ndescribe(\"x-2-y\", () => {\n  it(\"waits a day, then reminds (time travel, no real waiting)\", async () => {\n    // `clock: true` gives the app a controllable clock and a timer store; advanceTime moves the\n    // clock and fires what became due through the real TimerService.\n    const app = createTestApp({ clock: true, flows: [X2YFlow] });\n    try {\n      const handle = await app.runtime.start(X2YFlow, { who: \"ada\" });\n      await handle.waitForSuspend();\n\n      await advanceTime(app, DAY - 1); // not due yet\n      expect((await app.runtime.loadState(handle.executionId))?.status).toBe(\"suspended\");\n\n      await advanceTime(app, 1); // due\n      const state = await app.runtime.loadState(handle.executionId);\n      expect(state?.status).toBe(\"completed\");\n      expect(state?.variables._output).toEqual({ reminded: \"ada\" });\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "flow/saga/x-2-y": [
+    {
+      "path": "app/flows/x-2-y/flow.ts",
+      "content": "import { flow$, step$ } from \"@loom/core\";\nimport { withSaga } from \"@loom/saga\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\n// Saga steps are TOOL steps: each names a `toolId` whose effect you register on the app\n// (`app.effectRuntime.register(toolId, new ToolEffect(...))`). A compensator runs under a\n// derived step id, so it must resolve through its `toolId`, not through an inline `handler$`.\nexport const X2YTools = [\"reserve\", \"unreserve\", \"charge\", \"refund\", \"ship\"].map((t) => `x-2-y-${t}`);\n\n// Under `security.strict` (the scaffolded app) a flow may only run the tools it is granted:\n// in app/security.ts add `...X2YGrants` to the `GrantTable({ ... })`, e.g.\n//   import { X2YGrants } from \"./flows/x-2-y/flow\";\n//   export const authorizer = new GrantTable({ greet: [\"greet-step\"], ...X2YGrants });\nexport const X2YGrants = { \"x-2-y\": X2YTools };\n\nconst empty = z.object({});\nconst stepOf = (tool: string) =>\n  step$({\n    id: `x-2-y-${tool}`,\n    name: tool,\n    toolId: `x-2-y-${tool}`,\n    inputSchema: empty,\n    outputSchema: empty,\n  });\n\n// Forward steps and their compensators (undo what the forward step did).\nconst reserve = stepOf(\"reserve\");\nconst unreserve = stepOf(\"unreserve\");\nconst charge = stepOf(\"charge\");\nconst refund = stepOf(\"refund\");\nconst ship = stepOf(\"ship\");\n\nconst runner: FlowRunner<{ orderId: string }, { ok: boolean }> = (ctx) =>\n  // On any failure inside the scope, the registered compensators run in REVERSE as ordinary\n  // replay-safe steps. A suspension is not a failure: it never rolls back.\n  withSaga(ctx, async (saga) => {\n    await saga.run(reserve, {}, unreserve);\n    await saga.run(charge, {}, refund);\n    await ctx.run(ship, {}); // if the carrier fails, refund then unreserve run\n    return { ok: true };\n  });\n\nexport const X2YFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"x-2-y\",\n    name: \"X2Y\",\n    version: \"1.0.0\",\n    inputSchema: z.object({ orderId: z.string() }),\n    outputSchema: z.object({ ok: z.boolean() }),\n    steps: [reserve, unreserve, charge, refund, ship],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    },
+    {
+      "path": "app/flows/x-2-y/flow.test.ts",
+      "content": "import { ToolEffect } from \"@loom/effect-runtime\";\nimport { createTestApp } from \"@loom/testing\";\nimport { describe, expect, it } from \"vitest\";\nimport { X2YFlow, X2YTools } from \"./flow\";\n\n// Stand-ins for the real side effects: record each call, fail `ship` on demand.\nfunction build(failShipping: boolean) {\n  const ledger: string[] = [];\n  const app = createTestApp({ flows: [X2YFlow] });\n  for (const toolId of X2YTools) {\n    const label = toolId.slice(\"x-2-y-\".length);\n    app.effectRuntime.register(\n      toolId,\n      new ToolEffect(async () => {\n        if (label === \"ship\" && failShipping) throw new Error(\"carrier unavailable\");\n        ledger.push(label);\n        return {};\n      })\n    );\n  }\n  return { app, ledger };\n}\n\ndescribe(\"x-2-y\", () => {\n  it(\"keeps the work when every step succeeds\", async () => {\n    const { app, ledger } = build(false);\n    try {\n      const handle = await app.runtime.start(X2YFlow, { orderId: \"o-1\" });\n      const state = await handle.waitForCompletion();\n      expect(state.variables._output).toEqual({ ok: true });\n      expect(ledger).toEqual([\"reserve\", \"charge\", \"ship\"]);\n    } finally {\n      await app.close();\n    }\n  });\n\n  it(\"undoes the work in reverse when a later step fails\", async () => {\n    const { app, ledger } = build(true);\n    try {\n      const handle = await app.runtime.start(X2YFlow, { orderId: \"o-1\" });\n      await handle.waitForCompletion().catch(() => undefined); // the flow itself fails\n      expect(ledger).toEqual([\"reserve\", \"charge\", \"refund\", \"unreserve\"]);\n    } finally {\n      await app.close();\n    }\n  });\n});\n"
+    }
+  ],
+  "agent/echo/x-2-y": [
+    {
+      "path": "app/agents/x-2-y.ts",
+      "content": "import { agent$ } from \"@loom/core\";\n\nexport const X2YAgent = agent$({\n  id: \"x-2-y\",\n  name: \"X2Y\",\n  description: \"TODO: describe x-2-y.\",\n  tools: [],\n});\n"
+    }
+  ],
+  "tool/echo/x-2-y": [
+    {
+      "path": "app/tools/x-2-y.ts",
+      "content": "import { tool$ } from \"@loom/core\";\nimport { z } from \"zod\";\n\nexport const X2YTool = tool$({\n  id: \"x-2-y\",\n  name: \"X2Y\",\n  description: \"TODO: describe x-2-y.\",\n  kind: \"tool\",\n  inputSchema: z.object({}),\n  outputSchema: z.object({}),\n  // Typed failure channels (ADR 0060) — declare EXPECTED failure modes so the\n  // effect can `fail(\"notFound\", { id })`: the failure is recorded with its\n  // validated payload, flows branch on it deterministically, and replay\n  // substitutes it without re-invoking the effect. Undeclared failures keep\n  // legacy retry semantics. Pass the same map to the registered effect:\n  //   new ToolEffect(fn, { errors: { notFound: z.object({ id: z.string() }) } })\n  // errors: { notFound: z.object({ id: z.string() }) },\n});\n"
+    }
+  ],
+  "skill/echo/x-2-y": [
+    {
+      "path": "app/skills/x-2-y.ts",
+      "content": "import { instructions$, skill$ } from \"@loom/core\";\n\nexport const X2YSkill = skill$({\n  id: \"x-2-y\",\n  name: \"X2Y\",\n  description: \"TODO: describe x-2-y.\",\n  tags: [],\n  instructions: instructions$(\"TODO: write the x-2-y instructions.\"),\n});\n"
+    }
+  ],
+  "schedule/echo/x-2-y": [
+    {
+      "path": "app/schedules/x-2-y.ts",
+      "content": "import { schedule$ } from \"@loom/core\";\n\nexport const X2YSchedule = schedule$({\n  id: \"x-2-y\",\n  cron: \"0 * * * *\", // hourly (UTC); 5-field cron\n  flowId: \"TODO-flow-id\", // the registered flow each occurrence starts\n});\n"
+    }
+  ],
+  "memory/echo/x-2-y": [
+    {
+      "path": "app/memories/x-2-y.ts",
+      "content": "import { memory$ } from \"@loom/core\";\n\nexport const X2YMemory = memory$({\n  id: \"x-2-y\",\n  name: \"X2Y\",\n  // ttlMs / maxEntries bound each scope; omit for unbounded.\n});\n"
+    }
+  ],
+  "projection/echo/x-2-y": [
+    {
+      "path": "app/projections/x-2-y.ts",
+      "content": "import { projection$ } from \"@loom/core\";\n\nexport const X2YProjection = projection$({\n  id: \"x-2-y\",\n  name: \"X2Y\",\n  initialState: { count: 0 },\n  // The fold map: one reducer per event type. The @loom/compiler plugin extracts this\n  // into its own chunk, loaded on demand the first time a handled event fires.\n  handlers: {\n    STEP_COMPLETED: (state, _event) => ({ count: state.count + 1 }),\n  },\n});\n"
+    }
+  ],
+  "sentinel/echo/x-2-y": [
+    {
+      "path": "app/flows/x-2-y/flow.ts",
+      "content": "// The perpetual-agent pattern (ADRs 0051-0057): a schedule over bounded runs.\n// Wire preset.schedule into defineConfig({ timers }), preset.middleware into\n// effectMiddleware, call preset.register(app.effectRuntime), and feed\n// preset.pinnedEventTypes to `loom sweep content --pin`.\nimport { flow$ } from \"@loom/core\";\nimport { isClaimCheck } from \"@loom/middleware\";\nimport { sentinelPreset } from \"@loom/plugin-sentinel\";\nimport type { FlowRunner, RegisteredFlow } from \"@loom/workflow-runtime\";\nimport { z } from \"zod\";\n\nconst stateSchema = z.object({ wakes: z.number() }); // TODO: your carry-state contract\n\nexport const X2YPreset = sentinelPreset<z.infer<typeof stateSchema>>({\n  id: \"x-2-y\",\n  cron: \"0 */6 * * *\", // TODO: cadence\n  state: { schema: stateSchema },\n  stateStore: undefined as never, // TODO: durable-state backend (sqlite/postgres)\n  contentStore: undefined as never, // TODO: content backend (SqliteContentStore)\n});\n\nconst io = z.object({}).passthrough();\n\nconst runner: FlowRunner<Record<string, unknown>, Record<string, unknown>> = async (ctx) => {\n  const carried = await X2YPreset.state.load(ctx);\n  // TODO: observe via your tool$ (recorded; over-cap results go by reference):\n  // const read = await ctx.execute(readTask, { at: Preset.occurrenceOf(ctx.executionId) });\n  // if (isClaimCheck(read) && (read.digest as YourDigest).metric > threshold) {\n  //   ctx.emit(\"FINDING_RECORDED\", { evidence: [read.ref] /* + your schema */ });\n  // }\n  void isClaimCheck;\n  await X2YPreset.state.save(ctx, { wakes: (carried.value?.wakes ?? 0) + 1 }, carried.revision);\n  return { ok: true };\n};\n\nexport const X2YFlow: RegisteredFlow = {\n  definition: flow$({\n    id: \"x-2-y-flow\",\n    name: \"X2Y sentinel\",\n    version: \"1.0.0\",\n    inputSchema: io,\n    outputSchema: io,\n    steps: [],\n  }),\n  runner: runner as FlowRunner<unknown, unknown>,\n};\n"
+    }
+  ],
+  "notes/echo/x-2-y": [],
+  "notes/approval/x-2-y": [
+    "approval: wire `timers: { store }` in defineConfig so the 24h timeout can fire (the test provides one), and `security.resumeAuthenticator` to decide who may approve."
+  ],
+  "notes/timer/x-2-y": [
+    "timer: wire `timers: { store }` in defineConfig so the sleep can wake (the test provides one)."
+  ],
+  "notes/saga/x-2-y": [
+    "saga: the steps are tool steps. Under `security.strict` add `...X2YGrants` (from ./flows/x-2-y/flow) to the GrantTable in app/security.ts, and register an effect per tool id in `X2YTools` on app.effectRuntime (the test stubs them)."
+  ]
+}

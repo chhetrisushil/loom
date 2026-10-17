@@ -2,7 +2,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ChangeSpec } from "./changeSpec";
 import { safeWriteFile } from "./safeWrite";
-import { changeSpecDataIssues } from "./specText";
+import {
+  MAX_INTENT_LENGTH,
+  changeSpecDataIssues,
+  specStructureIssues,
+  textIssues,
+} from "./specText";
 
 // ── Spec lockfile: the appgen equivalent of a golden log ─────────────────────
 //
@@ -62,9 +67,12 @@ export function readLockfile(file: string): AppgenLock {
     throw new Error(`not a valid appgen lockfile: ${file}`);
   }
   const issues = changeSpecDataIssues(raw.changeSpec);
-  if (raw.intent !== undefined && typeof raw.intent !== "string") {
-    issues.push("intent must be a string");
-  }
+  // The top-level intent is echoed into provenance text, so it gets the same text rule.
+  issues.push(...textIssues("intent", raw.intent, MAX_INTENT_LENGTH));
+  // Structure (duplicate step / flow ids, generated-name collisions, modify/delete in a new
+  // flow) only once every field is type-correct, via the very implementation the model
+  // validator uses. A lockfile has no app to compare against, so no `existing`.
+  if (issues.length === 0) issues.push(...specStructureIssues(raw.changeSpec));
   if (issues.length > 0) {
     throw new Error(
       `appgen lockfile: unsafe or malformed spec in ${file}:\n${issues.map((i) => `  - ${i}`).join("\n")}`
