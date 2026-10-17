@@ -28,6 +28,8 @@ export interface CommandSpec {
    * `--help` / `-h` is a literal word, not a request for help. Absent: help anywhere.
    */
   literalAfter?: number;
+  /** One-letter aliases → the long flag they stand for (`{ v: "verbose" }` makes `-v` work). */
+  short?: Readonly<Record<string, string>>;
 }
 
 /** Exit code 2: bad usage or a refusal. Exit 1 is reserved for a failed verdict / runtime error. */
@@ -59,6 +61,8 @@ const STORE = {
   snap: "string",
   branches: "string",
   leases: "string",
+  // Prints the stack of a failed config load (also `LOOM_DEBUG=1`); `logs` reads it as detail.
+  verbose: "boolean",
 } as const satisfies Record<string, FlagKind>;
 
 const inspector: CommandSpec = {
@@ -73,10 +77,37 @@ export function specOf(name: string | undefined): CommandSpec | undefined {
 }
 
 export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
+  ls: {
+    summary: "list executions: status, last activity, what each suspended one waits on (read-only)",
+    usage: [
+      "loom ls <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--json]",
+    ],
+    flags: {
+      ...STORE,
+      status: "string",
+      workflow: "string",
+      since: "duration",
+      limit: "int",
+      json: "boolean",
+    },
+  },
   logs: {
-    summary: "print an execution's event timeline (--json: one event per line)",
-    usage: ["loom logs <store> <executionId> [--redact a,b] [--json]"],
-    flags: { ...STORE, redact: "string", json: "boolean" },
+    summary: "print an execution's event timeline (--follow tails it; --json: one event per line)",
+    usage: [
+      "loom logs <store> <executionId> [--redact a,b] [--json] [-v] [--type A,B] [--from N] [--to N]",
+      "loom logs <store> <executionId> --follow [--interval <dur>] [--redact a,b] [--json]",
+    ],
+    flags: {
+      ...STORE,
+      redact: "string",
+      json: "boolean",
+      follow: "boolean",
+      interval: "duration",
+      type: "string",
+      from: "int",
+      to: "int",
+    },
+    short: { v: "verbose" },
   },
   debug: {
     summary: "time-travel: the folded state of an execution at sequence N",
@@ -402,11 +433,21 @@ function validate(command: string, name: string, kind: FlagKind, value: string):
  * An unknown COMMAND parses loosely — the dispatcher reports it.
  */
 export function parseArgs(argv: string[]): Parsed {
-  const [command, ...rest] = argv;
+  const [command, ...restRaw] = argv;
+  const spec = specOf(command);
+  // `-v` style aliases become their long flag up front (only before a bare `--`).
+  const dd = restRaw.indexOf("--");
+  const rest =
+    spec?.short === undefined
+      ? restRaw
+      : restRaw.map((a, i) =>
+          (dd === -1 || i < dd) && /^-[A-Za-z]$/.test(a) && Object.hasOwn(spec.short!, a[1]!)
+            ? `--${spec.short![a[1]!]}`
+            : a
+        );
   // No prototype: with one, `flags["valueOf"] ?? fallback` answers with a FUNCTION for a
   // flag nobody passed. Every option is read out of this bag by name.
   const flags: Record<string, string> = Object.create(null);
-  const spec = specOf(command);
   if (spec === undefined) {
     // Unknown (or absent) command: loose reading so the dispatcher can name it.
     const positionals: string[] = [];

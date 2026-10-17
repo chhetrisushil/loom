@@ -57,7 +57,12 @@ validate
   loom eval  --dir <path> [--json]                replay golden logs vs expectations
 
 observe
+  loom ls    <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--json]
+                                                  list executions: status, last activity, and what a
+                                                  suspended one waits on (read-only; --leases adds owners)
   loom logs  <store> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
+  loom logs  <store> <executionId> [-v] [--type A,B] [--from N] [--to N]  detail (timestamps, gaps, payloads) / filter
+  loom logs  <store> <executionId> --follow [--interval <dur>]  tail it until it finishes (Ctrl-C stops)
   loom debug <store> <executionId> [--at N] [--redact a,b] [--json]  time-travel: state at sequence N
   loom profile <store> <executionId> [--json]     flame graph + latency breakdown
   loom introspect <store> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
@@ -157,7 +162,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 ### Machine output: `--json`
 
-`--json` is accepted by the commands that report a result: `logs`, `debug`, `census`, `doctor`, `check`, `verify`, `eval`, `lint claim-check`, `compat`, `profile`, `introspect` and `kernel-manifest`. Any other command rejects it as an unknown flag (exit `2`) rather than ignoring it.
+`--json` is accepted by the commands that report a result: `ls`, `logs`, `debug`, `census`, `doctor`, `check`, `verify`, `eval`, `lint claim-check`, `compat`, `profile`, `introspect` and `kernel-manifest`. Any other command rejects it as an unknown flag (exit `2`) rather than ignoring it.
 
 - **stdout is exactly the JSON** — one document (pretty-printed), or **ndjson** for `logs` (one event envelope per line). Banners, progress lines, `console.*` calls and direct `process.stdout.write` calls from an imported config are all diverted to stderr for the run.
 - Verdict commands put `ok` first-class: `{ "ok": boolean, … }`. The **exit code is unchanged** (`0` / `1` / `2`), so `loom doctor --json | jq .ok` and `loom doctor` agree. `ok` is meaningful where the command has a verdict; for `debug`, `profile`, `introspect` and `census` it is always `true` — a failure there (unknown execution, unreadable store) throws, so it exits non-zero with the stderr error document instead of emitting `ok:false`.
@@ -167,7 +172,8 @@ There are no global flags — each command declares its own. The recurring ones 
 |---|---|
 | `logs` | ndjson: one event envelope per line (`--redact` masks the same dot-paths at every depth of the envelope — `input`, `output`, resume payloads, results, arrays — and scrubs the masked values out of free text such as an error message) |
 | `debug` | `{ ok, executionId, at?, eventCount, state }` (`--redact` masks the folded `state`: frames, variables, output) |
-| `census` | `{ ok, census, note? }` |
+| `census` | `{ ok, census, suspended, note? }` (`suspended`: parked count, timer waits, overdue `wakeAt`s) |
+| `ls` | `{ ok, executions[], scanned, limit, truncated?, unreadable? }` |
 | `doctor` | `{ ok, checks: [{ id, name, status, detail }] }` |
 | `check` | `{ ok, issues }` |
 | `verify` | the verification report (`ok`, `findings`, `checked`, …) plus `banner?` |
@@ -509,11 +515,41 @@ npx loom lint claim-check --dir app
 
 ---
 
-## Observe a run: `logs`, `debug`, `inspect`
+## Observe a run: `ls`, `logs`, `debug`, `inspect`
 
-All three fold the durable log deterministically — they replay events, they never re-run effects.
+All of them fold the durable log deterministically — they replay events, they never re-run effects, and none of them writes.
 
-### `loom logs --db <path> <executionId>`
+### Choosing the store: `--config`, `--db`, or `./loom.config.js`
+
+Every `<store>` command takes `--config <module>` or `--db <events.db>`. With **neither**, the CLI looks for `./loom.config.js` (then `./loom.config.ts`) in the working directory, uses it, and says which on stderr (`loom: using ./loom.config.js …`). No file → the usual refusal (exit `2`). A command with `--apply` never guesses: name the store explicitly.
+
+Loading a config:
+
+- **TypeScript configs.** A `.ts` `--config` is loaded through [`tsx`](https://tsx.is) **if it resolves from the config's own directory** (`pnpm add -D tsx` in that project). The CLI bundles no transpiler. Without it: `built? point --config at the compiled .js, or install tsx …`, exit `2`.
+- **Errors say where.** A config that throws on import is reported as `while loading <absolute file>: <message>` plus a hint (exit `1`). `--verbose` or `LOOM_DEBUG=1` also prints the original stack to stderr.
+- **No `[loom] …` noise.** While importing a config the CLI sets `LOOM_QUIET=1`, which silences `defineConfig`'s default `console.warn("[loom] …")` composition notices so they do not bury the command's answer (they never touch stdout, and `--json` stays pure either way). `LOOM_DEBUG=1` leaves them on. `LOOM_QUIET=1` only mutes that default sink: an `onWarn` you pass still runs, and refusals (thrown errors) are never silenced. Set it yourself to quiet a script that imports your config.
+
+### `loom ls <store> [--status …] [--workflow <id>] [--since <dur>] [--limit N] [--json]`
+
+Lists executions: id, workflow, status, last sequence, last activity time (absolute plus `5m ago`), and for a **suspended** one what it waits on — the event type it is parked on, or for a timer `timer wakeAt <iso> (in 3m)` (and `overdue` when the time has passed and nothing has woken it). Give a lease store (`--leases <l.db>`, or the app's `timers.leases` via `--config`) and a row also shows the lease owner and whether it is expired.
+
+```bash
+npx loom ls --db .loom/events.db --status suspended
+```
+
+```text
+ID        WORKFLOW  STATUS     LAST  LAST ACTIVITY                         WAITING ON
+01J8…a    refund    suspended  #6    2026-10-17T09:12:03.000Z (4m ago)     event ApprovalGranted
+01J8…b    nightly   suspended  #3    2026-10-17T09:00:00.000Z (16m ago)    timer wakeAt 2026-10-17T10:00:00.000Z (in 44m)
+
+2 shown, 41 execution(s) scanned
+```
+
+- `--status` is one of `pending|running|suspended|completed|failed|cancelled|continued`; `--since 1h` keeps executions with activity in the last hour.
+- It is **bounded**: at most `--limit` rows (default `50`), in the store's id order, and it stops after scanning 5000 executions. When it stops early it says so (`truncated at --limit 50 …` / `stopped after scanning …`) — a partial list is never printed as a complete one. One read and fold per execution scanned; reserved control streams are skipped.
+- A store that cannot enumerate executions is refused with the same wording as `loom census` (exit `2`).
+
+### `loom logs <store> <executionId> [--redact a,b] [-v] [--type A,B] [--from N] [--to N] [--follow]`
 
 Prints the event timeline, one line per event: a `⏸` marker on `EXECUTION_SUSPENDED`, the sequence `#N`, the event type, and a per-type detail (the step id, the suspension target, a truncated output, or an error message).
 
@@ -530,9 +566,13 @@ npx loom logs --db .loom/events.db 01J8…
    #5  EXECUTION_COMPLETED {"summary":"…"}
 ```
 
+- **`-v` / `--verbose`** adds, under each event: its timestamp, the time since the previous event shown (`+120ms`), a step's own duration on its `STEP_COMPLETED`/`FAILED`/`CANCELLED` (`step 95ms`), the recorded actor/principal when the event carries one, and the payload cut to 200 characters. `--redact` is applied first, so a masked value is what gets truncated.
+- **`--type A,B`** keeps only those event types; **`--from N` / `--to N`** keep an inclusive sequence window (read as a range query where the store offers one). An empty window prints `(no events match …)`; an unknown execution id is still exit `1`. `--from` after `--to` is exit `2`.
+- **`--follow`** prints what is there, then polls the log from the last sequence every `--interval <dur>` (default `500ms`) and prints each new event as it lands (with `--json`: one event per line, ndjson). It stops with exit `0` when the execution reaches a terminal state (`completed`, `failed`, `cancelled`, `continued`; a `-- execution <id> completed (seq N) --` line goes to stdout, or to stderr under `--json`) and on Ctrl-C. A suspended execution is **not** terminal — `--follow` keeps waiting for the resume. Read-only: it only reads past the tip. `--redact` masks by path from the first event; a secret value learned from a later event is also scrubbed from the lines after it.
+
 ### `loom debug --db <path> <executionId> [--at N]`
 
-Time-travel inspection. With `--at N` it prints the **folded state at sequence `N`**; without `--at` it prints the full timeline followed by the final folded state.
+Time-travel inspection. With `--at N` it prints the **folded state at sequence `N`** (an `N` past the last event is refused — `sequence N > last (M)`, exit `2` — rather than quietly showing the final state); without `--at` it prints the full timeline followed by the final folded state.
 
 ```bash
 npx loom debug --db .loom/events.db 01J8… --at 3   # state as of sequence 3
@@ -551,6 +591,8 @@ frames:
 ```
 
 ### `loom inspect --db <path> [--port N]`  ·  alias `loom dev`
+
+The page opens with a clickable **executions** list (filterable by status) backed by the same scan as `loom ls` — read-only, `GET /api/executions[?status=&limit=]`; click a row to load its timeline. It binds `127.0.0.1` unless told otherwise.
 
 Launches a local **web inspector**: a timeline with a time-travel slider that fetches the folded state at each sequence. `--port` defaults to `0`, letting the OS pick a free port; the chosen URL is printed. The server runs until you stop it with Ctrl-C ([ADR 0014](adr/0014-deploy-check-and-inspector.md)).
 
@@ -1068,11 +1110,12 @@ npx loom plugin search postgres
 | `loom gen` | regenerate `loom.gen.ts` | `--dir app` | (write failure) |
 | `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied; `--check` typecheck fails |
 | `loom doctor` | run every pre-flight check whose input it can find, and name the ones it skipped | `--dir .`, `--config`, `--manifest` | any check fails (never for a skip) |
-| *store commands* | `logs` `debug` `inspect` `profile` `introspect` `optimize` `learn` `census` `recover` `branches` `repair` `retention` `sweep` `compliance` | **`<store>` = `--config <module>` _or_ `--db <events.db>`** — `--config` works wherever `--db` does, and neither flag is individually required | — |
+| *store commands* | `ls` `logs` `debug` `inspect` `profile` `introspect` `optimize` `learn` `census` `recover` `branches` `repair` `retention` `sweep` `compliance` | **`<store>` = `--config <module>` _or_ `--db <events.db>`** — `--config` works wherever `--db` does, and neither flag is individually required | — |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom verify` | pre-flight runtime verification over a built app | `--config` *(req)*, `--manifest` | any error-severity finding |
 | `loom lint claim-check` | claim-check reach-through lint (CC-5) | `--dir .` | any finding |
-| `loom logs` | print the event timeline | store *(req)*, `--redact` | unknown execution id; `--db` file missing |
+| `loom ls` | list executions + what each suspended one waits on | store *(req)*, `--status`, `--workflow`, `--since`, `--limit` | unknown store (a store that cannot enumerate is exit `2`) |
+| `loom logs` | print the event timeline | store *(req)*, `--redact`, `-v`, `--type`, `--from`, `--to`, `--follow` | unknown execution id; `--db` file missing |
 | `loom debug` | folded state at / after a sequence | store *(req)*, `--at N`, `--redact` | unknown execution id; `--db` file missing |
 | `loom inspect` (`dev`) | web timeline + time-travel slider | store *(req)*, `--port 0` | `--db` file missing |
 | `loom profile` | flame graph + latency breakdown | store *(req)* | unknown execution id; `--db` file missing |

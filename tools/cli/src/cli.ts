@@ -61,7 +61,12 @@ validate
   loom eval  --dir <path> [--json]                replay golden logs vs expectations
 
 observe
+  loom ls    <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--json]
+                                                  list executions: status, last activity, and what a
+                                                  suspended one waits on (read-only; --leases adds owners)
   loom logs  <store> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
+  loom logs  <store> <executionId> [-v] [--type A,B] [--from N] [--to N]  detail (timestamps, gaps, payloads) / filter
+  loom logs  <store> <executionId> --follow [--interval <dur>]  tail it until it finishes (Ctrl-C stops)
   loom debug <store> <executionId> [--at N] [--redact a,b] [--json]  time-travel: state at sequence N
   loom profile <store> <executionId> [--json]     flame graph + latency breakdown
   loom introspect <store> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
@@ -142,6 +147,25 @@ help
 
 New project?  →  create-loom-app <dir> --loom-path <loom>   (unpublished: see getting-started)
 `;
+
+/**
+ * Neither `--config` nor `--db` given: use `./loom.config.js` (or `.ts`) when the working
+ * directory has one, and say so on stderr. Otherwise the caller refuses as before. `--db`
+ * given alone is never overridden, and `--apply` (a write) never guesses a store.
+ */
+function hasStoreFlagsOrDiscover(flags: Record<string, string>): boolean {
+  if (hasStoreFlags(flags)) return true;
+  // A write is never aimed at a store the operator did not name.
+  if (flags.apply === "true") return false;
+  for (const name of ["loom.config.js", "loom.config.ts"]) {
+    if (fs.existsSync(name)) {
+      flags.config = `./${name}`;
+      console.error(`loom: using ./${name} (pass --config or --db to choose another store)`);
+      return true;
+    }
+  }
+  return false;
+}
 
 /** Every storage-backed command refuses the same way, naming both front doors. */
 function storeFlagError(command: string): never {
@@ -227,20 +251,77 @@ async function dispatch(
   json: boolean
 ): Promise<number> {
   switch (command) {
+    case "ls": {
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("ls");
+      const { LS_STATUSES, lsReport, renderLs } = await import("./ls");
+      if (
+        flags.status !== undefined &&
+        !(LS_STATUSES as readonly string[]).includes(flags.status)
+      ) {
+        throw new UsageError(
+          `loom ls: --status expects one of ${LS_STATUSES.join("|")}, got "${flags.status}"`
+        );
+      }
+      const { parseDuration } = await import("./duration");
+      const { result, limit } = await lsReport({
+        ...storeFlagsOf(flags),
+        ...(flags.status !== undefined && { status: flags.status as (typeof LS_STATUSES)[number] }),
+        ...(flags.workflow !== undefined && { workflow: flags.workflow }),
+        ...(flags.since !== undefined && { sinceMs: parseDuration(flags.since) }),
+        ...(flags.limit !== undefined && { limit: Number.parseInt(flags.limit, 10) }),
+      });
+      if (json) {
+        outJson({
+          ok: true,
+          executions: result.rows,
+          scanned: result.scanned,
+          limit,
+          ...(result.truncated !== undefined && { truncated: result.truncated }),
+          ...(result.unreadable > 0 && { unreadable: result.unreadable }),
+        });
+      } else out(renderLs(result, { limit }));
+      return 0;
+    }
     case "logs": {
-      if (!hasStoreFlags(flags)) return storeFlagError("logs");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("logs");
       const executionId = requirePositional(positionals, "executionId");
-      const { cmdLogs, cmdLogsJson } = await import("./commands");
+      const commands = await import("./commands");
       const redact = parseRedact(flags.redact);
+      const view: import("./commands").LogsView = {
+        ...(flags.verbose === "true" && { verbose: true }),
+        ...(flags.type !== undefined && { types: commands.parseTypes(flags.type) }),
+        ...(flags.from !== undefined && { from: Number.parseInt(flags.from, 10) }),
+        ...(flags.to !== undefined && { to: Number.parseInt(flags.to, 10) }),
+      };
+      if (flags.follow === "true") {
+        const { parseDuration } = await import("./duration");
+        const ac = new AbortController();
+        const onSigint = () => ac.abort();
+        process.once("SIGINT", onSigint);
+        try {
+          return await commands.cmdLogsFollow(storeFlagsOf(flags), executionId, {
+            redact,
+            view,
+            json,
+            ...(flags.interval !== undefined && { intervalMs: parseDuration(flags.interval) }),
+            write: out,
+            // stdout stays pure ndjson under --json; the "finished" note is a human aside.
+            note: (line) => (json ? console.error(line) : out(line)),
+            signal: ac.signal,
+          });
+        } finally {
+          process.removeListener("SIGINT", onSigint);
+        }
+      }
       out(
         json
-          ? await cmdLogsJson(storeFlagsOf(flags), executionId, redact)
-          : await cmdLogs(storeFlagsOf(flags), executionId, redact)
+          ? await commands.cmdLogsJson(storeFlagsOf(flags), executionId, redact, view)
+          : await commands.cmdLogs(storeFlagsOf(flags), executionId, redact, view)
       );
       return 0;
     }
     case "debug": {
-      if (!hasStoreFlags(flags)) return storeFlagError("debug");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("debug");
       const executionId = requirePositional(positionals, "executionId");
       const at = flags.at !== undefined ? Number.parseInt(flags.at, 10) : undefined;
       const { cmdDebug, cmdDebugJson } = await import("./commands");
@@ -250,7 +331,7 @@ async function dispatch(
       return 0;
     }
     case "recover": {
-      if (!hasStoreFlags(flags)) return storeFlagError("recover");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("recover");
       const { cmdRecover } = await import("./maintenance");
       out(
         await cmdRecover({
@@ -268,7 +349,7 @@ async function dispatch(
     }
     case "branches": {
       const sub = requirePositional(positionals, "retire|prune");
-      if (!hasStoreFlags(flags)) return storeFlagError(`branches ${sub}`);
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError(`branches ${sub}`);
       const shared = {
         ...storeFlagsOf(flags),
         ...(flags.limit !== undefined && { limit: Number.parseInt(flags.limit, 10) }),
@@ -299,22 +380,22 @@ async function dispatch(
       throw new UsageError(`unknown branches subcommand "${sub}" (expected retire|prune)`);
     }
     case "census": {
-      if (!hasStoreFlags(flags)) return storeFlagError("census");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("census");
       const { censusReport, renderCensus } = await import("./census");
-      const { census, note } = await censusReport({
+      const { census, note, suspended } = await censusReport({
         ...storeFlagsOf(flags),
         ...(flags.buckets !== undefined && { buckets: flags.buckets }),
         ...(flags.sample !== undefined && { sampleSize: Number(flags.sample) }),
       });
-      if (json) outJson({ ok: true, census, ...(note !== undefined && { note }) });
-      else out(renderCensus(census, note));
+      if (json) outJson({ ok: true, census, suspended, ...(note !== undefined && { note }) });
+      else out(renderCensus(census, note, suspended));
       return 0;
     }
 
     case "repair": {
       const sub = requirePositional(positionals, "blank-stream | terminal-event");
       if (sub === "terminal-event") {
-        if (!hasStoreFlags(flags)) return storeFlagError("repair terminal-event");
+        if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("repair terminal-event");
         const { cmdRepairTerminalEvent } = await import("./repair");
         out(
           await cmdRepairTerminalEvent(
@@ -333,7 +414,7 @@ async function dispatch(
           `unknown repair subcommand "${sub}" (expected blank-stream | terminal-event)`
         );
       }
-      if (!hasStoreFlags(flags)) return storeFlagError("repair blank-stream");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("repair blank-stream");
       const { cmdRepairBlankStream } = await import("./repair");
       out(
         await cmdRepairBlankStream({
@@ -346,7 +427,7 @@ async function dispatch(
     }
     case "retention": {
       requirePositional(positionals, "run"); // `loom retention run`
-      if (!hasStoreFlags(flags)) return storeFlagError("retention");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("retention");
       // No default: an omitted --ttl used to mean 0, i.e. "every terminal execution is aged
       // enough" — a destructive sweep chosen by forgetting a flag.
       if (flags.ttl === undefined) {
@@ -368,7 +449,7 @@ async function dispatch(
     }
     case "sweep": {
       requirePositional(positionals, "content"); // `loom sweep content`
-      if (!hasStoreFlags(flags)) return storeFlagError("sweep content");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("sweep content");
       requireFlag(flags, "content");
       const { parseDuration } = await import("./duration");
       const { cmdSweepContent } = await import("./sweepContent");
@@ -391,7 +472,7 @@ async function dispatch(
     }
     case "compliance": {
       requirePositional(positionals, "report"); // `loom compliance report`
-      if (!hasStoreFlags(flags)) return storeFlagError("compliance report");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("compliance report");
       requireFlag(flags, "subject-path");
       const { cmdComplianceReport } = await import("./compliance");
       out(
@@ -453,7 +534,7 @@ async function dispatch(
       return result.ok ? 0 : 1;
     }
     case "profile": {
-      if (!hasStoreFlags(flags)) return storeFlagError("profile");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("profile");
       const executionId = requirePositional(positionals, "executionId");
       const { cmdProfile, profileOf } = await import("./profile");
       if (json) outJson({ ok: true, profile: await profileOf(storeFlagsOf(flags), executionId) });
@@ -461,7 +542,7 @@ async function dispatch(
       return 0;
     }
     case "introspect": {
-      if (!hasStoreFlags(flags)) return storeFlagError("introspect");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("introspect");
       const executionId = requirePositional(positionals, "executionId");
       const { cmdIntrospect, introspectionOf } = await import("./introspect");
       if (json) {
@@ -477,7 +558,7 @@ async function dispatch(
       return 0;
     }
     case "optimize": {
-      if (!hasStoreFlags(flags)) return storeFlagError("optimize");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("optimize");
       const executionId = requirePositional(positionals, "executionId");
       const { cmdOptimize } = await import("./optimize");
       out(await cmdOptimize(storeFlagsOf(flags), executionId));
@@ -485,7 +566,7 @@ async function dispatch(
     }
     case "learn": {
       const sub = requirePositional(positionals, "report|eval");
-      if (!hasStoreFlags(flags)) return storeFlagError("learn");
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError("learn");
       if (sub === "report") {
         const { cmdLearnReport } = await import("./learn");
         out(await cmdLearnReport(storeFlagsOf(flags), positionals[1]));
@@ -758,7 +839,7 @@ async function dispatch(
     }
     case "inspect":
     case "dev": {
-      if (!hasStoreFlags(flags)) return storeFlagError(command);
+      if (!hasStoreFlagsOrDiscover(flags)) return storeFlagError(command);
       const { resolveStores } = await import("./stores");
       const { serveInspector } = await import("./inspector");
       const stores = await resolveStores(storeFlagsOf(flags));
@@ -849,6 +930,15 @@ export async function run(argv: string[]): Promise<number> {
     const message = String(err instanceof Error ? err.message : err);
     const code = err instanceof CliError ? err.exitCode : 1;
     console.error(jsonRequested(argv) ? JSON.stringify({ error: { code, message } }) : message);
+    // A failed config load keeps the original error as `cause`; its stack is for --verbose /
+    // LOOM_DEBUG=1 (stderr only — never stdout, never inside the --json error object).
+    if (
+      err instanceof Error &&
+      err.cause instanceof Error &&
+      (process.env.LOOM_DEBUG === "1" || argv.includes("--verbose"))
+    ) {
+      console.error(err.cause.stack ?? String(err.cause));
+    }
     return code;
   }
 }

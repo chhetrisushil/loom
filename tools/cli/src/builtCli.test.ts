@@ -1,5 +1,13 @@
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -97,5 +105,71 @@ describe("the built CLI loads a config module", () => {
     const out = run(["census", "--db", "./events.db"]);
     expect(out).toContain("1 execution(s) scanned, 1 in flight");
     expect(out).toContain("not asked");
+  });
+
+  it("lists executions from the SQLite shorthand (loom ls)", () => {
+    const out = run(["ls", "--db", "./events.db"]);
+    expect(out).toContain("stuck-1");
+    expect(out).toContain("running");
+  });
+
+  it("discovers ./loom.config.js, says which on stderr, and prints no [loom] banner", () => {
+    copyFileSync(join(SCRATCH, "app.cjs"), join(SCRATCH, "loom.config.js"));
+    try {
+      const r = spawnSync(process.execPath, [CLI, "ls"], { encoding: "utf8", cwd: SCRATCH });
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain("stuck-1");
+      expect(r.stderr).toContain("using ./loom.config.js");
+      expect(r.stderr).not.toContain("[loom]");
+    } finally {
+      rmSync(join(SCRATCH, "loom.config.js"), { force: true });
+    }
+  });
+
+  describe("TypeScript configs", () => {
+    const tsConfig = () => {
+      const dist = (p: string) => JSON.stringify(join(PKG, "..", "..", p));
+      return `import { defineConfig } from ${dist("packages/app/dist/index.js")};
+       import { SqliteEventStore, SqliteSnapshotStore } from ${dist("plugins/sqlite/dist/index.js")};
+       const events: string = "./events.db";
+       export default defineConfig({
+         storage: { kind: "custom", eventStore: new SqliteEventStore(events),
+                    snapshotStore: new SqliteSnapshotStore("./snap.db") },
+       });`;
+    };
+    // NODE_PATH is how vitest finds the hoisted tsx; a user's shell does not have it.
+    const cleanEnv = () => {
+      const env = { ...process.env };
+      Reflect.deleteProperty(env, "NODE_PATH");
+      return env;
+    };
+
+    it("refuses a .ts config when tsx does not resolve from its directory (exit 2)", () => {
+      writeFileSync(join(SCRATCH, "app.ts"), tsConfig());
+      const r = spawnSync(process.execPath, [CLI, "ls", "--config", "./app.ts"], {
+        encoding: "utf8",
+        cwd: SCRATCH,
+        env: cleanEnv(),
+      });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain("built? point --config at the compiled .js, or install tsx");
+    });
+
+    const pnpmDir = join(PKG, "..", "..", "node_modules", ".pnpm");
+    const tsxDir = readdirSync(pnpmDir).find((d) => d.startsWith("tsx@"));
+    it.skipIf(tsxDir === undefined)("loads a .ts config through the project's own tsx", () => {
+      mkdirSync(join(SCRATCH, "node_modules"), { recursive: true });
+      const link = join(SCRATCH, "node_modules", "tsx");
+      rmSync(link, { force: true });
+      symlinkSync(join(pnpmDir, tsxDir as string, "node_modules", "tsx"), link);
+      writeFileSync(join(SCRATCH, "app2.ts"), tsConfig());
+      const r = spawnSync(process.execPath, [CLI, "ls", "--config", "./app2.ts"], {
+        encoding: "utf8",
+        cwd: SCRATCH,
+        env: cleanEnv(),
+      });
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain("stuck-1");
+    });
   });
 });

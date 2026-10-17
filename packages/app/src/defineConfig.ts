@@ -1347,6 +1347,18 @@ export function normalizeConfig(config: LoomConfig): ResolvedConfig {
 }
 
 /**
+ * The default sink for boot-time `[loom] …` notices (stderr). `LOOM_QUIET=1` silences it: the
+ * `loom` CLI sets that while it imports your config to read a store, so a diagnostic's answer
+ * is not buried under the app's composition notices. Read at CALL time, so it can be set
+ * after this module loads. Only the default sink is affected — an `onWarn` you pass is
+ * always called, and errors (thrown refusals) are never silenced.
+ */
+function defaultWarn(message: string): void {
+  if (process.env.LOOM_QUIET === "1") return;
+  console.warn(`[loom] ${message}`);
+}
+
+/**
  * Assemble a Loom app from a static config: stores, an EffectRuntime wired with
  * middleware, a projection runtime with surfaces, telemetry, the WorkflowRuntime,
  * registered flows, and the A2A bus with agent/capability routes. Returns the
@@ -1362,7 +1374,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   const strictOpts: StrictOptions | undefined =
     config.strict === true ? {} : config.strict === false ? undefined : config.strict;
   const strict = strictOpts !== undefined;
-  const warnOut = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+  const warnOut = config.onWarn ?? defaultWarn;
   const posture = {
     authorizer: config.authorizer,
     executionAuthorizer: config.executionAuthorizer,
@@ -1585,7 +1597,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // someone has to know about. It stays parked durably (`ERASURE_PENDING`), so the next
   // terminal event for that subject retries it.
   const warnErasure = (err: unknown): void => {
-    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    const warn = config.onWarn ?? defaultWarn;
     warn(`erasure coordinator: ${String(err)} — the request stays parked and will retry`);
   };
   void eraseCoordinator?.loadParked().catch(warnErasure);
@@ -1722,7 +1734,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       // Suppressing a DEFAULT is the quiet, expected case. Suppressing what a config asked for
       // explicitly is someone's intent being overridden by an environment variable — the one
       // way this could silently stop timers in production, so it says so.
-      const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+      const warn = config.onWarn ?? defaultWarn;
       warn(
         "LOOM_NO_AUTOSTART=1 — background services were NOT started, though this config sets `autostart: true`. Unset it to run normally."
       );
@@ -1730,7 +1742,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   } else if (schedules.length > 0) {
     // Discovered/declared schedules can't fire without a TimerStore — surface it loudly at boot
     // rather than silently never running them.
-    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    const warn = config.onWarn ?? defaultWarn;
     warn(
       `${schedules.length} schedule(s) declared but no \`timers\` store is configured — they will not fire. Add \`timers: { store }\` to enable cron.`
     );
@@ -1742,7 +1754,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     if (timerService !== undefined && config.timers !== undefined) {
       redrive = { timers: config.timers.store, service: timerService };
     } else {
-      const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+      const warn = config.onWarn ?? defaultWarn;
       warn(
         "kernel.features.redrive is on but no `timers` store is configured — nothing can fire a re-drive row, so a contended resume is reported through onError and left to recover()."
       );
@@ -1751,7 +1763,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
 
   // ADR 0110 — the durable inbox's cross-process wake and its timer arms need a TimerStore.
   if (config.kernel?.features?.inbox === true && config.timers === undefined) {
-    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    const warn = config.onWarn ?? defaultWarn;
     warn(
       "kernel.features.inbox is on but no `timers` store is configured — a message sent from another process cannot wake a parked execution, and a ctx.select timer arm never fires. Add `timers: { store }`."
     );
@@ -1819,7 +1831,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   }
 
   if (config.manifest) {
-    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    const warn = config.onWarn ?? defaultWarn;
     for (const message of manifestWarnings(
       config.manifest,
       (id) => runtime.getFlow(id) !== undefined
@@ -1883,7 +1895,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     if (!config.a2a && !config.agentSurface) unwiredDefs += 1;
   }
   if (unwiredDefs > 0) {
-    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    const warn = config.onWarn ?? defaultWarn;
     warn(
       `${unwiredDefs} agent definition(s) passed to \`agents\` but neither \`a2a\` nor \`agentSurface\` is enabled — they are not wired to anything. Enable a flag, or pass hand-built AgentCards to wire manually.`
     );
@@ -1894,7 +1906,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   }
 
   if (config.validate) {
-    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    const warn = config.onWarn ?? defaultWarn;
     const flows = runtime.getFlowIds().map((id) => {
       const def = runtime.getFlow(id)?.definition;
       return { id, steps: (def?.steps ?? []) as FlowGraphFlow["steps"] };
@@ -1962,7 +1974,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   const verifyOptions = verifyCfg?.rules !== undefined ? { rules: verifyCfg.rules } : undefined;
 
   if (verifyCfg !== undefined && verifyCfg.mode !== "off") {
-    const warn = config.onWarn ?? ((m: string) => console.warn(`[loom] ${m}`));
+    const warn = config.onWarn ?? defaultWarn;
     // "error" throws VerificationError before the app is returned (boot fails, like validate).
     runVerification(verifyCfg.mode, resolveInput, verifyOptions, warn);
   }
