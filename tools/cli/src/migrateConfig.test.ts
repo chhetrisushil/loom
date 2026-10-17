@@ -540,3 +540,36 @@ describe("migrate-config: writing the files (P2)", () => {
     expect(readFileSync(third, "utf8")).toBe(wrap("  strict: true,\n"));
   });
 });
+
+describe("migrate-config: a large config is rewritten correctly (linear analysis)", () => {
+  /** `n` flat multi-line entries cycling over every grouped option, plus unrelated ones between. */
+  const big = (n: number) => {
+    const options = GROUPED_OPTIONS.flatMap(([, list]) => [...(list as readonly string[])]);
+    let body = "";
+    for (let i = 0; i < n; i++) {
+      const o = options[i % options.length] as string;
+      body += `  // entry ${i}\n  ${o}: {\n    n: ${i},\n  },\n  custom${i}: ${i},\n`;
+    }
+    return { body, options };
+  };
+
+  it("moves every flat entry once, keeps the rest in order, is idempotent and content-preserving", () => {
+    const n = 3000;
+    const { body, options } = big(n);
+    const src = wrap(body);
+    const a = analyzeConfig(src);
+    expect(a.refusal).toBeUndefined();
+    expect(a.conflicts).toEqual([]);
+    expect(a.moved).toHaveLength(n);
+    expect(a.moved.map((m) => m.key).slice(0, options.length)).toEqual(options);
+    // Unrelated entries stay at the top level, in their original order.
+    const custom = [...a.text.matchAll(/^ {2}custom(\d+): /gm)].map((m) => Number(m[1]));
+    expect(custom).toEqual(Array.from({ length: n }, (_, i) => i));
+    // No moved entry is left at the top level.
+    expect(a.text).not.toMatch(new RegExp(`^ {2}(${options.join("|")}): `, "m"));
+    expect(checkPreserved(src, a.text, a.created)).toBeUndefined();
+    const again = analyzeConfig(a.text);
+    expect(again.moved).toEqual([]);
+    expect(again.text).toBe(a.text);
+  });
+});

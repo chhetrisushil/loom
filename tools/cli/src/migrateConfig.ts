@@ -379,6 +379,27 @@ function reindent(
 }
 
 /**
+ * Apply `edits` (already sorted by descending start) in ONE pass: the pieces between them are
+ * collected back to front and joined once, instead of re-slicing the whole text per edit. Falls
+ * back to the one-at-a-time form if two edits overlap (never produced by the planner).
+ */
+function applyEdits(src: string, edits: readonly Edit[]): string {
+  const pieces: string[] = [];
+  let cursor = src.length;
+  for (const e of edits) {
+    if (e.end > cursor) {
+      let text = src;
+      for (const x of edits) text = text.slice(0, x.start) + x.text + text.slice(x.end);
+      return text;
+    }
+    pieces.push(src.slice(e.end, cursor), e.text);
+    cursor = e.start;
+  }
+  pieces.push(src.slice(0, cursor));
+  return pieces.reverse().join("");
+}
+
+/**
  * Plan every `defineConfig({...})` rewrite in `src`. Pure: no I/O. The caller re-analyzes the
  * result and requires a fixed point before anything is written.
  */
@@ -435,9 +456,7 @@ export function analyzeConfig(src: string): FileAnalysis {
   if (conflicts.length > 0)
     return { moved: [], conflicts, refusal: undefined, text: src, created: [] };
   edits.sort((a, b) => b.start - a.start || b.end - b.start - (a.end - a.start));
-  let text = src;
-  for (const e of edits) text = text.slice(0, e.start) + e.text + text.slice(e.end);
-  return { moved, conflicts, refusal: undefined, text, created };
+  return { moved, conflicts, refusal: undefined, text: applyEdits(src, edits), created };
 }
 
 /**
@@ -571,7 +590,9 @@ function planCall(
   const byGroup = new Map<string, Entry[]>();
   for (const e of flat) {
     const g = GROUP_OF.get(e.key as string) as string;
-    byGroup.set(g, [...(byGroup.get(g) ?? []), e]);
+    const bucket = byGroup.get(g);
+    if (bucket === undefined) byGroup.set(g, [e]);
+    else bucket.push(e);
   }
 
   const inline = sameLine(src, (toks[open] as Tok).start, (toks[close] as Tok).start);
@@ -597,8 +618,9 @@ function planCall(
     });
   }
   for (const [group, list] of byGroup) {
+    const present = new Set(targets.get(group)?.entries.map((x) => x.key));
     for (const e of list) {
-      if (targets.get(group)?.entries.some((x) => x.key === e.key))
+      if (present.has(e.key))
         conflicts.push(`\`${e.key}\` is set both flat and in \`${group}\`; keep one and re-run`);
     }
   }

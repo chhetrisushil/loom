@@ -168,7 +168,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   recover: {
     summary: "re-drive executions whose supervisor died (dry run unless --apply)",
     usage: [
-      "loom recover <store-flags> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]",
+      "loom recover <store-flags> (--stale 15m | --config <module> with timers.leases) [--owner <id>] [--limit N] [--max-recoveries N] [--apply]",
     ],
     flags: {
       ...STORE,
@@ -182,8 +182,8 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   branches: {
     summary: "retire or prune execution branches (dry run unless --apply)",
     usage: [
-      "loom branches retire <store-flags> --parent <id> --stale <d> [--limit N] [--apply]",
-      "loom branches prune <store-flags> [--protect main,rel] [--limit N] [--apply]",
+      "loom branches retire <store-flags> (--branches <b.db> | --config <module>) --parent <id> --stale <d> [--limit N] [--apply]",
+      "loom branches prune <store-flags> (--branches <b.db> | --config <module>) [--protect main,rel] [--limit N] [--apply]",
     ],
     subcommands: ["retire", "prune"],
     flags: {
@@ -203,8 +203,8 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   repair: {
     summary: "repair known log damage (dry run unless --apply)",
     usage: [
-      "loom repair blank-stream <store-flags> [--assign <id>:<from>-<through>,…] [--apply]",
-      "loom repair terminal-event <store-flags> [executionId] [--apply] [--force]",
+      "loom repair blank-stream <store-flags> (--snap <s.db> | --config <module>) [--assign <id>:<from>-<through>,…] [--apply]",
+      "loom repair terminal-event <store-flags> (--snap <s.db> | --config <module>) [executionId] [--apply] [--force]",
     ],
     subcommands: ["blank-stream", "terminal-event"],
     flags: { ...STORE, apply: "boolean", force: "boolean", assign: "string" },

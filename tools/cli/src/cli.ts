@@ -110,16 +110,16 @@ operate
                                                   process-local kill switch refuses unless
                                                   --allow-local-controls; --skip-effect-check
                                                   skips the registered-effect check)
-  loom recover <store-flags> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
+  loom recover <store-flags> (--stale 15m | --config <module> with timers.leases) [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
                                                   re-drive executions whose supervisor died
                                                   (--max-recoveries: skip + list those whose
                                                    last N re-drives made no progress)
                                                   (needs \`timers.leases\` or --stale; --apply
                                                    needs --config: re-driving runs the flow)
-  loom branches retire <store-flags> --parent <id> --stale <d> [--limit N] [--apply]
+  loom branches retire <store-flags> (--branches <b.db> | --config <module>) --parent <id> --stale <d> [--limit N] [--apply]
                                                   cancel branches nobody is coming back to
                                                   (they keep the parent uncollectable)
-  loom branches prune <store-flags> [--protect main,rel] [--limit N] [--apply]
+  loom branches prune <store-flags> (--branches <b.db> | --config <module>) [--protect main,rel] [--limit N] [--apply]
                                                   delete refs that name nothing (main protected)
   loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]
                                                   reconcile a directory into a corpus
@@ -131,12 +131,12 @@ operate
                                                   ask the corpus (operator query — not recorded)
 
 maintain
-  loom repair blank-stream <store-flags> [--assign <id>:<from>-<through>,…] [--apply]
+  loom repair blank-stream <store-flags> (--snap <s.db> | --config <module>) [--assign <id>:<from>-<through>,…] [--apply]
                                                   re-home what the pre-0106 compaction bug
                                                   wrote to execution "" (ADR 0107): proven
                                                   segments only; the rest is listed with its
                                                   candidates, never guessed
-  loom repair terminal-event <store-flags> [executionId] [--apply] [--force]
+  loom repair terminal-event <store-flags> (--snap <s.db> | --config <module>) [executionId] [--apply] [--force]
                                                   give an execution a pre-0116 compaction left
                                                   as [0]+checkpoint its terminal event back, so
                                                   it can take a late outcome (ADR 0116)
