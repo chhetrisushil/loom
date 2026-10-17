@@ -89,20 +89,20 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
     expect(reference.scores.validity).toBe(1);
   });
 
-  it("the measured gap is pinned: the model arm cannot plan a delete, the deterministic arm can", () => {
+  it("the delete gap is closed: the model arm plans the delete, as the deterministic arm does", () => {
     expect(
       coverage(
         kase("edit-remove-digest").expected,
         model.outcomes.get("edit-remove-digest")?.observed ?? []
       )
-    ).toBe(0);
+    ).toBe(1);
     expect(
       coverage(
         kase("edit-remove-digest").expected,
         reference.outcomes.get("edit-remove-digest")?.observed ?? []
       )
     ).toBe(1);
-    expect(model.scores.coverage).toBeCloseTo(0.9, 10);
+    expect(model.scores.coverage).toBeCloseTo(1, 10);
     expect(reference.scores.coverage).toBeCloseTo(0.4, 10);
   });
 
@@ -402,7 +402,7 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
         });
         expect(run.outcomes.get("new-refund-reviewer")?.valid).toBe(true); // valid, just incomplete
         expect(run.scores.validity).toBe(1);
-        expect(run.scores.coverage).toBeCloseTo(0.9 - 0.6 / 10, 10);
+        expect(run.scores.coverage).toBeCloseTo(1 - 0.6 / 10, 10);
         expect(run.scores.coverage).toBeLessThan(model.scores.coverage as number);
         expect(gate(run)).toEqual(["coverage"]);
         expect(gate(model)).toEqual([]);
@@ -439,8 +439,36 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
           typechecker,
           cassette: swap("new-refund-reviewer", c),
         });
-        expect(run.scores.coverage).toBeCloseTo(0.9 - 0.02, 10);
+        expect(run.scores.coverage).toBeCloseTo(1 - 0.02, 10);
         expect(gate(run)).toEqual(["coverage"]);
+      },
+      T
+    );
+
+    it(
+      "(b3) a model that ignores a requested delete (the old no-op extend) falls below the coverage floor",
+      async () => {
+        const ignoresDelete = {
+          content: JSON.stringify({
+            name: "digest",
+            capabilities: [{ id: "digest", name: "Digest", intent: "x", op: "extend", steps: [] }],
+          }),
+          stopReason: "end_turn" as const,
+        };
+        const c = await authorAppgenCassette(
+          kase("edit-remove-digest"),
+          typechecker,
+          () => ignoresDelete
+        );
+        const run = await runAppgenSuite({
+          arm: "model",
+          typechecker,
+          cassette: swap("edit-remove-digest", c),
+        });
+        expect(run.outcomes.get("edit-remove-digest")?.valid).toBe(true); // valid, just incomplete
+        expect(run.scores.coverage).toBeCloseTo(1 - 0.1, 10);
+        expect(gate(run)).toEqual(["coverage"]);
+        expect(gate(model)).toEqual([]);
       },
       T
     );

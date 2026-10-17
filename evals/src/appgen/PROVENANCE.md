@@ -49,13 +49,17 @@ prompt change MISSES (the signal); regenerate with `pnpm eval:author` and review
 3. Step and flow ids in `expected` are the kebab-case slug a sensible planner would pick; where the intent is the
    directive grammar the ids are exactly what the grammar derives.
 
-## Measured gap, recorded not hidden
+## Measured gap, recorded, then closed (delete gap closed 2026-10-17)
 
-`edit-remove-digest`: "Remove the digest flow." The model arm cannot plan a delete: `@loom/appgen-model`'s prompt and
-JSON schema offer `create | extend | modify` only (and `tryParseChangeSpec` coerces anything else to `create`), so a
-planner that follows the prompt answers with a no-op `extend`. The deterministic arm does handle it (`remove <flow>`).
-The case is kept with the label the USER intent implies (the flow must be gone); the model arm's coverage is 0.9 because
-of it. If the prompt learns to delete, raise the floor in `thresholds.ts`.
+`edit-remove-digest`: "Remove the digest flow." The first S3 run recorded that the model arm could not plan a delete:
+`@loom/appgen-model`'s prompt and JSON schema offered `create | extend | modify` only (and `tryParseChangeSpec` coerced
+anything else to `create`), so a planner that followed the prompt answered with a no-op `extend` and the arm scored 0.9
+coverage. CLOSED 2026-10-17: the prompt, grammar schema and parser now offer `op: "delete"` for a flow and for a step
+(the ChangeSpec shape the deterministic planner already produced), the hand-written script for this case now answers with
+`op: "delete"`, and every cassette was re-authored (the prompt text is part of each cassette key). Model coverage is 1.0
+(floor 0.985, was 0.885). Fail-proof `(b3)` pins the regression direction: a model that ignores the requested delete
+(the old no-op extend) falls below the floor. The script is still hand-written: this shows the code accepts and applies a
+model delete, not that any real model emits one.
 
 Also found while writing the fail-proofs: `validateChangeSpec` did not reject a capability with DUPLICATE step ids, so
 such a plan was accepted and generated `const <id>Step` twice; only the typecheck caught it. FIXED 2026-10-17: the

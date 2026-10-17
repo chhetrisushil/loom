@@ -345,6 +345,19 @@ export async function cmdAppgen(
   return result;
 }
 
+/**
+ * Every DESTRUCTIVE change in a plan, one line each: whole flows removed and steps cut out of
+ * a flow. Planner-agnostic - a deterministic plan and a model plan are held to the same gate
+ * (see `confirmPlan` and the non-interactive refusal in `loom appgen`).
+ */
+export function planDeletions(plan: FilePlan): string[] {
+  const out = plan.deletes.map((d) => `flow file ${d.path}`);
+  for (const e of plan.edits) {
+    for (const id of e.deletedSteps ?? []) out.push(`step "${id}" in ${e.path}`);
+  }
+  return out;
+}
+
 /** A one-line, human-readable tag for which planner produced a plan (and any elevations). */
 export function plannerTag(planner: Planner, elevations?: Elevation[]): string {
   if (planner !== "model") return "[deterministic]";
@@ -381,6 +394,12 @@ export function renderPlan(
   for (const s of plan.skips) lines.push(`  - skip   ${s.path} (${s.reason})`);
   if (plan.regenRegistration) lines.push("  ~ edit   app/loom.gen.ts (re-wire flow registration)");
   const n = plan.creates.length + plan.edits.length + plan.deletes.length;
+  const removals = planDeletions(plan);
+  if (removals.length > 0) {
+    lines.push("");
+    lines.push(`DESTRUCTIVE: this plan DELETES ${removals.length} item(s):`);
+    for (const r of removals) lines.push(`  ✗ ${r}`);
+  }
   lines.push("");
   lines.push(
     `${n} change${n === 1 ? "" : "s"}, ${plan.skips.length} skipped — run with --apply to write`

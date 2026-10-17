@@ -249,4 +249,39 @@ describe("planChangesDeterministic: existing digit-led ids resolve legacy-first"
       { id: "item-2fa", op: "extend" }
     );
   });
+
+  describe("delete resolves ids like extend (legacy slug, else the minted one, never mint)", () => {
+    it("deletes a minted flow `item-2fa` named '2fa'; the legacy slug still wins when both exist", () => {
+      const minted = model(flow("item-2fa", ["run"]));
+      expect(planChangesDeterministic("Delete 2fa.", minted as never).capabilities).toEqual([
+        expect.objectContaining({ id: "item-2fa", op: "delete" }),
+      ]);
+      const both = model(flow("2fa", ["run"]), flow("item-2fa", ["run"]));
+      expect(planChangesDeterministic("Delete 2fa.", both as never).capabilities).toEqual([
+        expect.objectContaining({ id: "2fa", op: "delete" }),
+      ]);
+    });
+
+    it("deletes a minted step from a minted flow", () => {
+      const minted = model(flow("item-2fa", ["item-3d", "run"]));
+      const spec = planChangesDeterministic("Delete step 3d from 2fa.", minted as never);
+      expect(spec.capabilities).toHaveLength(1);
+      expect(spec.capabilities[0]).toMatchObject({
+        id: "item-2fa",
+        op: "extend",
+        steps: [{ id: "item-3d", op: "delete" }],
+      });
+    });
+
+    it("never mints for delete: with neither id present nothing is planned", () => {
+      const app = model(flow("planner", ["run"]));
+      expect(planChangesDeterministic("Delete 2fa.", app as never).capabilities).toEqual([]);
+      expect(
+        planChangesDeterministic("Delete step 3d from planner.", app as never).capabilities
+      ).toEqual([]);
+      expect(
+        planChangesDeterministic("Delete step run from 2fa.", app as never).capabilities
+      ).toEqual([]);
+    });
+  });
 });

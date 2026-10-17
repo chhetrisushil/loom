@@ -131,19 +131,31 @@ export function planChangesDeterministic(intent: string, appModel: AppModel): Ch
     return c;
   };
 
+  // Delete resolves ids with the SAME rule as extend (the resolver above) but never mints: the
+  // legacy slug if the app has it, else the minted `newIdSlug` if THAT exists, else undefined
+  // (reported by the caller as "no such flow/step"). So "create 2fa" extending `item-2fa` and
+  // "delete 2fa" removing it agree.
+  const lookup = (raw: string, has: (id: string) => boolean): string | undefined => {
+    const legacy = slug(raw);
+    if (has(legacy)) return legacy;
+    const minted = newIdSlug(raw);
+    return has(minted) ? minted : undefined;
+  };
+
   for (const s of deletes) {
     const stepM = s.match(
       /(?:delete|remove)\s+(?:the\s+)?step\s+([a-z0-9][a-z0-9\s-]*?)(?:\s+from\s+(?:the\s+)?([a-z0-9\s-]+?)(?:\s+flow)?)?$/i
     );
     if (stepM?.[1] !== undefined) {
-      const stepId = slug(stepM[1]);
       const flowId =
         stepM[2] !== undefined
-          ? slug(stepM[2])
+          ? lookup(stepM[2], (id) => byId.has(id))
           : appModel.flows.length === 1
             ? appModel.flows[0]!.id
             : undefined;
-      if (flowId !== undefined && byId.has(flowId)) {
+      const known = flowId !== undefined ? flowIds.get(flowId) : undefined;
+      const stepId = lookup(stepM[1], (id) => known?.has(id) === true);
+      if (flowId !== undefined && stepId !== undefined) {
         ensureCap(flowId, "extend", s).steps.push({ id: stepId, op: "delete" });
       }
       continue;
@@ -152,8 +164,8 @@ export function planChangesDeterministic(intent: string, appModel: AppModel): Ch
       /(?:delete|remove)\s+(?:the\s+)?([a-z0-9][a-z0-9\s-]*?)(?:\s+(?:flow|capability))?$/i
     );
     if (flowM?.[1] !== undefined) {
-      const id = slug(flowM[1]);
-      if (byId.has(id) && !capById.has(id)) ensureCap(id, "delete", s);
+      const id = lookup(flowM[1], (f) => byId.has(f));
+      if (id !== undefined && !capById.has(id)) ensureCap(id, "delete", s);
     }
   }
 

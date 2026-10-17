@@ -1,6 +1,6 @@
 {
-  "req:df2c59536d301693f0a33adc896bdbf3": {
-    "content": "{\"name\":\"digest\",\"capabilities\":[{\"id\":\"digest\",\"name\":\"Digest\",\"intent\":\"Remove the digest flow.\",\"op\":\"extend\",\"steps\":[]}]}",
+  "req:a522ad751d8993f0bc5418888e3fdfa2": {
+    "content": "{\"name\":\"digest\",\"capabilities\":[{\"id\":\"digest\",\"name\":\"Digest\",\"intent\":\"Remove the digest flow.\",\"op\":\"delete\",\"steps\":[]}]}",
     "stopReason": "end_turn"
   }
 }

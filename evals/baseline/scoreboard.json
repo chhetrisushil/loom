@@ -24,7 +24,7 @@
       "gated": true
     },
     "appgen/model/coverage": {
-      "value": 0.9,
+      "value": 1,
       "gated": true
     },
     "appgen/model/validity": {

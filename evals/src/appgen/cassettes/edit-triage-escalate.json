@@ -1,5 +1,5 @@
 {
-  "req:fa35ee349e077a001c765309dc14fbc0": {
+  "req:81a4d7aeda67555af77877685e8d9bb3": {
     "content": "{\"name\":\"triage\",\"capabilities\":[{\"id\":\"triage\",\"name\":\"Triage\",\"intent\":\"Add a step that escalates urgent tickets to a human.\",\"op\":\"extend\",\"steps\":[{\"id\":\"escalate-urgent\",\"op\":\"create\"}]}]}",
     "stopReason": "end_turn"
   }

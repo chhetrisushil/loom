@@ -1,5 +1,5 @@
 {
-  "req:886ea6a9208cd7717e4f4c265f8ca4cf": {
+  "req:909551f168674bc46b9dfe216e81000d": {
     "content": "{\"name\":\"triage\",\"capabilities\":[{\"id\":\"triage\",\"name\":\"Triage\",\"intent\":\"Pause for human approval before routing.\",\"op\":\"extend\",\"steps\":[],\"addApproval\":true}]}",
     "stopReason": "end_turn"
   }
