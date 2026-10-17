@@ -147,9 +147,9 @@ time-based threshold: a wrongly preempted live worker's in-flight effect may sti
 **The CLI.**
 
 ```bash
-loom census  <store>                      # read-only: what is stuck, is anything watching it
-loom recover <store> --stale 15m          # dry run: lists what it would re-drive
-loom recover <store> --stale 15m --config ./loom.config.js --apply
+loom census  <store-flags>                      # read-only: what is stuck, is anything watching it
+loom recover <store-flags> --stale 15m          # dry run: lists what it would re-drive
+loom recover <store-flags> --stale 15m --config ./loom.config.js --apply
 ```
 
 `loom recover` needs `timers.leases` or `--stale`; `--apply` needs `--config` because re-driving runs

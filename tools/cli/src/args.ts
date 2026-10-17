@@ -76,7 +76,7 @@ const LIFECYCLE = {
 
 const inspector: CommandSpec = {
   summary: "web inspector (timeline + slider) over a store",
-  usage: ["loom inspect <store> [--port N]"],
+  usage: ["loom inspect <store-flags> [--port N]"],
   flags: { ...STORE, port: "int" },
 };
 
@@ -89,7 +89,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   ls: {
     summary: "list executions: status, last activity, what each suspended one waits on (read-only)",
     usage: [
-      "loom ls <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]",
+      "loom ls <store-flags> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]",
     ],
     flags: {
       ...STORE,
@@ -104,8 +104,8 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   logs: {
     summary: "print an execution's event timeline (--follow tails it; --json: one event per line)",
     usage: [
-      "loom logs <store> <executionId> [--redact a,b] [--json] [-v] [--type A,B] [--from N] [--to N]",
-      "loom logs <store> <executionId> --follow [--interval <dur>] [--redact a,b] [--json]",
+      "loom logs <store-flags> <executionId> [--redact a,b] [--json] [-v] [--type A,B] [--from N] [--to N]",
+      "loom logs <store-flags> <executionId> --follow [--interval <dur>] [--redact a,b] [--json]",
     ],
     flags: {
       ...STORE,
@@ -121,7 +121,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   debug: {
     summary: "time-travel: the folded state of an execution at sequence N",
-    usage: ["loom debug <store> <executionId> [--at N] [--redact a,b] [--json]"],
+    usage: ["loom debug <store-flags> <executionId> [--at N] [--redact a,b] [--json]"],
     flags: { ...STORE, at: "int", redact: "string", json: "boolean" },
   },
   resume: {
@@ -168,7 +168,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   recover: {
     summary: "re-drive executions whose supervisor died (dry run unless --apply)",
     usage: [
-      "loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]",
+      "loom recover <store-flags> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]",
     ],
     flags: {
       ...STORE,
@@ -182,8 +182,8 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   branches: {
     summary: "retire or prune execution branches (dry run unless --apply)",
     usage: [
-      "loom branches retire <store> --parent <id> --stale <d> [--limit N] [--apply]",
-      "loom branches prune <store> [--protect main,rel] [--limit N] [--apply]",
+      "loom branches retire <store-flags> --parent <id> --stale <d> [--limit N] [--apply]",
+      "loom branches prune <store-flags> [--protect main,rel] [--limit N] [--apply]",
     ],
     subcommands: ["retire", "prune"],
     flags: {
@@ -197,28 +197,28 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   census: {
     summary: "what is stuck, and is anything watching it (read-only)",
-    usage: ["loom census <store> [--buckets 5m,1h,6h,24h] [--sample N] [--json]"],
+    usage: ["loom census <store-flags> [--buckets 5m,1h,6h,24h] [--sample N] [--json]"],
     flags: { ...STORE, buckets: "string", sample: "int", json: "boolean" },
   },
   repair: {
     summary: "repair known log damage (dry run unless --apply)",
     usage: [
-      "loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]",
-      "loom repair terminal-event <store> [executionId] [--apply] [--force]",
+      "loom repair blank-stream <store-flags> [--assign <id>:<from>-<through>,…] [--apply]",
+      "loom repair terminal-event <store-flags> [executionId] [--apply] [--force]",
     ],
     subcommands: ["blank-stream", "terminal-event"],
     flags: { ...STORE, apply: "boolean", force: "boolean", assign: "string" },
   },
   retention: {
     summary: "reclaim aged terminal executions (needs --ttl; dry run unless --apply)",
-    usage: ["loom retention run <store> --ttl <dur|ms> [--apply]"],
+    usage: ["loom retention run <store-flags> --ttl <dur|ms> [--apply]"],
     subcommands: ["run"],
     flags: { ...STORE, ttl: "duration", apply: "boolean" },
   },
   sweep: {
     summary: "pinned blob sweep over content stores (dry run unless --apply)",
     usage: [
-      "loom sweep content <store> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]",
+      "loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]",
     ],
     subcommands: ["content"],
     flags: {
@@ -236,7 +236,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   compliance: {
     summary: "data-subject inventory over a store",
-    usage: ["loom compliance report <store> --subject-path <p> [--tenant-path <p>]"],
+    usage: ["loom compliance report <store-flags> --subject-path <p> [--tenant-path <p>]"],
     subcommands: ["report"],
     flags: { ...STORE, "subject-path": "string", "tenant-path": "string" },
   },
@@ -285,24 +285,24 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   profile: {
     summary: "flame graph + latency breakdown of an execution",
-    usage: ["loom profile <store> <executionId> [--json]"],
+    usage: ["loom profile <store-flags> <executionId> [--json]"],
     flags: { ...STORE, json: "boolean" },
   },
   introspect: {
     summary: "execution/task/decision/resource graphs of an execution",
-    usage: ["loom introspect <store> <executionId> [--graph N] [--json]"],
+    usage: ["loom introspect <store-flags> <executionId> [--graph N] [--json]"],
     flags: { ...STORE, graph: "string", json: "boolean" },
   },
   optimize: {
     summary: "advisory optimization report (recommendations) for an execution",
-    usage: ["loom optimize <store> <executionId>"],
+    usage: ["loom optimize <store-flags> <executionId>"],
     flags: { ...STORE },
   },
   learn: {
     summary: "learning coverage report; shadow-evaluate a candidate policy on real logs",
     usage: [
-      "loom learn report <store> [executionId]",
-      "loom learn eval <store> --policy <module> [--min-steps N] [executionId]",
+      "loom learn report <store-flags> [executionId]",
+      "loom learn eval <store-flags> --policy <module> [--min-steps N] [executionId]",
     ],
     subcommands: ["report", "eval"],
     flags: { ...STORE, policy: "string", "min-steps": "int" },

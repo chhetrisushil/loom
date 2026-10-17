@@ -193,7 +193,7 @@ describe("help scoping", () => {
   it("`loom branches retire --help` prints only that subcommand", async () => {
     expect(await run(["branches", "retire", "--help"])).toBe(0);
     const text = out.join("\n");
-    expect(text).toContain("loom branches retire <store>");
+    expect(text).toContain("loom branches retire <store-flags>");
     expect(text).not.toContain("loom branches prune");
     expect(text).toContain("--parent");
     expect(text).not.toContain("--protect");

@@ -164,7 +164,7 @@ export async function cmdRecover(
 }
 
 /**
- * `loom branches retire <store> --parent <executionId> --stale <duration> [--limit N] [--apply]`
+ * `loom branches retire <store-flags> --parent <executionId> --stale <duration> [--limit N] [--apply]`
  *
  * Cancels branches nobody is coming back to, so the parent they pin stops being uncollectable.
  * `--stale` is required and has no default: a branch parked on a human gate is someone's open
@@ -224,7 +224,7 @@ export async function cmdBranchesRetire(
 }
 
 /**
- * `loom branches prune <store> [--protect main,release] [--limit N] [--apply]`
+ * `loom branches prune <store-flags> [--protect main,release] [--limit N] [--apply]`
  *
  * Deletes refs that name executions the log no longer has. `main` is protected by default:
  * deleting it turns "main names a ghost" into "there is no main", which is harder to
