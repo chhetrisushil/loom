@@ -58,6 +58,30 @@ export interface DevOptions {
   backoff?: { baseMs?: number; maxMs?: number; stableMs?: number };
   /** How long a stopping child gets after SIGTERM before SIGKILL (default 3000 ms). */
   killGraceMs?: number;
+  /** A second interrupt: SIGKILL the child's group at once and resolve (skips the grace). */
+  forceSignal?: AbortSignal;
+  /**
+   * The environment the child inherits (default: `process.env`). `loom dev` passes the one it
+   * started with, so switches the dev process sets for ITSELF while loading the config for the
+   * inspector (`LOOM_NO_AUTOSTART`, `LOOM_QUIET`) never reach the app.
+   */
+  inheritEnv?: NodeJS.ProcessEnv;
+  /** Interval of the watcher's safety rescan / re-arm (default 5000 ms). */
+  safetyMs?: number;
+}
+
+/** What the dev loop watches: source files only, never editor / database scratch. */
+const SOURCE_FILE = /\.(?:ts|tsx|mts|cts|js|mjs|cjs|json)$/;
+const NOISE_NAME = /(?:~|\.swp|\.swx|\.tmp|\.log|-wal|-shm|-journal|\.db|\.sqlite3?)$/;
+
+/** Whether a changed path (relative, `/` separators) should restart the app. */
+export function isDevSource(file: string): boolean {
+  if (file === "loom.gen.ts") return false; // OUR output: restarting on it would double every restart
+  const segments = file.split("/");
+  const base = segments[segments.length - 1] as string;
+  if (segments.some((seg) => seg.startsWith("."))) return false; // dotfiles, .#lock, hidden dirs
+  if (base === "4913" || NOISE_NAME.test(base)) return false; // vim's probe file, sqlite sidecars
+  return SOURCE_FILE.test(base);
 }
 
 /** Signal a child's whole process group (POSIX), or the child itself where groups do not exist. */
@@ -68,6 +92,18 @@ function signalTree(child: ChildProcess, sig: NodeJS.Signals): void {
     else process.kill(-child.pid, sig);
   } catch {
     // already gone
+  }
+}
+
+/** Whether anything is still alive in the child's process group (the child itself where groups do not exist). */
+function groupAlive(child: ChildProcess): boolean {
+  if (child.pid === undefined) return false;
+  if (process.platform === "win32") return child.exitCode === null && child.signalCode === null;
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -86,10 +122,11 @@ export async function runDev(options: DevOptions): Promise<number> {
     binDirs.push(path.join(d, "node_modules", ".bin"));
     if (path.dirname(d) === d) break;
   }
-  const childEnv = {
-    ...process.env,
+  const inherited = options.inheritEnv ?? process.env;
+  const childEnv: NodeJS.ProcessEnv = {
+    ...inherited,
     ...options.env,
-    PATH: [...binDirs, process.env.PATH ?? ""].join(path.delimiter),
+    PATH: [...binDirs, inherited.PATH ?? ""].join(path.delimiter),
     LOOM_DEV: "1",
   };
 
@@ -99,6 +136,38 @@ export async function runDev(options: DevOptions): Promise<number> {
   let restartTimer: NodeJS.Timeout | undefined;
   let startedAt = 0;
   let exited: Promise<void> = Promise.resolve();
+  let forced = false;
+  /** Children being stopped on purpose (their group gets the full grace, then SIGKILL). */
+  const stopping = new WeakSet<ChildProcess>();
+  /** Pending "SIGKILL the leftovers of a self-exited child" timers. */
+  const reapers = new Map<NodeJS.Timeout, ChildProcess>();
+  let force!: () => void;
+  const forcedP = new Promise<void>((resolve) => {
+    force = resolve;
+  });
+  /** Wait `ms`, or until a second interrupt forces everything down. */
+  const pause = async (ms: number): Promise<void> => {
+    let t: NodeJS.Timeout | undefined;
+    await Promise.race([
+      new Promise<void>((resolve) => {
+        t = setTimeout(resolve, ms);
+      }),
+      forcedP,
+    ]);
+    clearTimeout(t);
+  };
+  const killAllNow = (): void => {
+    if (child !== undefined) signalTree(child, "SIGKILL");
+  };
+  const onProcessExit = (): void => killAllNow(); // best effort if loom itself is going down
+  process.on("exit", onProcessExit);
+  const onForce = (): void => {
+    forced = true;
+    killAllNow();
+    force();
+  };
+  if (options.forceSignal?.aborted) onForce();
+  else options.forceSignal?.addEventListener("abort", onForce, { once: true });
 
   const start = (): void => {
     startedAt = Date.now();
@@ -113,10 +182,24 @@ export async function runDev(options: DevOptions): Promise<number> {
     child = proc;
     log(`loom dev: started (pid ${proc.pid}): ${options.command}`);
     exited = new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
       proc.once("exit", (code, sig) => {
         if (child === proc) child = undefined;
-        // Whatever the app left behind in its group goes with it.
-        signalTree(proc, "SIGKILL");
+        // Members the app left in its group: a stop in progress gives them the grace period
+        // (stopChild escalates); on a self-exit ask them to stop now and force it after the grace.
+        if (!stopping.has(proc) && groupAlive(proc)) {
+          signalTree(proc, "SIGTERM");
+          const t = setTimeout(() => {
+            reapers.delete(t);
+            signalTree(proc, "SIGKILL");
+          }, killGraceMs);
+          reapers.set(t, proc);
+        }
         if (!stopped && !restarting) {
           if (code === 0) {
             log("loom dev: the app exited (0) - waiting for a change to run it again");
@@ -126,20 +209,28 @@ export async function runDev(options: DevOptions): Promise<number> {
             log(
               `loom dev: the app ${sig ? `was killed by ${sig}` : `exited with code ${code}`} - restarting in ${backoffMs}ms (or on the next change)`
             );
-            restartTimer = setTimeout(() => {
-              restartTimer = undefined;
-              if (!stopped && child === undefined) start();
-            }, backoffMs);
-            backoffMs = Math.min(backoffMs * 2, maxMs);
+            scheduleRestart();
           }
         }
-        resolve();
+        finish();
       });
       proc.once("error", (err) => {
+        // spawn failed (or the child could not be signalled): there is no child any more.
         log(`loom dev: could not start the app: ${err.message}`);
-        resolve();
+        if (child === proc) child = undefined;
+        if (!stopped && !restarting) scheduleRestart();
+        finish();
       });
     });
+  };
+
+  const scheduleRestart = (): void => {
+    if (restartTimer !== undefined) clearTimeout(restartTimer);
+    restartTimer = setTimeout(() => {
+      restartTimer = undefined;
+      if (!stopped && child === undefined) start();
+    }, backoffMs);
+    backoffMs = Math.min(backoffMs * 2, maxMs);
   };
 
   let restarting = false;
@@ -150,10 +241,16 @@ export async function runDev(options: DevOptions): Promise<number> {
     }
     const proc = child;
     if (proc === undefined) return;
+    stopping.add(proc);
     signalTree(proc, "SIGTERM");
-    const escalate = setTimeout(() => signalTree(proc, "SIGKILL"), killGraceMs);
+    // The shell may exit at once while its children are still flushing: wait for the WHOLE group
+    // (up to the grace period), and only then SIGKILL what is left - of this generation only.
+    const deadline = Date.now() + killGraceMs;
+    await Promise.race([exited, pause(killGraceMs)]);
+    while (groupAlive(proc) && Date.now() < deadline && !forced) await pause(25);
+    if (groupAlive(proc)) signalTree(proc, "SIGKILL");
     await exited;
-    clearTimeout(escalate);
+    if (child === proc) child = undefined;
   };
 
   const restart = async (why: string): Promise<void> => {
@@ -178,13 +275,13 @@ export async function runDev(options: DevOptions): Promise<number> {
   }
 
   const watcher = watchTree(options.dir, {
-    // loom.gen.ts is OUR output: restarting on it would double every restart.
-    include: (file) => file !== "loom.gen.ts" && !/\.(?:log|tmp|swp)$/.test(file),
+    include: isDevSource,
     ...(options.debounceMs !== undefined
       ? { debounceMs: options.debounceMs }
       : { debounceMs: 150 }),
     ...(options.pollMs !== undefined && { pollMs: options.pollMs }),
     ...(options.forcePoll !== undefined && { forcePoll: options.forcePoll }),
+    ...(options.safetyMs !== undefined && { safetyMs: options.safetyMs }),
     async onChange(changes: TreeChange[]) {
       const structural = changes.some(
         (c) => c.kind !== "changed" && CONVENTION_FOLDERS.includes(c.file.split("/")[0] as string)
@@ -218,5 +315,13 @@ export async function runDev(options: DevOptions): Promise<number> {
   stopped = true;
   watcher.close();
   await stopChild();
+  // Leftovers of a self-exited generation already had SIGTERM: finish them now.
+  for (const [t, proc] of reapers) {
+    clearTimeout(t);
+    signalTree(proc, "SIGKILL");
+  }
+  reapers.clear();
+  process.removeListener("exit", onProcessExit);
+  options.forceSignal?.removeEventListener("abort", onForce);
   return 0;
 }

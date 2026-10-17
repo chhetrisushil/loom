@@ -8,8 +8,8 @@ export type TestAppConfig = Omit<LoomConfig, "storage"> &
      * Time travel. `true` creates a {@link TestClock}; a number is its start (epoch ms); pass your
      * own clock to share it. The app gets `execution.now: clock.now`, an in-memory `TimerStore` and a
      * `TimerService` that does NOT poll on its own (`autostart: false`) - drive it with
-     * `advanceTime(app, ms)` / `fireDueTimers(app)`. Your own `execution.now`, `timers` or `autostart`
-     * win over these defaults.
+     * `advanceTime(app, ms)` / `fireDueTimers(app)`. Your own `timers` or `autostart` win over these defaults;
+     * your own `execution.now` wins too but must agree with the clock (it throws otherwise).
      */
     clock?: boolean | number | TestClock;
   };
@@ -31,6 +31,12 @@ export function createTestApp(config: TestAppConfig = {}): LoomApp {
     typeof clockOption === "object"
       ? clockOption
       : createTestClock(typeof clockOption === "number" ? clockOption : undefined);
+  const ownNow = rest.execution?.now;
+  if (ownNow !== undefined && ownNow() !== clock.now()) {
+    throw new Error(
+      "createTestApp: execution.now disagrees with the test clock - advanceTime moves the clock, not your now(), so timers would fire at the wrong instant. Drop execution.now (the clock supplies it) or pass a clock built on the same source"
+    );
+  }
   const app = defineConfig({
     storage: { kind: "memory" },
     timers: { store: new InMemoryTimerStore() },

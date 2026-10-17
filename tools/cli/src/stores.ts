@@ -206,6 +206,10 @@ function registerTsLoader(file: string): {
  * error (stack included) is its `cause`, printed by `--verbose` / `LOOM_DEBUG=1`.
  */
 export async function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>> {
+  // Restored in `finally`: defineConfig reads it while composing, which happens during the import,
+  // so restoring afterwards cannot re-enable autostart for the app already built - and a caller
+  // that goes on to spawn processes (`loom dev`) must not hand them our inspect-only switch.
+  const autostartBefore = process.env.LOOM_NO_AUTOSTART;
   process.env.LOOM_NO_AUTOSTART = "1";
   const file = path.resolve(modulePath);
   const quietBefore = process.env.LOOM_QUIET;
@@ -232,6 +236,8 @@ export async function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>>
     return (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;
   } finally {
     loader?.unregister();
+    if (autostartBefore === undefined) Reflect.deleteProperty(process.env, "LOOM_NO_AUTOSTART");
+    else process.env.LOOM_NO_AUTOSTART = autostartBefore;
     if (quietBefore === undefined) Reflect.deleteProperty(process.env, "LOOM_QUIET");
     else process.env.LOOM_QUIET = quietBefore;
   }
