@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LoomApp } from "@loom/app";
+import { UsageError } from "./args";
 import { cmdCheck } from "./check";
 import { cmdLintClaimCheck } from "./lintClaimCheck";
 import { loadLoomApp } from "./stores";
@@ -24,6 +25,8 @@ import { cmdVerify } from "./verify";
 export type DoctorStatus = "ok" | "failed" | "skipped" | "advisory";
 
 export interface DoctorCheck {
+  /** Stable id for `--require` and `--json` (the display `name` may be reworded). */
+  id?: string;
   name: string;
   status: DoctorStatus;
   /** Why it was skipped, what failed, or what the advisory depends on. */
@@ -52,7 +55,18 @@ export async function cmdDoctor(opts: {
   dir?: string;
   config?: string;
   manifest?: string;
+  /** Every check that could not run (`skipped`) becomes a failure. */
+  strict?: boolean;
+  /** Check ids that must have run (see {@link DOCTOR_CHECK_IDS}); a skipped one fails. */
+  require?: readonly string[];
 }): Promise<{ text: string; result: DoctorResult }> {
+  for (const id of opts.require ?? []) {
+    if (!DOCTOR_CHECK_IDS.includes(id)) {
+      throw new UsageError(
+        `loom doctor --require: unknown check "${id}" (checks: ${DOCTOR_CHECK_IDS.join(", ")})`
+      );
+    }
+  }
   const dir = path.resolve(opts.dir ?? ".");
   const checks: DoctorCheck[] = [];
   const loadedApp = appLoader();
@@ -190,8 +204,63 @@ export async function cmdDoctor(opts: {
     });
   }
 
+  for (const c of checks) {
+    const id = idOfCheck(c.name);
+    if (id !== undefined) c.id = id;
+  }
+  // F13 — a skip is "could not run", which a gate must be able to refuse. --strict refuses all
+  // of them; --require refuses the named ones (and says so when the check never even appeared).
+  const required = new Set(opts.require ?? []);
+  for (const c of checks) {
+    if (c.status !== "skipped") continue;
+    if (opts.strict === true || (c.id !== undefined && required.has(c.id))) {
+      c.status = "failed";
+      c.detail = `could not run (${opts.strict === true ? "--strict" : "--require"}): ${c.detail}`;
+    }
+  }
   const result: DoctorResult = { checks, ok: !checks.some((c) => c.status === "failed") };
   return { text: formatDoctor(result), result };
+}
+
+/** The stable ids `--require` accepts, in report order. */
+export const DOCTOR_CHECK_IDS: readonly string[] = [
+  "flow-graph",
+  "verify",
+  "memory-store",
+  "timers",
+  "timer-ownership",
+  "heartbeat-leases",
+  "encryption-keys",
+  "plaintext-snapshot",
+  "archive-snapshot",
+  "claim-check",
+];
+
+function idOfCheck(name: string): string | undefined {
+  switch (name) {
+    case "flow-graph (loom check)":
+      return "flow-graph";
+    case "runtime verification (loom verify)":
+      return "verify";
+    case "memory store (durability + relevance recall)":
+      return "memory-store";
+    case TIMER_CHECK:
+      return "timers";
+    case OWNERSHIP_CHECK:
+      return "timer-ownership";
+    case HEARTBEAT_CHECK:
+      return "heartbeat-leases";
+    case KEYS_CHECK:
+      return "encryption-keys";
+    case SNAPSHOT_SEAL_CHECK:
+      return "plaintext-snapshot";
+    case ARCHIVE_SEAL_CHECK:
+      return "archive-snapshot";
+    case "claim-check reach-through (loom lint)":
+      return "claim-check";
+    default:
+      return undefined;
+  }
 }
 
 /**

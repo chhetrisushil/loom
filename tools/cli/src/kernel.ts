@@ -33,7 +33,11 @@ export function cmdKernelManifest(opts: { json?: boolean; emitDocs?: string }): 
  * versions against this kernel's manifest. Exits non-zero on a major-version mismatch (a
  * deployment gate). Omitted contracts are not checked.
  */
-export function cmdCompat(flags: Record<string, string>): { text: string; ok: boolean } {
+export function cmdCompat(flags: Record<string, string>): {
+  text: string;
+  ok: boolean;
+  report: ReturnType<typeof checkCompatibility>;
+} {
   const actual: DeploymentVersions = {
     ...(flags.abi !== undefined && { kernelAbi: flags.abi }),
     ...(flags["event-schema"] !== undefined && { eventSchema: flags["event-schema"] }),
@@ -56,5 +60,5 @@ export function cmdCompat(flags: Record<string, string>): { text: string; ok: bo
     : `incompatible — ${report.issues.length} mismatch(es):\n${report.issues
         .map((i) => `  ✗ ${i.component}: ${i.reason}`)
         .join("\n")}`;
-  return { text, ok: report.ok };
+  return { text, ok: report.ok, report };
 }

@@ -15,6 +15,11 @@ export async function cmdIntrospect(
   executionId: string,
   graph?: string
 ): Promise<string> {
+  return formatIntrospection(await introspectionOf(flags, executionId, graph), graph);
+}
+
+/** The structured graphs (`loom introspect --json`); `--graph` selects one key. */
+export async function introspectionOf(flags: StoreFlags, executionId: string, graph?: string) {
   if (graph !== undefined && !(GRAPH_NAMES as readonly string[]).includes(graph)) {
     throw new UsageError(`unknown graph "${graph}" — choose one of: ${GRAPH_NAMES.join(", ")}`);
   }
@@ -23,7 +28,7 @@ export async function cmdIntrospect(
   try {
     const events = await store.read(executionId);
     if (events.length === 0) throw await noSuchExecution(store, executionId);
-    return formatIntrospection(introspect(events, executionId), graph);
+    return introspect(events, executionId);
   } finally {
     await resolved.close();
   }

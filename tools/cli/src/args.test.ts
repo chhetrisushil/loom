@@ -72,12 +72,9 @@ describe("did-you-mean", () => {
     expect(suggest("stael", ["apply", "stale"])).toBe("stale");
   });
 
-  it("--help / -h on a command points at `loom help`, not a did-you-mean", () => {
-    for (const h of ["--help", "-h"]) {
-      expect(() => parseArgs(["logs", h])).toThrow(
-        /per-command help is not available yet; run `loom help`/
-      );
-    }
+  it("--help / -h are handled by the dispatcher before parsing (help.test.ts), not flags", () => {
+    // parseArgs sees them only if a caller skips the dispatcher; they are then plain unknown flags.
+    expect(() => parseArgs(["logs", "--help"])).toThrow(/unknown flag --help/);
   });
 
   it("a value-looking token gets the `--` hint; short flags only suggest within distance 1", () => {
