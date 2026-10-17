@@ -2,7 +2,7 @@ import type { EventStore, ExecutionEnumerable } from "@loom/event-runtime";
 import { type ContentSweepReport, sweepUnpinnedContent } from "@loom/plugin-content";
 import { SqliteContentStore, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
-import { type StoreFlags, resolveStores } from "./stores";
+import { type StoreFlags, requireExistingFile, resolveStores } from "./stores";
 
 // ── `loom sweep content` — the operator surface for the K10.6 pinned sweep ────
 //
@@ -108,6 +108,11 @@ export async function cmdSweepContent(
   }
 ): Promise<string> {
   const orphans = opts.orphans === true;
+  // A SQLite open creates a missing file: a typo'd path would stand in for a real (empty)
+  // archive and make every blob it alone cites look orphaned. Check BEFORE anything opens.
+  requireExistingFile("content", opts.content);
+  if (opts.archiveDb !== undefined) requireExistingFile("archive-db", opts.archiveDb);
+  if (opts.archiveSnap !== undefined) requireExistingFile("archive-snap", opts.archiveSnap);
   const stores = await resolveStores(opts);
   const live = stores.eventStore;
   const configArchive = stores.archive;

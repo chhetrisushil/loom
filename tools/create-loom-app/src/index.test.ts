@@ -11,7 +11,14 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findWorkspace, linkPackageJson, loomPackages, scaffoldFiles } from "./index";
+import {
+  findWorkspace,
+  globToRegExp,
+  linkPackageJson,
+  loomPackages,
+  scaffoldFiles,
+  workspaceGlobs,
+} from "./index";
 
 describe("scaffoldFiles", () => {
   it("emits a convention-following, defineConfig-wired skeleton", () => {
@@ -78,11 +85,33 @@ describe("create-loom-app argument handling", () => {
     }
   });
 
+  it("a missing <directory> is bad usage (exit 2) and writes nothing", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cla-nodir-"));
+    try {
+      const { code, out } = run([], dir);
+      expect(code).toBe(2);
+      expect(out).toContain("usage: create-loom-app");
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("a flag missing its value is bad usage (exit 2)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cla-noval-"));
+    try {
+      expect(run(["app", "--name"], dir).code).toBe(2);
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("refuses any flag-shaped target, and writes nothing", () => {
     const dir = mkdtempSync(join(tmpdir(), "cla-flag-"));
     try {
       const { code, out } = run(["--oops"], dir);
-      expect(code).toBe(1);
+      expect(code).toBe(2);
       expect(out).toContain("is not a directory name");
       expect(readdirSync(dir)).toEqual([]);
     } finally {
@@ -283,5 +312,72 @@ describe("create-loom-app day-one wiring", () => {
       linkPackageJson(scaffoldFiles("a")["package.json"] as string, join(base, "x/y"), loom)
     );
     expect(out.pnpm.overrides["@loom/cli"]).toBe("link:../../loom/tools/cli");
+  });
+});
+
+describe("workspace detection forms", () => {
+  const match = (glob: string, rel: string) => globToRegExp(glob).test(rel);
+
+  it("globs: ** matches zero or more segments", () => {
+    expect(match("**/foo", "foo")).toBe(true);
+    expect(match("**/foo", "a/b/foo")).toBe(true);
+    expect(match("**/foo", "a/bar")).toBe(false);
+    expect(match("packages/**", "packages")).toBe(true);
+    expect(match("packages/**", "packages/a/b")).toBe(true);
+    expect(match("packages/**", "other")).toBe(false);
+    expect(match("a/**/b", "a/b")).toBe(true);
+    expect(match("a/**/b", "a/x/y/b")).toBe(true);
+    expect(match("packages/*", "packages/a")).toBe(true);
+    expect(match("packages/*", "packages/a/b")).toBe(false);
+    expect(match("./apps/*", "apps/x")).toBe(true);
+  });
+
+  it("parses block, quoted, comment-laden and inline-array forms", () => {
+    expect(
+      workspaceGlobs("packages:\n  - 'a/*'\n  - \"b\"\n  - c/* # note\n  - '!c/skip'\n")
+    ).toEqual(["a/*", "b", "c/*", "!c/skip"]);
+    expect(workspaceGlobs("packages: ['a/*', \"b\"]\n")).toEqual(["a/*", "b"]);
+    expect(workspaceGlobs("packages: [\n  'a/*',\n  b\n]\n")).toEqual(["a/*", "b"]);
+    expect(workspaceGlobs("catalog:\n  x: 1\n")).toBeUndefined();
+  });
+
+  it("refuses a packages: it cannot parse instead of guessing", () => {
+    expect(() => workspaceGlobs("packages: *anchor\n")).toThrow(/cannot confidently parse/);
+    expect(() => workspaceGlobs("packages:\n")).toThrow(/cannot confidently parse/);
+    expect(() => workspaceGlobs("packages:\n  foo: bar\n")).toThrow(/cannot confidently parse/);
+  });
+
+  const withWorkspace = (yaml: string, target: string) => {
+    const root = mkdtempSync(join(tmpdir(), "cla-ws-"));
+    try {
+      writeFileSync(join(root, "pnpm-workspace.yaml"), yaml);
+      return findWorkspace(join(root, target)).root !== undefined;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  };
+
+  it("findWorkspace: inline array, no packages key, **, and negation", () => {
+    expect(withWorkspace("packages: ['apps/*']\n", "apps/x")).toBe(true);
+    expect(withWorkspace("packages: ['apps/*']\n", "other/x")).toBe(false);
+    expect(withWorkspace("onlyBuiltDependencies: [a]\n", "anything/x")).toBe(true);
+    expect(withWorkspace("packages:\n  - '**/foo'\n", "foo")).toBe(true);
+    expect(withWorkspace("packages:\n  - 'packages/**'\n", "packages")).toBe(true);
+    expect(withWorkspace("packages:\n  - 'apps/*'\n  - '!apps/skip'\n", "apps/skip")).toBe(false);
+    expect(withWorkspace("packages:\n  - 'apps/*'\n  - '!apps/skip'\n", "apps/ok")).toBe(true);
+    expect(() => withWorkspace("packages: *x\n", "apps/x")).toThrow(/cannot confidently parse/);
+  });
+
+  it("run() refuses (exit 2, writes nothing) when the enclosing workspace file is unparseable", () => {
+    const root = mkdtempSync(join(tmpdir(), "cla-ws-bad-"));
+    try {
+      writeFileSync(join(root, "pnpm-workspace.yaml"), "packages: *x\n");
+      const { code, out } = cli(["app"], root);
+      expect(code).toBe(2);
+      expect(out).toContain("cannot confidently parse");
+      expect(readdirSync(root)).toEqual(["pnpm-workspace.yaml"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -71,4 +71,28 @@ describe("did-you-mean", () => {
     expect(suggest("xyzxyzxyz", ["apply", "stale"])).toBeUndefined();
     expect(suggest("stael", ["apply", "stale"])).toBe("stale");
   });
+
+  it("--help / -h on a command points at `loom help`, not a did-you-mean", () => {
+    for (const h of ["--help", "-h"]) {
+      expect(() => parseArgs(["logs", h])).toThrow(
+        /per-command help is not available yet; run `loom help`/
+      );
+    }
+  });
+
+  it("a value-looking token gets the `--` hint; short flags only suggest within distance 1", () => {
+    expect(() => parseArgs(["debug", "--db", "x", "-5"])).toThrow(/put -- before it/);
+    expect(() => parseArgs(["recover", "-ab"])).toThrow(/put -- before it/);
+    // `-l` is distance 4 from `--limit`'s 5 letters: no suggestion for a 1-char flag.
+    expect(() => parseArgs(["recover", "-l"])).not.toThrow(/did you mean/);
+    expect(() => parseArgs(["recover", "--aply"])).toThrow(/did you mean --apply/);
+  });
+
+  it("a value flag given twice is a usage error; a repeated boolean is harmless", () => {
+    expect(() => parseArgs(["debug", "--db", "a", "--db", "b"])).toThrow(
+      /--db given more than once/
+    );
+    expect(() => parseArgs(["debug", "--db=a", "--db", "b"])).toThrow(/given more than once/);
+    expect(() => parseArgs(["repair", "--apply", "--apply"])).not.toThrow();
+  });
 });

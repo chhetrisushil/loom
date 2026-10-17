@@ -161,14 +161,39 @@ async function fromConfig(modulePath: string): Promise<ResolvedStores> {
  * `--db` names a store that already exists. A SQLite open CREATES a missing file, so a mistyped
  * path used to answer "(no events)" (exit 0) and leave an empty database behind — a typo read
  * as "nothing happened". Refuse before opening anything, naming the absolute path and cwd.
+ *
+ * Existence is not enough: a zero-byte or non-SQLite file would be opened read-write and
+ * migrated into a database. So the file must also begin with the 16-byte SQLite header.
+ * (Chosen over a readonly open because the plugin stores run `CREATE TABLE` migrations on
+ * construction, which a readonly handle cannot do.)
  */
-function requireExistingFile(flag: string, file: string): void {
+export function requireExistingFile(flag: string, file: string): void {
   if (file === ":memory:" || file.startsWith("file:")) return;
-  if (fs.existsSync(file)) return;
-  throw new CliError(
-    `--${flag}: no such file ${path.resolve(file)} (cwd ${process.cwd()}) — not creating it. Check the path.`
-  );
+  if (!fs.existsSync(file)) {
+    throw new CliError(
+      `--${flag}: no such file ${path.resolve(file)} (cwd ${process.cwd()}) — not creating it. Check the path.`
+    );
+  }
+  const header = Buffer.alloc(SQLITE_HEADER.length);
+  let n = 0;
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      n = fs.readSync(fd, header, 0, header.length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (err) {
+    throw new CliError(`--${flag}: cannot read ${path.resolve(file)}: ${(err as Error).message}`);
+  }
+  if (n < header.length || !header.equals(SQLITE_HEADER)) {
+    throw new CliError(
+      `--${flag}: ${path.resolve(file)} is not a SQLite database (empty or wrong header) — refusing to open it.`
+    );
+  }
 }
+
+const SQLITE_HEADER = Buffer.from("SQLite format 3\0", "latin1");
 
 function fromSqlite(flags: StoreFlags): ResolvedStores {
   requireExistingFile("db", flags.db as string);
