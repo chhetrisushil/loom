@@ -37,7 +37,7 @@ Both halves work for every storage command.
 
 | | |
 |---|---|
-| `loom doctor` | runs every pre-flight check it can, and names the ones it could not |
+| `loom doctor [--config m]` | runs every pre-flight check it can, and names the ones it could not — timers, lease scope (`process`/`host`/`cluster`), plaintext snapshots under encrypting events, archive safety |
 | `loom check` | static flow-graph checks from the compiler manifest |
 | `loom verify` | runtime verification against a built config |
 | `loom lint claim-check` | flags claim-check reach-through inside flows |
@@ -79,10 +79,15 @@ Both halves work for every storage command.
 | `loom recover <store> [--stale 15m] [--apply]` | re-drive executions whose supervisor died. Needs `timers.leases` **or** an explicit `--stale` — loom will not guess. `--apply` requires `--config`, because re-driving runs your flow. `--max-recoveries N` skips and lists executions whose last N re-drives made no progress (ADR 0105). |
 | `loom repair blank-stream <store> [--assign id:from-through] [--apply]` | re-home events the pre-0106 compaction bug wrote to execution `""` — proven segments only; the rest is listed with candidates, never guessed (ADR 0107) |
 | `loom retention run <store> [--ttl ms] [--apply]` | reclaim aged terminal executions. Without a branchRegistry the live-descendant guard is **off**. |
+| `loom repair terminal-event <store> [id] [--apply]` | give an execution a pre-0116 compaction left as `[0]+checkpoint` its terminal event back, so it can take a late outcome (ADR 0116) |
 | `loom branches retire --parent <id> --stale <d>` | cancel branches nobody is coming back to — they keep the parent uncollectable |
 | `loom branches prune [--protect main]` | delete refs that name nothing; `main` is protected |
-| `loom sweep content --content <db>` | pinned-blob sweep over externalized payloads |
+| `loom sweep content --content <db>` | pinned-blob sweep over externalized payloads. `--orphans` also erases blobs nothing scanned cites — it needs the snapshot store and every archive; dry-run first |
 | `loom knowledge sync --apply` | reconcile a directory into a corpus (also **removes**) |
+
+> **Heartbeat leases (ADR 0130 D11) are the default evidence** that a driver is gone: with a
+> co-located lease store the sweep re-drives an execution whose lease *expired*, and refuses one
+> whose lease is live. Details: [operations](operations.md#3-failure-recovery).
 
 > **The preview is the pass.** Each dry run is the same code path as `--apply`, so it cannot
 > promise an outcome the real run won't deliver — and it claims no lease while looking.
@@ -99,6 +104,11 @@ Both halves work for every storage command.
 | `captureGolden(store, id)` | freeze a log as a fixture |
 | `recordingProvider` / `replayingProvider` | VCR for LLMs: record once, replay offline |
 | `crashingEventStore` | inject a store failure — prove recovery, don't assume it |
+| `@loom/dst` | deterministic simulation: `simWorld`, `faultInjectingStore`, `virtualClock`, seeded fault schedules checked against `INVARIANTS` |
+
+Rules the repo enforces on tests: wait on a *condition*, never a fixed `sleep`; no
+`performance.now()` or timing ratios in `*.test.ts` (put them in `*.perf.test.ts`, run with
+`pnpm test:perf`); bind test servers to `127.0.0.1`, never a bare `listen(0)`.
 
 ## Authoring a plugin
 
@@ -133,12 +143,19 @@ generated app.
 
 - **A package's tests import its siblings' `dist`.** Edit a dependency's `src` and nothing
   changes until you rebuild it — sourcemaps will point at pre-edit line numbers.
-- **Test files are not typechecked.** `tsconfig` excludes them, so a type-level proof in a
-  test silently proves nothing.
+- **`pnpm typecheck` does not see tests.** Package `tsconfig`s exclude them, so a type-level
+  proof in a test proves nothing until `pnpm typecheck:tests` (build first) runs it.
+- **Inner loop:** `pnpm build:fast` (one `tsc` process) and `pnpm test:src` (siblings resolved to
+  source). Before a PR: `pnpm build && npx turbo test --force --concurrency=2 && pnpm typecheck
+  && pnpm typecheck:tests && pnpm lint`. CI runs only on *ready* PRs — open drafts.
 - **`tsc --build` trusts `.tsbuildinfo`.** Delete `dist` and it may rebuild nothing; use
   `--force`.
 - **Three rules see past declared steps only with a compiler manifest.** Without one,
   `loom verify` says so rather than reporting clean.
+- **`needsApproval: true` parks** the tool call; the deprecated `requireApproval: true` meant
+  *proceed*. Same log, opposite polarity — rename, don't just alias.
+- **A strict resume schema changes what is persisted.** `z.object` drops unnamed keys from the
+  log for good; `agentLoop$` approvals need `viewDigest` to pass through.
 - **Grouped config options throw when spelled flat** — there is no deprecation window.
 - **Global install ≠ `pnpm link`.** pnpm's global store is tied to its major version, and
   this repo pins one via `packageManager`.
