@@ -25,6 +25,7 @@ export {
   discoverProjections,
   cmdGen,
   cmdNew,
+  containmentRootFor,
 } from "./gen";
 export { checkManifest, cmdCheck, type CheckManifest, type CheckResult } from "./check";
 export { buildTrace, type Trace, type TraceEvent, type TraceFrame } from "./trace";

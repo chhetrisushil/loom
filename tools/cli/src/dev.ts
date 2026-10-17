@@ -2,7 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { UsageError } from "./args";
-import { CONVENTION_FOLDERS, cmdGen, genSummary } from "./gen";
+import { CONVENTION_FOLDERS, cmdGen, containmentRootFor, genSummary } from "./gen";
 import { type TreeChange, watchTree } from "./watch";
 
 // ── `loom dev` - the development loop ─────────────────────────────────────────
@@ -42,7 +42,7 @@ export function resolveRunCommand(cwd: string, explicit: string | undefined): st
 export interface DevOptions {
   /** The folder holding flows/, agents/, ... (default "app"). */
   dir: string;
-  /** Symlink-containment root for the generated registration (default: `dir`; see `cmdGen`). */
+  /** Symlink-containment root for the generated registration (default: `containmentRootFor(dir)`; see `cmdGen`). */
   root?: string;
   /** Shell command that starts the app. */
   command: string;
@@ -282,7 +282,7 @@ export async function runDev(options: DevOptions): Promise<number> {
 
   // Generate once up front, like `loom gen`, so the first run sees a current loom.gen.ts.
   try {
-    log(genSummary(cmdGen(options.dir, options.root ?? options.dir)));
+    log(genSummary(cmdGen(options.dir, options.root ?? containmentRootFor(options.dir))));
   } catch (err) {
     if (err instanceof UsageError) throw err;
     log(`loom dev: gen failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -303,7 +303,7 @@ export async function runDev(options: DevOptions): Promise<number> {
       );
       if (structural) {
         try {
-          log(genSummary(cmdGen(options.dir, options.root ?? options.dir)));
+          log(genSummary(cmdGen(options.dir, options.root ?? containmentRootFor(options.dir))));
         } catch (err) {
           log(`loom dev: gen failed: ${err instanceof Error ? err.message : String(err)}`);
         }

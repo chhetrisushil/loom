@@ -87,17 +87,35 @@ export function discoverProjections(dir: string): string[] {
 }
 
 /**
+ * The symlink-containment root for a project directory: NEVER trust a symlink below the cwd.
+ *
+ *  - `dir` resolves (lexically) INSIDE the cwd, however it was spelled (`app`, `./app`, `app/nested`,
+ *    an absolute path under the cwd): the root is the cwd, so `dir` itself and every component below
+ *    it are checked and a link among them (a cloned repo's `app -> /outside`) is refused. The cwd
+ *    itself may be reached through a link.
+ *  - `dir` resolves OUTSIDE the cwd (an absolute path elsewhere, or a `..` path that leaves it): the
+ *    user named a location outside the project, so `dir` itself is the root and may be a link (what is
+ *    below it is still checked).
+ */
+export function containmentRootFor(dir: string, cwd: string = process.cwd()): string {
+  const rel = path.relative(path.resolve(cwd), path.resolve(cwd, dir));
+  const outside = rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+  return outside ? path.resolve(cwd, dir) : path.resolve(cwd);
+}
+
+/**
  * `loom gen [--dir app]` — write `<dir>/loom.gen.ts` registering the discovered
  * flows, agents, tools, skills, schedules, and memories (the folder convention).
  * Returns per-kind counts.
  *
  * `root` is the symlink-containment root: nothing between it and `loom.gen.ts` may be a link. It
- * defaults to `dir` (an explicit `--dir` is trusted to be reached through a link); the CLI passes the
- * cwd when `--dir` was DEFAULTED, so a repo's own `app -> /outside` link is refused, not followed.
+ * defaults to {@link containmentRootFor}: the cwd for a `dir` inside the cwd (so a repo's own
+ * `app -> /outside` link is refused, whether `--dir` was typed or defaulted), `dir` itself only for a
+ * `dir` outside the cwd.
  */
 export function cmdGen(
   dir: string,
-  root: string = dir
+  root: string = containmentRootFor(dir)
 ): {
   out: string;
   count: number;
@@ -196,7 +214,7 @@ export interface GenWatchOptions {
   log?: (line: string) => void;
   /** Stop watching and resolve. */
   signal?: AbortSignal;
-  /** Symlink-containment root (default: the watched dir). See {@link cmdGen}. */
+  /** Symlink-containment root (default: {@link containmentRootFor}). See {@link cmdGen}. */
   root?: string;
   debounceMs?: number;
   pollMs?: number;
@@ -213,7 +231,7 @@ export interface GenWatchOptions {
  * missing mid-rename) is reported and watching continues.
  */
 export async function genWatch(dir: string, options: GenWatchOptions = {}): Promise<number> {
-  const root = options.root ?? dir;
+  const root = options.root ?? containmentRootFor(dir);
   const log = options.log ?? ((line: string) => console.log(line));
   // The first generation is a plain `loom gen`: a bad --dir is a usage error, not a watch.
   const first = cmdGen(dir, root);
@@ -321,7 +339,7 @@ export function cmdNew(
   name: string,
   dir: string,
   template?: string,
-  root: string = dir
+  root: string = containmentRootFor(dir)
 ): {
   path: string;
   created: boolean;

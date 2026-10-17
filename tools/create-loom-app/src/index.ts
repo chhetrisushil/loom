@@ -260,7 +260,6 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
-/** Runs the CLI; returns the exit code. Every Refusal happens before the first write. */
 /** Refuse when any component of `dest` below `root` (the target itself included) is a symbolic link. */
 export function assertNoLinkBelow(root: string, dest: string): void {
   const rel = path.relative(path.resolve(root), path.resolve(dest));
@@ -281,6 +280,7 @@ export function assertNoLinkBelow(root: string, dest: string): void {
   }
 }
 
+/** Runs the CLI; returns the exit code. Every Refusal happens before the first write. */
 export function run(argv: string[], cwd: string): number {
   let args: Args;
   try {

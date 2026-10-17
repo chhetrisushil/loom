@@ -801,9 +801,9 @@ async function dispatch(
       return ok ? 0 : 1;
     }
     case "gen": {
-      const { cmdGen, genSummary, genWatch } = await import("./gen");
+      const { cmdGen, containmentRootFor, genSummary, genWatch } = await import("./gen");
       const dir = flags.dir ?? "app";
-      const root = containmentRoot(flags.dir);
+      const root = containmentRootFor(dir);
       if (flags.watch === "true") {
         const ac = new AbortController();
         const stop = () => ac.abort();
@@ -824,8 +824,8 @@ async function dispatch(
       const name = positionals[1];
       if (name === undefined) throw new UsageError("missing required <name>");
       const dir = flags.dir ?? "app";
-      const root = containmentRoot(flags.dir);
-      const { cmdNew, cmdGen, genSummary } = await import("./gen");
+      const { cmdNew, cmdGen, containmentRootFor, genSummary } = await import("./gen");
+      const root = containmentRootFor(dir);
       const {
         path: dest,
         created,
@@ -1074,7 +1074,6 @@ async function dispatch(
       try {
         return await runDev({
           dir,
-          root: containmentRoot(flags.dir),
           command,
           log: out,
           signal: ac.signal,
@@ -1153,16 +1152,6 @@ async function confirmPlan(
       resolve(/^y(es)?$/i.test(answer.trim()));
     });
   });
-}
-
-/**
- * The symlink-containment root for the project writers. An explicit `--dir <path>` is trusted as given
- * (it may itself be reached through a link: the user named it). A DEFAULTED `--dir` ("app") must not be
- * trusted - a cloned repo can ship `app -> /outside` - so the root is the cwd and `app` is a component
- * below it that is checked and refused when it is a link.
- */
-function containmentRoot(dirFlag: string | undefined): string {
-  return dirFlag !== undefined ? dirFlag : ".";
 }
 
 function requireFlag(flags: Record<string, string>, name: string): void {

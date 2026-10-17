@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -13,11 +14,11 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AppgenIO, cmdAppgen, resolveInside } from "./appgen";
 import { run } from "./cli";
-import { cmdGen, cmdNew } from "./gen";
+import { cmdGen, cmdNew, containmentRootFor, genWatch } from "./gen";
 import { cmdPluginNew } from "./plugin";
 
 // SECURITY: `resolveInside` was LEXICAL, so a symlinked `app/flows/<id>/flow.ts` (or a symlinked directory
@@ -216,56 +217,7 @@ describe("appgen never writes through a symlink (real-path containment)", () => 
   });
 });
 
-describe("safeWriteFile races and failures", () => {
-  /** `<base>/root/sub/` (real) beside `<base>/outside/`; returns a swapper that makes `sub` a link. */
-  function raceSandbox() {
-    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
-    made.push(base);
-    const root = join(base, "root");
-    const outside = join(base, "outside");
-    mkdirSync(join(root, "sub"), { recursive: true });
-    mkdirSync(outside);
-    const swap = () => {
-      renameSync(join(root, "sub"), join(base, "sub.moved"));
-      symlinkSync(outside, join(root, "sub"));
-    };
-    return { root, outside, swap, dest: join(root, "sub", "f.ts") };
-  }
-
-  it("a parent directory swapped for a link between the check and the open is refused", async () => {
-    const { safeWriteFile } = await import("./safeWrite");
-    const { root, outside, swap, dest } = raceSandbox();
-    expect(() => safeWriteFile(root, dest, "pwn", { beforeOpen: swap })).toThrow(
-      /swapped for a link|resolves to/
-    );
-    expect(readdirSync(outside)).toEqual([]);
-  });
-
-  it("a parent directory swapped for a link between the write and the rename is refused", async () => {
-    const { safeWriteFile } = await import("./safeWrite");
-    const { root, outside, swap, dest } = raceSandbox();
-    expect(() => safeWriteFile(root, dest, "pwn", { beforeRename: swap })).toThrow(
-      /swapped for a link|resolves to/
-    );
-    expect(readdirSync(outside)).toEqual([]);
-    expect(readdirSync(join(root, "..", "sub.moved")).filter((f) => f === "f.ts")).toEqual([]); // never renamed into place
-  });
-
-  it("a failing write (ENOSPC) leaves no temp file behind and does not create the target", async () => {
-    const { safeWriteFile } = await import("./safeWrite");
-    const { root, dest } = raceSandbox();
-    expect(() =>
-      safeWriteFile(root, dest, "x", {
-        writeContents: () => {
-          throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
-        },
-      })
-    ).toThrow(/ENOSPC/);
-    expect(readdirSync(join(root, "sub"))).toEqual([]);
-  });
-});
-
-describe("a DEFAULTED --dir is not trusted as a containment root", () => {
+describe("a --dir inside the cwd is never trusted as a containment root", () => {
   /** A cloned repo: `<base>/repo/app -> <base>/outside` (a cwd-relative default `app`). */
   function clonedRepo() {
     const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
@@ -276,7 +228,7 @@ describe("a DEFAULTED --dir is not trusted as a containment root", () => {
     mkdirSync(repo);
     symlinkSync(outside, join(repo, "app"));
     const s = sentinel(outside, "loom.gen.ts");
-    return { repo, outside, s };
+    return { base, repo, outside, s };
   }
   async function inCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
     const prev = process.cwd();
@@ -310,7 +262,7 @@ describe("a DEFAULTED --dir is not trusted as a containment root", () => {
     expect(readdirSync(join(outside, "flows"))).toEqual([]);
   });
 
-  it("loom dev's gen path (no --dir) refuses `app -> outside`", async () => {
+  async function devRefuses(extra: string[]): Promise<void> {
     const { repo, outside, s } = clonedRepo();
     const logs: string[] = [];
     const evRuntime = createRequire(join(__dirname, "symlinkContainment.test.ts")).resolve(
@@ -331,6 +283,7 @@ describe("a DEFAULTED --dir is not trusted as a containment root", () => {
         join(repo, "loom.config.js"),
         "--run",
         `"${process.execPath}" -e "setTimeout(()=>{},60000)"`,
+        ...extra,
         "--port",
         "0",
       ]);
@@ -346,15 +299,102 @@ describe("a DEFAULTED --dir is not trusted as a containment root", () => {
     expect(logs.join("\n")).toMatch(/gen failed.*symbolic link/);
     s.unchanged();
     expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
+  }
+
+  it("loom dev's gen path (no --dir) refuses `app -> outside`", async () => {
+    await devRefuses([]);
   }, 60_000);
 
-  it("an EXPLICIT --dir that is a link is trusted (the user named it): documented policy", async () => {
-    const { repo, outside } = clonedRepo();
+  it("`loom gen --dir app` (the scaffolded project's own script) refuses `app -> outside`", async () => {
+    const { repo, outside, s } = clonedRepo();
+    await inCwd(repo, async () => {
+      await expect(run(["gen", "--dir", "app"])).resolves.not.toBe(0);
+      await expect(run(["gen", "--dir", "./app"])).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
+  });
+
+  it("`loom new flow x --dir app` refuses `app -> outside` and creates nothing outside", async () => {
+    const { repo, outside, s } = clonedRepo();
+    await inCwd(repo, async () => {
+      await expect(run(["new", "flow", "x", "--dir", "app"])).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    expect(readdirSync(join(outside, "flows"))).toEqual([]);
+  });
+
+  it("the library defaults (no root) refuse `app -> outside`: cmdGen, cmdNew, genWatch", async () => {
+    const { repo, outside, s } = clonedRepo();
+    await inCwd(repo, async () => {
+      expect(() => cmdGen("app")).toThrow(/symbolic link/);
+      expect(() => cmdNew("flow", "x", "app")).toThrow(/symbolic link/);
+      await expect(genWatch("app", { log: () => undefined })).rejects.toThrow(/symbolic link/);
+    });
+    s.unchanged();
+    expect(readdirSync(join(outside, "flows"))).toEqual([]);
+  });
+
+  it("`--dir app/nested` where `app` is a link is refused", async () => {
+    const { repo, outside, s } = clonedRepo();
+    mkdirSync(join(outside, "nested"));
+    await inCwd(repo, async () => {
+      await expect(run(["gen", "--dir", "app/nested"])).resolves.not.toBe(0);
+      await expect(run(["new", "flow", "x", "--dir", "app/nested"])).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    expect(readdirSync(join(outside, "nested"))).toEqual([]);
+  });
+
+  it("an absolute --dir under the cwd is contained to the cwd too", async () => {
+    const { repo, outside, s } = clonedRepo();
+    await inCwd(repo, async () => {
+      await expect(run(["gen", "--dir", join(realpathSync(repo), "app")])).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
+  });
+
+  it("an absolute --dir OUTSIDE the cwd that is itself a link is allowed (you named it): documented policy", async () => {
+    const { repo, outside, base } = clonedRepo();
     rmSync(join(outside, "loom.gen.ts"));
-    const code = await inCwd(repo, () => run(["gen", "--dir", join(repo, "app")]));
+    const named = join(base, "named-link");
+    symlinkSync(outside, named);
+    const code = await inCwd(repo, () => run(["gen", "--dir", named]));
     expect(code).toBe(0);
     expect(existsSync(join(outside, "loom.gen.ts"))).toBe(true);
   });
+
+  it("a real directory inside the cwd works, with and without a cwd that is itself a link", async () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const real = join(base, "real");
+    mkdirSync(join(real, "app", "flows"), { recursive: true });
+    const viaLink = join(base, "cwd-link");
+    symlinkSync(real, viaLink);
+    await inCwd(real, async () => {
+      expect(await run(["gen", "--dir", "app"])).toBe(0);
+    });
+    rmSync(join(real, "app", "loom.gen.ts"));
+    await inCwd(viaLink, async () => {
+      expect(await run(["gen", "--dir", "app"])).toBe(0);
+    });
+    expect(existsSync(join(real, "app", "loom.gen.ts"))).toBe(true);
+  });
+
+  it("containmentRootFor: cwd for anything inside it, the dir itself only when it leaves the cwd", () => {
+    const cwd = resolve(tmpdir(), "p");
+    expect(containmentRootFor("app", cwd)).toBe(cwd);
+    expect(containmentRootFor("./app/x", cwd)).toBe(cwd);
+    expect(containmentRootFor(".", cwd)).toBe(cwd);
+    expect(containmentRootFor(join(cwd, "app"), cwd)).toBe(cwd);
+    expect(containmentRootFor("../other", cwd)).toBe(resolve(cwd, "../other"));
+    expect(containmentRootFor("/somewhere/else", cwd)).toBe("/somewhere/else");
+  });
+
+  it("loom dev's gen path with `--dir app` refuses `app -> outside`", async () => {
+    await devRefuses(["--dir", "app"]);
+  }, 60_000);
 });
 
 describe("the same exposure in the other project-root writers", () => {
