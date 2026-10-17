@@ -12,7 +12,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## Time travel: `ctx.sleep(1 day)` without waiting
 
-`createTestApp({ clock: true })` gives the app a controllable clock as its `execution.now` and an in-memory timer store, with the `TimerService` **not polling on its own** (`autostart: false`). `advanceTime(app, ms)` moves the clock and then runs one poll of the app's real `TimerService` (`app.timerService.tick(clock.now())`), so a sleep, a `suspend({ timeout })` or a cron occurrence fires through the same code production runs. Advancing less than the remaining time fires nothing.
+`createTestApp({ clock: true })` gives the app a controllable clock as its `execution.now` and an in-memory timer store, with the `TimerService` **not polling on its own** (`autostart: false`). `advanceTime(app, ms)` moves the clock and then drains the app's real `TimerService` (`app.timerService.tick(clock.now())`, repeated until nothing is due; it throws if a timer keeps re-arming at an already-due instant). `advanceTime` and `advanceBy` throw on a negative, NaN or non-finite delta, so a sleep, a `suspend({ timeout })` or a cron occurrence fires through the same code production runs. Advancing less than the remaining time fires nothing.
 
 ```ts
 import { advanceTime, createTestApp } from "@loom/testing";
@@ -27,7 +27,7 @@ const state = await app.runtime.loadState(handle.executionId);
 await app.close();
 ```
 
-`clock` is `true` (a fresh clock starting 2030-01-01T00:00:00Z), a number (the start, epoch ms) or your own `TestClock` (`createTestClock(start)`, with `now` / `advanceBy` / `advanceTo`). Your own `execution.now`, `timers` or `autostart` win over these defaults. `fireDueTimers(app)` polls without moving the clock. The clock is a minimal copy of the `now` / `advanceBy` shape of `@loom/dst`'s `virtualClock`, so this package does not depend on the simulation kit; reach for `@loom/dst` when you need fault injection or discrete-event simulation.
+`clock` is `true` (a fresh clock starting 2030-01-01T00:00:00Z), a number (the start, epoch ms) or your own `TestClock` (`createTestClock(start)`, with `now` / `advanceBy` / `advanceTo`). Your own `timers` or `autostart` win over these defaults; your own `execution.now` must agree with the clock (`createTestApp` throws otherwise, since `advanceTime` moves the clock, not your `now`). Autostart must stay off: `fireDueTimers` refuses to run while the service polls on its own. `fireDueTimers(app)` polls without moving the clock. The clock is a minimal copy of the `now` / `advanceBy` shape of `@loom/dst`'s `virtualClock`, so this package does not depend on the simulation kit; reach for `@loom/dst` when you need fault injection or discrete-event simulation.
 
 `loom new flow <name> --template approval|timer|saga` scaffolds flows whose tests use exactly this.
 

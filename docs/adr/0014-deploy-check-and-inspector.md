@@ -47,3 +47,5 @@ patterns are known.
   `/api/trace` returns the model, `/api/state/:seq` returns the folded state,
   unknown → 404. `loom --help` shows all eight commands.
 - Full repo: build + typecheck clean, 82/82 test tasks green, biome clean (559).
+
+> Erratum (2026-10-17): `loom dev` is no longer an alias of `loom inspect`; it is the dev loop (gen --watch + run the app + the inspector). `loom inspect <store>` is the inspector alone. See `docs/usage-cli.md`.

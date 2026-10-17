@@ -502,7 +502,8 @@ describe("loom resume / cancel / start", () => {
       }
       const res = await resume("e1", { apply: true }, { timers: "store" });
       expect(res.exitCode).toBe(0);
-      expect(process.env.LOOM_NO_AUTOSTART).toBe("1");
+      // The switch is scoped to the import (the app is composed during it): not leaked afterwards.
+      expect(process.env.LOOM_NO_AUTOSTART).toBeUndefined();
       expect((await timers.due(Date.now())).map((t) => t.executionId)).toContain("ghost");
       await timers.close();
     });
