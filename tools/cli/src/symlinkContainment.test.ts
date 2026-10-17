@@ -27,6 +27,24 @@ import { cmdPluginNew } from "./plugin";
 // project, inside that same temp tree, and is checked for content AND mtime afterwards.
 
 const made: string[] = [];
+function caseInsensitiveFs(): boolean {
+  const d = mkdtempSync(join(tmpdir(), "loom-case-"));
+  try {
+    mkdirSync(join(d, "abc"));
+    return existsSync(join(d, "ABC"));
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
+function normInsensitiveFs(): boolean {
+  const d = mkdtempSync(join(tmpdir(), "loom-nf-"));
+  try {
+    mkdirSync(join(d, "caf\u00e9"));
+    return existsSync(join(d, "cafe\u0301"));
+  } finally {
+    rmSync(d, { recursive: true, force: true });
+  }
+}
 afterEach(() => {
   for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
 });
@@ -587,27 +605,11 @@ describe("case and Unicode-normalisation spellings of the cwd are the cwd (nativ
       err.mockRestore();
     }
   }
-  const caseInsensitive = (() => {
-    const d = mkdtempSync(join(tmpdir(), "loom-case-"));
-    try {
-      mkdirSync(join(d, "abc"));
-      return existsSync(join(d, "ABC"));
-    } finally {
-      rmSync(d, { recursive: true, force: true });
-    }
-  })();
+  const caseInsensitive = caseInsensitiveFs();
   const CASE_REASON = "temp FS is case-sensitive: case-variant spellings cannot be exercised";
   const NFC = "caf\u00e9";
   const NFD = "cafe\u0301";
-  const normInsensitive = (() => {
-    const d = mkdtempSync(join(tmpdir(), "loom-nf-"));
-    try {
-      mkdirSync(join(d, NFC));
-      return existsSync(join(d, NFD));
-    } finally {
-      rmSync(d, { recursive: true, force: true });
-    }
-  })();
+  const normInsensitive = normInsensitiveFs();
 
   it.runIf(caseInsensitive)(
     "`../PROJ/app`, `../Proj/app`, `<abs>/PROJ/app` refuse `app -> victim` (CLI + library)",
@@ -651,10 +653,139 @@ describe("case and Unicode-normalisation spellings of the cwd are the cwd (nativ
       expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
     }
   );
+  // Spellings the temp FS cannot distinguish are `it.runIf` tests above: vitest reports them as SKIPPED
+  // (with their title), never as a vacuous pass.
+});
 
-  it("(reason) skips are explicit when the temp FS distinguishes the spellings", () => {
-    if (!caseInsensitive) console.log(`SKIP case tests: ${CASE_REASON}`);
-    if (!normInsensitive) console.log("SKIP NFD tests: temp FS distinguishes NFC/NFD spellings");
-    expect(true).toBe(true);
+describe("an INTERMEDIATE link above --dir is refused in every spelling of the cwd (identity, not strings)", () => {
+  // `x -> victim` is a component ABOVE the --dir's final component, so the final-component rule alone
+  // cannot catch it: only classifying the --dir as INSIDE the project (by st_dev/st_ino) lets the lstat
+  // walk see `x`. These fail if classification falls back to comparing spellings.
+  function build(name = "proj") {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "loom-symlink-")));
+    made.push(base);
+    const proj = join(base, name);
+    const victim = join(base, "victim");
+    mkdirSync(proj);
+    mkdirSync(join(victim, "app", "flows"), { recursive: true });
+    symlinkSync(victim, join(proj, "x"));
+    symlinkSync(base, join(base, "alias"));
+    symlinkSync(proj, join(base, "logical"));
+    const s = sentinel(join(victim, "app"), "loom.gen.ts");
+    return { base, proj, victim, s };
+  }
+  async function inCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.cwd();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.chdir(cwd);
+    try {
+      return await fn();
+    } finally {
+      process.chdir(prev);
+      log.mockRestore();
+      err.mockRestore();
+    }
+  }
+  const untouched = (victim: string) =>
+    expect(readdirSync(join(victim, "app")).sort()).toEqual(["flows", "loom.gen.ts"]);
+
+  async function expectRefused(
+    proj: string,
+    victim: string,
+    s: { unchanged: () => void },
+    d: string
+  ) {
+    await inCwd(proj, async () => {
+      expect(await run(["gen", "--dir", d])).not.toBe(0);
+      expect(await run(["new", "flow", "pwn", "--dir", d])).not.toBe(0);
+      expect(await run(["appgen", INTENT, "--dir", d, "--yes"])).not.toBe(0);
+    });
+    s.unchanged();
+    untouched(victim);
+  }
+
+  async function lib(proj: string, d: string) {
+    await inCwd(proj, async () => {
+      expect(() => cmdGen(d)).toThrow(/symbolic link/);
+      expect(() => cmdNew("flow", "pwn", d)).toThrow(/symbolic link/);
+      await expect(cmdAppgen({ intent: INTENT, dir: d, now: 1 }, noPromptIO())).rejects.toThrow(
+        /symbolic link|outside|resolves/
+      );
+    });
+  }
+
+  it("plain relative `x/app`", async () => {
+    const { proj, victim, s } = build();
+    await expectRefused(proj, victim, s, "x/app");
+    await lib(proj, "x/app");
+    s.unchanged();
+    untouched(victim);
+  });
+
+  it("alias-dir spelling `<alias>/proj/x/app`", async () => {
+    const { base, proj, victim, s } = build();
+    const d = join(base, "alias", "proj", "x", "app");
+    await expectRefused(proj, victim, s, d);
+    await lib(proj, d);
+    s.unchanged();
+    untouched(victim);
+  });
+
+  it("logical $PWD spelling `<logical>/x/app` (cwd reached through a link)", async () => {
+    const { base, proj, victim, s } = build();
+    const d = join(base, "logical", "x", "app");
+    await expectRefused(proj, victim, s, d);
+    await lib(proj, d);
+    s.unchanged();
+    untouched(victim);
+  });
+
+  it.runIf(existsSync("/System/Volumes/Data"))(
+    "macOS firmlink `/System/Volumes/Data<cwd>/x/app`",
+    async () => {
+      const { proj, victim, s } = build();
+      const fl = `/System/Volumes/Data${proj}`;
+      const a = statSync(proj);
+      let same = false;
+      try {
+        const b = statSync(fl);
+        same = a.dev === b.dev && a.ino === b.ino;
+      } catch {}
+      if (!same) return; // this path is not a firmlink spelling of the temp dir on this machine
+      const d = join(fl, "x", "app");
+      await expectRefused(proj, victim, s, d);
+      await lib(proj, d);
+      s.unchanged();
+      untouched(victim);
+    }
+  );
+
+  it.runIf(caseInsensitiveFs())("case variant `../PROJ/x/app` and `<abs>/PROJ/x/app`", async () => {
+    const { base, proj, victim, s } = build("proj");
+    for (const d of ["../PROJ/x/app", join(base, "PROJ", "x", "app")]) {
+      await expectRefused(proj, victim, s, d);
+      await lib(proj, d);
+    }
+    s.unchanged();
+    untouched(victim);
+  });
+
+  it.runIf(normInsensitiveFs())("NFD spelling of an NFC-named cwd `<NFD>/x/app`", async () => {
+    const { base, proj, victim, s } = build("caf\u00e9");
+    const d = join(base, "cafe\u0301", "x", "app");
+    await expectRefused(proj, victim, s, d);
+    await lib(proj, d);
+    s.unchanged();
+    untouched(victim);
+  });
+
+  it("a real nested dir still works (no false refusal) through the alias spelling", async () => {
+    const { base, proj } = build();
+    mkdirSync(join(proj, "real", "flows"), { recursive: true });
+    await inCwd(proj, async () => {
+      expect(await run(["gen", "--dir", join(base, "alias", "proj", "real")])).toBe(0);
+    });
+    expect(existsSync(join(proj, "real", "loom.gen.ts"))).toBe(true);
   });
 });
