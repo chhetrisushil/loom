@@ -126,6 +126,14 @@ describe("an explicit library root whose FINAL component is a link is refused", 
     expect(readdirSync(victim)).toEqual([]);
   });
 
+  it("a root spelled with a trailing separator is still refused (lstat of `app/` would follow the link)", () => {
+    const { victim, link } = sandbox();
+    for (const root of [`${link}/`, `${link}//`, `${link}/.`]) {
+      expect(() => safeWriteFile(root, join(link, "loom.gen.ts"), "PWN")).toThrow(/symbolic link/);
+    }
+    expect(readdirSync(victim)).toEqual([]);
+  });
+
   it("a relative root that is a link is refused too (resolved against the cwd)", () => {
     const { repo, victim } = sandbox();
     const prev = process.cwd();
