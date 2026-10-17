@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hitAtK, mean, mrr, ndcgAtK, recallAtK, reciprocalRank } from "./metrics";
+import { hitAtK, mean, mrr, ndcgAtK, precision, recallAtK, reciprocalRank } from "./metrics";
 
 // Every expected value below is computed by hand in the comment beside it.
 
@@ -22,6 +22,20 @@ describe("recallAtK", () => {
   it("credits a repeated hit once", () => {
     // [a,a,a] holds one distinct relevant id of two
     expect(recallAtK(["a", "a", "a"], ["a", "b"], 3)).toBe(0.5);
+  });
+});
+
+describe("precision", () => {
+  it("is the relevant fraction of the returned page", () => {
+    // page [a,x,b,y] with relevant {a,b,c}: 2 of 4
+    expect(precision(["a", "x", "b", "y"], ["a", "b", "c"])).toBe(0.5);
+    expect(precision(["a"], ["a"])).toBe(1);
+  });
+  it("is 0 for an empty page or an empty relevant set, and counts a repeated hit once", () => {
+    expect(precision([], ["a"])).toBe(0);
+    expect(precision(["a"], [])).toBe(0);
+    // [a,a,x] de-duplicates to [a,x]: 1 of 2
+    expect(precision(["a", "a", "x"], ["a"])).toBe(0.5);
   });
 });
 
