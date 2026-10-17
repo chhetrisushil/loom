@@ -146,3 +146,81 @@ describe.each(["toolId", "handler"] as const)(
     });
   }
 );
+
+// A compensator that FAILED (an untyped STEP_FAILED) is not a completion: crash right
+// after it is journaled, resume, and it is re-run (documented at-least-once) while the
+// compensator that COMPLETED before it is served from the log, not re-run.
+describe("DST — crash after a failed compensator", () => {
+  it("re-runs the failed compensator on resume, never the completed one", async () => {
+    const { flow, spawnRuntime: _unused } = makeSaga("toolId");
+    void _unused;
+    const calls: Record<string, number> = {};
+    let unreserveFails = true;
+    const inner = new InMemoryAsyncEventStore();
+    const snapshots = new InMemoryAsyncSnapshotStore();
+    let crashed = false;
+    let armed = true;
+    const crashing = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop !== "append") {
+          const v = Reflect.get(target, prop, receiver);
+          return typeof v === "function" ? v.bind(target) : v;
+        }
+        return async (envelope: Parameters<typeof inner.append>[0]) => {
+          if (crashed && armed) return; // the process is dead: swallow the tail
+          await inner.append(envelope);
+          const p = envelope.payload as { stepId?: string };
+          if (
+            armed &&
+            envelope.eventType === "STEP_FAILED" &&
+            p.stepId === "unreserve#compensate:0"
+          ) {
+            crashed = true; // durable up to and including the failed compensator
+          }
+        };
+      },
+    });
+    const spawn = (store: object) => {
+      const effects = new EffectRuntime();
+      for (const id of ["reserve", "unreserve", "charge", "refund", "ship"]) {
+        effects.register(
+          id,
+          new ToolEffect(async () => {
+            calls[id] = (calls[id] ?? 0) + 1;
+            if (id === "ship") throw new Error("ship failed");
+            if (id === "unreserve" && unreserveFails) throw new Error("unreserve failed");
+            return {};
+          })
+        );
+      }
+      const rt = new WorkflowRuntime({
+        eventStore: store as never,
+        snapshotStore: snapshots,
+        effectRuntime: effects,
+      });
+      rt.registerFlow(flow.definition, flow.runner);
+      return rt;
+    };
+
+    const h1 = await spawn(crashing).start(flow, {}, { executionId: EXEC });
+    await h1.waitForCompletion().catch(() => {});
+    expect(crashed).toBe(true);
+    expect(calls.unreserve).toBe(1);
+    expect(calls.refund).toBe(1);
+
+    armed = false; // reboot
+    unreserveFails = false;
+    await spawn(inner)
+      .resume(EXEC, { eventType: "EXECUTION_RECOVERED", payload: {} })
+      .then((h) => h.waitForCompletion())
+      .catch(() => {});
+
+    expect(calls.unreserve).toBe(2); // the failed compensator was retried
+    expect(calls.refund).toBe(1); // the completed one was not re-run
+    const done = (await inner.read(EXEC))
+      .filter((e) => e.eventType === "STEP_COMPLETED")
+      .map((e) => (e.payload as { stepId: string }).stepId);
+    expect(done.filter((id) => id === "refund#compensate:1")).toHaveLength(1);
+    expect(done.filter((id) => id === "unreserve#compensate:0")).toHaveLength(1);
+  });
+});
