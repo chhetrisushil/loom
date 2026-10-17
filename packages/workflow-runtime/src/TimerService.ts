@@ -379,6 +379,11 @@ export class TimerService {
     };
   }
 
+  /** Whether the poll loop is running (`start()` called, `stop()` not since). */
+  get running(): boolean {
+    return this.timer !== undefined;
+  }
+
   start(): void {
     if (this.timer !== undefined) return;
     this.timer = setInterval(() => void this.tick(), this.pollMs);

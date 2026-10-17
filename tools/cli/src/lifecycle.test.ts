@@ -1,7 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { SqliteEventStore, SqliteLeaseStore } from "@loom/plugin-sqlite";
+import type { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import {
+  type EncryptingSnapshotStore,
+  type InMemoryKeyStore,
+  shredSubject,
+} from "@loom/plugin-crypto";
+import { SqliteEventStore, SqliteLeaseStore, SqliteTimerStore } from "@loom/plugin-sqlite";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "./cli";
 import {
@@ -27,10 +33,29 @@ import { loadLoomApp } from "./stores";
 const PKG = resolve(__dirname, "..");
 const SCRATCH = join(PKG, ".tmp-lifecycle-test");
 
-const APP = (dir: string): string => `
+interface AppOpts {
+  /** Register the `count` effect the `div` flow's steps run. Default true. */
+  effects?: boolean;
+  /** The `div` flow's body: v1 runs A, B and parks on "go"; v2 asks for a step never recorded. */
+  body?: "v1" | "v2";
+  validateInput?: boolean;
+  /** "local" = an in-memory switch (admin API), "shared" = a bare registry. Default none. */
+  killSwitch?: "local" | "shared";
+  /** "off" = heartbeat disabled; "noget" = a lease store without `get`; "lie" = `get` always says free. */
+  heartbeat?: "off" | "noget" | "lie";
+  /** Wire a durable timer store; "start" additionally calls app.start() in the module. */
+  timers?: "store" | "start";
+  /** Fail every append that carries the named event type while globalThis.__lcFail is set. */
+  failAppend?: string;
+  /** What the query op admits (resume/cancel stay owner-scoped). */
+  queryScope?: "tenant" | "any";
+}
+
+const APP = (dir: string, o: AppOpts = {}): string => `
 import { defineConfig } from "@loom/app";
-import { flow$ } from "@loom/core";
-import { sqliteStorage } from "@loom/plugin-sqlite";
+import { flow$, step$ } from "@loom/core";
+import { ToolEffect } from "@loom/effect-runtime";
+import { SqliteTimerStore, sqliteStorage } from "@loom/plugin-sqlite";
 import { executionAccessPolicy } from "@loom/workflow-runtime";
 import { z } from "zod";
 
@@ -41,7 +66,7 @@ const approval = {
     inputSchema: z.object({ service: z.string() }),
     outputSchema: z.object({ done: z.boolean() }),
     steps: [],
-    resumeSchemas: { ApprovalGranted: Decision },
+    resumeSchemas: { ApprovalGranted: Decision, Mode: z.object({ mode: z.enum(["fast", "slow"]) }) },
   }),
   runner: async (ctx, input) => {
     const d = await ctx.suspend({ on: "ApprovalGranted", correlationKey: input.service });
@@ -55,14 +80,76 @@ const forbidden = {
   }),
   runner: async () => ({}),
 };
+const io = { inputSchema: z.any(), outputSchema: z.any() };
+const A = step$({ id: "A", name: "A", toolId: "count", ...io });
+const B = step$({ id: "B", name: "B", toolId: "count", ...io });
+const C = step$({ id: "C", name: "C", toolId: "count", ...io });
+const div = {
+  definition: flow$({ id: "div", name: "div", version: "1.0.0", ...io, steps: [A, B] }),
+  runner: ${
+    (o.body ?? "v1") === "v1"
+      ? `async (ctx) => {
+    await ctx.run(A, { id: "A" });
+    await ctx.run(B, { id: "B" });
+    await ctx.suspend({ on: "go" });
+    return { done: true };
+  }`
+      : `async (ctx) => {
+    await ctx.run(C, { id: "C" });
+    return { done: true };
+  }`
+  },
+};
 
+class InMemoryKillSwitch { check() { return undefined; } stopTenant() {} status() { return {}; } }
 const APPROVERS = new Set(["alice"]);
-globalThis.__lcTimerPolls = globalThis.__lcTimerPolls ?? 0;
 
-export default defineConfig({
-  storage: sqliteStorage({ dir: ${JSON.stringify(dir)} }),
-  flows: [approval, forbidden],
+const storage = sqliteStorage({ dir: ${JSON.stringify(dir)} });
+${
+  o.failAppend !== undefined
+    ? `{
+  const real = storage.eventStore;
+  const hits = (a) => JSON.stringify(a).includes(${JSON.stringify(`"${o.failAppend}"`)});
+  storage.eventStore = new Proxy(real, {
+    get(t, p) {
+      const v = t[p];
+      if (typeof v !== "function") return v;
+      if ((p === "append" || p === "appendMany") && globalThis.__lcFail === true) {
+        return (...a) => hits(a) ? Promise.reject(new Error("disk full (simulated)")) : v.apply(t, a);
+      }
+      return v.bind(t);
+    },
+  });
+}`
+    : ""
+}
+${
+  o.heartbeat === "noget" || o.heartbeat === "lie"
+    ? `const realLeases = storage.leaseStore;
+const leaseStore = new Proxy(realLeases, {
+  get(t, p) {
+    if (p === "get") return ${o.heartbeat === "lie" ? "async () => null" : "undefined"};
+    const v = t[p];
+    return typeof v === "function" ? v.bind(t) : v;
+  },
+});`
+    : ""
+}
+
+const app = defineConfig({
+  storage,
+  flows: [approval, forbidden, div],
+  ${o.timers !== undefined ? `timers: { pollMs: 5, store: new SqliteTimerStore(${JSON.stringify(`${dir}/events.db`)}) },` : ""}
+  ${o.heartbeat === "off" ? "durability: { heartbeat: { enabled: false } }," : ""}
+  ${o.heartbeat === "noget" || o.heartbeat === "lie" ? "durability: { heartbeat: { store: leaseStore } }," : ""}
+  execution: {
+    ${(o.effects ?? true) ? `registerEffects: (fx) => fx.register("count", new ToolEffect(async (i) => i)),` : ""}
+    ${o.validateInput === true ? "validateInput: true," : ""}
+  },
+  kernel: { divergence: "fail" },
   security: {
+    ${o.killSwitch === "local" ? "killSwitch: new InMemoryKillSwitch()," : ""}
+    ${o.killSwitch === "shared" ? "killSwitch: { check() { return undefined; } }," : ""}
     resumeAuthenticator: {
       verify(event) {
         if (event.eventType !== "ApprovalGranted") return { status: "not-applicable" };
@@ -73,9 +160,59 @@ export default defineConfig({
       },
     },
     executionAuthorizer: executionAccessPolicy({
-      allowWorkflows: ["approval"],
-      rules: { resume: "owner", cancel: "owner", query: "tenant" },
+      allowWorkflows: ["approval", "div"],
+      rules: { resume: "owner", cancel: "owner", query: ${JSON.stringify(o.queryScope ?? "tenant")} },
     }),
+  },
+});
+${o.timers === "start" ? "app.start();" : ""}
+export default app;
+`;
+
+interface Shred {
+  inner: InMemoryAsyncEventStore;
+  keys: InMemoryKeyStore;
+  snaps: EncryptingSnapshotStore;
+}
+
+/** An app over ENCRYPTING in-memory stores kept on globalThis, so a test can shred between loads. */
+const SHRED_APP = `
+import { defineConfig } from "@loom/app";
+import { flow$, step$ } from "@loom/core";
+import { ToolEffect } from "@loom/effect-runtime";
+import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { EncryptingEventStore, EncryptingSnapshotStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { executionAccessPolicy } from "@loom/workflow-runtime";
+import { z } from "zod";
+
+const g = (globalThis.__lcShred ??= (() => {
+  const inner = new InMemoryAsyncEventStore();
+  const keys = new InMemoryKeyStore();
+  const events = new EncryptingEventStore(inner, keys, { sensitive: { STEP_COMPLETED: ["output"] } });
+  const snaps = new EncryptingSnapshotStore(new InMemoryAsyncSnapshotStore(), keys, { sealState: true, events: inner });
+  // The app closes its stores on exit; these must outlive each load (an in-memory close clears them).
+  events.close = async () => {};
+  snaps.close = async () => {};
+  return { inner, keys, events, snaps };
+})());
+const io = { inputSchema: z.any(), outputSchema: z.any() };
+const echo = step$({ id: "echo", name: "echo", toolId: "echo", ...io });
+const shredMe = {
+  definition: flow$({ id: "shred-me", name: "shred-me", version: "1.0.0", ...io, steps: [echo] }),
+  runner: async (ctx) => {
+    await ctx.run(echo, { ssn: "123-45-6789" });
+    await ctx.suspend({ on: "Go" });
+    return null;
+  },
+};
+export default defineConfig({
+  storage: { kind: "custom", eventStore: g.events, snapshotStore: g.snaps },
+  flows: [shredMe],
+  durability: { snapshotEvery: 1 },
+  execution: { registerEffects: (fx) => fx.register("echo", new ToolEffect(async (i) => i)) },
+  security: {
+    executionAuthorizer: executionAccessPolicy({ rules: { cancel: "owner", query: "tenant" }, resolveOwner: () => ({ actor: "starter", tenant: "acme" }) }),
   },
 });
 `;
@@ -85,9 +222,9 @@ let n = 0;
 const OWNER = ["--as", "starter", "--tenant", "acme"];
 
 /** A fresh copy of the app module over the same storage dir (see the header). */
-function cfg(): string {
+function cfg(o: AppOpts = {}): string {
   const file = join(SCRATCH, `app-${n++}.mjs`);
-  writeFileSync(file, APP(dir));
+  writeFileSync(file, APP(dir, o));
   return file;
 }
 
@@ -98,6 +235,21 @@ async function seedParked(id: string): Promise<void> {
     const h = await app.runtime?.start(
       "approval",
       { service: "s1" },
+      { executionId: id, principal: { actor: "starter", tenant: "acme" } }
+    );
+    await h?.waitForSuspend();
+  } finally {
+    await app.close?.();
+  }
+}
+
+/** Start the `div` flow (steps A, B, then a park on "go") as the owner. */
+async function seedDiv(id: string): Promise<void> {
+  const app = await loadLoomApp(cfg({ body: "v1" }));
+  try {
+    const h = await app.runtime?.start(
+      "div",
+      {},
       { executionId: id, principal: { actor: "starter", tenant: "acme" } }
     );
     await h?.waitForSuspend();
@@ -117,9 +269,9 @@ async function events(id: string): Promise<string[]> {
 
 const OK = { approved: true, approvedBy: "alice" };
 
-function resume(id: string, over: Record<string, unknown> = {}) {
+function resume(id: string, over: Record<string, unknown> = {}, app: AppOpts = {}) {
   return resumeExecution({
-    config: cfg(),
+    config: cfg(app),
     as: "starter",
     tenant: "acme",
     apply: false,
@@ -131,9 +283,9 @@ function resume(id: string, over: Record<string, unknown> = {}) {
     ...over,
   });
 }
-function cancel(id: string, over: Record<string, unknown> = {}) {
+function cancel(id: string, over: Record<string, unknown> = {}, app: AppOpts = {}) {
   return cancelExecution({
-    config: cfg(),
+    config: cfg(app),
     as: "starter",
     tenant: "acme",
     apply: false,
@@ -142,9 +294,9 @@ function cancel(id: string, over: Record<string, unknown> = {}) {
     ...over,
   });
 }
-function start(over: Record<string, unknown> = {}) {
+function start(over: Record<string, unknown> = {}, app: AppOpts = {}) {
   return startExecution({
-    config: cfg(),
+    config: cfg(app),
     as: "starter",
     tenant: "acme",
     apply: false,
@@ -276,10 +428,167 @@ describe("loom resume / cancel / start", () => {
       await leases.close();
     });
 
-    it("loads the app with its background services switched off (LOOM_NO_AUTOSTART)", async () => {
+    it("never starts the app's timers: a due timer row is left unfired and the service is not running", async () => {
       await seedParked("e1");
-      await resume("e1", { apply: true });
+      const timers = new SqliteTimerStore(join(dir, "events.db"));
+      await timers.schedule({ executionId: "ghost", wakeAt: 1 });
+      const loaded = await loadLoomApp(cfg({ timers: "store" }));
+      try {
+        expect(loaded.timerService).toBeDefined();
+        expect(loaded.timerService?.running).toBe(false);
+      } finally {
+        await loaded.close?.();
+      }
+      const res = await resume("e1", { apply: true }, { timers: "store" });
+      expect(res.exitCode).toBe(0);
       expect(process.env.LOOM_NO_AUTOSTART).toBe("1");
+      expect((await timers.due(Date.now())).map((t) => t.executionId)).toContain("ghost");
+      await timers.close();
+    });
+
+    it("a --config module that starts the timer service itself is refused (warning on stderr), log unchanged", async () => {
+      await seedParked("e1");
+      const before = await events("e1");
+      const err = vi.spyOn(console, "error").mockImplementation(() => {});
+      const applied = await resume("e1", { apply: true }, { timers: "start" });
+      const dry = await resume("e1", {}, { timers: "start" });
+      const shown = err.mock.calls.flat().join("\n");
+      err.mockRestore();
+      expect(applied.exitCode).toBe(2);
+      expect(applied.refusal).toContain("timer service is RUNNING");
+      expect(dry.exitCode).toBe(2);
+      expect(shown).toContain("warning");
+      expect(await events("e1")).toEqual(before);
+    });
+
+    it("refuses --apply when the flow declares an effect the app has not registered, listing it", async () => {
+      await seedDiv("d1");
+      const before = await events("d1");
+      const over = { event: "go", payload: {} };
+      const dry = await resume("d1", over, { effects: false });
+      expect(dry.exitCode).toBe(2);
+      expect(dry.refusal).toContain("count");
+      const applied = await resume("d1", { ...over, apply: true }, { effects: false });
+      expect(applied.exitCode).toBe(2);
+      expect(applied.refusal).toContain("has not registered: count");
+      expect(await events("d1")).toEqual(before);
+      // With the effect registered the same resume is accepted.
+      const ok = await resume("d1", { ...over, apply: true });
+      expect(ok.exitCode).toBe(0);
+      expect(ok.after?.status).toBe("completed");
+    });
+
+    it("a process-local kill switch refuses --apply unless --allow-local-controls (log unchanged); a shared registry needs no flag", async () => {
+      await seedParked("e1");
+      const before = await events("e1");
+      const dry = await resume("e1", {}, { killSwitch: "local" });
+      expect(dry.exitCode).toBe(0);
+      expect(dry.lines.join("\n")).toContain(
+        "kill switch / budgets / rate limits are process-local: a stop issued in the running app does NOT apply here"
+      );
+      expect(dry.lines.join("\n")).toContain("--allow-local-controls");
+      const refused = await resume("e1", { apply: true }, { killSwitch: "local" });
+      expect(refused.exitCode).toBe(2);
+      expect(refused.refusal).toContain("--allow-local-controls");
+      expect(await events("e1")).toEqual(before);
+      const shared = await resume("e1", {}, { killSwitch: "shared" });
+      expect(shared.lines.join("\n")).toContain("shared registry");
+      expect(shared.lines.join("\n")).not.toContain("--allow-local-controls");
+      const allowed = await resume(
+        "e1",
+        { apply: true, allowLocalControls: true },
+        { killSwitch: "local" }
+      );
+      expect(allowed.exitCode).toBe(0);
+      expect(allowed.after?.status).toBe("completed");
+    });
+
+    it("a shared kill switch resumes with no flag", async () => {
+      await seedParked("e1");
+      const res = await resume("e1", { apply: true }, { killSwitch: "shared" });
+      expect(res.exitCode).toBe(0);
+    });
+
+    it("unknown lease liveness is not 'none live': resume --apply needs --force (lease store without get / heartbeat off)", async () => {
+      await seedParked("e1");
+      const before = await events("e1");
+      const dry = await resume("e1", {}, { heartbeat: "noget" });
+      expect(dry.lines.join("\n")).toContain("unknown (lease store not readable)");
+      expect(dry.lines.join("\n")).not.toContain("none live");
+      const refused = await resume("e1", { apply: true }, { heartbeat: "noget" });
+      expect(refused.exitCode).toBe(2);
+      expect(refused.refusal).toContain("--force");
+      expect(await events("e1")).toEqual(before);
+
+      const off = await resume("e1", {}, { heartbeat: "off" });
+      expect(off.lines.join("\n")).toContain("heartbeat leases off — liveness unknown");
+      expect((await resume("e1", { apply: true }, { heartbeat: "off" })).exitCode).toBe(2);
+      expect(await events("e1")).toEqual(before);
+
+      const forced = await resume("e1", { apply: true, force: true }, { heartbeat: "noget" });
+      expect(forced.exitCode).toBe(0);
+    });
+
+    it("a lease taken between the CLI's check and the runtime's (LeaseHeldError) is a refusal (exit 2), not a success", async () => {
+      await seedParked("e1");
+      const leases = new SqliteLeaseStore(join(dir, "events.db"));
+      await leases.acquire("e1", "worker-9", 60_000);
+      const before = await events("e1");
+      // `lie`: the CLI's liveness read says "free" (as if the holder arrived a moment later).
+      const res = await resume("e1", { apply: true }, { heartbeat: "lie" });
+      expect(res.exitCode).toBe(2);
+      expect(res.refusal).toMatch(/LeaseHeldError|worker-9|lease/i);
+      expect(await events("e1")).toEqual(before);
+      await leases.close();
+    });
+
+    it("tenant mismatch that the QUERY authorizer admits is still refused at the resume gate", async () => {
+      await seedParked("e1");
+      const before = await events("e1");
+      const res = await resume("e1", { apply: true, tenant: "evil" }, { queryScope: "any" });
+      expect(res.exitCode).toBe(2);
+      expect(res.refusal).toContain("ExecutionDeniedError");
+      const after = await events("e1");
+      expect(after.filter((t) => t !== "EXECUTION_DENIED")).toEqual(before);
+    });
+
+    it("a runtime failure is exit 1, never 'resumed' exit 0: a diverged flow body (the runtime parks it on the reserved gate)", async () => {
+      await seedDiv("d1");
+      const res = await resume("d1", { event: "go", payload: {}, apply: true }, { body: "v2" });
+      expect(res.exitCode).toBe(1);
+      expect(res.ok).toBe(false);
+      expect(res.failure).toContain("diverged");
+    });
+
+    it("a storage failure while the resumed run commits is exit 1 with the cause", async () => {
+      await seedParked("e1");
+      (globalThis as { __lcFail?: boolean }).__lcFail = true;
+      try {
+        const res = await resume("e1", { apply: true }, { failAppend: "EXECUTION_COMPLETED" });
+        expect(res.exitCode).toBe(1);
+        expect(res.ok).toBe(false);
+        expect(res.failure).toContain("disk full");
+      } finally {
+        (globalThis as { __lcFail?: boolean }).__lcFail = false;
+      }
+    });
+
+    it("egress: a rejected payload never prints the value (path + code only) unless --show-payload", async () => {
+      await seedParked("e1");
+      const secret = "hunter2-secret";
+      const dry = await resume("e1", { event: "Mode", payload: { mode: secret } });
+      expect(dry.exitCode).toBe(2);
+      expect(dry.refusal).toContain("mode");
+      expect(dry.refusal).not.toContain(secret);
+      const applied = await resume("e1", {
+        apply: true,
+        payload: { approved: secret, approvedBy: "alice" },
+      });
+      expect(applied.exitCode).toBe(2);
+      expect(applied.refusal).toContain("ResumePayloadValidationError");
+      expect(applied.refusal).not.toContain(secret);
+      const dryApprove = await resume("e1", { payload: { approved: secret, approvedBy: "alice" } });
+      expect(dryApprove.refusal).not.toContain(secret);
     });
   });
 
@@ -329,11 +638,85 @@ describe("loom resume / cancel / start", () => {
       expect(forced.after?.status).toBe("cancelled");
       await leases.close();
     });
+
+    it("cancel is exempt from --allow-local-controls (it runs no effects); unknown liveness needs --force", async () => {
+      await seedParked("e1");
+      const unknown = await cancel("e1", { apply: true }, { heartbeat: "noget" });
+      expect(unknown.exitCode).toBe(2);
+      expect(unknown.refusal).toContain("--force");
+      expect(unknown.lines.join("\n")).toContain("unknown (lease store not readable)");
+      expect((await events("e1")).at(-1)).not.toBe("EXECUTION_CANCELLED");
+      const off = await cancel("e1", { apply: true }, { heartbeat: "off" });
+      expect(off.exitCode).toBe(2);
+      expect(off.lines.join("\n")).toContain("heartbeat leases off — liveness unknown");
+      const done = await cancel("e1", { apply: true, force: true }, { killSwitch: "local" });
+      expect(done.exitCode).toBe(0);
+      expect(done.after?.status).toBe("cancelled");
+    });
+
+    it("tenant mismatch that the QUERY authorizer admits is still refused at the cancel gate", async () => {
+      await seedParked("e1");
+      const before = await events("e1");
+      const res = await cancel("e1", { apply: true, tenant: "evil" }, { queryScope: "any" });
+      expect(res.exitCode).toBe(2);
+      expect(res.refusal).toContain("ExecutionDeniedError");
+      const after = await events("e1");
+      expect(after).not.toContain("EXECUTION_CANCELLED");
+      expect(after.filter((t) => t !== "EXECUTION_DENIED")).toEqual(before);
+    });
+
+    it("cancels a crypto-shredded parked execution (the pre-read throws PayloadShreddedError; the runtime's cancel still works)", async () => {
+      const mod = join(SCRATCH, `shred-${n++}.mjs`);
+      writeFileSync(mod, SHRED_APP);
+      const g = (globalThis as unknown as { __lcShred?: Shred }).__lcShred;
+      expect(g).toBeUndefined();
+      const app = await loadLoomApp(mod);
+      try {
+        const h = await app.runtime?.start(
+          "shred-me",
+          {},
+          { executionId: "x", principal: { actor: "starter", tenant: "acme" } }
+        );
+        await h?.waitForSuspend();
+      } finally {
+        await app.close?.();
+      }
+      const shared = (globalThis as unknown as { __lcShred: Shred }).__lcShred;
+      await shredSubject(shared.keys, shared.inner, "x", { snapshotStore: shared.snaps });
+
+      const mod2 = join(SCRATCH, `shred-${n++}.mjs`);
+      writeFileSync(mod2, SHRED_APP);
+      const dry = await cancelExecution({
+        config: mod2,
+        as: "starter",
+        tenant: "acme",
+        apply: false,
+        force: true,
+        redact: [],
+        executionId: "x",
+      });
+      expect(dry.refusal).toBeUndefined();
+      expect(dry.lines.join("\n")).toContain("state unreadable (shredded)");
+      const res = await cancelExecution({
+        config: mod2,
+        as: "starter",
+        tenant: "acme",
+        apply: true,
+        force: true,
+        redact: [],
+        executionId: "x",
+      });
+      expect(res.exitCode).toBe(0);
+      expect(res.lines.join("\n")).toContain("cancelled");
+      const types = (await shared.inner.read("x")).map((e: { eventType: string }) => e.eventType);
+      expect(types.at(-1)).toBe("EXECUTION_CANCELLED");
+      Reflect.deleteProperty(globalThis, "__lcShred");
+    });
   });
 
   describe("start", () => {
     it("a dry run validates the input and starts nothing; --apply starts and parks", async () => {
-      const bad = await start({ input: { service: 7 } });
+      const bad = await start({ input: { service: 7 } }, { validateInput: true });
       expect(bad.exitCode).toBe(2);
       expect(bad.refusal).toContain("input schema");
 
@@ -352,9 +735,9 @@ describe("loom resume / cancel / start", () => {
     });
 
     it("an --idempotency-key derives a stable id, so a repeat start is refused", async () => {
-      const id = idempotentExecutionId("approval", "k1");
-      expect(id).toBe(idempotentExecutionId("approval", "k1"));
-      expect(id).not.toBe(idempotentExecutionId("approval", "k2"));
+      const id = idempotentExecutionId("approval", "k1", "acme");
+      expect(id).toBe(idempotentExecutionId("approval", "k1", "acme"));
+      expect(id).not.toBe(idempotentExecutionId("approval", "k2", "acme"));
       const first = await start({ idempotencyKey: "k1", apply: true });
       expect(first.executionId).toBe(id);
       expect(first.exitCode).toBe(0);
@@ -367,6 +750,72 @@ describe("loom resume / cancel / start", () => {
       expect(denied.refusal).toContain("ExecutionDeniedError");
       expect(await events("f-1")).toEqual([]);
       expect((await start({ flowId: "nope" })).exitCode).toBe(2);
+    });
+
+    it("the idempotency id is scoped to the tenant: one key, two tenants, two executions", async () => {
+      expect(idempotentExecutionId("approval", "k1", "acme")).not.toBe(
+        idempotentExecutionId("approval", "k1", "other")
+      );
+      expect(idempotentExecutionId("approval", "k1", "acme")).not.toBe(
+        idempotentExecutionId("approval", "k1")
+      );
+      // length-prefixed: shifting a delimiter between fields cannot collide
+      expect(idempotentExecutionId("a", "b|c", "t")).not.toBe(
+        idempotentExecutionId("a|b", "c", "t")
+      );
+      const one = await start({ idempotencyKey: "shared-key", apply: true });
+      const two = await start({ idempotencyKey: "shared-key", apply: true, tenant: "other" });
+      expect(one.exitCode).toBe(0);
+      expect(two.exitCode).toBe(0);
+      expect(one.executionId).not.toBe(two.executionId);
+      expect((await start({ idempotencyKey: "shared-key", apply: true })).exitCode).toBe(2);
+    });
+
+    it("shows the raw input, and says so when the schema is not enforced by the app", async () => {
+      const dry = await start({ input: { service: "s2", extra: "kept" } });
+      const text = dry.lines.join("\n");
+      expect(text).toContain("schema not enforced by the app");
+      expect(text).toContain('"extra":"kept"');
+      const enforced = await start({ input: { service: "s2" } }, { validateInput: true });
+      expect(enforced.lines.join("\n")).toContain("enforced by the app");
+    });
+
+    it("on --apply the runtime's authorizer runs BEFORE input validation: a denied principal learns nothing of the schema", async () => {
+      const denied = await start(
+        { flowId: "forbidden", input: "not-an-object-secret-9", id: "f-2", apply: true },
+        { validateInput: true }
+      );
+      expect(denied.exitCode).toBe(2);
+      expect(denied.refusal).toContain("ExecutionDeniedError");
+      expect(denied.refusal).not.toContain("input schema");
+      expect(await events("f-2")).toEqual([]);
+    });
+
+    it("egress: a schema failure never prints the received value unless --show-payload", async () => {
+      const secret = "hunter2-secret";
+      const dry = await start({ input: { service: { v: secret } } }, { validateInput: true });
+      expect(dry.exitCode).toBe(2);
+      expect(dry.refusal).not.toContain(secret);
+      const applied = await start(
+        { input: { service: { v: secret } }, id: "bad-1", apply: true },
+        { validateInput: true }
+      );
+      expect(applied.exitCode).toBe(2);
+      expect(applied.refusal).toContain("InputValidationError");
+      expect(applied.refusal).not.toContain(secret);
+    });
+
+    it("a process-local kill switch refuses start --apply unless --allow-local-controls", async () => {
+      const refused = await start({ id: "k-1", apply: true }, { killSwitch: "local" });
+      expect(refused.exitCode).toBe(2);
+      expect(refused.refusal).toContain("--allow-local-controls");
+      expect(await events("k-1")).toEqual([]);
+      const ok = await start(
+        { id: "k-1", apply: true, allowLocalControls: true },
+        { killSwitch: "local" }
+      );
+      expect(ok.exitCode).toBe(0);
+      expect((await start({ id: "k-2", apply: true }, { killSwitch: "shared" })).exitCode).toBe(0);
     });
   });
 

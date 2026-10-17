@@ -80,17 +80,23 @@ observe
   loom inspect <store> [--port N]                 web inspector (timeline + slider)
 
 operate
-  loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--apply] [--json]
+  loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--force] [--allow-local-controls] [--apply] [--json]
                                                   answer a suspended gate THROUGH your app's runtime:
                                                   its resume authenticator, execution authorizer and
                                                   resumeSchemas all run (dry run unless --apply; --db
-                                                  is refused; the continuation runs in THIS process)
+                                                  is refused; the continuation runs in THIS process;
+                                                  a process-local kill switch refuses unless
+                                                  --allow-local-controls; unknown lease liveness
+                                                  refuses unless --force)
   loom cancel <executionId> --config <module> --as <principal> [--tenant <t>] [--reason <text>] [--force] [--apply] [--json]
                                                   cancel through your app's runtime (dry run unless
-                                                  --apply; a live lease holder refuses unless --force)
-  loom start <flowId> --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--apply] [--json]
+                                                  --apply; a live or unknown lease holder refuses
+                                                  unless --force)
+  loom start <flowId> --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--allow-local-controls] [--apply] [--json]
                                                   start a flow through your app's runtime (dry run
-                                                  unless --apply; the flow runs in THIS process)
+                                                  unless --apply; the flow runs in THIS process; a
+                                                  process-local kill switch refuses unless
+                                                  --allow-local-controls)
   loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
                                                   re-drive executions whose supervisor died
                                                   (--max-recoveries: skip + list those whose
@@ -429,6 +435,8 @@ async function dispatch(
         apply: flags.apply === "true",
         redact: parseRedact(flags.redact),
         ...(flags["show-payload"] === "true" && { showPayload: true }),
+        ...(flags.force === "true" && { force: true }),
+        ...(flags["allow-local-controls"] === "true" && { allowLocalControls: true }),
       };
       let res: Awaited<ReturnType<typeof lc.resumeExecution>>;
       if (command === "resume") {
@@ -449,7 +457,6 @@ async function dispatch(
           ...common,
           executionId,
           ...(flags.reason !== undefined && { reason: flags.reason }),
-          ...(flags.force === "true" && { force: true }),
         });
       } else {
         const flowId = requirePositional(positionals, "flowId");

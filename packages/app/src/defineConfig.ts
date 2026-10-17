@@ -1125,6 +1125,12 @@ export interface LoomApp {
    */
   redrive?: { timers: TimerStore; service: TimerService };
   /**
+   * The durable-timer service, present only when `timers` was configured. Read-only introspection
+   * for tools (`loom resume|start` refuse to act while it is `running` in the CLI's process);
+   * `app.start()` is still how it starts.
+   */
+  timerService?: TimerService;
+  /**
    * ADR 0118 D3 — register the app-owned child supervisor so `lifecycle` retention does not delete a
    * finished child whose parent is still parked on it (`pinParkedChildren`, composed with
    * `durability.retention.pinned` by OR). Returns the supervisor, so it composes inline:
@@ -2022,6 +2028,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     },
     lifecycle,
     ...(redrive !== undefined && { redrive }),
+    ...(timerService !== undefined && { timerService }),
     supervise(supervisor) {
       supervisors.push(supervisor);
       return supervisor;
