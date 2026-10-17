@@ -110,7 +110,7 @@ onboarding, billing runs, ETL steps, order sagas, anything that must outlive its
 | wait hours or days | `ctx.sleep` / `ctx.sleepUntil` — survives restarts; needs a `TimerStore` |
 | wait for a human or webhook | `ctx.suspend({ on, timeout? })` + `flow$({ resumeSchemas })` to validate the payload |
 | run on a calendar | `schedule$({ id, cron, timeZone?, flowId })` in `timers.schedules`; one idempotent start per occurrence |
-| undo on failure | `@loom/saga` — `withSaga(ctx, saga => saga.run(step, input, compensator))`; compensators run in reverse; a failing compensator does not abort the rollback (`SagaCompensationError`, original as `cause`) |
+| undo on failure | `@loom/saga` — `withSaga(ctx, saga => saga.run(step, input, compensator))`; compensators run in reverse; a failing compensator does not abort the rollback and `withSaga` then throws `SagaCompensationError` (original as `cause`); a cancellation or other runtime signal propagates unchanged |
 | parent and child workflows | `@loom/orchestration` — `awaitChild` · `awaitChildren` · `awaitAll` (wire `superviseChildren`) |
 | map one step over many items | `fanout$(ctx, step, items)` — bounded concurrency, one step id per item |
 | long-lived loop | `continueAsNew` to bound history; the inbox as an event-driven mailbox |
@@ -132,7 +132,7 @@ async function run(ctx: ExecutionContext, order: { id: string }) {
 ```
 
 Start from a template: `loom new flow <name> --template approval|timer|saga` scaffolds each of the
-rows above (typed gate, durable timer, compensation) with a test that passes on a fresh scaffold.
+rows above (typed gate, durable timer, compensation; `echo` is the minimal one) with a test that passes on a fresh scaffold.
 Test time without waiting: `createTestApp({ clock: true })` and `advanceTime(app, ms)` from
 `@loom/testing` move the runtime's clock and fire what became due through the real `TimerService`.
 
@@ -194,7 +194,7 @@ All optional, all separate.
 | `@loom/knowledge` | document corpora over memory, with provenance |
 | `@loom/reasoning` | model routing, confidence elevation, critique |
 | `@loom/learning` | trajectories, off-policy eval (SNIPS, doubly-robust, bootstrap CIs), promotion gate, policy registry (shadow/canary/rollback), JSONL export |
-| `@loom/intent` · `planner` · `capability` | NL → capability → ordered plan |
+| `@loom/intent` · `planner` · `capability` | NL → capability → ordered plan. A configured model's answer is **final**: `NONE` is not overridden by a keyword guess; `routeExplained()` returns `{ route, reason }` (`model-none`, `model-unparseable`, …) |
 
 > **Off-policy eval needs exploration, not history.** Usable evidence ≈ explore-rate ×
 > window; a long log with no exploration evaluates nothing.
@@ -237,6 +237,7 @@ All optional, all separate.
 - **P10** — every edge is a pluggable SPI, so a third party never forks the kernel.
 - **A recorded decision has a position.** Each folded `DECISION_RECORDED` carries its sequence
   through checkpoints (ADR 0128), so replay order survives compaction.
+- **An owner-resolution fault is retryable.** Under an execution authorizer it surfaces as `ExecutionStoreUnavailableError`, never a false denial of the owner or an admission of a stranger (ADR 0039). A shredded payload is recognised by `isPayloadShredded` (realm-safe brand; `brandPayloadShredded` for a custom store), not by error name.
 - **A node that cannot open a sealed payload refuses it** — never delivers the envelope as if it
   were the user's data (ADR 0130); the wake is left for a capable node.
 - **Recovery is at-least-once.** An interrupted step may run twice; fencing makes that safe,
