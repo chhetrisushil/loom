@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { listSeams, pluginFiles } from "@loom/scaffold";
 import { KERNEL_PACKAGES, SPI_PACKAGES } from "@loom/spec";
+import { safeWriteFile } from "./safeWrite";
 
 /**
  * `loom plugin new <seam> <name> [--first-party] [--dir .]` — scaffold a plugin
@@ -31,8 +32,7 @@ export function cmdPluginNew(
       skipped.push(dest);
       continue;
     }
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, content);
+    safeWriteFile(opts.dir, dest, content);
     written.push(dest);
   }
   return { dir: root, written, skipped };
