@@ -1330,8 +1330,9 @@ export class WorkflowRuntime {
    * envelope the caller already read (resume does); otherwise it is one point read. A caller-
    * supplied `ExecutionState` is never consulted: `restoreFromState` cannot forge the owner.
    * `legacy: true` = the log predates EVENT_SCHEMA 1.23.0 and recorded no principal. A read that
-   * FAILS is never legacy: `actingPrincipal` propagates it and `ownerForAuthz` reports an unknown
-   * owner (the policy's `unknownOwner` rule decides: deny by default). A live execution of this
+   * FAILS is never legacy: `actingPrincipal` propagates it and `ownerForAuthz` turns it into the
+   * retryable {@link ExecutionStoreUnavailableError} (never an unknown owner). Only a crypto-
+   * shredded seq-0 read is mapped here, to `principalShredded` (an unknown owner). A live execution of this
    * runtime answers from the record its start wrote (see {@link startRecords}).
    */
   private async recordedPrincipal(
@@ -1426,7 +1427,16 @@ export class WorkflowRuntime {
       // ciphertext envelope (an O(1) shape check on the small record, never a payload walk).
       let knownFirst = known;
       if (knownFirst === undefined && !this.startRecords.has(executionId)) {
-        knownFirst = { first: (await readRangeOf(this.eventStore, executionId, 0, 0))[0] };
+        try {
+          knownFirst = { first: (await readRangeOf(this.eventStore, executionId, 0, 0))[0] };
+        } catch (err) {
+          // The ONE place erasure is classified: this store read of the anchor. Anything thrown
+          // below (principal resolver / codec = app code, a lineage hop) is a fault whatever its
+          // name, so an app error that merely NAMES itself `PayloadShreddedError` cannot forge an
+          // "unknown owner" (which `unknownOwner: "allow"` would admit a stranger on).
+          if (isErasure(err)) return {};
+          throw err;
+        }
       }
       if (knownFirst !== undefined && principalLooksSealed(knownFirst.first)) {
         throw new SealedStreamUnreadableError("query", executionId, {
@@ -1451,9 +1461,7 @@ export class WorkflowRuntime {
     } catch (err) {
       // A stream this node cannot open is NOT an "unknown owner" for the policy to judge.
       if (err instanceof SealedStreamUnreadableError) throw err;
-      // Only a PROVEN erasure is an unknown owner (the policy's `unknownOwner` rule decides).
-      if (isErasure(err)) return {};
-      // ANY OTHER fault (the store, the principal resolver / codec, a lineage hop) is no evidence
+      // ANY fault (the store, the principal resolver / codec, a lineage hop) is no evidence
       // about the execution: it is the sanitized, retryable error `readAnchor` raises, identical for
       // the owner and a stranger, never an "unknown owner" (which would falsely DENY the real owner
       // and could ADMIT a stranger under `unknownOwner: "allow"`). Nothing is allowed on a fault.
@@ -1465,8 +1473,8 @@ export class WorkflowRuntime {
   /**
    * {@link ownerForAuthz} for an op that has no anchor in hand (a live `cancel`, `restoreFromState`):
    * sequence 0 is read through {@link readAnchor}, so a storage fault is the sanitized retryable
-   * {@link ExecutionStoreUnavailableError} instead of `ownerForAuthz`'s catch-all "unknown owner"
-   * (which would deny the legitimate owner). A live start's own record (not yet journalled) is used
+   * {@link ExecutionStoreUnavailableError} from the anchor read itself, before `ownerForAuthz`
+   * (whose own seq-0 read, taken only when no anchor is in hand, raises the same error). A live start's own record (not yet journalled) is used
    * as before, with no read.
    */
   private async ownerAtAnchor(
@@ -1604,8 +1612,9 @@ export class WorkflowRuntime {
    * (already read with the execution's own record, so the first hop costs no extra seq-0 read).
    * `parent` is written only at a trusted start (the supervisor's lineage grant), so the chain is
    * the kernel's, not a caller's. Bounded at {@link MAX_LINEAGE_HOPS} and cycle-safe; an
-   * unreadable link, a shredded or unrestorable ancestor, a chain that ends, or one that runs out
-   * of hops, is an UNKNOWN owner.
+   * shredded or unrestorable ancestor, a chain that ends, or one that runs out of hops, is an
+   * UNKNOWN owner. An unreadable link (a store or resolver fault on a hop) THROWS: `ownerForAuthz`
+   * turns it into the retryable {@link ExecutionStoreUnavailableError}.
    */
   private async lineageOwner(
     executionId: string,

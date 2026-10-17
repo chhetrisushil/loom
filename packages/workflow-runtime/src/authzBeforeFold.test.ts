@@ -14,7 +14,7 @@ import {
 } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore, type SnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
-import { build, echo, flow } from "./__tests__/r2Harness";
+import { build, echo, flow, until } from "./__tests__/r2Harness";
 import { UNKNOWN_OWNER_REASON, executionAccessPolicy } from "./executionAccessPolicy";
 import { ExecutionStoreUnavailableError } from "./index";
 import { isSealedUnreadable } from "./sealGuard";
@@ -881,7 +881,7 @@ describe("an owner-resolution fault AFTER sequence 0 read fine is retryable, nev
       await first.h.rt.start(first.f, {}, { executionId: E, principal: OWNER })
     ).waitForSuspend();
     // a fresh node over the same log: no live start record, so the owner is read and RESOLVED
-    return { inner, fault, reports, n: node(inner, undefined, opts) };
+    return { inner, fault, reports, first, n: node(inner, undefined, opts) };
   }
 
   for (const [name, call] of OPS) {
@@ -942,15 +942,160 @@ describe("an owner-resolution fault AFTER sequence 0 read fine is retryable, nev
     );
   });
 
-  it("a resolver error that is a proven ERASURE is still an unknown owner (the policy decides), as before", async () => {
-    const w = await resolverWorld();
-    w.fault.error = () =>
-      Object.assign(new Error("subject erased"), { name: "PayloadShreddedError" });
-    w.fault.on = true;
-    const err = await rejection(w.n.h.rt.loadState(E, { principal: STRANGER }));
-    expect(nameOf(err)).toBe("ExecutionDeniedError");
-    expect((err as { reason?: unknown }).reason).toBe(UNKNOWN_OWNER_REASON);
-    expect(w.reports).toEqual([]);
+  // The resolver / codec is APP code: whatever it throws is a fault, even an Error that NAMES itself
+  // `PayloadShreddedError` (erasure is classified only on ownerForAuthz's own sequence-0 read).
+  // Otherwise such a throw is an "unknown owner", which `unknownOwner: "allow"` ADMITS a stranger on.
+  const forged = () => Object.assign(new Error("forged erasure"), { name: "PayloadShreddedError" });
+  for (const unknownOwner of ["allow", "deny"] as const) {
+    it(`a resolver throwing an Error NAMED PayloadShreddedError is a FAULT under unknownOwner '${unknownOwner}': owner and stranger get the retryable error, nobody is admitted`, async () => {
+      const w = await resolverWorld({
+        executionAuthorizer: executionAccessPolicy({ ...POLICY, unknownOwner }),
+      });
+      w.fault.error = forged;
+      w.fault.on = true;
+      const before = await kindsOf(w.inner);
+      for (const [name, call] of OPS) {
+        for (const who of [OWNER, STRANGER]) {
+          const err = await rejection(call(w.n, who));
+          expect(nameOf(err), `${name} as ${who.actor}`).toBe("ExecutionStoreUnavailableError");
+        }
+      }
+      expect(w.n.denied).toEqual([]);
+      expect(await kindsOf(w.inner)).toEqual(before);
+      expect(w.reports.length).toBeGreaterThan(0);
+    });
+  }
+
+  it("a resolver fault on a LIVE execution of this node (the start record, no store read) is the same retryable error", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    let seqZeroReads = 0;
+    const store = new Proxy(inner, {
+      get(target, prop, receiver) {
+        const v = Reflect.get(target, prop, receiver);
+        if (typeof v !== "function") return v;
+        return (...args: unknown[]) => {
+          if (prop === "readRange" && args[0] === E && args[1] === 0 && args[2] === 0) {
+            seqZeroReads++;
+          }
+          return (v as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    }) as unknown as EventStore;
+    const fault = { on: false };
+    const reports: unknown[] = [];
+    const n = node(store, undefined, {
+      principalResolver: {
+        resolve: (rec: { identity?: Record<string, string> }) => {
+          if (fault.on) throw new Error(CAUSE);
+          return rec.identity !== undefined ? { ...rec.identity } : undefined;
+        },
+      },
+      onStorageError: (_id: string, e: unknown) => reports.push(e),
+    });
+    await (await n.h.rt.start(n.f, {}, { executionId: E, principal: OWNER })).waitForSuspend();
+    fault.on = true;
+    seqZeroReads = 0;
+    // `cancel` of a live execution has no anchor in hand: the start record answers (no store read)
+    const owner = await rejection(n.h.rt.cancel(E, "no", { principal: OWNER }));
+    // the live start record answered: no sequence 0 was read (proves the startRecords path)
+    expect(seqZeroReads).toBe(0);
+    const stranger = await rejection(n.h.rt.cancel(E, "no", { principal: STRANGER }));
+    expect(nameOf(owner)).toBe("ExecutionStoreUnavailableError");
+    expect(shape(stranger)).toEqual(shape(owner));
+    expect(n.denied).toEqual([]);
+    expect(reports.map((r) => (r as Error).message)).toContain(CAUSE);
+    fault.on = false;
+    expect((await n.h.rt.loadState(E, { principal: OWNER }))?.status).toBe("suspended");
+  });
+
+  describe("send to a CONTINUED chain: the second check against the resolved head", () => {
+    it("a resolver fault on the head's owner check is retryable, not a denial", async () => {
+      const inner = new InMemoryAsyncEventStore();
+      const calls = { n: 0, failFrom: Number.POSITIVE_INFINITY };
+      const reports: unknown[] = [];
+      const opts = {
+        continueAsNewEnabled: true,
+        principalResolver: {
+          resolve: (rec: { identity?: Record<string, string> }) => {
+            calls.n++;
+            if (calls.n >= calls.failFrom) throw new Error(CAUSE);
+            return rec.identity !== undefined ? { ...rec.identity } : undefined;
+          },
+        },
+        onStorageError: (_id: string, e: unknown) => reports.push(e),
+      };
+      const rotate = () =>
+        flow<{ gen?: number }, unknown>("rot", async (ctx, input) => {
+          if (input?.gen === undefined) return ctx.continueAsNew({ gen: 1 });
+          await ctx.suspend({ on: "Go" });
+          return null;
+        });
+      const a = node(inner, undefined, opts, rotate as never);
+      await a.h.rt.start(a.f, {}, { executionId: E, principal: OWNER });
+      await until(async () => (await inner.read(`${E}~1`)).length > 0);
+      const n = node(inner, undefined, opts, rotate as never);
+      await until(
+        async () =>
+          (await n.h.rt.loadState(`${E}~1`, n.h.rt.systemOptions()))?.status === "suspended"
+      );
+      // sanity: with a healthy resolver the owner's send to the OLD id reaches the head
+      await n.h.rt.send(E, { topic: "t", payload: "x", messageId: "m0" }, { principal: OWNER });
+      // the addressed check resolves once, the head check a second time: fail from the 2nd resolve on
+      calls.n = 0;
+      calls.failFrom = 2;
+      const err = await rejection(
+        n.h.rt.send(E, { topic: "t", payload: "y", messageId: "m1" }, { principal: OWNER })
+      );
+      expect(calls.n).toBeGreaterThanOrEqual(2);
+      expect(nameOf(err)).toBe("ExecutionStoreUnavailableError");
+      expect((err as { op?: unknown }).op).toBe("send");
+      expect(n.denied).toEqual([]);
+      expect(reports.map((r) => (r as Error).message)).toContain(CAUSE);
+    });
+  });
+
+  describe("ownerForAuthz's OWN sequence-0 read (the anchor was unreadable, so it reads again)", () => {
+    // loadState: readAnchor reads seq 0 (1st read); an erasure there leaves the anchor unreadable, so
+    // ownerForAuthz reads seq 0 itself (2nd read). Script the two reads.
+    async function twoReads(second: () => unknown) {
+      const inner = new InMemoryAsyncEventStore();
+      const reports: unknown[] = [];
+      const opts = { onStorageError: (_id: string, e: unknown) => reports.push(e) };
+      const a = node(inner, undefined, opts);
+      await (await a.h.rt.start(a.f, {}, { executionId: E, principal: OWNER })).waitForSuspend();
+      let reads = 0;
+      const store = new Proxy(inner, {
+        get(target, prop, receiver) {
+          const v = Reflect.get(target, prop, receiver);
+          if (typeof v !== "function") return v;
+          return (...args: unknown[]) => {
+            if (prop === "readRange" && args[0] === E && args[1] === 0 && args[2] === 0) {
+              reads++;
+              if (reads === 1) return Promise.reject(forged());
+              if (reads === 2) return Promise.reject(second());
+            }
+            return (v as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      }) as unknown as EventStore;
+      return { reports, inner, n: node(store, undefined, opts) };
+    }
+
+    it("a store FAULT on that read is the retryable error for the owner and a stranger", async () => {
+      const w = await twoReads(() => new Error(CAUSE));
+      const owner = await rejection(w.n.h.rt.loadState(E, { principal: OWNER }));
+      expect(nameOf(owner)).toBe("ExecutionStoreUnavailableError");
+      expect(w.n.denied).toEqual([]);
+      expect(w.reports.map((r) => (r as Error).message)).toContain(CAUSE);
+    });
+
+    it("an ERASURE on that read is an unknown owner: the policy decides (strict: refused)", async () => {
+      const w = await twoReads(forged);
+      const err = await rejection(w.n.h.rt.loadState(E, { principal: OWNER }));
+      expect(nameOf(err)).toBe("ExecutionDeniedError");
+      expect((err as { reason?: unknown }).reason).toBe(UNKNOWN_OWNER_REASON);
+      expect(w.reports).toEqual([]);
+    });
   });
 
   it("the system grant never consults the resolver, so it is unchanged by the fault", async () => {
@@ -1006,6 +1151,31 @@ describe("an owner-resolution fault AFTER sequence 0 read fine is retryable, nev
       w.fault.on = false;
       expect((await w.n.h.rt.loadState(CHILD, { principal: OWNER }))?.status).toBe("suspended");
     });
+
+    const childOps: Array<[string, string, (n: Node) => Promise<unknown>]> = [
+      [
+        "resume",
+        "resume",
+        (n) => n.h.rt.resume(CHILD, { eventType: "Go", payload: null }, { principal: OWNER }),
+      ],
+      [
+        "send",
+        "send",
+        (n) => n.h.rt.send(CHILD, { topic: "t", payload: "x" }, { principal: OWNER }),
+      ],
+      ["followToHead", "query", (n) => n.h.rt.followToHead(CHILD, { principal: OWNER })],
+    ];
+    for (const [name, op, call] of childOps) {
+      it(`${name}: a faulting parent link is the retryable error, never a denial`, async () => {
+        const w = await lineageWorld();
+        w.fault.on = true;
+        const err = await rejection(call(w.n));
+        expect(nameOf(err)).toBe("ExecutionStoreUnavailableError");
+        expect((err as { op?: unknown }).op).toBe(op);
+        expect(w.n.denied).toEqual([]);
+        expect(w.reports.map((r) => (r as Error).message)).toContain(CAUSE);
+      });
+    }
   });
 });
 
