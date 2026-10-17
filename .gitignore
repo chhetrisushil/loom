@@ -30,3 +30,6 @@ tools/cli/.tmp-*/
 # which is exactly what happened once (79c8e35).
 tools/*/bin/
 tools/*/lib/
+
+# loom evals scoreboard output (the committed baseline is evals/baseline/)
+evals/out/

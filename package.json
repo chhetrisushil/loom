@@ -19,6 +19,8 @@
     "unlink:global": "npm rm --global @loom/cli @loom/compiler @loom/create-loom-app",
     "test:src": "LOOM_TEST_SRC=1 turbo test",
     "test:perf": "LOOM_TEST_PERF=1 turbo test --force",
+    "eval": "pnpm --filter @loom/evals-internal run eval",
+    "eval:update-baseline": "pnpm --filter @loom/evals-internal run eval:update-baseline",
     "test:e2e": "pnpm build && LOOM_TEST_E2E=1 pnpm --filter @loom/create-loom-app exec vitest run dayOne.e2e"
   },
   "devDependencies": {

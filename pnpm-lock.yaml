@@ -97,6 +97,40 @@ importers:
         specifier: ^5.4.10
         version: 5.4.21(@types/node@22.20.0)(sass@1.90.0)
 
+  evals:
+    dependencies:
+      '@loom/agent':
+        specifier: workspace:*
+        version: link:../packages/agent
+      '@loom/core':
+        specifier: workspace:*
+        version: link:../packages/core
+      '@loom/knowledge':
+        specifier: workspace:*
+        version: link:../packages/knowledge
+      '@loom/memory':
+        specifier: workspace:*
+        version: link:../packages/memory
+      '@loom/plugin-postgres':
+        specifier: workspace:*
+        version: link:../plugins/postgres
+      '@loom/plugin-sqlite':
+        specifier: workspace:*
+        version: link:../plugins/sqlite
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.0)(jsdom@25.0.1)(sass@1.90.0)
+
   packages/agent:
     dependencies:
       '@loom/classify':
