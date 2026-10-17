@@ -2,6 +2,17 @@ import { newIdSlug as slug } from "./slug";
 import type { AppSpec, CapabilitySpec } from "./types";
 
 /**
+ * How a raw phrase becomes an id. The default mints NEW ids (`newIdSlug`); the brownfield
+ * planner passes a resolver that prefers an id already present in the scanned app.
+ */
+export interface IdResolver {
+  capability(raw: string): string;
+  /** `capId` is the (resolved) id of the capability the step belongs to. */
+  step(capId: string, raw: string): string;
+}
+const DEFAULT_RESOLVER: IdResolver = { capability: slug, step: (_c, raw) => slug(raw) };
+
+/**
  * Deterministic, offline directive parser (P11 DX). Understands a small, documented
  * grammar of sentences and produces an {@link AppSpec}. This is the ONLY step that
  * interprets NL, and it does so without a model, so it is reproducible; a
@@ -19,7 +30,7 @@ import type { AppSpec, CapabilitySpec } from "./types";
  * Directives attach to the most recently created capability; if none was created,
  * a single "app" capability is assumed.
  */
-export function parseIntent(nl: string): AppSpec {
+export function parseIntent(nl: string, resolve: IdResolver = DEFAULT_RESOLVER): AppSpec {
   const sentences = nl
     .split(/[.\n]+/)
     .map((s) => s.trim())
@@ -42,7 +53,7 @@ export function parseIntent(nl: string): AppSpec {
 
     const create = s.match(/create\s+(?:a|an)?\s*([a-z0-9][a-z0-9\s-]*?)(?:\s+capability)?$/);
     if (create?.[1] !== undefined) {
-      const id = slug(create[1]);
+      const id = resolve.capability(create[1]);
       current = {
         id,
         name: id.replace(/(^|-)([a-z])/g, (_m, _p, c: string) => c.toUpperCase()),
@@ -81,7 +92,8 @@ export function parseIntent(nl: string): AppSpec {
 
     const step = s.match(/(?:add\s+)?step\s+([a-z0-9][a-z0-9\s-]*)/);
     if (step?.[1] !== undefined) {
-      ensureCurrent().steps.push(slug(step[1]));
+      const cap = ensureCurrent();
+      cap.steps.push(resolve.step(cap.id, step[1]));
       continue;
     }
 

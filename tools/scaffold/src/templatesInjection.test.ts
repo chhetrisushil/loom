@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 import { FLOW_TEMPLATES, templateFiles } from "./flowTemplates";
@@ -112,6 +113,17 @@ describe("scaffold templates are inert for a hostile name", () => {
       const out = flowFile(HOSTILE[label] as string);
       expect(out).toContain("XGlobalThis");
       expect(out).not.toContain("\n  globalThis");
+    }
+  });
+});
+
+describe("test sources", () => {
+  it("contain no raw line-separator, CR or bidi characters (payloads are written as escapes)", () => {
+    for (const f of [__filename, `${__dirname}/scaffold.test.ts`, `${__dirname}/emit.ts`]) {
+      const text = readFileSync(f, "utf8");
+      expect(text, f).not.toMatch(
+        /[\u2028\u2029\r\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\u{e0000}-\u{e007f}]/u
+      );
     }
   });
 });

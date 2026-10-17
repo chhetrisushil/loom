@@ -9,7 +9,7 @@ import { fnv1a32 } from "./hash";
  *   - a result that starts with a digit gets the word `item-` in front
  *     ("2fa login" -> `item-2fa-login`, "123" -> `item-123`);
  *   - input with NO ascii letter or digit at all (punctuation, unicode-only) becomes
- *     `capability-<8 hex>`, the hex being a hash of the original text, so two different
+ *     `capability-<8 hex>`, the hex being a hash of the NFC-normalised original text, so two different
  *     such inputs do not collapse onto one id. Blank input stays `app`.
  * Ids that were already valid are returned unchanged, so nothing that worked before moves.
  */
@@ -20,7 +20,7 @@ export function newIdSlug(text: string): string {
     .replace(/^-+|-+$/g, "");
   if (s === "") {
     if (text.trim() === "") return "app";
-    return `capability-${fnv1a32(text).toString(16).padStart(8, "0")}`;
+    return `capability-${fnv1a32(text.normalize("NFC")).toString(16).padStart(8, "0")}`;
   }
   return /^[0-9]/.test(s) ? `item-${s}` : s;
 }
