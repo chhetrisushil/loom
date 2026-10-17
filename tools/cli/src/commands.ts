@@ -1,8 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { maskPaths } from "@loom/classify";
-import type { EventEnvelope } from "@loom/core";
 import {
   type EvalReport,
   type Golden,
@@ -10,6 +8,8 @@ import {
   evaluateGoldens,
   foldAt,
   formatLog,
+  makeRedactor,
+  redactEvents,
 } from "./core";
 import { type StoreFlags, noSuchExecution, resolveStores } from "./stores";
 
@@ -55,18 +55,6 @@ export async function cmdDebug(
   }
 }
 
-/**
- * `--redact` for machine output: the same dot-paths the text view masks, applied to the payload
- * root AND to `payload.output` (the text view's only echo of step/flow output). Machine output
- * carries the whole payload, so the mask must not be narrower than the operator's flag.
- */
-function redactedEnvelope(e: EventEnvelope, redact: readonly string[]): EventEnvelope {
-  if (redact.length === 0) return e;
-  const payload = maskPaths(e.payload ?? {}, redact) as Record<string, unknown>;
-  if (payload.output !== undefined) payload.output = maskPaths(payload.output, redact);
-  return { ...e, payload } as EventEnvelope;
-}
-
 /** `loom logs --json` — ndjson, one event envelope per line. */
 export async function cmdLogsJson(
   flags: StoreFlags,
@@ -78,7 +66,9 @@ export async function cmdLogsJson(
   try {
     const events = await store.read(executionId);
     if (events.length === 0) throw await noSuchExecution(store, executionId);
-    return events.map((e) => JSON.stringify(redactedEnvelope(e, redact))).join("\n");
+    return redactEvents(events, redact)
+      .map((e) => JSON.stringify(e))
+      .join("\n");
   } finally {
     await resolved.close();
   }
@@ -96,18 +86,15 @@ export async function cmdDebugJson(
   try {
     const events = await store.read(executionId);
     if (events.length === 0) throw await noSuchExecution(store, executionId);
-    const state = foldAt(events, at);
-    const out = state.variables._output;
-    const masked =
-      out === undefined
-        ? state
-        : { ...state, variables: { ...state.variables, _output: maskPaths(out, redact) } };
+    const r = makeRedactor(redact);
+    r.mask(events); // learn every secret the log holds, then scrub the folded state with them
+    const state = r.scrub(r.mask(foldAt(events, at)));
     return {
       ok: true,
       executionId,
       ...(at !== undefined && { at }),
       eventCount: events.length,
-      state: masked,
+      state,
     };
   } finally {
     await resolved.close();

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EventEnvelope } from "@loom/core";
@@ -301,18 +301,27 @@ describe("loom doctor --strict / --require (F13)", () => {
 
 describe("the built binary", () => {
   const cli = join(__dirname, "..", "dist", "cli.js");
-  it("--version and per-command help run through the real entry point", () => {
-    const v = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8" });
-    if (v.error !== undefined || v.status === null) return; // not built in this run
-    expect(v.stdout.trim()).toBe(cliVersion());
-    const h = spawnSync(process.execPath, [cli, "doctor", "--help"], { encoding: "utf8" });
-    expect(h.status).toBe(0);
-    expect(h.stdout).toContain("--strict");
-    const j = spawnSync(process.execPath, [cli, "check", "--manifest", "/nonexistent", "--json"], {
-      encoding: "utf8",
-    });
-    expect(j.status).toBe(1);
-    expect(j.stdout).toBe("");
-    expect(JSON.parse(j.stderr).error.code).toBe(1);
-  });
+  // Skipped (visibly) only when dist is absent; a present binary that fails to spawn FAILS.
+  it.skipIf(!existsSync(cli))(
+    "--version and per-command help run through the real entry point",
+    () => {
+      const v = spawnSync(process.execPath, [cli, "--version"], { encoding: "utf8" });
+      expect(v.error).toBeUndefined();
+      expect(v.status).toBe(0);
+      expect(v.stdout.trim()).toBe(cliVersion());
+      const h = spawnSync(process.execPath, [cli, "doctor", "--help"], { encoding: "utf8" });
+      expect(h.status).toBe(0);
+      expect(h.stdout).toContain("--strict");
+      const j = spawnSync(
+        process.execPath,
+        [cli, "check", "--manifest", "/nonexistent", "--json"],
+        {
+          encoding: "utf8",
+        }
+      );
+      expect(j.status).toBe(1);
+      expect(j.stdout).toBe("");
+      expect(JSON.parse(j.stderr).error.code).toBe(1);
+    }
+  );
 });

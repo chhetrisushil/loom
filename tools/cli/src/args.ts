@@ -23,6 +23,11 @@ export interface CommandSpec {
   flags: Readonly<Record<string, FlagKind>>;
   /** First positional words that select a mode, e.g. `plugin new|check|…` (for completion). */
   subcommands?: readonly string[];
+  /**
+   * Positionals beyond this many are free text (an intent, a search query), so a later
+   * `--help` / `-h` is a literal word, not a request for help. Absent: help anywhere.
+   */
+  literalAfter?: number;
 }
 
 /** Exit code 2: bad usage or a refusal. Exit 1 is reserved for a failed verdict / runtime error. */
@@ -61,6 +66,11 @@ const inspector: CommandSpec = {
   usage: ["loom inspect <store> [--port N]"],
   flags: { ...STORE, port: "int" },
 };
+
+/** The spec for `name`, or undefined — own keys only (`toString`, `__proto__` are not commands). */
+export function specOf(name: string | undefined): CommandSpec | undefined {
+  return name !== undefined && Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
+}
 
 export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   logs: {
@@ -217,6 +227,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       'loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]',
     ],
     subcommands: ["sync", "list", "search"],
+    literalAfter: 1,
     flags: {
       config: "string",
       scope: "string",
@@ -284,6 +295,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
   appgen: {
     summary: "natural language to a new project or edits (dry run with --dry-run)",
+    literalAfter: 0,
     usage: [
       "loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]",
       "loom appgen ... --model <spec> [--model-big <spec>]",
@@ -394,7 +406,7 @@ export function parseArgs(argv: string[]): Parsed {
   // No prototype: with one, `flags["valueOf"] ?? fallback` answers with a FUNCTION for a
   // flag nobody passed. Every option is read out of this bag by name.
   const flags: Record<string, string> = Object.create(null);
-  const spec = command === undefined ? undefined : COMMANDS[command];
+  const spec = specOf(command);
   if (spec === undefined) {
     // Unknown (or absent) command: loose reading so the dispatcher can name it.
     const positionals: string[] = [];

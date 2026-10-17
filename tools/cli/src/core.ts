@@ -15,6 +15,77 @@ export function foldAt(events: EventEnvelope[], sequence?: number): ExecutionSta
   return replayAsFixture(prefix);
 }
 
+// ── makeRedactor — complete egress masking (pure) ─────────────────────────────
+
+const REDACTED_MARK = "[redacted]";
+const isPlain = (v: unknown): v is Record<string, unknown> => {
+  if (typeof v !== "object" || v === null) return false;
+  const proto = Object.getPrototypeOf(v);
+  return proto === Object.prototype || proto === null;
+};
+
+function collectStrings(v: unknown, into: Set<string>): void {
+  if (typeof v === "string") into.add(v);
+  else if (Array.isArray(v)) for (const x of v) collectStrings(x, into);
+  else if (isPlain(v)) for (const x of Object.values(v)) collectStrings(x, into);
+}
+
+/**
+ * The operator's `--redact` dot-paths, applied at EVERY object in a value (the payload, each
+ * nested object, each array element) — a cold log carries no flow schemas, so the path cannot
+ * be anchored to one known root, and `input`, resume payloads and results leak otherwise.
+ * `mask` replaces the values at the paths; the strings it removed are remembered, and `scrub`
+ * then removes them from free text (an error message that quotes the secret). Run `mask` over
+ * everything first, then `scrub`, so a secret found late still scrubs earlier text.
+ */
+export function makeRedactor(paths: readonly string[]) {
+  const secrets = new Set<string>();
+  const mask = <T>(value: T): T => {
+    if (paths.length === 0) return value;
+    const walk = (node: unknown): unknown => {
+      if (Array.isArray(node)) return node.map(walk);
+      if (!isPlain(node)) return node;
+      const m = maskPaths(node, paths) as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      for (const k of Object.keys(m)) {
+        if (m[k] === REDACTED_MARK && node[k] !== REDACTED_MARK) {
+          collectStrings(node[k], secrets);
+          out[k] = REDACTED_MARK;
+        } else out[k] = walk(m[k]);
+      }
+      return out;
+    };
+    return walk(value) as T;
+  };
+  const scrub = <T>(value: T): T => {
+    const list = [...secrets].filter((s) => s.length >= 4).sort((a, b) => b.length - a.length);
+    if (list.length === 0) return value;
+    const walk = (node: unknown): unknown => {
+      if (typeof node === "string") {
+        let r = node;
+        for (const s of list) r = r.split(s).join(REDACTED_MARK);
+        return r;
+      }
+      if (Array.isArray(node)) return node.map(walk);
+      if (isPlain(node)) {
+        const out: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(node)) out[k] = walk(v);
+        return out;
+      }
+      return node;
+    };
+    return walk(value) as T;
+  };
+  return { mask, scrub };
+}
+
+/** Mask then scrub a whole list of events (secrets found in any event scrub them all). */
+export function redactEvents(events: EventEnvelope[], paths: readonly string[]): EventEnvelope[] {
+  if (paths.length === 0) return events;
+  const r = makeRedactor(paths);
+  return events.map(r.mask).map(r.scrub);
+}
+
 // ── formatLog / describeState — the `loom logs` + `loom debug` views (pure) ────
 
 const SUSPEND_TYPES = new Set(["EXECUTION_SUSPENDED"]);
@@ -22,7 +93,7 @@ const SUSPEND_TYPES = new Set(["EXECUTION_SUSPENDED"]);
 // K10-R6 — CLI egress. The CLI reads a cold log with no flow schemas, so it can't derive the
 // classification marks; the operator names the sensitive OUTPUT dot-paths explicitly via
 // `--redact` (e.g. `--redact ssn,user.token`), masked before anything is printed.
-function detailOf(event: EventEnvelope, redact: readonly string[]): string {
+function detailOf(event: EventEnvelope): string {
   const p = (event.payload ?? {}) as Record<string, unknown>;
   switch (event.eventType) {
     case "STEP_STARTED":
@@ -37,7 +108,7 @@ function detailOf(event: EventEnvelope, redact: readonly string[]): string {
       return on ? `on ${on}` : "";
     }
     case "EXECUTION_COMPLETED":
-      return truncate(JSON.stringify(maskPaths(p.output, redact)));
+      return truncate(JSON.stringify(p.output));
     case "EXECUTION_FAILED":
       return truncate(String(p.error ?? ""));
     case "EXECUTION_CONTINUED":
@@ -51,13 +122,14 @@ function detailOf(event: EventEnvelope, redact: readonly string[]): string {
  * Pretty-print the event stream as a timeline, marking suspend points. `redact` masks the
  * given output dot-paths (K10-R6) so sensitive fields don't leak to stdout.
  */
-export function formatLog(events: EventEnvelope[], redact: readonly string[] = []): string {
-  if (events.length === 0) return "(no events)";
+export function formatLog(rawEvents: EventEnvelope[], redact: readonly string[] = []): string {
+  if (rawEvents.length === 0) return "(no events)";
+  const events = redactEvents(rawEvents, redact);
   const lines = events.map((e) => {
     const marker = SUSPEND_TYPES.has(e.eventType) ? "⏸" : " ";
     const seq = `#${e.sequence}`.padEnd(5);
     const type = e.eventType.padEnd(20);
-    return `${marker} ${seq} ${type} ${detailOf(e, redact)}`.trimEnd();
+    return `${marker} ${seq} ${type} ${detailOf(e)}`.trimEnd();
   });
   return lines.join("\n");
 }
@@ -66,12 +138,13 @@ export function formatLog(events: EventEnvelope[], redact: readonly string[] = [
  * Human summary of a folded state — the `loom debug --at <seq>` view. `redact` masks the
  * given output dot-paths (K10-R6) before the output is printed.
  */
-export function describeState(state: ExecutionState, redact: readonly string[] = []): string {
+export function describeState(rawState: ExecutionState, redact: readonly string[] = []): string {
+  const r = makeRedactor(redact);
+  const state = r.scrub(r.mask(rawState));
   const frames = Object.entries(state.frames)
     .map(([id, f]) => `    ${id}: ${f.status}`)
     .join("\n");
-  const rawOutput = state.variables._output;
-  const output = rawOutput !== undefined ? maskPaths(rawOutput, redact) : undefined;
+  const output = state.variables._output;
   return [
     `execution ${state.executionId}  (workflow ${state.workflowId})`,
     `status: ${state.status}   sequence: ${state.sequence}`,

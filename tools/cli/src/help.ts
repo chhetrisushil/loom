@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { COMMANDS, type CommandSpec, UsageError, suggest } from "./args";
+import { COMMANDS, type CommandSpec, UsageError, specOf, suggest } from "./args";
 
 // ── help, version, completion — all derived from the COMMANDS table ──────────
 //
@@ -24,21 +24,32 @@ export function unknownCommandMessage(name: string): string {
   return `loom: unknown command "${name}"${hint !== undefined ? ` (did you mean "${hint}"?)` : ""} — see \`loom help\``;
 }
 
+const STORE_FLAG_NAMES = new Set(["config", "db", "snap", "branches", "leases"]);
+
 function flagLine(name: string, kind: string): string {
   return kind === "boolean" ? `  --${name}` : `  --${name} <${kind}>`;
 }
 
 /** `loom <cmd> --help` / `loom help <cmd>`: the command's section of the reference. */
-export function commandHelp(name: string): string {
-  const spec: CommandSpec | undefined = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : undefined;
+export function commandHelp(name: string, sub?: string): string {
+  const spec: CommandSpec | undefined = specOf(name);
   if (spec === undefined) throw new UsageError(unknownCommandMessage(name));
+  // `loom branches retire --help`: just that subcommand's usage line(s) and the flags they
+  // name (plus the store flags when the line takes a <store>); the whole section otherwise.
+  const own =
+    sub !== undefined && spec.subcommands?.includes(sub)
+      ? spec.usage.filter((u) => u.startsWith(`loom ${name} ${sub}`))
+      : [];
+  const narrowed = own.length > 0;
   const lines = [
-    `loom ${name} — ${spec.summary}`,
+    `loom ${name}${narrowed ? ` ${sub}` : ""} — ${spec.summary}`,
     "",
     "usage:",
-    ...spec.usage.map((u) => `  ${u}`),
+    ...(narrowed ? own : spec.usage).map((u) => `  ${u}`),
   ];
-  const flags = Object.entries(spec.flags);
+  const mentioned = (f: string) =>
+    own.some((u) => u.includes(`--${f}`) || (u.includes("<store>") && STORE_FLAG_NAMES.has(f)));
+  const flags = Object.entries(spec.flags).filter(([f]) => !narrowed || mentioned(f));
   if (flags.length > 0) {
     lines.push("", "flags:", ...flags.map(([f, k]) => flagLine(f, k)));
   }
@@ -46,13 +57,32 @@ export function commandHelp(name: string): string {
   return lines.join("\n");
 }
 
-/** True when the args ask for help (before any `--` terminator). */
-export function wantsHelp(args: readonly string[]): boolean {
-  for (const a of args) {
+/**
+ * True when the args ask for help (before any `--` terminator). For commands whose later
+ * positionals are free text (`appgen make a cli with -h flag`), a `-h` past the allowed
+ * positionals is a literal word. Values of value flags are skipped, not counted.
+ */
+export function wantsHelp(args: readonly string[], command?: string): boolean {
+  const spec = specOf(command);
+  const limit = spec?.literalAfter ?? Number.POSITIVE_INFINITY;
+  let positionals = 0;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] as string;
     if (a === "--") return false;
-    if (a === "--help" || a === "-h") return true;
+    if (a === "--help" || a === "-h") return positionals <= limit;
+    if (a.startsWith("--")) {
+      const name = a.slice(2);
+      if (!a.includes("=") && spec !== undefined && Object.hasOwn(spec.flags, name)) {
+        if (spec.flags[name] !== "boolean") i++; // its value is not a positional
+      }
+    } else if (!a.startsWith("-")) positionals++;
   }
   return false;
+}
+
+/** The subcommand word a `--help` was asked about, if any (`branches retire --help`). */
+export function helpSubcommand(args: readonly string[]): string | undefined {
+  return args.find((a) => !a.startsWith("-"));
 }
 
 // ── completion ────────────────────────────────────────────────────────────────
@@ -63,8 +93,43 @@ function sortedCommands(): [string, CommandSpec][] {
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
+/** Flags whose value is a filesystem path: completed with files, not left blank. */
+const PATH_FLAGS = new Set([
+  "db",
+  "config",
+  "snap",
+  "branches",
+  "leases",
+  "dir",
+  "manifest",
+  "from",
+  "from-spec",
+  "content",
+  "archive-db",
+  "archive-snap",
+  "module",
+  "policy",
+  "logs",
+  "emit-docs",
+]);
+
+/** Flag names that take a value in some command and are boolean in none. */
+function valueFlagNames(): { path: string[]; other: string[] } {
+  const bool = new Set<string>();
+  const val = new Set<string>();
+  for (const [, spec] of sortedCommands()) {
+    for (const [f, k] of Object.entries(spec.flags)) (k === "boolean" ? bool : val).add(f);
+  }
+  const names = [...val].filter((f) => !bool.has(f)).sort();
+  return {
+    path: names.filter((f) => PATH_FLAGS.has(f)),
+    other: names.filter((f) => !PATH_FLAGS.has(f)),
+  };
+}
+
 function bashScript(): string {
   const cmds = sortedCommands();
+  const { path: pathFlags, other } = valueFlagNames();
   const cases = cmds
     .map(([name, spec]) => {
       const words = [
@@ -75,14 +140,20 @@ function bashScript(): string {
       return `    ${name}) opts="${words.join(" ")}" ;;`;
     })
     .join("\n");
+  const alt = (xs: string[]) => xs.map((f) => `--${f}`).join("|");
   return `# bash completion for loom — generated by \`loom completion bash\`
 # install: eval "$(loom completion bash)"   (or save to a file under bash-completion.d)
 _loom() {
-  local cur="\${COMP_WORDS[COMP_CWORD]}" opts=""
+  local cur="\${COMP_WORDS[COMP_CWORD]}" prev="\${COMP_WORDS[COMP_CWORD-1]}" opts=""
   if [ "$COMP_CWORD" -eq 1 ]; then
     COMPREPLY=( $(compgen -W "${cmds.map(([n]) => n).join(" ")} --help --version" -- "$cur") )
     return 0
   fi
+  # A value flag takes the next word as its value: files for path flags, nothing otherwise.
+  case "$prev" in
+    ${alt(pathFlags)}) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;
+    ${alt(other)}) COMPREPLY=(); return 0 ;;
+  esac
   case "\${COMP_WORDS[1]}" in
 ${cases}
   esac
@@ -99,19 +170,26 @@ function zshScript(): string {
     .join("\n");
   const cases = cmds
     .map(([name, spec]) => {
-      const words = [
-        ...(spec.subcommands ?? []),
-        ...Object.keys(spec.flags).map((f) => `--${f}`),
-        "--help",
+      const specs = [
+        ...(spec.subcommands !== undefined && spec.subcommands.length > 0
+          ? [shq(`1:subcommand:(${spec.subcommands.join(" ")})`)]
+          : []),
+        ...Object.entries(spec.flags).map(([f, k]) =>
+          k === "boolean"
+            ? shq(`--${f}[${f}]`)
+            : shq(`--${f}=[${f}]:${PATH_FLAGS.has(f) ? "file:_files" : `${k}: `}`)
+        ),
+        shq("--help[show help]"),
+        shq("*:argument:_files"),
       ];
-      return `    ${name}) opts=(${words.join(" ")}) ;;`;
+      return `    ${name}) _arguments ${specs.join(" ")} ;;`;
     })
     .join("\n");
   return `#compdef loom
 # zsh completion for loom — generated by \`loom completion zsh\`
 # install: loom completion zsh > "\${fpath[1]}/_loom"   (or: source <(loom completion zsh))
 _loom() {
-  local -a commands opts
+  local -a commands
   commands=(
 ${described}
   )
@@ -121,9 +199,7 @@ ${described}
   fi
   case $words[2] in
 ${cases}
-    *) opts=() ;;
   esac
-  compadd -- $opts
 }
 if [ "$funcstack[1]" = "_loom" ]; then _loom "$@"; else compdef _loom loom; fi
 `;
@@ -140,12 +216,18 @@ function fishScript(): string {
     ),
   ];
   for (const [name, spec] of cmds) {
+    const inCmd = `__fish_seen_subcommand_from ${name}`;
+    // Subcommand words only directly after the command (`loom <cmd> |`), never further along.
+    const justAfter = `${inCmd}; and test (count (commandline -opc)) -eq 2`;
     for (const sub of spec.subcommands ?? []) {
-      lines.push(`complete -c loom -n '__fish_seen_subcommand_from ${name}' -a ${sub}`);
+      lines.push(`complete -c loom -n '${justAfter}' -a ${sub}`);
     }
-    for (const flag of [...Object.keys(spec.flags), "help"]) {
-      lines.push(`complete -c loom -n '__fish_seen_subcommand_from ${name}' -l ${flag}`);
+    for (const [flag, kind] of Object.entries(spec.flags)) {
+      // `-r`: the flag requires a value; `-F`: that value is a path, so offer files again.
+      const value = kind === "boolean" ? "" : PATH_FLAGS.has(flag) ? " -r -F" : " -r";
+      lines.push(`complete -c loom -n '${inCmd}' -l ${flag}${value}`);
     }
+    lines.push(`complete -c loom -n '${inCmd}' -l help`);
   }
   return `${lines.join("\n")}\n`;
 }

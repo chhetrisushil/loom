@@ -8,11 +8,12 @@ import type { FilePlan } from "@loom/appgen";
 // time, not after loading the model clients, the SQLite driver and every runtime package.
 // Only type imports and the dependency-light modules (args, help, storeFlags) are static.
 import type { Elevation, Planner } from "./appgen";
-import { COMMANDS, CliError, UsageError, parseArgs } from "./args";
+import { CliError, UsageError, parseArgs, specOf } from "./args";
 import {
   cliVersion,
   commandHelp,
   completionScript,
+  helpSubcommand,
   unknownCommandMessage,
   wantsHelp,
 } from "./help";
@@ -154,9 +155,10 @@ function storeFlagError(command: string): never {
 // result is written straight to the real stdout. Errors become `{"error":{code,message}}` on
 // stderr (see `run`).
 let jsonStdout = false;
+let jsonWrite: ((s: string) => unknown) | undefined;
 
 function out(text: string): void {
-  if (jsonStdout) process.stdout.write(`${text}\n`);
+  if (jsonStdout && jsonWrite !== undefined) jsonWrite(`${text}\n`);
   else console.log(text);
 }
 function outJson(value: unknown): void {
@@ -165,8 +167,7 @@ function outJson(value: unknown): void {
 
 /** True when this invocation asked for `--json` on a command that supports it. */
 function jsonRequested(argv: readonly string[]): boolean {
-  const spec =
-    argv[0] === undefined || !Object.hasOwn(COMMANDS, argv[0]) ? undefined : COMMANDS[argv[0]];
+  const spec = specOf(argv[0]);
   if (spec === undefined || spec.flags.json === undefined) return false;
   const dd = argv.indexOf("--");
   return argv.slice(1, dd === -1 ? undefined : dd).includes("--json");
@@ -182,17 +183,26 @@ export async function main(argv: string[]): Promise<number> {
     console.log(cliVersion());
     return 0;
   }
-  if (Object.hasOwn(COMMANDS, first) && first !== "help" && wantsHelp(rest)) {
-    console.log(commandHelp(first));
+  if (specOf(first) !== undefined && wantsHelp(rest, first)) {
+    console.log(commandHelp(first, helpSubcommand(rest)));
     return 0;
   }
 
   const { command, positionals, flags } = parseArgs(argv);
-  const json =
-    flags.json === "true" && command !== undefined && COMMANDS[command]?.flags.json !== undefined;
+  const json = flags.json === "true" && specOf(command)?.flags.json !== undefined;
   const realLog = console.log;
   const realInfo = console.info;
+  const realWrite = process.stdout.write;
   if (json) {
+    // Divert `process.stdout.write` itself (console.debug/table/dir and any direct write go
+    // through it); the result alone is emitted via the saved original.
+    jsonWrite = (s) => realWrite.call(process.stdout, s);
+    process.stdout.write = ((chunk: unknown, ...more: unknown[]) =>
+      (process.stderr.write as (...a: unknown[]) => boolean).call(
+        process.stderr,
+        chunk,
+        ...more
+      )) as typeof process.stdout.write;
     jsonStdout = true;
     console.log = (...a: unknown[]) => console.error(...a);
     console.info = (...a: unknown[]) => console.error(...a);
@@ -202,6 +212,8 @@ export async function main(argv: string[]): Promise<number> {
   } finally {
     if (json) {
       jsonStdout = false;
+      jsonWrite = undefined;
+      process.stdout.write = realWrite;
       console.log = realLog;
       console.info = realInfo;
     }
