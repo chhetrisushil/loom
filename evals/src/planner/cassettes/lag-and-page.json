@@ -1,0 +1,10 @@
+{
+  "req:19007454aa1b157958413b0784fb7188": {
+    "content": "{\"nodes\":[{\"id\":\"diag\",\"capabilityId\":\"diagnose-replica-lag\",\"args\":{\"target\":\"reports-replica\"},\"rationale\":\"step diag\"},{\"id\":\"tell\",\"capabilityId\":\"notify-oncall\",\"args\":{\"channel\":\"db-oncall\",\"message\":{\"$from\":\"diag.summary\"}},\"dependsOn\":[\"diag\"],\"rationale\":\"step tell\"}]}",
+    "stopReason": "end_turn"
+  },
+  "req:482e997431f4c24701d7150080228119": {
+    "content": "diagnose-replica-lag",
+    "stopReason": "end_turn"
+  }
+}

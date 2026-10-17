@@ -1,0 +1,10 @@
+{
+  "req:5fc94cdfade09c8949b7f863ce268ef3": {
+    "content": "scale-read-replicas",
+    "stopReason": "end_turn"
+  },
+  "req:672f0c447df160ed12b9168ecce2c7de": {
+    "content": "{\"nodes\":[{\"id\":\"scale\",\"capabilityId\":\"scale-read-replicas\",\"args\":{\"target\":\"reports-db\",\"addReplicas\":2},\"rationale\":\"step scale\"}]}",
+    "stopReason": "end_turn"
+  }
+}

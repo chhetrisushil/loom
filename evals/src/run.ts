@@ -2,6 +2,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { measureAgentLoop } from "./agentLoop/measure";
 import { AGENT_LOOP_CEILINGS, AGENT_LOOP_THRESHOLDS } from "./agentLoop/thresholds";
+import { measureAppgen } from "./appgen/measure";
+import { APPGEN_THRESHOLDS } from "./appgen/thresholds";
+import { measurePlanner } from "./planner/measure";
+import { PLANNER_THRESHOLDS } from "./planner/thresholds";
 import {
   BACKENDS,
   POSTGRES_SKIP_REASON,
@@ -61,6 +65,8 @@ export async function collect(): Promise<Collected> {
   );
   rows.push(...(await measureSkills(SKILL_THRESHOLDS)));
   rows.push(...(await measureAgentLoop(AGENT_LOOP_THRESHOLDS, AGENT_LOOP_CEILINGS)));
+  rows.push(...(await measureAppgen(APPGEN_THRESHOLDS)));
+  rows.push(...(await measurePlanner(PLANNER_THRESHOLDS)));
   return { board: buildScoreboard(rows), postgresRan: pg !== undefined };
 }
 

@@ -1,0 +1,10 @@
+{
+  "req:1d5348893702457df2af15b1c91fe4bc": {
+    "content": "vacuum-table",
+    "stopReason": "end_turn"
+  },
+  "req:56e91ca3fe5b6590a09921c457c13394": {
+    "content": "{\"nodes\":[{\"id\":\"vac\",\"capabilityId\":\"vacuum-table\",\"args\":{\"target\":\"analytics-db\",\"table\":\"events\"},\"rationale\":\"step vac\"}]}",
+    "stopReason": "end_turn"
+  }
+}

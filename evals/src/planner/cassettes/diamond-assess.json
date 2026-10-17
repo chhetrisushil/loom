@@ -1,0 +1,10 @@
+{
+  "req:41c5977b429fd71e73a177fb0cdc76b6": {
+    "content": "diagnose-cpu",
+    "stopReason": "end_turn"
+  },
+  "req:87e6d4eb9fba9116e7d48d2a22bf6e60": {
+    "content": "{\"nodes\":[{\"id\":\"cpu\",\"capabilityId\":\"diagnose-cpu\",\"args\":{\"target\":\"inventory-db\"},\"rationale\":\"step cpu\"},{\"id\":\"locks\",\"capabilityId\":\"diagnose-locks\",\"args\":{\"target\":\"inventory-db\"},\"rationale\":\"step locks\"},{\"id\":\"assess\",\"capabilityId\":\"assess-remediation\",\"args\":{\"target\":\"inventory-db\",\"domain\":\"restart\"},\"dependsOn\":[\"cpu\",\"locks\"],\"rationale\":\"step assess\"}]}",
+    "stopReason": "end_turn"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "req:9e648815b2d93ae52acd9c3bc5ea949a": {
+    "content": "{\"nodes\":[{\"id\":\"cpu\",\"capabilityId\":\"diagnose-cpu\",\"args\":{\"target\":\"orders-db\"},\"rationale\":\"step cpu\"}]}",
+    "stopReason": "end_turn"
+  },
+  "req:ca9cca848ba6f747e2c5e959576143f8": {
+    "content": "diagnose-cpu",
+    "stopReason": "end_turn"
+  }
+}

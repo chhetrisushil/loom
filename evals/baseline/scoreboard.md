@@ -5,6 +5,12 @@
 | `agentLoop/cassette/meanSteps` | 2.3846 | yes |
 | `agentLoop/cassette/meanToolCalls` | 1.7692 | yes |
 | `agentLoop/cassette/successRate` | 1.0000 | yes |
+| `appgen/deterministic/coverage` | 0.4000 | yes |
+| `appgen/deterministic/validity` | 1.0000 | yes |
+| `appgen/model/coverage` | 0.9000 | yes |
+| `appgen/model/validity` | 1.0000 | yes |
+| `planner/cassette/graphCorrectness` | 1.0000 | yes |
+| `planner/cassette/routeAccuracy` | 0.9167 | yes |
 | `retrieval/memory/knowledge/ndcg@10` | 0.7209 | yes |
 | `retrieval/memory/knowledge/recall@5` | 0.8030 | yes |
 | `retrieval/memory/memory/ndcg@10` | 0.7209 | yes |

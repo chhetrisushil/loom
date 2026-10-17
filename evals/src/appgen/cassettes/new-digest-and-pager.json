@@ -1,0 +1,6 @@
+{
+  "req:6187089b6ed38d54f96954d2633be0ef": {
+    "content": "{\"name\":\"failed-jobs-digest\",\"capabilities\":[{\"id\":\"failed-jobs-digest\",\"name\":\"Failed Jobs Digest\",\"intent\":\"Collect the failed jobs of the night and summarise them.\",\"op\":\"create\",\"steps\":[{\"id\":\"collect-failures\",\"op\":\"create\"},{\"id\":\"summarise\",\"op\":\"create\"}]},{\"id\":\"oncall-pager\",\"name\":\"On-call Pager\",\"intent\":\"Page the on-call engineer when the error rate spikes.\",\"op\":\"create\",\"steps\":[{\"id\":\"watch-error-rate\",\"op\":\"create\"},{\"id\":\"page-oncall\",\"op\":\"create\"}]}]}",
+    "stopReason": "end_turn"
+  }
+}

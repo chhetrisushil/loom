@@ -1,0 +1,6 @@
+{
+  "req:c7066f7524b52666c86fe5f2e57f05dc": {
+    "content": "{\"name\":\"shipping-notifier\",\"capabilities\":[{\"id\":\"shipping-notifier\",\"name\":\"Shipping Notifier\",\"intent\":\"Notify the customer about shipping.\",\"op\":\"create\",\"steps\":[{\"id\":\"notify-customer\",\"op\":\"create\"}],\"addUi\":true}]}",
+    "stopReason": "end_turn"
+  }
+}
