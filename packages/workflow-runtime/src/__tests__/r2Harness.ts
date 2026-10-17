@@ -266,32 +266,68 @@ export function crashHarness(
 }
 
 /**
+ * The EventStore SPI methods that are SYNCHRONOUS (they return a value, not a Promise): the optional
+ * `sealingCapability` and `readAtRest` (event-runtime `types.ts`). Their callers read the result
+ * inline (`checkpointGuard.eventStoreSeals` reads `.covers` off it), so a retired store must never
+ * hand back a rejected Promise for one: nobody holds that Promise, so its rejection is unhandleable
+ * and surfaces as a vitest "Unhandled error" in whichever test happened to be running.
+ */
+export const SYNC_METHODS: ReadonlySet<string> = new Set(["sealingCapability", "readAtRest"]);
+/**
+ * The synchronous methods that are PURE capability queries (no I/O): a retired store still answers
+ * them. `sealingCapability` is a static fact about what the store seals, and the dead process's last
+ * checkpoint guard asks it; a throw there would escape the guard's caller. `readAtRest` hands out a
+ * READER (a handle that does I/O), so it throws synchronously instead.
+ */
+const PURE_QUERIES: ReadonlySet<string> = new Set(["sealingCapability"]);
+
+/**
  * A store a test can RETIRE, to model the process that owns it going away (a redeploy, a crash):
  * `retire()` refuses every call made after it and resolves once every call made before it has
  * settled, so nothing that process started can still read or write once it returns. A runtime
  * merely left alive is NOT gone: it keeps running its in-flight work (a resumed flow, the
- * fire-and-forget closure-2 re-read after a park) against its own store.
+ * fire-and-forget closure-2 re-read after a park, the park's own snapshot save) against its stores.
+ *
+ * Pass the process's `snapshotStore` too and the same switch fences it (the park's checkpoint save is
+ * part of what the process started). A refused async call is a rejected Promise; a refused SYNCHRONOUS
+ * call ({@link SYNC_METHODS}) throws, or answers if it is a pure query, and is never a Promise.
  */
-export function retirable(store: EventStore): { store: EventStore; retire(): Promise<void> } {
+export function retirable(store: EventStore): { store: EventStore; retire(): Promise<void> };
+export function retirable(
+  store: EventStore,
+  snapshotStore: SnapshotStore
+): { store: EventStore; snapshotStore: SnapshotStore; retire(): Promise<void> };
+export function retirable(
+  store: EventStore,
+  snapshotStore?: SnapshotStore
+): { store: EventStore; snapshotStore?: SnapshotStore; retire(): Promise<void> } {
   let retired = false;
   const inFlight = new Set<Promise<unknown>>();
-  const wrapped = new Proxy(store, {
-    get(target, key, receiver) {
-      const value = Reflect.get(target, key, receiver);
-      if (typeof value !== "function") return value;
-      return (...args: unknown[]) => {
-        if (retired) return Promise.reject(new Error(`store retired: ${String(key)}`));
-        const result = value.apply(target, args);
-        if (!(result instanceof Promise)) return result;
-        inFlight.add(result);
-        const forget = () => inFlight.delete(result);
-        result.then(forget, forget);
-        return result;
-      };
-    },
-  });
+  const fence = <T extends object>(inner: T): T =>
+    new Proxy(inner, {
+      get(target, key, receiver) {
+        const value = Reflect.get(target, key, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (retired) {
+            if (typeof key === "string" && SYNC_METHODS.has(key)) {
+              if (PURE_QUERIES.has(key)) return value.apply(target, args);
+              throw new Error(`store retired: ${String(key)}`);
+            }
+            return Promise.reject(new Error(`store retired: ${String(key)}`));
+          }
+          const result = value.apply(target, args);
+          if (!(result instanceof Promise)) return result;
+          inFlight.add(result);
+          const forget = () => inFlight.delete(result);
+          result.then(forget, forget);
+          return result;
+        };
+      },
+    });
   return {
-    store: wrapped,
+    store: fence(store),
+    ...(snapshotStore !== undefined && { snapshotStore: fence(snapshotStore) }),
     retire: async () => {
       retired = true;
       await Promise.allSettled([...inFlight]);
