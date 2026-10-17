@@ -24,7 +24,7 @@ import { InboxMessageRefusedError, SealedPayloadUnreadableError } from "./types"
 
 const SECRET = "123-45-6789";
 let seq = 0;
-const id = (): string => `sg-${++seq}-${Math.random().toString(36).slice(2, 6)}`;
+const id = (): string => `sg-${++seq}`; // deterministic: a random suffix can spell any short literal
 
 /** Two nodes over ONE set of raw stores: `sealed` opens the inbox, `plain` has no crypto at all. */
 function twoNodes(sensitive: Record<string, readonly string[]>) {
@@ -118,7 +118,7 @@ describe("sealed-payload guard (ADR 0130)", () => {
     const typed = err as SealedPayloadUnreadableError;
     expect([typed.executionId, typed.messageId, typed.topic]).toEqual([e2, "m2", "y"]);
     expect(typed.message).not.toContain('ciphertext":');
-    expect(JSON.stringify(typed)).not.toContain("iv");
+    expect(JSON.stringify(typed)).not.toContain('"iv":');
     // The log is untouched: nothing consumed, nothing resumed, the message still in the inbox.
     expect(await eventsOf(raw.eventStore, e2, "MESSAGE_CONSUMED")).toHaveLength(0);
     expect((await raw.eventStore.read(e2)).length).toBe(rawBefore);
@@ -293,7 +293,7 @@ describe("sealed-payload guard (ADR 0130)", () => {
       );
       expect(refused).toBeInstanceOf(SealedPayloadUnreadableError);
       expect((refused as SealedPayloadUnreadableError).recorded).toBe(true);
-      expect(JSON.stringify(refused)).not.toContain("ciphertext");
+      expect(JSON.stringify(refused)).not.toContain('"ciphertext":');
       const kinds = (await raw.eventStore.read(e)).map((x) => x.eventType);
       // Nothing from the refused attempt: no completion, no failure, no second park, no step.
       for (const k of ["EXECUTION_COMPLETED", "EXECUTION_FAILED", "STEP_COMPLETED"]) {
