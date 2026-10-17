@@ -27,8 +27,8 @@ import { resolveInsideRoot, writePlan } from "./subject";
 //   3. FINDING: a `flow.ts` that is a SYMLINK to a file outside the project is scanned as a flow, planned as an
 //      in-place edit, and a write to that path follows the link. The lexical `resolveInside` check cannot see it, and
 //      the real `cmdAppgen` overwrote the outside file when this was tried by hand (2026-10-17). The demonstration
-//      is the exact pin below (`outsideChanged` is true today, with a positive control); when the escape is fixed
-//      it goes red, which is the prompt to flip it to `toBe(false)`.
+//      was the exact pin below (`outsideChanged` was true, with a positive control). It is now FIXED (#627): the
+//      scanner skips a symlinked flow, so the pin asserts `outsideChanged` is false.
 // Nothing here works around the finding in the code under test; only the eval harness's OWN writer refuses
 // symlinks and escapes (writePlan in ./subject.ts), because it must never write outside its fixture either.
 
@@ -99,7 +99,7 @@ describe("applyChanges containment (ESCALATION RULE, S3)", () => {
     for (const c of abs.creates) expect(() => resolveInsideRoot(root, c.path)).not.toThrow();
   });
 
-  it("a symlinked flow file is scanned and PLANNED as an in-place edit, but applyChanges still writes nothing", () => {
+  it("a symlinked flow file is NOT offered as editable (the scanner skips it), and applyChanges writes nothing", () => {
     const { base, root } = sandbox();
     const outside = join(base, "outside", "evil.ts");
     const [f] = generateFlows({
@@ -115,11 +115,16 @@ describe("applyChanges containment (ESCALATION RULE, S3)", () => {
       spec({ id: "evil", op: "extend", steps: [{ id: "extra", op: "create" }] }),
       scanApp(root)
     );
-    expect(plan.edits.map((e) => e.path)).toEqual([join("app", "flows", "evil", "flow.ts")]);
-    expect(plan.edits[0]?.before).toBe(before); // it READ the file outside the project through the link
+    // fixed (#627): the link is skipped, so no in-place edit of the outside file is ever planned
+    expect(plan.edits).toEqual([]);
     expect(readFileSync(outside, "utf8")).toBe(before); // ... and wrote nothing
-    // the harness's own writer refuses the link, so the eval can never be turned against its host
-    expect(() => writePlan(root, plan)).toThrow(/symlink/);
+    // belt and braces: the harness's own writer refuses a link at the planned path regardless
+    expect(() =>
+      writePlan(root, {
+        ...plan,
+        edits: [{ path: join("app", "flows", "evil", "flow.ts"), before, after: "X" }],
+      } as typeof plan)
+    ).toThrow(/symlink/);
     expect(readFileSync(outside, "utf8")).toBe(before);
   });
 
@@ -129,8 +134,7 @@ describe("applyChanges containment (ESCALATION RULE, S3)", () => {
   // skip the link or applyChanges throw turns `outsideChanged` false and flips this pin, whatever the mechanism.
   // SCOPE: this is the APPGEN-LEVEL path only (evals does not depend on @loom/cli). It goes red when @loom/appgen stops
   // offering a symlinked flow as editable; the CLI write path (resolveInside + writer in tools/cli/src/appgen.ts) is
-  // pinned by tools/cli's own tests in the fix. When the appgen-level fix lands (branch fix/appgen-symlink-escape)
-  // flip the ONE assertion marked FLIP below.
+  // pinned by tools/cli's own tests. The assertion marked FLIP below was flipped to false when the fix landed.
   function symlinkEscape(): { outsideChanged: boolean; threw: string | undefined } {
     const { base, root } = sandbox();
     const outside = join(base, "outside", "evil.ts");
@@ -176,13 +180,13 @@ describe("applyChanges containment (ESCALATION RULE, S3)", () => {
     expect(snap()).not.toBe(before);
   });
 
-  it("SECURITY FINDING: appgen writes through a symlinked flow file (pinned; flips when the fix lands)", () => {
+  it("SECURITY FIX PINNED: appgen no longer writes through a symlinked flow file (the escape is CLOSED)", () => {
     const { outsideChanged, threw } = symlinkEscape();
     expect(threw, "scanApp/applyChanges/writer threw; the escape did not run").toBeUndefined();
-    // FLIP when the fix lands (branch fix/appgen-symlink-escape): expect(outsideChanged).toBe(false)
+    // FLIP (done): the scanner skips the symlinked flow, so the outside file is untouched
     expect(
       outsideChanged,
-      "SECURITY FINDING: appgen writes through a symlinked flow file - when the fix lands (branch fix/appgen-symlink-escape), flip this to expect(outsideChanged).toBe(false)"
-    ).toBe(true);
+      "SECURITY REGRESSION: appgen wrote through a symlinked flow file (the escape reopened)"
+    ).toBe(false);
   });
 });

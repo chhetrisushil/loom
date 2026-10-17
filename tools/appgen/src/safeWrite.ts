@@ -20,6 +20,7 @@ import * as path from "node:path";
  */
 export function assertNoSymlinkPath(dir: string, dest: string): void {
   const root = path.resolve(dir);
+  assertRootNotLink(root);
   const rel = path.relative(root, path.resolve(dest));
   if (rel === "" || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     throw new Error(
@@ -49,6 +50,31 @@ export function assertNoSymlinkPath(dir: string, dest: string): void {
       );
     }
   }
+}
+
+/**
+ * An explicit root whose FINAL component is a symbolic link is refused (one lstat): a clone's `app -> /outside`
+ * passed as a library root would otherwise anchor the walk OUTSIDE the project. The cwd itself (identity-equal
+ * to `process.cwd()`) is exempt: a repository cannot make you `cd`.
+ */
+function assertRootNotLink(root: string): void {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(root);
+  } catch {
+    return; // does not exist yet: nothing to be a link
+  }
+  if (!st.isSymbolicLink()) return;
+  try {
+    const cwd = fs.statSync(process.cwd());
+    const tgt = fs.statSync(root);
+    if (cwd.dev === tgt.dev && cwd.ino === tgt.ino) return;
+  } catch {
+    /* fall through to refusal */
+  }
+  throw new Error(
+    `refusing root "${root}": it is a symbolic link (${fs.readlinkSync(root)}); pass the real path of the directory`
+  );
 }
 
 /** True when two paths name the same filesystem object (st_dev + st_ino; `stat` follows links). */

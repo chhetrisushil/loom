@@ -60,17 +60,17 @@ of it. If the prompt learns to delete, raise the floor in `thresholds.ts`.
 Also found while writing the fail-proofs: `validateChangeSpec` does not reject a capability with DUPLICATE step ids, so
 such a plan is accepted and generates `const <id>Step` twice; only the typecheck catches it (fail-proof `(a3)`).
 
-## Security finding: symlinked flow file escape
+## Security finding: symlinked flow file escape (fixed by #627, 2026-10-17)
 
 `applyChanges` itself writes nothing, but a `flow.ts` that is a SYMLINK to a file outside the project is scanned, planned
-as an in-place edit, and a write to that path (the CLI's lexical `resolveInside` check cannot see it) overwrites the
-outside file. Pinned exactly in `containment.test.ts` (it asserts the escape happens today).
+as an in-place edit, and a write to that path (the CLI's lexical `resolveInside` check cannot see it) overwrote the
+outside file. FIXED by #627 (2026-10-17): the scanner skips a symlinked flow and the CLI writes through a real-path-contained writer. `containment.test.ts` now pins the escape as CLOSED (`outsideChanged` is false).
 
 Scope of the pin: it covers the APPGEN-LEVEL path only (`scanApp` -> `applyChanges` -> a harness write standing in for
-the CLI writer); `@loom/evals-internal` does not depend on `@loom/cli`. A fix in `@loom/appgen` (the scanner no longer
-offers a symlinked flow as editable) turns it red, which is the prompt to flip it to `expect(outsideChanged).toBe(false)`.
+the CLI writer); `@loom/evals-internal` does not depend on `@loom/cli`. The @loom/appgen fix (the scanner no longer
+offers a symlinked flow as editable) flipped it to `expect(outsideChanged).toBe(false)`.
 The CLI WRITE path (`tools/cli/src/appgen.ts` `resolveInside` + the writer) is covered by `tools/cli`'s own regression
-tests in the fix (branch `fix/appgen-symlink-escape`), not by this pin; a CLI-only fix would leave this pin green.
+tests, not by this pin; a CLI-only fix would leave this pin green.
 
 ## Label edits after measurement
 

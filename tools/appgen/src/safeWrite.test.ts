@@ -12,7 +12,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { containmentRootFor, safeWriteFile, safeWriteFileWithHooks } from "./safeWrite";
+import {
+  assertNoSymlinkPath,
+  containmentRootFor,
+  safeWriteFile,
+  safeWriteFileWithHooks,
+} from "./safeWrite";
 
 // Race and failure seams of the symlink-safe writer (the hooks are internal, hence tested here).
 const made: string[] = [];
@@ -97,5 +102,56 @@ describe("safeWriteFile permissions and containment root", () => {
     // the final component never a link
     symlinkSync(other, join(cwd, "ln"));
     expect(() => containmentRootFor("ln", cwd)).toThrow(/symbolic link/);
+  });
+});
+
+describe("an explicit library root whose FINAL component is a link is refused", () => {
+  function sandbox() {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const repo = join(base, "repo");
+    const victim = join(base, "victim");
+    mkdirSync(repo);
+    mkdirSync(victim);
+    symlinkSync(victim, join(repo, "app"));
+    return { repo, victim, link: join(repo, "app") };
+  }
+
+  it("safeWriteFile / safeWriteFileWithHooks / assertNoSymlinkPath refuse root=<link>; the victim is untouched", () => {
+    const { victim, link } = sandbox();
+    const dest = join(link, "loom.gen.ts");
+    expect(() => safeWriteFile(link, dest, "PWN")).toThrow(/symbolic link/);
+    expect(() => safeWriteFileWithHooks(link, dest, "PWN", {})).toThrow(/symbolic link/);
+    expect(() => assertNoSymlinkPath(link, dest)).toThrow(/symbolic link/);
+    expect(readdirSync(victim)).toEqual([]);
+  });
+
+  it("a relative root that is a link is refused too (resolved against the cwd)", () => {
+    const { repo, victim } = sandbox();
+    const prev = process.cwd();
+    process.chdir(repo);
+    try {
+      expect(() => safeWriteFile("app", join("app", "x.ts"), "PWN")).toThrow(/symbolic link/);
+    } finally {
+      process.chdir(prev);
+    }
+    expect(readdirSync(victim)).toEqual([]);
+  });
+
+  it("the cwd itself, reached through a link, is exempt (a repo cannot make you cd)", () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const real = join(base, "real");
+    mkdirSync(real);
+    const via = join(base, "via");
+    symlinkSync(real, via);
+    const prev = process.cwd();
+    process.chdir(via);
+    try {
+      safeWriteFile(via, join(via, "ok.ts"), "fine");
+    } finally {
+      process.chdir(prev);
+    }
+    expect(readdirSync(real)).toEqual(["ok.ts"]);
   });
 });

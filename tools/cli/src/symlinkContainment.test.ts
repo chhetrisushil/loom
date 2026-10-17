@@ -18,6 +18,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AppgenIO, cmdAppgen, resolveInside } from "./appgen";
 import { run } from "./cli";
+import { runDev } from "./dev";
 import { cmdGen, cmdNew, containmentRootFor, genWatch } from "./gen";
 import { cmdPluginNew } from "./plugin";
 
@@ -348,6 +349,31 @@ describe("a --dir inside the cwd is never trusted as a containment root", () => 
       expect(() => cmdGen("app")).toThrow(/symbolic link/);
       expect(() => cmdNew("flow", "x", "app")).toThrow(/symbolic link/);
       await expect(genWatch("app", { log: () => undefined })).rejects.toThrow(/symbolic link/);
+    });
+    s.unchanged();
+    expect(readdirSync(join(outside, "flows"))).toEqual([]);
+  });
+
+  it("an EXPLICIT library root whose final component is a link is refused: cmdGen, cmdNew, genWatch, runDev", async () => {
+    const { repo, outside, s } = clonedRepo();
+    await inCwd(repo, async () => {
+      expect(() => cmdGen("app", "app")).toThrow(/symbolic link/);
+      expect(() => cmdNew("flow", "x", "app", undefined, "app")).toThrow(/symbolic link/);
+      await expect(genWatch("app", { root: "app", log: () => undefined })).rejects.toThrow(
+        /symbolic link/
+      );
+      const lines: string[] = [];
+      const ac = new AbortController();
+      ac.abort();
+      await runDev({
+        dir: "app",
+        root: "app",
+        command: "true",
+        signal: ac.signal,
+        forcePoll: true,
+        log: (l) => lines.push(l),
+      });
+      expect(lines.some((l) => /gen failed.*symbolic link/.test(l))).toBe(true);
     });
     s.unchanged();
     expect(readdirSync(join(outside, "flows"))).toEqual([]);
@@ -741,25 +767,33 @@ describe("an INTERMEDIATE link above --dir is refused in every spelling of the c
     untouched(victim);
   });
 
-  it.runIf(existsSync("/System/Volumes/Data"))(
-    "macOS firmlink `/System/Volumes/Data<cwd>/x/app`",
-    async () => {
-      const { proj, victim, s } = build();
-      const fl = `/System/Volumes/Data${proj}`;
-      const a = statSync(proj);
-      let same = false;
-      try {
-        const b = statSync(fl);
-        same = a.dev === b.dev && a.ino === b.ino;
-      } catch {}
-      if (!same) return; // this path is not a firmlink spelling of the temp dir on this machine
-      const d = join(fl, "x", "app");
-      await expectRefused(proj, victim, s, d);
-      await lib(proj, d);
-      s.unchanged();
-      untouched(victim);
+  it("macOS firmlink `/System/Volumes/Data<cwd>/x/app`", async (ctx) => {
+    if (!existsSync("/System/Volumes/Data")) {
+      ctx.skip();
+      return;
     }
-  );
+    const { proj, victim, s } = build();
+    const fl = `/System/Volumes/Data${proj}`;
+    const a = statSync(proj);
+    let same = false;
+    try {
+      const b = statSync(fl);
+      same = a.dev === b.dev && a.ino === b.ino;
+    } catch {}
+    if (!same) {
+      // reported as SKIPPED (not a silent pass); this vitest's `skip()` takes no reason, so log it
+      process.stderr.write(
+        `SKIP firmlink: ${fl} is not a firmlink spelling of the temp dir here\n`
+      );
+      ctx.skip();
+      return;
+    }
+    const d = join(fl, "x", "app");
+    await expectRefused(proj, victim, s, d);
+    await lib(proj, d);
+    s.unchanged();
+    untouched(victim);
+  });
 
   it.runIf(caseInsensitiveFs())("case variant `../PROJ/x/app` and `<abs>/PROJ/x/app`", async () => {
     const { base, proj, victim, s } = build("proj");
