@@ -513,7 +513,8 @@ export function appFiles(appName: string): Record<string, string> {
     )}\n`,
 
     "README.md": [
-      `# ${appName}`,
+      // One line of plain heading text: a newline in the name must not become extra markdown.
+      `# ${appName.replace(/\s+/g, " ")}`,
       "",
       "A Loom app scaffolded with `create-loom-app`, following the folder convention:",
       "",

@@ -22,3 +22,12 @@ export type {
   GeneratedFile,
   ReasoningSpec,
 } from "./types";
+export {
+  assertSafeId,
+  blockCommentText,
+  commentText,
+  hasUnsafeChars,
+  markdownText,
+  templateLiteralText,
+  tsStringLiteral,
+} from "./emit";
