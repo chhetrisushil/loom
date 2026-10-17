@@ -67,62 +67,299 @@ const FOLD_ENGINE = "@loom/replay-vm";
 /** @loom/* SPI + kernel packages a third-party plugin should peer-depend on, not bundle. */
 const SPI_KERNEL = new Set<string>([...KERNEL_PACKAGES, ...SPI_PACKAGES]);
 
+interface Tok {
+  /** `id` identifier / keyword / number, `str` a string or template (value = a plain string's text), `p` one punctuation char. */
+  k: "id" | "str" | "p";
+  v: string;
+}
+
+/** After one of these a `/` starts a regex literal (an expression position); after a value it divides. */
+const REGEX_AFTER_WORD = new Set([
+  "return",
+  "typeof",
+  "case",
+  "do",
+  "else",
+  "in",
+  "of",
+  "void",
+  "delete",
+  "throw",
+  "new",
+  "await",
+  "yield",
+]);
+
+const isIdChar = (c: string): boolean => /[\w$]/.test(c) || c > "\u007f";
+
 /**
- * Blank out comments (always) and string / template contents (when `blankStrings`), keeping
- * offsets and newlines. A small scanner, not a parser: enough that `// runXConformance(`
- * or `"runXConformance("` is not mistaken for code. Regex literals are not special-cased.
+ * A small LINEAR tokenizer, not a parser: identifiers, strings (text kept), single punctuation
+ * characters. Comments, regex literals and template text are dropped, but a template's `${ … }`
+ * body is scanned as code (so a call inside it still counts) and a regex containing a quote or a
+ * backtick cannot open a phantom string.
  */
-function stripNonCode(src: string, blankStrings: boolean): string {
-  let out = "";
+function tokenize(src: string): Tok[] {
+  const toks: Tok[] = [];
+  const n = src.length;
   let i = 0;
-  const blank = (c: string) => (c === "\n" ? c : " ");
-  while (i < src.length) {
-    const c = src[i] as string;
-    const n = src[i + 1];
-    if (c === "/" && n === "/") {
-      while (i < src.length && src[i] !== "\n") {
-        out += " ";
+  let depth = 0; // `{` nesting, for matching the `}` that closes a template's `${`
+  const tmpl: number[] = []; // depths at which a `${` is open
+
+  const regexAllowed = (): boolean => {
+    const t = toks[toks.length - 1];
+    if (t === undefined) return true;
+    if (t.k === "str") return false;
+    if (t.k === "id") return REGEX_AFTER_WORD.has(t.v);
+    return t.v !== ")" && t.v !== "]";
+  };
+
+  /** From inside a template, consume text up to the closing backtick or an opening `${`. */
+  const templateText = (): void => {
+    while (i < n) {
+      const c = src[i] as string;
+      if (c === "\\") i += 2;
+      else if (c === "`") {
         i++;
-      }
-    } else if (c === "/" && n === "*") {
-      const end = src.indexOf("*/", i + 2);
-      const stop = end === -1 ? src.length : end + 2;
-      for (; i < stop; i++) out += blank(src[i] as string);
-    } else if (c === '"' || c === "'" || c === "`") {
-      out += c;
+        toks.push({ k: "str", v: "" });
+        return;
+      } else if (c === "$" && src[i + 1] === "{") {
+        i += 2;
+        tmpl.push(depth++);
+        toks.push({ k: "p", v: "{" });
+        return;
+      } else i++;
+    }
+  };
+
+  while (i < n) {
+    const c = src[i] as string;
+    const nx = src[i + 1];
+    if (c === " " || c === "\t" || c === "\n" || c === "\r") {
       i++;
-      while (i < src.length && src[i] !== c) {
+    } else if (c === "/" && nx === "/") {
+      while (i < n && src[i] !== "\n") i++;
+    } else if (c === "/" && nx === "*") {
+      const end = src.indexOf("*/", i + 2);
+      i = end === -1 ? n : end + 2;
+    } else if (c === '"' || c === "'") {
+      let v = "";
+      i++;
+      while (i < n && src[i] !== c) {
         const ch = src[i] as string;
-        if (ch === "\\" && i + 1 < src.length) {
-          out += blankStrings ? "  " : ch + src[i + 1];
+        if (ch === "\\" && i + 1 < n) {
+          v += src[i + 1];
           i += 2;
           continue;
         }
-        if (ch === "\n" && c !== "`") break; // unterminated: resync at the line end
-        out += blankStrings ? blank(ch) : ch;
+        if (ch === "\n") break; // unterminated: resync at the line end
+        v += ch;
         i++;
       }
-      if (i < src.length && src[i] === c) {
-        out += c;
-        i++;
-      }
-    } else {
-      out += c;
+      if (i < n && src[i] === c) i++;
+      toks.push({ k: "str", v });
+    } else if (c === "`") {
       i++;
+      templateText();
+    } else if (c === "/" && regexAllowed()) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < n && src[j] !== "\n") {
+        const ch = src[j] as string;
+        if (ch === "\\") j++;
+        else if (ch === "[") inClass = true;
+        else if (ch === "]") inClass = false;
+        else if (ch === "/" && !inClass) break;
+        j++;
+      }
+      if (j < n && src[j] === "/") {
+        i = j + 1;
+        toks.push({ k: "str", v: "" }); // a value: what follows is a division / flags
+      } else {
+        toks.push({ k: "p", v: "/" }); // not a regex after all
+        i++;
+      }
+    } else if (isIdChar(c)) {
+      let j = i + 1;
+      while (j < n && isIdChar(src[j] as string)) j++;
+      toks.push({ k: "id", v: src.slice(i, j) });
+      i = j;
+    } else {
+      i++;
+      if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (tmpl.length > 0 && tmpl[tmpl.length - 1] === depth) {
+          tmpl.pop();
+          templateText();
+          continue;
+        }
+      }
+      toks.push({ k: "p", v: c });
     }
   }
-  return out;
+  return toks;
 }
 
-/** True when a test source really imports `@loom/conformance` and really calls `run*Conformance(`. */
+const isKit = (spec: string): boolean =>
+  spec === "@loom/conformance" || spec.startsWith("@loom/conformance/");
+const RUN_CONFORMANCE = /^run\w*Conformance$/;
+
+/**
+ * The bindings a source takes from `@loom/conformance` (or a subpath): `callable` names that count
+ * when called, `ns` names whose `run*Conformance` member counts. Real (non-type) imports,
+ * `import * as ns`, default imports, `require(...)` and dynamic `import(...)` only.
+ */
+function kitBindings(toks: Tok[]): { callable: Set<string>; ns: Set<string>; inline: boolean } {
+  const callable = new Set<string>();
+  const ns = new Set<string>();
+  let inline = false; // `(await import("@loom/conformance")).runX(` / `require(...).runX(`
+  const at = (j: number): Tok | undefined => toks[j];
+  const isP = (j: number, v: string): boolean => at(j)?.k === "p" && at(j)?.v === v;
+
+  /** The names bound by `const|let|var <target> = [await] <call at j>`. */
+  const declaredBy = (j: number): void => {
+    let m = j - 1;
+    if (at(m)?.k === "id" && at(m)?.v === "await") m--;
+    if (!isP(m, "=")) return;
+    m--;
+    const t = at(m);
+    if (t?.k === "id") {
+      ns.add(t.v);
+      return;
+    }
+    if (isP(m, "}")) {
+      // `{ a, b: c }` — walk back to the matching `{`, binding the local name of each element.
+      let d = 0;
+      const end = m;
+      for (; m >= 0; m--) {
+        if (isP(m, "}")) d++;
+        else if (isP(m, "{") && --d === 0) break;
+      }
+      const els: Tok[][] = [[]];
+      for (let q = m + 1; q < end; q++) {
+        const e = at(q) as Tok;
+        if (e.k === "p" && e.v === ",") els.push([]);
+        else els[els.length - 1]?.push(e);
+      }
+      for (const el of els) {
+        const names = el.filter((e) => e.k === "id");
+        const colon = el.findIndex((e) => e.k === "p" && e.v === ":");
+        const local = colon === -1 ? names[0] : el.slice(colon).find((e) => e.k === "id");
+        if (local !== undefined) callable.add(local.v);
+      }
+    }
+  };
+
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i] as Tok;
+    if (t.k !== "id") continue;
+    if ((t.v === "require" || t.v === "import") && isP(i + 1, "(")) {
+      const spec = at(i + 2);
+      if (spec?.k === "str" && isKit(spec.v) && isP(i + 3, ")")) {
+        declaredBy(i);
+        let j = i + 4;
+        if (isP(j, ")")) j++; // `(await import(...))`
+        const m = isP(j, ".") ? at(j + 1) : undefined;
+        if (m?.k === "id" && RUN_CONFORMANCE.test(m.v) && isP(j + 2, "(")) inline = true;
+      }
+      continue;
+    }
+    if (t.v !== "import") continue;
+    let j = i + 1;
+    if (at(j)?.k === "str") continue; // side-effect import: binds nothing
+    if (at(j)?.v === "type") {
+      const after = at(j + 1);
+      if (
+        after !== undefined &&
+        (after.v === "{" || after.v === "*" || (after.k === "id" && after.v !== "from"))
+      )
+        continue; // `import type …`
+    }
+    // Clause: only identifiers, `,` `{` `}` `*` until `from "<spec>"`; anything else is not an import.
+    const clause: Tok[] = [];
+    for (; j < toks.length; j++) {
+      const c = toks[j] as Tok;
+      if (c.k === "id" && c.v === "from" && at(j + 1)?.k === "str") break;
+      if (c.k === "id" && c.v === "import") break;
+      if (c.k === "p" && !"{},*".includes(c.v)) break;
+      if (c.k === "str") break;
+      clause.push(c);
+    }
+    const spec = at(j + 1);
+    if (!(at(j)?.v === "from" && spec?.k === "str" && isKit(spec.v))) continue;
+    // Split `default, * as ns, { a, b as c, type D }`.
+    let braces = false;
+    for (let q = 0; q < clause.length; q++) {
+      const c = clause[q] as Tok;
+      if (c.k === "p") {
+        if (c.v === "{") braces = true;
+        else if (c.v === "}") braces = false;
+        continue;
+      }
+      if (c.v === "type" && braces && clause[q + 1]?.k === "id" && clause[q + 1]?.v !== "as") {
+        q++; // an inline type specifier binds nothing at runtime
+        if (clause[q + 1]?.v === "as") q += 2;
+        continue;
+      }
+      if (c.v === "as") continue;
+      const next = clause[q + 1];
+      if (next?.k === "id" && next.v === "as") {
+        // `a as b` binds b; `* as ns` is a namespace.
+        const local = clause[q + 2];
+        if (local !== undefined && local.k === "id") (c.v === "*" ? ns : callable).add(local.v);
+        q += 2;
+        continue;
+      }
+      if (!braces) {
+        ns.add(c.v); // default import
+        callable.add(c.v);
+      } else callable.add(c.v);
+    }
+    // `* as ns`: the `*` is punct and was skipped above, so bind its alias here.
+    for (let q = 0; q + 2 < clause.length; q++)
+      if (clause[q]?.v === "*" && clause[q + 1]?.v === "as" && clause[q + 2]?.k === "id")
+        ns.add((clause[q + 2] as Tok).v);
+  }
+  return { callable, ns, inline };
+}
+
+/**
+ * True when a test source really takes something from `@loom/conformance` (a real, non-type
+ * import / require / dynamic import, any alias or subpath) and really CALLS it — directly, or as
+ * `ns.run*Conformance(`. Comments, string contents and regex literals are not code; a template's
+ * `${ … }` is. An unrelated `obj.runFooConformance()` or a local `function runX()` does not count.
+ */
 export function wiresConformance(source: string): boolean {
-  const withStrings = stripNonCode(source, false);
-  const imported =
-    /\bimport\b[^;]*?\bfrom\s*["']@loom\/conformance["']/s.test(withStrings) ||
-    /\bimport\s*["']@loom\/conformance["']/.test(withStrings) ||
-    /\brequire\(\s*["']@loom\/conformance["']\s*\)/.test(withStrings);
-  if (!imported) return false;
-  return /\brun\w*Conformance\s*\(/.test(stripNonCode(source, true));
+  const toks = tokenize(source);
+  const { callable, ns, inline } = kitBindings(toks);
+  if (inline) return true;
+  if (callable.size === 0 && ns.size === 0) return false;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i] as Tok;
+    if (t.k !== "id") continue;
+    const prev = toks[i - 1];
+    const dotted = prev?.k === "p" && prev.v === ".";
+    if (
+      callable.has(t.v) &&
+      !dotted &&
+      !(prev?.k === "id" && (prev.v === "function" || prev.v === "new"))
+    ) {
+      if (toks[i + 1]?.k === "p" && toks[i + 1]?.v === "(") return true;
+    }
+    if (ns.has(t.v) && !dotted) {
+      let j = i + 1;
+      if (toks[j]?.v === "?") j++;
+      const m = toks[j + 1];
+      if (
+        toks[j]?.v === "." &&
+        m?.k === "id" &&
+        RUN_CONFORMANCE.test(m.v) &&
+        toks[j + 2]?.v === "("
+      )
+        return true;
+    }
+  }
+  return false;
 }
 
 /**

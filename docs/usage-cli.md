@@ -919,8 +919,8 @@ included) and reports `reclaimed` / `blocked-by-branch` / …
 > accepted when you really mean it. Accepts `30d`/`12h`/… or milliseconds.
 
 ```bash
-npx loom retention run --db .data/events.db --snap .loom/snapshots.db --ttl 90d   # dry run
-npx loom retention run --db .data/events.db --snap .loom/snapshots.db --ttl 90d --apply
+npx loom retention run --db .data/events.db --snap .data/snapshots.db --ttl 90d   # dry run
+npx loom retention run --db .data/events.db --snap .data/snapshots.db --ttl 90d --apply
 ```
 
 ### `loom sweep content --db <events.db> [--snap <snap.db>] --content <content.db> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl <ms>] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`
@@ -941,8 +941,8 @@ The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k1
 | `--apply` | no | dry run | actually erase |
 
 ```bash
-npx loom sweep content --db .data/events.db --content .loom/content.db          # dry run, 30-day ttl
-npx loom sweep content --db .data/events.db --content .loom/content.db --apply
+npx loom sweep content --db .data/events.db --content .data/content.db          # dry run, 30-day ttl
+npx loom sweep content --db .data/events.db --content .data/content.db --apply
 ```
 
 ```text
@@ -1017,7 +1017,7 @@ Run it with the affected executions quiesced and with retention and compaction p
 npx loom repair blank-stream --config ./loom.config.ts                     # census
 npx loom repair blank-stream --config ./loom.config.ts --apply             # re-home proven
 npx loom repair blank-stream --config ./loom.config.ts --assign e1:13-15 --apply
-npx loom repair blank-stream --db .data/events.db --snap .loom/snapshots.db   # SQLite shorthand
+npx loom repair blank-stream --db .data/events.db --snap .data/snapshots.db   # SQLite shorthand
 ```
 
 ### `loom repair terminal-event (--config <module> | --db <events.db> --snap <snap.db>) [executionId] [--apply]`
@@ -1228,7 +1228,7 @@ npx loom plugin check --dir ./loom-plugin-redis --publish
 plugin check: passed (0 error, 1 warn)
 ```
 
-### `loom plugin try --module <path> [--preset <name>] [--options <json>]`
+### `loom plugin try --module <path> [--preset <name>] [--options <json>] [--verbose]`
 
 End-to-end smoke test for a **store** plugin: imports your built module, calls its storage preset, runs a smoke flow against it, and asserts the run completed, events persisted, and the execution **replays from the durable store**.
 
@@ -1303,7 +1303,7 @@ npx loom plugin search postgres
 | `loom compat` | validate a deployment's contract versions | `--abi`, `--event-schema`, … | major-version mismatch |
 | `loom plugin new` | scaffold a plugin package | `--first-party`, `--dir .` | every file already existed |
 | `loom plugin check` | validate a plugin package | `--dir .`, `--publish` | any error-level finding |
-| `loom plugin try` | run a store plugin end-to-end | `--module` *(req)*, `--preset`, `--options` | any smoke assertion fails |
+| `loom plugin try` | run a store plugin end-to-end | `--module` *(req)*, `--preset`, `--options`, `--verbose` | any smoke assertion fails |
 | `loom plugin search` / `seams` | discover plugins / list seams | — | (never) |
 
 A typical loop: `loom new` → write the flow → `loom gen` → `loom doctor` (or `loom check` → `loom verify` individually) → run it → `loom logs` / `loom debug` / `loom profile` / `loom inspect` → `loom eval` and `loom deploy check` in CI before promoting.

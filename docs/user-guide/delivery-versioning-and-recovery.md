@@ -183,8 +183,8 @@ await ctx.sleepUntil(Date.parse("2026-08-01")); // or at an absolute time
 // Wiring — one config key (timer rows live beside your event store, so one
 // backup captures the full kernel state):
 const app = defineConfig({
-  storage: sqliteStorage({ dir: ".loom" }),
-  timers: { store: new SqliteTimerStore(".loom/events.db") }, // or InMemoryTimerStore
+  storage: sqliteStorage({ dir: ".data" }),
+  timers: { store: new SqliteTimerStore(".data/events.db") }, // or InMemoryTimerStore
 });
 // suspend({ on, timeout }) is unified too: with timers wired, the timeout becomes
 // a durable wake (fired as TIMER_FIRED); unwired it stays no-fire metadata (G2).

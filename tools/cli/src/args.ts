@@ -145,7 +145,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   cancel: {
     summary: "cancel an execution through your app's runtime (dry run unless --apply)",
     usage: [
-      "loom cancel <executionId> --config <module> --as <principal> [--tenant <t>] [--reason <text>] [--force] [--apply] [--json]",
+      "loom cancel <executionId> --config <module> --as <principal> [--tenant <t>] [--reason <text>] [--redact a,b] [--force] [--apply] [--json]",
     ],
     flags: { ...LIFECYCLE, reason: "string", force: "boolean" },
   },
@@ -304,7 +304,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   knowledge: {
     summary: "reconcile, list and search a knowledge corpus",
     usage: [
-      "loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]",
+      "loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--max-bytes N] [--apply]",
       "loom knowledge list --config <mod> --scope <s>",
       'loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]',
     ],
@@ -359,9 +359,9 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   plugin: {
     summary: "scaffold, validate, try and search plugins",
     usage: [
-      "loom plugin new <seam> <name> [--first-party] [--dir .]",
+      "loom plugin new <seam> <name> [--first-party | --1p] [--dir .]",
       "loom plugin check [--dir .] [--publish]",
-      "loom plugin try --module <path> [--preset <name>] [--options <json>]",
+      "loom plugin try --module <path> [--preset <name>] [--options <json>] [--verbose]",
       "loom plugin search <term>",
       "loom plugin seams",
     ],
@@ -374,14 +374,17 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       module: "string",
       preset: "string",
       options: "string",
+      // The stack of a module that will not load (`plugin try`); also `LOOM_DEBUG=1`.
+      verbose: "boolean",
     },
+    short: { v: "verbose" },
   },
   appgen: {
     summary: "natural language to a new project or edits (dry run with --dry-run)",
     literalAfter: 0,
     usage: [
-      "loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]",
-      "loom appgen ... --model <spec> [--model-big <spec>]",
+      "loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check] [--yes] [--offline]",
+      "loom appgen ... --model <spec> [--model-big <spec>] [--model-tier <tier>]",
       "loom appgen --from-spec <file> [--dir .]",
     ],
     flags: {
@@ -406,7 +409,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   inspect: inspector,
   dev: {
     summary: "dev loop: gen --watch + run the app (restart on change) + the inspector",
-    usage: ["loom dev --config <module> [--dir app] [--run <command>] [--port N]"],
+    usage: ["loom dev --config <module> [--dir app] [--run <command>] [--port N] [--verbose]"],
     flags: { config: "string", dir: "string", run: "string", port: "int", verbose: "boolean" },
   },
   help: {

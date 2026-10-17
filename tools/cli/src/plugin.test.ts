@@ -164,6 +164,77 @@ describe("wiresConformance", () => {
     expect(wiresConformance("@loom/conformance")).toBe(false);
     expect(wiresConformance(IMPORT)).toBe(false);
   });
+  it("accepts an aliased import, a namespace import, a default import and a subpath", () => {
+    expect(wiresConformance('import { runA as go } from "@loom/conformance";\ngo(x);')).toBe(true);
+    expect(wiresConformance('import * as c from "@loom/conformance";\nc.runAConformance(x);')).toBe(
+      true
+    );
+    expect(wiresConformance('import c from "@loom/conformance";\nc.runAConformance(x);')).toBe(
+      true
+    );
+    expect(
+      wiresConformance('import { runA } from "@loom/conformance/event-store";\nrunA(x);')
+    ).toBe(true);
+    expect(wiresConformance('import { type T, runA } from "@loom/conformance";\nrunA(x);')).toBe(
+      true
+    );
+  });
+  it("accepts dynamic import and require bindings", () => {
+    expect(
+      wiresConformance('const c = await import("@loom/conformance");\nc.runAConformance(x);')
+    ).toBe(true);
+    expect(
+      wiresConformance('const { runA: go, b } = await import("@loom/conformance");\ngo(x);')
+    ).toBe(true);
+    expect(wiresConformance('const { runA } = require("@loom/conformance");\nrunA(x);')).toBe(true);
+    expect(wiresConformance('(await import("@loom/conformance")).runAConformance(x);')).toBe(true);
+    expect(wiresConformance('const c = await import("@loom/conformance");\nc.other(x);')).toBe(
+      false
+    );
+  });
+  it("sees a call inside a template ${ } but not template text", () => {
+    expect(wiresConformance(`${IMPORT}\nconst s = \`a \${runEventStoreConformance(x)} b\`;`)).toBe(
+      true
+    );
+    expect(wiresConformance(`${IMPORT}\nconst s = \`runEventStoreConformance(x)\`;`)).toBe(false);
+    expect(
+      wiresConformance(`${IMPORT}\nconst s = \`\${ {a: 1}.a } \${runEventStoreConformance(x)}\`;`)
+    ).toBe(true);
+  });
+  it("a regex literal holding a quote or backtick does not open a phantom string", () => {
+    expect(wiresConformance(`${IMPORT}\nconst r = /["'\`]/;\nrunEventStoreConformance(x);`)).toBe(
+      true
+    );
+    expect(wiresConformance(`${IMPORT}\nx.replace(/\`/g, "");\nrunEventStoreConformance(x);`)).toBe(
+      true
+    );
+    // ...and a division is not a regex
+    expect(
+      wiresConformance(`${IMPORT}\nconst h = a / b; runEventStoreConformance(x); c / d;`)
+    ).toBe(true);
+    expect(wiresConformance(`${IMPORT}\nconst r = /runEventStoreConformance(/;`)).toBe(false);
+  });
+  it("rejects a type-only import, an unrelated object's method and a local definition", () => {
+    expect(wiresConformance('import type { runA } from "@loom/conformance";\nrunA(x);')).toBe(
+      false
+    );
+    expect(wiresConformance('import { type runA } from "@loom/conformance";\nrunA(x);')).toBe(
+      false
+    );
+    expect(wiresConformance(`${IMPORT}\nother.runEventStoreConformance(1);`)).toBe(false);
+    expect(wiresConformance(`${IMPORT}\nfunction runMyConformance() {}`)).toBe(false);
+    expect(wiresConformance('import { x } from "@loom/other";\nrunA(x);')).toBe(false);
+    expect(
+      wiresConformance('import * as c from "@loom/conformance";\nother.runAConformance(1);')
+    ).toBe(false);
+  });
+  it("handles a large semicolon-less file linearly (and correctly)", () => {
+    const lines: string[] = [];
+    for (let i = 0; i < 20000; i++) lines.push(`import a${i} from "./m${i}"`);
+    const noKit = lines.join("\n");
+    expect(wiresConformance(noKit)).toBe(false);
+    expect(wiresConformance(`${noKit}\n${IMPORT}\nrunEventStoreConformance(x)`)).toBe(true);
+  });
   it("checkPlugin warns when only a comment mentions the kit", () => {
     const findings = checkPlugin({ name: "loom-plugin-x", keywords: ["loom-plugin"] }, [
       `${IMPORT}\n// runEventStoreConformance(() => new X());`,
