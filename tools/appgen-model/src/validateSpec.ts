@@ -1,4 +1,4 @@
-import type { AppModel, ChangeSpec } from "@loom/appgen";
+import { type AppModel, type ChangeSpec, stepConstName } from "@loom/appgen";
 
 // Semantic validation of a model-produced ChangeSpec against the scanned app. The
 // grammar already guarantees the JSON is well-formed and on-schema; this catches the
@@ -6,7 +6,14 @@ import type { AppModel, ChangeSpec } from "@loom/appgen";
 // `create` for something that's already there, malformed ids. The issue list drives the
 // self-repair loop (re-prompt the model with what was wrong).
 
+// Loose shape: what an EXISTING flow/step id may look like (apps predate the strict rule).
 const KEBAB = /^[a-z0-9][a-z0-9-]*$/;
+// Strict shape for every NEW id (a `create`d step or flow). Both become generated
+// identifiers (`<camel>Step`, `<Pascal>Flow`), so the id must start with a letter
+// (`1-run` -> `1RunStep` is not an identifier) and have no trailing/double dash (`a-` and
+// `a--b` collapse onto `a` and `a-b`).
+const STRICT_KEBAB = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+const STRICT_HINT = "start with a letter, no leading digit, no trailing or double dash";
 
 export function validateChangeSpec(spec: ChangeSpec, appModel: AppModel): string[] {
   const issues: string[] = [];
@@ -17,12 +24,27 @@ export function validateChangeSpec(spec: ChangeSpec, appModel: AppModel): string
   // runtime does not require them to be unique across flows). Tracked across every
   // operation on the same flow so two ops cannot both touch one id.
   const seenByFlow = new Map<string, Set<string>>();
+  // Generated const name -> the step id that claimed it, per flow. Pre-seeded with the
+  // scanned flow's steps so a new `a--b` cannot shadow an existing `a-b`.
+  const namesByFlow = new Map<string, Map<string, string>>();
+  const createdFlows = new Set<string>();
 
   if (spec.capabilities.length === 0) issues.push("the plan has no capabilities — it is empty");
 
   for (const cap of spec.capabilities) {
-    if (!KEBAB.test(cap.id)) issues.push(`capability id "${cap.id}" must be kebab-case`);
     const exists = flowIds.has(cap.id);
+    const isNew = cap.op === "create" && !exists;
+    if (isNew) {
+      if (!STRICT_KEBAB.test(cap.id))
+        issues.push(`capability id "${cap.id}" must be kebab-case: ${STRICT_HINT}`);
+      if (createdFlows.has(cap.id))
+        issues.push(
+          `flow "${cap.id}" is created more than once — declare each new flow once, with all its steps`
+        );
+      createdFlows.add(cap.id);
+    } else if (!KEBAB.test(cap.id)) {
+      issues.push(`capability id "${cap.id}" must be kebab-case`);
+    }
     if (cap.op === "create" && exists) {
       issues.push(`flow "${cap.id}" already exists — use op "extend", not "create"`);
     }
@@ -35,6 +57,12 @@ export function validateChangeSpec(spec: ChangeSpec, appModel: AppModel): string
       seen = new Set();
       seenByFlow.set(cap.id, seen);
     }
+    let names = namesByFlow.get(cap.id);
+    if (names === undefined) {
+      names = new Map();
+      for (const id of known ?? []) names.set(stepConstName(id), id);
+      namesByFlow.set(cap.id, names);
+    }
     for (const step of cap.steps) {
       if (seen.has(step.id)) {
         issues.push(
@@ -43,8 +71,29 @@ export function validateChangeSpec(spec: ChangeSpec, appModel: AppModel): string
         continue;
       }
       seen.add(step.id);
-      if (!KEBAB.test(step.id))
+      if (isNew && (step.op === "modify" || step.op === "delete")) {
+        issues.push(
+          `step "${step.id}" op "${step.op}" but flow "${cap.id}" is being created — there is nothing to ${step.op}`
+        );
+        continue;
+      }
+      if (step.op === "create") {
+        if (!STRICT_KEBAB.test(step.id)) {
+          issues.push(`step id "${step.id}" in "${cap.id}" must be kebab-case: ${STRICT_HINT}`);
+          continue;
+        }
+        const name = stepConstName(step.id);
+        const owner = names.get(name);
+        if (owner !== undefined && owner !== step.id) {
+          issues.push(
+            `step ids "${owner}" and "${step.id}" in flow "${cap.id}" both generate the name "${name}" — rename one`
+          );
+          continue;
+        }
+        names.set(name, step.id);
+      } else if (!KEBAB.test(step.id)) {
         issues.push(`step id "${step.id}" in "${cap.id}" must be kebab-case`);
+      }
       if (
         (step.op === "modify" || step.op === "delete") &&
         known !== undefined &&
