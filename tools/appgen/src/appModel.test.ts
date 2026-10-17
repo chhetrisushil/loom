@@ -59,3 +59,40 @@ describe("scanApp (dir → AppModel)", () => {
     expect(flow?.steps[0]?.handlerState).toBe("edited");
   });
 });
+
+describe("scanApp never offers a symlinked flow as an editable flow", () => {
+  const outsideDir = (): string => path.join(dir, "..", `${path.basename(dir)}-outside`);
+  const outsideOf = (): string => {
+    fs.mkdirSync(outsideDir());
+    return outsideDir();
+  };
+  afterEach(() => {
+    fs.rmSync(outsideDir(), { recursive: true, force: true });
+  });
+
+  it("skips a symlinked flow.ts and records it", () => {
+    writeProject("Create a planner. Step fetch.");
+    const o = outsideOf();
+    const flow = path.join(dir, "app", "flows", "planner", "flow.ts");
+    fs.renameSync(flow, path.join(o, "flow.ts"));
+    fs.symlinkSync(path.join(o, "flow.ts"), flow);
+    const m = scanApp(dir);
+    expect(m.flows.map((f) => f.id)).not.toContain("planner");
+    expect(m.skippedLinks).toEqual([path.join("app", "flows", "planner", "flow.ts")]);
+  });
+
+  it("skips a symlinked flow folder and a symlinked app/flows", () => {
+    writeProject("Create a planner. Step fetch.");
+    const o = outsideOf();
+    const folder = path.join(dir, "app", "flows", "planner");
+    fs.renameSync(folder, path.join(o, "planner"));
+    fs.symlinkSync(path.join(o, "planner"), folder);
+    expect(scanApp(dir).flows).toEqual([]);
+    expect(scanApp(dir).skippedLinks).toEqual([path.join("app", "flows", "planner")]);
+    fs.rmSync(folder);
+    fs.renameSync(path.join(dir, "app", "flows"), path.join(o, "flows"));
+    fs.symlinkSync(path.join(o, "flows"), path.join(dir, "app", "flows"));
+    expect(scanApp(dir).flows).toEqual([]);
+    expect(scanApp(dir).skippedLinks).toEqual([path.join("app", "flows")]);
+  });
+});
