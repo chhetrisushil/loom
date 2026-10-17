@@ -1,0 +1,222 @@
+import { type ChildProcess, spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { UsageError } from "./args";
+import { CONVENTION_FOLDERS, cmdGen, genSummary } from "./gen";
+import { type TreeChange, watchTree } from "./watch";
+
+// ── `loom dev` - the development loop ─────────────────────────────────────────
+//
+// gen --watch + run the app's entry, restarting it when the source changes, + the inspector.
+//
+// The app runs as a CHILD PROCESS in its own process group, so a restart can kill the whole tree
+// (the app, whatever it forked, a `pnpm`/`sh` wrapper) and never leave an orphan holding a port or
+// a database. The loop never needs the app's cooperation: it watches files and signals processes.
+
+/** The script `loom dev` runs when `--run` is not given: `dev`, else `start` (never `loom dev` itself). */
+export function resolveRunCommand(cwd: string, explicit: string | undefined): string {
+  if (explicit !== undefined) {
+    if (explicit.trim() === "") throw new UsageError("loom dev: --run needs a command");
+    return explicit;
+  }
+  const manifest = path.join(cwd, "package.json");
+  let scripts: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(manifest, "utf8")) as { scripts?: unknown };
+    if (parsed.scripts && typeof parsed.scripts === "object") {
+      scripts = parsed.scripts as Record<string, unknown>;
+    }
+  } catch {
+    // no readable package.json: fall through to the usage error below
+  }
+  for (const name of ["dev", "start"]) {
+    const script = scripts[name];
+    // A `dev` script that is itself `loom dev ...` would fork-bomb the loop.
+    if (typeof script === "string" && !/\bloom\s+dev\b/.test(script)) return script;
+  }
+  throw new UsageError(
+    `loom dev: nothing to run - pass --run "<command>" (for example --run "tsx app/main.ts"), or add a "dev" or "start" script to ${manifest}`
+  );
+}
+
+export interface DevOptions {
+  /** The folder holding flows/, agents/, ... (default "app"). */
+  dir: string;
+  /** Shell command that starts the app. */
+  command: string;
+  /** Working directory of the child (default: process.cwd()). */
+  cwd?: string;
+  log?: (line: string) => void;
+  signal?: AbortSignal;
+  /** Extra environment for the child. */
+  env?: Record<string, string>;
+  /** Quiet period before a burst of file events becomes one restart (default 150 ms). */
+  debounceMs?: number;
+  pollMs?: number;
+  forcePoll?: boolean;
+  /** Crash-loop backoff: first delay, cap, and how long a run must last to count as stable. */
+  backoff?: { baseMs?: number; maxMs?: number; stableMs?: number };
+  /** How long a stopping child gets after SIGTERM before SIGKILL (default 3000 ms). */
+  killGraceMs?: number;
+}
+
+/** Signal a child's whole process group (POSIX), or the child itself where groups do not exist. */
+function signalTree(child: ChildProcess, sig: NodeJS.Signals): void {
+  if (child.pid === undefined) return;
+  try {
+    if (process.platform === "win32") child.kill(sig);
+    else process.kill(-child.pid, sig);
+  } catch {
+    // already gone
+  }
+}
+
+/** Run until `signal` aborts; resolves 0 after the child (and its group) is gone. */
+export async function runDev(options: DevOptions): Promise<number> {
+  const log = options.log ?? ((line: string) => console.log(line));
+  const cwd = options.cwd ?? process.cwd();
+  const baseMs = options.backoff?.baseMs ?? 1000;
+  const maxMs = options.backoff?.maxMs ?? 30_000;
+  const stableMs = options.backoff?.stableMs ?? 10_000;
+  const killGraceMs = options.killGraceMs ?? 3000;
+
+  // Same PATH an npm script gets, so `--run "tsx app/main.ts"` finds the project's local bins.
+  const binDirs: string[] = [];
+  for (let d = path.resolve(cwd); ; d = path.dirname(d)) {
+    binDirs.push(path.join(d, "node_modules", ".bin"));
+    if (path.dirname(d) === d) break;
+  }
+  const childEnv = {
+    ...process.env,
+    ...options.env,
+    PATH: [...binDirs, process.env.PATH ?? ""].join(path.delimiter),
+    LOOM_DEV: "1",
+  };
+
+  let child: ChildProcess | undefined;
+  let stopped = false;
+  let backoffMs = baseMs;
+  let restartTimer: NodeJS.Timeout | undefined;
+  let startedAt = 0;
+  let exited: Promise<void> = Promise.resolve();
+
+  const start = (): void => {
+    startedAt = Date.now();
+    // detached => its own process group (POSIX), which is what lets us kill the whole tree.
+    const proc = spawn(options.command, {
+      cwd,
+      env: childEnv,
+      shell: true,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+    child = proc;
+    log(`loom dev: started (pid ${proc.pid}): ${options.command}`);
+    exited = new Promise<void>((resolve) => {
+      proc.once("exit", (code, sig) => {
+        if (child === proc) child = undefined;
+        // Whatever the app left behind in its group goes with it.
+        signalTree(proc, "SIGKILL");
+        if (!stopped && !restarting) {
+          if (code === 0) {
+            log("loom dev: the app exited (0) - waiting for a change to run it again");
+          } else {
+            const ranFor = Date.now() - startedAt;
+            if (ranFor >= stableMs) backoffMs = baseMs;
+            log(
+              `loom dev: the app ${sig ? `was killed by ${sig}` : `exited with code ${code}`} - restarting in ${backoffMs}ms (or on the next change)`
+            );
+            restartTimer = setTimeout(() => {
+              restartTimer = undefined;
+              if (!stopped && child === undefined) start();
+            }, backoffMs);
+            backoffMs = Math.min(backoffMs * 2, maxMs);
+          }
+        }
+        resolve();
+      });
+      proc.once("error", (err) => {
+        log(`loom dev: could not start the app: ${err.message}`);
+        resolve();
+      });
+    });
+  };
+
+  let restarting = false;
+  const stopChild = async (): Promise<void> => {
+    if (restartTimer !== undefined) {
+      clearTimeout(restartTimer);
+      restartTimer = undefined;
+    }
+    const proc = child;
+    if (proc === undefined) return;
+    signalTree(proc, "SIGTERM");
+    const escalate = setTimeout(() => signalTree(proc, "SIGKILL"), killGraceMs);
+    await exited;
+    clearTimeout(escalate);
+  };
+
+  const restart = async (why: string): Promise<void> => {
+    if (stopped) return;
+    restarting = true;
+    try {
+      log(`loom dev: ${why} - restarting`);
+      await stopChild();
+      backoffMs = baseMs; // a change is a fresh attempt, not part of a crash loop
+      if (!stopped) start();
+    } finally {
+      restarting = false;
+    }
+  };
+
+  // Generate once up front, like `loom gen`, so the first run sees a current loom.gen.ts.
+  try {
+    log(genSummary(cmdGen(options.dir)));
+  } catch (err) {
+    if (err instanceof UsageError) throw err;
+    log(`loom dev: gen failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  const watcher = watchTree(options.dir, {
+    // loom.gen.ts is OUR output: restarting on it would double every restart.
+    include: (file) => file !== "loom.gen.ts" && !/\.(?:log|tmp|swp)$/.test(file),
+    ...(options.debounceMs !== undefined
+      ? { debounceMs: options.debounceMs }
+      : { debounceMs: 150 }),
+    ...(options.pollMs !== undefined && { pollMs: options.pollMs }),
+    ...(options.forcePoll !== undefined && { forcePoll: options.forcePoll }),
+    async onChange(changes: TreeChange[]) {
+      const structural = changes.some(
+        (c) => c.kind !== "changed" && CONVENTION_FOLDERS.includes(c.file.split("/")[0] as string)
+      );
+      if (structural) {
+        try {
+          log(genSummary(cmdGen(options.dir)));
+        } catch (err) {
+          log(`loom dev: gen failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+      const shown = changes
+        .slice(0, 3)
+        .map((c) => `${c.kind} ${c.file}`)
+        .join(", ");
+      await restart(changes.length > 3 ? `${shown} (+${changes.length - 3} more)` : shown);
+    },
+    onError(err) {
+      log(
+        `loom dev: watch error: ${err instanceof Error ? err.message : String(err)} (still watching)`
+      );
+    },
+  });
+
+  start();
+
+  await new Promise<void>((resolve) => {
+    if (options.signal?.aborted) return resolve();
+    options.signal?.addEventListener("abort", () => resolve(), { once: true });
+  });
+  stopped = true;
+  watcher.close();
+  await stopChild();
+  return 0;
+}

@@ -1560,7 +1560,8 @@ interface LoomApp {
 
 | Helper | Purpose |
 |---|---|
-| `createTestApp(config?)` | in-memory `LoomApp` (storage defaults to memory) |
+| `createTestApp(config?)` | in-memory `LoomApp` (storage defaults to memory); `{ clock: true }` adds a test clock and a timer store |
+| `advanceTime(app, ms)` / `fireDueTimers(app)` | move that clock and fire due timers through the real `TimerService` |
 | `waitFor(pred, { timeoutMs, intervalMs })` | poll until a predicate holds |
 | `waitForPhase(pr, surface, id, phase)` | wait until a surface reaches a phase |
 | `getSurfaceState(pr, surface, id)` | read a surface |

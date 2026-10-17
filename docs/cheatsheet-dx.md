@@ -14,8 +14,10 @@
 node <loom>/tools/create-loom-app/dist/index.js my-app --loom-path <loom>
 cd my-app && pnpm install && pnpm test && pnpm start
 
-loom new flow checkout      # scaffold a definition (+ its flow.test.ts)
-loom gen                    # regenerate loom.gen.ts
+loom new flow checkout      # scaffold a definition (+ its flow.test.ts), then run gen
+loom new flow refund --template approval   # or timer | saga: non-agentic starters, each with a passing test
+loom gen --watch            # keep loom.gen.ts current as modules are added/removed/renamed
+loom dev --config ./loom.config.ts   # gen --watch + run the app (restart on change) + the inspector
 loom doctor                 # what can I check right now?
 loom logs --help            # per-command help (also: loom help logs, loom version)
 loom doctor --json          # machine output: stdout is one JSON document, exit code unchanged
@@ -72,7 +74,7 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 | `loom ls <store>` | list executions; what each suspended one waits on (`--status`, `--since 1h`; newest activity first) |
 | `loom logs <store> <id>` | the event timeline (`--redact a,b`; `-v` detail; `--type`/`--from`/`--to`; `--follow` tails it) |
 | `loom debug <store> <id> --at N` | folded state at sequence N — time travel |
-| `loom inspect <store>` | web timeline with a slider |
+| `loom inspect <store>` | web timeline with a slider (`loom dev` is the dev loop, not an alias) |
 | `loom profile <store> <id>` | flame graph + latency breakdown |
 | `loom introspect <store> <id>` | execution / task / decision / resource graphs |
 | `loom optimize <store> <id>` | advisory recommendations |
@@ -109,6 +111,8 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 | | |
 |---|---|
 | `createTestApp(config?)` | in-memory app; storage defaults to memory |
+| `createTestApp({ clock: true })` | time travel: the runtime's `now` is a test clock and a `TimerService` waits for you |
+| `advanceTime(app, ms)` / `fireDueTimers(app)` | move the clock, then fire what became due through the real `TimerService` (`ctx.sleep`, `suspend({ timeout })`, cron) |
 | `driveToSuspend(handle)` | start → first suspend |
 | `resumeWith(runtime, id, ev?)` | resume sugar |
 | `waitFor` / `waitForPhase` | poll a predicate or a surface phase |

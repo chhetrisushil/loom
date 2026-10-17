@@ -344,16 +344,17 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     },
   },
   gen: {
-    summary: "regenerate loom.gen.ts from app/flows",
-    usage: ["loom gen [--dir app]"],
-    flags: { dir: "string" },
+    summary: "regenerate loom.gen.ts from app/flows (--watch keeps it current)",
+    usage: ["loom gen [--dir app] [--watch]"],
+    flags: { dir: "string", watch: "boolean" },
   },
   new: {
     summary: "scaffold a flow, agent, tool, skill, schedule, memory, projection or sentinel",
     usage: [
-      "loom new <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app]",
+      "loom new <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] [--no-gen]",
+      "loom new flow <name> --template echo|approval|timer|saga [--dir app] [--no-gen]",
     ],
-    flags: { dir: "string" },
+    flags: { dir: "string", template: "string", "no-gen": "boolean" },
   },
   plugin: {
     summary: "scaffold, validate, try and search plugins",
@@ -403,7 +404,11 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     flags: { logs: "string", config: "string" },
   },
   inspect: inspector,
-  dev: { ...inspector, summary: "alias of inspect", usage: ["loom dev <store> [--port N]"] },
+  dev: {
+    summary: "dev loop: gen --watch + run the app (restart on change) + the inspector",
+    usage: ["loom dev --config <module> [--dir app] [--run <command>] [--port N]"],
+    flags: { config: "string", dir: "string", run: "string", port: "int", verbose: "boolean" },
+  },
   help: {
     summary: "show the usage of every command, or of one",
     usage: ["loom help [command]"],

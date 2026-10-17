@@ -3085,8 +3085,15 @@ Every command has a pure, testable core exported from ~@loom/cli~: ~foldAt(event
 ** ~@loom/testing~ — the testing kit
 
 #+begin_src typescript
-type TestAppConfig = Omit<LoomConfig, "storage"> & Partial<Pick<LoomConfig, "storage">>;
-function createTestApp(config?: TestAppConfig): LoomApp                      // defaults storage to in-memory
+type TestAppConfig = Omit<LoomConfig, "storage"> & Partial<Pick<LoomConfig, "storage">> & { clock?: boolean | number | TestClock };
+function createTestApp(config?: TestAppConfig): LoomApp                      // defaults storage to in-memory; `clock` = time travel (execution.now + InMemoryTimerStore, autostart false)
+
+// time travel (needs createTestApp({ clock }))
+interface TestClock { now(): number; advanceBy(ms: number): void; advanceTo(epochMs: number): void }
+function createTestClock(startEpochMs?: number): TestClock                   // default start 2030-01-01T00:00:00Z
+function advanceTime(app: LoomApp, ms: number): Promise<void>                // advance the clock, then fireDueTimers
+function fireDueTimers(app: LoomApp): Promise<void>                          // app.timerService.tick(clock.now()) - the real TimerService
+function clockOf(app: LoomApp): TestClock | undefined
 
 function waitFor(pred: () => boolean | Promise<boolean>, options?: { timeoutMs?: number; intervalMs?: number }): Promise<void>
 function waitForPhase(pr: ProjectionRuntime, surface: string, executionId: string, phase: string, options?): Promise<void>

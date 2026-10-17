@@ -131,6 +131,11 @@ async function run(ctx: ExecutionContext, order: { id: string }) {
 }
 ```
 
+Start from a template: `loom new flow <name> --template approval|timer|saga` scaffolds each of the
+rows above (typed gate, durable timer, compensation) with a test that passes on a fresh scaffold.
+Test time without waiting: `createTestApp({ clock: true })` and `advanceTime(app, ms)` from
+`@loom/testing` move the runtime's clock and fire what became due through the real `TimerService`.
+
 Honest limits:
 
 - **The flow body must be deterministic.** It is re-run from the top on every resume, with

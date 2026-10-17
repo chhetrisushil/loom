@@ -1,5 +1,12 @@
 export { createTestApp, type TestAppConfig } from "./createTestApp";
 export {
+  createTestClock,
+  clockOf,
+  advanceTime,
+  fireDueTimers,
+  type TestClock,
+} from "./time";
+export {
   waitFor,
   waitForPhase,
   getSurfaceState,
