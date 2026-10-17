@@ -57,7 +57,9 @@ export function assertNoSymlinkPath(dir: string, dest: string): void {
  * passed as a library root would otherwise anchor the walk OUTSIDE the project. The cwd itself (identity-equal
  * to `process.cwd()`) is exempt: a repository cannot make you `cd`.
  */
-function assertRootNotLink(root: string): void {
+function assertRootNotLink(rootIn: string): void {
+  // resolve first: lstat("app/") (trailing separator) FOLLOWS the link, so a raw spelling could slip past.
+  const root = path.resolve(rootIn);
   let st: fs.Stats;
   try {
     st = fs.lstatSync(root);
