@@ -1,10 +1,22 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { GROUPED_OPTIONS } from "@loom/app";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "./cli";
-import { analyzeConfig, cmdMigrateConfig, unifiedDiff } from "./migrateConfig";
+import { analyzeConfig, checkPreserved, cmdMigrateConfig, unifiedDiff } from "./migrateConfig";
 
 const wrap = (body: string) =>
   `import { defineConfig } from "@loom/app";\n\nexport default defineConfig({\n${body}});\n`;
@@ -154,13 +166,22 @@ describe("migrate-config: conflicts and refusals", () => {
       analyzeConfig(`import { defineConfig } from "vite";\ndefineConfig({ strict: 1 });\n`).refusal
     ).toMatch(/@loom\/app/);
     expect(analyzeConfig(`import "@loom/app";\nexport const x = 1;\n`).refusal).toMatch(
-      /no `defineConfig/
+      /no import of `defineConfig`/
     );
+    expect(
+      analyzeConfig(`import { defineConfig } from "@loom/app";\nexport const x = 1;\n`).refusal
+    ).toMatch(/no `defineConfig/);
   });
 
   it("leaves a clean config byte-identical (no refusal)", () => {
     const src = wrap("  security: { strict: true },\n  stores: s,\n");
-    expect(analyzeConfig(src)).toEqual({ moved: [], conflicts: [], refusal: undefined, text: src });
+    expect(analyzeConfig(src)).toEqual({
+      moved: [],
+      conflicts: [],
+      refusal: undefined,
+      text: src,
+      created: [],
+    });
   });
 });
 
@@ -283,5 +304,239 @@ describe("loom migrate-config (command)", () => {
     expect(() => cmdMigrateConfig({ files: [join(dir, "missing.ts")], apply: false })).toThrow(
       /cannot read/
     );
+  });
+});
+
+// ── Review fixes ─────────────────────────────────────────────────────────────
+
+describe("migrate-config: values are never changed by the move (P1)", () => {
+  const moveTemplate = (value: string) =>
+    wrap(`  name: "x",\n  telemetry: {\n    a: ${value},\n  },\n`);
+
+  it("P1: a multi-line template value is byte-identical after the move", () => {
+    const value = "`l1\n  l2\n    l3`";
+    const a = analyzeConfig(moveTemplate(value));
+    expect(a.refusal).toBeUndefined();
+    expect(a.text).toBe(
+      wrap(`  name: "x",\n  observability: {\n    telemetry: {\n      a: ${value},\n    },\n  },\n`)
+    );
+    expect(checkPreserved(moveTemplate(value), a.text, a.created)).toBeUndefined();
+    expect(analyzeConfig(a.text).text).toBe(a.text);
+  });
+
+  it("P1: a multi-line template with substitutions keeps its inner lines", () => {
+    const value = "`l1 ${x}\n  l2 ${ {a: 1}.a }\n  l3`";
+    const a = analyzeConfig(moveTemplate(value));
+    expect(a.text).toContain(`a: ${value},`);
+    expect(a.text).toContain("\n  l2 ${ {a: 1}.a }\n  l3`,");
+  });
+
+  it("P1: a backslash-continued string keeps its continuation line", () => {
+    const value = '"l1\\\n  l2"';
+    const a = analyzeConfig(moveTemplate(value));
+    expect(a.refusal).toBeUndefined();
+    expect(a.text).toContain(`a: ${value},`);
+    expect(a.moved).toEqual([{ key: "telemetry", group: "observability" }]);
+  });
+
+  it("P1: a template into an EXISTING namespace is untouched too", () => {
+    const src = wrap(
+      "  telemetry: {\n    a: `x\n  y`,\n  },\n  observability: {\n    onWarn,\n  },\n"
+    );
+    const a = analyzeConfig(src);
+    expect(a.text).toContain("a: `x\n  y`,");
+  });
+
+  it("P1: the preservation check refuses a corrupting rewrite (nothing written)", () => {
+    const src = moveTemplate("`l1\n  l2`");
+    const p = join(mkdtempSync(join(tmpdir(), "loom-migrate-c-")), "loom.config.ts");
+    writeFileSync(p, src);
+    try {
+      const corrupt = (s: string) => {
+        const a = analyzeConfig(s);
+        return { ...a, text: a.text.replace("\n  l2`", "\n    l2`") };
+      };
+      const r = cmdMigrateConfig({ files: [p], apply: true }, { analyze: corrupt });
+      expect(r.refused).toBe(true);
+      expect(r.files[0]?.refusal).toMatch(/change the content of the config/);
+      expect(r.files[0]?.changed).toBe(false);
+      expect(readFileSync(p, "utf8")).toBe(src);
+    } finally {
+      rmSync(join(p, ".."), { recursive: true, force: true });
+    }
+  });
+
+  it("the check also catches a lost or duplicated entry and unbalanced braces", () => {
+    const src = wrap("  strict: true,\n  telemetry,\n");
+    const a = analyzeConfig(src);
+    expect(checkPreserved(src, a.text, a.created)).toBeUndefined();
+    expect(checkPreserved(src, a.text.replace("    telemetry,\n", ""), a.created)).toMatch(
+      /change the content/
+    );
+    expect(checkPreserved(src, a.text.replace("strict: true", "strict: false"), a.created)).toMatch(
+      /change the content/
+    );
+    expect(checkPreserved(src, a.text, [])).toMatch(/change the content/);
+  });
+});
+
+describe("migrate-config: file endings, BOM, bindings, generics (P3)", () => {
+  it("a CRLF file stays CRLF: inserted and moved lines, no mixed endings", () => {
+    const crlf = (s: string) => s.replace(/\n/g, "\r\n");
+    const src = crlf(
+      wrap(
+        "  strict: true, // keep\n  telemetry,\n  killSwitch: f(\n    1,\n  ),\n  security: {\n    crypto,\n  },\n"
+      )
+    );
+    const a = analyzeConfig(src);
+    expect(a.refusal).toBeUndefined();
+    expect(a.text).toBe(
+      crlf(
+        wrap(
+          "  observability: {\n    telemetry,\n  },\n  security: {\n    crypto,\n    strict: true, // keep\n    killSwitch: f(\n      1,\n    ),\n  },\n"
+        )
+      )
+    );
+    expect(/(?<!\r)\n/.test(a.text)).toBe(false);
+    expect(analyzeConfig(a.text).text).toBe(a.text);
+  });
+
+  it("an LF file gets no CR", () => {
+    expect(analyzeConfig(wrap("  strict: true,\n")).text.includes("\r")).toBe(false);
+  });
+
+  it("a BOM is preserved", () => {
+    const a = analyzeConfig(`\uFEFF${wrap("  strict: true,\n")}`);
+    expect(a.refusal).toBeUndefined();
+    expect(a.text).toBe(`\uFEFF${wrap("  security: {\n    strict: true,\n  },\n")}`);
+  });
+
+  it("rewrites the call through the local name of the @loom/app import", () => {
+    const src = `import { defineConfig as dc } from "@loom/app";\nexport default dc({\n  strict: true,\n});\n`;
+    expect(analyzeConfig(src).text).toBe(
+      `import { defineConfig as dc } from "@loom/app";\nexport default dc({\n  security: {\n    strict: true,\n  },\n});\n`
+    );
+    const ns = `import * as app from "@loom/app";\nexport default app.defineConfig({\n  strict: true,\n});\n`;
+    expect(analyzeConfig(ns).moved).toEqual([{ key: "strict", group: "security" }]);
+  });
+
+  it("does not rewrite a defineConfig from another module (a vite-style config)", () => {
+    const vite = `import { defineConfig } from "vite";\nimport { loom } from "@loom/app";\nexport default defineConfig({\n  strict: true,\n  plugins: [loom()],\n});\n`;
+    const a = analyzeConfig(vite);
+    expect(a.refusal).toMatch(/no import of `defineConfig` from `@loom\/app`/);
+    expect(a.text).toBe(vite);
+    const both = `import { defineConfig as dc } from "@loom/app";\nimport { defineConfig } from "vite";\nconst v = defineConfig({\n  strict: true,\n});\nexport default dc({\n  strict: true,\n});\n`;
+    const b = analyzeConfig(both);
+    expect(b.moved).toEqual([{ key: "strict", group: "security" }]);
+    expect(b.text).toContain("const v = defineConfig({\n  strict: true,\n});");
+    expect(b.text).toContain("dc({\n  security: {\n    strict: true,");
+    const typeOnly = `import type { defineConfig } from "@loom/app";\ndefineConfig({\n  strict: true,\n});\n`;
+    expect(analyzeConfig(typeOnly).refusal).toMatch(/no import of `defineConfig`/);
+  });
+
+  it("a generic in a flat value does not split the entry at its comma", () => {
+    const a = analyzeConfig(
+      wrap(
+        "  policies: new Map<string, number>(),\n  name: f<A, B>(1),\n  secrets: x as Map<string, Set<number>>,\n"
+      )
+    );
+    expect(a.refusal).toBeUndefined();
+    expect(a.text).toBe(
+      wrap(
+        "  security: {\n    policies: new Map<string, number>(),\n    secrets: x as Map<string, Set<number>>,\n  },\n  name: f<A, B>(1),\n"
+      )
+    );
+    const one = analyzeConfig(
+      `import { defineConfig } from "@loom/app";\ndefineConfig({ policies: new Map<string, number>(), name: "x" });\n`
+    );
+    expect(one.text).toContain("security: { policies: new Map<string, number>() }");
+    // Two comparisons are two entries, not a type-argument list.
+    const cmp = analyzeConfig(wrap("  strict: a<b,\n  name: c>d,\n"));
+    expect(cmp.moved).toEqual([{ key: "strict", group: "security" }]);
+  });
+});
+
+describe("migrate-config: writing the files (P2)", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "loom-migrate-w-"));
+  });
+  afterEach(() => {
+    for (const d of [dir, join(dir, "ro")]) {
+      try {
+        chmodSync(d, 0o755);
+      } catch {}
+    }
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const put = (rel: string, body: string) => {
+    const p = join(dir, rel);
+    writeFileSync(p, body);
+    return p;
+  };
+  const isRoot = process.getuid?.() === 0;
+
+  it("refuses a symlinked config, naming the real path, and changes nothing", () => {
+    const real = put("real.ts", wrap("  strict: true,\n"));
+    const link = join(dir, "loom.config.ts");
+    symlinkSync(real, link);
+    const r = cmdMigrateConfig({ files: [link], apply: true });
+    expect(r.refused).toBe(true);
+    expect(r.files[0]?.refusal).toContain(realpathSync(real));
+    expect(readFileSync(real, "utf8")).toBe(wrap("  strict: true,\n"));
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+  });
+
+  it("preserves the file mode and leaves no temp file", () => {
+    const a = put("a.ts", wrap("  strict: true,\n"));
+    chmodSync(a, 0o600);
+    const b = put("b.ts", wrap("  strict: true,\n"));
+    chmodSync(b, 0o755);
+    const r = cmdMigrateConfig({ files: [a, b], apply: true });
+    expect(r.refused).toBe(false);
+    expect(r.files.map((f) => f.written)).toEqual([true, true]);
+    expect(statSync(a).mode & 0o777).toBe(0o600);
+    expect(statSync(b).mode & 0o777).toBe(0o755);
+    expect(readdirSync(dir).sort()).toEqual(["a.ts", "b.ts"]);
+    expect(readFileSync(a, "utf8")).toBe(wrap("  security: {\n    strict: true,\n  },\n"));
+  });
+
+  it("is all-or-nothing: one refused file means no file is written", () => {
+    const good = put("good.ts", wrap("  strict: true,\n"));
+    const bad = put("bad.ts", wrap("  ...base,\n  strict: true,\n"));
+    const r = cmdMigrateConfig({ files: [good, bad], apply: true });
+    expect(r.refused).toBe(true);
+    expect(r.blocked).toBe(true);
+    expect(r.files.map((f) => f.written)).toEqual([false, false]);
+    expect(readFileSync(good, "utf8")).toBe(wrap("  strict: true,\n"));
+  });
+
+  it.skipIf(isRoot)("a write failure leaves the original intact and is reported", () => {
+    mkdirSync(join(dir, "ro"));
+    const f = put("ro/loom.config.ts", wrap("  strict: true,\n"));
+    chmodSync(join(dir, "ro"), 0o555);
+    const r = cmdMigrateConfig({ files: [f], apply: true });
+    chmodSync(join(dir, "ro"), 0o755);
+    expect(r.refused).toBe(true);
+    expect(r.writeError?.path).toBe(f);
+    expect(r.writeError?.written).toEqual([]);
+    expect(r.writeError?.unwritten).toEqual([f]);
+    expect(readFileSync(f, "utf8")).toBe(wrap("  strict: true,\n"));
+    expect(readdirSync(join(dir, "ro"))).toEqual(["loom.config.ts"]);
+  });
+
+  it.skipIf(isRoot)("a failure part-way reports exactly which files were written", () => {
+    mkdirSync(join(dir, "ro"));
+    const first = put("first.ts", wrap("  strict: true,\n"));
+    const second = put("ro/second.ts", wrap("  strict: true,\n"));
+    const third = put("third.ts", wrap("  strict: true,\n"));
+    chmodSync(join(dir, "ro"), 0o555);
+    const r = cmdMigrateConfig({ files: [first, second, third], apply: true });
+    chmodSync(join(dir, "ro"), 0o755);
+    expect(r.writeError?.written).toEqual([first]);
+    expect(r.writeError?.unwritten).toEqual([second, third]);
+    expect(readFileSync(first, "utf8")).toBe(wrap("  security: {\n    strict: true,\n  },\n"));
+    expect(readFileSync(second, "utf8")).toBe(wrap("  strict: true,\n"));
+    expect(readFileSync(third, "utf8")).toBe(wrap("  strict: true,\n"));
   });
 });
