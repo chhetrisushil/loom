@@ -131,7 +131,19 @@ describe("names", () => {
 
   it("validates npm package names and derives one from a folder name", () => {
     expect(isValidPackageName("my-app")).toBe(true);
-    for (const bad of ["Bad Name!", "", ".hidden", "_x", "UPPER"]) {
+    expect(isValidPackageName("@acme/my-app")).toBe(true);
+    for (const bad of [
+      "Bad Name!",
+      "",
+      ".hidden",
+      "_x",
+      "UPPER",
+      "@acme",
+      "@/x",
+      "@acme/",
+      "a/b",
+      "@a/b/c",
+    ]) {
       expect(isValidPackageName(bad), bad).toBe(false);
     }
     expect(packageNameFrom("Bad Name!")).toBe("bad-name");

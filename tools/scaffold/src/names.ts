@@ -27,9 +27,13 @@ export function constructNameProblem(name: string): string | undefined {
   return `invalid name "${name}": use lowercase kebab-case matching ${CONSTRUCT_NAME.source}${hint}`;
 }
 
-/** npm's rules for an unscoped package name (lowercase, URL-safe, no leading `.`/`_`). */
+/** npm's rules for a package name, unscoped or `@scope/name` (lowercase, URL-safe, no leading `.`/`_`). */
 export function isValidPackageName(name: string): boolean {
-  return name.length > 0 && name.length <= 214 && /^[a-z0-9][a-z0-9._~-]*$/.test(name);
+  return (
+    name.length > 0 &&
+    name.length <= 214 &&
+    /^(@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/.test(name)
+  );
 }
 
 /** A valid npm name derived from a directory name, or `undefined` if nothing usable remains. */

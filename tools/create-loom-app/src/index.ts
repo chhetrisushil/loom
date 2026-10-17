@@ -16,7 +16,7 @@ const USAGE = `usage: create-loom-app <directory> [--loom-path <loom checkout>] 
   --loom-path    your built loom checkout. @loom/* is not published, so an app created
                  OUTSIDE the loom pnpm workspace links to it (link: + pnpm overrides).
                  Not needed inside the workspace (apps/<name> gets workspace:*).
-  --name         npm package name (default: the folder name, which must be a valid one)
+  --name         npm package name, may be scoped (default: the folder name, which must be a valid one)
   --force        scaffold into a non-empty folder: overwrites only the files this generates,
                  never deletes anything`;
 
@@ -281,13 +281,14 @@ export function run(argv: string[], cwd: string): number {
   try {
     const root = realResolve(path.resolve(cwd, target));
 
-    // The package name: a valid npm name, or refuse with the name we would have used.
-    const dirName = path.basename(root);
+    // The package name: a valid npm name, or refuse with the name we would have used. Taken from
+    // the folder as TYPED, not its realpath — a symlinked target is named after the link.
+    const dirName = path.basename(path.resolve(cwd, target));
     const pkgName = args.name ?? dirName;
     if (!isValidPackageName(pkgName)) {
       const hint = packageNameFrom(args.name ?? dirName);
       throw new Refusal(
-        `"${pkgName}" is not a valid npm package name (lowercase letters, digits, - . _ ~; no spaces).${
+        `"${pkgName}" is not a valid npm package name (lowercase letters, digits, - . _ ~, optionally @scope/; no spaces).${
           hint
             ? ` Try \`--name ${hint}\` or a folder called ${hint}.`
             : " Pass a valid one with --name."

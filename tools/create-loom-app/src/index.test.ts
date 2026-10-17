@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -283,6 +284,26 @@ describe("create-loom-app day-one wiring", () => {
     expect(ok.out).toContain("cd 'Bad Name!' &&");
     const pkg = JSON.parse(readFileSync(join(cwd, "Bad Name!/package.json"), "utf8"));
     expect(pkg.name).toBe("bad-name");
+  });
+
+  it("accepts a scoped --name, and names a symlinked target after the link, not its realpath", () => {
+    const base = scratch();
+    const loom = fakeLoom(join(base, "loom"));
+    const cwd = join(base, "work");
+    mkdirSync(join(base, "real-dir-name"), { recursive: true });
+    mkdirSync(cwd);
+    const scoped = cli(["scoped", "--loom-path", loom, "--name", "@acme/scoped-app"], cwd);
+    expect(scoped.code).toBe(0);
+    expect(JSON.parse(readFileSync(join(cwd, "scoped/package.json"), "utf8")).name).toBe(
+      "@acme/scoped-app"
+    );
+
+    symlinkSync(join(base, "real-dir-name"), join(cwd, "linked-app"));
+    const linked = cli(["linked-app", "--loom-path", loom], cwd);
+    expect(linked.code).toBe(0);
+    expect(JSON.parse(readFileSync(join(base, "real-dir-name/package.json"), "utf8")).name).toBe(
+      "linked-app"
+    );
   });
 
   it("refuses to link from inside someone else's pnpm workspace (overrides would be ignored)", () => {
