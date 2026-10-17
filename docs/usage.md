@@ -312,7 +312,7 @@ import { PlannerRuntime } from "@loom/planner";
 const intent = new IntentRuntime({ catalog, provider });   // provider optional — omit for offline keyword routing
 const planner = new PlannerRuntime({ catalog, provider });
 
-// Route a natural-language goal to the primary capability (null if nothing matches).
+// Route a natural-language goal to the primary capability (null if nothing matches; with a model configured its NONE is final, no keyword guess).
 const route = await intent.route(goal);
 
 // Compose an ordered, multi-step capability plan from the goal.

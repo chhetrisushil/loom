@@ -18,9 +18,9 @@ import { makeCatalog } from "./catalog";
 //
 // The same model (a cassette) is asked twice, by the two REAL runtimes:
 //   1. `IntentRuntime.route(intent)` with the model as its provider → which capability handles the intent. The
-//      router falls back to its offline keyword matcher whenever the model's answer names no capability, which would
-//      score a model failure as if the model had routed: the route is therefore only counted when `rationale` says
-//      "model routed" (or the model said NONE and the keyword matcher found nothing either).
+//      router's answer is final with a model configured (NONE or an unusable reply routes nowhere; the offline
+//      keyword matcher runs only with no model), so `routedBy` is "model" or "none" here; "keyword" stays in the
+//      type so a regression to a keyword fallback is visible rather than scored as a model route.
 //   2. `PlannerRuntime.planGraph(ctx, …)` inside a real `WorkflowRuntime`, with the model behind the ring as a
 //      registered `createAgentModelEffect` (`effectPlanModel`), journaled through `ctx.decide`. There is no silent
 //      fallback here: an unusable plan is a typed `PlanFailedError`, reported as `refused:<reason>`.

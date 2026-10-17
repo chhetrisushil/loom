@@ -30,8 +30,8 @@ prompt change MISSES (the signal); regenerate with `pnpm eval:author` and review
 ## Metrics
 
 - **routeAccuracy** - cases where `IntentRuntime.route` returned the expected capability AND `rationale` is
-  "model routed" (an answer the router could not use falls back to a keyword match, which must not read as the model
-  routing), or the expected "no route" came out as none.
+  "model routed", or the expected "no route" came out as none. (With a model configured the router has no keyword
+  fallback, so a reply it cannot use is a miss, never a silent keyword pick.)
 - **graphCorrectness** - cases whose planned graph is exactly the expected one: node ids, capability ids, `args`
   (including `{"$from": ...}` bindings; key order irrelevant), `dependsOn` (order irrelevant), node order. The free-text
   `rationale` is not part of the graph. A planner that gives up is `refused:<reason>` and is compared the same way.
@@ -45,13 +45,15 @@ prompt change MISSES (the signal); regenerate with `pnpm eval:author` and review
    executor runs them in one wave).
 3. A request nothing in the catalogue can serve expects `route: null` and a typed refusal, never an invented step.
 
-## Measured gap, recorded not hidden
+## Measured gap, recorded not hidden (FIXED 2026-10-17)
 
-`no-capability` ("Find me a good Italian restaurant for dinner tonight."): the router model answers `NONE` and
-`IntentRuntime.route` then FALLS BACK to its offline keyword matcher on any unusable answer, an explicit `NONE`
-included. The matcher routes the request to `diagnose-cpu` on shared words. The label (`route: null`) is what the intent
-implies; the measured routeAccuracy is therefore 11/12, a pinned test asserts today's behaviour, and the floor is set one
-case lower (`thresholds.ts`). If the fallback is fixed the pinned test fails: update it and raise the floor.
+`no-capability` ("Find me a good Italian restaurant for dinner tonight."): the router model answers `NONE`, and
+`IntentRuntime.route` used to FALL BACK to its offline keyword matcher on any unusable answer, an explicit `NONE`
+included. The matcher routed the request to `diagnose-cpu` on shared words. The label (`route: null`) is what the
+intent implies; the first measurement was therefore routeAccuracy 11/12, with a pinned test asserting that behaviour and
+the floor one case lower. **Fixed, 2026-10-17:** a configured model's `NONE` is final and an unparseable or ambiguous
+reply routes nowhere; the keyword matcher runs only with no model. The measured routeAccuracy is now 12/12, the pinned
+test asserts the NONE is honoured, and the floor is raised to 11/12 (`thresholds.ts`). No label changed.
 
 ## Label edits after measurement
 

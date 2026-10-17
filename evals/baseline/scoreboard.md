@@ -10,7 +10,7 @@
 | `appgen/model/coverage` | 0.9000 | yes |
 | `appgen/model/validity` | 1.0000 | yes |
 | `planner/cassette/graphCorrectness` | 1.0000 | yes |
-| `planner/cassette/routeAccuracy` | 0.9167 | yes |
+| `planner/cassette/routeAccuracy` | 1.0000 | yes |
 | `retrieval/memory/knowledge/ndcg@10` | 0.7209 | yes |
 | `retrieval/memory/knowledge/recall@5` | 0.8030 | yes |
 | `retrieval/memory/memory/ndcg@10` | 0.7209 | yes |

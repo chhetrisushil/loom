@@ -85,15 +85,15 @@ describe("planner eval (@loom/intent + @loom/planner, hand-authored cassettes)",
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  // MEASURED GAP, pinned as today's behaviour. The router model answered NONE ("nothing fits") and
-  // `IntentRuntime.route` falls back to its offline keyword matcher on ANY unusable answer, including an explicit
-  // NONE, so an off-topic request is routed to a capability that merely shares a word with it. If the fallback is
-  // fixed this test fails: update it, move the case to `routedBy: "none"`, and raise routeAccuracy's floor.
-  it("known gap: a model NONE is overridden by the keyword fallback (routeAccuracy is 11/12 because of it)", () => {
+  // FIXED 2026-10-17: a model's NONE is final. The router model answered NONE ("nothing fits") for the
+  // off-topic `no-capability` request; `IntentRuntime.route` used to override that with its offline keyword
+  // matcher (routing it to `diagnose-cpu` on shared words). The keyword matcher now runs only with no model configured.
+  it("a model NONE is honoured: no keyword override, routeAccuracy is 12/12", () => {
     const o = real.outcomes.get("no-capability");
-    expect(o?.route).toBe("diagnose-cpu");
-    expect(o?.routedBy).toBe("keyword");
-    expect(real.scores.routeAccuracy).toBeCloseTo(11 / 12, 10);
+    expect(o?.route).toBeNull();
+    expect(o?.routedBy).toBe("none");
+    expect(o?.routerReply?.trim()).toBe("NONE");
+    expect(real.scores.routeAccuracy).toBe(1);
     for (const c of PLANNER_CASES.filter((x) => x.id !== "no-capability")) {
       expect(real.outcomes.get(c.id)?.routedBy, c.id).toBe("model");
     }
@@ -195,11 +195,11 @@ describe("planner eval (@loom/intent + @loom/planner, hand-authored cassettes)",
       );
       const a = await runPlannerSuite({ cassette: swap(c.id, wrongRoute) });
       expect(a.outcomes.get(c.id)?.route).toBe("diagnose-locks");
-      expect(a.scores.routeAccuracy).toBeCloseTo(10 / 12, 10);
+      expect(a.scores.routeAccuracy).toBeCloseTo(11 / 12, 10);
       expect(gate(a)).toEqual(["routeAccuracy"]);
 
-      // The router replies with prose: IntentRuntime silently falls back to keywords, which here happens to pick the
-      // RIGHT capability. It must still not count (routedBy is "keyword"), or a broken router would read as healthy.
+      // The router replies with prose naming no capability: IntentRuntime routes nowhere (it no longer guesses by
+      // keywords, which here would have picked the RIGHT capability), so the case is a miss, not a silent pass.
       const prose = await authorPlannerCassette(c, (_t, req) =>
         isRouting(req.system)
           ? { content: "Hmm, hard to say.", stopReason: "end_turn" }
@@ -211,9 +211,9 @@ describe("planner eval (@loom/intent + @loom/planner, hand-authored cassettes)",
             }
       );
       const b = await runPlannerSuite({ cassette: swap(c.id, prose) });
-      expect(b.outcomes.get(c.id)?.route).toBe("diagnose-cpu");
-      expect(b.outcomes.get(c.id)?.routedBy).toBe("keyword");
-      expect(b.scores.routeAccuracy).toBeCloseTo(10 / 12, 10);
+      expect(b.outcomes.get(c.id)?.route).toBeNull();
+      expect(b.outcomes.get(c.id)?.routedBy).toBe("none");
+      expect(b.scores.routeAccuracy).toBeCloseTo(11 / 12, 10);
       expect(gate(b)).toEqual(["routeAccuracy"]);
       expect(gate(real)).toEqual([]);
     });
@@ -250,7 +250,7 @@ describe("planner eval (@loom/intent + @loom/planner, hand-authored cassettes)",
       expect(PLANNER_THRESHOLDS.graphCorrectness as number).toBeLessThanOrEqual(
         real.scores.graphCorrectness as number
       );
-      expect(PLANNER_THRESHOLDS.routeAccuracy as number).toBeGreaterThan((n - 2) / n);
+      expect(PLANNER_THRESHOLDS.routeAccuracy as number).toBeGreaterThan((n - 1) / n - 1e-9);
       expect(PLANNER_THRESHOLDS.routeAccuracy as number).toBeLessThanOrEqual(
         real.scores.routeAccuracy as number
       );

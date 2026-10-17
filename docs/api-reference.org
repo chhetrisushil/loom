@@ -2482,7 +2482,7 @@ class PlannerRuntime {
 }
 #+end_src
 
-Both work fully offline (deterministic keyword routing), with an ~LlmProvider~, or — preferred (2.0) — with a ~ReasoningRuntime~ (routing/elevation).
+Both work fully offline (deterministic keyword routing), with an ~LlmProvider~, or — preferred (2.0) — with a ~ReasoningRuntime~ (routing/elevation). With a model configured, ~IntentRuntime.route~ trusts it: ~NONE~ (any case, tolerating quotes and punctuation), an ambiguous reply or one naming no capability id returns ~null~, never a keyword guess (~routeExplained()~ says which); the keyword matcher runs only with no model.
 
 *** Planning depth (R16, ADR 0123) — plan DAGs, replanning, goals
 

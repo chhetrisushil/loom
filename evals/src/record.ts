@@ -251,7 +251,7 @@ export function judgePlannerRecording(
   if (expectsRefusal) {
     if (typeof out.graph !== "string") return "expected a refusal but the planner produced a graph";
     // A refusal must be the MODEL's explicit one: a non-empty router reply that names NONE. An empty HTTP 200 (or a
-    // reply that is not NONE) also ends in `refused:*` via the keyword fallback, and is not a recording worth keeping.
+    // reply that is not NONE) ends in `refused:*` too, but is not a recording worth keeping.
     const reply = (out.routerReply ?? "").trim();
     if (reply === "")
       return "no explicit refusal: the router's reply was empty (an HTTP 200 with no candidates?)";
