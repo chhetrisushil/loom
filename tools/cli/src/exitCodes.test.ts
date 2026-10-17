@@ -132,6 +132,17 @@ describe("CLI exit codes + nothing-written refusals", () => {
     expect(await run(["plugin", "bogus"])).toBe(2);
   });
 
+  it("new / gen refusals are exit 2 and write nothing", async () => {
+    const app = join(dir, "app");
+    const before = readdirSync(dir).sort();
+    expect(await run(["new", "flow", "../evil", "--dir", app])).toBe(2);
+    expect(await run(["new", "flow", "Bad Name", "--dir", app])).toBe(2);
+    expect(await run(["new", "widget", "x", "--dir", app])).toBe(2);
+    expect(await run(["new", "flow", "--dir", app])).toBe(2); // missing <name>
+    expect(await run(["gen", "--dir", join(dir, "nonexist")])).toBe(2);
+    expect(readdirSync(dir).sort()).toEqual(before);
+  });
+
   it("an unknown command and missing store flags are exit 2", async () => {
     expect(await run(["logz"])).toBe(2);
     expect(await run(["logs", "done"])).toBe(2);
