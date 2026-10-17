@@ -42,7 +42,10 @@ pnpm eval:record --live --model gemini:<model-id> --task flaky-recover   # one t
 LOOM_EVAL_RECORD_MODEL=gemini:<model-id> pnpm eval:record --live          # every task
 ```
 
-It writes cassettes only. Then review the cassette diff like any other diff, run `pnpm eval`, and, if the scores moved
+It writes cassettes only, and only a clean recording replaces a committed one: a provider error (bad key, 429,
+wrong model id), an empty or short recording, or a task that ends differently than `expected.status` is refused
+with the reason (the key is never printed), the committed cassette is left untouched, and the exit code is 1. A
+provider error also stops the remaining tasks; an outcome mismatch skips only that task. Then review the cassette diff like any other diff, run `pnpm eval`, and, if the scores moved
 on purpose, `pnpm eval:update-baseline` (and revisit `thresholds.ts` with a reason). A live cassette measures the
 loop PLUS that model's behaviour on these prompts; the hand-authored script is no longer the model, so some tasks may
 legitimately fail and need their `expected` reviewed.
@@ -57,6 +60,13 @@ legitimately fail and need their `expected` reviewed.
    budget task).
 3. A run that must FAIL (quota stop, capability denial) is expected as `failed`, with the failure text matched; the
    model must not be asked a second time (`steps` is 1).
+
+## Tasks that pin current behaviour
+
+`step-budget` and `denied-tool` pin what the loop does TODAY, as a tripwire, not as a judgement that it is right:
+a budget stop (`maxIterations`) ends the run as `completed` with the last assistant text (not as a failure), and a
+capability denial fails the run without feeding the denial back to the model. If either behaviour is changed on
+purpose, these tasks and their `expected` change in the same reviewed diff.
 
 ## Label edits after measurement
 

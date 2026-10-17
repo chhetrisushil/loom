@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type CassetteData, CassetteProvider } from "@loom/eval";
 import type { LlmProvider, LlmRequest } from "@loom/llm";
@@ -23,7 +23,14 @@ export function loadCassette(id: string): CassetteData {
 
 export function writeCassette(id: string, data: CassetteData): void {
   mkdirSync(CASSETTE_DIR, { recursive: true });
-  writeFileSync(cassettePath(id), serializeCassette(data));
+  // Temp file in the same directory, then an atomic rename: a crash mid-write never leaves a half cassette.
+  const tmp = join(CASSETTE_DIR, `.${id}.json.${process.pid}.tmp`);
+  try {
+    writeFileSync(tmp, serializeCassette(data));
+    renameSync(tmp, cassettePath(id));
+  } finally {
+    rmSync(tmp, { force: true });
+  }
 }
 
 /** The turn a request is at: how many assistant messages the transcript already holds. */

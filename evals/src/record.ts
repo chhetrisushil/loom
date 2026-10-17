@@ -1,8 +1,8 @@
 import { CassetteProvider } from "@loom/eval";
 import type { LlmProvider } from "@loom/llm";
 import { cassettePath, writeCassette } from "./agentLoop/cassettes";
-import { runTask } from "./agentLoop/subject";
-import { TASKS } from "./agentLoop/tasks";
+import { type TaskOutput, runTask } from "./agentLoop/subject";
+import { TASKS, type Task } from "./agentLoop/tasks";
 
 // ── `pnpm eval:record`: LIVE cassette recording, on demand only (ADR 0131 D4.3) ───────────────────────────
 //
@@ -15,6 +15,15 @@ import { TASKS } from "./agentLoop/tasks";
 //     The key is checked for PRESENCE only and is never printed.
 // The provider is loom's `GeminiProvider` from `@loom/llm` (the same adapter behind the CLI's `--model gemini:<m>`),
 // loaded lazily, so importing this module (or running any eval) never constructs a provider or touches the network.
+//
+// A recording is kept ONLY when the task ran clean (`judgeRecording`): no provider/transport error surfaced (a bad
+// key, a 429, a wrong model id: the loop's model effect swallows those into a `failed` run, so the recording
+// provider is wrapped to see them), the task ended as `tasks.ts` expects (`status`; quota-stop and denied-tool
+// legitimately end `failed`), and the exchange count is > 0 and >= the model calls the run made. A cassette is
+// written to a temp file in its directory and atomically renamed, so a failed task leaves the committed one
+// untouched. RULE across tasks: a PROVIDER error aborts the run (it is systemic: the same key/quota/model fails
+// every later task, so stop spending); an outcome or empty-recording failure skips only that task and goes on.
+// Any failure makes the exit code 1. Messages never contain the key (redacted).
 //
 // It writes cassettes only (one file per task, `--task <id>` to re-record selectively, repeatable). It never edits
 // thresholds or the baseline: review the cassette diff, run `pnpm eval`, then `pnpm eval:update-baseline`.
@@ -49,8 +58,9 @@ type Env = Readonly<Record<string, string | undefined>>;
 
 /** Why a record run must not proceed, or `undefined`. Pure: reads nothing but its arguments. */
 export function recordRefusal(args: RecordArgs, env: Env): string | undefined {
-  if (env.CI === "true" || env.CI === "1") {
-    return "refusing to record under CI=true: live recording is manual only (ADR 0131 D4.3)";
+  const ci = env.CI;
+  if (ci !== undefined && ci !== "" && !["false", "0"].includes(ci.toLowerCase())) {
+    return `refusing to record under CI (CI=${ci}): live recording is manual only (ADR 0131 D4.3)`;
   }
   const known = new Set(TASKS.map((t) => t.id));
   for (const t of args.tasks) {
@@ -88,6 +98,40 @@ const defaultDeps: RecordDeps = {
   log: (l) => console.log(l),
 };
 
+/** Why a finished recording must NOT replace the committed cassette, or `undefined` when it is clean. Pure. */
+export function judgeRecording(
+  task: Pick<Task, "expected">,
+  out: Pick<TaskOutput, "status" | "steps" | "error">,
+  exchanges: number,
+  providerErrors: readonly string[]
+): string | undefined {
+  if (providerErrors.length > 0) return `provider error: ${providerErrors[0]}`;
+  if (exchanges === 0) return "empty recording (0 exchanges)";
+  if (exchanges < out.steps) {
+    return `incomplete recording (${exchanges} exchange(s) for ${out.steps} model call(s))`;
+  }
+  if (out.status !== task.expected.status) {
+    return `task ended ${out.status}, expected ${task.expected.status}${out.error ? ` (${out.error})` : ""}`;
+  }
+  return undefined;
+}
+
+/** Wrap the live provider: remember (redacted) every error it throws, and rethrow it unchanged. */
+function watching(inner: LlmProvider, redact: (s: string) => string) {
+  const errors: string[] = [];
+  const provider: LlmProvider = {
+    async complete(req) {
+      try {
+        return await inner.complete(req);
+      } catch (e) {
+        errors.push(redact(String((e as Error)?.message ?? e)).slice(0, 300));
+        throw e;
+      }
+    },
+  };
+  return { provider, errors };
+}
+
 /** Returns the process exit code. */
 export async function runRecord(
   argv: readonly string[],
@@ -118,14 +162,34 @@ export async function runRecord(
   const model = (args.model ?? env[MODEL_ENV]) as string;
   const modelId = model.slice("gemini:".length);
   const live = await deps.makeProvider(modelId);
+  const secrets = KEY_ENVS.map((k) => env[k] ?? "").filter((v) => v !== "");
+  const redact = (m: string) => secrets.reduce((acc, k) => acc.split(k).join("[redacted]"), m);
+  const failures: string[] = [];
   for (const t of selected) {
+    const { provider, errors } = watching(live, redact);
     // A fresh, empty cassette per task: the exchange is whatever the live model actually said.
-    const rec = new CassetteProvider({ mode: "record", inner: live, data: {} });
+    const rec = new CassetteProvider({ mode: "record", inner: provider, data: {} });
     deps.log(`recording ${t.id} with gemini:${modelId} ...`);
-    await runTask(t, rec);
+    const out = await runTask(t, rec);
     const data = rec.toJSON();
+    const why = judgeRecording(t, out, Object.keys(data).length, errors);
+    if (why !== undefined) {
+      deps.log(`  ${t.id}: NOT WRITTEN, committed cassette left untouched: ${why}`);
+      failures.push(t.id);
+      if (errors.length > 0) {
+        deps.log("  provider error: aborting the remaining tasks (it would fail the same way).");
+        break;
+      }
+      continue;
+    }
     deps.write(t.id, data);
     deps.log(`  ${t.id}: ${Object.keys(data).length} exchange(s) written`);
+  }
+  if (failures.length > 0) {
+    deps.log(
+      `eval:record: FAILED for ${failures.join(", ")}; every other cassette is as written above.`
+    );
+    return 1;
   }
   deps.log(
     "Done. Review the cassette diff, run `pnpm eval`, then `pnpm eval:update-baseline` if the scores moved on purpose."

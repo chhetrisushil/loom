@@ -1,6 +1,6 @@
 import { readdirSync } from "node:fs";
 import { CassetteMissError, CassetteProvider, reportDigest } from "@loom/eval";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { exceedingMetrics, failingMetrics, toRows } from "../gate";
 import { buildScoreboard, serializeScoreboard } from "../scoreboard";
 import { CASSETTE_DIR, authorCassette, loadCassette, serializeCassette } from "./cassettes";
@@ -37,7 +37,7 @@ describe("agentLoop$ task eval (ADR 0121, hand-authored cassettes)", () => {
     vi.stubGlobal("fetch", fetchSpy);
     real = await runAgentLoopSuite();
   });
-  afterEach(() => undefined);
+  afterAll(() => vi.unstubAllGlobals());
 
   it("sweep: at least 12 tasks, a cassette for each and none orphaned, every behaviour class present", () => {
     expect(TASKS.length).toBeGreaterThanOrEqual(12);
@@ -151,7 +151,16 @@ describe("agentLoop$ task eval (ADR 0121, hand-authored cassettes)", () => {
 
     it("(d3) a step budget that is too low cuts the multi-turn tasks off, naming successRate", async () => {
       const run = await runAgentLoopSuite({ degrade: { maxIterations: 2 } });
-      expect(failed(run).length).toBeGreaterThanOrEqual(5);
+      // exactly the tasks whose script needs a third model call (plus the budget task, pinned at exactly 3)
+      expect(failed(run).sort()).toEqual([
+        "flaky-recover",
+        "refund-approved",
+        "refund-declined",
+        "search-first",
+        "search-then-parallel",
+        "sequential-dependent",
+        "step-budget",
+      ]);
       expect(gate(run).floors).toEqual(["successRate"]);
       // the budget task itself asked for 3 and is now cut to 2
       expect(run.outputs.get("step-budget")?.steps).toBe(2);
@@ -169,9 +178,44 @@ describe("agentLoop$ task eval (ADR 0121, hand-authored cassettes)", () => {
       const noisy = await authorCassette(task("single-lookup"), chatty);
       const run = await runAgentLoopSuite({ cassette: swap("single-lookup", noisy) });
       expect(gate(run).ceilings.sort()).toEqual(["meanSteps", "meanToolCalls"]);
-      // and ONE extra call is enough: the ceilings are one call above the measured means
-      expect(32 / 13).toBeGreaterThan(AGENT_LOOP_CEILINGS.meanSteps as number);
-      expect(24 / 13).toBeGreaterThan(AGENT_LOOP_CEILINGS.meanToolCalls as number);
+    });
+
+    it("(d4b) EXACTLY one extra model call and one extra tool call trips both ceilings", async () => {
+      const total = (r: SuiteRun, k: "steps" | "toolCalls") =>
+        [...r.outputs.values()].reduce((n, o) => n + o[k], 0);
+      // single-lookup's own script is lookup then answer (2 model calls, 1 tool call): ask for the lookup twice.
+      const lookup = (id: string) => ({
+        content: "looking the order up",
+        toolCalls: [{ id, name: "lookup_order", input: { order: 1042 } }],
+        stopReason: "tool_use" as const,
+      });
+      const plusOne: Script = (turn) =>
+        turn < 2
+          ? lookup(`c${turn}`)
+          : { content: "Order 1042 (a desk lamp, $49) is delivered.", stopReason: "end_turn" };
+      const run = await runAgentLoopSuite({
+        cassette: swap("single-lookup", await authorCassette(task("single-lookup"), plusOne)),
+      });
+      expect(total(run, "steps")).toBe(total(real, "steps") + 1);
+      expect(total(run, "toolCalls")).toBe(total(real, "toolCalls") + 1);
+      expect(gate(run).ceilings.sort()).toEqual(["meanSteps", "meanToolCalls"]);
+      // and the real run, with zero extra calls, is inside both (the trip is the one call, nothing else)
+      expect(gate(real).ceilings).toEqual([]);
+    });
+
+    it("the ceilings sit between the measured mean and the mean plus one call, derived from the real run", () => {
+      const n = real.outputs.size;
+      for (const [metric, key] of [
+        ["meanSteps", "steps"],
+        ["meanToolCalls", "toolCalls"],
+      ] as const) {
+        const sum = [...real.outputs.values()].reduce((a, o) => a + o[key], 0);
+        const ceiling = AGENT_LOOP_CEILINGS[metric] as number;
+        expect(ceiling, metric).toBeGreaterThanOrEqual(sum / n);
+        expect(ceiling, metric).toBeLessThan((sum + 1) / n);
+      }
+      expect(AGENT_LOOP_THRESHOLDS.successRate as number).toBeGreaterThan((n - 1) / n);
+      expect(AGENT_LOOP_THRESHOLDS.successRate as number).toBeLessThanOrEqual(1);
     });
   });
 });
