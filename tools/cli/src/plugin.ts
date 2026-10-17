@@ -96,9 +96,12 @@ const isIdChar = (c: string): boolean => /[\w$]/.test(c) || c > "\u007f";
  * A small LINEAR tokenizer, not a parser: identifiers, strings (text kept), single punctuation
  * characters. Comments, regex literals and template text are dropped, but a template's `${ … }`
  * body is scanned as code (so a call inside it still counts) and a regex containing a quote or a
- * backtick cannot open a phantom string.
+ * backtick cannot open a phantom string. With `jsx` (a `.tsx` / `.jsx` file) the heuristic also
+ * knows that `/>` and `</` are tag punctuation, not a regex start, and that an apostrophe inside
+ * a word (`it's`), an unterminated quote, or a backtick straight after `>` is JSX text, not the
+ * opening of a string or template that would swallow the rest of the line (or file).
  */
-function tokenize(src: string): Tok[] {
+function tokenize(src: string, jsx = false): Tok[] {
   const toks: Tok[] = [];
   const n = src.length;
   let i = 0;
@@ -141,8 +144,13 @@ function tokenize(src: string): Tok[] {
     } else if (c === "/" && nx === "*") {
       const end = src.indexOf("*/", i + 2);
       i = end === -1 ? n : end + 2;
+    } else if (jsx && (c === '"' || c === "'") && i > 0 && isIdChar(src[i - 1] as string)) {
+      i++; // `it's` in JSX text: an apostrophe, never a string opener (valid code has no `a'b'`)
+    } else if (jsx && c === "`" && src[i - 1] === ">") {
+      i++; // a backtick opening JSX text
     } else if (c === '"' || c === "'") {
       let v = "";
+      const open = i;
       i++;
       while (i < n && src[i] !== c) {
         const ch = src[i] as string;
@@ -155,12 +163,20 @@ function tokenize(src: string): Tok[] {
         v += ch;
         i++;
       }
+      if (jsx && !(i < n && src[i] === c)) {
+        i = open + 1; // unterminated on its line: JSX text, so resume right after the quote
+        continue;
+      }
       if (i < n && src[i] === c) i++;
       toks.push({ k: "str", v });
     } else if (c === "`") {
       i++;
       templateText();
-    } else if (c === "/" && regexAllowed()) {
+    } else if (
+      c === "/" &&
+      regexAllowed() &&
+      !(jsx && (nx === ">" || toks[toks.length - 1]?.v === "<"))
+    ) {
       let j = i + 1;
       let inClass = false;
       while (j < n && src[j] !== "\n") {
@@ -200,6 +216,9 @@ function tokenize(src: string): Tok[] {
   return toks;
 }
 
+/** The most tokens a destructuring pattern is walked back over to find its `{`. */
+const WALK_CAP = 1000;
+
 const isKit = (spec: string): boolean =>
   spec === "@loom/conformance" || spec.startsWith("@loom/conformance/");
 const RUN_CONFORMANCE = /^run\w*Conformance$/;
@@ -229,12 +248,25 @@ function kitBindings(toks: Tok[]): { callable: Set<string>; ns: Set<string>; inl
     }
     if (isP(m, "}")) {
       // `{ a, b: c }` — walk back to the matching `{`, binding the local name of each element.
+      // Bounded: stop at a statement boundary (`;` or a declaration keyword, which a pattern
+      // cannot contain) or after WALK_CAP tokens, so a run of unmatched `}` cannot make this
+      // quadratic. A pattern longer than the cap is not recognised (a false negative).
       let d = 0;
       const end = m;
-      for (; m >= 0; m--) {
-        if (isP(m, "}")) d++;
-        else if (isP(m, "{") && --d === 0) break;
+      const stop = Math.max(-1, m - WALK_CAP);
+      for (; m > stop; m--) {
+        const w = at(m) as Tok;
+        if (w.k === "p" && w.v === "}") d++;
+        else if (w.k === "p" && w.v === "{" && --d === 0) break;
+        else if (w.k === "p" && w.v === ";") {
+          m = -1;
+          break;
+        } else if (w.k === "id" && (w.v === "const" || w.v === "let" || w.v === "var")) {
+          m = -1;
+          break;
+        }
       }
+      if (m <= stop || !isP(m, "{")) return;
       const els: Tok[][] = [[]];
       for (let q = m + 1; q < end; q++) {
         const e = at(q) as Tok;
@@ -329,8 +361,8 @@ function kitBindings(toks: Tok[]): { callable: Set<string>; ns: Set<string>; inl
  * `ns.run*Conformance(`. Comments, string contents and regex literals are not code; a template's
  * `${ … }` is. An unrelated `obj.runFooConformance()` or a local `function runX()` does not count.
  */
-export function wiresConformance(source: string): boolean {
-  const toks = tokenize(source);
+export function wiresConformance(source: string, opts: { jsx?: boolean } = {}): boolean {
+  const toks = tokenize(source, opts.jsx === true);
   const { callable, ns, inline } = kitBindings(toks);
   if (inline) return true;
   if (callable.size === 0 && ns.size === 0) return false;
@@ -362,13 +394,19 @@ export function wiresConformance(source: string): boolean {
   return false;
 }
 
+/** A test file's text; `jsx` marks a `.tsx` / `.jsx` file (see {@link wiresConformance}). */
+export interface TestSource {
+  source: string;
+  jsx?: boolean;
+}
+
 /**
  * Static contract check for a plugin (ADR 0043 / docs/plugins.md). Pure over the
  * manifest + the text of its test files, so it is unit-testable without disk.
  */
 export function checkPlugin(
   pkg: PluginManifest,
-  testSources: string[],
+  testSources: readonly (string | TestSource)[],
   opts: { publish?: boolean } = {}
 ): PluginFinding[] {
   const findings: PluginFinding[] = [];
@@ -427,7 +465,13 @@ export function checkPlugin(
   // Conformance wiring — is any SPI impl proven with the published kit?
   // A real import AND a real `run*Conformance(` call: a comment or string that merely
   // mentions either (the scaffold ships the call commented out) proves nothing.
-  if (testSources.some(wiresConformance)) {
+  if (
+    testSources.some((t) =>
+      typeof t === "string"
+        ? wiresConformance(t)
+        : wiresConformance(t.source, { jsx: t.jsx === true })
+    )
+  ) {
     findings.push({ level: "ok", message: "a test wires @loom/conformance" });
   } else {
     findings.push({
@@ -506,15 +550,16 @@ export function checkPlugin(
   return findings;
 }
 
-function readTestSources(dir: string): string[] {
+function readTestSources(dir: string): TestSource[] {
   const srcDir = path.join(dir, "src");
   if (!fs.existsSync(srcDir)) return [];
-  const out: string[] = [];
+  const out: TestSource[] = [];
   const walk = (d: string): void => {
     for (const e of fs.readdirSync(d, { withFileTypes: true })) {
       const p = path.join(d, e.name);
       if (e.isDirectory()) walk(p);
-      else if (e.name.endsWith(".test.ts")) out.push(fs.readFileSync(p, "utf8"));
+      else if (/\.test\.[cm]?[jt]sx?$/.test(e.name))
+        out.push({ source: fs.readFileSync(p, "utf8"), jsx: /x$/.test(e.name) });
     }
   };
   walk(srcDir);

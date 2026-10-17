@@ -54,6 +54,7 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 | `loom eval` | replay golden logs against expectations |
 | `loom deploy check` | simulate a deploy against new flow definitions |
 | `loom compat` | validate ABI / event-schema versions |
+| `loom migrate-config [file] [--apply]` | rewrites flat `defineConfig` options into their groups (dry-run diff first; refuses a spread; never runs the config) |
 | `loom kernel-manifest` | kernel version + maturity manifest |
 
 ### Reading doctor's four marks

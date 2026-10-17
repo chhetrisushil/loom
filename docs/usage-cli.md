@@ -60,6 +60,10 @@ validate
   loom lint claim-check [--dir .] [--json]        CC-5: flag claim-check reach-through inside flows
   loom verify --config <module> [--manifest <path>] [--json]  pre-flight runtime verification (@loom/verify)
                                                   (auto-reads loom-manifest.json loopIdentity findings, ADR 0061)
+  loom migrate-config [<file>...] [--config <file>] [--apply] [--json]  rewrite flat defineConfig options into their groups
+                                                  (dry run prints a diff; --apply writes; refuses a
+                                                   spread / computed key / non-literal config; never
+                                                   runs the config; default ./loom.config.{js,ts})
   loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
   loom compat --abi <v> --event-schema <v> [...] [--json]  validate a deployment's contract versions
   loom eval  --dir <path> [--json]                replay golden logs vs expectations
@@ -190,7 +194,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 ### Machine output: `--json`
 
-`--json` is accepted by the commands that report a result: `resume`, `cancel`, `start`, `ls`, `logs`, `debug`, `census`, `doctor`, `check`, `verify`, `eval`, `lint claim-check`, `compat`, `profile`, `introspect` and `kernel-manifest`. Any other command rejects it as an unknown flag (exit `2`) rather than ignoring it.
+`--json` is accepted by the commands that report a result: `resume`, `cancel`, `start`, `ls`, `logs`, `debug`, `census`, `doctor`, `check`, `verify`, `eval`, `lint claim-check`, `compat`, `profile`, `introspect`, `migrate-config` and `kernel-manifest`. Any other command rejects it as an unknown flag (exit `2`) rather than ignoring it.
 
 - **stdout is exactly the JSON** — one document (pretty-printed), or **ndjson** for `logs` (one event envelope per line). Banners, progress lines, `console.*` calls and direct `process.stdout.write` calls from an imported config are all diverted to stderr for the run.
 - Verdict commands put `ok` first-class: `{ "ok": boolean, … }`. The **exit code is unchanged** (`0` / `1` / `2`), so `loom doctor --json | jq .ok` and `loom doctor` agree. `ok` is meaningful where the command has a verdict; for `debug`, `profile`, `introspect` and `census` it is always `true` — a failure there (unknown execution, unreadable store) throws, so it exits non-zero with the stderr error document instead of emitting `ok:false`.
@@ -211,6 +215,7 @@ There are no global flags — each command declares its own. The recurring ones 
 | `compat` | the compatibility report (`ok`, `issues`) |
 | `profile` | `{ ok, profile }` |
 | `introspect` | `{ ok, introspection }` (`--graph` keeps only that key) |
+| `migrate-config` | `{ apply, files: [{ path, changed, moved: [{ key, group }], conflicts, refusal, diff }], refused }` (exit `2` when `refused`) |
 | `kernel-manifest` | the kernel manifest itself (unchanged) |
 
 **Flags are checked strictly.** Each command declares the flags it takes, and what kind each is:
@@ -542,6 +547,22 @@ its reach declaration, e.g. `checks: { verify: { reach: { planner } } }`. A hand
 is reported unresolved, naming the key to add (ADR 0086, L32).
 
 > If the config's own `defineConfig` sets `checks: { verify: "error" }`, requiring the module throws at boot; the CLI catches that and prints it. This command exists for on-demand verification **independent** of the config's own mode.
+
+### `loom migrate-config [<file>...] [--config <file>] [--apply] [--json]`
+
+`defineConfig` options were grouped into `security`, `observability`, `durability`, `execution` and `checks`; the old flat spellings (`strict: true`, `telemetry`, `now`, ...) now **throw** at boot. This codemod rewrites them for you. The old-to-new table is `GROUPED_OPTIONS` in `@loom/app`, the same one the error message is built from.
+
+- It **reads** the config as text and never imports or runs it, so it is safe on any file. With no argument it uses `./loom.config.js` or `./loom.config.ts`; otherwise name the file(s) (positional or `--config`).
+- **Dry run by default**: it prints a unified diff and exits `0`, like every other verb with `--apply`. `--apply` writes the files. Run it again and it reports `nothing to migrate`.
+- Each flat entry moves **verbatim**, with its leading comments, into its group: merged into an existing `security: { ... }` literal, or a new group object placed where the first moved entry was. Everything else in the file is byte-identical.
+- It **refuses (exit `2`) and writes nothing** for that file when it cannot be sure: a spread (`...base`, which may carry flat keys), a computed key, `defineConfig(cfg)` with a non-literal argument, a group that is not an object literal (`security: shared`), or entries sharing a line (run your formatter). The message says what to change by hand.
+- A key set **both** flat and inside its group is a **conflict**: reported, exit `2`, nothing written. Keep the one you want and re-run.
+- `--json` emits `{ apply, files: [{ path, changed, moved, conflicts, refusal, diff }], refused }`.
+
+```bash
+npx loom migrate-config               # preview ./loom.config.ts
+npx loom migrate-config --apply       # rewrite it
+```
 
 ### `loom lint claim-check [--dir .]`
 
@@ -939,6 +960,9 @@ The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k1
 | `--no-archive` | no | off | with `--orphans --apply`: assert that retention archives nowhere. The command then warns on stderr before erasing anything. |
 | `--snap` / `--archive-snap` | with `--orphans` (`--archive-snap` whenever `--archive-db` is given) | — | the live / archive snapshot stores, where compaction checkpoints live |
 | `--apply` | no | dry run | actually erase |
+
+`.data/content.db` below is wherever YOUR content store lives (the path you gave your
+`SqliteContentStore`); `sqliteStorage()` does not create it, and neither does this command.
 
 ```bash
 npx loom sweep content --db .data/events.db --content .data/content.db          # dry run, 30-day ttl

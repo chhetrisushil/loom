@@ -235,6 +235,59 @@ describe("wiresConformance", () => {
     expect(wiresConformance(noKit)).toBe(false);
     expect(wiresConformance(`${noKit}\n${IMPORT}\nrunEventStoreConformance(x)`)).toBe(true);
   });
+  it("a run of unmatched `}` before require() is linear and still correct", () => {
+    // Each `} = require("@loom/conformance");` used to walk back to the file start looking for
+    // its `{` (quadratic: minutes at this size). The correct answer here is "nothing wired".
+    const crafted = 'const { a } = 1;\n} = require("@loom/conformance");\n'.repeat(30000);
+    expect(wiresConformance(crafted)).toBe(false);
+    // Without `;` boundaries the walk is capped, not unbounded.
+    const noSemis = '} = require("@loom/conformance")\n'.repeat(30000);
+    expect(wiresConformance(noSemis)).toBe(false);
+    // A real destructure after the noise still counts.
+    expect(
+      wiresConformance(`${crafted}\nconst { runA } = require("@loom/conformance");\nrunA(1);`)
+    ).toBe(true);
+  });
+
+  describe("JSX sources (.tsx / .jsx)", () => {
+    const jsx = (s: string) => wiresConformance(`${IMPORT}\n${s}`, { jsx: true });
+    const plain = (s: string) => wiresConformance(`${IMPORT}\n${s}`);
+    it("`/>` after a `}` is a tag end, not a regex start", () => {
+      const src = "const a = <Foo a={b} />; runEventStoreConformance(1/2)";
+      expect(jsx(src)).toBe(true);
+      expect(plain(src)).toBe(false); // the plain heuristic still reads it as a regex
+    });
+    it("`</` is a closing tag, not a regex start", () => {
+      expect(jsx("const a = <b>{x}</b>; runEventStoreConformance(1/2)")).toBe(true);
+    });
+    it("an apostrophe or backtick in JSX text does not open a string", () => {
+      expect(jsx("const a = <div>it's</div>; runEventStoreConformance(x)")).toBe(true);
+      expect(jsx("const a = <div>`quoted</div>; runEventStoreConformance(x)")).toBe(true);
+      expect(jsx('const a = <p>say "hi</p>;\nrunEventStoreConformance(x)')).toBe(true);
+    });
+    it("real strings, comments and templates are still not code in JSX files", () => {
+      expect(jsx("const a = <div>{'runEventStoreConformance(x)'}</div>;")).toBe(false);
+      expect(jsx('const s = "it\'s runEventStoreConformance(x)";')).toBe(false);
+      expect(jsx("const a = <div>ok</div>; // runEventStoreConformance(x)")).toBe(false);
+      expect(jsx("const a = <p>don't</p>; const s = `runEventStoreConformance(x)`;")).toBe(false);
+      expect(jsx("const a = <p>don't</p>; /* runEventStoreConformance(x) */")).toBe(false);
+    });
+    it("never throws and stays linear on a pile of unbalanced quotes", () => {
+      const junk = "<p>it's `x \"y</p>\n".repeat(20000);
+      expect(jsx(junk)).toBe(false);
+    });
+    it("checkPlugin takes a JSX source marked jsx", () => {
+      const src = `${IMPORT}\nconst a = <Foo a={b} />; runEventStoreConformance(1/2)`;
+      const ok = (s: string | { source: string; jsx?: boolean }) =>
+        levels(
+          checkPlugin({ name: "loom-plugin-x", keywords: ["loom-plugin"] }, [s]),
+          "warn"
+        ).join();
+      expect(ok(src)).toMatch(/conformance/);
+      expect(ok({ source: src, jsx: true })).not.toMatch(/conformance/);
+    });
+  });
+
   it("checkPlugin warns when only a comment mentions the kit", () => {
     const findings = checkPlugin({ name: "loom-plugin-x", keywords: ["loom-plugin"] }, [
       `${IMPORT}\n// runEventStoreConformance(() => new X());`,
