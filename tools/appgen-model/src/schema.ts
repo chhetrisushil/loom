@@ -8,7 +8,7 @@
 // node-llama-cpp types; GemmaProvider casts it to the grammar type at call time.
 
 export function changeSpecJsonSchema(): Record<string, unknown> {
-  const op = { enum: ["create", "extend", "modify"] };
+  const op = { enum: ["create", "extend", "modify", "delete"] };
   return {
     type: "object",
     properties: {

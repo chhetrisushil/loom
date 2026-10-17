@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { GEMMA_TIERS, gemmaRoute } from "./gemmaModels";
 import { extractJsonObject, tryParseChangeSpec } from "./parse";
 import { planChangesModel } from "./planChangesModel";
-import { summarizeAppModel } from "./prompt";
+import { buildSystem, summarizeAppModel } from "./prompt";
 import { changeSpecJsonSchema } from "./schema";
 import { validateChangeSpec } from "./validateSpec";
 
@@ -360,5 +360,68 @@ describe("self-repair loop", () => {
       maxRepairs: 1,
     });
     expect(spec.planner).toBe("deterministic");
+  });
+});
+
+describe("model-planned deletes", () => {
+  const DELETE_FLOW = JSON.stringify({
+    name: "planner",
+    capabilities: [
+      { id: "planner", name: "Planner", intent: "remove it", op: "delete", steps: [] },
+    ],
+  });
+  const DELETE_STEP = JSON.stringify({
+    name: "planner",
+    capabilities: [
+      {
+        id: "planner",
+        name: "Planner",
+        intent: "drop run",
+        op: "extend",
+        steps: [{ id: "run", op: "delete" }],
+      },
+    ],
+  });
+  const DELETE_GHOST = JSON.stringify({
+    name: "ghost",
+    capabilities: [{ id: "ghost", name: "Ghost", intent: "x", op: "delete", steps: [] }],
+  });
+
+  it("the grammar schema and the prompt offer delete for flows and steps", () => {
+    expect(JSON.stringify(changeSpecJsonSchema())).toContain('"delete"');
+    expect(buildSystem(EXISTING)).toContain('"delete"');
+  });
+
+  it("parses delete ops for a flow and a step (not coerced to create)", () => {
+    expect(tryParseChangeSpec(DELETE_FLOW)?.capabilities[0]?.op).toBe("delete");
+    expect(tryParseChangeSpec(DELETE_STEP)?.capabilities[0]?.steps).toEqual([
+      { id: "run", op: "delete" },
+    ]);
+  });
+
+  it("plans a model delete end to end (flow and step), validated against the app", async () => {
+    for (const json of [DELETE_FLOW, DELETE_STEP]) {
+      const spec = await planChangesModel("remove it", EXISTING, {
+        routes: [route("gemma-e4b", 0, json)],
+      });
+      expect(spec.planner).toBe("model");
+    }
+  });
+
+  it("rejects delete of a missing flow with a one-line repair message, then repairs", async () => {
+    const issues = validateChangeSpec(tryParseChangeSpec(DELETE_GHOST)!, EXISTING);
+    expect(issues).toEqual(['op "delete" targets flow "ghost", but no such flow exists']);
+    const spec = await planChangesModel("remove ghost", EXISTING, {
+      routes: [sequenceRoute("gemma-e4b", DELETE_GHOST, DELETE_FLOW)],
+    });
+    expect(spec.planner).toBe("model");
+    expect(spec.capabilities[0]?.id).toBe("planner");
+  });
+
+  it("rejects delete of a missing step", () => {
+    const s = tryParseChangeSpec(DELETE_STEP.replace('"run"', '"nope"'))!;
+    expect(validateChangeSpec(s, EXISTING)).toEqual([
+      'step "nope" op "delete" but flow "planner" has no such step',
+    ]);
   });
 });

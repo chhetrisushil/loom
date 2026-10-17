@@ -7,7 +7,7 @@
 | `agentLoop/cassette/successRate` | 1.0000 | yes |
 | `appgen/deterministic/coverage` | 0.4000 | yes |
 | `appgen/deterministic/validity` | 1.0000 | yes |
-| `appgen/model/coverage` | 0.9000 | yes |
+| `appgen/model/coverage` | 1.0000 | yes |
 | `appgen/model/validity` | 1.0000 | yes |
 | `planner/cassette/graphCorrectness` | 1.0000 | yes |
 | `planner/cassette/routeAccuracy` | 1.0000 | yes |

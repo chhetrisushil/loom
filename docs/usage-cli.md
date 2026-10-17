@@ -352,7 +352,7 @@ Re-run `loom gen` whenever you add or remove any construct (`loom new` does it f
 Turns a **natural-language intent** into a change to a Loom app, following the **[folder convention](#scaffold--wire-new-gen-appgen)**. It is **brownfield-aware**: it scans what already exists and applies a *delta* rather than only scaffolding from scratch. Four stages, with **NL understanding isolated to exactly one** and everything else deterministic and offline ([`@loom/appgen`](../tools/appgen)); the generated output is ordinary, statically-wired Loom code with `TODO` handlers you own (P5, P11):
 
 1. **scan** — `scanApp(dir)` summarizes the app (flows, steps, gates, and whether each handler is still a generated stub or hand-edited). Never raw file contents.
-2. **plan** — the intent is parsed into a `ChangeSpec` that tags each capability/step `create | extend | modify | delete`. This is the only stage that reads NL. Deterministic by default; a **model of your choice** can drive it (see `--model`).
+2. **plan** — the intent is parsed into a `ChangeSpec` that tags each capability/step `create | extend | modify | delete`. This is the only stage that reads NL. Deterministic by default; a **model of your choice** can drive it (see `--model`) and can plan all four ops, deletes included (a delete of a flow or step the scan does not see is rejected and the model is asked to repair it).
 3. **apply** — new flows come from the templates; existing flows are edited **surgically** (a new step is inserted, registered, and wired into the runner; approval/UI gates and grants are added) while untouched code is preserved byte-for-byte. A handler body is overwritten **only if it still hashes to the generated stub** — anything you have edited is insert-only.
 4. **validate** — with `--check`, the app is typechecked in-process (`tsc`) after applying.
 
@@ -367,7 +367,7 @@ Turns a **natural-language intent** into a change to a Loom app, following the *
 | `--from-spec <file>` | replay a `.loom/appgen/<ts>.spec.json` lockfile verbatim — no NL, no model |
 | `--dir <path>` | the project root (default `.`) |
 | `--dry-run` | render the plan as a unified diff and write nothing |
-| `--yes` | apply without the interactive confirmation prompt |
+| `--yes` | apply without the interactive confirmation prompt. A plan that **deletes** a flow or a step (from either planner, including `--model`) lists every deletion under `DESTRUCTIVE:` and asks first; with no TTY it is refused (exit 1, nothing written) unless `--yes` is given |
 | `--check` | typecheck the app (`tsc`) after applying |
 | `--model <spec>` | plan with a **model of your choice**: `anthropic:<model>`, `openai:<model>`, `gemini:<model>` (API key from the provider's env var), or a local `.gguf` path / `gemma:<path>` (needs [`@loom/appgen-model`](../tools/appgen-model) + `node-llama-cpp`) |
 | `--model-big <spec>` | a stronger model the reasoning ladder elevates to on low confidence (any provider spec) |

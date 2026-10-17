@@ -1,5 +1,5 @@
 {
-  "req:5752cc91527edb540b6069131be57400": {
+  "req:1e0c0dcd21c5b46d64cfdb2f98107de7": {
     "content": "{\"name\":\"refund-reviewer\",\"capabilities\":[{\"id\":\"refund-reviewer\",\"name\":\"Refund Reviewer\",\"intent\":\"Check the refund policy, draft a decision and pause for approval.\",\"op\":\"create\",\"steps\":[{\"id\":\"check-policy\",\"op\":\"create\"},{\"id\":\"draft-decision\",\"op\":\"create\"}],\"addApproval\":true,\"addUi\":true}]}",
     "stopReason": "end_turn"
   }

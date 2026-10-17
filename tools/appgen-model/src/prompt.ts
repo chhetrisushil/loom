@@ -1,7 +1,7 @@
 import type { AppModel } from "@loom/appgen";
 
 // The planner prompt. The model's whole job is: read the intent + a COMPACT summary of
-// the existing app, and emit a ChangeSpec (create/extend/modify). It never sees raw file
+// the existing app, and emit a ChangeSpec (create/extend/modify/delete). It never sees raw file
 // contents — only the scanned summary — which keeps context (and the KV-cache memory
 // footprint) small and keeps the model honest about what already exists.
 
@@ -30,8 +30,8 @@ export function buildSystem(appModel: AppModel): string {
     '  { "name": string,',
     '    "capabilities": [ {',
     '        "id": kebab-case string, "name": string, "intent": string,',
-    '        "op": "create" | "extend" | "modify",   // create=new flow, extend=add to an existing flow',
-    '        "steps": [ { "id": kebab-case string, "op": "create" | "modify" } ],',
+    '        "op": "create" | "extend" | "modify" | "delete",   // create=new flow, extend=add to an existing flow, delete=remove an existing flow',
+    '        "steps": [ { "id": kebab-case string, "op": "create" | "modify" | "delete" } ],',
     '        "addApproval"?: boolean,   // add a durable human-approval suspend gate',
     '        "addUi"?: boolean          // add a durable UI surface update',
     "    } ],",
@@ -41,6 +41,7 @@ export function buildSystem(appModel: AppModel): string {
     '- If a flow with the same id already exists, use op "extend" (or "modify"); otherwise "create".',
     "- Only set addApproval/addUi when the intent asks for it AND the flow lacks that gate already.",
     '- Steps that already exist are op "modify"; genuinely new steps are op "create".',
+    '- Delete ONLY what the intent explicitly asks to remove, and only a flow or step listed in EXISTING APP. Remove a whole flow with op "delete" and "steps": []; remove one step with op "extend" on its flow and that step as op "delete".',
     "- Never invent handler code or file paths — you emit intent, the toolchain emits code.",
     "",
     'Example — existing flow "triage" with steps classify[stub]; gates=none.',
