@@ -76,7 +76,7 @@ export async function planChangesModel(
       );
       const parsed = tryParseChangeSpec(result.content);
       if (parsed !== undefined) {
-        const issues = validateChangeSpec(parsed, appModel);
+        const issues = validateChangeSpec(parsed, appModel, intent);
         if (issues.length === 0) {
           const elevations = elevationsFromTrace(result.trace);
           return { ...parsed, planner: "model", ...(elevations !== undefined && { elevations }) };

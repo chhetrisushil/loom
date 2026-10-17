@@ -21,8 +21,20 @@ import {
 
 export { MAX_INTENT_LENGTH };
 
-export function validateChangeSpec(spec: ChangeSpec, appModel: AppModel): string[] {
+const DELETE_VERB = /\b(delete|remove|drop|get rid of|discard|retire|deprecate|unregister)\b/i;
+
+/**
+ * `request` is the USER'S request (the intent handed to the planner). A model-planned delete
+ * (a flow or a step) is only accepted when that text asks for one. When a caller has no request
+ * to hand (a structural-only check), the delete gate is skipped.
+ */
+export function validateChangeSpec(
+  spec: ChangeSpec,
+  appModel: AppModel,
+  request?: string
+): string[] {
   const issues: string[] = [];
+  const asked = request === undefined || DELETE_VERB.test(request);
   const existing = new Map(appModel.flows.map((f) => [f.id, new Set(f.steps.map((s) => s.id))]));
 
   if (spec.capabilities.length === 0) issues.push("the plan has no capabilities — it is empty");
@@ -30,6 +42,14 @@ export function validateChangeSpec(spec: ChangeSpec, appModel: AppModel): string
   issues.push(...textIssues("compute target", spec.compute?.target, MAX_LABEL_LENGTH));
 
   for (const cap of spec.capabilities) {
+    if (!asked) {
+      const deletes = cap.op === "delete" || cap.steps.some((st) => st.op === "delete");
+      if (deletes) {
+        issues.push(
+          `op "delete" on "${cap.id}" but the request does not ask to delete anything — only delete what the user explicitly asks to remove`
+        );
+      }
+    }
     issues.push(...textIssues(`intent of "${cap.id}"`, cap.intent, MAX_INTENT_LENGTH));
     issues.push(...textIssues(`name of "${cap.id}"`, cap.name, MAX_LABEL_LENGTH));
     issues.push(

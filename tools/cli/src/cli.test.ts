@@ -529,7 +529,10 @@ describe("loom CLI", () => {
       );
       expect(existsSync(join(appDir, "app/flows/reporter/flow.ts"))).toBe(true);
 
-      const r = await cmdAppgen({ intent: "Delete the reporter.", dir: appDir }, scriptedIO([]));
+      const r = await cmdAppgen(
+        { intent: "Delete the reporter.", dir: appDir, allowDeletes: true },
+        scriptedIO([])
+      );
       expect(r.deleted.some((p) => p.includes(join("reporter", "flow.ts")))).toBe(true);
       expect(existsSync(join(appDir, "app/flows/reporter/flow.ts"))).toBe(false);
       expect(readFileSync(join(appDir, "app/loom.gen.ts"), "utf-8")).not.toContain("reporter");
