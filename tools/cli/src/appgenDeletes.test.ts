@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cmdAppgen } from "./appgen";
 import { run } from "./cli";
 
 // A deletion (a whole flow, or a step cut out of one) is never applied unattended, whichever
@@ -98,5 +99,47 @@ describe("loom appgen: deletions need a confirmation", () => {
     const code = await run(["appgen", "Create a planner. Step route.", "--dir", app, "--offline"]);
     expect(code).toBe(0);
     expect(readFileSync(join(app, "app/flows/planner/flow.ts"), "utf8")).toContain("routeStep");
+  });
+
+  describe("the library API (cmdAppgen) needs consent for deletes too", () => {
+    const del = (app: string, extra: object = {}) =>
+      cmdAppgen({ intent: "Delete the reporter.", dir: app, offline: true, ...extra });
+
+    it("refuses with neither confirm nor allowDeletes: nothing written, deletions named", async () => {
+      const app = await seed();
+      const r = await del(app);
+      expect(r.aborted).toBe(true);
+      expect(r.refusedDeletes?.join(";")).toContain("reporter");
+      expect(r.deleted).toEqual([]);
+      expect(existsSync(reporter(app))).toBe(true);
+    });
+
+    it("applies with allowDeletes: true", async () => {
+      const app = await seed();
+      const r = await del(app, { allowDeletes: true });
+      expect(r.aborted).toBeUndefined();
+      expect(existsSync(reporter(app))).toBe(false);
+    });
+
+    it("a confirm callback decides: false writes nothing, true applies", async () => {
+      const app = await seed();
+      const no = await del(app, { confirm: async () => false });
+      expect(no.aborted).toBe(true);
+      expect(no.refusedDeletes).toBeUndefined();
+      expect(existsSync(reporter(app))).toBe(true);
+      await del(app, { confirm: async () => true });
+      expect(existsSync(reporter(app))).toBe(false);
+    });
+
+    it("a plan without deletions is unaffected", async () => {
+      const app = await seed();
+      const r = await cmdAppgen({
+        intent: "Create a planner. Step route.",
+        dir: app,
+        offline: true,
+      });
+      expect(r.aborted).toBeUndefined();
+      expect(readFileSync(join(app, "app/flows/planner/flow.ts"), "utf8")).toContain("routeStep");
+    });
   });
 });

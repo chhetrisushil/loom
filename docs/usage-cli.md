@@ -367,7 +367,7 @@ Turns a **natural-language intent** into a change to a Loom app, following the *
 | `--from-spec <file>` | replay a `.loom/appgen/<ts>.spec.json` lockfile verbatim — no NL, no model |
 | `--dir <path>` | the project root (default `.`) |
 | `--dry-run` | render the plan as a unified diff and write nothing |
-| `--yes` | apply without the interactive confirmation prompt. A plan that **deletes** a flow or a step (from either planner, including `--model`) lists every deletion under `DESTRUCTIVE:` and asks first; with no TTY it is refused (exit 1, nothing written) unless `--yes` is given |
+| `--yes` | apply without the interactive confirmation prompt. A plan that **deletes** a flow or a step (from either planner, including `--model`) lists every deletion under `DESTRUCTIVE:` and asks first; with no TTY it is refused (exit 1, nothing written) unless `--yes` is given - this includes scripted or CI `--from-spec` replays whose lockfile deletes, which need `--yes`. Deleting a flow removes its flow file and its registration in `app/loom.gen.ts`; it does not edit grants in `app/config.ts` or any test, so clean those up yourself. Library callers of `cmdAppgen` must pass `confirm` or `allowDeletes: true` to apply a plan with deletes |
 | `--check` | typecheck the app (`tsc`) after applying |
 | `--model <spec>` | plan with a **model of your choice**: `anthropic:<model>`, `openai:<model>`, `gemini:<model>` (API key from the provider's env var), or a local `.gguf` path / `gemma:<path>` (needs [`@loom/appgen-model`](../tools/appgen-model) + `node-llama-cpp`) |
 | `--model-big <spec>` | a stronger model the reasoning ladder elevates to on low confidence (any provider spec) |
