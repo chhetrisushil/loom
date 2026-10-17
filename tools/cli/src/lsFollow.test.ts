@@ -6,9 +6,9 @@ import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { SqliteEventStore, SqliteLeaseStore } from "@loom/plugin-sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { run } from "./cli";
-import { cmdLogsFollow } from "./commands";
+import { cmdLogs, cmdLogsFollow, cmdLogsJson } from "./commands";
 import { serveInspector } from "./inspector";
-import { scanExecutions } from "./ls";
+import { renderLs, scanExecutions } from "./ls";
 import { loadLoomApp } from "./stores";
 
 // ── W4a: ls, logs --follow / -v / --type / --from / --to, debug --at bound, config loading ──
@@ -280,7 +280,7 @@ describe("W4a — CLI over a SQLite store", () => {
   describe("logs --follow", () => {
     it("prints existing events, then new ones as they land, and exits 0 on the terminal event", async () => {
       const writer = new SqliteEventStore(db);
-      const done = run(["logs", "--db", db, "run-1", "--follow", "--interval", "10"]);
+      const done = run(["logs", "--db", db, "run-1", "--follow", "--interval", "50"]);
       await vi.waitFor(() => expect(printed()).toContain("STEP_STARTED"));
       await writer.append(ev("run-1", 2, "STEP_COMPLETED", { stepId: "a" }));
       await vi.waitFor(() => expect(printed()).toContain("STEP_COMPLETED"));
@@ -296,7 +296,7 @@ describe("W4a — CLI over a SQLite store", () => {
 
     it("--json is pure ndjson on stdout; the finished note goes to stderr", async () => {
       const writer = new SqliteEventStore(db);
-      const done = run(["logs", "--db", db, "run-1", "--follow", "--json", "--interval", "10"]);
+      const done = run(["logs", "--db", db, "run-1", "--follow", "--json", "--interval", "50"]);
       await vi.waitFor(() => expect(printed()).toContain("STEP_STARTED"));
       await writer.append(ev("run-1", 2, "EXECUTION_FAILED", { error: "x" }));
       expect(await done).toBe(0);
@@ -308,7 +308,7 @@ describe("W4a — CLI over a SQLite store", () => {
 
     it("a suspended execution is NOT terminal: it keeps following until the resume finishes it", async () => {
       const writer = new SqliteEventStore(db);
-      const done = run(["logs", "--db", db, "wait-gate", "--follow", "--interval", "10"]);
+      const done = run(["logs", "--db", db, "wait-gate", "--follow", "--interval", "50"]);
       await vi.waitFor(() => expect(printed()).toContain("EXECUTION_SUSPENDED"));
       let settled = false;
       void done.then(() => {
@@ -323,7 +323,7 @@ describe("W4a — CLI over a SQLite store", () => {
     });
 
     it("already-finished execution: prints it all and exits 0 without waiting", async () => {
-      expect(await run(["logs", "--db", db, "done", "--follow", "--interval", "10"])).toBe(0);
+      expect(await run(["logs", "--db", db, "done", "--follow", "--interval", "50"])).toBe(0);
       expect(printed()).toContain("EXECUTION_COMPLETED");
     });
 
@@ -338,7 +338,7 @@ describe("W4a — CLI over a SQLite store", () => {
         "--redact",
         "pw",
         "--interval",
-        "10",
+        "50",
       ]);
       await vi.waitFor(() => expect(printed()).toContain("STEP_STARTED"));
       await writer.append(ev("run-1", 2, "STEP_COMPLETED", { stepId: "a", pw: "topsecret-value" }));
@@ -349,7 +349,7 @@ describe("W4a — CLI over a SQLite store", () => {
     });
 
     it("an unknown execution id fails (exit 1) instead of waiting forever", async () => {
-      expect(await run(["logs", "--db", db, "ghost", "--follow", "--interval", "10"])).toBe(1);
+      expect(await run(["logs", "--db", db, "ghost", "--follow", "--interval", "50"])).toBe(1);
     });
   });
 });
@@ -530,6 +530,195 @@ describe("W4a — config loading", () => {
       expect(err.join("\n")).toContain("--config <module>");
     } finally {
       process.chdir(cwd);
+    }
+  });
+});
+
+describe("W4a review fixes", () => {
+  const SECRET = "sekrit-value-123";
+  let dir: string;
+  let db: string;
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), "loom-w4a-rev-"));
+    db = join(dir, "e.db");
+    const s = new SqliteEventStore(db);
+    await s.append(ev("leak", 0, "EXECUTION_STARTED", { input: {} }));
+    await s.append(ev("leak", 1, "STEP_FAILED", { stepId: "a", error: `bad token "${SECRET}"` }));
+    await s.append(ev("leak", 2, "STEP_COMPLETED", { stepId: "a", pw: SECRET }));
+    await s.append(ev("leak", 3, "EXECUTION_COMPLETED", { output: 1 }));
+    await s.close();
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  const follow = async (view: Record<string, unknown>, json: boolean): Promise<string> => {
+    const lines: string[] = [];
+    const code = await cmdLogsFollow({ db }, "leak", {
+      redact: ["pw"],
+      // Text rows only carry payloads under -v; without it the assertion would be vacuous.
+      view: { ...view, verbose: true },
+      json,
+      intervalMs: 50,
+      write: (l) => lines.push(l),
+      note: () => {},
+    });
+    expect(code).toBe(0);
+    return lines.join("\n");
+  };
+
+  it("control: without --redact the quoted secret is in the output", async () => {
+    const lines: string[] = [];
+    await cmdLogsFollow({ db }, "leak", {
+      view: { verbose: true },
+      write: (l) => lines.push(l),
+      note: () => {},
+      intervalMs: 50,
+    });
+    expect(lines.join("\n")).toContain(SECRET);
+  });
+
+  it("follow --redact: a secret learned at event 2 scrubs event 1 of the SAME first batch", async () => {
+    for (const json of [false, true]) {
+      const text = await follow({}, json);
+      expect(text, `json=${json}`).not.toContain(SECRET);
+      expect(text).toContain("STEP_FAILED");
+    }
+  });
+
+  it("follow --redact: events a filter excludes still teach the redactor", async () => {
+    for (const json of [false, true]) {
+      // The event that carries the secret at the redact path (seq 2) is filtered out by
+      // --type and by --to; the quoted copy at seq 1 must still be scrubbed.
+      for (const view of [{ types: ["STEP_FAILED"] }, { to: 1 }, { from: 0, to: 1 }]) {
+        const text = await follow(view, json);
+        expect(text, `json=${json} ${JSON.stringify(view)}`).not.toContain(SECRET);
+        expect(text).toContain("STEP_FAILED");
+      }
+    }
+  });
+
+  it("non-follow logs (text and --json): filtered-out events still teach the redactor", async () => {
+    for (const view of [{ types: ["STEP_FAILED"] }, { to: 1 }]) {
+      const text = await cmdLogs({ db }, "leak", ["pw"], { ...view, verbose: true });
+      expect(text).not.toContain(SECRET);
+      expect(text).toContain("STEP_FAILED");
+      const json = await cmdLogsJson({ db }, "leak", ["pw"], view);
+      expect(json).not.toContain(SECRET);
+      expect(json).toContain("STEP_FAILED");
+    }
+  });
+
+  it("--follow --interval below the floor is refused with exit 2, naming the floor", async () => {
+    const err: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => {
+      err.push(a.join(" "));
+    });
+    try {
+      for (const iv of ["0", "10"]) {
+        err.length = 0;
+        expect(await run(["logs", "--db", db, "leak", "--follow", "--interval", iv])).toBe(2);
+        expect(err.join("\n")).toContain("50ms floor");
+      }
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("ending on EXECUTION_CONTINUED names the successor", async () => {
+    const s = new SqliteEventStore(db);
+    await s.append(ev("old", 0, "EXECUTION_STARTED", { input: {} }));
+    await s.append(
+      ev("old", 1, "EXECUTION_CONTINUED", { successorId: "new-1" }, { metadata: { kernel: true } })
+    );
+    await s.close();
+    const notes: string[] = [];
+    expect(
+      await cmdLogsFollow({ db }, "old", {
+        write: () => {},
+        note: (l) => notes.push(l),
+        intervalMs: 50,
+      })
+    ).toBe(0);
+    expect(notes.join("\n")).toContain("continued -> new-1");
+  });
+
+  it("-v on a failing logs command prints the cause's stack, like --verbose", async () => {
+    const err: string[] = [];
+    vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => {
+      err.push(a.join(" "));
+    });
+    const cfg = join(dir, "bad.js");
+    writeFileSync(cfg, 'throw new Error("config-boom");\n');
+    try {
+      expect(await run(["logs", "--config", cfg, "leak", "-v"])).toBe(1);
+      expect(err.join("\n")).toContain("at ");
+      err.length = 0;
+      expect(await run(["logs", "--config", cfg, "leak"])).toBe(1);
+      expect(err.join("\n")).not.toContain("\n    at ");
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});
+
+describe("W4a review fixes: ls ordering, scan cap, correlation keys", () => {
+  const seedMany = async (s: InMemoryAsyncEventStore) => {
+    // Store order is NOT recency: "a-old" is enumerated first but is the least active.
+    await s.append(ev("a-old", 0, "EXECUTION_STARTED", { input: {} }, { timestamp: T0 }));
+    await s.append(ev("b-new", 0, "EXECUTION_STARTED", { input: {} }, { timestamp: T0 + 9000 }));
+    await s.append(ev("c-mid", 0, "EXECUTION_STARTED", { input: {} }, { timestamp: T0 + 5000 }));
+    await s.append(ev("park", 0, "EXECUTION_STARTED", { input: {} }, { timestamp: T0 + 1000 }));
+    await s.append(
+      ev(
+        "park",
+        1,
+        "EXECUTION_SUSPENDED",
+        { condition: { on: "Approved", correlationKey: "cust-4711" } },
+        { timestamp: T0 + 2000 }
+      )
+    );
+  };
+
+  it("--limit keeps the MOST RECENTLY ACTIVE rows, and says how many more matched", async () => {
+    const s = new InMemoryAsyncEventStore();
+    await seedMany(s);
+    const r = await scanExecutions(s, { limit: 2, now: T0 + 10_000 });
+    expect(r.rows.map((x) => x.executionId)).toEqual(["b-new", "c-mid"]);
+    expect(r.matched).toBe(4);
+    expect(r.truncated).toBe("limit");
+    expect(renderLs(r, { limit: 2, now: T0 + 10_000 })).toContain("2 shown of 4 matched");
+  });
+
+  it("the scan cap bounds the scan, not the matches, and is reported", async () => {
+    const s = new InMemoryAsyncEventStore();
+    await seedMany(s);
+    const r = await scanExecutions(s, { limit: 10, maxScan: 2, now: T0 + 10_000 });
+    expect(r.scanned).toBe(2);
+    expect(r.truncated).toBe("scan-cap");
+    expect(renderLs(r, { limit: 10 })).toContain("bounds the scan, not the matches");
+  });
+
+  it("correlationKey is omitted by default (rows and text) and included with keys", async () => {
+    const s = new InMemoryAsyncEventStore();
+    await seedMany(s);
+    const plain = await scanExecutions(s, {});
+    expect(JSON.stringify(plain.rows)).not.toContain("cust-4711");
+    expect(renderLs(plain, { limit: 50 })).not.toContain("cust-4711");
+    const keyed = await scanExecutions(s, { includeKeys: true });
+    expect(JSON.stringify(keyed.rows)).toContain("cust-4711");
+    expect(renderLs(keyed, { limit: 50, keys: true })).toContain("key cust-4711");
+  });
+
+  it("the inspector list omits correlation keys", async () => {
+    const s = new InMemoryAsyncEventStore();
+    await seedMany(s);
+    const server = serveInspector(s);
+    await server.start();
+    try {
+      const body = await (await fetch(`http://127.0.0.1:${server.port}/api/executions`)).text();
+      expect(body).toContain("park");
+      expect(body).not.toContain("cust-4711");
+    } finally {
+      await server.stop();
     }
   });
 });

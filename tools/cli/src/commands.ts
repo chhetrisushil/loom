@@ -51,21 +51,34 @@ const matchesType = (view: LogsView) => {
     types === undefined || types.length === 0 || types.includes(e.eventType);
 };
 
-/** Read the window `view` names. An empty log for the execution is "no such execution". */
+/**
+ * Read the window `view` names. An empty log for the execution is "no such execution".
+ * `all` is every event the read touched — with `--redact` that is the WHOLE log, so events the
+ * view filters out (`--type/--from/--to`) still teach the redactor which secrets to scrub.
+ */
 async function readView(
   store: EventStore,
   executionId: string,
-  view: LogsView
-): Promise<EventEnvelope[]> {
+  view: LogsView,
+  learn = false
+): Promise<{ shown: EventEnvelope[]; all: EventEnvelope[] }> {
   checkView(view);
   const bounded = view.from !== undefined || view.to !== undefined;
+  const inWindow = (e: EventEnvelope) =>
+    (view.from === undefined || e.sequence >= view.from) &&
+    (view.to === undefined || e.sequence <= view.to);
+  if (learn) {
+    const whole = await store.read(executionId);
+    if (whole.length === 0) throw await noSuchExecution(store, executionId);
+    return { shown: whole.filter(inWindow).filter(matchesType(view)), all: whole };
+  }
   const events = bounded
     ? await readRangeOf(store, executionId, view.from ?? 0, view.to ?? Number.MAX_SAFE_INTEGER)
     : await store.read(executionId);
   if (events.length === 0 && (!bounded || (await headOf(store, executionId)) === null)) {
     throw await noSuchExecution(store, executionId);
   }
-  return events.filter(matchesType(view));
+  return { shown: events.filter(matchesType(view)), all: events };
 }
 
 function emptyViewNote(view: LogsView): string {
@@ -95,9 +108,9 @@ export async function cmdLogs(
   const resolved = await resolveStores(flags);
   const store = resolved.eventStore;
   try {
-    const events = await readView(store, executionId, view);
-    if (events.length === 0) return emptyViewNote(view);
-    return redactEvents(events, redact).map(textRenderer(view)).join("\n");
+    const { shown, all } = await readView(store, executionId, view, redact.length > 0);
+    if (shown.length === 0) return emptyViewNote(view);
+    return redactEvents(shown, redact, all).map(textRenderer(view)).join("\n");
   } finally {
     await resolved.close();
   }
@@ -148,8 +161,8 @@ export async function cmdLogsJson(
   const resolved = await resolveStores(flags);
   const store = resolved.eventStore;
   try {
-    const events = await readView(store, executionId, view);
-    return redactEvents(events, redact)
+    const { shown, all } = await readView(store, executionId, view, redact.length > 0);
+    return redactEvents(shown, redact, all)
       .map((e) => JSON.stringify(e))
       .join("\n");
   } finally {
@@ -164,6 +177,9 @@ const TERMINAL_EVENTS = new Set([
   "EXECUTION_CONTINUED",
 ]);
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled", "continued"]);
+
+/** Smallest `--follow --interval` the CLI accepts: below this the poll loop would hammer the store. */
+export const FOLLOW_MIN_INTERVAL_MS = 50;
 
 export interface FollowOptions {
   redact?: readonly string[];
@@ -217,6 +233,9 @@ export async function cmdLogsFollow(
     let last = -1;
     let first = true;
     const emit = (batch: EventEnvelope[]): void => {
+      // Learn every secret in the WHOLE batch (filtered-out events included) before anything
+      // is scrubbed or printed: a secret met at event 5 must scrub event 2 of the same batch.
+      for (const e of batch) redactor.mask(e);
       for (const e of batch) {
         last = Math.max(last, e.sequence);
         if (view.from !== undefined && e.sequence < view.from) continue;
@@ -229,7 +248,17 @@ export async function cmdLogsFollow(
       const all = await store.read(executionId);
       const status = foldAt(all).status;
       if (!TERMINAL_STATUSES.has(status)) return false;
-      options.note(`-- execution ${executionId} ${status} (seq ${last}) --`);
+      const cont = all.find(
+        (e) => e.eventType === "EXECUTION_CONTINUED" && e.metadata?.kernel === true
+      );
+      const p = cont?.payload as Record<string, unknown> | null | undefined;
+      const successor =
+        status === "continued" && typeof p?.successorId === "string" && p.successorId !== ""
+          ? p.successorId
+          : undefined;
+      options.note(
+        `-- execution ${executionId} ${status}${successor !== undefined ? ` -> ${successor}` : ""} (seq ${last}) --`
+      );
       return true;
     };
     for (;;) {

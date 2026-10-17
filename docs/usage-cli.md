@@ -57,7 +57,7 @@ validate
   loom eval  --dir <path> [--json]                replay golden logs vs expectations
 
 observe
-  loom ls    <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--json]
+  loom ls    <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]
                                                   list executions: status, last activity, and what a
                                                   suspended one waits on (read-only; --leases adds owners)
   loom logs  <store> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
@@ -521,17 +521,19 @@ All of them fold the durable log deterministically — they replay events, they 
 
 ### Choosing the store: `--config`, `--db`, or `./loom.config.js`
 
-Every `<store>` command takes `--config <module>` or `--db <events.db>`. With **neither**, the CLI looks for `./loom.config.js` (then `./loom.config.ts`) in the working directory, uses it, and says which on stderr (`loom: using ./loom.config.js …`). No file → the usual refusal (exit `2`). A command with `--apply` never guesses: name the store explicitly.
+Every `<store>` command takes `--config <module>` or `--db <events.db>`. With **neither**, the **read-only** commands (`ls`, `logs`, `debug`, `census`, `profile`, `introspect`, `inspect`) look for `./loom.config.js` (then `./loom.config.ts`) in the working directory, use it, and say which on stderr (`loom: using ./loom.config.js …`). No file → the usual refusal (exit `2`). Every other command (`recover`, `repair`, `retention`, `sweep`, `branches`, `learn`, `optimize`, `dev`, …) never guesses a store, with or without `--apply`: name it explicitly.
+
+> **Discovery executes code.** Using `./loom.config.js` means *importing* it, which runs that file and everything it imports. Do not run `loom ls` (or any read-only command) bare in a checkout you do not trust — pass `--db` (SQLite shorthand; nothing is imported) instead.
 
 Loading a config:
 
-- **TypeScript configs.** A `.ts` `--config` is loaded through [`tsx`](https://tsx.is) **if it resolves from the config's own directory** (`pnpm add -D tsx` in that project). The CLI bundles no transpiler. Without it: `built? point --config at the compiled .js, or install tsx …`, exit `2`.
+- **TypeScript configs.** A `.ts` `--config` is loaded through [`tsx`](https://tsx.is) **if it resolves from the config's own directory** upward through its `node_modules` chain (`NODE_PATH` is honoured too; `pnpm add -D tsx` in that project). The CLI bundles no transpiler. A config with **top-level await** must be an ES module — name it `loom.config.mts` or set `"type": "module"` in its `package.json` (tsx compiles a plain `.ts` in a CommonJS package to CommonJS, which cannot hold a top-level `await`; the error says so, exit `1`). Without it: `built? point --config at the compiled .js, or install tsx …`, exit `2`.
 - **Errors say where.** A config that throws on import is reported as `while loading <absolute file>: <message>` plus a hint (exit `1`). `--verbose` or `LOOM_DEBUG=1` also prints the original stack to stderr.
 - **No `[loom] …` noise.** While importing a config the CLI sets `LOOM_QUIET=1`, which silences `defineConfig`'s default `console.warn("[loom] …")` composition notices so they do not bury the command's answer (they never touch stdout, and `--json` stays pure either way). `LOOM_DEBUG=1` leaves them on. `LOOM_QUIET=1` only mutes that default sink: an `onWarn` you pass still runs, and refusals (thrown errors) are never silenced. Set it yourself to quiet a script that imports your config.
 
-### `loom ls <store> [--status …] [--workflow <id>] [--since <dur>] [--limit N] [--json]`
+### `loom ls <store> [--status …] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]`
 
-Lists executions: id, workflow, status, last sequence, last activity time (absolute plus `5m ago`), and for a **suspended** one what it waits on — the event type it is parked on, or for a timer `timer wakeAt <iso> (in 3m)` (and `overdue` when the time has passed and nothing has woken it). Give a lease store (`--leases <l.db>`, or the app's `timers.leases` via `--config`) and a row also shows the lease owner and whether it is expired.
+Lists executions: id, workflow, status, last sequence, last activity time (absolute plus `5m ago`), and for a **suspended** one what it waits on — the event type it is parked on, or for a timer `timer wakeAt <iso> (in 3m)` (and `overdue` when the time has passed and nothing has woken it). The gate's `correlationKey` is an application-chosen id that can be sensitive, so it is **omitted** from the text, from `--json` and from the inspector list; `--keys` includes it (`key <id>`). The lease owner and the gate event name are operational ids and always shown. Give a lease store (`--leases <l.db>`, or the app's `timers.leases` via `--config`) and a row also shows the lease owner and whether it is expired.
 
 ```bash
 npx loom ls --db .loom/events.db --status suspended
@@ -546,7 +548,7 @@ ID        WORKFLOW  STATUS     LAST  LAST ACTIVITY                         WAITI
 ```
 
 - `--status` is one of `pending|running|suspended|completed|failed|cancelled|continued`; `--since 1h` keeps executions with activity in the last hour.
-- It is **bounded**: at most `--limit` rows (default `50`), in the store's id order, and it stops after scanning 5000 executions. When it stops early it says so (`truncated at --limit 50 …` / `stopped after scanning …`) — a partial list is never printed as a complete one. One read and fold per execution scanned; reserved control streams are skipped.
+- It is **bounded**: it scans at most 5000 executions (the cap bounds the *scan*, not the matches), orders the matches by last activity, newest first, and prints the first `--limit` of them (default `50`). When it cuts anything it says so (`2 shown of 9 matched`, `truncated at --limit 50 …` / `stopped after scanning …`) — a partial list is never printed as a complete one; `--json` carries `matched` and `truncated`. One read and fold per execution scanned; reserved control streams are skipped.
 - A store that cannot enumerate executions is refused with the same wording as `loom census` (exit `2`).
 
 ### `loom logs <store> <executionId> [--redact a,b] [-v] [--type A,B] [--from N] [--to N] [--follow]`
@@ -568,7 +570,7 @@ npx loom logs --db .loom/events.db 01J8…
 
 - **`-v` / `--verbose`** adds, under each event: its timestamp, the time since the previous event shown (`+120ms`), a step's own duration on its `STEP_COMPLETED`/`FAILED`/`CANCELLED` (`step 95ms`), the recorded actor/principal when the event carries one, and the payload cut to 200 characters. `--redact` is applied first, so a masked value is what gets truncated.
 - **`--type A,B`** keeps only those event types; **`--from N` / `--to N`** keep an inclusive sequence window (read as a range query where the store offers one). An empty window prints `(no events match …)`; an unknown execution id is still exit `1`. `--from` after `--to` is exit `2`.
-- **`--follow`** prints what is there, then polls the log from the last sequence every `--interval <dur>` (default `500ms`) and prints each new event as it lands (with `--json`: one event per line, ndjson). It stops with exit `0` when the execution reaches a terminal state (`completed`, `failed`, `cancelled`, `continued`; a `-- execution <id> completed (seq N) --` line goes to stdout, or to stderr under `--json`) and on Ctrl-C. A suspended execution is **not** terminal — `--follow` keeps waiting for the resume. Read-only: it only reads past the tip. `--redact` masks by path from the first event; a secret value learned from a later event is also scrubbed from the lines after it.
+- **`--follow`** prints what is there, then polls the log from the last sequence every `--interval <dur>` (default `500ms`) and prints each new event as it lands (with `--json`: one event per line, ndjson). It stops with exit `0` when the execution reaches a terminal state (`completed`, `failed`, `cancelled`, `continued`; a `-- execution <id> completed (seq N) --` line (for `continued`, `-- execution <id> continued -> <successor> (seq N) --`) goes to stdout, or to stderr under `--json`) and on Ctrl-C. A suspended execution is **not** terminal — `--follow` keeps waiting for the resume. Read-only: it only reads past the tip. `--interval` below `50ms` is refused (exit `2`) so the poll cannot busy-loop the store. `--redact` masks by path; each batch of events (the first batch is the whole existing log) is learned in full before anything is printed, so a secret found at a redact path in any event — including one that `--type/--from/--to` filters out — is scrubbed from every line, earlier ones in the batch included. Only a secret that first appears in a LATER batch cannot scrub lines already printed.
 
 ### `loom debug --db <path> <executionId> [--at N]`
 
