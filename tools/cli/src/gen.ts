@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { UsageError } from "./args";
 import {
   THIRD_PARTY_SPECS,
   constructNameProblem,
@@ -8,6 +7,7 @@ import {
   importedPackages,
   newFiles,
 } from "@loom/scaffold";
+import { UsageError } from "./args";
 
 /**
  * Discover flow modules under `<dir>/flows/<name>/flow.{ts,tsx}` — the folder
