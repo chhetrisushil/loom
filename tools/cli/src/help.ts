@@ -26,8 +26,9 @@ export function unknownCommandMessage(name: string): string {
 
 const STORE_FLAG_NAMES = new Set(["config", "db", "snap", "branches", "leases"]);
 
-function flagLine(name: string, kind: string): string {
-  return kind === "boolean" ? `  --${name}` : `  --${name} <${kind}>`;
+function flagLine(name: string, kind: string, short?: string): string {
+  const flag = short === undefined ? `--${name}` : `-${short}, --${name}`;
+  return kind === "boolean" ? `  ${flag}` : `  ${flag} <${kind}>`;
 }
 
 /** `loom <cmd> --help` / `loom help <cmd>`: the command's section of the reference. */
@@ -51,7 +52,13 @@ export function commandHelp(name: string, sub?: string): string {
     own.some((u) => u.includes(`--${f}`) || (u.includes("<store>") && STORE_FLAG_NAMES.has(f)));
   const flags = Object.entries(spec.flags).filter(([f]) => !narrowed || mentioned(f));
   if (flags.length > 0) {
-    lines.push("", "flags:", ...flags.map(([f, k]) => flagLine(f, k)));
+    lines.push(
+      "",
+      "flags:",
+      ...flags.map(([f, k]) =>
+        flagLine(f, k, Object.entries(spec.short ?? {}).find(([, long]) => long === f)?.[0])
+      )
+    );
   }
   lines.push("", "`loom help` lists every command.");
   return lines.join("\n");

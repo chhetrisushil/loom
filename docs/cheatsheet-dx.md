@@ -69,7 +69,8 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 
 | | |
 |---|---|
-| `loom logs <store> <id>` | the event timeline (`--redact a,b`) |
+| `loom ls <store>` | list executions; what each suspended one waits on (`--status`, `--since 1h`) |
+| `loom logs <store> <id>` | the event timeline (`--redact a,b`; `-v` detail; `--type`/`--from`/`--to`; `--follow` tails it) |
 | `loom debug <store> <id> --at N` | folded state at sequence N — time travel |
 | `loom inspect <store>` | web timeline with a slider |
 | `loom profile <store> <id>` | flame graph + latency breakdown |

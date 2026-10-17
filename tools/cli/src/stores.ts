@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LoomApp } from "@loom/app";
@@ -90,12 +91,16 @@ export async function resolveStores(flags: StoreFlags): Promise<ResolvedStores> 
  * real dynamic import — hidden from the compiler behind `new Function` — for ESM, including
  * modules with top-level await, which `require(esm)` refuses even on Node 22+.
  */
-async function loadModule(file: string): Promise<Record<string, unknown>> {
+async function loadModule(
+  file: string,
+  registerEsm?: () => (() => void) | undefined
+): Promise<Record<string, unknown>> {
   try {
     return require(file) as Record<string, unknown>;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== "ERR_REQUIRE_ESM" && code !== "ERR_REQUIRE_ASYNC_MODULE") throw err;
+    registerEsm?.();
     const url = pathToFileURL(file).href;
     try {
       // Hidden from the compiler: a literal `import()` in this CommonJS build becomes
@@ -115,6 +120,64 @@ async function loadModule(file: string): Promise<Record<string, unknown>> {
   }
 }
 
+/** A config module that could not be loaded; `cause` holds the original error (and its stack). */
+export class ConfigLoadError extends CliError {
+  constructor(message: string, exitCode: number, cause?: unknown) {
+    super(message, exitCode);
+    this.name = "ConfigLoadError";
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/** The `tsx` loader API as the CLI uses it — resolved from the USER's project, never bundled. */
+type TsxApi = { register(): (() => void) | undefined };
+
+const TS_CONFIG = /\.(?:ts|mts|cts)$/;
+
+/**
+ * Register a TypeScript loader for a `.ts` config, or refuse (exit 2). The CLI ships no
+ * transpiler: `tsx` must resolve from the CONFIG's own directory (the project that already
+ * has its types and dependencies), so it is the user's version that runs.
+ */
+function registerTsLoader(file: string): {
+  unregister: () => void;
+  esm: () => (() => void) | undefined;
+} {
+  const from = path.dirname(file);
+  // Resolve AS the config's own directory would (its node_modules chain), not ours.
+  const fromConfig = createRequire(path.join(from, "noop.js"));
+  const resolveApi = (spec: string): string | undefined => {
+    try {
+      return fromConfig.resolve(spec);
+    } catch {
+      return undefined;
+    }
+  };
+  const cjs = resolveApi("tsx/cjs/api");
+  if (cjs === undefined) {
+    throw new ConfigLoadError(
+      `cannot load TypeScript config ${file}: built? point --config at the compiled .js, or install tsx in that project (\`pnpm add -D tsx\`)`,
+      2
+    );
+  }
+  const unregisters: Array<() => void> = [];
+  const un = (fromConfig(cjs) as TsxApi).register();
+  if (typeof un === "function") unregisters.push(un);
+  return {
+    unregister: () => {
+      for (const u of unregisters.reverse()) u();
+    },
+    // A config with top-level await cannot be `require`d; register the ESM hook for the import.
+    esm: () => {
+      const api = resolveApi("tsx/esm/api");
+      if (api === undefined) return undefined;
+      const u = (fromConfig(api) as TsxApi).register();
+      if (typeof u === "function") unregisters.push(u);
+      return u;
+    },
+  };
+}
+
 /**
  * Load an app from its config module without running it.
  *
@@ -124,11 +187,42 @@ async function loadModule(file: string): Promise<Record<string, unknown>> {
  *
  * Shared so every command that loads a config gets that guarantee, rather than each one
  * remembering to: `loom doctor` used a bare `require` and therefore did start it.
+ *
+ * `LOOM_QUIET=1` is set for the duration of the import (unless `LOOM_DEBUG=1` / `--verbose`):
+ * `defineConfig` prints `[loom] …` notices to stderr when it composes, and a diagnostic CLI
+ * that imports your app must not bury its own answer under them.
+ *
+ * A failure is reported as `while loading <abs file>: <message>` plus a hint; the original
+ * error (stack included) is its `cause`, printed by `--verbose` / `LOOM_DEBUG=1`.
  */
 export async function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>> {
   process.env.LOOM_NO_AUTOSTART = "1";
-  const mod = await loadModule(path.resolve(modulePath));
-  return (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;
+  const file = path.resolve(modulePath);
+  const quietBefore = process.env.LOOM_QUIET;
+  if (process.env.LOOM_DEBUG !== "1") process.env.LOOM_QUIET = "1";
+  let loader: ReturnType<typeof registerTsLoader> | undefined;
+  try {
+    if (TS_CONFIG.test(file)) loader = registerTsLoader(file);
+    let mod: Record<string, unknown>;
+    try {
+      mod = await loadModule(file, loader?.esm);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = (err as NodeJS.ErrnoException).code;
+      const hint =
+        code === "MODULE_NOT_FOUND" && !fs.existsSync(file)
+          ? "no such file - built? point --config at the compiled .js"
+          : code === "MODULE_NOT_FOUND"
+            ? "a dependency of the config is missing - is it installed (and built, for a workspace package)?"
+            : "run with --verbose (or LOOM_DEBUG=1) for the stack";
+      throw new ConfigLoadError(`while loading ${file}: ${message}\n  hint: ${hint}`, 1, err);
+    }
+    return (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;
+  } finally {
+    loader?.unregister();
+    if (quietBefore === undefined) Reflect.deleteProperty(process.env, "LOOM_QUIET");
+    else process.env.LOOM_QUIET = quietBefore;
+  }
 }
 
 async function fromConfig(modulePath: string): Promise<ResolvedStores> {
