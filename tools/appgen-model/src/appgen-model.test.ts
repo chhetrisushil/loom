@@ -188,6 +188,67 @@ describe("validateChangeSpec", () => {
     ]);
     expect(validateChangeSpec(s, EXISTING).join()).toMatch(/no such step/);
   });
+
+  const dupMsg = (flow: string, id: string) =>
+    `flow "${flow}" declares step id "${id}" more than once — step ids must be unique within a flow; use each id once`;
+  it("rejects a duplicate step id within one new flow", () => {
+    const s = spec([
+      {
+        id: "router",
+        name: "R",
+        intent: "x",
+        op: "create",
+        steps: [
+          { id: "classify", op: "create" },
+          { id: "classify", op: "create" },
+        ],
+      },
+    ]);
+    expect(validateChangeSpec(s, NET_NEW)).toEqual([dupMsg("router", "classify")]);
+  });
+  it("rejects a duplicate step id within one extend of an existing flow", () => {
+    const s = spec([
+      {
+        id: "planner",
+        name: "P",
+        intent: "x",
+        op: "extend",
+        steps: [
+          { id: "summarize", op: "create" },
+          { id: "summarize", op: "create" },
+        ],
+      },
+    ]);
+    expect(validateChangeSpec(s, EXISTING)).toEqual([dupMsg("planner", "summarize")]);
+  });
+  it("rejects a step added to an existing flow that the flow already has", () => {
+    const s = spec([
+      {
+        id: "planner",
+        name: "P",
+        intent: "x",
+        op: "extend",
+        steps: [{ id: "score", op: "create" }],
+      },
+    ]);
+    expect(validateChangeSpec(s, EXISTING)).toEqual([
+      `step "score" already exists in "planner" — use op "modify"`,
+    ]);
+  });
+  it("rejects the same step id across two operations on one flow", () => {
+    const s = spec([
+      { id: "planner", name: "P", intent: "x", op: "extend", steps: [{ id: "a", op: "create" }] },
+      { id: "planner", name: "P", intent: "x", op: "extend", steps: [{ id: "a", op: "create" }] },
+    ]);
+    expect(validateChangeSpec(s, EXISTING)).toEqual([dupMsg("planner", "a")]);
+  });
+  it("allows the same step id in two different flows (scoped per flow)", () => {
+    const s = spec([
+      { id: "one", name: "O", intent: "x", op: "create", steps: [{ id: "run", op: "create" }] },
+      { id: "two", name: "T", intent: "x", op: "create", steps: [{ id: "run", op: "create" }] },
+    ]);
+    expect(validateChangeSpec(s, NET_NEW)).toEqual([]);
+  });
 });
 
 describe("self-repair loop", () => {
