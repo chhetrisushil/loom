@@ -127,7 +127,10 @@ describe("applyChanges containment (ESCALATION RULE, S3)", () => {
   // plain writeFileSync) over a symlinked flow.ts and record whether the OUTSIDE file changed (content or mtime). Any
   // exception from scanApp / applyChanges / the writer is CAUGHT and recorded separately, so a fix that makes scanApp
   // skip the link or applyChanges throw turns `outsideChanged` false and flips this pin, whatever the mechanism.
-  // When the fix lands (branch fix/appgen-symlink-escape) flip the ONE assertion marked FLIP below.
+  // SCOPE: this is the APPGEN-LEVEL path only (evals does not depend on @loom/cli). It goes red when @loom/appgen stops
+  // offering a symlinked flow as editable; the CLI write path (resolveInside + writer in tools/cli/src/appgen.ts) is
+  // pinned by tools/cli's own tests in the fix. When the appgen-level fix lands (branch fix/appgen-symlink-escape)
+  // flip the ONE assertion marked FLIP below.
   function symlinkEscape(): { outsideChanged: boolean; threw: string | undefined } {
     const { base, root } = sandbox();
     const outside = join(base, "outside", "evil.ts");
