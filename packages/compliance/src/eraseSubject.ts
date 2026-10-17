@@ -6,6 +6,7 @@ import {
   chainIdOfFirst,
   erasureWindowView,
   inboxStreamsOfChainDeep,
+  isPayloadShredded,
 } from "@loom/event-runtime";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
@@ -353,7 +354,7 @@ export class EraseCoordinator {
       return await this.options.eventStore.read(executionId);
     } catch (err) {
       const redacted = (err as { name?: unknown; redacted?: EventEnvelope[] } | null)?.redacted;
-      if ((err as { name?: unknown } | null)?.name === "PayloadShreddedError" && redacted) {
+      if (isPayloadShredded(err) && redacted) {
         return redacted;
       }
       // The ShredIncomplete window (ADR 0130 D7): the key is destroyed but the tombstone append

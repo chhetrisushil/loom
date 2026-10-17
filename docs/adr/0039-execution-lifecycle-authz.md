@@ -198,3 +198,21 @@ raw `KeyUnavailableError` with and without the erase intent, the workflow-id fal
 checkpoint and the `acquireFence`/`fork` re-read each have a test; an authorized caller still gets
 `PayloadShreddedError` (and a working `cancel`). No event shape changes: `EVENT_SCHEMA` and
 `KERNEL_ABI` are unchanged.
+
+**Amendment (2026-10-17, c) - erasure is a BRAND, never a name.** The kernel classified a failure as a
+PROVEN erasure (`isErasure`, the `recordedPrincipal` anchor read, the `cancel` redacted fold) by
+`err.name === "PayloadShreddedError"`. Name matching exists because `instanceof` fails across
+duplicated package copies, but it also let any store decorator or third-party store (or anything in its
+error path) that threw a plain `Error` with that name forge an unknown owner, which
+`unknownOwner: "allow"` admits. Erasure is now the realm-safe brand `Symbol.for("loom.payloadShredded")`
+(a non-enumerable own property, so `name`, message and serialized shape are unchanged), set by
+`@loom/plugin-crypto`'s `PayloadShreddedError` constructor and by the kernel's own synthetic errors
+(built from a `PAYLOAD_SHREDDED` tombstone), and read by ONE predicate, `isPayloadShredded` in
+`@loom/event-runtime` (beside `KeyUnavailableError`, so no consumer imports the crypto plugin). The
+name alone is never enough; the symbol registry makes the brand survive duplicated copies. Consumers
+moved: `WorkflowRuntime` (3 sites), `@loom/orchestration` `pinParkedChildren`, `@loom/compliance`
+`EraseCoordinator`, `@loom/plugin-content` GC, the CLI lifecycle. A store that throws its own erasure
+error adopts `brandPayloadShredded(err)`; until then its error is a fault (retryable, nobody admitted).
+A serialized error (JSON, A2A) has lost the brand by design and no boundary re-trusts it by name; where
+a boundary needs the fact it reads the log's own `PAYLOAD_SHREDDED` tombstone. Verification:
+`shreddedBrand.test.ts` (each claim has a test that fails with the name-only match restored).

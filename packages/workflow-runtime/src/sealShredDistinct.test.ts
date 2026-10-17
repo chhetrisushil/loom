@@ -4,6 +4,7 @@ import {
   InMemoryTimerStore,
   KeyUnavailableError,
 } from "@loom/event-runtime";
+import { isPayloadShredded } from "@loom/event-runtime";
 import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
@@ -67,6 +68,7 @@ describe("a real crypto-shred is never reported as a missing key", () => {
           (e: unknown) => e
         );
         expect(name(err)).toBe("PayloadShreddedError");
+        expect(isPayloadShredded(err)).toBe(true);
         expect(isSealedUnreadable(err)).toBe(false);
         expect(denied).toHaveLength(0);
         // a due timer row on the shredded stream is not backed off as a sealed refusal
@@ -119,6 +121,7 @@ describe("a real crypto-shred is never reported as a missing key", () => {
       (e: unknown) => e
     );
     expect(name(err)).toBe("PayloadShreddedError");
+    expect(isPayloadShredded(err)).toBe(true);
     expect(isSealedUnreadable(err)).toBe(false);
   });
 });

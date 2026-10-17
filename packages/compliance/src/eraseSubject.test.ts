@@ -1,6 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import {
   InMemoryAsyncEventStore,
+  brandPayloadShredded,
   inboxTopicStreamId,
   quarantineStreamId,
 } from "@loom/event-runtime";
@@ -427,7 +428,7 @@ describe("EraseCoordinator reaches RESERVED inbox streams (ADR 0110 follow-up)",
     let shredded = false;
     const decrypting = Object.create(store) as InMemoryAsyncEventStore;
     decrypting.read = async (id: string) => {
-      if (shredded) throw new Error("PayloadShreddedError: the key is gone");
+      if (shredded) throw brandPayloadShredded(new Error("PayloadShreddedError: the key is gone"));
       return store.read(id);
     };
     const coord = new EraseCoordinator({
@@ -692,6 +693,7 @@ describe("EraseCoordinator and PARKED owners (review P2-2)", () => {
     shreddedStore.read = async (id: string) => {
       const err = new Error("shredded") as Error & { redacted?: unknown };
       err.name = "PayloadShreddedError";
+      brandPayloadShredded(err);
       err.redacted = await store.read(id);
       throw err;
     };
@@ -701,5 +703,24 @@ describe("EraseCoordinator and PARKED owners (review P2-2)", () => {
       shred,
     });
     expect((await coord.eraseSubject("pat")).outcome).toBe("erased");
+  });
+
+  it("an Error only NAMED PayloadShreddedError (no brand) is NOT judged by its redacted view", async () => {
+    const { store, shred } = await make([]);
+    await seedStarted(store, "t1", "pat");
+    await store.append(ev("t1", 1, "EXECUTION_COMPLETED", {}));
+    const forgedStore = Object.create(store) as InMemoryAsyncEventStore;
+    forgedStore.read = async (id: string) => {
+      const err = new Error("forged") as Error & { redacted?: unknown };
+      err.name = "PayloadShreddedError";
+      err.redacted = await store.read(id);
+      throw err;
+    };
+    const coord = new EraseCoordinator({
+      index: SubjectIndex.fromEvents(await store.read("t1"), subjectOf),
+      eventStore: forgedStore,
+      shred,
+    });
+    await expect(coord.eraseSubject("pat")).rejects.toThrow("forged");
   });
 });

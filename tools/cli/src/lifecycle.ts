@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { type ExecutionState, flowHashMatches } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
+import { isPayloadShredded } from "@loom/event-runtime";
 import type { ExecutionHandle, WorkflowRuntime } from "@loom/workflow-runtime";
 import { UsageError } from "./args";
 import { makeRedactor } from "./core";
@@ -339,7 +340,7 @@ export async function conclude(
     unverified =
       name === "ExecutionDeniedError"
         ? { reason: "query denied by the authorizer", failed: false }
-        : name === "PayloadShreddedError" || name === "SealedPayloadUnreadableError"
+        : isPayloadShredded(err) || name === "SealedPayloadUnreadableError"
           ? { reason: "state unreadable (sealed or erased)", failed: false }
           : { reason: "store read failed", failed: true };
   }
@@ -817,7 +818,7 @@ export async function cancelExecution(args: CancelArgs): Promise<LifecycleResult
       state = await runtime.loadState(id, { principal });
     } catch (err) {
       const name = (err as { name?: unknown } | null)?.name;
-      if (name === "PayloadShreddedError") {
+      if (isPayloadShredded(err)) {
         // An erased (crypto-shredded) parked execution is exactly what an operator cancels. The
         // runtime's own cancel folds a redacted view for it, so the pre-read is skipped, not fatal.
         notShown = true;

@@ -10,6 +10,11 @@ export {
   isKeyUnavailable,
   recordsErasureIntent,
 } from "./keyUnavailable";
+export {
+  PAYLOAD_SHREDDED_BRAND,
+  brandPayloadShredded,
+  isPayloadShredded,
+} from "./payloadShredded";
 export { ShardSealingMismatchError, ShardedEventStore } from "./ShardedEventStore";
 export type { MigrationResult, ShardedEventStoreOptions } from "./ShardedEventStore";
 export { ShardPlan, DEFAULT_BUCKETS } from "./ShardPlan";

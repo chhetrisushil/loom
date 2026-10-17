@@ -1,5 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryAsyncEventStore, brandPayloadShredded } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
@@ -1712,6 +1712,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         constructor() {
           super("shredded");
           this.name = "PayloadShreddedError";
+          brandPayloadShredded(this);
         }
       }
       // Wraps a raw store the way a sealState EncryptingSnapshotStore behaves on read.
@@ -1788,6 +1789,19 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         expect(await t.content.get(t.liveOnly)).not.toBeNull();
         expect(await t.content.get(t.shared)).not.toBeNull();
         expect(await t.content.get(t.sole)).toBeNull();
+      });
+
+      it("an Error only NAMED PayloadShreddedError (no brand) is not a confirmed shred: the sweep fails", async () => {
+        const t = await setup();
+        class Forged extends Error {
+          constructor() {
+            super("forged");
+            this.name = "PayloadShreddedError";
+          }
+        }
+        await expect(run(t, { gone: () => new Forged() }, { dryRun: true })).rejects.toThrow(
+          "forged"
+        );
       });
 
       it("a dry run reports the shredded execution and erases nothing", async () => {

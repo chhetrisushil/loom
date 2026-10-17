@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "@loom/core";
+import { brandPayloadShredded } from "@loom/event-runtime";
 
 /**
  * K10.2 — a read touched payload encrypted under a subject key that has been
@@ -23,6 +24,8 @@ export class PayloadShreddedError extends Error {
     );
     this.name = "PayloadShreddedError";
     Object.setPrototypeOf(this, PayloadShreddedError.prototype);
+    // The realm-safe brand the kernel classifies erasure by (never the name alone; ADR 0039).
+    brandPayloadShredded(this);
   }
 }
 
