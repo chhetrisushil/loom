@@ -57,8 +57,11 @@ planner that follows the prompt answers with a no-op `extend`. The deterministic
 The case is kept with the label the USER intent implies (the flow must be gone); the model arm's coverage is 0.9 because
 of it. If the prompt learns to delete, raise the floor in `thresholds.ts`.
 
-Also found while writing the fail-proofs: `validateChangeSpec` does not reject a capability with DUPLICATE step ids, so
-such a plan is accepted and generates `const <id>Step` twice; only the typecheck catches it (fail-proof `(a3)`).
+Also found while writing the fail-proofs: `validateChangeSpec` did not reject a capability with DUPLICATE step ids, so
+such a plan was accepted and generated `const <id>Step` twice; only the typecheck caught it. FIXED 2026-10-17: the
+validator now rejects it (fail-proof `(a3)`). Fail-proof `(a3b)` keeps the typecheck path covered with a plan the
+validator still accepts: two distinct kebab-case ids (`a-b`, `a--b`) that collapse to one const name (`aBStep`). That
+collision is a remaining validator gap, recorded here rather than hidden.
 
 ## Security finding: symlinked flow file escape (fixed by #627, 2026-10-17)
 
