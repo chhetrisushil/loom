@@ -280,6 +280,65 @@ export function assertNoLinkBelow(root: string, dest: string): void {
   }
 }
 
+/**
+ * Refuse a target that is, or lies below, a symbolic link under the project (cwd). Decided by FILESYSTEM
+ * IDENTITY (st_dev + st_ino), not path spelling. (1) The target's final component is never a link
+ * (the cwd itself is exempt: it is trusted even when reached through a link). (2) The nearest ancestor,
+ * in the spelling used, whose identity is the cwd's is the root: every component between it and the
+ * target is lstat-checked. (3) No spelled ancestor matches but the target's PHYSICAL parent chain
+ * reaches the cwd: refuse (a spelling the walk cannot cover). (4) Otherwise the target is genuinely
+ * outside the cwd and only its own final component is checked. A small copy of `containmentRootFor`
+ * from @loom/appgen (create-loom-app depends only on @loom/scaffold; no new edge).
+ */
+export function assertTargetNotLinked(target: string, cwd: string): void {
+  const stat = (p: string): fs.Stats | undefined => {
+    try {
+      return fs.statSync(p);
+    } catch {
+      return undefined;
+    }
+  };
+  const same = (a: fs.Stats, b: fs.Stats) => a.dev === b.dev && a.ino === b.ino;
+  const abs = path.resolve(cwd, target);
+  const cwdId = stat(cwd);
+  const absId = stat(abs);
+  if (cwdId !== undefined && absId !== undefined && same(absId, cwdId)) return;
+  let isLink = false;
+  try {
+    isLink = fs.lstatSync(abs).isSymbolicLink();
+  } catch {
+    /* not there yet */
+  }
+  if (isLink) {
+    throw new Refusal(
+      `"${target}" is a symbolic link (${abs}); pass the real path of the directory, or scaffold into a real directory`
+    );
+  }
+  if (cwdId === undefined) return;
+  for (let a = path.dirname(abs); ; a = path.dirname(a)) {
+    const st = stat(a);
+    if (st !== undefined && same(st, cwdId)) {
+      assertNoLinkBelow(a, abs);
+      return;
+    }
+    if (path.dirname(a) === a) break;
+  }
+  let p = abs;
+  while (stat(p) === undefined && path.dirname(p) !== p) p = path.dirname(p);
+  for (let cur = p; ; ) {
+    const st = stat(cur);
+    if (st === undefined) return;
+    if (same(st, cwdId)) {
+      throw new Refusal(
+        `"${target}" resolves inside the project through a spelling the symlink check cannot walk; pass a path relative to the project`
+      );
+    }
+    const up = stat(path.join(cur, ".."));
+    if (up === undefined || same(up, st)) return; // reached "/": genuinely outside
+    cur = path.join(cur, "..");
+  }
+}
+
 /** Runs the CLI; returns the exit code. Every Refusal happens before the first write. */
 export function run(argv: string[], cwd: string): number {
   let args: Args;
@@ -299,10 +358,11 @@ export function run(argv: string[], cwd: string): number {
   }
   const target = args.target;
   try {
+    assertTargetNotLinked(target, cwd);
     const root = realResolve(path.resolve(cwd, target));
 
     // The package name: a valid npm name, or refuse with the name we would have used. Taken from
-    // the folder as TYPED, not its realpath — a symlinked target is named after the link.
+    // the folder as TYPED (a symlinked target is refused above).
     const dirName = path.basename(path.resolve(cwd, target));
     const pkgName = args.name ?? dirName;
     if (!isValidPackageName(pkgName)) {

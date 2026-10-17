@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as nodePath from "node:path";
 import { GROUPED_OPTIONS } from "@loom/app";
+import { assertNoSymlinkPath, containmentRootFor } from "@loom/appgen";
 import { UsageError } from "./args";
 
 /**
@@ -899,11 +900,24 @@ export function cmdMigrateConfig(
     } catch (e) {
       throw new UsageError(`cannot read ${path}: ${(e as Error).message}`);
     }
+    // The directory chain must hold no link below the (identity-matched) cwd; a path genuinely outside
+    // the cwd is checked from its own parent (links above it are the user's).
+    let chainRefusal: string | undefined;
+    try {
+      const dir = nodePath.resolve(nodePath.dirname(path));
+      const root = containmentRootFor(dir);
+      if (root !== dir) assertNoSymlinkPath(root, dir);
+    } catch (e) {
+      chainRefusal = (e as Error).message;
+    }
     let a = analyze(src);
     let refusal = a.refusal ?? null;
     if (link !== undefined) {
       a = refuse(src, "");
       refusal = `${path} is a symbolic link to ${link}; pass the real path so the file you mean is the one that changes`;
+    } else if (chainRefusal !== undefined) {
+      a = refuse(src, "");
+      refusal = `${path}: ${chainRefusal}; pass the real path so the file you mean is the one that changes`;
     }
     if (refusal === null && a.conflicts.length === 0 && a.text !== src) {
       const lost = checkPreserved(src, a.text, a.created);

@@ -487,6 +487,50 @@ describe("migrate-config: writing the files (P2)", () => {
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
   });
 
+  it("refuses a config reached through a LINKED DIRECTORY below the cwd; the outside file is untouched", () => {
+    const proj = realpathSync(dir);
+    const outside = join(proj, "outside");
+    const work = join(proj, "work");
+    mkdirSync(outside);
+    mkdirSync(work);
+    const victim = join(outside, "loom.config.ts");
+    writeFileSync(victim, wrap("  strict: true,\n"));
+    symlinkSync(outside, join(work, "sub"));
+    const alias = join(proj, "alias");
+    symlinkSync(work, alias);
+    const prev = process.cwd();
+    process.chdir(work);
+    try {
+      for (const f of [
+        "sub/loom.config.ts",
+        join(work, "sub", "loom.config.ts"),
+        join(alias, "sub", "loom.config.ts"),
+      ]) {
+        const r = cmdMigrateConfig({ files: [f], apply: true });
+        expect(r.refused, f).toBe(true);
+        expect(r.files[0]?.refusal, f).toMatch(/symbolic link/);
+      }
+    } finally {
+      process.chdir(prev);
+    }
+    expect(readFileSync(victim, "utf8")).toBe(wrap("  strict: true,\n"));
+  });
+
+  it("a real config under the cwd still migrates (no false refusal)", () => {
+    const proj = realpathSync(dir);
+    mkdirSync(join(proj, "sub"));
+    const f = put("sub/loom.config.ts", wrap("  strict: true,\n"));
+    const prev = process.cwd();
+    process.chdir(proj);
+    try {
+      const r = cmdMigrateConfig({ files: ["sub/loom.config.ts"], apply: true });
+      expect(r.refused).toBe(false);
+      expect(readFileSync(f, "utf8")).not.toBe(wrap("  strict: true,\n"));
+    } finally {
+      process.chdir(prev);
+    }
+  });
+
   it("preserves the file mode and leaves no temp file", () => {
     const a = put("a.ts", wrap("  strict: true,\n"));
     chmodSync(a, 0o600);

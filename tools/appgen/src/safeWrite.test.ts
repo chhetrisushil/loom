@@ -1,8 +1,18 @@
-import { mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { safeWriteFileWithHooks } from "./safeWrite";
+import { containmentRootFor, safeWriteFile, safeWriteFileWithHooks } from "./safeWrite";
 
 // Race and failure seams of the symlink-safe writer (the hooks are internal, hence tested here).
 const made: string[] = [];
@@ -53,5 +63,39 @@ describe("safeWriteFile races and failures", () => {
       })
     ).toThrow(/ENOSPC/);
     expect(readdirSync(join(root, "sub"))).toEqual([]);
+  });
+});
+
+describe("safeWriteFile permissions and containment root", () => {
+  it("does not carry a planted target's group/other write bits (or setuid) over", () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const f = join(base, "f.ts");
+    writeFileSync(f, "old");
+    chmodSync(f, 0o777);
+    safeWriteFile(base, f, "new");
+    expect(statSync(f).mode & 0o7777).toBe(0o755);
+    chmodSync(f, 0o664);
+    safeWriteFile(base, f, "newer");
+    expect(statSync(f).mode & 0o022).toBe(0);
+  });
+
+  it("containmentRootFor decides by identity: the nearest ancestor that IS the cwd is the root", () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const cwd = join(base, "proj");
+    mkdirSync(join(cwd, "app"), { recursive: true });
+    symlinkSync(base, join(base, "alias"));
+    expect(containmentRootFor("app/x", cwd)).toBe(cwd);
+    expect(containmentRootFor(join(base, "alias", "proj", "app"), cwd)).toBe(
+      join(base, "alias", "proj")
+    );
+    // genuinely outside: the dir itself
+    const other = join(base, "other");
+    mkdirSync(other);
+    expect(containmentRootFor(other, cwd)).toBe(other);
+    // the final component never a link
+    symlinkSync(other, join(cwd, "ln"));
+    expect(() => containmentRootFor("ln", cwd)).toThrow(/symbolic link/);
   });
 });

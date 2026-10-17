@@ -51,6 +51,79 @@ export function assertNoSymlinkPath(dir: string, dest: string): void {
   }
 }
 
+/** True when two paths name the same filesystem object (st_dev + st_ino; `stat` follows links). */
+function sameObject(a: fs.Stats, b: fs.Stats): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+function statOrUndefined(p: string): fs.Stats | undefined {
+  try {
+    return fs.statSync(p);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The symlink-containment root for a project directory, decided by FILESYSTEM IDENTITY (st_dev +
+ * st_ino), never by comparing path spellings (case, Unicode form, `/tmp` vs `/private/tmp`, macOS
+ * firmlinks `/System/Volumes/Data/...`, logical `$PWD` all spell one directory many ways).
+ *
+ * Rule: (1) the FINAL component of `dir` is never a link (the cwd itself, reached by identity, is exempt:
+ * it is trusted even when reached through a link - a repository cannot make you `cd`); (2) the nearest
+ * ancestor of `dir`, in the spelling used, whose identity IS the cwd's becomes the root, so every
+ * component below it is lstat-walked by the writer; (3) if no spelled ancestor matches but the target's
+ * PHYSICAL parent chain (`p/..`, `p/../..`, ...) reaches the cwd, the target is inside the project by a
+ * spelling the walk cannot cover and this THROWS; (4) only when the physical chain never meets the cwd
+ * is the target genuinely outside, and `dir` itself is the root (links above it are fine).
+ */
+export function containmentRootFor(dir: string, cwd: string = process.cwd()): string {
+  const target = path.resolve(cwd, dir);
+  const cwdId = statOrUndefined(cwd);
+  if (cwdId === undefined) {
+    // A cwd that does not exist has no identity: only a lexical answer is possible.
+    const rel = path.relative(path.resolve(cwd), target);
+    const inside =
+      rel === "" || !(rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
+    return inside ? path.resolve(cwd) : target;
+  }
+  const targetId = statOrUndefined(target);
+  if (targetId !== undefined && sameObject(targetId, cwdId)) return target; // the cwd itself
+  let isLink = false;
+  try {
+    isLink = fs.lstatSync(target).isSymbolicLink();
+  } catch {
+    /* does not exist yet */
+  }
+  if (isLink) {
+    throw new Error(
+      `refusing --dir "${dir}": it is a symbolic link (${target}); pass the real path of the directory`
+    );
+  }
+  for (let a = path.dirname(target); ; a = path.dirname(a)) {
+    const st = statOrUndefined(a);
+    if (st !== undefined && sameObject(st, cwdId)) return a;
+    if (path.dirname(a) === a) break;
+  }
+  // No spelled ancestor is the cwd: walk the physical parent chain of the deepest existing ancestor.
+  let p = target;
+  while (statOrUndefined(p) === undefined && path.dirname(p) !== p) p = path.dirname(p);
+  let cur = p;
+  for (;;) {
+    const st = statOrUndefined(cur);
+    if (st === undefined) break;
+    if (sameObject(st, cwdId)) {
+      throw new Error(
+        `refusing --dir "${dir}": it resolves inside the project through a spelling the containment check cannot walk; pass a path relative to the project`
+      );
+    }
+    const up = statOrUndefined(path.join(cur, ".."));
+    if (up === undefined || sameObject(up, st)) break; // reached "/"
+    cur = path.join(cur, "..");
+  }
+  return target;
+}
+
 /** @internal Test-only seams; not part of the public surface (not re-exported from the package index). */
 export interface SafeWriteHooks {
   /** Test-only seam: runs immediately BEFORE the pre-open realpath re-check (models the race window). */
@@ -61,7 +134,11 @@ export interface SafeWriteHooks {
   writeContents?: (fd: number, contents: string) => void;
 }
 
-/** Refuse when the parent's real path is not `realpath(root)` + the lexical relative parent. */
+/**
+ * Refuse when the parent directory is not the object `realpath(root)` + the relative parent names.
+ * Compared by FILESYSTEM IDENTITY (dev + ino), not by path string: a parent swapped for a link names
+ * a different object, while a different spelling of the same directory (firmlink, case) does not trip it.
+ */
 function assertParentRealpath(dir: string, parent: string): void {
   const root = path.resolve(dir);
   const expected = path.join(
@@ -69,7 +146,23 @@ function assertParentRealpath(dir: string, parent: string): void {
     path.relative(root, path.resolve(parent))
   );
   const actual = fs.realpathSync.native(parent);
-  if (actual !== expected) {
+  let same = false;
+  try {
+    const a = fs.statSync(actual);
+    const e = fs.statSync(expected);
+    same = a.dev === e.dev && a.ino === e.ino;
+    // `stat` follows links, so a swapped-in link would name the same object as itself: also require
+    // that no component of the relative parent is a link right now.
+    let cur = root;
+    for (const seg of path.relative(root, path.resolve(parent)).split(path.sep)) {
+      if (seg === "") continue;
+      cur = path.join(cur, seg);
+      if (fs.lstatSync(cur).isSymbolicLink()) same = false;
+    }
+  } catch {
+    same = false;
+  }
+  if (!same) {
     throw new Error(
       `refusing to write: "${path.relative(root, path.resolve(parent)) || "."}" resolves to ${actual}, not ${expected} (a parent directory was swapped for a link)`
     );
@@ -106,7 +199,8 @@ export function safeWriteFileWithHooks(
   assertNoSymlinkPath(dir, dest);
   let mode = 0o644;
   try {
-    mode = fs.lstatSync(dest).mode & 0o777;
+    // a planted target's group/other write bits are never carried over
+    mode = fs.lstatSync(dest).mode & 0o755 & ~0o022;
   } catch {
     /* new file */
   }

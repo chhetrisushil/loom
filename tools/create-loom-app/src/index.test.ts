@@ -5,7 +5,9 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -314,25 +316,65 @@ describe("create-loom-app day-one wiring", () => {
     expect(pkg.name).toBe("bad-name");
   });
 
-  it("accepts a scoped --name, and names a symlinked target after the link, not its realpath", () => {
+  it("accepts a scoped --name", () => {
     const base = scratch();
     const loom = fakeLoom(join(base, "loom"));
     const cwd = join(base, "work");
-    mkdirSync(join(base, "real-dir-name"), { recursive: true });
     mkdirSync(cwd);
     const scoped = cli(["scoped", "--loom-path", loom, "--name", "@acme/scoped-app"], cwd);
     expect(scoped.code).toBe(0);
     expect(JSON.parse(readFileSync(join(cwd, "scoped/package.json"), "utf8")).name).toBe(
       "@acme/scoped-app"
     );
-
-    symlinkSync(join(base, "real-dir-name"), join(cwd, "linked-app"));
-    const linked = cli(["linked-app", "--loom-path", loom], cwd);
-    expect(linked.code).toBe(0);
-    expect(JSON.parse(readFileSync(join(base, "real-dir-name/package.json"), "utf8")).name).toBe(
-      "linked-app"
-    );
   });
+
+  it("REFUSES a symlinked target (final component) and a symlink anywhere below the cwd; the link's destination is untouched", () => {
+    const base = scratch();
+    const loom = fakeLoom(join(base, "loom"));
+    const cwd = join(base, "work");
+    const victim = join(base, "victim");
+    mkdirSync(cwd);
+    mkdirSync(victim);
+    writeFileSync(join(victim, "package.json"), "{}\n");
+    symlinkSync(victim, join(cwd, "demo"));
+    mkdirSync(join(cwd, "sub"));
+    symlinkSync(victim, join(cwd, "sub", "x"));
+    for (const t of ["demo", "sub/x/nested", "sub/x"]) {
+      for (const extra of [[], ["--force"]]) {
+        const r = cli([t, "--loom-path", loom, ...extra], cwd);
+        expect(r.code, `${t} ${extra}`).toBe(2);
+        expect(r.out).toMatch(/symbolic link/);
+      }
+    }
+    expect(readdirSync(victim)).toEqual(["package.json"]);
+    expect(readFileSync(join(victim, "package.json"), "utf8")).toBe("{}\n");
+    // an alias spelling of the cwd (symlinked parent of the cwd) is the same project: still refused
+    const alias = join(base, "alias");
+    symlinkSync(cwd, alias);
+    expect(cli(["sub/x/nested", "--loom-path", loom, "--force"], alias).code).toBe(2);
+    expect(readdirSync(victim)).toEqual(["package.json"]);
+  });
+
+  it.runIf(existsSync("/System/Volumes/Data"))(
+    "REFUSES an intermediate link reached through a macOS firmlink spelling of the cwd",
+    () => {
+      const base = scratch();
+      const loom = fakeLoom(join(base, "loom"));
+      const cwd = join(base, "work");
+      const victim = join(base, "victim");
+      mkdirSync(cwd);
+      mkdirSync(victim);
+      symlinkSync(victim, join(cwd, "x"));
+      const fl = `/System/Volumes/Data${realpathSync(cwd)}`;
+      let same = false;
+      try {
+        same = statSync(fl).ino === statSync(cwd).ino;
+      } catch {}
+      if (!same) return;
+      expect(cli(["x/app", "--loom-path", loom, "--force"], fl).code).toBe(2);
+      expect(readdirSync(victim)).toEqual([]);
+    }
+  );
 
   it("refuses to link from inside someone else's pnpm workspace (overrides would be ignored)", () => {
     const base = scratch();
