@@ -1,8 +1,16 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readLockfile } from "./lockfile";
+import { makeLock, readLockfile, writeLockfile } from "./lockfile";
 
 describe("readLockfile validation", () => {
   let dir: string;
@@ -57,5 +65,34 @@ describe("readLockfile validation", () => {
       },
     });
     expect(() => readLockfile(f)).toThrow(/unsafe step id/);
+  });
+});
+
+describe("writeLockfile never writes through a symlink", () => {
+  const lock = makeLock("i", { ops: [] } as never, "2026-01-01T00:00:00Z");
+  it("refuses a planted .loom directory link and a planted lockfile link", () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-lock-"));
+    try {
+      const root = join(base, "root");
+      const outside = join(base, "outside");
+      mkdirSync(root);
+      mkdirSync(outside);
+      symlinkSync(outside, join(root, ".loom"));
+      expect(() => writeLockfile(root, lock, "a.spec.json")).toThrow(/symbolic link/);
+      expect(readdirSync(outside)).toEqual([]);
+
+      rmSync(join(root, ".loom"));
+      mkdirSync(join(root, ".loom", "appgen"), { recursive: true });
+      const victim = join(outside, "victim.json");
+      writeFileSync(victim, "keep");
+      symlinkSync(victim, join(root, ".loom", "appgen", "b.spec.json"));
+      expect(() => writeLockfile(root, lock, "b.spec.json")).toThrow(/symbolic link/);
+      expect(readFileSync(victim, "utf8")).toBe("keep");
+      // a normal write still works
+      const dest = writeLockfile(root, lock, "c.spec.json");
+      expect(JSON.parse(readFileSync(dest, "utf8")).intent).toBe("i");
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });

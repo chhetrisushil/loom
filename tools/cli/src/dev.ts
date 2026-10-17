@@ -42,6 +42,8 @@ export function resolveRunCommand(cwd: string, explicit: string | undefined): st
 export interface DevOptions {
   /** The folder holding flows/, agents/, ... (default "app"). */
   dir: string;
+  /** Symlink-containment root for the generated registration (default: `dir`; see `cmdGen`). */
+  root?: string;
   /** Shell command that starts the app. */
   command: string;
   /** Working directory of the child (default: process.cwd()). */
@@ -280,7 +282,7 @@ export async function runDev(options: DevOptions): Promise<number> {
 
   // Generate once up front, like `loom gen`, so the first run sees a current loom.gen.ts.
   try {
-    log(genSummary(cmdGen(options.dir)));
+    log(genSummary(cmdGen(options.dir, options.root ?? options.dir)));
   } catch (err) {
     if (err instanceof UsageError) throw err;
     log(`loom dev: gen failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -301,7 +303,7 @@ export async function runDev(options: DevOptions): Promise<number> {
       );
       if (structural) {
         try {
-          log(genSummary(cmdGen(options.dir)));
+          log(genSummary(cmdGen(options.dir, options.root ?? options.dir)));
         } catch (err) {
           log(`loom dev: gen failed: ${err instanceof Error ? err.message : String(err)}`);
         }

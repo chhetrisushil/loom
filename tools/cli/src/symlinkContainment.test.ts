@@ -11,10 +11,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AppgenIO, cmdAppgen, resolveInside } from "./appgen";
+import { run } from "./cli";
 import { cmdGen, cmdNew } from "./gen";
 import { cmdPluginNew } from "./plugin";
 
@@ -203,15 +205,155 @@ describe("appgen never writes through a symlink (real-path containment)", () => 
     expect(readFileSync(flowPath(root), "utf8")).toContain("publish");
   });
 
-  it("the default IO's write refuses a link raced in after the check (called directly)", async () => {
+  it("safeWriteFile (called directly) refuses a destination that is already a link", async () => {
     const { root, outside } = await sandbox();
-    const s = sentinel(outside, "raced.ts");
-    // exercise the exported writer the default IO delegates to
+    const s = sentinel(outside, "planted.ts");
     const { safeWriteFile } = await import("./safeWrite");
-    const dest = join(root, "app", "raced.ts");
+    const dest = join(root, "app", "planted.ts");
     symlinkSync(s.file, dest);
     expect(() => safeWriteFile(root, dest, "pwn")).toThrow(/symbolic link/);
     s.unchanged();
+  });
+});
+
+describe("safeWriteFile races and failures", () => {
+  /** `<base>/root/sub/` (real) beside `<base>/outside/`; returns a swapper that makes `sub` a link. */
+  function raceSandbox() {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const root = join(base, "root");
+    const outside = join(base, "outside");
+    mkdirSync(join(root, "sub"), { recursive: true });
+    mkdirSync(outside);
+    const swap = () => {
+      renameSync(join(root, "sub"), join(base, "sub.moved"));
+      symlinkSync(outside, join(root, "sub"));
+    };
+    return { root, outside, swap, dest: join(root, "sub", "f.ts") };
+  }
+
+  it("a parent directory swapped for a link between the check and the open is refused", async () => {
+    const { safeWriteFile } = await import("./safeWrite");
+    const { root, outside, swap, dest } = raceSandbox();
+    expect(() => safeWriteFile(root, dest, "pwn", { beforeOpen: swap })).toThrow(
+      /swapped for a link|resolves to/
+    );
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("a parent directory swapped for a link between the write and the rename is refused", async () => {
+    const { safeWriteFile } = await import("./safeWrite");
+    const { root, outside, swap, dest } = raceSandbox();
+    expect(() => safeWriteFile(root, dest, "pwn", { beforeRename: swap })).toThrow(
+      /swapped for a link|resolves to/
+    );
+    expect(readdirSync(outside)).toEqual([]);
+    expect(readdirSync(join(root, "..", "sub.moved")).filter((f) => f === "f.ts")).toEqual([]); // never renamed into place
+  });
+
+  it("a failing write (ENOSPC) leaves no temp file behind and does not create the target", async () => {
+    const { safeWriteFile } = await import("./safeWrite");
+    const { root, dest } = raceSandbox();
+    expect(() =>
+      safeWriteFile(root, dest, "x", {
+        writeContents: () => {
+          throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+        },
+      })
+    ).toThrow(/ENOSPC/);
+    expect(readdirSync(join(root, "sub"))).toEqual([]);
+  });
+});
+
+describe("a DEFAULTED --dir is not trusted as a containment root", () => {
+  /** A cloned repo: `<base>/repo/app -> <base>/outside` (a cwd-relative default `app`). */
+  function clonedRepo() {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const repo = join(base, "repo");
+    const outside = join(base, "outside");
+    mkdirSync(join(outside, "flows"), { recursive: true });
+    mkdirSync(repo);
+    symlinkSync(outside, join(repo, "app"));
+    const s = sentinel(outside, "loom.gen.ts");
+    return { repo, outside, s };
+  }
+  async function inCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.cwd();
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.chdir(cwd);
+    try {
+      return await fn();
+    } finally {
+      process.chdir(prev);
+      spy.mockRestore();
+      err.mockRestore();
+    }
+  }
+
+  it("loom gen with no --dir refuses `app -> outside` and leaves outside untouched", async () => {
+    const { repo, outside, s } = clonedRepo();
+    await inCwd(repo, async () => {
+      await expect(run(["gen"])).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
+  });
+
+  it("loom new with no --dir refuses `app -> outside` and creates nothing outside", async () => {
+    const { repo, outside, s } = clonedRepo();
+    await inCwd(repo, async () => {
+      await expect(run(["new", "flow", "pwn"])).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    expect(readdirSync(join(outside, "flows"))).toEqual([]);
+  });
+
+  it("loom dev's gen path (no --dir) refuses `app -> outside`", async () => {
+    const { repo, outside, s } = clonedRepo();
+    const logs: string[] = [];
+    const evRuntime = createRequire(join(__dirname, "symlinkContainment.test.ts")).resolve(
+      "@loom/event-runtime"
+    );
+    writeFileSync(
+      join(repo, "loom.config.js"),
+      `const { InMemoryAsyncEventStore } = require(${JSON.stringify(evRuntime)});
+       module.exports = { stores: { eventStore: new InMemoryAsyncEventStore() }, close: async () => {} };`
+    );
+    await inCwd(repo, async () => {
+      const spy = vi.mocked(console.log);
+      spy.mockImplementation((...a: unknown[]) => void logs.push(a.join(" ")));
+      vi.mocked(console.error).mockImplementation((...a: unknown[]) => void logs.push(a.join(" ")));
+      const done = run([
+        "dev",
+        "--config",
+        join(repo, "loom.config.js"),
+        "--run",
+        `"${process.execPath}" -e "setTimeout(()=>{},60000)"`,
+        "--port",
+        "0",
+      ]);
+      const until = async () => {
+        for (let i = 0; i < 400 && !logs.some((l) => l.includes("gen failed")); i++)
+          await new Promise((r) => setTimeout(r, 25));
+      };
+      await until();
+      process.emit("SIGHUP");
+      const code = await done;
+      logs.push(`exit=${code}`);
+    });
+    expect(logs.join("\n")).toMatch(/gen failed.*symbolic link/);
+    s.unchanged();
+    expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
+  }, 60_000);
+
+  it("an EXPLICIT --dir that is a link is trusted (the user named it): documented policy", async () => {
+    const { repo, outside } = clonedRepo();
+    rmSync(join(outside, "loom.gen.ts"));
+    const code = await inCwd(repo, () => run(["gen", "--dir", join(repo, "app")]));
+    expect(code).toBe(0);
+    expect(existsSync(join(outside, "loom.gen.ts"))).toBe(true);
   });
 });
 

@@ -268,6 +268,34 @@ describe("create-loom-app day-one wiring", () => {
     expect(readFileSync(join(cwd, "demo/notes.txt"), "utf8")).toBe("keep me");
   });
 
+  it("--force refuses to write through a planted symlink and touches nothing outside", () => {
+    const base = scratch();
+    const loom = fakeLoom(join(base, "loom"));
+    const cwd = join(base, "work");
+    mkdirSync(join(cwd, "demo"), { recursive: true });
+    const victim = join(base, "victim.txt");
+    writeFileSync(victim, "do not touch");
+    symlinkSync(victim, join(cwd, "demo/package.json"));
+    const r = cli(["demo", "--loom-path", loom, "--force"], cwd);
+    expect(r.code).toBe(2);
+    expect(r.out).toContain("symbolic link");
+    expect(readFileSync(victim, "utf8")).toBe("do not touch");
+    expect(readdirSync(join(cwd, "demo"))).toEqual(["package.json"]); // refused up front: nothing written
+  });
+
+  it("--force refuses a symlinked sub-directory too", () => {
+    const base = scratch();
+    const loom = fakeLoom(join(base, "loom"));
+    const cwd = join(base, "work");
+    mkdirSync(join(cwd, "demo"), { recursive: true });
+    const outside = join(base, "outside");
+    mkdirSync(outside);
+    symlinkSync(outside, join(cwd, "demo/app"));
+    const r = cli(["demo", "--loom-path", loom, "--force"], cwd);
+    expect(r.code).toBe(2);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
   it("refuses an invalid npm name with a suggestion, and quotes the cd hint when it must", () => {
     const base = scratch();
     const loom = fakeLoom(join(base, "loom"));

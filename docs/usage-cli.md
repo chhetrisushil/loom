@@ -358,7 +358,7 @@ Turns a **natural-language intent** into a change to a Loom app, following the *
 
 `appgen` **adapts to the target directory**: a new/empty dir gets a full runnable project (`package.json`, `tsconfig.json`, `app/config.ts`, `app/main.ts`, `app/loom.gen.ts`, one `app/flows/<id>/flow.ts` per capability); an existing app gets new flow files + surgical edits, then `app/loom.gen.ts` is regenerated.
 
-**Symlinks.** `appgen` (and `gen`, `new`, `plugin new`) never reads a flow or writes through a symbolic link: a link anywhere below `--dir` on a write path (a flow folder, `flow.ts`, `app/`, `app/loom.gen.ts`, `.loom/`) is refused with an error naming the link, even when it points back inside the project, and a linked `flow.ts`/flow folder is skipped by the scan with a warning (so it is never planned as an edit). `--dir` itself may be a link. Replace the link with a real file to let `appgen` manage it.
+**Symlinks.** `appgen` (and `gen`, `new`, `plugin new`) never reads a flow or writes through a symbolic link: a link anywhere below `--dir` on a write path (a flow folder, `flow.ts`, `app/`, `app/loom.gen.ts`, `.loom/`) is refused with an error naming the link, even when it points back inside the project, and a linked `flow.ts`/flow folder is skipped by the scan with a warning (so it is never planned as an edit). An explicit `--dir <path>` may itself be a link (you named it); a DEFAULTED `--dir` (`app`) may not - the cwd is the containment root, so a repo's own `app -> /elsewhere` link is refused. Residual race: a swap of a parent directory by a concurrent writer between the final realpath check and the `rename` (Node has no `openat`/`renameat`). Replace the link with a real file to let `appgen` manage it.
 
 | Argument / flag | Meaning |
 |---|---|

@@ -261,6 +261,26 @@ function parseArgs(argv: string[]): Args {
 }
 
 /** Runs the CLI; returns the exit code. Every Refusal happens before the first write. */
+/** Refuse when any component of `dest` below `root` (the target itself included) is a symbolic link. */
+export function assertNoLinkBelow(root: string, dest: string): void {
+  const rel = path.relative(path.resolve(root), path.resolve(dest));
+  let cur = path.resolve(root);
+  for (const seg of rel.split(path.sep)) {
+    cur = path.join(cur, seg);
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(cur);
+    } catch {
+      return; // nothing deeper exists
+    }
+    if (st.isSymbolicLink()) {
+      throw new Refusal(
+        `refusing to write through the symbolic link "${path.relative(root, cur)}" - replace it with a real file or directory, or scaffold into a clean directory`
+      );
+    }
+  }
+}
+
 export function run(argv: string[], cwd: string): number {
   let args: Args;
   try {
@@ -333,12 +353,23 @@ export function run(argv: string[], cwd: string): number {
       files["package.json"] = linkPackageJson(files["package.json"] as string, root, loomRoot);
     }
 
+    // `--force` into an existing directory: a planted `package.json -> ~/.x` (or a linked `src/`) must not be
+    // written through. Check EVERY target first so a refusal leaves the directory untouched.
+    for (const rel of Object.keys(files)) assertNoLinkBelow(root, path.join(root, rel));
     let overwritten = 0;
     for (const [rel, content] of Object.entries(files)) {
       const dest = path.join(root, rel);
       if (fs.existsSync(dest)) overwritten++;
       fs.mkdirSync(path.dirname(dest), { recursive: true });
-      fs.writeFileSync(dest, content);
+      assertNoLinkBelow(root, dest);
+      const tmp = `${dest}.${process.pid}.tmp`;
+      try {
+        fs.writeFileSync(tmp, content, { flag: "wx" });
+        fs.renameSync(tmp, dest); // replaces the entry; never follows a link at the final component
+      } catch (e) {
+        fs.rmSync(tmp, { force: true });
+        throw e;
+      }
     }
     console.log(`Scaffolded ${Object.keys(files).length} files into ${target}/`);
     if (args.force && existing > 0) {
