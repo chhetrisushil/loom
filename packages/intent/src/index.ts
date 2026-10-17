@@ -1,2 +1,8 @@
 export { IntentRuntime } from "./IntentRuntime";
-export type { IntentRoute, IntentRuntimeConfig, IntentRuntimePrompts } from "./IntentRuntime";
+export type {
+  IntentRoute,
+  IntentRouteOutcome,
+  IntentRouteReason,
+  IntentRuntimeConfig,
+  IntentRuntimePrompts,
+} from "./IntentRuntime";

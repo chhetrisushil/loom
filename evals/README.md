@@ -31,7 +31,7 @@ deterministic, free, keyless and offline; a cassette miss is a `CassetteMissErro
 | Area | Subject | Metrics |
 | --- | --- | --- |
 | `src/appgen/` | the real `planChangesModel` (`@loom/appgen-model`: reasoning ladder, semantic validation, self-repair) over 10 intents, then the real `applyChanges` into a throwaway fixture app in a temp directory, then a tight `tsc --noEmit` over its flow files (one shared compiler host, not the repo build). `planChangesDeterministic` runs the same intents as a reference arm | validity (accepted, applied inside the fixture, typechecks; a failure carries its underlying TS or validator error), coverage (recall of the expected flows, steps, approval gates and UI surfaces read back from the applied app) |
-| `src/planner/` | the real `IntentRuntime.route` and `PlannerRuntime.planGraph` (in a real `WorkflowRuntime`, journaled through `ctx.decide`) over 12 operator intents against a database-operations catalogue | route accuracy (by the model, not the keyword fallback), graph correctness (exact structural equality of the DAG, incl. `$from` bindings and `dependsOn`) |
+| `src/planner/` | the real `IntentRuntime.route` and `PlannerRuntime.planGraph` (in a real `WorkflowRuntime`, journaled through `ctx.decide`) over 12 operator intents against a database-operations catalogue | route accuracy (by the model; a model NONE is final), graph correctness (exact structural equality of the DAG, incl. `$from` bindings and `dependsOn`) |
 
 The cassettes are **hand-authored** exactly as in S2 (`PROVENANCE.md` in each directory): the "model" is a script, so S3
 measures the planning, validation and apply code's handling of model behaviour, not a model's quality. Findings the

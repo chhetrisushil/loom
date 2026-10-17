@@ -36,7 +36,7 @@
       "gated": true
     },
     "planner/cassette/routeAccuracy": {
-      "value": 0.9167,
+      "value": 1,
       "gated": true
     },
     "retrieval/memory/knowledge/ndcg@10": {

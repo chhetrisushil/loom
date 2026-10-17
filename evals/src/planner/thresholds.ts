@@ -8,23 +8,22 @@ import type { Thresholds } from "../gate";
 // Measured on the committed cassettes (2026-10-17), 12 cases:
 //
 //   graphCorrectness  1.0000 (12/12)  exact structural equality, incl. the repaired plan and the typed refusal
-//   routeAccuracy     0.9167 (11/12)  `no-capability` is a MEASURED GAP, not a labelling error: the router model
-//                                     answered NONE ("nothing fits") and `IntentRuntime.route` then FELL BACK to its
+//   routeAccuracy     1.0000 (12/12)  `no-capability` was a MEASURED GAP (11/12 at first measurement): the router
+//                                     model answered NONE ("nothing fits") and `IntentRuntime.route` FELL BACK to its
 //                                     offline keyword matcher, which routed "Find me a good Italian restaurant for
-//                                     dinner tonight." to `diagnose-cpu` on shared words (scores 2, 1, 1 for
-//                                     diagnose-cpu, diagnose-locks, assess-remediation). See PROVENANCE.md; a
-//                                     pinned test in planner.eval.test.ts asserts today's behaviour, so fixing the
-//                                     fallback fails that test and prompts raising this floor.
+//                                     dinner tonight." to `diagnose-cpu` on shared words. FIXED 2026-10-17: a model's
+//                                     NONE is final (the keyword matcher runs only with no model configured), so the
+//                                     case now routes to none as labelled. See PROVENANCE.md.
 //
 // Floors follow the S2 convention (floor = the score after losing ONE more case, rounded UP, so a single further
 // loss falls below the gate):
 //
 //   graphCorrectness floor = 11/12 = 0.916667, written 0.9167
-//   routeAccuracy    floor = 10/12 = 0.833333, written 0.8334 (measured minus one case)
+//   routeAccuracy    floor = 11/12 = 0.916667, written 0.9167 (measured minus one case; was 0.8334 while the gap stood)
 //
 // Lowering a floor needs a one-line reason in the PR and here; raising is free.
 
 export const PLANNER_THRESHOLDS: Thresholds = {
   graphCorrectness: 0.9167, // measured 1.0000 (12/12)
-  routeAccuracy: 0.8334, // measured 0.9167 (11/12)
+  routeAccuracy: 0.9167, // measured 1.0000 (12/12)
 };

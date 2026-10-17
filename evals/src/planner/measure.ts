@@ -15,8 +15,8 @@ import { type PlannerOutcome, runPlannerCase, sameGraph } from "./subject";
 
 // ── The planner metrics ───────────────────────────────────────────────────────
 //
-//   routeAccuracy      cases where IntentRuntime routed to the expected capability BY THE MODEL (a keyword fallback
-//                      does not count), or correctly found none, over ALL cases
+//   routeAccuracy      cases where IntentRuntime routed to the expected capability BY THE MODEL, or correctly
+//                      found none (a model's NONE is final; there is no keyword fallback), over ALL cases
 //   graphCorrectness   cases whose planned graph is EXACTLY the expected one (ids, capabilities, args incl. `$from`
 //                      bindings, dependsOn; node order; rationale text excluded), or whose expected refusal happened
 //
