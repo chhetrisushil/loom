@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`loom appgen` (and `gen`, `new`, `plugin new`) never write through a symbolic link (no kernel, SPI or ABI change).** `appgen`'s containment check (`resolveInside`) was lexical, so a symlinked `app/flows/<id>/flow.ts` was scanned as a flow, planned as an in-place edit, and the write followed the link and overwrote a file OUTSIDE the project (found by the S3 evals work and reproduced with the real `cmdAppgen`). Now: no path component below `--dir` may be a symlink on any write or delete (the target, a flow folder, `app/`, `.loom/`), whether the link points outside or back inside the project, with an error naming the link and its target; the scanner skips (and warns about) a linked `app`, `app/flows`, flow folder or `flow.ts` instead of planning an edit; the default writer writes a temp file (`O_EXCL|O_NOFOLLOW`) and renames it over the target; `app/loom.gen.ts` and the lockfile directory are checked too. `loom gen`, `loom new` and `loom plugin new` use the same writer. The `--dir` root itself may be a link. `loom kernel-manifest --emit-docs <dir>` writes to a directory you name explicitly and is unchanged.
+
 ### Added
 
 - **[ADR 0131](docs/adr/0131-loom-own-evals.md) accepted: loom's own evals (decision record; no code change).** Repo-internal, unpublished regression gates over the first-party agentic layer (retrieval first, then cassette-replayed model evals); the implementation lands slice by slice.

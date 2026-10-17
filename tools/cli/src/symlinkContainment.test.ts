@@ -1,0 +1,258 @@
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { type AppgenIO, cmdAppgen, resolveInside } from "./appgen";
+import { cmdGen, cmdNew } from "./gen";
+import { cmdPluginNew } from "./plugin";
+
+// SECURITY: `resolveInside` was LEXICAL, so a symlinked `app/flows/<id>/flow.ts` (or a symlinked directory
+// on the path) passed the containment check and the write followed the link and overwrote a file OUTSIDE
+// the project. Every test runs inside a mkdtemp tree; the "outside" target is a sibling directory of the
+// project, inside that same temp tree, and is checked for content AND mtime afterwards.
+
+const made: string[] = [];
+afterEach(() => {
+  for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true });
+});
+
+const INTENT = "Create a planner. Step fetch.";
+const EXTEND = "Create a planner. Step fetch. Step publish.";
+
+/** `<base>/project` (a real appgen-generated app) beside `<base>/outside` (a sentinel it must never touch). */
+async function sandbox() {
+  const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+  made.push(base);
+  const root = join(base, "project");
+  const outside = join(base, "outside");
+  mkdirSync(outside);
+  await cmdAppgen({ intent: INTENT, dir: root, now: 1 }, noPromptIO());
+  return { base, root, outside };
+}
+
+/** Real filesystem IO that NEVER prompts: a conflict is a test failure, not a hang on stdin. */
+function noPromptIO(): AppgenIO {
+  return {
+    exists: (p) => existsSync(p) || isLink(p),
+    write: (p, c) => {
+      mkdirSync(join(p, ".."), { recursive: true });
+      writeFileSync(p, c); // deliberately NAIVE: the guard under test must not depend on a careful IO
+    },
+    resolveConflict: async () => ({ action: "overwrite" }),
+  };
+}
+function isLink(p: string): boolean {
+  try {
+    return lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+function sentinel(outside: string, name = "victim.ts") {
+  const file = join(outside, name);
+  writeFileSync(file, "// untouched\n");
+  const mtime = statSync(file).mtimeMs;
+  return {
+    file,
+    unchanged: () => {
+      expect(readFileSync(file, "utf8")).toBe("// untouched\n");
+      expect(statSync(file).mtimeMs).toBe(mtime);
+    },
+  };
+}
+
+function flowPath(root: string) {
+  return join(root, "app", "flows", "planner", "flow.ts");
+}
+
+describe("appgen never writes through a symlink (real-path containment)", () => {
+  it("a symlinked flow.ts is not planned as an edit, and nothing outside is written", async () => {
+    const { root, outside } = await sandbox();
+    const s = sentinel(outside);
+    rmSync(flowPath(root));
+    symlinkSync(s.file, flowPath(root));
+
+    // The scan skips the link, so the plan never proposes an in-place edit of it ...
+    await expect(cmdAppgen({ intent: EXTEND, dir: root, dryRun: true })).resolves.toMatchObject({
+      warnings: [expect.stringContaining("app/flows/planner/flow.ts")],
+    });
+    // ... and if a create lands on the link anyway, the applier refuses it by name.
+    await expect(cmdAppgen({ intent: EXTEND, dir: root }, noPromptIO())).rejects.toThrow(
+      /symbolic link .*flow\.ts/
+    );
+    s.unchanged();
+    expect(lstatSync(flowPath(root)).isSymbolicLink()).toBe(true); // the link itself was not replaced
+  });
+
+  it("an edit planned from a lockfile against a symlinked flow.ts is refused at write time", async () => {
+    const { root, outside } = await sandbox();
+    const lockDir = join(root, ".loom", "appgen");
+    const lock = readdirSync(lockDir).find((f) => f.endsWith(".spec.json")) as string;
+    const s = sentinel(outside);
+    rmSync(flowPath(root));
+    symlinkSync(s.file, flowPath(root));
+    await expect(
+      cmdAppgen({ intent: "ignored", dir: root, fromSpec: join(lockDir, lock) }, noPromptIO())
+    ).rejects.toThrow(/symbolic link/);
+    s.unchanged();
+  });
+
+  it("a symlinked flows/<id>/ DIRECTORY is refused (no write lands in the outside directory)", async () => {
+    const { root, outside } = await sandbox();
+    const real = join(root, "app", "flows", "planner");
+    const moved = join(outside, "planner");
+    renameSync(real, moved);
+    symlinkSync(moved, real);
+    const before = readdirSync(moved).sort();
+    const mtime = statSync(join(moved, "flow.ts")).mtimeMs;
+    const content = readFileSync(join(moved, "flow.ts"), "utf8");
+
+    await expect(cmdAppgen({ intent: EXTEND, dir: root }, noPromptIO())).rejects.toThrow(
+      /symbolic link .*planner/
+    );
+    expect(readdirSync(moved).sort()).toEqual(before);
+    expect(readFileSync(join(moved, "flow.ts"), "utf8")).toBe(content);
+    expect(statSync(join(moved, "flow.ts")).mtimeMs).toBe(mtime);
+  });
+
+  it("a symlinked app/ directory or app/flows is refused and never scanned", async () => {
+    const { root, outside } = await sandbox();
+    const moved = join(outside, "app");
+    renameSync(join(root, "app"), moved);
+    symlinkSync(moved, join(root, "app"));
+    const snapshot = readdirSync(moved, { recursive: true }).map(String).sort();
+    await expect(cmdAppgen({ intent: EXTEND, dir: root }, noPromptIO())).rejects.toThrow(
+      /symbolic link/
+    );
+    expect(readdirSync(moved, { recursive: true }).map(String).sort()).toEqual(snapshot);
+  });
+
+  it("a symlink INSIDE the project pointing INSIDE is refused too (policy: no symlink on a write path)", async () => {
+    const { root } = await sandbox();
+    const twin = join(root, "app", "flows", "planner", "flow.real.ts");
+    writeFileSync(twin, readFileSync(flowPath(root)));
+    rmSync(flowPath(root));
+    symlinkSync("flow.real.ts", flowPath(root)); // relative link, stays inside
+    const content = readFileSync(twin, "utf8");
+    await expect(cmdAppgen({ intent: EXTEND, dir: root }, noPromptIO())).rejects.toThrow(
+      /symbolic link/
+    );
+    expect(readFileSync(twin, "utf8")).toBe(content);
+  });
+
+  it("a symlinked app/loom.gen.ts (registration) is not written through", async () => {
+    const { root, outside } = await sandbox();
+    const s = sentinel(outside, "gen.ts");
+    rmSync(join(root, "app", "loom.gen.ts"), { force: true });
+    symlinkSync(s.file, join(root, "app", "loom.gen.ts"));
+    await expect(
+      cmdAppgen({ intent: "Create a reporter. Step a.", dir: root }, noPromptIO())
+    ).rejects.toThrow(/symbolic link .*loom\.gen\.ts/);
+    s.unchanged();
+  });
+
+  it("a symlinked .loom/appgen lockfile directory is not written through", async () => {
+    const { root, outside } = await sandbox();
+    rmSync(join(root, ".loom"), { recursive: true, force: true });
+    symlinkSync(outside, join(root, ".loom"));
+    await expect(
+      cmdAppgen({ intent: "Create a reporter. Step a.", dir: root }, noPromptIO())
+    ).rejects.toThrow(/symbolic link .*\.loom/);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("traversal and absolute ids are still refused lexically", () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    for (const bad of ["../x.ts", "a/../../x.ts", "/etc/passwd"]) {
+      expect(() => resolveInside(base, bad)).toThrow(/outside the target directory/);
+    }
+  });
+
+  it("a normal project still works: create, then extend in place, no stray temp files", async () => {
+    const { root } = await sandbox();
+    expect(existsSync(flowPath(root))).toBe(true);
+    const r = await cmdAppgen({ intent: EXTEND, dir: root, now: 2 }, noPromptIO());
+    expect(r.overwritten.length + r.written.length).toBeGreaterThan(0);
+    expect(readFileSync(flowPath(root), "utf8")).toContain("publish");
+    expect(
+      readdirSync(join(root, "app", "flows", "planner")).filter((f) => f.endsWith(".tmp"))
+    ).toEqual([]);
+  });
+
+  it("the default IO writes atomically through safeWriteFile and keeps a normal project working", async () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const root = join(base, "p");
+    await cmdAppgen({ intent: INTENT, dir: root, now: 1 }); // default IO
+    const r = await cmdAppgen({ intent: EXTEND, dir: root, now: 2 }); // default IO, in-place edit
+    expect(r.overwritten.length).toBeGreaterThan(0);
+    expect(readFileSync(flowPath(root), "utf8")).toContain("publish");
+  });
+
+  it("the default IO's write refuses a link raced in after the check (called directly)", async () => {
+    const { root, outside } = await sandbox();
+    const s = sentinel(outside, "raced.ts");
+    // exercise the exported writer the default IO delegates to
+    const { safeWriteFile } = await import("./safeWrite");
+    const dest = join(root, "app", "raced.ts");
+    symlinkSync(s.file, dest);
+    expect(() => safeWriteFile(root, dest, "pwn")).toThrow(/symbolic link/);
+    s.unchanged();
+  });
+});
+
+describe("the same exposure in the other project-root writers", () => {
+  it("loom gen will not write app/loom.gen.ts through a link", () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const dir = join(base, "app");
+    mkdirSync(join(dir, "flows"), { recursive: true });
+    const outside = join(base, "outside");
+    mkdirSync(outside);
+    const s = sentinel(outside, "gen.ts");
+    symlinkSync(s.file, join(dir, "loom.gen.ts"));
+    expect(() => cmdGen(dir)).toThrow(/symbolic link/);
+    s.unchanged();
+  });
+
+  it("loom new will not create a file through a dangling or live link", () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const dir = join(base, "app");
+    const outside = join(base, "outside");
+    mkdirSync(join(dir, "flows"), { recursive: true });
+    mkdirSync(outside);
+    // `flows/demo` is a link to an outside directory: the scaffold must not populate it
+    symlinkSync(outside, join(dir, "flows", "demo"));
+    expect(() => cmdNew("flow", "demo", dir)).toThrow(/symbolic link/);
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it("loom plugin new will not write through a linked plugin directory", () => {
+    const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));
+    made.push(base);
+    const dir = join(base, "repo");
+    const outside = join(base, "outside");
+    mkdirSync(join(dir, "plugins"), { recursive: true });
+    mkdirSync(outside);
+    symlinkSync(outside, join(dir, "plugins", "my-store"));
+    expect(() => cmdPluginNew("store", "my-store", { firstParty: true, dir })).toThrow(
+      /symbolic link/
+    );
+    expect(readdirSync(outside)).toEqual([]);
+  });
+});

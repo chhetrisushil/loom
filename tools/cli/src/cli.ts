@@ -983,6 +983,7 @@ async function dispatch(
         ...r.overwritten.map((p) => `  overwrote ${p}`),
         ...r.deleted.map((p) => `  deleted ${p}`),
         ...r.skipped.map((p) => `  skipped ${p}`),
+        ...(r.warnings ?? []).map((w) => `  warning: ${w}`),
       ];
       if (r.lockfile !== undefined) lines.push(`  spec  ${r.lockfile}`);
       if (r.typecheck !== undefined && !r.typecheck.skipped) {
