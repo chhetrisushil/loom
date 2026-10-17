@@ -10,15 +10,18 @@
 ## Day one
 
 ```bash
-npm create loom-app my-app
-cd my-app && pnpm install && pnpm test
+# unpublished: build a loom checkout once (pnpm install && pnpm build), then
+node <loom>/tools/create-loom-app/dist/index.js my-app --loom-path <loom>
+cd my-app && pnpm install && pnpm test && pnpm start
 
-loom new flow checkout      # scaffold a definition
+loom new flow checkout      # scaffold a definition (+ its flow.test.ts)
 loom gen                    # regenerate loom.gen.ts
 loom doctor                 # what can I check right now?
 ```
 
-`loom new` takes `flow · agent · tool · skill · schedule · memory · projection · sentinel`.
+Outside the checkout `--loom-path` is required (`create-loom-app` refuses without it); inside it
+(`<loom>/apps/my-app`) no flag is needed. `loom new` names are kebab-case; a kind that imports a
+package your `package.json` lacks (`sentinel`) prints the line to add. `loom new` takes `flow · agent · tool · skill · schedule · memory · projection · sentinel`.
 The folder convention is **build-time** codegen — a static `loom.gen.ts`, never runtime
 globbing.
 

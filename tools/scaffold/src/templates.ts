@@ -36,6 +36,34 @@ export function flowFile(name: string): string {
   ].join("\n");
 }
 
+/**
+ * `app/flows/<name>/flow.test.ts` — runs the `loom new flow` echo flow through `@loom/testing`'s
+ * `createTestApp` (in-memory, permissive defaults: no principal or grants to wire). It passes on a
+ * fresh scaffold; replace the input/assertion as you change the flow.
+ */
+export function flowTestFile(name: string): string {
+  const P = pascal(name);
+  return [
+    'import { createTestApp } from "@loom/testing";',
+    'import { describe, expect, it } from "vitest";',
+    `import { ${P}Flow } from "./flow";`,
+    "",
+    `describe("${name}", () => {`,
+    '  it("runs the flow end to end", async () => {',
+    `    const app = createTestApp({ flows: [${P}Flow] });`,
+    "    try {",
+    `      const handle = await app.runtime.start(${P}Flow, { input: "hello" });`,
+    "      const state = await handle.waitForCompletion();",
+    '      expect(state.variables._output).toEqual({ output: "hello" });',
+    "    } finally {",
+    "      await app.close();",
+    "    }",
+    "  });",
+    "});",
+    "",
+  ].join("\n");
+}
+
 /** `app/flows/<name>/flow.ts` — a schedule-driven sentinel starter (@loom/plugin-sentinel). */
 export function sentinelFile(name: string): string {
   const P = pascal(name);
@@ -223,6 +251,39 @@ export function newFile(
   }
 }
 
+/**
+ * Every file `loom new <kind> <name>` writes: the construct itself first, then (where a test is
+ * natural — a flow) a sibling `*.test.ts`. `newFile` stays the single-file router.
+ */
+export function newFiles(
+  kind: Parameters<typeof newFile>[0],
+  name: string
+): { path: string; content: string }[] {
+  const files = [newFile(kind, name)];
+  if (kind === "flow") {
+    files.push({ path: `app/flows/${name}/flow.test.ts`, content: flowTestFile(name) });
+  }
+  return files;
+}
+
+/** Version spec for a non-`@loom` dependency a template imports. */
+export const THIRD_PARTY_SPECS: Record<string, string> = {
+  zod: "^3.23.8",
+  vitest: "^2.1.8",
+};
+
+/** Package names a generated file imports (bare specifiers only; `node:` and relative excluded). */
+export function importedPackages(content: string): string[] {
+  const out = new Set<string>();
+  for (const m of content.matchAll(/^\s*import\b[^"']*?from\s+["']([^"']+)["']/gm)) {
+    const spec = m[1] as string;
+    if (spec.startsWith(".") || spec.startsWith("node:")) continue;
+    const parts = spec.split("/");
+    out.add(spec.startsWith("@") ? parts.slice(0, 2).join("/") : (parts[0] as string));
+  }
+  return [...out].sort();
+}
+
 // ── Whole-app scaffold (used by create-loom-app), following the convention ────
 
 export function appFiles(appName: string): Record<string, string> {
@@ -250,6 +311,7 @@ export function appFiles(appName: string): Record<string, string> {
         },
         devDependencies: {
           "@loom/cli": "workspace:*",
+          "@loom/testing": "workspace:*", // `loom new flow` emits a createTestApp test
           tsx: "^4.19.2",
           typescript: "^5.6.3",
           vitest: "^2.1.8",

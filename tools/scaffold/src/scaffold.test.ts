@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { generateRegistration, pascal } from "./codegen";
+import { constructNameProblem, isValidPackageName, kebab, packageNameFrom } from "./names";
 import {
   agentFile,
   appFiles,
   flowFile,
+  importedPackages,
   memoryFile,
   newFile,
+  newFiles,
   projectionFile,
   scheduleFile,
   skillFile,
@@ -109,5 +112,58 @@ describe("appFiles", () => {
     expect(files["app/config.ts"]).toContain("flowModules");
     expect(files["app/config.ts"]).toContain("skillModules");
     for (const content of Object.values(files)) expect(content).not.toContain("${");
+  });
+});
+
+describe("names", () => {
+  it("accepts kebab-case construct names and refuses the rest with a suggestion", () => {
+    for (const ok of ["greet", "pg-lag", "a1", "order-check-2"]) {
+      expect(constructNameProblem(ok), ok).toBeUndefined();
+    }
+    expect(constructNameProblem("Bad Name")).toContain('"bad-name"');
+    expect(constructNameProblem("1abc")).toContain("kebab-case");
+    expect(constructNameProblem("")).toContain("kebab-case");
+    for (const p of ["../x", "a/b", "..", ".", "C:x", "a\\b"]) {
+      expect(constructNameProblem(p), p).toContain("path");
+    }
+    expect(kebab("MyCoolApp!")).toBe("my-cool-app");
+  });
+
+  it("validates npm package names and derives one from a folder name", () => {
+    expect(isValidPackageName("my-app")).toBe(true);
+    for (const bad of ["Bad Name!", "", ".hidden", "_x", "UPPER"]) {
+      expect(isValidPackageName(bad), bad).toBe(false);
+    }
+    expect(packageNameFrom("Bad Name!")).toBe("bad-name");
+    expect(packageNameFrom("!!!")).toBeUndefined();
+  });
+});
+
+describe("newFiles and importedPackages", () => {
+  it("a flow ships a sibling test that imports @loom/testing; other kinds ship only themselves", () => {
+    expect(newFiles("flow", "greet").map((f) => f.path)).toEqual([
+      "app/flows/greet/flow.ts",
+      "app/flows/greet/flow.test.ts",
+    ]);
+    expect(newFiles("tool", "lookup").map((f) => f.path)).toEqual(["app/tools/lookup.ts"]);
+    expect(newFiles("flow", "greet")[1]?.content).toContain("createTestApp");
+  });
+
+  it("lists bare package imports only (scoped as two segments; node: and relative excluded)", () => {
+    expect(
+      importedPackages(
+        [
+          'import { a } from "@loom/core";',
+          'import x from "zod/v3";',
+          'import "node:fs";',
+          'import y from "./y";',
+        ].join("\n")
+      )
+    ).toEqual(["@loom/core", "zod"]);
+    expect(importedPackages(newFile("sentinel", "w").content)).toContain("@loom/plugin-sentinel");
+  });
+
+  it("the scaffolded package.json declares @loom/testing for the emitted flow test", () => {
+    expect(appFiles("a")["package.json"]).toContain('"@loom/testing": "workspace:*"');
   });
 });
