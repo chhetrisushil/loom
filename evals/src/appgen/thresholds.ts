@@ -19,6 +19,8 @@ import type { Thresholds } from "../gate";
 // `edit-remove-digest` case is a MEASURED GAP, not a labelling error. The ChangeSpec prompt and schema of
 // `@loom/appgen-model` offer create / extend / modify and no delete, so the model arm cannot plan "remove the digest
 // flow" (the deterministic arm can). See PROVENANCE.md; if the planner learns to delete, raise this floor.
+// NOTE: this floor bakes in that known delete gap, and the pinned `toBeCloseTo(0.9)` test will go RED on an
+// improvement (coverage rises above 0.9). That is the prompt to raise the floor, not a regression.
 //
 // Lowering a floor needs a one-line reason in the PR and here; raising is free.
 

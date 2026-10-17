@@ -4,7 +4,9 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,8 +27,8 @@ import { resolveInsideRoot, writePlan } from "./subject";
 //   3. FINDING: a `flow.ts` that is a SYMLINK to a file outside the project is scanned as a flow, planned as an
 //      in-place edit, and a write to that path follows the link. The lexical `resolveInside` check cannot see it, and
 //      the real `cmdAppgen` overwrote the outside file when this was tried by hand (2026-10-17). The demonstration
-//      is the `it.fails` test below: it asserts the SAFE behaviour, fails today, and so "passes" as expected-failure;
-//      when the escape is fixed it starts failing, which is the prompt to delete the `.fails`.
+//      is the exact pin below (`outsideChanged` is true today, with a positive control); when the escape is fixed
+//      it goes red, which is the prompt to flip it to `toBe(false)`.
 // Nothing here works around the finding in the code under test; only the eval harness's OWN writer refuses
 // symlinks and escapes (writePlan in ./subject.ts), because it must never write outside its fixture either.
 
@@ -121,24 +123,26 @@ describe("applyChanges containment (ESCALATION RULE, S3)", () => {
     expect(readFileSync(outside, "utf8")).toBe(before);
   });
 
-  // The FINDING. Asserts the SAFE behaviour (a plan consumer that checks containment the way the CLI does, with
-  // `path.relative` on the lexical path, must not end up modifying a file outside the project). It FAILS today, so it
-  // is `it.fails`: the suite stays green and records the finding; fixing the escape turns it red and the `.fails`
-  // is then removed. Reported to the user as a security finding (see the PR), NOT worked around here.
-  it.fails(
-    "FINDING: writing an applyChanges plan through a symlinked flow.ts modifies a file OUTSIDE the project",
-    () => {
-      const { base, root } = sandbox();
-      const outside = join(base, "outside", "evil.ts");
-      const [f] = generateFlows({
-        name: "x",
-        capabilities: [{ id: "evil", name: "Evil", intent: "i", steps: ["run"] }],
-      });
-      writeFileSync(outside, (f as { contents: string }).contents);
-      mkdirSync(join(root, "app", "flows", "evil"), { recursive: true });
-      symlinkSync(outside, join(root, "app", "flows", "evil", "flow.ts"));
-      const before = readFileSync(outside, "utf8");
-
+  // The FINDING, pinned EXACTLY. We run what the CLI does (scanApp -> applyChanges -> lexical containment check ->
+  // plain writeFileSync) over a symlinked flow.ts and record whether the OUTSIDE file changed (content or mtime). Any
+  // exception from scanApp / applyChanges / the writer is CAUGHT and recorded separately, so a fix that makes scanApp
+  // skip the link or applyChanges throw turns `outsideChanged` false and flips this pin, whatever the mechanism.
+  // When the fix lands (branch fix/appgen-symlink-escape) flip the ONE assertion marked FLIP below.
+  function symlinkEscape(): { outsideChanged: boolean; threw: string | undefined } {
+    const { base, root } = sandbox();
+    const outside = join(base, "outside", "evil.ts");
+    const [f] = generateFlows({
+      name: "x",
+      capabilities: [{ id: "evil", name: "Evil", intent: "i", steps: ["run"] }],
+    });
+    writeFileSync(outside, (f as { contents: string }).contents);
+    utimesSync(outside, 1_000, 1_000); // a fixed, old mtime so a rewrite is always visible
+    mkdirSync(join(root, "app", "flows", "evil"), { recursive: true });
+    symlinkSync(outside, join(root, "app", "flows", "evil", "flow.ts"));
+    const snap = () => `${readFileSync(outside, "utf8")}@${statSync(outside).mtimeMs}`;
+    const before = snap();
+    let threw: string | undefined;
+    try {
       const plan = applyChanges(
         spec({ id: "evil", op: "extend", steps: [{ id: "extra", op: "create" }] }),
         scanApp(root)
@@ -146,11 +150,36 @@ describe("applyChanges containment (ESCALATION RULE, S3)", () => {
       // the CLI's check (tools/cli/src/appgen.ts `resolveInside`): lexical containment, then a plain write
       for (const e of plan.edits) {
         const dest = join(root, e.path);
-        const rel = relative(root, dest);
-        expect(rel.startsWith(`..${sep}`)).toBe(false); // passes: the LEXICAL path is inside
+        if (relative(root, dest).startsWith(`..${sep}`)) continue; // refused lexically
         writeFileSync(dest, e.after); // follows the link
       }
-      expect(readFileSync(outside, "utf8")).toBe(before); // FAILS today: the outside file was rewritten
+    } catch (e) {
+      threw = String((e as Error)?.message ?? e);
     }
-  );
+    return { outsideChanged: snap() !== before, threw };
+  }
+
+  it("POSITIVE CONTROL: the escape detector sees a change to the outside file (so the pin below is not vacuous)", () => {
+    const { base } = sandbox();
+    const outside = join(base, "outside", "ctl.ts");
+    writeFileSync(outside, "a");
+    utimesSync(outside, 1_000, 1_000);
+    const snap = () => `${readFileSync(outside, "utf8")}@${statSync(outside).mtimeMs}`;
+    const before = snap();
+    expect(snap()).toBe(before); // no change, no detection
+    writeFileSync(outside, "a"); // same content, new mtime: still detected
+    expect(snap()).not.toBe(before);
+    writeFileSync(outside, "b");
+    expect(snap()).not.toBe(before);
+  });
+
+  it("SECURITY FINDING: appgen writes through a symlinked flow file (pinned; flips when the fix lands)", () => {
+    const { outsideChanged, threw } = symlinkEscape();
+    expect(threw, "scanApp/applyChanges/writer threw; the escape did not run").toBeUndefined();
+    // FLIP when the fix lands (branch fix/appgen-symlink-escape): expect(outsideChanged).toBe(false)
+    expect(
+      outsideChanged,
+      "SECURITY FINDING: appgen writes through a symlinked flow file - when the fix lands (branch fix/appgen-symlink-escape), flip this to expect(outsideChanged).toBe(false)"
+    ).toBe(true);
+  });
 });

@@ -2,7 +2,7 @@
 
 - **Files:** `corpus.ts` (40 synthetic documents, 8 topics x 5), `queries.ts` (33 graded queries and one
   pathological termination query).
-- **Labeller:** Claude Opus 5.5 (1M context), as the implementing agent of ADR 0131 slice S1, for the repo owner.
+- **Labeller:** Claude (Sonnet subagent), reviewed by Claude (Sonnet), as the implementing agent of ADR 0131 slice S1, for the repo owner.
 - **Date:** 2026-10-17.
 - **Source:** original synthetic text about everyday topics. No real user data, no third-party or copied text.
 - **Blind labelling:** the corpus and every graded query were written and committed BEFORE any store was searched

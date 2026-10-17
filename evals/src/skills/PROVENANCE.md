@@ -1,7 +1,7 @@
 # Provenance: skill-discovery dataset
 
 - **Files:** `skills.ts` (15 synthetic skills), `intents.ts` (30 labelled intents).
-- **Labeller:** Claude Opus 5.5 (1M context), as the implementing agent of ADR 0131 slice S1, for the repo owner.
+- **Labeller:** Claude (Sonnet subagent), reviewed by Claude (Sonnet), as the implementing agent of ADR 0131 slice S1, for the repo owner.
 - **Date:** 2026-10-17.
 - **Source:** original synthetic text. No real user data, no third-party text.
 - **Blind labelling:** skills and intents were written and committed BEFORE any ranker was run over them

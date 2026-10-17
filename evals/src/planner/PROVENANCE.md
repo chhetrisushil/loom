@@ -3,7 +3,7 @@
 - **Files:** `cases.ts` (12 operator intents, each with the capability it must route to, the exact agent graph it must
   plan, and a hand-written model script), `catalog.ts` (the 8-capability database-operations catalogue), `cassettes/*.json`
   (one cassette per intent), `subject.ts` (the case runner), `measure.ts`, `author.ts`.
-- **Labeller:** Claude Opus 5.5 (1M context), as the implementing agent of ADR 0131 slice S3, for the repo owner.
+- **Labeller:** Claude (Sonnet subagent), reviewed by Claude (Sonnet), as the implementing agent of ADR 0131 slice S3, for the repo owner.
 - **Date:** 2026-10-17.
 - **Source:** original synthetic text. The catalogue and the intent shapes follow the sibling `loom-examples`
   `db-command-center` example (diagnose, assess, apply, scale), with synthetic ids and wording. No real user data, no

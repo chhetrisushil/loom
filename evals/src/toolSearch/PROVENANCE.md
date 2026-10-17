@@ -1,7 +1,7 @@
 # Provenance: tool-search dataset
 
 - **Files:** `catalogue.ts` (72 synthetic tools and 10 host annotations), `queries.ts` (48 labelled queries).
-- **Labeller:** Claude Opus 5.5 (1M context), as the implementing agent of ADR 0131 slice S1, for the repo owner.
+- **Labeller:** Claude (Sonnet subagent), reviewed by Claude (Sonnet), as the implementing agent of ADR 0131 slice S1, for the repo owner.
 - **Date:** 2026-10-17.
 - **Source:** original synthetic text. The menu shape follows the `tool-search-mcp-menu` example in the sibling
   `loom-examples` repo (nine domains, deliberately overlapping vocabulary). No real user data, no third-party text.

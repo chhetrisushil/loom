@@ -34,6 +34,8 @@ export interface PlannerOutcome {
   readonly graph: ExpectedGraph;
   /** Model calls the whole case made (route + plan attempts). */
   readonly modelCalls: number;
+  /** The model's raw reply to the ROUTING call (the first model call), or undefined when none was made / it threw. */
+  readonly routerReply?: string;
   readonly error?: string;
 }
 
@@ -80,10 +82,14 @@ export async function runPlannerCase(
 ): Promise<PlannerOutcome> {
   const catalog = makeCatalog();
   let modelCalls = 0;
+  let routerReply: string | undefined;
   const counted: LlmProvider = {
     async complete(req) {
       modelCalls++;
-      return provider.complete(req);
+      const first = modelCalls === 1;
+      const res = await provider.complete(req);
+      if (first) routerReply = typeof res.content === "string" ? res.content : undefined;
+      return res;
     },
   };
 
@@ -126,6 +132,7 @@ export async function runPlannerCase(
     routedBy,
     graph,
     modelCalls,
+    ...(routerReply !== undefined && { routerReply }),
     ...(error !== undefined && { error }),
   };
 }

@@ -80,6 +80,21 @@ describe("eval:record refuses an empty 200 (no candidates), for every kind of ta
     expect(h.text()).toMatch(/planner\/cpu-single: NOT WRITTEN.*did not name a capability/);
   });
 
+  it("planner: an empty 200 on the no-capability case is NOT WRITTEN; a proper NONE refusal is written", async () => {
+    const h = harness({ complete: async () => empty });
+    expect(await runRecord(["--live", "--task", "planner/no-capability"], env, h.d)).toBe(1);
+    expect(h.written).toEqual({});
+    expect(h.text()).toMatch(/planner\/no-capability: NOT WRITTEN.*no explicit refusal/);
+
+    const c = PLANNER_CASES.find((x) => x.id === "no-capability");
+    const run = c?.script as NonNullable<typeof c>["script"];
+    const g = harness({ complete: async (req) => run(turnOf(req), req) });
+    expect(await runRecord(["--live", "--task", "planner/no-capability"], env, g.d), g.text()).toBe(
+      0
+    );
+    expect(Object.keys(g.written)).toEqual(["planner/no-capability"]);
+  });
+
   it("the S3 judges, directly", () => {
     const ok = {
       spec: { planner: "model", capabilities: [{ id: "a" }] },
@@ -121,12 +136,20 @@ describe("eval:record refuses an empty 200 (no candidates), for every kind of ta
     expect(
       judgePlannerRecording(
         true,
-        with_({ graph: "refused:empty", route: null, routedBy: "none" }),
+        with_({ graph: "refused:empty", route: null, routedBy: "none", routerReply: "NONE" }),
         2,
         []
       )
     ).toBeUndefined();
     expect(judgePlannerRecording(true, graph, 2, [])).toMatch(/expected a refusal/);
+    const refused = { graph: "refused:empty", route: null, routedBy: "none" };
+    expect(judgePlannerRecording(true, with_(refused), 2, [])).toMatch(/no explicit refusal/);
+    expect(judgePlannerRecording(true, with_({ ...refused, routerReply: "  " }), 2, [])).toMatch(
+      /reply was empty/
+    );
+    expect(
+      judgePlannerRecording(true, with_({ ...refused, routerReply: "I am not sure" }), 2, [])
+    ).toMatch(/did not answer NONE/);
     expect(judgePlannerRecording(false, with_({ routedBy: "keyword" }), 2, [])).toMatch(
       /keyword matcher/
     );
