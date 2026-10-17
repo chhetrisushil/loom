@@ -397,6 +397,124 @@ describe("a --dir inside the cwd is never trusted as a containment root", () => 
   }, 60_000);
 });
 
+describe("--dir is classified by REAL path, never by spelling", () => {
+  /**
+   * `<base>/proj` (the cwd, real) with `app -> <base>/outside`, plus `<base>/alias -> <base>` (a second
+   * spelling of the whole tree, like macOS /tmp -> /private/tmp) and `<base>/logical -> proj` (a shell's
+   * logical `$PWD`). Built inside the temp tree so it behaves the same on Linux.
+   */
+  function fixture(linkName = "app") {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "loom-symlink-")));
+    made.push(base);
+    const proj = join(base, "proj");
+    const outside = join(base, "outside");
+    mkdirSync(proj);
+    mkdirSync(join(outside, "flows"), { recursive: true });
+    symlinkSync(outside, join(proj, linkName));
+    symlinkSync(base, join(base, "alias"));
+    symlinkSync(proj, join(base, "logical"));
+    return { base, proj, outside, s: sentinel(outside, "loom.gen.ts") };
+  }
+  async function inCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.cwd();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.chdir(cwd);
+    try {
+      return await fn();
+    } finally {
+      process.chdir(prev);
+      log.mockRestore();
+      err.mockRestore();
+    }
+  }
+  const untouched = (outside: string) =>
+    expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
+
+  it("loom gen --dir <alias-of-the-tree>/proj/app (cwd physical) refuses `app -> outside`", async () => {
+    const { base, proj, outside, s } = fixture();
+    await inCwd(proj, async () => {
+      await expect(run(["gen", "--dir", join(base, "alias", "proj", "app")])).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    untouched(outside);
+  });
+
+  it('loom gen --dir "$PWD/app" with a LOGICAL $PWD (process cwd physical) refuses `app -> outside`', async () => {
+    const { base, proj, outside, s } = fixture();
+    await inCwd(proj, async () => {
+      await expect(run(["gen", "--dir", join(base, "logical", "app")])).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    untouched(outside);
+  });
+
+  it("loom new flow --dir <logical>/app refuses `app -> outside`", async () => {
+    const { base, proj, outside, s } = fixture();
+    await inCwd(proj, async () => {
+      await expect(
+        run(["new", "flow", "pwn", "--dir", join(base, "logical", "app")])
+      ).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    untouched(outside);
+  });
+
+  it("loom appgen --dir <logical>/app refuses `app -> outside` (files and lockfile)", async () => {
+    const { base, proj, outside, s } = fixture();
+    await inCwd(proj, async () => {
+      await expect(
+        run(["appgen", INTENT, "--dir", join(base, "logical", "app"), "--yes", "--offline"])
+      ).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    untouched(outside);
+  });
+
+  it("loom plugin new --dir <logical>/app refuses `app -> outside`", async () => {
+    const { base, proj, outside, s } = fixture();
+    await inCwd(proj, async () => {
+      await expect(
+        run(["plugin", "new", "store", "my-store", "--dir", join(base, "logical", "app")])
+      ).resolves.not.toBe(0);
+    });
+    s.unchanged();
+    untouched(outside);
+  });
+
+  it("a real dir inside the cwd works through an aliased spelling (no false refusal)", async () => {
+    const { base, proj } = fixture();
+    mkdirSync(join(proj, "real", "flows"), { recursive: true });
+    await inCwd(proj, async () => {
+      expect(await run(["gen", "--dir", join(base, "logical", "real")])).toBe(0);
+      expect(await run(["gen", "--dir", join(base, "alias", "proj", "real")])).toBe(0);
+    });
+    expect(existsSync(join(proj, "real", "loom.gen.ts"))).toBe(true);
+  });
+
+  it("a --dir truly outside the cwd (a sibling) that is itself a link is allowed: documented policy", async () => {
+    const { base, proj, outside } = fixture();
+    rmSync(join(outside, "loom.gen.ts"), { force: true });
+    symlinkSync(outside, join(base, "named"));
+    await inCwd(proj, async () => {
+      expect(await run(["gen", "--dir", join(base, "named")])).toBe(0);
+      expect(await run(["gen", "--dir", "../named"])).toBe(0);
+    });
+    expect(existsSync(join(outside, "loom.gen.ts"))).toBe(true);
+  });
+
+  it("containmentRootFor: by real path, in the spelling dir used; sibling stays its own root", () => {
+    const { base, proj } = fixture();
+    expect(containmentRootFor(join(base, "logical", "app"), proj)).toBe(join(base, "logical"));
+    expect(containmentRootFor(join(base, "alias", "proj", "app"), proj)).toBe(
+      join(base, "alias", "proj")
+    );
+    expect(containmentRootFor("app", proj)).toBe(proj);
+    expect(containmentRootFor(join(base, "named"), proj)).toBe(join(base, "named"));
+    expect(containmentRootFor("not/yet/created", proj)).toBe(proj);
+  });
+});
+
 describe("the same exposure in the other project-root writers", () => {
   it("loom gen will not write app/loom.gen.ts through a link", () => {
     const base = mkdtempSync(join(tmpdir(), "loom-symlink-"));

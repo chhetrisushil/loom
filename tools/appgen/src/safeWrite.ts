@@ -9,7 +9,7 @@ import * as path from "node:path";
  * follows the link and overwrites a file outside the project. Policy (deliberately simple):
  *
  *  - the ROOT itself may be reached through a link (`/tmp` -> `/private/tmp`, a symlinked checkout),
- *    but ONLY for a root OUTSIDE the cwd that the user named explicitly (`--dir /elsewhere`). A project
+ *    but ONLY for a root OUTSIDE the cwd (by REAL path, not spelling) that the user named explicitly (`--dir /elsewhere`). A project
  *    directory inside the cwd (`app`, `./app`, `app/nested`, typed or defaulted) is never trusted:
  *    callers use the cwd as the root, so a cloned repo's own `app -> /outside` link is a component below
  *    the root and is refused (the CLI and the library defaults derive it with `containmentRootFor`);

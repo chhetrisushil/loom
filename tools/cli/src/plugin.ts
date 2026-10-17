@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { listSeams, pluginFiles } from "@loom/scaffold";
 import { KERNEL_PACKAGES, SPI_PACKAGES } from "@loom/spec";
+import { containmentRootFor } from "./gen";
 import { safeWriteFile } from "./safeWrite";
 
 /**
@@ -17,6 +18,7 @@ export function cmdPluginNew(
   const files = pluginFiles(seam, name, { firstParty: opts.firstParty });
   const written: string[] = [];
   const skipped: string[] = [];
+  const containment = containmentRootFor(opts.dir);
   let root = "";
   for (const [rel, content] of Object.entries(files)) {
     const dest = path.join(opts.dir, rel);
@@ -32,7 +34,7 @@ export function cmdPluginNew(
       skipped.push(dest);
       continue;
     }
-    safeWriteFile(opts.dir, dest, content);
+    safeWriteFile(containment, dest, content);
     written.push(dest);
   }
   return { dir: root, written, skipped };
