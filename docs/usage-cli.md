@@ -1,6 +1,6 @@
 # Loom — CLI Usage Guide
 
-`loom` is the project-local command line for a Loom app. Every command is a **lens on the same durable event log** — it adds no infrastructure, holds no state of its own, and runs no live effects. You use it to scaffold code, validate a flow graph before it runs, observe an execution after it ran, and gate a deploy on replay.
+`loom` is the project-local command line for a Loom app. Every command is a **lens on the same durable event log** — it adds no infrastructure and holds no state of its own, and — apart from the three lifecycle verbs `resume`, `cancel` and `start`, which act only through your app's own runtime and say so — runs no live effects. You use it to scaffold code, validate a flow graph before it runs, observe an execution after it ran, and gate a deploy on replay.
 
 > New here? Follow the **[Getting Started](getting-started.md)** quickstart first, then the **[Usage Guide](usage.md)** (Step 13 introduces the CLI in context). This doc is the command-by-command reference.
 
@@ -14,6 +14,7 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 2. [Scaffold & wire: `new`, `gen`, `appgen`](#scaffold--wire-new-gen-appgen)
 3. [Validate before you run: `doctor`, `check`, `verify`, `lint`](#validate-before-you-run-doctor-check-verify-lint)
 4. [Observe a run: `logs`, `debug`, `inspect`](#observe-a-run-logs-debug-inspect)
+   - [Act on a run: `resume`, `cancel`, `start`](#act-on-a-run-resume-cancel-start)
 5. [Analyze a run: `profile`, `introspect`, `optimize`](#analyze-a-run-profile-introspect-optimize)
 6. [Learn from the log: `learn report`, `learn eval`](#learn-from-the-log-learn-report-learn-eval)
 7. [Ship safely: `eval`, `deploy check`](#ship-safely-eval-deploy-check)
@@ -76,6 +77,17 @@ observe
   loom inspect <store> [--port N]                 web inspector (timeline + slider)
 
 operate
+  loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--apply] [--json]
+                                                  answer a suspended gate THROUGH your app's runtime:
+                                                  its resume authenticator, execution authorizer and
+                                                  resumeSchemas all run (dry run unless --apply; --db
+                                                  is refused; the continuation runs in THIS process)
+  loom cancel <executionId> --config <module> --as <principal> [--tenant <t>] [--reason <text>] [--force] [--apply] [--json]
+                                                  cancel through your app's runtime (dry run unless
+                                                  --apply; a live lease holder refuses unless --force)
+  loom start <flowId> --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--apply] [--json]
+                                                  start a flow through your app's runtime (dry run
+                                                  unless --apply; the flow runs in THIS process)
   loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
                                                   re-drive executions whose supervisor died
                                                   (--max-recoveries: skip + list those whose
@@ -162,7 +174,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 ### Machine output: `--json`
 
-`--json` is accepted by the commands that report a result: `ls`, `logs`, `debug`, `census`, `doctor`, `check`, `verify`, `eval`, `lint claim-check`, `compat`, `profile`, `introspect` and `kernel-manifest`. Any other command rejects it as an unknown flag (exit `2`) rather than ignoring it.
+`--json` is accepted by the commands that report a result: `resume`, `cancel`, `start`, `ls`, `logs`, `debug`, `census`, `doctor`, `check`, `verify`, `eval`, `lint claim-check`, `compat`, `profile`, `introspect` and `kernel-manifest`. Any other command rejects it as an unknown flag (exit `2`) rather than ignoring it.
 
 - **stdout is exactly the JSON** — one document (pretty-printed), or **ndjson** for `logs` (one event envelope per line). Banners, progress lines, `console.*` calls and direct `process.stdout.write` calls from an imported config are all diverted to stderr for the run.
 - Verdict commands put `ok` first-class: `{ "ok": boolean, … }`. The **exit code is unchanged** (`0` / `1` / `2`), so `loom doctor --json | jq .ok` and `loom doctor` agree. `ok` is meaningful where the command has a verdict; for `debug`, `profile`, `introspect` and `census` it is always `true` — a failure there (unknown execution, unreadable store) throws, so it exits non-zero with the stderr error document instead of emitting `ok:false`.
@@ -174,6 +186,7 @@ There are no global flags — each command declares its own. The recurring ones 
 | `debug` | `{ ok, executionId, at?, eventCount, state }` (`--redact` masks the folded `state`: frames, variables, output) |
 | `census` | `{ ok, census, suspended, note? }` (`suspended`: parked count, timer waits, overdue `wakeAt`s) |
 | `ls` | `{ ok, executions[], scanned, limit, truncated?, unreadable? }` |
+| `resume` · `cancel` · `start` | `{ ok, action, dryRun, executionId, before?, after?, refusal?, failure? }` — a refusal is `ok:false` with the app's reason **on stdout** and exit `2`; a runtime failure is `failure` and exit `1` |
 | `doctor` | `{ ok, checks: [{ id, name, status, detail }] }` |
 | `check` | `{ ok, issues }` |
 | `verify` | the verification report (`ok`, `findings`, `checked`, …) plus `banner?` |
@@ -604,6 +617,46 @@ npx loom inspect --db .loom/events.db
 ```
 
 Enter an execution id in the page, then drag the slider to walk the run. Under the hood it serves `/api/trace/:executionId` (the timeline render model) and `/api/state/:executionId/:sequence` (the same folded state as `loom debug --at`). `loom dev` is an identical alias.
+
+---
+
+## Act on a run: `resume`, `cancel`, `start`
+
+The only commands that make an execution *do* something. They are a **security boundary**, so they are built to add no privilege and to bypass no check:
+
+```bash
+loom resume <executionId> --config <module> --as <principal> [--tenant <t>] \
+    --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--apply] [--json]
+loom cancel <executionId> --config <module> --as <principal> [--tenant <t>] [--reason <text>] [--force] [--apply] [--json]
+loom start  <flowId>      --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) \
+    [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--apply] [--json]
+```
+
+**Dry run by default.** Without `--apply` they report, and change nothing: the execution's status and what it waits on (for `resume`, also the park's sequence number — an approval signed to a park binds it, [ADR 0117](adr/0117-approvals-bound-to-what-the-approver-saw.md)), the live lease if any, and for `resume` what the flow's `resumeSchemas` ([ADR 0077](adr/0077-typed-resume-payloads.md)) make of your payload — **the parsed value, with the keys the schema strips named**, because `z.object` drops unknown keys and what is recorded is the parsed value, not what you typed. For `start` the input is validated against the flow's input schema. Whether the resume authenticator and the execution authorizer will admit the call is **evaluated on `--apply`** (the runtime offers no side-effect-free way to ask), and the dry run says so.
+
+### The trust model
+
+- **Only through your app.** `--config <module>` is required and is never discovered (the module is imported and executed, so a verb that writes never guesses it). `--db` — and `--snap`, `--branches`, `--leases` — are **refused (exit `2`)**: a bare store has no resume authenticator, execution authorizer, `resumeSchemas`, tenant isolation or sealed-payload keys, so acting on it would bypass all of them. The verbs call `app.runtime.resume` / `cancel` / `start` / `loadState` / `parkedAtSequence` and nothing else; they never append to the log and never build a runtime of their own. So every check the app's own code path runs, these run: the `ResumeAuthenticator` (K12.2, [ADR 0024](adr/0024-k12-identity-tenancy-delegated-authority.md)), the `ExecutionAuthorizer` including tenant scoping and fail-closed principals ([ADR 0111](adr/0111-durable-principal.md)), the typed resume gate, the gate/event-type check, input validation, start-once ids ([ADR 0103](adr/0103-durable-bootstrap-for-caller-chosen-ids.md)), fencing and heartbeat leases ([ADR 0118](adr/0118-acquire-if-parked-fence.md), [ADR 0130](adr/0130-sealed-payload-delivery-guard.md)), sealed streams — and, because the continuation runs in this process through the app's effect runtime, the kill switch, quotas and capability ring ([ADR 0017](adr/0017-k6-behavioral-safety-ring.md)).
+- **Identity is `--as`** (the principal's `actor`) plus `--tenant`. `--as` is **required**: a call with no principal bypasses a non-strict app's authorizer by design (that is how the kernel's own machinery is exempt), and a CLI must not use that door. The CLI asserts the principal; it does not authenticate it. An operator who holds the config module and the store credentials is trusted **exactly as far as the app's checks admit** — the CLI grants nothing a check would refuse and removes nothing. Effects of a resumed execution run as the principal **recorded when it started**, never as `--as`.
+- **A credential rides in the payload, untouched.** If the app verifies an approval (a signature, a session), put the signed event in `--payload` / `--payload-file`; the authenticator sees exactly the event you gave. The CLI invents no credential. Prefer `--payload-file` for secrets: it keeps them out of shell history, and the file's contents are never echoed unless you pass `--show-payload`. Shown payloads go through `--redact` (the same masking as `logs`), and a JSON syntax error says "not valid JSON" without quoting your text.
+- **Refusals are exit `2`, with the app's reason, and append nothing** — a rejected approver, a payload failing `resumeSchemas`, a wrong event type, a non-suspended or unknown execution, an authorizer denial, a tenant mismatch, a live foreign lease, a duplicate start. One honest exception: when the *app's authorizer* denies a `resume`/`cancel`, the app's own runtime records its `EXECUTION_DENIED` audit fact, exactly as it would for the app's code; the CLI does not suppress that. A failure *after* acceptance (the resumed flow throws) is exit `1`.
+
+### In process, not delivered
+
+`resume` and `start` **run the continuation in this process**, through your app's effect runtime — the runtime has no public path that records a gate answer for "the owning worker" to pick up (only the durable inbox, `runtime.send`, delivers by itself, and it is not a gate). So the effects of the resumed steps happen *here*, with this machine's network and credentials. The CLI loads the app with `LOOM_NO_AUTOSTART=1`, so its timer service, schedules and workers do **not** start; a flow that parks again leaves its timer row in the store for your real workers to fire. `cancel` runs nothing: it records `EXECUTION_CANCELLED` under a fence (K8.2), so a stale driver's next write is rejected.
+
+**Concurrency.** `resume` answers exactly the park it read, under a conditional fence (`fenceIfParkedAt`, ADR 0118 — the same path the timer service uses), takes the runtime's heartbeat lease before the first append, and is refused if another live owner holds the lease (exit `2`, nothing appended). `cancel` refuses a live foreign lease unless `--force`, which fences the owner out (its next write fails) — use it only for an owner you know is wedged. `start --id` is start-once; `--idempotency-key k` derives a stable id (`idem-` + a hash of the flow and key), so a retried start is refused rather than run twice.
+
+```bash
+# What would this approval do?
+loom resume rel-42 --config dist/app.js --as release-bot --tenant acme \
+    --event ApprovalGranted --payload-file approval.json
+# …do it.
+loom resume rel-42 --config dist/app.js --as release-bot --tenant acme \
+    --event ApprovalGranted --payload-file approval.json --apply
+loom cancel rel-42 --config dist/app.js --as release-bot --tenant acme --reason "superseded" --apply
+loom start release-approval --config dist/app.js --as release-bot --input '{"service":"api","changeType":"hotfix"}' --idempotency-key api-2026-10-17 --apply
+```
 
 ---
 
@@ -1113,6 +1166,7 @@ npx loom plugin search postgres
 | `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied; `--check` typecheck fails |
 | `loom doctor` | run every pre-flight check whose input it can find, and name the ones it skipped | `--dir .`, `--config`, `--manifest` | any check fails (never for a skip) |
 | *store commands* | `ls` `logs` `debug` `inspect` `profile` `introspect` `optimize` `learn` `census` `recover` `branches` `repair` `retention` `sweep` `compliance` | **`<store>` = `--config <module>` _or_ `--db <events.db>`** — `--config` works wherever `--db` does, and neither flag is individually required | — |
+| `loom resume` · `cancel` · `start` | act on an execution THROUGH your app's runtime (authenticator, authorizer, `resumeSchemas`, leases all run; dry run unless `--apply`; the continuation runs in this process) | `--config` *(req)*, `--as` *(req)*, `--tenant`, `--event` *(req, resume)*, `--payload`/`--payload-file` *(req, resume)*, `--input`/`--input-file` *(req, start)*, `--id`/`--idempotency-key`, `--force` (cancel), `--redact`, `--show-payload`, `--apply` | a resumed/started execution fails after acceptance (refusals are exit `2`; `--db` is refused) |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom verify` | pre-flight runtime verification over a built app | `--config` *(req)*, `--manifest` | any error-severity finding |
 | `loom lint claim-check` | claim-check reach-through lint (CC-5) | `--dir .` | any finding |
@@ -1154,7 +1208,7 @@ Three exit codes, consistent across commands:
 |---|---|---|
 | `0` | it ran and the answer is fine | a clean `check`, a dry run, a `logs` of a real execution |
 | `1` | a **verdict failed**, or the thing you named **does not exist / could not run** | `doctor`/`check`/`verify`/`lint`/`eval`/`deploy check`/`compat`/`learn eval`/`plugin check`/`plugin try` finding a problem; a `--db`/`--snap`/`--content`/`--archive-*` path that is missing or is not a SQLite database (nothing is created or opened); an unknown execution id (not found is a runtime failure, not a usage error); `loom new` / `loom plugin new` that wrote nothing because everything "skipped … (already exists)" |
-| `2` | **bad usage or a refusal** — the command declined to act, and changed nothing. Everything refused for bad usage is `2`, in `create-loom-app` too | an unknown command, subcommand or flag (`loom <command> --help` is not an error: it prints that command's help and exits `0`); a value flag given twice; a missing `<directory>`; a missing required flag or positional; a malformed number/duration; `retention run` without `--ttl` or a snapshot store; `recover` with neither `timers.leases` nor `--stale`; `recover --apply` without `--config`; `introspect --graph bogus`; `repair`/`branches` preconditions |
+| `2` | **bad usage or a refusal** — the command declined to act, and changed nothing. Everything refused for bad usage is `2`, in `create-loom-app` too | an unknown command, subcommand or flag (`loom <command> --help` is not an error: it prints that command's help and exits `0`); a value flag given twice; a missing `<directory>`; a missing required flag or positional; a malformed number/duration; `retention run` without `--ttl` or a snapshot store; `recover` with neither `timers.leases` nor `--stale`; `recover --apply` without `--config`; `resume`/`cancel`/`start` with `--db`, without `--config` or `--as`, or refused by your app (authenticator, authorizer, `resumeSchemas`, a live lease); `introspect --graph bogus`; `repair`/`branches` preconditions |
 
 A script can therefore tell a refused `recover --apply` from a successful one. (Before this table, several refusals printed their reason and exited `0`, and the unknown-subcommand cases of `branches`/`repair`/`plugin` exited `1`; only `learn` returned `2`.) `doctor` fails only on a failing check, never on a skipped one. Reports go to stdout, errors to stderr. That makes the gates drop straight into CI:
 
