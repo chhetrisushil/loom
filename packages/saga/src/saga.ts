@@ -2,6 +2,7 @@ import { StorageWriteError, SuspendError } from "@loom/core";
 import type { StepDefinition } from "@loom/core";
 import {
   ExecutionCancelledError,
+  ExecutionStoreUnavailableError,
   FlowDivergenceError,
   LeaseHeldError,
   LeaseLostError,
@@ -27,7 +28,8 @@ import type { ExecutionContext } from "@loom/workflow-runtime";
 
 // Errors that are the RUNTIME talking, not a compensator failing: a suspension, a
 // cancellation / abort, a lost lease or stale fence (this driver no longer owns the
-// execution), replay divergence, an unreadable sealed payload, a storage failure. They
+// execution), replay divergence, an unreadable sealed payload, a storage failure or a
+// temporarily unavailable execution store (retryable — the retry is the caller's). They
 // propagate at once — folding them into `compensationErrors` would keep calling
 // `ctx.run` on a dead context and mask the real cause. Classes from packages saga does
 // not depend on (`StaleFenceError`) are matched by their stable `name`.
@@ -49,7 +51,8 @@ function isRuntimeSignal(err: unknown): boolean {
     err instanceof LeaseHeldError ||
     err instanceof FlowDivergenceError ||
     err instanceof SealedPayloadUnreadableError ||
-    err instanceof StorageWriteError
+    err instanceof StorageWriteError ||
+    err instanceof ExecutionStoreUnavailableError
   ) {
     return true;
   }

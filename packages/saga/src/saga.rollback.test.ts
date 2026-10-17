@@ -1,8 +1,13 @@
 import { StorageWriteError, SuspendError, step$ } from "@loom/core";
 import {
   ExecutionCancelledError,
+  ExecutionStoreUnavailableError,
   FlowDivergenceError,
+  LeaseHeldError,
   LeaseLostError,
+  SealedPayloadUnreadableError,
+  StartFencedOutError,
+  StartLeaseHeldError,
 } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -50,6 +55,11 @@ describe("rollback: runtime signals propagate unwrapped (no masking)", () => {
         new FlowDivergenceError("exec", "w", { kind: "a", name: "b" }, { kind: "c", name: "d" }),
     ],
     ["storage failure", () => new StorageWriteError(new Error("disk"))],
+    ["store unavailable", () => new ExecutionStoreUnavailableError("resume" as never, "exec")],
+    ["lease held elsewhere", () => new LeaseHeldError("exec")],
+    ["sealed payload", () => new SealedPayloadUnreadableError("exec", "msg", "topic")],
+    ["start fenced out", () => new StartFencedOutError("exec")],
+    ["start lease held", () => new StartLeaseHeldError("exec")],
     ["suspension", () => new SuspendError({ type: "event", eventType: "approve" } as never)],
   ];
   for (const [name, make] of signals) {
