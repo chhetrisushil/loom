@@ -1,4 +1,5 @@
-import type { LlmRequest, LlmResponse, LlmToolCall } from "@loom/llm";
+import type { LlmResponse, LlmToolCall } from "@loom/llm";
+import type { Script } from "../cassetteFiles";
 import type { TaskInput } from "./subject";
 
 // ── The scripted tasks ────────────────────────────────────────────────────────
@@ -9,8 +10,7 @@ import type { TaskInput } from "./subject";
 // pair, so replay is the same loop over the same exchange. Shapes follow the loom-examples `agent-loop-triage`
 // example (ADR 0121); the behaviours asserted are the ones that ADR documents, not invented ones.
 
-/** The model's answer at a turn (`turn` = assistant messages so far). */
-export type Script = (turn: number, request: LlmRequest) => LlmResponse;
+export type { Script };
 
 export interface Expected {
   readonly status: "completed" | "failed";

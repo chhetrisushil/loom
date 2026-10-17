@@ -1,6 +1,18 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { APPGEN_CASES } from "./appgen/cases";
+import { PLANNER_CASES } from "./planner/cases";
+import { CAPABILITY_IDS } from "./planner/catalog";
 import { DOCS } from "./retrieval/corpus";
 import { QUERIES as RETRIEVAL_QUERIES } from "./retrieval/queries";
 import { INTENTS } from "./skills/intents";
@@ -21,10 +33,13 @@ function datasetDirs(): string[] {
     .sort();
 }
 
-/** Dataset content files: everything in the directory except tests, the measure code and the thresholds. */
+/**
+ * Dataset content files: everything in the directory except tests, the measure code and the thresholds, and except
+ * the `.<id>.json.<pid>.tmp` scratch file a cassette write leaves for an instant (git-ignored, never content).
+ */
 function contentFiles(dir: string): string[] {
   return readdirSync(dir)
-    .filter((f) => !/\.test\.ts$|^measure\.ts$|^thresholds\.ts$/.test(f))
+    .filter((f) => !/\.test\.ts$|^measure\.ts$|^thresholds\.ts$|\.tmp$/.test(f))
     .flatMap((f) => {
       const p = join(dir, f);
       return statSync(p).isDirectory() ? contentFiles(p) : [p];
@@ -51,9 +66,16 @@ describe("dataset sweep", () => {
   const dirs = datasetDirs();
 
   it("discovers every eval area (a non-zero, expected count - an empty walk cannot pass)", () => {
-    expect(dirs.length).toBeGreaterThanOrEqual(3);
+    expect(dirs.length).toBeGreaterThanOrEqual(6);
     expect(dirs.map((d) => d.split("/").pop())).toEqual(
-      expect.arrayContaining(["agentLoop", "retrieval", "skills", "toolSearch"])
+      expect.arrayContaining([
+        "agentLoop",
+        "appgen",
+        "planner",
+        "retrieval",
+        "skills",
+        "toolSearch",
+      ])
     );
   });
 
@@ -85,7 +107,7 @@ describe("dataset sweep", () => {
         ).toBeUndefined();
       }
     }
-    expect(scanned).toBeGreaterThanOrEqual(25); // 3 retrieval areas x 3 files, plus the agentLoop sources and its 13 cassettes
+    expect(scanned).toBeGreaterThanOrEqual(55); // 3 retrieval areas x 3 files, the agentLoop, appgen and planner sources and their 13 + 10 + 12 cassettes
   });
 
   it("the real-data detector fires on what it is meant to catch (and not on prose)", () => {
@@ -142,5 +164,55 @@ describe("dataset sweep", () => {
       expect(i.acceptable, i.id).toContain(i.expected);
       for (const a of i.acceptable) expect(ids.has(a), `${i.id} -> ${a}`).toBe(true);
     }
+  });
+
+  it("appgen: sizes, unique ids, every case expects something, and both fixtures are used", () => {
+    expect(APPGEN_CASES.length).toBeGreaterThanOrEqual(10);
+    expect(new Set(APPGEN_CASES.map((c) => c.id)).size).toBe(APPGEN_CASES.length);
+    for (const c of APPGEN_CASES) {
+      expect(c.intent.trim().length, c.id).toBeGreaterThan(0);
+      expect(c.expected.present.length + c.expected.absent.length, c.id).toBeGreaterThan(0);
+    }
+    expect(new Set(APPGEN_CASES.map((c) => c.fixture)).size).toBe(2);
+  });
+
+  it("planner: sizes, unique ids, and every route and capability in an expected graph resolves in the catalogue", () => {
+    expect(PLANNER_CASES.length).toBeGreaterThanOrEqual(12);
+    expect(new Set(PLANNER_CASES.map((c) => c.id)).size).toBe(PLANNER_CASES.length);
+    const caps = new Set(CAPABILITY_IDS);
+    for (const c of PLANNER_CASES) {
+      if (c.route !== null) expect(caps.has(c.route), `${c.id} route ${c.route}`).toBe(true);
+      if (typeof c.graph === "string") continue;
+      const seen = new Set<string>();
+      for (const n of c.graph) {
+        expect(caps.has(n.capabilityId), `${c.id} -> ${n.capabilityId}`).toBe(true);
+        for (const d of n.dependsOn)
+          expect(seen.has(d), `${c.id}: ${n.id} depends on later ${d}`).toBe(true);
+        seen.add(n.id);
+      }
+    }
+  });
+
+  it("a cassette write's scratch file is never picked up (and is git-ignored)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "loom-evals-sweep-"));
+    try {
+      writeFileSync(join(dir, "case.json"), "{}\n");
+      writeFileSync(join(dir, ".case.json.12345.tmp"), "{}\n");
+      expect(contentFiles(dir).map((f) => f.split("/").pop())).toEqual(["case.json"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // and no scratch file exists in any dataset directory right now
+    for (const d of datasetDirs()) {
+      const cassettes = join(d, "cassettes");
+      if (existsSync(cassettes)) {
+        expect(
+          readdirSync(cassettes).filter((f) => f.endsWith(".tmp")),
+          cassettes
+        ).toEqual([]);
+      }
+    }
+    const ignore = readFileSync(join(SRC, "..", ".gitignore"), "utf8").split("\n");
+    expect(ignore).toContain("*.tmp");
   });
 });

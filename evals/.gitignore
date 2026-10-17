@@ -1,0 +1,3 @@
+# A cassette write goes through `.<id>.json.<pid>.tmp` and an atomic rename (src/cassetteFiles.ts); a crash
+# between the two would otherwise leave the scratch file to be committed.
+*.tmp

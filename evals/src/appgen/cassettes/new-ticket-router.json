@@ -1,0 +1,6 @@
+{
+  "req:e9ee2fd50f7ec492f38ceda04f2648b1": {
+    "content": "{\"name\":\"ticket-router\",\"capabilities\":[{\"id\":\"ticket-router\",\"name\":\"Ticket Router\",\"intent\":\"Read a support ticket, rate its urgency and route it to the right team.\",\"op\":\"create\",\"steps\":[{\"id\":\"classify-urgency\",\"op\":\"create\"},{\"id\":\"route-to-team\",\"op\":\"create\"}]}]}",
+    "stopReason": "end_turn"
+  }
+}

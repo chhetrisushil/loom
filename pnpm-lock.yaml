@@ -102,6 +102,18 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../packages/agent
+      '@loom/agent-surface':
+        specifier: workspace:*
+        version: link:../packages/agent-surface
+      '@loom/appgen':
+        specifier: workspace:*
+        version: link:../tools/appgen
+      '@loom/appgen-model':
+        specifier: workspace:*
+        version: link:../tools/appgen-model
+      '@loom/capability':
+        specifier: workspace:*
+        version: link:../packages/capability
       '@loom/classify':
         specifier: workspace:*
         version: link:../packages/classify
@@ -117,6 +129,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../packages/event-runtime
+      '@loom/intent':
+        specifier: workspace:*
+        version: link:../packages/intent
       '@loom/knowledge':
         specifier: workspace:*
         version: link:../packages/knowledge
@@ -129,12 +144,18 @@ importers:
       '@loom/middleware':
         specifier: workspace:*
         version: link:../packages/middleware
+      '@loom/planner':
+        specifier: workspace:*
+        version: link:../packages/planner
       '@loom/plugin-postgres':
         specifier: workspace:*
         version: link:../plugins/postgres
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../plugins/sqlite
+      '@loom/reasoning':
+        specifier: workspace:*
+        version: link:../packages/reasoning
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../packages/snapshot-runtime

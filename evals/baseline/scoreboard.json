@@ -15,6 +15,30 @@
       "value": 1,
       "gated": true
     },
+    "appgen/deterministic/coverage": {
+      "value": 0.4,
+      "gated": true
+    },
+    "appgen/deterministic/validity": {
+      "value": 1,
+      "gated": true
+    },
+    "appgen/model/coverage": {
+      "value": 0.9,
+      "gated": true
+    },
+    "appgen/model/validity": {
+      "value": 1,
+      "gated": true
+    },
+    "planner/cassette/graphCorrectness": {
+      "value": 1,
+      "gated": true
+    },
+    "planner/cassette/routeAccuracy": {
+      "value": 0.9167,
+      "gated": true
+    },
     "retrieval/memory/knowledge/ndcg@10": {
       "value": 0.7209,
       "gated": true

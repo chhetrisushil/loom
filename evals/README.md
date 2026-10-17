@@ -26,6 +26,19 @@ runs the real loop over it and stores each request/response pair as a `CassetteP
 loop's handling of model behaviour, NOT a model's quality (`src/agentLoop/PROVENANCE.md` says exactly what). Replay is
 deterministic, free, keyless and offline; a cassette miss is a `CassetteMissError`, never a live call.
 
+## Slice S3: appgen and planner over cassettes (a model, replayed)
+
+| Area | Subject | Metrics |
+| --- | --- | --- |
+| `src/appgen/` | the real `planChangesModel` (`@loom/appgen-model`: reasoning ladder, semantic validation, self-repair) over 10 intents, then the real `applyChanges` into a throwaway fixture app in a temp directory, then a tight `tsc --noEmit` over its flow files (one shared compiler host, not the repo build). `planChangesDeterministic` runs the same intents as a reference arm | validity (accepted, applied inside the fixture, typechecks; a failure carries its underlying TS or validator error), coverage (recall of the expected flows, steps, approval gates and UI surfaces read back from the applied app) |
+| `src/planner/` | the real `IntentRuntime.route` and `PlannerRuntime.planGraph` (in a real `WorkflowRuntime`, journaled through `ctx.decide`) over 12 operator intents against a database-operations catalogue | route accuracy (by the model, not the keyword fallback), graph correctness (exact structural equality of the DAG, incl. `$from` bindings and `dependsOn`) |
+
+The cassettes are **hand-authored** exactly as in S2 (`PROVENANCE.md` in each directory): the "model" is a script, so S3
+measures the planning, validation and apply code's handling of model behaviour, not a model's quality. Findings the
+datasets recorded rather than hid are in each `PROVENANCE.md` and `thresholds.ts` (no delete in the model planner,
+`IntentRuntime` overriding a model `NONE`, duplicate step ids accepted) and, as a security finding, in
+`src/appgen/containment.test.ts` (a symlinked `flow.ts` is followed out of the project; `applyChanges` itself writes nothing).
+
 ### Re-recording live, on demand only, with Gemini
 
 `pnpm eval:record` is the only code here that can reach a model. It is NOT wired to `pnpm eval`, `pnpm test`, turbo,
@@ -37,8 +50,14 @@ is assumed.
 ```sh
 pnpm eval:record                                                          # dry run
 pnpm eval:record --live --model gemini:<model-id> --task flaky-recover    # one task, spends real tokens
+pnpm eval:record --live --model gemini:<model-id> --task appgen/edit-refunds-ui --task planner/cpu-single   # S3 cassettes
 LOOM_EVAL_RECORD_MODEL=gemini:<model-id> pnpm eval:record --live          # every task (about 3 calls each)
 ```
+
+It records the agentLoop tasks (`flaky-recover`), the appgen intents (`appgen/<id>`) and the planner intents (`planner/<id>`). A
+recording is kept only when it ran clean: an HTTP 200 with no candidates (an empty answer), a model plan the planner
+rejected (the deterministic fallback), or a router answer the runtime could not use are all refused, with the committed
+cassette left untouched.
 
 It writes cassettes only. Review the cassette diff, run `pnpm eval`, then `pnpm eval:update-baseline` if the scores
 moved on purpose (thresholds are a separate reviewed edit).

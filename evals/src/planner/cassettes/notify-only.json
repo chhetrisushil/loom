@@ -1,0 +1,10 @@
+{
+  "req:c4bce5201fe77e7fcc3307dc95b32dac": {
+    "content": "notify-oncall",
+    "stopReason": "end_turn"
+  },
+  "req:f9b7997afc13df888edec2ef659a3056": {
+    "content": "{\"nodes\":[{\"id\":\"tell\",\"capabilityId\":\"notify-oncall\",\"args\":{\"channel\":\"db-oncall\",\"message\":\"The nightly vacuum finished.\"},\"rationale\":\"step tell\"}]}",
+    "stopReason": "end_turn"
+  }
+}

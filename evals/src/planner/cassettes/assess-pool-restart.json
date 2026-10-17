@@ -1,0 +1,10 @@
+{
+  "req:5452e8efe118d30646487eb150a19c16": {
+    "content": "{\"nodes\":[{\"id\":\"risk\",\"capabilityId\":\"assess-remediation\",\"args\":{\"target\":\"orders-db\",\"domain\":\"pool\"},\"rationale\":\"step risk\"}]}",
+    "stopReason": "end_turn"
+  },
+  "req:9b1ab9f94264d0188ecd7fef06f24fe2": {
+    "content": "assess-remediation",
+    "stopReason": "end_turn"
+  }
+}

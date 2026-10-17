@@ -1,0 +1,10 @@
+{
+  "req:04ecde228d35fed5c1d84d4c8e4a9195": {
+    "content": "diagnose-locks",
+    "stopReason": "end_turn"
+  },
+  "req:146bc0b29e0e2535cb227cae2367b851": {
+    "content": "{\"nodes\":[{\"id\":\"locks\",\"capabilityId\":\"diagnose-locks\",\"args\":{\"target\":\"payments-db\"},\"rationale\":\"step locks\"}]}",
+    "stopReason": "end_turn"
+  }
+}

@@ -145,7 +145,7 @@ describe("eval:record never replaces a cassette with a failed or empty recording
 
   it("an empty or short recording is refused (judgeRecording), whatever the status", () => {
     const t = { expected: { status: "completed" } } as never;
-    const out = { status: "completed", steps: 2 } as const;
+    const out = { status: "completed", steps: 2, answer: "done", toolCalls: 1 } as const;
     expect(judgeRecording(t, { ...out, steps: 0 }, 0, [])).toMatch(/empty recording/);
     expect(judgeRecording(t, out, 1, [])).toMatch(/incomplete recording \(1 exchange\(s\) for 2/);
     expect(judgeRecording(t, out, 2, [])).toBeUndefined();

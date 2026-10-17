@@ -1,0 +1,6 @@
+{
+  "req:df2c59536d301693f0a33adc896bdbf3": {
+    "content": "{\"name\":\"digest\",\"capabilities\":[{\"id\":\"digest\",\"name\":\"Digest\",\"intent\":\"Remove the digest flow.\",\"op\":\"extend\",\"steps\":[]}]}",
+    "stopReason": "end_turn"
+  }
+}
