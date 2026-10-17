@@ -162,6 +162,26 @@ describe("validateChangeSpec", () => {
     ]);
     expect(validateChangeSpec(s, EXISTING)).toEqual([]);
   });
+  it("rejects a delete the request does not ask for, accepts one it does", () => {
+    const del = spec([
+      {
+        id: "planner",
+        name: "P",
+        intent: "tidy",
+        op: "extend",
+        steps: [{ id: "summarize", op: "delete" }],
+      },
+    ]);
+    const flowDel = spec([{ id: "planner", name: "P", intent: "tidy", op: "delete", steps: [] }]);
+    const msg = (id: string) =>
+      `op "delete" on "${id}" but the request does not ask to delete anything — only delete what the user explicitly asks to remove`;
+    expect(validateChangeSpec(del, EXISTING, "Tidy up the planner")).toEqual([msg("planner")]);
+    expect(validateChangeSpec(flowDel, EXISTING, "Add a step")).toEqual([msg("planner")]);
+    expect(validateChangeSpec(del, EXISTING, "Please REMOVE step summarize")).toEqual([]);
+    expect(validateChangeSpec(flowDel, EXISTING, "get rid of the planner")).toEqual([]);
+    expect(validateChangeSpec(flowDel, EXISTING, "undeleted things")).toEqual([msg("planner")]);
+  });
+
   it("flags create on an existing flow, and extend on a missing one", () => {
     expect(
       validateChangeSpec(

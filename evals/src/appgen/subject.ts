@@ -170,13 +170,17 @@ function recording(inner: LlmProvider): { provider: LlmProvider; replies: string
 }
 
 /** Why the model's last answer was not accepted, from the same checks `planChangesModel` applies. */
-export function whyRejected(replies: readonly string[], appModel: AppModel): string {
+export function whyRejected(
+  replies: readonly string[],
+  appModel: AppModel,
+  intent?: string
+): string {
   const last = replies[replies.length - 1];
   if (last === undefined || last.trim() === "") return "the model returned an empty answer";
   const parsed = tryParseChangeSpec(last);
   if (parsed === undefined)
     return "the model's answer is not a usable ChangeSpec (no capabilities)";
-  const issues = validateChangeSpec(parsed, appModel);
+  const issues = validateChangeSpec(parsed, appModel, intent);
   return issues.length > 0 ? issues.join("; ") : "rejected for an unknown reason";
 }
 
@@ -213,7 +217,7 @@ export async function runCase(o: RunOptions): Promise<CaseOutcome> {
       if (miss !== undefined) throw new CassetteMissError(miss);
       if (spec.planner !== "model") {
         reasons.push(
-          `model plan rejected (fell back to the deterministic planner): ${whyRejected(replies, before)}`
+          `model plan rejected (fell back to the deterministic planner): ${whyRejected(replies, before, o.intent)}`
         );
       }
     } else {

@@ -117,6 +117,8 @@ export interface AppgenResult {
   typecheck?: TypecheckResult;
   /** True when the user declined the plan at the confirmation prompt. */
   aborted?: boolean;
+  /** Set when the run was refused because the plan deletes and nothing consented (see `allowDeletes`). */
+  refusedDeletes?: string[];
   /** Paths the scan refused to follow (symbolic links) - never planned as sources to edit. */
   warnings?: string[];
 }
@@ -149,6 +151,13 @@ export interface AppgenOptions {
    * default, and what tests use).
    */
   confirm?: (plan: FilePlan, planner: Planner, elevations?: Elevation[]) => Promise<boolean>;
+  /**
+   * Consent to apply a plan that DELETES something (a whole flow, or a step cut out of one)
+   * without asking. Deletes are never applied by default: when the plan has any and the caller
+   * passed neither `confirm` nor `allowDeletes: true`, the run is refused - nothing is written
+   * and the result has `aborted: true` and `refusedDeletes` naming what would have been deleted.
+   */
+  allowDeletes?: boolean;
 }
 
 export type Planner = "deterministic" | "model";
@@ -293,6 +302,16 @@ export async function cmdAppgen(
   };
 
   if (opts.dryRun === true) return result; // preview only — no writes, no io.close
+
+  // Deletes need explicit consent in the API too: a `confirm` callback decides, or the caller
+  // opts in with `allowDeletes: true`. Neither -> refuse before writing anything.
+  const removals = planDeletions(plan);
+  if (removals.length > 0 && opts.confirm === undefined && opts.allowDeletes !== true) {
+    result.aborted = true;
+    result.refusedDeletes = removals;
+    io.close?.();
+    return result;
+  }
 
   // Interactive confirmation (if provided): abort cleanly on a "no", without writing.
   const hasChanges = plan.creates.length + plan.edits.length + plan.deletes.length > 0;

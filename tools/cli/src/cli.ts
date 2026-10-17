@@ -962,6 +962,7 @@ async function dispatch(
         intent,
         dir,
         dryRun,
+        ...(flags.yes === "true" && { allowDeletes: true }),
         check,
         offline,
         ...(model !== undefined && { model }),
