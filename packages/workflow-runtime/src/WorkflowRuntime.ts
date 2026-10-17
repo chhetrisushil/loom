@@ -15,9 +15,11 @@ import type {
 import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
 import {
   RESERVED_STREAM_PREFIX,
+  brandPayloadShredded,
   hasInboxStreamShape,
   inboxChainOf,
   isKeyUnavailable,
+  isPayloadShredded,
   isReservedStream,
   recordsErasureIntent,
 } from "@loom/event-runtime";
@@ -799,13 +801,22 @@ const STRAY_WARNING_MEMORY = 4096;
 const MAX_LINEAGE_HOPS = 8;
 
 /**
+ * The kernel's own erasure error, built from the log's `PAYLOAD_SHREDDED` tombstone: the same `name` and
+ * fields a store's real `PayloadShreddedError` has, plus the realm-safe brand.
+ */
+function syntheticShredded(message: string, subjectId: unknown, executionId: string): Error {
+  return brandPayloadShredded(
+    Object.assign(new Error(message), { name: "PayloadShreddedError", subjectId, executionId })
+  );
+}
+
+/**
  * Is `err` PROOF the record was erased: a `PayloadShreddedError`, or a `KeyUnavailableError` whose
  * redacted view records the erase intent (the ShredIncomplete window)? The ONLY failures that mean
  * "unknown owner" rather than "the store/resolver faulted, retry" (ADR 0039, amendment 2026-10-17).
  */
 function isErasure(err: unknown): boolean {
-  const e = err as { name?: unknown } | null;
-  if (e?.name === "PayloadShreddedError") return true;
+  if (isPayloadShredded(err)) return true;
   return (
     isKeyUnavailable(err) &&
     recordsErasureIntent(
@@ -1123,11 +1134,10 @@ export class WorkflowRuntime {
       }
       if (tomb !== undefined) {
         const subjectId = (tomb.payload as { subjectId?: unknown } | null)?.subjectId;
-        throw Object.assign(
-          new Error(
-            `execution "${id}" was crypto-shredded (PAYLOAD_SHREDDED in its log${typeof subjectId === "string" ? ` for subject "${subjectId}"` : ""})`
-          ),
-          { name: "PayloadShreddedError", subjectId, executionId: id }
+        throw syntheticShredded(
+          `execution "${id}" was crypto-shredded (PAYLOAD_SHREDDED in its log${typeof subjectId === "string" ? ` for subject "${subjectId}"` : ""})`,
+          subjectId,
+          id
         );
       }
     });
@@ -1360,7 +1370,7 @@ export class WorkflowRuntime {
         first = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
       } catch (err) {
         // A crypto-shredded record denies; it never falls back to the caller (D2).
-        if ((err as { name?: unknown } | null)?.name === "PayloadShreddedError") {
+        if (isPayloadShredded(err)) {
           return { legacy: false, chain: { principalShredded: true } };
         }
         throw err;
@@ -3085,7 +3095,7 @@ export class WorkflowRuntime {
     try {
       return await this.foldState(executionId);
     } catch (err) {
-      if ((err as { name?: unknown } | null)?.name !== "PayloadShreddedError") throw err;
+      if (!isPayloadShredded(err)) throw err;
       // Always re-read the whole log: the error that reached us may come from a partial read (the
       // anchor of a snapshot-seeded fold), whose redacted view is only that slice.
       let redacted: readonly EventEnvelope[] | undefined;
@@ -7326,11 +7336,10 @@ export class WorkflowRuntime {
     const shredded = (state.variables as { _shredded?: { subjectId?: unknown } })._shredded;
     if (shredded !== undefined) {
       const subjectId = typeof shredded.subjectId === "string" ? shredded.subjectId : undefined;
-      throw Object.assign(
-        new Error(
-          `execution "${executionId}" was crypto-shredded (PAYLOAD_SHREDDED in its log${subjectId !== undefined ? ` for subject "${subjectId}"` : ""})`
-        ),
-        { name: "PayloadShreddedError", subjectId, executionId }
+      throw syntheticShredded(
+        `execution "${executionId}" was crypto-shredded (PAYLOAD_SHREDDED in its log${subjectId !== undefined ? ` for subject "${subjectId}"` : ""})`,
+        subjectId,
+        executionId
       );
     }
     // TRANSIENT: may hold ciphertext where a real fold holds values; it only decides the verb.

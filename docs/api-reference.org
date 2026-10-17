@@ -1381,6 +1381,9 @@ function shredSubject(keys: KeyStore, rawEventStore: EventStore, executionId: st
 // EraseCoordinator({ destroyed }) / exportSubject({ destroyed }) / compliance.erase.destroyed: DestructionProof
 // EncryptingSnapshotStore.loadLatestSealed(id) — latest snapshot at rest, sensitive fields left as ciphertext
 class PayloadShreddedError extends Error { … }     // thrown on any read of a shredded subject
+// Recognised by the realm-safe BRAND Symbol.for("loom.payloadShredded"), never by the name alone (ADR 0039, 2026-10-17):
+// import { isPayloadShredded, brandPayloadShredded, PAYLOAD_SHREDDED_BRAND } from "@loom/event-runtime";
+// isPayloadShredded(err): boolean   // true only with the brand; a store that cannot extend the class calls brandPayloadShredded(err)
 class ShredIncompleteError extends Error { subjectId: string; failures: { executionId: string; error: unknown }[] }
 // key destroyed, some tombstones not written: re-run shredSubject with the same arguments.
 // Retry-safe: sequences resolved before the key is destroyed; a re-run writes only the missing

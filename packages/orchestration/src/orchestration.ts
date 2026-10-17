@@ -6,6 +6,7 @@ import { signDelegation, verifyDelegation } from "@loom/effect-runtime";
 import {
   type ExecutionEnumerable,
   type TimerStore,
+  isPayloadShredded,
   isReservedStream,
   iterateExecutionIds,
   readRangeOf,
@@ -2000,13 +2001,10 @@ export function superviseChildren(deps: SupervisorDeps): ChildSupervisor {
     } catch (err) {
       // A crypto-shredded log is unreadable BY DESIGN and forever (the key is destroyed): nothing
       // can be parked on it, and pinning it would block its retention AND compaction for good.
-      // Matched by NAME (this package does not depend on the crypto plugin), through the
+      // Matched by the realm-safe BRAND (`isPayloadShredded`, never the name alone), through the
       // StorageWriteError/cause wrappers. Any OTHER failure is rethrown: the retention run fails
       // visibly and the log is KEPT (a swallowed error would have to guess).
-      if (
-        errName(rootCause(err)) === "PayloadShreddedError" ||
-        errName(err) === "PayloadShreddedError"
-      ) {
+      if (isPayloadShredded(rootCause(err)) || isPayloadShredded(err)) {
         return false;
       }
       throw err;

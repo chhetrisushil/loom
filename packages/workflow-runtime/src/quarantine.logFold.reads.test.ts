@@ -1,4 +1,5 @@
 import { unwrapTainted } from "@loom/classify";
+import { isPayloadShredded } from "@loom/event-runtime";
 import {
   EncryptingEventStore,
   EncryptingSnapshotStore,
@@ -311,6 +312,7 @@ describe("P3-5: a shredded subject is never folded for a verb", () => {
     const before = await kindsOf(s.raw.eventStore, s.e);
     const err = await b.rt.quarantineInbox(s.e, { topic: "a" }, { principal: OP }).catch((x) => x);
     expect((err as Error).name).toBe("PayloadShreddedError");
+    expect(isPayloadShredded(err)).toBe(true);
     expect(await kindsOf(s.raw.eventStore, s.e)).toEqual(before);
   });
 
@@ -321,5 +323,6 @@ describe("P3-5: a shredded subject is never folded for a verb", () => {
     s.register(b);
     const err = await b.rt.quarantineInbox(s.e, { topic: "a" }, { principal: OP }).catch((x) => x);
     expect((err as Error).name).toBe("PayloadShreddedError");
+    expect(isPayloadShredded(err)).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import type { EventStore, ExecutionEnumerable } from "@loom/event-runtime";
-import { iterateExecutionIds } from "@loom/event-runtime";
+import { isPayloadShredded, iterateExecutionIds } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
 import { isContentTouchingSnapshotStore } from "./ContentTouchingSnapshotStore";
 import { visitCitedAddresses } from "./citations";
@@ -663,8 +663,8 @@ export async function sweepUnpinnedContent(
             covered = true;
           }
         } catch (err) {
-          // Only a CONFIRMED crypto-shred means the snapshot is erased: the store's error (matched by
-          // name: content does not import plugin-crypto) AND the execution's own `PAYLOAD_SHREDDED`
+          // Only a CONFIRMED crypto-shred means the snapshot is erased: the store's error (recognised by the realm-safe
+          // brand, never by name) AND the execution's own `PAYLOAD_SHREDDED`
           // tombstone. A node that merely lacks the key can report the same error, so without the
           // tombstone it propagates like anything else (undecryptable, I/O, a key unavailable with no
           // tombstone): dropping refs for data that still exists would delete live blobs. A
@@ -674,7 +674,7 @@ export async function sweepUnpinnedContent(
           const tombstoned = events.some((e) => e.eventType === "PAYLOAD_SHREDDED");
           if (
             !(err instanceof Error) ||
-            (err.name !== "PayloadShreddedError" && err.name !== "KeyUnavailableError") ||
+            (!isPayloadShredded(err) && err.name !== "KeyUnavailableError") ||
             !tombstoned
           )
             throw err;

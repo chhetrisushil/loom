@@ -1057,6 +1057,8 @@ describe("an owner-resolution fault AFTER sequence 0 read fine is retryable, nev
   describe("ownerForAuthz's OWN sequence-0 read (the anchor was unreadable, so it reads again)", () => {
     // loadState: readAnchor reads seq 0 (1st read); an erasure there leaves the anchor unreadable, so
     // ownerForAuthz reads seq 0 itself (2nd read). Script the two reads.
+    // The erasure is the REAL branded error (a name-only Error is a fault, see shreddedBrand.test.ts).
+    const erasure = () => new PayloadShreddedError("alice", E);
     async function twoReads(second: () => unknown) {
       const inner = new InMemoryAsyncEventStore();
       const reports: unknown[] = [];
@@ -1071,7 +1073,7 @@ describe("an owner-resolution fault AFTER sequence 0 read fine is retryable, nev
           return (...args: unknown[]) => {
             if (prop === "readRange" && args[0] === E && args[1] === 0 && args[2] === 0) {
               reads++;
-              if (reads === 1) return Promise.reject(forged());
+              if (reads === 1) return Promise.reject(erasure());
               if (reads === 2) return Promise.reject(second());
             }
             return (v as (...a: unknown[]) => unknown).apply(target, args);
@@ -1090,7 +1092,7 @@ describe("an owner-resolution fault AFTER sequence 0 read fine is retryable, nev
     });
 
     it("an ERASURE on that read is an unknown owner: the policy decides (strict: refused)", async () => {
-      const w = await twoReads(forged);
+      const w = await twoReads(erasure);
       const err = await rejection(w.n.h.rt.loadState(E, { principal: OWNER }));
       expect(nameOf(err)).toBe("ExecutionDeniedError");
       expect((err as { reason?: unknown }).reason).toBe(UNKNOWN_OWNER_REASON);

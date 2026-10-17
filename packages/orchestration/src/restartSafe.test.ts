@@ -4,6 +4,7 @@ import { EffectRuntime } from "@loom/effect-runtime";
 import {
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
+  brandPayloadShredded,
   iterateExecutionIds,
 } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
@@ -934,7 +935,7 @@ describe("R8k D3 — pinParkedChildren", () => {
     const shredded = (): Error => {
       const e = new Error("payload was crypto-shredded");
       e.name = "PayloadShreddedError";
-      return e;
+      return brandPayloadShredded(e);
     };
     const wrapped = (): Error =>
       Object.assign(new Error("Durable event write failed"), {
@@ -945,6 +946,11 @@ describe("R8k D3 — pinParkedChildren", () => {
     expect(await pinParkedChildren(boot(failing(wrapped)).sup)("P::k")).toBe(false);
     const down = failing(() => new Error("connection reset"));
     await expect(pinParkedChildren(boot(down).sup)("P::k")).rejects.toThrow("connection reset");
+    // An Error that merely NAMES itself PayloadShreddedError (no brand) is NOT an erasure: it rethrows.
+    const forged = failing(() =>
+      Object.assign(new Error("forged"), { name: "PayloadShreddedError" })
+    );
+    await expect(pinParkedChildren(boot(forged).sup)("P::k")).rejects.toThrow("forged");
   }, 20000);
 
   it("a child the parent is parked on under a DIFFERENT key is not pinned", async () => {

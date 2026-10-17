@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { brandPayloadShredded } from "@loom/event-runtime";
 import {
   type EncryptingSnapshotStore,
   type InMemoryKeyStore,
@@ -1275,9 +1276,14 @@ describe("loom resume / start: failure text, durability verification", () => {
       const failed = await conclude(...fake("completed", undefined, new Error("io")));
       expect(failed.failure).toContain("store read failed");
       expect(failed.verified).toBe(false);
-      const sealed = await conclude(...fake("completed", undefined, named("PayloadShreddedError")));
+      const sealed = await conclude(
+        ...fake("completed", undefined, brandPayloadShredded(named("PayloadShreddedError")))
+      );
       expect(sealed.failure).toBeUndefined();
       expect(sealed.verified).toBe(false);
+      // An Error only NAMED PayloadShreddedError (no brand) is a store failure, not an erasure.
+      const forged = await conclude(...fake("completed", undefined, named("PayloadShreddedError")));
+      expect(forged.failure).toContain("store read failed");
     });
   });
 });
