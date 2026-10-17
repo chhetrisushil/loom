@@ -242,6 +242,99 @@ describe("validateChangeSpec", () => {
     ]);
     expect(validateChangeSpec(s, EXISTING)).toEqual([dupMsg("planner", "a")]);
   });
+  const cap = (id: string, op: string, steps: unknown[]) => ({
+    id,
+    name: "N",
+    intent: "x",
+    op,
+    steps,
+  });
+  const HINT = "start with a letter, no leading digit, no trailing or double dash";
+  it("rejects two step ids that generate the same const name (new flow)", () => {
+    const s = spec([
+      cap("router", "create", [
+        { id: "a-b", op: "create" },
+        { id: "a--b", op: "create" },
+      ]),
+    ]);
+    // `a--b` is also malformed under the strict rule; use `ab`/`a-b`-style pair below too.
+    expect(validateChangeSpec(s, NET_NEW)).toEqual([
+      `step id "a--b" in "router" must be kebab-case: ${HINT}`,
+    ]);
+    const t = spec([
+      cap("router", "create", [
+        { id: "a-b2", op: "create" },
+        { id: "a-b-2", op: "create" },
+      ]),
+    ]);
+    expect(validateChangeSpec(t, NET_NEW)).toEqual([
+      `step ids "a-b2" and "a-b-2" in flow "router" both generate the name "aB2Step" — rename one`,
+    ]);
+  });
+  it("rejects a new step whose generated name collides with an existing step", () => {
+    const model: AppModel = {
+      ...EXISTING,
+      flows: [{ ...EXISTING.flows[0]!, steps: [{ id: "a-b", handlerState: "stub" }] }],
+    };
+    const s = spec([cap("planner", "extend", [{ id: "ab-", op: "create" }])]);
+    expect(validateChangeSpec(s, model)).toEqual([
+      `step id "ab-" in "planner" must be kebab-case: ${HINT}`,
+    ]);
+    const t = spec([cap("planner", "extend", [{ id: "a-b", op: "create" }])]);
+    expect(validateChangeSpec(t, model)).toEqual([
+      `step "a-b" already exists in "planner" — use op "modify"`,
+    ]);
+    const legacy: AppModel = {
+      ...EXISTING,
+      flows: [{ ...EXISTING.flows[0]!, steps: [{ id: "a_b", handlerState: "stub" }] }],
+    };
+    const u = spec([cap("planner", "extend", [{ id: "a-b", op: "create" }])]);
+    expect(validateChangeSpec(u, legacy)).toEqual([
+      `step ids "a_b" and "a-b" in flow "planner" both generate the name "aBStep" — rename one`,
+    ]);
+  });
+  it("rejects a new step id with a leading digit or a trailing/double dash", () => {
+    for (const id of ["1-run", "run-", "a--b", "-a", "A"]) {
+      const s = spec([cap("router", "create", [{ id, op: "create" }])]);
+      expect(validateChangeSpec(s, NET_NEW)).toEqual([
+        `step id "${id}" in "router" must be kebab-case: ${HINT}`,
+      ]);
+    }
+    const ok = spec([cap("router", "create", [{ id: "run-2-go", op: "create" }])]);
+    expect(validateChangeSpec(ok, NET_NEW)).toEqual([]);
+  });
+  it("applies the strict rule to a NEW flow id only; an existing flow keeps the loose rule", () => {
+    expect(validateChangeSpec(spec([cap("1-router", "create", [])]), NET_NEW)).toEqual([
+      `capability id "1-router" must be kebab-case: ${HINT}`,
+    ]);
+    const legacy: AppModel = {
+      ...EXISTING,
+      flows: [{ ...EXISTING.flows[0]!, id: "2-legacy--flow", steps: [] }],
+    };
+    expect(validateChangeSpec(spec([cap("2-legacy--flow", "extend", [])]), legacy)).toEqual([]);
+  });
+  it("rejects two creates of the same new flow in one spec", () => {
+    const s = spec([
+      cap("router", "create", [{ id: "a", op: "create" }]),
+      cap("router", "create", [{ id: "b", op: "create" }]),
+    ]);
+    expect(validateChangeSpec(s, NET_NEW)).toEqual([
+      `flow "router" is created more than once — declare each new flow once, with all its steps`,
+    ]);
+  });
+  it("rejects a modify/delete step op inside a newly created flow", () => {
+    const s = spec([
+      cap("router", "create", [
+        { id: "a", op: "modify" },
+        { id: "b", op: "delete" },
+        { id: "c", op: "create" },
+      ]),
+    ]);
+    expect(validateChangeSpec(s, NET_NEW)).toEqual([
+      `step "a" op "modify" but flow "router" is being created — there is nothing to modify`,
+      `step "b" op "delete" but flow "router" is being created — there is nothing to delete`,
+    ]);
+  });
   it("allows the same step id in two different flows (scoped per flow)", () => {
     const s = spec([
       { id: "one", name: "O", intent: "x", op: "create", steps: [{ id: "run", op: "create" }] },
