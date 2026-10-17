@@ -23,6 +23,14 @@ const runner = async (ctx, input) =>
 - **Replay-safe**: the compensation stack is rebuilt deterministically on a resume/recovery re-run;
   compensators run as `ctx.run` steps, so a crash mid-rollback recovers without double-undoing
   (verified by a DST no-double-compensation property under seeded crashes).
+- **A compensator is any declared step**: a `toolId` step or a `handler$`-only step. Each runs under a
+  derived, replay-stable journal id (`<id>#compensate:<i>`), but its effect — and so any grant or
+  middleware keyed on a tool id — resolves on the step's DECLARED id (`toolId ?? id`), the same one the
+  forward step uses.
+- **A failing compensator does not stop the rollback**: the remaining compensators still run, then a
+  `SagaCompensationError` is thrown (`compensationErrors` = each failure, in run order). Out of
+  `withSaga` its `cause` is the ORIGINAL error that triggered the rollback. A `SuspendError` from a
+  compensator (a human-gated undo) still propagates at once.
 - **Byte-identical on success**: if the flow succeeds, no compensator runs and no compensation events
   exist — indistinguishable from a non-saga flow (G2).
 - **Suspension ≠ failure**: `withSaga` never rolls back on a `SuspendError`; the flow suspends/resumes

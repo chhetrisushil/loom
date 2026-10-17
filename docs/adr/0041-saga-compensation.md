@@ -37,6 +37,13 @@ compensator that receives the forward output), `compensate(step, input)` (explic
 error, re-throwing — while a `SuspendError` propagates untouched (a suspension is not a failure; the
 stack rebuilds on the resume re-run).
 
+**Amendment 2026-10-17.** The derived id is JOURNAL identity only: the compensation step keeps
+`toolId: step.toolId ?? step.id`, so its effect resolves on the declared id (the runtime registers a
+`handler$` under that id and never under the derived one). Before this, only `toolId` compensators
+worked; a `handler$`-only one threw `No effect registered` and aborted the rollback. Rollback also no
+longer aborts on the first failing compensator: it runs the rest and throws `SagaCompensationError`
+(`cause` = the original error when thrown from `withSaga`).
+
 ## Consequences
 
 - First-class, replay-safe reverse-order compensation, opt-in per flow. On success, **no compensator

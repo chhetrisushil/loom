@@ -1,4 +1,4 @@
-import { step$ } from "@loom/core";
+import { handler$, step$ } from "@loom/core";
 import { faultInjectingStore, splitmix64 } from "@loom/dst";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
@@ -13,99 +13,136 @@ import { withSaga } from "./saga";
 // per step) — the crash-mid-compensation property.
 
 const empty = z.object({});
-const mk = (id: string) =>
-  step$({ id, name: id, toolId: id, inputSchema: empty, outputSchema: empty });
-const reserve = mk("reserve");
-const unreserve = mk("unreserve");
-const charge = mk("charge");
-const refund = mk("refund");
-const ship = mk("ship");
 
-const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) =>
-  withSaga(ctx, async (saga) => {
-    await saga.run(reserve, {}, unreserve);
-    await saga.run(charge, {}, refund);
-    await ctx.run(ship, {}); // throws → rollback
-    return { ok: true };
-  });
+type Kind = "toolId" | "handler";
 
-const flow = {
-  definition: {
-    _tag: "FlowDefinition" as const,
-    id: "order-saga",
-    name: "order-saga",
-    version: "1.0.0",
-    inputSchema: z.object({}),
-    outputSchema: z.object({ ok: z.boolean() }),
-    steps: [reserve, unreserve, charge, refund, ship],
-  },
-  runner,
-} as RegisteredFlow<Record<string, never>, { ok: boolean }>;
+function makeSaga(kind: Kind) {
+  const mk = (id: string) =>
+    kind === "toolId"
+      ? step$({ id, name: id, toolId: id, inputSchema: empty, outputSchema: empty })
+      : step$({
+          id,
+          name: id,
+          inputSchema: empty,
+          outputSchema: empty,
+          handler: handler$(async () => {
+            if (id === "ship") throw new Error("ship failed");
+            return {};
+          }),
+        });
+  const reserve = mk("reserve");
+  const unreserve = mk("unreserve");
+  const charge = mk("charge");
+  const refund = mk("refund");
+  const ship = mk("ship");
 
-function spawnRuntime(
-  store: InMemoryAsyncEventStore | ReturnType<typeof faultInjectingStore>["store"],
-  snapshots: InMemoryAsyncSnapshotStore
-) {
-  const effects = new EffectRuntime();
-  for (const id of ["reserve", "unreserve", "charge", "refund"]) {
-    effects.register(id, new ToolEffect(async () => ({})));
+  const runner: FlowRunner<Record<string, never>, { ok: boolean }> = async (ctx) =>
+    withSaga(ctx, async (saga) => {
+      await saga.run(reserve, {}, unreserve);
+      await saga.run(charge, {}, refund);
+      await ctx.run(ship, {}); // throws → rollback
+      return { ok: true };
+    });
+
+  const flow = {
+    definition: {
+      _tag: "FlowDefinition" as const,
+      id: "order-saga",
+      name: "order-saga",
+      version: "1.0.0",
+      inputSchema: z.object({}),
+      outputSchema: z.object({ ok: z.boolean() }),
+      steps: [reserve, unreserve, charge, refund, ship],
+    },
+    runner,
+  } as RegisteredFlow<Record<string, never>, { ok: boolean }>;
+
+  function spawnRuntime(
+    store: InMemoryAsyncEventStore | ReturnType<typeof faultInjectingStore>["store"],
+    snapshots: InMemoryAsyncSnapshotStore
+  ) {
+    const effects = new EffectRuntime();
+    if (kind === "toolId") {
+      // handler$ steps register themselves from the declared definition.
+      for (const id of ["reserve", "unreserve", "charge", "refund"]) {
+        effects.register(id, new ToolEffect(async () => ({})));
+      }
+      effects.register(
+        "ship",
+        new ToolEffect(async () => {
+          throw new Error("ship failed");
+        })
+      );
+    }
+    const runtime = new WorkflowRuntime({
+      eventStore: store as never,
+      snapshotStore: snapshots,
+      effectRuntime: effects,
+    });
+    runtime.registerFlow(flow.definition, runner);
+    return runtime;
   }
-  effects.register(
-    "ship",
-    new ToolEffect(async () => {
-      throw new Error("ship failed");
-    })
-  );
-  const runtime = new WorkflowRuntime({
-    eventStore: store as never,
-    snapshotStore: snapshots,
-    effectRuntime: effects,
-  });
-  runtime.registerFlow(flow.definition, runner);
-  return runtime;
+  return { flow, spawnRuntime };
 }
 
 const EXEC = "saga-dst";
 
-describe("DST — saga rollback under seeded crashes", () => {
-  it("never double-compensates, across the crash-schedule space", async () => {
-    let sawCrash = false;
-    for (let s = 1n; s <= 40n; s++) {
-      const inner = new InMemoryAsyncEventStore();
-      const snapshots = new InMemoryAsyncSnapshotStore();
-      const faults = faultInjectingStore(inner, {
-        mode: "explore",
-        rng: splitmix64(s).fork("faults"),
-        model: { crashBeforeAppend: 0.12 },
-      });
+describe.each(["toolId", "handler"] as const)(
+  "DST — saga rollback under seeded crashes (%s compensators)",
+  (kind) => {
+    const { flow, spawnRuntime } = makeSaga(kind);
+    it("compensates each step exactly once, across the crash-schedule space", async () => {
+      let sawCrash = false;
+      let failedRuns = 0;
+      for (let s = 1n; s <= 40n; s++) {
+        const inner = new InMemoryAsyncEventStore();
+        const snapshots = new InMemoryAsyncSnapshotStore();
+        const faults = faultInjectingStore(inner, {
+          mode: "explore",
+          rng: splitmix64(s).fork("faults"),
+          model: { crashBeforeAppend: 0.12 },
+        });
 
-      const h1 = await spawnRuntime(faults.store, snapshots).start(flow, {}, { executionId: EXEC });
-      await h1.waitForCompletion().catch(() => {}); // the saga fails by design
+        const h1 = await spawnRuntime(faults.store, snapshots).start(
+          flow,
+          {},
+          { executionId: EXEC }
+        );
+        await h1.waitForCompletion().catch(() => {}); // the saga fails by design
 
-      const durable = await inner.read(EXEC);
-      const terminal = durable.some(
-        (e) => e.eventType === "EXECUTION_FAILED" || e.eventType === "EXECUTION_COMPLETED"
-      );
-      if (durable.length > 0 && !terminal) {
-        faults.restore();
-        await spawnRuntime(faults.store, snapshots)
-          .resume(EXEC, { eventType: "EXECUTION_RECOVERED", payload: {} })
-          .then((h) => h.waitForCompletion())
-          .catch(() => {});
-      }
-      if (faults.crashed) sawCrash = true;
+        const durable = await inner.read(EXEC);
+        const terminal = durable.some(
+          (e) => e.eventType === "EXECUTION_FAILED" || e.eventType === "EXECUTION_COMPLETED"
+        );
+        if (durable.length > 0 && !terminal) {
+          faults.restore();
+          await spawnRuntime(faults.store, snapshots)
+            .resume(EXEC, { eventType: "EXECUTION_RECOVERED", payload: {} })
+            .then((h) => h.waitForCompletion())
+            .catch(() => {});
+        }
+        if (faults.crashed) sawCrash = true;
 
-      // No step (forward OR compensation) completed more than once in the durable log.
-      const completions = new Map<string, number>();
-      for (const e of await inner.read(EXEC)) {
-        if (e.eventType !== "STEP_COMPLETED") continue;
-        const id = (e.payload as { stepId: string }).stepId;
-        completions.set(id, (completions.get(id) ?? 0) + 1);
+        // No step (forward OR compensation) completed more than once in the durable log.
+        const completions = new Map<string, number>();
+        for (const e of await inner.read(EXEC)) {
+          if (e.eventType !== "STEP_COMPLETED") continue;
+          const id = (e.payload as { stepId: string }).stepId;
+          completions.set(id, (completions.get(id) ?? 0) + 1);
+        }
+        for (const [id, n] of completions) {
+          expect(n, `step ${id} completed ${n}× @seed ${s}`).toBeLessThanOrEqual(1);
+        }
+        // Not vacuous: a run that reached its failure compensated BOTH steps, exactly once.
+        const finalLog = await inner.read(EXEC);
+        if (finalLog.some((e) => e.eventType === "EXECUTION_FAILED")) {
+          expect(completions.get("refund#compensate:1"), `refund @seed ${s}`).toBe(1);
+          expect(completions.get("unreserve#compensate:0"), `unreserve @seed ${s}`).toBe(1);
+          failedRuns++;
+        }
       }
-      for (const [id, n] of completions) {
-        expect(n, `step ${id} completed ${n}× @seed ${s}`).toBeLessThanOrEqual(1);
-      }
-    }
-    expect(sawCrash).toBe(true);
-  });
-});
+      expect(sawCrash).toBe(true);
+      expect(failedRuns).toBeGreaterThan(0);
+    });
+  }
+);
