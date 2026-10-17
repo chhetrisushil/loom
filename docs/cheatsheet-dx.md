@@ -15,9 +15,11 @@ node <loom>/tools/create-loom-app/dist/index.js my-app --loom-path <loom>
 cd my-app && pnpm install && pnpm test && pnpm start
 
 loom new flow checkout      # scaffold a definition (+ its flow.test.ts), then run gen
-loom new flow refund --template approval   # or timer | saga: non-agentic starters, each with a passing test
+loom new flow refund --template approval   # or echo | timer | saga: non-agentic starters, each with a passing test
+loom new tool charge --no-gen   # scaffold only; skip the gen that normally follows
 loom gen --watch            # keep loom.gen.ts current as modules are added/removed/renamed
 loom dev --config ./loom.config.ts   # gen --watch + run the app (restart on change) + the inspector
+                            # [--dir app] [--run <command>] [--port N] [--verbose]
 loom doctor                 # what can I check right now?
 loom logs --help            # per-command help (also: loom help logs, loom version)
 loom doctor --json          # machine output: stdout is one JSON document, exit code unchanged
@@ -29,16 +31,21 @@ Outside the checkout `--loom-path` is required (`create-loom-app` refuses withou
 (`<loom>/apps/my-app`) no flag is needed. `loom new` names are kebab-case; a kind that imports a
 package your `package.json` lacks (`sentinel`) prints the line to add. `loom new` takes `flow · agent · tool · skill · schedule · memory · projection · sentinel`.
 The folder convention is **build-time** codegen — a static `loom.gen.ts`, never runtime
-globbing.
+globbing; `loom gen` skips a file whose name is unsafe to put in generated code.
+
+**Writes stay inside the project.** `gen`, `new`, `dev`, `appgen`, `plugin new`, `create-loom-app` and
+`migrate-config --apply` never write through a symlink below the project; a `--dir` whose final
+component is a link is refused (pass the real path).
 
 ## `<store-flags>` — where a command reads
 
-Both halves work for every log command; `knowledge`, `verify` and `deploy check` need `--config`.
+Store is a **flag** (`--db` / `--config`), never a positional: a bare path is refused (`loom logs
+--db x.db events.db` reads `events.db` as the execution id). Both halves work for every log command; `knowledge`, `verify` and `deploy check` need `--config`.
 
 | | |
 |---|---|
 | `--config ./dist/app.js` | the stores **your app** wired — SQLite, Postgres, or any conforming backend. Importing it starts nothing. |
-| `--db events.db [--snap] [--branches] [--leases]` | SQLite shorthand, one file per store. A flag you omit is a store the command cannot consult — and it says so rather than reporting zero. |
+| `--db events.db [--snap s.db] [--branches b.db] [--leases l.db]` | SQLite shorthand, one file per store. A flag you omit is a store the command cannot consult — and it says so rather than reporting zero. |
 
 > **Leases and placement exist because you run more than one node** — and a multi-node
 > deployment is not a file you can pass to `--db`. Use `--config` for anything real.
@@ -54,7 +61,7 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 | `loom eval` | replay golden logs against expectations |
 | `loom deploy check` | simulate a deploy against new flow definitions |
 | `loom compat` | validate ABI / event-schema versions |
-| `loom migrate-config [file] [--apply]` | rewrites flat `defineConfig` options into their groups (dry-run diff first; refuses a spread; never runs the config) |
+| `loom migrate-config [<file>...] [--config f] [--apply] [--json]` | rewrites flat `defineConfig` options into their groups (dry-run diff first; refuses a spread, computed key or non-literal config; never runs the config; default `./loom.config.{js,ts}`) |
 | `loom kernel-manifest` | kernel version + maturity manifest |
 
 ### Reading doctor's four marks
@@ -80,7 +87,7 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 | `loom introspect <store-flags> <id>` | execution / task / decision / resource graphs |
 | `loom optimize <store-flags> <id>` | advisory recommendations |
 | `loom learn report\|eval` | trajectories, coverage, shadow-evaluate a policy |
-| `loom census <store-flags>` | what is stuck, and is anything watching it |
+| `loom census <store-flags> [--buckets 5m,1h,6h,24h] [--sample N]` | what is stuck, and is anything watching it (takes no predicate) |
 | `loom compliance report` | data-subject inventory |
 | `loom knowledge list\|search` | what a corpus holds; ask it |
 
@@ -91,12 +98,12 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 | `loom resume <id> --config <mod> --as <who> --event <type> --payload-file f.json [--apply]` | answer a suspended gate **through your app's runtime**: its resume authenticator, execution authorizer and `resumeSchemas` all run (ADR 0077/0117). `--db` is refused; `--as` is required; the continuation runs **in this process**. The dry run shows the parsed payload (stripped keys named) and the park's sequence. A kill switch that does not declare `scope: "shared"` refuses `--apply` unless `--allow-local-controls`; unknown lease liveness unless `--force`; `--skip-effect-check` skips the registered-effect check. |
 | `loom cancel <id> --config <mod> --as <who> [--apply]` | cancel through the runtime (fenced; runs nothing). A live or unknown lease holder refuses unless `--force`. |
 | `loom start <flow> --config <mod> --as <who> --input '{…}' [--id i \| --idempotency-key k] [--apply]` | start a flow through the runtime; input shown as given (schema predicted only when the app enforces it); the flow runs in this process until it completes or parks. A kill switch that does not declare `scope: "shared"` refuses `--apply` unless `--allow-local-controls`. |
-| `loom recover <store-flags> [--stale 15m] [--apply]` | re-drive executions whose supervisor died. Needs `timers.leases` **or** an explicit `--stale` — loom will not guess. `--apply` requires `--config`, because re-driving runs your flow. `--max-recoveries N` skips and lists executions whose last N re-drives made no progress (ADR 0105). |
-| `loom repair blank-stream <store-flags> [--assign id:from-through] [--apply]` | re-home events the pre-0106 compaction bug wrote to execution `""` — proven segments only; the rest is listed with candidates, never guessed (ADR 0107) |
+| `loom recover <store-flags> (--stale 15m \| --config <mod> with timers.leases) [--apply]` | re-drive executions whose supervisor died. Needs `timers.leases` **or** an explicit `--stale` — loom will not guess. `--apply` requires `--config`, because re-driving runs your flow. `--max-recoveries N` skips and lists executions whose last N re-drives made no progress (ADR 0105). |
+| `loom repair blank-stream <store-flags> (--snap s.db \| --config <mod>) [--assign id:from-through] [--apply]` | re-home events the pre-0106 compaction bug wrote to execution `""` — proven segments only; the rest is listed with candidates, never guessed (ADR 0107) |
 | `loom retention run <store-flags> --ttl <dur\|ms> [--apply]` | reclaim aged terminal executions (`--ttl` is required: there is no default). Without a branchRegistry the live-descendant guard is **off**. |
-| `loom repair terminal-event <store-flags> [id] [--apply]` | give an execution a pre-0116 compaction left as `[0]+checkpoint` its terminal event back, so it can take a late outcome (ADR 0116) |
-| `loom branches retire --parent <id> --stale <d>` | cancel branches nobody is coming back to — they keep the parent uncollectable |
-| `loom branches prune [--protect main]` | delete refs that name nothing; `main` is protected |
+| `loom repair terminal-event <store-flags> (--snap s.db \| --config <mod>) [id] [--apply]` | give an execution a pre-0116 compaction left as `[0]+checkpoint` its terminal event back, so it can take a late outcome (ADR 0116) |
+| `loom branches retire <store-flags> (--branches b.db \| --config <mod>) --parent <id> --stale <d>` | cancel branches nobody is coming back to — they keep the parent uncollectable |
+| `loom branches prune <store-flags> (--branches b.db \| --config <mod>) [--protect main]` | delete refs that name nothing; `main` is protected |
 | `loom sweep content --content <db>` | pinned-blob sweep over externalized payloads. `--orphans` also erases blobs nothing scanned cites — it needs the snapshot store and every archive; dry-run first |
 | `loom knowledge sync --apply` | reconcile a directory into a corpus (also **removes**) |
 
@@ -112,8 +119,8 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 | | |
 |---|---|
 | `createTestApp(config?)` | in-memory app; storage defaults to memory |
-| `createTestApp({ clock: true })` | time travel: the runtime's `now` is a test clock and a `TimerService` waits for you |
-| `advanceTime(app, ms)` / `fireDueTimers(app)` | move the clock, then fire what became due through the real `TimerService` (`ctx.sleep`, `suspend({ timeout })`, cron) |
+| `createTestApp({ clock: true })` | time travel: the runtime's `now` is a test clock and a `TimerService` waits for you (`autostart` stays off — it never polls on its own; `fireDueTimers` throws if it does) |
+| `advanceTime(app, ms)` / `fireDueTimers(app)` | move the clock, then fire what became due through the real `TimerService` (`ctx.sleep`, `suspend({ timeout })`, cron). `fireDueTimers` **drains**: it polls until nothing is due, so resumes are finished on return; a timer re-arming at an already-due instant throws instead of looping |
 | `driveToSuspend(handle)` | start → first suspend |
 | `resumeWith(runtime, id, ev?)` | resume sugar |
 | `waitFor` / `waitForPhase` | poll a predicate or a surface phase |
@@ -122,6 +129,8 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 | `recordingProvider` / `replayingProvider` | VCR for LLMs: record once, replay offline |
 | `crashingEventStore` | inject a store failure — prove recovery, don't assume it |
 | `@loom/dst` | deterministic simulation: `simWorld`, `faultInjectingStore`, `virtualClock`, seeded fault schedules checked against `INVARIANTS` |
+
+Repo evals (not a user command): `pnpm eval` scores retrieval, `agentLoop$`, appgen and planner over committed cassettes; `pnpm eval:update-baseline [--allow-partial]` after an intended change. `pnpm eval:record --live` re-records against a real model, on demand only (see `evals/README.md`).
 
 Rules the repo enforces on tests: wait on a *condition*, never a fixed `sleep`; no
 `performance.now()` or timing ratios in `*.test.ts` (put them in `*.perf.test.ts`, run with
@@ -132,8 +141,8 @@ Rules the repo enforces on tests: wait on a *condition*, never a fixed `sleep`; 
 ```bash
 loom plugin seams              # 19 seams, and how each is wired
 loom plugin new lease my-redis
-loom plugin check --publish    # npm-readiness too
-loom plugin try --module ./dist/index.js
+loom plugin check --publish    # npm-readiness too; needs a real @loom/conformance import AND a real run*Conformance( call
+loom plugin try --module ./dist/index.js [--preset <name>] [--options <json>] [--verbose]
 loom plugin search <term>
 ```
 
@@ -149,12 +158,16 @@ Seams: `store` · `dispatcher` · `telemetry` · `middleware` · `timer` · `lea
 ## Generating an app from intent
 
 ```bash
-loom appgen "<intent>" [--dir .] [--dry-run] [--check]
+loom appgen "<intent>" [--dir .] [--dry-run] [--check] [--yes] [--offline]
+loom appgen "<intent>" --model gemini:<m>   # or anthropic:<m> | openai:<m> | a .gguf path; [--model-big] [--model-tier]
 loom appgen --from-spec .loom/appgen/<ts>.spec.json   # replay, no model
 ```
 
 Deterministic and offline in the output: no model call at generate time, and none in the
-generated app.
+generated app. With no `--model` it plans with the deterministic keyword parser and says so on
+stderr (silent with `--offline` / `--from-spec`); `--dry-run` ends with a re-run hint. The plan
+validator refuses duplicate step ids, ids whose generated names collide, non-kebab new ids and
+control / bidi / format characters; every codegen sink escapes model text.
 
 ## Things that bite
 
