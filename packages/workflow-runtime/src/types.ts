@@ -668,8 +668,10 @@ export class DecideScopeClosedError extends Error {
 
 /**
  * Thrown by an authorizer-gated lifecycle op when the execution's sequence 0 (the one point read the
- * verdict is reached from, ADR 0039 amendment 2026-10-17) could not be read for a reason that is NOT
- * an erasure or a seal: a storage fault, a transient key-service failure. It is RETRYABLE
+ * verdict is reached from, ADR 0039 amendment 2026-10-17) could not be read, or the owner recorded there
+ * could not be resolved, for a reason that is NOT an erasure or a seal: a storage fault, a transient
+ * key-service failure, or a fault of the app's principal resolver / codec (or of a parent link on the
+ * lineage walk). It is RETRYABLE
  * (`retryable === true`) and deliberately carries nothing derived from the execution: no cause, no
  * workflow id, no subject, no redacted view. The owner and a stranger get the identical error (a
  * fault must not become a status oracle, and must not be judged as "unknown owner" and denied to the
@@ -682,7 +684,7 @@ export class ExecutionStoreUnavailableError extends Error {
     readonly executionId: string
   ) {
     super(
-      `execution operation "${op}" on "${executionId}" could not be completed: the execution store is temporarily unavailable; retry`
+      `execution operation "${op}" on "${executionId}" could not be completed: a dependency (execution store or principal resolver) is unavailable; retry`
     );
     this.name = "ExecutionStoreUnavailableError";
     Object.setPrototypeOf(this, ExecutionStoreUnavailableError.prototype);
