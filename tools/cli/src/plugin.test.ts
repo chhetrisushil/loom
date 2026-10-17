@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { type PluginFinding, checkPlugin } from "./plugin";
+import { type PluginFinding, checkPlugin, wiresConformance } from "./plugin";
+
+const WIRED = [
+  'import { runEventStoreConformance } from "@loom/conformance";',
+  "runEventStoreConformance(() => new X());",
+].join("\n");
 
 const levels = (f: PluginFinding[], level: PluginFinding["level"]) =>
   f.filter((x) => x.level === level).map((x) => x.message);
@@ -12,7 +17,7 @@ describe("checkPlugin", () => {
         keywords: ["loom", "loom-plugin"],
         peerDependencies: { "@loom/event-runtime": "*", "@loom/snapshot-runtime": "*" },
       },
-      ['import { runEventStoreConformance } from "@loom/conformance";']
+      [WIRED]
     );
     expect(levels(findings, "error")).toEqual([]);
     expect(levels(findings, "warn")).toEqual([]);
@@ -28,7 +33,7 @@ describe("checkPlugin", () => {
         keywords: ["loom", "loom-plugin"],
         exports: { ".": { require: "./dist/index.js", types: "./dist/index.d.ts" } },
       },
-      ['import { runMemoryStoreConformance } from "@loom/conformance";']
+      [WIRED]
     );
     expect(levels(findings, "warn")[0]).toMatch(/ERR_PACKAGE_PATH_NOT_EXPORTED/);
   });
@@ -40,7 +45,7 @@ describe("checkPlugin", () => {
         keywords: ["loom", "loom-plugin"],
         exports: { ".": { default: "./dist/index.js", require: "./dist/index.js" } },
       },
-      ['import { runMemoryStoreConformance } from "@loom/conformance";']
+      [WIRED]
     );
     expect(levels(findings, "warn")[0]).toMatch(/anything after it is dead/);
   });
@@ -58,7 +63,7 @@ describe("checkPlugin", () => {
           },
         },
       },
-      ['import { runMemoryStoreConformance } from "@loom/conformance";']
+      [WIRED]
     );
     expect(levels(findings, "warn")).toEqual([]);
     expect(levels(findings, "ok")).toContain("exports resolve for both require() and import");
@@ -79,7 +84,7 @@ describe("checkPlugin", () => {
         keywords: ["loom-plugin"],
         dependencies: { "@loom/event-runtime": "*" },
       },
-      ["conformance"]
+      [WIRED]
     );
     expect(levels(findings, "warn").join()).toMatch(/peer-depend/);
   });
@@ -91,14 +96,14 @@ describe("checkPlugin", () => {
   });
 
   it("warns when the name follows neither convention", () => {
-    const findings = checkPlugin({ name: "my-thing" }, ["@loom/conformance"]);
+    const findings = checkPlugin({ name: "my-thing" }, [WIRED]);
     expect(levels(findings, "warn").join()).toMatch(/neither/);
   });
 
   it("allows a legitimate workflow-runtime dependency (a2a/renderer pattern)", () => {
     const findings = checkPlugin(
       { name: "@loom/plugin-a2a", dependencies: { "@loom/workflow-runtime": "workspace:*" } },
-      ["@loom/conformance"]
+      [WIRED]
     );
     expect(levels(findings, "error")).toEqual([]);
   });
@@ -128,10 +133,41 @@ describe("checkPlugin", () => {
         repository: "github:me/loom-plugin-x",
         exports: { ".": {} },
       },
-      ["@loom/conformance"],
+      [WIRED],
       { publish: true }
     );
     // no publish-readiness warnings for a complete manifest
     expect(levels(ready, "warn")).toEqual([]);
+  });
+});
+
+describe("wiresConformance", () => {
+  const IMPORT = 'import { runEventStoreConformance } from "@loom/conformance";';
+  it("accepts a real import plus a real call", () => {
+    expect(wiresConformance(`${IMPORT}\nrunEventStoreConformance(() => new X());`)).toBe(true);
+  });
+  it("rejects the scaffold's commented-out call", () => {
+    expect(wiresConformance(`${IMPORT}\n// runEventStoreConformance(() => new X());`)).toBe(false);
+    expect(wiresConformance(`${IMPORT}\n/* runEventStoreConformance(() => new X()); */`)).toBe(
+      false
+    );
+  });
+  it("rejects a call named only inside a string, and a commented-out import", () => {
+    expect(wiresConformance(`${IMPORT}\nconst s = "runEventStoreConformance(";`)).toBe(false);
+    expect(
+      wiresConformance(
+        '// import { runEventStoreConformance } from "@loom/conformance";\nrunEventStoreConformance(x);'
+      )
+    ).toBe(false);
+  });
+  it("rejects a bare mention and an import without a call", () => {
+    expect(wiresConformance("@loom/conformance")).toBe(false);
+    expect(wiresConformance(IMPORT)).toBe(false);
+  });
+  it("checkPlugin warns when only a comment mentions the kit", () => {
+    const findings = checkPlugin({ name: "loom-plugin-x", keywords: ["loom-plugin"] }, [
+      `${IMPORT}\n// runEventStoreConformance(() => new X());`,
+    ]);
+    expect(levels(findings, "warn").join()).toMatch(/conformance/);
   });
 });

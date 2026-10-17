@@ -1309,7 +1309,7 @@ another principal cannot read, change or detect them. `ctx.continueAsNew` carrie
 store holds the goal. Planning-depth migration notes: `plan()` and `dispatchPlan` keep working
 unchanged; moving a flow to `planGoal` is a body change (ADR 0113).
 
-`@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. The default backing store is in-memory, so an agent that restarts remembers nothing — pass `memoryStore: new SqliteMemoryStore(".loom/events.db")` (or `new PostgresMemoryStore(url)`) to point memory at the same database as the event log, so one backup captures both.
+`@loom/memory` gives agents scoped, TTL/size-bounded stores via `memory$({ id, name, ttlMs, maxEntries })`. The default backing store is in-memory, so an agent that restarts remembers nothing — pass `memoryStore: new SqliteMemoryStore(".data/events.db")` (or `new PostgresMemoryStore(url)`) to point memory at the same database as the event log, so one backup captures both.
 
 Recall comes in two shapes, and the difference matters more than the API surface suggests:
 

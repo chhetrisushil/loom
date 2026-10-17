@@ -44,9 +44,12 @@ scaffold
   loom new   flow <name> --template echo|approval|timer|saga [--dir app]  a non-agentic starter (human gate, timer, compensation)
   loom dev   --config <module> [--dir app] [--run <command>] [--port N]  the dev loop: gen --watch + run the app,
                                                   restarting on change + the inspector (NOT an alias of inspect)
-  loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
-                                                  (--dry-run previews; --check typechecks after apply)
-  loom appgen ... --model <spec> [--model-big <spec>]  plan with a model of your choice
+  loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check] [--yes] [--offline]  NL → new project or edits
+                                                  (--dry-run previews; --check typechecks after apply;
+                                                   --yes skips the confirmation; --offline never calls
+                                                   a model. Without --model it plans with the
+                                                   deterministic keyword parser and says so)
+  loom appgen ... --model <spec> [--model-big <spec>] [--model-tier <t>]  plan with a model of your choice
                                                   (anthropic:<m> / openai:<m> / gemini:<m> / a .gguf path)
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
 
@@ -74,8 +77,9 @@ observe
   loom profile <store> <executionId> [--json]     flame graph + latency breakdown
   loom introspect <store> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
   loom optimize <store> <executionId>             advisory optimization report (recommendations)
-  loom census <store> [--buckets 5m,1h,6h,24h] [--json]  what is stuck, and is anything watching it
-                                                  (read-only; takes no predicate)
+  loom census <store> [--buckets 5m,1h,6h,24h] [--sample N] [--json]  what is stuck, and is anything watching it
+                                                  (read-only; takes no predicate; --sample: ids kept
+                                                   per band, default 5)
   loom learn report <store> [executionId]         trajectories, per-arm rewards, learning coverage
   loom learn eval <store> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
@@ -906,6 +910,15 @@ async function dispatch(
               ...(flags["model-tier"] !== undefined && { tier: flags["model-tier"] }),
             }
           : undefined;
+      // No model: the deterministic keyword parser plans. That is a valid choice, but it
+      // reads the intent literally, so say so rather than let it pass for an LLM's plan.
+      if (model === undefined && fromSpec === undefined && !offline) {
+        process.stderr.write(
+          "appgen: no --model given, planning with the deterministic keyword parser (no LLM; " +
+            'it follows your literal step names, e.g. "Step fetch. Step transform."). ' +
+            "For a model plan pass --model anthropic:<model> | openai:<model> | gemini:<model> | <path.gguf>.\n"
+        );
+      }
       // `--from-spec` carries its own intent; otherwise resolve one from args / `--from`.
       const intent = fromSpec !== undefined ? "" : resolveIntent(flags, positionals);
       // On a TTY (and not `--yes`/`--dry-run`), show the plan and ask before writing.
@@ -929,6 +942,7 @@ async function dispatch(
             ...(r.elevations && { elevations: r.elevations }),
           })
         );
+        out("\nappgen: dry run, nothing was written. Re-run without --dry-run to apply.");
         return 0;
       }
       if (r.aborted) {

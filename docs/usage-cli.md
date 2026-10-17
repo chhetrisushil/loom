@@ -15,6 +15,7 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 3. [Validate before you run: `doctor`, `check`, `verify`, `lint`](#validate-before-you-run-doctor-check-verify-lint)
 4. [Observe a run: `logs`, `debug`, `inspect`](#observe-a-run-logs-debug-inspect)
    - [Act on a run: `resume`, `cancel`, `start`](#act-on-a-run-resume-cancel-start)
+   - [Keep it healthy: `census`, `recover`, `branches`](#keep-it-healthy-census-recover-branches)
 5. [Analyze a run: `profile`, `introspect`, `optimize`](#analyze-a-run-profile-introspect-optimize)
 6. [Learn from the log: `learn report`, `learn eval`](#learn-from-the-log-learn-report-learn-eval)
 7. [Ship safely: `eval`, `deploy check`](#ship-safely-eval-deploy-check)
@@ -41,9 +42,12 @@ scaffold
   loom new   flow <name> --template echo|approval|timer|saga [--dir app]  a non-agentic starter (human gate, timer, compensation)
   loom dev   --config <module> [--dir app] [--run <command>] [--port N]  the dev loop: gen --watch + run the app,
                                                   restarting on change + the inspector (NOT an alias of inspect)
-  loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
-                                                  (--dry-run previews; --check typechecks after apply)
-  loom appgen ... --model <spec> [--model-big <spec>]  plan with a model of your choice
+  loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check] [--yes] [--offline]  NL → new project or edits
+                                                  (--dry-run previews; --check typechecks after apply;
+                                                   --yes skips the confirmation; --offline never calls
+                                                   a model. Without --model it plans with the
+                                                   deterministic keyword parser and says so)
+  loom appgen ... --model <spec> [--model-big <spec>] [--model-tier <t>]  plan with a model of your choice
                                                   (anthropic:<m> / openai:<m> / gemini:<m> / a .gguf path)
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
 
@@ -71,8 +75,9 @@ observe
   loom profile <store> <executionId> [--json]     flame graph + latency breakdown
   loom introspect <store> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
   loom optimize <store> <executionId>             advisory optimization report (recommendations)
-  loom census <store> [--buckets 5m,1h,6h,24h] [--json]  what is stuck, and is anything watching it
-                                                  (read-only; takes no predicate)
+  loom census <store> [--buckets 5m,1h,6h,24h] [--sample N] [--json]  what is stuck, and is anything watching it
+                                                  (read-only; takes no predicate; --sample: ids kept
+                                                   per band, default 5)
   loom learn report <store> [executionId]         trajectories, per-arm rewards, learning coverage
   loom learn eval <store> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
@@ -173,7 +178,7 @@ New project?  →  create-loom-app <dir> --loom-path <loom>   (unpublished: see 
 
 There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new` and `.` elsewhere), and `--at <N>` (a sequence number). An unknown command prints a one-line error with a did-you-mean (`unknown command "logz" (did you mean "logs"?) — see \`loom help\``) to stderr and exits `2`; it no longer dumps the whole usage.
 
-### Help, version, completion
+### Help, version, completion: `help`, `version`, `completion`
 
 - `loom help` prints the grouped summary above (scaffold · validate · observe · operate · maintain · plugin · deploy).
 - `loom <command> --help`, `loom <command> -h` and `loom help <command>` print **that command's** summary, synopsis lines and flags (exit `0`) — the text comes from the same command table the strict flag parser uses, so it cannot name a flag the command rejects. `loom <command> <subcommand> --help` (e.g. `loom branches retire --help`) narrows to that subcommand's synopsis and the flags it names. `loom help --help` prints help's own help.
@@ -217,7 +222,7 @@ There are no global flags — each command declares its own. The recurring ones 
 
 Several commands are **two words** — the first positional selects the subcommand: `deploy check`, `lint claim-check`, `repair blank-stream`, `retention run`, `sweep content`, `compliance report`, `learn report|eval`, and `plugin new|check|try|search|seams`.
 
-> **The `--db` commands need SQLite storage.** `logs`, `debug`, and `inspect` read a durable log, so your app must persist one. Wire `storage: { kind: "sqlite", dir: ".loom" }` in [`defineConfig`](usage.md#step-3--wire-the-app-with-defineconfig) — the event store is then at `.loom/events.db`. In-memory apps leave nothing to inspect.
+> **The `--db` commands need SQLite storage.** `logs`, `debug`, and `inspect` read a durable log, so your app must persist one. Wire `storage: { kind: "sqlite", dir: ".data" }` in [`defineConfig`](usage.md#step-3--wire-the-app-with-defineconfig) — the event store is then at `.data/events.db`. In-memory apps leave nothing to inspect.
 
 ---
 
@@ -576,7 +581,7 @@ Loading a config:
 Lists executions: id, workflow, status, last sequence, last activity time (absolute plus `5m ago`), and for a **suspended** one what it waits on — the event type it is parked on, or for a timer `timer wakeAt <iso> (in 3m)` (and `overdue` when the time has passed and nothing has woken it). The gate's `correlationKey` is an application-chosen id that can be sensitive, so it is **omitted** from the text, from `--json` and from the inspector list; `--keys` includes it (`key <id>`). The lease owner and the gate event name are operational ids and always shown. Give a lease store (`--leases <l.db>`, or the app's `timers.leases` via `--config`) and a row also shows the lease owner and whether it is expired.
 
 ```bash
-npx loom ls --db .loom/events.db --status suspended
+npx loom ls --db .data/events.db --status suspended
 ```
 
 ```text
@@ -596,7 +601,7 @@ ID        WORKFLOW  STATUS     LAST  LAST ACTIVITY                         WAITI
 Prints the event timeline, one line per event: a `⏸` marker on `EXECUTION_SUSPENDED`, the sequence `#N`, the event type, and a per-type detail (the step id, the suspension target, a truncated output, or an error message).
 
 ```bash
-npx loom logs --db .loom/events.db 01J8…
+npx loom logs --db .data/events.db 01J8…
 ```
 
 ```text
@@ -617,8 +622,8 @@ npx loom logs --db .loom/events.db 01J8…
 Time-travel inspection. With `--at N` it prints the **folded state at sequence `N`** (an `N` past the last event is refused — `sequence N > last (M)`, exit `2` — rather than quietly showing the final state); without `--at` it prints the full timeline followed by the final folded state.
 
 ```bash
-npx loom debug --db .loom/events.db 01J8… --at 3   # state as of sequence 3
-npx loom debug --db .loom/events.db 01J8…          # timeline + final state
+npx loom debug --db .data/events.db 01J8… --at 3   # state as of sequence 3
+npx loom debug --db .data/events.db 01J8…          # timeline + final state
 ```
 
 The state block reports the execution and workflow ids, status, sequence, the suspension target (if suspended), each step frame's status, and the output (if set):
@@ -639,7 +644,7 @@ The page opens with a clickable **executions** list (filterable by status) backe
 Launches a local **web inspector**: a timeline with a time-travel slider that fetches the folded state at each sequence. `--port` defaults to `0`, letting the OS pick a free port; the chosen URL is printed. The server runs until you stop it with Ctrl-C ([ADR 0014](adr/0014-deploy-check-and-inspector.md)).
 
 ```bash
-npx loom inspect --db .loom/events.db
+npx loom inspect --db .data/events.db
 # → loom inspector on http://localhost:53812  (Ctrl-C to stop)
 ```
 
@@ -718,6 +723,48 @@ loom start release-approval --config dist/app.js --as release-bot --input '{"ser
 
 ---
 
+## Keep it healthy: `census`, `recover`, `branches`
+
+The fleet-level maintenance verbs. `census` only reads; `recover` and `branches` **write**, so both are **dry runs by default** and act only under `--apply` (the same vocabulary as `retention` and `sweep content`). None of them discovers a store for a write: `recover`, `branches` take `--config <module>` or `--db <events.db>` (see [Choosing the store](#choosing-the-store---config---db-or-loomconfigjs)); `census` may also use `./loom.config.js`.
+
+### `loom census <store> [--buckets 5m,1h,6h,24h] [--sample N] [--json]`
+
+What is stuck, and is anything watching it. Counts the in-flight (running/pending) executions older than each bucket, and, when the store has leases, how many of them hold a live lease, an expired one, or none at all (`no lease at all` is the number to watch: nothing can recover those from evidence). Parked executions are summarized separately: how many are suspended, how many wait on a timer, and how many timers are **overdue** (`wakeAt` already passed, nothing has woken them).
+
+- `--buckets` are the age thresholds, as durations or plain milliseconds (default `5m,1h,6h,24h`).
+- `--sample N` is how many example execution ids are kept per band (default `5`), so a band is a pointer, not a dump.
+- `--json` emits `{ ok, census, suspended, note? }`. Read-only, takes no predicate, and exits `0` whenever it ran.
+
+```bash
+npx loom census --db .data/events.db --leases .data/leases.db --buckets 1h,24h --sample 3
+```
+
+### `loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]`
+
+Re-drives executions whose supervisor died. Loom will not guess what counts as abandoned, so you must supply the evidence: either the app wires `timers.leases` (an **expired lease** is the evidence), or you pass `--stale <duration>` to state your own rule. With neither it refuses (exit `2`), because a running execution owned by a healthy node looks exactly like an orphaned one.
+
+- `--owner <id>` names the lease holder the command takes while re-driving (default `loom-recover`).
+- `--limit N` caps how many executions one pass touches.
+- `--max-recoveries N` (an integer, at least 1) skips and lists executions whose last N re-drives made no progress, so a poison execution cannot be re-driven forever.
+- **`--apply` needs `--config`**: re-driving runs the flow's steps, and only your app has the flows and effects registered. Through `--db` you can preview but not apply (exit `2`).
+
+### `loom branches retire <store> --parent <id> --stale <d> [--limit N] [--apply]`
+
+Cancels branches of `--parent` that nobody is coming back to, so the parent they pin stops being uncollectable by `retention run`. `--stale` is required with no default: a branch parked on a human gate is an open question, not garbage. It needs a branch registry (`--branches <branches.db>`, or `--config` where the app supplies one). The report also lists what stays open and why.
+
+### `loom branches prune <store> [--protect main,rel] [--limit N] [--apply]`
+
+Deletes branch refs that name executions the log no longer has. `main` is protected by default; `--protect` names more refs to keep.
+
+```bash
+npx loom recover --db .data/events.db --stale 15m                  # preview
+npx loom recover --config dist/app.js --stale 15m --max-recoveries 3 --apply
+npx loom branches retire --config dist/app.js --parent rel-42 --stale 7d --apply
+npx loom branches prune --config dist/app.js --protect main,release
+```
+
+---
+
 ## Analyze a run: `profile`, `introspect`, `optimize`
 
 Three read-only lenses from [`@loom/analytics`](../packages/analytics), all with the same shape: `--db <path>` plus a positional `<executionId>`. They fold one execution's log and print — nothing is mutated, no effect re-runs. An unknown id is an error — `no such execution <id> (N executions in this store — try loom census)` on stderr, exit `1` (it used to print `(no execution "<id>")` and exit `0`, which read as "nothing happened" when the id was merely mistyped). `--graph` must be one of `executions|tasks|decisions|resources`, else exit `2`.
@@ -727,7 +774,7 @@ Three read-only lenses from [`@loom/analytics`](../packages/analytics), all with
 A flame graph plus latency breakdown for one execution — "DevTools for Loom" in the terminal ([ADR 0029](adr/0029-runtime-observability-profiler.md)). Use it to find which step actually owns the wall clock.
 
 ```bash
-npx loom profile --db .loom/events.db 01J8…
+npx loom profile --db .data/events.db 01J8…
 ```
 
 ### `loom introspect --db <path> <executionId> [--graph <name>]`
@@ -735,8 +782,8 @@ npx loom profile --db .loom/events.db 01J8…
 The runtime introspection facade ([ADR 0031](adr/0031-runtime-introspection-facade.md)): the **execution**, **task**, **decision**, and **resource** graphs folded from the log. `--graph <name>` prints just one; omit it for all four.
 
 ```bash
-npx loom introspect --db .loom/events.db 01J8…
-npx loom introspect --db .loom/events.db 01J8… --graph decision
+npx loom introspect --db .data/events.db 01J8…
+npx loom introspect --db .data/events.db 01J8… --graph decision
 ```
 
 ### `loom optimize --db <path> <executionId>`
@@ -744,7 +791,7 @@ npx loom introspect --db .loom/events.db 01J8… --graph decision
 The advisory optimization report ([ADR 0034](adr/0034-advisory-optimization-pipeline.md)) — observe → analyze → recommend → evaluate → learn over one execution's log. **Advisory only**: it emits recommendations and mutates nothing. Adopting one is an explicit `ctx.decide` you write in app code, so the choice stays on the log.
 
 ```bash
-npx loom optimize --db .loom/events.db 01J8…
+npx loom optimize --db .data/events.db 01J8…
 ```
 
 ---
@@ -762,8 +809,8 @@ What the log can — and cannot — teach. Folds `DECISION_RECORDED` into trajec
 It also prints **blocking gaps** — e.g. no outcome naming a `decisionId`, meaning rewards are aggregated globally rather than per decision. Read this before you write a policy: it tells you whether off-policy evaluation is even possible on the log you have.
 
 ```bash
-npx loom learn report --db .loom/events.db            # every execution
-npx loom learn report --db .loom/events.db 01J8…      # just one
+npx loom learn report --db .data/events.db            # every execution
+npx loom learn report --db .data/events.db 01J8…      # just one
 ```
 
 Prints `(no events)` or `(no decisions recorded — nothing to learn from)` when there's nothing to fold. Exits `0`; an explicit `[executionId]` that does not exist is exit `1` (`no such execution`).
@@ -780,7 +827,7 @@ Shadow-evaluate a **candidate policy** against historical traffic — SNIPS off-
 The module path may be relative (resolved against the cwd) or absolute. A module that doesn't export a usable `Policy` fails with a message and exit `1`.
 
 ```bash
-npx loom learn eval --db .loom/events.db --policy dist/policies/linucb.js --min-steps 500
+npx loom learn eval --db .data/events.db --policy dist/policies/linucb.js --min-steps 500
 ```
 
 ```text
@@ -872,8 +919,8 @@ included) and reports `reclaimed` / `blocked-by-branch` / …
 > accepted when you really mean it. Accepts `30d`/`12h`/… or milliseconds.
 
 ```bash
-npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 90d   # dry run
-npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 90d --apply
+npx loom retention run --db .data/events.db --snap .loom/snapshots.db --ttl 90d   # dry run
+npx loom retention run --db .data/events.db --snap .loom/snapshots.db --ttl 90d --apply
 ```
 
 ### `loom sweep content --db <events.db> [--snap <snap.db>] --content <content.db> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl <ms>] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`
@@ -894,8 +941,8 @@ The operator surface for the K10.6 **pinned blob sweep** ([ADR 0055](adr/0055-k1
 | `--apply` | no | dry run | actually erase |
 
 ```bash
-npx loom sweep content --db .loom/events.db --content .loom/content.db          # dry run, 30-day ttl
-npx loom sweep content --db .loom/events.db --content .loom/content.db --apply
+npx loom sweep content --db .data/events.db --content .loom/content.db          # dry run, 30-day ttl
+npx loom sweep content --db .data/events.db --content .loom/content.db --apply
 ```
 
 ```text
@@ -970,7 +1017,7 @@ Run it with the affected executions quiesced and with retention and compaction p
 npx loom repair blank-stream --config ./loom.config.ts                     # census
 npx loom repair blank-stream --config ./loom.config.ts --apply             # re-home proven
 npx loom repair blank-stream --config ./loom.config.ts --assign e1:13-15 --apply
-npx loom repair blank-stream --db .loom/events.db --snap .loom/snapshots.db   # SQLite shorthand
+npx loom repair blank-stream --db .data/events.db --snap .loom/snapshots.db   # SQLite shorthand
 ```
 
 ### `loom repair terminal-event (--config <module> | --db <events.db> --snap <snap.db>) [executionId] [--apply]`
@@ -988,7 +1035,7 @@ so you name the path, e.g. `--subject-path input.userId --tenant-path input.tena
 subject → execution counts, per tenant.
 
 ```bash
-npx loom compliance report --db .loom/events.db --subject-path input.userId
+npx loom compliance report --db .data/events.db --subject-path input.userId
 ```
 
 ---
@@ -1221,11 +1268,15 @@ npx loom plugin search postgres
 |---|---|---|---|
 | `loom new <kind> <name>` | scaffold a flow/agent/tool/… file | `--dir app` | file already exists |
 | `loom gen` | regenerate `loom.gen.ts` (`--watch` keeps it current) | `--dir app` | (write failure) |
-| `loom dev` | gen --watch + run the app (restart on change) + the inspector | `--config`, `--run`, `--dir app` | no `--config`; nothing to run |
+| `loom dev` | gen --watch + run the app (restart on change) + the inspector | `--config` *(req)*, `--run`, `--dir app` | no `--config`; nothing to run |
 | `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied; `--check` typecheck fails |
 | `loom doctor` | run every pre-flight check whose input it can find, and name the ones it skipped | `--dir .`, `--config`, `--manifest` | any check fails (never for a skip) |
-| *store commands* | `ls` `logs` `debug` `inspect` `profile` `introspect` `optimize` `learn` `census` `recover` `branches` `repair` `retention` `sweep` `compliance` | **`<store>` = `--config <module>` _or_ `--db <events.db>`** — `--config` works wherever `--db` does, and neither flag is individually required | — |
+| *store commands* | `ls` `logs` `debug` `inspect` `profile` `introspect` `optimize` `learn` `repair` `retention` `sweep` `compliance` | **`<store>` = `--config <module>` _or_ `--db <events.db>`** — `--config` works wherever `--db` does, and neither flag is individually required | — |
 | `loom resume` · `cancel` · `start` | act on an execution THROUGH your app's runtime (authenticator, authorizer, `resumeSchemas`, leases all run; dry run unless `--apply`; the continuation runs in this process) | `--config` *(req)*, `--as` *(req)*, `--tenant`, `--event` *(req, resume)*, `--payload`/`--payload-file` *(req, resume)*, `--input`/`--input-file` *(req, start)*, `--id`/`--idempotency-key`, `--force` (cancel, resume), `--allow-local-controls` (resume, start), `--redact`, `--show-payload`, `--apply` | a resumed/started execution fails after acceptance (refusals are exit `2`; `--db` is refused) |
+| `loom census` | what is stuck, and is anything watching it (read-only) | store *(req)*, `--buckets`, `--sample N`, `--json` | (never; a store that cannot enumerate is exit `2`) |
+| `loom recover` | re-drive executions whose supervisor died (dry run unless `--apply`) | store *(req)*, `--stale` *(req unless the app wires `timers.leases`)*, `--owner`, `--limit`, `--max-recoveries`, `--apply` (needs `--config`) | (refusals are exit `2`) |
+| `loom branches retire` | cancel branches nobody is coming back to | store *(req)*, `--parent` *(req)*, `--stale` *(req)*, `--limit`, `--apply` | (refusals are exit `2`) |
+| `loom branches prune` | delete refs that name nothing (`main` protected) | store *(req)*, `--protect`, `--limit`, `--apply` | (refusals are exit `2`) |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom verify` | pre-flight runtime verification over a built app | `--config` *(req)*, `--manifest` | any error-severity finding |
 | `loom lint claim-check` | claim-check reach-through lint (CC-5) | `--dir .` | any finding |
@@ -1293,7 +1344,8 @@ The core commands are also exported as functions from `@loom/cli`, so you can bu
 import { cmdLogs, cmdDebug, cmdEval, cmdCheck, cmdGen, cmdNew, cmdAppgen,
          cmdDeployCheck, serveInspector, parseArgs } from "@loom/cli";
 
-const timeline = await cmdLogs(".loom/events.db", executionId);
+// The first argument is the store flags — `{ db }` or `{ config }`, same as the CLI's.
+const timeline: string = await cmdLogs({ db: ".data/events.db" }, executionId);
 const { report } = cmdEval("evals/");
 if (!report.ok) process.exit(1);
 ```
