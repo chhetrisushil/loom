@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import { step$ } from "@loom/core";
@@ -8,6 +16,7 @@ import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@lo
 import { failure } from "./refusalTestUtil";
 
 import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loom/llm";
+import { appFiles } from "@loom/scaffold";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner, RegisteredFlow, WorkflowContext } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -322,6 +331,7 @@ describe("loom CLI", () => {
     });
 
     it("gen on an empty app yields an empty flowModules array", () => {
+      mkdirSync(join(dir, "empty-app"));
       const { count, out } = cmdGen(join(dir, "empty-app"));
       expect(count).toBe(0);
       expect(readFileSync(out, "utf-8")).toContain("export const flowModules = [];");
@@ -1021,5 +1031,105 @@ describe("docs/usage-cli.md", () => {
     for (const command of commands) {
       expect(md, `\`loom ${command}\` undocumented`).toContain(`loom ${command}`);
     }
+  });
+});
+
+// ── `loom new` / `loom gen` refusals (F8) ─────────────────────────────────────
+//
+// A name became a path (`../evil` wrote outside app/flows), a typo'd --dir was created and
+// "succeeded" with 0 flows, and a template imported a package the app never declared. Each guard
+// below asserts the refusal AND that the tree is unchanged — a refusal that writes is not one.
+
+describe("loom new / gen guards", () => {
+  let root: string;
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), "loom-new-guard-"));
+    writeFileSync(join(root, "package.json"), appFiles("guard-app")["package.json"] as string);
+    mkdirSync(join(root, "app"));
+  });
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  const tree = (): string[] => {
+    const out: string[] = [];
+    const walk = (d: string) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, e.name);
+        out.push(relative(root, p));
+        if (e.isDirectory()) walk(p);
+      }
+    };
+    walk(root);
+    return out.sort();
+  };
+
+  it("refuses names that are not kebab-case (suggesting the fix) or that escape the folder", () => {
+    const before = tree();
+    expect(() => cmdNew("flow", "Bad Name", join(root, "app"))).toThrow(/did you mean "bad-name"/);
+    expect(() => cmdNew("flow", "PascalCase", join(root, "app"))).toThrow(/pascal-case/);
+    for (const evil of ["../evil", "a/b", "..", "/etc/x", "a\\b"]) {
+      expect(() => cmdNew("tool", evil, join(root, "app")), evil).toThrow(/path, not a name/);
+    }
+    expect(tree()).toEqual(before);
+  });
+
+  it("gen refuses a --dir that does not exist instead of creating it", () => {
+    const before = tree();
+    expect(() => cmdGen(join(root, "nonexist"))).toThrow(/not an existing directory/);
+    expect(tree()).toEqual(before);
+  });
+
+  it("emits a sibling test for a flow, and it is not mistaken for a flow module", () => {
+    const r = cmdNew("flow", "order-check", join(root, "app"));
+    expect(r.extras.map((e) => e.path)).toEqual([join(root, "app/flows/order-check/flow.test.ts")]);
+    const test = readFileSync(r.extras[0]!.path, "utf-8");
+    expect(test).toContain('from "@loom/testing"');
+    expect(test).toContain("OrderCheckFlow");
+    expect(discoverFlows(join(root, "app"))).toEqual(["./flows/order-check/flow"]);
+    // Re-running skips both files; nothing is overwritten.
+    const again = cmdNew("flow", "order-check", join(root, "app"));
+    expect([again.created, ...again.extras.map((e) => e.created)]).toEqual([false, false]);
+  });
+
+  it("audits every template's imports against the scaffolded package.json", () => {
+    const kinds = [
+      "flow",
+      "agent",
+      "tool",
+      "skill",
+      "schedule",
+      "memory",
+      "projection",
+      "sentinel",
+    ];
+    const missing: Record<string, string[]> = {};
+    for (const kind of kinds)
+      missing[kind] = cmdNew(kind, `x-${kind}`, join(root, "app")).missingDeps;
+    // Only the sentinel imports something a fresh app does not declare; the hint is the exact line.
+    expect(missing).toEqual({
+      flow: [],
+      agent: [],
+      tool: [],
+      skill: [],
+      schedule: [],
+      memory: [],
+      projection: [],
+      sentinel: ['"@loom/plugin-sentinel": "workspace:*"'],
+    });
+    // It never edits package.json.
+    expect(readFileSync(join(root, "package.json"), "utf-8")).toBe(
+      appFiles("guard-app")["package.json"]
+    );
+  });
+
+  it("uses the app's own @loom spec (a linked app gets `*`)", () => {
+    writeFileSync(
+      join(root, "package.json"),
+      JSON.stringify({
+        dependencies: { "@loom/core": "*", "@loom/workflow-runtime": "*", zod: "^3" },
+      })
+    );
+    expect(cmdNew("sentinel", "watch", join(root, "app")).missingDeps).toEqual([
+      '"@loom/middleware": "*"',
+      '"@loom/plugin-sentinel": "*"',
+    ]);
   });
 });

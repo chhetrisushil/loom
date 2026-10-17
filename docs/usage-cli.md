@@ -4,7 +4,7 @@
 
 > New here? Follow the **[Getting Started](getting-started.md)** quickstart first, then the **[Usage Guide](usage.md)** (Step 13 introduces the CLI in context). This doc is the command-by-command reference.
 
-The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`"scripts": { "loom": "loom" }` → `pnpm loom …`), or the local `node_modules/.bin/loom`. Starting a brand-new project? `npm create loom-app`.
+The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`"scripts": { "loom": "loom" }` → `pnpm loom …`), or the local `node_modules/.bin/loom`. Starting a brand-new project? `create-loom-app <dir> --loom-path <your built loom checkout>` (see [Getting Started](getting-started.md)); `npm create loom-app` does not work until the packages are published.
 
 > **Working in the Loom monorepo?** The dev-tooling bins (`loom`, `loom-compile`, `create-loom-app`) live under `tools/`. Expose them globally against your local build with **`pnpm link:global`** (and `pnpm unlink:global` to remove) — a root script that re-links all three from `tools/*`. Run it after a fresh clone, or any time the tooling packages move (a stale global link left over from an old path is what breaks `loom` otherwise).
 
@@ -115,7 +115,7 @@ loom — project-local commands for a Loom app
                          files. Flags you omit are stores the command cannot consult, and it
                          says so rather than reporting them as empty.
 
-New project?  →  npm create loom-app
+New project?  →  create-loom-app <dir> --loom-path <loom>   (unpublished: see getting-started)
 ```
 
 > Data-protection commands: `--redact a,b` masks output dot-paths from `logs`/`debug` (K10-R6);
@@ -148,7 +148,7 @@ Scaffolds a single file from a template.
 | Argument / flag | Required | Default | Meaning |
 |---|---|---|---|
 | `<kind>` | yes | — | `flow`, `agent`, `tool`, `skill`, `schedule`, `memory`, `projection`, or `sentinel` (any other kind is an error) |
-| `<name>` | yes | — | the human name, e.g. `greet` |
+| `<name>` | yes | — | kebab-case, `^[a-z][a-z0-9-]*$`, e.g. `greet` or `pg-lag`. Anything else is refused with a `did you mean` suggestion, and so is a path (`../evil`, `a/b`, an absolute path): a name can never leave the convention folder |
 | `--dir` | no | `app` | base directory the subfolders go under |
 
 ```bash
@@ -162,11 +162,15 @@ npx loom new projection counter  # → creates app/projections/counter.ts
 npx loom new tool lookup --dir src
 ```
 
-It **never overwrites** an existing file: it prints `created <path>` (exit `0`) or `skipped <path> (already exists)` (exit `1`).
+`loom new flow` also writes a sibling `app/flows/<name>/flow.test.ts` that runs the flow through [`@loom/testing`](../tools/testing/README.md)'s `createTestApp` (it passes on a fresh scaffold; the other kinds have no natural test and get none).
+
+It **never overwrites** an existing file: it prints `created <path>` (exit `0`) or `skipped <path> (already exists)` (exit `1`). A refused name exits `1` with nothing written.
+
+When a generated file imports a package the nearest `package.json` does not declare (`loom new sentinel` imports `@loom/plugin-sentinel`; every other kind needs nothing a fresh `create-loom-app` project lacks), `loom new` prints the exact line to add — `"@loom/plugin-sentinel": "workspace:*"` inside the Loom workspace, `"*"` in an app created with `--loom-path` (its `pnpm.overrides` already map every `@loom/*` package). It never edits `package.json`; without the dependency the whole app fails to load, not just the new file.
 
 ### `loom gen [--dir app]`
 
-Scans the seven convention folders and writes `<dir>/loom.gen.ts` — a static, alphabetically-sorted registration module. Wiring is build-time and replay-safe (P5), so discovery is codegen, not runtime globbing:
+`--dir` must be an existing directory: a typo'd one is refused (exit `1`) rather than created and "succeeding" with zero of everything. Scans the seven convention folders and writes `<dir>/loom.gen.ts` — a static, alphabetically-sorted registration module. Wiring is build-time and replay-safe (P5), so discovery is codegen, not runtime globbing:
 
 - `<dir>/flows/<name>/flow.{ts,tsx}` → `flowModules`
 - `<dir>/agents/<name>.{ts,tsx}` → `agentModules`

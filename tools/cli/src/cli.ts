@@ -130,7 +130,7 @@ export const USAGE = `loom — project-local commands for a Loom app
                          files. Flags you omit are stores the command cannot consult, and it
                          says so rather than reporting them as empty.
 
-New project?  →  npm create loom-app
+New project?  →  create-loom-app <dir> --loom-path <loom>   (unpublished: see getting-started)
 `;
 
 /** Every storage-backed command refuses the same way, naming both front doors. */
@@ -446,8 +446,15 @@ export async function main(argv: string[]): Promise<number> {
       const name = positionals[1];
       if (name === undefined) throw new Error("missing required <name>");
       const dir = flags.dir ?? "app";
-      const { path: dest, created } = cmdNew(kind, name, dir);
-      console.log(created ? `created ${dest}` : `skipped ${dest} (already exists)`);
+      const { path: dest, created, extras, missingDeps } = cmdNew(kind, name, dir);
+      for (const f of [{ path: dest, created }, ...extras]) {
+        console.log(f.created ? `created ${f.path}` : `skipped ${f.path} (already exists)`);
+      }
+      if (missingDeps.length > 0) {
+        console.log(
+          `\nthese files import packages your package.json does not declare — add to its dependencies/devDependencies, then install:\n${missingDeps.map((l) => `  ${l}`).join("\n")}`
+        );
+      }
       return created ? 0 : 1;
     }
     case "plugin": {
