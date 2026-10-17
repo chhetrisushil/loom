@@ -914,7 +914,7 @@ Being honest about the edges:
     cluster-visible store, ghost leases are garbage-collected, and acquisition is lazy for a fresh
     `start` by default (S7g amendment of 2026-10-15: eager measured 25-30% no-op overhead on
     Postgres). Residual risks stay documented in the ADR. Operating it: [operations](operations.md)
-  - **0131** loom's own evals (Proposed): retrieval gates and cassette-replayed model evals for the
+  - **0131** loom's own evals (Accepted): retrieval gates and cassette-replayed model evals for the
     first-party agentic layer, in a repo-internal unpublished workspace that dogfoods `@loom/eval`,
     with committed regression thresholds and manual-only live re-recording (kernel unchanged)
 - **[Presentation](presentation/loom-deck.md)** — the deck.
