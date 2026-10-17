@@ -65,6 +65,15 @@ const STORE = {
   verbose: "boolean",
 } as const satisfies Record<string, FlagKind>;
 
+const LIFECYCLE = {
+  ...STORE,
+  as: "string",
+  tenant: "string",
+  apply: "boolean",
+  redact: "string",
+  json: "boolean",
+} as const satisfies Record<string, FlagKind>;
+
 const inspector: CommandSpec = {
   summary: "web inspector (timeline + slider) over a store",
   usage: ["loom inspect <store> [--port N]"],
@@ -114,6 +123,42 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     summary: "time-travel: the folded state of an execution at sequence N",
     usage: ["loom debug <store> <executionId> [--at N] [--redact a,b] [--json]"],
     flags: { ...STORE, at: "int", redact: "string", json: "boolean" },
+  },
+  resume: {
+    summary:
+      "answer a suspended execution's gate through your app's runtime (dry run unless --apply)",
+    usage: [
+      "loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--apply] [--json]",
+    ],
+    flags: {
+      ...LIFECYCLE,
+      event: "string",
+      payload: "string",
+      "payload-file": "string",
+      "show-payload": "boolean",
+      "wait-id": "string",
+    },
+  },
+  cancel: {
+    summary: "cancel an execution through your app's runtime (dry run unless --apply)",
+    usage: [
+      "loom cancel <executionId> --config <module> --as <principal> [--tenant <t>] [--reason <text>] [--force] [--apply] [--json]",
+    ],
+    flags: { ...LIFECYCLE, reason: "string", force: "boolean" },
+  },
+  start: {
+    summary: "start a flow through your app's runtime (dry run unless --apply)",
+    usage: [
+      "loom start <flowId> --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--apply] [--json]",
+    ],
+    flags: {
+      ...LIFECYCLE,
+      input: "string",
+      "input-file": "string",
+      id: "string",
+      "idempotency-key": "string",
+      "show-payload": "boolean",
+    },
   },
   recover: {
     summary: "re-drive executions whose supervisor died (dry run unless --apply)",

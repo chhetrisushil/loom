@@ -80,6 +80,17 @@ observe
   loom inspect <store> [--port N]                 web inspector (timeline + slider)
 
 operate
+  loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--apply] [--json]
+                                                  answer a suspended gate THROUGH your app's runtime:
+                                                  its resume authenticator, execution authorizer and
+                                                  resumeSchemas all run (dry run unless --apply; --db
+                                                  is refused; the continuation runs in THIS process)
+  loom cancel <executionId> --config <module> --as <principal> [--tenant <t>] [--reason <text>] [--force] [--apply] [--json]
+                                                  cancel through your app's runtime (dry run unless
+                                                  --apply; a live lease holder refuses unless --force)
+  loom start <flowId> --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--apply] [--json]
+                                                  start a flow through your app's runtime (dry run
+                                                  unless --apply; the flow runs in THIS process)
   loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
                                                   re-drive executions whose supervisor died
                                                   (--max-recoveries: skip + list those whose
@@ -404,6 +415,73 @@ async function dispatch(
         return 0;
       }
       throw new UsageError(`unknown branches subcommand "${sub}" (expected retire|prune)`);
+    }
+    case "resume":
+    case "cancel":
+    case "start": {
+      // These verbs write through the app's runtime, so: no discovery (the config is named),
+      // no `--db` (a bare store has none of the app's checks), no principal-less call.
+      const lc = await import("./lifecycle");
+      const common = {
+        ...storeFlagsOf(flags),
+        ...(flags.as !== undefined && { as: flags.as }),
+        ...(flags.tenant !== undefined && { tenant: flags.tenant }),
+        apply: flags.apply === "true",
+        redact: parseRedact(flags.redact),
+        ...(flags["show-payload"] === "true" && { showPayload: true }),
+      };
+      let res: Awaited<ReturnType<typeof lc.resumeExecution>>;
+      if (command === "resume") {
+        const executionId = requirePositional(positionals, "executionId");
+        requireFlag(flags, "event");
+        const payload = lc.readJsonInput("payload", flags.payload, flags["payload-file"], true);
+        res = await lc.resumeExecution({
+          ...common,
+          executionId,
+          event: flags.event as string,
+          payload: payload?.value,
+          payloadFromFile: payload?.fromFile === true,
+          ...(flags["wait-id"] !== undefined && { waitId: flags["wait-id"] }),
+        });
+      } else if (command === "cancel") {
+        const executionId = requirePositional(positionals, "executionId");
+        res = await lc.cancelExecution({
+          ...common,
+          executionId,
+          ...(flags.reason !== undefined && { reason: flags.reason }),
+          ...(flags.force === "true" && { force: true }),
+        });
+      } else {
+        const flowId = requirePositional(positionals, "flowId");
+        const input = lc.readJsonInput("input", flags.input, flags["input-file"], true);
+        res = await lc.startExecution({
+          ...common,
+          flowId,
+          input: input?.value,
+          inputFromFile: input?.fromFile === true,
+          ...(flags.id !== undefined && { id: flags.id }),
+          ...(flags["idempotency-key"] !== undefined && {
+            idempotencyKey: flags["idempotency-key"],
+          }),
+        });
+      }
+      if (json) {
+        outJson({
+          ok: res.ok,
+          action: res.action,
+          dryRun: res.dryRun,
+          executionId: res.executionId,
+          ...(res.before !== undefined && { before: res.before }),
+          ...(res.after !== undefined && { after: res.after }),
+          ...(res.refusal !== undefined && { refusal: res.refusal }),
+          ...(res.failure !== undefined && { failure: res.failure }),
+        });
+      } else {
+        if (res.lines.length > 0) out(lc.renderLifecycle(res));
+        if (res.refusal !== undefined) console.error(`loom ${command}: refused: ${res.refusal}`);
+        if (res.failure !== undefined) console.error(`loom ${command}: failed: ${res.failure}`);
+      }
+      return res.exitCode;
     }
     case "census": {
       if (!hasStoreFlagsOrDiscover(flags, "census")) return storeFlagError("census");
