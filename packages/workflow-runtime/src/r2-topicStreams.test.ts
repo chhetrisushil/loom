@@ -488,8 +488,52 @@ for (const backend of inboxBackends("topics")) {
       expect(await readRegisteredTopics(be.eventStore, e)).toEqual(["y"]); // re-registered
       await a.rt.resume(e, { eventType: "Go", payload: null });
       await done(a, e);
-      await until(async () => (await raw(be.eventStore, inboxTopicStreamId(e, "y"))).length === 0);
-      expect(await raw(be.eventStore, inboxRegistryStreamId(e))).toEqual([]);
+      // Retirement deletes the topic streams first and the registry LAST, so wait for the whole set.
+      const streams = [inboxTopicStreamId(e, "y"), inboxRegistryStreamId(e)];
+      await retired(a, streams);
+      for (const stream of streams) expect(await raw(be.eventStore, stream)).toEqual([]);
+    });
+
+    it("retirement deletes the registry last: with its delete held, the topic stream is gone but the registry is not yet", async () => {
+      const be = backend.make();
+      const view = Object.create(be.eventStore) as EventStore;
+      const e = id();
+      let armed = false;
+      let reachedRegDelete!: () => void;
+      const reached = new Promise<void>((r) => {
+        reachedRegDelete = r;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      view.deleteExecution = async (target) => {
+        if (armed && target === inboxRegistryStreamId(e)) {
+          armed = false;
+          reachedRegDelete();
+          await gate;
+        }
+        return be.eventStore.deleteExecution!(target);
+      };
+      const a = build({ inboxTopicStreams: true }, { ...be, eventStore: view });
+      await enable(a);
+      await parkOn(a, gated("y", 1), e);
+      await a.rt.send(e, { topic: "y", payload: "SECRET-1", messageId: "m1" });
+      await deleteInbox(be.eventStore, e);
+      await a.rt.send(e, { topic: "y", payload: "SECRET-2", messageId: "m2" });
+      armed = true;
+      await a.rt.resume(e, { eventType: "Go", payload: null });
+      await done(a, e);
+      await reached;
+      const topic = inboxTopicStreamId(e, "y");
+      const registry = inboxRegistryStreamId(e);
+      // The topic stream is already deleted while the registry still exists: asserting the registry
+      // empty right after the topic stream drains is wrong.
+      expect(await raw(be.eventStore, topic)).toEqual([]);
+      expect((await raw(be.eventStore, registry)).length).toBeGreaterThan(0);
+      release();
+      await retired(a, [topic, registry]);
+      for (const stream of [topic, registry]) expect(await raw(be.eventStore, stream)).toEqual([]);
     });
 
     it("a send racing the owner's completion deletes the stream it wrote, even when the registry no longer names it", async () => {
