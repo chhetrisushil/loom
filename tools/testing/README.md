@@ -12,7 +12,7 @@ Unpublished for now: inside this repo use `workspace:*`; from a sibling checkout
 
 ## Time travel: `ctx.sleep(1 day)` without waiting
 
-`createTestApp({ clock: true })` gives the app a controllable clock as its `execution.now` and an in-memory timer store, with the `TimerService` **not polling on its own** (`autostart: false`). `advanceTime(app, ms)` moves the clock and then drains the app's real `TimerService` (`app.timerService.tick(clock.now())`, repeated until nothing is due; it throws if a timer keeps re-arming at an already-due instant). `advanceTime` and `advanceBy` throw on a negative, NaN or non-finite delta, so a sleep, a `suspend({ timeout })` or a cron occurrence fires through the same code production runs. Advancing less than the remaining time fires nothing.
+`createTestApp({ clock: true })` gives the app a controllable clock as its `execution.now` and an in-memory timer store, with the `TimerService` **not polling on its own** (`autostart: false`). `advanceTime(app, ms)` moves the clock and then drains the app's real `TimerService` (`app.timerService.tick(clock.now())`, repeated until nothing is due; it throws if a timer keeps re-arming at an already-due instant). `advanceTime` and `advanceBy` throw on a negative, NaN or non-finite delta. Because `advanceTime` drains the real `TimerService`, a sleep, a `suspend({ timeout })` or a cron occurrence fires through the same code production runs. Advancing less than the remaining time fires nothing.
 
 ```ts
 import { advanceTime, createTestApp } from "@loom/testing";

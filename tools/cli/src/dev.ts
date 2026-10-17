@@ -76,12 +76,22 @@ const NOISE_NAME = /(?:~|\.swp|\.swx|\.tmp|\.log|-wal|-shm|-journal|\.db|\.sqlit
 
 /** Whether a changed path (relative, `/` separators) should restart the app. */
 export function isDevSource(file: string): boolean {
-  if (file === "loom.gen.ts") return false; // OUR output: restarting on it would double every restart
+  if (isDevNoise(file)) return false;
+  const segments = file.split("/");
+  return SOURCE_FILE.test(segments[segments.length - 1] as string);
+}
+
+/**
+ * Names that are never worth a rescan, whatever their extension (or lack of one): our own output,
+ * dotfiles / hidden dirs, vim's extensionless probe file, editor and database scratch. The watcher's
+ * `ignoreEvent`, so these events do not even schedule a rescan.
+ */
+export function isDevNoise(file: string): boolean {
+  if (file === "loom.gen.ts") return true; // OUR output: restarting on it would double every restart
   const segments = file.split("/");
   const base = segments[segments.length - 1] as string;
-  if (segments.some((seg) => seg.startsWith("."))) return false; // dotfiles, .#lock, hidden dirs
-  if (base === "4913" || NOISE_NAME.test(base)) return false; // vim's probe file, sqlite sidecars
-  return SOURCE_FILE.test(base);
+  if (segments.some((seg) => seg.startsWith("."))) return true; // dotfiles, .#lock, hidden dirs
+  return base === "4913" || NOISE_NAME.test(base); // vim's probe file, sqlite sidecars
 }
 
 /** Signal a child's whole process group (POSIX), or the child itself where groups do not exist. */
@@ -146,28 +156,28 @@ export async function runDev(options: DevOptions): Promise<number> {
     force = resolve;
   });
   /** Wait `ms`, or until a second interrupt forces everything down. */
-  const pause = async (ms: number): Promise<void> => {
+  const waiter = (ms: number): { done: Promise<void>; cancel: () => void } => {
     let t: NodeJS.Timeout | undefined;
-    await Promise.race([
-      new Promise<void>((resolve) => {
-        t = setTimeout(resolve, ms);
-      }),
-      forcedP,
-    ]);
-    clearTimeout(t);
+    const timed = new Promise<void>((resolve) => {
+      t = setTimeout(resolve, ms);
+    });
+    return { done: Promise.race([timed, forcedP]), cancel: () => clearTimeout(t) };
+  };
+  const pause = async (ms: number): Promise<void> => {
+    const w = waiter(ms);
+    await w.done;
+    w.cancel();
   };
   const killAllNow = (): void => {
     if (child !== undefined) signalTree(child, "SIGKILL");
+    for (const proc of reapers.values()) signalTree(proc, "SIGKILL"); // leftovers awaiting their reaper
   };
   const onProcessExit = (): void => killAllNow(); // best effort if loom itself is going down
-  process.on("exit", onProcessExit);
   const onForce = (): void => {
     forced = true;
     killAllNow();
     force();
   };
-  if (options.forceSignal?.aborted) onForce();
-  else options.forceSignal?.addEventListener("abort", onForce, { once: true });
 
   const start = (): void => {
     startedAt = Date.now();
@@ -196,7 +206,7 @@ export async function runDev(options: DevOptions): Promise<number> {
           signalTree(proc, "SIGTERM");
           const t = setTimeout(() => {
             reapers.delete(t);
-            signalTree(proc, "SIGKILL");
+            if (groupAlive(proc)) signalTree(proc, "SIGKILL");
           }, killGraceMs);
           reapers.set(t, proc);
         }
@@ -246,7 +256,9 @@ export async function runDev(options: DevOptions): Promise<number> {
     // The shell may exit at once while its children are still flushing: wait for the WHOLE group
     // (up to the grace period), and only then SIGKILL what is left - of this generation only.
     const deadline = Date.now() + killGraceMs;
-    await Promise.race([exited, pause(killGraceMs)]);
+    const grace = waiter(killGraceMs);
+    await Promise.race([exited, grace.done]);
+    grace.cancel(); // a prompt exit must not leave the grace timer holding the event loop
     while (groupAlive(proc) && Date.now() < deadline && !forced) await pause(25);
     if (groupAlive(proc)) signalTree(proc, "SIGKILL");
     await exited;
@@ -276,6 +288,7 @@ export async function runDev(options: DevOptions): Promise<number> {
 
   const watcher = watchTree(options.dir, {
     include: isDevSource,
+    ignoreEvent: isDevNoise,
     ...(options.debounceMs !== undefined
       ? { debounceMs: options.debounceMs }
       : { debounceMs: 150 }),
@@ -306,22 +319,31 @@ export async function runDev(options: DevOptions): Promise<number> {
     },
   });
 
-  start();
+  // Registered only now: everything above can throw (bad --dir, watcher), and nothing may leak then.
+  process.on("exit", onProcessExit);
+  if (options.forceSignal?.aborted) onForce();
+  else options.forceSignal?.addEventListener("abort", onForce, { once: true });
+  try {
+    start();
 
-  await new Promise<void>((resolve) => {
-    if (options.signal?.aborted) return resolve();
-    options.signal?.addEventListener("abort", () => resolve(), { once: true });
-  });
-  stopped = true;
-  watcher.close();
-  await stopChild();
-  // Leftovers of a self-exited generation already had SIGTERM: finish them now.
-  for (const [t, proc] of reapers) {
-    clearTimeout(t);
-    signalTree(proc, "SIGKILL");
+    await new Promise<void>((resolve) => {
+      if (options.signal?.aborted) return resolve();
+      options.signal?.addEventListener("abort", () => resolve(), { once: true });
+    });
+    stopped = true;
+    watcher.close();
+    await stopChild();
+    // Leftovers of a self-exited generation already had SIGTERM: finish them now.
+    for (const [t, proc] of reapers) {
+      clearTimeout(t);
+      signalTree(proc, "SIGKILL");
+    }
+    reapers.clear();
+    return 0;
+  } finally {
+    stopped = true;
+    watcher.close();
+    process.removeListener("exit", onProcessExit);
+    options.forceSignal?.removeEventListener("abort", onForce);
   }
-  reapers.clear();
-  process.removeListener("exit", onProcessExit);
-  options.forceSignal?.removeEventListener("abort", onForce);
-  return 0;
 }
