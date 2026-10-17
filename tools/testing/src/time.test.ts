@@ -113,6 +113,42 @@ describe("test clock (time travel)", () => {
     await app.close();
   }, 60_000);
 
+  it("no progress: a timer that stays due is named in the error (not a generic cap message)", async () => {
+    const app = createTestApp({ clock: true, flows: [sleeper] });
+    const h = await app.runtime.start(sleeper, {});
+    await h.waitForSuspend();
+    // Firing keeps failing: the poll does nothing, so the same row stays due after every poll.
+    let polls = 0;
+    const service = app.timerService as unknown as { tick: (now: number) => Promise<unknown> };
+    service.tick = async () => {
+      polls++;
+    };
+    const err = await advanceTime(app, DAY).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/no progress/);
+    expect((err as Error).message).toContain(h.executionId);
+    expect(polls).toBe(1000);
+    await app.close();
+  }, 60_000);
+
+  it("a timer that re-arms at a fresh already-due instant hits the cap with the re-arming message", async () => {
+    const app = createTestApp({ clock: true, flows: [sleeper] });
+    const h = await app.runtime.start(sleeper, {});
+    await h.waitForSuspend();
+    const store = app.stores?.timerStore as unknown as {
+      due: (...a: unknown[]) => Promise<unknown[]>;
+    };
+    // Each poll "fires" the timer, which immediately re-arms at a NEW due instant.
+    let n = 0;
+    store.due = async () => [{ executionId: h.executionId, wakeAt: ++n }];
+    const err = await advanceTime(app, DAY).catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/re-arming a timer/);
+    expect((err as Error).message).not.toMatch(/no progress/);
+    expect((err as Error).message).toContain(h.executionId);
+    await app.close();
+  }, 60_000);
+
   it("advanceTime refuses a negative, NaN or non-finite delta", async () => {
     const app = createTestApp({ clock: true });
     await expect(advanceTime(app, -1)).rejects.toThrow(/finite number >= 0/);

@@ -205,7 +205,20 @@ function registerTsLoader(file: string): {
  * A failure is reported as `while loading <abs file>: <message>` plus a hint; the original
  * error (stack included) is its `cause`, printed by `--verbose` / `LOOM_DEBUG=1`.
  */
-export async function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>> {
+export function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>> {
+  // Serialized: the load swaps process.env (LOOM_NO_AUTOSTART / LOOM_QUIET) and restores it, so two
+  // overlapping loads would capture each other's "1" as the value to restore and leak it.
+  const run = loadChain.then(() => loadLoomAppNow(modulePath));
+  loadChain = run.then(
+    () => undefined,
+    () => undefined
+  );
+  return run;
+}
+
+let loadChain: Promise<void> = Promise.resolve();
+
+async function loadLoomAppNow(modulePath: string): Promise<Partial<LoomApp>> {
   // Restored in `finally`: defineConfig reads it while composing, which happens during the import,
   // so restoring afterwards cannot re-enable autostart for the app already built - and a caller
   // that goes on to spawn processes (`loom dev`) must not hand them our inspect-only switch.

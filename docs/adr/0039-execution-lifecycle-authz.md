@@ -101,6 +101,13 @@ same anchor read (they have none in hand), so they follow the same rule. Residua
 keeps its catch-all "unknown owner" for the trusted-lineage (parent) walk, which only withholds a
 `parentOwner` and never denies the execution's own owner.
 
+**Residual (2026-10-17): a bounded existence oracle during a key outage.** While the key service is
+down, a stranger asking about an EXISTING encrypted execution id gets `ExecutionStoreUnavailableError`
+(its anchor cannot be decrypted, so no verdict is possible), whereas a missing id answers
+not-found/denied. That tells a stranger that an id exists, but only during a real fault, only for ids
+they already guess, and never the owner, workflow or contents. Accepted: answering the same for both
+would mean denying or hiding a fault the legitimate owner must be able to retry.
+
 **Workflow id of an unreadable anchor.** The authorizer and `onExecutionDenied` get the envelope's
 plaintext `workflowId` column, taken from the redacted view the erasure error carries (else the
 error's own `workflowId`). For an in-tree store this is always present. A THIRD-PARTY decorator whose

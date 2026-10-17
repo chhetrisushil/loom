@@ -36,7 +36,6 @@ import type { ExecutionContext } from "@loom/workflow-runtime";
 const RUNTIME_ERROR_NAMES = new Set([
   "StaleFenceError",
   "ExecutionCancelledError",
-  "AbortError",
   "LeaseLostError",
   "LeaseHeldError",
   "StartFencedOutError",
@@ -55,6 +54,12 @@ function isRuntimeSignal(err: unknown): boolean {
     err instanceof ExecutionStoreUnavailableError
   ) {
     return true;
+  }
+  // An abort is the platform's `DOMException` named AbortError (what `signal.reason` /
+  // `throwIfAborted` produce, and what the scheduler raises). Matching the bare name would let a
+  // compensator abort the whole rollback by throwing any Error it named "AbortError".
+  if (typeof DOMException !== "undefined" && err instanceof DOMException) {
+    return err.name === "AbortError";
   }
   return err instanceof Error && RUNTIME_ERROR_NAMES.has(err.name);
 }

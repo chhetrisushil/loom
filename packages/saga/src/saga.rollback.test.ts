@@ -46,7 +46,7 @@ async function registerThree(saga: ReturnType<typeof createSaga>) {
 describe("rollback: runtime signals propagate unwrapped (no masking)", () => {
   const signals: [string, () => unknown][] = [
     ["cancellation", () => new ExecutionCancelledError()],
-    ["abort", () => Object.assign(new Error("aborted"), { name: "AbortError" })],
+    ["abort", () => new DOMException("aborted", "AbortError")],
     ["lost lease", () => new LeaseLostError("exec", "node-1", "taken-over")],
     ["stale fence", () => Object.assign(new Error("stale fence"), { name: "StaleFenceError" })],
     [
@@ -78,6 +78,21 @@ describe("rollback: runtime signals propagate unwrapped (no masking)", () => {
       expect(ran).toEqual(["undo-c#compensate:2", "undo-b#compensate:1"]);
     });
   }
+
+  it("a plain Error that merely NAMES itself AbortError is a compensator failure, not an abort", async () => {
+    const spoof = Object.assign(new Error("not an abort"), { name: "AbortError" });
+    const { ctx, ran } = fakeCtx({
+      "undo-b": () => {
+        throw spoof;
+      },
+    });
+    const saga = createSaga(ctx);
+    await registerThree(saga);
+    const err = await saga.rollback().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SagaCompensationError);
+    expect((err as SagaCompensationError).compensationErrors).toEqual([spoof]);
+    expect(ran).toHaveLength(3); // the remaining compensators still ran
+  });
 
   it("through withSaga the signal replaces nothing and is not a SagaCompensationError", async () => {
     const cancel = new ExecutionCancelledError();
