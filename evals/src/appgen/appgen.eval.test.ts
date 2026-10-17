@@ -253,8 +253,50 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
     it(
       "(a3b) a plan the validator ACCEPTS but whose code does not typecheck is reported invalid with the compiler error",
       async () => {
-        // Two DIFFERENT, kebab-case step ids ("a-b", "a--b") that both become `const aBStep`:
-        // validator-clean, a duplicate declaration for tsc.
+        // The validator does not model `intent`, which generate.ts splices into a `//`
+        // comment line. A newline in it ends the comment, so the rest becomes code: a
+        // validator-clean plan whose generated flow.ts is a TS syntax error. (The earlier
+        // `a-b` / `a--b` const-name collision is now rejected by the validator, see (a3c).)
+        const broken = {
+          content: JSON.stringify({
+            name: "ticket-router",
+            capabilities: [
+              {
+                id: "ticket-router",
+                name: "Ticket Router",
+                intent: "route tickets\nthis is not typescript",
+                op: "create",
+                steps: [{ id: "classify", op: "create" }],
+              },
+            ],
+          }),
+          stopReason: "end_turn" as const,
+        };
+        const bad = await authorAppgenCassette(
+          kase("new-ticket-router"),
+          typechecker,
+          () => broken
+        );
+        const run = await runAppgenSuite({
+          arm: "model",
+          typechecker,
+          cassette: swap("new-ticket-router", bad),
+        });
+        const o = run.outcomes.get("new-ticket-router");
+        expect(o?.spec?.planner).toBe("model"); // accepted as a plan ...
+        expect(o?.valid).toBe(false); // ... and still invalid
+        expect(o?.reasons.join(" ")).toMatch(
+          /typecheck: TS\d+ app\/flows\/ticket-router\/flow\.ts\(\d+\)/
+        );
+        expect(gate(run)).toContain("validity");
+        expect(gate(model)).toEqual([]);
+      },
+      T
+    );
+
+    it(
+      "(a3c) two step ids that generate one const name (a-b / a--b) are rejected by the validator, not left to tsc",
+      async () => {
         const clash = {
           content: JSON.stringify({
             name: "ticket-router",
@@ -280,12 +322,12 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
           cassette: swap("new-ticket-router", bad),
         });
         const o = run.outcomes.get("new-ticket-router");
-        expect(o?.spec?.planner).toBe("model"); // accepted as a plan ...
-        expect(o?.valid).toBe(false); // ... and still invalid
+        expect(o?.valid).toBe(false);
         expect(o?.reasons.join(" ")).toMatch(
-          /typecheck: TS\d+ app\/flows\/ticket-router\/flow\.ts\(\d+\)/
+          /step id "a--b" in "ticket-router" must be kebab-case/
         );
-        expect(o?.reasons.join(" ")).toMatch(/aBStep/);
+        expect(o?.reasons.join(" ")).not.toMatch(/typecheck:/);
+        expect(o?.replies.length).toBe(2); // asked, repaired once, still wrong
         expect(gate(run)).toContain("validity");
         expect(gate(model)).toEqual([]);
       },
