@@ -839,12 +839,18 @@ class SpawnLimitExceededError extends Error { limit: "maxDepth" | "maxFanOut"; m
 ** ~@loom/saga~ — compensation without a syscall
 
 #+begin_src typescript
-function createSaga(ctx): Saga
-function withSaga<T>(ctx, body: (saga: Saga) => Promise<T>): Promise<T>
+function createSaga(ctx: Pick<ExecutionContext, "run">): Saga
+function withSaga<T>(ctx: Pick<ExecutionContext, "run">, body: (saga: Saga) => Promise<T>): Promise<T>
 interface Saga {
-  run<T>(step: StepDefinition<unknown, T>, input: unknown, compensate: (out: T) => Promise<void> | void): Promise<T>
-  compensate(): Promise<void>     // reverse order; each compensator is a replay-guarded ctx.run step
+  run<TIn, TOut>(step: StepDefinition<TIn, TOut>, input: TIn, compensator?: StepDefinition<TOut, unknown>): Promise<TOut>  // compensator gets the forward OUTPUT
+  compensate<T>(step: StepDefinition<T, unknown>, input: T): void   // register a compensator with a custom input
+  rollback(): Promise<void>       // reverse order; each compensator is a replay-guarded ctx.run step; idempotent
+  readonly pending: number
 }
+class SagaCompensationError extends Error {   // a compensator failed; the rest still ran
+  readonly compensationErrors: readonly unknown[]   // run order; out of withSaga, `cause` = the ORIGINAL error
+}
+// SuspendError and runtime signals (cancel, lost lease/fence, divergence, storage) propagate unwrapped
 // ADR 0041 — the plan's `ctx.compensate` syscall and COMPENSATION_* events proved unnecessary
 #+end_src
 
