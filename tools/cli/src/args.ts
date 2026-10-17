@@ -239,14 +239,39 @@ export function parseArgs(argv: string[]): Parsed {
   }
   const known = Object.keys(spec.flags);
 
-  // Pass 1 (lenient, with tokens): find unknown flags and report them our way.
+  // Pass 1 (lenient, with tokens): find unknown and repeated flags and report them our way.
   const loose = nodeParseArgs({ args: rest, strict: false, allowPositionals: true, tokens: true });
+  const seen = new Set<string>();
   for (const t of loose.tokens ?? []) {
     if (t.kind === "option" && !Object.hasOwn(spec.flags, t.name)) {
+      const shown = t.rawName ?? `--${t.name}`;
+      if (t.name === "help" || t.name === "h") {
+        throw new UsageError(
+          `loom ${command}: ${shown} is not a flag — per-command help is not available yet; run \`loom help\` for the usage of every command`
+        );
+      }
+      const shortOrNumeric = !shown.startsWith("--");
       const hint = suggest(t.name, known);
+      const closeEnough =
+        hint !== undefined && (t.name.length > 2 || editDistance(t.name, hint) <= 1);
       throw new UsageError(
-        `loom ${command}: unknown flag --${t.name}${hint !== undefined ? ` (did you mean --${hint}?)` : ""}`
+        `loom ${command}: unknown flag ${shown}${closeEnough ? ` (did you mean --${hint}?)` : ""}${
+          shortOrNumeric || /^-\d/.test(shown)
+            ? " (if this is a value that starts with -, put -- before it)"
+            : ""
+        }`
       );
+    }
+    if (t.kind === "option" && spec.flags[t.name] !== "boolean") {
+      // Silently taking the last of two values is how a stale flag in a shell alias wins.
+      if (seen.has(t.name)) {
+        throw new UsageError(
+          `loom ${command}: --${t.name} given more than once (use one value${
+            spec.flags[t.name] === "string" ? "; lists are comma-separated" : ""
+          })`
+        );
+      }
+      seen.add(t.name);
     }
   }
 

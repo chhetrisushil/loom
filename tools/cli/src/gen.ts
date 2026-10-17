@@ -44,7 +44,7 @@ function discoverFlat(dir: string, sub: string): string[] {
   for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
     const m = /^(.*)\.(ts|tsx)$/.exec(entry.name);
-    if (m && !entry.name.endsWith(".test.ts") && !entry.name.endsWith(".d.ts")) {
+    if (m && !/\.(?:test|spec)\.tsx?$/.test(entry.name) && !entry.name.endsWith(".d.ts")) {
       specifiers.push(`./${sub}/${m[1]}`);
     }
   }

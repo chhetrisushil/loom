@@ -25,33 +25,73 @@ class Refusal extends Error {}
 
 // ── Where is the target? ─────────────────────────────────────────────────────
 
-/** Glob (pnpm-workspace `packages:` syntax: `*` = one segment, `**` = any depth) → RegExp. */
-function globToRegExp(glob: string): RegExp {
-  const body = glob
-    .replace(/^\.\//, "")
-    .replace(/\/+$/, "")
-    .split("/")
-    .map((seg) =>
-      seg === "**" ? ".*" : seg.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*")
-    )
-    .join("/");
-  return new RegExp(`^${body}$`);
+/**
+ * Glob (pnpm-workspace `packages:` syntax: `*` = one segment, `**` = any depth) → RegExp.
+ * `**` also matches zero segments: `**\/foo` matches top-level `foo`, `packages/**` matches
+ * `packages` itself.
+ */
+export function globToRegExp(glob: string): RegExp {
+  const segs = glob.replace(/^\.\//, "").replace(/\/+$/, "").split("/");
+  let re = "";
+  segs.forEach((seg, i) => {
+    const last = i === segs.length - 1;
+    if (seg === "**") {
+      // zero or more whole segments
+      re += last ? (i === 0 ? ".*" : "(?:/.*)?") : "(?:.*/)?";
+      return;
+    }
+    const part = seg.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
+    const prevGlobstar = i > 0 && segs[i - 1] === "**";
+    re += (i === 0 || prevGlobstar ? "" : "/") + part;
+  });
+  return new RegExp(`^${re}$`);
 }
 
-/** The `packages:` globs of a pnpm-workspace.yaml (the only key we need; no YAML dependency). */
-function workspaceGlobs(yaml: string): string[] {
-  const out: string[] = [];
-  let inPackages = false;
-  for (const line of yaml.split(/\r?\n/)) {
-    if (/^packages\s*:/.test(line)) {
-      inPackages = true;
-      continue;
-    }
-    if (!inPackages) continue;
-    if (/^\S/.test(line) && !line.startsWith("#")) break; // next top-level key
-    const m = /^\s*-\s*(?:'([^']*)'|"([^"]*)"|([^\s#]+))/.exec(line);
-    if (m) out.push((m[1] ?? m[2] ?? m[3]) as string);
+function unquote(raw: string): string {
+  const t = raw.trim();
+  const m = /^(?:'([^']*)'|"([^"]*)"|([^\s#'"]+))\s*(?:#.*)?$/.exec(t);
+  if (!m) throw new Refusal(`cannot parse pnpm-workspace.yaml entry ${JSON.stringify(raw)}`);
+  return (m[1] ?? m[2] ?? m[3]) as string;
+}
+
+/**
+ * The `packages:` globs of a pnpm-workspace.yaml (the only key we need; no YAML dependency).
+ * `undefined` = no `packages:` key (pnpm then treats every directory as a package). Anything we
+ * cannot read with confidence throws a {@link Refusal} rather than guessing "not a member".
+ */
+export function workspaceGlobs(yaml: string): string[] | undefined {
+  const lines = yaml.split(/\r?\n/);
+  const idx = lines.findIndex((l) => /^packages\s*:/.test(l));
+  if (idx < 0) return undefined;
+  const fail = (): never => {
+    throw new Refusal(
+      "cannot confidently parse the `packages:` list of the enclosing pnpm-workspace.yaml; refusing to guess whether the target is a workspace member. Scaffold outside that workspace."
+    );
+  };
+  const rest = (lines[idx] as string).replace(/^packages\s*:/, "").trim();
+  if (rest !== "" && !rest.startsWith("#")) {
+    // Inline / flow form, possibly spanning lines: packages: ['a/*', "b"]
+    if (!rest.startsWith("[")) return fail();
+    let text = rest;
+    for (let j = idx + 1; !text.includes("]") && j < lines.length; j++) text += ` ${lines[j]}`;
+    const m = /^\[([^\]]*)\]\s*(?:#.*)?$/.exec(text);
+    if (!m) return fail();
+    const items = (m[1] as string)
+      .split(",")
+      .map((x) => x.trim())
+      .filter((x) => x !== "");
+    return items.map(unquote);
   }
+  const out: string[] = [];
+  for (let j = idx + 1; j < lines.length; j++) {
+    const line = lines[j] as string;
+    if (/^\s*(#.*)?$/.test(line)) continue;
+    if (/^\S/.test(line)) break; // next top-level key
+    const m = /^\s*-\s*(.*)$/.exec(line);
+    if (!m) return fail();
+    out.push(unquote(m[1] as string));
+  }
+  if (out.length === 0) return fail();
   return out;
 }
 
@@ -83,6 +123,7 @@ export function findWorkspace(target: string): WorkspaceContext {
       const globs = workspaceGlobs(fs.readFileSync(file, "utf8"));
       const member =
         rel === "" ||
+        globs === undefined ||
         (globs.some((g) => !g.startsWith("!") && globToRegExp(g).test(rel)) &&
           !globs.some((g) => g.startsWith("!") && globToRegExp(g.slice(1)).test(rel)));
       if (member) {
@@ -226,7 +267,7 @@ export function run(argv: string[], cwd: string): number {
     args = parseArgs(argv);
   } catch (err) {
     console.error((err as Error).message);
-    return 1;
+    return 2;
   }
   if (args.help) {
     console.log(USAGE);
@@ -234,7 +275,7 @@ export function run(argv: string[], cwd: string): number {
   }
   if (args.target === undefined) {
     console.error(USAGE);
-    return 1;
+    return 2;
   }
   const target = args.target;
   try {

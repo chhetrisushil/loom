@@ -1,9 +1,10 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SqliteContentStore, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 import { afterEach, describe, expect, it } from "vitest";
+import { requireExistingFile } from "./stores";
 import { cmdSweepContent } from "./sweepContent";
 
 const DAY = 24 * 3_600_000;
@@ -335,5 +336,77 @@ describe("loom sweep content (DX-2, K10.6)", () => {
       { encoding: "utf8" }
     );
     expect(ok.status).toBe(0); // a dry run is not a refusal
+  });
+
+  it("a typo'd --archive-db / --archive-snap / --content is refused before anything opens, creates no file, erases nothing", async () => {
+    const { db, snap, contentDb, orphan } = await orphanSeed();
+    const base = {
+      db,
+      snap,
+      content: contentDb,
+      orphans: true,
+      apply: true,
+      snapshotsTouchContent: true,
+      ttlMs: 30 * DAY,
+    };
+    const typoArchive = join(dir, "archive-typo.db");
+    const typoArchiveSnap = join(dir, "archive-snap-typo.db");
+    const typoContent = join(dir, "content-typo.db");
+    await expect(
+      cmdSweepContent({ ...base, archiveDb: typoArchive, archiveSnap: typoArchiveSnap })
+    ).rejects.toThrow(/--archive-db: no such file/);
+    await expect(cmdSweepContent({ ...base, archiveSnap: typoArchiveSnap })).rejects.toThrow(
+      /--archive-snap: no such file/
+    );
+    await expect(cmdSweepContent({ ...base, content: typoContent })).rejects.toThrow(
+      /--content: no such file/
+    );
+    for (const f of [typoArchive, typoArchiveSnap, typoContent]) expect(existsSync(f)).toBe(false);
+    expect(await stillThere(contentDb, orphan)).toBe(true);
+  });
+
+  it("the built binary exits 1 for a typo'd --archive-db and leaves the blob alone", async () => {
+    const { db, snap, contentDb, orphan } = await orphanSeed();
+    const cli = join(__dirname, "..", "dist", "cli.js");
+    const typo = join(dir, "nope.db");
+    const r = spawnSync(
+      process.execPath,
+      [
+        cli,
+        "sweep",
+        "content",
+        "--db",
+        db,
+        "--snap",
+        snap,
+        "--content",
+        contentDb,
+        "--archive-db",
+        typo,
+        "--archive-snap",
+        snap,
+        "--orphans",
+        "--apply",
+        "--snapshots-touch-content",
+      ],
+      { encoding: "utf8" }
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(typo);
+    expect(existsSync(typo)).toBe(false);
+    expect(await stillThere(contentDb, orphan)).toBe(true);
+  });
+
+  it("a zero-byte or non-SQLite file is refused, not migrated into a database", async () => {
+    dir = mkdtempSync(join(tmpdir(), "loom-sweep-"));
+    const empty = join(dir, "empty.db");
+    const junk = join(dir, "junk.db");
+    writeFileSync(empty, "");
+    writeFileSync(junk, "this is not a database at all");
+    for (const f of [empty, junk]) {
+      expect(() => requireExistingFile("db", f)).toThrow(/not a SQLite database/);
+    }
+    expect(statSync(empty).size).toBe(0);
+    expect(readFileSync(junk, "utf8")).toBe("this is not a database at all");
   });
 });
