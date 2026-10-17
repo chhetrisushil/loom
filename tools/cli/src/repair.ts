@@ -103,7 +103,7 @@ export function renderBlankStream(
 }
 
 /**
- * `loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]`
+ * `loom repair blank-stream <store-flags> [--assign <id>:<from>-<through>,…] [--apply]`
  *
  * Needs the snapshot store (the proof lives there) and an enumerable event store.
  */
@@ -149,7 +149,7 @@ export async function cmdRepairBlankStream(
 }
 
 /**
- * `loom repair terminal-event <store> [executionId] [--apply]` (ADR 0116 migration)
+ * `loom repair terminal-event <store-flags> [executionId] [--apply]` (ADR 0116 migration)
  *
  * A finished execution a pre-0116 kernel compacted is left as `[0]` + a checkpoint at its terminal
  * sequence: no valid slot for `recordOutcome`, no terminal event for retention to date. This

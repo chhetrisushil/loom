@@ -146,7 +146,7 @@ segment fails condition 4 and falls into this class too.
 
 `LogLifecycle.blankStreamCensus()` reads. `LogLifecycle.rehomeBlankStream({ apply, assign })`
 is a dry run unless `apply: true`. It is exposed as
-`loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]`.
+`loom repair blank-stream <store-flags> [--assign <id>:<from>-<through>,…] [--apply]`.
 
 - **Placement.** A proven segment is appended to X's log at its own sequences. Each event is
   re-stamped with X's `executionId`, sequence 0's `workflowId` and `id` `<X>-<sequence>`, and

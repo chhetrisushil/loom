@@ -71,24 +71,24 @@ validate
   loom eval  --dir <path> [--json]                replay golden logs vs expectations
 
 observe
-  loom ls    <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]
+  loom ls    <store-flags> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]
                                                   list executions: status, last activity, and what a
                                                   suspended one waits on (read-only; --leases adds owners)
-  loom logs  <store> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
-  loom logs  <store> <executionId> [-v] [--type A,B] [--from N] [--to N]  detail (timestamps, gaps, payloads) / filter
-  loom logs  <store> <executionId> --follow [--interval <dur>]  tail it until it finishes (Ctrl-C stops)
-  loom debug <store> <executionId> [--at N] [--redact a,b] [--json]  time-travel: state at sequence N
-  loom profile <store> <executionId> [--json]     flame graph + latency breakdown
-  loom introspect <store> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
-  loom optimize <store> <executionId>             advisory optimization report (recommendations)
-  loom census <store> [--buckets 5m,1h,6h,24h] [--sample N] [--json]  what is stuck, and is anything watching it
+  loom logs  <store-flags> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
+  loom logs  <store-flags> <executionId> [-v] [--type A,B] [--from N] [--to N]  detail (timestamps, gaps, payloads) / filter
+  loom logs  <store-flags> <executionId> --follow [--interval <dur>]  tail it until it finishes (Ctrl-C stops)
+  loom debug <store-flags> <executionId> [--at N] [--redact a,b] [--json]  time-travel: state at sequence N
+  loom profile <store-flags> <executionId> [--json]     flame graph + latency breakdown
+  loom introspect <store-flags> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
+  loom optimize <store-flags> <executionId>       advisory optimization report (recommendations)
+  loom census <store-flags> [--buckets 5m,1h,6h,24h] [--sample N] [--json]  what is stuck, and is anything watching it
                                                   (read-only; takes no predicate; --sample: ids kept
                                                    per band, default 5)
-  loom learn report <store> [executionId]         trajectories, per-arm rewards, learning coverage
-  loom learn eval <store> --policy <module> [--min-steps N] [executionId]
+  loom learn report <store-flags> [executionId]   trajectories, per-arm rewards, learning coverage
+  loom learn eval <store-flags> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
-  loom compliance report <store> --subject-path <p> [--tenant-path <p>]  data-subject inventory
-  loom inspect <store> [--port N]                 web inspector (timeline + slider)
+  loom compliance report <store-flags> --subject-path <p> [--tenant-path <p>]  data-subject inventory
+  loom inspect <store-flags> [--port N]           web inspector (timeline + slider)
 
 operate
   loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--force] [--allow-local-controls] [--skip-effect-check] [--apply] [--json]
@@ -110,16 +110,16 @@ operate
                                                   process-local kill switch refuses unless
                                                   --allow-local-controls; --skip-effect-check
                                                   skips the registered-effect check)
-  loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
+  loom recover <store-flags> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
                                                   re-drive executions whose supervisor died
                                                   (--max-recoveries: skip + list those whose
                                                    last N re-drives made no progress)
                                                   (needs \`timers.leases\` or --stale; --apply
                                                    needs --config: re-driving runs the flow)
-  loom branches retire <store> --parent <id> --stale <d> [--limit N] [--apply]
+  loom branches retire <store-flags> --parent <id> --stale <d> [--limit N] [--apply]
                                                   cancel branches nobody is coming back to
                                                   (they keep the parent uncollectable)
-  loom branches prune <store> [--protect main,rel] [--limit N] [--apply]
+  loom branches prune <store-flags> [--protect main,rel] [--limit N] [--apply]
                                                   delete refs that name nothing (main protected)
   loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]
                                                   reconcile a directory into a corpus
@@ -131,20 +131,20 @@ operate
                                                   ask the corpus (operator query — not recorded)
 
 maintain
-  loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]
+  loom repair blank-stream <store-flags> [--assign <id>:<from>-<through>,…] [--apply]
                                                   re-home what the pre-0106 compaction bug
                                                   wrote to execution "" (ADR 0107): proven
                                                   segments only; the rest is listed with its
                                                   candidates, never guessed
-  loom repair terminal-event <store> [executionId] [--apply] [--force]
+  loom repair terminal-event <store-flags> [executionId] [--apply] [--force]
                                                   give an execution a pre-0116 compaction left
                                                   as [0]+checkpoint its terminal event back, so
                                                   it can take a late outcome (ADR 0116)
-  loom retention run <store> --ttl <dur|ms> [--apply]  reclaim aged terminal executions
+  loom retention run <store-flags> --ttl <dur|ms> [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content <store> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
+  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
                                                   (--orphans also erases blobs NOTHING scanned
                                                    cites, so it needs the snapshot store and
                                                    every archive; with --apply and no archive
@@ -167,7 +167,8 @@ help
   loom version                                    print the @loom/cli version (also --version)
   loom completion <zsh|bash|fish>                 print a shell completion script
 
-  <store>  where a command reads storage. Either half works for every command above:
+  <store-flags>  where a command reads storage — FLAGS, never a positional path (loom logs events.db <id>
+                 reads "events.db" as the execution id). Either half works for every command above:
     --config <module>    the stores YOUR app wired (defineConfig) — SQLite, Postgres, or any
                          conforming backend; importing it starts nothing
     --db <events.db> [--snap <s.db>] [--branches <b.db>] [--leases <l.db>]
@@ -1015,7 +1016,7 @@ async function dispatch(
       }
       if (flags.config === undefined) {
         throw new UsageError(
-          "loom dev: --config <module> is required (it names the app whose stores the inspector reads). `loom dev` is now the dev loop; for only the inspector over a store use `loom inspect <store>`"
+          "loom dev: --config <module> is required (it names the app whose stores the inspector reads). `loom dev` is now the dev loop; for only the inspector over a store use `loom inspect <store-flags>`"
         );
       }
       let port: number | undefined;

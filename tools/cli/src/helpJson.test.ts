@@ -25,19 +25,19 @@ describe("per-command help comes from the command table", () => {
   });
 
   it("every declared flag appears in the command's own usage lines", () => {
-    // The shared store flags are selected by `--config` / `<store>`; each is exempt only for
+    // The shared store flags are selected by `--config` / `<store-flags>`; each is exempt only for
     // what that front door implies. Every other flag must be spelled in a usage line, matched
     // on a word boundary so `--json` is not satisfied by `--json-lines`.
     expect(Object.keys(COMMANDS).length).toBeGreaterThan(0);
     const spelled = (text: string, flag: string) =>
       new RegExp(`--${flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(text);
-    // `--db` and its siblings are the SQLite shorthand for `<store>`; `--config` is the other half.
+    // `--db` and its siblings are the SQLite shorthand for `<store-flags>`; `--config` is the other half.
     const IMPLIED_BY_STORE = new Set(["config", "db", "snap", "branches", "leases"]);
     const missing: string[] = [];
     let checked = 0;
     for (const [name, spec] of Object.entries(COMMANDS)) {
       const text = spec.usage.join("\n");
-      const takesStore = /<store>/.test(text) || spelled(text, "config");
+      const takesStore = /<store-flags>/.test(text) || spelled(text, "config");
       for (const flag of Object.keys(spec.flags)) {
         checked++;
         const implied =
@@ -49,6 +49,29 @@ describe("per-command help comes from the command table", () => {
     }
     expect(checked).toBeGreaterThan(0);
     expect(missing).toEqual([]);
+  });
+
+  it("the store is never a positional in usage: `<store>` is banned, `<store-flags>` only where --config/--db parse", () => {
+    // The store is given with FLAGS (`--db`, `--config`, ...). A bare `<store>` reads as a positional
+    // path, and `loom logs events.db <id>` then takes the path for the execution id.
+    const bare = /<store>/;
+    const offenders: string[] = [];
+    let flagged = 0;
+    for (const [name, spec] of Object.entries(COMMANDS)) {
+      for (const line of spec.usage) {
+        if (bare.test(line)) offenders.push(line);
+        if (line.includes("<store-flags>")) {
+          flagged++;
+          if (!Object.hasOwn(spec.flags, "db") || !Object.hasOwn(spec.flags, "config"))
+            offenders.push(`loom ${name}: <store-flags> but no --db/--config flag`);
+        }
+      }
+      expect(commandHelp(name)).not.toMatch(bare);
+    }
+    for (const line of USAGE.split("\n")) if (bare.test(line)) offenders.push(line.trim());
+    expect(flagged).toBeGreaterThan(10);
+    expect(offenders).toEqual([]);
+    expect(commandHelp("ls")).toContain("flags, never a positional path");
   });
 
   it("every command the table knows appears in the grouped top-level USAGE", () => {

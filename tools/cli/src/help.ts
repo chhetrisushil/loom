@@ -36,7 +36,7 @@ export function commandHelp(name: string, sub?: string): string {
   const spec: CommandSpec | undefined = specOf(name);
   if (spec === undefined) throw new UsageError(unknownCommandMessage(name));
   // `loom branches retire --help`: just that subcommand's usage line(s) and the flags they
-  // name (plus the store flags when the line takes a <store>); the whole section otherwise.
+  // name (plus the store flags when the line takes a <store-flags>); the whole section otherwise.
   const own =
     sub !== undefined && spec.subcommands?.includes(sub)
       ? spec.usage.filter((u) => u.startsWith(`loom ${name} ${sub}`))
@@ -49,7 +49,9 @@ export function commandHelp(name: string, sub?: string): string {
     ...(narrowed ? own : spec.usage).map((u) => `  ${u}`),
   ];
   const mentioned = (f: string) =>
-    own.some((u) => u.includes(`--${f}`) || (u.includes("<store>") && STORE_FLAG_NAMES.has(f)));
+    own.some(
+      (u) => u.includes(`--${f}`) || (u.includes("<store-flags>") && STORE_FLAG_NAMES.has(f))
+    );
   const flags = Object.entries(spec.flags).filter(([f]) => !narrowed || mentioned(f));
   if (flags.length > 0) {
     lines.push(
@@ -58,6 +60,12 @@ export function commandHelp(name: string, sub?: string): string {
       ...flags.map(([f, k]) =>
         flagLine(f, k, Object.entries(spec.short ?? {}).find(([, long]) => long === f)?.[0])
       )
+    );
+  }
+  if ((narrowed ? own : spec.usage).some((u) => u.includes("<store-flags>"))) {
+    lines.push(
+      "",
+      "<store-flags> are flags, never a positional path: --config <module> | --db <events.db> [--snap <s.db>] [--branches <b.db>] [--leases <l.db>]"
     );
   }
   lines.push("", "`loom help` lists every command.");

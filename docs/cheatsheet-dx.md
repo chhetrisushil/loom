@@ -31,7 +31,7 @@ package your `package.json` lacks (`sentinel`) prints the line to add. `loom new
 The folder convention is **build-time** codegen — a static `loom.gen.ts`, never runtime
 globbing.
 
-## `<store>` — where a command reads
+## `<store-flags>` — where a command reads
 
 Both halves work for every log command; `knowledge`, `verify` and `deploy check` need `--config`.
 
@@ -72,15 +72,15 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 
 | | |
 |---|---|
-| `loom ls <store>` | list executions; what each suspended one waits on (`--status`, `--since 1h`; newest activity first) |
-| `loom logs <store> <id>` | the event timeline (`--redact a,b`; `-v` detail; `--type`/`--from`/`--to`; `--follow` tails it) |
-| `loom debug <store> <id> --at N` | folded state at sequence N — time travel |
-| `loom inspect <store>` | web timeline with a slider (`loom dev` is the dev loop, not an alias) |
-| `loom profile <store> <id>` | flame graph + latency breakdown |
-| `loom introspect <store> <id>` | execution / task / decision / resource graphs |
-| `loom optimize <store> <id>` | advisory recommendations |
+| `loom ls <store-flags>` | list executions; what each suspended one waits on (`--status`, `--since 1h`; newest activity first) |
+| `loom logs <store-flags> <id>` | the event timeline (`--redact a,b`; `-v` detail; `--type`/`--from`/`--to`; `--follow` tails it) |
+| `loom debug <store-flags> <id> --at N` | folded state at sequence N — time travel |
+| `loom inspect <store-flags>` | web timeline with a slider (`loom dev` is the dev loop, not an alias) |
+| `loom profile <store-flags> <id>` | flame graph + latency breakdown |
+| `loom introspect <store-flags> <id>` | execution / task / decision / resource graphs |
+| `loom optimize <store-flags> <id>` | advisory recommendations |
 | `loom learn report\|eval` | trajectories, coverage, shadow-evaluate a policy |
-| `loom census <store>` | what is stuck, and is anything watching it |
+| `loom census <store-flags>` | what is stuck, and is anything watching it |
 | `loom compliance report` | data-subject inventory |
 | `loom knowledge list\|search` | what a corpus holds; ask it |
 
@@ -91,10 +91,10 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 | `loom resume <id> --config <mod> --as <who> --event <type> --payload-file f.json [--apply]` | answer a suspended gate **through your app's runtime**: its resume authenticator, execution authorizer and `resumeSchemas` all run (ADR 0077/0117). `--db` is refused; `--as` is required; the continuation runs **in this process**. The dry run shows the parsed payload (stripped keys named) and the park's sequence. A kill switch that does not declare `scope: "shared"` refuses `--apply` unless `--allow-local-controls`; unknown lease liveness unless `--force`; `--skip-effect-check` skips the registered-effect check. |
 | `loom cancel <id> --config <mod> --as <who> [--apply]` | cancel through the runtime (fenced; runs nothing). A live or unknown lease holder refuses unless `--force`. |
 | `loom start <flow> --config <mod> --as <who> --input '{…}' [--id i \| --idempotency-key k] [--apply]` | start a flow through the runtime; input shown as given (schema predicted only when the app enforces it); the flow runs in this process until it completes or parks. A kill switch that does not declare `scope: "shared"` refuses `--apply` unless `--allow-local-controls`. |
-| `loom recover <store> [--stale 15m] [--apply]` | re-drive executions whose supervisor died. Needs `timers.leases` **or** an explicit `--stale` — loom will not guess. `--apply` requires `--config`, because re-driving runs your flow. `--max-recoveries N` skips and lists executions whose last N re-drives made no progress (ADR 0105). |
-| `loom repair blank-stream <store> [--assign id:from-through] [--apply]` | re-home events the pre-0106 compaction bug wrote to execution `""` — proven segments only; the rest is listed with candidates, never guessed (ADR 0107) |
-| `loom retention run <store> --ttl <dur\|ms> [--apply]` | reclaim aged terminal executions (`--ttl` is required: there is no default). Without a branchRegistry the live-descendant guard is **off**. |
-| `loom repair terminal-event <store> [id] [--apply]` | give an execution a pre-0116 compaction left as `[0]+checkpoint` its terminal event back, so it can take a late outcome (ADR 0116) |
+| `loom recover <store-flags> [--stale 15m] [--apply]` | re-drive executions whose supervisor died. Needs `timers.leases` **or** an explicit `--stale` — loom will not guess. `--apply` requires `--config`, because re-driving runs your flow. `--max-recoveries N` skips and lists executions whose last N re-drives made no progress (ADR 0105). |
+| `loom repair blank-stream <store-flags> [--assign id:from-through] [--apply]` | re-home events the pre-0106 compaction bug wrote to execution `""` — proven segments only; the rest is listed with candidates, never guessed (ADR 0107) |
+| `loom retention run <store-flags> --ttl <dur\|ms> [--apply]` | reclaim aged terminal executions (`--ttl` is required: there is no default). Without a branchRegistry the live-descendant guard is **off**. |
+| `loom repair terminal-event <store-flags> [id] [--apply]` | give an execution a pre-0116 compaction left as `[0]+checkpoint` its terminal event back, so it can take a late outcome (ADR 0116) |
 | `loom branches retire --parent <id> --stale <d>` | cancel branches nobody is coming back to — they keep the parent uncollectable |
 | `loom branches prune [--protect main]` | delete refs that name nothing; `main` is protected |
 | `loom sweep content --content <db>` | pinned-blob sweep over externalized payloads. `--orphans` also erases blobs nothing scanned cites — it needs the snapshot store and every archive; dry-run first |

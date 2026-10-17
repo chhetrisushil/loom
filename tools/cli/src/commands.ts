@@ -96,7 +96,7 @@ function textRenderer(view: LogsView): (e: EventEnvelope) => string {
 }
 
 /**
- * `loom logs <store> <executionId> [--redact a,b] [-v] [--type A,B] [--from N] [--to N]` — the
+ * `loom logs <store-flags> <executionId> [--redact a,b] [-v] [--type A,B] [--from N] [--to N]` — the
  * durable event stream.
  */
 export async function cmdLogs(

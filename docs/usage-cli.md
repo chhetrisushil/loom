@@ -69,24 +69,24 @@ validate
   loom eval  --dir <path> [--json]                replay golden logs vs expectations
 
 observe
-  loom ls    <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]
+  loom ls    <store-flags> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]
                                                   list executions: status, last activity, and what a
                                                   suspended one waits on (read-only; --leases adds owners)
-  loom logs  <store> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
-  loom logs  <store> <executionId> [-v] [--type A,B] [--from N] [--to N]  detail (timestamps, gaps, payloads) / filter
-  loom logs  <store> <executionId> --follow [--interval <dur>]  tail it until it finishes (Ctrl-C stops)
-  loom debug <store> <executionId> [--at N] [--redact a,b] [--json]  time-travel: state at sequence N
-  loom profile <store> <executionId> [--json]     flame graph + latency breakdown
-  loom introspect <store> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
-  loom optimize <store> <executionId>             advisory optimization report (recommendations)
-  loom census <store> [--buckets 5m,1h,6h,24h] [--sample N] [--json]  what is stuck, and is anything watching it
+  loom logs  <store-flags> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
+  loom logs  <store-flags> <executionId> [-v] [--type A,B] [--from N] [--to N]  detail (timestamps, gaps, payloads) / filter
+  loom logs  <store-flags> <executionId> --follow [--interval <dur>]  tail it until it finishes (Ctrl-C stops)
+  loom debug <store-flags> <executionId> [--at N] [--redact a,b] [--json]  time-travel: state at sequence N
+  loom profile <store-flags> <executionId> [--json]     flame graph + latency breakdown
+  loom introspect <store-flags> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
+  loom optimize <store-flags> <executionId>       advisory optimization report (recommendations)
+  loom census <store-flags> [--buckets 5m,1h,6h,24h] [--sample N] [--json]  what is stuck, and is anything watching it
                                                   (read-only; takes no predicate; --sample: ids kept
                                                    per band, default 5)
-  loom learn report <store> [executionId]         trajectories, per-arm rewards, learning coverage
-  loom learn eval <store> --policy <module> [--min-steps N] [executionId]
+  loom learn report <store-flags> [executionId]   trajectories, per-arm rewards, learning coverage
+  loom learn eval <store-flags> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
-  loom compliance report <store> --subject-path <p> [--tenant-path <p>]  data-subject inventory
-  loom inspect <store> [--port N]                 web inspector (timeline + slider)
+  loom compliance report <store-flags> --subject-path <p> [--tenant-path <p>]  data-subject inventory
+  loom inspect <store-flags> [--port N]           web inspector (timeline + slider)
 
 operate
   loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--force] [--allow-local-controls] [--skip-effect-check] [--apply] [--json]
@@ -108,16 +108,16 @@ operate
                                                   process-local kill switch refuses unless
                                                   --allow-local-controls; --skip-effect-check
                                                   skips the registered-effect check)
-  loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
+  loom recover <store-flags> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
                                                   re-drive executions whose supervisor died
                                                   (--max-recoveries: skip + list those whose
                                                    last N re-drives made no progress)
                                                   (needs `timers.leases` or --stale; --apply
                                                    needs --config: re-driving runs the flow)
-  loom branches retire <store> --parent <id> --stale <d> [--limit N] [--apply]
+  loom branches retire <store-flags> --parent <id> --stale <d> [--limit N] [--apply]
                                                   cancel branches nobody is coming back to
                                                   (they keep the parent uncollectable)
-  loom branches prune <store> [--protect main,rel] [--limit N] [--apply]
+  loom branches prune <store-flags> [--protect main,rel] [--limit N] [--apply]
                                                   delete refs that name nothing (main protected)
   loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]
                                                   reconcile a directory into a corpus
@@ -129,20 +129,20 @@ operate
                                                   ask the corpus (operator query — not recorded)
 
 maintain
-  loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]
+  loom repair blank-stream <store-flags> [--assign <id>:<from>-<through>,…] [--apply]
                                                   re-home what the pre-0106 compaction bug
                                                   wrote to execution "" (ADR 0107): proven
                                                   segments only; the rest is listed with its
                                                   candidates, never guessed
-  loom repair terminal-event <store> [executionId] [--apply] [--force]
+  loom repair terminal-event <store-flags> [executionId] [--apply] [--force]
                                                   give an execution a pre-0116 compaction left
                                                   as [0]+checkpoint its terminal event back, so
                                                   it can take a late outcome (ADR 0116)
-  loom retention run <store> --ttl <dur|ms> [--apply]  reclaim aged terminal executions
+  loom retention run <store-flags> --ttl <dur|ms> [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content <store> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
+  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
                                                   (--orphans also erases blobs NOTHING scanned
                                                    cites, so it needs the snapshot store and
                                                    every archive; with --apply and no archive
@@ -165,7 +165,8 @@ help
   loom version                                    print the @loom/cli version (also --version)
   loom completion <zsh|bash|fish>                 print a shell completion script
 
-  <store>  where a command reads storage. Either half works for every command above:
+  <store-flags>  where a command reads storage — FLAGS, never a positional path (loom logs events.db <id>
+                 reads "events.db" as the execution id). Either half works for every command above:
     --config <module>    the stores YOUR app wired (defineConfig) — SQLite, Postgres, or any
                          conforming backend; importing it starts nothing
     --db <events.db> [--snap <s.db>] [--branches <b.db>] [--leases <l.db>]
@@ -587,7 +588,7 @@ All of them fold the durable log deterministically — they replay events, they 
 
 ### Choosing the store: `--config`, `--db`, or `./loom.config.js`
 
-Every `<store>` command takes `--config <module>` or `--db <events.db>`. With **neither**, the **read-only** commands (`ls`, `logs`, `debug`, `census`, `profile`, `introspect`, `inspect`) look for `./loom.config.js` (then `./loom.config.ts`) in the working directory, use it, and say which on stderr (`loom: using ./loom.config.js …`). No file → the usual refusal (exit `2`). Every other command (`recover`, `repair`, `retention`, `sweep`, `branches`, `learn`, `optimize`, `dev`, …) never guesses a store, with or without `--apply`: name it explicitly.
+Every `<store-flags>` command takes `--config <module>` or `--db <events.db>`. With **neither**, the **read-only** commands (`ls`, `logs`, `debug`, `census`, `profile`, `introspect`, `inspect`) look for `./loom.config.js` (then `./loom.config.ts`) in the working directory, use it, and say which on stderr (`loom: using ./loom.config.js …`). No file → the usual refusal (exit `2`). Every other command (`recover`, `repair`, `retention`, `sweep`, `branches`, `learn`, `optimize`, `dev`, …) never guesses a store, with or without `--apply`: name it explicitly.
 
 > **Discovery executes code.** Using `./loom.config.js` means *importing* it, which runs that file and everything it imports. Do not run `loom ls` (or any read-only command) bare in a checkout you do not trust — pass `--db` (SQLite shorthand; nothing is imported) instead.
 
@@ -597,7 +598,7 @@ Loading a config:
 - **Errors say where.** A config that throws on import is reported as `while loading <absolute file>: <message>` plus a hint (exit `1`). `--verbose` or `LOOM_DEBUG=1` also prints the original stack to stderr.
 - **No `[loom] …` noise.** While importing a config the CLI sets `LOOM_QUIET=1`, which silences `defineConfig`'s default `console.warn("[loom] …")` composition notices so they do not bury the command's answer (they never touch stdout, and `--json` stays pure either way). `LOOM_DEBUG=1` leaves them on. `LOOM_QUIET=1` only mutes that default sink: an `onWarn` you pass still runs, and refusals (thrown errors) are never silenced. Set it yourself to quiet a script that imports your config.
 
-### `loom ls <store> [--status …] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]`
+### `loom ls <store-flags> [--status …] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]`
 
 Lists executions: id, workflow, status, last sequence, last activity time (absolute plus `5m ago`), and for a **suspended** one what it waits on — the event type it is parked on, or for a timer `timer wakeAt <iso> (in 3m)` (and `overdue` when the time has passed and nothing has woken it). The gate's `correlationKey` is an application-chosen id that can be sensitive, so it is **omitted** from the text, from `--json` and from the inspector list; `--keys` includes it (`key <id>`). The lease owner and the gate event name are operational ids and always shown. Give a lease store (`--leases <l.db>`, or the app's `timers.leases` via `--config`) and a row also shows the lease owner and whether it is expired.
 
@@ -617,7 +618,7 @@ ID        WORKFLOW  STATUS     LAST  LAST ACTIVITY                         WAITI
 - It is **bounded**: it scans at most 5000 executions (the cap bounds the *scan*, not the matches), orders the matches by last activity, newest first, and prints the first `--limit` of them (default `50`). When it cuts anything it says so (`2 shown of 9 matched`, `truncated at --limit 50 …` / `stopped after scanning …`) — a partial list is never printed as a complete one; `--json` carries `matched` and `truncated`. One read and fold per execution scanned; reserved control streams are skipped.
 - A store that cannot enumerate executions is refused with the same wording as `loom census` (exit `2`).
 
-### `loom logs <store> <executionId> [--redact a,b] [-v] [--type A,B] [--from N] [--to N] [--follow]`
+### `loom logs <store-flags> <executionId> [--redact a,b] [-v] [--type A,B] [--from N] [--to N] [--follow]`
 
 Prints the event timeline, one line per event: a `⏸` marker on `EXECUTION_SUSPENDED`, the sequence `#N`, the event type, and a per-type detail (the step id, the suspension target, a truncated output, or an error message).
 
@@ -748,7 +749,7 @@ loom start release-approval --config dist/app.js --as release-bot --input '{"ser
 
 The fleet-level maintenance verbs. `census` only reads; `recover` and `branches` **write**, so both are **dry runs by default** and act only under `--apply` (the same vocabulary as `retention` and `sweep content`). None of them discovers a store for a write: `recover`, `branches` take `--config <module>` or `--db <events.db>` (see [Choosing the store](#choosing-the-store---config---db-or-loomconfigjs)); `census` may also use `./loom.config.js`.
 
-### `loom census <store> [--buckets 5m,1h,6h,24h] [--sample N] [--json]`
+### `loom census <store-flags> [--buckets 5m,1h,6h,24h] [--sample N] [--json]`
 
 What is stuck, and is anything watching it. Counts the in-flight (running/pending) executions older than each bucket, and, when the store has leases, how many of them hold a live lease, an expired one, or none at all (`no lease at all` is the number to watch: nothing can recover those from evidence). Parked executions are summarized separately: how many are suspended, how many wait on a timer, and how many timers are **overdue** (`wakeAt` already passed, nothing has woken them).
 
@@ -760,7 +761,7 @@ What is stuck, and is anything watching it. Counts the in-flight (running/pendin
 npx loom census --db .data/events.db --leases .data/leases.db --buckets 1h,24h --sample 3
 ```
 
-### `loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]`
+### `loom recover <store-flags> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]`
 
 Re-drives executions whose supervisor died. Loom will not guess what counts as abandoned, so you must supply the evidence: either the app wires `timers.leases` (an **expired lease** is the evidence), or you pass `--stale <duration>` to state your own rule. With neither it refuses (exit `2`), because a running execution owned by a healthy node looks exactly like an orphaned one.
 
@@ -769,11 +770,11 @@ Re-drives executions whose supervisor died. Loom will not guess what counts as a
 - `--max-recoveries N` (an integer, at least 1) skips and lists executions whose last N re-drives made no progress, so a poison execution cannot be re-driven forever.
 - **`--apply` needs `--config`**: re-driving runs the flow's steps, and only your app has the flows and effects registered. Through `--db` you can preview but not apply (exit `2`).
 
-### `loom branches retire <store> --parent <id> --stale <d> [--limit N] [--apply]`
+### `loom branches retire <store-flags> --parent <id> --stale <d> [--limit N] [--apply]`
 
 Cancels branches of `--parent` that nobody is coming back to, so the parent they pin stops being uncollectable by `retention run`. `--stale` is required with no default: a branch parked on a human gate is an open question, not garbage. It needs a branch registry (`--branches <branches.db>`, or `--config` where the app supplies one). The report also lists what stays open and why.
 
-### `loom branches prune <store> [--protect main,rel] [--limit N] [--apply]`
+### `loom branches prune <store-flags> [--protect main,rel] [--limit N] [--apply]`
 
 Deletes branch refs that name executions the log no longer has. `main` is protected by default; `--protect` names more refs to keep.
 
@@ -1295,7 +1296,7 @@ npx loom plugin search postgres
 | `loom dev` | gen --watch + run the app (restart on change) + the inspector | `--config` *(req)*, `--run`, `--dir app` | no `--config`; nothing to run |
 | `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied; `--check` typecheck fails |
 | `loom doctor` | run every pre-flight check whose input it can find, and name the ones it skipped | `--dir .`, `--config`, `--manifest` | any check fails (never for a skip) |
-| *store commands* | `ls` `logs` `debug` `inspect` `profile` `introspect` `optimize` `learn` `repair` `retention` `sweep` `compliance` | **`<store>` = `--config <module>` _or_ `--db <events.db>`** — `--config` works wherever `--db` does, and neither flag is individually required | — |
+| *store commands* | `ls` `logs` `debug` `inspect` `profile` `introspect` `optimize` `learn` `repair` `retention` `sweep` `compliance` | **`<store-flags>` = `--config <module>` _or_ `--db <events.db>`** — `--config` works wherever `--db` does, and neither flag is individually required | — |
 | `loom resume` · `cancel` · `start` | act on an execution THROUGH your app's runtime (authenticator, authorizer, `resumeSchemas`, leases all run; dry run unless `--apply`; the continuation runs in this process) | `--config` *(req)*, `--as` *(req)*, `--tenant`, `--event` *(req, resume)*, `--payload`/`--payload-file` *(req, resume)*, `--input`/`--input-file` *(req, start)*, `--id`/`--idempotency-key`, `--force` (cancel, resume), `--allow-local-controls` (resume, start), `--redact`, `--show-payload`, `--apply` | a resumed/started execution fails after acceptance (refusals are exit `2`; `--db` is refused) |
 | `loom census` | what is stuck, and is anything watching it (read-only) | store *(req)*, `--buckets`, `--sample N`, `--json` | (never; a store that cannot enumerate is exit `2`) |
 | `loom recover` | re-drive executions whose supervisor died (dry run unless `--apply`) | store *(req)*, `--stale` *(req unless the app wires `timers.leases`)*, `--owner`, `--limit`, `--max-recoveries`, `--apply` (needs `--config`) | (refusals are exit `2`) |
