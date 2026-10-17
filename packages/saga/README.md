@@ -33,7 +33,7 @@ const runner = async (ctx, input) =>
   `SagaCompensationError` is thrown (`compensationErrors` = each failure, in run order). Out of
   `withSaga` its `cause` is the ORIGINAL error that triggered the rollback. A `SuspendError` from a
   compensator (a human-gated undo) still propagates at once, as does any runtime signal
-  (cancellation / abort, lost lease or stale fence, replay divergence, storage failure): it is
+  (cancellation / abort, lost lease or stale fence, replay divergence, storage failure, execution store unavailable): it is
   re-thrown unwrapped, no further compensator runs, and it is never folded into `compensationErrors`.
   **Behaviour change:** a failed rollback out of `withSaga` is a `SagaCompensationError` (original
   error as `cause`), not the original error itself, so a caller matching the original type
