@@ -659,6 +659,33 @@ describe("loadLoomApp env scoping", () => {
   });
 });
 
+describe("loadLoomApp concurrent loads", () => {
+  it("overlapping loads leave LOOM_NO_AUTOSTART / LOOM_QUIET exactly as before", async () => {
+    const { loadLoomApp } = await import("./stores");
+    const mk = (name: string) => {
+      const f = join(root, `${name}.js`);
+      writeFileSync(f, "module.exports = { stores: {} };");
+      return f;
+    };
+    const keys = ["LOOM_NO_AUTOSTART", "LOOM_QUIET", "LOOM_DEBUG"] as const;
+    const before = keys.map((k) => process.env[k]);
+    try {
+      for (const k of keys) Reflect.deleteProperty(process.env, k);
+      await Promise.all([loadLoomApp(mk("c1")), loadLoomApp(mk("c2")), loadLoomApp(mk("c3"))]);
+      for (const k of keys) expect(process.env[k]).toBeUndefined();
+      process.env.LOOM_NO_AUTOSTART = "keep-me";
+      await Promise.all([loadLoomApp(mk("c1")), loadLoomApp(mk("c2"))]);
+      expect(process.env.LOOM_NO_AUTOSTART).toBe("keep-me");
+    } finally {
+      keys.forEach((k, i) => {
+        const v = before[i];
+        if (v === undefined) Reflect.deleteProperty(process.env, k);
+        else process.env[k] = v;
+      });
+    }
+  });
+});
+
 describe("loom dev (cli)", () => {
   it("refuses without --config, pointing at `loom inspect`", async () => {
     const { run } = await import("./cli");
