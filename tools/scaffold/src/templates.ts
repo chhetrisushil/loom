@@ -296,39 +296,58 @@ export function importedPackages(content: string): string[] {
 
 // ── Whole-app scaffold (used by create-loom-app), following the convention ────
 
+/**
+ * `JSON.stringify` leaves bidi, zero-width, line-separator and tag characters raw (all legal
+ * in JSON); rewrite them as `\\uXXXX` escapes (still valid JSON, same value) so the manifest
+ * reads as what it parses to.
+ */
+function jsonText(json: string): string {
+  return json.replace(
+    /[\u007f-\u009f\u00ad\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff\u{e0000}-\u{e007f}]/gu,
+    (c) => {
+      const cp = c.codePointAt(0) as number;
+      if (cp <= 0xffff) return `\\u${cp.toString(16).padStart(4, "0")}`;
+      const v = cp - 0x10000;
+      return `\\u${(0xd800 + (v >> 10)).toString(16)}\\u${(0xdc00 + (v & 0x3ff)).toString(16)}`;
+    }
+  );
+}
+
 export function appFiles(appName: string): Record<string, string> {
   return {
-    "package.json": `${JSON.stringify(
-      {
-        name: appName,
-        private: true,
-        // CommonJS (no "type": "module") — @loom/* publish require-only exports, so
-        // `tsx app/main.ts` must resolve them via CJS (matches the loom-starter example).
-        scripts: {
-          start: "tsx app/main.ts",
-          test: "vitest run",
-          gen: "loom gen --dir app",
+    "package.json": `${jsonText(
+      JSON.stringify(
+        {
+          name: appName,
+          private: true,
+          // CommonJS (no "type": "module") — @loom/* publish require-only exports, so
+          // `tsx app/main.ts` must resolve them via CJS (matches the loom-starter example).
+          scripts: {
+            start: "tsx app/main.ts",
+            test: "vitest run",
+            gen: "loom gen --dir app",
+          },
+          dependencies: {
+            // `surface(ctx)` / the typing of `ctx.ui` (ADR 0114): a flow that drives a UI surface imports it.
+            "@loom/agent-surface": "workspace:*",
+            "@loom/app": "workspace:*",
+            "@loom/core": "workspace:*",
+            "@loom/effect-runtime": "workspace:*",
+            "@loom/middleware": "workspace:*",
+            "@loom/workflow-runtime": "workspace:*",
+            zod: "^3.23.8",
+          },
+          devDependencies: {
+            "@loom/cli": "workspace:*",
+            "@loom/testing": "workspace:*", // `loom new flow` emits a createTestApp test
+            tsx: "^4.19.2",
+            typescript: "^5.6.3",
+            vitest: "^2.1.8",
+          },
         },
-        dependencies: {
-          // `surface(ctx)` / the typing of `ctx.ui` (ADR 0114): a flow that drives a UI surface imports it.
-          "@loom/agent-surface": "workspace:*",
-          "@loom/app": "workspace:*",
-          "@loom/core": "workspace:*",
-          "@loom/effect-runtime": "workspace:*",
-          "@loom/middleware": "workspace:*",
-          "@loom/workflow-runtime": "workspace:*",
-          zod: "^3.23.8",
-        },
-        devDependencies: {
-          "@loom/cli": "workspace:*",
-          "@loom/testing": "workspace:*", // `loom new flow` emits a createTestApp test
-          tsx: "^4.19.2",
-          typescript: "^5.6.3",
-          vitest: "^2.1.8",
-        },
-      },
-      null,
-      2
+        null,
+        2
+      )
     )}\n`,
 
     "loom.config.ts": ['export { app as default } from "./app/config";', ""].join("\n"),

@@ -66,7 +66,12 @@ export function readLockfile(file: string): AppgenLock {
   ) {
     throw new Error(`not a valid appgen lockfile: ${file}`);
   }
-  const issues = changeSpecDataIssues(raw.changeSpec);
+  const issues: string[] = [];
+  // Same message as `validateChangeSpec` (parity): an empty plan is refused, not replayed as a no-op.
+  if (raw.changeSpec.capabilities.length === 0) {
+    issues.push("the plan has no capabilities — it is empty");
+  }
+  issues.push(...changeSpecDataIssues(raw.changeSpec));
   // The top-level intent is echoed into provenance text, so it gets the same text rule.
   issues.push(...textIssues("intent", raw.intent, MAX_INTENT_LENGTH));
   // Structure (duplicate step / flow ids, generated-name collisions, modify/delete in a new

@@ -187,3 +187,66 @@ describe("FlowEditor.ensureUi — import handling (ADR 0114)", () => {
     expect(ed.changed()).toBe(false);
   });
 });
+
+describe("planChangesDeterministic: existing digit-led ids resolve legacy-first", () => {
+  const flow = (id: string, steps: string[]) => ({
+    id,
+    file: `app/flows/${id}/flow.ts`,
+    steps: steps.map((s) => ({ id: s, handlerState: "edited" as const })),
+    hasApproval: false,
+    hasUi: false,
+    isGenerated: false,
+  });
+  const model = (...flows: ReturnType<typeof flow>[]) => ({
+    root: "/x",
+    isExisting: true,
+    flows,
+  });
+  const app = model(flow("2fa-login", ["3d-render"]));
+
+  it("extends the existing flow and modifies the existing step (no item- ids)", () => {
+    const spec = planChangesDeterministic("Create a 2fa login. Step 3d render.", app as never);
+    expect(spec.capabilities).toHaveLength(1);
+    const cap = spec.capabilities[0]!;
+    expect(cap.id).toBe("2fa-login");
+    expect(cap.op).toBe("extend");
+    expect(cap.steps).toEqual([{ id: "3d-render", op: "modify" }]);
+    expect(JSON.stringify(spec)).not.toContain("item-");
+  });
+
+  it("a net-new digit-led name or step still gets the item- prefix", () => {
+    const spec = planChangesDeterministic("Create a 9lives. Step 4k scan.", app as never);
+    expect(spec.capabilities[0]).toMatchObject({
+      id: "item-9lives",
+      op: "create",
+      steps: [{ id: "item-4k-scan", op: "create" }],
+    });
+    // a new step on the existing flow is created with the minted id
+    const s2 = planChangesDeterministic("Create a 2fa login. Step 5g relay.", app as never);
+    expect(s2.capabilities[0]).toMatchObject({
+      id: "2fa-login",
+      op: "extend",
+      steps: [{ id: "item-5g-relay", op: "create" }],
+    });
+  });
+
+  it("a grant to the existing digit-led capability merges into the same entry", () => {
+    const spec = planChangesDeterministic(
+      "Create a 2fa login. Step 3d render. Grant search to 2fa login.",
+      app as never
+    );
+    expect(spec.capabilities).toHaveLength(1);
+    expect(spec.capabilities[0]).toMatchObject({ id: "2fa-login", wireGrants: ["search"] });
+  });
+
+  it("does not strip item-: a genuine new 'item 2fa' never maps to the existing '2fa'", () => {
+    const only = model(flow("2fa", ["run"]));
+    const spec = planChangesDeterministic("Create a item 2fa.", only as never);
+    expect(spec.capabilities[0]).toMatchObject({ id: "item-2fa", op: "create" });
+    // the other direction: a new "2fa" phrase maps onto an existing `item-2fa`
+    const other = model(flow("item-2fa", ["run"]));
+    expect(planChangesDeterministic("Create a 2fa.", other as never).capabilities[0]).toMatchObject(
+      { id: "item-2fa", op: "extend" }
+    );
+  });
+});
