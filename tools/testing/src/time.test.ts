@@ -97,4 +97,34 @@ describe("test clock (time travel)", () => {
     await plain.close();
     await timed.close();
   });
+
+  it("drains: more due timers than one poll's batch all fire in one advanceTime", async () => {
+    const app = createTestApp({ clock: true, flows: [sleeper] });
+    const handles = [];
+    for (let i = 0; i < 150; i++) {
+      const h = await app.runtime.start(sleeper, {});
+      await h.waitForSuspend();
+      handles.push(h);
+    }
+    await advanceTime(app, DAY);
+    for (const h of handles) {
+      expect((await app.runtime.loadState(h.executionId))?.status).toBe("completed");
+    }
+    await app.close();
+  }, 60_000);
+
+  it("advanceTime refuses a negative, NaN or non-finite delta", async () => {
+    const app = createTestApp({ clock: true });
+    await expect(advanceTime(app, -1)).rejects.toThrow(/finite number >= 0/);
+    await expect(advanceTime(app, Number.NaN)).rejects.toThrow(/finite number >= 0/);
+    await expect(advanceTime(app, Number.POSITIVE_INFINITY)).rejects.toThrow(/finite number >= 0/);
+    expect(() => clockOf(app)?.advanceBy(-5)).toThrow(/finite number >= 0/);
+    await app.close();
+  });
+
+  it("an execution.now that disagrees with the clock is refused", () => {
+    expect(() => createTestApp({ clock: 1000, execution: { now: () => 5 } })).toThrow(
+      /disagrees with the test clock/
+    );
+  });
 });

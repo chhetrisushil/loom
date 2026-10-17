@@ -100,6 +100,8 @@ export function cmdGen(dir: string): {
   schedules: number;
   memories: number;
   projections: number;
+  /** The module specifiers `out` registers, in order (what a watcher compares against). */
+  specifiers: string[];
 } {
   // A typo'd --dir used to be created on the spot and "succeed" with 0 of everything.
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
@@ -129,6 +131,15 @@ export function cmdGen(dir: string): {
     schedules: schedules.length,
     memories: memories.length,
     projections: projections.length,
+    specifiers: [
+      ...flows,
+      ...agents,
+      ...tools,
+      ...skills,
+      ...schedules,
+      ...memories,
+      ...projections,
+    ],
   };
 }
 
@@ -180,6 +191,8 @@ export interface GenWatchOptions {
   pollMs?: number;
   /** Poll instead of `fs.watch` (tests / filesystems without events). */
   forcePoll?: boolean;
+  /** Interval of the safety rescan / watcher re-arm (default 5000 ms). */
+  safetyMs?: number;
 }
 
 /**
@@ -191,8 +204,12 @@ export interface GenWatchOptions {
 export async function genWatch(dir: string, options: GenWatchOptions = {}): Promise<number> {
   const log = options.log ?? ((line: string) => console.log(line));
   // The first generation is a plain `loom gen`: a bad --dir is a usage error, not a watch.
-  log(genSummary(cmdGen(dir)));
-  let known = discoveredSpecifiers(dir);
+  const first = cmdGen(dir);
+  log(genSummary(first));
+  // `known` is what loom.gen.ts REGISTERS (from the same discovery that wrote it), not a second
+  // look at the disk: a module added between the write and the watcher's first snapshot would
+  // otherwise be in neither, and never generated.
+  let known = first.specifiers;
 
   const watcher = watchTree(dir, {
     include: (file) => {
@@ -202,6 +219,7 @@ export async function genWatch(dir: string, options: GenWatchOptions = {}): Prom
     ...(options.debounceMs !== undefined && { debounceMs: options.debounceMs }),
     ...(options.pollMs !== undefined && { pollMs: options.pollMs }),
     ...(options.forcePoll !== undefined && { forcePoll: options.forcePoll }),
+    ...(options.safetyMs !== undefined && { safetyMs: options.safetyMs }),
     onChange(changes: TreeChange[]) {
       if (changes.every((c) => c.kind === "changed")) return; // contents do not enter loom.gen.ts
       const now = discoveredSpecifiers(dir);
@@ -209,7 +227,7 @@ export async function genWatch(dir: string, options: GenWatchOptions = {}): Prom
       const removed = known.filter((s) => !now.includes(s));
       if (added.length === 0 && removed.length === 0) return; // e.g. a test file came and went
       const result = cmdGen(dir);
-      known = now;
+      known = result.specifiers;
       const delta = [...added.map((s) => `+${s}`), ...removed.map((s) => `-${s}`)].join(" ");
       log(`${genSummary(result)}  ${delta}`);
     },
@@ -217,6 +235,17 @@ export async function genWatch(dir: string, options: GenWatchOptions = {}): Prom
       log(`loom gen --watch: ${err instanceof Error ? err.message : String(err)} (still watching)`);
     },
   });
+  // Catch up with anything that landed between the write and the watcher's first snapshot.
+  try {
+    const now = discoveredSpecifiers(dir);
+    if (now.length !== known.length || now.some((s, i) => s !== known[i])) {
+      const result = cmdGen(dir);
+      known = result.specifiers;
+      log(genSummary(result));
+    }
+  } catch (err) {
+    log(`loom gen --watch: ${err instanceof Error ? err.message : String(err)} (still watching)`);
+  }
   log(
     `watching ${path.resolve(dir)} for added/removed modules (${watcher.mode === "watch" ? "fs.watch" : "polling"}) - Ctrl-C to stop`
   );

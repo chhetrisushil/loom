@@ -968,18 +968,43 @@ async function dispatch(
       return report.ok ? 0 : 1;
     }
     case "dev": {
+      if (process.env.LOOM_DEV === "1") {
+        throw new UsageError(
+          "loom dev is already running this app (LOOM_DEV=1) - your dev/start script calls `loom dev`; point it at the app itself, or pass --run"
+        );
+      }
       if (flags.config === undefined) {
         throw new UsageError(
           "loom dev: --config <module> is required (it names the app whose stores the inspector reads). `loom dev` is now the dev loop; for only the inspector over a store use `loom inspect <store>`"
         );
       }
+      let port: number | undefined;
+      if (flags.port !== undefined) {
+        port = Number.parseInt(flags.port, 10);
+        if (!Number.isInteger(port) || port < 0 || port > 65535) {
+          throw new UsageError(
+            `loom dev: --port must be an integer 0..65535 (got "${flags.port}")`
+          );
+        }
+      }
       const dir = flags.dir ?? "app";
       const { resolveRunCommand, runDev } = await import("./dev");
       const command = resolveRunCommand(process.cwd(), flags.run);
+      // The app must see the environment the user started `loom dev` with, not the inspect-only
+      // switches this process sets while it loads the config for the inspector.
+      const startEnv: NodeJS.ProcessEnv = { ...process.env };
       const ac = new AbortController();
-      const stop = () => ac.abort();
-      process.once("SIGINT", stop);
-      process.once("SIGTERM", stop);
+      const force = new AbortController();
+      // `on`, not `once`: the first interrupt stops gracefully, the second kills the app's group
+      // at once. SIGHUP (terminal closed) is a graceful stop too.
+      let interrupts = 0;
+      const stop = () => {
+        interrupts++;
+        if (interrupts === 1) ac.abort();
+        else force.abort();
+      };
+      const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+      for (const sig of signals) process.on(sig, stop);
       // The inspector reads the config's stores from THIS process. It is best effort: a config
       // that does not load yet (mid-edit) must not stop the loop, only the inspector.
       let closeInspector: (() => Promise<void>) | undefined;
@@ -987,10 +1012,7 @@ async function dispatch(
         const { resolveStores } = await import("./stores");
         const { serveInspector } = await import("./inspector");
         const stores = await resolveStores(storeFlagsOf({ config: flags.config }));
-        const server = serveInspector(
-          stores.eventStore,
-          flags.port !== undefined ? { port: Number.parseInt(flags.port, 10) } : {}
-        );
+        const server = serveInspector(stores.eventStore, port !== undefined ? { port } : {});
         await server.start();
         out(
           `loom inspector on ${server.url}  (reads ${flags.config} in this process: use durable storage, e.g. sqlite, to see the app's executions)`
@@ -1005,10 +1027,16 @@ async function dispatch(
         );
       }
       try {
-        return await runDev({ dir, command, log: out, signal: ac.signal });
+        return await runDev({
+          dir,
+          command,
+          log: out,
+          signal: ac.signal,
+          forceSignal: force.signal,
+          inheritEnv: startEnv,
+        });
       } finally {
-        process.removeListener("SIGINT", stop);
-        process.removeListener("SIGTERM", stop);
+        for (const sig of signals) process.removeListener(sig, stop);
         await closeInspector?.();
       }
     }
