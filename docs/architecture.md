@@ -805,7 +805,7 @@ Being honest about the edges:
 - **[User Guide](user-guide.md)** — every feature area with examples.
 - **[Data classification](data-classification.md)** — field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6).
 - **[Compliance](compliance.md)** — data-subject rights: subject index, export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3).
-- **[ADRs](adr/)** — the full decision history (0001–0130), one line per range:
+- **[ADRs](adr/)** — the full decision history (0001–0131), one line per range:
   - **0016–0026** cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series
   - **0036–0041** the three-direction arc
   - **0042** the AI-native brownfield `appgen`
@@ -914,4 +914,7 @@ Being honest about the edges:
     cluster-visible store, ghost leases are garbage-collected, and acquisition is lazy for a fresh
     `start` by default (S7g amendment of 2026-10-15: eager measured 25-30% no-op overhead on
     Postgres). Residual risks stay documented in the ADR. Operating it: [operations](operations.md)
+  - **0131** loom's own evals (Proposed): retrieval gates and cassette-replayed model evals for the
+    first-party agentic layer, in a repo-internal unpublished workspace that dogfoods `@loom/eval`,
+    with committed regression thresholds and manual-only live re-recording (kernel unchanged)
 - **[Presentation](presentation/loom-deck.md)** — the deck.
