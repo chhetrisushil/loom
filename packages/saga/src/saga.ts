@@ -39,7 +39,10 @@ export interface Saga {
   ): Promise<TOut>;
   /** Register a compensator to run (in reverse) if the saga rolls back. */
   compensate<T>(step: StepDefinition<T, unknown>, input: T): void;
-  /** Run all registered compensators in REVERSE order, as replay-safe `ctx.run` steps. */
+  /**
+   * Run all registered compensators in REVERSE order, as replay-safe `ctx.run` steps. A
+   * failing compensator does not stop the rest; throws {@link SagaCompensationError} after.
+   */
   rollback(): Promise<void>;
   /** Number of compensators currently registered. */
   readonly pending: number;
@@ -70,13 +73,52 @@ export function createSaga(ctx: Pick<ExecutionContext, "run">): Saga {
       // Reverse order. Each compensator gets a UNIQUE, STABLE step id so its fold
       // frame never collides with the forward step or another compensation, and the
       // ids are identical across replay (same stack → same order → same suffixes).
+      // The derived id is JOURNAL identity only: the effect is still resolved on the
+      // compensator's DECLARED id (`toolId ?? id`) — the runtime registers a `handler$`
+      // under that id, never under the derived one — so grants and middleware keyed on
+      // the original tool id apply unchanged.
+      //
+      // A compensator that fails does NOT stop the rollback: the remaining ones still
+      // run (undo is best-effort per step; abandoning the rest would leave forward side
+      // effects uncompensated), and the failures are thrown together afterwards. A
+      // `SuspendError` is not a failure and propagates at once.
+      const failures: unknown[] = [];
       for (let i = stack.length - 1; i >= 0; i--) {
         const { step, input } = stack[i] as Compensation;
-        const compStep: AnyStep = { ...step, id: `${step.id}#compensate:${i}` };
-        await ctx.run(compStep, input);
+        const compStep: AnyStep = {
+          ...step,
+          id: `${step.id}#compensate:${i}`,
+          toolId: step.toolId ?? step.id,
+        };
+        try {
+          await ctx.run(compStep, input);
+        } catch (err) {
+          if (err instanceof SuspendError) throw err;
+          failures.push(err);
+        }
       }
+      if (failures.length > 0) throw new SagaCompensationError(failures);
     },
   };
+}
+
+/**
+ * One or more compensators failed during rollback. The remaining compensators still ran.
+ * When thrown out of {@link withSaga}, `cause` is the ORIGINAL error that triggered the
+ * rollback and `compensationErrors` holds each compensator failure (in run order).
+ */
+export class SagaCompensationError extends Error {
+  readonly compensationErrors: readonly unknown[];
+  constructor(compensationErrors: readonly unknown[], cause?: unknown) {
+    const first = compensationErrors[0];
+    const firstNote = first instanceof Error ? ` (first: ${first.message})` : "";
+    super(
+      `saga rollback: ${compensationErrors.length} compensator(s) failed${firstNote}`,
+      cause === undefined ? undefined : { cause }
+    );
+    this.name = "SagaCompensationError";
+    this.compensationErrors = compensationErrors;
+  }
 }
 
 /**
@@ -94,7 +136,15 @@ export async function withSaga<T>(
     return await body(saga);
   } catch (err) {
     if (err instanceof SuspendError) throw err; // suspension, not failure
-    await saga.rollback();
+    try {
+      await saga.rollback();
+    } catch (rollbackErr) {
+      if (rollbackErr instanceof SagaCompensationError) {
+        // Keep the ORIGINAL error reachable (as `cause`) — never replace it.
+        throw new SagaCompensationError(rollbackErr.compensationErrors, err);
+      }
+      throw rollbackErr; // SuspendError from a human-gated compensator
+    }
     throw err;
   }
 }
