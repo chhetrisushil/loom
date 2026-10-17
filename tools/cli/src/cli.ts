@@ -80,23 +80,25 @@ observe
   loom inspect <store> [--port N]                 web inspector (timeline + slider)
 
 operate
-  loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--force] [--allow-local-controls] [--apply] [--json]
+  loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--force] [--allow-local-controls] [--skip-effect-check] [--apply] [--json]
                                                   answer a suspended gate THROUGH your app's runtime:
                                                   its resume authenticator, execution authorizer and
                                                   resumeSchemas all run (dry run unless --apply; --db
                                                   is refused; the continuation runs in THIS process;
                                                   a process-local kill switch refuses unless
                                                   --allow-local-controls; unknown lease liveness
-                                                  refuses unless --force)
+                                                  refuses unless --force; --skip-effect-check
+                                                  skips the registered-effect check)
   loom cancel <executionId> --config <module> --as <principal> [--tenant <t>] [--reason <text>] [--force] [--apply] [--json]
                                                   cancel through your app's runtime (dry run unless
                                                   --apply; a live or unknown lease holder refuses
                                                   unless --force)
-  loom start <flowId> --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--allow-local-controls] [--apply] [--json]
+  loom start <flowId> --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--allow-local-controls] [--skip-effect-check] [--apply] [--json]
                                                   start a flow through your app's runtime (dry run
                                                   unless --apply; the flow runs in THIS process; a
                                                   process-local kill switch refuses unless
-                                                  --allow-local-controls)
+                                                  --allow-local-controls; --skip-effect-check
+                                                  skips the registered-effect check)
   loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
                                                   re-drive executions whose supervisor died
                                                   (--max-recoveries: skip + list those whose
@@ -437,6 +439,7 @@ async function dispatch(
         ...(flags["show-payload"] === "true" && { showPayload: true }),
         ...(flags.force === "true" && { force: true }),
         ...(flags["allow-local-controls"] === "true" && { allowLocalControls: true }),
+        ...(flags["skip-effect-check"] === "true" && { skipEffectCheck: true }),
       };
       let res: Awaited<ReturnType<typeof lc.resumeExecution>>;
       if (command === "resume") {
@@ -480,6 +483,7 @@ async function dispatch(
           executionId: res.executionId,
           ...(res.before !== undefined && { before: res.before }),
           ...(res.after !== undefined && { after: res.after }),
+          ...(res.verified !== undefined && { verified: res.verified }),
           ...(res.refusal !== undefined && { refusal: res.refusal }),
           ...(res.failure !== undefined && { failure: res.failure }),
         });

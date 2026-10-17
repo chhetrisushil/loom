@@ -627,7 +627,7 @@ Under `strict`, `defineConfig` **throws** (listing every problem at once) unless
 | child spawn depth (`envelope.spawn.maxDepth`) | 5 | Root = 0. Deeper than five levels is a recursion, not a plan. |
 | child fan-out (`envelope.spawn.maxFanOut`) | 32 | Children one `awaitChildren`/`awaitAll` group may start. |
 | per-execution token budget (`envelope.budget.perExecution`) | 1,000,000 tokens | Admission control before each effect, recorded as `RESOURCE_METERED`. Needs a provider that reports `usage`; set `envelope.budget.pricing` for another unit. |
-| kill switch (`app.killSwitch`) | in-memory | `stopAll()` / `stopTenant(id)` / `stopWorkflow(id)`; supply your own `KillSwitchRegistry` over a shared store to stop across processes. |
+| kill switch (`app.killSwitch`) | in-memory | `stopAll()` / `stopTenant(id)` / `stopWorkflow(id)`; supply your own `KillSwitchRegistry` over a shared store to stop across processes, and declare it with `readonly scope = "shared" as const` so out-of-process tooling (`loom resume` / `loom start`) trusts it (an undeclared registry is treated as process-local). |
 
 Deliberately **not** defaulted: a rate limit (`envelope.rateLimit`, a token bucket per execution / tenant / flow / process) and the per-agent / per-tenant lifetime budgets — their safe value depends on the workload, and a wrong default throttles legitimate work, which is how a safety feature gets switched off. A refusal is a typed, non-retryable error — `QuotaExceededError`, `RateLimitExceededError`, `KillSwitchEngagedError`, `SpawnLimitExceededError` — and `retryMiddleware` does not retry the new ones.
 

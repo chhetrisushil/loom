@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { ExecutionState } from "@loom/core";
+import { type ExecutionState, flowHashMatches } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import type { ExecutionHandle, WorkflowRuntime } from "@loom/workflow-runtime";
 import { UsageError } from "./args";
@@ -57,6 +57,8 @@ export interface LifecycleFlags {
   force?: boolean;
   /** Run effects under a process-local kill switch / budgets (resume/start). */
   allowLocalControls?: boolean;
+  /** Skip the registered-effect preflight (resume/start): you accept a missing handler fails the run. */
+  skipEffectCheck?: boolean;
   apply: boolean;
   redact: string[];
   showPayload?: boolean;
@@ -81,6 +83,11 @@ export interface LifecycleResult {
   refusal?: string;
   /** A runtime failure after the verb was accepted. Exit 1. */
   failure?: string;
+  /**
+   * resume/start --apply only: whether the outcome was confirmed by re-reading the log as the
+   * same principal. `false` = the handle's own view is all there is (reason in `lines`).
+   */
+  verified?: boolean;
   /** Human lines: what would happen / what happened. Already redacted. */
   lines: string[];
   exitCode: 0 | 1 | 2;
@@ -219,8 +226,33 @@ function issueText(
     .join("; ");
 }
 
-function errorText(err: unknown): string {
-  return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+/**
+ * Errors whose message is POLICY / CONTRACT text (no caller payload), relayed verbatim. Anything
+ * else - a user effect's or step's throw, a ZodError from a step/tool schema - may quote a value
+ * the run handled, so it is relayed as its NAME plus a fixed sentence unless `--show-payload`.
+ */
+function isPolicyError(name: string): boolean {
+  return (
+    REFUSAL_ERRORS.has(name) ||
+    name === "ExecutionDeniedError" ||
+    name === "ResumeRefusedError" ||
+    name === "FlowCodeMismatchError" ||
+    name === "FlowDivergenceError" || // step ids and the fix, no payload
+    name.startsWith("Sealed") ||
+    name.startsWith("Quarantine")
+  );
+}
+
+function errorText(err: unknown, executionId: string | null, showPayload?: boolean): string {
+  if (!(err instanceof Error)) {
+    return showPayload === true
+      ? String(err)
+      : "the run failed: a non-Error value was thrown - rerun with --show-payload for it";
+  }
+  if (isPolicyError(err.name) || showPayload === true) return `${err.name}: ${err.message}`;
+  // The name is a class name, but a thrown object can carry any string there.
+  const name = /^[A-Za-z_$][\w$.]{0,79}$/.test(err.name) ? err.name : "Error";
+  return `the run failed: ${name} \u2014 rerun with --show-payload for the message, or see \`loom logs ${executionId ?? "<id>"}\``;
 }
 
 // ── Shared pieces ─────────────────────────────────────────────────────────────
@@ -272,8 +304,12 @@ async function settle(handle: ExecutionHandle): Promise<{ error: unknown } | und
   ]);
 }
 
-interface Concluded {
+export interface Concluded {
   after: ExecutionSnapshot;
+  /** Whether the log was re-read to confirm the outcome (see {@link LifecycleResult.verified}). */
+  verified: boolean;
+  /** Printed when `verified` is false. */
+  note?: string;
   refusal?: string;
   failure?: string;
 }
@@ -281,9 +317,11 @@ interface Concluded {
 /**
  * What a run left behind. The handle's own state is not trusted alone: the log is re-read (as the
  * same principal) so a park that did not land durably, or a status other than suspended /
- * completed / cancelled, is a FAILURE (exit 1), whatever the handle's promises said.
+ * completed / cancelled, is a FAILURE (exit 1), whatever the handle's promises said. When the
+ * re-read cannot be made the outcome says so (`verified: false`): a query-denied or sealed read
+ * leaves the handle's view standing (exit unchanged), a store read FAILURE is exit 1.
  */
-async function conclude(
+export async function conclude(
   runtime: WorkflowRuntime,
   handle: ExecutionHandle,
   principal: PrincipalChain,
@@ -293,39 +331,73 @@ async function conclude(
 ): Promise<Concluded> {
   const settled = await settle(handle);
   let durable: ExecutionState | null = null;
+  let unverified: { reason: string; failed: boolean } | undefined;
   try {
     durable = await runtime.loadState(handle.executionId, { principal });
-  } catch {
-    // unreadable (sealed, shredded, denied): fall back to the handle's own view below
+  } catch (err) {
+    const name = (err as { name?: unknown } | null)?.name;
+    unverified =
+      name === "ExecutionDeniedError"
+        ? { reason: "query denied by the authorizer", failed: false }
+        : name === "PayloadShreddedError" || name === "SealedPayloadUnreadableError"
+          ? { reason: "state unreadable (sealed or erased)", failed: false }
+          : { reason: "store read failed", failed: true };
   }
+  if (durable === null && unverified === undefined) {
+    unverified = { reason: "store read failed (the execution is not in the log)", failed: true };
+  }
+  const verified = unverified === undefined;
+  const note =
+    unverified !== undefined ? `durability not verified: ${unverified.reason}` : undefined;
   const live = handle.getState();
   const after = snapshotOf(durable ?? live);
+  const meta = { verified, ...(note !== undefined && { note }) };
   const ok = (s: string) => s === "suspended" || s === "completed" || s === "cancelled";
-  if (settled !== undefined && after.status !== "cancelled") {
-    const refusal = refusalOf(settled.error, showPayload);
-    return refusal !== undefined
-      ? { after, refusal: r.scrub(refusal) }
-      : { after, failure: r.scrub(`${what}: ${errorText(settled.error)}`) };
+  if (settled !== undefined) {
+    const cancelledOnly =
+      after.status === "cancelled" &&
+      (settled.error as { name?: unknown } | null)?.name === "ExecutionCancelledError";
+    if (!cancelledOnly) {
+      const refusal = refusalOf(settled.error, showPayload);
+      if (refusal !== undefined && after.status !== "cancelled") {
+        return { after, ...meta, refusal: r.scrub(refusal) };
+      }
+      const text = r.scrub(errorText(settled.error, handle.executionId, showPayload));
+      return {
+        after,
+        ...meta,
+        failure:
+          after.status === "cancelled"
+            ? `${what}: the run failed and the execution was also cancelled (${text})`
+            : `${what}: ${text}`,
+      };
+    }
+  }
+  if (unverified?.failed === true) {
+    return { after, ...meta, failure: `${what}: ${note}` };
   }
   if (!ok(after.status)) {
     return {
       after,
+      ...meta,
       failure: `${what}: the log says it is ${after.status}${live.status !== after.status ? ` (the handle reported ${live.status})` : ""}`,
     };
   }
   if (durable !== null && live.status === "suspended" && durable.status !== "suspended") {
     return {
       after,
+      ...meta,
       failure: `${what}: the park did not land durably (the log says ${durable.status})`,
     };
   }
   if (after.status === "suspended" && after.waitingOn === DIVERGED_GATE) {
     return {
       after,
+      ...meta,
       failure: `${what}: the flow's code no longer matches this execution's recorded history, so the runtime parked it on the reserved gate "${DIVERGED_GATE}" instead of continuing (fix or pin the code, then retryDiverged)`,
     };
   }
-  return { after };
+  return { after, ...meta };
 }
 
 type Liveness =
@@ -375,14 +447,20 @@ const IN_PROCESS =
 
 type KillSwitchKind = "none" | "process-local" | "shared";
 
-/** An in-memory kill switch is recognised by its admin API (the class lives in @loom/middleware). */
+/**
+ * FAIL-CLOSED: a registry counts as shared ONLY if it affirmatively declares
+ * `scope: "shared"` (`KillSwitchRegistry.scope`, @loom/middleware). Everything else - the
+ * in-memory default, a subclass or proxy of it, a wrapper or decorator that does not re-declare
+ * it, a custom `{ check }` - is treated as process-local. Guessing from the object's shape would
+ * pass exactly the wrappers that hide an in-memory registry.
+ */
 function killSwitchKind(ks: unknown): KillSwitchKind {
   if (ks === undefined || ks === null) return "none";
-  const o = ks as Record<string, unknown>;
-  const local =
-    (o.constructor as { name?: string } | undefined)?.name === "InMemoryKillSwitch" ||
-    (typeof o.stopTenant === "function" && typeof o.status === "function");
-  return local ? "process-local" : "shared";
+  try {
+    return (ks as { scope?: unknown }).scope === "shared" ? "shared" : "process-local";
+  } catch {
+    return "process-local"; // a getter that throws declares nothing
+  }
 }
 
 interface Preflight {
@@ -393,12 +471,25 @@ interface Preflight {
   structural: string[];
 }
 
+/**
+ * True when the execution records a flow-code hash that is not the registered (current) flow's:
+ * it will resume on a pinned older version (or be refused), whose steps the runtime does not expose.
+ */
+function pinnedElsewhere(
+  definition: Parameters<typeof flowHashMatches>[1],
+  state: ExecutionState | null | undefined
+): boolean {
+  const recorded = state?.variables._flowHash;
+  return typeof recorded === "string" && !flowHashMatches(recorded, definition);
+}
+
 /** What running effects HERE depends on; shared by `resume` and `start`. */
 function preflight(
   app: AppLike,
   runtime: WorkflowRuntime,
   workflowId: string,
-  flags: Pick<LifecycleFlags, "allowLocalControls">
+  flags: Pick<LifecycleFlags, "allowLocalControls" | "skipEffectCheck">,
+  state?: ExecutionState | null
 ): Preflight {
   const lines: string[] = [];
   const flagBlockers: string[] = [];
@@ -407,11 +498,11 @@ function preflight(
   const ks = killSwitchKind(app.killSwitch);
   if (ks === "process-local") {
     lines.push(
-      "controls: kill switch / budgets / rate limits are process-local: a stop issued in the running app does NOT apply here"
+      'controls: kill switch / budgets / rate limits are process-local: a stop issued in the running app does NOT apply here (a kill switch counts as shared only if it declares scope: "shared")'
     );
     if (flags.allowLocalControls !== true) {
       flagBlockers.push(
-        "the app's kill switch is process-local (an in-memory default), so an operator stop in the running app would NOT stop this run's effects; pass --allow-local-controls to run effects anyway, or give the app a shared KillSwitchRegistry"
+        'the app\'s kill switch is process-local or does not declare itself shared (an in-memory default, a subclass or wrapper of one, or a registry without scope: "shared"), so an operator stop in the running app would NOT stop this run\'s effects; pass --allow-local-controls to run effects anyway, or give the app a shared KillSwitchRegistry that declares scope: "shared"'
       );
     }
   } else if (ks === "shared") {
@@ -424,22 +515,39 @@ function preflight(
     );
   }
 
-  // Every effect the flow DECLARES must be registered, or the first step fails the execution
-  // permanently. A step run dynamically (`ctx.run` of a step the definition does not declare)
-  // cannot be known ahead of time.
-  const steps = runtime.getFlow(workflowId)?.definition.steps ?? [];
+  // Every effect the flow DECLARES and has not yet run must be registered, or the step fails the
+  // execution permanently. A step run dynamically (`ctx.run` of a step the definition does not
+  // declare) cannot be known ahead of time.
+  const definition = runtime.getFlow(workflowId)?.definition;
   const effects = app.effectRuntime;
-  if (effects === undefined) {
+  if (flags.skipEffectCheck === true) {
+    lines.push(
+      "effects: NOT checked (--skip-effect-check): you accept that a missing handler will fail the execution"
+    );
+  } else if (effects === undefined) {
     lines.push("effects: the app exposes no effect runtime, so registration cannot be checked");
+  } else if (definition !== undefined && pinnedElsewhere(definition, state)) {
+    lines.push(
+      "effects: NOT checked - this execution is pinned to a different flow version than the one registered now, and the runtime does not expose that version's steps (the runtime resumes it on its pinned code, or refuses)"
+    );
   } else {
-    const missing = [...new Set(steps.map((s) => s.toolId ?? s.id))].filter((t) => !effects.has(t));
+    const done = new Set<string>();
+    for (const [key, f] of Object.entries(state?.frames ?? {})) {
+      if (f.status === "completed") {
+        done.add(key);
+        done.add(f.stepId);
+      }
+    }
+    const pending = (definition?.steps ?? []).filter((s) => !done.has(s.id));
+    const needed = [...new Set(pending.map((s) => s.toolId ?? s.id))];
+    const missing = needed.filter((t) => !effects.has(t));
     if (missing.length > 0) {
       structural.push(
-        `the flow declares effect(s) this app has not registered: ${missing.join(", ")}. A missing handler would fail the execution permanently; register them in the config module (execution.registerEffects)`
+        `the flow declares effect(s) not yet run that this app has not registered: ${missing.join(", ")}. A missing handler would fail the execution permanently; register them in the config module (execution.registerEffects), or pass --skip-effect-check to accept that`
       );
     } else {
       lines.push(
-        `effects: all ${new Set(steps.map((s) => s.toolId ?? s.id)).size} declared step effect(s) are registered (a step the flow runs without declaring it cannot be checked ahead of time)`
+        `effects: all ${needed.length} declared, not-yet-completed step effect(s) are registered (a step the flow runs without declaring it cannot be checked ahead of time)`
       );
     }
   }
@@ -586,7 +694,7 @@ export async function resumeExecution(args: ResumeArgs): Promise<LifecycleResult
       if (refusal === undefined) throw err;
       return result({ ...base, before, refusal: r.scrub(refusal) });
     }
-    const pre = preflight(app, runtime, state.workflowId, args);
+    const pre = preflight(app, runtime, state.workflowId, args, state);
     const lines = [
       `resume ${args.apply ? "APPLY" : "DRY RUN (pass --apply to act)"} - execution ${id} (${before.workflowId})`,
       `  now: ${describe(before)}${parkSeq !== undefined ? `; park at sequence ${parkSeq} (an approval signed to a park binds this, ADR 0117)` : ""}`,
@@ -649,10 +757,12 @@ export async function resumeExecution(args: ResumeArgs): Promise<LifecycleResult
         "the resumed execution did not complete"
       );
       lines.push(`  resumed: ${describe(done.after)}`);
+      if (done.note !== undefined) lines.push(`  ${done.note}`);
       return result({
         ...base,
         before,
         after: done.after,
+        verified: done.verified,
         lines,
         ...(done.refusal !== undefined && { refusal: done.refusal }),
         ...(done.failure !== undefined && { failure: done.failure }),
@@ -660,7 +770,12 @@ export async function resumeExecution(args: ResumeArgs): Promise<LifecycleResult
     } catch (err) {
       const refusal = refusalOf(err, args.showPayload);
       if (refusal === undefined) {
-        return result({ ...base, before, lines, failure: r.scrub(errorText(err)) });
+        return result({
+          ...base,
+          before,
+          lines,
+          failure: r.scrub(errorText(err, id, args.showPayload)),
+        });
       }
       return result({ ...base, before, lines, refusal: r.scrub(refusal) });
     }
@@ -691,21 +806,31 @@ export async function cancelExecution(args: CancelArgs): Promise<LifecycleResult
     const id = args.executionId;
     const base = { action: "cancel", dryRun: !args.apply, executionId: id } as const;
     let state: ExecutionState | null = null;
+    // True when the pre-read could not show the state: it was DENIED, or it was SHREDDED. In a
+    // dry run these two are deliberately indistinguishable (the runtime folds a state BEFORE it
+    // authorizes the read, so a shredded execution would otherwise tell an unauthorized caller
+    // that it exists and was erased). Only after `runtime.cancel` - which authorizes - succeeds
+    // may the output say the state was unreadable.
+    let notShown = false;
     let shredded = false;
     try {
       state = await runtime.loadState(id, { principal });
     } catch (err) {
-      if ((err as { name?: unknown } | null)?.name === "PayloadShreddedError") {
+      const name = (err as { name?: unknown } | null)?.name;
+      if (name === "PayloadShreddedError") {
         // An erased (crypto-shredded) parked execution is exactly what an operator cancels. The
         // runtime's own cancel folds a redacted view for it, so the pre-read is skipped, not fatal.
+        notShown = true;
         shredded = true;
+      } else if (name === "ExecutionDeniedError" && !args.apply) {
+        notShown = true;
       } else {
         const refusal = refusalOf(err, args.showPayload);
         if (refusal === undefined) throw err;
         return result({ ...base, refusal: r.scrub(refusal) });
       }
     }
-    if (!shredded && state === null)
+    if (!notShown && state === null)
       return result({ ...base, before: null, refusal: `no such execution ${id}` });
     const before = state !== null ? snapshotOf(state) : undefined;
     if (state !== null && TERMINAL.has(state.status)) {
@@ -715,22 +840,29 @@ export async function cancelExecution(args: CancelArgs): Promise<LifecycleResult
         refusal: `execution ${id} is already ${state.status} (terminal): nothing to cancel`,
       });
     }
-    const lease = await leaseLiveness(app, id);
+    // With the state not shown nothing about the execution may be volunteered, the lease included.
+    const lease: Liveness =
+      notShown && !args.apply
+        ? { state: "unknown", why: "not shown" }
+        : await leaseLiveness(app, id);
     const lines = [
       `cancel ${args.apply ? "APPLY" : "DRY RUN (pass --apply to act)"} - execution ${id}${before !== undefined ? ` (${before.workflowId})` : ""}`,
-      before !== undefined
-        ? `  now: ${describe(before)}`
-        : "  now: state unreadable (shredded): its payloads were erased; the cancel is recorded without reading them",
+      before !== undefined ? `  now: ${describe(before)}` : "  now: state not shown",
       `  as ${principal.actor}${principal.tenant !== undefined ? ` in tenant ${principal.tenant}` : ""}; execution authorizer: evaluated on --apply`,
-      `  lease: ${livenessLine(lease)}`,
+      `  lease: ${notShown && !args.apply ? "not shown" : livenessLine(lease)}`,
       "  effect: records EXECUTION_CANCELLED under a fence (K8.2); runs nothing in this process. The fence stops the owner's NEXT write, not an effect already running",
     ];
+    if (notShown && !args.apply) return result({ ...base, lines });
+    // On --apply the lease refusals below can run before the runtime's authorizer (a shredded
+    // pre-read), so they name no holder in that case.
     if (lease.state === "held" && args.force !== true) {
       return result({
         ...base,
         ...(before !== undefined && { before }),
         lines,
-        refusal: `another live owner (${lease.owner}) holds this execution's lease until ${new Date(lease.expiresAt).toISOString()}; pass --force to fence it out (its next write is rejected; an effect already running is not stopped), or wait`,
+        refusal: notShown
+          ? "another live owner holds this execution's lease; pass --force to fence it out (its next write is rejected; an effect already running is not stopped), or wait"
+          : `another live owner (${lease.owner}) holds this execution's lease until ${new Date(lease.expiresAt).toISOString()}; pass --force to fence it out (its next write is rejected; an effect already running is not stopped), or wait`,
       });
     }
     if (lease.state === "unknown" && args.force !== true) {
@@ -767,6 +899,12 @@ export async function cancelExecution(args: CancelArgs): Promise<LifecycleResult
       lines.push(
         `  cancelled: ${after !== undefined ? describe(after) : "recorded (state unreadable)"}`
       );
+      // Only now - the runtime's cancel authorized this principal - may the output say why.
+      if (shredded) {
+        lines.push(
+          "  note: the state was unreadable (its payloads were erased); the cancel was recorded without reading them"
+        );
+      }
       return result({
         ...base,
         ...(before !== undefined && { before }),
@@ -780,7 +918,7 @@ export async function cancelExecution(args: CancelArgs): Promise<LifecycleResult
           ...base,
           ...(before !== undefined && { before }),
           lines,
-          failure: r.scrub(errorText(err)),
+          failure: r.scrub(errorText(err, id, args.showPayload)),
         });
       }
       return result({
@@ -902,7 +1040,7 @@ export async function startExecution(args: StartArgs): Promise<LifecycleResult> 
       args.inputFromFile && args.showPayload !== true
         ? "(from --input-file; not shown, pass --show-payload to display)"
         : JSON.stringify(r.scrub(r.mask(args.input)));
-    const pre = preflight(app, runtime, args.flowId, args);
+    const pre = preflight(app, runtime, args.flowId, args, null);
     const lines = [
       `start ${args.apply ? "APPLY" : "DRY RUN (pass --apply to act)"} - flow ${args.flowId}`,
       `  execution id: ${executionId ?? "(a fresh id is minted)"}${args.idempotencyKey !== undefined ? ` (derived from --idempotency-key, scoped to tenant ${principal.tenant ?? "(none)"})` : ""}`,
@@ -937,10 +1075,12 @@ export async function startExecution(args: StartArgs): Promise<LifecycleResult> 
         "the execution did not complete"
       );
       lines.push(`  started ${handle.executionId}: ${describe(done.after)}`);
+      if (done.note !== undefined) lines.push(`  ${done.note}`);
       return result({
         ...base,
         executionId: handle.executionId,
         after: done.after,
+        verified: done.verified,
         lines,
         ...(done.refusal !== undefined && { refusal: done.refusal }),
         ...(done.failure !== undefined && { failure: done.failure }),
@@ -948,7 +1088,11 @@ export async function startExecution(args: StartArgs): Promise<LifecycleResult> 
     } catch (err) {
       const refusal = refusalOf(err, args.showPayload);
       if (refusal === undefined) {
-        return result({ ...base, lines, failure: r.scrub(errorText(err)) });
+        return result({
+          ...base,
+          lines,
+          failure: r.scrub(errorText(err, executionId ?? null, args.showPayload)),
+        });
       }
       return result({ ...base, lines, refusal: r.scrub(refusal) });
     }

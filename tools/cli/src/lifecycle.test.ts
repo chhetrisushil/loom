@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import {
   type EncryptingSnapshotStore,
@@ -12,6 +13,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { run } from "./cli";
 import {
   cancelExecution,
+  conclude,
   idempotentExecutionId,
   readJsonInput,
   resumeExecution,
@@ -32,6 +34,7 @@ import { loadLoomApp } from "./stores";
 
 const PKG = resolve(__dirname, "..");
 const SCRATCH = join(PKG, ".tmp-lifecycle-test");
+const MIDDLEWARE = pathToFileURL(resolve(PKG, "../../packages/middleware/dist/index.js")).href;
 
 interface AppOpts {
   /** Register the `count` effect the `div` flow's steps run. Default true. */
@@ -40,7 +43,9 @@ interface AppOpts {
   body?: "v1" | "v2";
   validateInput?: boolean;
   /** "local" = an in-memory switch (admin API), "shared" = a bare registry. Default none. */
-  killSwitch?: "local" | "shared";
+  killSwitch?: "local" | "shared" | "subclass" | "proxy" | "wrapper" | "custom";
+  /** Make the runtime's loadState throw (after the app is composed) while globalThis.__lcFailLoad is set. */
+  failLoad?: boolean;
   /** "off" = heartbeat disabled; "noget" = a lease store without `get`; "lie" = `get` always says free. */
   heartbeat?: "off" | "noget" | "lie";
   /** Wire a durable timer store; "start" additionally calls app.start() in the module. */
@@ -48,7 +53,7 @@ interface AppOpts {
   /** Fail every append that carries the named event type while globalThis.__lcFail is set. */
   failAppend?: string;
   /** What the query op admits (resume/cancel stay owner-scoped). */
-  queryScope?: "tenant" | "any";
+  queryScope?: "tenant" | "any" | "deny";
 }
 
 const APP = (dir: string, o: AppOpts = {}): string => `
@@ -58,6 +63,8 @@ import { ToolEffect } from "@loom/effect-runtime";
 import { SqliteTimerStore, sqliteStorage } from "@loom/plugin-sqlite";
 import { executionAccessPolicy } from "@loom/workflow-runtime";
 import { z } from "zod";
+const { InMemoryKillSwitch: RealKillSwitch } = await import(${JSON.stringify(MIDDLEWARE)});
+const SECRET = "hunter2-secret-value";
 
 const Decision = z.object({ approved: z.boolean(), approvedBy: z.string() });
 const approval = {
@@ -81,6 +88,16 @@ const forbidden = {
   runner: async () => ({}),
 };
 const io = { inputSchema: z.any(), outputSchema: z.any() };
+const E1 = step$({ id: "E1", name: "E1", toolId: "boom", ...io });
+const E2 = step$({ id: "E2", name: "E2", toolId: "zt", ...io });
+const boom = {
+  definition: flow$({ id: "boom", name: "boom", version: "1.0.0", ...io, steps: [E1] }),
+  runner: async (ctx) => { await ctx.run(E1, {}); return {}; },
+};
+const zerr = {
+  definition: flow$({ id: "zerr", name: "zerr", version: "1.0.0", ...io, steps: [E2] }),
+  runner: async (ctx) => { await ctx.run(E2, {}); return {}; },
+};
 const A = step$({ id: "A", name: "A", toolId: "count", ...io });
 const B = step$({ id: "B", name: "B", toolId: "count", ...io });
 const C = step$({ id: "C", name: "C", toolId: "count", ...io });
@@ -98,6 +115,16 @@ const div = {
     await ctx.run(C, { id: "C" });
     return { done: true };
   }`
+  },
+};
+
+const late = {
+  definition: flow$({ id: "late", name: "late", version: "1.0.0", ...io, steps: [A, B] }),
+  runner: async (ctx) => {
+    await ctx.run(A, { id: "A" });
+    await ctx.suspend({ on: "go" });
+    await ctx.run(B, { id: "B" });
+    return { done: true };
   },
 };
 
@@ -138,18 +165,26 @@ const leaseStore = new Proxy(realLeases, {
 
 const app = defineConfig({
   storage,
-  flows: [approval, forbidden, div],
+  flows: [approval, forbidden, div, late, boom, zerr],
   ${o.timers !== undefined ? `timers: { pollMs: 5, store: new SqliteTimerStore(${JSON.stringify(`${dir}/events.db`)}) },` : ""}
   ${o.heartbeat === "off" ? "durability: { heartbeat: { enabled: false } }," : ""}
   ${o.heartbeat === "noget" || o.heartbeat === "lie" ? "durability: { heartbeat: { store: leaseStore } }," : ""}
   execution: {
-    ${(o.effects ?? true) ? `registerEffects: (fx) => fx.register("count", new ToolEffect(async (i) => i)),` : ""}
+    registerEffects: (fx) => {
+      ${(o.effects ?? true) ? `fx.register("count", new ToolEffect(async (i) => i));` : ""}
+      fx.register("boom", new ToolEffect(async () => { throw new Error("db password " + SECRET); }));
+      fx.register("zt", new ToolEffect(async () => z.enum(["x"]).parse(SECRET)));
+    },
     ${o.validateInput === true ? "validateInput: true," : ""}
   },
   kernel: { divergence: "fail" },
   security: {
     ${o.killSwitch === "local" ? "killSwitch: new InMemoryKillSwitch()," : ""}
-    ${o.killSwitch === "shared" ? "killSwitch: { check() { return undefined; } }," : ""}
+    ${o.killSwitch === "shared" ? 'killSwitch: { scope: "shared", check() { return undefined; } },' : ""}
+    ${o.killSwitch === "custom" ? "killSwitch: { check() { return undefined; } }," : ""}
+    ${o.killSwitch === "subclass" ? "killSwitch: new (class extends RealKillSwitch {})()," : ""}
+    ${o.killSwitch === "proxy" ? "killSwitch: new Proxy(new RealKillSwitch(), { get(t, p) { const v = t[p]; return typeof v === 'function' ? v.bind(t) : v; } })," : ""}
+    ${o.killSwitch === "wrapper" ? 'killSwitch: (() => { const inner = { scope: "shared", check() { return undefined; } }; return { check: (c) => inner.check(c) }; })(),' : ""}
     resumeAuthenticator: {
       verify(event) {
         if (event.eventType !== "ApprovalGranted") return { status: "not-applicable" };
@@ -160,11 +195,22 @@ const app = defineConfig({
       },
     },
     executionAuthorizer: executionAccessPolicy({
-      allowWorkflows: ["approval", "div"],
+      allowWorkflows: ["approval", "div", "late", "boom", "zerr"],
       rules: { resume: "owner", cancel: "owner", query: ${JSON.stringify(o.queryScope ?? "tenant")} },
     }),
   },
 });
+${
+  o.failLoad === true
+    ? `{
+  const realLoad = app.runtime.loadState.bind(app.runtime);
+  app.runtime.loadState = async (...a) => {
+    if (globalThis.__lcFailLoad === true) throw new Error("disk read failed (simulated)");
+    return realLoad(...a);
+  };
+}`
+    : ""
+}
 ${o.timers === "start" ? "app.start();" : ""}
 export default app;
 `;
@@ -249,6 +295,21 @@ async function seedDiv(id: string): Promise<void> {
   try {
     const h = await app.runtime?.start(
       "div",
+      {},
+      { executionId: id, principal: { actor: "starter", tenant: "acme" } }
+    );
+    await h?.waitForSuspend();
+  } finally {
+    await app.close?.();
+  }
+}
+
+/** Start `late` (step A, a park on "go", then step B) as the owner. */
+async function seedLate(id: string): Promise<void> {
+  const app = await loadLoomApp(cfg());
+  try {
+    const h = await app.runtime?.start(
+      "late",
       {},
       { executionId: id, principal: { actor: "starter", tenant: "acme" } }
     );
@@ -461,21 +522,67 @@ describe("loom resume / cancel / start", () => {
       expect(await events("e1")).toEqual(before);
     });
 
-    it("refuses --apply when the flow declares an effect the app has not registered, listing it", async () => {
-      await seedDiv("d1");
-      const before = await events("d1");
+    it("refuses --apply when a not-yet-completed declared step needs an unregistered effect; --skip-effect-check overrides", async () => {
+      await seedLate("l1");
+      const before = await events("l1");
       const over = { event: "go", payload: {} };
-      const dry = await resume("d1", over, { effects: false });
+      const dry = await resume("l1", over, { effects: false });
       expect(dry.exitCode).toBe(2);
       expect(dry.refusal).toContain("count");
-      const applied = await resume("d1", { ...over, apply: true }, { effects: false });
+      expect(dry.refusal).toContain("--skip-effect-check");
+      const applied = await resume("l1", { ...over, apply: true }, { effects: false });
       expect(applied.exitCode).toBe(2);
-      expect(applied.refusal).toContain("has not registered: count");
-      expect(await events("d1")).toEqual(before);
+      expect(applied.refusal).toContain("not yet run that this app has not registered: count");
+      expect(await events("l1")).toEqual(before);
+      // The override is explicit and printed; the missing handler then fails the run (exit 1).
+      const skipDry = await resume("l1", { ...over, skipEffectCheck: true }, { effects: false });
+      expect(skipDry.exitCode).toBe(0);
+      expect(skipDry.lines.join("\n")).toContain("--skip-effect-check");
+      const skipped = await resume(
+        "l1",
+        { ...over, apply: true, skipEffectCheck: true },
+        { effects: false }
+      );
+      expect(skipped.exitCode).toBe(1);
       // With the effect registered the same resume is accepted.
-      const ok = await resume("d1", { ...over, apply: true });
+      await seedLate("l2");
+      const ok = await resume("l2", { ...over, apply: true });
       expect(ok.exitCode).toBe(0);
       expect(ok.after?.status).toBe("completed");
+    });
+
+    it("steps already completed in this execution are not preflighted (a missing handler for them is fine)", async () => {
+      await seedDiv("d1"); // A and B completed, parked on "go"
+      const res = await resume("d1", { event: "go", payload: {}, apply: true }, { effects: false });
+      expect(res.exitCode).toBe(0);
+      expect(res.after?.status).toBe("completed");
+    });
+
+    it("an execution pinned to a different flow version is not checked against the current one's steps (and says so)", async () => {
+      await seedDiv("d1");
+      // Same id and version, but a third declared step: a different content hash than d1 recorded.
+      const file = cfg({ effects: false });
+      const src = (await import("node:fs")).readFileSync(file, "utf8");
+      writeFileSync(
+        file,
+        src.replace(
+          'definition: flow$({ id: "div", name: "div", version: "1.0.0", ...io, steps: [A, B] })',
+          'definition: flow$({ id: "div", name: "div", version: "1.0.0", ...io, steps: [A, B, C] })'
+        )
+      );
+      const dry = await resumeExecution({
+        config: file,
+        as: "starter",
+        tenant: "acme",
+        apply: false,
+        redact: [],
+        executionId: "d1",
+        event: "go",
+        payload: {},
+        payloadFromFile: false,
+      });
+      expect(dry.exitCode).toBe(0);
+      expect(dry.lines.join("\n")).toContain("pinned to a different flow version");
     });
 
     it("a process-local kill switch refuses --apply unless --allow-local-controls (log unchanged); a shared registry needs no flag", async () => {
@@ -501,6 +608,22 @@ describe("loom resume / cancel / start", () => {
       );
       expect(allowed.exitCode).toBe(0);
       expect(allowed.after?.status).toBe("completed");
+    });
+
+    it("FAIL-CLOSED: a subclass, a proxy, a wrapper and a bare {check} registry are all process-local (refused without the flag, log unchanged)", async () => {
+      await seedParked("e1");
+      const before = await events("e1");
+      for (const killSwitch of ["subclass", "proxy", "wrapper", "custom"] as const) {
+        const dry = await resume("e1", {}, { killSwitch });
+        expect(dry.lines.join("\n"), killSwitch).toContain("process-local");
+        const refused = await resume("e1", { apply: true }, { killSwitch });
+        expect(refused.exitCode, killSwitch).toBe(2);
+        expect(refused.refusal, killSwitch).toContain("--allow-local-controls");
+        expect(await events("e1"), killSwitch).toEqual(before);
+        const started = await start({ id: `k-${killSwitch}`, apply: true }, { killSwitch });
+        expect(started.exitCode, killSwitch).toBe(2);
+        expect(await events(`k-${killSwitch}`), killSwitch).toEqual([]);
+      }
     });
 
     it("a shared kill switch resumes with no flag", async () => {
@@ -567,7 +690,17 @@ describe("loom resume / cancel / start", () => {
         const res = await resume("e1", { apply: true }, { failAppend: "EXECUTION_COMPLETED" });
         expect(res.exitCode).toBe(1);
         expect(res.ok).toBe(false);
-        expect(res.failure).toContain("disk full");
+        expect(res.failure).not.toContain("disk full"); // a storage error's message is withheld too
+        expect(res.failure).toContain("StorageWriteError");
+        (globalThis as { __lcFail?: boolean }).__lcFail = false;
+        await seedParked("e2");
+        (globalThis as { __lcFail?: boolean }).__lcFail = true;
+        const shown = await resume(
+          "e2",
+          { apply: true, showPayload: true },
+          { failAppend: "EXECUTION_COMPLETED" }
+        );
+        expect(shown.failure).toContain("disk full");
       } finally {
         (globalThis as { __lcFail?: boolean }).__lcFail = false;
       }
@@ -696,7 +829,8 @@ describe("loom resume / cancel / start", () => {
         executionId: "x",
       });
       expect(dry.refusal).toBeUndefined();
-      expect(dry.lines.join("\n")).toContain("state unreadable (shredded)");
+      expect(dry.lines.join("\n")).toContain("state not shown");
+      expect(dry.lines.join("\n")).not.toMatch(/shred|erased|unreadable/i);
       const res = await cancelExecution({
         config: mod2,
         as: "starter",
@@ -708,8 +842,55 @@ describe("loom resume / cancel / start", () => {
       });
       expect(res.exitCode).toBe(0);
       expect(res.lines.join("\n")).toContain("cancelled");
+      expect(res.lines.join("\n")).toContain("the state was unreadable");
       const types = (await shared.inner.read("x")).map((e: { eventType: string }) => e.eventType);
       expect(types.at(-1)).toBe("EXECUTION_CANCELLED");
+      Reflect.deleteProperty(globalThis, "__lcShred");
+    });
+  });
+
+  describe("cancel: no shred-status oracle", () => {
+    it("a wrong-tenant dry run prints the same thing for a shredded execution and a denied read; the mention comes only after --apply succeeds", async () => {
+      // A shredded execution "x" (encrypting in-memory stores kept on globalThis).
+      const mod = join(SCRATCH, `shred-${n++}.mjs`);
+      writeFileSync(mod, SHRED_APP);
+      const app = await loadLoomApp(mod);
+      try {
+        const h = await app.runtime?.start(
+          "shred-me",
+          {},
+          { executionId: "x", principal: { actor: "starter", tenant: "acme" } }
+        );
+        await h?.waitForSuspend();
+      } finally {
+        await app.close?.();
+      }
+      const g = (globalThis as unknown as { __lcShred: Shred }).__lcShred;
+      await shredSubject(g.keys, g.inner, "x", { snapshotStore: g.snaps });
+      const mod2 = join(SCRATCH, `shred-${n++}.mjs`);
+      writeFileSync(mod2, SHRED_APP);
+      const wrong = { as: "mallory", tenant: "evil", apply: false, redact: [], executionId: "x" };
+      const shreddedDry = await cancelExecution({ config: mod2, ...wrong });
+
+      // The same wrong-tenant principal against an ordinary execution whose read is DENIED.
+      await seedParked("x");
+      const deniedDry = await cancel("x", { as: "mallory", tenant: "evil" });
+
+      expect(shreddedDry.lines).toEqual(deniedDry.lines);
+      expect(shreddedDry.exitCode).toBe(deniedDry.exitCode);
+      expect(shreddedDry.refusal).toEqual(deniedDry.refusal);
+      expect(shreddedDry.lines.join("\n")).toContain("state not shown");
+      expect(JSON.stringify(shreddedDry)).not.toMatch(/shred|erased|unreadable/i);
+
+      // --apply by the wrong tenant: the runtime's cancel authorizes first and refuses; no mention.
+      const wrongApply = await cancelExecution({
+        config: mod2,
+        ...wrong,
+        apply: true,
+        force: true,
+      });
+      expect(wrongApply.exitCode).toBe(2);
+      expect(JSON.stringify(wrongApply)).not.toMatch(/shred|erased|unreadable/i);
       Reflect.deleteProperty(globalThis, "__lcShred");
     });
   });
@@ -975,4 +1156,127 @@ describe("loom resume / cancel / start", () => {
   });
 
   afterAll(() => rmSync(SCRATCH, { recursive: true, force: true }));
+});
+
+describe("loom resume / start: failure text, durability verification", () => {
+  beforeEach(() => {
+    mkdirSync(SCRATCH, { recursive: true });
+    dir = mkdtempSync(join(SCRATCH, "store-"));
+  });
+  afterEach(() => rmSync(SCRATCH, { recursive: true, force: true }));
+  const SECRET = "hunter2-secret-value";
+
+  it("an effect's thrown message and a ZodError from a schema never print without --show-payload; they do with it", async () => {
+    for (const flowId of ["boom", "zerr"]) {
+      const quiet = await start({ flowId, input: {}, id: `q-${flowId}`, apply: true });
+      expect(quiet.exitCode, flowId).toBe(1);
+      expect(JSON.stringify(quiet), flowId).not.toContain(SECRET);
+      expect(quiet.failure, flowId).toContain("the run failed:");
+      expect(quiet.failure, flowId).toContain("--show-payload");
+      expect(quiet.failure, flowId).toContain(`loom logs q-${flowId}`);
+      expect(quiet.failure, flowId).toMatch(flowId === "boom" ? /Error/ : /ZodError/);
+
+      const loud = await start({
+        flowId,
+        input: {},
+        id: `l-${flowId}`,
+        apply: true,
+        showPayload: true,
+      });
+      expect(loud.exitCode, flowId).toBe(1);
+      expect(loud.failure, flowId).toContain(SECRET);
+    }
+  });
+
+  it("a store whose query the authorizer denies: the run proceeds, the output says durability was not verified, verified:false, exit 0", async () => {
+    const res = await start({ apply: true }, { queryScope: "deny" });
+    expect(res.exitCode).toBe(0);
+    expect(res.verified).toBe(false);
+    expect(res.lines.join("\n")).toContain(
+      "durability not verified: query denied by the authorizer"
+    );
+    expect(res.after?.status).toBe("suspended");
+  });
+
+  it("a store read FAILURE after the run is exit 1 (not silently skipped)", async () => {
+    (globalThis as { __lcFailLoad?: boolean }).__lcFailLoad = true;
+    try {
+      const res = await start({ apply: true }, { failLoad: true });
+      expect(res.exitCode).toBe(1);
+      expect(res.verified).toBe(false);
+      expect(res.failure).toContain("durability not verified: store read failed");
+      expect(res.lines.join("\n")).toContain("durability not verified: store read failed");
+    } finally {
+      (globalThis as { __lcFailLoad?: boolean }).__lcFailLoad = false;
+    }
+  });
+
+  it("a verified outcome reports verified:true", async () => {
+    const res = await start({ apply: true });
+    expect(res.verified).toBe(true);
+    expect(res.lines.join("\n")).not.toContain("not verified");
+  });
+
+  describe("conclude: settled error vs cancelled status", () => {
+    const principal = { actor: "a" };
+    const redactor = { scrub: (x: string) => x, mask: (x: unknown) => x } as never;
+    const fake = (
+      status: string,
+      error: unknown,
+      loaded: unknown = "ok"
+    ): Parameters<typeof conclude> => {
+      const state = {
+        executionId: "z",
+        workflowId: "w",
+        workflowVersion: "1",
+        status,
+        frames: {},
+        variables: {},
+        sequence: 3,
+        startedAt: 0,
+        updatedAt: 0,
+      };
+      const runtime = {
+        loadState: async () => {
+          if (loaded !== "ok") throw loaded;
+          return state;
+        },
+      };
+      const handle = {
+        executionId: "z",
+        getState: () => state,
+        waitForCompletion: () => (error === undefined ? Promise.resolve() : Promise.reject(error)),
+        waitForSuspend: () => new Promise(() => {}),
+      };
+      return [runtime, handle, principal, redactor, false, "the run"] as never;
+    };
+
+    it("a run that failed AND was cancelled reports both and exits 1", async () => {
+      const done = await conclude(...fake("cancelled", new Error(`bad ${SECRET}`)));
+      expect(done.failure).toContain("failed and the execution was also cancelled");
+      expect(done.failure).not.toContain(SECRET);
+    });
+
+    it("a plain cancellation (ExecutionCancelledError) with a cancelled status is not a failure", async () => {
+      const err = Object.assign(new Error("execution cancelled"), {
+        name: "ExecutionCancelledError",
+      });
+      const done = await conclude(...fake("cancelled", err));
+      expect(done.failure).toBeUndefined();
+      expect(done.refusal).toBeUndefined();
+    });
+
+    it("denied vs failed vs sealed re-reads", async () => {
+      const named = (name: string) => Object.assign(new Error("x"), { name });
+      const denied = await conclude(...fake("completed", undefined, named("ExecutionDeniedError")));
+      expect(denied).toMatchObject({ verified: false, note: expect.stringContaining("denied") });
+      expect(denied.failure).toBeUndefined();
+      const failed = await conclude(...fake("completed", undefined, new Error("io")));
+      expect(failed.failure).toContain("store read failed");
+      expect(failed.verified).toBe(false);
+      const sealed = await conclude(...fake("completed", undefined, named("PayloadShreddedError")));
+      expect(sealed.failure).toBeUndefined();
+      expect(sealed.verified).toBe(false);
+    });
+  });
 });

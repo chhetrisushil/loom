@@ -39,6 +39,21 @@ export interface KillVerdict {
  * a throw is treated as a refusal (fail closed) by {@link killSwitchMiddleware}.
  */
 export interface KillSwitchRegistry {
+  /**
+   * Where the stop flags live, DECLARED by the registry. Optional and additive (no SPI version
+   * bump: an absent field changes nothing for any existing registry).
+   *
+   *  - `"process"` — the flags live in this process's memory ({@link InMemoryKillSwitch}); a stop
+   *    issued in another process is invisible here.
+   *  - `"shared"` — the flags live in a store every process reads (a DB row, a feature-flag
+   *    service), so a stop issued anywhere applies here.
+   *
+   * Tooling that runs your effects OUTSIDE the long-running app (`loom resume` / `loom start`)
+   * reads this and is FAIL-CLOSED: only a registry that affirmatively declares `"shared"` is
+   * trusted to carry an operator stop across processes. Absent, or anything else, is treated as
+   * process-local. A wrapper or subclass must re-declare it: forwarding is the wrapper's claim.
+   */
+  readonly scope?: "process" | "shared";
   check(ctx: EffectContext): KillVerdict | undefined | Promise<KillVerdict | undefined>;
 }
 
@@ -61,6 +76,8 @@ export class KillSwitchEngagedError extends SafetyViolationError {
 
 /** Single-process registry with the operator-facing admin API. */
 export class InMemoryKillSwitch implements KillSwitchRegistry {
+  /** Declares itself process-local (see {@link KillSwitchRegistry.scope}). */
+  readonly scope = "process" as const;
   private system: string | undefined;
   private readonly tenants = new Map<string, string>();
   private readonly workflows = new Map<string, string>();
