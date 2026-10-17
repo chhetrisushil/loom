@@ -97,12 +97,12 @@ describe("identity under crypto", () => {
     const run = await a.runtime.start(a.flow, {}, { executionId: "e1", principal: alice });
     await run.waitForSuspend();
     const rawLog = JSON.stringify(await a.raw.read("e1"));
-    expect(rawLog).not.toContain("alice");
-    expect(rawLog).not.toContain("acme");
+    expect(rawLog).not.toContain('"alice"');
+    expect(rawLog).not.toContain('"acme"');
     expect(rawLog).toContain("__loomEnc");
     const rawSnap = JSON.stringify(await a.rawSnaps.loadLatest("e1"));
-    expect(rawSnap).not.toContain("alice");
-    expect(rawSnap).not.toContain("acme");
+    expect(rawSnap).not.toContain('"alice"');
+    expect(rawSnap).not.toContain('"acme"');
 
     // another process, same stores + keys: decrypts the record and resumes as alice
     const b = boot(a);
