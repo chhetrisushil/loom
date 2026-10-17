@@ -140,10 +140,16 @@ for (const backend of inboxBackends("erase")) {
     it("P3-2: a log written BEFORE the path was sealed (plaintext consumption) still replays beside sealed ones", async () => {
       const raw = backend.make();
       const keys: KeyStore = new InMemoryKeyStore();
+      // The old process's snapshot store is fenced by the same switch: its park writes a checkpoint
+      // AFTER the suspension is durable, and that save must not land once the process is gone.
       const unsealed = retirable(
-        new EncryptingEventStore(raw.eventStore, keys, { sensitive: {}, subjectOf })
+        new EncryptingEventStore(raw.eventStore, keys, { sensitive: {}, subjectOf }),
+        raw.snapshotStore
       );
-      const before = build({}, { ...raw, eventStore: unsealed.store });
+      const before = build(
+        {},
+        { ...raw, eventStore: unsealed.store, snapshotStore: unsealed.snapshotStore }
+      );
       const f = flow("w", async (ctx) => {
         const a = unwrapTainted(await ctx.receive<string>("a"));
         const b = unwrapTainted(await ctx.receive<string>("b"));
@@ -156,11 +162,22 @@ for (const backend of inboxBackends("erase")) {
       // Wait for the WHOLE exchange on the old deployment: "a" consumed AND the flow parked again on
       // "b". The consumption alone is not enough: the old runtime is still running the flow, and its
       // next `receive("b")` reads the inbox through ITS store, which does not open the sealed path.
-      await until(
-        async () =>
-          (await eventsOf(raw.eventStore, e, "MESSAGE_CONSUMED")).length === 1 &&
+      // ...and the park's TAIL: a park saves its checkpoint after EXECUTION_SUSPENDED is durable, and
+      // the status turns "suspended" before that save runs. Retiring in that gap fenced the store
+      // under a live save (on Postgres, where the append is slow enough to lose the race).
+      await until(async () => {
+        const consumed = await eventsOf(raw.eventStore, e, "MESSAGE_CONSUMED");
+        const parks = await eventsOf(raw.eventStore, e, "EXECUTION_SUSPENDED");
+        const lastPark = parks[parks.length - 1]?.sequence ?? Number.POSITIVE_INFINITY;
+        const checkpoint = await raw.snapshotStore.loadLatest(e);
+        return (
+          consumed.length === 1 &&
+          parks.length === 2 &&
+          lastPark > (consumed[0]?.sequence ?? 0) &&
+          (checkpoint?.sequence ?? -1) >= lastPark &&
           (await before.rt.loadState(e))?.status === "suspended"
-      );
+        );
+      });
       // ...then the old deployment goes away. A park is followed by a fire-and-forget re-read of the
       // inbox (ADR 0110 D5 closure 2); left alive, that read could consume "b" through the unsealed
       // store and hand the flow the ciphertext envelope (`b.length` undefined).
