@@ -3,7 +3,7 @@
 - **Files:** `cases.ts` (10 intents, each with the fixture it runs against, the shape it must leave behind, and a
   hand-written model script), `cassettes/*.json` (one cassette per intent), `subject.ts` (the case runner and the
   fixture builder), `typecheck.ts` (the tight `tsc --noEmit` host), `measure.ts`, `author.ts`, `containment.test.ts`.
-- **Labeller:** Claude Opus 5.5 (1M context), as the implementing agent of ADR 0131 slice S3, for the repo owner.
+- **Labeller:** Claude (Sonnet subagent), reviewed by Claude (Sonnet), as the implementing agent of ADR 0131 slice S3, for the repo owner.
 - **Date:** 2026-10-17.
 - **Source:** original synthetic text. The intents mix the `@loom/appgen` directive grammar ("Create a refund-reviewer.
   Step check policy. Pause for approval.") with free-form requests, over a net-new app and a three-flow "support-desk"
@@ -59,6 +59,13 @@ of it. If the prompt learns to delete, raise the floor in `thresholds.ts`.
 
 Also found while writing the fail-proofs: `validateChangeSpec` does not reject a capability with DUPLICATE step ids, so
 such a plan is accepted and generates `const <id>Step` twice; only the typecheck catches it (fail-proof `(a3)`).
+
+## Security finding: symlinked flow file escape
+
+`applyChanges` itself writes nothing, but a `flow.ts` that is a SYMLINK to a file outside the project is scanned, planned
+as an in-place edit, and a write to that path (the CLI's lexical `resolveInside` check cannot see it) overwrites the
+outside file. Pinned exactly in `containment.test.ts` (it asserts the escape happens today). The fix is on branch
+`fix/appgen-symlink-escape`; whichever PR lands second flips that pin to `expect(outsideChanged).toBe(false)`.
 
 ## Label edits after measurement
 
