@@ -86,21 +86,59 @@ export function discoverProjections(dir: string): string[] {
   return discoverFlat(dir, "projections");
 }
 
+/** `realpath` of `p`, or of its deepest existing ancestor plus the remaining (not yet created) segments. */
+function realpathDeep(p: string): string {
+  const rest: string[] = [];
+  let cur = path.resolve(p);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync(cur), ...rest.reverse());
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      const up = path.dirname(cur);
+      if ((code !== "ENOENT" && code !== "ENOTDIR") || up === cur) throw e;
+      rest.push(path.basename(cur));
+      cur = up;
+    }
+  }
+}
+
 /**
  * The symlink-containment root for a project directory: NEVER trust a symlink below the cwd.
  *
- *  - `dir` resolves (lexically) INSIDE the cwd, however it was spelled (`app`, `./app`, `app/nested`,
- *    an absolute path under the cwd): the root is the cwd, so `dir` itself and every component below
- *    it are checked and a link among them (a cloned repo's `app -> /outside`) is refused. The cwd
- *    itself may be reached through a link.
- *  - `dir` resolves OUTSIDE the cwd (an absolute path elsewhere, or a `..` path that leaves it): the
- *    user named a location outside the project, so `dir` itself is the root and may be a link (what is
- *    below it is still checked).
+ * Classified by REAL path, never by spelling (`/tmp` vs `/private/tmp`, a shell's logical `$PWD`, an
+ * alias link to the project all name the same place). The ancestors of `dir` (as spelled) are matched
+ * against the real path of the cwd; `dir`'s own last component is never resolved (it may be the planted
+ * link), and neither is any link on the way below the cwd.
+ *
+ *  - an ancestor of `dir` IS the cwd by real path (or its parent resolves inside the cwd): the root is the cwd (in the spelling `dir` used, so every
+ *    component below is lstat-checked), and `dir` itself and everything under it must not be a link: a
+ *    cloned repo's `app -> /outside` is refused however `--dir` was spelled. The cwd may be reached
+ *    through a link.
+ *  - otherwise: the user named a location outside the project, so `dir` itself is
+ *    the root and may be a link (what is below it is still checked).
  */
 export function containmentRootFor(dir: string, cwd: string = process.cwd()): string {
-  const rel = path.relative(path.resolve(cwd), path.resolve(cwd, dir));
-  const outside = rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
-  return outside ? path.resolve(cwd, dir) : path.resolve(cwd);
+  const rc = realpathDeep(cwd);
+  const target = path.resolve(cwd, dir);
+  // Climb the spelling `dir` used to the ancestor that IS the cwd (by real path): that ancestor is the
+  // root, so every component below it - `dir` itself and any link on the way - is lstat-checked. The
+  // climb starts at the PARENT: `dir`'s own last component is never resolved.
+  for (let a = path.dirname(target); ; a = path.dirname(a)) {
+    try {
+      if (realpathDeep(a) === rc) return a;
+    } catch {
+      /* unreadable ancestor: keep climbing */
+    }
+    if (path.dirname(a) === a) break;
+  }
+  // No spelling of the cwd on the way. If the parent still resolves inside the cwd (e.g. through a
+  // link to a subdirectory) the lexical walk fails closed against the cwd; otherwise the user named a
+  // location outside the project and `dir` itself is the root.
+  const rel = path.relative(rc, realpathDeep(path.dirname(target)));
+  const inside =
+    rel === "" || !(rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));
+  return inside ? rc : target;
 }
 
 /**

@@ -28,12 +28,18 @@ export function makeLock(intent: string, changeSpec: ChangeSpec, createdAt: stri
 /**
  * Write a lockfile to `<root>/.loom/appgen/<fileName>` and return its path. The caller
  * chooses `fileName` (typically `<timestamp>.spec.json`) so the timestamp source stays
- * outside this pure-ish writer.
+ * outside this pure-ish writer. `containment` is the symlink-containment root (default `root`; the CLI
+ * passes the cwd-based root from `containmentRootFor`, so a linked `root` below the cwd is refused).
  */
-export function writeLockfile(root: string, lock: AppgenLock, fileName: string): string {
+export function writeLockfile(
+  root: string,
+  lock: AppgenLock,
+  fileName: string,
+  containment: string = root
+): string {
   const dest = path.join(root, ".loom", "appgen", fileName);
   // Never through a link (a planted `.loom` or lockfile): same writer as every other project write.
-  safeWriteFile(root, dest, `${JSON.stringify(lock, null, 2)}\n`);
+  safeWriteFile(containment, dest, `${JSON.stringify(lock, null, 2)}\n`);
   return dest;
 }
 

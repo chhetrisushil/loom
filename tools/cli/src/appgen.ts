@@ -19,6 +19,7 @@ import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loom/llm";
 import { generateRegistration } from "@loom/scaffold";
 import { unifiedDiff } from "./diff";
 import { discoverFlows } from "./gen";
+import { containmentRootFor } from "./gen";
 import { assertNoSymlinkPath, safeWriteFile } from "./safeWrite";
 
 /** A structural view of a `@loom/reasoning` ModelRoute — avoids a hard dep here. */
@@ -329,7 +330,12 @@ export async function cmdAppgen(
     const now = opts.now ?? Date.now();
     const lock = makeLock(intent, changeSpec, new Date(now).toISOString());
     resolveInside(opts.dir, path.join(".loom", "appgen", `${now}.spec.json`));
-    result.lockfile = writeLockfile(opts.dir, lock, `${now}.spec.json`);
+    result.lockfile = writeLockfile(
+      opts.dir,
+      lock,
+      `${now}.spec.json`,
+      containmentRootFor(opts.dir)
+    );
   } finally {
     io.close?.();
   }
@@ -394,7 +400,11 @@ export function renderPlan(
  * `path.relative` is the check rather than a `startsWith("..")` on the raw string, so `a/../..`
  * and absolute paths are caught after normalisation rather than by pattern.
  */
-export function resolveInside(dir: string, relative: string): string {
+export function resolveInside(
+  dir: string,
+  relative: string,
+  containment: string = containmentRootFor(dir)
+): string {
   const root = path.resolve(dir);
   const dest = path.resolve(root, relative);
   const rel = path.relative(root, dest);
@@ -408,7 +418,7 @@ export function resolveInside(dir: string, relative: string): string {
   // The checks above are LEXICAL and cannot see a symlink: refuse any link on the path (the target
   // or a parent directory), whether it points outside the project or back inside it.
   try {
-    assertNoSymlinkPath(root, dest);
+    assertNoSymlinkPath(containment, dest);
   } catch (e) {
     throw new Error(`appgen: ${(e as Error).message}`);
   }
@@ -463,6 +473,7 @@ function regenerateRegistration(dir: string, io: AppgenIO, result: AppgenResult)
 }
 
 function defaultIO(dir: string): AppgenIO {
+  const containment = containmentRootFor(dir);
   // A line-queue reader over stdin: robust for both interactive TTYs and piped input
   // (where readline emits every buffered line up front, which `rl.question` would drop
   // between successive prompts). Prompts are written manually; EOF resolves pending
@@ -495,7 +506,7 @@ function defaultIO(dir: string): AppgenIO {
   return {
     exists: (p) => fs.existsSync(p) || isLink(p),
     write: (p, contents) => {
-      safeWriteFile(dir, p, contents);
+      safeWriteFile(containment, p, contents);
     },
     resolveConflict: async (existingPath) => {
       for (;;) {
