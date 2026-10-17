@@ -35,9 +35,11 @@ deterministic, free, keyless and offline; a cassette miss is a `CassetteMissErro
 
 The cassettes are **hand-authored** exactly as in S2 (`PROVENANCE.md` in each directory): the "model" is a script, so S3
 measures the planning, validation and apply code's handling of model behaviour, not a model's quality. Findings the
-datasets recorded rather than hid are in each `PROVENANCE.md` and `thresholds.ts` (no delete in the model planner,
-`IntentRuntime` overriding a model `NONE`, duplicate step ids accepted) and, as a security finding, in
-`src/appgen/containment.test.ts` (a symlinked `flow.ts` is followed out of the project; `applyChanges` itself writes nothing).
+datasets recorded rather than hid are in each `PROVENANCE.md` and `thresholds.ts` (no delete in the model
+planner — still open; `IntentRuntime` overriding a model `NONE` — fixed 2026-10-17, #632; duplicate step ids and
+colliding generated names accepted — fixed 2026-10-17, #634; `intent` text spliced raw into generated code — fixed
+2026-10-17, #635) and, as a security finding, in `src/appgen/containment.test.ts` (a symlinked `flow.ts` was followed
+out of the project — fixed 2026-10-17, #630; the pin now asserts the escape is closed).
 
 ### Re-recording live, on demand only, with Gemini
 

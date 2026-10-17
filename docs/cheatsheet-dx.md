@@ -34,13 +34,14 @@ The folder convention is **build-time** codegen — a static `loom.gen.ts`, neve
 globbing; `loom gen` skips a file whose name is unsafe to put in generated code.
 
 **Writes stay inside the project.** `gen`, `new`, `dev`, `appgen`, `plugin new`, `create-loom-app` and
-`migrate-config --apply` never write through a symlink below the project; a `--dir` whose final
-component is a link is refused (pass the real path).
+`migrate-config --apply` (and the appgen lockfile) never write through a symlink below the cwd, judged by
+filesystem identity (dev+ino), not path spelling. An explicit `--dir` outside the cwd is its own root, but
+its final component may never be a link — pass the real path.
 
 ## `<store-flags>` — where a command reads
 
-Store is a **flag** (`--db` / `--config`), never a positional: a bare path is refused (`loom logs
---db x.db events.db` reads `events.db` as the execution id). Both halves work for every log command; `knowledge`, `verify` and `deploy check` need `--config`.
+Store is a **flag** (`--db` / `--config`), never a positional: a bare path is not a store: alone
+it is refused, and next to `--db` it is read as the execution id (`loom logs --db x.db events.db`). Both halves work for every log command; `knowledge`, `verify` and `deploy check` need `--config`.
 
 | | |
 |---|---|
@@ -158,7 +159,8 @@ Seams: `store` · `dispatcher` · `telemetry` · `middleware` · `timer` · `lea
 ## Generating an app from intent
 
 ```bash
-loom appgen "<intent>" [--dir .] [--dry-run] [--check] [--yes] [--offline]
+loom appgen "<intent>" [--dir .] [--dry-run] [--check] [--yes] [--offline]   # --yes skips the confirm prompt
+loom appgen --from <file> [...]                       # read the intent from a file
 loom appgen "<intent>" --model gemini:<m>   # or anthropic:<m> | openai:<m> | a .gguf path; [--model-big] [--model-tier]
 loom appgen --from-spec .loom/appgen/<ts>.spec.json   # replay, no model
 ```
