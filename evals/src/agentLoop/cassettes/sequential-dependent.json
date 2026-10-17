@@ -1,0 +1,32 @@
+{
+  "req:3c78ec06ec1a631d6674fbae240065fb": {
+    "content": "finding the customer first",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "lookup_customer",
+        "input": {
+          "name": "Ada"
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  },
+  "req:44647ddcca76489c3a2ec0fc53d8fea5": {
+    "content": "Ada's order 1042 is a desk lamp and it was delivered.",
+    "stopReason": "end_turn"
+  },
+  "req:79f2cc35e40dc052cdbb92304937159d": {
+    "content": "now her order",
+    "toolCalls": [
+      {
+        "id": "c1",
+        "name": "lookup_order",
+        "input": {
+          "customer": "cus_ada"
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  }
+}

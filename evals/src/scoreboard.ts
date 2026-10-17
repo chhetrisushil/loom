@@ -11,11 +11,15 @@ export interface MetricRow {
   readonly key: string;
   readonly value: number;
   readonly gated: boolean;
+  /** A COST (steps, tool calls): a rise is the regression. Absent = higher is better (every S1 row). */
+  readonly lowerIsBetter?: boolean;
 }
 
 export interface ScoreboardEntry {
   readonly value: number;
   readonly gated: boolean;
+  /** Present (and `true`) only on a cost metric, so S1 rows serialise exactly as they always did. */
+  readonly lowerIsBetter?: true;
 }
 
 export interface Scoreboard {
@@ -36,7 +40,11 @@ export function buildScoreboard(rows: readonly MetricRow[]): Scoreboard {
     if (!Number.isFinite(r.value))
       throw new RangeError(`scoreboard: ${r.key} is not finite (${r.value})`);
     if (Object.hasOwn(metrics, r.key)) throw new Error(`scoreboard: duplicate metric ${r.key}`);
-    metrics[r.key] = { value: round4(r.value), gated: r.gated };
+    metrics[r.key] = {
+      value: round4(r.value),
+      gated: r.gated,
+      ...(r.lowerIsBetter === true && { lowerIsBetter: true as const }),
+    };
   }
   return { version: 1, metrics };
 }
@@ -69,7 +77,7 @@ export interface MetricDelta {
 /**
  * Compare a run to a committed baseline, metric by metric.
  *
- * - `regressed`: the value fell (both sides are already rounded to 4 dp, so any fall is real).
+ * - `regressed`: the value fell, or ROSE for a `lowerIsBetter` cost metric (both sides are already rounded to 4 dp, so any fall is real).
  * - `new`: measured now, absent from the baseline (a reviewer adds it with `eval:update-baseline`).
  * - `not-run`: in the baseline, absent from this run, for example the Postgres leg on a machine with no
  *   database. It is REPORTED, never silently equal; it is not a regression because nothing was measured.
@@ -96,7 +104,10 @@ export function compareAgainstBaseline(current: Scoreboard, baseline: Scoreboard
       return { key, baseline: undefined, current: c.value, delta: undefined, status: "new", gated };
     }
     const delta = round4(c.value - b.value);
-    const status: DeltaStatus = delta < 0 ? "regressed" : delta > 0 ? "improved" : "unchanged";
+    // A cost metric regresses when it RISES.
+    const worse = c.lowerIsBetter === true || b.lowerIsBetter === true ? delta > 0 : delta < 0;
+    const better = c.lowerIsBetter === true || b.lowerIsBetter === true ? delta < 0 : delta > 0;
+    const status: DeltaStatus = worse ? "regressed" : better ? "improved" : "unchanged";
     return { key, baseline: b.value, current: c.value, delta, status, gated };
   });
 }

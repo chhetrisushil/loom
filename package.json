@@ -21,6 +21,7 @@
     "test:perf": "LOOM_TEST_PERF=1 turbo test --force",
     "eval": "pnpm --filter @loom/evals-internal run eval",
     "eval:update-baseline": "pnpm --filter @loom/evals-internal run eval:update-baseline",
+    "eval:record": "pnpm --filter @loom/evals-internal run eval:record",
     "test:e2e": "pnpm build && LOOM_TEST_E2E=1 pnpm --filter @loom/create-loom-app exec vitest run dayOne.e2e"
   },
   "devDependencies": {

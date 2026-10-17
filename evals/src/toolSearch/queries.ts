@@ -144,13 +144,13 @@ export const QUERIES: readonly ToolQuery[] = [
     id: "t26",
     kind: "plain",
     query: "sign the user out everywhere",
-    relevant: ["list_active_sessions", "revoke_access"],
+    relevant: ["revoke_access"],
   },
   {
     id: "t27",
     kind: "plain",
     query: "undo a bad release",
-    relevant: ["rollback_deployment", "cancel_deployment"],
+    relevant: ["rollback_deployment"],
   },
   {
     id: "t28",

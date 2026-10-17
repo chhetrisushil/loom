@@ -9,10 +9,18 @@
   "exclude": ["node_modules", "dist", "**/*.test.ts"],
   "references": [
     { "path": "../packages/agent" },
+    { "path": "../packages/classify" },
     { "path": "../packages/core" },
     { "path": "../packages/knowledge" },
     { "path": "../packages/memory" },
     { "path": "../plugins/postgres" },
-    { "path": "../plugins/sqlite" }
+    { "path": "../plugins/sqlite" },
+    { "path": "../packages/effect-runtime" },
+    { "path": "../tools/eval" },
+    { "path": "../packages/event-runtime" },
+    { "path": "../packages/llm" },
+    { "path": "../packages/middleware" },
+    { "path": "../packages/snapshot-runtime" },
+    { "path": "../packages/workflow-runtime" }
   ]
 }

@@ -1,0 +1,30 @@
+{
+  "req:3710db3bb38e789254acb2eea6cf4808": {
+    "content": "I need a tool for this",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "search_tools",
+        "input": {
+          "query": "slowest database queries"
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  },
+  "req:a06e331d57b599aee9d047e4184377d4": {
+    "content": "loaded; calling it",
+    "toolCalls": [
+      {
+        "id": "c1",
+        "name": "db_slow_queries",
+        "input": {}
+      }
+    ],
+    "stopReason": "tool_use"
+  },
+  "req:a44f650848235cc9daf990ecd6ad4f84": {
+    "content": "The slowest queries are select * from orders and select * from events.",
+    "stopReason": "end_turn"
+  }
+}

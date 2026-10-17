@@ -1,0 +1,26 @@
+{
+  "req:5b3d3c536ca9480832e5c12c3a75b7e4": {
+    "content": "The customer is Ada (pro plan) and she bought a desk lamp.",
+    "stopReason": "end_turn"
+  },
+  "req:7941e6020c21429f7e00621a12431ab0": {
+    "content": "fetching both at once",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "lookup_customer",
+        "input": {
+          "name": "Ada"
+        }
+      },
+      {
+        "id": "c1",
+        "name": "lookup_order",
+        "input": {
+          "order": 1042
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  }
+}

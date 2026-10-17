@@ -102,21 +102,45 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../packages/agent
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../packages/classify
       '@loom/core':
         specifier: workspace:*
         version: link:../packages/core
+      '@loom/effect-runtime':
+        specifier: workspace:*
+        version: link:../packages/effect-runtime
+      '@loom/eval':
+        specifier: workspace:*
+        version: link:../tools/eval
+      '@loom/event-runtime':
+        specifier: workspace:*
+        version: link:../packages/event-runtime
       '@loom/knowledge':
         specifier: workspace:*
         version: link:../packages/knowledge
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../packages/llm
       '@loom/memory':
         specifier: workspace:*
         version: link:../packages/memory
+      '@loom/middleware':
+        specifier: workspace:*
+        version: link:../packages/middleware
       '@loom/plugin-postgres':
         specifier: workspace:*
         version: link:../plugins/postgres
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../plugins/sqlite
+      '@loom/snapshot-runtime':
+        specifier: workspace:*
+        version: link:../packages/snapshot-runtime
+      '@loom/workflow-runtime':
+        specifier: workspace:*
+        version: link:../packages/workflow-runtime
       zod:
         specifier: ^3.23.8
         version: 3.25.76

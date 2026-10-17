@@ -1,0 +1,15 @@
+{
+  "req:32b862db07c796c6851ce2c9cec04d53": {
+    "content": "checking the refund budget",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "check_refund_budget",
+        "input": {
+          "orders": 50
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  }
+}

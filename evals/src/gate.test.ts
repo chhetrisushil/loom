@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { failingMetrics, toRows } from "./gate";
+import { exceedingMetrics, failingMetrics, toRows } from "./gate";
+
+describe("exceedingMetrics (ceilings for cost metrics)", () => {
+  it("names every metric above its ceiling and none at or below it", () => {
+    expect(exceedingMetrics({ a: 3, b: 4.1 }, { a: 3, b: 4 })).toEqual(["b"]);
+  });
+  it("a ceiling whose metric is not computed FAILS, named (missing)", () => {
+    expect(exceedingMetrics({}, { a: 1 })).toEqual(["a (missing)"]);
+  });
+  it("toRows gates a ceiling metric and flags it lowerIsBetter", () => {
+    expect(toRows("x", { a: 1, c: 2 }, { a: 0.5 }, { c: 3 })).toEqual([
+      { key: "x/a", value: 1, gated: true },
+      { key: "x/c", value: 2, gated: true, lowerIsBetter: true },
+    ]);
+  });
+});
 
 describe("failingMetrics", () => {
   it("names every metric below its floor and none at or above it", () => {

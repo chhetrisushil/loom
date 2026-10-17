@@ -1,0 +1,41 @@
+{
+  "req:22d549e3ac31fba3aa1950c4844e7493": {
+    "content": "still checking",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "lookup_order",
+        "input": {
+          "order": 1042
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  },
+  "req:4edcef083c044bb32e9b7f76f1a43375": {
+    "content": "still checking",
+    "toolCalls": [
+      {
+        "id": "c2",
+        "name": "lookup_order",
+        "input": {
+          "order": 1042
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  },
+  "req:539b8c8c189567febbcc7602889c84a8": {
+    "content": "still checking",
+    "toolCalls": [
+      {
+        "id": "c1",
+        "name": "lookup_order",
+        "input": {
+          "order": 1042
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  }
+}

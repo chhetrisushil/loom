@@ -15,6 +15,34 @@ labelled cases and fails when the score drops.
 | `src/retrieval/` | `MemoryStore.search` and `KnowledgeBase.retrieve` on EVERY backend: `InMemoryMemoryStore`, `SqliteMemoryStore`, `PostgresMemoryStore` | recall@5, nDCG@10 |
 | `src/skills/` | skill discovery (`discovery: "search"`), single index and two-ranker mode | hit@1, hit@3 |
 
+## Slice S2: `agentLoop$` tasks over cassettes (a model, replayed)
+
+| Area | Subject | Metrics |
+| --- | --- | --- |
+| `src/agentLoop/` | the real `agentLoop$` in a real `WorkflowRuntime` over 13 scripted tasks: single and parallel tool calls, a flaky tool (`isError` feedback, then recovery or an explanation), a refund parked on approval and resumed in a fresh runtime (approved and declined), a tool-search-first task, an answer with no tool, terminal quota and capability errors that must FAIL the run, and a step budget | task success rate (floor), mean steps and mean tool calls (ceilings) |
+
+**The cassettes are hand-authored today; no model was called.** The "model" is a script in `tasks.ts`; `pnpm eval:author`
+runs the real loop over it and stores each request/response pair as a `CassetteProvider` cassette. So S2 measures the
+loop's handling of model behaviour, NOT a model's quality (`src/agentLoop/PROVENANCE.md` says exactly what). Replay is
+deterministic, free, keyless and offline; a cassette miss is a `CassetteMissError`, never a live call.
+
+### Re-recording live, on demand only, with Gemini
+
+`pnpm eval:record` is the only code here that can reach a model. It is NOT wired to `pnpm eval`, `pnpm test`, turbo,
+`eval:update-baseline`, install or any hook, it refuses under `CI=true`, and without `--live` it is a dry run that lists
+the cassettes it would rewrite. It uses loom's own `GeminiProvider` (`@loom/llm`, the adapter behind the CLI's
+`--model gemini:<m>`); the key is read from `GEMINI_API_KEY` (else `GOOGLE_API_KEY`) and never printed; no model name
+is assumed.
+
+```sh
+pnpm eval:record                                                          # dry run
+pnpm eval:record --live --model gemini:<model-id> --task flaky-recover    # one task, spends real tokens
+LOOM_EVAL_RECORD_MODEL=gemini:<model-id> pnpm eval:record --live          # every task (about 3 calls each)
+```
+
+It writes cassettes only. Review the cassette diff, run `pnpm eval`, then `pnpm eval:update-baseline` if the scores
+moved on purpose (thresholds are a separate reviewed edit).
+
 ## A threshold is a tripwire, not a quality claim
 
 The datasets are small (about 30 to 50 cases each) and hand-written. A floor says "this did not get worse than the day it
@@ -26,7 +54,7 @@ file; raising is free.
 
 ```sh
 pnpm eval                    # measure everything, write evals/out/scoreboard.{json,md}, print the delta vs evals/baseline/
-pnpm eval:update-baseline    # rewrite evals/baseline/ (a reviewed diff)
+pnpm eval:update-baseline    # rewrite evals/baseline/ (a reviewed diff); refuses if the Postgres leg did not run, unless --allow-partial
 pnpm --filter @loom/evals-internal test   # the gates: scores against thresholds, plus every fail-proof
 ```
 

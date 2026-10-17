@@ -10,6 +10,29 @@ import {
   serializeScoreboard,
 } from "./scoreboard";
 
+describe("cost metrics (lowerIsBetter)", () => {
+  const cost = (v: number) =>
+    buildScoreboard([
+      { key: "a/y/meanSteps", value: v, gated: true, lowerIsBetter: true },
+      { key: "a/y/mrr", value: 0.5, gated: true },
+    ]);
+
+  it("a RISE is the regression and a fall is an improvement", () => {
+    const up = compareAgainstBaseline(cost(3), cost(2));
+    expect(up.find((d) => d.key === "a/y/meanSteps")?.status).toBe("regressed");
+    expect(regressions(up).map((d) => d.key)).toEqual(["a/y/meanSteps"]);
+    const down = compareAgainstBaseline(cost(1), cost(2));
+    expect(down.find((d) => d.key === "a/y/meanSteps")?.status).toBe("improved");
+    expect(regressions(down)).toEqual([]);
+  });
+
+  it("only cost rows carry the flag, so every other row serialises exactly as before", () => {
+    const json = serializeScoreboard(cost(2));
+    expect(json).toContain('"lowerIsBetter": true');
+    expect(json.match(/lowerIsBetter/g)).toHaveLength(1);
+  });
+});
+
 const rows = [
   { key: "b/x/recall@5", value: 0.91234567, gated: true },
   { key: "a/y/mrr", value: 0.5, gated: true },

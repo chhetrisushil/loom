@@ -15,8 +15,13 @@
      stuck worker") is NOT relevant.
   4. `kind: "stoplist"` queries are function-word heavy (ADR 0125 D15). `kind: "annotation"` queries use phrasing that
      appears only in a host annotation in `catalogue.ts`.
-- **Label edits after measurement:** none (see the report in the PR if this ever changes; each edit must be listed here
-  with its reason, and only for an objective labelling error, never to move a score).
+- **Label edits after measurement (post-review label corrections, S2 PR, 2026-10-17).** Two objective labelling errors
+  found in review (rule 3: a near-miss is NOT relevant); the relevant sets were narrowed and no threshold was lowered to
+  hide anything (the floors were re-derived as measured minus 0.02):
+  - `t26` "sign the user out everywhere": dropped `list_active_sessions` (it only LISTS sessions; it signs nobody out).
+  - `t27` "undo a bad release": dropped `cancel_deployment` (it stops a deployment in flight; it does not undo a shipped
+    release). Each edit must be listed here with its reason, and only for an objective labelling error, never to move a
+    score.
 - **Adding a case:** add the tool (and annotation) or query, label it from the descriptions first, re-run `pnpm eval`,
   and commit the new baseline with `pnpm eval:update-baseline`. A threshold change is a reviewed diff with a reason.
 - **Limits:** 48 queries over 72 tools is a tripwire for regression, not a claim about absolute quality.
