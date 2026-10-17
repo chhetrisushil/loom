@@ -12,6 +12,11 @@ import {
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 import type { ArchiveStores, WorkflowRuntime } from "@loom/workflow-runtime";
 import { CliError } from "./args";
+import { STORE_FLAG_HELP, hasStoreFlags, storeFlagsOf } from "./storeFlags";
+
+// The flag helpers live in ./storeFlags so the CLI front door can use them without loading this
+// module (which pulls the SQLite driver). Re-exported for existing importers.
+export { STORE_FLAG_HELP, hasStoreFlags, storeFlagsOf };
 
 // ── Where an operator command gets its storage ───────────────────────────────
 //
@@ -62,14 +67,6 @@ export interface StoreFlags {
   branches?: string;
   leases?: string;
 }
-
-/** True when the caller gave enough to resolve anything at all. */
-export function hasStoreFlags(flags: StoreFlags): boolean {
-  return flags.config !== undefined || flags.db !== undefined;
-}
-
-export const STORE_FLAG_HELP =
-  "pass --config <module> (your app's stores, any backend) or --db <events.db> (SQLite shorthand)";
 
 /**
  * Resolve the stores an operator command should read.
@@ -219,17 +216,6 @@ function fromSqlite(flags: StoreFlags): ResolvedStores {
       await branchRegistry?.close();
       await leaseStore?.close();
     },
-  };
-}
-
-/** Parsed CLI flags → the subset that decides where storage comes from. */
-export function storeFlagsOf(flags: Record<string, string | undefined>): StoreFlags {
-  return {
-    ...(flags.config !== undefined && { config: flags.config }),
-    ...(flags.db !== undefined && { db: flags.db }),
-    ...(flags.snap !== undefined && { snap: flags.snap }),
-    ...(flags.branches !== undefined && { branches: flags.branches }),
-    ...(flags.leases !== undefined && { leases: flags.leases }),
   };
 }
 

@@ -34,46 +34,43 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 ```text
 loom — project-local commands for a Loom app
 
+scaffold
   loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
   loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] scaffold a file
-  loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
-  loom plugin check [--dir .] [--publish]         validate a plugin (--publish adds npm-readiness)
-  loom plugin try --module <path> [--preset <name>] [--options <json>]  run a store plugin end-to-end
-  loom plugin search <term>                       find plugins on npm (keyword loom-plugin)
-  loom plugin seams                               list the seams a plugin can target
   loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
                                                   (--dry-run previews; --check typechecks after apply)
   loom appgen ... --model <spec> [--model-big <spec>]  plan with a model of your choice
                                                   (anthropic:<m> / openai:<m> / gemini:<m> / a .gguf path)
   loom appgen --from-spec <file> [--dir .]        replay a .loom/appgen/<ts>.spec.json (no model)
-  loom doctor [--dir .] [--config <module>] [--manifest <path>]  run every pre-flight check that
-                                                  can run, and report which ones could NOT
-  loom check --manifest <path>                    static flow-graph checks (compiler manifest)
-  loom lint claim-check [--dir .]                 CC-5: flag claim-check reach-through inside flows
-  loom verify --config <module> [--manifest <path>]  pre-flight runtime verification (@loom/verify)
+
+validate
+  loom doctor [--dir .] [--config <module>] [--manifest <path>] [--strict] [--require <check,check>] [--json]
+                                                  run every pre-flight check that can run, and report
+                                                  which ones could NOT (--strict: those fail; --require:
+                                                  the named ones must have run)
+  loom check --manifest <path> [--json]           static flow-graph checks (compiler manifest)
+  loom lint claim-check [--dir .] [--json]        CC-5: flag claim-check reach-through inside flows
+  loom verify --config <module> [--manifest <path>] [--json]  pre-flight runtime verification (@loom/verify)
                                                   (auto-reads loom-manifest.json loopIdentity findings, ADR 0061)
-  loom logs  <store> <executionId> [--redact a,b]  print the event timeline
-  loom profile <store> <executionId>              flame graph + latency breakdown
-  loom introspect <store> <executionId> [--graph N]  execution/task/decision/resource graphs
+  loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
+  loom compat --abi <v> --event-schema <v> [...] [--json]  validate a deployment's contract versions
+  loom eval  --dir <path> [--json]                replay golden logs vs expectations
+
+observe
+  loom logs  <store> <executionId> [--redact a,b] [--json]  print the event timeline (--json: ndjson)
+  loom debug <store> <executionId> [--at N] [--redact a,b] [--json]  time-travel: state at sequence N
+  loom profile <store> <executionId> [--json]     flame graph + latency breakdown
+  loom introspect <store> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
   loom optimize <store> <executionId>             advisory optimization report (recommendations)
+  loom census <store> [--buckets 5m,1h,6h,24h] [--json]  what is stuck, and is anything watching it
+                                                  (read-only; takes no predicate)
   loom learn report <store> [executionId]         trajectories, per-arm rewards, learning coverage
   loom learn eval <store> --policy <module> [--min-steps N] [executionId]
                                                   shadow-evaluate a candidate policy on real logs
-  loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]
-                                                  reconcile a directory into a corpus
-                                                  (dry run by default; --apply also REMOVES
-                                                   documents the directory no longer has —
-                                                   but never another writer's, see --source)
-  loom knowledge list --config <mod> --scope <s>  what the corpus holds
-  loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]
-                                                  ask the corpus (operator query — not recorded)
-  loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
-  loom compat --abi <v> --event-schema <v> [...]  validate a deployment's contract versions
-  loom debug <store> <executionId> [--at N] [--redact a,b]   time-travel: state at sequence N
-  loom eval  --dir <path>                         replay golden logs vs expectations
-  loom deploy check --logs <dir> --config <mod>   simulate deploy vs new flow defs
-  loom census <store> [--buckets 5m,1h,6h,24h]    what is stuck, and is anything watching it
-                                                  (read-only; takes no predicate)
+  loom compliance report <store> --subject-path <p> [--tenant-path <p>]  data-subject inventory
+  loom inspect <store> [--port N]                 web inspector (timeline + slider)
+
+operate
   loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]
                                                   re-drive executions whose supervisor died
                                                   (--max-recoveries: skip + list those whose
@@ -85,6 +82,16 @@ loom — project-local commands for a Loom app
                                                   (they keep the parent uncollectable)
   loom branches prune <store> [--protect main,rel] [--limit N] [--apply]
                                                   delete refs that name nothing (main protected)
+  loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]
+                                                  reconcile a directory into a corpus
+                                                  (dry run by default; --apply also REMOVES
+                                                   documents the directory no longer has —
+                                                   but never another writer's, see --source)
+  loom knowledge list --config <mod> --scope <s>  what the corpus holds
+  loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]
+                                                  ask the corpus (operator query — not recorded)
+
+maintain
   loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]
                                                   re-home what the pre-0106 compaction bug
                                                   wrote to execution "" (ADR 0107): proven
@@ -104,8 +111,22 @@ loom — project-local commands for a Loom app
                                                    every archive; with --apply and no archive
                                                    it refuses unless --no-archive;
                                                    it also needs --snapshots-touch-content)
-  loom compliance report <store> --subject-path <p> [--tenant-path <p>]  data-subject inventory
-  loom inspect <store> [--port N]                 web inspector (timeline + slider)
+
+plugin
+  loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
+  loom plugin check [--dir .] [--publish]         validate a plugin (--publish adds npm-readiness)
+  loom plugin try --module <path> [--preset <name>] [--options <json>]  run a store plugin end-to-end
+  loom plugin search <term>                       find plugins on npm (keyword loom-plugin)
+  loom plugin seams                               list the seams a plugin can target
+
+deploy
+  loom deploy check --logs <dir> --config <module>  simulate deploy vs new flow defs
+
+help
+  loom help [command]                             this summary, or one command's usage
+  loom <command> --help                           same as `loom help <command>`
+  loom version                                    print the @loom/cli version (also --version)
+  loom completion <zsh|bash|fish>                 print a shell completion script
 
   <store>  where a command reads storage. Either half works for every command above:
     --config <module>    the stores YOUR app wired (defineConfig) — SQLite, Postgres, or any
@@ -122,7 +143,39 @@ New project?  →  create-loom-app <dir> --loom-path <loom>   (unpublished: see 
 > `retention run`, `sweep content` (both dry-run by default, `--apply` to reclaim) and
 > `compliance report` (subject inventory) sweep the store via the `listExecutions` SPI.
 
-There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new` and `.` elsewhere), and `--at <N>` (a sequence number). An unknown command prints the usage to stderr and exits `2`.
+There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new` and `.` elsewhere), and `--at <N>` (a sequence number). An unknown command prints a one-line error with a did-you-mean (`unknown command "logz" (did you mean "logs"?) — see \`loom help\``) to stderr and exits `2`; it no longer dumps the whole usage.
+
+### Help, version, completion
+
+- `loom help` prints the grouped summary above (scaffold · validate · observe · operate · maintain · plugin · deploy).
+- `loom <command> --help`, `loom <command> -h` and `loom help <command>` print **that command's** summary, synopsis lines and flags (exit `0`) — the text comes from the same command table the strict flag parser uses, so it cannot name a flag the command rejects.
+- `loom version` / `loom --version` prints the `@loom/cli` package version.
+- `loom completion zsh|bash|fish` prints a completion script generated from the command table (commands, subcommands, flags): `eval "$(loom completion bash)"`, `loom completion zsh > "${fpath[1]}/_loom"`, or `loom completion fish > ~/.config/fish/completions/loom.fish`.
+
+`loom help`, `loom --version` and `loom completion` load none of the command implementations (each command's modules are imported when it runs), so they answer in roughly node's own startup time.
+
+### Machine output: `--json`
+
+`--json` is accepted by the commands that report a result: `logs`, `debug`, `census`, `doctor`, `check`, `verify`, `eval`, `lint claim-check`, `compat`, `profile`, `introspect` and `kernel-manifest`. Any other command rejects it as an unknown flag (exit `2`) rather than ignoring it.
+
+- **stdout is exactly the JSON** — one document (pretty-printed), or **ndjson** for `logs` (one event envelope per line). Banners and progress lines are diverted to stderr for the run.
+- Verdict commands put `ok` first-class: `{ "ok": boolean, … }`. The **exit code is unchanged** (`0` / `1` / `2`), so `loom doctor --json | jq .ok` and `loom doctor` agree.
+- **Errors** (including refusals and bad usage) go to **stderr** as `{"error":{"code":<exit code>,"message":"…"}}`; stdout is empty.
+
+| Command | `--json` shape |
+|---|---|
+| `logs` | ndjson: one event envelope per line (`--redact` masks the same dot-paths in the payload) |
+| `debug` | `{ ok, executionId, at?, eventCount, state }` |
+| `census` | `{ ok, census, note? }` |
+| `doctor` | `{ ok, checks: [{ id, name, status, detail }] }` |
+| `check` | `{ ok, issues }` |
+| `verify` | the verification report (`ok`, `findings`, `checked`, …) plus `banner?` |
+| `eval` | `{ ok, passed, failed, results }` |
+| `lint claim-check` | `{ ok, findings }` |
+| `compat` | the compatibility report (`ok`, `issues`) |
+| `profile` | `{ ok, profile }` |
+| `introspect` | `{ ok, introspection }` (`--graph` keeps only that key) |
+| `kernel-manifest` | the kernel manifest itself (unchanged) |
 
 **Flags are checked strictly.** Each command declares the flags it takes, and what kind each is:
 
@@ -292,7 +345,7 @@ Planning runs through a cheap-first elevation ladder (`--model-big <spec>` names
 
 Three static gates, in increasing order of what they need: `check` reads only a compiler manifest, `verify` loads your built config, `lint` reads source files. `loom doctor` is the front door that runs whichever of the three it can find inputs for — start there.
 
-### `loom doctor [--dir .] [--config <module>] [--manifest <path>]`
+### `loom doctor [--dir .] [--config <module>] [--manifest <path>] [--strict] [--require <check,check>] [--json]`
 
 Runs every pre-flight check whose input it can discover, and **reports the ones it could not run and why**. It adds no checking capability of its own; it exists because three commands with three different inputs meant a developer had to know all three existed before running one.
 
@@ -346,7 +399,14 @@ Four statuses, and the distinctions are the point:
 | `–` | **skipped** — the input it needs was not there | no |
 | `!` | **advisory** — it ran, and what it found matters *depending on how you deploy* | no |
 
-A **skipped check never fails the run**, but it never reads as a pass either: `all checks passed` and `passed, but 1 could not run — coverage is partial` are deliberately different strings, so a green `doctor` can't be cited as evidence for a check that never ran.
+Two flags turn "could not run" into a gate. **`--strict`** makes every skipped check a failure (exit `1`, detail prefixed `could not run (--strict)`). **`--require <id,id>`** fails only if the named checks did not run; an unknown id is exit `2`. The ids are `flow-graph`, `verify`, `memory-store`, `timers`, `timer-ownership`, `heartbeat-leases`, `encryption-keys`, `plaintext-snapshot`, `archive-snapshot`, `claim-check` (also the `id` in `--json`).
+
+```bash
+loom doctor --config dist/loom.config.js --require verify,timers   # CI: these two must have run
+loom doctor --strict --config dist/loom.config.js                  # CI: nothing may be skipped
+```
+
+Without either flag, a **skipped check never fails the run**, but it never reads as a pass either: `all checks passed` and `passed, but 1 could not run — coverage is partial` are deliberately different strings, so a green `doctor` can't be cited as evidence for a check that never ran.
 
 An **advisory** is the other half of that honesty. "A TimerStore with no lease store" is a defect on a multi-node deployment and completely fine on one node, and `doctor` cannot see how many nodes you run — so it reports the fact, names the consequence, and leaves the judgement with you rather than failing your build on a guess or staying silent. Advisories are counted in the summary for the same reason skips are.
 
@@ -1048,7 +1108,7 @@ Three exit codes, consistent across commands:
 |---|---|---|
 | `0` | it ran and the answer is fine | a clean `check`, a dry run, a `logs` of a real execution |
 | `1` | a **verdict failed**, or the thing you named **does not exist / could not run** | `doctor`/`check`/`verify`/`lint`/`eval`/`deploy check`/`compat`/`learn eval`/`plugin check`/`plugin try` finding a problem; a `--db`/`--snap`/`--content`/`--archive-*` path that is missing or is not a SQLite database (nothing is created or opened); an unknown execution id (not found is a runtime failure, not a usage error); `loom new` / `loom plugin new` that wrote nothing because everything "skipped … (already exists)" |
-| `2` | **bad usage or a refusal** — the command declined to act, and changed nothing. Everything refused for bad usage is `2`, in `create-loom-app` too | an unknown command, subcommand or flag (`--help`/`-h` included: per-command help is not available, use `loom help`); a value flag given twice; a missing `<directory>`; a missing required flag or positional; a malformed number/duration; `retention run` without `--ttl` or a snapshot store; `recover` with neither `timers.leases` nor `--stale`; `recover --apply` without `--config`; `introspect --graph bogus`; `repair`/`branches` preconditions |
+| `2` | **bad usage or a refusal** — the command declined to act, and changed nothing. Everything refused for bad usage is `2`, in `create-loom-app` too | an unknown command, subcommand or flag (`loom <command> --help` is not an error: it prints that command's help and exits `0`); a value flag given twice; a missing `<directory>`; a missing required flag or positional; a malformed number/duration; `retention run` without `--ttl` or a snapshot store; `recover` with neither `timers.leases` nor `--stale`; `recover --apply` without `--config`; `introspect --graph bogus`; `repair`/`branches` preconditions |
 
 A script can therefore tell a refused `recover --apply` from a successful one. (Before this table, several refusals printed their reason and exited `0`, and the unknown-subcommand cases of `branches`/`repair`/`plugin` exited `1`; only `learn` returned `2`.) `doctor` fails only on a failing check, never on a skipped one. Reports go to stdout, errors to stderr. That makes the gates drop straight into CI:
 

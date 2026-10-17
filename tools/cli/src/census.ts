@@ -75,6 +75,14 @@ export function renderCensus(census: OrphanCensus, coverageNote?: string): strin
 export async function cmdCensus(
   flags: StoreFlags & { buckets?: string; sampleSize?: number } = {}
 ): Promise<string> {
+  const { census, note } = await censusReport(flags);
+  return renderCensus(census, note);
+}
+
+/** The structured census (`loom census --json`): the report plus the coverage note, if any. */
+export async function censusReport(
+  flags: StoreFlags & { buckets?: string; sampleSize?: number } = {}
+): Promise<{ census: OrphanCensus; note: string | undefined }> {
   const stores = await resolveStores(flags);
   const events = stores.eventStore;
   const leases = stores.leaseStore;
@@ -104,7 +112,7 @@ export async function cmdCensus(
       ...(flags.buckets !== undefined && { buckets: parseBuckets(flags.buckets) }),
       ...(flags.sampleSize !== undefined && { sampleSize: flags.sampleSize }),
     });
-    return renderCensus(census, coverageNote(stores.origin, leases !== undefined));
+    return { census, note: coverageNote(stores.origin, leases !== undefined) };
   } finally {
     await stores.close();
   }

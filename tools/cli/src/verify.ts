@@ -121,7 +121,7 @@ function resolveManifestPath(configPath: string, manifestPath?: string): string 
 export async function cmdVerify(
   configPath: string,
   manifestPath?: string
-): Promise<{ text: string; result: VerificationReport }> {
+): Promise<{ text: string; result: VerificationReport; banner: string }> {
   const mod = (await loadModuleForVerify(configPath)) as {
     default?: unknown;
     app?: unknown;
@@ -169,5 +169,5 @@ export async function cmdVerify(
   const report = app.verify(lint !== undefined ? { lint } : undefined);
   const text = banner + formatReport(report);
   await app.close?.();
-  return { text, result: report };
+  return { text, result: report, banner };
 }
