@@ -355,14 +355,14 @@ describe("a --dir inside the cwd is never trusted as a containment root", () => 
     expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
   });
 
-  it("an absolute --dir OUTSIDE the cwd that is itself a link is allowed (you named it): documented policy", async () => {
+  it("an absolute --dir OUTSIDE the cwd that is itself a link is now REFUSED (policy: final component never a link)", async () => {
     const { repo, outside, base } = clonedRepo();
     rmSync(join(outside, "loom.gen.ts"));
     const named = join(base, "named-link");
     symlinkSync(outside, named);
     const code = await inCwd(repo, () => run(["gen", "--dir", named]));
-    expect(code).toBe(0);
-    expect(existsSync(join(outside, "loom.gen.ts"))).toBe(true);
+    expect(code).not.toBe(0);
+    expect(existsSync(join(outside, "loom.gen.ts"))).toBe(false);
   });
 
   it("a real directory inside the cwd works, with and without a cwd that is itself a link", async () => {
@@ -492,26 +492,32 @@ describe("--dir is classified by REAL path, never by spelling", () => {
     expect(existsSync(join(proj, "real", "loom.gen.ts"))).toBe(true);
   });
 
-  it("a --dir truly outside the cwd (a sibling) that is itself a link is allowed: documented policy", async () => {
+  it("a --dir truly outside the cwd (a sibling) that is itself a link is REFUSED; its real path works", async () => {
     const { base, proj, outside } = fixture();
     rmSync(join(outside, "loom.gen.ts"), { force: true });
     symlinkSync(outside, join(base, "named"));
     await inCwd(proj, async () => {
-      expect(await run(["gen", "--dir", join(base, "named")])).toBe(0);
-      expect(await run(["gen", "--dir", "../named"])).toBe(0);
+      expect(await run(["gen", "--dir", join(base, "named")])).not.toBe(0);
+      expect(await run(["gen", "--dir", "../named"])).not.toBe(0);
+      expect(existsSync(join(outside, "loom.gen.ts"))).toBe(false);
+      expect(await run(["gen", "--dir", "../outside"])).toBe(0);
     });
     expect(existsSync(join(outside, "loom.gen.ts"))).toBe(true);
   });
 
-  it("containmentRootFor: by real path, in the spelling dir used; sibling stays its own root", () => {
+  it("containmentRootFor: by real path, in the spelling dir used; a link as final component throws", () => {
     const { base, proj } = fixture();
-    expect(containmentRootFor(join(base, "logical", "app"), proj)).toBe(join(base, "logical"));
-    expect(containmentRootFor(join(base, "alias", "proj", "app"), proj)).toBe(
+    mkdirSync(join(proj, "real"));
+    expect(containmentRootFor(join(base, "logical", "real"), proj)).toBe(join(base, "logical"));
+    expect(containmentRootFor(join(base, "alias", "proj", "real"), proj)).toBe(
       join(base, "alias", "proj")
     );
-    expect(containmentRootFor("app", proj)).toBe(proj);
-    expect(containmentRootFor(join(base, "named"), proj)).toBe(join(base, "named"));
+    expect(containmentRootFor("real", proj)).toBe(proj);
+    expect(containmentRootFor(join(base, "outside"), proj)).toBe(join(base, "outside"));
     expect(containmentRootFor("not/yet/created", proj)).toBe(proj);
+    expect(() => containmentRootFor("app", proj)).toThrow(/symbolic link/);
+    expect(() => containmentRootFor(join(base, "logical", "app"), proj)).toThrow(/symbolic link/);
+    expect(() => containmentRootFor(join(base, "named"), proj)).not.toThrow(); // absent here
   });
 });
 
@@ -554,5 +560,101 @@ describe("the same exposure in the other project-root writers", () => {
       /symbolic link/
     );
     expect(readdirSync(outside)).toEqual([]);
+  });
+});
+
+describe("case and Unicode-normalisation spellings of the cwd are the cwd (native real path)", () => {
+  function build(name: string) {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "loom-symlink-")));
+    made.push(base);
+    const proj = join(base, name);
+    const outside = join(base, "victim");
+    mkdirSync(proj);
+    mkdirSync(join(outside, "flows"), { recursive: true });
+    symlinkSync(outside, join(proj, "app"));
+    return { base, proj, outside, s: sentinel(outside, "loom.gen.ts") };
+  }
+  async function inCwd<T>(cwd: string, fn: () => Promise<T>): Promise<T> {
+    const prev = process.cwd();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.chdir(cwd);
+    try {
+      return await fn();
+    } finally {
+      process.chdir(prev);
+      log.mockRestore();
+      err.mockRestore();
+    }
+  }
+  const caseInsensitive = (() => {
+    const d = mkdtempSync(join(tmpdir(), "loom-case-"));
+    try {
+      mkdirSync(join(d, "abc"));
+      return existsSync(join(d, "ABC"));
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  })();
+  const CASE_REASON = "temp FS is case-sensitive: case-variant spellings cannot be exercised";
+  const NFC = "caf\u00e9";
+  const NFD = "cafe\u0301";
+  const normInsensitive = (() => {
+    const d = mkdtempSync(join(tmpdir(), "loom-nf-"));
+    try {
+      mkdirSync(join(d, NFC));
+      return existsSync(join(d, NFD));
+    } finally {
+      rmSync(d, { recursive: true, force: true });
+    }
+  })();
+
+  it.runIf(caseInsensitive)(
+    "`../PROJ/app`, `../Proj/app`, `<abs>/PROJ/app` refuse `app -> victim` (CLI + library)",
+    async () => {
+      const { base, proj, outside, s } = build("proj");
+      const other = join(base, "other");
+      mkdirSync(other);
+      await inCwd(proj, async () => {
+        for (const d of ["../PROJ/app", "../Proj/app", join(base, "PROJ", "app")]) {
+          expect(await run(["gen", "--dir", d])).not.toBe(0);
+          expect(await run(["new", "flow", "pwn", "--dir", d])).not.toBe(0);
+          expect(() => cmdGen(d)).toThrow(/symbolic link/);
+          expect(() => cmdNew("flow", "pwn", d)).toThrow(/symbolic link/);
+        }
+      });
+      s.unchanged();
+      expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
+    }
+  );
+
+  it.runIf(caseInsensitive)("a real dir through a miscased spelling still works", async () => {
+    const { base, proj } = build("proj");
+    mkdirSync(join(proj, "real", "flows"), { recursive: true });
+    await inCwd(proj, async () => {
+      expect(await run(["gen", "--dir", join(base, "PROJ", "real")])).toBe(0);
+    });
+    expect(existsSync(join(proj, "real", "loom.gen.ts"))).toBe(true);
+  });
+
+  it.runIf(normInsensitive)(
+    "an NFD-spelled ancestor of an NFC-named cwd refuses `app -> victim`",
+    async () => {
+      const { base, proj, outside, s } = build(NFC);
+      await inCwd(proj, async () => {
+        const d = join(base, NFD, "app");
+        expect(await run(["gen", "--dir", d])).not.toBe(0);
+        expect(() => cmdGen(d)).toThrow(/symbolic link/);
+        expect(() => cmdNew("flow", "pwn", d)).toThrow(/symbolic link/);
+      });
+      s.unchanged();
+      expect(readdirSync(outside).sort()).toEqual(["flows", "loom.gen.ts"]);
+    }
+  );
+
+  it("(reason) skips are explicit when the temp FS distinguishes the spellings", () => {
+    if (!caseInsensitive) console.log(`SKIP case tests: ${CASE_REASON}`);
+    if (!normInsensitive) console.log("SKIP NFD tests: temp FS distinguishes NFC/NFD spellings");
+    expect(true).toBe(true);
   });
 });
