@@ -298,6 +298,26 @@ describe("wiresConformance", () => {
       expect(jsx("const a = <p>don't</p>; const s = `runEventStoreConformance(x)`;")).toBe(false);
       expect(jsx("const a = <p>don't</p>; /* runEventStoreConformance(x) */")).toBe(false);
     });
+    it("a backtick PAIR in JSX text is text on both sides (no template swallows the rest)", () => {
+      expect(jsx("const a = <p>`it's`</p>; runEventStoreConformance(x)")).toBe(true);
+      expect(jsx("const a = <p>`a` and `b`</p>;\nrunEventStoreConformance(x)")).toBe(true);
+      expect(jsx("const a = <p>`{n}`</p>; runEventStoreConformance(x)")).toBe(true);
+      // ...but a template in an expression inside that text is still a template.
+      expect(jsx("const a = <p>`{`runEventStoreConformance(x)`}`</p>;")).toBe(false);
+      // and after the text run ends, a real template is a template again.
+      expect(jsx("const a = <p>`q`</p>; const s = `runEventStoreConformance(x)`;")).toBe(false);
+    });
+    it("a long opening tag (more than 64 tokens) is still seen as a tag", () => {
+      const attrs = Array.from({ length: 80 }, (_, i) => `a${i}="v" `).join("");
+      expect(jsx(`const a = <p ${attrs}>\`it's\`</p>; runEventStoreConformance(x)`)).toBe(true);
+      expect(jsx(`const a = <p ${attrs}>\`q</p>; runEventStoreConformance(x)`)).toBe(true);
+    });
+    it("a TSX generic arrow's trailing `>` + template is a template, not JSX text", () => {
+      expect(jsx("const f = <T,>(x: T) => x>`runEventStoreConformance(x)`;")).toBe(false);
+      expect(jsx("const f = <T extends object>(x: T) => x>`runEventStoreConformance(x)`;")).toBe(
+        false
+      );
+    });
     it("never throws and stays linear on a pile of unbalanced quotes", () => {
       const junk = "<p>it's `x \"y</p>\n".repeat(20000);
       expect(jsx(junk)).toBe(false);

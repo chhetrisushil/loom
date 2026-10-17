@@ -51,6 +51,25 @@ describe("per-command help comes from the command table", () => {
     expect(missing).toEqual([]);
   });
 
+  it("a command whose handler refuses a missing extra store names that flag in EVERY usage line", () => {
+    // `branches` needs a branch registry, `repair` a snapshot store, `recover` lease evidence: a
+    // `<store-flags>` line alone reads as "any store works" and the refusal is then a surprise.
+    const required: Record<string, string> = {
+      branches: "branches",
+      repair: "snap",
+      recover: "stale",
+    };
+    const offenders: string[] = [];
+    for (const [name, flag] of Object.entries(required)) {
+      const lines = COMMANDS[name]!.usage;
+      expect(lines.length).toBeGreaterThan(0);
+      for (const line of lines)
+        if (!new RegExp(`--${flag}(?![\\w-])`).test(line)) offenders.push(line);
+      expect(commandHelp(name)).toContain(`--${flag}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it("the store is never a positional in usage: `<store>` is banned, `<store-flags>` only where --config/--db parse", () => {
     // The store is given with FLAGS (`--db`, `--config`, ...). A bare `<store>` reads as a positional
     // path, and `loom logs events.db <id>` then takes the path for the execution id.

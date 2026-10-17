@@ -110,28 +110,6 @@ function followsKeyword(src: string, quote: number): boolean {
 }
 
 /**
- * Do the tokens so far end inside an opening JSX tag (`<div className="x"` just before its `>`)?
- * Walks back (bounded, stopping at `;`) to a `<` that starts an expression, i.e. is not a
- * comparison or the generic of `f<T>`, and is followed by a tag name or `>` (a fragment).
- */
-function inJsxTag(toks: Tok[]): boolean {
-  for (let k = toks.length - 1, steps = 0; k >= 0 && steps < 64; k--, steps++) {
-    const t = toks[k] as Tok;
-    if (t.k === "p" && t.v === ";") return false;
-    if (t.k !== "p" || t.v !== "<") continue;
-    const before = toks[k - 1];
-    const after = toks[k + 1];
-    const exprStart =
-      before === undefined ||
-      (before.k === "p"
-        ? before.v !== ")" && before.v !== "]"
-        : before.k === "id" && REGEX_AFTER_WORD.has(before.v));
-    if (exprStart && (after?.k === "id" || (after?.k === "p" && after.v === ">"))) return true;
-  }
-  return false;
-}
-
-/**
  * A small LINEAR tokenizer, not a parser: identifiers, strings (text kept), single punctuation
  * characters. Comments, regex literals and template text are dropped, but a template's `${ … }`
  * body is scanned as code (so a call inside it still counts) and a regex containing a quote or a
@@ -146,6 +124,44 @@ function tokenize(src: string, jsx = false): Tok[] {
   let i = 0;
   let depth = 0; // `{` nesting, for matching the `}` that closes a template's `${`
   const tmpl: number[] = []; // depths at which a `${` is open
+
+  // Do the tokens so far end inside (or just after) an opening JSX tag (`<div className="x"` just
+  // before its `>`)? Tracks, incrementally and in amortised O(1) per token (so a tag of any length
+  // is seen, never a bounded lookback), the latest `<` that starts an expression (not a comparison
+  // or the generic of `f<T>`) and is followed by a tag name or `>` (a fragment). A `;` forgets it.
+  // `<T,>(x) => ...` and `<T extends U>(x) => ...` are TSX generic arrows, not tags.
+  let scanned = 0;
+  let lastTag = -1;
+  const isExprLt = (c: number): boolean => {
+    const lt = toks[c];
+    if (lt === undefined || lt.k !== "p" || lt.v !== "<") return false;
+    const before = toks[c - 1];
+    return (
+      before === undefined ||
+      (before.k === "p"
+        ? before.v !== ")" && before.v !== "]"
+        : before.k === "id" && REGEX_AFTER_WORD.has(before.v))
+    );
+  };
+  const inJsxTag = (): boolean => {
+    for (; scanned < toks.length; scanned++) {
+      const k = scanned;
+      const cur = toks[k] as Tok;
+      if (cur.k === "p" && cur.v === ";") {
+        lastTag = -1;
+        continue;
+      }
+      if (k >= 1 && isExprLt(k - 1) && cur.k === "p" && cur.v === ">") lastTag = k - 1;
+      else if (k >= 2 && isExprLt(k - 2) && (toks[k - 1] as Tok).k === "id") {
+        const generic = (cur.k === "p" && cur.v === ",") || (cur.k === "id" && cur.v === "extends");
+        if (!generic) lastTag = k - 2;
+      }
+    }
+    return lastTag >= 0;
+  };
+  // A backtick that opened JSX text (at `{` depth `jsxTextDepth`): every later backtick at that
+  // depth, up to the next `<`, is text too (`<p>`it's`</p>`), never the start of a template.
+  let jsxTextDepth = -1;
 
   const regexAllowed = (): boolean => {
     const t = toks[toks.length - 1];
@@ -193,8 +209,11 @@ function tokenize(src: string, jsx = false): Tok[] {
       // `it's` in JSX text: an apostrophe, never a string opener (valid code has no `a'b'`) —
       // except right after a keyword (`from"@loom/conformance"`, `case"a"`), which IS code.
       i++;
-    } else if (jsx && c === "`" && src[i - 1] === ">" && src[i - 2] !== "=" && inJsxTag(toks)) {
+    } else if (jsx && c === "`" && jsxTextDepth === depth) {
+      i++; // a later backtick of the same JSX text run (the closing one, or a second pair)
+    } else if (jsx && c === "`" && src[i - 1] === ">" && src[i - 2] !== "=" && inJsxTag()) {
       i++; // a backtick opening JSX text (not `=>` + template, nor `a>` + template)
+      jsxTextDepth = depth;
     } else if (c === '"' || c === "'") {
       let v = "";
       const open = i;
@@ -248,6 +267,7 @@ function tokenize(src: string, jsx = false): Tok[] {
       i = j;
     } else {
       i++;
+      if (c === "<") jsxTextDepth = -1; // the text run ended at the next tag
       if (c === "{") depth++;
       else if (c === "}") {
         depth--;
