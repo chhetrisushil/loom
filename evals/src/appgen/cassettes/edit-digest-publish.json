@@ -1,5 +1,5 @@
 {
-  "req:65279d3fb9d0f62146c860d2ef7fd7bc": {
+  "req:07e435c9d4810abb6e5bffedec2b0854": {
     "content": "{\"name\":\"digest\",\"capabilities\":[{\"id\":\"digest\",\"name\":\"Digest\",\"intent\":\"Publish the summary behind an approval gate and a status UI.\",\"op\":\"extend\",\"steps\":[{\"id\":\"publish-summary\",\"op\":\"create\"}],\"addApproval\":true,\"addUi\":true}]}",
     "stopReason": "end_turn"
   }

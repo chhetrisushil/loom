@@ -30,13 +30,13 @@ export interface AppgenCase {
   readonly script: Script;
 }
 
-type Op = "create" | "extend" | "modify";
+type Op = "create" | "extend" | "modify" | "delete";
 interface Cap {
   id: string;
   name: string;
   intent: string;
   op: Op;
-  steps: { id: string; op: "create" | "modify" }[];
+  steps: { id: string; op: "create" | "modify" | "delete" }[];
   addApproval?: true;
   addUi?: true;
 }
@@ -274,16 +274,16 @@ export const APPGEN_CASES: readonly AppgenCase[] = [
     fixture: "support-desk",
     intent: "Remove the digest flow.",
     expected: { present: [], absent: ["flow:digest"] },
-    // The planner prompt and schema (`@loom/appgen-model`) offer create / extend / modify only: there is no way to
-    // say "delete", so a sensible model that follows the prompt answers with a no-op extend. PROVENANCE.md records
-    // this as a measured gap of the model arm (the deterministic arm does handle `remove <flow>`).
+    // The planner prompt and schema (`@loom/appgen-model`) offer `delete` (it used to offer create / extend / modify
+    // only, a measured gap the first S3 run recorded), so the scripted model answers with a flow-level delete,
+    // exactly the ChangeSpec the deterministic arm produces for `remove <flow>`.
     script: turns(
       reply("digest", [
         cap({
           id: "digest",
           name: "Digest",
           intent: "Remove the digest flow.",
-          op: "extend",
+          op: "delete",
           steps: [],
         }),
       ])

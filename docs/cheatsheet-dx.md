@@ -159,7 +159,7 @@ Seams: `store` · `dispatcher` · `telemetry` · `middleware` · `timer` · `lea
 ## Generating an app from intent
 
 ```bash
-loom appgen "<intent>" [--dir .] [--dry-run] [--check] [--yes] [--offline]   # --yes skips the confirm prompt
+loom appgen "<intent>" [--dir .] [--dry-run] [--check] [--yes] [--offline]   # --yes skips the confirm prompt; a plan that deletes a flow/step (either planner) always asks, and without a TTY needs --yes
 loom appgen --from <file> [...]                       # read the intent from a file
 loom appgen "<intent>" --model gemini:<m>   # or anthropic:<m> | openai:<m> | a .gguf path; [--model-big] [--model-tier]
 loom appgen --from-spec .loom/appgen/<ts>.spec.json   # replay, no model

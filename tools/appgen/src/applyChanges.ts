@@ -28,6 +28,8 @@ export interface PlanEdit {
   before: string;
   after: string;
   notes: string[];
+  /** Step ids this edit REMOVES from the flow file (destructive; listed in the confirm prompt). */
+  deletedSteps?: string[];
 }
 
 export interface PlanSkip {
@@ -129,10 +131,12 @@ export function applyChanges(changeSpec: ChangeSpec, appModel: AppModel): FilePl
     const abs = path.join(appModel.root, flow.file);
     const before = fs.readFileSync(abs, "utf8");
     const editor = new FlowEditor(before, flow.file);
+    const deletedSteps: string[] = [];
     for (const step of cap.steps) {
       if (step.op === "create") editor.addStep(step.id);
-      else if (step.op === "delete") editor.removeStep(step.id);
-      else if (step.op === "modify") {
+      else if (step.op === "delete") {
+        if (editor.removeStep(step.id)) deletedSteps.push(step.id);
+      } else if (step.op === "modify") {
         editor.notes.push(
           `step "${step.id}" marked modify — appgen doesn't rewrite handler bodies; edit ${flow.file} yourself`
         );
@@ -142,7 +146,13 @@ export function applyChanges(changeSpec: ChangeSpec, appModel: AppModel): FilePl
     if (cap.addUi === true) editor.ensureUi();
 
     if (editor.changed()) {
-      edits.push({ path: flow.file, before, after: editor.toString(), notes: editor.notes });
+      edits.push({
+        path: flow.file,
+        before,
+        after: editor.toString(),
+        notes: editor.notes,
+        ...(deletedSteps.length > 0 && { deletedSteps }),
+      });
     } else {
       skips.push({ path: flow.file, reason: editor.notes.join("; ") || "no changes needed" });
     }

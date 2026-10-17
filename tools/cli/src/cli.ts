@@ -921,7 +921,7 @@ async function dispatch(
       throw new UsageError("usage: loom plugin <new|check|try|search|seams> … (see `loom help`)");
     }
     case "appgen": {
-      const { cmdAppgen, plannerTag, renderPlan } = await import("./appgen");
+      const { cmdAppgen, planDeletions, plannerTag, renderPlan } = await import("./appgen");
       // For appgen, `dir` is the PROJECT ROOT (scaffold paths are already `app/…`-relative):
       // a new dir gets a full project; an existing app gets flows + surgical edits.
       const dir = flags.dir ?? ".";
@@ -953,6 +953,11 @@ async function dispatch(
       const intent = fromSpec !== undefined ? "" : resolveIntent(flags, positionals);
       // On a TTY (and not `--yes`/`--dry-run`), show the plan and ask before writing.
       const interactive = flags.yes !== "true" && !dryRun && process.stdin.isTTY === true;
+      // A deletion (a flow, or a step cut out of one) is never applied unattended: with no TTY
+      // to ask and no `--yes`, a plan that deletes anything is refused - whichever planner
+      // (deterministic or model) produced it. Plans without deletions are unaffected.
+      let refusedDeletes = false;
+      const guardDeletes = flags.yes !== "true" && !dryRun && !interactive;
       const r = await cmdAppgen({
         intent,
         dir,
@@ -963,6 +968,17 @@ async function dispatch(
         ...(fromSpec !== undefined && { fromSpec }),
         ...(interactive && {
           confirm: (plan, planner, elevations) => confirmPlan(plan, dir, planner, elevations),
+        }),
+        ...(guardDeletes && {
+          confirm: async (plan) => {
+            const removals = planDeletions(plan);
+            if (removals.length === 0) return true;
+            refusedDeletes = true;
+            process.stderr.write(
+              `appgen: the plan DELETES ${removals.length} item(s) (${removals.join("; ")}) - refusing without a confirmation. Re-run with --yes to apply, or --dry-run to preview.\n`
+            );
+            return false;
+          },
         }),
       });
       if (r.dryRun) {
@@ -977,7 +993,7 @@ async function dispatch(
       }
       if (r.aborted) {
         out("appgen: aborted — nothing written");
-        return 0;
+        return refusedDeletes ? 1 : 0;
       }
       const lines = [
         `appgen: ${r.specName} → ${dir} ${plannerTag(r.planner, r.elevations)}`,
@@ -1143,11 +1159,16 @@ async function confirmPlan(
   planner: Planner,
   elevations?: Elevation[]
 ): Promise<boolean> {
-  const { renderPlan } = await import("./appgen");
+  const { renderPlan, planDeletions } = await import("./appgen");
   console.log(renderPlan(plan, dir, { planner, ...(elevations && { elevations }) }));
+  const removals = planDeletions(plan).length;
+  const question =
+    removals > 0
+      ? `\nApply these changes, INCLUDING ${removals} deletion(s) listed above? [y/N] `
+      : "\nApply these changes? [y/N] ";
   return new Promise((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question("\nApply these changes? [y/N] ", (answer) => {
+    rl.question(question, (answer) => {
       rl.close();
       resolve(/^y(es)?$/i.test(answer.trim()));
     });

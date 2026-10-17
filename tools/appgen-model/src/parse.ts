@@ -5,7 +5,7 @@ import type { CapabilityChange, ChangeSpec, Op, StepChange } from "@loom/appgen"
 // ChangeSpec and rejects anything structurally unusable (so the reasoning ladder can
 // elevate, and the caller can fall back to the deterministic parser). Pure, no I/O.
 
-const OPS = new Set<Op>(["create", "extend", "modify"]);
+const OPS = new Set<Op>(["create", "extend", "modify", "delete"]);
 
 /** Extract the first balanced JSON object from model text (tolerating ``` fences/prose). */
 export function extractJsonObject(text: string): string | undefined {
