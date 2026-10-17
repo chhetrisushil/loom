@@ -804,7 +804,8 @@ const MAX_LINEAGE_HOPS = 8;
  * The kernel's own erasure error, built from the log's `PAYLOAD_SHREDDED` tombstone: the same `name` and
  * fields a store's real `PayloadShreddedError` has, plus the realm-safe brand.
  */
-function syntheticShredded(message: string, subjectId: unknown, executionId: string): Error {
+/** @internal exported for tests only. */
+export function syntheticShredded(message: string, subjectId: unknown, executionId: string): Error {
   return brandPayloadShredded(
     Object.assign(new Error(message), { name: "PayloadShreddedError", subjectId, executionId })
   );
@@ -1125,8 +1126,8 @@ export class WorkflowRuntime {
       // A key-unavailable snapshot load asks the LOG whether it was a real shred. Read the WHOLE
       // stream (a tombstone sits ABOVE the snapshot, not at sequence 0): the guarded read raises the
       // store's own erasure error when it can see the shred, and a `PAYLOAD_SHREDDED` fact in what
-      // it returns is the erasure outcome too (named like the crypto plugin's error, which the
-      // cancel / recordedPrincipal paths already match by name). Rare path, bounded by the back-off.
+      // it returns is the erasure outcome too (thrown as `syntheticShredded`, carrying the realm-safe
+      // brand, which the cancel / recordedPrincipal paths recognise via `isPayloadShredded`, never by name). Rare path, bounded by the back-off.
       const stream = await guardedEvents.read(id);
       let tomb: EventEnvelope | undefined;
       for (let i = stream.length - 1; i >= 0 && tomb === undefined; i--) {

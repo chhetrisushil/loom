@@ -12,10 +12,11 @@ import {
   shredSubject,
 } from "@loom/plugin-crypto";
 import { describe, expect, it } from "vitest";
+import { syntheticShredded } from "./WorkflowRuntime";
 import { build, echo, flow } from "./__tests__/r2Harness";
 import { executionAccessPolicy } from "./executionAccessPolicy";
 
-// ADR 0039 (amendment 2026-10-17 (b)): a shredded payload is recognised by a realm-safe BRAND
+// ADR 0039 (amendment 2026-10-17 (c)): a shredded payload is recognised by a realm-safe BRAND
 // (`Symbol.for("loom.payloadShredded")`), never by the error's `name` alone. On the authorization
 // path "erasure" means "unknown owner", which `unknownOwner: "allow"` ADMITS a stranger on, so an
 // Error that merely NAMES itself `PayloadShreddedError` (a store decorator, a third-party store) must
@@ -227,7 +228,50 @@ describe("the cancel redacted fold", () => {
   });
 });
 
-describe("the kernel's own synthetic erasure errors carry the brand", () => {
+describe("brandPayloadShredded / isPayloadShredded hardening", () => {
+  it("a frozen error does not throw: a branded wrapper (same name/message/fields, cause = original) is returned", () => {
+    const frozen = Object.freeze(
+      Object.assign(new Error("gone"), { name: "PayloadShreddedError", subjectId: "s" })
+    );
+    const out = brandPayloadShredded(frozen);
+    expect(isPayloadShredded(out)).toBe(true);
+    expect(out).not.toBe(frozen);
+    expect(out.name).toBe("PayloadShreddedError");
+    expect(out.message).toBe("gone");
+    expect((out as unknown as { subjectId: string }).subjectId).toBe("s");
+    expect((out as Error & { cause?: unknown }).cause).toBe(frozen);
+    expect(isPayloadShredded(frozen)).toBe(false);
+  });
+
+  it("an extensible error is branded in place", () => {
+    const e = new Error("x");
+    expect(brandPayloadShredded(e)).toBe(e);
+    expect(isPayloadShredded(e)).toBe(true);
+  });
+
+  it("a prototype-inherited brand is NOT recognised; non-objects are false", () => {
+    const proto = brandPayloadShredded({});
+    expect(isPayloadShredded(proto)).toBe(true);
+    expect(isPayloadShredded(Object.create(proto))).toBe(false);
+    for (const v of [undefined, null, 1, true, "x", Symbol("s")])
+      expect(isPayloadShredded(v)).toBe(false);
+  });
+});
+
+describe("the kernel's own synthetic erasure error (built from a PAYLOAD_SHREDDED tombstone)", () => {
+  it("syntheticShredded output is branded, keeps the name and fields", () => {
+    const e = syntheticShredded("boom", "subj", "ex-1") as Error & {
+      subjectId?: unknown;
+      executionId?: unknown;
+    };
+    expect(isPayloadShredded(e)).toBe(true);
+    expect(e.name).toBe("PayloadShreddedError");
+    expect(e.subjectId).toBe("subj");
+    expect(e.executionId).toBe("ex-1");
+  });
+});
+
+describe("a real crypto shred surfaces as an erasure", () => {
   it("the real crypto shred, end to end, is recognised by the kernel and by the predicate", async () => {
     const inner = new InMemoryAsyncEventStore();
     const keys = new InMemoryKeyStore();

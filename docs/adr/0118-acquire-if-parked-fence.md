@@ -314,7 +314,7 @@ KERNEL_ABI and EVENT_SCHEMA are untouched. Where the code differs from the decis
   (`@loom/orchestration`). The edge is the child's own `EXECUTION_STARTED.parent` (R3k: only the lineage
   grant writes it), falling back to the supervisor's rebuilt state; the parent must be non-terminal,
   parked on `CHILD_DONE`, with the child's own key or a group that names it. A crypto-shredded log
-  (`PayloadShreddedError`, matched by name through the `StorageWriteError` wrapper) is NOT pinned (it is
+  (`PayloadShreddedError`, matched through the `StorageWriteError` wrapper; as of the 2026-10-17 ADR 0039 amendment (c) by the realm-safe brand `isPayloadShredded`, on the error or its root cause, no longer by name) is NOT pinned (it is
   unreadable by design and forever; pinning it blocked its retention and compaction for good). Any other
   read failure is RETHROWN, so the retention run fails visibly and the log is kept (round 1: it used to
   answer "pinned" for every error, which the shredded case turned into a permanent pin). **`defineConfig` cannot compose it by itself**: the

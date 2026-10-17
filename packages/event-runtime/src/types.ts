@@ -343,6 +343,11 @@ export async function inboxStreamsOfChainDeep(
  */
 export interface EventStore {
   /**
+   * Erasure: a store that can crypto-shred (or otherwise erase) payloads MUST signal it with an error
+   * recognised by `isPayloadShredded` (the real `PayloadShreddedError`, or its own error passed through
+   * `brandPayloadShredded`); any other failure, even one named `PayloadShreddedError`, is a fault the
+   * kernel treats as retryable and never as proof of erasure.
+   *
    * Append one envelope.
    *
    * A log has TWO uniqueness constraints, and a backend MUST enforce both — rejecting,
