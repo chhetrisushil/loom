@@ -1,6 +1,6 @@
 # ADR 0131 — Loom's own evals: quality gates for the first-party agentic layer
 
-- Status: **Proposed** (2026-10-17)
+- Status: **Accepted** (2026-10-17) — user approved and scheduled slice S1 2026-10-17.
 - Date: 2026-10-17
 - Builds on: [ADR 0008](0008-evals-and-deploy-simulation.md) (`@loom/eval`, `@loom/deploy-sim`),
   [ADR 0124](0124-learning-lifecycle.md) (the LLM evaluation harness: graded suites, cassette providers),
