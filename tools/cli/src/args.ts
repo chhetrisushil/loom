@@ -128,7 +128,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     summary:
       "answer a suspended execution's gate through your app's runtime (dry run unless --apply)",
     usage: [
-      "loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--apply] [--json]",
+      "loom resume <executionId> --config <module> --as <principal> [--tenant <t>] --event <type> (--payload <json> | --payload-file <path>) [--wait-id <id>] [--show-payload] [--redact a,b] [--force] [--allow-local-controls] [--apply] [--json]",
     ],
     flags: {
       ...LIFECYCLE,
@@ -137,6 +137,8 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       "payload-file": "string",
       "show-payload": "boolean",
       "wait-id": "string",
+      force: "boolean",
+      "allow-local-controls": "boolean",
     },
   },
   cancel: {
@@ -149,7 +151,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   start: {
     summary: "start a flow through your app's runtime (dry run unless --apply)",
     usage: [
-      "loom start <flowId> --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--apply] [--json]",
+      "loom start <flowId> --config <module> --as <principal> [--tenant <t>] (--input <json> | --input-file <path>) [--id <executionId> | --idempotency-key <k>] [--show-payload] [--redact a,b] [--allow-local-controls] [--apply] [--json]",
     ],
     flags: {
       ...LIFECYCLE,
@@ -158,6 +160,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       id: "string",
       "idempotency-key": "string",
       "show-payload": "boolean",
+      "allow-local-controls": "boolean",
     },
   },
   recover: {

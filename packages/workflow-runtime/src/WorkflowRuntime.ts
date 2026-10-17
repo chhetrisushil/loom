@@ -1852,6 +1852,15 @@ export class WorkflowRuntime {
   }
 
   /**
+   * Whether `start()` parses the input against a flow's declared `inputSchema` (the
+   * `validateInput` option). Read-only and boolean, like {@link hasResumeAuthenticator}: lets a
+   * tool say whether a schema it can see is ENFORCED or only declared.
+   */
+  validatesInput(): boolean {
+    return this.validateInput;
+  }
+
+  /**
    * Whether a `TimerStore` is wired. Read by pre-flight verification: with one,
    * a suspend's `wakeAt` is DERIVED from its `timeout`, so `suspend({ timeout })`
    * wakes across a restart; without one it silently does not (T1). Same

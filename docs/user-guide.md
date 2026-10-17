@@ -1538,6 +1538,7 @@ interface LoomApp {
   lifecycle: LogLifecycle;                                      // K10.1 retention/compaction
   supervise(supervisor): supervisor;                            // ADR 0118: register superviseChildren's result so retention keeps a child its parent is parked on
   redrive?: { timers: TimerStore; service: TimerService };      // ADR 0118: present iff kernel.features.redrive + timers; pass to superviseChildren({ redrive })
+  timerService?: TimerService;                                  // present iff `timers`: read-only introspection (`.running`); `loom resume|start` refuse to act while it runs in the CLI
   subjectIndex?: SubjectIndex;                                  // T3 (when compliance wired)
   exportSubject(id: string, o?: { includeEvents?: boolean; tenant?: string }): Promise<SubjectExport>;
   eraseSubject(id: string, tenant?: string): Promise<EraseSubjectResult>;
