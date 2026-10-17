@@ -99,7 +99,17 @@ async function loadModule(
     return require(file) as Record<string, unknown>;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code !== "ERR_REQUIRE_ESM" && code !== "ERR_REQUIRE_ASYNC_MODULE") throw err;
+    // A `.ts` config with top-level await cannot be transformed to CommonJS: tsx's CJS hook
+    // fails with an esbuild transform error. Any such error on a TS file retries through the
+    // ESM hook, which handles TLA; a genuine syntax error then fails there with its own message.
+    const tsTransformFailure =
+      TS_CONFIG.test(file) &&
+      /top-level await|transform failed|TransformError|esbuild/i.test(
+        err instanceof Error ? `${err.name} ${err.message}` : String(err)
+      );
+    if (code !== "ERR_REQUIRE_ESM" && code !== "ERR_REQUIRE_ASYNC_MODULE" && !tsTransformFailure) {
+      throw err;
+    }
     registerEsm?.();
     const url = pathToFileURL(file).href;
     try {
@@ -210,11 +220,13 @@ export async function loadLoomApp(modulePath: string): Promise<Partial<LoomApp>>
       const message = err instanceof Error ? err.message : String(err);
       const code = (err as NodeJS.ErrnoException).code;
       const hint =
-        code === "MODULE_NOT_FOUND" && !fs.existsSync(file)
-          ? "no such file - built? point --config at the compiled .js"
-          : code === "MODULE_NOT_FOUND"
-            ? "a dependency of the config is missing - is it installed (and built, for a workspace package)?"
-            : "run with --verbose (or LOOM_DEBUG=1) for the stack";
+        /top-level await/i.test(message) && TS_CONFIG.test(file)
+          ? 'top-level await needs an ES-module config: name it loom.config.mts, or set "type": "module" in its package.json (tsx compiles a plain .ts in a CommonJS package to CommonJS)'
+          : code === "MODULE_NOT_FOUND" && !fs.existsSync(file)
+            ? "no such file - built? point --config at the compiled .js"
+            : code === "MODULE_NOT_FOUND"
+              ? "a dependency of the config is missing - is it installed (and built, for a workspace package)?"
+              : "run with --verbose (or LOOM_DEBUG=1) for the stack";
       throw new ConfigLoadError(`while loading ${file}: ${message}\n  hint: ${hint}`, 1, err);
     }
     return (mod.default ?? mod.app ?? mod) as Partial<LoomApp>;

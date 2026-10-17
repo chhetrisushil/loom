@@ -80,9 +80,15 @@ export function makeRedactor(paths: readonly string[]) {
 }
 
 /** Mask then scrub a whole list of events (secrets found in any event scrub them all). */
-export function redactEvents(events: EventEnvelope[], paths: readonly string[]): EventEnvelope[] {
+export function redactEvents(
+  events: EventEnvelope[],
+  paths: readonly string[],
+  /** Events that are NOT printed (filtered out) but whose secrets must still scrub the ones that are. */
+  learnFrom: readonly EventEnvelope[] = []
+): EventEnvelope[] {
   if (paths.length === 0) return events;
   const r = makeRedactor(paths);
+  for (const e of learnFrom) r.mask(e);
   return events.map(r.mask).map(r.scrub);
 }
 

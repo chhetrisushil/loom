@@ -126,6 +126,19 @@ describe("the built CLI loads a config module", () => {
     }
   });
 
+  it("does NOT discover ./loom.config.js for a command that is not read-only", () => {
+    copyFileSync(join(SCRATCH, "app.cjs"), join(SCRATCH, "loom.config.js"));
+    try {
+      for (const args of [["recover"], ["retention", "run"]]) {
+        const r = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8", cwd: SCRATCH });
+        expect(r.status, `${args.join(" ")}: ${r.stderr}`).toBe(2);
+        expect(r.stderr).not.toContain("using ./loom.config.js");
+      }
+    } finally {
+      rmSync(join(SCRATCH, "loom.config.js"), { force: true });
+    }
+  });
+
   describe("TypeScript configs", () => {
     const tsConfig = () => {
       const dist = (p: string) => JSON.stringify(join(PKG, "..", "..", p));
@@ -171,5 +184,52 @@ describe("the built CLI loads a config module", () => {
       expect(r.status, r.stderr).toBe(0);
       expect(r.stdout).toContain("stuck-1");
     });
+
+    const linkTsx = () => {
+      mkdirSync(join(SCRATCH, "node_modules"), { recursive: true });
+      const link = join(SCRATCH, "node_modules", "tsx");
+      rmSync(link, { force: true });
+      symlinkSync(join(pnpmDir, tsxDir as string, "node_modules", "tsx"), link);
+    };
+    const tla = () =>
+      tsConfig().replace("export default", "await Promise.resolve();\n       export default");
+    const lsOf = (config: string) =>
+      spawnSync(process.execPath, [CLI, "ls", "--config", config], {
+        encoding: "utf8",
+        cwd: SCRATCH,
+        env: cleanEnv(),
+      });
+
+    it.skipIf(tsxDir === undefined)("loads a .mts config with top-level await", () => {
+      linkTsx();
+      writeFileSync(join(SCRATCH, "app3.mts"), tla());
+      const r = lsOf("./app3.mts");
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.stdout).toContain("stuck-1");
+    });
+
+    it.skipIf(tsxDir === undefined)(
+      "loads a .ts config with top-level await in a type:module package",
+      () => {
+        linkTsx();
+        mkdirSync(join(SCRATCH, "esm"), { recursive: true });
+        writeFileSync(join(SCRATCH, "esm", "package.json"), '{"type":"module"}');
+        writeFileSync(join(SCRATCH, "esm", "app.ts"), tla());
+        const r = lsOf("./esm/app.ts");
+        expect(r.status, r.stderr).toBe(0);
+        expect(r.stdout).toContain("stuck-1");
+      }
+    );
+
+    it.skipIf(tsxDir === undefined)(
+      "a plain .ts with top-level await fails with a hint to use .mts / type:module",
+      () => {
+        linkTsx();
+        writeFileSync(join(SCRATCH, "app4.ts"), tla());
+        const r = lsOf("./app4.ts");
+        expect(r.status).toBe(1);
+        expect(r.stderr).toContain("name it loom.config.mts");
+      }
+    );
   });
 });

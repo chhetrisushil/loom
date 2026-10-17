@@ -53,12 +53,16 @@ export interface LsOptions {
   sinceMs?: number;
   limit?: number;
   maxScan?: number;
+  /** Include `waiting.correlationKey` (an application-chosen id that may be sensitive). Default: omitted. */
+  includeKeys?: boolean;
   now?: number;
   leases?: LeaseStore;
 }
 
 export interface LsResult {
   rows: ExecutionRow[];
+  /** Rows that matched every filter within the scanned set (>= rows.length when `--limit` cut). */
+  matched: number;
   /** Executions read and folded (reserved control streams excluded). */
   scanned: number;
   /** Why the list ended early, if it did. */
@@ -130,7 +134,7 @@ export async function scanExecutions(
   const limit = options.limit ?? LS_DEFAULT_LIMIT;
   const maxScan = options.maxScan ?? LS_MAX_SCAN;
   const now = options.now ?? Date.now();
-  const result: LsResult = { rows: [], scanned: 0, unreadable: 0 };
+  const result: LsResult = { rows: [], matched: 0, scanned: 0, unreadable: 0 };
   // Judged on the lease store's own clock when it has one (a shared database stamps its own).
   const leaseNow =
     options.leases === undefined ? now : ((await options.leases.storeNow?.()) ?? now);
@@ -138,6 +142,9 @@ export async function scanExecutions(
     result.truncated = "limit";
     return result;
   }
+  // Scan the whole bounded set, THEN order and limit: store order is not recency, and
+  // stopping at the first N matches would show an arbitrary N rather than the latest N.
+  const matched: ExecutionRow[] = [];
   for await (const executionId of iterateExecutionIds(events, 500)) {
     if (isReservedStream(executionId)) continue;
     if (result.scanned >= maxScan) {
@@ -160,8 +167,17 @@ export async function scanExecutions(
     if (options.status !== undefined && row.status !== options.status) continue;
     if (options.workflow !== undefined && row.workflowId !== options.workflow) continue;
     if (options.sinceMs !== undefined && now - row.lastActivityAt > options.sinceMs) continue;
+    matched.push(row);
+  }
+  matched.sort(
+    (a, b) => b.lastActivityAt - a.lastActivityAt || a.executionId.localeCompare(b.executionId)
+  );
+  result.matched = matched.length;
+  result.rows = matched.slice(0, limit);
+  if (matched.length > limit && result.truncated === undefined) result.truncated = "limit";
+  for (const row of result.rows) {
     if (options.leases?.get !== undefined) {
-      const lease = await options.leases.get(executionId);
+      const lease = await options.leases.get(row.executionId);
       if (lease !== null) {
         row.lease = {
           owner: lease.owner,
@@ -170,10 +186,8 @@ export async function scanExecutions(
         };
       }
     }
-    result.rows.push(row);
-    if (result.rows.length >= limit) {
-      result.truncated = "limit";
-      break;
+    if (options.includeKeys !== true && row.waiting !== undefined) {
+      Reflect.deleteProperty(row.waiting, "correlationKey");
     }
   }
   return result;
@@ -202,7 +216,7 @@ export function relative(ms: number, now: number): string {
 }
 
 /** What a row waits on, in one phrase. */
-export function describeWaiting(row: ExecutionRow, now: number): string {
+export function describeWaiting(row: ExecutionRow, now: number, keys = false): string {
   const w = row.waiting;
   if (w === undefined) return "";
   const parts: string[] = [];
@@ -213,6 +227,7 @@ export function describeWaiting(row: ExecutionRow, now: number): string {
     );
     if (w.on !== "" && w.on !== "timer") parts.push(`or event ${w.on}`);
   } else parts.push(`event ${w.on}`);
+  if (keys && w.correlationKey !== undefined) parts.push(`key ${w.correlationKey}`);
   return parts.join(" ");
 }
 
@@ -221,7 +236,10 @@ function leaseText(row: ExecutionRow, now: number): string {
   return `lease ${row.lease.owner} (${row.lease.expired ? "expired" : "expires"} ${relative(row.lease.expiresAt, now)})`;
 }
 
-export function renderLs(result: LsResult, options: { limit: number; now?: number }): string {
+export function renderLs(
+  result: LsResult,
+  options: { limit: number; now?: number; keys?: boolean }
+): string {
   const now = options.now ?? Date.now();
   const lines: string[] = [];
   if (result.rows.length === 0) lines.push("(no executions match)");
@@ -232,7 +250,9 @@ export function renderLs(result: LsResult, options: { limit: number; now?: numbe
       status: r.status,
       seq: `#${r.sequence}`,
       at: `${iso(r.lastActivityAt)} (${relative(r.lastActivityAt, now)})`,
-      extra: [describeWaiting(r, now), leaseText(r, now)].filter((x) => x !== "").join("; "),
+      extra: [describeWaiting(r, now, options.keys === true), leaseText(r, now)]
+        .filter((x) => x !== "")
+        .join("; "),
     }));
     const w = (k: "id" | "wf" | "status" | "seq" | "at", head: string) =>
       Math.max(head.length, ...rows.map((r) => r[k].length));
@@ -254,21 +274,26 @@ export function renderLs(result: LsResult, options: { limit: number; now?: numbe
   }
   lines.push(
     "",
-    `${result.rows.length} shown, ${result.scanned} execution(s) scanned${
+    `${result.rows.length} shown${
+      result.matched > result.rows.length ? ` of ${result.matched} matched` : ""
+    }, ${result.scanned} execution(s) scanned${
       result.unreadable > 0 ? `, ${result.unreadable} unreadable (skipped)` : ""
     }`
   );
   if (result.truncated === "limit") {
-    lines.push(`truncated at --limit ${options.limit}: more may match (raise --limit).`);
+    lines.push(
+      `truncated at --limit ${options.limit}: showing the most recently active; ${result.matched - result.rows.length} more matched (raise --limit).`
+    );
   } else if (result.truncated === "scan-cap") {
     lines.push(
-      `stopped after scanning ${result.scanned} executions: the store holds more. Narrow with --status/--workflow/--since or use \`loom census\`.`
+      `stopped after scanning ${result.scanned} executions (the cap bounds the scan, not the matches): the store holds more. Narrow with --status/--workflow/--since or use \`loom census\`.`
     );
   }
   return lines.join("\n");
 }
 
 export interface LsFlags extends StoreFlags {
+  keys?: boolean;
   status?: ExecutionStatus;
   workflow?: string;
   sinceMs?: number;
@@ -284,6 +309,7 @@ export async function lsReport(
     const limit = flags.limit ?? LS_DEFAULT_LIMIT;
     const result = await scanExecutions(stores.eventStore, {
       limit,
+      ...(flags.keys === true && { includeKeys: true }),
       ...(flags.status !== undefined && { status: flags.status }),
       ...(flags.workflow !== undefined && { workflow: flags.workflow }),
       ...(flags.sinceMs !== undefined && { sinceMs: flags.sinceMs }),
@@ -297,5 +323,5 @@ export async function lsReport(
 
 export async function cmdLs(flags: LsFlags): Promise<string> {
   const { result, limit } = await lsReport(flags);
-  return renderLs(result, { limit });
+  return renderLs(result, { limit, ...(flags.keys === true && { keys: true }) });
 }

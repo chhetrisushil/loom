@@ -80,10 +80,11 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   ls: {
     summary: "list executions: status, last activity, what each suspended one waits on (read-only)",
     usage: [
-      "loom ls <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--json]",
+      "loom ls <store> [--status running|suspended|failed|completed|cancelled] [--workflow <id>] [--since <dur>] [--limit N] [--keys] [--json]",
     ],
     flags: {
       ...STORE,
+      keys: "boolean",
       status: "string",
       workflow: "string",
       since: "duration",
