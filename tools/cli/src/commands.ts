@@ -9,7 +9,7 @@ import {
   foldAt,
   formatLog,
 } from "./core";
-import { type StoreFlags, resolveStores } from "./stores";
+import { type StoreFlags, noSuchExecution, resolveStores } from "./stores";
 
 /** `loom logs --db <path> <executionId> [--redact a,b]` — the durable event stream. */
 export async function cmdLogs(
@@ -20,7 +20,9 @@ export async function cmdLogs(
   const resolved = await resolveStores(flags);
   const store = resolved.eventStore;
   try {
-    return formatLog(await store.read(executionId), redact);
+    const events = await store.read(executionId);
+    if (events.length === 0) throw await noSuchExecution(store, executionId);
+    return formatLog(events, redact);
   } finally {
     await resolved.close();
   }
@@ -41,7 +43,7 @@ export async function cmdDebug(
   const store = resolved.eventStore;
   try {
     const events = await store.read(executionId);
-    if (events.length === 0) return `(no execution "${executionId}")`;
+    if (events.length === 0) throw await noSuchExecution(store, executionId);
     if (at !== undefined) {
       return describeState(foldAt(events, at), redact);
     }

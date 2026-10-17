@@ -1,5 +1,6 @@
 import { isReservedStream, iterateExecutionIds } from "@loom/event-runtime";
 import { LogLifecycle } from "@loom/workflow-runtime";
+import { UsageError } from "./args";
 import { type StoreFlags, resolveStores } from "./stores";
 
 // ── `loom retention run` — the explicit, operator-driven retention sweep (K10.1) ─
@@ -39,12 +40,16 @@ export async function cmdRetentionRun(
   const branchRegistry = stores.branchRegistry;
   try {
     if (events.listExecutions === undefined && events.listExecutionsPage === undefined) {
-      return `loom retention needs to enumerate executions, and the configured ${events.constructor.name} implements neither listExecutions nor listExecutionsPage.`;
+      throw new UsageError(
+        `loom retention needs to enumerate executions, and the configured ${events.constructor.name} implements neither listExecutions nor listExecutionsPage.`
+      );
     }
     if (stores.snapshotStore === undefined) {
       // Retention PRUNES snapshots alongside the log. Running without one would silently
       // leave them behind — a sweep that reports success while half the data stays.
-      return "loom retention needs a snapshot store: pass --snap <snap.db>, or use --config (an app always has one).";
+      throw new UsageError(
+        "loom retention needs a snapshot store: pass --snap <snap.db>, or use --config (an app always has one)."
+      );
     }
     const snapshots = stores.snapshotStore;
     const now = Date.now();

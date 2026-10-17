@@ -12,7 +12,7 @@ import type { Policy, Trajectory } from "@loom/learning";
 import { evidenceEvents } from "@loom/learning";
 import { ReplayVM, normalizeSnapshotState } from "@loom/replay-vm";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
-import { type StoreFlags, resolveStores } from "./stores";
+import { type StoreFlags, noSuchExecution, resolveStores } from "./stores";
 
 /**
  * `loom learn …` — the offline half of the learning loop (ADR 0080).
@@ -99,6 +99,9 @@ async function readAll(flags: StoreFlags, executionId?: string): Promise<Evidenc
       out.events.push(...got.events);
       if (got.folded) out.folded++;
       if (got.unreadable) out.unreadable.push(id);
+    }
+    if (executionId !== undefined && out.events.length === 0 && out.unreadable.length === 0) {
+      throw await noSuchExecution(store, executionId);
     }
     return out;
   } finally {

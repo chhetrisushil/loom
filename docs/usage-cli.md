@@ -94,7 +94,7 @@ loom — project-local commands for a Loom app
                                                   give an execution a pre-0116 compaction left
                                                   as [0]+checkpoint its terminal event back, so
                                                   it can take a late outcome (ADR 0116)
-  loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
+  loom retention run <store> --ttl <dur|ms> [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
@@ -122,7 +122,14 @@ New project?  →  npm create loom-app
 > `retention run`, `sweep content` (both dry-run by default, `--apply` to reclaim) and
 > `compliance report` (subject inventory) sweep the store via the `listExecutions` SPI.
 
-There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new` and `.` elsewhere), and `--at <N>` (a sequence number). An unknown command prints the usage to stderr and exits `1`.
+There are no global flags — each command declares its own. The recurring ones are `--db <path>` (a SQLite event-store file), `--dir <path>` (a directory, defaulting to `app` for `gen`/`new` and `.` elsewhere), and `--at <N>` (a sequence number). An unknown command prints the usage to stderr and exits `2`.
+
+**Flags are checked strictly.** Each command declares the flags it takes, and what kind each is:
+
+- an **unknown flag** is an error with a did-you-mean, exit `2` (`--aply` used to run the dry-run path of `recover` without a word);
+- a **boolean flag never swallows the next word** — `loom repair terminal-event --db x --apply <id>` and `loom logs --db x --json <id>` read `<id>` as the id;
+- a **number or duration is validated where it is typed** — `--at abc`, `--limit many` and `--ttl soon` exit `2` instead of becoming `NaN`/`0`. Durations are `30s`, `5m`, `6h`, `2d`, or bare milliseconds;
+- `--flag=value` and a bare `--` (everything after it is positional) both work.
 
 Several commands are **two words** — the first positional selects the subcommand: `deploy check`, `lint claim-check`, `repair blank-stream`, `retention run`, `sweep content`, `compliance report`, `learn report|eval`, and `plugin new|check|try|search|seams`.
 
@@ -493,7 +500,7 @@ Enter an execution id in the page, then drag the slider to walk the run. Under t
 
 ## Analyze a run: `profile`, `introspect`, `optimize`
 
-Three read-only lenses from [`@loom/analytics`](../packages/analytics), all with the same shape: `--db <path>` plus a positional `<executionId>`. They fold one execution's log and print — nothing is mutated, no effect re-runs. An unknown id prints `(no execution "<id>")` and still exits `0`.
+Three read-only lenses from [`@loom/analytics`](../packages/analytics), all with the same shape: `--db <path>` plus a positional `<executionId>`. They fold one execution's log and print — nothing is mutated, no effect re-runs. An unknown id is an error — `no such execution <id> (N executions in this store — try loom census)` on stderr, exit `1` (it used to print `(no execution "<id>")` and exit `0`, which read as "nothing happened" when the id was merely mistyped). `--graph` must be one of `executions|tasks|decisions|resources`, else exit `2`.
 
 ### `loom profile --db <path> <executionId>`
 
@@ -539,7 +546,7 @@ npx loom learn report --db .loom/events.db            # every execution
 npx loom learn report --db .loom/events.db 01J8…      # just one
 ```
 
-Prints `(no events)` or `(no decisions recorded — nothing to learn from)` when there's nothing to fold. Always exits `0`.
+Prints `(no events)` or `(no decisions recorded — nothing to learn from)` when there's nothing to fold. Exits `0`; an explicit `[executionId]` that does not exist is exit `1` (`no such execution`).
 
 ### `loom learn eval --db <path> --policy <module> [--min-steps N] [executionId]`
 
@@ -632,20 +639,21 @@ control streams (`__loom_*`) are filtered automatically. See [data classificatio
 
 **Nothing prunes on a timer** — the operator drives every sweep, and both reclaiming commands are **dry-run by default**.
 
-### `loom retention run --db <events.db> --snap <snap.db> [--ttl <ms>] [--apply]`
+### `loom retention run --db <events.db> --snap <snap.db> --ttl <dur|ms> [--apply]`
 
 Reclaim terminal executions older than the TTL (K10.1). **Dry run by default** — it reports
 `would-reclaim` / `kept` / `not-terminal` per execution; `--apply` performs the deletion via
 `LogLifecycle` (branch-integrity guard + `EXECUTION_ARCHIVED`/`EXECUTION_DELETED` control facts
 included) and reports `reclaimed` / `blocked-by-branch` / …
 
-> **`--ttl` defaults to `0`**, which makes *every* terminal execution eligible. Unlike
-> `sweep content` (30 days), there is no grace period here — always pass an explicit TTL
-> before `--apply`.
+> **`--ttl` is required.** It used to default to `0`, which makes *every* terminal execution
+> eligible — so forgetting (or mistyping) the flag chose "reclaim everything". Now an omitted or
+> malformed `--ttl` is refused with exit `2` before any store is opened. `--ttl 0` is still
+> accepted when you really mean it. Accepts `30d`/`12h`/… or milliseconds.
 
 ```bash
-npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 7776000000   # dry run (90 days)
-npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 7776000000 --apply
+npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 90d   # dry run
+npx loom retention run --db .loom/events.db --snap .loom/snapshots.db --ttl 90d --apply
 ```
 
 ### `loom sweep content --db <events.db> [--snap <snap.db>] --content <content.db> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl <ms>] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]`
@@ -995,27 +1003,28 @@ npx loom plugin search postgres
 | `loom gen` | regenerate `loom.gen.ts` | `--dir app` | (write failure) |
 | `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied; `--check` typecheck fails |
 | `loom doctor` | run every pre-flight check whose input it can find, and name the ones it skipped | `--dir .`, `--config`, `--manifest` | any check fails (never for a skip) |
+| *store commands* | `logs` `debug` `inspect` `profile` `introspect` `optimize` `learn` `census` `recover` `branches` `repair` `retention` `sweep` `compliance` | **`<store>` = `--config <module>` _or_ `--db <events.db>`** — `--config` works wherever `--db` does, and neither flag is individually required | — |
 | `loom check` | static flow-graph validation | `--manifest` *(req)* | issues found |
 | `loom verify` | pre-flight runtime verification over a built app | `--config` *(req)*, `--manifest` | any error-severity finding |
 | `loom lint claim-check` | claim-check reach-through lint (CC-5) | `--dir .` | any finding |
-| `loom logs` | print the event timeline | `--db` *(req)*, `--redact` | error |
-| `loom debug` | folded state at / after a sequence | `--db` *(req)*, `--at N`, `--redact` | error |
-| `loom inspect` (`dev`) | web timeline + time-travel slider | `--db` *(req)*, `--port 0` | error |
-| `loom profile` | flame graph + latency breakdown | `--db` *(req)* | error |
-| `loom introspect` | execution/task/decision/resource graphs | `--db` *(req)*, `--graph <name>` | error |
-| `loom optimize` | advisory optimization report | `--db` *(req)* | error |
-| `loom learn report` | decision coverage + per-arm rewards | `--db` *(req)* | error |
-| `loom learn eval` | shadow-evaluate a candidate policy | `--db` *(req)*, `--policy` *(req)*, `--min-steps N` | promotion gate refuses |
+| `loom logs` | print the event timeline | store *(req)*, `--redact` | unknown execution id; `--db` file missing |
+| `loom debug` | folded state at / after a sequence | store *(req)*, `--at N`, `--redact` | unknown execution id; `--db` file missing |
+| `loom inspect` (`dev`) | web timeline + time-travel slider | store *(req)*, `--port 0` | `--db` file missing |
+| `loom profile` | flame graph + latency breakdown | store *(req)* | unknown execution id; `--db` file missing |
+| `loom introspect` | execution/task/decision/resource graphs | store *(req)*, `--graph <name>` | unknown execution id (unknown `--graph` is exit `2`) |
+| `loom optimize` | advisory optimization report | store *(req)* | unknown execution id; `--db` file missing |
+| `loom learn report` | decision coverage + per-arm rewards | store *(req)* | unknown explicit execution id |
+| `loom learn eval` | shadow-evaluate a candidate policy | store *(req)*, `--policy` *(req)*, `--min-steps N` | promotion gate refuses |
 | `loom eval` | replay golden logs vs expectations | `--dir` *(req)* | any golden fails |
 | `loom deploy check` | replay logs vs new flow defs | `--logs` *(req)*, `--config` *(req)* | resume-breaking change |
-| `loom repair terminal-event` | restore the terminal event a pre-0116 compaction left off a `[0]`+checkpoint execution so it can take a late outcome (ADR 0116) | `--config` (preferred) or `--db` + `--snap`, `--apply` | error |
-| `loom repair blank-stream` | re-home events the pre-0106 compaction bug wrote to `""` (ADR 0107) | `--config` (preferred) or `--db` + `--snap`, `--assign`, `--apply` | error |
-| `loom retention run` | reclaim aged terminal executions | `--db` *(req)*, `--snap` *(req)*, `--ttl`, `--apply` | error |
-| `loom sweep content` | K10.6 pinned blob sweep | `--db` *(req)*, `--content` *(req)*, `--snap`, `--archive-db`, `--archive-snap`, `--pin`, `--ttl`, `--orphans`, `--no-archive`, `--snapshots-touch-content`, `--apply` | error |
-| `loom compliance report` | data-subject inventory | `--db` *(req)*, `--subject-path` *(req)*, `--tenant-path` | error |
-| `loom knowledge sync` | reconcile a directory into a corpus | `--config` *(req)*, `--scope` *(req)*, `--dir` *(req)*, `--ext`, `--max-bytes`, `--source`, `--apply` | error |
-| `loom knowledge list` | what the corpus holds | `--config` *(req)*, `--scope` *(req)* | error |
-| `loom knowledge search` | ask the corpus (not recorded) | `--config` *(req)*, `--scope` *(req)*, `--limit` | error |
+| `loom repair terminal-event` | restore the terminal event a pre-0116 compaction left off a `[0]`+checkpoint execution so it can take a late outcome (ADR 0116) | `--config` (preferred) or `--db` + `--snap`, `--apply` | (refusals are exit `2`) |
+| `loom repair blank-stream` | re-home events the pre-0106 compaction bug wrote to `""` (ADR 0107) | `--config` (preferred) or `--db` + `--snap`, `--assign`, `--apply` | (refusals are exit `2`) |
+| `loom retention run` | reclaim aged terminal executions | store *(req)*, `--snap` (or `--config`), `--ttl` *(req)*, `--apply` | (refusals are exit `2`) |
+| `loom sweep content` | K10.6 pinned blob sweep | store *(req)*, `--content` *(req)*, `--snap`, `--archive-db`, `--archive-snap`, `--pin`, `--ttl`, `--orphans`, `--no-archive`, `--snapshots-touch-content`, `--apply` | (refusals are exit `2`) |
+| `loom compliance report` | data-subject inventory | store *(req)*, `--subject-path` *(req)*, `--tenant-path` | (never; a store that cannot enumerate is exit `2`) |
+| `loom knowledge sync` | reconcile a directory into a corpus | `--config` *(req)*, `--scope` *(req)*, `--dir` *(req)*, `--ext`, `--max-bytes`, `--source`, `--apply` | (usage errors are exit `2`) |
+| `loom knowledge list` | what the corpus holds | `--config` *(req)*, `--scope` *(req)* | (usage errors are exit `2`) |
+| `loom knowledge search` | ask the corpus (not recorded) | `--config` *(req)*, `--scope` *(req)*, `--limit` | (usage errors are exit `2`) |
 | `loom kernel-manifest` | kernel version + maturity manifest | `--json`, `--emit-docs <dir>` | (never) |
 | `loom compat` | validate a deployment's contract versions | `--abi`, `--event-schema`, … | major-version mismatch |
 | `loom plugin new` | scaffold a plugin package | `--first-party`, `--dir .` | every file already existed |
@@ -1029,7 +1038,15 @@ A typical loop: `loom new` → write the flow → `loom gen` → `loom doctor` (
 
 ## Exit codes & scripting
 
-Commands return `0` on success and `1` on failure (missing required flag, unreadable input, unknown command, or a "not clean" verdict from `doctor`/`check`/`verify`/`lint`/`eval`/`deploy check`/`compat`/`learn eval`/`plugin check`/`plugin try` — note `doctor` fails only on a failing check, never on a skipped one). The one other code is `2`, returned by `loom learn` when the subcommand is neither `report` nor `eval`. Reports go to stdout, errors to stderr. That makes the gates drop straight into CI:
+Three exit codes, consistent across commands:
+
+| Code | Meaning | Examples |
+|---|---|---|
+| `0` | it ran and the answer is fine | a clean `check`, a dry run, a `logs` of a real execution |
+| `1` | a **verdict failed**, or the thing you named **does not exist / could not run** | `doctor`/`check`/`verify`/`lint`/`eval`/`deploy check`/`compat`/`learn eval`/`plugin check`/`plugin try` finding a problem; a `--db` path that is not a file (nothing is created); an unknown execution id |
+| `2` | **bad usage or a refusal** — the command declined to act, and changed nothing | an unknown command, subcommand or flag; a missing required flag or positional; a malformed number/duration; `retention run` without `--ttl` or a snapshot store; `recover` with neither `timers.leases` nor `--stale`; `recover --apply` without `--config`; `introspect --graph bogus`; `repair`/`branches` preconditions |
+
+A script can therefore tell a refused `recover --apply` from a successful one. (Before this table, several refusals printed their reason and exited `0`, and the unknown-subcommand cases of `branches`/`repair`/`plugin` exited `1`; only `learn` returned `2`.) `doctor` fails only on a failing check, never on a skipped one. Reports go to stdout, errors to stderr. That makes the gates drop straight into CI:
 
 ```bash
 npx loom check --manifest loom-manifest.json \
@@ -1039,7 +1056,7 @@ npx loom check --manifest loom-manifest.json \
   && npx loom deploy check --logs logs/ --config dist/app.js
 ```
 
-The purely-informational commands (`logs`, `debug`, `profile`, `introspect`, `optimize`, `learn report`, `kernel-manifest`, `plugin seams`, `plugin search`) exit `0` whenever they ran — including when the execution id doesn't exist. Don't gate on them; gate on the verdict commands above.
+The purely-informational commands (`kernel-manifest`, `plugin seams`, `plugin search`, a `census`, a `logs` of an execution that exists) exit `0` whenever they ran. An **unknown execution id or a missing `--db` file is no longer a quiet `0`** — it exits `1` naming the absolute path / id — so a mistyped path cannot read as "nothing happened". Still, gate on the verdict commands above.
 
 Note that `inspect`/`dev` start a long-lived server and stay in the foreground until Ctrl-C — don't put them in a non-interactive gate.
 

@@ -1,5 +1,5 @@
 import { formatProfile, profile } from "@loom/analytics";
-import { type StoreFlags, resolveStores } from "./stores";
+import { type StoreFlags, noSuchExecution, resolveStores } from "./stores";
 
 /**
  * `loom profile --db <path> <executionId>` — a flame graph + latency breakdown for
@@ -11,7 +11,7 @@ export async function cmdProfile(flags: StoreFlags, executionId: string): Promis
   const store = resolved.eventStore;
   try {
     const events = await store.read(executionId);
-    if (events.length === 0) return `(no execution "${executionId}")`;
+    if (events.length === 0) throw await noSuchExecution(store, executionId);
     return formatProfile(profile(events, executionId));
   } finally {
     await resolved.close();

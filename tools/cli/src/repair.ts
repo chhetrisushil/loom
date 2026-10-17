@@ -3,6 +3,7 @@ import {
   LogLifecycle,
   type RehomeAssignment,
 } from "@loom/workflow-runtime";
+import { UsageError } from "./args";
 import { type StoreFlags, resolveStores } from "./stores";
 
 // ── `loom repair blank-stream` — the pre-0106 compaction bug's misfiled events (ADR 0107) ─
@@ -114,10 +115,14 @@ export async function cmdRepairBlankStream(
   try {
     const events = stores.eventStore;
     if (events.listExecutions === undefined && events.listExecutionsPage === undefined) {
-      return `loom repair blank-stream needs to enumerate executions, and the configured ${events.constructor.name} implements neither listExecutions nor listExecutionsPage.`;
+      throw new UsageError(
+        `loom repair blank-stream needs to enumerate executions, and the configured ${events.constructor.name} implements neither listExecutions nor listExecutionsPage.`
+      );
     }
     if (stores.snapshotStore === undefined) {
-      return "loom repair blank-stream needs the snapshot store — the proof of whose events these are lives there: pass --snap <snap.db>, or use --config.";
+      throw new UsageError(
+        "loom repair blank-stream needs the snapshot store — the proof of whose events these are lives there: pass --snap <snap.db>, or use --config."
+      );
     }
     const lifecycle = new LogLifecycle(events, stores.snapshotStore);
     let result: Awaited<ReturnType<LogLifecycle["rehomeBlankStream"]>>;
@@ -126,10 +131,14 @@ export async function cmdRepairBlankStream(
     } catch (err) {
       // The library refuses, before writing, to copy events it cannot decrypt.
       if (err instanceof TypeError && /\$shredded/.test(err.message)) {
-        return `loom repair blank-stream refused --apply (nothing written): the events in "" are shredded placeholders — the key they were encrypted under is gone, and their payloads cannot be recovered.`;
+        throw new UsageError(
+          `loom repair blank-stream refused --apply (nothing written): the events in "" are shredded placeholders — the key they were encrypted under is gone, and their payloads cannot be recovered.`
+        );
       }
       if (err instanceof TypeError && /ciphertext/.test(err.message)) {
-        return `loom repair blank-stream refused --apply (nothing written): the events in "" are still encrypted as this store reads them. Re-run with --config <module>, whose stores decrypt them.`;
+        throw new UsageError(
+          `loom repair blank-stream refused --apply (nothing written): the events in "" are still encrypted as this store reads them. Re-run with --config <module>, whose stores decrypt them.`
+        );
       }
       throw err;
     }
@@ -157,13 +166,17 @@ export async function cmdRepairTerminalEvent(
   try {
     const events = stores.eventStore;
     if (stores.snapshotStore === undefined) {
-      return "loom repair terminal-event needs the snapshot store — the checkpoint is what proves the execution finished: pass --snap <snap.db>, or use --config.";
+      throw new UsageError(
+        "loom repair terminal-event needs the snapshot store — the checkpoint is what proves the execution finished: pass --snap <snap.db>, or use --config."
+      );
     }
     let ids: string[];
     if (executionId !== undefined) ids = [executionId];
     else if (events.listExecutions !== undefined) ids = await events.listExecutions();
     else {
-      return `loom repair terminal-event needs to enumerate executions, and the configured ${events.constructor.name} does not implement listExecutions: pass an <executionId>.`;
+      throw new UsageError(
+        `loom repair terminal-event needs to enumerate executions, and the configured ${events.constructor.name} does not implement listExecutions: pass an <executionId>.`
+      );
     }
     const lifecycle = new LogLifecycle(events, stores.snapshotStore);
     const lines: string[] = [];

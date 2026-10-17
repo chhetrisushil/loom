@@ -1,5 +1,5 @@
 import { advisoryPipeline, formatAdvisory } from "@loom/analytics";
-import { type StoreFlags, resolveStores } from "./stores";
+import { type StoreFlags, noSuchExecution, resolveStores } from "./stores";
 
 /**
  * `loom optimize --db <path> <executionId>` — the advisory optimization report (ADR 0034):
@@ -11,7 +11,7 @@ export async function cmdOptimize(flags: StoreFlags, executionId: string): Promi
   const store = resolved.eventStore;
   try {
     const events = await store.read(executionId);
-    if (events.length === 0) return `(no execution "${executionId}")`;
+    if (events.length === 0) throw await noSuchExecution(store, executionId);
     return formatAdvisory(advisoryPipeline(events));
   } finally {
     await resolved.close();

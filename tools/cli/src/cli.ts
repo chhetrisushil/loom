@@ -4,12 +4,14 @@ import * as readline from "node:readline";
 import type { FilePlan } from "@loom/appgen";
 
 import { type Elevation, type Planner, cmdAppgen, plannerTag, renderPlan } from "./appgen";
+import { CliError, EXIT_USAGE, UsageError, parseArgs } from "./args";
 import { cmdCensus } from "./census";
 import { cmdCheck } from "./check";
 import { cmdDebug, cmdEval, cmdLogs } from "./commands";
 import { cmdComplianceReport } from "./compliance";
 import { cmdDeployCheck } from "./deploy";
 import { cmdDoctor } from "./doctor";
+import { parseDuration } from "./duration";
 import { cmdGen, cmdNew } from "./gen";
 import { serveInspector } from "./inspector";
 import { cmdIntrospect } from "./introspect";
@@ -29,36 +31,7 @@ import { STORE_FLAG_HELP, hasStoreFlags, resolveStores, storeFlagsOf } from "./s
 import { cmdSweepContent } from "./sweepContent";
 import { cmdVerify } from "./verify";
 
-interface Parsed {
-  command: string | undefined;
-  positionals: string[];
-  flags: Record<string, string>;
-}
-
-export function parseArgs(argv: string[]): Parsed {
-  const [command, ...rest] = argv;
-  const positionals: string[] = [];
-  // No prototype: with one, `flags["valueOf"] ?? fallback` answers with a FUNCTION for a
-  // flag nobody passed, and `--__proto__ x` sets a prototype instead of recording a flag.
-  // Every option is read out of this bag by name, so the bag must hold only what was typed.
-  const flags: Record<string, string> = Object.create(null);
-  for (let i = 0; i < rest.length; i++) {
-    const arg = rest[i]!;
-    if (arg.startsWith("--")) {
-      const key = arg.slice(2);
-      const next = rest[i + 1];
-      if (next !== undefined && !next.startsWith("--")) {
-        flags[key] = next;
-        i++;
-      } else {
-        flags[key] = "true";
-      }
-    } else {
-      positionals.push(arg);
-    }
-  }
-  return { command, positionals, flags };
-}
+export { parseArgs };
 
 /** Parse `--redact a,b,c` into a list of output dot-paths to mask (K10-R6). */
 export function parseRedact(flag: string | undefined): string[] {
@@ -136,7 +109,7 @@ export const USAGE = `loom — project-local commands for a Loom app
                                                   give an execution a pre-0116 compaction left
                                                   as [0]+checkpoint its terminal event back, so
                                                   it can take a late outcome (ADR 0116)
-  loom retention run <store> [--ttl ms] [--apply]  reclaim aged terminal executions
+  loom retention run <store> --ttl <dur|ms> [--apply]  reclaim aged terminal executions
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
@@ -163,15 +136,16 @@ New project?  →  npm create loom-app
 /** Every storage-backed command refuses the same way, naming both front doors. */
 function storeFlagError(command: string): number {
   console.error(`loom ${command}: ${STORE_FLAG_HELP}`);
-  return 1;
+  return EXIT_USAGE;
 }
 
-async function main(argv: string[]): Promise<number> {
+export async function main(argv: string[]): Promise<number> {
   const { command, positionals, flags } = parseArgs(argv);
 
   switch (command) {
     case "logs": {
       if (!hasStoreFlags(flags)) return storeFlagError("logs");
+      warnJsonUnsupported("logs", flags);
       const executionId = requirePositional(positionals, "executionId");
       console.log(await cmdLogs(storeFlagsOf(flags), executionId, parseRedact(flags.redact)));
       return 0;
@@ -227,10 +201,11 @@ async function main(argv: string[]): Promise<number> {
         );
         return 0;
       }
-      throw new Error(`unknown branches subcommand "${sub}" (expected retire|prune)`);
+      throw new UsageError(`unknown branches subcommand "${sub}" (expected retire|prune)`);
     }
     case "census": {
       if (!hasStoreFlags(flags)) return storeFlagError("census");
+      warnJsonUnsupported("census", flags);
       console.log(
         await cmdCensus({
           ...storeFlagsOf(flags),
@@ -258,7 +233,7 @@ async function main(argv: string[]): Promise<number> {
         return 0;
       }
       if (sub !== "blank-stream") {
-        throw new Error(
+        throw new UsageError(
           `unknown repair subcommand "${sub}" (expected blank-stream | terminal-event)`
         );
       }
@@ -275,7 +250,14 @@ async function main(argv: string[]): Promise<number> {
     case "retention": {
       requirePositional(positionals, "run"); // `loom retention run`
       if (!hasStoreFlags(flags)) return storeFlagError("retention");
-      const ttl = flags.ttl !== undefined ? Number.parseInt(flags.ttl, 10) : 0;
+      // No default: an omitted --ttl used to mean 0, i.e. "every terminal execution is aged
+      // enough" — a destructive sweep chosen by forgetting a flag.
+      if (flags.ttl === undefined) {
+        throw new UsageError(
+          "loom retention run needs an explicit --ttl <duration> (e.g. --ttl 30d, or milliseconds): there is no default, and --ttl 0 reclaims every terminal execution."
+        );
+      }
+      const ttl = parseDuration(flags.ttl);
       console.log(
         await cmdRetentionRun({
           ...storeFlagsOf(flags),
@@ -289,7 +271,7 @@ async function main(argv: string[]): Promise<number> {
       requirePositional(positionals, "content"); // `loom sweep content`
       if (!hasStoreFlags(flags)) return storeFlagError("sweep content");
       requireFlag(flags, "content");
-      const ttl = flags.ttl !== undefined ? Number.parseInt(flags.ttl, 10) : 30 * 24 * 3_600_000;
+      const ttl = flags.ttl !== undefined ? parseDuration(flags.ttl) : 30 * 24 * 3_600_000;
       console.log(
         await cmdSweepContent({
           ...storeFlagsOf(flags),
@@ -384,8 +366,7 @@ async function main(argv: string[]): Promise<number> {
         console.log(text);
         return ok ? 0 : 1;
       }
-      console.error(`unknown subcommand "learn ${sub}" — expected report|eval`);
-      return 2;
+      throw new UsageError(`unknown subcommand "learn ${sub}" — expected report|eval`);
     }
     case "knowledge": {
       const sub = requirePositional(positionals, "sync | list | search");
@@ -415,7 +396,7 @@ async function main(argv: string[]): Promise<number> {
       if (sub === "search") {
         const query = positionals[1];
         if (query === undefined || query.length === 0) {
-          throw new Error(
+          throw new UsageError(
             'knowledge search: pass the query as a positional — loom knowledge search --config <mod> --scope <s> "replica lag"'
           );
         }
@@ -428,7 +409,7 @@ async function main(argv: string[]): Promise<number> {
         console.log(text);
         return 0;
       }
-      throw new Error(`unknown subcommand "${sub}" — expected sync | list | search`);
+      throw new UsageError(`unknown subcommand "${sub}" — expected sync | list | search`);
     }
     case "kernel-manifest": {
       console.log(
@@ -508,7 +489,7 @@ async function main(argv: string[]): Promise<number> {
         const seam = positionals[1];
         const name = positionals[2];
         if (seam === undefined || name === undefined) {
-          throw new Error("usage: loom plugin new <seam> <name> [--first-party] [--dir .]");
+          throw new UsageError("usage: loom plugin new <seam> <name> [--first-party] [--dir .]");
         }
         const firstParty = flags["first-party"] === "true" || flags["1p"] === "true";
         const dir = flags.dir ?? ".";
@@ -528,7 +509,7 @@ async function main(argv: string[]): Promise<number> {
         console.log(lines.join("\n"));
         return written.length > 0 ? 0 : 1;
       }
-      throw new Error("usage: loom plugin <new|check|try|search|seams> … (see `loom help`)");
+      throw new UsageError("usage: loom plugin <new|check|try|search|seams> … (see `loom help`)");
     }
     case "appgen": {
       // For appgen, `dir` is the PROJECT ROOT (scaffold paths are already `app/…`-relative):
@@ -601,7 +582,7 @@ async function main(argv: string[]): Promise<number> {
     }
     case "deploy": {
       if (positionals[0] !== "check") {
-        throw new Error("usage: loom deploy check --logs <dir> --config <module>");
+        throw new UsageError("usage: loom deploy check --logs <dir> --config <module>");
       }
       requireFlag(flags, "logs");
       requireFlag(flags, "config");
@@ -635,7 +616,7 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     default:
       console.error(`unknown command "${command}"\n\n${USAGE}`);
-      return 1;
+      return EXIT_USAGE;
   }
 }
 
@@ -648,7 +629,7 @@ export function resolveIntent(flags: Record<string, string>, positionals: string
   const intent =
     flags.from !== undefined ? fs.readFileSync(flags.from, "utf8") : positionals.join(" ");
   if (intent.trim() === "") {
-    throw new Error("provide an intent string or --from <file>");
+    throw new UsageError("provide an intent string or --from <file>");
   }
   return intent;
 }
@@ -670,15 +651,35 @@ function confirmPlan(
   });
 }
 
+/** `--json` was always swallowed on these two; keep accepting it, but never silently. */
+function warnJsonUnsupported(command: string, flags: Record<string, string>): void {
+  if (flags.json === "true") {
+    console.error(`loom ${command}: --json is not implemented yet — printing text`);
+  }
+}
+
 function requireFlag(flags: Record<string, string>, name: string): void {
   if (flags[name] === undefined) {
-    throw new Error(`missing required --${name}`);
+    throw new UsageError(`missing required --${name}`);
   }
 }
 function requirePositional(positionals: string[], name: string): string {
   const value = positionals[0];
-  if (value === undefined) throw new Error(`missing required <${name}>`);
+  if (value === undefined) throw new UsageError(`missing required <${name}>`);
   return value;
+}
+
+/**
+ * Run the CLI and return its exit code: a verdict failure is 1, a refusal or bad usage is 2
+ * (see {@link CliError}). Never throws — the message goes to stderr.
+ */
+export async function run(argv: string[]): Promise<number> {
+  try {
+    return await main(argv);
+  } catch (err) {
+    console.error(String(err instanceof Error ? err.message : err));
+    return err instanceof CliError ? err.exitCode : 1;
+  }
 }
 
 // Run only as a CLI, not when imported by tests.
@@ -688,12 +689,7 @@ function requirePositional(positionals: string[], name: string): string {
 // the binary then exits 0 having done nothing, which is the worst way for a CLI to fail.
 // pnpm's global link hid this because it writes a shim that execs cli.js by name.
 if (require.main === module) {
-  main(process.argv.slice(2))
-    .then((code) => {
-      process.exitCode = code;
-    })
-    .catch((err: unknown) => {
-      console.error(String(err instanceof Error ? err.message : err));
-      process.exitCode = 1;
-    });
+  void run(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
 }
