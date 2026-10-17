@@ -351,6 +351,10 @@ const NOT_A_CAPABILITY = new Set([
   // path (ADR 0110), no new events, SPI or subsystem. Completes the inbox capability; nothing new
   // to grade.
   "0130",
+  // 0131 — loom's own evals: a repo-internal, unpublished workspace (`evals/`) of regression gates over the
+  // first-party agentic layer. A development gate like the DST runs and the fitness tests; it ships no
+  // runtime subsystem, event, SPI or exported vocabulary, so there is nothing to grade.
+  "0131",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {
