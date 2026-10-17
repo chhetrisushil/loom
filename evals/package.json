@@ -1,0 +1,29 @@
+{
+  "name": "@loom/evals-internal",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Loom's own evals (ADR 0131): regression gates for the quality of the first-party agentic layer (tool search, memory and knowledge retrieval, skill discovery). Repo-internal and unpublished; imported by no runtime package.",
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist out tsconfig.tsbuildinfo",
+    "eval": "tsc --build && node dist/run.js",
+    "eval:update-baseline": "tsc --build && node dist/run.js --update-baseline",
+    "typecheck:tests": "tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@loom/agent": "workspace:*",
+    "@loom/core": "workspace:*",
+    "@loom/knowledge": "workspace:*",
+    "@loom/memory": "workspace:*",
+    "@loom/plugin-postgres": "workspace:*",
+    "@loom/plugin-sqlite": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "evals" },
     { "path": "plugins/sandbox" },
     { "path": "plugins/crypto" },
     { "path": "packages/wire-abi" },
