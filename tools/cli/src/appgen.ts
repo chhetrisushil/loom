@@ -19,6 +19,7 @@ import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loom/llm";
 import { generateRegistration } from "@loom/scaffold";
 import { unifiedDiff } from "./diff";
 import { discoverFlows } from "./gen";
+import { assertNoSymlinkPath, safeWriteFile } from "./safeWrite";
 
 /** A structural view of a `@loom/reasoning` ModelRoute — avoids a hard dep here. */
 type ModelRoute = { id: string; provider: unknown; tier: number; tags?: string[] };
@@ -115,6 +116,8 @@ export interface AppgenResult {
   typecheck?: TypecheckResult;
   /** True when the user declined the plan at the confirmation prompt. */
   aborted?: boolean;
+  /** Paths the scan refused to follow (symbolic links) - never planned as sources to edit. */
+  warnings?: string[];
 }
 
 export interface AppgenOptions {
@@ -255,7 +258,7 @@ async function planChange(
  */
 export async function cmdAppgen(
   opts: AppgenOptions,
-  io: AppgenIO = defaultIO()
+  io: AppgenIO = defaultIO(opts.dir)
 ): Promise<AppgenResult> {
   const model = scanApp(opts.dir);
   // Replay a lockfile verbatim, or plan the delta from the intent (deterministic here;
@@ -281,6 +284,11 @@ export async function cmdAppgen(
     plan,
     planner: changeSpec.planner,
     ...(changeSpec.elevations !== undefined && { elevations: changeSpec.elevations }),
+    ...(model.skippedLinks !== undefined && {
+      warnings: model.skippedLinks.map(
+        (l) => `ignored symbolic link ${l}: appgen never reads or writes through a link`
+      ),
+    }),
   };
 
   if (opts.dryRun === true) return result; // preview only — no writes, no io.close
@@ -320,6 +328,7 @@ export async function cmdAppgen(
     // Record the accepted ChangeSpec as a replayable lockfile (provenance + `--from-spec`).
     const now = opts.now ?? Date.now();
     const lock = makeLock(intent, changeSpec, new Date(now).toISOString());
+    resolveInside(opts.dir, path.join(".loom", "appgen", `${now}.spec.json`));
     result.lockfile = writeLockfile(opts.dir, lock, `${now}.spec.json`);
   } finally {
     io.close?.();
@@ -396,6 +405,13 @@ export function resolveInside(dir: string, relative: string): string {
       `appgen: refusing to touch "${relative}" — it resolves outside the target directory (${root})`
     );
   }
+  // The checks above are LEXICAL and cannot see a symlink: refuse any link on the path (the target
+  // or a parent directory), whether it points outside the project or back inside it.
+  try {
+    assertNoSymlinkPath(root, dest);
+  } catch (e) {
+    throw new Error(`appgen: ${(e as Error).message}`);
+  }
   return dest;
 }
 
@@ -440,13 +456,13 @@ async function writeFile(
 /** Rewrite `<dir>/app/loom.gen.ts` from the flows discovered on disk (the `loom gen` step). */
 function regenerateRegistration(dir: string, io: AppgenIO, result: AppgenResult): void {
   const appDir = path.join(dir, "app");
-  const genPath = path.join(appDir, "loom.gen.ts");
+  const genPath = resolveInside(dir, path.join("app", "loom.gen.ts"));
   const existed = io.exists(genPath);
   io.write(genPath, generateRegistration(discoverFlows(appDir)));
   (existed ? result.overwritten : result.written).push(genPath);
 }
 
-function defaultIO(): AppgenIO {
+function defaultIO(dir: string): AppgenIO {
   // A line-queue reader over stdin: robust for both interactive TTYs and piped input
   // (where readline emits every buffered line up front, which `rl.question` would drop
   // between successive prompts). Prompts are written manually; EOF resolves pending
@@ -477,10 +493,9 @@ function defaultIO(): AppgenIO {
   };
 
   return {
-    exists: (p) => fs.existsSync(p),
+    exists: (p) => fs.existsSync(p) || isLink(p),
     write: (p, contents) => {
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(p, contents);
+      safeWriteFile(dir, p, contents);
     },
     resolveConflict: async (existingPath) => {
       for (;;) {
@@ -498,4 +513,12 @@ function defaultIO(): AppgenIO {
     },
     close: () => rl?.close(),
   };
+}
+
+function isLink(p: string): boolean {
+  try {
+    return fs.lstatSync(p).isSymbolicLink();
+  } catch {
+    return false;
+  }
 }

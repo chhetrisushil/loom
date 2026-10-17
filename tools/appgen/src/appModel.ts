@@ -39,6 +39,12 @@ export interface AppModel {
   /** True if `root` looks like an existing Loom app (folder-convention markers). */
   isExisting: boolean;
   flows: FlowModel[];
+  /**
+   * Root-relative paths the scan REFUSED to follow because they are symbolic links (`app`,
+   * `app/flows`, a flow folder, or a `flow.ts`). A link is not an in-project source: it can point
+   * anywhere, so the scan neither reads through it nor offers it as a flow to edit.
+   */
+  skippedLinks?: string[];
 }
 
 /** The folder-convention markers that identify an existing Loom app under `root`. */
@@ -56,26 +62,50 @@ export function isExistingApp(root: string): boolean {
  * writes nothing. A missing `app/flows` directory (net-new) yields `flows: []`.
  */
 export function scanApp(root: string): AppModel {
-  const flowsDir = path.join(root, "app", "flows");
+  const appDir = path.join(root, "app");
+  const flowsDir = path.join(appDir, "flows");
   const flows: FlowModel[] = [];
-  if (fs.existsSync(flowsDir)) {
-    const entries = fs
-      .readdirSync(flowsDir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .sort((a, b) => a.name.localeCompare(b.name));
+  const skippedLinks: string[] = [];
+  const isLink = (p: string): boolean => {
+    try {
+      return fs.lstatSync(p).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  };
+  if (isLink(appDir)) {
+    skippedLinks.push("app");
+  } else if (isLink(flowsDir)) {
+    skippedLinks.push(path.join("app", "flows"));
+  } else if (fs.existsSync(flowsDir)) {
+    const all = fs.readdirSync(flowsDir, { withFileTypes: true });
+    // `Dirent` is lstat-based: a symlinked flow folder is not `isDirectory()`; record it instead of
+    // dropping it silently.
+    for (const e of all) {
+      if (e.isSymbolicLink()) skippedLinks.push(path.join("app", "flows", e.name));
+    }
+    const entries = all.filter((e) => e.isDirectory()).sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
       for (const ext of ["ts", "tsx"]) {
         const abs = path.join(flowsDir, entry.name, `flow.${ext}`);
+        const rel = path.join("app", "flows", entry.name, `flow.${ext}`);
+        if (isLink(abs)) {
+          skippedLinks.push(rel);
+          break;
+        }
         if (fs.existsSync(abs)) {
-          flows.push(
-            scanFlowFile(abs, path.join("app", "flows", entry.name, `flow.${ext}`), entry.name)
-          );
+          flows.push(scanFlowFile(abs, rel, entry.name));
           break;
         }
       }
     }
   }
-  return { root, isExisting: isExistingApp(root), flows };
+  return {
+    root,
+    isExisting: isExistingApp(root),
+    flows,
+    ...(skippedLinks.length > 0 && { skippedLinks }),
+  };
 }
 
 function scanFlowFile(abs: string, rel: string, folderId: string): FlowModel {

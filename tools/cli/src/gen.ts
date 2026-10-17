@@ -11,6 +11,7 @@ import {
   templateNotes,
 } from "@loom/scaffold";
 import { UsageError } from "./args";
+import { safeWriteFile } from "./safeWrite";
 import { type TreeChange, watchTree } from "./watch";
 
 /**
@@ -117,7 +118,8 @@ export function cmdGen(dir: string): {
   const memories = discoverMemories(dir);
   const projections = discoverProjections(dir);
   const out = path.join(dir, "loom.gen.ts");
-  fs.writeFileSync(
+  safeWriteFile(
+    dir,
     out,
     generateRegistration(flows, agents, tools, skills, schedules, memories, projections)
   );
@@ -341,8 +343,7 @@ export function cmdNew(
   const written = files.map(({ path: rel, content }) => {
     const dest = path.join(dir, rel.replace(/^app\//, ""));
     if (fs.existsSync(dest)) return { path: dest, created: false };
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.writeFileSync(dest, content);
+    safeWriteFile(dir, dest, content);
     return { path: dest, created: true };
   });
   const [main, ...extras] = written as [(typeof written)[number], ...typeof written];
