@@ -162,7 +162,7 @@ describe("CLI exit codes + nothing-written refusals", () => {
   it("a positional after a boolean flag is a positional", async () => {
     // `--json` was swallowed as the value of... nothing; `logs --json <id>` must resolve the id.
     expect(await run(["logs", "--db", db, "--json", "done"])).toBe(0);
-    expect(err.join("\n")).toContain("--json is not implemented yet");
+    expect(err).toEqual([]);
   });
 
   it("a failed verdict stays exit 1 (compat major mismatch)", async () => {

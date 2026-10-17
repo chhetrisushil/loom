@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { maskPaths } from "@loom/classify";
+import type { EventEnvelope } from "@loom/core";
 import {
   type EvalReport,
   type Golden,
@@ -48,6 +50,65 @@ export async function cmdDebug(
       return describeState(foldAt(events, at), redact);
     }
     return `${formatLog(events, redact)}\n\n${describeState(foldAt(events), redact)}`;
+  } finally {
+    await resolved.close();
+  }
+}
+
+/**
+ * `--redact` for machine output: the same dot-paths the text view masks, applied to the payload
+ * root AND to `payload.output` (the text view's only echo of step/flow output). Machine output
+ * carries the whole payload, so the mask must not be narrower than the operator's flag.
+ */
+function redactedEnvelope(e: EventEnvelope, redact: readonly string[]): EventEnvelope {
+  if (redact.length === 0) return e;
+  const payload = maskPaths(e.payload ?? {}, redact) as Record<string, unknown>;
+  if (payload.output !== undefined) payload.output = maskPaths(payload.output, redact);
+  return { ...e, payload } as EventEnvelope;
+}
+
+/** `loom logs --json` — ndjson, one event envelope per line. */
+export async function cmdLogsJson(
+  flags: StoreFlags,
+  executionId: string,
+  redact: readonly string[] = []
+): Promise<string> {
+  const resolved = await resolveStores(flags);
+  const store = resolved.eventStore;
+  try {
+    const events = await store.read(executionId);
+    if (events.length === 0) throw await noSuchExecution(store, executionId);
+    return events.map((e) => JSON.stringify(redactedEnvelope(e, redact))).join("\n");
+  } finally {
+    await resolved.close();
+  }
+}
+
+/** `loom debug --json` — `{ ok, executionId, at?, eventCount, state }`. */
+export async function cmdDebugJson(
+  flags: StoreFlags,
+  executionId: string,
+  at?: number,
+  redact: readonly string[] = []
+): Promise<unknown> {
+  const resolved = await resolveStores(flags);
+  const store = resolved.eventStore;
+  try {
+    const events = await store.read(executionId);
+    if (events.length === 0) throw await noSuchExecution(store, executionId);
+    const state = foldAt(events, at);
+    const out = state.variables._output;
+    const masked =
+      out === undefined
+        ? state
+        : { ...state, variables: { ...state.variables, _output: maskPaths(out, redact) } };
+    return {
+      ok: true,
+      executionId,
+      ...(at !== undefined && { at }),
+      eventCount: events.length,
+      state: masked,
+    };
   } finally {
     await resolved.close();
   }

@@ -17,6 +17,10 @@ cd my-app && pnpm install && pnpm test && pnpm start
 loom new flow checkout      # scaffold a definition (+ its flow.test.ts)
 loom gen                    # regenerate loom.gen.ts
 loom doctor                 # what can I check right now?
+loom logs --help            # per-command help (also: loom help logs, loom version)
+loom doctor --json          # machine output: stdout is one JSON document, exit code unchanged
+loom doctor --strict        # a check that could not run is a failure (--require verify,timers)
+loom completion zsh         # also bash | fish: tab completion from the command table
 ```
 
 Outside the checkout `--loom-path` is required (`create-loom-app` refuses without it); inside it

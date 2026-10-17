@@ -15,8 +15,14 @@ import { parseDuration } from "./duration";
 export type FlagKind = "boolean" | "string" | "int" | "duration";
 
 export interface CommandSpec {
+  /** One line: what the command does (shown by `loom help <cmd>` and in shell completion). */
+  summary: string;
+  /** Synopsis lines, one invocation each (shown by `loom <cmd> --help`). */
+  usage: readonly string[];
   /** flag name (no leading dashes) → kind */
   flags: Readonly<Record<string, FlagKind>>;
+  /** First positional words that select a mode, e.g. `plugin new|check|…` (for completion). */
+  subcommands?: readonly string[];
 }
 
 /** Exit code 2: bad usage or a refusal. Exit 1 is reserved for a failed verdict / runtime error. */
@@ -50,13 +56,28 @@ const STORE = {
   leases: "string",
 } as const satisfies Record<string, FlagKind>;
 
-const inspector: CommandSpec = { flags: { ...STORE, port: "int" } };
+const inspector: CommandSpec = {
+  summary: "web inspector (timeline + slider) over a store",
+  usage: ["loom inspect <store> [--port N]"],
+  flags: { ...STORE, port: "int" },
+};
 
 export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
-  // `json` is accepted-and-warned (it was always swallowed here); real output lands with F11.
-  logs: { flags: { ...STORE, redact: "string", json: "boolean" } },
-  debug: { flags: { ...STORE, at: "int", redact: "string" } },
+  logs: {
+    summary: "print an execution's event timeline (--json: one event per line)",
+    usage: ["loom logs <store> <executionId> [--redact a,b] [--json]"],
+    flags: { ...STORE, redact: "string", json: "boolean" },
+  },
+  debug: {
+    summary: "time-travel: the folded state of an execution at sequence N",
+    usage: ["loom debug <store> <executionId> [--at N] [--redact a,b] [--json]"],
+    flags: { ...STORE, at: "int", redact: "string", json: "boolean" },
+  },
   recover: {
+    summary: "re-drive executions whose supervisor died (dry run unless --apply)",
+    usage: [
+      "loom recover <store> [--stale 15m] [--owner <id>] [--limit N] [--max-recoveries N] [--apply]",
+    ],
     flags: {
       ...STORE,
       stale: "duration",
@@ -67,6 +88,12 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     },
   },
   branches: {
+    summary: "retire or prune execution branches (dry run unless --apply)",
+    usage: [
+      "loom branches retire <store> --parent <id> --stale <d> [--limit N] [--apply]",
+      "loom branches prune <store> [--protect main,rel] [--limit N] [--apply]",
+    ],
+    subcommands: ["retire", "prune"],
     flags: {
       ...STORE,
       limit: "int",
@@ -76,10 +103,32 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       protect: "string",
     },
   },
-  census: { flags: { ...STORE, buckets: "string", sample: "int", json: "boolean" } },
-  repair: { flags: { ...STORE, apply: "boolean", force: "boolean", assign: "string" } },
-  retention: { flags: { ...STORE, ttl: "duration", apply: "boolean" } },
+  census: {
+    summary: "what is stuck, and is anything watching it (read-only)",
+    usage: ["loom census <store> [--buckets 5m,1h,6h,24h] [--sample N] [--json]"],
+    flags: { ...STORE, buckets: "string", sample: "int", json: "boolean" },
+  },
+  repair: {
+    summary: "repair known log damage (dry run unless --apply)",
+    usage: [
+      "loom repair blank-stream <store> [--assign <id>:<from>-<through>,…] [--apply]",
+      "loom repair terminal-event <store> [executionId] [--apply] [--force]",
+    ],
+    subcommands: ["blank-stream", "terminal-event"],
+    flags: { ...STORE, apply: "boolean", force: "boolean", assign: "string" },
+  },
+  retention: {
+    summary: "reclaim aged terminal executions (needs --ttl; dry run unless --apply)",
+    usage: ["loom retention run <store> --ttl <dur|ms> [--apply]"],
+    subcommands: ["run"],
+    flags: { ...STORE, ttl: "duration", apply: "boolean" },
+  },
   sweep: {
+    summary: "pinned blob sweep over content stores (dry run unless --apply)",
+    usage: [
+      "loom sweep content <store> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]",
+    ],
+    subcommands: ["content"],
     flags: {
       ...STORE,
       content: "string",
@@ -93,17 +142,81 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       "snapshots-touch-content": "boolean",
     },
   },
-  compliance: { flags: { ...STORE, "subject-path": "string", "tenant-path": "string" } },
-  eval: { flags: { dir: "string" } },
-  lint: { flags: { dir: "string" } },
-  check: { flags: { manifest: "string" } },
-  doctor: { flags: { dir: "string", config: "string", manifest: "string" } },
-  verify: { flags: { config: "string", manifest: "string" } },
-  profile: { flags: { ...STORE } },
-  introspect: { flags: { ...STORE, graph: "string" } },
-  optimize: { flags: { ...STORE } },
-  learn: { flags: { ...STORE, policy: "string", "min-steps": "int" } },
+  compliance: {
+    summary: "data-subject inventory over a store",
+    usage: ["loom compliance report <store> --subject-path <p> [--tenant-path <p>]"],
+    subcommands: ["report"],
+    flags: { ...STORE, "subject-path": "string", "tenant-path": "string" },
+  },
+  eval: {
+    summary: "replay golden logs against expectations (CI gate)",
+    usage: ["loom eval --dir <path> [--json]"],
+    flags: { dir: "string", json: "boolean" },
+  },
+  lint: {
+    summary: "CC-5: flag claim-check reach-through inside flows",
+    usage: ["loom lint claim-check [--dir .] [--json]"],
+    subcommands: ["claim-check"],
+    flags: { dir: "string", json: "boolean" },
+  },
+  check: {
+    summary: "static flow-graph checks over the compiler manifest",
+    usage: ["loom check --manifest <path> [--json]"],
+    flags: { manifest: "string", json: "boolean" },
+  },
+  doctor: {
+    summary: "run every pre-flight check that can run, and report which could not",
+    usage: [
+      "loom doctor [--dir .] [--config <module>] [--manifest <path>] [--strict] [--require <check,check>] [--json]",
+      "  --strict    every check that could not run becomes a failure (exit 1)",
+      "  --require   the named checks must have run; ids: flow-graph, verify, memory-store, timers, timer-ownership, heartbeat-leases, encryption-keys, plaintext-snapshot, archive-snapshot, claim-check",
+    ],
+    flags: {
+      dir: "string",
+      config: "string",
+      manifest: "string",
+      strict: "boolean",
+      require: "string",
+      json: "boolean",
+    },
+  },
+  verify: {
+    summary: "pre-flight runtime verification (@loom/verify)",
+    usage: ["loom verify --config <module> [--manifest <path>] [--json]"],
+    flags: { config: "string", manifest: "string", json: "boolean" },
+  },
+  profile: {
+    summary: "flame graph + latency breakdown of an execution",
+    usage: ["loom profile <store> <executionId> [--json]"],
+    flags: { ...STORE, json: "boolean" },
+  },
+  introspect: {
+    summary: "execution/task/decision/resource graphs of an execution",
+    usage: ["loom introspect <store> <executionId> [--graph N] [--json]"],
+    flags: { ...STORE, graph: "string", json: "boolean" },
+  },
+  optimize: {
+    summary: "advisory optimization report (recommendations) for an execution",
+    usage: ["loom optimize <store> <executionId>"],
+    flags: { ...STORE },
+  },
+  learn: {
+    summary: "learning coverage report; shadow-evaluate a candidate policy on real logs",
+    usage: [
+      "loom learn report <store> [executionId]",
+      "loom learn eval <store> --policy <module> [--min-steps N] [executionId]",
+    ],
+    subcommands: ["report", "eval"],
+    flags: { ...STORE, policy: "string", "min-steps": "int" },
+  },
   knowledge: {
+    summary: "reconcile, list and search a knowledge corpus",
+    usage: [
+      "loom knowledge sync --config <mod> --scope <s> --dir <path> [--ext md,txt] [--source <s>] [--apply]",
+      "loom knowledge list --config <mod> --scope <s>",
+      'loom knowledge search --config <mod> --scope <s> "<query>" [--limit N]',
+    ],
+    subcommands: ["sync", "list", "search"],
     flags: {
       config: "string",
       scope: "string",
@@ -115,8 +228,16 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       limit: "int",
     },
   },
-  "kernel-manifest": { flags: { json: "boolean", "emit-docs": "string" } },
+  "kernel-manifest": {
+    summary: "kernel version + maturity manifest",
+    usage: ["loom kernel-manifest [--json] [--emit-docs <dir>]"],
+    flags: { json: "boolean", "emit-docs": "string" },
+  },
   compat: {
+    summary: "validate a deployment's declared contract versions against this kernel",
+    usage: [
+      "loom compat --abi <v> --event-schema <v> [--wire <v>] [--event-store-spi <v>] [--snapshot-store-spi <v>] [--branch-registry-spi <v>] [--dispatcher-spi <v>] [--compiler-manifest <v>] [--json]",
+    ],
     flags: {
       abi: "string",
       "event-schema": "string",
@@ -126,11 +247,31 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       "branch-registry-spi": "string",
       "dispatcher-spi": "string",
       "compiler-manifest": "string",
+      json: "boolean",
     },
   },
-  gen: { flags: { dir: "string" } },
-  new: { flags: { dir: "string" } },
+  gen: {
+    summary: "regenerate loom.gen.ts from app/flows",
+    usage: ["loom gen [--dir app]"],
+    flags: { dir: "string" },
+  },
+  new: {
+    summary: "scaffold a flow, agent, tool, skill, schedule, memory, projection or sentinel",
+    usage: [
+      "loom new <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app]",
+    ],
+    flags: { dir: "string" },
+  },
   plugin: {
+    summary: "scaffold, validate, try and search plugins",
+    usage: [
+      "loom plugin new <seam> <name> [--first-party] [--dir .]",
+      "loom plugin check [--dir .] [--publish]",
+      "loom plugin try --module <path> [--preset <name>] [--options <json>]",
+      "loom plugin search <term>",
+      "loom plugin seams",
+    ],
+    subcommands: ["new", "check", "try", "search", "seams"],
     flags: {
       dir: "string",
       publish: "boolean",
@@ -142,6 +283,12 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     },
   },
   appgen: {
+    summary: "natural language to a new project or edits (dry run with --dry-run)",
+    usage: [
+      "loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]",
+      "loom appgen ... --model <spec> [--model-big <spec>]",
+      "loom appgen --from-spec <file> [--dir .]",
+    ],
     flags: {
       dir: "string",
       "dry-run": "boolean",
@@ -155,10 +302,30 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       yes: "boolean",
     },
   },
-  deploy: { flags: { logs: "string", config: "string" } },
+  deploy: {
+    summary: "simulate a deploy against new flow definitions",
+    usage: ["loom deploy check --logs <dir> --config <module>"],
+    subcommands: ["check"],
+    flags: { logs: "string", config: "string" },
+  },
   inspect: inspector,
-  dev: inspector,
-  help: { flags: {} },
+  dev: { ...inspector, summary: "alias of inspect", usage: ["loom dev <store> [--port N]"] },
+  help: {
+    summary: "show the usage of every command, or of one",
+    usage: ["loom help [command]"],
+    flags: {},
+  },
+  version: {
+    summary: "print the @loom/cli version",
+    usage: ["loom version", "loom --version"],
+    flags: {},
+  },
+  completion: {
+    summary: "print a shell completion script",
+    usage: ["loom completion <zsh|bash|fish>"],
+    subcommands: ["zsh", "bash", "fish"],
+    flags: {},
+  },
 };
 
 export interface Parsed {
@@ -245,11 +412,6 @@ export function parseArgs(argv: string[]): Parsed {
   for (const t of loose.tokens ?? []) {
     if (t.kind === "option" && !Object.hasOwn(spec.flags, t.name)) {
       const shown = t.rawName ?? `--${t.name}`;
-      if (t.name === "help" || t.name === "h") {
-        throw new UsageError(
-          `loom ${command}: ${shown} is not a flag — per-command help is not available yet; run \`loom help\` for the usage of every command`
-        );
-      }
       const shortOrNumeric = !shown.startsWith("--");
       const hint = suggest(t.name, known);
       const closeEnough =
