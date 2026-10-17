@@ -1,6 +1,12 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { generateRegistration, newFile } from "@loom/scaffold";
+import {
+  THIRD_PARTY_SPECS,
+  constructNameProblem,
+  generateRegistration,
+  importedPackages,
+  newFiles,
+} from "@loom/scaffold";
 
 /**
  * Discover flow modules under `<dir>/flows/<name>/flow.{ts,tsx}` — the folder
@@ -90,6 +96,12 @@ export function cmdGen(dir: string): {
   memories: number;
   projections: number;
 } {
+  // A typo'd --dir used to be created on the spot and "succeed" with 0 of everything.
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+    throw new Error(
+      `loom gen: --dir "${dir}" is not an existing directory (resolved ${path.resolve(dir)}) — pass the folder that holds flows/, agents/, … (default "app")`
+    );
+  }
   const flows = discoverFlows(dir);
   const agents = discoverAgents(dir);
   const tools = discoverTools(dir);
@@ -97,7 +109,6 @@ export function cmdGen(dir: string): {
   const schedules = discoverSchedules(dir);
   const memories = discoverMemories(dir);
   const projections = discoverProjections(dir);
-  fs.mkdirSync(dir, { recursive: true });
   const out = path.join(dir, "loom.gen.ts");
   fs.writeFileSync(
     out,
@@ -116,22 +127,77 @@ export function cmdGen(dir: string): {
   };
 }
 
-/** `loom new <kind> <name> [--dir app]` — scaffold a single flow/agent/tool file. */
+/** Nearest `package.json` at or above `dir`, parsed — or undefined when there is none. */
+function nearestManifest(dir: string): Record<string, unknown> | undefined {
+  let cur = path.resolve(dir);
+  for (;;) {
+    const file = path.join(cur, "package.json");
+    if (fs.existsSync(file)) {
+      try {
+        return JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+      } catch {
+        return undefined;
+      }
+    }
+    const up = path.dirname(cur);
+    if (up === cur) return undefined;
+    cur = up;
+  }
+}
+
+/**
+ * The exact `"pkg": "spec"` lines the app's `package.json` is missing for the packages the
+ * generated files import. `@loom/*` take the spec the app already uses for `@loom/core`
+ * (`workspace:*` in the monorepo, `*` + a `link:` override elsewhere). Never edits the file.
+ */
+function missingDependencies(dir: string, contents: string[]): string[] {
+  const manifest = nearestManifest(dir);
+  if (manifest === undefined) return [];
+  const sections = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
+  const have = new Map<string, string>();
+  for (const sec of sections) {
+    const table = manifest[sec];
+    if (table && typeof table === "object") {
+      for (const [k, v] of Object.entries(table)) have.set(k, String(v));
+    }
+  }
+  const loomSpec = have.get("@loom/core") ?? "workspace:*";
+  const wanted = new Set(contents.flatMap(importedPackages));
+  return [...wanted]
+    .filter((p) => !have.has(p))
+    .map((p) => `"${p}": "${p.startsWith("@loom/") ? loomSpec : (THIRD_PARTY_SPECS[p] ?? "*")}"`);
+}
+
+/**
+ * `loom new <kind> <name> [--dir app]` — scaffold a single flow/agent/tool file (and, for a flow,
+ * a sibling test). The name must be kebab-case and can never leave the convention folder.
+ * `missingDeps` is the `package.json` lines the new files need that the app does not declare.
+ */
 export function cmdNew(
   kind: string,
   name: string,
   dir: string
-): { path: string; created: boolean } {
+): {
+  path: string;
+  created: boolean;
+  extras: { path: string; created: boolean }[];
+  missingDeps: string[];
+} {
   const kinds = ["flow", "agent", "tool", "skill", "schedule", "memory", "projection", "sentinel"];
   if (!kinds.includes(kind)) {
     throw new Error(`unknown kind "${kind}" — expected ${kinds.join(" | ")}`);
   }
-  const { path: rel, content } = newFile(kind as Parameters<typeof newFile>[0], name);
-  const dest = path.join(dir, rel.replace(/^app\//, ""));
-  if (fs.existsSync(dest)) {
-    return { path: dest, created: false };
-  }
-  fs.mkdirSync(path.dirname(dest), { recursive: true });
-  fs.writeFileSync(dest, content);
-  return { path: dest, created: true };
+  const problem = constructNameProblem(name);
+  if (problem !== undefined) throw new Error(`loom new: ${problem}`);
+  const files = newFiles(kind as Parameters<typeof newFiles>[0], name);
+  const written = files.map(({ path: rel, content }) => {
+    const dest = path.join(dir, rel.replace(/^app\//, ""));
+    if (fs.existsSync(dest)) return { path: dest, created: false };
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, content);
+    return { path: dest, created: true };
+  });
+  const [main, ...extras] = written as [(typeof written)[number], ...typeof written];
+  const fresh = files.filter((_, i) => written[i]?.created).map((f) => f.content);
+  return { ...main, extras, missingDeps: missingDependencies(dir, fresh) };
 }

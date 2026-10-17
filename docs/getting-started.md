@@ -15,20 +15,25 @@ This guide takes you from zero to a **durable flow that runs, pauses for a human
 
 ## 1. Scaffold an app
 
-Loom's `@loom/*` packages are **not published to npm yet**, so today you build the framework from a
-checkout and scaffold your app inside its pnpm workspace (`apps/*` is a workspace glob):
+Loom's `@loom/*` packages are **not published to npm yet**, so you build the framework from a
+checkout once and point `create-loom-app` at it. An app anywhere on disk links to the built checkout
+with `--loom-path`:
 
 ```bash
 git clone git@github.com:chhetrisushil/loom.git
 cd loom
 pnpm install && pnpm build          # `pnpm build:fast` is quicker for the edit-rebuild loop
-node tools/create-loom-app/dist/index.js apps/my-app
-pnpm install                        # links the new app to the workspace packages
-cd apps/my-app && pnpm test         # the scaffold ships a passing test
+node tools/create-loom-app/dist/index.js ~/code/my-app --loom-path "$PWD"
+cd ~/code/my-app
+pnpm install                        # resolves @loom/* through link: overrides into the checkout
+pnpm test                           # the scaffold ships a passing test
+pnpm start                          # runs the greet flow once
 ```
 
-(`pnpm link:global` at the repo root also puts `create-loom-app` and `loom` on your PATH.) The app
-declares its `@loom/*` dependencies as `workspace:*`, which is why it has to live inside the checkout.
+(`pnpm link:global` at the repo root also puts `create-loom-app` and `loom` on your PATH.) Without
+`--loom-path`, outside the checkout, `create-loom-app` refuses before writing anything: `workspace:*`
+cannot resolve there. Scaffolding **inside** the checkout (`node tools/create-loom-app/dist/index.js
+apps/my-app`, then `pnpm install` from the repo root) needs no flag and uses `workspace:*`.
 
 > **Once published**, this collapses to `npm create loom-app@latest my-app && cd my-app && pnpm install`.
 > That command does not work yet.
@@ -57,8 +62,8 @@ and build `loom` first. Run an example with `pnpm --filter @loom/<name> start` f
 The scaffold already ships a `greet` flow (`app/flows/greet/flow.ts`, registered in `app/config.ts`).
 Sections 2 to 7 build **new** flows (`helloFlow`, then `approveFlow`) in files you add under `src/`:
 create each file, then add the flow to the `flows` array of your `defineConfig` (in `app/config.ts`),
-or use the `defineConfig` snippets below in a scratch script. Section 6 also needs
-`@loom/testing` added to the app's `devDependencies` (the scaffold does not include it).
+or use the `defineConfig` snippets below in a scratch script. Section 6 uses
+`@loom/testing`, which the scaffold already lists in `devDependencies`.
 
 A flow has two parts:
 
