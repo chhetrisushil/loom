@@ -165,8 +165,9 @@ help
   loom version                                    print the @loom/cli version (also --version)
   loom completion <zsh|bash|fish>                 print a shell completion script
 
-  <store-flags>  where a command reads storage — FLAGS, never a positional path (loom logs events.db <id>
-                 reads "events.db" as the execution id). Either half works for every command above:
+  <store-flags>  where a command reads storage — FLAGS, never a positional path (a bare path is refused;
+                 next to --db, "loom logs --db x.db events.db" reads "events.db" as the execution id).
+                 Either half works for every command above:
     --config <module>    the stores YOUR app wired (defineConfig) — SQLite, Postgres, or any
                          conforming backend; importing it starts nothing
     --db <events.db> [--snap <s.db>] [--branches <b.db>] [--leases <l.db>]
