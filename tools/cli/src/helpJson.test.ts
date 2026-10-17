@@ -26,7 +26,6 @@ describe("per-command help comes from the command table", () => {
 
   it("every command the table knows appears in the grouped top-level USAGE", () => {
     for (const name of Object.keys(COMMANDS)) {
-      if (name === "dev") continue; // an alias, documented with `inspect`
       expect(USAGE, `USAGE never mentions loom ${name}`).toContain(`loom ${name}`);
     }
   });

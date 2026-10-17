@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -45,10 +45,58 @@ describe.skipIf(!ENABLED)("create-loom-app day one (real install)", () => {
     expect(sh("pnpm", ["start"], app)).toContain("output: 'world'");
 
     // The generated test for a new flow must pass on a fresh scaffold, too.
-    sh("pnpm", ["exec", "loom", "new", "flow", "order-check"], app);
+    // (`loom new` runs `gen` itself now; the explicit `pnpm gen` stays idempotent.)
+    const created = sh("pnpm", ["exec", "loom", "new", "flow", "order-check"], app);
+    expect(created).toMatch(/wrote .*loom\.gen\.ts \(2 flows,/);
     sh("pnpm", ["gen"], app);
     expect(existsSync(join(app, "app/flows/order-check/flow.test.ts"))).toBe(true);
     expect(sh("pnpm", ["test"], app)).toContain("2 passed");
     expect(sh("pnpm", ["start"], app)).toContain("output: 'world'");
-  }, 300_000);
+
+    // The non-agentic templates: each scaffolds a flow whose own test (time travel included)
+    // passes on a fresh app. `saga` imports a package the scaffold does not declare - the hint
+    // `loom new` prints is the line we add, which proves the hint is right.
+    const manifestPath = join(app, "package.json");
+    let expected = 2;
+    for (const [template, tests] of [
+      ["approval", 2],
+      ["timer", 1],
+      ["saga", 2],
+    ] as const) {
+      const name = `${template}-flow`;
+      const printed = sh(
+        "pnpm",
+        ["exec", "loom", "new", "flow", name, "--template", template],
+        app
+      );
+      expect(existsSync(join(app, `app/flows/${name}/flow.test.ts`))).toBe(true);
+      const hint = /"(@loom\/saga)": "([^"]+)"/.exec(printed);
+      if (template === "saga") {
+        expect(hint, "loom new must say @loom/saga is missing").not.toBeNull();
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+          dependencies: Record<string, string>;
+        };
+        manifest.dependencies["@loom/saga"] = (hint as RegExpExecArray)[2] as string;
+        writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+        sh("pnpm", ["install", "--prefer-offline"], app);
+        // The scaffold is `security.strict`: the saga's tool steps need grants, as the note says.
+        expect(printed).toContain("SagaFlowGrants");
+        const sec = join(app, "app/security.ts");
+        const text = readFileSync(sec, "utf8");
+        const patched = text
+          .replace(
+            "import { createHash }",
+            'import { SagaFlowGrants } from "./flows/saga-flow/flow";\nimport { createHash }'
+          )
+          .replace('greet: ["greet-step"],', 'greet: ["greet-step"],\n  ...SagaFlowGrants,');
+        expect(patched).not.toBe(text);
+        writeFileSync(sec, patched);
+      } else {
+        expect(hint).toBeNull();
+      }
+      expected += tests;
+      expect(sh("pnpm", ["test"], app)).toContain(`${expected} passed`);
+    }
+    expect(sh("pnpm", ["start"], app)).toContain("output: 'world'");
+  }, 600_000);
 });

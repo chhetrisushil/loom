@@ -1,4 +1,5 @@
 import { generateRegistration, pascal } from "./codegen";
+import { type FlowTemplate, templateFiles } from "./flowTemplates";
 
 // ── Per-file templates (used by `loom new`, following the folder convention) ──
 
@@ -229,13 +230,17 @@ export function projectionFile(name: string): string {
 /** Route `loom new <kind> <name>` to the file it generates (path + contents). */
 export function newFile(
   kind: "flow" | "agent" | "tool" | "skill" | "schedule" | "memory" | "projection" | "sentinel",
-  name: string
+  name: string,
+  template: FlowTemplate = "echo"
 ): { path: string; content: string } {
   switch (kind) {
     case "sentinel":
       return { path: `app/flows/${name}/flow.ts`, content: sentinelFile(name) };
     case "flow":
-      return { path: `app/flows/${name}/flow.ts`, content: flowFile(name) };
+      return {
+        path: `app/flows/${name}/flow.ts`,
+        content: template === "echo" ? flowFile(name) : templateFiles(template, name).flow,
+      };
     case "agent":
       return { path: `app/agents/${name}.ts`, content: agentFile(name) };
     case "tool":
@@ -257,11 +262,15 @@ export function newFile(
  */
 export function newFiles(
   kind: Parameters<typeof newFile>[0],
-  name: string
+  name: string,
+  template: FlowTemplate = "echo"
 ): { path: string; content: string }[] {
-  const files = [newFile(kind, name)];
+  const files = [newFile(kind, name, template)];
   if (kind === "flow") {
-    files.push({ path: `app/flows/${name}/flow.test.ts`, content: flowTestFile(name) });
+    files.push({
+      path: `app/flows/${name}/flow.test.ts`,
+      content: template === "echo" ? flowTestFile(name) : templateFiles(template, name).test,
+    });
   }
   return files;
 }

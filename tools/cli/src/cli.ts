@@ -39,8 +39,11 @@ export function parseRedact(flag: string | undefined): string[] {
 export const USAGE = `loom — project-local commands for a Loom app
 
 scaffold
-  loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
-  loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] scaffold a file
+  loom gen   [--dir app] [--watch]                regenerate loom.gen.ts from app/flows (--watch: keep it current)
+  loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] [--no-gen] scaffold a file, then run gen
+  loom new   flow <name> --template echo|approval|timer|saga [--dir app]  a non-agentic starter (human gate, timer, compensation)
+  loom dev   --config <module> [--dir app] [--run <command>] [--port N]  the dev loop: gen --watch + run the app,
+                                                  restarting on change + the inspector (NOT an alias of inspect)
   loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
                                                   (--dry-run previews; --check typechecks after apply)
   loom appgen ... --model <spec> [--model-big <spec>]  plan with a model of your choice
@@ -766,29 +769,21 @@ async function dispatch(
       return ok ? 0 : 1;
     }
     case "gen": {
-      const { cmdGen } = await import("./gen");
+      const { cmdGen, genSummary, genWatch } = await import("./gen");
       const dir = flags.dir ?? "app";
-      const {
-        out: file,
-        flows,
-        agents,
-        tools,
-        skills,
-        schedules,
-        memories,
-        projections,
-      } = cmdGen(dir);
-      const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
-      const parts = [
-        plural(flows, "flow"),
-        plural(agents, "agent"),
-        plural(tools, "tool"),
-        plural(skills, "skill"),
-        plural(schedules, "schedule"),
-        plural(memories, "memory").replace("memorys", "memories"),
-        plural(projections, "projection"),
-      ];
-      out(`wrote ${file} (${parts.join(", ")})`);
+      if (flags.watch === "true") {
+        const ac = new AbortController();
+        const stop = () => ac.abort();
+        process.once("SIGINT", stop);
+        process.once("SIGTERM", stop);
+        try {
+          return await genWatch(dir, { log: out, signal: ac.signal });
+        } finally {
+          process.removeListener("SIGINT", stop);
+          process.removeListener("SIGTERM", stop);
+        }
+      }
+      out(genSummary(cmdGen(dir)));
       return 0;
     }
     case "new": {
@@ -796,16 +791,33 @@ async function dispatch(
       const name = positionals[1];
       if (name === undefined) throw new UsageError("missing required <name>");
       const dir = flags.dir ?? "app";
-      const { cmdNew } = await import("./gen");
-      const { path: dest, created, extras, missingDeps } = cmdNew(kind, name, dir);
+      const { cmdNew, cmdGen, genSummary } = await import("./gen");
+      const {
+        path: dest,
+        created,
+        extras,
+        missingDeps,
+        notes,
+      } = cmdNew(kind, name, dir, flags.template);
       for (const f of [{ path: dest, created }, ...extras]) {
         out(f.created ? `created ${f.path}` : `skipped ${f.path} (already exists)`);
+      }
+      if (flags["no-gen"] !== "true") {
+        // The next thing you would do. Forgetting it gave "Cannot find module ./flows/x/flow".
+        try {
+          out(genSummary(cmdGen(dir)));
+        } catch (err) {
+          out(
+            `gen failed (the files above were written): ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
       }
       if (missingDeps.length > 0) {
         out(
           `\nthese files import packages your package.json does not declare — add to its dependencies/devDependencies, then install:\n${missingDeps.map((l) => `  ${l}`).join("\n")}`
         );
       }
+      for (const note of notes) out(`\nnote - ${note}`);
       return created ? 0 : 1;
     }
     case "plugin": {
@@ -955,8 +967,52 @@ async function dispatch(
       out(text);
       return report.ok ? 0 : 1;
     }
-    case "inspect":
     case "dev": {
+      if (flags.config === undefined) {
+        throw new UsageError(
+          "loom dev: --config <module> is required (it names the app whose stores the inspector reads). `loom dev` is now the dev loop; for only the inspector over a store use `loom inspect <store>`"
+        );
+      }
+      const dir = flags.dir ?? "app";
+      const { resolveRunCommand, runDev } = await import("./dev");
+      const command = resolveRunCommand(process.cwd(), flags.run);
+      const ac = new AbortController();
+      const stop = () => ac.abort();
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      // The inspector reads the config's stores from THIS process. It is best effort: a config
+      // that does not load yet (mid-edit) must not stop the loop, only the inspector.
+      let closeInspector: (() => Promise<void>) | undefined;
+      try {
+        const { resolveStores } = await import("./stores");
+        const { serveInspector } = await import("./inspector");
+        const stores = await resolveStores(storeFlagsOf({ config: flags.config }));
+        const server = serveInspector(
+          stores.eventStore,
+          flags.port !== undefined ? { port: Number.parseInt(flags.port, 10) } : {}
+        );
+        await server.start();
+        out(
+          `loom inspector on ${server.url}  (reads ${flags.config} in this process: use durable storage, e.g. sqlite, to see the app's executions)`
+        );
+        closeInspector = async () => {
+          await server.stop();
+          await stores.close();
+        };
+      } catch (err) {
+        out(
+          `loom dev: inspector unavailable: ${err instanceof Error ? err.message : String(err)}\n  (continuing without it)`
+        );
+      }
+      try {
+        return await runDev({ dir, command, log: out, signal: ac.signal });
+      } finally {
+        process.removeListener("SIGINT", stop);
+        process.removeListener("SIGTERM", stop);
+        await closeInspector?.();
+      }
+    }
+    case "inspect": {
       if (!hasStoreFlagsOrDiscover(flags, command)) return storeFlagError(command);
       const { resolveStores } = await import("./stores");
       const { serveInspector } = await import("./inspector");
