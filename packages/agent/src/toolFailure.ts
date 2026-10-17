@@ -42,6 +42,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "StartFencedOutError",
   "PrincipalUnrestorableError",
   "StorageWriteError",
+  // a lifecycle op could not read the execution's sequence 0 (a store fault): infrastructure, retry is the caller's, not the model's
+  "ExecutionStoreUnavailableError",
   // a deployment mismatch (this node cannot write per-topic inbox streams after the fleet switch): no retry helps
   "InboxTopicStreamsRequiredError",
   // a sealed inbox payload this node cannot open: retrying on the same node cannot help (ADR 0130)

@@ -78,17 +78,64 @@ erasure error when the recorded principal is itself sealed and shredded.
 **Rule.** For every authorizer-gated op the verdict is reached from **sequence 0 alone** (the
 plaintext workflow id and the recorded principal, one point read that `ownerForAuthz` reuses), before
 any checkpoint load, fold, full read or caller-supplied code. A sequence 0 this node cannot decode
-(shredded principal, decrypt or storage fault) is an execution that EXISTS with an UNKNOWN owner: the
-policy decides exactly as for any unknown-owner execution, so the denied caller gets the ordinary
-`ExecutionDeniedError`, never a status-revealing error. A stream-level seal refusal is unchanged
-(ADR 0130 D7: `sealedOp` words it as that op's unknown-owner denial). An authorized caller is
-unaffected: it proceeds to the same fold and gets the same errors as before (a shredded execution
-still raises `PayloadShreddedError`; `cancel` still folds the redacted view and works).
+BECAUSE OF AN ERASURE (`PayloadShreddedError`, or a `KeyUnavailableError` whose redacted view records
+the erase intent) is an execution that EXISTS with an UNKNOWN owner: the policy decides exactly as for
+any unknown-owner execution, so the denied caller gets the ordinary `ExecutionDeniedError`, never a
+status-revealing error. A stream-level seal refusal is unchanged (ADR 0130 D7: `sealedOp` words it as
+that op's unknown-owner denial; the seal guard also turns a raw `KeyUnavailableError` into that
+refusal before `readAnchor` sees it, so the intent test is a defensive second layer). An authorized
+caller is unaffected: it proceeds to the same fold and gets the same errors as before (a shredded
+execution still raises `PayloadShreddedError`; `cancel` still folds the redacted view and works;
+`acquireFence` and `fork` re-read an unreadable sequence 0 so a caller the policy lets through, e.g.
+`unknownOwner: "allow"`, gets the original error instead of proceeding).
+
+**Failures that are not erasures.** Any other failure to read sequence 0 (a storage fault, a transient
+key-service error, a `KeyUnavailableError` without the erase intent) says nothing about the execution,
+so it is NOT an unknown owner: judging it so denied the legitimate owner (a false `onExecutionDenied`,
+e.g. a worker's `acquireFence` during a database blip) and reported a missing id as existing. It throws
+the new `ExecutionStoreUnavailableError` (`@loom/workflow-runtime`): retryable (`retryable: true`),
+carrying only `op` and `executionId`, with no cause, workflow id, subject or redacted view, and
+IDENTICAL for the owner and a stranger (a fault must not become a status oracle). The real cause goes
+to `onStorageError`. `cancel` of a live execution and `restoreFromState` read the owner through the
+same anchor read (they have none in hand), so they follow the same rule. Residual: `ownerForAuthz`
+keeps its catch-all "unknown owner" for the trusted-lineage (parent) walk, which only withholds a
+`parentOwner` and never denies the execution's own owner.
+
+**Workflow id of an unreadable anchor.** The authorizer and `onExecutionDenied` get the envelope's
+plaintext `workflowId` column, taken from the redacted view the erasure error carries (else the
+error's own `workflowId`). For an in-tree store this is always present. A THIRD-PARTY decorator whose
+erasure error carries neither yields `""`: the authorizer then sees an empty workflow id (an
+`allowWorkflows` policy refuses it with `workflow "" is not permitted`). Such a decorator should
+attach `redacted` (as `EncryptingEventStore` does). A sealed refusal's callback now carries the
+refusal's plaintext workflow id too (it was `""`).
+
+**Reason oracle (documented residual, not redesigned).** What is indistinguishable is the ERROR the
+fold or decrypt path throws. The denial REASON is the policy's own and still differs by what the
+policy knows: an execution whose owner is unknown (an erased principal, a sealed stream, a legacy log
+with no principal) is refused with `UNKNOWN_OWNER_REASON`, an execution with a recorded owner of
+another tenant with "the execution belongs to another tenant". A caller who sees reasons can
+therefore tell an unknown-owner execution from an owned one. Closing it would mean the policy
+answering one reason for both (losing the operator-facing distinction in `onExecutionDenied`, which
+carries the same text); left to the integrator, pinned by `authzBeforeFold.test.ts`.
+
+**Reads.** The verdict costs one indexed point read of sequence 0, handed on to the owner lookup and
+to the fold (`foldState`'s existence anchor, `resume`'s carried-scanner path), so `loadState` reads
+sequence 0 once where it read twice and the carried `resume` path reads it once as before. The first
+(uncarried) `resume` and `resumeAs` read the whole log anyway; they pay ONE added point read, the
+inherent price of a verdict that must precede that read. Counts are pinned by a counting-store test.
+
+**Orphan checkpoints.** An id with no sequence 0 is "missing" to the authorizer. If a checkpoint
+a retention sweep left behind then fails to load, `loadState`, `resume` and `resumeAs` read that as not found
+(with `denyMissing` for an anonymous strict caller) instead of surfacing the checkpoint error to a
+caller the authorizer is consulted for. The kernel's system grant is not gated and keeps the error.
 
 **Writes.** A read denial writes nothing. A denied `resume`/`resumeAs`/`cancel` keeps its best-effort
 `EXECUTION_DENIED`, now placed at the folded tip found AFTER the verdict; if that fold cannot be read
 (shredded, sealed, bad checkpoint) the audit fact is skipped rather than surface the error to the
-denied caller (the thrown denial is the enforcement). `onExecutionDenied` fires as before.
+denied caller (the thrown denial is the enforcement). `onExecutionDenied` fires as before. The fact
+is therefore absent for a denied `resume`/`resumeAs` of a shredded execution (its strict fold throws)
+and for every op whose checkpoint or stream is unreadable; a denied `cancel` of a shredded execution
+keeps it (the redacted fold is readable).
 
 **Missing vs denied (unchanged, intended).** An execution that does not exist is judged by the
 authorizer before "not found" is revealed only for an ANONYMOUS caller under `strict`
@@ -98,10 +145,15 @@ starting it, and a policy cannot tell a free id from a forbidden one without bre
 a documented residual, not changed here. `start` of an existing id keeps `ExecutionAlreadyExistsError`
 for the same reason.
 
-Verification: `authzBeforeFold.test.ts` runs every gated op as a denied principal against a shredded
-execution (steps and checkpoint sealed), one whose recorded principal is sealed too, a sealed stream,
-a key-unavailable checkpoint and a foreign-identity checkpoint, and demands the shape (error class,
-message, reason, audit callback) of the ordinary denial, no `transformState` call, and no append
-beyond the write ops' `EXECUTION_DENIED`; a counting store asserts a denied `loadState` performs no
-`read`, no `readFrom` and no checkpoint load; an authorized caller still gets `PayloadShreddedError`
-(and a working `cancel`). No event shape changes: `EVENT_SCHEMA` and `KERNEL_ABI` are unchanged.
+Verification: `authzBeforeFold.test.ts` runs EVERY gated op, one test per (world, op), as a denied
+principal against a shredded execution (steps and checkpoint sealed), one whose recorded principal is
+sealed too, a sealed stream, a key-unavailable checkpoint and a foreign-identity checkpoint, and
+demands the shape (error class, message, reason, audit callback including the workflow id) of the
+ordinary denial, no `transformState` call, and the same appended events as the ordinary execution
+(the audit-skip exceptions above are stated in the file). The file's header table says which cells
+failed before the fix and which are vacuous. A counting store pins the reads; a faulting store pins
+the retryable error (owner = stranger, no detail, no denial callback, nothing written) for every op; a
+raw `KeyUnavailableError` with and without the erase intent, the workflow-id fallback, the orphan
+checkpoint and the `acquireFence`/`fork` re-read each have a test; an authorized caller still gets
+`PayloadShreddedError` (and a working `cancel`). No event shape changes: `EVENT_SCHEMA` and
+`KERNEL_ABI` are unchanged.

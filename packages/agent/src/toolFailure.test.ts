@@ -88,6 +88,7 @@ const TERMINAL = new Set([
   "StartFencedOutError",
   "PrincipalUnrestorableError",
   "StorageWriteError",
+  "ExecutionStoreUnavailableError",
   "InboxTopicStreamsRequiredError",
   "SealedPayloadUnreadableError",
   "QuarantineHeldError",
