@@ -797,6 +797,23 @@ const STRAY_WARNING_MEMORY = 4096;
 
 /** R3k round 2 (ADR 0111 D6) — how far up a `parent` chain an owner is looked for. */
 const MAX_LINEAGE_HOPS = 8;
+
+/**
+ * Is `err` PROOF the record was erased: a `PayloadShreddedError`, or a `KeyUnavailableError` whose
+ * redacted view records the erase intent (the ShredIncomplete window)? The ONLY failures that mean
+ * "unknown owner" rather than "the store/resolver faulted, retry" (ADR 0039, amendment 2026-10-17).
+ */
+function isErasure(err: unknown): boolean {
+  const e = err as { name?: unknown } | null;
+  if (e?.name === "PayloadShreddedError") return true;
+  return (
+    isKeyUnavailable(err) &&
+    recordsErasureIntent(
+      err.redacted ?? [],
+      typeof err.subjectId === "string" ? err.subjectId : undefined
+    )
+  );
+}
 /** Bound on the per-execution sealed-refusal report counters. */
 const SEALED_REPORT_CAP = 1024;
 /** ADR 0116 — how many times a reopen re-slots its bootstrap over late outcomes that took its slot. */
@@ -1392,6 +1409,7 @@ export class WorkflowRuntime {
    * is an unknown owner and gets neither: it never borrows its parent's authority.
    */
   private async ownerForAuthz(
+    op: ExecutionOp,
     executionId: string,
     principal: PrincipalChain | undefined,
     system: SystemGrant | undefined,
@@ -1433,7 +1451,14 @@ export class WorkflowRuntime {
     } catch (err) {
       // A stream this node cannot open is NOT an "unknown owner" for the policy to judge.
       if (err instanceof SealedStreamUnreadableError) throw err;
-      return {}; // an owner we cannot read is an unknown owner: the policy decides
+      // Only a PROVEN erasure is an unknown owner (the policy's `unknownOwner` rule decides).
+      if (isErasure(err)) return {};
+      // ANY OTHER fault (the store, the principal resolver / codec, a lineage hop) is no evidence
+      // about the execution: it is the sanitized, retryable error `readAnchor` raises, identical for
+      // the owner and a stranger, never an "unknown owner" (which would falsely DENY the real owner
+      // and could ADMIT a stranger under `unknownOwner: "allow"`). Nothing is allowed on a fault.
+      this.onStorageError?.(executionId, err);
+      throw new ExecutionStoreUnavailableError(op, executionId);
     }
   }
 
@@ -1451,12 +1476,12 @@ export class WorkflowRuntime {
     system: SystemGrant | undefined
   ): Promise<AuthzOwners> {
     if (!this.authzApplies(principal, system) || this.startRecords.has(executionId)) {
-      return this.ownerForAuthz(executionId, principal, system);
+      return this.ownerForAuthz(op, executionId, principal, system);
     }
     const anchor = await this.readAnchor(op, executionId);
     return anchor.unreadable
-      ? this.ownerForAuthz(executionId, principal, system)
-      : this.ownerForAuthz(executionId, principal, system, { first: anchor.first });
+      ? this.ownerForAuthz(op, executionId, principal, system)
+      : this.ownerForAuthz(op, executionId, principal, system, { first: anchor.first });
   }
 
   /**
@@ -1739,14 +1764,7 @@ export class WorkflowRuntime {
         workflowId?: unknown;
         subjectId?: unknown;
       } | null;
-      const erased =
-        e?.name === "PayloadShreddedError" ||
-        (isKeyUnavailable(err) &&
-          recordsErasureIntent(
-            err.redacted ?? [],
-            typeof err.subjectId === "string" ? err.subjectId : undefined
-          ));
-      if (!erased) {
+      if (!isErasure(err)) {
         this.onStorageError?.(executionId, err);
         throw new ExecutionStoreUnavailableError(op, executionId);
       }
@@ -1786,8 +1804,8 @@ export class WorkflowRuntime {
     const missing = anchor.first === undefined && !anchor.unreadable;
     if (missing) return { ...anchor, missing, denial: undefined };
     const owners = anchor.unreadable
-      ? await this.ownerForAuthz(executionId, principal, system)
-      : await this.ownerForAuthz(executionId, principal, system, { first: anchor.first });
+      ? await this.ownerForAuthz(op, executionId, principal, system)
+      : await this.ownerForAuthz(op, executionId, principal, system, { first: anchor.first });
     const denial = this.authzDenial(op, executionId, anchor.workflowId, principal, system, owners);
     return { ...anchor, missing, denial };
   }
@@ -2791,8 +2809,8 @@ export class WorkflowRuntime {
         !exists
           ? undefined
           : anchor.unreadable
-            ? await this.ownerForAuthz(executionId, options?.principal, options?.system)
-            : await this.ownerForAuthz(executionId, options?.principal, options?.system, {
+            ? await this.ownerForAuthz(op, executionId, options?.principal, options?.system)
+            : await this.ownerForAuthz(op, executionId, options?.principal, options?.system, {
                 first: anchor.first,
               })
       );
@@ -2942,7 +2960,7 @@ export class WorkflowRuntime {
         f.workflowId,
         options?.principal,
         options?.system,
-        await this.ownerForAuthz(id, options?.principal, options?.system, { first: f })
+        await this.ownerForAuthz("cancel", id, options?.principal, options?.system, { first: f })
       );
       if (denial !== undefined) {
         await this.denyOp("cancel", id, f.workflowId, options?.principal, denial.reason, undefined);
@@ -3755,7 +3773,7 @@ export class WorkflowRuntime {
         workflowId,
         options?.principal,
         options?.system,
-        await this.ownerForAuthz(executionId, options?.principal, options?.system, {
+        await this.ownerForAuthz("resume", executionId, options?.principal, options?.system, {
           first: firstEvent,
         })
       );
@@ -4276,7 +4294,7 @@ export class WorkflowRuntime {
         head.workflowId,
         options?.principal,
         options?.system,
-        await this.ownerForAuthz(head.id, options?.principal, options?.system, {
+        await this.ownerForAuthz("send", head.id, options?.principal, options?.system, {
           first: head.first,
         })
       );
@@ -4552,7 +4570,7 @@ export class WorkflowRuntime {
         head.workflowId,
         options?.principal,
         options?.system,
-        await this.ownerForAuthz(head.id, options?.principal, options?.system, {
+        await this.ownerForAuthz("discard", head.id, options?.principal, options?.system, {
           first: head.first,
         })
       );
@@ -4713,7 +4731,9 @@ export class WorkflowRuntime {
         head.workflowId,
         options.principal,
         options.system,
-        await this.ownerForAuthz(head.id, options.principal, options.system, { first: head.first })
+        await this.ownerForAuthz(op, head.id, options.principal, options.system, {
+          first: head.first,
+        })
       );
       if (headDenial !== undefined) {
         await this.denyOp(
@@ -6958,7 +6978,7 @@ export class WorkflowRuntime {
         workflowId,
         options.principal,
         options.system,
-        await this.ownerForAuthz(executionId, options.principal, options.system, {
+        await this.ownerForAuthz("resume", executionId, options.principal, options.system, {
           first: firstEvent,
         })
       );
@@ -7162,7 +7182,7 @@ export class WorkflowRuntime {
         state.workflowId,
         options?.principal,
         options?.system,
-        await this.ownerForAuthz(executionId, options?.principal, options?.system)
+        await this.ownerForAuthz("query", executionId, options?.principal, options?.system)
       );
       if (denial !== undefined) {
         throw new ExecutionDeniedError("query", executionId, denial.reason);
@@ -7417,8 +7437,8 @@ export class WorkflowRuntime {
         await this.denyMissing("query", parentExecutionId, opts?.principal, opts?.system);
       } else {
         const parentOwner = anchor.unreadable
-          ? await this.ownerForAuthz(parentExecutionId, opts?.principal, opts?.system)
-          : await this.ownerForAuthz(parentExecutionId, opts?.principal, opts?.system, {
+          ? await this.ownerForAuthz("query", parentExecutionId, opts?.principal, opts?.system)
+          : await this.ownerForAuthz("query", parentExecutionId, opts?.principal, opts?.system, {
               first: anchor.first,
             });
         const queryDenial = this.authzDenial(

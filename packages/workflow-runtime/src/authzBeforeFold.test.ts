@@ -852,3 +852,205 @@ describe("a 'missing' id never shows what an ORPHAN checkpoint would say", () =>
     expect((err as Error).message).toBe(BOOM);
   });
 });
+
+// ── FU-B (ADR 0039 amendment 2026-10-17, second) ────────────────────────────────────────────────
+// Reading sequence 0 fine and THEN failing to resolve the owner (the principal resolver throws, a
+// lineage hop's store read fails) is the same kind of fault as a failed anchor read: no evidence about
+// the execution. It used to become an "unknown owner" (denying the REAL owner, and ADMITTING a stranger
+// under `unknownOwner: "allow"`). It is now the sanitized, retryable ExecutionStoreUnavailableError.
+
+describe("an owner-resolution fault AFTER sequence 0 read fine is retryable, never an unknown owner", () => {
+  const CAUSE = "resolver backend ECONNREFUSED idp.internal:443 (tenant t1, workflow secret)";
+
+  async function resolverWorld(extra: Record<string, unknown> = {}) {
+    const inner = new InMemoryAsyncEventStore();
+    const fault = { on: false, error: () => new Error(CAUSE) as unknown };
+    const reports: unknown[] = [];
+    const opts = {
+      principalResolver: {
+        resolve: (rec: { identity?: Record<string, string> }) => {
+          if (fault.on) throw fault.error();
+          return rec.identity !== undefined ? { ...rec.identity } : undefined;
+        },
+      },
+      onStorageError: (_id: string, e: unknown) => reports.push(e),
+      ...extra,
+    };
+    const first = node(inner, undefined, opts);
+    await (
+      await first.h.rt.start(first.f, {}, { executionId: E, principal: OWNER })
+    ).waitForSuspend();
+    // a fresh node over the same log: no live start record, so the owner is read and RESOLVED
+    return { inner, fault, reports, n: node(inner, undefined, opts) };
+  }
+
+  for (const [name, call] of OPS) {
+    it(`${name}: a resolver fault is the same sanitized retryable error for the owner and a stranger; the owner succeeds after`, async () => {
+      transformCalls.length = 0; // the module-level spy: the previous op's RETRY may have run it
+      const w = await resolverWorld();
+      const before = await kindsOf(w.inner);
+      w.fault.on = true;
+      const owner = await rejection(call(w.n, OWNER));
+      const stranger = await rejection(call(w.n, STRANGER));
+      w.fault.on = false;
+      expect(nameOf(owner), "owner").toBe("ExecutionStoreUnavailableError");
+      expect(owner).toBeInstanceOf(ExecutionStoreUnavailableError);
+      expect((owner as { retryable?: unknown }).retryable).toBe(true);
+      expect(shape(stranger), "a stranger learns nothing the owner does not").toEqual(shape(owner));
+      for (const e of [owner, stranger]) {
+        expect(Object.keys(e as object).sort()).toEqual(["executionId", "name", "op", "retryable"]);
+        expect((e as Error).message).not.toContain("ECONNREFUSED");
+        expect((e as Error).message).not.toContain("secret");
+        expect((e as { cause?: unknown }).cause).toBeUndefined();
+      }
+      // not a denial: no audit callback, nothing appended, no caller code run
+      expect(w.n.denied).toEqual([]);
+      expect(await kindsOf(w.inner)).toEqual(before);
+      expect(transformCalls).toEqual([]);
+      // the operator channel gets the real cause
+      expect(w.reports.map((r) => (r as Error).message)).toContain(CAUSE);
+      // the retry, with the fault cleared, is neither the fault nor a denial
+      const retry = await rejection(call(w.n, OWNER));
+      expect(nameOf(retry), "retry").not.toBe("ExecutionStoreUnavailableError");
+      expect(nameOf(retry), "retry").not.toBe("ExecutionDeniedError");
+    });
+  }
+
+  it("loadState: the owner reads the state once the resolver recovers", async () => {
+    const w = await resolverWorld();
+    w.fault.on = true;
+    expect(nameOf(await rejection(w.n.h.rt.loadState(E, { principal: OWNER })))).toBe(
+      "ExecutionStoreUnavailableError"
+    );
+    w.fault.on = false;
+    expect((await w.n.h.rt.loadState(E, { principal: OWNER }))?.status).toBe("suspended");
+  });
+
+  it("a fault is NEVER an allow: a stranger under unknownOwner 'allow' gets the retryable error, not the state", async () => {
+    const w = await resolverWorld({
+      executionAuthorizer: executionAccessPolicy({ ...POLICY, unknownOwner: "allow" }),
+    });
+    w.fault.on = true;
+    for (const [name, call] of OPS) {
+      const err = await rejection(call(w.n, STRANGER));
+      expect(nameOf(err), name).toBe("ExecutionStoreUnavailableError");
+    }
+    // ...and once the resolver is back the owner is known, so the stranger is refused as usual
+    w.fault.on = false;
+    expect(nameOf(await rejection(w.n.h.rt.loadState(E, { principal: STRANGER })))).toBe(
+      "ExecutionDeniedError"
+    );
+  });
+
+  it("a resolver error that is a proven ERASURE is still an unknown owner (the policy decides), as before", async () => {
+    const w = await resolverWorld();
+    w.fault.error = () =>
+      Object.assign(new Error("subject erased"), { name: "PayloadShreddedError" });
+    w.fault.on = true;
+    const err = await rejection(w.n.h.rt.loadState(E, { principal: STRANGER }));
+    expect(nameOf(err)).toBe("ExecutionDeniedError");
+    expect((err as { reason?: unknown }).reason).toBe(UNKNOWN_OWNER_REASON);
+    expect(w.reports).toEqual([]);
+  });
+
+  it("the system grant never consults the resolver, so it is unchanged by the fault", async () => {
+    const w = await resolverWorld();
+    w.fault.on = true;
+    const sys = w.n.h.rt.systemOptions();
+    expect((await w.n.h.rt.loadState(E, sys))?.status).toBe("suspended");
+    expect(w.reports).toEqual([]);
+  });
+
+  describe("a lineage hop (the parent's sequence 0) that faults", () => {
+    const CHILD = "authz-child";
+    async function lineageWorld() {
+      const inner = new InMemoryAsyncEventStore();
+      const fault = { on: false };
+      const reports: unknown[] = [];
+      // only the PARENT's sequence 0 fails: the child's own anchor reads fine
+      const store = new Proxy(inner, {
+        get(target, prop, receiver) {
+          const v = Reflect.get(target, prop, receiver);
+          if (typeof v !== "function") return v;
+          return (...args: unknown[]) =>
+            fault.on && prop === "readRange" && args[0] === E && args[1] === 0 && args[2] === 0
+              ? Promise.reject(new Error(CAUSE))
+              : (v as (...a: unknown[]) => unknown).apply(target, args);
+        },
+      }) as unknown as EventStore;
+      const opts = { onStorageError: (_id: string, e: unknown) => reports.push(e) };
+      const a = node(inner, undefined, opts);
+      await (await a.h.rt.start(a.f, {}, { executionId: E, principal: OWNER })).waitForSuspend();
+      await (
+        await a.h.rt.start(
+          a.f,
+          {},
+          { executionId: CHILD, parentExecutionId: E, ...a.h.rt.systemOptions() }
+        )
+      ).waitForSuspend();
+      return { inner, fault, reports, n: node(store, undefined, opts) };
+    }
+
+    it("the parent's owner is told to retry (not denied) and succeeds after; a stranger gets the same error", async () => {
+      const w = await lineageWorld();
+      // sanity: the parent's owner may read the child (ADR 0111 D6) while the chain reads fine
+      expect((await w.n.h.rt.loadState(CHILD, { principal: OWNER }))?.status).toBe("suspended");
+      w.fault.on = true;
+      const owner = await rejection(w.n.h.rt.loadState(CHILD, { principal: OWNER }));
+      const stranger = await rejection(w.n.h.rt.loadState(CHILD, { principal: STRANGER }));
+      expect(nameOf(owner)).toBe("ExecutionStoreUnavailableError");
+      expect(shape(stranger)).toEqual(shape(owner));
+      expect((owner as { op?: unknown }).op).toBe("query");
+      expect(w.n.denied).toEqual([]);
+      expect(w.reports.map((r) => (r as Error).message)).toContain(CAUSE);
+      w.fault.on = false;
+      expect((await w.n.h.rt.loadState(CHILD, { principal: OWNER }))?.status).toBe("suspended");
+    });
+  });
+});
+
+describe("an AUTHORIZED caller on an ERASED anchor keeps PayloadShreddedError (the authorizer lets it through)", () => {
+  // `unknownOwner: "allow"` admits an execution whose principal is erased. The shared helper then
+  // RE-READS the anchor so the caller gets the very error it got before the authorizer moved first,
+  // never "No execution found" for an execution that exists.
+  const allow = {
+    executionAuthorizer: executionAccessPolicy({ ...POLICY, unknownOwner: "allow" }),
+  };
+  async function erased() {
+    const inner = new InMemoryAsyncEventStore();
+    const keys = new InMemoryKeyStore();
+    const events = new EncryptingEventStore(inner, keys, {
+      sensitive: { STEP_COMPLETED: ["output"], EXECUTION_STARTED: PRINCIPAL_PATHS },
+    });
+    const opts = { principalIdentity: "encrypted", ...allow };
+    const w = node(events, undefined, opts);
+    await (await w.h.rt.start(w.f, {}, { executionId: E, principal: OWNER })).waitForSuspend();
+    await shredSubject(keys, inner, E, { snapshotStore: { loadLatest: async () => null } });
+    return node(events, undefined, opts);
+  }
+  const cases: Array<[string, (n: Node) => Promise<unknown>]> = [
+    ["send", (n) => n.h.rt.send(E, { topic: "t", payload: "x" }, { principal: OWNER })],
+    [
+      "discardInbox",
+      (n) => n.h.rt.discardInbox(E, { topic: "t", throughSeq: 1 }, { principal: OWNER }),
+    ],
+    ["quarantineInbox", (n) => n.h.rt.quarantineInbox(E, { topic: "t" }, { principal: OWNER })],
+    [
+      "releaseInbox",
+      (n) => n.h.rt.releaseInbox(E, { topic: "t", messageId: "m" }, { principal: OWNER }),
+    ],
+    [
+      "recordOutcome",
+      (n) =>
+        n.h.rt.recordOutcome(E, { decisionId: "d", key: "k", success: true }, { principal: OWNER }),
+    ],
+  ];
+  for (const [name, call] of cases) {
+    it(name, async () => {
+      const n = await erased();
+      const err = await rejection(call(n));
+      expect(nameOf(err)).toBe("PayloadShreddedError");
+      expect(n.denied).toEqual([]);
+    });
+  }
+});
