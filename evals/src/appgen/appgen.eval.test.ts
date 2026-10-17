@@ -212,9 +212,8 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
     );
 
     it(
-      "(a3) a plan the validator ACCEPTS but whose code does not typecheck is reported invalid with the compiler error",
+      "(a3) a plan with a duplicate step id is rejected by the validator (fixed 2026-10-17), after the repair round",
       async () => {
-        // Duplicate step ids pass `validateChangeSpec` and generate `const classifyStep` twice.
         const dup = {
           content: JSON.stringify({
             name: "ticket-router",
@@ -240,12 +239,53 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
           cassette: swap("new-ticket-router", bad),
         });
         const o = run.outcomes.get("new-ticket-router");
+        expect(o?.valid).toBe(false);
+        expect(o?.reasons.join(" ")).toMatch(
+          /flow "ticket-router" declares step id "classify" more than once/
+        );
+        expect(o?.replies.length).toBe(2); // asked, repaired once, still wrong
+        expect(gate(run)).toContain("validity");
+        expect(gate(model)).toEqual([]);
+      },
+      T
+    );
+
+    it(
+      "(a3b) a plan the validator ACCEPTS but whose code does not typecheck is reported invalid with the compiler error",
+      async () => {
+        // Two DIFFERENT, kebab-case step ids ("a-b", "a--b") that both become `const aBStep`:
+        // validator-clean, a duplicate declaration for tsc.
+        const clash = {
+          content: JSON.stringify({
+            name: "ticket-router",
+            capabilities: [
+              {
+                id: "ticket-router",
+                name: "Ticket Router",
+                intent: "x",
+                op: "create",
+                steps: [
+                  { id: "a-b", op: "create" },
+                  { id: "a--b", op: "create" },
+                ],
+              },
+            ],
+          }),
+          stopReason: "end_turn" as const,
+        };
+        const bad = await authorAppgenCassette(kase("new-ticket-router"), typechecker, () => clash);
+        const run = await runAppgenSuite({
+          arm: "model",
+          typechecker,
+          cassette: swap("new-ticket-router", bad),
+        });
+        const o = run.outcomes.get("new-ticket-router");
         expect(o?.spec?.planner).toBe("model"); // accepted as a plan ...
         expect(o?.valid).toBe(false); // ... and still invalid
         expect(o?.reasons.join(" ")).toMatch(
           /typecheck: TS\d+ app\/flows\/ticket-router\/flow\.ts\(\d+\)/
         );
-        expect(o?.reasons.join(" ")).toMatch(/classifyStep/);
+        expect(o?.reasons.join(" ")).toMatch(/aBStep/);
         expect(gate(run)).toContain("validity");
         expect(gate(model)).toEqual([]);
       },
