@@ -169,7 +169,7 @@ describe("validateChangeSpec", () => {
         name: "P",
         intent: "tidy",
         op: "extend",
-        steps: [{ id: "summarize", op: "delete" }],
+        steps: [{ id: "run", op: "delete" }],
       },
     ]);
     const flowDel = spec([{ id: "planner", name: "P", intent: "tidy", op: "delete", steps: [] }]);
@@ -177,7 +177,7 @@ describe("validateChangeSpec", () => {
       `op "delete" on "${id}" but the request does not ask to delete anything — only delete what the user explicitly asks to remove`;
     expect(validateChangeSpec(del, EXISTING, "Tidy up the planner")).toEqual([msg("planner")]);
     expect(validateChangeSpec(flowDel, EXISTING, "Add a step")).toEqual([msg("planner")]);
-    expect(validateChangeSpec(del, EXISTING, "Please REMOVE step summarize")).toEqual([]);
+    expect(validateChangeSpec(del, EXISTING, "Please REMOVE step run")).toEqual([]);
     expect(validateChangeSpec(flowDel, EXISTING, "get rid of the planner")).toEqual([]);
     expect(validateChangeSpec(flowDel, EXISTING, "undeleted things")).toEqual([msg("planner")]);
   });
