@@ -1,0 +1,34 @@
+# Loom evals scoreboard
+
+| metric | value | gated |
+| --- | ---: | :---: |
+| `retrieval/memory/knowledge/ndcg@10` | 0.7213 | yes |
+| `retrieval/memory/knowledge/recall@5` | 0.8030 | yes |
+| `retrieval/memory/memory/ndcg@10` | 0.7213 | yes |
+| `retrieval/memory/memory/recall@5` | 0.8030 | yes |
+| `retrieval/postgres/knowledge/ndcg@10` | 0.7031 | yes |
+| `retrieval/postgres/knowledge/recall@5` | 0.7121 | yes |
+| `retrieval/postgres/memory/ndcg@10` | 0.7031 | yes |
+| `retrieval/postgres/memory/recall@5` | 0.7121 | yes |
+| `retrieval/sqlite/knowledge/ndcg@10` | 0.7782 | yes |
+| `retrieval/sqlite/knowledge/recall@5` | 0.7879 | yes |
+| `retrieval/sqlite/memory/ndcg@10` | 0.7782 | yes |
+| `retrieval/sqlite/memory/recall@5` | 0.7879 | yes |
+| `skills/combined/hit@1` | 0.8333 | yes |
+| `skills/combined/hit@3` | 0.8333 | yes |
+| `skills/two-ranker/hit@1` | 0.8333 | yes |
+| `skills/two-ranker/hit@3` | 0.8333 | yes |
+| `toolSearch/factory/mrr` | 0.9583 | yes |
+| `toolSearch/factory/mrr:annotation` | 1.0000 | yes |
+| `toolSearch/factory/mrr:plain` | 0.9286 | yes |
+| `toolSearch/factory/mrr:stoplist` | 1.0000 | yes |
+| `toolSearch/factory/precision:stoplist` | 0.1550 | yes |
+| `toolSearch/factory/recall@3` | 0.9549 | yes |
+| `toolSearch/factory/recall@5` | 0.9549 | yes |
+| `toolSearch/real/mrr` | 0.9583 | yes |
+| `toolSearch/real/mrr:annotation` | 1.0000 | yes |
+| `toolSearch/real/mrr:plain` | 0.9286 | yes |
+| `toolSearch/real/mrr:stoplist` | 1.0000 | yes |
+| `toolSearch/real/precision:stoplist` | 0.1550 | yes |
+| `toolSearch/real/recall@3` | 0.9549 | yes |
+| `toolSearch/real/recall@5` | 0.9549 | yes |

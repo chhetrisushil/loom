@@ -16,13 +16,31 @@ const dedupe = (ranked: readonly string[]): string[] => [...new Set(ranked)];
 const asSet = (relevant: Iterable<string>): Set<string> => new Set(relevant);
 
 /** Fraction of the relevant set found in the top `k`. */
-export function recallAtK(ranked: readonly string[], relevant: Iterable<string>, k: number): number {
+export function recallAtK(
+  ranked: readonly string[],
+  relevant: Iterable<string>,
+  k: number
+): number {
   const rel = asSet(relevant);
   if (rel.size === 0 || k <= 0) return 0;
   const top = dedupe(ranked).slice(0, k);
   let found = 0;
   for (const id of top) if (rel.has(id)) found++;
   return found / rel.size;
+}
+
+/**
+ * Fraction of the returned page that is relevant. It measures NOISE: a ranker that returns the right
+ * tool first and nine unrelated ones after still has a perfect reciprocal rank. An empty page, or an
+ * empty relevant set, scores 0.
+ */
+export function precision(ranked: readonly string[], relevant: Iterable<string>): number {
+  const rel = asSet(relevant);
+  const page = dedupe(ranked);
+  if (rel.size === 0 || page.length === 0) return 0;
+  let found = 0;
+  for (const id of page) if (rel.has(id)) found++;
+  return found / page.length;
 }
 
 /** 1 when any relevant id is in the top `k`, else 0. */
@@ -54,7 +72,9 @@ export function mean(values: readonly number[]): number {
 }
 
 /** Mean reciprocal rank over `(ranked, relevant)` pairs. */
-export function mrr(cases: ReadonlyArray<{ ranked: readonly string[]; relevant: Iterable<string> }>): number {
+export function mrr(
+  cases: ReadonlyArray<{ ranked: readonly string[]; relevant: Iterable<string> }>
+): number {
   return mean(cases.map((c) => reciprocalRank(c.ranked, c.relevant)));
 }
 
@@ -66,7 +86,11 @@ export function mrr(cases: ReadonlyArray<{ ranked: readonly string[]; relevant: 
  * grade-1 one); with grades in {0, 1} this is the binary nDCG. The ideal ordering is every graded id,
  * best first, cut at `k`. No relevant id at all scores 0.
  */
-export function ndcgAtK(ranked: readonly string[], gains: Readonly<Record<string, number>>, k: number): number {
+export function ndcgAtK(
+  ranked: readonly string[],
+  gains: Readonly<Record<string, number>>,
+  k: number
+): number {
   if (k <= 0) return 0;
   const gain = (id: string): number => 2 ** Math.max(0, gains[id] ?? 0) - 1;
   const discount = (i: number): number => Math.log2(i + 2);
