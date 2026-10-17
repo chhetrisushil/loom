@@ -7,6 +7,7 @@ import {
   recoverAbandoned,
   retireAbandonedBranches,
 } from "@loom/workflow-runtime";
+import { UsageError } from "./args";
 import { parseDuration } from "./duration";
 import { type ResolvedStores, type StoreFlags, resolveStores } from "./stores";
 
@@ -62,34 +63,42 @@ export async function cmdRecover(
     flags.maxRecoveries !== undefined &&
     (!Number.isSafeInteger(flags.maxRecoveries) || flags.maxRecoveries < 1)
   ) {
-    return "loom recover: --max-recoveries must be an integer ≥ 1 (0 would skip every execution).";
+    throw new UsageError(
+      "loom recover: --max-recoveries must be an integer ≥ 1 (0 would skip every execution)."
+    );
   }
   const stores = await resolveStores(flags);
   try {
     const staleMs = flags.stale === undefined ? undefined : parseDuration(flags.stale);
     if (stores.leaseStore === undefined && staleMs === undefined) {
-      return [
-        "loom recover needs to know what counts as abandoned, and will not guess:",
-        "  • wire `timers.leases` in your app — an expired lease is evidence, not a guess; or",
-        "  • pass --stale <duration> to state your rule explicitly (e.g. --stale 15m).",
-        "A running execution owned by a healthy node is byte-identical to an orphaned one.",
-      ].join("\n");
+      throw new UsageError(
+        [
+          "loom recover needs to know what counts as abandoned, and will not guess:",
+          "  • wire `timers.leases` in your app — an expired lease is evidence, not a guess; or",
+          "  • pass --stale <duration> to state your rule explicitly (e.g. --stale 15m).",
+          "A running execution owned by a healthy node is byte-identical to an orphaned one.",
+        ].join("\n")
+      );
     }
 
     // Without leases the candidate set comes from enumerating the log, which is an OPTIONAL
     // capability. Name it and the store, rather than letting the library throw.
     if (stores.leaseStore === undefined && stores.eventStore.listExecutions === undefined) {
-      return `loom recover has no --stale candidates to scan: the configured ${stores.eventStore.constructor.name} does not implement listExecutions. Wire \`timers.leases\` — expired leases enumerate themselves.`;
+      throw new UsageError(
+        `loom recover has no --stale candidates to scan: the configured ${stores.eventStore.constructor.name} does not implement listExecutions. Wire \`timers.leases\` — expired leases enumerate themselves.`
+      );
     }
 
     // Re-driving runs the flow's steps, so it needs the app's registered flows and effects.
     // The shorthand can only ever LOOK.
     if (flags.apply && stores.runtime === undefined) {
-      return [
-        "loom recover --apply needs --config <module>: re-driving an execution runs its steps,",
-        "and only your app has the flows and effects registered. The --db shorthand can preview",
-        "(drop --apply), but recovering through it would fail every execution it touched.",
-      ].join("\n");
+      throw new UsageError(
+        [
+          "loom recover --apply needs --config <module>: re-driving an execution runs its steps,",
+          "and only your app has the flows and effects registered. The --db shorthand can preview",
+          "(drop --apply), but recovering through it would fail every execution it touched.",
+        ].join("\n")
+      );
     }
 
     const runtime = stores.runtime ?? foldingRuntime(stores);
@@ -167,12 +176,16 @@ export async function cmdBranchesRetire(
   const stores = await resolveStores(flags);
   try {
     if (stores.branchRegistry === undefined) {
-      return stores.origin === "config"
-        ? "loom branches retire needs a branchRegistry, and this app wires none (so nothing has been forked)."
-        : "loom branches retire needs --branches <branches.db> (or --config, where the app supplies it).";
+      throw new UsageError(
+        stores.origin === "config"
+          ? "loom branches retire needs a branchRegistry, and this app wires none (so nothing has been forked)."
+          : "loom branches retire needs --branches <branches.db> (or --config, where the app supplies it)."
+      );
     }
     if (flags.stale === undefined) {
-      return "loom branches retire needs --stale <duration> (e.g. --stale 7d): a branch parked on a gate is an open question, not garbage, and loom will not decide that for you.";
+      throw new UsageError(
+        "loom branches retire needs --stale <duration> (e.g. --stale 7d): a branch parked on a gate is an open question, not garbage, and loom will not decide that for you."
+      );
     }
     const staleMs = parseDuration(flags.stale);
 
@@ -223,9 +236,11 @@ export async function cmdBranchesPrune(
   const stores = await resolveStores(flags);
   try {
     if (stores.branchRegistry === undefined) {
-      return stores.origin === "config"
-        ? "loom branches prune needs a branchRegistry, and this app wires none (so there are no refs to prune)."
-        : "loom branches prune needs --branches <branches.db> (or --config, where the app supplies it).";
+      throw new UsageError(
+        stores.origin === "config"
+          ? "loom branches prune needs a branchRegistry, and this app wires none (so there are no refs to prune)."
+          : "loom branches prune needs --branches <branches.db> (or --config, where the app supplies it)."
+      );
     }
     const protect =
       flags.protect === undefined

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LoomApp } from "@loom/app";
@@ -10,6 +11,7 @@ import {
 } from "@loom/plugin-sqlite";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 import type { ArchiveStores, WorkflowRuntime } from "@loom/workflow-runtime";
+import { CliError } from "./args";
 
 // ── Where an operator command gets its storage ───────────────────────────────
 //
@@ -155,7 +157,24 @@ async function fromConfig(modulePath: string): Promise<ResolvedStores> {
   };
 }
 
+/**
+ * `--db` names a store that already exists. A SQLite open CREATES a missing file, so a mistyped
+ * path used to answer "(no events)" (exit 0) and leave an empty database behind — a typo read
+ * as "nothing happened". Refuse before opening anything, naming the absolute path and cwd.
+ */
+function requireExistingFile(flag: string, file: string): void {
+  if (file === ":memory:" || file.startsWith("file:")) return;
+  if (fs.existsSync(file)) return;
+  throw new CliError(
+    `--${flag}: no such file ${path.resolve(file)} (cwd ${process.cwd()}) — not creating it. Check the path.`
+  );
+}
+
 function fromSqlite(flags: StoreFlags): ResolvedStores {
+  requireExistingFile("db", flags.db as string);
+  if (flags.snap !== undefined) requireExistingFile("snap", flags.snap);
+  if (flags.branches !== undefined) requireExistingFile("branches", flags.branches);
+  if (flags.leases !== undefined) requireExistingFile("leases", flags.leases);
   const eventStore = new SqliteEventStore(flags.db as string);
   // Optional by design: without a snapshot store every state folds from the log — slower and
   // identical. A diagnostic must not require the deployment's full wiring.
@@ -202,4 +221,23 @@ export function requireCapability<T extends object>(
 ): string | undefined {
   if (typeof store[member] === "function") return undefined;
   return `${what} needs \`${member}\`, and the configured ${store.constructor.name} does not implement it.`;
+}
+
+/**
+ * Fail an unknown execution id loudly (exit 1) instead of printing an empty timeline: a
+ * mistyped id used to read as "nothing happened". Names how many executions the store holds
+ * when it can enumerate them.
+ */
+export async function noSuchExecution(
+  store: {
+    listExecutions?: () => Promise<string[]>;
+  },
+  executionId: string
+): Promise<CliError> {
+  let tail = "";
+  if (store.listExecutions !== undefined) {
+    const n = (await store.listExecutions()).filter((id) => !id.startsWith("__loom_")).length;
+    tail = ` (${n} execution${n === 1 ? "" : "s"} in this store — try loom census)`;
+  }
+  return new CliError(`no such execution ${executionId}${tail}`, 1);
 }

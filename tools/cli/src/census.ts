@@ -3,6 +3,7 @@ import { isReservedStream } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, orphanCensus } from "@loom/workflow-runtime";
 import type { LeaseCoverage, OrphanCensus } from "@loom/workflow-runtime";
+import { UsageError } from "./args";
 import { humanizeDuration as humanize, parseDuration } from "./duration";
 import { type StoreFlags, resolveStores } from "./stores";
 
@@ -81,7 +82,9 @@ export async function cmdCensus(
     if (events.listExecutions === undefined && events.listExecutionsPage === undefined) {
       // Name the store: on the `--config` path the operator did not choose it here, and
       // "does not support enumeration" without a name is a dead end.
-      return `loom census needs to enumerate executions, and the configured ${events.constructor.name} implements neither listExecutions nor listExecutionsPage.`;
+      throw new UsageError(
+        `loom census needs to enumerate executions, and the configured ${events.constructor.name} implements neither listExecutions nor listExecutionsPage.`
+      );
     }
     const runtime = new WorkflowRuntime({
       eventStore: events,

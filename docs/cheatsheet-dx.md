@@ -79,7 +79,7 @@ Both halves work for every log command; `knowledge`, `verify` and `deploy check`
 |---|---|
 | `loom recover <store> [--stale 15m] [--apply]` | re-drive executions whose supervisor died. Needs `timers.leases` **or** an explicit `--stale` — loom will not guess. `--apply` requires `--config`, because re-driving runs your flow. `--max-recoveries N` skips and lists executions whose last N re-drives made no progress (ADR 0105). |
 | `loom repair blank-stream <store> [--assign id:from-through] [--apply]` | re-home events the pre-0106 compaction bug wrote to execution `""` — proven segments only; the rest is listed with candidates, never guessed (ADR 0107) |
-| `loom retention run <store> [--ttl ms] [--apply]` | reclaim aged terminal executions. Without a branchRegistry the live-descendant guard is **off**. |
+| `loom retention run <store> --ttl <dur\|ms> [--apply]` | reclaim aged terminal executions (`--ttl` is required: there is no default). Without a branchRegistry the live-descendant guard is **off**. |
 | `loom repair terminal-event <store> [id] [--apply]` | give an execution a pre-0116 compaction left as `[0]+checkpoint` its terminal event back, so it can take a late outcome (ADR 0116) |
 | `loom branches retire --parent <id> --stale <d>` | cancel branches nobody is coming back to — they keep the parent uncollectable |
 | `loom branches prune [--protect main]` | delete refs that name nothing; `main` is protected |

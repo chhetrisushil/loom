@@ -5,6 +5,7 @@ import { step$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { SqliteBranchRegistry, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { failure } from "./refusalTestUtil";
 
 import { AnthropicProvider, GeminiProvider, OpenAiProvider } from "@loom/llm";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
@@ -116,9 +117,8 @@ describe("loom CLI", () => {
       }
     });
 
-    it("records `--__proto__` as a flag rather than losing it", () => {
-      const { flags } = parseArgs(["debug", "--__proto__", "x"]);
-      expect(Object.entries(flags)).toEqual([["__proto__", "x"]]);
+    it("rejects `--__proto__` as an unknown flag rather than recording or polluting", () => {
+      expect(() => parseArgs(["debug", "--__proto__", "x"])).toThrow(/unknown flag --__proto__/);
     });
   });
 
@@ -173,8 +173,8 @@ describe("loom CLI", () => {
       expect(text).toContain("EXECUTION_SUSPENDED");
       expect(text).toContain("status: suspended");
     });
-    it("loom debug on an unknown execution is graceful", async () => {
-      expect(await cmdDebug({ db: dbPath }, "nope")).toContain("no execution");
+    it("loom debug on an unknown execution is an error, not an empty answer", async () => {
+      expect(await failure(cmdDebug({ db: dbPath }, "nope"))).toContain("no such execution nope");
     });
     it("loom profile prints a flame graph + latency breakdown", async () => {
       const text = await cmdProfile({ db: dbPath }, executionId);
@@ -183,8 +183,8 @@ describe("loom CLI", () => {
       expect(text).toContain("latency:");
       expect(text).toContain("a —"); // the completed step appears in the flame tree
     });
-    it("loom profile on an unknown execution is graceful", async () => {
-      expect(await cmdProfile({ db: dbPath }, "nope")).toContain("no execution");
+    it("loom profile on an unknown execution is an error, not an empty answer", async () => {
+      expect(await failure(cmdProfile({ db: dbPath }, "nope"))).toContain("no such execution nope");
     });
     it("loom introspect prints the execution/task/decision/resource graphs", async () => {
       const text = await cmdIntrospect({ db: dbPath }, executionId);
@@ -197,16 +197,20 @@ describe("loom CLI", () => {
       expect(text).toContain("tasks:");
       expect(text).not.toContain("resources:");
     });
-    it("loom introspect on an unknown execution is graceful", async () => {
-      expect(await cmdIntrospect({ db: dbPath }, "nope")).toContain("no execution");
+    it("loom introspect on an unknown execution is an error, not an empty answer", async () => {
+      expect(await failure(cmdIntrospect({ db: dbPath }, "nope"))).toContain(
+        "no such execution nope"
+      );
     });
     it("loom optimize prints the advisory report", async () => {
       const text = await cmdOptimize({ db: dbPath }, executionId);
       expect(text).toContain("advisory optimization report");
       expect(text).toContain("recommendations:");
     });
-    it("loom optimize on an unknown execution is graceful", async () => {
-      expect(await cmdOptimize({ db: dbPath }, "nope")).toContain("no execution");
+    it("loom optimize on an unknown execution is an error, not an empty answer", async () => {
+      expect(await failure(cmdOptimize({ db: dbPath }, "nope"))).toContain(
+        "no such execution nope"
+      );
     });
   });
 
@@ -849,6 +853,8 @@ describe("loom retention run + compliance report (listExecutions SPI)", () => {
     cdir = mkdtempSync(join(tmpdir(), "loom-ret-"));
     cdb = join(cdir, "events.db");
     csnap = join(cdir, "snap.db");
+    // `--snap` must name an EXISTING file (a mistyped path is refused, never created).
+    await new SqliteSnapshotStore(csnap).close();
     const store = new SqliteEventStore(cdb);
     // Two completed executions for "ann", one still-running for "bob".
     await seed(store, "x1", [

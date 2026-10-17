@@ -10,6 +10,7 @@ import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
+import { refusal } from "./refusalTestUtil";
 import { cmdRepairBlankStream, cmdRepairTerminalEvent, parseAssignments } from "./repair";
 
 // `loom repair blank-stream` (ADR 0107) over a SQLite image of what the pre-0106 compaction bug
@@ -157,7 +158,7 @@ describe("loom repair blank-stream", () => {
     expect(await cmdRepairBlankStream({ db, snap, apply: false })).toContain(
       "still carry ciphertext"
     );
-    const out = await cmdRepairBlankStream({ db, snap, apply: true });
+    const out = await refusal(cmdRepairBlankStream({ db, snap, apply: true }));
     expect(out).toContain("refused --apply (nothing written)");
     expect(out).toContain("--config");
     const after = new SqliteEventStore(db);
@@ -166,7 +167,9 @@ describe("loom repair blank-stream", () => {
   });
 
   it("needs the snapshot store — the proof lives there", async () => {
-    expect(await cmdRepairBlankStream({ db, apply: false })).toContain("needs the snapshot store");
+    expect(await refusal(cmdRepairBlankStream({ db, apply: false }))).toContain(
+      "needs the snapshot store"
+    );
   });
 
   it("parses --assign and refuses a malformed one", () => {
@@ -249,6 +252,9 @@ describe("loom repair terminal-event (ADR 0116 migration)", () => {
   });
 
   it("asks for the snapshot store, and leaves a non-terminal execution alone", async () => {
-    expect(await cmdRepairTerminalEvent({ db, apply: true })).toMatch(/needs the snapshot store/);
+    new SqliteEventStore(db).close();
+    expect(await refusal(cmdRepairTerminalEvent({ db, apply: true }))).toMatch(
+      /needs the snapshot store/
+    );
   });
 });

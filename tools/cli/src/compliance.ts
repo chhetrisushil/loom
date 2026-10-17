@@ -1,6 +1,7 @@
 import { SubjectIndex } from "@loom/compliance";
 import type { EventEnvelope } from "@loom/core";
 import { isReservedStream, readRangeOf } from "@loom/event-runtime";
+import { UsageError } from "./args";
 import { type StoreFlags, resolveStores } from "./stores";
 
 // ── `loom compliance report` — data-subject inventory over cold storage (T3) ────
@@ -38,7 +39,9 @@ export async function cmdComplianceReport(
   const store = resolved.eventStore;
   try {
     if (store.listExecutions === undefined) {
-      return "this event store does not support listExecutions (cannot enumerate subjects)";
+      throw new UsageError(
+        "this event store does not support listExecutions (cannot enumerate subjects)"
+      );
     }
     const ids = (await store.listExecutions()).filter((id) => !isReservedStream(id));
 

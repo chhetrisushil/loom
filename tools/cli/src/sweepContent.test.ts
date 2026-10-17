@@ -2,7 +2,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SqliteContentStore, SqliteEventStore } from "@loom/plugin-sqlite";
+import { SqliteContentStore, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { cmdSweepContent } from "./sweepContent";
 
@@ -131,6 +131,7 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     const contentDb = join(dir, "content.db");
     const events = new SqliteEventStore(db);
     await events.close();
+    await new SqliteSnapshotStore(snap).close();
     const old = Date.now() - 60 * DAY;
     const content = new SqliteContentStore(contentDb, { now: () => old });
     // Put, then the process died before the append: nothing in the log cites it.

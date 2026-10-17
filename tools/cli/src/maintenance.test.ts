@@ -5,6 +5,7 @@ import type { EventEnvelope } from "@loom/core";
 import { SqliteBranchRegistry, SqliteEventStore, SqliteLeaseStore } from "@loom/plugin-sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { cmdBranchesPrune, cmdBranchesRetire, cmdRecover } from "./maintenance";
+import { refusal } from "./refusalTestUtil";
 
 // ── The maintenance passes as operator commands ──────────────────────────────
 //
@@ -42,7 +43,7 @@ describe("loom recover", () => {
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
   it("refuses to guess what abandoned means, and says both ways to tell it", async () => {
-    const out = await cmdRecover({ db, apply: false });
+    const out = await refusal(cmdRecover({ db, apply: false }));
     expect(out).toContain("will not guess");
     expect(out).toContain("timers.leases");
     expect(out).toContain("--stale");
@@ -61,7 +62,7 @@ describe("loom recover", () => {
   });
 
   it("refuses --apply on the shorthand: re-driving needs the app's flows", async () => {
-    const out = await cmdRecover({ db, stale: "15m", apply: true });
+    const out = await refusal(cmdRecover({ db, stale: "15m", apply: true }));
     expect(out).toContain("--apply needs --config");
     expect(out).toContain("runs its steps");
     // ...and it says what the shorthand CAN do, rather than just refusing.
@@ -88,7 +89,7 @@ describe("loom recover", () => {
   });
 
   it("refuses --max-recoveries 0: it would skip every execution", async () => {
-    const out = await cmdRecover({ db, stale: "15m", maxRecoveries: 0, apply: false });
+    const out = await refusal(cmdRecover({ db, stale: "15m", maxRecoveries: 0, apply: false }));
     expect(out).toContain("must be an integer ≥ 1");
   });
 
@@ -168,18 +169,20 @@ describe("loom branches", () => {
   });
 
   it("says which half to fix when no registry is reachable", async () => {
-    const out = await cmdBranchesPrune({ db, apply: false });
+    const out = await refusal(cmdBranchesPrune({ db, apply: false }));
     expect(out).toContain("--branches");
     expect(out).toContain("--config");
   });
 
   it("retire refuses without --stale — a parked branch is an open question", async () => {
-    const out = await cmdBranchesRetire({
-      db,
-      branches: branchesDb,
-      parent: "live-1",
-      apply: false,
-    });
+    const out = await refusal(
+      cmdBranchesRetire({
+        db,
+        branches: branchesDb,
+        parent: "live-1",
+        apply: false,
+      })
+    );
     expect(out).toContain("--stale");
     expect(out).toContain("not garbage");
   });
