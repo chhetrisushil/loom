@@ -137,7 +137,7 @@ Every gate must be shown to fire. A threshold that nothing can fail is the vacuo
 
 ## Open questions
 
-1. Where thresholds live: a per-eval file beside each dataset, or one `baseline.json` for the whole workspace.
+1. ~~Where thresholds live: a per-eval file beside each dataset, or one `baseline.json` for the whole workspace.~~ **Resolved 2026-10-17 (slice S1):** thresholds live in a per-area `thresholds.ts` beside the dataset (a reviewer sees the number, its measured value, its margin and its reason next to the data); the scoreboard baseline is the separate `evals/baseline/` snapshot used only for the diff.
 2. Whether loom-ui's planner gets its own evals in the `loom-ui` repo. Likely yes, by the same pattern, since loom-ui builds
    capabilities before consumers.
 3. Whether the scoreboard publishes to the public loom-site.

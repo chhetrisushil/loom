@@ -21,7 +21,11 @@ describe("scoreboard build / serialise", () => {
     const a = serializeScoreboard(buildScoreboard(rows));
     const b = serializeScoreboard(buildScoreboard([...rows].reverse()));
     expect(a).toBe(b);
-    expect(Object.keys(buildScoreboard(rows).metrics)).toEqual(["a/y/extra", "a/y/mrr", "b/x/recall@5"]);
+    expect(Object.keys(buildScoreboard(rows).metrics)).toEqual([
+      "a/y/extra",
+      "a/y/mrr",
+      "b/x/recall@5",
+    ]);
     expect(buildScoreboard(rows).metrics["b/x/recall@5"]?.value).toBe(0.9123);
     expect(a.endsWith("\n")).toBe(true);
   });
@@ -36,7 +40,9 @@ describe("scoreboard build / serialise", () => {
   });
   it("refuses a duplicate key and a non-finite value", () => {
     expect(() => buildScoreboard([rows[0] as never, rows[0] as never])).toThrow(/duplicate/);
-    expect(() => buildScoreboard([{ key: "k", value: Number.NaN, gated: true }])).toThrow(/not finite/);
+    expect(() => buildScoreboard([{ key: "k", value: Number.NaN, gated: true }])).toThrow(
+      /not finite/
+    );
   });
   it("round4 rounds half up at the fourth decimal", () => {
     expect(round4(0.12345)).toBe(0.1235);
@@ -59,32 +65,46 @@ describe("compareAgainstBaseline", () => {
   });
 
   it("changing ONE score names exactly that metric, with the delta", () => {
-    const changed = buildScoreboard(rows.map((r) => (r.key === "a/y/mrr" ? { ...r, value: 0.4 } : r)));
+    const changed = buildScoreboard(
+      rows.map((r) => (r.key === "a/y/mrr" ? { ...r, value: 0.4 } : r))
+    );
     const deltas = compareAgainstBaseline(changed, baseline);
     const moved = deltas.filter((d) => d.status !== "unchanged");
     expect(moved.map((d) => d.key)).toEqual(["a/y/mrr"]);
-    expect(moved[0]).toMatchObject({ status: "regressed", baseline: 0.5, current: 0.4, delta: -0.1 });
+    expect(moved[0]).toMatchObject({
+      status: "regressed",
+      baseline: 0.5,
+      current: 0.4,
+      delta: -0.1,
+    });
     expect(regressions(deltas).map((d) => d.key)).toEqual(["a/y/mrr"]);
     expect(renderDeltas(deltas)).toContain("`a/y/mrr`");
     expect(renderDeltas(deltas)).not.toContain("`b/x/recall@5`");
   });
 
   it("an improvement is reported but is not a regression", () => {
-    const better = buildScoreboard(rows.map((r) => (r.key === "a/y/mrr" ? { ...r, value: 0.6 } : r)));
+    const better = buildScoreboard(
+      rows.map((r) => (r.key === "a/y/mrr" ? { ...r, value: 0.6 } : r))
+    );
     const deltas = compareAgainstBaseline(better, baseline);
     expect(deltas.find((d) => d.key === "a/y/mrr")?.status).toBe("improved");
     expect(regressions(deltas)).toEqual([]);
   });
 
   it("a fall in a report-only metric is shown but never fails the run", () => {
-    const lower = buildScoreboard(rows.map((r) => (r.key === "a/y/extra" ? { ...r, value: 0 } : r)));
+    const lower = buildScoreboard(
+      rows.map((r) => (r.key === "a/y/extra" ? { ...r, value: 0 } : r))
+    );
     const deltas = compareAgainstBaseline(lower, baseline);
     expect(deltas.find((d) => d.key === "a/y/extra")?.status).toBe("regressed");
     expect(regressions(deltas)).toEqual([]);
   });
 
   it("a metric missing from the run is not-run, and a new one is new", () => {
-    const partial = buildScoreboard([...rows.slice(1), { key: "c/z/hit@1", value: 1, gated: true }]);
+    const partial = buildScoreboard([
+      ...rows.slice(1),
+      { key: "c/z/hit@1", value: 1, gated: true },
+    ]);
     const deltas = compareAgainstBaseline(partial, baseline);
     expect(deltas.find((d) => d.key === "b/x/recall@5")?.status).toBe("not-run");
     expect(deltas.find((d) => d.key === "c/z/hit@1")?.status).toBe("new");

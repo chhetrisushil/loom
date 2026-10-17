@@ -33,7 +33,8 @@ export function buildScoreboard(rows: readonly MetricRow[]): Scoreboard {
   const sorted = [...rows].sort((a, b) => byCodeUnit(a.key, b.key));
   const metrics: Record<string, ScoreboardEntry> = {};
   for (const r of sorted) {
-    if (!Number.isFinite(r.value)) throw new RangeError(`scoreboard: ${r.key} is not finite (${r.value})`);
+    if (!Number.isFinite(r.value))
+      throw new RangeError(`scoreboard: ${r.key} is not finite (${r.value})`);
     if (Object.hasOwn(metrics, r.key)) throw new Error(`scoreboard: duplicate metric ${r.key}`);
     metrics[r.key] = { value: round4(r.value), gated: r.gated };
   }
@@ -74,13 +75,22 @@ export interface MetricDelta {
  *   database. It is REPORTED, never silently equal; it is not a regression because nothing was measured.
  */
 export function compareAgainstBaseline(current: Scoreboard, baseline: Scoreboard): MetricDelta[] {
-  const keys = [...new Set([...Object.keys(current.metrics), ...Object.keys(baseline.metrics)])].sort(byCodeUnit);
+  const keys = [
+    ...new Set([...Object.keys(current.metrics), ...Object.keys(baseline.metrics)]),
+  ].sort(byCodeUnit);
   return keys.map((key): MetricDelta => {
     const c = current.metrics[key];
     const b = baseline.metrics[key];
     const gated = (c ?? b)?.gated ?? false;
     if (c === undefined) {
-      return { key, baseline: (b as ScoreboardEntry).value, current: undefined, delta: undefined, status: "not-run", gated };
+      return {
+        key,
+        baseline: (b as ScoreboardEntry).value,
+        current: undefined,
+        delta: undefined,
+        status: "not-run",
+        gated,
+      };
     }
     if (b === undefined) {
       return { key, baseline: undefined, current: c.value, delta: undefined, status: "new", gated };
@@ -96,11 +106,17 @@ export const regressions = (deltas: readonly MetricDelta[]): MetricDelta[] =>
   deltas.filter((d) => d.status === "regressed" && d.gated);
 
 const fmt = (n: number | undefined): string => (n === undefined ? "-" : n.toFixed(4));
-const sign = (n: number | undefined): string => (n === undefined ? "-" : `${n > 0 ? "+" : ""}${n.toFixed(4)}`);
+const sign = (n: number | undefined): string =>
+  n === undefined ? "-" : `${n > 0 ? "+" : ""}${n.toFixed(4)}`;
 
 /** The human summary written to `scoreboard.md` (same determinism rules as the JSON). */
 export function renderScoreboardMarkdown(sb: Scoreboard): string {
-  const lines = ["# Loom evals scoreboard", "", "| metric | value | gated |", "| --- | ---: | :---: |"];
+  const lines = [
+    "# Loom evals scoreboard",
+    "",
+    "| metric | value | gated |",
+    "| --- | ---: | :---: |",
+  ];
   for (const [key, e] of Object.entries(sb.metrics)) {
     lines.push(`| \`${key}\` | ${fmt(e.value)} | ${e.gated ? "yes" : "no"} |`);
   }
@@ -111,9 +127,14 @@ export function renderScoreboardMarkdown(sb: Scoreboard): string {
 export function renderDeltas(deltas: readonly MetricDelta[]): string {
   const changed = deltas.filter((d) => d.status !== "unchanged");
   if (changed.length === 0) return "No change against the baseline.\n";
-  const lines = ["| metric | baseline | current | delta | status |", "| --- | ---: | ---: | ---: | --- |"];
+  const lines = [
+    "| metric | baseline | current | delta | status |",
+    "| --- | ---: | ---: | ---: | --- |",
+  ];
   for (const d of changed) {
-    lines.push(`| \`${d.key}\` | ${fmt(d.baseline)} | ${fmt(d.current)} | ${sign(d.delta)} | ${d.status} |`);
+    lines.push(
+      `| \`${d.key}\` | ${fmt(d.baseline)} | ${fmt(d.current)} | ${sign(d.delta)} | ${d.status} |`
+    );
   }
   return `${lines.join("\n")}\n`;
 }
