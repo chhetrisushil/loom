@@ -1,4 +1,5 @@
 import { generateRegistration, pascal } from "./codegen";
+import { markdownText } from "./emit";
 import { type FlowTemplate, templateFiles } from "./flowTemplates";
 
 // ── Per-file templates (used by `loom new`, following the folder convention) ──
@@ -513,8 +514,9 @@ export function appFiles(appName: string): Record<string, string> {
     )}\n`,
 
     "README.md": [
-      // One line of plain heading text: a newline in the name must not become extra markdown.
-      `# ${appName.replace(/\s+/g, " ")}`,
+      // One line of plain heading text: line breaks, control/bidi characters and markdown/HTML
+      // metacharacters in the name are neutralised, so it can never open a section or a tag.
+      `# ${markdownText(appName)}`,
       "",
       "A Loom app scaffolded with `create-loom-app`, following the folder convention:",
       "",

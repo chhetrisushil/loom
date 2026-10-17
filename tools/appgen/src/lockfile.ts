@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ChangeSpec } from "./changeSpec";
 import { safeWriteFile } from "./safeWrite";
+import { changeSpecDataIssues } from "./specText";
 
 // ── Spec lockfile: the appgen equivalent of a golden log ─────────────────────
 //
@@ -43,28 +44,31 @@ export function writeLockfile(
   return dest;
 }
 
-// Every id in a spec becomes a file-path segment and a codegen identifier; the live NL
-// path guarantees this by construction (ids come from `slug()`), but a `--from-spec`
-// lockfile is hand-editable/shareable data. Re-assert the slug shape on read so a crafted
-// spec can't traverse out of the output dir (`../…`) or inject code via a non-identifier id.
-const SAFE_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-function assertSafeId(id: unknown, what: string): void {
-  if (typeof id !== "string" || !SAFE_ID.test(id)) {
-    throw new Error(
-      `appgen lockfile: unsafe ${what} id ${JSON.stringify(id)} — must be a kebab slug`
-    );
-  }
-}
-
+// A `--from-spec` lockfile is hand-editable, shareable data and a replay never goes through
+// the model validator, so read-time is the only gate: re-assert EVERY field a codegen sink
+// reads (ids as path segments and identifiers, names / intents / models / grants as comment,
+// string and markdown text) with the very predicates `validateChangeSpec` uses, so a crafted
+// spec cannot traverse out of the output dir (`../...`), inject code, or spoof a reviewer
+// with invisible/bidi characters.
 /** Read and validate a lockfile written by {@link writeLockfile}. */
 export function readLockfile(file: string): AppgenLock {
   const raw = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<AppgenLock>;
-  if (raw.changeSpec === undefined || !Array.isArray(raw.changeSpec.capabilities)) {
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    raw.changeSpec === undefined ||
+    !Array.isArray(raw.changeSpec.capabilities)
+  ) {
     throw new Error(`not a valid appgen lockfile: ${file}`);
   }
-  for (const cap of raw.changeSpec.capabilities) {
-    assertSafeId(cap?.id, "capability");
-    for (const step of cap?.steps ?? []) assertSafeId(step?.id, "step");
+  const issues = changeSpecDataIssues(raw.changeSpec);
+  if (raw.intent !== undefined && typeof raw.intent !== "string") {
+    issues.push("intent must be a string");
+  }
+  if (issues.length > 0) {
+    throw new Error(
+      `appgen lockfile: unsafe or malformed spec in ${file}:\n${issues.map((i) => `  - ${i}`).join("\n")}`
+    );
   }
   return raw as AppgenLock;
 }

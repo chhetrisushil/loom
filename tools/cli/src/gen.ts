@@ -9,22 +9,40 @@ import {
   isFlowTemplate,
   newFiles,
   templateNotes,
+  tsStringLiteral,
 } from "@loom/scaffold";
 import { UsageError } from "./args";
 import { containmentRootFor, safeWriteFile } from "./safeWrite";
 import { type TreeChange, watchTree } from "./watch";
 
 /**
+ * A file / folder name `loom gen` will register. The name ends up inside a quoted import
+ * specifier of the generated `loom.gen.ts` (escaped there regardless), and a checked-out
+ * repo controls its file names, so anything but letters, digits and `. _ -` (quotes,
+ * backslashes, `$`, backticks, control, bidi and zero-width characters, path separators) is
+ * skipped and reported rather than registered. This is deliberately looser than
+ * `constructNameProblem` (the `loom new` rule: lowercase kebab only), so existing
+ * `getWeather.ts` / `my_tool.ts` files keep registering.
+ */
+export function isModuleName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && !name.includes("..");
+}
+
+/**
  * Discover flow modules under `<dir>/flows/<name>/flow.{ts,tsx}` — the folder
  * convention. Returns extension-less module specifiers relative to `dir` (where
  * `loom.gen.ts` is written), sorted for deterministic output.
  */
-export function discoverFlows(dir: string): string[] {
+export function discoverFlows(dir: string, skipped: string[] = []): string[] {
   const flowsDir = path.join(dir, "flows");
   if (!fs.existsSync(flowsDir)) return [];
   const specifiers: string[] = [];
   for (const entry of fs.readdirSync(flowsDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
+    if (!isModuleName(entry.name)) {
+      skipped.push(`flows/${entry.name}`);
+      continue;
+    }
     for (const ext of ["ts", "tsx"]) {
       const file = path.join(flowsDir, entry.name, `flow.${ext}`);
       if (fs.existsSync(file)) {
@@ -42,7 +60,7 @@ export function discoverFlows(dir: string): string[] {
  * Returns extension-less specifiers, sorted. Shared by {@link discoverAgents} /
  * {@link discoverTools}.
  */
-function discoverFlat(dir: string, sub: string): string[] {
+function discoverFlat(dir: string, sub: string, skipped: string[] = []): string[] {
   const base = path.join(dir, sub);
   if (!fs.existsSync(base)) return [];
   const specifiers: string[] = [];
@@ -50,6 +68,10 @@ function discoverFlat(dir: string, sub: string): string[] {
     if (!entry.isFile()) continue;
     const m = /^(.*)\.(ts|tsx)$/.exec(entry.name);
     if (m && !/\.(?:test|spec)\.tsx?$/.test(entry.name) && !entry.name.endsWith(".d.ts")) {
+      if (!isModuleName(m[1] ?? "")) {
+        skipped.push(`${sub}/${entry.name}`);
+        continue;
+      }
       specifiers.push(`./${sub}/${m[1]}`);
     }
   }
@@ -57,33 +79,33 @@ function discoverFlat(dir: string, sub: string): string[] {
 }
 
 /** Discover agent modules under `<dir>/agents/<name>.{ts,tsx}` (flat convention). */
-export function discoverAgents(dir: string): string[] {
-  return discoverFlat(dir, "agents");
+export function discoverAgents(dir: string, skipped: string[] = []): string[] {
+  return discoverFlat(dir, "agents", skipped);
 }
 
 /** Discover tool modules under `<dir>/tools/<name>.{ts,tsx}` (flat convention). */
-export function discoverTools(dir: string): string[] {
-  return discoverFlat(dir, "tools");
+export function discoverTools(dir: string, skipped: string[] = []): string[] {
+  return discoverFlat(dir, "tools", skipped);
 }
 
 /** Discover skill modules under `<dir>/skills/<name>.{ts,tsx}` (flat convention). */
-export function discoverSkills(dir: string): string[] {
-  return discoverFlat(dir, "skills");
+export function discoverSkills(dir: string, skipped: string[] = []): string[] {
+  return discoverFlat(dir, "skills", skipped);
 }
 
 /** Discover schedule modules under `<dir>/schedules/<name>.{ts,tsx}` (flat convention). */
-export function discoverSchedules(dir: string): string[] {
-  return discoverFlat(dir, "schedules");
+export function discoverSchedules(dir: string, skipped: string[] = []): string[] {
+  return discoverFlat(dir, "schedules", skipped);
 }
 
 /** Discover memory modules under `<dir>/memories/<name>.{ts,tsx}` (flat convention). */
-export function discoverMemories(dir: string): string[] {
-  return discoverFlat(dir, "memories");
+export function discoverMemories(dir: string, skipped: string[] = []): string[] {
+  return discoverFlat(dir, "memories", skipped);
 }
 
 /** Discover projection modules under `<dir>/projections/<name>.{ts,tsx}` (flat convention). */
-export function discoverProjections(dir: string): string[] {
-  return discoverFlat(dir, "projections");
+export function discoverProjections(dir: string, skipped: string[] = []): string[] {
+  return discoverFlat(dir, "projections", skipped);
 }
 
 /** Re-exported: the symlink-containment root, decided by filesystem identity (see `@loom/appgen`). */
@@ -112,6 +134,8 @@ export function cmdGen(
   schedules: number;
   memories: number;
   projections: number;
+  /** Files / folders NOT registered because their name is not a plain module name. */
+  skipped: string[];
   /** The module specifiers `out` registers, in order (what a watcher compares against). */
   specifiers: string[];
 } {
@@ -121,13 +145,14 @@ export function cmdGen(
       `loom gen: --dir "${dir}" is not an existing directory (resolved ${path.resolve(dir)}) — pass the folder that holds flows/, agents/, … (default "app")`
     );
   }
-  const flows = discoverFlows(dir);
-  const agents = discoverAgents(dir);
-  const tools = discoverTools(dir);
-  const skills = discoverSkills(dir);
-  const schedules = discoverSchedules(dir);
-  const memories = discoverMemories(dir);
-  const projections = discoverProjections(dir);
+  const skipped: string[] = [];
+  const flows = discoverFlows(dir, skipped);
+  const agents = discoverAgents(dir, skipped);
+  const tools = discoverTools(dir, skipped);
+  const skills = discoverSkills(dir, skipped);
+  const schedules = discoverSchedules(dir, skipped);
+  const memories = discoverMemories(dir, skipped);
+  const projections = discoverProjections(dir, skipped);
   const out = path.join(dir, "loom.gen.ts");
   safeWriteFile(
     root,
@@ -144,6 +169,7 @@ export function cmdGen(
     schedules: schedules.length,
     memories: memories.length,
     projections: projections.length,
+    skipped,
     specifiers: [
       ...flows,
       ...agents,
@@ -168,7 +194,11 @@ export function genSummary(r: ReturnType<typeof cmdGen>): string {
     plural(r.memories, "memory").replace("memorys", "memories"),
     plural(r.projections, "projection"),
   ];
-  return `wrote ${r.out} (${parts.join(", ")})`;
+  const skipped =
+    r.skipped.length === 0
+      ? ""
+      : `; skipped ${r.skipped.length} with an unsafe name (not registered): ${r.skipped.map((n) => tsStringLiteral(n)).join(", ")}`;
+  return `wrote ${r.out} (${parts.join(", ")})${skipped}`;
 }
 
 /** The convention folders `loom gen` discovers from (a change elsewhere never needs a regen). */

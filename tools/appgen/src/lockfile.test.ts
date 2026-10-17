@@ -10,7 +10,17 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { wireGrantsIntoConfig } from "./configEditor";
 import { makeLock, readLockfile, writeLockfile } from "./lockfile";
+
+const CAP = (over: Record<string, unknown>): Record<string, unknown> => ({
+  id: "deploy-app",
+  name: "Deploy",
+  intent: "ship it",
+  op: "create",
+  steps: [],
+  ...over,
+});
 
 describe("readLockfile validation", () => {
   let dir: string;
@@ -33,7 +43,7 @@ describe("readLockfile validation", () => {
       changeSpec: {
         name: "a",
         planner: "deterministic",
-        capabilities: [{ id: "deploy-app", steps: [{ id: "build" }] }],
+        capabilities: [CAP({ id: "deploy-app", steps: [{ id: "build", op: "create" }] })],
       },
     });
     expect(readLockfile(f).changeSpec.capabilities[0]!.id).toBe("deploy-app");
@@ -47,10 +57,10 @@ describe("readLockfile validation", () => {
       changeSpec: {
         name: "a",
         planner: "deterministic",
-        capabilities: [{ id: "../../../etc", steps: [] }],
+        capabilities: [CAP({ id: "../../../etc", steps: [] })],
       },
     });
-    expect(() => readLockfile(f)).toThrow(/unsafe capability id/);
+    expect(() => readLockfile(f)).toThrow(/capability id/);
   });
 
   it("rejects an unsafe step id", () => {
@@ -61,10 +71,74 @@ describe("readLockfile validation", () => {
       changeSpec: {
         name: "a",
         planner: "deterministic",
-        capabilities: [{ id: "ok", steps: [{ id: "a`);evil" }] }],
+        capabilities: [CAP({ id: "ok", steps: [{ id: "a`);evil", op: "create" }] })],
       },
     });
-    expect(() => readLockfile(f)).toThrow(/unsafe step id/);
+    expect(() => readLockfile(f)).toThrow(/step id/);
+  });
+
+  const spec = (cap: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    write({
+      version: 1,
+      createdAt: "t",
+      intent: "",
+      changeSpec: { name: "a", planner: "model", capabilities: [CAP(cap)], ...extra },
+    });
+
+  it("refuses bidi / zero-width / tag / line-break characters in a wireGrants entry", () => {
+    for (const bad of [
+      "db.read\u202e\u2066",
+      "db\u200bread",
+      "db\u{e0041}read",
+      "db\u2028read",
+      "db\nread",
+    ]) {
+      expect(() => readLockfile(spec({ wireGrants: [bad] })), bad).toThrow(/wireGrants/);
+    }
+  });
+
+  it("refuses unsafe text in every other field a sink reads", () => {
+    const bad = "x\u202ey";
+    expect(() => readLockfile(spec({ intent: bad }))).toThrow(/intent of/);
+    expect(() => readLockfile(spec({ name: bad }))).toThrow(/name of/);
+    expect(() => readLockfile(spec({ reasoning: { baseModel: bad } }))).toThrow(/base model/);
+    expect(() => readLockfile(spec({ reasoning: { elevateTo: ["ok", bad] } }))).toThrow(
+      /elevation/
+    );
+    expect(() => readLockfile(spec({}, { name: bad }))).toThrow(/plan name/);
+    expect(() => readLockfile(spec({}, { compute: { target: bad } }))).toThrow(/compute target/);
+    expect(() => readLockfile(spec({ intent: "a".repeat(501) }))).toThrow(/too long/);
+  });
+
+  it("refuses wrongly typed fields", () => {
+    expect(() => readLockfile(spec({ wireGrants: "db.read" }))).toThrow(/array/);
+    expect(() => readLockfile(spec({ wireGrants: [1] }))).toThrow(/string/);
+    expect(() => readLockfile(spec({ name: 7 }))).toThrow(/name of/);
+    expect(() => readLockfile(spec({ op: "explode" }))).toThrow(/known op/);
+    expect(() => readLockfile(spec({ addUi: "yes" }))).toThrow(/addUi/);
+    expect(() => readLockfile(spec({}, { planner: "magic" }))).toThrow(/planner/);
+    expect(() => readLockfile(spec({}, { compute: 3 }))).toThrow(/compute/);
+  });
+
+  it("applies the new-id rule to a create and the loose rule to an existing id", () => {
+    expect(() => readLockfile(spec({ id: "1-run" }))).toThrow(/start with a letter/);
+    expect(() => readLockfile(spec({ id: "a--b" }))).toThrow(/kebab-case/);
+    // a legacy id on an extend is only looked up, so the loose rule applies
+    expect(
+      readLockfile(spec({ id: "1-legacy", op: "extend" })).changeSpec.capabilities
+    ).toHaveLength(1);
+  });
+
+  it("the config sink escapes a grant even if one were to reach it", () => {
+    const grant = "db.read\u202e\u2066\u2028\u{e0041}";
+    const r = wireGrantsIntoConfig(
+      'import { defineConfig } from "@loom/app";\nexport default defineConfig({});\n',
+      { "cap\u202e": [grant] }
+    );
+    expect(r.changed).toBe(true);
+    expect(r.after).not.toMatch(/[\u202e\u2066\u2028]|\u{e0041}/u);
+    expect(r.after).toContain('"db.read\\u202e\\u2066\\u2028\\udb40\\udc41"');
+    expect(r.after).toContain('"cap\\u202e"');
   });
 });
 

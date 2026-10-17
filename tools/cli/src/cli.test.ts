@@ -47,6 +47,7 @@ import {
   discoverSchedules,
   discoverSkills,
   discoverTools,
+  genSummary,
 } from "./gen";
 import { describeState, evaluateGoldens, foldAt, formatLog, parseArgs } from "./index";
 import { serveInspector } from "./inspector";
@@ -276,6 +277,36 @@ describe("loom CLI", () => {
       const gen = readFileSync(out, "utf-8");
       expect(gen).toContain('import * as _f0 from "./flows/greet/flow";');
       expect(gen).toContain("export const flowModules = [_f0, _f1];");
+    });
+
+    it("never registers a file whose name could break out of the generated import", () => {
+      const appDir = join(dir, "app-evil");
+      cmdNew("flow", "greet", appDir);
+      mkdirSync(join(appDir, "tools"), { recursive: true });
+      // (a name cannot contain `/`, so the comment marker is not part of it)
+      const evil = 'a";globalThis.pwned=1;x';
+      writeFileSync(join(appDir, "tools", `${evil}.ts`), "export {};\n");
+      writeFileSync(join(appDir, "tools", "back`tick$\\{x}.ts"), "export {};\n");
+      writeFileSync(join(appDir, "tools", "bidi\u202e.ts"), "export {};\n");
+      writeFileSync(join(appDir, "tools", "getWeather.ts"), "export {};\n"); // legacy camelCase stays
+      mkdirSync(join(appDir, "flows", evil), { recursive: true });
+      writeFileSync(join(appDir, "flows", evil, "flow.ts"), "export {};\n");
+      const r = cmdGen(appDir);
+      const gen = readFileSync(r.out, "utf-8");
+      expect(gen).not.toContain("pwned");
+      expect(gen).not.toContain("\u202e");
+      expect(r.specifiers).toEqual(["./flows/greet/flow", "./tools/getWeather"]);
+      expect(r.skipped.sort()).toEqual(
+        [
+          `flows/${evil}`,
+          `tools/${evil}.ts`,
+          "tools/back`tick$\\{x}.ts",
+          "tools/bidi\u202e.ts",
+        ].sort()
+      );
+      const summary = genSummary(r);
+      expect(summary).toContain("skipped 4");
+      expect(summary).not.toContain("\u202e");
     });
 
     it("discovers every construct (flat-file) and emits all six module arrays", () => {
