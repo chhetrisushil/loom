@@ -2,7 +2,7 @@
 
 - **Files:** `tasks.ts` (13 scripted tasks, each with a hand-written model script and an `expected` outcome),
   `cassettes/*.json` (one cassette per task), `world.ts` (the synthetic tools), `graders.ts`, `subject.ts`.
-- **Labeller:** Claude Opus 5.5 (1M context), as the implementing agent of ADR 0131 slice S2, for the repo owner.
+- **Labeller:** Claude (Sonnet subagent), reviewed by Claude (Sonnet), as the implementing agent of ADR 0131 slice S2, for the repo owner.
 - **Date:** 2026-10-17.
 - **Source:** original synthetic text. The scenario shapes follow the sibling `loom-examples` `agent-loop-triage`
   example and the behaviours ADR 0121 documents (feedback not failure, terminal authority and quota errors, parallel

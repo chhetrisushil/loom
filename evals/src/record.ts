@@ -240,7 +240,8 @@ export function judgeAppgenRecording(
 /** The planner equivalent: routed by the MODEL, and a non-empty graph (or the refusal the case expects). Pure. */
 export function judgePlannerRecording(
   expectsRefusal: boolean,
-  out: Pick<PlannerOutcome, "route" | "routedBy" | "graph" | "error">,
+  out: Pick<PlannerOutcome, "route" | "routedBy" | "graph" | "error"> &
+    Partial<Pick<PlannerOutcome, "routerReply">>,
   exchanges: number,
   providerErrors: readonly string[]
 ): string | undefined {
@@ -248,9 +249,16 @@ export function judgePlannerRecording(
   if (exchanges === 0) return "empty recording (0 exchanges)";
   if (out.error !== undefined) return `planning failed: ${out.error}`;
   if (expectsRefusal) {
-    return typeof out.graph === "string"
-      ? undefined
-      : "expected a refusal but the planner produced a graph";
+    if (typeof out.graph !== "string") return "expected a refusal but the planner produced a graph";
+    // A refusal must be the MODEL's explicit one: a non-empty router reply that names NONE. An empty HTTP 200 (or a
+    // reply that is not NONE) also ends in `refused:*` via the keyword fallback, and is not a recording worth keeping.
+    const reply = (out.routerReply ?? "").trim();
+    if (reply === "")
+      return "no explicit refusal: the router's reply was empty (an HTTP 200 with no candidates?)";
+    if (!/^none\b/i.test(reply)) {
+      return `no explicit refusal: the router did not answer NONE (it said "${reply.slice(0, 40)}")`;
+    }
+    return undefined;
   }
   if (out.routedBy !== "model") {
     return `the router did not name a capability (${out.routedBy === "keyword" ? "it fell back to the keyword matcher" : "no route"})`;
