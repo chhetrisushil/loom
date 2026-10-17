@@ -1,14 +1,5 @@
+import { newIdSlug as slug } from "./slug";
 import type { AppSpec, CapabilitySpec } from "./types";
-
-// Turn a free-form phrase into a safe identifier slug (kebab-case).
-function slug(text: string): string {
-  return (
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "app"
-  );
-}
 
 /**
  * Deterministic, offline directive parser (P11 DX). Understands a small, documented

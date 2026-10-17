@@ -1,4 +1,5 @@
-import { pascal } from "./codegen";
+import { pascalIdent } from "./codegen";
+import { commentText, templateLiteralText, tsStringLiteral } from "./emit";
 
 // ── Non-agentic flow templates (`loom new flow <name> --template approval|timer|saga`) ──
 //
@@ -17,7 +18,7 @@ export function isFlowTemplate(value: string): value is FlowTemplate {
 
 /** Suspend on a typed resume gate (`resumeSchemas`), with a 24h expiry. */
 export function approvalFlowFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { flow$, handler$, step$ } from "@loom/core";',
     'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
@@ -28,7 +29,7 @@ export function approvalFlowFile(name: string): string {
     `const ${P}Decision = z.object({ approved: z.boolean(), approvedBy: z.string() });`,
     "",
     `const ${P}Apply = step$({`,
-    `  id: "${name}-apply",`,
+    `  id: ${tsStringLiteral(`${name}-apply`)},`,
     `  name: "${P} apply",`,
     "  inputSchema: z.object({ target: z.string() }),",
     "  outputSchema: z.object({ applied: z.boolean() }),",
@@ -56,7 +57,7 @@ export function approvalFlowFile(name: string): string {
     "",
     `export const ${P}Flow: RegisteredFlow = {`,
     "  definition: flow$({",
-    `    id: "${name}",`,
+    `    id: ${tsStringLiteral(name)},`,
     `    name: "${P}",`,
     '    version: "1.0.0",',
     "    inputSchema: z.object({ target: z.string() }),",
@@ -75,13 +76,13 @@ export function approvalFlowFile(name: string): string {
 }
 
 export function approvalTestFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { advanceTime, createTestApp, resumeWith } from "@loom/testing";',
     'import { describe, expect, it } from "vitest";',
     `import { ${P}Flow } from "./flow";`,
     "",
-    `describe("${name}", () => {`,
+    `describe(${tsStringLiteral(name)}, () => {`,
     '  it("applies once approved", async () => {',
     `    const app = createTestApp({ flows: [${P}Flow] });`,
     "    try {",
@@ -120,14 +121,14 @@ export function approvalTestFile(name: string): string {
 
 /** A durable `ctx.sleep` between two steps. */
 export function timerFlowFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { flow$, handler$, step$ } from "@loom/core";',
     'import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";',
     'import { z } from "zod";',
     "",
     `const ${P}Remind = step$({`,
-    `  id: "${name}-remind",`,
+    `  id: ${tsStringLiteral(`${name}-remind`)},`,
     `  name: "${P} remind",`,
     "  inputSchema: z.object({ who: z.string() }),",
     "  outputSchema: z.object({ reminded: z.string() }),",
@@ -143,7 +144,7 @@ export function timerFlowFile(name: string): string {
     "",
     `export const ${P}Flow: RegisteredFlow = {`,
     "  definition: flow$({",
-    `    id: "${name}",`,
+    `    id: ${tsStringLiteral(name)},`,
     `    name: "${P}",`,
     '    version: "1.0.0",',
     "    inputSchema: z.object({ who: z.string() }),",
@@ -161,7 +162,7 @@ export function timerFlowFile(name: string): string {
 }
 
 export function timerTestFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { advanceTime, createTestApp } from "@loom/testing";',
     'import { describe, expect, it } from "vitest";',
@@ -169,7 +170,7 @@ export function timerTestFile(name: string): string {
     "",
     "const DAY = 24 * 60 * 60 * 1000;",
     "",
-    `describe("${name}", () => {`,
+    `describe(${tsStringLiteral(name)}, () => {`,
     '  it("waits a day, then reminds (time travel, no real waiting)", async () => {',
     "    // `clock: true` gives the app a controllable clock and a timer store; advanceTime moves the",
     "    // clock and fires what became due through the real TimerService.",
@@ -198,7 +199,7 @@ export function timerTestFile(name: string): string {
 
 /** reserve -> charge -> ship with a compensator per forward step (`@loom/saga` `withSaga`). */
 export function sagaFlowFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { flow$, step$ } from "@loom/core";',
     'import { withSaga } from "@loom/saga";',
@@ -208,20 +209,20 @@ export function sagaFlowFile(name: string): string {
     "// Saga steps are TOOL steps: each names a `toolId` whose effect you register on the app",
     "// (`app.effectRuntime.register(toolId, new ToolEffect(...))`). A compensator runs under a",
     "// derived step id, so it must resolve through its `toolId`, not through an inline `handler$`.",
-    `export const ${P}Tools = ["reserve", "unreserve", "charge", "refund", "ship"].map((t) => \`${name}-\${t}\`);`,
+    `export const ${P}Tools = ["reserve", "unreserve", "charge", "refund", "ship"].map((t) => \`${templateLiteralText(name)}-\${t}\`);`,
     "",
     "// Under `security.strict` (the scaffolded app) a flow may only run the tools it is granted:",
     `// in app/security.ts add \`...${P}Grants\` to the \`GrantTable({ ... })\`, e.g.`,
-    `//   import { ${P}Grants } from "./flows/${name}/flow";`,
+    `//   import { ${P}Grants } from "./flows/${commentText(name)}/flow";`,
     `//   export const authorizer = new GrantTable({ greet: ["greet-step"], ...${P}Grants });`,
-    `export const ${P}Grants = { "${name}": ${P}Tools };`,
+    `export const ${P}Grants = { ${tsStringLiteral(name)}: ${P}Tools };`,
     "",
     "const empty = z.object({});",
     "const stepOf = (tool: string) =>",
     "  step$({",
-    `    id: \`${name}-\${tool}\`,`,
+    `    id: \`${templateLiteralText(name)}-\${tool}\`,`,
     "    name: tool,",
-    `    toolId: \`${name}-\${tool}\`,`,
+    `    toolId: \`${templateLiteralText(name)}-\${tool}\`,`,
     "    inputSchema: empty,",
     "    outputSchema: empty,",
     "  });",
@@ -245,7 +246,7 @@ export function sagaFlowFile(name: string): string {
     "",
     `export const ${P}Flow: RegisteredFlow = {`,
     "  definition: flow$({",
-    `    id: "${name}",`,
+    `    id: ${tsStringLiteral(name)},`,
     `    name: "${P}",`,
     '    version: "1.0.0",',
     "    inputSchema: z.object({ orderId: z.string() }),",
@@ -259,7 +260,7 @@ export function sagaFlowFile(name: string): string {
 }
 
 export function sagaTestFile(name: string): string {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   return [
     'import { ToolEffect } from "@loom/effect-runtime";',
     'import { createTestApp } from "@loom/testing";',
@@ -271,7 +272,7 @@ export function sagaTestFile(name: string): string {
     "  const ledger: string[] = [];",
     `  const app = createTestApp({ flows: [${P}Flow] });`,
     `  for (const toolId of ${P}Tools) {`,
-    `    const label = toolId.slice("${name}-".length);`,
+    `    const label = toolId.slice(${tsStringLiteral(`${name}-`)}.length);`,
     "    app.effectRuntime.register(",
     "      toolId,",
     "      new ToolEffect(async () => {",
@@ -284,7 +285,7 @@ export function sagaTestFile(name: string): string {
     "  return { app, ledger };",
     "}",
     "",
-    `describe("${name}", () => {`,
+    `describe(${tsStringLiteral(name)}, () => {`,
     '  it("keeps the work when every step succeeds", async () => {',
     "    const { app, ledger } = build(false);",
     "    try {",
@@ -317,7 +318,7 @@ export function sagaTestFile(name: string): string {
  * the CLI, because the templates cannot edit the app's own config.
  */
 export function templateNotes(template: FlowTemplate, name: string): string[] {
-  const P = pascal(name);
+  const P = pascalIdent(name);
   switch (template) {
     case "echo":
       return [];
@@ -331,7 +332,7 @@ export function templateNotes(template: FlowTemplate, name: string): string[] {
       ];
     case "saga":
       return [
-        `saga: the steps are tool steps. Under \`security.strict\` add \`...${P}Grants\` (from ./flows/${name}/flow) to the GrantTable in app/security.ts, and register an effect per tool id in \`${P}Tools\` on app.effectRuntime (the test stubs them).`,
+        `saga: the steps are tool steps. Under \`security.strict\` add \`...${P}Grants\` (from ./flows/${commentText(name)}/flow) to the GrantTable in app/security.ts, and register an effect per tool id in \`${P}Tools\` on app.effectRuntime (the test stubs them).`,
       ];
   }
 }

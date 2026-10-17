@@ -1,4 +1,5 @@
 import { EXISTING_ID, NEW_ID, NEW_ID_HINT, hasUnsafeChars } from "./emit";
+import { stepConstName } from "./stepTemplate";
 
 // One definition of "what a plan field may contain", shared by the model validator
 // (`validateChangeSpec` in @loom/appgen-model) and by `readLockfile`, so a `--from-spec`
@@ -150,4 +151,119 @@ function idIssues(kind: string, id: unknown, isNew: boolean): string[] {
   if (!isNew && !EXISTING_ID.test(id))
     return [`${kind} id ${JSON.stringify(id)} must be kebab-case`];
   return [];
+}
+
+/** The minimal shape {@link specStructureIssues} reads (a `ChangeSpec` satisfies it). */
+export interface StructuralSpec {
+  capabilities: ReadonlyArray<{
+    id: string;
+    op: string;
+    steps: ReadonlyArray<{ id: string; op: string }>;
+  }>;
+}
+
+/**
+ * Structural issues in a ChangeSpec: id shapes, duplicate flow creates, duplicate step ids
+ * per flow, generated-name collisions (`a--b` vs `a-b`), and modify/delete inside a flow
+ * that is being created. ONE implementation shared by the model validator
+ * (`validateChangeSpec`, which passes the scanned app as `existing`) and `readLockfile`
+ * (which has no app to compare against, so passes none).
+ *
+ * `existing` maps each scanned flow id to its step ids. When given, it also checks the spec
+ * against the app (create of an existing flow, extend/modify/delete of a missing one, a
+ * step that is or is not there). The spec's fields must already be type-correct.
+ */
+export function specStructureIssues(
+  spec: StructuralSpec,
+  existing?: ReadonlyMap<string, ReadonlySet<string>>
+): string[] {
+  const issues: string[] = [];
+  // Step ids are unique PER FLOW (a step id is the key inside one flow's execution; the
+  // runtime does not require them to be unique across flows). Tracked across every
+  // operation on the same flow so two ops cannot both touch one id.
+  const seenByFlow = new Map<string, Set<string>>();
+  // Generated const name -> the step id that claimed it, per flow. Pre-seeded with the
+  // scanned flow's steps so a new `a--b` cannot shadow an existing `a-b`.
+  const namesByFlow = new Map<string, Map<string, string>>();
+  const createdFlows = new Set<string>();
+
+  for (const cap of spec.capabilities) {
+    const exists = existing?.has(cap.id) === true;
+    const isNew = cap.op === "create" && !exists;
+    if (isNew) {
+      if (!NEW_ID.test(cap.id))
+        issues.push(`capability id "${cap.id}" must be kebab-case: ${NEW_ID_HINT}`);
+      if (createdFlows.has(cap.id))
+        issues.push(
+          `flow "${cap.id}" is created more than once — declare each new flow once, with all its steps`
+        );
+      createdFlows.add(cap.id);
+    } else if (!EXISTING_ID.test(cap.id)) {
+      issues.push(`capability id "${cap.id}" must be kebab-case`);
+    }
+    if (existing !== undefined) {
+      if (cap.op === "create" && exists) {
+        issues.push(`flow "${cap.id}" already exists — use op "extend", not "create"`);
+      }
+      if ((cap.op === "extend" || cap.op === "modify" || cap.op === "delete") && !exists) {
+        issues.push(`op "${cap.op}" targets flow "${cap.id}", but no such flow exists`);
+      }
+    }
+    const known = existing?.get(cap.id);
+    let seen = seenByFlow.get(cap.id);
+    if (seen === undefined) {
+      seen = new Set();
+      seenByFlow.set(cap.id, seen);
+    }
+    let names = namesByFlow.get(cap.id);
+    if (names === undefined) {
+      names = new Map();
+      for (const id of known ?? []) names.set(stepConstName(id), id);
+      namesByFlow.set(cap.id, names);
+    }
+    for (const step of cap.steps) {
+      if (seen.has(step.id)) {
+        issues.push(
+          `flow "${cap.id}" declares step id "${step.id}" more than once — step ids must be unique within a flow; use each id once`
+        );
+        continue;
+      }
+      seen.add(step.id);
+      if (isNew && (step.op === "modify" || step.op === "delete")) {
+        issues.push(
+          `step "${step.id}" op "${step.op}" but flow "${cap.id}" is being created — there is nothing to ${step.op}`
+        );
+        continue;
+      }
+      if (step.op === "create") {
+        if (!NEW_ID.test(step.id)) {
+          issues.push(`step id "${step.id}" in "${cap.id}" must be kebab-case: ${NEW_ID_HINT}`);
+          continue;
+        }
+        const name = stepConstName(step.id);
+        const owner = names.get(name);
+        if (owner !== undefined && owner !== step.id) {
+          issues.push(
+            `step ids "${owner}" and "${step.id}" in flow "${cap.id}" both generate the name "${name}" — rename one`
+          );
+          continue;
+        }
+        names.set(name, step.id);
+      } else if (!EXISTING_ID.test(step.id)) {
+        issues.push(`step id "${step.id}" in "${cap.id}" must be kebab-case`);
+      }
+      if (
+        existing !== undefined &&
+        (step.op === "modify" || step.op === "delete") &&
+        known !== undefined &&
+        !known.has(step.id)
+      ) {
+        issues.push(`step "${step.id}" op "${step.op}" but flow "${cap.id}" has no such step`);
+      }
+      if (existing !== undefined && step.op === "create" && known?.has(step.id) === true) {
+        issues.push(`step "${step.id}" already exists in "${cap.id}" — use op "modify"`);
+      }
+    }
+  }
+  return issues;
 }

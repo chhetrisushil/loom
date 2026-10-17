@@ -16,6 +16,21 @@ export function camel(name: string): string {
 }
 
 /**
+ * {@link pascal}, asserted to be a plain ASCII identifier. The template functions put it into
+ * generated source as an export name, so a name whose derivation is not an identifier
+ * (`a"; x(); //`, a leading digit) throws instead of producing code.
+ */
+export function pascalIdent(name: string): string {
+  const p = pascal(name);
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(p)) {
+    throw new Error(
+      `scaffold: ${JSON.stringify(name)} does not derive a valid identifier (got ${JSON.stringify(p)}); use lowercase kebab-case starting with a letter`
+    );
+  }
+  return p;
+}
+
+/**
  * Generate the text of `loom.gen.ts` — a static module that imports the discovered
  * flow / agent / tool / skill / schedule / memory modules and re-exports them as
  * `flowModules` / `agentModules` / `toolModules` / `skillModules` / `scheduleModules`
