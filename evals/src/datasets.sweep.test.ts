@@ -1,6 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DOCS } from "./retrieval/corpus";
 import { QUERIES as RETRIEVAL_QUERIES } from "./retrieval/queries";
@@ -12,7 +11,7 @@ import { QUERIES as TOOL_QUERIES } from "./toolSearch/queries";
 // ADR 0131 verification (d) and D4.6: the sweep DISCOVERS the datasets by walking the directory (so an empty or
 // missing one cannot pass by never being looked at), and holds each to the dataset rules.
 
-const SRC = dirname(fileURLToPath(import.meta.url));
+const SRC = __dirname;
 
 /** A dataset directory is any directory under `src/` that holds a `thresholds.ts` (every eval area does). */
 function datasetDirs(): string[] {
