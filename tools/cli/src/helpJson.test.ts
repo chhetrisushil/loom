@@ -24,6 +24,21 @@ describe("per-command help comes from the command table", () => {
     }
   });
 
+  it("every declared flag appears in the command's own usage lines", () => {
+    // The shared store flags are selected by `--config` (or documented under `<store>`);
+    // every other flag must be spelled in a usage line.
+    const STORE_FLAGS = new Set(["config", "db", "snap", "branches", "leases", "verbose"]);
+    const missing: string[] = [];
+    for (const [name, spec] of Object.entries(COMMANDS)) {
+      const text = spec.usage.join("\n");
+      for (const flag of Object.keys(spec.flags)) {
+        const store = STORE_FLAGS.has(flag) && /<store>|--config/.test(text);
+        if (!store && !text.includes(`--${flag}`)) missing.push(`loom ${name} --${flag}`);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
   it("every command the table knows appears in the grouped top-level USAGE", () => {
     for (const name of Object.keys(COMMANDS)) {
       expect(USAGE, `USAGE never mentions loom ${name}`).toContain(`loom ${name}`);

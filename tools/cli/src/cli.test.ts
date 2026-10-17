@@ -1046,7 +1046,7 @@ describe("docs/usage-cli.md headings", () => {
     const out: string[] = [];
     let fenced = false;
     for (const line of md.split("\n")) {
-      if (line.startsWith("```")) fenced = !fenced;
+      if (line.trimStart().startsWith("```")) fenced = !fenced;
       else if (!fenced && /^#{2,4} /.test(line)) out.push(line);
     }
     return out;
