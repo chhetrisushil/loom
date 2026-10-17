@@ -148,9 +148,10 @@ There are no global flags — each command declares its own. The recurring ones 
 ### Help, version, completion
 
 - `loom help` prints the grouped summary above (scaffold · validate · observe · operate · maintain · plugin · deploy).
-- `loom <command> --help`, `loom <command> -h` and `loom help <command>` print **that command's** summary, synopsis lines and flags (exit `0`) — the text comes from the same command table the strict flag parser uses, so it cannot name a flag the command rejects.
+- `loom <command> --help`, `loom <command> -h` and `loom help <command>` print **that command's** summary, synopsis lines and flags (exit `0`) — the text comes from the same command table the strict flag parser uses, so it cannot name a flag the command rejects. `loom <command> <subcommand> --help` (e.g. `loom branches retire --help`) narrows to that subcommand's synopsis and the flags it names. `loom help --help` prints help's own help.
+- `--help` / `-h` is recognised **in flag position**. For commands whose later words are free text, a `-h` after them is a literal word: `loom appgen make a cli with -h flag` is an intent, not a help request (`appgen` reads help only before its first positional; `knowledge` only before its query). A `--` ends help scanning everywhere. `loom logs --db x --help` still prints help.
 - `loom version` / `loom --version` prints the `@loom/cli` package version.
-- `loom completion zsh|bash|fish` prints a completion script generated from the command table (commands, subcommands, flags): `eval "$(loom completion bash)"`, `loom completion zsh > "${fpath[1]}/_loom"`, or `loom completion fish > ~/.config/fish/completions/loom.fish`.
+- `loom completion zsh|bash|fish` prints a completion script generated from the command table (commands, subcommands, flags): `eval "$(loom completion bash)"`, `loom completion zsh > "${fpath[1]}/_loom"`, or `loom completion fish > ~/.config/fish/completions/loom.fish`. Value flags take a value in every shell (fish `-r`; zsh `--db=[db]:file:_files`; bash completes the next word as a file for path flags such as `--db`/`--config`/`--dir`, and as nothing for the others), and subcommand words are offered only right after the command.
 
 `loom help`, `loom --version` and `loom completion` load none of the command implementations (each command's modules are imported when it runs), so they answer in roughly node's own startup time.
 
@@ -158,14 +159,14 @@ There are no global flags — each command declares its own. The recurring ones 
 
 `--json` is accepted by the commands that report a result: `logs`, `debug`, `census`, `doctor`, `check`, `verify`, `eval`, `lint claim-check`, `compat`, `profile`, `introspect` and `kernel-manifest`. Any other command rejects it as an unknown flag (exit `2`) rather than ignoring it.
 
-- **stdout is exactly the JSON** — one document (pretty-printed), or **ndjson** for `logs` (one event envelope per line). Banners and progress lines are diverted to stderr for the run.
-- Verdict commands put `ok` first-class: `{ "ok": boolean, … }`. The **exit code is unchanged** (`0` / `1` / `2`), so `loom doctor --json | jq .ok` and `loom doctor` agree.
+- **stdout is exactly the JSON** — one document (pretty-printed), or **ndjson** for `logs` (one event envelope per line). Banners, progress lines, `console.*` calls and direct `process.stdout.write` calls from an imported config are all diverted to stderr for the run.
+- Verdict commands put `ok` first-class: `{ "ok": boolean, … }`. The **exit code is unchanged** (`0` / `1` / `2`), so `loom doctor --json | jq .ok` and `loom doctor` agree. `ok` is meaningful where the command has a verdict; for `debug`, `profile`, `introspect` and `census` it is always `true` — a failure there (unknown execution, unreadable store) throws, so it exits non-zero with the stderr error document instead of emitting `ok:false`.
 - **Errors** (including refusals and bad usage) go to **stderr** as `{"error":{"code":<exit code>,"message":"…"}}`; stdout is empty.
 
 | Command | `--json` shape |
 |---|---|
-| `logs` | ndjson: one event envelope per line (`--redact` masks the same dot-paths in the payload) |
-| `debug` | `{ ok, executionId, at?, eventCount, state }` |
+| `logs` | ndjson: one event envelope per line (`--redact` masks the same dot-paths at every depth of the envelope — `input`, `output`, resume payloads, results, arrays — and scrubs the masked values out of free text such as an error message) |
+| `debug` | `{ ok, executionId, at?, eventCount, state }` (`--redact` masks the folded `state`: frames, variables, output) |
 | `census` | `{ ok, census, note? }` |
 | `doctor` | `{ ok, checks: [{ id, name, status, detail }] }` |
 | `check` | `{ ok, issues }` |
