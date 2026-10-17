@@ -1,0 +1,15 @@
+{
+  "req:d6449cc57a8ae280f21182e799e24b33": {
+    "content": "deleting the account",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "delete_account",
+        "input": {
+          "id": "cus_ada"
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  }
+}

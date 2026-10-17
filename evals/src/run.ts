@@ -1,5 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { measureAgentLoop } from "./agentLoop/measure";
+import { AGENT_LOOP_CEILINGS, AGENT_LOOP_THRESHOLDS } from "./agentLoop/thresholds";
 import {
   BACKENDS,
   POSTGRES_SKIP_REASON,
@@ -31,7 +33,22 @@ const ROOT = join(__dirname, "..");
 const BASELINE = join(ROOT, "baseline");
 const OUT = join(ROOT, "out");
 
-export async function collect(): Promise<Scoreboard> {
+export interface Collected {
+  readonly board: Scoreboard;
+  /** False when the Postgres leg did not run (no `LOOM_TEST_POSTGRES_URL`): the board is PARTIAL. */
+  readonly postgresRan: boolean;
+}
+
+/**
+ * `--update-baseline` on a partial board would silently drop the Postgres rows from the committed baseline
+ * (and the next full run would then report them `new`). Refuse unless the caller says so with `--allow-partial`.
+ */
+export function baselineRefusal(postgresRan: boolean, argv: readonly string[]): string | undefined {
+  if (postgresRan || argv.includes("--allow-partial")) return undefined;
+  return "refusing to update the baseline: the Postgres leg did not run (LOOM_TEST_POSTGRES_URL is unset), so the new baseline would DROP every retrieval/postgres/* row. Set LOOM_TEST_POSTGRES_URL, or pass --allow-partial to write a partial baseline on purpose.";
+}
+
+export async function collect(): Promise<Collected> {
   const rows: MetricRow[] = [];
   rows.push(...(await measureToolSearch(TOOL_SEARCH_THRESHOLDS)));
   const pg = postgresBackend();
@@ -43,15 +60,21 @@ export async function collect(): Promise<Scoreboard> {
     ))
   );
   rows.push(...(await measureSkills(SKILL_THRESHOLDS)));
-  return buildScoreboard(rows);
+  rows.push(...(await measureAgentLoop(AGENT_LOOP_THRESHOLDS, AGENT_LOOP_CEILINGS)));
+  return { board: buildScoreboard(rows), postgresRan: pg !== undefined };
 }
 
 async function main(): Promise<number> {
-  const board = await collect();
+  const { board, postgresRan } = await collect();
   const json = serializeScoreboard(board);
   const md = renderScoreboardMarkdown(board);
 
   if (process.argv.includes("--update-baseline")) {
+    const refusal = baselineRefusal(postgresRan, process.argv);
+    if (refusal !== undefined) {
+      console.error(refusal);
+      return 1;
+    }
     mkdirSync(BASELINE, { recursive: true });
     writeFileSync(join(BASELINE, "scoreboard.json"), json);
     writeFileSync(join(BASELINE, "scoreboard.md"), md);

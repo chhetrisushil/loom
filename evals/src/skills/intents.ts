@@ -87,7 +87,7 @@ export const INTENTS: readonly SkillIntent[] = [
     id: "i13",
     intent: "write a how-to guide for the deploy process",
     expected: "documentation-writer",
-    acceptable: ["documentation-writer", "release-management"],
+    acceptable: ["documentation-writer"],
   },
   {
     id: "i14",

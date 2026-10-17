@@ -10,15 +10,25 @@
     "clean": "rm -rf dist out tsconfig.tsbuildinfo",
     "eval": "tsc --build && node dist/run.js",
     "eval:update-baseline": "tsc --build && node dist/run.js --update-baseline",
-    "typecheck:tests": "tsc -p tsconfig.test.json"
+    "typecheck:tests": "tsc -p tsconfig.test.json",
+    "eval:author": "tsc --build && node dist/agentLoop/author.js",
+    "eval:record": "tsc --build && node dist/record.js"
   },
   "dependencies": {
     "@loom/agent": "workspace:*",
+    "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
+    "@loom/effect-runtime": "workspace:*",
+    "@loom/eval": "workspace:*",
+    "@loom/event-runtime": "workspace:*",
     "@loom/knowledge": "workspace:*",
+    "@loom/llm": "workspace:*",
     "@loom/memory": "workspace:*",
+    "@loom/middleware": "workspace:*",
     "@loom/plugin-postgres": "workspace:*",
     "@loom/plugin-sqlite": "workspace:*",
+    "@loom/snapshot-runtime": "workspace:*",
+    "@loom/workflow-runtime": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {

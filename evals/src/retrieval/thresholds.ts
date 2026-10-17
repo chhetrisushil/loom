@@ -6,7 +6,7 @@ import type { BackendName } from "./measure";
 // differently: the reference scorer (`InMemoryMemoryStore`), SQLite FTS5 bm25, and Postgres `ts_rank`.
 //
 // A backend-specific floor is allowed only with a reason, and here the reason is the measured divergence
-// (recall@5 / nDCG@10): memory 0.8030 / 0.7213, sqlite 0.7879 / 0.7782, postgres 0.7121 / 0.7031. Postgres is
+// (recall@5 / nDCG@10): memory 0.8030 / 0.7209, sqlite 0.7879 / 0.7768, postgres 0.7121 / 0.7070. Postgres is
 // lowest because `ts_rank` has no inverse-document-frequency, so common words in a conversational query
 // ("my", "the", "how") weigh as much as the rare one that names the topic. This is reported as a finding in
 // the PR; the floor records today's behaviour, it does not endorse it.
@@ -16,15 +16,15 @@ import type { BackendName } from "./measure";
 const FLOORS: Readonly<Record<BackendName, Thresholds>> = {
   memory: {
     "recall@5": 0.783, // measured 0.8030
-    "ndcg@10": 0.7013, // measured 0.7213
+    "ndcg@10": 0.7009, // measured 0.7209
   },
   sqlite: {
     "recall@5": 0.7679, // measured 0.7879
-    "ndcg@10": 0.7582, // measured 0.7782
+    "ndcg@10": 0.7568, // measured 0.7768
   },
   postgres: {
     "recall@5": 0.6921, // measured 0.7121
-    "ndcg@10": 0.6831, // measured 0.7031
+    "ndcg@10": 0.687, // measured 0.7070
   },
 };
 

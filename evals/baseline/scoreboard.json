@@ -1,8 +1,22 @@
 {
   "version": 1,
   "metrics": {
+    "agentLoop/cassette/meanSteps": {
+      "value": 2.3846,
+      "gated": true,
+      "lowerIsBetter": true
+    },
+    "agentLoop/cassette/meanToolCalls": {
+      "value": 1.7692,
+      "gated": true,
+      "lowerIsBetter": true
+    },
+    "agentLoop/cassette/successRate": {
+      "value": 1,
+      "gated": true
+    },
     "retrieval/memory/knowledge/ndcg@10": {
-      "value": 0.7213,
+      "value": 0.7209,
       "gated": true
     },
     "retrieval/memory/knowledge/recall@5": {
@@ -10,7 +24,7 @@
       "gated": true
     },
     "retrieval/memory/memory/ndcg@10": {
-      "value": 0.7213,
+      "value": 0.7209,
       "gated": true
     },
     "retrieval/memory/memory/recall@5": {
@@ -18,7 +32,7 @@
       "gated": true
     },
     "retrieval/postgres/knowledge/ndcg@10": {
-      "value": 0.7031,
+      "value": 0.707,
       "gated": true
     },
     "retrieval/postgres/knowledge/recall@5": {
@@ -26,7 +40,7 @@
       "gated": true
     },
     "retrieval/postgres/memory/ndcg@10": {
-      "value": 0.7031,
+      "value": 0.707,
       "gated": true
     },
     "retrieval/postgres/memory/recall@5": {
@@ -34,7 +48,7 @@
       "gated": true
     },
     "retrieval/sqlite/knowledge/ndcg@10": {
-      "value": 0.7782,
+      "value": 0.7768,
       "gated": true
     },
     "retrieval/sqlite/knowledge/recall@5": {
@@ -42,7 +56,7 @@
       "gated": true
     },
     "retrieval/sqlite/memory/ndcg@10": {
-      "value": 0.7782,
+      "value": 0.7768,
       "gated": true
     },
     "retrieval/sqlite/memory/recall@5": {
@@ -66,7 +80,7 @@
       "gated": true
     },
     "toolSearch/factory/mrr": {
-      "value": 0.9583,
+      "value": 0.9401,
       "gated": true
     },
     "toolSearch/factory/mrr:annotation": {
@@ -74,7 +88,7 @@
       "gated": true
     },
     "toolSearch/factory/mrr:plain": {
-      "value": 0.9286,
+      "value": 0.8973,
       "gated": true
     },
     "toolSearch/factory/mrr:stoplist": {
@@ -86,15 +100,15 @@
       "gated": true
     },
     "toolSearch/factory/recall@3": {
-      "value": 0.9549,
+      "value": 0.9444,
       "gated": true
     },
     "toolSearch/factory/recall@5": {
-      "value": 0.9549,
+      "value": 0.9444,
       "gated": true
     },
     "toolSearch/real/mrr": {
-      "value": 0.9583,
+      "value": 0.9401,
       "gated": true
     },
     "toolSearch/real/mrr:annotation": {
@@ -102,7 +116,7 @@
       "gated": true
     },
     "toolSearch/real/mrr:plain": {
-      "value": 0.9286,
+      "value": 0.8973,
       "gated": true
     },
     "toolSearch/real/mrr:stoplist": {
@@ -114,11 +128,11 @@
       "gated": true
     },
     "toolSearch/real/recall@3": {
-      "value": 0.9549,
+      "value": 0.9444,
       "gated": true
     },
     "toolSearch/real/recall@5": {
-      "value": 0.9549,
+      "value": 0.9444,
       "gated": true
     }
   }

@@ -1,0 +1,19 @@
+{
+  "req:814a812a52a9602d7ab956258e16df01": {
+    "content": "asking the carrier",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "carrier_status",
+        "input": {
+          "order": 1042
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  },
+  "req:b73f3686e201956907c0e7dff4b0f186": {
+    "content": "The carrier tracking service is unavailable, so I could not verify delivery.",
+    "stopReason": "end_turn"
+  }
+}

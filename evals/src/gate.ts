@@ -20,11 +20,34 @@ export function failingMetrics(scores: Scores, thresholds: Thresholds): string[]
   return out;
 }
 
-/** Scoreboard rows for one `area/subject`: every score is gated iff it has a threshold. */
-export function toRows(prefix: string, scores: Scores, thresholds: Thresholds): MetricRow[] {
+/**
+ * Cost metrics (steps, tool calls) have CEILINGS, not floors: the metrics whose score is ABOVE the committed
+ * ceiling, by name. A ceiling with no score fails too, for the same vacuous-check reason as the floors.
+ */
+export function exceedingMetrics(scores: Scores, ceilings: Thresholds): string[] {
+  const out: string[] = [];
+  for (const [name, ceiling] of Object.entries(ceilings)) {
+    const v = scores[name];
+    if (v === undefined) out.push(`${name} (missing)`);
+    else if (v > ceiling) out.push(name);
+  }
+  return out;
+}
+
+/**
+ * Scoreboard rows for one `area/subject`: every score is gated iff it has a threshold (a floor) or a ceiling.
+ * A ceiling metric is a cost, so its scoreboard row is `lowerIsBetter`.
+ */
+export function toRows(
+  prefix: string,
+  scores: Scores,
+  thresholds: Thresholds,
+  ceilings: Thresholds = {}
+): MetricRow[] {
   return Object.entries(scores).map(([name, value]) => ({
     key: `${prefix}/${name}`,
     value,
-    gated: Object.hasOwn(thresholds, name),
+    gated: Object.hasOwn(thresholds, name) || Object.hasOwn(ceilings, name),
+    ...(Object.hasOwn(ceilings, name) && { lowerIsBetter: true }),
   }));
 }

@@ -1,0 +1,48 @@
+{
+  "req:2febe7af5e8ab8447f7ae26395ae2cda": {
+    "content": "find a session tool",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "search_tools",
+        "input": {
+          "query": "terminate runaway database session"
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  },
+  "req:5d51629b12ae36147565a5191bee5644": {
+    "content": "both loaded; running together",
+    "toolCalls": [
+      {
+        "id": "c2",
+        "name": "db_kill_session",
+        "input": {}
+      },
+      {
+        "id": "c3",
+        "name": "db_vacuum_table",
+        "input": {}
+      }
+    ],
+    "stopReason": "tool_use"
+  },
+  "req:828e6a23d456a1cc6f06bd3c06fc5e54": {
+    "content": "Killed session 4412 and vacuumed the orders table.",
+    "stopReason": "end_turn"
+  },
+  "req:bc9db04b37be74b6f57bc3239521ac3c": {
+    "content": "and a vacuum tool",
+    "toolCalls": [
+      {
+        "id": "c1",
+        "name": "search_tools",
+        "input": {
+          "query": "vacuum table"
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  }
+}

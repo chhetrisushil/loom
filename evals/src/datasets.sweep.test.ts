@@ -25,8 +25,14 @@ function datasetDirs(): string[] {
 function contentFiles(dir: string): string[] {
   return readdirSync(dir)
     .filter((f) => !/\.test\.ts$|^measure\.ts$|^thresholds\.ts$/.test(f))
-    .map((f) => join(dir, f));
+    .flatMap((f) => {
+      const p = join(dir, f);
+      return statSync(p).isDirectory() ? contentFiles(p) : [p];
+    });
 }
+
+/** A cassette's request keys (`req:` + 32 hex) are content hashes, not secrets; everything else is scanned. */
+const withoutCassetteKeys = (text: string): string => text.replace(/"req:[0-9a-f]{32}"/g, '"req"');
 
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+\.[A-Za-z]{2,}/;
 const KNOWN_TOKEN =
@@ -47,7 +53,7 @@ describe("dataset sweep", () => {
   it("discovers every eval area (a non-zero, expected count - an empty walk cannot pass)", () => {
     expect(dirs.length).toBeGreaterThanOrEqual(3);
     expect(dirs.map((d) => d.split("/").pop())).toEqual(
-      expect.arrayContaining(["retrieval", "skills", "toolSearch"])
+      expect.arrayContaining(["agentLoop", "retrieval", "skills", "toolSearch"])
     );
   });
 
@@ -74,12 +80,12 @@ describe("dataset sweep", () => {
       for (const f of contentFiles(d)) {
         scanned++;
         expect(
-          looksLikeRealData(readFileSync(f, "utf8")),
+          looksLikeRealData(withoutCassetteKeys(readFileSync(f, "utf8"))),
           `${f} looks like it holds real data`
         ).toBeUndefined();
       }
     }
-    expect(scanned).toBeGreaterThanOrEqual(9); // 3 areas x (2 data files + PROVENANCE.md)
+    expect(scanned).toBeGreaterThanOrEqual(25); // 3 retrieval areas x 3 files, plus the agentLoop sources and its 13 cassettes
   });
 
   it("the real-data detector fires on what it is meant to catch (and not on prose)", () => {

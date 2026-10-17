@@ -1,0 +1,19 @@
+{
+  "req:373ecad308092851cd65467bb97d8bf2": {
+    "content": "Order 1042 (a desk lamp, $49) is delivered.",
+    "stopReason": "end_turn"
+  },
+  "req:7bc4cce7f72af27afec0890f95ad87f1": {
+    "content": "looking the order up",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "lookup_order",
+        "input": {
+          "order": 1042
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  }
+}

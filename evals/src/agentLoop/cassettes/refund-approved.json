@@ -1,0 +1,33 @@
+{
+  "req:69922efebd40c09345d219054d93abc6": {
+    "content": "refunding",
+    "toolCalls": [
+      {
+        "id": "c1",
+        "name": "issue_refund",
+        "input": {
+          "order": 1042,
+          "amount": 49
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  },
+  "req:899b3965ed5d8267f39a889d99090923": {
+    "content": "Refunded order 1042 ($49).",
+    "stopReason": "end_turn"
+  },
+  "req:e191987dced2295023fc894ccf7c6c2c": {
+    "content": "checking the order",
+    "toolCalls": [
+      {
+        "id": "c0",
+        "name": "lookup_order",
+        "input": {
+          "order": 1042
+        }
+      }
+    ],
+    "stopReason": "tool_use"
+  }
+}
