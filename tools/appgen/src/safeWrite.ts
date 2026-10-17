@@ -9,9 +9,10 @@ import * as path from "node:path";
  * follows the link and overwrites a file outside the project. Policy (deliberately simple):
  *
  *  - the ROOT itself may be reached through a link (`/tmp` -> `/private/tmp`, a symlinked checkout),
- *    but ONLY when the user named it explicitly (`--dir <path>`). A DEFAULTED root (`app`) is never
- *    trusted: callers use the cwd as the root, so a cloned repo's own `app -> /outside` link is a
- *    component below the root and is refused;
+ *    but ONLY for a root OUTSIDE the cwd that the user named explicitly (`--dir /elsewhere`). A project
+ *    directory inside the cwd (`app`, `./app`, `app/nested`, typed or defaulted) is never trusted:
+ *    callers use the cwd as the root, so a cloned repo's own `app -> /outside` link is a component below
+ *    the root and is refused (the CLI and the library defaults derive it with `containmentRootFor`);
  *  - NOTHING BELOW the root may be a symlink on the path to a write: not the target, not any parent
  *    directory. That refuses links that point outside AND links that point back inside - an in-project
  *    link is refused too, because "inside" is a fact about the moment of the check, and the cost of
@@ -50,6 +51,7 @@ export function assertNoSymlinkPath(dir: string, dest: string): void {
   }
 }
 
+/** @internal Test-only seams; not part of the public surface (not re-exported from the package index). */
 export interface SafeWriteHooks {
   /** Test-only seam: runs immediately BEFORE the pre-open realpath re-check (models the race window). */
   beforeOpen?: () => void;
@@ -84,11 +86,16 @@ function assertParentRealpath(dir: string, parent: string): void {
  * parent directory in that window; Node has no `openat`/`renameat`, so it cannot be closed from here.
  * The temp file is removed on every failure path.
  */
-export function safeWriteFile(
+export function safeWriteFile(dir: string, dest: string, contents: string): void {
+  safeWriteFileWithHooks(dir, dest, contents, {});
+}
+
+/** @internal `safeWriteFile` with test-only race seams. Not exported from the package index. */
+export function safeWriteFileWithHooks(
   dir: string,
   dest: string,
   contents: string,
-  hooks: SafeWriteHooks = {}
+  hooks: SafeWriteHooks
 ): void {
   assertNoSymlinkPath(dir, dest);
   const parent = path.dirname(dest);
