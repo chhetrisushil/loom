@@ -1,13 +1,17 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
+  FLOW_TEMPLATES,
   THIRD_PARTY_SPECS,
   constructNameProblem,
   generateRegistration,
   importedPackages,
+  isFlowTemplate,
   newFiles,
+  templateNotes,
 } from "@loom/scaffold";
 import { UsageError } from "./args";
+import { type TreeChange, watchTree } from "./watch";
 
 /**
  * Discover flow modules under `<dir>/flows/<name>/flow.{ts,tsx}` — the folder
@@ -128,6 +132,103 @@ export function cmdGen(dir: string): {
   };
 }
 
+/** The result line `loom gen` prints: `wrote <file> (2 flows, 0 agents, ...)`. */
+export function genSummary(r: ReturnType<typeof cmdGen>): string {
+  const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+  const parts = [
+    plural(r.flows, "flow"),
+    plural(r.agents, "agent"),
+    plural(r.tools, "tool"),
+    plural(r.skills, "skill"),
+    plural(r.schedules, "schedule"),
+    plural(r.memories, "memory").replace("memorys", "memories"),
+    plural(r.projections, "projection"),
+  ];
+  return `wrote ${r.out} (${parts.join(", ")})`;
+}
+
+/** The convention folders `loom gen` discovers from (a change elsewhere never needs a regen). */
+export const CONVENTION_FOLDERS: readonly string[] = [
+  "flows",
+  "agents",
+  "tools",
+  "skills",
+  "schedules",
+  "memories",
+  "projections",
+];
+
+/** Every module specifier the convention currently yields - the only input to `loom.gen.ts`. */
+function discoveredSpecifiers(dir: string): string[] {
+  return [
+    ...discoverFlows(dir),
+    ...discoverAgents(dir),
+    ...discoverTools(dir),
+    ...discoverSkills(dir),
+    ...discoverSchedules(dir),
+    ...discoverMemories(dir),
+    ...discoverProjections(dir),
+  ];
+}
+
+export interface GenWatchOptions {
+  /** One line of output (default: console.log). */
+  log?: (line: string) => void;
+  /** Stop watching and resolve. */
+  signal?: AbortSignal;
+  debounceMs?: number;
+  pollMs?: number;
+  /** Poll instead of `fs.watch` (tests / filesystems without events). */
+  forcePoll?: boolean;
+}
+
+/**
+ * `loom gen --watch` - generate once, then regenerate whenever a module is ADDED, REMOVED or
+ * RENAMED under a convention folder, until `signal` aborts (exit 0). Editing a file's contents
+ * never changes `loom.gen.ts`, so it never regenerates; a transient failure (a folder briefly
+ * missing mid-rename) is reported and watching continues.
+ */
+export async function genWatch(dir: string, options: GenWatchOptions = {}): Promise<number> {
+  const log = options.log ?? ((line: string) => console.log(line));
+  // The first generation is a plain `loom gen`: a bad --dir is a usage error, not a watch.
+  log(genSummary(cmdGen(dir)));
+  let known = discoveredSpecifiers(dir);
+
+  const watcher = watchTree(dir, {
+    include: (file) => {
+      const [top, ...rest] = file.split("/");
+      return rest.length > 0 && CONVENTION_FOLDERS.includes(top as string) && /\.tsx?$/.test(file);
+    },
+    ...(options.debounceMs !== undefined && { debounceMs: options.debounceMs }),
+    ...(options.pollMs !== undefined && { pollMs: options.pollMs }),
+    ...(options.forcePoll !== undefined && { forcePoll: options.forcePoll }),
+    onChange(changes: TreeChange[]) {
+      if (changes.every((c) => c.kind === "changed")) return; // contents do not enter loom.gen.ts
+      const now = discoveredSpecifiers(dir);
+      const added = now.filter((s) => !known.includes(s));
+      const removed = known.filter((s) => !now.includes(s));
+      if (added.length === 0 && removed.length === 0) return; // e.g. a test file came and went
+      const result = cmdGen(dir);
+      known = now;
+      const delta = [...added.map((s) => `+${s}`), ...removed.map((s) => `-${s}`)].join(" ");
+      log(`${genSummary(result)}  ${delta}`);
+    },
+    onError(err) {
+      log(`loom gen --watch: ${err instanceof Error ? err.message : String(err)} (still watching)`);
+    },
+  });
+  log(
+    `watching ${path.resolve(dir)} for added/removed modules (${watcher.mode === "watch" ? "fs.watch" : "polling"}) - Ctrl-C to stop`
+  );
+
+  await new Promise<void>((resolve) => {
+    if (options.signal?.aborted) return resolve();
+    options.signal?.addEventListener("abort", () => resolve(), { once: true });
+  });
+  watcher.close();
+  return 0;
+}
+
 /** Nearest `package.json` at or above `dir`, parsed — or undefined when there is none. */
 function nearestManifest(dir: string): Record<string, unknown> | undefined {
   let cur = path.resolve(dir);
@@ -177,12 +278,15 @@ function missingDependencies(dir: string, contents: string[]): string[] {
 export function cmdNew(
   kind: string,
   name: string,
-  dir: string
+  dir: string,
+  template?: string
 ): {
   path: string;
   created: boolean;
   extras: { path: string; created: boolean }[];
   missingDeps: string[];
+  /** Manual follow-ups the template cannot do for you (wiring in the app's own config). */
+  notes: string[];
 } {
   const kinds = ["flow", "agent", "tool", "skill", "schedule", "memory", "projection", "sentinel"];
   if (!kinds.includes(kind)) {
@@ -190,7 +294,21 @@ export function cmdNew(
   }
   const problem = constructNameProblem(name);
   if (problem !== undefined) throw new UsageError(`loom new: ${problem}`);
-  const files = newFiles(kind as Parameters<typeof newFiles>[0], name);
+  if (template !== undefined) {
+    if (kind !== "flow") {
+      throw new UsageError(`loom new: --template applies to \`flow\` only (got kind "${kind}")`);
+    }
+    if (!isFlowTemplate(template)) {
+      throw new UsageError(
+        `loom new: unknown --template "${template}" - expected ${FLOW_TEMPLATES.join(" | ")}`
+      );
+    }
+  }
+  const files = newFiles(
+    kind as Parameters<typeof newFiles>[0],
+    name,
+    template !== undefined && isFlowTemplate(template) ? template : "echo"
+  );
   const written = files.map(({ path: rel, content }) => {
     const dest = path.join(dir, rel.replace(/^app\//, ""));
     if (fs.existsSync(dest)) return { path: dest, created: false };
@@ -200,5 +318,11 @@ export function cmdNew(
   });
   const [main, ...extras] = written as [(typeof written)[number], ...typeof written];
   const fresh = files.filter((_, i) => written[i]?.created).map((f) => f.content);
-  return { ...main, extras, missingDeps: missingDependencies(dir, fresh) };
+  const chosen = template !== undefined && isFlowTemplate(template) ? template : "echo";
+  return {
+    ...main,
+    extras,
+    missingDeps: missingDependencies(dir, fresh),
+    notes: main.created ? templateNotes(chosen, name) : [],
+  };
 }

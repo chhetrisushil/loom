@@ -36,8 +36,11 @@ The binary ships in `@loom/cli`. Run it with `npx loom …`, a package script (`
 loom — project-local commands for a Loom app
 
 scaffold
-  loom gen   [--dir app]                          regenerate loom.gen.ts from app/flows
-  loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] scaffold a file
+  loom gen   [--dir app] [--watch]                regenerate loom.gen.ts from app/flows (--watch: keep it current)
+  loom new   <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] [--no-gen] scaffold a file, then run gen
+  loom new   flow <name> --template echo|approval|timer|saga [--dir app]  a non-agentic starter (human gate, timer, compensation)
+  loom dev   --config <module> [--dir app] [--run <command>] [--port N]  the dev loop: gen --watch + run the app,
+                                                  restarting on change + the inspector (NOT an alias of inspect)
   loom appgen <intent> | --from <file> [--dir .] [--dry-run] [--check]  NL → new project or edits
                                                   (--dry-run previews; --check typechecks after apply)
   loom appgen ... --model <spec> [--model-big <spec>]  plan with a model of your choice
@@ -222,15 +225,17 @@ Several commands are **two words** — the first positional selects the subcomma
 
 These follow the **folder convention** — flows live at `app/flows/<name>/flow.ts` (folder); agents, tools, skills, schedules, memories, and projections are flat files at `app/agents/<name>.ts`, `app/tools/<name>.ts`, `app/skills/<name>.ts`, `app/schedules/<name>.ts`, `app/memories/<name>.ts`, `app/projections/<name>.ts` ([ADR 0011](adr/0011-folder-convention-codegen.md)).
 
-### `loom new <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app]`
+### `loom new <flow|agent|tool|skill|schedule|memory|projection|sentinel> <name> [--dir app] [--no-gen]`
 
-Scaffolds a single file from a template.
+Scaffolds a single file from a template, then runs `loom gen` so the new file is wired (the result line is printed; `--no-gen` skips it).
 
 | Argument / flag | Required | Default | Meaning |
 |---|---|---|---|
 | `<kind>` | yes | — | `flow`, `agent`, `tool`, `skill`, `schedule`, `memory`, `projection`, or `sentinel` (any other kind is an error) |
 | `<name>` | yes | — | kebab-case, `^[a-z][a-z0-9-]*$`, e.g. `greet` or `pg-lag`. Anything else is refused with a `did you mean` suggestion, and so is a path (`../evil`, `a/b`, an absolute path): a name can never leave the convention folder |
 | `--dir` | no | `app` | base directory the subfolders go under |
+| `--template` | no | `echo` | flows only: `echo` (default), `approval`, `timer` or `saga` (see below) |
+| `--no-gen` | no | off | do not run `loom gen` afterwards |
 
 ```bash
 npx loom new flow greet          # → creates app/flows/greet/flow.ts
@@ -245,11 +250,25 @@ npx loom new tool lookup --dir src
 
 `loom new flow` also writes a sibling `app/flows/<name>/flow.test.ts` that runs the flow through [`@loom/testing`](../tools/testing/README.md)'s `createTestApp` (it passes on a fresh scaffold; the other kinds have no natural test and get none).
 
+#### Non-agentic flow templates: `loom new flow <name> --template approval|timer|saga`
+
+The default flow is an echo step. These three are the plain-workflow starting points; each writes `flow.ts` plus a sibling `flow.test.ts` that passes on a fresh scaffold and uses [`@loom/testing`](../tools/testing/README.md) time travel (`createTestApp({ clock: true })`, `advanceTime`) instead of real waiting:
+
+| Template | What it shows | Test |
+|---|---|---|
+| `approval` | `ctx.suspend` on a typed gate (`flow$({ resumeSchemas })`) with a 24h timeout, and a note on wiring `security.resumeAuthenticator` for who may approve | approve → applied; no answer for 24h → expired |
+| `timer` | a durable `ctx.sleep` (1 day) between steps (`ctx.sleepUntil` for an absolute instant) | one millisecond short of a day: still suspended; then due: completed |
+| `saga` | `withSaga` from `@loom/saga`: each forward step registers a compensator, a later failure runs them in reverse | success keeps the work; a failure undoes it in reverse |
+
+`saga` imports `@loom/saga`, which a fresh `create-loom-app` project does not declare, so `loom new` prints the line to add (the same hint as above). Saga steps are **tool steps** (a compensator runs under a derived step id, so an inline `handler$` cannot be one): the flow exports `<Name>Tools` and `<Name>Grants`, and under the scaffold's `security.strict` you must spread `<Name>Grants` into the `GrantTable` in `app/security.ts` or the app refuses to start with a `capability-compat` finding; register an effect per tool id on `app.effectRuntime` (the generated test stubs them). The `timer` and `approval` templates need a `TimerService` in the app that runs them (`defineConfig({ timers: { store } })`); the generated tests provide one through `clock: true`. After writing, `loom new` prints these follow-ups as `note - ...` lines.
+
 It **never overwrites** an existing file: it prints `created <path>` (exit `0`) or `skipped <path> (already exists)` (exit `1`). A refused name exits `1` with nothing written.
 
 When a generated file imports a package the nearest `package.json` does not declare (`loom new sentinel` imports `@loom/plugin-sentinel`; every other kind needs nothing a fresh `create-loom-app` project lacks), `loom new` prints the exact line to add — `"@loom/plugin-sentinel": "workspace:*"` inside the Loom workspace, `"*"` in an app created with `--loom-path` (its `pnpm.overrides` already map every `@loom/*` package). It never edits `package.json`; without the dependency the whole app fails to load, not just the new file.
 
-### `loom gen [--dir app]`
+### `loom gen [--dir app] [--watch]`
+
+`--watch` generates once, then keeps `loom.gen.ts` current while you work: it regenerates when a module is **added, removed or renamed** under a convention folder (editing a file's contents, or adding a `*.test.ts`, changes nothing in `loom.gen.ts` and is ignored), prints what changed (`wrote app/loom.gen.ts (2 flows, …)  +./flows/refund/flow`), debounces a burst of events into one run, and reports a transient failure without exiting. It uses recursive `fs.watch` (macOS, Windows, Linux on Node 20+) and falls back to polling the tree when that is unavailable. Ctrl-C (or SIGTERM) stops it with exit `0`.
 
 `--dir` must be an existing directory: a typo'd one is refused (exit `1`) rather than created and "succeeding" with zero of everything. Scans the seven convention folders and writes `<dir>/loom.gen.ts` — a static, alphabetically-sorted registration module. Wiring is build-time and replay-safe (P5), so discovery is codegen, not runtime globbing:
 
@@ -310,7 +329,7 @@ Feed the generated modules to `defineConfig({ flowModules, agentModules, toolMod
 | `memoryModules` | `app.memory` (`MemoryRuntime`) | agents resolve their `memoryId` against it |
 | `projectionModules` | the projection runtime | compiled projections fold **on demand** — see below |
 
-Re-run `loom gen` whenever you add or remove any construct. Exit `0` on a successful write.
+Re-run `loom gen` whenever you add or remove any construct (`loom new` does it for you; `loom gen --watch` and `loom dev` keep it current). Exit `0` on a successful write.
 
 **Projections load their fold code on demand** ([ADR 0049](adr/0049-projection-on-demand-fold-code.md)). When the `@loom/compiler` plugin builds a `projection$`, it extracts the whole `handlers` fold map into its own `import()` chunk (exactly like `handler$`/`instructions$`) and records the handled event-type keys. At runtime the projection stays **code-dormant** until an event whose type it folds first fires — then it imports the chunk once (buffering until ready) and folds normally after. A projection whose events never fire never loads its code. Uncompiled (dev), the handlers are inline and eager.
 
@@ -613,7 +632,7 @@ frames:
     remediate: pending
 ```
 
-### `loom inspect --db <path> [--port N]`  ·  alias `loom dev`
+### `loom inspect --db <path> [--port N]`
 
 The page opens with a clickable **executions** list (filterable by status) backed by the same scan as `loom ls` — read-only, `GET /api/executions[?status=&limit=]`; click a row to load its timeline. It binds `127.0.0.1` unless told otherwise.
 
@@ -624,7 +643,24 @@ npx loom inspect --db .loom/events.db
 # → loom inspector on http://localhost:53812  (Ctrl-C to stop)
 ```
 
-Enter an execution id in the page, then drag the slider to walk the run. Under the hood it serves `/api/trace/:executionId` (the timeline render model) and `/api/state/:executionId/:sequence` (the same folded state as `loom debug --at`). `loom dev` is an identical alias.
+Enter an execution id in the page, then drag the slider to walk the run. Under the hood it serves `/api/trace/:executionId` (the timeline render model) and `/api/state/:executionId/:sequence` (the same folded state as `loom debug --at`).
+
+### `loom dev --config <module> [--dir app] [--run <command>] [--port N]`
+
+The development loop. **Behaviour change:** until now `loom dev` was an alias of `loom inspect`; it is now a real dev loop and `loom inspect` is unchanged. `loom dev --db …` is refused (exit `2`, pointing at `loom inspect`).
+
+It does three things at once:
+
+1. **`gen --watch`** over `--dir` (default `app`): `loom.gen.ts` is regenerated when a module is added, removed or renamed.
+2. **Runs your app** as a child process and **restarts it on change**. The command is `--run "<command>"`, or else the `dev` script in `./package.json`, or else its `start` script (a `dev` script that itself calls `loom dev` is skipped). It runs through the shell with `node_modules/.bin` on `PATH` (as an npm script would), with `LOOM_DEV=1` set. Any file change under `--dir` (not `node_modules`, `dist`, `.git`, `.data`) restarts it once per burst; a change that adds/removes a module also regenerates first. Files outside `--dir` (for example the config) do not trigger a restart.
+3. **The inspector** over the stores of `--config`, on `127.0.0.1` (`--port`, default: a free port, printed). The config is loaded **in the dev process** without starting its timers, so the inspector sees executions only when the app uses durable storage (for example sqlite) shared with the child. If the config does not load yet (mid-edit), the loop continues without the inspector.
+
+The child runs in its **own process group**: a restart or Ctrl-C signals the whole group (SIGTERM, then SIGKILL after 3 s), so no orphan keeps a port or a database open. An app that exits `0` waits for the next change; one that exits non-zero is restarted with a backoff (1 s, doubling to 30 s; a change restarts it immediately). Ctrl-C (or SIGTERM) stops everything and exits `0`.
+
+```bash
+npx loom dev --config ./loom.config.ts                 # runs the "dev" or "start" script
+npx loom dev --config ./loom.config.ts --run "tsx app/main.ts" --port 4000
+```
 
 ---
 
@@ -1184,7 +1220,8 @@ npx loom plugin search postgres
 | Command | Purpose | Key flags | Exit `1` when |
 |---|---|---|---|
 | `loom new <kind> <name>` | scaffold a flow/agent/tool/… file | `--dir app` | file already exists |
-| `loom gen` | regenerate `loom.gen.ts` | `--dir app` | (write failure) |
+| `loom gen` | regenerate `loom.gen.ts` (`--watch` keeps it current) | `--dir app` | (write failure) |
+| `loom dev` | gen --watch + run the app (restart on change) + the inspector | `--config`, `--run`, `--dir app` | no `--config`; nothing to run |
 | `loom appgen <intent>` | brownfield-aware NL → new project or surgical edits (scan→plan→apply→validate) | `--dry-run`, `--yes`, `--check`, `--from <file>`, `--from-spec <file>`, `--model <spec>`, `--offline`, `--dir .` | no intent supplied; `--check` typecheck fails |
 | `loom doctor` | run every pre-flight check whose input it can find, and name the ones it skipped | `--dir .`, `--config`, `--manifest` | any check fails (never for a skip) |
 | *store commands* | `ls` `logs` `debug` `inspect` `profile` `introspect` `optimize` `learn` `census` `recover` `branches` `repair` `retention` `sweep` `compliance` | **`<store>` = `--config <module>` _or_ `--db <events.db>`** — `--config` works wherever `--db` does, and neither flag is individually required | — |
