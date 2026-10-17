@@ -1,13 +1,13 @@
 import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CassetteMissError, reportDigest } from "@loom/eval";
+import { CassetteMissError, CassetteProvider, reportDigest } from "@loom/eval";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializeCassette } from "../cassetteFiles";
 import { failingMetrics, toRows } from "../gate";
 import { buildScoreboard, serializeScoreboard } from "../scoreboard";
 import { APPGEN_CASES, type AppgenCase } from "./cases";
 import { type SuiteRun, authorAppgenCassette, runAppgenSuite, store } from "./measure";
-import { type Arm, buildFixture, coverage } from "./subject";
+import { type Arm, buildFixture, coverage, runCase } from "./subject";
 import { APPGEN_THRESHOLDS } from "./thresholds";
 import { createTypechecker } from "./typecheck";
 
@@ -251,17 +251,49 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
     );
 
     it(
-      "(a3b) a plan the validator ACCEPTS but whose code does not typecheck is reported invalid with the compiler error",
+      "(a3b) a plan the validator accepts whose generated code does not typecheck is reported invalid with the compiler error",
       async () => {
-        // TEMPORARY PIN: this relies on the `intent` -> `//`-comment injection channel in
-        // generate.ts (a security finding fixed on branch fix/appgen-codegen-injection). When
-        // that fix lands this plan is rejected or its text escaped, and this test must switch
-        // to another validator-clean tsc failure (or inject a corrupted generated file into the
-        // typecheck harness directly) so the compiler-error reporting path stays covered.
-        // The validator does not model `intent`, which generate.ts splices into a `//`
-        // comment line. A newline in it ends the comment, so the rest becomes code: a
-        // validator-clean plan whose generated flow.ts is a TS syntax error. (The earlier
-        // `a-b` / `a--b` const-name collision is now rejected by the validator, see (a3c).)
+        // The old pin on the `intent` -> `//`-comment injection channel is gone (that channel is
+        // closed, see (a3d)). The compiler-error reporting path is covered by corrupting the
+        // generated flow.ts inside the harness, between `applyChanges` and the typecheck.
+        const c = kase("new-ticket-router");
+        const out = await runCase({
+          intent: c.intent,
+          fixture: c.fixture,
+          arm: "model",
+          typechecker,
+          provider: new CassetteProvider({ mode: "replay", data: store.load(c.id) }),
+          tamper: (root) => {
+            const file = join(root, "app", "flows", "ticket-router", "flow.ts");
+            writeFileSync(file, `${readFileSync(file, "utf8")}\nthis is not typescript\n`);
+          },
+        });
+        expect(out.spec?.planner).toBe("model"); // accepted as a plan ...
+        expect(out.valid).toBe(false); // ... and still invalid
+        expect(out.reasons.join(" ")).toMatch(
+          /typecheck: TS\d+ app\/flows\/ticket-router\/flow\.ts\(\d+\)/
+        );
+        // the same case untouched is valid: the failure is the corruption
+        const clean = await runCase({
+          intent: c.intent,
+          fixture: c.fixture,
+          arm: "model",
+          typechecker,
+          provider: new CassetteProvider({ mode: "replay", data: store.load(c.id) }),
+        });
+        expect(clean.valid).toBe(true);
+      },
+      T
+    );
+
+    it(
+      "(a3d) a newline in an intent is refused by the validator (repair round, then the deterministic fallback), not left to tsc",
+      async () => {
+        // Before the codegen-injection fix the validator ignored `intent`, generate.ts spliced it into
+        // a `//` comment, and a newline made the rest of the line CODE (a TS syntax error at best).
+        // Now the validator names the character class, the model gets one repair round, and a model
+        // that keeps it is not trusted: the plan falls back to the deterministic planner, which is
+        // scored invalid for the arm (`planner !== "model"`).
         const broken = {
           content: JSON.stringify({
             name: "ticket-router",
@@ -288,11 +320,12 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
           cassette: swap("new-ticket-router", bad),
         });
         const o = run.outcomes.get("new-ticket-router");
-        expect(o?.spec?.planner).toBe("model"); // accepted as a plan ...
-        expect(o?.valid).toBe(false); // ... and still invalid
+        expect(o?.spec?.planner).toBe("deterministic"); // fell back
+        expect(o?.valid).toBe(false);
         expect(o?.reasons.join(" ")).toMatch(
-          /typecheck: TS\d+ app\/flows\/ticket-router\/flow\.ts\(\d+\)/
+          /model plan rejected .*intent of "ticket-router" contains a control, line-break or invisible\/bidi character/
         );
+        expect(o?.replies.length).toBe(2); // asked, repaired once, still wrong
         expect(gate(run)).toContain("validity");
         expect(gate(model)).toEqual([]);
       },

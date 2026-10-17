@@ -30,4 +30,14 @@ export {
   markdownText,
   templateLiteralText,
   tsStringLiteral,
+  EXISTING_ID,
+  NEW_ID,
 } from "./emit";
+export {
+  MAX_GRANTS,
+  MAX_INTENT_LENGTH,
+  MAX_LABEL_LENGTH,
+  changeSpecDataIssues,
+  textIssues,
+  textListIssues,
+} from "./specText";

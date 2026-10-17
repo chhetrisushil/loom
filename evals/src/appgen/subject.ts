@@ -187,6 +187,11 @@ export interface RunOptions {
   /** The model arm's provider (a cassette on replay). */
   readonly provider?: LlmProvider & { readonly misses?: readonly string[] };
   readonly typechecker: Typechecker;
+  /**
+   * Test seam: runs on the fixture directory AFTER the plan is written and BEFORE the typecheck, so a
+   * test can corrupt a generated file and prove the compiler-error reporting path still names the file.
+   */
+  readonly tamper?: (root: string) => void;
 }
 
 /** Run one case end to end. A cassette MISS is rethrown (it is a harness failure, never a quality score). */
@@ -219,6 +224,7 @@ export async function runCase(o: RunOptions): Promise<CaseOutcome> {
       try {
         const plan = applyChanges(spec, before);
         writePlan(root, plan);
+        o.tamper?.(root);
         const diags = o.typechecker.check(root, flowFiles(root));
         for (const d of diags.slice(0, 5)) reasons.push(`typecheck: ${formatDiagnostic(d)}`);
       } catch (e) {

@@ -61,10 +61,15 @@ Also found while writing the fail-proofs: `validateChangeSpec` did not reject a 
 such a plan was accepted and generated `const <id>Step` twice; only the typecheck caught it. FIXED 2026-10-17: the
 validator now rejects it (fail-proof `(a3)`). The same-const-name collision (`a-b` / `a--b` -> `aBStep`) and the invalid-identifier ids (`1-run`) are also
 rejected now (fail-proof `(a3c)`; strict step-id rule `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`, a new flow id likewise, an
-existing flow keeps the loose rule). Fail-proof `(a3b)` keeps the typecheck path covered with a different
-validator-clean plan: a capability `intent` containing a newline, which `generate.ts` splices into a `//` comment so the
-rest of the line becomes code. The validator does not model `intent`; that is a remaining gap, recorded here rather
-than hidden.
+existing flow keeps the loose rule).
+
+The text-field gap is also FIXED (2026-10-17, codegen-injection fix): the validator used not to model `intent`, which
+`generate.ts` spliced into a `//` comment, so a newline made the rest of the line code. The validator now refuses
+control, line-break, bidi, zero-width and Unicode tag characters (and over-long text) in every free-text field, and every
+codegen sink escapes regardless. Fail-proof `(a3d)` pins the refusal (repair round, then the deterministic fallback).
+Fail-proof `(a3b)` no longer relies on that channel: it corrupts the generated `flow.ts` inside the harness (the
+`tamper` seam of `runCase`, between `applyChanges` and the typecheck) so the `typecheck: TS... flow.ts(line)` reporting
+path stays covered.
 
 ## Security finding: symlinked flow file escape (fixed by #627, 2026-10-17)
 

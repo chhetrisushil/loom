@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { AppModel } from "./appModel";
 import { applyChanges } from "./applyChanges";
 import { planChangesDeterministic } from "./changeSpec";
+import { wireGrantsIntoConfig } from "./configEditor";
 import {
   assertSafeId,
   blockCommentText,
@@ -16,7 +17,7 @@ import {
 import { generateFlows, generateProject } from "./generate";
 import { parseIntent } from "./parseIntent";
 import { stepConstSource } from "./stepTemplate";
-import type { CapabilitySpec } from "./types";
+import type { AppSpec, CapabilitySpec } from "./types";
 
 // Model-supplied (or user-typed) text is untrusted. Each payload below tries to leave
 // its comment / string literal / template literal and run `globalThis.pwned = 1`.
@@ -33,6 +34,16 @@ const PAYLOADS: Record<string, string> = {
   trailingBackslash: "ends with a backslash \\",
   scriptTag: `</script><script>${EXEC}</script>`,
   bidiOverride: `evil \u202e${EXEC}`,
+  // Only already-present identifiers / no new identifier: invisible to an identifier-set oracle.
+  nestedImport: 'x\n  await import("../../../tmp/evil.js"); //',
+  nestedLoop: "x\n  for (;;); //",
+  // Astral / invisible characters a BMP-only character class misses.
+  tagCharacters: `hello\u{e0041}\u{e0042}\u{e0067} ${EXEC}`,
+  tagWithNewline: `\u{e0001}\u{e0041}\n${EXEC}`,
+  musicalFormatting: `a\u{1d173}b\u{1d17a}c ${EXEC}`,
+  interlinearAnnotation: `a\ufff9b\ufffac\ufffb ${EXEC}`,
+  combiningGraphemeJoiner: `a\u034fb ${EXEC}`,
+  loneSurrogate: `a\ud800b ${EXEC}`,
 };
 
 /** Syntactic problems TypeScript reports for `source` (empty = parses cleanly). */
@@ -44,18 +55,61 @@ function syntaxErrors(source: string): string[] {
   return (out.diagnostics ?? []).map((d) => ts.flattenDiagnosticMessageText(d.messageText, "\n"));
 }
 
-/** What the CODE of a file is: its statement kinds and every identifier it mentions. */
-function shape(source: string): { kinds: string[]; identifiers: string[] } {
+/**
+ * The CODE of a file, in full: every node's SyntaxKind, recursively, with identifier and
+ * numeric text kept and string / template / regex text blanked (comments are not nodes, so
+ * they never appear). A payload that stays inside its comment or string literal leaves this
+ * unchanged; one that adds ANY node anywhere - a top-level statement, or an
+ * `await import("../../tmp/evil.js")` / `for(;;);` smuggled into a nested runner body -
+ * changes it. (The earlier oracle compared only top-level statement kinds plus the
+ * identifier set, which a nested injection of already-present identifiers did not move.)
+ */
+function astShape(source: string): string {
   const sf = ts.createSourceFile("x.ts", source, ts.ScriptTarget.ES2022, true);
-  const ids = new Set<string>();
-  const visit = (n: ts.Node): void => {
-    if (ts.isIdentifier(n)) ids.add(n.text);
-    ts.forEachChild(n, visit);
+  const BLANK = new Set([
+    ts.SyntaxKind.StringLiteral,
+    ts.SyntaxKind.NoSubstitutionTemplateLiteral,
+    ts.SyntaxKind.TemplateHead,
+    ts.SyntaxKind.TemplateMiddle,
+    ts.SyntaxKind.TemplateTail,
+    ts.SyntaxKind.RegularExpressionLiteral,
+  ]);
+  const walk = (n: ts.Node): string => {
+    const kind = ts.SyntaxKind[n.kind] as string;
+    if (BLANK.has(n.kind)) return kind;
+    if (ts.isIdentifier(n) || ts.isNumericLiteral(n) || ts.isPrivateIdentifier(n)) {
+      return `${kind}:${n.text}`;
+    }
+    const kids: string[] = [];
+    ts.forEachChild(n, (c) => {
+      kids.push(walk(c));
+    });
+    return kids.length === 0 ? kind : `${kind}(${kids.join(",")})`;
   };
-  visit(sf);
+  return walk(sf);
+}
+
+/** A copy of `spec` with every free-text field replaced by a benign constant. */
+function neutralise(spec: AppSpec): AppSpec {
   return {
-    kinds: sf.statements.map((s) => ts.SyntaxKind[s.kind] as string),
-    identifiers: [...ids].sort(),
+    ...spec,
+    name: "app",
+    capabilities: spec.capabilities.map((c) => ({
+      ...c,
+      name: "Name",
+      intent: "benign",
+      ...(c.reasoning === undefined
+        ? {}
+        : {
+            reasoning: {
+              ...(c.reasoning.baseModel === undefined ? {} : { baseModel: "m" }),
+              ...(c.reasoning.elevateTo === undefined
+                ? {}
+                : { elevateTo: c.reasoning.elevateTo.map(() => "n") }),
+            },
+          }),
+    })),
+    ...(spec.compute === undefined ? {} : { compute: { target: "local" } }),
   };
 }
 
@@ -67,12 +121,12 @@ const NET_NEW: AppModel = { root: "/nonexistent", isExisting: false, flows: [] }
 
 describe.each(Object.entries(PAYLOADS))("codegen injection: %s", (_label, payload) => {
   it("an intent is inert in the generated flow file", () => {
-    const baseline = shape(generateFlows({ name: "a", capabilities: [cap({})] })[0]!.contents);
+    const baseline = astShape(generateFlows({ name: "a", capabilities: [cap({})] })[0]!.contents);
     const file = generateFlows({ name: "a", capabilities: [cap({ intent: payload })] })[0]!;
     expect(syntaxErrors(file.contents)).toEqual([]);
-    const got = shape(file.contents);
-    expect(got).toEqual(baseline); // no extra statement, no extra identifier
-    expect(got.identifiers).not.toContain("pwned");
+    const got = astShape(file.contents);
+    expect(got).toEqual(baseline); // no extra node anywhere in the file
+    expect(got).not.toContain("pwned");
   });
 
   it("reasoning model names are inert (comment sinks)", () => {
@@ -82,7 +136,7 @@ describe.each(Object.entries(PAYLOADS))("codegen injection: %s", (_label, payloa
         cap({ reasoning: { baseModel: payload, elevateTo: [payload, `x${payload}`] } }),
       ],
     };
-    const baseline = shape(
+    const baseline = astShape(
       generateFlows({
         name: "a",
         capabilities: [cap({ reasoning: { baseModel: "m", elevateTo: ["n"] } })],
@@ -90,7 +144,7 @@ describe.each(Object.entries(PAYLOADS))("codegen injection: %s", (_label, payloa
     );
     const file = generateFlows(spec)[0]!;
     expect(syntaxErrors(file.contents)).toEqual([]);
-    expect(shape(file.contents)).toEqual(baseline);
+    expect(astShape(file.contents)).toEqual(baseline);
   });
 
   it("a whole new project built from the plan parses and adds no code", () => {
@@ -104,7 +158,7 @@ describe.each(Object.entries(PAYLOADS))("codegen injection: %s", (_label, payloa
     for (const f of mk(payload)) {
       if (!f.path.endsWith(".ts")) continue;
       expect(syntaxErrors(f.contents), f.path).toEqual([]);
-      expect(shape(f.contents), f.path).toEqual(shape(baseline.get(f.path) ?? ""));
+      expect(astShape(f.contents), f.path).toEqual(astShape(baseline.get(f.path) ?? ""));
     }
   });
 
@@ -119,15 +173,32 @@ describe.each(Object.entries(PAYLOADS))("codegen injection: %s", (_label, payloa
       if (!f.path.endsWith(".ts")) continue;
       expect(syntaxErrors(f.contents), f.path).toEqual([]);
       const b = baseline.creates.find((c) => c.path === f.path);
-      expect(shape(f.contents), f.path).toEqual(shape(b?.contents ?? ""));
+      expect(astShape(f.contents), f.path).toEqual(astShape(b?.contents ?? ""));
     }
   });
 
-  it("parseIntent output survives generation", () => {
+  it("parseIntent output survives generation and adds no code", () => {
     const spec = parseIntent(payload);
+    const baseline = new Map(generateProject(neutralise(spec)).map((f) => [f.path, f.contents]));
     for (const f of generateProject(spec)) {
-      if (f.path.endsWith(".ts")) expect(syntaxErrors(f.contents), f.path).toEqual([]);
+      if (!f.path.endsWith(".ts")) continue;
+      expect(syntaxErrors(f.contents), f.path).toEqual([]);
+      expect(astShape(f.contents), f.path).toEqual(astShape(baseline.get(f.path) ?? ""));
     }
+  });
+
+  it("a grant name cannot break out of the generated GrantTable", () => {
+    const r = wireGrantsIntoConfig(
+      'import { defineConfig } from "@loom/app";\nexport default defineConfig({});\n',
+      { [payload]: [payload] }
+    );
+    expect(syntaxErrors(r.after)).toEqual([]);
+    expect(hasUnsafeChars(r.after.replace(/\n/g, ""))).toBe(false);
+    const base = wireGrantsIntoConfig(
+      'import { defineConfig } from "@loom/app";\nexport default defineConfig({});\n',
+      { a: ["b"] }
+    );
+    expect(astShape(r.after)).toEqual(astShape(base.after));
   });
 
   it("the compute target cannot add markdown structure", () => {
@@ -164,9 +235,33 @@ describe("codegen injection: identifiers", () => {
     const name = "app\n\n## Pwn\n<script>x</script>";
     const files = generateProject({ name, capabilities: [cap({})] });
     const readme = files.find((f) => f.path === "README.md")?.contents ?? "";
-    expect(readme.split("\n")[0]).toBe("# app ## Pwn <script>x</script>");
+    // one heading line; markdown/HTML metacharacters are escaped, not passed through
+    expect(readme.split("\n")[0]).toBe("# app \\#\\# Pwn \\<script\\>x\\</script\\>");
+    expect(readme).not.toContain("<script>");
+    expect(readme.split("\n").filter((l) => /^#{1,6}\s/.test(l))).toEqual(
+      expect.not.arrayContaining(["## Pwn <script>x</script>"])
+    );
     const pkg = JSON.parse(files.find((f) => f.path === "package.json")?.contents ?? "{}");
     expect(pkg.name).toBe(name); // JSON-escaped, still one string
+  });
+});
+
+describe("the AST oracle itself", () => {
+  const base = generateFlows({ name: "a", capabilities: [cap({})] })[0]!.contents;
+  it("is unchanged by comment / string text but sees any added node, nested or not", () => {
+    expect(astShape(base.replace("benign", "other words"))).toBe(astShape(base));
+    const nested = base.replace(
+      "const out = await ctx.run(",
+      'await import("../../../tmp/evil.js");\n  const out = await ctx.run('
+    );
+    expect(nested).not.toBe(base);
+    expect(astShape(nested)).not.toBe(astShape(base));
+    const loop = base.replace(
+      "const out = await ctx.run(",
+      "for (;;);\n  const out = await ctx.run("
+    );
+    expect(loop).not.toBe(base);
+    expect(astShape(loop)).not.toBe(astShape(base));
   });
 });
 
@@ -174,6 +269,7 @@ describe("emit helpers", () => {
   it("commentText leaves no line terminator", () => {
     for (const p of Object.values(PAYLOADS)) {
       expect(commentText(p)).not.toMatch(/[\r\n\u2028\u2029\u202e]/);
+      expect(hasUnsafeChars(commentText(p))).toBe(false);
     }
     expect(commentText("a\nb")).toBe("a b");
   });
@@ -186,6 +282,7 @@ describe("emit helpers", () => {
     for (const p of Object.values(PAYLOADS)) {
       const lit = tsStringLiteral(p);
       expect(lit).not.toMatch(/[\r\n\u2028\u2029\u202e]/);
+      expect(hasUnsafeChars(lit)).toBe(false);
       expect(syntaxErrors(`const s = ${lit};`)).toEqual([]);
       expect(new Function(`return ${lit}`)()).toBe(p);
     }
@@ -206,9 +303,31 @@ describe("emit helpers", () => {
     expect(hasUnsafeChars("a\u007fb")).toBe(true);
     expect(hasUnsafeChars(`it's "fine" \`ok\` \${x} \\ </script> */`)).toBe(false);
   });
-  it("assertSafeId accepts kebab-case only", () => {
+  it("hasUnsafeChars flags astral format characters (tag chars, musical formatting) and U+034F", () => {
+    for (const c of [
+      "\u{e0001}",
+      "\u{e0041}",
+      "\u{e007f}",
+      "\u{1d173}",
+      "\u{1d17a}",
+      "\ufff9",
+      "\ufffb",
+      "\u034f",
+      "\u2065",
+      "\ud800",
+    ]) {
+      expect(hasUnsafeChars(`a${c}b`), c.codePointAt(0)?.toString(16)).toBe(true);
+    }
+    expect(hasUnsafeChars("caf\u00e9 \u{1f600} \u4e2d")).toBe(false); // ordinary non-ASCII is fine
+  });
+  it("tsStringLiteral escapes an astral character as a surrogate pair", () => {
+    expect(tsStringLiteral("a\u{e0041}")).toBe('"a\\udb40\\udc41"');
+    expect(tsStringLiteral("\u{1d173}")).toBe('"\\ud834\\udd73"');
+    expect(commentText("a\u{e0041}b")).toBe("a b");
+  });
+  it("assertSafeId accepts the strict new-id kebab-case only", () => {
     expect(assertSafeId("capability", "a-b-1")).toBe("a-b-1");
-    for (const bad of ["", "-a", "A", "a b", 'a"', "a\n"]) {
+    for (const bad of ["", "-a", "A", "a b", 'a"', "a\n", "1a", "a-", "a--b", "a\u{e0041}"]) {
       expect(() => assertSafeId("capability", bad)).toThrow();
     }
   });

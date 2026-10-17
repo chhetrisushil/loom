@@ -1,5 +1,13 @@
 export { pascal, generateRegistration } from "./codegen";
 export {
+  blockCommentText,
+  commentText,
+  hasUnsafeChars,
+  markdownText,
+  templateLiteralText,
+  tsStringLiteral,
+} from "./emit";
+export {
   flowFile,
   flowTestFile,
   toolFile,

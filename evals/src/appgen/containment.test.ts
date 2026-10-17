@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative, sep } from "node:path";
 import { applyChanges, generateFlows, scanApp } from "@loom/appgen";
-import type { ChangeSpec } from "@loom/appgen";
+import type { ChangeSpec, FilePlan } from "@loom/appgen";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveInsideRoot, writePlan } from "./subject";
 
@@ -75,28 +75,45 @@ describe("applyChanges containment (ESCALATION RULE, S3)", () => {
   it("applyChanges writes NOTHING, whatever the ids: the sandbox is byte-for-byte the same afterwards", () => {
     const { base, root } = sandbox();
     const before = tree(base);
-    for (const id of ["ok-flow", "../../../escape", "/abs/escape", "a/../../../../escape"]) {
-      applyChanges(spec({ id }), scanApp(root)); // brownfield (package.json marks an existing app)
+    applyChanges(spec({ id: "ok-flow" }), scanApp(root)); // brownfield (package.json marks an existing app)
+    // The generator now refuses a non-kebab id outright (codegen-injection fix), before any path exists.
+    for (const id of ["../../../escape", "/abs/escape", "a/../../../../escape"]) {
+      expect(() => applyChanges(spec({ id }), scanApp(root)), id).toThrow(/kebab-case/);
     }
     // a net-new project too (no marker)
     const fresh = join(base, "fresh");
     mkdirSync(fresh);
-    applyChanges(spec({ id: "../../../escape" }), scanApp(fresh));
+    expect(() => applyChanges(spec({ id: "../../../escape" }), scanApp(fresh))).toThrow(
+      /kebab-case/
+    );
     expect(tree(base)).toEqual([...before, "fresh"].sort());
     expect(readFileSync(join(base, "outside", "sentinel.txt"), "utf8")).toBe("untouched\n");
   });
 
-  it("a traversal or absolute id yields a plan path that escapes LEXICALLY; the harness writer refuses it", () => {
+  it("a traversal or absolute id is refused by the generator; the harness writer still refuses an escaping path", () => {
     const { base, root, sentinelDir } = sandbox();
-    const plan = applyChanges(spec({ id: "../../../outside/x" }), scanApp(root));
-    const created = plan.creates.map((c) => c.path);
-    expect(created).toEqual(["app/flows/../../../outside/x/flow.ts"]);
-    expect(() => resolveInsideRoot(root, created[0] as string)).toThrow(/outside the fixture/);
-    expect(() => writePlan(root, plan)).toThrow(/outside the fixture/);
+    // (before the fix this id yielded the plan path below; the generator now throws first)
+    expect(() => applyChanges(spec({ id: "../../../outside/x" }), scanApp(root))).toThrow(
+      /kebab-case/
+    );
+    expect(() => applyChanges(spec({ id: "/abs/x" }), scanApp(join(base, "nothing-here")))).toThrow(
+      /kebab-case/
+    );
+    // belt and braces: a hand-built plan with such a path (any future planner bug) is still refused
+    const escaping = {
+      root,
+      isNewProject: false,
+      creates: [{ path: "app/flows/../../../outside/x/flow.ts", contents: "x" }],
+      edits: [],
+      deletes: [],
+      skips: [],
+      regenRegistration: false,
+    } as FilePlan;
+    expect(() => resolveInsideRoot(root, escaping.creates[0]?.path as string)).toThrow(
+      /outside the fixture/
+    );
+    expect(() => writePlan(root, escaping)).toThrow(/outside the fixture/);
     expect(readdirSync(sentinelDir)).toEqual(["sentinel.txt"]);
-    // net-new, absolute id: `app/flows//abs/x/flow.ts` stays inside (path.resolve treats it as relative)
-    const abs = applyChanges(spec({ id: "/abs/x" }), scanApp(join(base, "nothing-here")));
-    for (const c of abs.creates) expect(() => resolveInsideRoot(root, c.path)).not.toThrow();
   });
 
   it("a symlinked flow file is NOT offered as editable (the scanner skips it), and applyChanges writes nothing", () => {

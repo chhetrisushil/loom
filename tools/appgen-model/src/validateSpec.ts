@@ -1,4 +1,15 @@
-import { type AppModel, type ChangeSpec, hasUnsafeChars, stepConstName } from "@loom/appgen";
+import {
+  type AppModel,
+  type ChangeSpec,
+  EXISTING_ID,
+  MAX_GRANTS,
+  MAX_INTENT_LENGTH,
+  MAX_LABEL_LENGTH,
+  NEW_ID,
+  stepConstName,
+  textIssues,
+  textListIssues,
+} from "@loom/appgen";
 
 // Semantic validation of a model-produced ChangeSpec against the scanned app. The
 // grammar already guarantees the JSON is well-formed and on-schema; this catches the
@@ -6,34 +17,13 @@ import { type AppModel, type ChangeSpec, hasUnsafeChars, stepConstName } from "@
 // `create` for something that's already there, malformed ids. The issue list drives the
 // self-repair loop (re-prompt the model with what was wrong).
 
-// Loose shape: what an EXISTING flow/step id may look like (apps predate the strict rule).
-const KEBAB = /^[a-z0-9][a-z0-9-]*$/;
-// Strict shape for every NEW id (a `create`d step or flow). Both become generated
-// identifiers (`<camel>Step`, `<Pascal>Flow`), so the id must start with a letter
-// (`1-run` -> `1RunStep` is not an identifier) and have no trailing/double dash (`a-` and
-// `a--b` collapse onto `a` and `a-b`).
-const STRICT_KEBAB = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+// Id shapes and the free-text rules are shared with `readLockfile` (a `--from-spec` replay
+// never goes through this validator), so both gates apply identical predicates.
+const KEBAB = EXISTING_ID; // what an EXISTING flow/step id may look like (apps predate the strict rule)
+const STRICT_KEBAB = NEW_ID; // every NEW id (a `create`d step or flow)
 const STRICT_HINT = "start with a letter, no leading digit, no trailing or double dash";
 
-/** Longest free-text field a plan may carry (an intent is a sentence, not a document). */
-export const MAX_INTENT_LENGTH = 500;
-const MAX_LABEL_LENGTH = 200;
-
-// Free text is escaped at every codegen sink (defence at the sink); refusing control
-// characters here too gives the model a repair message instead of a silently mangled
-// comment. Ordinary punctuation, quotes and backticks are NOT refused - they are escaped.
-function textIssues(where: string, value: unknown, max: number): string[] {
-  if (value === undefined) return [];
-  if (typeof value !== "string") return [`${where} must be a string`];
-  const out: string[] = [];
-  if (value.length > max) out.push(`${where} is too long (${value.length} > ${max} characters)`);
-  if (hasUnsafeChars(value)) {
-    out.push(
-      `${where} contains a control or line-break character - write it as one plain line of text`
-    );
-  }
-  return out;
-}
+export { MAX_INTENT_LENGTH };
 
 export function validateChangeSpec(spec: ChangeSpec, appModel: AppModel): string[] {
   const issues: string[] = [];
@@ -66,6 +56,9 @@ export function validateChangeSpec(spec: ChangeSpec, appModel: AppModel): string
     for (const m of cap.reasoning?.elevateTo ?? []) {
       issues.push(...textIssues(`reasoning elevation model of "${cap.id}"`, m, MAX_LABEL_LENGTH));
     }
+    issues.push(
+      ...textListIssues(`wireGrants of "${cap.id}"`, cap.wireGrants, MAX_LABEL_LENGTH, MAX_GRANTS)
+    );
     const exists = flowIds.has(cap.id);
     const isNew = cap.op === "create" && !exists;
     if (isNew) {

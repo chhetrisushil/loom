@@ -1,3 +1,5 @@
+import { tsStringLiteral } from "./emit";
+
 /** kebab/snake/space → PascalCase, for deriving export names. */
 export function pascal(name: string): string {
   return name
@@ -34,7 +36,7 @@ export function generateRegistration(
   projectionPaths: string[] = []
 ): string {
   const group = (paths: string[], prefix: string, exportName: string): string[] => {
-    const imports = paths.map((p, i) => `import * as ${prefix}${i} from "${p}";`);
+    const imports = paths.map((p, i) => `import * as ${prefix}${i} from ${tsStringLiteral(p)};`);
     const refs = paths.map((_, i) => `${prefix}${i}`).join(", ");
     return [...imports, "", `export const ${exportName} = [${refs}];`, ""];
   };

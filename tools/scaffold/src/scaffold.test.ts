@@ -29,6 +29,25 @@ describe("codegen", () => {
     expect(out).toContain("export const flowModules = [_f0, _f1];");
   });
 
+  it("generateRegistration writes every specifier as an escaped string literal", () => {
+    const evil = './flows/a";globalThis.pwned=1;//\u202e\u{e0041}/flow';
+    const out = generateRegistration([evil], [evil], [evil], [evil], [evil], [evil], [evil]);
+    expect(out).not.toMatch(/[\u202e]|\u{e0041}/u);
+    expect(out).toContain(
+      'import * as _f0 from "./flows/a\\";globalThis.pwned=1;//\\u202e\\udb40\\udc41/flow";'
+    );
+    // the module parses as a plain list of imports + exports (no extra statements)
+    expect(out.split("\n").filter((l) => l.startsWith("import ")).length).toBe(7);
+  });
+
+  it("the README heading of appFiles neutralises markdown, HTML and control characters", () => {
+    const readme = appFiles("app\n\n## Pwn\u202e <script>x</script>")["README.md"] ?? "";
+    expect(readme.split("\n")[0]).toBe("# app \\#\\# Pwn \\<script\\>x\\</script\\>");
+    expect(readme).not.toContain("<script>");
+    expect(readme).not.toContain("\u202e");
+    expect(appFiles("my-app")["README.md"]?.split("\n")[0]).toBe("# my-app");
+  });
+
   it("generateRegistration with no flows yields empty arrays for every construct", () => {
     const out = generateRegistration([]);
     expect(out).toContain("export const flowModules = [];");

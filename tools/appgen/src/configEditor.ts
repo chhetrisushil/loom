@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { tsStringLiteral } from "./emit";
 
 // Wire capability→tool grants into `app/config.ts` by inserting a `GrantTable`
 // authorizer into the `defineConfig({...})` call (and its import). Same surgical,
@@ -71,7 +72,7 @@ export function wireGrantsIntoConfig(
   const grantLines = entries
     .map(
       ([cap, tools]) =>
-        `    ${JSON.stringify(cap)}: [${tools.map((t) => JSON.stringify(t)).join(", ")}],`
+        `    ${tsStringLiteral(cap)}: [${tools.map((t) => tsStringLiteral(t)).join(", ")}],`
     )
     .join("\n");
   const closeBrace = obj.getEnd() - 1; // the object's `}`
