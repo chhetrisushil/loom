@@ -4,12 +4,12 @@ import {
   KeyUnavailableError,
   headOf,
   isKeyUnavailable,
+  isPayloadShredded,
   isReservedStream,
   recordsErasureIntent,
 } from "@loom/event-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { hasEnvelope } from "./crypto";
-import { PayloadShreddedError } from "./errors";
 import type { KeyStore } from "./keystore";
 
 export interface ShredOptions {
@@ -112,7 +112,7 @@ async function resolve(
     } catch (err) {
       // Key gone: a retry after the key was destroyed (the snapshot may predate the shred, so it
       // cannot record it, and reads as key-unavailable, ADR 0130 residuals D7).
-      if (!(err instanceof PayloadShreddedError) && !isKeyUnavailable(err)) throw err;
+      if (!isPayloadShredded(err) && !isKeyUnavailable(err)) throw err;
       throw new TypeError(
         `shredSubject("${subjectId}"): the snapshot store refused to read "${executionId}" because the key is already destroyed (a retry), and it does not offer loadLatestSealed (SnapshotStore SPI 1.1.0). Pass a store that does — EncryptingSnapshotStore does, and TenantScopedSnapshotStore forwards it — or the raw snapshot store, or tombstoneSequenceOf. No sequence was guessed; nothing was written.`
       );
