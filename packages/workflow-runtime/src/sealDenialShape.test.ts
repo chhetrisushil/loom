@@ -277,19 +277,19 @@ describe("a sealed refusal is worded as the ordinary unknown-owner call of the s
         createdAt: 0,
       });
       const sealed = node(plainInner, new InMemoryTimerStore(), policy, sealedSnaps);
-      let refused = 0;
       for (const call of [
         (n: ReturnType<typeof node>) => n.h.rt.loadState(E, { principal: STRANGER }),
         (n: ReturnType<typeof node>) => n.h.rt.cancel(E, "no", { principal: STRANGER }),
       ]) {
         const want = await rejection(call(base));
         const got = await rejection(call(sealed));
-        if (!isSealedUnreadable(got)) continue; // this op does not read the checkpoint first
-        refused++;
+        // The authorizer decides from sequence 0 BEFORE the checkpoint is loaded (ADR 0039 amendment
+        // 2026-10-17), so a denied caller never reaches the sealed checkpoint: it gets the ordinary
+        // denial itself, field for field.
+        expect(isSealedUnreadable(got)).toBe(false);
         expect(shape(got)).toEqual(shape(want));
         if (allow[0] === "other") expect((got as Error).message).toContain('"secret"');
       }
-      expect(refused).toBeGreaterThanOrEqual(1);
     });
   }
 

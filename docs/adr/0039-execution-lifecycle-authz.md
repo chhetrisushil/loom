@@ -60,3 +60,48 @@ the pinned list). **No `KERNEL_ABI` change** — this is a boundary check, not a
   audit callback; a principal-less call bypasses even a deny-all authorizer.
 - `eventSchema.test.ts` pins `EXECUTION_DENIED` (schema 1.12.0); `abi.test.ts` unchanged (no
   syscall). `@loom/spec` registers `execution-authz` at L2. Full runtime suite 109/109.
+
+## Amendment (2026-10-17) — the verdict comes before the fold
+
+The Decision above says the public `loadState` is `foldState` plus a query authorization, "folding is
+pure, so authorizing after is safe". Folding is pure, but it can **throw**, and the error is
+caller-visible: `PayloadShreddedError` for a crypto-shredded execution, a failing or foreign
+checkpoint (`SnapshotIdentityMismatchError`, a key-unavailable load), an unreadable sequence 0. A
+caller the authorizer would refuse (another tenant) therefore learned that an execution exists and
+what became of it (an existence-and-status oracle; no payload content). `resume` and `resumeAs`
+leaked the same way (they load the checkpoint and read and fold the log before asking), and
+`resumeAs` additionally ran the caller's `transformState` over the RECORDED INPUT before the
+authorizer was asked. `send`, `discardInbox`, `quarantineInbox`, `releaseInbox`, `recordOutcome`,
+`fork` and `acquireFence` already asked first but read sequence 0 unguarded, which raises the same
+erasure error when the recorded principal is itself sealed and shredded.
+
+**Rule.** For every authorizer-gated op the verdict is reached from **sequence 0 alone** (the
+plaintext workflow id and the recorded principal, one point read that `ownerForAuthz` reuses), before
+any checkpoint load, fold, full read or caller-supplied code. A sequence 0 this node cannot decode
+(shredded principal, decrypt or storage fault) is an execution that EXISTS with an UNKNOWN owner: the
+policy decides exactly as for any unknown-owner execution, so the denied caller gets the ordinary
+`ExecutionDeniedError`, never a status-revealing error. A stream-level seal refusal is unchanged
+(ADR 0130 D7: `sealedOp` words it as that op's unknown-owner denial). An authorized caller is
+unaffected: it proceeds to the same fold and gets the same errors as before (a shredded execution
+still raises `PayloadShreddedError`; `cancel` still folds the redacted view and works).
+
+**Writes.** A read denial writes nothing. A denied `resume`/`resumeAs`/`cancel` keeps its best-effort
+`EXECUTION_DENIED`, now placed at the folded tip found AFTER the verdict; if that fold cannot be read
+(shredded, sealed, bad checkpoint) the audit fact is skipped rather than surface the error to the
+denied caller (the thrown denial is the enforcement). `onExecutionDenied` fires as before.
+
+**Missing vs denied (unchanged, intended).** An execution that does not exist is judged by the
+authorizer before "not found" is revealed only for an ANONYMOUS caller under `strict`
+(`denyMissing`, R3). A caller that presents a principal still tells "not found" from "denied":
+`loadState(id, { principal })` returning `null` is how an edge asks whether an id is free before
+starting it, and a policy cannot tell a free id from a forbidden one without breaking that. This is
+a documented residual, not changed here. `start` of an existing id keeps `ExecutionAlreadyExistsError`
+for the same reason.
+
+Verification: `authzBeforeFold.test.ts` runs every gated op as a denied principal against a shredded
+execution (steps and checkpoint sealed), one whose recorded principal is sealed too, a sealed stream,
+a key-unavailable checkpoint and a foreign-identity checkpoint, and demands the shape (error class,
+message, reason, audit callback) of the ordinary denial, no `transformState` call, and no append
+beyond the write ops' `EXECUTION_DENIED`; a counting store asserts a denied `loadState` performs no
+`read`, no `readFrom` and no checkpoint load; an authorized caller still gets `PayloadShreddedError`
+(and a working `cancel`). No event shape changes: `EVENT_SCHEMA` and `KERNEL_ABI` are unchanged.

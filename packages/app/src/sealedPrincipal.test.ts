@@ -428,7 +428,7 @@ describe("S0 — a sealed/opaque principal read by a node that cannot open it (s
   // PayloadShreddedError), including cancel.
   refusalMatrix("crypto: node holding a DIFFERENT (empty) KeyStore", "wrongKey", "key-unavailable");
 
-  it("control: after a REAL shred the same reads raise PayloadShreddedError (tombstone present), unchanged", async () => {
+  it("control: after a REAL shred an authorizer-gated read is an ordinary denial; the kernel-internal fold still raises PayloadShreddedError", async () => {
     const c = await boot("wrongKey");
     try {
       const id = "shred-ctl";
@@ -436,10 +436,17 @@ describe("S0 — a sealed/opaque principal read by a node that cannot open it (s
       // the real shred: destroy node A's key and write the tombstone (what shredSubject does)
       const aKeys = (c.a.runtime.events as unknown as { keys: InMemoryKeyStore }).keys;
       await shredSubject(aKeys, c.raw, id, { snapshotStore: { loadLatest: async () => null } });
+      // The authorizer decides from sequence 0 BEFORE the fold (ADR 0039 amendment 2026-10-17): the
+      // shredded principal is an unknown owner, so even T1 gets the ordinary denial (a caller the
+      // policy refuses must not be able to tell an erased execution from any other). Never a sealed
+      // refusal either.
       const r = await outcomeOf(() => c.b.loadState(id, { principal: T1 }));
-      // an erasure stays the erasure outcome, never a sealed refusal
-      expect((r.error as Error).name).toBe("PayloadShreddedError");
+      expect((r.error as Error).name).toBe("ExecutionDeniedError");
       expect(sealedDetailOf(r.error)).toBeUndefined();
+      // the erasure outcome is unchanged for the kernel itself (system grant bypasses the authorizer)
+      const k = await outcomeOf(() => c.b.loadState(id, c.b.systemOptions()));
+      expect((k.error as Error).name).toBe("PayloadShreddedError");
+      expect(sealedDetailOf(k.error)).toBeUndefined();
     } finally {
       await c.close();
     }

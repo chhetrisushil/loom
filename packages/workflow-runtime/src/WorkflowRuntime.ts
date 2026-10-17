@@ -1676,6 +1676,110 @@ export class WorkflowRuntime {
     }
   }
 
+  /**
+   * Sequence 0, read for the AUTHORIZER and nothing else (the verdict comes BEFORE any fold). It is
+   * the only data an authorization decision needs: the plaintext workflow id and the recorded
+   * principal. A sequence 0 this node cannot decode (a crypto-shredded principal under a strict
+   * store, a decrypt or storage fault) is `unreadable`: it still EXISTS, its workflow id is taken
+   * from the redacted view the error carries when there is one (else `""`), and its owner is
+   * unknown, so the policy decides exactly as for any unknown-owner execution and the caller never
+   * sees a status-revealing error. A stream-level SEAL refusal propagates: `sealedOp` turns it into
+   * the denial-shaped refusal of the op (ADR 0130 residuals D7).
+   */
+  private async readAnchor(executionId: string): Promise<{
+    first: EventEnvelope | undefined;
+    unreadable: boolean;
+    workflowId: string;
+  }> {
+    try {
+      const first = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+      return { first, unreadable: false, workflowId: first?.workflowId ?? "" };
+    } catch (err) {
+      if (isSealedUnreadable(err)) throw err;
+      const redacted = (err as { redacted?: readonly EventEnvelope[] } | null)?.redacted;
+      const workflowId = redacted?.find((e) => e.sequence === 0)?.workflowId;
+      return { first: undefined, unreadable: true, workflowId: workflowId ?? "" };
+    }
+  }
+
+  /**
+   * The authorizer's verdict on `op`, reached from {@link readAnchor} ALONE: nothing is folded, no
+   * checkpoint is loaded and no payload beyond the recorded principal is read, so what the log
+   * holds (shredded, sealed, a corrupt or foreign checkpoint) cannot reach a caller the authorizer
+   * refuses. `undefined` when the authorizer is not consulted for this call. `missing` = no
+   * sequence 0 exists (the caller does its own not-found handling).
+   */
+  private async authzVerdictAtAnchor(
+    op: ExecutionOp,
+    executionId: string,
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined
+  ): Promise<
+    | {
+        first: EventEnvelope | undefined;
+        unreadable: boolean;
+        missing: boolean;
+        workflowId: string;
+        denial: { reason?: string } | undefined;
+      }
+    | undefined
+  > {
+    if (!this.authzApplies(principal, system)) return undefined;
+    const anchor = await this.readAnchor(executionId);
+    const missing = anchor.first === undefined && !anchor.unreadable;
+    if (missing) return { ...anchor, missing, denial: undefined };
+    const owners = anchor.unreadable
+      ? await this.ownerForAuthz(executionId, principal, system)
+      : await this.ownerForAuthz(executionId, principal, system, { first: anchor.first });
+    const denial = this.authzDenial(op, executionId, anchor.workflowId, principal, system, owners);
+    return { ...anchor, missing, denial };
+  }
+
+  /**
+   * {@link authzVerdictAtAnchor} for an op that audits its denial (`onExecutionDenied`, plus the
+   * durable `EXECUTION_DENIED` after `tip()` when given): throws the denial, else returns sequence 0
+   * for the caller's own use (`undefined` = no such execution). An authorized caller whose anchor
+   * was unreadable re-reads it, so it gets the very error it got before the authorizer moved first.
+   */
+  private async authorizeAtAnchor(
+    op: ExecutionOp,
+    executionId: string,
+    principal: PrincipalChain | undefined,
+    system: SystemGrant | undefined,
+    tip?: () => Promise<number | undefined>
+  ): Promise<EventEnvelope | undefined> {
+    const v = await this.authzVerdictAtAnchor(op, executionId, principal, system);
+    if (v === undefined) return (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    if (v.denial !== undefined) {
+      await this.denyOp(
+        op,
+        executionId,
+        v.workflowId,
+        principal,
+        v.denial.reason,
+        tip === undefined ? undefined : await tip()
+      );
+    }
+    if (v.unreadable) return (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    return v.first;
+  }
+
+  /**
+   * Where a write op's best-effort `EXECUTION_DENIED` goes: the folded tip, found only AFTER the
+   * verdict. A fold that cannot be read (shredded, sealed, a bad checkpoint) skips the audit fact
+   * rather than surface its error to the denied caller.
+   */
+  private async denialTipOf(executionId: string, forCancel = false): Promise<number | undefined> {
+    try {
+      const state = forCancel
+        ? await this.foldStateForCancel(executionId)
+        : await this.foldState(executionId);
+      return state?.sequence;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Sequence 0 survives compaction, so its workflow id answers "what is this execution?". */
   private async workflowIdOf(executionId: string): Promise<string | undefined> {
     const first = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
@@ -2603,20 +2707,28 @@ export class WorkflowRuntime {
     // id nobody has written poisons a later start of it, so it is gated like the ops it
     // enables: `cancel` on an execution that exists, `start` on one that does not.
     if (this.authzApplies(options?.principal, options?.system)) {
-      const workflowId = await this.workflowIdOf(executionId);
+      // Sequence 0 only (see `readAnchor`): an unreadable one still EXISTS, so it is judged as the
+      // op it enables with an unknown owner, never as a free id and never with a status-revealing error.
+      const anchor = await this.readAnchor(executionId);
+      const workflowId = anchor.workflowId || undefined;
+      const exists = anchor.unreadable || workflowId !== undefined;
       // `gateAs: "resume"` — a dispatcher fencing an EXISTING execution to RESUME it (not to kill
       // it) is judged as the resume it enables, so a `cancel: "deny"` policy does not refuse a
       // legitimate dispatched resume (and the audit names the op that was attempted).
-      const op: ExecutionOp = workflowId === undefined ? "start" : (options?.gateAs ?? "cancel");
+      const op: ExecutionOp = !exists ? "start" : (options?.gateAs ?? "cancel");
       const denial = this.authzDenial(
         op,
         executionId,
         workflowId ?? "",
         options?.principal,
         options?.system,
-        workflowId === undefined
+        !exists
           ? undefined
-          : await this.ownerForAuthz(executionId, options?.principal, options?.system)
+          : anchor.unreadable
+            ? await this.ownerForAuthz(executionId, options?.principal, options?.system)
+            : await this.ownerForAuthz(executionId, options?.principal, options?.system, {
+                first: anchor.first,
+              })
       );
       if (denial !== undefined) {
         await this.denyOp(
@@ -2770,28 +2882,50 @@ export class WorkflowRuntime {
     // C.1 — gate the cancel (only when configured AND a principal is present). Use the
     // live handle's state when running here, else fold; a denial is best-effort
     // recorded WITHOUT a fence (never disrupts the still-running execution).
-    if (this.authzApplies(options?.principal, options?.system)) {
-      const gate = live?.getState() ?? (await this.foldStateForCancel(executionId));
-      if (gate === null || gate === undefined) {
-        await this.denyMissing("cancel", executionId, options?.principal, options?.system);
-        throw new Error(`No execution found for id: ${executionId}`);
-      }
-      const cancelDenial = this.authzDenial(
-        "cancel",
-        executionId,
-        gate.workflowId,
-        options?.principal,
-        options?.system,
-        await this.ownerForAuthz(executionId, options?.principal, options?.system)
-      );
-      if (cancelDenial !== undefined) {
-        await this.denyOp(
+    // The verdict is reached from sequence 0 alone, BEFORE the fold (which can raise
+    // status-revealing errors: a shredded or unreadable execution); the folded tip is found only to
+    // place the best-effort EXECUTION_DENIED audit fact, and an unreadable fold skips that fact.
+    if (live !== undefined) {
+      if (this.authzApplies(options?.principal, options?.system)) {
+        const gate = live.getState();
+        const cancelDenial = this.authzDenial(
           "cancel",
           executionId,
           gate.workflowId,
           options?.principal,
-          cancelDenial.reason,
-          gate.sequence
+          options?.system,
+          await this.ownerForAuthz(executionId, options?.principal, options?.system)
+        );
+        if (cancelDenial !== undefined) {
+          await this.denyOp(
+            "cancel",
+            executionId,
+            gate.workflowId,
+            options?.principal,
+            cancelDenial.reason,
+            gate.sequence
+          );
+        }
+      }
+    } else if (this.authzApplies(options?.principal, options?.system)) {
+      const verdict = await this.authzVerdictAtAnchor(
+        "cancel",
+        executionId,
+        options?.principal,
+        options?.system
+      );
+      if (verdict?.missing === true) {
+        await this.denyMissing("cancel", executionId, options?.principal, options?.system);
+        throw new Error(`No execution found for id: ${executionId}`);
+      }
+      if (verdict?.denial !== undefined) {
+        await this.denyOp(
+          "cancel",
+          executionId,
+          verdict.workflowId,
+          options?.principal,
+          verdict.denial.reason,
+          await this.denialTipOf(executionId, true)
         );
       }
     }
@@ -3425,6 +3559,26 @@ export class WorkflowRuntime {
     // remembered; from then on the log is read from the snapshot forward. An unclean log is
     // never remembered (it re-scans every time, as before), and `discardLegacyAnswers` always
     // forces the scan. Without a snapshot the log is the bounded read, so nothing changes.
+    // C.1 — the verdict comes FIRST, from sequence 0 alone: the checkpoint load and the fold below
+    // raise status-revealing errors (a shredded or unreadable execution) that a caller the
+    // authorizer refuses must never see. The denial's audit fact goes at the folded tip, found only
+    // after the verdict (an unreadable fold skips the fact).
+    const gated = await this.authzVerdictAtAnchor(
+      "resume",
+      executionId,
+      options?.principal,
+      options?.system
+    );
+    if (gated?.denial !== undefined) {
+      await this.denyOp(
+        "resume",
+        executionId,
+        gated.workflowId,
+        options?.principal,
+        gated.denial.reason,
+        await this.denialTipOf(executionId)
+      );
+    }
     const snapshot = await this.snapshotStore.loadLatest(executionId);
     let allEvents: EventEnvelope[] | undefined;
     let firstEvent: EventEnvelope | undefined;
@@ -3500,31 +3654,34 @@ export class WorkflowRuntime {
       });
     }
 
-    // C.1 — gate the resume; the execution exists, so best-effort record the denial. It is
-    // recorded after the FOLDED tip, not the log's last event: a log compacted at its tip is
-    // `[0]` with the checkpoint above it, and a denial appended at `lastEvent + 1` landed in
-    // the checkpoint's freed slot — the log then looked never-compacted and the next fold
-    // started from scratch, losing the suspension (ADR 0106).
-    const resumeDenial = this.authzDenial(
-      "resume",
-      executionId,
-      workflowId,
-      options?.principal,
-      options?.system,
-      await this.ownerForAuthz(executionId, options?.principal, options?.system, {
-        first: firstEvent,
-      })
-    );
-    if (resumeDenial !== undefined) {
-      // recordExecutionDenied dedups consecutive identical denials internally.
-      await this.denyOp(
+    // (The verdict was reached above, from sequence 0; this repeats it only for a start that raced
+    // that read: no sequence 0 then, one now.) The denial's audit fact is recorded after the
+    // FOLDED tip, not the log's last event: a log compacted at its tip is `[0]` with the
+    // checkpoint above it, and a denial appended at `lastEvent + 1` landed in the checkpoint's
+    // freed slot — the log then looked never-compacted and the next fold started from scratch,
+    // losing the suspension (ADR 0106).
+    if (gated?.missing === true) {
+      const resumeDenial = this.authzDenial(
         "resume",
         executionId,
         workflowId,
         options?.principal,
-        resumeDenial.reason,
-        vm.getState().sequence
+        options?.system,
+        await this.ownerForAuthz(executionId, options?.principal, options?.system, {
+          first: firstEvent,
+        })
       );
+      if (resumeDenial !== undefined) {
+        // recordExecutionDenied dedups consecutive identical denials internally.
+        await this.denyOp(
+          "resume",
+          executionId,
+          workflowId,
+          options?.principal,
+          resumeDenial.reason,
+          vm.getState().sequence
+        );
+      }
     }
 
     // K8.2 — cancelled is TERMINAL: a cancel-by-id of a suspended/detached
@@ -4009,32 +4166,17 @@ export class WorkflowRuntime {
     // Authorize FIRST, against the addressed id's recorded owner (which every generation of the
     // chain inherits): an unauthorized or unknown caller costs one point read and learns nothing
     // of the chain's depth, its head, or whether a successor exists.
-    const addressed = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    // No durable EXECUTION_DENIED on a denial: a sender must never write into the owner's log (that
+    // is the very race the separate stream avoids). The audit callback still fires.
+    const addressed = await this.authorizeAtAnchor(
+      "send",
+      executionId,
+      options?.principal,
+      options?.system
+    );
     if (addressed === undefined) {
       await this.denyMissing("send", executionId, options?.principal, options?.system);
       throw new Error(`No execution found for id: ${executionId}`);
-    }
-    const denial = this.authzDenial(
-      "send",
-      executionId,
-      addressed.workflowId,
-      options?.principal,
-      options?.system,
-      await this.ownerForAuthz(executionId, options?.principal, options?.system, {
-        first: addressed,
-      })
-    );
-    if (denial !== undefined) {
-      // No durable EXECUTION_DENIED: a sender must never write into the owner's log (that is the
-      // very race the separate stream avoids). The audit callback still fires.
-      await this.denyOp(
-        "send",
-        executionId,
-        addressed.workflowId,
-        options?.principal,
-        denial.reason,
-        undefined
-      );
     }
     const head = await this.sendTarget(executionId, { first: addressed });
     if (head === null) throw new Error(`No execution found for id: ${executionId}`);
@@ -4301,31 +4443,16 @@ export class WorkflowRuntime {
         "a discard is an operator action and needs an authenticated principal"
       );
     }
-    const addressed = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    // No durable EXECUTION_DENIED, as for `send`: the audit callback fires, the log is untouched.
+    const addressed = await this.authorizeAtAnchor(
+      "discard",
+      executionId,
+      options?.principal,
+      options?.system
+    );
     if (addressed === undefined) {
       await this.denyMissing("discard", executionId, options?.principal, options?.system);
       throw new Error(`No execution found for id: ${executionId}`);
-    }
-    const denial = this.authzDenial(
-      "discard",
-      executionId,
-      addressed.workflowId,
-      options?.principal,
-      options?.system,
-      await this.ownerForAuthz(executionId, options?.principal, options?.system, {
-        first: addressed,
-      })
-    );
-    if (denial !== undefined) {
-      // No durable EXECUTION_DENIED, as for `send`: the audit callback fires, the log is untouched.
-      await this.denyOp(
-        "discard",
-        executionId,
-        addressed.workflowId,
-        options?.principal,
-        denial.reason,
-        undefined
-      );
     }
     const head = await this.sendTarget(executionId, { first: addressed });
     if (head === null) throw new Error(`No execution found for id: ${executionId}`);
@@ -4479,28 +4606,15 @@ export class WorkflowRuntime {
         `${verb} is an operator action and needs an authenticated principal`
       );
     }
-    const addressed = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    const addressed = await this.authorizeAtAnchor(
+      op,
+      executionId,
+      options.principal,
+      options.system
+    );
     if (addressed === undefined) {
       await this.denyMissing(op, executionId, options.principal, options.system);
       throw new Error(`No execution found for id: ${executionId}`);
-    }
-    const denial = this.authzDenial(
-      op,
-      executionId,
-      addressed.workflowId,
-      options.principal,
-      options.system,
-      await this.ownerForAuthz(executionId, options.principal, options.system, { first: addressed })
-    );
-    if (denial !== undefined) {
-      await this.denyOp(
-        op,
-        executionId,
-        addressed.workflowId,
-        options.principal,
-        denial.reason,
-        undefined
-      );
     }
     const head = await this.sendTarget(executionId, { first: addressed, logFoldFor: verb });
     if (head === null) throw new Error(`No execution found for id: ${executionId}`);
@@ -5453,30 +5567,17 @@ export class WorkflowRuntime {
     options?: RecordOutcomeOptions
   ): Promise<RecordOutcomeResult> {
     assertNotReserved(executionId);
-    const first = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    // No durable EXECUTION_DENIED on a denial: the log is a finished execution's evidence, and a
+    // denied writer must leave it untouched. The audit callback still fires.
+    const first = await this.authorizeAtAnchor(
+      "annotate",
+      executionId,
+      options?.principal,
+      options?.system
+    );
     if (first === undefined) {
       await this.denyMissing("annotate", executionId, options?.principal, options?.system);
       throw new Error(`No execution found for id: ${executionId}`);
-    }
-    const denial = this.authzDenial(
-      "annotate",
-      executionId,
-      first.workflowId,
-      options?.principal,
-      options?.system,
-      await this.ownerForAuthz(executionId, options?.principal, options?.system, { first })
-    );
-    if (denial !== undefined) {
-      // No durable EXECUTION_DENIED: the log is a finished execution's evidence, and a denied
-      // writer must leave it untouched. The audit callback still fires.
-      await this.denyOp(
-        "annotate",
-        executionId,
-        first.workflowId,
-        options?.principal,
-        denial.reason,
-        undefined
-      );
     }
     const problem = outcomeShapeProblem(outcome);
     if (problem !== undefined) throw new OutcomeRefusedError(executionId, problem);
@@ -6661,6 +6762,26 @@ export class WorkflowRuntime {
     // Before any read or append (see `start`): an invalid budget must leave the log untouched.
     assertValidBudget("deadlineMs", options.deadlineMs, "resumeAs options");
     assertNotReserved(executionId);
+    // C.1 — the verdict comes FIRST, from sequence 0 alone: everything below (the full read, the
+    // fold, the flow lookup, the caller's `transformState` run over the RECORDED INPUT, the status
+    // and orphan checks) would otherwise answer, or hand execution data to, a caller the authorizer
+    // refuses. A write op: the audit fact goes at the folded tip, found only after the verdict.
+    const gated = await this.authzVerdictAtAnchor(
+      "resume",
+      executionId,
+      options.principal,
+      options.system
+    );
+    if (gated?.denial !== undefined) {
+      await this.denyOp(
+        "resume",
+        executionId,
+        gated.workflowId,
+        options.principal,
+        gated.denial.reason,
+        await this.denialTipOf(executionId)
+      );
+    }
     const allEvents = await this.eventStore.read(executionId);
     if (allEvents.length === 0) {
       await this.denyMissing("resume", executionId, options.principal, options.system);
@@ -6734,25 +6855,28 @@ export class WorkflowRuntime {
 
     // C.1 / K12.2 — the same identity gates as `resume`. A migration that answers a parked
     // gate IS an approval of that gate; before ADR 0104 it skipped both.
-    const resumeDenial = this.authzDenial(
-      "resume",
-      executionId,
-      workflowId,
-      options.principal,
-      options.system,
-      await this.ownerForAuthz(executionId, options.principal, options.system, {
-        first: firstEvent,
-      })
-    );
-    if (resumeDenial !== undefined) {
-      await this.denyOp(
+    // (Reached above from sequence 0; repeated here only for a start that raced that read.)
+    if (gated?.missing === true) {
+      const resumeDenial = this.authzDenial(
         "resume",
         executionId,
         workflowId,
         options.principal,
-        resumeDenial.reason,
-        state.sequence
+        options.system,
+        await this.ownerForAuthz(executionId, options.principal, options.system, {
+          first: firstEvent,
+        })
       );
+      if (resumeDenial !== undefined) {
+        await this.denyOp(
+          "resume",
+          executionId,
+          workflowId,
+          options.principal,
+          resumeDenial.reason,
+          state.sequence
+        );
+      }
     }
     const migrationPark = await this.locatePark(executionId, state, {
       events: allEvents,
@@ -6905,24 +7029,39 @@ export class WorkflowRuntime {
     executionId: string,
     options?: { principal?: PrincipalChain; system?: SystemGrant }
   ): Promise<ExecutionState | null> {
+    // C.1 — gate the query FIRST, from sequence 0 alone. Folding has no side effects, but it CAN
+    // THROW (PayloadShreddedError, a bad or foreign checkpoint, ...): authorizing after it told a
+    // caller the authorizer refuses that the execution exists and what became of it. A denial
+    // writes nothing (a read must never write). Kernel-internal callers use `foldState` and bypass
+    // this.
+    const verdict = await this.authzVerdictAtAnchor(
+      "query",
+      executionId,
+      options?.principal,
+      options?.system
+    );
+    if (verdict?.denial !== undefined) {
+      throw new ExecutionDeniedError("query", executionId, verdict.denial.reason);
+    }
     const state = await this.foldState(executionId);
     if (state === null) {
       await this.denyMissing("query", executionId, options?.principal, options?.system);
       return null;
     }
-    // C.1 — gate the query. Folding is pure (no side effects), so authorizing AFTER
-    // is safe: on a denial we simply withhold the data (no durable record — a read
-    // must never write). Kernel-internal callers use `foldState` and bypass this.
-    const denial = this.authzDenial(
-      "query",
-      executionId,
-      state.workflowId,
-      options?.principal,
-      options?.system,
-      await this.ownerForAuthz(executionId, options?.principal, options?.system)
-    );
-    if (denial !== undefined) {
-      throw new ExecutionDeniedError("query", executionId, denial.reason);
+    // No sequence 0 at the gate but the fold found a state (a start racing the read): judge it
+    // now, against the folded workflow id, as this path always did.
+    if (verdict?.missing === true) {
+      const denial = this.authzDenial(
+        "query",
+        executionId,
+        state.workflowId,
+        options?.principal,
+        options?.system,
+        await this.ownerForAuthz(executionId, options?.principal, options?.system)
+      );
+      if (denial !== undefined) {
+        throw new ExecutionDeniedError("query", executionId, denial.reason);
+      }
     }
     return state;
   }
@@ -7153,25 +7292,26 @@ export class WorkflowRuntime {
     // parent just to learn how long it was — on a long-lived parent that is the dominant cost
     // of a fork, and it was paid even when the store could copy the prefix natively.
     assertNotReserved(parentExecutionId);
-    if (opts?.executionId !== undefined) await this.assertCreatable(opts.executionId);
     const childId = opts?.executionId ?? ulid();
     // R3 — a fork READS the parent (its whole prefix, input included) and CREATES an execution,
     // so it is gated as `query` on the parent and `start` on the child, before anything is read
-    // beyond sequence 0 or written. Both used to be skipped.
+    // beyond sequence 0 or written. Both used to be skipped. Sequence 0 only (see `readAnchor`): an
+    // unreadable one still EXISTS and is judged with an unknown owner.
     if (this.authzApplies(opts?.principal, opts?.system)) {
-      const parentWorkflowId = await this.workflowIdOf(parentExecutionId);
-      if (parentWorkflowId === undefined) {
+      const anchor = await this.readAnchor(parentExecutionId);
+      const parentWorkflowId = anchor.workflowId || undefined;
+      if (parentWorkflowId === undefined && !anchor.unreadable) {
         await this.denyMissing("query", parentExecutionId, opts?.principal, opts?.system);
       } else {
-        const parentOwner = await this.ownerForAuthz(
-          parentExecutionId,
-          opts?.principal,
-          opts?.system
-        );
+        const parentOwner = anchor.unreadable
+          ? await this.ownerForAuthz(parentExecutionId, opts?.principal, opts?.system)
+          : await this.ownerForAuthz(parentExecutionId, opts?.principal, opts?.system, {
+              first: anchor.first,
+            });
         const queryDenial = this.authzDenial(
           "query",
           parentExecutionId,
-          parentWorkflowId,
+          anchor.workflowId,
           opts?.principal,
           opts?.system,
           parentOwner
@@ -7180,7 +7320,7 @@ export class WorkflowRuntime {
           await this.denyOp(
             "query",
             parentExecutionId,
-            parentWorkflowId,
+            anchor.workflowId,
             opts?.principal,
             queryDenial.reason,
             undefined
@@ -7189,7 +7329,7 @@ export class WorkflowRuntime {
         const startDenial = this.authzDenial(
           "start",
           childId,
-          parentWorkflowId,
+          anchor.workflowId,
           opts?.principal,
           opts?.system
         );
@@ -7197,7 +7337,7 @@ export class WorkflowRuntime {
           await this.denyOp(
             "start",
             childId,
-            parentWorkflowId,
+            anchor.workflowId,
             opts?.principal,
             startDenial.reason,
             undefined
@@ -7209,7 +7349,7 @@ export class WorkflowRuntime {
           const ownerDenial = this.authzDenial(
             "actAsOwner",
             parentExecutionId,
-            parentWorkflowId,
+            anchor.workflowId,
             opts?.principal,
             opts?.system,
             parentOwner
@@ -7218,7 +7358,7 @@ export class WorkflowRuntime {
             await this.denyOp(
               "actAsOwner",
               parentExecutionId,
-              parentWorkflowId,
+              anchor.workflowId,
               opts?.principal,
               ownerDenial.reason,
               undefined
@@ -7227,6 +7367,7 @@ export class WorkflowRuntime {
         }
       }
     }
+    if (opts?.executionId !== undefined) await this.assertCreatable(opts.executionId);
     if (opts?.actAs !== undefined && opts.actAs !== "owner") {
       throw new Error(`fork: unknown actAs "${String(opts.actAs)}" (only "owner" is defined)`);
     }
