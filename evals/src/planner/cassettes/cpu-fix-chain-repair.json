@@ -1,0 +1,14 @@
+{
+  "req:28c096704d2f6e7403d3e20c0c654f51": {
+    "content": "{\"nodes\":[{\"id\":\"diag\",\"capabilityId\":\"diagnose-cpu\",\"args\":{\"target\":\"billing-db\"},\"rationale\":\"step diag\"},{\"id\":\"assess\",\"capabilityId\":\"assess-remediation\",\"args\":{\"target\":\"billing-db\",\"domain\":\"cpu\"},\"dependsOn\":[\"diag\"],\"rationale\":\"step assess\"},{\"id\":\"fix\",\"capabilityId\":\"apply-remediation\",\"args\":{\"target\":\"billing-db\"},\"dependsOn\":[\"assess\"],\"rationale\":\"step fix\"}]}",
+    "stopReason": "end_turn"
+  },
+  "req:6cf89146cb7c929abecadf5c5f963627": {
+    "content": "diagnose-cpu",
+    "stopReason": "end_turn"
+  },
+  "req:b671e37deb1b0cf48c3e128b17bb438a": {
+    "content": "{\"nodes\":[{\"id\":\"diag\",\"capabilityId\":\"diagnose-cpu\",\"args\":{\"target\":\"billing-db\"},\"rationale\":\"step diag\"},{\"id\":\"fix\",\"capabilityId\":\"fix-cpu\",\"args\":{\"target\":\"billing-db\"},\"dependsOn\":[\"diag\"],\"rationale\":\"step fix\"}]}",
+    "stopReason": "end_turn"
+  }
+}

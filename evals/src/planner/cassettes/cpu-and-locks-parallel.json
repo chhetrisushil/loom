@@ -1,0 +1,10 @@
+{
+  "req:07e0dcf8a172e6fadb24d1cce499ac73": {
+    "content": "{\"nodes\":[{\"id\":\"cpu\",\"capabilityId\":\"diagnose-cpu\",\"args\":{\"target\":\"ledger-db\"},\"rationale\":\"step cpu\"},{\"id\":\"locks\",\"capabilityId\":\"diagnose-locks\",\"args\":{\"target\":\"ledger-db\"},\"rationale\":\"step locks\"}]}",
+    "stopReason": "end_turn"
+  },
+  "req:5000255d453580b37cef596ebda94c36": {
+    "content": "diagnose-cpu",
+    "stopReason": "end_turn"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "req:a8f95928c48085c24e59e4256f6168ec": {
+    "content": "{\"name\":\"refunds\",\"capabilities\":[{\"id\":\"refunds\",\"name\":\"Refunds\",\"intent\":\"Publish a live status panel.\",\"op\":\"extend\",\"steps\":[],\"addUi\":true}]}",
+    "stopReason": "end_turn"
+  },
+  "req:ab6c5c3799c00d1c5a16c0bc91214b9f": {
+    "content": "{\"name\":\"refunds\",\"capabilities\":[{\"id\":\"refunds\",\"name\":\"Refunds\",\"intent\":\"Publish a live status panel.\",\"op\":\"create\",\"steps\":[{\"id\":\"run\",\"op\":\"create\"}],\"addUi\":true}]}",
+    "stopReason": "end_turn"
+  }
+}

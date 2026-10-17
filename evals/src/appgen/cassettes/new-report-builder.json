@@ -1,0 +1,6 @@
+{
+  "req:d6afa7e173400d0ba01ce7578e355b6d": {
+    "content": "{\"name\":\"report-builder\",\"capabilities\":[{\"id\":\"report-builder\",\"name\":\"Report Builder\",\"intent\":\"Gather data and render a report.\",\"op\":\"create\",\"steps\":[{\"id\":\"gather-data\",\"op\":\"create\"},{\"id\":\"render-report\",\"op\":\"create\"}]}],\"compute\":{\"target\":\"cloudrun\"}}",
+    "stopReason": "end_turn"
+  }
+}

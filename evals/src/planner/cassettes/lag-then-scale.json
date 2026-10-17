@@ -1,0 +1,10 @@
+{
+  "req:1b3fb3353ad0faa71b84c8af1b91f118": {
+    "content": "diagnose-replica-lag",
+    "stopReason": "end_turn"
+  },
+  "req:a6ce92b7e6f830d0ea5bb0764b784b49": {
+    "content": "{\"nodes\":[{\"id\":\"diag\",\"capabilityId\":\"diagnose-replica-lag\",\"args\":{\"target\":\"orders-replica-2\"},\"rationale\":\"step diag\"},{\"id\":\"scale\",\"capabilityId\":\"scale-read-replicas\",\"args\":{\"target\":\"orders-replica-2\",\"addReplicas\":1},\"dependsOn\":[\"diag\"],\"rationale\":\"step scale\"}]}",
+    "stopReason": "end_turn"
+  }
+}
