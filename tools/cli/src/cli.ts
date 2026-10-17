@@ -444,7 +444,7 @@ export async function main(argv: string[]): Promise<number> {
     case "new": {
       const kind = requirePositional(positionals, "kind");
       const name = positionals[1];
-      if (name === undefined) throw new Error("missing required <name>");
+      if (name === undefined) throw new UsageError("missing required <name>");
       const dir = flags.dir ?? "app";
       const { path: dest, created, extras, missingDeps } = cmdNew(kind, name, dir);
       for (const f of [{ path: dest, created }, ...extras]) {

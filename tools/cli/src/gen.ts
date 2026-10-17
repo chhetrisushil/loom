@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { UsageError } from "./args";
 import {
   THIRD_PARTY_SPECS,
   constructNameProblem,
@@ -98,7 +99,7 @@ export function cmdGen(dir: string): {
 } {
   // A typo'd --dir used to be created on the spot and "succeed" with 0 of everything.
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
-    throw new Error(
+    throw new UsageError(
       `loom gen: --dir "${dir}" is not an existing directory (resolved ${path.resolve(dir)}) — pass the folder that holds flows/, agents/, … (default "app")`
     );
   }
@@ -185,10 +186,10 @@ export function cmdNew(
 } {
   const kinds = ["flow", "agent", "tool", "skill", "schedule", "memory", "projection", "sentinel"];
   if (!kinds.includes(kind)) {
-    throw new Error(`unknown kind "${kind}" — expected ${kinds.join(" | ")}`);
+    throw new UsageError(`unknown kind "${kind}" — expected ${kinds.join(" | ")}`);
   }
   const problem = constructNameProblem(name);
-  if (problem !== undefined) throw new Error(`loom new: ${problem}`);
+  if (problem !== undefined) throw new UsageError(`loom new: ${problem}`);
   const files = newFiles(kind as Parameters<typeof newFiles>[0], name);
   const written = files.map(({ path: rel, content }) => {
     const dest = path.join(dir, rel.replace(/^app\//, ""));
