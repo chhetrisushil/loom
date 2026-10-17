@@ -25,17 +25,29 @@ describe("per-command help comes from the command table", () => {
   });
 
   it("every declared flag appears in the command's own usage lines", () => {
-    // The shared store flags are selected by `--config` (or documented under `<store>`);
-    // every other flag must be spelled in a usage line.
-    const STORE_FLAGS = new Set(["config", "db", "snap", "branches", "leases", "verbose"]);
+    // The shared store flags are selected by `--config` / `<store>`; each is exempt only for
+    // what that front door implies. Every other flag must be spelled in a usage line, matched
+    // on a word boundary so `--json` is not satisfied by `--json-lines`.
+    expect(Object.keys(COMMANDS).length).toBeGreaterThan(0);
+    const spelled = (text: string, flag: string) =>
+      new RegExp(`--${flag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`).test(text);
+    // `--db` and its siblings are the SQLite shorthand for `<store>`; `--config` is the other half.
+    const IMPLIED_BY_STORE = new Set(["config", "db", "snap", "branches", "leases"]);
     const missing: string[] = [];
+    let checked = 0;
     for (const [name, spec] of Object.entries(COMMANDS)) {
       const text = spec.usage.join("\n");
+      const takesStore = /<store>/.test(text) || spelled(text, "config");
       for (const flag of Object.keys(spec.flags)) {
-        const store = STORE_FLAGS.has(flag) && /<store>|--config/.test(text);
-        if (!store && !text.includes(`--${flag}`)) missing.push(`loom ${name} --${flag}`);
+        checked++;
+        const implied =
+          (IMPLIED_BY_STORE.has(flag) && takesStore) ||
+          // `--verbose` is the store loader's stack flag: only where a store is loaded.
+          (flag === "verbose" && takesStore && Object.hasOwn(spec.flags, "config"));
+        if (!implied && !spelled(text, flag)) missing.push(`loom ${name} --${flag}`);
       }
     }
+    expect(checked).toBeGreaterThan(0);
     expect(missing).toEqual([]);
   });
 

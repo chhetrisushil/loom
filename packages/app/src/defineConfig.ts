@@ -1346,7 +1346,7 @@ export function normalizeConfig(config: LoomConfig): ResolvedConfig {
   }
   if (moved.length > 0) {
     throw new Error(
-      `defineConfig: ${moved.join(", ")} — these options now live in a group. Move them, or pin @loom/app to the previous version.`
+      `defineConfig: ${moved.join(", ")} — these options now live in a group. Run \`loom migrate-config --apply\` to rewrite your config, move them by hand, or pin @loom/app to the previous version.`
     );
   }
   return resolved as unknown as ResolvedConfig;

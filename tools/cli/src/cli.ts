@@ -62,6 +62,10 @@ validate
   loom lint claim-check [--dir .] [--json]        CC-5: flag claim-check reach-through inside flows
   loom verify --config <module> [--manifest <path>] [--json]  pre-flight runtime verification (@loom/verify)
                                                   (auto-reads loom-manifest.json loopIdentity findings, ADR 0061)
+  loom migrate-config [<file>...] [--config <file>] [--apply] [--json]  rewrite flat defineConfig options into their groups
+                                                  (dry run prints a diff; --apply writes; refuses a
+                                                   spread / computed key / non-literal config; never
+                                                   runs the config; default ./loom.config.{js,ts})
   loom kernel-manifest [--json] [--emit-docs <dir>]  kernel version + maturity manifest
   loom compat --abi <v> --event-schema <v> [...] [--json]  validate a deployment's contract versions
   loom eval  --dir <path> [--json]                replay golden logs vs expectations
@@ -174,6 +178,9 @@ help
 New project?  →  create-loom-app <dir> --loom-path <loom>   (unpublished: see getting-started)
 `;
 
+/** The config files a command may default to (discovery) in the working directory. */
+export const DISCOVERED_CONFIG_NAMES = ["loom.config.js", "loom.config.ts"] as const;
+
 /**
  * The READ-ONLY commands that may default to `./loom.config.{js,ts}`. Discovery IMPORTS and
  * executes that file, so it is offered only where the command can do no harm beyond reading;
@@ -200,7 +207,7 @@ function hasStoreFlagsOrDiscover(flags: Record<string, string>, command: string)
   if (!DISCOVERY_COMMANDS.has(command.split(" ")[0] as string)) return false;
   // Belt and braces: a write is never aimed at a store the operator did not name.
   if (flags.apply === "true") return false;
-  for (const name of ["loom.config.js", "loom.config.ts"]) {
+  for (const name of DISCOVERED_CONFIG_NAMES) {
     if (fs.existsSync(name)) {
       flags.config = `./${name}`;
       console.error(`loom: using ./${name} (pass --config or --db to choose another store)`);
@@ -649,6 +656,25 @@ async function dispatch(
       if (json) outJson({ ok: result.ok, checks: result.checks });
       else out(text);
       return result.ok ? 0 : 1;
+    }
+    case "migrate-config": {
+      // Text-only: the config is READ, never imported, so discovery is safe here.
+      const { cmdMigrateConfig, formatMigrate } = await import("./migrateConfig");
+      let files = [...positionals, ...(flags.config !== undefined ? [flags.config] : [])];
+      if (files.length === 0) {
+        const found = DISCOVERED_CONFIG_NAMES.find((n) => fs.existsSync(n));
+        if (found === undefined) {
+          throw new UsageError(
+            `loom migrate-config: no ${DISCOVERED_CONFIG_NAMES.join(" or ")} here; pass the config file`
+          );
+        }
+        console.error(`loom: using ./${found} (pass a file to choose another)`);
+        files = [`./${found}`];
+      }
+      const res = cmdMigrateConfig({ files, apply: flags.apply === "true" });
+      if (json) outJson(res);
+      else out(formatMigrate(res));
+      return res.refused ? 2 : 0;
     }
     case "verify": {
       requireFlag(flags, "config");

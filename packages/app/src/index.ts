@@ -1,4 +1,5 @@
 export {
+  GROUPED_OPTIONS,
   defineConfig,
   normalizeConfig,
   type CatalogLike,

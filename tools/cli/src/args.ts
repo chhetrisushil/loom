@@ -272,6 +272,12 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       json: "boolean",
     },
   },
+  "migrate-config": {
+    summary:
+      "rewrite flat defineConfig options into their groups (dry run unless --apply; never runs the config)",
+    usage: ["loom migrate-config [<file>...] [--config <file>] [--apply] [--json]"],
+    flags: { config: "string", apply: "boolean", json: "boolean" },
+  },
   verify: {
     summary: "pre-flight runtime verification (@loom/verify)",
     usage: ["loom verify --config <module> [--manifest <path>] [--json]"],

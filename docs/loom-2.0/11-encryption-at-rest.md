@@ -25,15 +25,16 @@ it defends the bytes on disk wholesale, without Loom knowing which fields are se
 ## SQLite backend
 
 `SqliteEventStore` / `SqliteSnapshotStore` use `better-sqlite3`, which writes a **plain,
-unencrypted** SQLite database file. Anyone who can read `.data/events.db` reads the log. Choose
-one (or both) of:
+unencrypted** SQLite database file. Anyone who can read the store directory reads the log: the
+`sqliteStorage()` preset defaults to `.loom/events.db` (the examples pass `dir: ".data"`, giving
+`.data/events.db`). Choose one (or both) of:
 
 ### Option A — encrypt the volume (simplest, OS-managed)
 
 Put the store directory on an encrypted filesystem and there is nothing to change in Loom:
 
 - **macOS:** FileVault (full-disk).
-- **Linux:** LUKS / `dm-crypt` on the partition holding the `.data` dir.
+- **Linux:** LUKS / `dm-crypt` on the partition holding the store dir.
 - **Cloud VMs / containers:** an encrypted block device (AWS EBS encryption, GCP CMEK persistent
   disks, Azure disk encryption). Point `storage.dir` at a mount on that device.
 
