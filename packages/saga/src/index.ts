@@ -4,4 +4,4 @@
 // failure. Compensators are ordinary `ctx.run` steps, so rollback is replay-safe with
 // NO new syscall and NO new event type (P10).
 
-export { type Saga, createSaga, withSaga } from "./saga";
+export { type Saga, SagaCompensationError, createSaga, withSaga } from "./saga";
