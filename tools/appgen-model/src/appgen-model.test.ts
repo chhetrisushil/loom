@@ -271,7 +271,7 @@ describe("validateChangeSpec", () => {
       `step ids "a-b2" and "a-b-2" in flow "router" both generate the name "aB2Step" — rename one`,
     ]);
   });
-  it("rejects a new step whose generated name collides with an existing step", () => {
+  it("a new step checked against an existing flow: malformed id, exact duplicate, and a generated-name collision with a legacy id", () => {
     const model: AppModel = {
       ...EXISTING,
       flows: [{ ...EXISTING.flows[0]!, steps: [{ id: "a-b", handlerState: "stub" }] }],

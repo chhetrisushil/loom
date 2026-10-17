@@ -253,6 +253,11 @@ describe("appgen plan eval (@loom/appgen + @loom/appgen-model, hand-authored cas
     it(
       "(a3b) a plan the validator ACCEPTS but whose code does not typecheck is reported invalid with the compiler error",
       async () => {
+        // TEMPORARY PIN: this relies on the `intent` -> `//`-comment injection channel in
+        // generate.ts (a security finding fixed on branch fix/appgen-codegen-injection). When
+        // that fix lands this plan is rejected or its text escaped, and this test must switch
+        // to another validator-clean tsc failure (or inject a corrupted generated file into the
+        // typecheck harness directly) so the compiler-error reporting path stays covered.
         // The validator does not model `intent`, which generate.ts splices into a `//`
         // comment line. A newline in it ends the comment, so the rest becomes code: a
         // validator-clean plan whose generated flow.ts is a TS syntax error. (The earlier
