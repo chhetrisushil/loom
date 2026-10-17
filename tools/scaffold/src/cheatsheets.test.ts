@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SEAM_KEYS } from "./plugin";
@@ -76,5 +76,38 @@ describe("cheatsheets stay true to what they enumerate", () => {
       { cwd: REPO_ROOT, encoding: "utf8" }
     ).trim();
     expect(card(DX)).toContain(`**${kits}** conformance kits`);
+  });
+
+  it("every @loom/* package a card names is a real workspace package", () => {
+    // A rename or removal would leave the card pointing at nothing. Workspace names come from
+    // each package.json under packages/, plugins/ and tools/ (text, no runtime import).
+    const names = new Set<string>();
+    for (const dir of ["packages", "plugins", "tools"]) {
+      for (const d of readdirSync(resolve(REPO_ROOT, dir))) {
+        const pj = resolve(REPO_ROOT, dir, d, "package.json");
+        if (!existsSync(pj)) continue;
+        const name = (JSON.parse(readFileSync(pj, "utf8")) as { name?: string }).name;
+        if (name) names.add(name);
+      }
+    }
+    expect(names.size).toBeGreaterThan(50);
+    for (const file of [FEATURES, DX]) {
+      const named = [...card(file).matchAll(/@loom\/[a-z][a-z0-9-]*/g)].map((m) => m[0]);
+      const unknown = [...new Set(named)].filter((n) => !names.has(n));
+      expect(unknown, `${file} names packages that do not exist: ${unknown.join(", ")}`).toEqual(
+        []
+      );
+    }
+  });
+
+  it("Card II only recommends root scripts that exist", () => {
+    const scripts = (JSON.parse(source("package.json")) as { scripts: Record<string, string> })
+      .scripts;
+    const named = [...card(DX).matchAll(/`pnpm ([a-z][a-z:-]*)/g)].map((m) => m[1] as string);
+    const builtins = new Set(["install", "link"]);
+    const missing = [...new Set(named)].filter((n) => !builtins.has(n) && !(n in scripts));
+    expect(missing, `${DX} names pnpm scripts that do not exist: ${missing.join(", ")}`).toEqual(
+      []
+    );
   });
 });
