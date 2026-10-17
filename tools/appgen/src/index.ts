@@ -1,4 +1,5 @@
 export { parseIntent } from "./parseIntent";
+export { newIdSlug } from "./slug";
 export { generateApp, generateFlows, generateProject } from "./generate";
 export { isExistingApp, scanApp } from "./appModel";
 export type { AppModel, FlowModel, HandlerState, StepModel } from "./appModel";
@@ -38,6 +39,7 @@ export {
   MAX_INTENT_LENGTH,
   MAX_LABEL_LENGTH,
   changeSpecDataIssues,
+  specStructureIssues,
   textIssues,
   textListIssues,
 } from "./specText";

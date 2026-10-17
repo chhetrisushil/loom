@@ -1,4 +1,4 @@
-export { pascal, generateRegistration } from "./codegen";
+export { pascal, pascalIdent, generateRegistration } from "./codegen";
 export {
   blockCommentText,
   commentText,
