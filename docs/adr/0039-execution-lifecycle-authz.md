@@ -97,9 +97,32 @@ the new `ExecutionStoreUnavailableError` (`@loom/workflow-runtime`): retryable (
 carrying only `op` and `executionId`, with no cause, workflow id, subject or redacted view, and
 IDENTICAL for the owner and a stranger (a fault must not become a status oracle). The real cause goes
 to `onStorageError`. `cancel` of a live execution and `restoreFromState` read the owner through the
-same anchor read (they have none in hand), so they follow the same rule. Residual: `ownerForAuthz`
-keeps its catch-all "unknown owner" for the trusted-lineage (parent) walk, which only withholds a
-`parentOwner` and never denies the execution's own owner.
+same anchor read (they have none in hand), so they follow the same rule. (The earlier residual that
+`ownerForAuthz` kept a catch-all "unknown owner" for the lineage walk is closed by the next
+paragraph.)
+
+**Owner-resolution faults (2026-10-17, second amendment; FU-B).** `ownerForAuthz` ran AFTER sequence
+0 had been read fine and swallowed every failure as an "unknown owner": the principal resolver or
+codec throwing, the sequence-0 read it does itself when the caller holds no anchor, or a store
+fault on a parent link of the lineage walk. With the default `unknownOwner: "deny"` that falsely
+DENIED the real owner (a non-retryable `ExecutionDeniedError`, a false `onExecutionDenied`), and
+under `unknownOwner: "allow"` it ADMITTED a stranger on a transient fault. The same rule as the
+anchor read now applies to the whole owner-resolution path: only a PROVEN erasure
+(`PayloadShreddedError`, or a `KeyUnavailableError` recording the erase intent; one shared
+`isErasure` test) is an unknown owner; a stream-level seal refusal is unchanged; EVERY other
+failure is the sanitized, retryable `ExecutionStoreUnavailableError` (same shape and the same
+`onStorageError` report of the real cause, for the owner and a stranger alike). A fault is never
+an allow, for anyone, and nothing is appended or audited. A legitimately unresolvable record (the
+resolver returns `undefined`, a delegation it cannot restore, a shredded or malformed principal
+record) is NOT a fault: it still yields the unknown owner and the policy decides, as before. The
+`system` grant never reaches this path. Existence oracle: `ownerForAuthz` is reached only once
+sequence 0 exists (a missing id returns earlier), so a stranger who now sees
+`ExecutionStoreUnavailableError` where they saw a denial learns only that the id exists, which the
+denial (versus a missing id's not-found) already told them: the same bounded, fault-only class as
+the key-outage residual below. The one new fact is that, for a child execution, the fault was in the
+recorded lineage rather than the execution's own record; it is visible only during that fault and
+only to a caller who already guessed the id. Accepted for parity with `readAnchor`: hiding it would
+deny the legitimate owner a retry.
 
 **Residual (2026-10-17): a bounded existence oracle during a key outage.** While the key service is
 down, a stranger asking about an EXISTING encrypted execution id gets `ExecutionStoreUnavailableError`
