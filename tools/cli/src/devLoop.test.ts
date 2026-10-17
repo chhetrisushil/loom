@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UsageError } from "./args";
-import { resolveRunCommand, runDev } from "./dev";
+import { isDevNoise, isDevSource, resolveRunCommand, runDev } from "./dev";
 import { genWatch } from "./gen";
 import { watchTree } from "./watch";
 
@@ -21,6 +21,15 @@ import { watchTree } from "./watch";
 // Every wait is on a CONDITION (a file appears, a line is printed, a pid is gone) with a generous
 // ceiling; nothing asserts on elapsed time. Each test works in its own temp dir. Both watcher
 // modes are exercised: real `fs.watch` where the platform has it, and forced polling.
+
+// Count (and pass through) fs.watch calls, so the re-arm test can prove a fresh watcher was made.
+const watchCalls = vi.hoisted(() => ({ fn: undefined as unknown }));
+vi.mock("node:fs", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("node:fs")>();
+  const spy = vi.fn(orig.watch);
+  watchCalls.fn = spy;
+  return { ...orig, default: orig, watch: spy };
+});
 
 const CEILING = 30_000;
 const until = (cond: () => boolean | Promise<boolean>) =>
@@ -150,24 +159,60 @@ describe("watchTree", () => {
     }
   });
 
-  it("drops noise events before scheduling and re-arms when the root is replaced", async () => {
-    const seen: string[] = [];
+  it("re-arms the event watcher (a fresh fs.watch) after the root is deleted and recreated", async () => {
+    // The safety rescan alone finds new files, and macOS keeps delivering events across a replaced
+    // root, so neither proves the re-arm: the count of fs.watch calls does.
+    const watchSpy = watchCalls.fn as ReturnType<typeof vi.fn>;
+    watchSpy.mockClear();
     const w = watchTree(root, {
       debounceMs: 20,
       pollMs: 50,
       safetyMs: 100,
-      include: (f) => f.endsWith(".ts"),
-      onChange: (cs) => void seen.push(...cs.map((c) => `${c.kind}:${c.file}`)),
+      onChange: () => undefined,
       onError: () => undefined,
     });
     try {
+      if (w.mode !== "watch") return; // no recursive fs.watch on this platform: nothing to re-arm
+      expect(watchSpy).toHaveBeenCalledTimes(1);
       rmSync(root, { recursive: true, force: true });
-      mkdirSync(root, { recursive: true });
-      touch(join(root, "after.ts"));
-      await until(() => seen.includes("added:after.ts"));
-      // The watcher is live again on the new root: a further add is seen without a manual poke.
-      touch(join(root, "later.ts"));
-      await until(() => seen.includes("added:later.ts"));
+      mkdirSync(root, { recursive: true }); // a new inode
+      await until(() => watchSpy.mock.calls.length >= 2);
+      expect(w.mode).toBe("watch");
+    } finally {
+      w.close();
+    }
+  });
+
+  it("an ignoreEvent-rejected name never schedules a rescan", async () => {
+    const dir = join(root, "w");
+    mkdirSync(dir);
+    let scans = 0;
+    const rejected: string[] = [];
+    const w = watchTree(dir, {
+      debounceMs: 10,
+      safetyMs: 600_000,
+      include: (f) => {
+        scans++;
+        return f.endsWith(".ts");
+      },
+      ignoreEvent: (f) => {
+        rejected.push(f);
+        return true; // every event name is rejected (the watched dir itself reports as "w" too)
+      },
+      onChange: () => undefined,
+      onError: () => undefined,
+    });
+    try {
+      if (w.mode !== "watch") return;
+      const before = scans;
+      let n = 0;
+      await until(() => {
+        writeFileSync(join(dir, "scratch4913"), String(n++)); // extensionless: only ignoreEvent stops it
+        return rejected.includes("scratch4913");
+      });
+      // events were delivered and rejected; give any (wrong) rescan a chance, then none happened
+      await new Promise((r) => setTimeout(r, 300));
+      expect({ scans, rejected }).toEqual({ scans: before, rejected });
     } finally {
       w.close();
     }
@@ -442,6 +487,42 @@ describe("loom dev (runDev)", () => {
     expect(starts()).toHaveLength(2); // ... and only that edit restarted it
   }, 60_000);
 
+  it("the dev filter: scratch is noise (even extensionless), sources are not", () => {
+    for (const f of [
+      "4913",
+      "app/4913",
+      ".flow.ts.swp",
+      "flow.ts~",
+      "state.db",
+      "x.db-wal",
+      "loom.gen.ts",
+      ".git/x.ts",
+      "a.log",
+    ]) {
+      expect(isDevNoise(f), f).toBe(true);
+      expect(isDevSource(f), f).toBe(false);
+    }
+    for (const f of ["flows/a/flow.ts", "config.json", "x.mjs"]) {
+      expect(isDevNoise(f), f).toBe(false);
+      expect(isDevSource(f), f).toBe(true);
+    }
+    expect(isDevNoise("flows")).toBe(false); // a directory event must still pass
+  });
+
+  it("a failing runDev leaves no process.exit listener behind", async () => {
+    const before = process.listenerCount("exit");
+    await expect(
+      runDev({
+        dir: join(root, "no-such-dir"),
+        command: "true",
+        cwd: root,
+        log: () => undefined,
+        forcePoll: true,
+      })
+    ).rejects.toThrow();
+    expect(process.listenerCount("exit")).toBe(before);
+  });
+
   it("gives a SIGTERM'd tree its grace: the grandchild finishes flushing before runDev resolves", async () => {
     const { ac, start } = setup();
     // The shell child exits at once on SIGTERM; its grandchild traps it and flushes slowly.
@@ -631,6 +712,7 @@ describe("loom dev (cli)", () => {
     writeFileSync(
       join(root, "envdump.js"),
       `require("node:fs").writeFileSync(${JSON.stringify(join(root, "env.json"))}, JSON.stringify({ a: process.env.LOOM_NO_AUTOSTART ?? null, q: process.env.LOOM_QUIET ?? null, dev: process.env.LOOM_DEV }));
+       require("node:fs").appendFileSync(${JSON.stringify(join(root, "starts.log"))}, process.pid + "\\n");
        process.on("SIGTERM", () => process.exit(0));
        setInterval(() => {}, 1000);`
     );

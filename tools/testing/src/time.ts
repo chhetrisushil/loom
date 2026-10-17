@@ -83,16 +83,23 @@ export async function fireDueTimers(app: LoomApp): Promise<void> {
     );
   }
   const store = app.stores?.timerStore;
+  let lastDue = "";
+  let identical = true; // the SAME timers were due after every poll so far
   for (let i = 0; i < MAX_DRAIN_TICKS; i++) {
     const now = clock.now();
     await service.tick(now);
     if (store === undefined) return; // cannot look: one poll is all we can promise
     // Same exclusions the service applies when it has no re-driver / inbox: rows it cannot judge.
-    const left = await store.due(now, 1, { redrive: false, inbox: false, refused: false });
+    const left = await store.due(now, 5, { redrive: false, inbox: false, refused: false });
     if (left.length === 0) return;
+    const sig = left.map((r) => `${r.executionId}@${r.wakeAt}`).join(", ");
+    if (i > 0 && sig !== lastDue) identical = false;
+    lastDue = sig;
   }
   throw new Error(
-    `fireDueTimers: timers were still due after ${MAX_DRAIN_TICKS} polls - something keeps re-arming a timer at an instant that is already due (for example a loop that sleeps for 0 ms)`
+    identical
+      ? `fireDueTimers: no progress - the same timer(s) (${lastDue}) were still due after ${MAX_DRAIN_TICKS} polls, so firing keeps failing (or the flow re-arms at the same already-due instant) and the timer stays due; check the flow's resume for an error`
+      : `fireDueTimers: timers were still due after ${MAX_DRAIN_TICKS} polls (last due: ${lastDue}) - something keeps re-arming a timer at an instant that is already due (for example a loop that sleeps for 0 ms)`
   );
 }
 
