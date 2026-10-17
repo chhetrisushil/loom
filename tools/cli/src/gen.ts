@@ -86,13 +86,13 @@ export function discoverProjections(dir: string): string[] {
   return discoverFlat(dir, "projections");
 }
 
-/** `realpath` of `p`, or of its deepest existing ancestor plus the remaining (not yet created) segments. */
+/** NATIVE `realpath` (canonical on-disk case/normalisation, unlike JS `realpathSync`) of `p`, or of its deepest existing ancestor plus the remaining (not yet created) segments. */
 function realpathDeep(p: string): string {
   const rest: string[] = [];
   let cur = path.resolve(p);
   for (;;) {
     try {
-      return path.join(fs.realpathSync(cur), ...rest.reverse());
+      return path.join(fs.realpathSync.native(cur), ...rest.reverse());
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       const up = path.dirname(cur);
@@ -104,26 +104,36 @@ function realpathDeep(p: string): string {
 }
 
 /**
- * The symlink-containment root for a project directory: NEVER trust a symlink below the cwd.
+ * The symlink-containment root for a project directory: NEVER follow a symlink below the real cwd.
  *
- * Classified by REAL path, never by spelling (`/tmp` vs `/private/tmp`, a shell's logical `$PWD`, an
- * alias link to the project all name the same place). The ancestors of `dir` (as spelled) are matched
- * against the real path of the cwd; `dir`'s own last component is never resolved (it may be the planted
- * link), and neither is any link on the way below the cwd.
- *
- *  - an ancestor of `dir` IS the cwd by real path (or its parent resolves inside the cwd): the root is the cwd (in the spelling `dir` used, so every
- *    component below is lstat-checked), and `dir` itself and everything under it must not be a link: a
- *    cloned repo's `app -> /outside` is refused however `--dir` was spelled. The cwd may be reached
- *    through a link.
- *  - otherwise: the user named a location outside the project, so `dir` itself is
- *    the root and may be a link (what is below it is still checked).
+ * Classified by NATIVE real path (`realpathSync.native`: canonical case and Unicode form, so `../PROJ`,
+ * NFD spellings, `/tmp` vs `/private/tmp` and a shell's logical `$PWD` all name the same place), never by
+ * spelling. Rule: (1) the FINAL component of `dir` may never be a link (always refused, however `dir`
+ * classifies; the cwd itself, being resolved rather than lstat-walked, is exempt); (2) an ancestor of
+ * `dir` whose native real path IS the real cwd becomes the root (in the spelling `dir` used), so every
+ * component below it is lstat-checked; (3) if `dir`'s parent resolves inside the real cwd by some other
+ * route the cwd is the root and the lexical walk fails closed; (4) only when the native real path is
+ * entirely outside the cwd is `dir` itself the root (links ABOVE it, e.g. `/tmp`, are fine; everything
+ * below it is lstat-checked). Equivalent to "no component strictly below realpath(cwd), nor the final one,
+ * is a link": inside targets are walked from a root equal to the real cwd, outside targets never touch
+ * the cwd subtree. A user who wants an outside target passes its real path.
  */
 export function containmentRootFor(dir: string, cwd: string = process.cwd()): string {
   const rc = realpathDeep(cwd);
   const target = path.resolve(cwd, dir);
-  // Climb the spelling `dir` used to the ancestor that IS the cwd (by real path): that ancestor is the
-  // root, so every component below it - `dir` itself and any link on the way - is lstat-checked. The
-  // climb starts at the PARENT: `dir`'s own last component is never resolved.
+  if (target !== path.resolve(cwd)) {
+    let isLink = false;
+    try {
+      isLink = fs.lstatSync(target).isSymbolicLink();
+    } catch {
+      /* does not exist yet */
+    }
+    if (isLink) {
+      throw new Error(
+        `refusing --dir "${dir}": it is a symbolic link (${target}); pass the real path of the directory`
+      );
+    }
+  }
   for (let a = path.dirname(target); ; a = path.dirname(a)) {
     try {
       if (realpathDeep(a) === rc) return a;
@@ -132,9 +142,6 @@ export function containmentRootFor(dir: string, cwd: string = process.cwd()): st
     }
     if (path.dirname(a) === a) break;
   }
-  // No spelling of the cwd on the way. If the parent still resolves inside the cwd (e.g. through a
-  // link to a subdirectory) the lexical walk fails closed against the cwd; otherwise the user named a
-  // location outside the project and `dir` itself is the root.
   const rel = path.relative(rc, realpathDeep(path.dirname(target)));
   const inside =
     rel === "" || !(rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel));

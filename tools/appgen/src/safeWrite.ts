@@ -8,8 +8,8 @@ import * as path from "node:path";
  * to `/etc/whatever`, so a lexical "is it inside the root" check passes and `writeFileSync` then
  * follows the link and overwrites a file outside the project. Policy (deliberately simple):
  *
- *  - the ROOT itself may be reached through a link (`/tmp` -> `/private/tmp`, a symlinked checkout),
- *    but ONLY for a root OUTSIDE the cwd (by REAL path, not spelling) that the user named explicitly (`--dir /elsewhere`). A project
+ *  - links ABOVE the root are fine (`/tmp` -> `/private/tmp`), but the root's own FINAL component is
+ *    never a link (the CLI refuses a `--dir` that is one; pass its real path). A project
  *    directory inside the cwd (`app`, `./app`, `app/nested`, typed or defaulted) is never trusted:
  *    callers use the cwd as the root, so a cloned repo's own `app -> /outside` link is a component below
  *    the root and is refused (the CLI and the library defaults derive it with `containmentRootFor`);
@@ -64,8 +64,11 @@ export interface SafeWriteHooks {
 /** Refuse when the parent's real path is not `realpath(root)` + the lexical relative parent. */
 function assertParentRealpath(dir: string, parent: string): void {
   const root = path.resolve(dir);
-  const expected = path.join(fs.realpathSync(root), path.relative(root, path.resolve(parent)));
-  const actual = fs.realpathSync(parent);
+  const expected = path.join(
+    fs.realpathSync.native(root),
+    path.relative(root, path.resolve(parent))
+  );
+  const actual = fs.realpathSync.native(parent);
   if (actual !== expected) {
     throw new Error(
       `refusing to write: "${path.relative(root, path.resolve(parent)) || "."}" resolves to ${actual}, not ${expected} (a parent directory was swapped for a link)`
@@ -112,7 +115,7 @@ export function safeWriteFileWithHooks(
   assertParentRealpath(dir, parent);
   // From here on use the RESOLVED parent: a link swapped in later cannot redirect the open, the rename
   // or the cleanup (the cleanup would otherwise delete in the wrong directory).
-  const realParent = fs.realpathSync(parent);
+  const realParent = fs.realpathSync.native(parent);
   const tmp = path.join(realParent, tmpName);
   const final = path.join(realParent, path.basename(dest));
   const fd = fs.openSync(
