@@ -1,3 +1,4 @@
+import { templateLiteralText } from "./emit";
 import { fnv1a32 } from "./hash";
 
 // ── The generated handler stub: a single source of truth ─────────────────────
@@ -11,7 +12,7 @@ import { fnv1a32 } from "./hash";
 
 /** The canonical placeholder handler body appgen generates for a fresh step. */
 export function stubHandlerBody(stepId: string): string {
-  return `async (input: { prompt: string }) => ({ result: \`TODO: implement ${stepId} for \${input.prompt}\` })`;
+  return `async (input: { prompt: string }) => ({ result: \`TODO: implement ${templateLiteralText(stepId)} for \${input.prompt}\` })`;
 }
 
 /**

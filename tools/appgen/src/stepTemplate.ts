@@ -1,4 +1,5 @@
 import { pascal } from "@loom/scaffold";
+import { assertSafeId, tsStringLiteral } from "./emit";
 import { stubHandlerBody } from "./stub";
 
 // The source text of a generated `step$` const — the single source of truth shared by
@@ -18,9 +19,10 @@ export function stepConstName(id: string): string {
 
 /** The full `const <id>Step = step$({ ... })` declaration for a fresh step. */
 export function stepConstSource(id: string): string {
+  assertSafeId("step", id);
   return `const ${stepConstName(id)} = step$({
-  id: "${id}",
-  name: "${pascal(id)}",
+  id: ${tsStringLiteral(id)},
+  name: ${tsStringLiteral(pascal(id))},
   inputSchema: z.object({ prompt: z.string() }),
   outputSchema: z.object({ result: z.string() }),
   handler: handler$(${stubHandlerBody(id)}),
