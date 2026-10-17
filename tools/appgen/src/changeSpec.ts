@@ -1,6 +1,6 @@
 import { pascal } from "@loom/scaffold";
 import type { AppModel } from "./appModel";
-import { parseIntent } from "./parseIntent";
+import { type IdResolver, parseIntent } from "./parseIntent";
 import { newIdSlug, existingIdSlug as slug } from "./slug";
 import type { CapabilitySpec, ComputeSpec, ReasoningSpec } from "./types";
 
@@ -76,8 +76,24 @@ export function planChangesDeterministic(intent: string, appModel: AppModel): Ch
   let specCaps: CapabilitySpec[] = [];
   let specCompute: ComputeSpec | undefined;
   let specName = "app";
+  // Id resolution (brownfield): an id the scanned app ALREADY has wins. The lookup uses the
+  // ORIGINAL phrase's legacy slug (digit-led ids allowed), e.g. "2fa login" -> existing
+  // `2fa-login`; only when nothing matches is a NEW id minted (`item-2fa-login`). No
+  // string-stripping of `item-`: a genuine new "item 2fa" is `item-2fa`, never the existing
+  // `2fa`. A new digit-led "2fa" does map to an existing `item-2fa` (same minted id).
+  const flowIds = new Map(appModel.flows.map((f) => [f.id, new Set(f.steps.map((s) => s.id))]));
+  const resolver: IdResolver = {
+    capability: (raw) => {
+      const legacy = slug(raw);
+      return flowIds.has(legacy) ? legacy : newIdSlug(raw);
+    },
+    step: (capId, raw) => {
+      const legacy = slug(raw);
+      return flowIds.get(capId)?.has(legacy) === true ? legacy : newIdSlug(raw);
+    },
+  };
   if (keep.length > 0) {
-    const spec = parseIntent(keep.join(". "));
+    const spec = parseIntent(keep.join(". "), resolver);
     specCaps = spec.capabilities;
     specCompute = spec.compute;
     specName = spec.name;

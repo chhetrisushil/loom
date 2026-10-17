@@ -49,3 +49,13 @@ describe("parseIntent ids survive assertSafeId", () => {
     expect(assertSafeId("step", cap.steps[0]!)).toBe(cap.steps[0]);
   });
 });
+
+describe("newIdSlug fallback hash is NFC-stable", () => {
+  it("composed and decomposed forms of the same text get the same id", () => {
+    const hangul = "\ud55c\uae00"; // precomposed syllables; NFD is conjoining jamo, no ascii
+    const nfd = hangul.normalize("NFD");
+    expect(nfd).not.toBe(hangul);
+    expect(newIdSlug(nfd)).toBe(newIdSlug(hangul));
+    expect(newIdSlug(hangul)).toMatch(/^capability-[0-9a-f]{8}$/);
+  });
+});

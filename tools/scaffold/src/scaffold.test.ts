@@ -40,6 +40,22 @@ describe("codegen", () => {
     expect(out.split("\n").filter((l) => l.startsWith("import ")).length).toBe(7);
   });
 
+  it("appFiles puts a hostile app name only in package.json (JSON-escaped) and the README heading", () => {
+    const hostile = 'a"},\n"x":`${1}`\u202e<script>';
+    const files = appFiles(hostile);
+    expect((JSON.parse(files["package.json"] ?? "{}") as { name: string }).name).toBe(hostile);
+    expect(files["package.json"]).not.toContain("\u202e");
+    for (const [file, contents] of Object.entries(files)) {
+      if (file === "package.json") continue;
+      expect(contents, file).not.toContain("\u202e");
+      expect(contents, file).not.toContain("<script>");
+      if (file !== "README.md") expect(contents, file).not.toContain(hostile.slice(0, 5));
+    }
+    // a valid name is unchanged in both places
+    const ok = appFiles("my-app");
+    expect(JSON.parse(ok["package.json"] ?? "{}").name).toBe("my-app");
+  });
+
   it("the README heading of appFiles neutralises markdown, HTML and control characters", () => {
     const readme = appFiles("app\n\n## Pwn\u202e <script>x</script>")["README.md"] ?? "";
     expect(readme.split("\n")[0]).toBe("# app \\#\\# Pwn \\<script\\>x\\</script\\>");

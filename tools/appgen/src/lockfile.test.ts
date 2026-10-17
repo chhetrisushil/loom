@@ -110,6 +110,16 @@ describe("readLockfile validation", () => {
     expect(() => readLockfile(spec({ intent: "a".repeat(501) }))).toThrow(/too long/);
   });
 
+  it("refuses an empty plan with the model validator's message (parity)", () => {
+    const f = write({
+      version: 1,
+      createdAt: "t",
+      intent: "",
+      changeSpec: { name: "a", planner: "model", capabilities: [] },
+    });
+    expect(() => readLockfile(f)).toThrow(/the plan has no capabilities — it is empty/);
+  });
+
   it("refuses wrongly typed fields", () => {
     expect(() => readLockfile(spec({ wireGrants: "db.read" }))).toThrow(/array/);
     expect(() => readLockfile(spec({ wireGrants: [1] }))).toThrow(/string/);
