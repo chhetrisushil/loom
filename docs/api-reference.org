@@ -280,6 +280,10 @@ interface LoomConfig {
   onEvent?: (event: EventEnvelope) => void;      // fired after projection + telemetry
 }
 
+// Every option that moved into a group, paired with its group — the single table the flat-key
+// error is built from and `loom migrate-config` rewrites by (read-only; exported from @loom/app).
+const GROUPED_OPTIONS: readonly (readonly [group: string, options: readonly string[]])[]
+
 interface LoomApp {
   runtime: WorkflowRuntime;
   effectRuntime: EffectRuntime;

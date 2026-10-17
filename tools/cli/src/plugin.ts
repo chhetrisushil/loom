@@ -92,6 +92,45 @@ const REGEX_AFTER_WORD = new Set([
 
 const isIdChar = (c: string): boolean => /[\w$]/.test(c) || c > "\u007f";
 
+/** Keywords after which a touching quote opens a string (`from"x"`), not a JSX apostrophe. */
+const STRING_AFTER_WORD = new Set([
+  ...REGEX_AFTER_WORD,
+  "from",
+  "import",
+  "export",
+  "default",
+  "require",
+]);
+
+/** Is the identifier run ending just before `quote` a keyword that takes a string next? */
+function followsKeyword(src: string, quote: number): boolean {
+  let j = quote;
+  while (j > 0 && isIdChar(src[j - 1] as string)) j--;
+  return STRING_AFTER_WORD.has(src.slice(j, quote));
+}
+
+/**
+ * Do the tokens so far end inside an opening JSX tag (`<div className="x"` just before its `>`)?
+ * Walks back (bounded, stopping at `;`) to a `<` that starts an expression, i.e. is not a
+ * comparison or the generic of `f<T>`, and is followed by a tag name or `>` (a fragment).
+ */
+function inJsxTag(toks: Tok[]): boolean {
+  for (let k = toks.length - 1, steps = 0; k >= 0 && steps < 64; k--, steps++) {
+    const t = toks[k] as Tok;
+    if (t.k === "p" && t.v === ";") return false;
+    if (t.k !== "p" || t.v !== "<") continue;
+    const before = toks[k - 1];
+    const after = toks[k + 1];
+    const exprStart =
+      before === undefined ||
+      (before.k === "p"
+        ? before.v !== ")" && before.v !== "]"
+        : before.k === "id" && REGEX_AFTER_WORD.has(before.v));
+    if (exprStart && (after?.k === "id" || (after?.k === "p" && after.v === ">"))) return true;
+  }
+  return false;
+}
+
 /**
  * A small LINEAR tokenizer, not a parser: identifiers, strings (text kept), single punctuation
  * characters. Comments, regex literals and template text are dropped, but a template's `${ … }`
@@ -144,10 +183,18 @@ function tokenize(src: string, jsx = false): Tok[] {
     } else if (c === "/" && nx === "*") {
       const end = src.indexOf("*/", i + 2);
       i = end === -1 ? n : end + 2;
-    } else if (jsx && (c === '"' || c === "'") && i > 0 && isIdChar(src[i - 1] as string)) {
-      i++; // `it's` in JSX text: an apostrophe, never a string opener (valid code has no `a'b'`)
-    } else if (jsx && c === "`" && src[i - 1] === ">") {
-      i++; // a backtick opening JSX text
+    } else if (
+      jsx &&
+      (c === '"' || c === "'") &&
+      i > 0 &&
+      isIdChar(src[i - 1] as string) &&
+      !followsKeyword(src, i)
+    ) {
+      // `it's` in JSX text: an apostrophe, never a string opener (valid code has no `a'b'`) —
+      // except right after a keyword (`from"@loom/conformance"`, `case"a"`), which IS code.
+      i++;
+    } else if (jsx && c === "`" && src[i - 1] === ">" && src[i - 2] !== "=" && inJsxTag(toks)) {
+      i++; // a backtick opening JSX text (not `=>` + template, nor `a>` + template)
     } else if (c === '"' || c === "'") {
       let v = "";
       const open = i;
@@ -216,8 +263,13 @@ function tokenize(src: string, jsx = false): Tok[] {
   return toks;
 }
 
-/** The most tokens a destructuring pattern is walked back over to find its `{`. */
-const WALK_CAP = 1000;
+/**
+ * The most tokens a destructuring pattern is walked back over to find its `{`. The walk also stops
+ * at a statement boundary and at the previous `require` / `import` (a pattern holds neither), so a
+ * run of unmatched `}` costs a few tokens each, not the cap; the cap is only the backstop. 20k
+ * covers a pattern of thousands of renamed names (4 tokens each); a longer one is not recognised.
+ */
+const WALK_CAP = 20_000;
 
 const isKit = (spec: string): boolean =>
   spec === "@loom/conformance" || spec.startsWith("@loom/conformance/");
@@ -261,7 +313,14 @@ function kitBindings(toks: Tok[]): { callable: Set<string>; ns: Set<string>; inl
         else if (w.k === "p" && w.v === ";") {
           m = -1;
           break;
-        } else if (w.k === "id" && (w.v === "const" || w.v === "let" || w.v === "var")) {
+        } else if (
+          w.k === "id" &&
+          (w.v === "const" ||
+            w.v === "let" ||
+            w.v === "var" ||
+            w.v === "require" ||
+            w.v === "import")
+        ) {
           m = -1;
           break;
         }

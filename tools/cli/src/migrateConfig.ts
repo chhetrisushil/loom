@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as nodePath from "node:path";
 import { GROUPED_OPTIONS } from "@loom/app";
 import { UsageError } from "./args";
 
@@ -80,7 +81,8 @@ function scan(src: string, from: number, nested: boolean): { toks: Tok[]; end: n
       i++;
     } else if (c === "/" && src[i + 1] === "/") {
       const nl = src.indexOf("\n", i);
-      const end = nl < 0 ? src.length : nl;
+      let end = nl < 0 ? src.length : nl;
+      if (end > i && src[end - 1] === "\r") end--; // a CRLF file: the \r is the line ending
       push("comment", i, end);
       i = end;
     } else if (c === "/" && src[i + 1] === "*") {
@@ -160,6 +162,40 @@ interface Entry {
   valueFirst: number;
 }
 
+/** Tokens a type-argument list is made of; anything else means the `<` is a comparison. */
+const TYPE_ARG_PUNCT = new Set([",", ".", "|", "&", "[", "]", "<", ">", "?"]);
+
+/**
+ * If the `<` at `lt` opens type arguments (`new Map<string, number>()`, `f<T>(x)`, `x as M<A, B>`)
+ * return the index of its closing `>`, else -1. A `<` counts only when it touches the preceding
+ * identifier and the list holds nothing but type-ish tokens, AND what follows is a call / template
+ * or what precedes is `new` / `as` / `satisfies` — otherwise (`a<b, c>d`) it is two comparisons
+ * and the comma is a real separator.
+ */
+function typeArgsEnd(toks: Tok[], lt: number, limit: number): number {
+  const word = toks[lt - 1];
+  const open = toks[lt] as Tok;
+  if (word?.kind !== "word" || word.end !== open.start) return -1;
+  let depth = 0;
+  for (let k = lt; k < limit; k++) {
+    const t = toks[k] as Tok;
+    if (t.kind === "comment") continue;
+    if (t.kind === "punct" && t.text === "<") depth++;
+    else if (t.kind === "punct" && t.text === ">") {
+      if (--depth === 0) {
+        const next = toks[k + 1];
+        let b = lt - 2;
+        while (b >= 0 && toks[b]?.kind === "comment") b--;
+        const before = toks[b]?.text;
+        const follows = next?.text === "(" || next?.kind === "template";
+        return follows || before === "new" || before === "as" || before === "satisfies" ? k : -1;
+      }
+    } else if (t.kind === "word" || t.kind === "string") continue;
+    else if (!(t.kind === "punct" && TYPE_ARG_PUNCT.has(t.text))) return -1;
+  }
+  return -1;
+}
+
 function parseObject(toks: Tok[], open: number, close: number): Entry[] {
   const entries: Entry[] = [];
   let depth = 0;
@@ -171,6 +207,14 @@ function parseObject(toks: Tok[], open: number, close: number): Entry[] {
   for (let k = open + 1; k < close; k++) {
     const t = toks[k] as Tok;
     if (t.kind === "comment") continue;
+    if (t.kind === "punct" && t.text === "<" && depth === 0) {
+      const gt = typeArgsEnd(toks, k, close);
+      if (gt > k) {
+        for (; k <= gt; k++) if ((toks[k] as Tok).kind !== "comment") sig.push(k);
+        k--;
+        continue;
+      }
+    }
     if (t.kind === "punct" && OPEN.has(t.text)) depth++;
     else if (t.kind === "punct" && CLOSE.has(t.text)) depth--;
     if (depth === 0 && t.kind === "punct" && t.text === ",") flush(k);
@@ -227,12 +271,14 @@ export interface FileAnalysis {
   refusal: string | undefined;
   /** The rewritten source (equal to the input when there is nothing to do). */
   text: string;
+  /** Groups the rewrite created (they had no literal to merge into), for the preservation check. */
+  created: string[];
 }
 
 const MAPPING_HINT = `the groups (${GROUPED_OPTIONS.map(([g]) => g).join(", ")}; see docs/usage-cli.md, loom migrate-config)`;
 
 function refuse(text: string, why: string): FileAnalysis {
-  return { moved: [], conflicts: [], refusal: why, text };
+  return { moved: [], conflicts: [], refusal: why, text, created: [] };
 }
 
 const sameLine = (src: string, a: number, b: number) => !src.slice(a, b).includes("\n");
@@ -294,10 +340,41 @@ function extentOf(src: string, toks: Tok[], e: Entry): Extent {
   };
 }
 
-function reindent(text: string, from: string, to: string): string {
+/** Is `pos` strictly inside one of the (sorted, disjoint) string / template spans? */
+function insideSpan(spans: readonly Tok[], pos: number): boolean {
+  let lo = 0;
+  let hi = spans.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const t = spans[mid] as Tok;
+    if (pos <= t.start) hi = mid - 1;
+    else if (pos >= t.end) lo = mid + 1;
+    else return true;
+  }
+  return false;
+}
+
+/**
+ * Re-indent `text` (which starts at absolute offset `base`) from `from` to `to`. A line that
+ * starts INSIDE a string or template token is part of the value (a multi-line template, a
+ * backslash-continued string) and is never touched.
+ */
+function reindent(
+  text: string,
+  base: number,
+  opaque: readonly Tok[],
+  from: string,
+  to: string
+): string {
+  let off = base;
   return text
     .split("\n")
-    .map((l) => (l.startsWith(from) ? to + l.slice(from.length) : l))
+    .map((l) => {
+      const at = off;
+      off += l.length + 1;
+      if (at > base && insideSpan(opaque, at)) return l;
+      return l.startsWith(from) ? to + l.slice(from.length) : l;
+    })
     .join("\n");
 }
 
@@ -306,22 +383,39 @@ function reindent(text: string, from: string, to: string): string {
  * result and requires a fixed point before anything is written.
  */
 export function analyzeConfig(src: string): FileAnalysis {
-  if (!src.includes("@loom/app")) {
-    return refuse(src, "no import of `@loom/app` — this does not look like a loom config");
-  }
   const { toks } = scan(src, 0, false);
+  const { names, spaces } = loomAppBindings(toks);
+  if (names.size === 0 && spaces.size === 0) {
+    return refuse(
+      src,
+      "no import of `defineConfig` from `@loom/app` — this does not look like a loom config"
+    );
+  }
   const edits: Edit[] = [];
   const moved: FileAnalysis["moved"] = [];
   const conflicts: string[] = [];
+  const created: string[] = [];
+  const eol = /\r\n/.test(src.slice(0, src.indexOf("\n") + 1)) ? "\r\n" : "\n";
+  const opaque = toks.filter((x) => x.kind === "string" || x.kind === "template");
   let calls = 0;
 
   for (let k = 0; k < toks.length; k++) {
     const t = toks[k] as Tok;
-    if (t.kind !== "word" || t.text !== "defineConfig") continue;
-    let open = k + 1;
-    while (toks[open]?.kind === "comment") open++;
+    if (t.kind !== "word") continue;
     let p = k - 1;
     while (p >= 0 && toks[p]?.kind === "comment") p--;
+    let callee = k;
+    if (names.has(t.text)) {
+      if (toks[p]?.text === ".") continue; // `obj.defineConfig(` is some other method
+    } else if (
+      spaces.has(t.text) &&
+      toks[k + 1]?.text === "." &&
+      toks[k + 2]?.text === "defineConfig"
+    ) {
+      callee = k + 2; // `app.defineConfig(` through `import * as app from "@loom/app"`
+    } else continue;
+    let open = callee + 1;
+    while (toks[open]?.kind === "comment") open++;
     if (toks[open]?.text !== "(" || toks[p]?.text === "function") continue;
     calls++;
     let arg = open + 1;
@@ -333,16 +427,113 @@ export function analyzeConfig(src: string): FileAnalysis {
         `defineConfig(...) is not given an object literal (${toks[arg]?.text ?? "nothing"}); move any flat options into ${MAPPING_HINT} by hand`
       );
     }
-    const r = planCall(src, toks, arg, closeIdx, edits, moved, conflicts);
+    const r = planCall(src, toks, arg, closeIdx, edits, moved, conflicts, created, eol, opaque);
     if (r !== undefined) return refuse(src, r);
     k = closeIdx;
   }
   if (calls === 0) return refuse(src, "no `defineConfig({...})` call found");
-  if (conflicts.length > 0) return { moved: [], conflicts, refusal: undefined, text: src };
+  if (conflicts.length > 0)
+    return { moved: [], conflicts, refusal: undefined, text: src, created: [] };
   edits.sort((a, b) => b.start - a.start || b.end - b.start - (a.end - a.start));
   let text = src;
   for (const e of edits) text = text.slice(0, e.start) + e.text + text.slice(e.end);
-  return { moved, conflicts, refusal: undefined, text };
+  return { moved, conflicts, refusal: undefined, text, created };
+}
+
+/**
+ * The local names under which `defineConfig` is imported from `@loom/app` (`names`, honouring
+ * `import { defineConfig as dc }`) and the namespace names of `import * as ns from "@loom/app"`
+ * (`spaces`). A `defineConfig` from any other module (vite's, say) is not in either set.
+ */
+function loomAppBindings(toks: Tok[]): { names: Set<string>; spaces: Set<string> } {
+  const names = new Set<string>();
+  const spaces = new Set<string>();
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k] as Tok;
+    if (t.kind !== "word" || t.text !== "import") continue;
+    let from = -1;
+    for (let j = k + 1; j < toks.length && j < k + 400; j++) {
+      const x = toks[j] as Tok;
+      if (x.text === ";" || (x.kind === "word" && x.text === "import")) break;
+      if (x.kind === "word" && x.text === "from" && toks[j + 1]?.kind === "string") {
+        from = j;
+        break;
+      }
+    }
+    if (from < 0 || (toks[from + 1] as Tok).text.slice(1, -1) !== "@loom/app") continue;
+    const first = toks[k + 1];
+    if (first?.text === "type" && toks[k + 2]?.text !== "," && toks[k + 2]?.text !== "from")
+      continue;
+    for (let j = k + 1; j < from; j++) {
+      const x = toks[j] as Tok;
+      if (x.text === "*" && toks[j + 1]?.text === "as" && toks[j + 2]?.kind === "word") {
+        spaces.add((toks[j + 2] as Tok).text);
+      } else if (x.text === "{") {
+        let el: string[] = [];
+        const flushEl = () => {
+          const typeOnly = el[0] === "type" && el.length >= 2 && el[1] !== "as";
+          if (!typeOnly && el[0] === "defineConfig")
+            names.add(el[1] === "as" ? (el[2] ?? "") : "defineConfig");
+          el = [];
+        };
+        for (j++; j < from && (toks[j] as Tok).text !== "}"; j++) {
+          const e = toks[j] as Tok;
+          if (e.text === ",") flushEl();
+          else if (e.kind === "word") el.push(e.text);
+        }
+        flushEl();
+      }
+    }
+  }
+  names.delete("");
+  return { names, spaces };
+}
+
+/**
+ * The tokens that carry meaning, as a multiset: a string / template by its exact text, a comment by
+ * its text modulo whitespace, everything else by its text. Separators the rewrite legitimately
+ * adds or drops (`,` `{` `}`) are excluded; whitespace outside strings is not tokens at all.
+ */
+function meaningCounts(src: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  const bump = (k: string) => counts.set(k, (counts.get(k) ?? 0) + 1);
+  for (const t of scan(src, 0, false).toks) {
+    if (t.kind === "punct" && (t.text === "," || t.text === "{" || t.text === "}")) continue;
+    bump(t.kind === "comment" ? `c:${t.text.replace(/\s+/g, " ")}` : `${t.kind}:${t.text}`);
+  }
+  return counts;
+}
+
+/**
+ * The post-rewrite guard: the token multiset of `after` must equal `before`'s plus exactly what
+ * creating `created` groups adds (the group name and its `:`), and the braces must balance
+ * accordingly. A re-indent that touched the inside of a string or template, a lost or duplicated
+ * entry, all fail it. Returns why, or undefined when the content is preserved.
+ */
+export function checkPreserved(
+  before: string,
+  after: string,
+  created: readonly string[]
+): string | undefined {
+  const want = meaningCounts(before);
+  for (const g of created) {
+    want.set(`word:${g}`, (want.get(`word:${g}`) ?? 0) + 1);
+    want.set("punct::", (want.get("punct::") ?? 0) + 1);
+  }
+  const got = meaningCounts(after);
+  for (const k of new Set([...want.keys(), ...got.keys()])) {
+    if ((want.get(k) ?? 0) !== (got.get(k) ?? 0)) {
+      return `the rewrite would change the content of the config (${JSON.stringify(k.slice(0, 60))}); no change made — migrate this config by hand`;
+    }
+  }
+  const braces = (s: string, c: string) =>
+    scan(s, 0, false).toks.filter((t) => t.text === c).length;
+  for (const c of ["{", "}"]) {
+    if (braces(after, c) !== braces(before, c) + created.length) {
+      return "the rewrite would unbalance the config's braces; no change made — migrate this config by hand";
+    }
+  }
+  return undefined;
 }
 
 interface Target {
@@ -358,7 +549,10 @@ function planCall(
   close: number,
   edits: Edit[],
   moved: FileAnalysis["moved"],
-  conflicts: string[]
+  conflicts: string[],
+  created: string[],
+  eol: string,
+  opaque: readonly Tok[]
 ): string | undefined {
   const entries = parseObject(toks, open, close);
   for (const e of entries) {
@@ -424,6 +618,7 @@ function planCall(
       if (g !== undefined) {
         if (!targets.has(g) && !placed.has(g)) {
           placed.add(g);
+          created.push(g);
           parts.push(`${g}: { ${(byGroup.get(g) ?? []).map(text).join(", ")} }`);
         }
         continue;
@@ -464,7 +659,7 @@ function planCall(
       : "  ";
   const rendered = (e: Entry, toIndent: string): string => {
     const x = extents.get(e) as Extent;
-    return `${reindent(x.head, leadingWs(x.head), toIndent)},${x.tail}`;
+    return `${reindent(x.head, x.from, opaque, leadingWs(x.head), toIndent)},${x.tail}`;
   };
   for (const e of flat) {
     const x = extents.get(e) as Extent;
@@ -475,11 +670,12 @@ function planCall(
     if (t === undefined) {
       const first = extents.get(list[0] as Entry) as Extent;
       const fromIndent = leadingWs(first.head);
-      const body = list.map((e) => rendered(e, fromIndent + unit)).join("\n");
+      const body = list.map((e) => rendered(e, fromIndent + unit)).join(eol);
+      created.push(group);
       edits.push({
         start: first.from,
         end: first.from,
-        text: `${fromIndent}${group}: {\n${body}\n${fromIndent}},\n`,
+        text: `${fromIndent}${group}: {${eol}${body}${eol}${fromIndent}},${eol}`,
       });
       continue;
     }
@@ -513,7 +709,7 @@ function planCall(
     edits.push({
       start: at,
       end: at,
-      text: `${list.map((e) => rendered(e, innerIndent)).join("\n")}\n`,
+      text: `${list.map((e) => rendered(e, innerIndent)).join(eol)}${eol}`,
     });
   }
   return undefined;
@@ -599,7 +795,10 @@ export function unifiedDiff(a: string, b: string, label: string): string {
 
 export interface MigrateFileResult {
   path: string;
+  /** The file would change (and, under `--apply` with every file clean, did). */
   changed: boolean;
+  /** The new text was written to disk. */
+  written: boolean;
   moved: { key: string; group: string }[];
   conflicts: string[];
   refusal: string | null;
@@ -609,48 +808,130 @@ export interface MigrateFileResult {
 export interface MigrateResult {
   apply: boolean;
   files: MigrateFileResult[];
-  /** True when a file was refused or has a conflict (exit 2). */
+  /** True when a file was refused, has a conflict, or a write failed (exit 2). */
   refused: boolean;
+  /** `--apply` was asked but a file was refused, so NO file was written. */
+  blocked: boolean;
+  /** A write failed part-way: exactly which files were written and which were not. */
+  writeError?: { path: string; message: string; written: string[]; unwritten: string[] };
 }
 
-/** Plan (and with `apply`, write) the migration of each file. */
-export function cmdMigrateConfig(opts: {
-  files: readonly string[];
-  apply: boolean;
-}): MigrateResult {
+/** Test seam: replace the analysis (e.g. with one that deliberately corrupts its output). */
+export interface MigrateHooks {
+  analyze?: (src: string) => FileAnalysis;
+}
+
+/**
+ * Write `text` to `path` atomically: a temp file in the same directory (so the rename cannot
+ * cross a filesystem), fsynced, given the original's mode, then renamed over it. On any failure
+ * the original is untouched and the temp file is removed.
+ */
+function writeFileAtomic(path: string, text: string, mode: number): void {
+  const tmp = nodePath.join(
+    nodePath.dirname(path),
+    `.${nodePath.basename(path)}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+  );
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(tmp, "wx", mode);
+    fs.writeSync(fd, text);
+    fs.fchmodSync(fd, mode); // the umask must not narrow the original's mode
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tmp, path);
+  } catch (e) {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+    throw e;
+  }
+}
+
+/**
+ * Plan (and with `apply`, write) the migration of each file. Every file is analyzed first; if
+ * any is refused or conflicts, nothing is written. A symlinked config is refused (writing it
+ * would replace the link, or edit a file the user did not name).
+ */
+export function cmdMigrateConfig(
+  opts: { files: readonly string[]; apply: boolean },
+  hooks: MigrateHooks = {}
+): MigrateResult {
+  const analyze = hooks.analyze ?? analyzeConfig;
   const files: MigrateFileResult[] = [];
+  const texts: string[] = [];
+  const modes: number[] = [];
   for (const path of opts.files) {
     let src: string;
+    let mode = 0o644;
+    let link: string | undefined;
     try {
+      if (fs.lstatSync(path).isSymbolicLink()) link = fs.realpathSync(path);
       src = fs.readFileSync(path, "utf8");
+      mode = fs.statSync(path).mode & 0o7777;
     } catch (e) {
       throw new UsageError(`cannot read ${path}: ${(e as Error).message}`);
     }
-    const a = analyzeConfig(src);
+    let a = analyze(src);
     let refusal = a.refusal ?? null;
+    if (link !== undefined) {
+      a = refuse(src, "");
+      refusal = `${path} is a symbolic link to ${link}; pass the real path so the file you mean is the one that changes`;
+    }
     if (refusal === null && a.conflicts.length === 0 && a.text !== src) {
-      // The rewrite must itself be clean: nothing left to move, nothing refused.
-      const again = analyzeConfig(a.text);
-      if (again.refusal !== undefined || again.moved.length > 0 || again.text !== a.text) {
-        refusal = `internal check failed: the rewritten file would still not be clean (${again.refusal ?? "flat keys remain"}); no change made — migrate this config by hand`;
+      const lost = checkPreserved(src, a.text, a.created);
+      if (lost !== undefined) refusal = lost;
+      else {
+        // The rewrite must itself be clean: nothing left to move, nothing refused.
+        const again = analyzeConfig(a.text);
+        if (again.refusal !== undefined || again.moved.length > 0 || again.text !== a.text) {
+          refusal = `internal check failed: the rewritten file would still not be clean (${again.refusal ?? "flat keys remain"}); no change made — migrate this config by hand`;
+        }
       }
     }
     const changed = refusal === null && a.conflicts.length === 0 && a.text !== src;
-    if (changed && opts.apply) fs.writeFileSync(path, a.text);
+    texts.push(a.text);
+    modes.push(mode);
     files.push({
       path,
       changed,
+      written: false,
       moved: refusal === null ? a.moved : [],
       conflicts: a.conflicts,
       refusal,
       diff: changed ? unifiedDiff(src, a.text, path) : "",
     });
   }
-  return {
-    apply: opts.apply,
-    files,
-    refused: files.some((f) => f.refusal !== null || f.conflicts.length > 0),
-  };
+  const dirty = files.some((f) => f.refusal !== null || f.conflicts.length > 0);
+  const result: MigrateResult = { apply: opts.apply, files, refused: dirty, blocked: false };
+  if (!opts.apply) return result;
+  if (dirty) {
+    result.blocked = files.some((f) => f.changed);
+    return result;
+  }
+  const todo = files.map((f, i) => i).filter((i) => (files[i] as MigrateFileResult).changed);
+  for (const [n, i] of todo.entries()) {
+    const f = files[i] as MigrateFileResult;
+    try {
+      writeFileAtomic(f.path, texts[i] as string, modes[i] as number);
+      f.written = true;
+    } catch (e) {
+      result.refused = true;
+      result.writeError = {
+        path: f.path,
+        message: (e as Error).message,
+        written: todo.slice(0, n).map((k) => (files[k] as MigrateFileResult).path),
+        unwritten: todo.slice(n).map((k) => (files[k] as MigrateFileResult).path),
+      };
+      break;
+    }
+  }
+  return result;
 }
 
 /** The text report for {@link cmdMigrateConfig}. */
@@ -659,14 +940,29 @@ export function formatMigrate(r: MigrateResult): string {
   for (const f of r.files) {
     if (f.changed) {
       out.push(f.diff);
+      const what = f.moved.map((m) => `${m.key} -> ${m.group}.${m.key}`).join(", ");
       out.push(
-        `${r.apply ? "migrated" : "would migrate"} ${f.path}: ${f.moved.map((m) => `${m.key} -> ${m.group}.${m.key}`).join(", ")}`
+        f.written
+          ? `migrated ${f.path}: ${what}`
+          : r.apply
+            ? `not written ${f.path}: ${what}`
+            : `would migrate ${f.path}: ${what}`
       );
     } else if (f.refusal === null && f.conflicts.length === 0) {
       out.push(`${f.path}: nothing to migrate`);
     }
     for (const c of f.conflicts) out.push(`${f.path}: conflict: ${c}`);
     if (f.refusal !== null) out.push(`${f.path}: refused: ${f.refusal}`);
+  }
+  if (r.blocked)
+    out.push(
+      "nothing was written: --apply writes all the files or none, and a file above was refused"
+    );
+  if (r.writeError !== undefined) {
+    const w = r.writeError;
+    out.push(
+      `write failed for ${w.path}: ${w.message}; the original ${w.path} is intact. written: ${w.written.length > 0 ? w.written.join(", ") : "(none)"}; not written: ${w.unwritten.join(", ")}`
+    );
   }
   const n = r.files.filter((f) => f.changed).length;
   if (!r.apply && n > 0)

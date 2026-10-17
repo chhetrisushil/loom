@@ -249,6 +249,14 @@ describe("wiresConformance", () => {
     ).toBe(true);
   });
 
+  it("recognises a long renamed destructure (300 names), the walk-back cap is not hit", () => {
+    const names = Array.from({ length: 300 }, (_, i) => `n${i}: m${i}`).join(", ");
+    const src = `const { runEventStoreConformance: run, ${names} } = await import("@loom/conformance");\nrun(x);`;
+    expect(wiresConformance(src)).toBe(true);
+    const tail = `const { ${names}, runEventStoreConformance: run } = require("@loom/conformance");\nrun(x);`;
+    expect(wiresConformance(tail)).toBe(true);
+  });
+
   describe("JSX sources (.tsx / .jsx)", () => {
     const jsx = (s: string) => wiresConformance(`${IMPORT}\n${s}`, { jsx: true });
     const plain = (s: string) => wiresConformance(`${IMPORT}\n${s}`);
@@ -264,6 +272,24 @@ describe("wiresConformance", () => {
       expect(jsx("const a = <div>it's</div>; runEventStoreConformance(x)")).toBe(true);
       expect(jsx("const a = <div>`quoted</div>; runEventStoreConformance(x)")).toBe(true);
       expect(jsx('const a = <p>say "hi</p>;\nrunEventStoreConformance(x)')).toBe(true);
+    });
+    it("a quote touching a keyword is code, not a JSX apostrophe (both modes)", () => {
+      const src =
+        'import { runEventStoreConformance } from"@loom/conformance";\nrunEventStoreConformance(x)';
+      expect(wiresConformance(src, { jsx: true })).toBe(true);
+      expect(wiresConformance(src)).toBe(true);
+      const req =
+        'const k = require("@loom/conformance");\nswitch (a) { case"x": k.runEventStoreConformance(x) }';
+      expect(wiresConformance(req, { jsx: true })).toBe(true);
+    });
+    it("a backtick after `=>` or a comparison is a template, a backtick in JSX text is not", () => {
+      // Template text is not code, so a call written inside it must not count.
+      expect(jsx("const f = (x) =>`runEventStoreConformance(x)`;")).toBe(false);
+      expect(jsx("const c = a>`runEventStoreConformance(x)`;")).toBe(false);
+      expect(plain("const f = (x) =>`runEventStoreConformance(x)`;")).toBe(false);
+      // In JSX text (also after a tag with attributes) the backtick is only text.
+      expect(jsx('const a = <a href="x">`q</a>; runEventStoreConformance(x)')).toBe(true);
+      expect(jsx("const a = <>`q</>; runEventStoreConformance(x)")).toBe(true);
     });
     it("real strings, comments and templates are still not code in JSX files", () => {
       expect(jsx("const a = <div>{'runEventStoreConformance(x)'}</div>;")).toBe(false);
