@@ -1,5 +1,12 @@
-import { SuspendError } from "@loom/core";
+import { StorageWriteError, SuspendError } from "@loom/core";
 import type { StepDefinition } from "@loom/core";
+import {
+  ExecutionCancelledError,
+  FlowDivergenceError,
+  LeaseHeldError,
+  LeaseLostError,
+  SealedPayloadUnreadableError,
+} from "@loom/workflow-runtime";
 import type { ExecutionContext } from "@loom/workflow-runtime";
 
 // ── Saga / compensation ───────────────────────────────────────────────────────
@@ -17,6 +24,37 @@ import type { ExecutionContext } from "@loom/workflow-runtime";
 // (An unhandled failure only auto-compensates inside a `withSaga` scope — compensation
 // boundaries are explicit, which is a feature, not a limitation. A suspension is NOT a
 // failure, so `withSaga` never rolls back on `SuspendError`.)
+
+// Errors that are the RUNTIME talking, not a compensator failing: a suspension, a
+// cancellation / abort, a lost lease or stale fence (this driver no longer owns the
+// execution), replay divergence, an unreadable sealed payload, a storage failure. They
+// propagate at once — folding them into `compensationErrors` would keep calling
+// `ctx.run` on a dead context and mask the real cause. Classes from packages saga does
+// not depend on (`StaleFenceError`) are matched by their stable `name`.
+const RUNTIME_ERROR_NAMES = new Set([
+  "StaleFenceError",
+  "ExecutionCancelledError",
+  "AbortError",
+  "LeaseLostError",
+  "LeaseHeldError",
+  "StartFencedOutError",
+  "StartLeaseHeldError",
+]);
+
+function isRuntimeSignal(err: unknown): boolean {
+  if (
+    err instanceof SuspendError ||
+    err instanceof ExecutionCancelledError ||
+    err instanceof LeaseLostError ||
+    err instanceof LeaseHeldError ||
+    err instanceof FlowDivergenceError ||
+    err instanceof SealedPayloadUnreadableError ||
+    err instanceof StorageWriteError
+  ) {
+    return true;
+  }
+  return err instanceof Error && RUNTIME_ERROR_NAMES.has(err.name);
+}
 
 type AnyStep = StepDefinition<unknown, unknown>;
 
@@ -81,7 +119,9 @@ export function createSaga(ctx: Pick<ExecutionContext, "run">): Saga {
       // A compensator that fails does NOT stop the rollback: the remaining ones still
       // run (undo is best-effort per step; abandoning the rest would leave forward side
       // effects uncompensated), and the failures are thrown together afterwards. A
-      // `SuspendError` is not a failure and propagates at once.
+      // `SuspendError` or any other runtime signal (cancellation, lost lease / stale fence,
+      // divergence, storage failure — see `isRuntimeSignal`) is not the compensator's own
+      // failure and propagates at once, unwrapped, with no further compensator run.
       const failures: unknown[] = [];
       for (let i = stack.length - 1; i >= 0; i--) {
         const { step, input } = stack[i] as Compensation;
@@ -93,7 +133,7 @@ export function createSaga(ctx: Pick<ExecutionContext, "run">): Saga {
         try {
           await ctx.run(compStep, input);
         } catch (err) {
-          if (err instanceof SuspendError) throw err;
+          if (isRuntimeSignal(err)) throw err;
           failures.push(err);
         }
       }
@@ -109,12 +149,12 @@ export function createSaga(ctx: Pick<ExecutionContext, "run">): Saga {
  */
 export class SagaCompensationError extends Error {
   readonly compensationErrors: readonly unknown[];
-  constructor(compensationErrors: readonly unknown[], cause?: unknown) {
+  constructor(compensationErrors: readonly unknown[], ...original: [] | [cause: unknown]) {
     const first = compensationErrors[0];
     const firstNote = first instanceof Error ? ` (first: ${first.message})` : "";
     super(
       `saga rollback: ${compensationErrors.length} compensator(s) failed${firstNote}`,
-      cause === undefined ? undefined : { cause }
+      original.length === 0 ? undefined : { cause: original[0] }
     );
     this.name = "SagaCompensationError";
     this.compensationErrors = compensationErrors;
@@ -141,6 +181,7 @@ export async function withSaga<T>(
     } catch (rollbackErr) {
       if (rollbackErr instanceof SagaCompensationError) {
         // Keep the ORIGINAL error reachable (as `cause`) — never replace it.
+        // (`err` may legitimately be `undefined` — a thrown `undefined` is still the cause.)
         throw new SagaCompensationError(rollbackErr.compensationErrors, err);
       }
       throw rollbackErr; // SuspendError from a human-gated compensator

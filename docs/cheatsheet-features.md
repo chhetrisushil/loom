@@ -110,7 +110,7 @@ onboarding, billing runs, ETL steps, order sagas, anything that must outlive its
 | wait hours or days | `ctx.sleep` / `ctx.sleepUntil` — survives restarts; needs a `TimerStore` |
 | wait for a human or webhook | `ctx.suspend({ on, timeout? })` + `flow$({ resumeSchemas })` to validate the payload |
 | run on a calendar | `schedule$({ id, cron, timeZone?, flowId })` in `timers.schedules`; one idempotent start per occurrence |
-| undo on failure | `@loom/saga` — `withSaga(ctx, saga => saga.run(step, input, compensator))`; compensators run in reverse |
+| undo on failure | `@loom/saga` — `withSaga(ctx, saga => saga.run(step, input, compensator))`; compensators run in reverse; a failing compensator does not abort the rollback (`SagaCompensationError`, original as `cause`) |
 | parent and child workflows | `@loom/orchestration` — `awaitChild` · `awaitChildren` · `awaitAll` (wire `superviseChildren`) |
 | map one step over many items | `fanout$(ctx, step, items)` — bounded concurrency, one step id per item |
 | long-lived loop | `continueAsNew` to bound history; the inbox as an event-driven mailbox |
