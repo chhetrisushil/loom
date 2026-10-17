@@ -803,19 +803,20 @@ async function dispatch(
     case "gen": {
       const { cmdGen, genSummary, genWatch } = await import("./gen");
       const dir = flags.dir ?? "app";
+      const root = containmentRoot(flags.dir);
       if (flags.watch === "true") {
         const ac = new AbortController();
         const stop = () => ac.abort();
         process.once("SIGINT", stop);
         process.once("SIGTERM", stop);
         try {
-          return await genWatch(dir, { log: out, signal: ac.signal });
+          return await genWatch(dir, { log: out, signal: ac.signal, root });
         } finally {
           process.removeListener("SIGINT", stop);
           process.removeListener("SIGTERM", stop);
         }
       }
-      out(genSummary(cmdGen(dir)));
+      out(genSummary(cmdGen(dir, root)));
       return 0;
     }
     case "new": {
@@ -823,6 +824,7 @@ async function dispatch(
       const name = positionals[1];
       if (name === undefined) throw new UsageError("missing required <name>");
       const dir = flags.dir ?? "app";
+      const root = containmentRoot(flags.dir);
       const { cmdNew, cmdGen, genSummary } = await import("./gen");
       const {
         path: dest,
@@ -830,14 +832,14 @@ async function dispatch(
         extras,
         missingDeps,
         notes,
-      } = cmdNew(kind, name, dir, flags.template);
+      } = cmdNew(kind, name, dir, flags.template, root);
       for (const f of [{ path: dest, created }, ...extras]) {
         out(f.created ? `created ${f.path}` : `skipped ${f.path} (already exists)`);
       }
       if (flags["no-gen"] !== "true") {
         // The next thing you would do. Forgetting it gave "Cannot find module ./flows/x/flow".
         try {
-          out(genSummary(cmdGen(dir)));
+          out(genSummary(cmdGen(dir, root)));
         } catch (err) {
           out(
             `gen failed (the files above were written): ${err instanceof Error ? err.message : String(err)}`
@@ -1072,6 +1074,7 @@ async function dispatch(
       try {
         return await runDev({
           dir,
+          root: containmentRoot(flags.dir),
           command,
           log: out,
           signal: ac.signal,
@@ -1150,6 +1153,16 @@ async function confirmPlan(
       resolve(/^y(es)?$/i.test(answer.trim()));
     });
   });
+}
+
+/**
+ * The symlink-containment root for the project writers. An explicit `--dir <path>` is trusted as given
+ * (it may itself be reached through a link: the user named it). A DEFAULTED `--dir` ("app") must not be
+ * trusted - a cloned repo can ship `app -> /outside` - so the root is the cwd and `app` is a component
+ * below it that is checked and refused when it is a link.
+ */
+function containmentRoot(dirFlag: string | undefined): string {
+  return dirFlag !== undefined ? dirFlag : ".";
 }
 
 function requireFlag(flags: Record<string, string>, name: string): void {

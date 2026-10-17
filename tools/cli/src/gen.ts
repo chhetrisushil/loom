@@ -90,8 +90,15 @@ export function discoverProjections(dir: string): string[] {
  * `loom gen [--dir app]` — write `<dir>/loom.gen.ts` registering the discovered
  * flows, agents, tools, skills, schedules, and memories (the folder convention).
  * Returns per-kind counts.
+ *
+ * `root` is the symlink-containment root: nothing between it and `loom.gen.ts` may be a link. It
+ * defaults to `dir` (an explicit `--dir` is trusted to be reached through a link); the CLI passes the
+ * cwd when `--dir` was DEFAULTED, so a repo's own `app -> /outside` link is refused, not followed.
  */
-export function cmdGen(dir: string): {
+export function cmdGen(
+  dir: string,
+  root: string = dir
+): {
   out: string;
   count: number;
   flows: number;
@@ -119,7 +126,7 @@ export function cmdGen(dir: string): {
   const projections = discoverProjections(dir);
   const out = path.join(dir, "loom.gen.ts");
   safeWriteFile(
-    dir,
+    root,
     out,
     generateRegistration(flows, agents, tools, skills, schedules, memories, projections)
   );
@@ -189,6 +196,8 @@ export interface GenWatchOptions {
   log?: (line: string) => void;
   /** Stop watching and resolve. */
   signal?: AbortSignal;
+  /** Symlink-containment root (default: the watched dir). See {@link cmdGen}. */
+  root?: string;
   debounceMs?: number;
   pollMs?: number;
   /** Poll instead of `fs.watch` (tests / filesystems without events). */
@@ -204,9 +213,10 @@ export interface GenWatchOptions {
  * missing mid-rename) is reported and watching continues.
  */
 export async function genWatch(dir: string, options: GenWatchOptions = {}): Promise<number> {
+  const root = options.root ?? dir;
   const log = options.log ?? ((line: string) => console.log(line));
   // The first generation is a plain `loom gen`: a bad --dir is a usage error, not a watch.
-  const first = cmdGen(dir);
+  const first = cmdGen(dir, root);
   log(genSummary(first));
   // `known` is what loom.gen.ts REGISTERS (from the same discovery that wrote it), not a second
   // look at the disk: a module added between the write and the watcher's first snapshot would
@@ -228,7 +238,7 @@ export async function genWatch(dir: string, options: GenWatchOptions = {}): Prom
       const added = now.filter((s) => !known.includes(s));
       const removed = known.filter((s) => !now.includes(s));
       if (added.length === 0 && removed.length === 0) return; // e.g. a test file came and went
-      const result = cmdGen(dir);
+      const result = cmdGen(dir, root);
       known = result.specifiers;
       const delta = [...added.map((s) => `+${s}`), ...removed.map((s) => `-${s}`)].join(" ");
       log(`${genSummary(result)}  ${delta}`);
@@ -241,7 +251,7 @@ export async function genWatch(dir: string, options: GenWatchOptions = {}): Prom
   try {
     const now = discoveredSpecifiers(dir);
     if (now.length !== known.length || now.some((s, i) => s !== known[i])) {
-      const result = cmdGen(dir);
+      const result = cmdGen(dir, root);
       known = result.specifiers;
       log(genSummary(result));
     }
@@ -310,7 +320,8 @@ export function cmdNew(
   kind: string,
   name: string,
   dir: string,
-  template?: string
+  template?: string,
+  root: string = dir
 ): {
   path: string;
   created: boolean;
@@ -343,7 +354,7 @@ export function cmdNew(
   const written = files.map(({ path: rel, content }) => {
     const dest = path.join(dir, rel.replace(/^app\//, ""));
     if (fs.existsSync(dest)) return { path: dest, created: false };
-    safeWriteFile(dir, dest, content);
+    safeWriteFile(root, dest, content);
     return { path: dest, created: true };
   });
   const [main, ...extras] = written as [(typeof written)[number], ...typeof written];

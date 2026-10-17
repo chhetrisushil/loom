@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ChangeSpec } from "./changeSpec";
+import { safeWriteFile } from "./safeWrite";
 
 // ── Spec lockfile: the appgen equivalent of a golden log ─────────────────────
 //
@@ -30,10 +31,9 @@ export function makeLock(intent: string, changeSpec: ChangeSpec, createdAt: stri
  * outside this pure-ish writer.
  */
 export function writeLockfile(root: string, lock: AppgenLock, fileName: string): string {
-  const dir = path.join(root, ".loom", "appgen");
-  fs.mkdirSync(dir, { recursive: true });
-  const dest = path.join(dir, fileName);
-  fs.writeFileSync(dest, `${JSON.stringify(lock, null, 2)}\n`);
+  const dest = path.join(root, ".loom", "appgen", fileName);
+  // Never through a link (a planted `.loom` or lockfile): same writer as every other project write.
+  safeWriteFile(root, dest, `${JSON.stringify(lock, null, 2)}\n`);
   return dest;
 }
 

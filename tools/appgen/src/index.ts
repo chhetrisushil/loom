@@ -14,6 +14,8 @@ export { typecheck } from "./validate";
 export type { Diagnostic, TypecheckResult } from "./validate";
 export { makeLock, readLockfile, writeLockfile } from "./lockfile";
 export type { AppgenLock } from "./lockfile";
+export { assertNoSymlinkPath, safeWriteFile } from "./safeWrite";
+export type { SafeWriteHooks } from "./safeWrite";
 export type {
   AppSpec,
   CapabilitySpec,
