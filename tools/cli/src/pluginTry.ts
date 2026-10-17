@@ -4,6 +4,7 @@ import { flow$, handler$, step$ } from "@loom/core";
 import type { CustomStorage } from "@loom/plugin-kit";
 import type { FlowRunner, RegisteredFlow } from "@loom/workflow-runtime";
 import { z } from "zod";
+import { CliError, EXIT_USAGE } from "./args";
 
 export interface TryResult {
   preset: string;
@@ -72,6 +73,29 @@ export async function trySmoke(storage: CustomStorage, presetLabel: string): Pro
 }
 
 /**
+ * A short, actionable error for a module that will not load. Node's require-stack dump
+ * ("Require stack: - /a/b ...") is noise to the author; the original error stays as `cause`
+ * and its stack is printed only under `--verbose` / `LOOM_DEBUG=1` (see `run`).
+ */
+function loadFailure(requested: string, resolved: string, err: unknown): CliError {
+  const code = (err as { code?: string } | null)?.code;
+  const first = (err instanceof Error ? err.message : String(err)).split("\n")[0] ?? "";
+  const missing =
+    code === "MODULE_NOT_FOUND" ||
+    code === "ERR_MODULE_NOT_FOUND" ||
+    /Cannot find module|Failed to load url/i.test(first);
+  const hint = missing
+    ? "Is it built? loom plugin try imports the compiled module (e.g. --module ./dist/index.js); run your build first."
+    : "The module threw while loading.";
+  const e = new CliError(
+    `plugin try: cannot load "${requested}"${requested === resolved ? "" : ` (${resolved})`}: ${first}\n${hint} Re-run with --verbose for the full stack.`,
+    EXIT_USAGE
+  );
+  (e as { cause?: unknown }).cause = err;
+  return e;
+}
+
+/**
  * `loom plugin try --module <path> [--preset <name>] [--options <json>]` — import a
  * store plugin's built module, call its preset, and run {@link trySmoke}. The
  * end-to-end check that `check` (static) and conformance (per-SPI) can't give: does
@@ -86,7 +110,12 @@ export async function cmdPluginTry(opts: {
   // CJS CLI, `import()` downlevels to `require()`, which takes a path, not a file:// URL.)
   const isPath = opts.module.startsWith(".") || opts.module.startsWith("/");
   const spec = isPath ? resolve(opts.module) : opts.module;
-  const mod = (await import(spec)) as Record<string, unknown>;
+  let mod: Record<string, unknown>;
+  try {
+    mod = (await import(spec)) as Record<string, unknown>;
+  } catch (err) {
+    throw loadFailure(opts.module, spec, err);
+  }
 
   const presetName = resolvePresetName(mod, opts.preset);
   const preset = mod[presetName] as (options?: unknown) => CustomStorage;

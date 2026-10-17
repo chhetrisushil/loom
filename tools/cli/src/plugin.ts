@@ -68,6 +68,64 @@ const FOLD_ENGINE = "@loom/replay-vm";
 const SPI_KERNEL = new Set<string>([...KERNEL_PACKAGES, ...SPI_PACKAGES]);
 
 /**
+ * Blank out comments (always) and string / template contents (when `blankStrings`), keeping
+ * offsets and newlines. A small scanner, not a parser: enough that `// runXConformance(`
+ * or `"runXConformance("` is not mistaken for code. Regex literals are not special-cased.
+ */
+function stripNonCode(src: string, blankStrings: boolean): string {
+  let out = "";
+  let i = 0;
+  const blank = (c: string) => (c === "\n" ? c : " ");
+  while (i < src.length) {
+    const c = src[i] as string;
+    const n = src[i + 1];
+    if (c === "/" && n === "/") {
+      while (i < src.length && src[i] !== "\n") {
+        out += " ";
+        i++;
+      }
+    } else if (c === "/" && n === "*") {
+      const end = src.indexOf("*/", i + 2);
+      const stop = end === -1 ? src.length : end + 2;
+      for (; i < stop; i++) out += blank(src[i] as string);
+    } else if (c === '"' || c === "'" || c === "`") {
+      out += c;
+      i++;
+      while (i < src.length && src[i] !== c) {
+        const ch = src[i] as string;
+        if (ch === "\\" && i + 1 < src.length) {
+          out += blankStrings ? "  " : ch + src[i + 1];
+          i += 2;
+          continue;
+        }
+        if (ch === "\n" && c !== "`") break; // unterminated: resync at the line end
+        out += blankStrings ? blank(ch) : ch;
+        i++;
+      }
+      if (i < src.length && src[i] === c) {
+        out += c;
+        i++;
+      }
+    } else {
+      out += c;
+      i++;
+    }
+  }
+  return out;
+}
+
+/** True when a test source really imports `@loom/conformance` and really calls `run*Conformance(`. */
+export function wiresConformance(source: string): boolean {
+  const withStrings = stripNonCode(source, false);
+  const imported =
+    /\bimport\b[^;]*?\bfrom\s*["']@loom\/conformance["']/s.test(withStrings) ||
+    /\bimport\s*["']@loom\/conformance["']/.test(withStrings) ||
+    /\brequire\(\s*["']@loom\/conformance["']\s*\)/.test(withStrings);
+  if (!imported) return false;
+  return /\brun\w*Conformance\s*\(/.test(stripNonCode(source, true));
+}
+
+/**
  * Static contract check for a plugin (ADR 0043 / docs/plugins.md). Pure over the
  * manifest + the text of its test files, so it is unit-testable without disk.
  */
@@ -130,13 +188,15 @@ export function checkPlugin(
   }
 
   // Conformance wiring — is any SPI impl proven with the published kit?
-  if (testSources.some((s) => s.includes("@loom/conformance"))) {
+  // A real import AND a real `run*Conformance(` call: a comment or string that merely
+  // mentions either (the scaffold ships the call commented out) proves nothing.
+  if (testSources.some(wiresConformance)) {
     findings.push({ level: "ok", message: "a test wires @loom/conformance" });
   } else {
     findings.push({
       level: "warn",
       message:
-        "no test imports @loom/conformance — prove your SPI impl with the conformance kit (if one exists for your seam)",
+        "no test imports @loom/conformance AND calls a run*Conformance(...) — a comment or string does not count; prove your SPI impl with the conformance kit (if one exists for your seam)",
     });
   }
 

@@ -339,9 +339,9 @@ pnpm --filter @loom/schema-migration-planner dev
 Inspect any run's durable log with the CLI (for apps using SQLite storage):
 
 #+begin_src sh
-loom logs    --db .loom/events.db <executionId>        # tail the event timeline
-loom debug   --db .loom/events.db <executionId> --at 5 # time-travel: state at sequence 5
-loom inspect --db .loom/events.db <executionId>        # web timeline + slider
+loom logs    --db .data/events.db <executionId>        # tail the event timeline
+loom debug   --db .data/events.db <executionId> --at 5 # time-travel: state at sequence 5
+loom inspect --db .data/events.db <executionId>        # web timeline + slider
 #+end_src
 
 -----

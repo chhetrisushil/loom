@@ -30,9 +30,9 @@ from a checkout, run `pnpm link:global` at the repo root (`pnpm unlink:global` r
 ## Example
 
 ```bash
-# persist to SQLite first: defineConfig({ storage: sqliteStorage({ dir: ".loom" }), ... })
-npx loom logs --db .loom/events.db <executionId>         # print the event timeline
-npx loom debug --db .loom/events.db <executionId> --at 3 # fold the state as of sequence 3
+# persist to SQLite first: defineConfig({ storage: sqliteStorage({ dir: ".data" }), ... })
+npx loom logs --db .data/events.db <executionId>         # print the event timeline
+npx loom debug --db .data/events.db <executionId> --at 3 # fold the state as of sequence 3
 npx loom doctor --config ./loom.config.ts              # every pre-flight check that can run
 ```
 

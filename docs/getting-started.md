@@ -124,7 +124,7 @@ import { defineConfig } from "@loom/app";
 import { helloFlow } from "./hello";
 
 const app = defineConfig({
-  storage: { kind: "memory" },     // in-memory; use sqliteStorage({ dir: ".loom" }) to persist
+  storage: { kind: "memory" },     // in-memory; use sqliteStorage({ dir: ".data" }) to persist
   surfaces: ["default"],            // agent surfaces to project
   flows: [helloFlow],
 });
@@ -247,20 +247,20 @@ await app.close();
 Persist to SQLite so the CLI can read the log:
 
 ```ts
-const app = defineConfig({ storage: sqliteStorage({ dir: ".loom" }), surfaces: ["default"], flows: [approveFlow] });
+const app = defineConfig({ storage: sqliteStorage({ dir: ".data" }), surfaces: ["default"], flows: [approveFlow] });
 ```
 
 Then, from your project root:
 
 ```bash
 # Tail the event timeline for an execution
-npx loom logs --db .loom/events.db <executionId>
+npx loom logs --db .data/events.db <executionId>
 
 # Time-travel: fold the state as it was at sequence N
-npx loom debug --db .loom/events.db <executionId> --at 3
+npx loom debug --db .data/events.db <executionId> --at 3
 
 # Open the web inspector (timeline + time-travel slider)
-npx loom inspect --db .loom/events.db <executionId>
+npx loom inspect --db .data/events.db <executionId>
 ```
 
 Every command is just a different **lens on the same event log** — the full command reference is the **[CLI Usage Guide](usage-cli.md)**, and the [architecture overview](architecture.md#56-dx-tooling-loomcli-loomappgen-loomeval-loomdeploy-sim-loomtesting-loomscaffold-loomcompiler) explains where it fits.

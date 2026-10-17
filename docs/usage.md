@@ -116,7 +116,7 @@ Inside a runner you have the full `ExecutionContext` (`WorkflowContext` is an al
 import { defineConfig } from "@loom/app";
 
 const app = defineConfig({
-  storage: sqliteStorage({ dir: ".loom", branching: true }), // or { kind: "memory" }
+  storage: sqliteStorage({ dir: ".data", branching: true }), // or { kind: "memory" }
   surfaces: ["mission", "telemetry"],
   flows: [investigateFlow],
   checks: { validate: "warn" }, // static flow-graph checks at boot (missing effects, etc.)
@@ -137,7 +137,7 @@ const app = defineConfig({
 | `agentModules` / `toolModules` / `skillModules` | `agent$` / `tool$` / `skill$` definitions discovered by `loom gen` (value-shape); agents fold into `agents` (auto-wired behind `a2a`/`agentSurface`), tools are exposed on `app.tools`, skills register into `app.skills` |
 | `scheduleModules` / `memoryModules` | `schedule$` / `memory$` definitions discovered by `loom gen`; schedules merge into `app.schedules` + fire via the `TimerService` (needs `timers.store`), memories register into `app.memory` |
 | `skills` / `memories` | `skill$` / `memory$` definitions registered directly (in addition to the `*Modules`) |
-| `memoryStore` | backing `MemoryStore` for `app.memory` **and every corpus `app.knowledge(scope)` opens**. Defaults to in-memory — **agent memory is lost on restart** unless you pass a durable one: `new SqliteMemoryStore(".loom/events.db")` (`@loom/plugin-sqlite`) or `new PostgresMemoryStore(url)` (`@loom/plugin-postgres`). Memory is stored separately from the durable log. Both durable backends implement the optional `search` (FTS5 / `tsvector`), which `TieredMemory.recallRelevant` needs, and `remove` ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md), `MEMORY_STORE_SPI_VERSION` 2.1.0 — the query is bounded: terms come from `queryTerms`, deduplicated and capped) |
+| `memoryStore` | backing `MemoryStore` for `app.memory` **and every corpus `app.knowledge(scope)` opens**. Defaults to in-memory — **agent memory is lost on restart** unless you pass a durable one: `new SqliteMemoryStore(".data/events.db")` (`@loom/plugin-sqlite`) or `new PostgresMemoryStore(url)` (`@loom/plugin-postgres`). Memory is stored separately from the durable log. Both durable backends implement the optional `search` (FTS5 / `tsvector`), which `TieredMemory.recallRelevant` needs, and `remove` ([ADR 0091](adr/0091-corpus-lifecycle-and-the-knowledge-package.md), `MEMORY_STORE_SPI_VERSION` 2.1.0 — the query is bounded: terms come from `queryTerms`, deduplicated and capped) |
 | `projections` / `projectionModules` | `projection$` definitions (explicit, or discovered by `loom gen`) folded into surfaces |
 | `catalog` | the widget catalogue a model-composed blueprint is validated against (`validateBlueprint`, [ADR 0088](adr/0088-blueprint-conformance.md)) |
 | `timers` | durable timers + `schedule$` cron occurrences (T1; see Step 11) |
@@ -608,7 +608,7 @@ Everything so far is the happy path. The **kernel-hardening rings (K1–K12, T1�
 
 ```ts
 const app = defineConfig({
-  storage: sqliteStorage({ dir: ".loom" }),
+  storage: sqliteStorage({ dir: ".data" }),
   flows: [investigateFlow],
   security: {
     strict: true,                                   // or { defaultDeadlineMs: 3_600_000 }
@@ -685,7 +685,7 @@ What the kill switch cannot do: it refuses the *next* effect. It does not interr
 import { GrantTable } from "@loom/effect-runtime";
 
 const app = defineConfig({
-  storage: sqliteStorage({ dir: ".loom" }),
+  storage: sqliteStorage({ dir: ".data" }),
   flows: [investigateFlow],
   security: { authorizer: new GrantTable({ "*": ["lookup-metrics", "triage-llm"] }) }, // "*" principal
 });
@@ -782,7 +782,7 @@ const token = signDelegation(secret, "worker-agent", ["lookup-metrics"]); // nar
 import { schedule$ } from "@loom/core";
 
 defineConfig({
-  storage: sqliteStorage({ dir: ".loom" }),
+  storage: sqliteStorage({ dir: ".data" }),
   flows: [reconcileFlow],
   timers: { store: timerStore, schedules: [schedule$({ id: "nightly", cron: "0 3 * * *", flowId: "reconcile" })] },
 });
@@ -819,9 +819,9 @@ For deterministic LLMs, wrap your provider with `recordingProvider(real, cassett
 With SQLite storage, the `loom` CLI turns the log into tooling (each command is a lens on the same log):
 
 ```bash
-loom logs   --db .loom/events.db <id>          # tail the timeline
-loom debug  --db .loom/events.db <id> --at 5   # state at sequence 5 (time-travel)
-loom inspect --db .loom/events.db <id>         # web timeline + slider
+loom logs   --db .data/events.db <id>          # tail the timeline
+loom debug  --db .data/events.db <id> --at 5   # state at sequence 5 (time-travel)
+loom inspect --db .data/events.db <id>         # web timeline + slider
 loom eval   --dir evals/                       # replay golden logs vs expectations (CI gate)
 loom deploy check --logs logs/ --config dist/app.js  # simulate a deploy vs new flow defs
 loom check  --manifest loom-manifest.json      # static flow-graph checks

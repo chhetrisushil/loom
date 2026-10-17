@@ -29,6 +29,7 @@ import {
   renderPlan,
   routeFromSpec,
 } from "./appgen";
+import { COMMANDS } from "./args";
 import { checkManifest } from "./check";
 import { USAGE, resolveIntent } from "./cli";
 import { parseRedact } from "./cli";
@@ -1031,6 +1032,52 @@ describe("docs/usage-cli.md", () => {
     for (const command of commands) {
       expect(md, `\`loom ${command}\` undocumented`).toContain(`loom ${command}`);
     }
+  });
+});
+
+// Every command in the table needs a HEADING of its own in the reference. The check above only
+// proves the words "loom <cmd>" occur somewhere (a cheat-sheet row or a passing mention satisfies
+// it), which is how `census`, `recover` and `branches` shipped with no section at all.
+describe("docs/usage-cli.md headings", () => {
+  const doc = join(__dirname, "..", "..", "..", "docs", "usage-cli.md");
+
+  /** The `##`..`####` heading lines of a markdown source, outside fenced blocks. */
+  function headings(md: string): string[] {
+    const out: string[] = [];
+    let fenced = false;
+    for (const line of md.split("\n")) {
+      if (line.startsWith("```")) fenced = !fenced;
+      else if (!fenced && /^#{2,4} /.test(line)) out.push(line);
+    }
+    return out;
+  }
+
+  /** The commands lacking a heading that names them as `loom <cmd>…` or a backticked `<cmd>`. */
+  function undocumented(md: string): string[] {
+    const hs = headings(md);
+    return Object.keys(COMMANDS).filter(
+      (cmd) => !hs.some((h) => new RegExp(`\`(?:loom )?${cmd}[\` ]`).test(h))
+    );
+  }
+
+  it("gives every command in the command table its own ##/### section", () => {
+    const md = readFileSync(doc, "utf8");
+    expect(Object.keys(COMMANDS).length).toBeGreaterThan(25); // not vacuous
+    expect(undocumented(md)).toEqual([]);
+  });
+
+  it("fails when a command's section is removed (the guard fires)", () => {
+    const md = readFileSync(doc, "utf8");
+    const without = md
+      .split("\n")
+      .filter((l) => !/^#{2,4} .*`(?:loom )?census[` ]/.test(l))
+      .join("\n");
+    expect(without).not.toBe(md);
+    expect(undocumented(without)).toEqual(["census"]);
+  });
+
+  it("a bare mention in prose is not a section", () => {
+    expect(undocumented("Use loom census to look.\n\n## Nothing here\n")).toContain("census");
   });
 });
 
