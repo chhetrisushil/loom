@@ -5,7 +5,9 @@ import {
   NOTHING_LIFTED,
   SensitiveStateError,
   assertStateClean,
+  isCipherEnvelope,
   isLiftable,
+  walkBounded,
 } from "./sensitiveState";
 
 const ctx = { modelId: "m", executionId: "x-1", eventType: "STEP_COMPLETED", sequence: 3 };
@@ -82,10 +84,80 @@ describe("assertStateClean — the persist-time check (ADR 0132 D11)", () => {
     expect(isLiftable("abcdef")).toBe(true);
     expect(isLiftable(123456)).toBe(true);
     expect(isLiftable(true)).toBe(false);
+    expect(isLiftable(1234567.5)).toBe(false);
+    expect(isLiftable(-123456)).toBe(true);
   });
 
   it("fails closed when the state is too large to verify", () => {
     const e = refusal({ big: new Array(GUARD_WALK_BUDGET + 1).fill(0) }, NOTHING_LIFTED);
     expect(e.reason).toBe("unverifiable");
+  });
+
+  it("does not echo a lifted value embedded in a longer key, in message, statePath or stack", () => {
+    const sec = "Alice@Example.com";
+    const e = refusal({ byEmail: { [`t1:${sec}`]: { email: sec } } }, lifted([sec]));
+    expect(e.statePath).toBe("$.byEmail.<key>.email");
+    for (const text of [e.message, e.statePath, e.stack ?? ""]) {
+      expect(text.toLowerCase()).not.toContain(sec.toLowerCase());
+    }
+    const plain = refusal({ byEmail: { k_a: { email: sec } } }, lifted([sec]));
+    expect(plain.statePath).toBe("$.byEmail.k_a.email");
+  });
+
+  it("copies only the four named context fields", () => {
+    const wide = { ...ctx, secret: "s3cretvalue" };
+    try {
+      assertStateClean(wide, { v: { __loomEnc: "x" } }, NOTHING_LIFTED);
+    } catch (e) {
+      const err = e as SensitiveStateError;
+      expect(err.context).toEqual(ctx);
+      expect(JSON.stringify(err.context)).not.toContain("s3cretvalue");
+      return;
+    }
+    throw new Error("expected a SensitiveStateError");
+  });
+
+  it("does not lift floats, so a float-looking key passes", () => {
+    expect(() => assertStateClean(ctx, { "1234567.5": 1 }, lifted([], [1234567]))).not.toThrow();
+  });
+
+  it("compares canonical decimal form both ways for values", () => {
+    expect(refusal({ v: "123456789" }, lifted([], [123456789]))).toMatchObject({
+      statePath: "$.v",
+    });
+    expect(refusal({ v: 123456789 }, lifted(["123456789"]))).toMatchObject({ statePath: "$.v" });
+    expect(() => assertStateClean(ctx, { v: "0123456789" }, lifted([], [123456789]))).not.toThrow();
+  });
+
+  it("refuses a negative lifted integer", () => {
+    expect(refusal({ v: [-123456789] }, lifted([], [-123456789]))).toMatchObject({
+      statePath: "$.v[0]",
+    });
+  });
+
+  it("refuses an envelope at the root and as a top-level array element", () => {
+    expect(refusal({ __loomEnc: "a" }, NOTHING_LIFTED)).toMatchObject({
+      reason: "sealed-envelope",
+      statePath: "$",
+    });
+    expect(refusal([1, { __loomEnc: "a" }], NOTHING_LIFTED)).toMatchObject({ statePath: "$[1]" });
+    expect(isCipherEnvelope([])).toBe(false);
+  });
+
+  it("walks exactly the budget and refuses one more; walkBounded reports exhaustion", () => {
+    const fits = new Array(GUARD_WALK_BUDGET - 1).fill(0);
+    expect(() => assertStateClean(ctx, fits, NOTHING_LIFTED)).not.toThrow();
+    expect(() => assertStateClean(ctx, [...fits, 0], NOTHING_LIFTED)).toThrow(SensitiveStateError);
+    let seen = 0;
+    expect(walkBounded(fits, () => seen++)).toBe(true);
+    expect(seen).toBe(GUARD_WALK_BUDGET);
+    expect(walkBounded([...fits, 0], () => {})).toBe(false);
+  });
+
+  it("does not mutate the state", () => {
+    const state = { a: [1, { b: "abcdefgh" }] };
+    const copy = structuredClone(state);
+    assertStateClean(ctx, state, lifted(["zzzzzzz"]));
+    expect(state).toEqual(copy);
   });
 });
