@@ -1,11 +1,21 @@
 import type {
+  FoldedApply,
+  FoldedApplyResult,
+  FoldedRecord,
+  FoldedSelector,
   ReadModelPage,
   ReadModelQuery,
   ReadModelRow,
   ReadModelScalar,
   ReadModelStore,
 } from "@loom/plugin-read-model";
-import { assertPurgeFilter, clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
+import {
+  assertManyKeys,
+  assertPurgeFilter,
+  clampQueryLimit,
+  foldedSelectorColumn,
+  parseQueryCursor,
+} from "@loom/plugin-read-model";
 import {
   type FoldedNames,
   type FoldedTableOptions,
@@ -32,6 +42,26 @@ export interface PostgresReadModelStoreOptions extends FoldedTableOptions {
    * role that cannot run DDL works; the app creates the tables from `foldedStateDdl(...)`.
    */
   manageSchema?: boolean;
+}
+
+interface FoldedDbRow {
+  execution_id: string;
+  app_key: string | null;
+  scope: string | null;
+  sequence: string; // BIGINT → string from node-postgres
+  state: unknown;
+  erased: boolean;
+}
+
+function toFolded(r: FoldedDbRow): FoldedRecord {
+  return {
+    executionId: r.execution_id,
+    key: r.app_key,
+    scope: r.scope,
+    sequence: Number(r.sequence),
+    state: r.state,
+    erased: r.erased,
+  };
 }
 
 /**
@@ -225,6 +255,119 @@ export class PostgresReadModelStore implements ReadModelStore {
     } finally {
       client.release();
     }
+  }
+
+  // ── Folded state (ADR 0132 D3, D5, D6, D12) ──────────────────────────────
+
+  async beginFold(modelId: string, foldVersion: string): Promise<{ rebuilt: boolean }> {
+    await this.ensureFolded();
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO ${this.names.folds} (model_id, version) VALUES ($1, $2) ON CONFLICT (model_id) DO NOTHING`,
+        [modelId, foldVersion]
+      );
+      // FOR UPDATE serializes concurrent beginFolds and blocks applyFolded's FOR SHARE until commit.
+      const { rows } = await client.query<{ version: string }>(
+        `SELECT version FROM ${this.names.folds} WHERE model_id = $1 FOR UPDATE`,
+        [modelId]
+      );
+      const rebuilt = rows[0]?.version !== foldVersion;
+      if (rebuilt) {
+        await client.query(`DELETE FROM ${this.names.state} WHERE model_id = $1`, [modelId]);
+        await client.query(`UPDATE ${this.names.folds} SET version = $2 WHERE model_id = $1`, [
+          modelId,
+          foldVersion,
+        ]);
+      }
+      await client.query("COMMIT");
+      return { rebuilt };
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async applyFolded(a: FoldedApply): Promise<FoldedApplyResult> {
+    await this.ensureFolded();
+    const T = this.names.state;
+    const H = this.names.folds;
+    // One atomic statement: header match + monotonic CAS (ADR 0132 D3/D5).
+    const res = await this.pool.query<{ erased: boolean }>(
+      `INSERT INTO ${T} (model_id, execution_id, app_key, scope, sequence, state, erased)
+       SELECT $1::text, $2::text, $3::text, $4::text, $5::bigint, $6::jsonb, false
+       WHERE EXISTS (SELECT 1 FROM ${H} h WHERE h.model_id = $1::text AND h.version = $7::text FOR SHARE OF h)
+       ON CONFLICT (model_id, execution_id) DO UPDATE
+          SET sequence = EXCLUDED.sequence,
+              state    = CASE WHEN ${T}.erased THEN NULL ELSE EXCLUDED.state END,
+              app_key  = COALESCE(EXCLUDED.app_key, ${T}.app_key),
+              scope    = COALESCE(EXCLUDED.scope, ${T}.scope)
+        WHERE ${T}.sequence < EXCLUDED.sequence
+       RETURNING sequence, erased`,
+      [
+        a.modelId,
+        a.executionId,
+        a.key ?? null,
+        a.scope ?? null,
+        a.upToSequence,
+        a.state === null || a.state === undefined ? null : JSON.stringify(a.state),
+        a.foldVersion,
+      ]
+    );
+    const hit = res.rows[0];
+    if (hit !== undefined) return hit.erased ? "applied-erased" : "applied";
+    const hdr = await this.pool.query<{ version: string }>(
+      `SELECT version FROM ${H} WHERE model_id = $1`,
+      [a.modelId]
+    );
+    return hdr.rows[0]?.version === a.foldVersion ? "stale" : "version-mismatch";
+  }
+
+  async getFolded(modelId: string, executionIds: readonly string[]): Promise<FoldedRecord[]> {
+    assertManyKeys(executionIds, "getFolded");
+    await this.ensureFolded();
+    const ids = [...new Set(executionIds)];
+    if (ids.length === 0) return [];
+    const { rows } = await this.pool.query<FoldedDbRow>(
+      `SELECT execution_id, app_key, scope, sequence, state, erased FROM ${this.names.state}
+       WHERE model_id = $1 AND execution_id = ANY($2::text[])`,
+      [modelId, ids]
+    );
+    const byId = new Map(rows.map((r) => [r.execution_id, toFolded(r)]));
+    return ids.flatMap((id) => {
+      const r = byId.get(id);
+      return r === undefined ? [] : [r];
+    });
+  }
+
+  async getFoldedByKey(modelId: string, keys: readonly string[]): Promise<FoldedRecord[]> {
+    assertManyKeys(keys, "getFoldedByKey");
+    await this.ensureFolded();
+    const uniq = [...new Set(keys)];
+    if (uniq.length === 0) return [];
+    // execution_id is COLLATE "C" in the DDL: byte order = code-point order (ADR 0132).
+    const { rows } = await this.pool.query<FoldedDbRow>(
+      `SELECT execution_id, app_key, scope, sequence, state, erased FROM ${this.names.state}
+       WHERE model_id = $1 AND app_key = ANY($2::text[]) ORDER BY execution_id COLLATE "C"`,
+      [modelId, uniq]
+    );
+    return rows.map(toFolded);
+  }
+
+  async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {
+    await this.ensureFolded();
+    // `col` is one of three literals from foldedSelectorColumn, never caller input.
+    const [col, val] = foldedSelectorColumn(selector);
+    // Tombstone, never delete: the row IS the watermark (ADR 0132 D12).
+    const { rowCount } = await this.pool.query(
+      `UPDATE ${this.names.state} SET state = NULL, erased = true
+       WHERE model_id = $1 AND ${col} = $2 AND NOT erased`,
+      [modelId, val]
+    );
+    return rowCount ?? 0;
   }
 
   async close(): Promise<void> {

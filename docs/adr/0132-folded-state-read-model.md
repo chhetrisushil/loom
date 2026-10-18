@@ -102,7 +102,7 @@ ON CONFLICT (model_id, execution_id) DO UPDATE
        app_key  = COALESCE(EXCLUDED.app_key, "<state>".app_key),
        scope    = COALESCE(EXCLUDED.scope,   "<state>".scope)
  WHERE "<state>".sequence < EXCLUDED.sequence
-RETURNING sequence;
+RETURNING sequence, erased;
 ```
 
 - `rowCount = 1` → `"applied"`, or `"applied-erased"` when the row was a tombstone (`RETURNING sequence, erased`: the

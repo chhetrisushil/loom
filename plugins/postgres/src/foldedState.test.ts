@@ -163,3 +163,9 @@ describe.skipIf(!url)("folded-state ensure (postgres)", () => {
     expect(rows[0].t).toBeNull();
   });
 });
+
+describe("PostgresReadModelStore folded SPI", () => {
+  it("exposes the folded methods", () => {
+    expect(typeof PostgresReadModelStore.prototype.applyFolded).toBe("function");
+  });
+});
