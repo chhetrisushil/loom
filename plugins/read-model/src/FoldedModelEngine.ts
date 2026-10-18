@@ -27,6 +27,10 @@ export function foldedCapable(store: ReadModelStore): store is ReadModelStore & 
   );
 }
 
+/** Live contiguity pointers kept per node (ADR 0132 D4). Losing one costs a store read, never correctness. */
+const FRONTIER_MAX = 10_000;
+const slot = (modelId: string, executionId: string): string => `${modelId}\u0000${executionId}`;
+
 export interface FoldedModel {
   id: string;
   version: string;
@@ -58,6 +62,9 @@ function normalize(model: FoldedModel, next: unknown): unknown {
 
 export class FoldedModelEngine {
   protected readonly models = new Map<string, FoldedModel>();
+  private readonly queues = new Map<string, Promise<void>>();
+  /** (model, execution) -> highest sequence this node has accounted for on the live feed. Map order = recency. */
+  private readonly frontier = new Map<string, number>();
 
   constructor(
     protected readonly store: FoldedStore,
@@ -162,5 +169,87 @@ export class FoldedModelEngine {
     });
     if (result === "version-mismatch") throw new FoldVersionMismatchError(modelId, model.version);
     return result === "applied";
+  }
+
+  /**
+   * Live tail: the engine is shown EVERY event of an execution (ADR 0132 D4). Serialized per
+   * (model, execution); errors go to `onError`, never into the pipeline.
+   */
+  handle(event: EventEnvelope): void {
+    for (const model of this.models.values()) {
+      void this.enqueue(model.id, event.executionId, () => this.applyLive(model, event)).catch(
+        (err) => this.onError(err, event)
+      );
+    }
+  }
+
+  async drain(): Promise<void> {
+    while (this.queues.size > 0) await Promise.all([...this.queues.values()]);
+  }
+
+  protected enqueue<T>(modelId: string, executionId: string, job: () => Promise<T>): Promise<T> {
+    const k = slot(modelId, executionId);
+    const next = (this.queues.get(k) ?? Promise.resolve()).then(job);
+    const tail = next.then(
+      () => undefined,
+      () => undefined
+    );
+    this.queues.set(k, tail);
+    void tail.then(() => {
+      if (this.queues.get(k) === tail) this.queues.delete(k);
+    });
+    return next;
+  }
+
+  /** Forget a model's live pointers (its stored state was reset, so they no longer describe it). */
+  protected dropFrontier(modelId: string): void {
+    const prefix = `${modelId}\u0000`;
+    for (const k of [...this.frontier.keys()]) if (k.startsWith(prefix)) this.frontier.delete(k);
+  }
+
+  private setFrontier(k: string, sequence: number): void {
+    this.frontier.delete(k);
+    this.frontier.set(k, sequence);
+    if (this.frontier.size > FRONTIER_MAX) {
+      const oldest = this.frontier.keys().next().value;
+      if (oldest !== undefined) this.frontier.delete(oldest);
+    }
+  }
+
+  /** An event no handler matches: bookkeeping only, no write (ADR 0058 D2 semantics without a write per event). */
+  private observe(k: string, sequence: number): void {
+    const through = this.frontier.get(k);
+    if (through === undefined) {
+      if (sequence === 0) this.setFrontier(k, 0); // the first event of an execution: nothing precedes it
+    } else if (sequence === through + 1) this.setFrontier(k, sequence);
+    else if (sequence > through + 1) this.frontier.delete(k); // a hole this node did not observe: stop vouching
+  }
+
+  private async applyLive(model: FoldedModel, event: EventEnvelope): Promise<void> {
+    const id = event.executionId;
+    const k = slot(model.id, id);
+    if (!Object.hasOwn(model.handlers, event.eventType)) {
+      this.observe(k, event.sequence);
+      return;
+    }
+    const rec = await this.mark(model.id, id);
+    const from = rec?.sequence ?? -1;
+    if (event.sequence <= from) return;
+    const accounted = Math.max(from, this.frontier.get(k) ?? -1);
+    let events: readonly EventEnvelope[];
+    let through = accounted;
+    if (event.sequence === accounted + 1) events = [event];
+    else if (this.options.liveSource !== undefined) {
+      events = await this.options.liveSource.readFrom(id, from + 1);
+      through = from;
+      // A source that cannot reach the event leaves the hole open: report it, never fold part-way.
+      if (!events.some((e) => e.sequence >= event.sequence)) {
+        throw new FoldGapError(model.id, id, from, event.sequence);
+      }
+    } else throw new FoldGapError(model.id, id, accounted, event.sequence);
+    await this.foldBatch(model.id, id, rec, events, through);
+    // Applied, or "stale" (another node got there first): either way the store is at least this far.
+    const last = events[events.length - 1];
+    if (last !== undefined) this.setFrontier(k, last.sequence);
   }
 }

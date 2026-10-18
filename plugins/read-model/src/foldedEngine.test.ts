@@ -1,3 +1,4 @@
+import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { FoldedModelEngine } from "./FoldedModelEngine";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
@@ -239,5 +240,109 @@ describe("FoldedModelEngine — hardening", () => {
     const erased = { sequence: 0, state: null, erased: true };
     await engine.foldBatch(ID, X, erased, [step(1)]);
     expect(await stored(store)).toMatchObject({ sequence: 1, state: null });
+  });
+});
+
+describe("FoldedModelEngine — the live tail (D4)", () => {
+  it("folds a contiguous live tail and stores key + scope", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection(), keyOf, scopeOf });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "ocr" }));
+    engine.handle(evt(X, 1, "STEP_COMPLETED", { step: "embed" }));
+    await engine.drain();
+    expect(await stored(store)).toMatchObject({
+      key: "d1",
+      scope: "u1",
+      sequence: 1,
+      state: { status: "running", steps: 2, last: "embed" },
+    });
+  });
+
+  it("ignores duplicates and lower sequences", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await engine.drain();
+    expect((await stored(store))?.state).toMatchObject({ steps: 1 });
+  });
+
+  it("a gap with no liveSource is reported, never folded over", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    engine.handle(evt(X, 5, "STEP_COMPLETED", { step: "late" }));
+    await engine.drain();
+    expect(errs[0]).toBeInstanceOf(FoldGapError);
+    expect(await stored(store)).toMatchObject({ sequence: 0 });
+  });
+
+  it("unhandled events in the sequence are NOT gaps: no liveSource, no error, no write per unhandled event", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 0, "EXECUTION_STARTED")); // unhandled: bookkeeping only
+    await engine.drain();
+    expect(await stored(store)).toBeUndefined();
+    engine.handle(evt(X, 1, "STEP_COMPLETED", { step: "ocr" }));
+    engine.handle(evt(X, 2, "NOISE"));
+    engine.handle(evt(X, 3, "NOISE"));
+    engine.handle(evt(X, 4, "STEP_COMPLETED", { step: "embed" }));
+    await engine.drain();
+    expect(errs).toEqual([]);
+    expect(await stored(store)).toMatchObject({ sequence: 4, state: { steps: 2, last: "embed" } });
+  });
+
+  it("an unhandled event this node did not see in order stops vouching: the next handled event is a gap", async () => {
+    const errs: unknown[] = [];
+    const { engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 0, "EXECUTION_STARTED"));
+    engine.handle(evt(X, 2, "NOISE")); // 1 was never delivered
+    engine.handle(evt(X, 3, "STEP_COMPLETED", { step: "x" }));
+    await engine.drain();
+    expect(errs[0]).toBeInstanceOf(FoldGapError);
+  });
+
+  it("a cold node (missed events 0..1) fills the gap from liveSource", async () => {
+    const log = new InMemoryAsyncEventStore();
+    for (let i = 0; i < 3; i++) await log.append(evt(X, i, "STEP_COMPLETED", { step: `s${i}` }));
+    const store = new InMemoryReadModelStore();
+    const engine = new FoldedModelEngine(
+      store,
+      (e) => {
+        throw e;
+      },
+      { liveSource: log }
+    );
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 2, "STEP_COMPLETED", { step: "s2" })); // missed 0..1
+    await engine.drain();
+    expect((await stored(store))?.state).toMatchObject({ steps: 3 });
+  });
+
+  it("a liveSource that cannot fill the hole reports FoldGapError", async () => {
+    const errs: unknown[] = [];
+    const store = new InMemoryReadModelStore();
+    const engine = new FoldedModelEngine(store, (e) => errs.push(e), {
+      liveSource: new InMemoryAsyncEventStore(), // empty: has nothing to give
+    });
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 3, "STEP_COMPLETED", { step: "late" }));
+    await engine.drain();
+    expect(errs[0]).toBeInstanceOf(FoldGapError);
+    expect(await stored(store)).toBeUndefined();
+  });
+
+  it("a handler returning undefined is reported on the live path", async () => {
+    const errs: unknown[] = [];
+    const { engine } = boot((e) => errs.push(e));
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = () => undefined;
+    await engine.register({ projection: p });
+    engine.handle(evt(X, 0, "STEP_COMPLETED"));
+    await engine.drain();
+    expect(String(errs[0])).toMatch(/state must be a JSON value/);
   });
 });
