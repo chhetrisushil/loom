@@ -4,10 +4,15 @@ import type {
   FoldBase,
   FoldedEngineOptions,
   FoldedReadModelDefinition,
+  FoldedReadOptions,
   FoldedRecord,
+  FoldedSelector,
+  FoldedState,
+  ReadModelEventSource,
   ReadModelStore,
+  RefreshOptions,
 } from "./types";
-import { FoldGapError, FoldVersionMismatchError } from "./types";
+import { FoldGapError, FoldVersionMismatchError, assertManyKeys } from "./types";
 
 export type FoldedStore = Required<
   Pick<
@@ -59,6 +64,14 @@ function normalize(model: FoldedModel, next: unknown): unknown {
   }
   return parsed;
 }
+
+function toState(r: FoldedRecord): FoldedState<unknown> | undefined {
+  if (r.erased || r.state === null) return undefined;
+  return { executionId: r.executionId, key: r.key, sequence: r.sequence, state: r.state };
+}
+
+const refreshOptions = (o: FoldedReadOptions): RefreshOptions =>
+  o.concurrency === undefined ? {} : { concurrency: o.concurrency };
 
 export class FoldedModelEngine {
   protected readonly models = new Map<string, FoldedModel>();
@@ -114,6 +127,126 @@ export class FoldedModelEngine {
 
   async mark(modelId: string, executionId: string): Promise<FoldedRecord | undefined> {
     return (await this.store.getFolded(modelId, [executionId]))[0];
+  }
+
+  async getMany(
+    modelId: string,
+    executionIds: readonly string[],
+    opts: FoldedReadOptions = {}
+  ): Promise<Map<string, FoldedState<unknown>>> {
+    this.require(modelId);
+    assertManyKeys(executionIds, "getMany");
+    if (opts.refreshFrom !== undefined) {
+      await this.refresh(modelId, executionIds, opts.refreshFrom, refreshOptions(opts));
+    }
+    const out = new Map<string, FoldedState<unknown>>();
+    for (const r of await this.store.getFolded(modelId, executionIds)) {
+      const s = toState(r);
+      if (s !== undefined) out.set(r.executionId, s);
+    }
+    return out;
+  }
+
+  /**
+   * With `refreshFrom`, only the executions that ALREADY have a row for these keys are refreshed
+   * (two key queries around the refresh). An execution with no row yet has no key to find: refresh
+   * it by id (`getMany` / `refresh`). ADR 0132 D8/D9.
+   */
+  async getManyByKey(
+    modelId: string,
+    keys: readonly string[],
+    opts: FoldedReadOptions = {}
+  ): Promise<Map<string, FoldedState<unknown>[]>> {
+    this.require(modelId);
+    assertManyKeys(keys, "getManyByKey");
+    let records = await this.store.getFoldedByKey(modelId, keys);
+    if (opts.refreshFrom !== undefined && records.length > 0) {
+      await this.refresh(
+        modelId,
+        records.map((r) => r.executionId),
+        opts.refreshFrom,
+        refreshOptions(opts)
+      );
+      records = await this.store.getFoldedByKey(modelId, keys);
+    }
+    const out = new Map<string, FoldedState<unknown>[]>();
+    for (const r of records) {
+      const s = toState(r);
+      if (s === undefined || r.key === null) continue;
+      const list = out.get(r.key);
+      if (list === undefined) out.set(r.key, [s]);
+      else list.push(s);
+    }
+    return out;
+  }
+
+  /**
+   * Read-repair (ADR 0132 D8): fold each execution's log tail past its watermark, on the
+   * per-(model, execution) queue so it serializes behind any in-flight live apply. The final
+   * watermark is persisted even when the tail is unhandled and adopted into the live frontier.
+   * Returns the number of executions whose state advanced.
+   */
+  async refresh(
+    modelId: string,
+    executionIds: readonly string[],
+    sources: readonly ReadModelEventSource[],
+    opts: RefreshOptions = {}
+  ): Promise<number> {
+    const model = this.require(modelId);
+    const concurrency = opts.concurrency ?? 8;
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+      throw new RangeError(
+        `folded read model refresh: concurrency must be a positive integer (got ${concurrency})`
+      );
+    }
+    const ids = [...new Set(executionIds)];
+    let advanced = 0;
+    for (let i = 0; i < ids.length; i += concurrency) {
+      await Promise.all(
+        ids.slice(i, i + concurrency).map((id) =>
+          this.enqueue(model.id, id, async () => {
+            const rec = await this.mark(model.id, id);
+            for (const source of sources) {
+              const events = await source.readFrom(id, (rec?.sequence ?? -1) + 1);
+              if (events.length === 0) continue;
+              if (await this.foldBatch(model.id, id, rec, events)) advanced++;
+              // Applied or stale: the store is at least this far, so the live tail must not report a gap.
+              this.setFrontier(slot(model.id, id), events[events.length - 1]!.sequence);
+              break;
+            }
+          })
+        )
+      );
+    }
+    return advanced;
+  }
+
+  async purge(modelId: string, selector: FoldedSelector): Promise<number> {
+    this.require(modelId);
+    const set = Object.values(selector).filter((v) => v !== undefined);
+    if (set.length !== 1 || typeof set[0] !== "string" || set[0] === "") {
+      throw new TypeError(
+        "folded read model purge: the selector must name exactly one of executionId / key / scope, non-empty — an empty selector is not 'every row' (that is `clear`)"
+      );
+    }
+    await this.drain();
+    return this.store.purgeFolded(modelId, selector);
+  }
+
+  /** Drop the model's states and re-create its header (the caller then runs a catch-up scan). */
+  async reset(modelId: string): Promise<void> {
+    const model = this.require(modelId);
+    await this.drain();
+    this.dropFrontier(modelId); // the live pointers described states that are about to be gone
+    await this.store.clear(modelId);
+    await this.store.beginFold(modelId, model.version);
+  }
+
+  private require(modelId: string): FoldedModel {
+    const model = this.models.get(modelId);
+    if (model === undefined)
+      throw new TypeError(`read model "${modelId}" is not a registered folded model`);
+    return model;
   }
 
   /**
