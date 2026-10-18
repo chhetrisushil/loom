@@ -1,5 +1,8 @@
 import { loadProjectionHandlers, projectionEventTypes } from "@loom/core";
 import type { EventEnvelope, ProjectionHandlers } from "@loom/core";
+import { effectiveFoldVersion, mergeSensitive } from "./sensitiveConfig";
+import { foldView } from "./sensitiveInput";
+import { assertStateClean } from "./sensitiveState";
 import type {
   FoldBase,
   FoldedEngineOptions,
@@ -11,6 +14,7 @@ import type {
   ReadModelEventSource,
   ReadModelStore,
   RefreshOptions,
+  SensitiveMap,
 } from "./types";
 import { FoldGapError, FoldVersionMismatchError, assertManyKeys } from "./types";
 
@@ -41,6 +45,8 @@ export interface FoldedModel {
   version: string;
   initial: unknown;
   handlers: ProjectionHandlers<unknown>;
+  /** Effective declared sensitive paths: service map ∪ per-model map (D11). */
+  sensitive: SensitiveMap;
   keyOf?: (executionId: string) => string | undefined;
   scopeOf?: (executionId: string) => string | undefined;
 }
@@ -102,13 +108,15 @@ export class FoldedModelEngine {
 
   async register<S>(def: FoldedReadModelDefinition<S>): Promise<{ rebuilt: boolean }> {
     const p = def.projection;
-    const version = typeof p.version === "string" ? p.version.trim() : undefined;
-    if (version === undefined || version === "") {
+    const declaredVersion = typeof p.version === "string" ? p.version.trim() : undefined;
+    if (declaredVersion === undefined || declaredVersion === "") {
       throw new TypeError(
         `folded read model "${p.id}": a version is required — a durable fold cannot be rebuilt when it changes without one (ADR 0132 D5)`
       );
     }
     if (this.models.has(p.id)) throw new TypeError(`read model "${p.id}" is already registered`);
+    const sensitive = mergeSensitive(this.options.sensitive, def.sensitive);
+    const version = effectiveFoldVersion(declaredVersion, sensitive);
     const handlers = (await loadProjectionHandlers(p.handlers)) as ProjectionHandlers<unknown>;
     if (projectionEventTypes(p.handlers).length === 0) {
       throw new TypeError(`folded read model "${p.id}": handlers must be non-empty`);
@@ -120,6 +128,7 @@ export class FoldedModelEngine {
       version,
       initial: p.initialState,
       handlers,
+      sensitive,
       ...(def.keyOf !== undefined && { keyOf: def.keyOf }),
       ...(def.scopeOf !== undefined && { scopeOf: def.scopeOf }),
     };
@@ -312,12 +321,19 @@ export class FoldedModelEngine {
     // Clone the base once: a mutating handler must not touch the caller's record or cache.
     let state: unknown = rec?.state == null ? null : structuredClone(rec.state);
     if (!erased) {
-      // The event envelope is passed as-is; the masked copy of Task 5c owns isolating it from handlers.
+      // Each handler gets a fresh masked copy, never the shared envelope (D11). The state that is
+      // checked is the SAME object that is persisted: normalize() already JSON round-tripped it.
       for (const e of todo) {
         if (!Object.hasOwn(model.handlers, e.eventType)) continue;
         const handler = model.handlers[e.eventType]!;
         const base = state === null ? structuredClone(model.initial) : state;
-        state = normalize(model, handler(base, e));
+        const view = foldView(modelId, e, model.sensitive);
+        state = normalize(model, handler(base, view.event));
+        assertStateClean(
+          { modelId, executionId, eventType: e.eventType, sequence: e.sequence },
+          state,
+          view.lifted
+        );
       }
     }
     const result = await this.store.applyFolded({

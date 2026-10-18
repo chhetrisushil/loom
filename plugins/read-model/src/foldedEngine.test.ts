@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { FoldedModelEngine } from "./FoldedModelEngine";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import { evt, ingestProjection, keyOf, scopeOf } from "./foldedFixtures";
+import { SensitiveStateError } from "./sensitiveState";
 import { FoldGapError, FoldVersionMismatchError } from "./types";
 
 const X = "u1:wf:ingest-d1";
@@ -628,5 +629,151 @@ describe("FoldedModelEngine — reads, refresh, purge (D7, D8, D12)", () => {
     release();
     await Promise.all([resetting, purging]);
     expect(order).toEqual(["clear:start", "clear:end", "purge"]);
+  });
+});
+
+describe("FoldedModelEngine — sensitive-state guard (D11)", () => {
+  const email = "alice@example.com";
+  const leaky = (field: "email" | "mirror") => {
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = (
+      s: object,
+      e: { payload: Record<string, string> }
+    ) => ({
+      ...s,
+      status: "running",
+      last: e.payload[field],
+    });
+    return p;
+  };
+
+  it("hands the handler a masked event: a fold that copies a declared field stores the sentinel", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: leaky("email"), sensitive: { STEP_COMPLETED: ["email"] } });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "ocr", email }));
+    await engine.drain();
+    expect((await store.getFolded(ID, [X]))[0]?.state).toMatchObject({ last: "[redacted]" });
+  });
+
+  it("refuses a state that mirrors a sensitive value through an undeclared field, without leaking it", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({
+      projection: leaky("mirror"),
+      sensitive: { STEP_COMPLETED: ["email"] },
+    });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "ocr", email, mirror: email }));
+    await engine.drain();
+    const err = errs[0] as SensitiveStateError;
+    expect(err).toBeInstanceOf(SensitiveStateError);
+    expect(err).toMatchObject({ reason: "lifted-value", statePath: "$.last" });
+    expect(err.message).toContain(ID);
+    expect(err.message).not.toContain(email);
+    expect(await store.getFolded(ID, [X])).toEqual([]); // the watermark did not advance
+  });
+
+  it("refuses a handler that fabricates a sealed envelope into state", async () => {
+    const errs: unknown[] = [];
+    const { engine } = boot((e) => errs.push(e));
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = (s: object) => ({
+      ...s,
+      blob: { __loomEnc: "x" },
+    });
+    await engine.register({ projection: p });
+    engine.handle(evt(X, 0, "STEP_COMPLETED"));
+    await engine.drain();
+    expect(errs[0]).toMatchObject({
+      name: "SensitiveStateError",
+      reason: "sealed-envelope",
+      statePath: "$.blob",
+    });
+  });
+
+  it("uses the event's own seal marker with no declared map", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: leaky("email") });
+    const e = {
+      ...evt(X, 0, "STEP_COMPLETED", { step: "ocr", email }),
+      metadata: { seal: { v: 1, cipher: "c", covers: ["STEP_COMPLETED.email"] } },
+    };
+    engine.handle(e);
+    await engine.drain();
+    expect((await store.getFolded(ID, [X]))[0]?.state).toMatchObject({ last: "[redacted]" });
+  });
+
+  it("registers under a version that includes the declared map: changing the paths rebuilds", async () => {
+    const store = new InMemoryReadModelStore();
+    const a = new FoldedModelEngine(store, () => {});
+    expect(
+      await a.register({ projection: ingestProjection(), sensitive: { STEP_COMPLETED: ["email"] } })
+    ).toEqual({ rebuilt: false });
+    const b = new FoldedModelEngine(store, () => {});
+    expect(
+      await b.register({
+        projection: ingestProjection(),
+        sensitive: { STEP_COMPLETED: ["email", "phone"] },
+      })
+    ).toEqual({ rebuilt: true });
+    expect(b.versions()[0]?.[1]).toMatch(/^1\+sens\./);
+  });
+
+  it("unions the service map with the model's own", async () => {
+    const store = new InMemoryReadModelStore();
+    const a = new FoldedModelEngine(store, () => {}, { sensitive: { STEP_COMPLETED: ["email"] } });
+    await a.register({ projection: ingestProjection(), sensitive: { STEP_COMPLETED: ["phone"] } });
+    const b = new FoldedModelEngine(store, () => {});
+    expect(
+      await b.register({
+        projection: ingestProjection(),
+        sensitive: { STEP_COMPLETED: ["email", "phone"] },
+      })
+    ).toEqual({ rebuilt: false });
+  });
+
+  it("gives each handler a fresh copy: a mutating handler cannot reach the shared envelope", async () => {
+    const { engine } = boot();
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = (
+      s: object,
+      e: { payload: Record<string, unknown> }
+    ) => {
+      e.payload.step = "tampered";
+      return s;
+    };
+    await engine.register({ projection: p });
+    const ev = evt(X, 0, "STEP_COMPLETED", { step: "ocr" });
+    await engine.foldBatch(ID, X, undefined, [ev]);
+    expect((ev.payload as { step: string }).step).toBe("ocr");
+  });
+
+  it("persists exactly the checked state: a toJSON cannot smuggle bytes past the guard", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    const p = ingestProjection();
+    let calls = 0;
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = (s: object) => ({
+      ...s,
+      sneaky: {
+        toJSON: () => (++calls === 1 ? "harmless" : email),
+      },
+    });
+    await engine.register({ projection: p, sensitive: { STEP_COMPLETED: ["email"] } });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "ocr", email }));
+    await engine.drain();
+    expect(errs).toEqual([]);
+    expect(JSON.stringify((await store.getFolded(ID, [X]))[0]?.state)).not.toContain(email);
+  });
+
+  it("throws SensitiveStateError from a catch-up fold and does not advance", async () => {
+    const { store, engine } = boot();
+    await engine.register({
+      projection: leaky("mirror"),
+      sensitive: { STEP_COMPLETED: ["email"] },
+    });
+    await expect(
+      engine.foldBatch(ID, X, undefined, [evt(X, 0, "STEP_COMPLETED", { email, mirror: email })])
+    ).rejects.toBeInstanceOf(SensitiveStateError);
+    expect(await store.getFolded(ID, [X])).toEqual([]);
   });
 });
