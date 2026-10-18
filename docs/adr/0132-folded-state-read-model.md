@@ -414,7 +414,9 @@ backstop for what the guard cannot see, not the primary control.
 
 Un-tombstoning is `rebuild(modelId, sources)` (clear + re-fold), which has the same obligations as
 ADR 0092 D6: rebuild through a source that tolerates shredded payloads, and make the handler treat
-`{ $shredded: true }` as "skip", not as data. A tombstone is for an execution that exists; erasing a subject
+`{ $shredded: true }` as "skip", not as data. A rebuild that fails part-way (for example through a strict
+source) leaves the model cleared, tombstones and watermarks included: a failed rebuild is an unfinished
+rebuild, so re-run it through a tolerant source. A tombstone is for an execution that exists; erasing a subject
 whose execution has not started yet is the app's job (the shred makes its events unreadable).
 
 ### D13 — Wiring: unchanged seam, plus a per-execution queue and an optional `liveSource`
