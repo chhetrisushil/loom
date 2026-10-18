@@ -1,10 +1,28 @@
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { FoldedModelEngine } from "./FoldedModelEngine";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import { ReadModelService } from "./ReadModelService";
-import { X, boot, evt, ingestProjection, keyOf, scopeOf } from "./foldedFixtures";
-import { FoldedUnsupportedError } from "./types";
-import type { FoldedApply, FoldedApplyResult, ReadModelStore } from "./types";
+import {
+  CountingStore,
+  X,
+  boot,
+  evt,
+  ingestProjection,
+  keyOf,
+  scopeOf,
+  step,
+  stepsOf,
+} from "./foldedFixtures";
+import { SensitiveStateError } from "./sensitiveState";
+import { FoldGapError, FoldedUnsupportedError } from "./types";
+import type {
+  FoldedApply,
+  FoldedApplyResult,
+  ReadModelDefinition,
+  ReadModelEventSource,
+  ReadModelStore,
+} from "./types";
 
 describe("ReadModelService folded models — live wiring (D13)", () => {
   it("live events fold, unhandled ones included in the sequence, with no liveSource and no error", async () => {
@@ -128,15 +146,30 @@ describe("ReadModelService folded models — live wiring (D13)", () => {
 class ApplyProbeStore extends InMemoryReadModelStore {
   inFlight = 0;
   peak = 0;
+  /** When set, the first applyFolded parks here until the test releases it. */
+  hold: Promise<void> | undefined;
   override async applyFolded(a: FoldedApply): Promise<FoldedApplyResult> {
     this.inFlight++;
     this.peak = Math.max(this.peak, this.inFlight);
     try {
-      await Promise.resolve(); // a yield point: an unserialized second writer would overlap here
+      const gate = this.hold;
+      this.hold = undefined;
+      await (gate ?? Promise.resolve()); // a yield point: an unserialized second writer would overlap here
       return await super.applyFolded(a);
     } finally {
       this.inFlight--;
     }
+  }
+}
+
+/** Parks `clear` until the test releases it, so a reset can be held open. */
+class ClearGateStore extends InMemoryReadModelStore {
+  hold: Promise<void> | undefined;
+  clearing = false;
+  override async clear(modelId: string): Promise<void> {
+    this.clearing = true;
+    await this.hold;
+    return super.clear(modelId);
   }
 }
 
@@ -183,8 +216,12 @@ describe("ReadModelService folded models — catch-up (D4, D13)", () => {
     expect((await service.getMany("ingest-status", [X])).size).toBe(1);
   });
 
-  it("a catch-up fold runs on the live path's queue: applies for one execution never overlap", async () => {
+  it("a catch-up fold waits behind an in-flight live apply: applies never overlap (F17)", async () => {
     const store = new ApplyProbeStore();
+    let release!: () => void;
+    store.hold = new Promise<void>((r) => {
+      release = r;
+    });
     const service = new ReadModelService(store);
     await service.registerFolded({ projection: ingestProjection(), keyOf, scopeOf });
     const log = new InMemoryAsyncEventStore();
@@ -193,20 +230,128 @@ describe("ReadModelService folded models — catch-up (D4, D13)", () => {
       evt(X, 1, "STEP_COMPLETED", { step: "b" }),
     ];
     for (const e of events) await log.append(e);
-    service.handleEvent(events[0]!); // in flight when the scan starts
-    await service.catchUp([log]);
+    service.handleEvent(events[0]!);
+    await vi.waitFor(() => expect(store.inFlight).toBe(1)); // the live apply is parked in the store
+    let scanRead = false;
+    const spy: ReadModelEventSource = {
+      listExecutionsPage: (o) => log.listExecutionsPage!(o),
+      readFrom: async (id, from) => {
+        scanRead = true;
+        return log.readFrom(id, from);
+      },
+    };
+    const scan = service.catchUp([spy]);
+    await vi.waitFor(() => expect(scanRead).toBe(true));
+    await new Promise((r) => setImmediate(r)); // let every pending microtask run: the scan is queued
+    expect(store.inFlight).toBe(1); // a bypassing catch-up would be a second writer by now
+    release();
+    await scan;
     await service.drain();
     expect(store.peak).toBe(1);
     expect((await service.getMany("ingest-status", [X])).get(X)?.state).toMatchObject({ steps: 2 });
   });
 
-  it("a catch-up refusal throws to the caller and the watermark does not advance", async () => {
-    const { service, store } = await boot();
+  it("catch-up then a live event with the cache on: the stale cached base is not reused", async () => {
+    const store = new CountingStore();
+    const service = new ReadModelService(store);
+    await service.registerFolded({ projection: ingestProjection(), keyOf, scopeOf });
     const log = new InMemoryAsyncEventStore();
-    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
-    await log.append(evt(X, 2, "STEP_COMPLETED", { step: "c" })); // hole at 1
-    await expect(service.catchUp([log])).rejects.toThrow();
+    for (let i = 0; i <= 3; i++) await log.append(step(X, i));
+    service.handleEvent(step(X, 0)); // caches X@0
+    await service.drain();
+    await service.catchUp([log]); // folds 1..3 behind the cached base
+    store.reads = 0;
+    service.handleEvent(step(X, 4));
+    await service.drain();
+    expect(store.reads).toBe(1); // the base was re-read, not taken from the cache
+    expect(await stepsOf(store)).toBe(5);
+  });
+
+  it("catch-up racing a reset drops its stale tail without throwing; the next scan converges", async () => {
+    const store = new ClearGateStore();
+    const errs: unknown[] = [];
+    const service = new ReadModelService(store, { onError: (e) => errs.push(e) });
+    await service.registerFolded({ projection: ingestProjection(), keyOf, scopeOf });
+    const log = new InMemoryAsyncEventStore();
+    for (let i = 0; i <= 3; i++) await log.append(step(X, i));
+    await service.catchUp([log]);
+    expect(await stepsOf(store)).toBe(4);
+    await log.append(step(X, 4));
+    let release!: () => void;
+    store.hold = new Promise<void>((r) => {
+      release = r;
+    });
+    const engine = (service as unknown as { folded: FoldedModelEngine }).folded;
+    const reset = engine.reset("ingest-status"); // parked inside store.clear
+    await vi.waitFor(() => expect(store.clearing).toBe(true));
+    const scan = service.catchUp([log]); // reads watermark 3, queues behind the reset
+    await new Promise((r) => setImmediate(r));
+    release();
+    await reset;
+    await expect(scan).resolves.toBeDefined();
+    expect(await store.getFolded("ingest-status", [X])).toEqual([]); // nothing written over the reset
+    await service.catchUp([log]);
+    expect(await stepsOf(store)).toBe(5);
+    expect(errs).toEqual([]);
+  });
+
+  it("a catch-up gap throws FoldGapError, writes nothing, and the live tail still reports the gap", async () => {
+    const errs: unknown[] = [];
+    const { service, store } = await boot({ onError: (e) => errs.push(e) });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(step(X, 0));
+    await log.append(step(X, 2)); // hole at 1
+    await expect(service.catchUp([log])).rejects.toBeInstanceOf(FoldGapError);
     expect(await store.getFolded("ingest-status", [X])).toEqual([]);
+    service.handleEvent(step(X, 3)); // the frontier was not adopted: still a gap
+    await service.drain();
+    expect(errs[0]).toBeInstanceOf(FoldGapError);
+  });
+
+  it("a catch-up SensitiveStateError throws to the caller and the watermark does not advance", async () => {
+    const email = "alice@example.com";
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = (
+      s: object,
+      e: { payload: { mirror?: string } }
+    ) => ({
+      ...s,
+      last: e.payload.mirror,
+    });
+    const store = new InMemoryReadModelStore();
+    const service = new ReadModelService(store);
+    await service.registerFolded({ projection: p, sensitive: { STEP_COMPLETED: ["email"] } });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { email, mirror: email }));
+    await expect(service.catchUp([log])).rejects.toBeInstanceOf(SensitiveStateError);
+    expect(await store.getFolded("ingest-status", [X])).toEqual([]);
+  });
+
+  it("models at different watermarks each apply exactly their own tail from one shared read", async () => {
+    for (const rowsAhead of [true, false]) {
+      const { service, store } = await boot();
+      const log = new InMemoryAsyncEventStore();
+      const rows: ReadModelDefinition = {
+        id: "rows",
+        kinds: ["STEP_COMPLETED"],
+        indexes: ["step"],
+        extract: (e) => [{ fields: { step: (e.payload as { step: string }).step } }],
+      };
+      if (rowsAhead) {
+        for (let i = 0; i <= 5; i++) await log.append(step(X, i));
+        service.register(rows);
+        await store.apply("rows", X, 3, []); // rows at 3, folded at -1
+      } else {
+        for (let i = 0; i <= 3; i++) await log.append(step(X, i));
+        await service.catchUp([log]); // folded at 3
+        for (let i = 4; i <= 5; i++) await log.append(step(X, i));
+        service.register(rows); // rows at -1
+      }
+      const report = await service.catchUp([log]);
+      expect(report.eventsScanned).toBe(6);
+      expect(await stepsOf(store)).toBe(6);
+      expect((await service.query("rows")).rows).toHaveLength(rowsAhead ? 2 : 6);
+    }
   });
 
   it("a source that cannot be enumerated makes catch-up refuse", async () => {

@@ -237,7 +237,7 @@ export class ReadModelService {
         for (const id of foldedIds) {
           if (tip <= marks.get(id)!) continue;
           // Through the per-(model, execution) queue, not around it (ADR 0132 D4).
-          await folded?.foldQueued(id, executionId, events);
+          await folded?.foldQueued(id, executionId, events, marks.get(id));
         }
       }
     }
