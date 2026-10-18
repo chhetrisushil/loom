@@ -264,16 +264,16 @@ export class PostgresReadModelStore implements ReadModelStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      await client.query(
-        `INSERT INTO ${this.names.folds} (model_id, version) VALUES ($1, $2) ON CONFLICT (model_id) DO NOTHING`,
+      // One insert-or-lock statement: the row is locked FOR UPDATE-equivalent either way, so a
+      // concurrent clear cannot leave us "rebuilding" a header that no longer exists. xmax = 0 means
+      // we inserted it (nothing to rebuild); otherwise RETURNING shows the stored version.
+      const { rows } = await client.query<{ version: string; inserted: boolean }>(
+        `INSERT INTO ${this.names.folds} (model_id, version) VALUES ($1, $2)
+         ON CONFLICT (model_id) DO UPDATE SET model_id = EXCLUDED.model_id
+         RETURNING version, (xmax = 0) AS inserted`,
         [modelId, foldVersion]
       );
-      // FOR UPDATE serializes concurrent beginFolds and blocks applyFolded's FOR SHARE until commit.
-      const { rows } = await client.query<{ version: string }>(
-        `SELECT version FROM ${this.names.folds} WHERE model_id = $1 FOR UPDATE`,
-        [modelId]
-      );
-      const rebuilt = rows[0]?.version !== foldVersion;
+      const rebuilt = rows[0]?.inserted !== true && rows[0]?.version !== foldVersion;
       if (rebuilt) {
         await client.query(`DELETE FROM ${this.names.state} WHERE model_id = $1`, [modelId]);
         await client.query(`UPDATE ${this.names.folds} SET version = $2 WHERE model_id = $1`, [
@@ -295,18 +295,24 @@ export class PostgresReadModelStore implements ReadModelStore {
     await this.ensureFolded();
     const T = this.names.state;
     const H = this.names.folds;
-    // One atomic statement: header match + monotonic CAS (ADR 0132 D3/D5).
-    const res = await this.pool.query<{ erased: boolean }>(
-      `INSERT INTO ${T} (model_id, execution_id, app_key, scope, sequence, state, erased)
-       SELECT $1::text, $2::text, $3::text, $4::text, $5::bigint, $6::jsonb, false
-       WHERE EXISTS (SELECT 1 FROM ${H} h WHERE h.model_id = $1::text AND h.version = $7::text FOR SHARE OF h)
-       ON CONFLICT (model_id, execution_id) DO UPDATE
-          SET sequence = EXCLUDED.sequence,
-              state    = CASE WHEN ${T}.erased THEN NULL ELSE EXCLUDED.state END,
-              app_key  = COALESCE(EXCLUDED.app_key, ${T}.app_key),
-              scope    = COALESCE(EXCLUDED.scope, ${T}.scope)
-        WHERE ${T}.sequence < EXCLUDED.sequence
-       RETURNING sequence, erased`,
+    // One atomic statement: header match + monotonic CAS + classification (ADR 0132 D3/D5). The
+    // header is read in the same statement (FOR SHARE) so a beginFold committing in between can
+    // never turn a version mismatch into "stale".
+    const res = await this.pool.query<{ hv: string | null; hit: boolean; e: boolean | null }>(
+      `WITH h AS (SELECT version FROM ${H} WHERE model_id = $1::text FOR SHARE),
+       ins AS (
+         INSERT INTO ${T} (model_id, execution_id, app_key, scope, sequence, state, erased)
+         SELECT $1::text, $2::text, $3::text, $4::text, $5::bigint, $6::jsonb, false
+         WHERE EXISTS (SELECT 1 FROM h WHERE h.version = $7::text)
+         ON CONFLICT (model_id, execution_id) DO UPDATE
+            SET sequence = EXCLUDED.sequence,
+                state    = CASE WHEN ${T}.erased THEN NULL ELSE EXCLUDED.state END,
+                app_key  = COALESCE(EXCLUDED.app_key, ${T}.app_key),
+                scope    = COALESCE(EXCLUDED.scope, ${T}.scope)
+          WHERE ${T}.sequence < EXCLUDED.sequence
+         RETURNING sequence, erased)
+       SELECT (SELECT version FROM h) AS hv, EXISTS (SELECT 1 FROM ins) AS hit,
+              (SELECT erased FROM ins) AS e`,
       [
         a.modelId,
         a.executionId,
@@ -317,13 +323,9 @@ export class PostgresReadModelStore implements ReadModelStore {
         a.foldVersion,
       ]
     );
-    const hit = res.rows[0];
-    if (hit !== undefined) return hit.erased ? "applied-erased" : "applied";
-    const hdr = await this.pool.query<{ version: string }>(
-      `SELECT version FROM ${H} WHERE model_id = $1`,
-      [a.modelId]
-    );
-    return hdr.rows[0]?.version === a.foldVersion ? "stale" : "version-mismatch";
+    const r = res.rows[0];
+    if (r?.hit) return r.e ? "applied-erased" : "applied";
+    return r?.hv === a.foldVersion ? "stale" : "version-mismatch";
   }
 
   async getFolded(modelId: string, executionIds: readonly string[]): Promise<FoldedRecord[]> {
