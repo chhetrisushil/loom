@@ -346,3 +346,61 @@ describe("FoldedModelEngine — the live tail (D4)", () => {
     expect(String(errs[0])).toMatch(/state must be a JSON value/);
   });
 });
+
+describe("FoldedModelEngine — live tail hardening", () => {
+  it("a watermark ahead of the frontier is adopted: no spurious gap after a skipped duplicate", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 0, "EXECUTION_STARTED")); // frontier 0
+    await engine.drain();
+    // catch-up (or another node) folds through 1
+    await engine.foldBatch(ID, X, undefined, [evt(X, 1, "STEP_COMPLETED", { step: "a" })], 0);
+    engine.handle(evt(X, 1, "STEP_COMPLETED", { step: "a" })); // skipped: already stored
+    engine.handle(evt(X, 2, "NOISE"));
+    engine.handle(evt(X, 3, "STEP_COMPLETED", { step: "b" }));
+    await engine.drain();
+    expect(errs).toEqual([]);
+    expect(await stored(store)).toMatchObject({ sequence: 3, state: { steps: 2 } });
+  });
+
+  it("a throwing onError is swallowed and later events still apply", async () => {
+    let calls = 0;
+    const { store, engine } = boot(() => {
+      calls++;
+      throw new Error("onError boom");
+    });
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 5, "STEP_COMPLETED", { step: "late" })); // gap -> onError throws
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await engine.drain();
+    expect(calls).toBe(1);
+    expect(await stored(store)).toMatchObject({ sequence: 0 });
+  });
+
+  it("enqueue runs jobs in order and a rejected job does not stop the next; drain waits for late work", async () => {
+    class Probe extends FoldedModelEngine {
+      run<T>(id: string, job: () => Promise<T>) {
+        return this.enqueue(ID, id, job);
+      }
+    }
+    const engine = new Probe(new InMemoryReadModelStore(), () => {});
+    const order: string[] = [];
+    const a = engine.run(X, async () => {
+      order.push("a");
+      throw new Error("a failed");
+    });
+    const b = engine.run(X, async () => {
+      order.push("b");
+      // enqueued while drain() is already waiting
+      void engine.run(X, async () => {
+        order.push("late");
+      });
+    });
+    await expect(a).rejects.toThrow("a failed");
+    const drained = engine.drain();
+    await drained;
+    await b;
+    expect(order).toEqual(["a", "b", "late"]);
+  });
+});
