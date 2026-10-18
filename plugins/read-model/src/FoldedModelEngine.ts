@@ -52,7 +52,7 @@ const withheld = (e: EventEnvelope): EventEnvelope => {
 };
 const slot = (modelId: string, executionId: string): string => `${modelId}\u0000${executionId}`;
 
-/** The CAS result of a fold and the record it wrote (only present when `result` is "applied"). */
+/** The CAS result of a fold and the record it wrote (present when `result` is "applied" or "applied-erased"). */
 export interface FoldOutcome {
   result: FoldedApplyResult | "noop";
   record?: FoldBase;
@@ -106,6 +106,11 @@ export class FoldedModelEngine {
   private readonly frontier = new Map<string, number>();
   /** Fold bases this node wrote (D15); undefined when disabled. Write-path only: no read API touches it. */
   private readonly cache: FoldStateCache | undefined;
+  /**
+   * modelId -> counter bumped whenever cached bases may have become untrustworthy (purge, register,
+   * reset, version mismatch). An apply that began before a bump never caches its result.
+   */
+  private readonly generations = new Map<string, number>();
 
   constructor(
     protected readonly store: FoldedStore,
@@ -115,6 +120,15 @@ export class FoldedModelEngine {
     const c = options.cache;
     const max = c === false ? 0 : (c?.maxEntries ?? DEFAULT_FOLD_CACHE_ENTRIES);
     this.cache = max > 0 ? new FoldStateCache(max) : undefined;
+  }
+
+  private generation(modelId: string): number {
+    return this.generations.get(modelId) ?? 0;
+  }
+
+  private invalidate(modelId: string): void {
+    this.generations.set(modelId, this.generation(modelId) + 1);
+    this.cache?.deleteModel(modelId);
   }
 
   cacheSize(): number {
@@ -161,7 +175,7 @@ export class FoldedModelEngine {
       ...(def.scopeOf !== undefined && { scopeOf: def.scopeOf }),
     };
     this.models.set(p.id, model);
-    this.cache?.deleteModel(p.id);
+    this.invalidate(p.id);
     return { rebuilt };
   }
 
@@ -278,11 +292,16 @@ export class FoldedModelEngine {
     }
     // Behind a running reset, so purgeFolded never overlaps clear (a tombstone would be lost).
     await this.gates.get(modelId);
-    // One snapshot is enough: a later apply reads the sticky erased record and writes no state (D12).
+    // One snapshot is enough: a later apply's CAS lands on the sticky erased row and writes no state
+    // (D12). The generation is bumped before AND after the store call so no apply that overlapped
+    // the purge can re-cache its pre-purge base.
     await Promise.all([...this.queues.values()]);
-    const n = await this.store.purgeFolded(modelId, { [field!]: value } as FoldedSelector);
-    this.cache?.deleteModel(modelId);
-    return n;
+    this.invalidate(modelId);
+    try {
+      return await this.store.purgeFolded(modelId, { [field!]: value } as FoldedSelector);
+    } finally {
+      this.invalidate(modelId);
+    }
   }
 
   /**
@@ -303,7 +322,7 @@ export class FoldedModelEngine {
     try {
       await Promise.all([before, ...inFlight]);
       this.dropFrontier(modelId); // the live pointers described states that are about to be gone
-      this.cache?.deleteModel(modelId); // ... and so do the cached bases
+      this.invalidate(modelId); // ... and so do the cached bases
       await this.store.clear(modelId);
       await this.store.beginFold(modelId, model.version);
     } finally {
@@ -335,7 +354,7 @@ export class FoldedModelEngine {
   ): Promise<boolean> {
     try {
       return (
-        (await this.foldOutcome(modelId, executionId, rec, events, accounted)).result === "applied"
+        (await this.foldOutcome(modelId, executionId, rec, events, accounted)).record !== undefined
       );
     } finally {
       // Catch-up, refresh and rebuild move the row behind any cached base: the live path re-reads.
@@ -399,10 +418,13 @@ export class FoldedModelEngine {
       foldVersion: model.version,
     });
     if (result === "version-mismatch") {
-      this.cache?.deleteModel(modelId); // another node rebuilt: no cached base for this model is trustworthy
+      this.invalidate(modelId); // another node rebuilt: no cached base for this model is trustworthy
       throw new FoldVersionMismatchError(modelId, model.version);
     }
-    return { result, record: { sequence: upToSequence, state, erased } };
+    if (result === "stale") return { result };
+    // "applied-erased": the row was tombstoned elsewhere; remember that, never the folded state.
+    const gone = erased || result === "applied-erased";
+    return { result, record: { sequence: upToSequence, state: gone ? null : state, erased: gone } };
   }
 
   /**
@@ -482,6 +504,7 @@ export class FoldedModelEngine {
     // `useCache` is true only on the first pass; every retry goes to the store.
     for (let useCache = this.cache !== undefined; ; useCache = false) {
       // take() removes the entry: if anything below throws, the key is absent, never half-folded.
+      const gen = this.generation(model.id);
       const cached = useCache ? this.cache?.take(model.id, id) : undefined;
       const rec: FoldBase | undefined = cached ?? (await this.mark(model.id, id));
       const from = rec?.sequence ?? -1;
@@ -508,9 +531,10 @@ export class FoldedModelEngine {
         }
       } else throw new FoldGapError(model.id, id, accounted, event.sequence);
       const out = await this.foldOutcome(model.id, id, rec, events, through);
-      if (out.result === "applied" && out.record !== undefined) {
-        // Only this node's own applied write is cached, and it is the exact state that was persisted.
-        this.cache?.put(model.id, id, out.record);
+      if (out.record !== undefined) {
+        // Only this node's own applied write is cached (the exact state persisted, or the erased
+        // marker), and only if no purge/reset/register/mismatch happened while it was in flight.
+        if (gen === this.generation(model.id)) this.cache?.put(model.id, id, out.record);
       } else if (out.result === "stale" && cached !== undefined) {
         continue; // lost the CAS on a possibly stale base: drop it (taken) and re-read once
       }

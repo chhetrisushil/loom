@@ -105,7 +105,8 @@ ON CONFLICT (model_id, execution_id) DO UPDATE
 RETURNING sequence;
 ```
 
-- `rowCount = 1` → `"applied"`. `0` → one more `SELECT version FROM "<folds>" WHERE model_id = $1`
+- `rowCount = 1` → `"applied"`, or `"applied-erased"` when the row was a tombstone (`RETURNING sequence, erased`: the
+  sequence advanced, the state stayed `NULL`). `0` → one more `SELECT version FROM "<folds>" WHERE model_id = $1`
   distinguishes `"version-mismatch"` from `"stale"` (an equal or lower sequence — an idempotent
   re-apply). The WHERE on `DO UPDATE` is what makes the watermark monotonic: two nodes folding the same
   tail race, one wins, the other is told `"stale"`, and both wrote the same bytes anyway.
@@ -186,7 +187,7 @@ and one `getMany` answers from two folds. Here the declaration is enforced:
 
 ```ts
 beginFold?(modelId, foldVersion): Promise<{ rebuilt: boolean }>;
-applyFolded?(a: FoldedApply): Promise<"applied" | "stale" | "version-mismatch">;
+applyFolded?(a: FoldedApply): Promise<"applied" | "applied-erased" | "stale" | "version-mismatch">;
 getFolded?(modelId, executionIds: readonly string[]): Promise<FoldedRecord[]>;
 getFoldedByKey?(modelId, keys: readonly string[]): Promise<FoldedRecord[]>;
 purgeFolded?(modelId, selector: { executionId } | { key } | { scope }): Promise<number>;
@@ -444,7 +445,7 @@ the `FoldedModelEngine`. The store's monotonic compare-and-set (D3) stays the on
 only a guess at the *base* a fold starts from.
 
 - **Written** only after this node's own `applyFolded` returned `"applied"` (it holds exactly the row it just
-  wrote), and read only by the live path (`applyLive`). `take` *removes* the entry, so any failure while a
+  wrote) or `"applied-erased"` (it holds the erased marker `{ erased: true, state: null }`, never folded state), and read only by the live path (`applyLive`). `take` *removes* the entry, so any failure while a
   handler is running leaves the key absent rather than holding a half-mutated state.
 - **Never decides a gap.** A cached base with `event.sequence` beyond the next expected one (the cached
   sequence, or the contiguous-through pointer of D4 when this node has seen unhandled events since) is
@@ -461,7 +462,11 @@ only a guess at the *base* a fold starts from.
   correct for the write path (where the CAS catches staleness) would silently return stale data on a read
   path (where nothing does), and another node's progress or a purge elsewhere would be invisible.
 - **A purge on another node** is covered by the store: the upsert keeps `state = NULL` for an erased row
-  whatever base it was computed from, so a stale cached entry costs one wasted fold, never a resurrection.
+  whatever base it was computed from, and reports `"applied-erased"`. The node then caches the erased marker, so
+  its later events skip the handler (D12: the engine never folds an erased execution). The one fold that raced
+  the purge is discarded by the store; it is never resurrected.
+- **A local purge, register, reset or version mismatch** bumps a per-model generation; an apply that began
+  before the bump never caches its result, so an in-flight apply cannot re-cache pre-purge state.
 - Memory is bounded by count, not bytes; state is a status-shaped value (D11). A model with large states
   should lower `maxEntries` or turn the cache off.
 
