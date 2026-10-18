@@ -123,17 +123,31 @@ A fold is not idempotent per event the way a row is: applying event *n* to a sta
 it, or skipping *n−1*, silently corrupts the state. So the engine only folds events with
 `sequence > watermark`, and **only from `watermark + 1`**:
 
-- **Live tail** (`handleEvent`): if `event.sequence === watermark + 1` fold it; if `<= watermark`
-  (a duplicate, or another node got there first) ignore it; if it is a gap (`> watermark + 1`, e.g. a
-  cold node, a missed event, a restart mid-execution) read the missing tail from the configured
-  `liveSource` (`ReadModelServiceOptions.liveSource`, normally the node's own event store) and fold from
-  `watermark + 1`. With no `liveSource` the gap is reported to `onError` as `FoldGapError` and the next
-  `catchUp` heals it. A gap is never papered over.
-- **Catch-up / refresh / rebuild**: always `readFrom(executionId, watermark + 1)`.
-- The live path serializes per `(modelId, executionId)` through a promise chain, because the
-  read-state → fold → apply sequence is async and two interleaved applies would fold from the same base.
-  Cross-node races are covered by D3, not by this queue. The base state of a live apply is a `getFolded`
-  read, or the node's bounded cache entry when one exists (D15).
+- **Live tail** (`handleEvent`): the engine is shown **every** event of an execution, handled or not
+  (real executions always contain events no handler matches, and treating each as a gap would make the
+  live path unusable without a `liveSource`). An event no handler matches writes nothing; it advances an
+  in-memory *contiguous-through* pointer for that `(model, execution)`: "every event up to here is either
+  folded into the stored state or was seen on this node and is unhandled". This is ADR 0058 D2's
+  "advances the high-water mark even when no rows matched" without a store write per unhandled event. A
+  handled event is applied when it is the next event after `max(watermark, pointer)`, and the watermark
+  is persisted at its own sequence; if `<= watermark` (a duplicate, or another node got there first) it
+  is ignored; anything else is a hole (`> max(watermark, pointer) + 1`: a cold node, a missed event, a
+  restart mid-execution). A hole is filled by reading the missing tail from the configured `liveSource`
+  (`ReadModelServiceOptions.liveSource`, normally the node's own event store) from `watermark + 1`. With
+  no `liveSource` the hole is reported to `onError` as `FoldGapError` and the next `catchUp` heals it, so
+  `liveSource` is optional and is needed only for holes. A gap is never papered over. The pointer is
+  seeded by an execution's sequence-0 event, dropped when this node observes a hole in what it was shown
+  and when the model is reset, and bounded in size; losing it costs one store read and at worst a hole
+  fill, never a wrong state.
+- **Catch-up / refresh / rebuild**: always `readFrom(executionId, watermark + 1)`, and they persist the
+  final watermark even when the tail they read is unhandled.
+- **The fold itself refuses to skip.** The first event a fold applies must be `watermark + 1`, or at most
+  `pointer + 1` when the live path vouches for the events between (they are unhandled by construction);
+  otherwise it raises `FoldGapError` and writes nothing, whichever feed called it.
+- Every feed that writes (live, catch-up, refresh, rebuild) serializes per `(modelId, executionId)`
+  through one promise chain, because the read-state → fold → apply sequence is async and two interleaved
+  applies would fold from the same base. Cross-node races are covered by D3, not by this queue. The base
+  state of a live apply is a `getFolded` read, or the node's bounded cache entry when one exists (D15).
 - Each handler result is round-tripped through JSON before the next event, so the incremental state
   (persisted after every event) and the rebuilt state (folded in one batch) cannot differ by
   non-JSON values (`undefined` properties, `Date`, `Map`). That makes "rebuild == incremental" a property of
@@ -180,9 +194,12 @@ purgeFolded?(modelId, selector: { executionId } | { key } | { scope }): Promise<
 
 MINOR, like ADR 0093: a backend that omits them behaves exactly as at 1.1.0, and
 `registerFolded` against such a backend throws a typed `FoldedUnsupportedError` rather than accepting a
-model it cannot persist. The five are all-or-none (the service checks all five). `clear(modelId)` now also
+model it cannot persist. The five are all-or-none (the service checks all five). `getFoldedByKey` returns its records ordered by `executionId` in byte (code-point)
+order (on Postgres `COLLATE "C"`), the same on every backend. `clear(modelId)` now also
 removes the model's folded state and header — an extension of "all rows and watermarks", and the only
-sensible meaning of "drop everything for this model" once folded state exists. A new
+sensible meaning of "drop everything for this model" once folded state exists. On Postgres it does so
+only if the folded tables already exist and never creates them, so a store that never used a folded model
+(or a role that cannot run DDL) clears exactly as it did at 1.1.0 (D10). A new
 `runFoldedStateConformance` kit in `@loom/conformance` pins the semantics (idempotent, monotonic,
 version guard, tombstones, key lookup, isolation, concurrent convergence) and skips for backends without
 the methods. In-memory (reference), SQLite and Postgres implement it.
@@ -224,7 +241,13 @@ service.drain(): Promise<void>                                  // await the nod
 `readFrom(id, watermark + 1)` and folds. It is correct from any node, needs no sequence from the caller, and
 is a no-op round trip when the state is already current. Cost: one `getFolded` + one `readFrom` per execution
 per call, so use it on the executions a user action just touched (the one document), not on every list view;
-the plain `getMany` stays one query. Neither reads the state cache (D15). The trade-off against fire-and-forget is thus explicit: the default read
+the plain `getMany` stays one query. Neither reads the state cache (D15).
+
+`getManyByKey(model, keys, { refreshFrom })` has one stated limit: it refreshes only the executions that
+already have a row for those keys (the key is derived from the executionId, so an execution with no row
+has nothing to look up by key). The execution a user action has just started is refreshed by id —
+`getMany(model, [executionId], { refreshFrom })` or `refresh` — which is the call D8 recommends for the
+one execution a user touched anyway. The trade-off against fire-and-forget is thus explicit: the default read
 is eventually consistent and free; read-your-writes is opt-in and costs a log tail read.
 
 ### D9 — App key and scope are derived columns; keyed lookup is IN, paging over state is OUT (adapted / rejected)
@@ -255,7 +278,8 @@ foldedStateDdl({ schema, tables }): string       // pure — put it in the app's
   the folded tables nor runs the shared `migrate()` (DDL a read-only role cannot, and must not, run).
 - Identifiers are validated (`/^[A-Za-z_][A-Za-z0-9_]{0,47}$/`, so derived index names stay under 63 bytes) and double-quoted; they are never taken
   from event data. The folded tables are created lazily on first folded use, under an advisory lock, so
-  apps that never register a folded model pay nothing and the shared `migrate()` is untouched.
+  apps that never register a folded model pay nothing and the shared `migrate()` is untouched. `clear`
+  (D6) never creates them either: it drops folded rows only when the tables already exist.
 - `scope` (nullable `TEXT`, from `scopeOf(executionId)`) is the column an RLS policy keys on, indexed
   `(model_id, scope)`. `scopeOf` is derived **synchronously from the executionId** (owner decision, 2026-10-19), so it is knowable at read,
   purge and RLS time with no lookup. The DocMind example (Loom itself stays generic): its execution ids are
@@ -375,8 +399,9 @@ do exactly that. `purgeFolded` therefore **tombstones**: `state = NULL, erased =
 The engine never folds an erased execution (it advances the sequence and leaves the state `NULL`), so later
 events cannot resurrect a partial state from `initialState`. Exactly one selector field is required (an
 empty selector is refused, ADR 0093 D3); the call drains the node's in-flight live applies first; it returns
-the number of rows newly tombstoned (a retry returns 0); a backend without the method raises
-`PurgeUnsupportedError`. Compliance wiring is the existing two-step: `eraseSubject(...)` then
+the number of rows newly tombstoned (a retry returns 0). There is no `PurgeUnsupportedError` path for
+folded models: a backend without the five methods was already refused at `registerFolded`
+(`FoldedUnsupportedError`, D6), so a registered folded model always has `purgeFolded`. Compliance wiring is the existing two-step: `eraseSubject(...)` then
 `purgeFolded(model, { scope })`. With D11 declared, the fold never held the declared values, so the purge is the
 backstop for what the guard cannot see, not the primary control.
 
@@ -385,11 +410,13 @@ ADR 0092 D6: rebuild through a source that tolerates shredded payloads, and make
 `{ $shredded: true }` as "skip", not as data. A tombstone is for an execution that exists; erasing a subject
 whose execution has not started yet is the app's job (the shred makes its events unreadable).
 
-### D13 — Wiring: unchanged seam, plus a per-execution queue and a `liveSource`
+### D13 — Wiring: unchanged seam, plus a per-execution queue and an optional `liveSource`
 
-`service.handleEvent` fans out to row extractors and folded models; `catchUp(sources)` computes ONE
+`service.handleEvent` fans out to row extractors and shows every event to each folded model (an event no
+handler matches is a no-write bookkeeping step, D4); `catchUp(sources)` computes ONE
 frontier per execution across both kinds (one shared `readFrom`, as the existing audit fix) and applies to
-each. Boot order: `await registerFolded(…)` (may rebuild, D5) → wire `onEvent` → `catchUp([store])`. Events that
+each; the folded models' fold runs on the same per-`(model, execution)` queue as the live path (D4).
+`liveSource` is optional and only fills holes (a restart mid-execution, a missed event). Boot order: `await registerFolded(…)` (may rebuild, D5) → wire `onEvent` → `catchUp([store])`. Events that
 arrive between registration and wiring are healed by the catch-up, exactly as for rows. Errors follow
 ADR 0058: live path → `onError`, catch-up path → throws.
 
@@ -419,9 +446,10 @@ only a guess at the *base* a fold starts from.
 - **Written** only after this node's own `applyFolded` returned `"applied"` (it holds exactly the row it just
   wrote), and read only by the live path (`applyLive`). `take` *removes* the entry, so any failure while a
   handler is running leaves the key absent rather than holding a half-mutated state.
-- **Never decides a gap.** A cached base with `event.sequence > cached + 1` is dropped and the store is
-  re-read first, because another node may be ahead. `event.sequence <= cached` is a safe ignore (the
-  watermark is monotonic).
+- **Never decides a gap.** A cached base with `event.sequence` beyond the next expected one (the cached
+  sequence, or the contiguous-through pointer of D4 when this node has seen unhandled events since) is
+  dropped and the store is re-read first, because another node may be ahead. `event.sequence <= cached` is a safe
+  ignore (the watermark is monotonic).
 - **A lost CAS drops the entry and re-reads once.** `"stale"` from a write that started from a cached base
   means the cache was behind; the entry is discarded, the store row is read, and the same event is
   re-evaluated against it (ignored if the other node already folded it). `"version-mismatch"` drops every
@@ -459,7 +487,8 @@ only half of the events) converge with the cache disabled and with it enabled.
 
 - DocMind's list view becomes one `getManyByKey(model, docIds, { refreshFrom: [store] })` per page (50 keys,
   one state query; the refresh variant adds one tail read per execution and should be reserved for the row the
-  user just acted on) instead of a row query and a client-side fold per document.
+  user just acted on, which is refreshed by id because the key variant refreshes only executions that already
+  have a row, D8) instead of a row query and a client-side fold per document.
 - Live ingest costs one upsert per handled event per model, plus one `getFolded` read only on a cache miss (D15):
   the first event of an execution on this node, an eviction, or a lost CAS. `foldCache: false` restores a read per event.
 - Handlers see `"[redacted]"` where a declared-sensitive field was, and a fold that mirrors a secret into state fails
