@@ -274,7 +274,11 @@ export class ReadModelService {
     return this.engine(modelId).refresh(modelId, executionIds, sources, opts);
   }
 
-  /** Erase folded state by exactly one of executionId / key / scope (D12). */
+  /**
+   * Erase folded state by exactly one of executionId / key / scope (D12). A tombstone for an
+   * execution that exists; rebuild un-tombstones — see ADR 0132 D12 for the tolerant-source
+   * obligation.
+   */
   async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {
     return this.engine(modelId).purge(modelId, selector);
   }
@@ -343,6 +347,8 @@ export class ReadModelService {
     for (const [id, model] of this.models) {
       if (model.version !== undefined) pins[id] = model.version;
     }
+    // The effective stored version (version + sensitive-map digest), so a changed map drifts.
+    for (const [id, version] of this.folded?.versions() ?? []) pins[id] = version;
     return pins;
   }
 
@@ -374,6 +380,11 @@ export class ReadModelService {
 
   /** RM-2 — the read model is a cache: drop it and re-derive from the log. */
   async rebuild(modelId: string, sources: readonly ReadModelEventSource[]): Promise<CatchUpReport> {
+    if (this.folded?.has(modelId)) {
+      // Gated reset (drops the frontier under the gate), then a scan of this model alone.
+      await this.folded.reset(modelId);
+      return this.scan(sources, modelId);
+    }
     if (!this.models.has(modelId)) {
       throw new TypeError(`read model "${modelId}" is not registered`);
     }

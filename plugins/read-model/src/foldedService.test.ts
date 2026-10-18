@@ -359,3 +359,85 @@ describe("ReadModelService folded models — catch-up (D4, D13)", () => {
     await expect(service.catchUp([{ readFrom: async () => [] }])).rejects.toThrow(/enumerated/);
   });
 });
+
+describe("ReadModelService folded models — refresh, erasure, rebuild, pins", () => {
+  it("getMany({ refreshFrom }) is read-your-writes without any live feed", async () => {
+    const { service } = await boot();
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "EXECUTION_COMPLETED"));
+    const got = await service.getMany("ingest-status", [X], { refreshFrom: [log] });
+    expect(got.get(X)?.state).toMatchObject({ status: "done" });
+  });
+
+  it("purgeFolded tombstones; a later catch-up and later events do not resurrect it", async () => {
+    const { service } = await boot();
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await service.catchUp([log]);
+    expect(await service.purgeFolded("ingest-status", { scope: "u1" })).toBe(1);
+    await log.append(evt(X, 1, "EXECUTION_COMPLETED"));
+    await service.catchUp([log]);
+    service.handleEvent(evt(X, 2, "STEP_COMPLETED", { step: "late" }));
+    await service.drain();
+    expect((await service.getMany("ingest-status", [X])).size).toBe(0);
+  });
+
+  it("a changed fold version rebuilds on registration and the next catch-up re-folds from the log", async () => {
+    const store = new InMemoryReadModelStore();
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    const v1 = new ReadModelService(store);
+    expect(await v1.registerFolded({ projection: ingestProjection("1") })).toEqual({
+      rebuilt: false,
+    });
+    await v1.catchUp([log]);
+
+    const v2 = new ReadModelService(store);
+    expect(await v2.registerFolded({ projection: ingestProjection("2") })).toEqual({
+      rebuilt: true,
+    });
+    expect((await v2.getMany("ingest-status", [X])).size).toBe(0);
+    const report = await v2.catchUp([log]);
+    expect(report.eventsScanned).toBe(1);
+    expect((await v2.getMany("ingest-status", [X])).size).toBe(1);
+  });
+
+  it("an old-version node is refused after a rebuild instead of corrupting the new fold", async () => {
+    const store = new InMemoryReadModelStore();
+    const errs: unknown[] = [];
+    const old = new ReadModelService(store, { onError: (e) => errs.push(e) });
+    await old.registerFolded({ projection: ingestProjection("1") });
+    await new ReadModelService(store).registerFolded({ projection: ingestProjection("2") });
+    old.handleEvent(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await old.drain();
+    expect(String(errs[0])).toMatch(/version "1"/);
+    expect(await store.getFolded("ingest-status", [X])).toEqual([]);
+  });
+
+  it("rebuild(modelId) clears and re-folds a folded model; pins() reports its version", async () => {
+    const { service } = await boot();
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await service.catchUp([log]);
+    expect(service.pins()).toEqual({ "ingest-status": "1" });
+    const report = await service.rebuild("ingest-status", [log]);
+    expect(report.eventsScanned).toBe(1);
+    expect((await service.getMany("ingest-status", [X])).get(X)?.sequence).toBe(0);
+  });
+
+  it("rebuild un-tombstones and does not touch other models; pins carry the sensitive digest", async () => {
+    const { service } = await boot();
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await service.catchUp([log]);
+    await service.purgeFolded("ingest-status", { executionId: X });
+    await service.rebuild("ingest-status", [log]);
+    expect((await service.getMany("ingest-status", [X])).size).toBe(1);
+
+    const sens = new ReadModelService(new InMemoryReadModelStore(), {
+      sensitive: { STEP_COMPLETED: ["step"] },
+    });
+    await sens.registerFolded({ projection: ingestProjection() });
+    expect(sens.pins()["ingest-status"]).toMatch(/^1\+sens\./);
+  });
+});
