@@ -20,6 +20,7 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
+    "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*"
   },

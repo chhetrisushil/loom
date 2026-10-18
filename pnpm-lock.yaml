@@ -1985,6 +1985,9 @@ importers:
 
   plugins/read-model:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../../packages/classify
       '@loom/core':
         specifier: workspace:*
         version: link:../../packages/core
