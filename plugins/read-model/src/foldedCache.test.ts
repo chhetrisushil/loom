@@ -263,3 +263,54 @@ describe("FoldedModelEngine — live-path state cache (D15)", () => {
     });
   });
 });
+
+describe("FoldedModelEngine — the cache never weakens correctness (D15, 6c)", () => {
+  it("after a purge the next live event reads the store, advances the tombstone and keeps no state", async () => {
+    const store = new CountingStore();
+    const engine = await node(store);
+    engine.handle(step(X, 0));
+    await engine.drain();
+    expect(await engine.purge("ingest-status", { executionId: X })).toBe(1);
+    expect(engine.cacheSize()).toBe(0);
+    store.reads = 0;
+    engine.handle(step(X, 1));
+    await engine.drain();
+    expect(store.reads).toBe(1); // no cached base: one store read
+    expect((await engine.getMany("ingest-status", [X])).size).toBe(0);
+    expect((await store.getFolded("ingest-status", [X]))[0]).toMatchObject({
+      state: null,
+      erased: true,
+      sequence: 1,
+    });
+  });
+
+  it("getMany never serves a node's cached base: it sees another node's progress for one store read", async () => {
+    const store = new CountingStore();
+    const a = await node(store);
+    const b = await node(store);
+    a.handle(step(X, 0));
+    await a.drain();
+    expect(a.cacheSize()).toBe(1);
+    for (const i of [1, 2]) b.handle(step(X, i));
+    await b.drain();
+    store.reads = 0;
+    const got = await a.getMany("ingest-status", [X]);
+    expect(store.reads).toBe(1);
+    expect(got.get(X)).toMatchObject({ sequence: 2, state: { steps: 3 } });
+  });
+
+  it("a direct foldBatch deletes the entry, so the next live event re-reads the store", async () => {
+    const store = new CountingStore();
+    const engine = await node(store);
+    engine.handle(step(X, 0));
+    await engine.drain();
+    expect(engine.cacheSize()).toBe(1);
+    await engine.foldBatch("ingest-status", X, await engine.mark("ingest-status", X), [step(X, 1)]);
+    expect(engine.cacheSize()).toBe(0);
+    store.reads = 0;
+    engine.handle(step(X, 2));
+    await engine.drain();
+    expect(store.reads).toBe(1);
+    expect(await stepsOf(store)).toBe(3);
+  });
+});
