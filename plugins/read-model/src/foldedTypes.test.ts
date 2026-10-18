@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import {
   DEFAULT_FOLD_CACHE_ENTRIES,
   MAX_GET_MANY,
@@ -40,4 +41,17 @@ describe("folded SPI types (ADR 0132 D6/D7)", () => {
     expect(foldedSelectorColumn({ key: "d1" })).toEqual(["app_key", "d1"]);
     expect(foldedSelectorColumn({ scope: "u1" })).toEqual(["scope", "u1"]);
   });
+});
+
+it("the in-memory reference implements every folded method (so the kit does not silently skip)", () => {
+  const s = new InMemoryReadModelStore();
+  for (const m of [
+    "beginFold",
+    "applyFolded",
+    "getFolded",
+    "getFoldedByKey",
+    "purgeFolded",
+  ] as const) {
+    expect(typeof s[m]).toBe("function");
+  }
 });

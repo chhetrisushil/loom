@@ -1,11 +1,15 @@
 import type {
+  FoldedApply,
+  FoldedApplyResult,
+  FoldedRecord,
+  FoldedSelector,
   ReadModelPage,
   ReadModelQuery,
   ReadModelRow,
   ReadModelScalar,
   ReadModelStore,
 } from "./types";
-import { assertPurgeFilter, clampQueryLimit, parseQueryCursor } from "./types";
+import { assertManyKeys, assertPurgeFilter, clampQueryLimit, parseQueryCursor } from "./types";
 
 type Cursor = [timestamp: number, sequence: number, rowId: string];
 
@@ -37,6 +41,8 @@ function matches(row: ReadModelRow, q: ReadModelQuery): boolean {
 export class InMemoryReadModelStore implements ReadModelStore {
   private readonly rows = new Map<string, Map<string, ReadModelRow>>();
   private readonly watermarks = new Map<string, Map<string, number>>();
+  private readonly foldVersions = new Map<string, string>();
+  private readonly folded = new Map<string, Map<string, FoldedRecord>>();
 
   async apply(
     modelId: string,
@@ -111,6 +117,72 @@ export class InMemoryReadModelStore implements ReadModelStore {
   async clear(modelId: string): Promise<void> {
     this.rows.delete(modelId);
     this.watermarks.delete(modelId);
+    this.folded.delete(modelId);
+    this.foldVersions.delete(modelId);
+  }
+
+  async beginFold(modelId: string, foldVersion: string): Promise<{ rebuilt: boolean }> {
+    const prior = this.foldVersions.get(modelId);
+    this.foldVersions.set(modelId, foldVersion);
+    if (prior === undefined || prior === foldVersion) return { rebuilt: false };
+    this.folded.delete(modelId);
+    return { rebuilt: true };
+  }
+
+  async applyFolded(a: FoldedApply): Promise<FoldedApplyResult> {
+    if (this.foldVersions.get(a.modelId) !== a.foldVersion) return "version-mismatch";
+    let byExec = this.folded.get(a.modelId);
+    if (byExec === undefined) {
+      byExec = new Map();
+      this.folded.set(a.modelId, byExec);
+    }
+    const prev = byExec.get(a.executionId);
+    if (prev !== undefined && prev.sequence >= a.upToSequence) return "stale";
+    byExec.set(a.executionId, {
+      executionId: a.executionId,
+      key: a.key ?? prev?.key ?? null,
+      scope: a.scope ?? prev?.scope ?? null,
+      sequence: a.upToSequence,
+      state: prev?.erased === true ? null : structuredClone(a.state),
+      erased: prev?.erased ?? false,
+    });
+    return "applied";
+  }
+
+  async getFolded(modelId: string, executionIds: readonly string[]): Promise<FoldedRecord[]> {
+    assertManyKeys(executionIds, "getFolded");
+    const byExec = this.folded.get(modelId);
+    return [...new Set(executionIds)].flatMap((id) => {
+      const r = byExec?.get(id);
+      return r === undefined ? [] : [structuredClone(r)];
+    });
+  }
+
+  async getFoldedByKey(modelId: string, keys: readonly string[]): Promise<FoldedRecord[]> {
+    assertManyKeys(keys, "getFoldedByKey");
+    const wanted = new Set(keys);
+    return [...(this.folded.get(modelId)?.values() ?? [])]
+      .filter((r) => r.key !== null && wanted.has(r.key))
+      .sort((a, b) => (a.executionId < b.executionId ? -1 : a.executionId > b.executionId ? 1 : 0))
+      .map((r) => structuredClone(r));
+  }
+
+  async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {
+    let n = 0;
+    for (const r of this.folded.get(modelId)?.values() ?? []) {
+      const hit =
+        "executionId" in selector
+          ? r.executionId === selector.executionId
+          : "key" in selector
+            ? r.key === selector.key
+            : r.scope === selector.scope;
+      if (hit && !r.erased) {
+        r.state = null; // tombstone: sequence KEPT (ADR 0132 D12)
+        r.erased = true;
+        n++;
+      }
+    }
+    return n;
   }
 }
 
