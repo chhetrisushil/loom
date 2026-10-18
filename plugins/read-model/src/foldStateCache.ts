@@ -27,10 +27,11 @@ export class FoldStateCache {
     return hit;
   }
 
+  /** Stores a private copy: the caller keeps its object and may mutate it without touching the cache. */
   put(modelId: string, executionId: string, entry: FoldBase): void {
     const k = key(modelId, executionId);
     this.entries.delete(k);
-    this.entries.set(k, entry);
+    this.entries.set(k, structuredClone(entry));
     if (this.entries.size > this.maxEntries) {
       const oldest = this.entries.keys().next().value;
       if (oldest !== undefined) this.entries.delete(oldest);
