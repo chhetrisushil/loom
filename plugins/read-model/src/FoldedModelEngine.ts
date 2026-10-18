@@ -1,6 +1,13 @@
 import { loadProjectionHandlers, projectionEventTypes } from "@loom/core";
 import type { EventEnvelope, ProjectionHandlers } from "@loom/core";
-import type { FoldedEngineOptions, FoldedReadModelDefinition, ReadModelStore } from "./types";
+import type {
+  FoldBase,
+  FoldedEngineOptions,
+  FoldedReadModelDefinition,
+  FoldedRecord,
+  ReadModelStore,
+} from "./types";
+import { FoldVersionMismatchError } from "./types";
 
 export type FoldedStore = Required<
   Pick<
@@ -27,6 +34,26 @@ export interface FoldedModel {
   handlers: ProjectionHandlers<unknown>;
   keyOf?: (executionId: string) => string | undefined;
   scopeOf?: (executionId: string) => string | undefined;
+}
+
+/** Persist-shaped state: JSON round trip per event, so incremental == batch (ADR 0132 D4). */
+function normalize(model: FoldedModel, next: unknown): unknown {
+  if (next === undefined || next === null) {
+    throw new TypeError(
+      `folded read model "${model.id}": a handler returned ${next} — state must be a JSON value other than null (null means "no handled event yet")`
+    );
+  }
+  const text = JSON.stringify(next);
+  if (text === undefined) {
+    throw new TypeError(`folded read model "${model.id}": state is not JSON-serializable`);
+  }
+  const parsed: unknown = JSON.parse(text);
+  if (parsed === null) {
+    throw new TypeError(
+      `folded read model "${model.id}": state must be a JSON value other than null (NaN/Infinity serialize to null)`
+    );
+  }
+  return parsed;
 }
 
 export class FoldedModelEngine {
@@ -76,5 +103,49 @@ export class FoldedModelEngine {
     };
     this.models.set(p.id, model);
     return { rebuilt };
+  }
+
+  async mark(modelId: string, executionId: string): Promise<FoldedRecord | undefined> {
+    return (await this.store.getFolded(modelId, [executionId]))[0];
+  }
+
+  /**
+   * Fold `events` (those past the record's watermark) and CAS-write. True when the write applied.
+   */
+  async foldBatch(
+    modelId: string,
+    executionId: string,
+    rec: FoldBase | undefined,
+    events: readonly EventEnvelope[]
+  ): Promise<boolean> {
+    const model = this.models.get(modelId);
+    if (model === undefined)
+      throw new TypeError(`read model "${modelId}" is not a registered folded model`);
+    const from = rec?.sequence ?? -1;
+    const todo = events.filter((e) => e.sequence > from);
+    if (todo.length === 0) return false;
+    const erased = rec?.erased === true;
+    // Clone the base once: a mutating handler must not touch the caller's record or cache.
+    let state: unknown = rec?.state == null ? null : structuredClone(rec.state);
+    if (!erased) {
+      // The event envelope is passed as-is; the masked copy of Task 5c owns isolating it from handlers.
+      for (const e of todo) {
+        if (!Object.hasOwn(model.handlers, e.eventType)) continue;
+        const handler = model.handlers[e.eventType]!;
+        const base = state === null ? structuredClone(model.initial) : state;
+        state = normalize(model, handler(base, e));
+      }
+    }
+    const result = await this.store.applyFolded({
+      modelId,
+      executionId,
+      upToSequence: todo[todo.length - 1]!.sequence,
+      state,
+      key: model.keyOf?.(executionId) ?? null,
+      scope: model.scopeOf?.(executionId) ?? null,
+      foldVersion: model.version,
+    });
+    if (result === "version-mismatch") throw new FoldVersionMismatchError(modelId, model.version);
+    return result === "applied";
   }
 }
