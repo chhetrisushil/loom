@@ -1,6 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
+import type { FoldedModelEngine } from "./FoldedModelEngine";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import { ReadModelService, type ReadModelServiceOptions } from "./ReadModelService";
 import { evt, ingestProjection, keyOf, scopeOf } from "./foldedFixtures";
@@ -82,12 +83,27 @@ describe("folded models: rebuild == incremental (D14)", () => {
     await prefix.s.catchUp([log]);
     expect(prefix.errors).toEqual([]);
 
-    // corrupt first: a store holding only a stale prefix, so a no-op rebuild cannot pass
+    // corrupt first, in a way a scan cannot repair: a wrong state beyond the log's end for one
+    // execution and a stray row for an execution the log has never heard of
     const rebuiltStore = new InMemoryReadModelStore();
     const rebuilt = await service(rebuiltStore, { liveSource: log });
-    await rebuilt.s.catchUp([await logOf(events.filter((e) => e.sequence < 2))]);
-    expect((await snapshot(rebuilt.s))["u1:wf:ingest-d1"]).toMatchObject({ sequence: 1 });
+    const stray = "u9:wf:ingest-zz";
+    const wrong = (executionId: string, upToSequence: number) =>
+      rebuiltStore.applyFolded({
+        modelId: "ingest-status",
+        executionId,
+        upToSequence,
+        state: { status: "failed", steps: 99 },
+        key: keyOf(executionId) ?? null,
+        scope: scopeOf(executionId) ?? null,
+        foldVersion: "1",
+      });
+    expect(await wrong("u1:wf:ingest-d1", 9)).toBe("applied");
+    expect(await wrong(stray, 3)).toBe("applied");
+    await rebuilt.s.catchUp([log]); // cannot repair: d1's watermark is already past the log
+    expect((await snapshot(rebuilt.s))["u1:wf:ingest-d1"]).toMatchObject({ sequence: 9 });
     await rebuilt.s.rebuild("ingest-status", [log]);
+    expect(await rebuiltStore.getFolded("ingest-status", [stray])).toEqual([]);
     expect(rebuilt.errors).toEqual([]);
 
     const expected = await snapshot(live.s);
@@ -193,11 +209,15 @@ describe("folded models: rebuild == incremental (D14)", () => {
         liveSource: log,
         ...(foldCache !== undefined && { foldCache }),
       });
-      const b = await service(store, { liveSource: log });
-      for (const e of events.filter((e) => e.sequence <= 2)) a.s.handleEvent(e); // A caches seq 2
+      const b = await service(store, { liveSource: seenBy(events.filter((e) => e.sequence <= 3)) });
+      for (const e of events.filter((e) => e.sequence <= 2)) a.s.handleEvent(e); // A's cached base is seq 1 (0 and 2 are unhandled)
       await a.s.drain();
       for (const e of events.filter((e) => e.sequence === 3)) b.s.handleEvent(e); // B advances to 3
       await b.s.drain();
+      // premise: A holds a base (cache on) strictly below the store's watermark
+      const cacheOf = (n: typeof a) => (n.s as unknown as { folded: FoldedModelEngine }).folded;
+      expect(cacheOf(a).cacheSize()).toBe(foldCache === false ? 0 : 1);
+      expect((await store.getFolded("ingest-status", [X0]))[0]?.sequence).toBe(3);
       for (const e of events.filter((e) => e.sequence === 4)) a.s.handleEvent(e); // A's base is stale
       await a.s.drain();
       expect([...a.errors, ...b.errors]).toEqual([]);
