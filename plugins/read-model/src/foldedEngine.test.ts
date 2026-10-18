@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FoldedModelEngine } from "./FoldedModelEngine";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 import { evt, ingestProjection, keyOf, scopeOf } from "./foldedFixtures";
+import { FoldGapError, FoldVersionMismatchError } from "./types";
 
 const X = "u1:wf:ingest-d1";
 const ID = "ingest-status";
@@ -104,28 +105,103 @@ describe("FoldedModelEngine — the contiguous fold (D3, D4)", () => {
     );
     expect(await stored(store)).toBeUndefined();
   });
+
+  it("refuses to fold over a hole: the first event must follow the watermark", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    await expect(
+      engine.foldBatch(ID, X, undefined, [evt(X, 2, "STEP_COMPLETED", { step: "late" })])
+    ).rejects.toBeInstanceOf(FoldGapError);
+    expect(await stored(store)).toBeUndefined(); // nothing was written
+  });
+
+  it("folds across a hole only when the caller vouches for it (`accounted`)", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    // events 0..1 were observed as unhandled by this node; 2 is the first handled one
+    await engine.foldBatch(ID, X, undefined, [evt(X, 2, "STEP_COMPLETED", { step: "c" })], 1);
+    expect(await stored(store)).toMatchObject({ sequence: 2, state: { steps: 1 } });
+  });
 });
 
 describe("FoldedModelEngine — hardening", () => {
-  it("D5: same version keeps rows, a new version rebuilds", async () => {
+  const step = (n: number) => evt(X, n, "STEP_COMPLETED", { step: `s${n}` });
+
+  it("refuses a mid-batch hole before writing", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    await expect(
+      engine.foldBatch(ID, X, undefined, [step(0), step(1), step(3)])
+    ).rejects.toBeInstanceOf(FoldGapError);
+    expect(await stored(store)).toBeUndefined();
+  });
+
+  it("refuses duplicate and unsorted batches", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    await expect(
+      engine.foldBatch(ID, X, undefined, [step(0), step(1), step(1)])
+    ).rejects.toBeInstanceOf(FoldGapError);
+    await expect(engine.foldBatch(ID, X, undefined, [step(1), step(0)])).rejects.toBeInstanceOf(
+      FoldGapError
+    );
+    expect(await stored(store)).toBeUndefined();
+  });
+
+  it("a mutating handler leaves the caller's base unchanged", async () => {
+    const { engine } = boot();
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = (s: { steps: number }) => {
+      s.steps++;
+      return s;
+    };
+    await engine.register({ projection: p });
+    const base = { sequence: 0, state: { status: "running", steps: 5 }, erased: false };
+    await engine.foldBatch(ID, X, base, [step(1)]);
+    expect(base.state).toStrictEqual({ status: "running", steps: 5 });
+  });
+
+  it("D5: same version keeps rows, a new version rebuilds, the old engine is refused", async () => {
     const store = new InMemoryReadModelStore();
-    const boot1 = (v: string) =>
-      new FoldedModelEngine(store, (e) => {
-        throw e;
-      }).register({ projection: ingestProjection(v) });
-    expect(await boot1("1")).toEqual({ rebuilt: false });
-    await store.applyFolded({
-      modelId: ID,
-      executionId: X,
-      upToSequence: 0,
-      state: { steps: 1 },
-      key: null,
-      scope: null,
-      foldVersion: "1",
+    const old = new FoldedModelEngine(store, (e) => {
+      throw e;
     });
-    expect(await boot1("1")).toEqual({ rebuilt: false });
+    expect(await old.register({ projection: ingestProjection("1") })).toEqual({ rebuilt: false });
+    await old.foldBatch(ID, X, undefined, [step(0)]);
+    const same = new FoldedModelEngine(store, (e) => {
+      throw e;
+    });
+    expect(await same.register({ projection: ingestProjection("1") })).toEqual({ rebuilt: false });
     expect(await stored(store)).toBeDefined();
-    expect(await boot1("2")).toEqual({ rebuilt: true });
+    const next = new FoldedModelEngine(store, (e) => {
+      throw e;
+    });
+    expect(await next.register({ projection: ingestProjection("2") })).toEqual({ rebuilt: true });
+    expect(await stored(store)).toBeUndefined();
+    await expect(old.foldBatch(ID, X, undefined, [step(0)])).rejects.toBeInstanceOf(
+      FoldVersionMismatchError
+    );
+    expect(await stored(store)).toBeUndefined();
+  });
+
+  it("does not resolve handlers through the prototype", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    await engine.foldBatch(ID, X, undefined, [
+      evt(X, 0, "constructor"),
+      evt(X, 1, "hasOwnProperty"),
+    ]);
+    expect(await stored(store)).toMatchObject({ sequence: 1, state: null });
+  });
+
+  it("NaN/Infinity (serialised to null) is rejected", async () => {
+    const { store, engine } = boot();
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = () => Number.NaN;
+    await engine.register({ projection: p });
+    await expect(engine.foldBatch(ID, X, undefined, [step(0)])).rejects.toThrow(
+      /state must be a JSON value/
+    );
     expect(await stored(store)).toBeUndefined();
   });
 
@@ -133,5 +209,35 @@ describe("FoldedModelEngine — hardening", () => {
     const { engine } = boot();
     const bad = { projection: { ...ingestProjection(), version: 3 as never } };
     await expect(engine.register(bad)).rejects.toThrow(/version is required/);
+  });
+
+  it("a throwing handler mid-batch stores nothing", async () => {
+    const { store, engine } = boot();
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).EXECUTION_FAILED = () => {
+      throw new Error("boom");
+    };
+    await engine.register({ projection: p });
+    await expect(
+      engine.foldBatch(ID, X, undefined, [step(0), evt(X, 1, "EXECUTION_FAILED")])
+    ).rejects.toThrow("boom");
+    expect(await stored(store)).toBeUndefined();
+  });
+
+  it("a negative accounted does not vouch for a hole", async () => {
+    const { engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    await expect(engine.foldBatch(ID, X, undefined, [step(2)], 0)).rejects.toBeInstanceOf(
+      FoldGapError
+    );
+  });
+
+  it("an erased record folds nothing but its watermark advances", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    await engine.foldBatch(ID, X, undefined, [step(0)]);
+    const erased = { sequence: 0, state: null, erased: true };
+    await engine.foldBatch(ID, X, erased, [step(1)]);
+    expect(await stored(store)).toMatchObject({ sequence: 1, state: null });
   });
 });
