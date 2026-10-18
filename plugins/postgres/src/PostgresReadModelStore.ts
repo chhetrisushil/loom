@@ -47,14 +47,12 @@ export class PostgresReadModelStore implements ReadModelStore {
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;
   private readonly names: FoldedNames;
-  private readonly foldedOptions: FoldedTableOptions;
   private readonly manageSchema: boolean;
   private foldedReady: Promise<void> | undefined;
 
   constructor(config: PgConfig, options: PostgresReadModelStoreOptions = {}) {
     const { manageSchema = true, ...placement } = options;
     this.names = foldedNames(placement); // validates identifiers up front
-    this.foldedOptions = placement;
     this.manageSchema = manageSchema;
     const { pool, owned } = toPool(config);
     this.pool = pool;
@@ -66,7 +64,7 @@ export class PostgresReadModelStore implements ReadModelStore {
   protected async ensureFolded(): Promise<void> {
     await this.ready;
     if (!this.manageSchema) return;
-    this.foldedReady ??= ensureFoldedTables(this.pool, this.foldedOptions).catch((err) => {
+    this.foldedReady ??= ensureFoldedTables(this.pool, this.names).catch((err) => {
       this.foldedReady = undefined;
       throw err;
     });
@@ -208,9 +206,24 @@ export class PostgresReadModelStore implements ReadModelStore {
     await this.pool.query("DELETE FROM read_model_rows WHERE model_id = $1", [modelId]);
     await this.pool.query("DELETE FROM read_model_watermarks WHERE model_id = $1", [modelId]);
     // Folded tables: drop this model's rows only if they exist; never create them (F8, D10).
-    for (const table of [this.names.state, this.names.folds]) {
-      const { rows } = await this.pool.query("SELECT to_regclass($1) AS t", [table]);
-      if (rows[0]?.t) await this.pool.query(`DELETE FROM ${table} WHERE model_id = $1`, [modelId]);
+    // Header first, both deletes in one transaction: applyFolded takes FOR SHARE on the header row.
+    const probe = await this.pool.query("SELECT to_regclass($1) AS s, to_regclass($2) AS f", [
+      this.names.state,
+      this.names.folds,
+    ]);
+    const { s, f } = probe.rows[0] ?? {};
+    if (!s && !f) return;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      if (f) await client.query(`DELETE FROM ${this.names.folds} WHERE model_id = $1`, [modelId]);
+      if (s) await client.query(`DELETE FROM ${this.names.state} WHERE model_id = $1`, [modelId]);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
     }
   }
 
