@@ -38,6 +38,20 @@ function matches(row: ReadModelRow, q: ReadModelQuery): boolean {
  * default. Rows are deep-cloned on write and read (value semantics, matching
  * the JSON round-trip of the durable backends).
  */
+/** Code-point order (== UTF-8 byte order); isomorphic, no Buffer. JS `<` compares UTF-16 units. */
+function compareCodePoints(a: string, b: string): number {
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    const x = a.codePointAt(i) as number;
+    const y = b.codePointAt(j) as number;
+    if (x !== y) return x < y ? -1 : 1;
+    i += x > 0xffff ? 2 : 1;
+    j += y > 0xffff ? 2 : 1;
+  }
+  return a.length - i === 0 && b.length - j === 0 ? 0 : a.length - i === 0 ? -1 : 1;
+}
+
 export class InMemoryReadModelStore implements ReadModelStore {
   private readonly rows = new Map<string, Map<string, ReadModelRow>>();
   private readonly watermarks = new Map<string, Map<string, number>>();
@@ -165,7 +179,7 @@ export class InMemoryReadModelStore implements ReadModelStore {
       [...(this.folded.get(modelId)?.values() ?? [])]
         .filter((r) => r.key !== null && wanted.has(r.key))
         // UTF-8 bytewise == code-point order (ADR 0132); JS `<` would compare UTF-16 code units.
-        .sort((a, b) => Buffer.compare(Buffer.from(a.executionId), Buffer.from(b.executionId)))
+        .sort((a, b) => compareCodePoints(a.executionId, b.executionId))
         .map((r) => structuredClone(r))
     );
   }
