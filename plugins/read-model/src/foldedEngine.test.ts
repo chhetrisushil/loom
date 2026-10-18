@@ -1,3 +1,4 @@
+import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { FoldedModelEngine } from "./FoldedModelEngine";
@@ -10,7 +11,7 @@ const X = "u1:wf:ingest-d1";
 const ID = "ingest-status";
 
 function boot(
-  onError: (e: unknown) => void = (e) => {
+  onError: (e: unknown, ev: EventEnvelope) => void = (e) => {
     throw e;
   }
 ) {
@@ -814,7 +815,9 @@ describe("FoldedModelEngine — sensitive-state guard (D11)", () => {
 
   it("hands onError an event without the refused secret", async () => {
     const seen: unknown[] = [];
-    const { engine } = boot((_e, ev) => seen.push(ev));
+    const { engine } = boot((_e, ev) => {
+      seen.push(ev);
+    });
     await engine.register({
       projection: leaky("mirror"),
       sensitive: { STEP_COMPLETED: ["email"] },
