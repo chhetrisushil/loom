@@ -1,4 +1,4 @@
-import type { EventEnvelope } from "@loom/core";
+import type { EventEnvelope, ProjectionDefinition } from "@loom/core";
 
 // ── RM (db-copilot infra, issue #183) — durable cross-execution read models ───
 //
@@ -97,8 +97,9 @@ export function clampQueryLimit(limit: number | undefined): number {
  *   before: callers reach it through `ReadModelService.purge`, which REFUSES loudly
  *   when the backend cannot do it rather than deleting nothing and returning, which is
  *   the one behaviour an erasure path must never have.
+ * - `1.2.0`: five optional folded-state methods (ADR 0132); clear() also drops folded state.
  */
-export const READ_MODEL_STORE_SPI_VERSION = "1.1.0";
+export const READ_MODEL_STORE_SPI_VERSION = "1.2.0";
 
 /**
  * Raised when a purge is asked of a backend that does not implement it. Typed rather
@@ -216,9 +217,23 @@ export interface ReadModelStore {
    * a source that tolerates shredded payloads, because the authoritative read of a
    * shredded subject throws. See `docs/compliance.md` and `erasure.test.ts`; a
    * row-granular purge is deferred behind a measured cost
-   * (ADR 0092 D6).
+   * (ADR 0092 D6). Also drops the model's folded states and fold header.
    */
   clear(modelId: string): Promise<void>;
+  /**
+   * OPTIONAL folded-state methods (SPI 1.2.0, ADR 0132). All five or none.
+   * `beginFold`: create the model header, or — if `foldVersion` differs from the stored one —
+   * delete the model's folded states and swap the header in ONE transaction (`rebuilt: true`).
+   */
+  beginFold?(modelId: string, foldVersion: string): Promise<{ rebuilt: boolean }>;
+  /** Monotonic compare-and-set of one execution's state + watermark. See ADR 0132 D3. */
+  applyFolded?(a: FoldedApply): Promise<FoldedApplyResult>;
+  /** Records for the given executions (absent ones omitted), input order. Routes through `assertManyKeys`. */
+  getFolded?(modelId: string, executionIds: readonly string[]): Promise<FoldedRecord[]>;
+  /** Records whose `key` is in `keys`, ordered by executionId in byte (code-point) order. Routes through `assertManyKeys`. */
+  getFoldedByKey?(modelId: string, keys: readonly string[]): Promise<FoldedRecord[]>;
+  /** Tombstone (`state = NULL, erased = true`, sequence KEPT); returns newly tombstoned count. */
+  purgeFolded?(modelId: string, selector: FoldedSelector): Promise<number>;
   close?(): Promise<void>;
 }
 
@@ -237,4 +252,153 @@ export interface CatchUpReport {
   executionsScanned: number;
   eventsScanned: number;
   rowsApplied: number;
+}
+
+// ── ADR 0132 — folded-state read models ──────────────────────────────────────
+
+/** A folded model: the `projection$` fold plus pure id-derived key/scope (D1, D2). */
+export interface FoldedReadModelDefinition<TState = unknown> {
+  /** id, version (REQUIRED here), initialState, handlers — straight from `projection$`. */
+  projection: ProjectionDefinition<TState>;
+  /** App key (e.g. documentId) derived from the executionId ONLY — never from event data. */
+  keyOf?: (executionId: string) => string | undefined;
+  /** Tenant/RLS scope derived from the executionId ONLY. */
+  scopeOf?: (executionId: string) => string | undefined;
+  /** Payload dot-paths a handler must never see (ADR 0132 D11); unioned with the service's `sensitive`. */
+  sensitive?: SensitiveMap;
+}
+
+/** eventType -> payload dot-paths (`[]` wildcards allowed): the shape of `EncryptingEventStore`'s `sensitive` option. */
+export type SensitiveMap = Readonly<Record<string, readonly string[]>>;
+
+/** One stored folded state. `state === null` means "no handled event yet" or erased. */
+export interface FoldedRecord {
+  executionId: string;
+  key: string | null;
+  scope: string | null;
+  /** The watermark: highest sequence folded into `state`. */
+  sequence: number;
+  state: unknown | null;
+  erased: boolean;
+}
+
+/** What a fold starts from: a stored record, or a cached copy of one (ADR 0132 D15). */
+export type FoldBase = Pick<FoldedRecord, "sequence" | "state" | "erased">;
+
+export interface FoldedApply {
+  modelId: string;
+  executionId: string;
+  upToSequence: number;
+  state: unknown | null;
+  key: string | null;
+  scope: string | null;
+  /** The writer's fold version; refused when the model header says otherwise. */
+  foldVersion: string;
+}
+
+/** `stale` = an equal-or-lower sequence (idempotent re-apply or a lost race). */
+export type FoldedApplyResult = "applied" | "stale" | "version-mismatch";
+
+export type FoldedSelector = { executionId: string } | { key: string } | { scope: string };
+
+/** What `getMany` / `getManyByKey` return per execution. */
+export interface FoldedState<TState = unknown> {
+  executionId: string;
+  key: string | null;
+  sequence: number;
+  state: TState;
+}
+
+/** Hard ceiling on keys per batch read. */
+export const MAX_GET_MANY = 1_000;
+
+/** Validate a batch-read key list. Backends MUST route through this (SPI contract). */
+export function assertManyKeys(keys: readonly string[], what: string): void {
+  if (keys.length > MAX_GET_MANY) {
+    throw new RangeError(
+      `read-model ${what}: at most ${MAX_GET_MANY} keys per call (got ${keys.length})`
+    );
+  }
+  for (const k of keys) {
+    if (typeof k !== "string" || k === "") {
+      throw new TypeError(`read-model ${what}: keys must be non-empty strings`);
+    }
+  }
+}
+
+/** Per-node state cache for the live apply path (ADR 0132 D15). */
+export interface FoldCacheOptions {
+  /** Max (model, execution) entries on this node. 0 disables. Default {@link DEFAULT_FOLD_CACHE_ENTRIES}. */
+  maxEntries?: number;
+}
+export const DEFAULT_FOLD_CACHE_ENTRIES = 1_024;
+
+/** Everything the engine needs beyond the store and `onError`. */
+export interface FoldedEngineOptions {
+  /** Fills a gap in the live tail (D4) — normally this node's own event store. */
+  liveSource?: ReadModelEventSource;
+  /** Service-wide sensitive paths (D11); unioned with each model's own. */
+  sensitive?: SensitiveMap;
+  /** `false` disables the state cache (D15). */
+  cache?: FoldCacheOptions | false;
+}
+
+/** Options shared by `getMany` / `getManyByKey` (engine and service). */
+export interface FoldedReadOptions {
+  /** Fold each execution's log tail past its watermark first (read-your-writes, D8). */
+  refreshFrom?: readonly ReadModelEventSource[];
+  /** Executions refreshed in parallel. Default 8. */
+  concurrency?: number;
+}
+
+/** The options object of `refresh` (ADR 0132 D8). */
+export interface RefreshOptions {
+  /** Executions refreshed in parallel. Default 8. */
+  concurrency?: number;
+}
+
+/** The one column a purge selector names, with its value. Backends use it so the mapping lives in one place. */
+export function foldedSelectorColumn(
+  selector: FoldedSelector
+): readonly ["execution_id" | "app_key" | "scope", string] {
+  if ("executionId" in selector) return ["execution_id", selector.executionId];
+  if ("key" in selector) return ["app_key", selector.key];
+  return ["scope", selector.scope];
+}
+
+export class FoldedUnsupportedError extends Error {
+  readonly name = "FoldedUnsupportedError";
+  constructor(readonly modelId: string) {
+    super(
+      `read model "${modelId}": this backend does not implement the folded-state methods (ReadModelStore SPI ${READ_MODEL_STORE_SPI_VERSION}) — use InMemory/Sqlite/Postgres or implement beginFold/applyFolded/getFolded/getFoldedByKey/purgeFolded`
+    );
+  }
+}
+
+/** A gap in a live tail with no `liveSource` to fill it; the next catch-up heals it. */
+export class FoldGapError extends Error {
+  readonly name = "FoldGapError";
+  constructor(
+    readonly modelId: string,
+    readonly executionId: string,
+    readonly watermark: number,
+    readonly sequence: number
+  ) {
+    super(
+      `folded model "${modelId}": execution "${executionId}" is at ${watermark} but event ${sequence} arrived — run catchUp() or configure a liveSource`
+    );
+  }
+}
+
+/** This node's fold version is not the model's current one (a rolling deploy's old node). */
+export class FoldVersionMismatchError extends Error {
+  readonly name = "FoldVersionMismatchError";
+  constructor(
+    readonly modelId: string,
+    readonly version: string
+  ) {
+    super(
+      `folded model "${modelId}": version "${version}" is not the store's current fold version — this node's apply was refused`
+    );
+  }
 }
