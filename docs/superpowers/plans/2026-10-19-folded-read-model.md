@@ -285,29 +285,14 @@ Update the `clear` doc: "also drops the model's folded states and fold header". 
 Run: `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedTypes.test.ts && pnpm --filter @loom/plugin-read-model build`
 Expected: PASS, build clean.
 
-- [ ] **Step 5: Repo guards (F5).** ADR 0132 is a new record, so two fitness tests in `packages/spec` fail until the docs say so: `changelogCoverage.test.ts` (an ADR that is not Superseded/Withdrawn/Rejected, number >= 80, must be mentioned in `CHANGELOG.md` as `ADR 0132` or `adr/0132`; "Proposed" is NOT exempt) and `adrIndexDocs.test.ts` (every tracked `.md`/`.org` that claims `(0001–NNNN` must end at the newest ADR, and `docs/architecture.md` must mention `0132`). Do all four edits in this PR, so every PR in the stack keeps `pnpm test` green:
-
-  1. `CHANGELOG.md`, first bullet under `## [Unreleased]` → `### Added`:
-
-```markdown
-- **[ADR 0132](docs/adr/0132-folded-state-read-model.md): folded-state read models for `@loom/plugin-read-model`, SPI 1.2.0 types (no kernel, ABI or `EVENT_SCHEMA` change).** The decision record (durable per-execution `projection$` folds with a monotonic compare-and-set, a sensitive-state guard and a bounded live-path cache) and its first slice: the folded types and five OPTIONAL `ReadModelStore` methods (`READ_MODEL_STORE_SPI_VERSION` 1.1.0 → 1.2.0; a backend that omits them behaves as before). Later slices (conformance kit, in-memory / SQLite / Postgres backends, `registerFolded` / `getMany` / `getManyByKey` / `refresh` / `purgeFolded`) extend this entry as they land; Task 13b rewrites it as shipped.
-```
-
-  2. `README.org`, `docs/README.md`, `docs/architecture.md`: change the range end in `0001–0131` to `0001–0132` (one claim each; `grep -n '0001–0131' README.org docs/README.md docs/architecture.md`).
-  3. `docs/architecture.md`: after the `**0131**` bullet of the decision-history list add:
-
-```markdown
-  - **0132** folded-state read models (Proposed): durable per-execution `projection$` folds in `@loom/plugin-read-model` — one state row whose sequence is the watermark, a monotonic compare-and-set so nodes converge without locks, a sensitive-state guard, a bounded live-path cache, and `ReadModelStore` SPI 1.2.0 (kernel unchanged)
-```
-
-  4. Verify: `pnpm --filter @loom/spec exec vitest run src/changelogCoverage.test.ts src/adrIndexDocs.test.ts` → PASS.
+- [ ] **Step 5: Repo guards (F5).** The docs PR already added the ADR 0132 CHANGELOG entry and bumped the `0001–0132` ranges and the `architecture.md` bullet (so `changelogCoverage` and `adrIndexDocs` pass on every PR). Here, extend that CHANGELOG entry: change "(decision record; no code change yet)" to "(first slice: the folded types and SPI 1.2.0)" and append one sentence naming the five optional methods and that a backend omitting them behaves as before. Verify: `pnpm --filter @loom/spec exec vitest run src/changelogCoverage.test.ts src/adrIndexDocs.test.ts` → PASS.
 
 - [ ] **Step 6: Format and commit**
 
 ```bash
 npx biome check --write plugins/read-model/src/types.ts plugins/read-model/src/index.ts plugins/read-model/src/foldedTypes.test.ts
 pnpm --filter @loom/plugin-read-model exec vitest run src/foldedTypes.test.ts
-git add plugins/read-model/src/types.ts plugins/read-model/src/index.ts plugins/read-model/src/foldedTypes.test.ts CHANGELOG.md README.org docs/README.md docs/architecture.md
+git add plugins/read-model/src/types.ts plugins/read-model/src/index.ts plugins/read-model/src/foldedTypes.test.ts CHANGELOG.md
 git commit -m "feat(read-model): folded-state SPI types, SPI 1.2.0 (ADR 0132 D1/D6/D7)"
 ```
 (append the Co-Authored-By trailer from Global Constraints)
