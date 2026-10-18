@@ -425,7 +425,51 @@ describe("ReadModelService folded models — refresh, erasure, rebuild, pins", (
     expect((await service.getMany("ingest-status", [X])).get(X)?.sequence).toBe(0);
   });
 
-  it("rebuild un-tombstones and does not touch other models; pins carry the sensitive digest", async () => {
+  it("rebuild leaves other row and folded models untouched", async () => {
+    const { store, service } = await boot();
+    service.register({
+      id: "rows",
+      kinds: ["ROW_EVT"],
+      indexes: ["n"],
+      extract: () => [{ fields: { n: "1" } }],
+    });
+    await service.registerFolded({
+      projection: { ...ingestProjection(), id: "other", name: "Other" },
+      keyOf,
+      scopeOf,
+    });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await log.append(evt(X, 1, "ROW_EVT", {}));
+    await service.catchUp([log]);
+    const rowsBefore = (await service.query("rows")).rows.length;
+    expect(rowsBefore).toBe(1);
+    const otherBefore = await store.getFolded("other", [X]);
+    const spy = vi.spyOn(store, "clear");
+    await service.rebuild("ingest-status", [log]);
+    expect(spy.mock.calls.map((c) => c[0])).toEqual(["ingest-status"]);
+    expect((await service.query("rows")).rows.length).toBe(rowsBefore);
+    expect(await store.getFolded("other", [X])).toEqual(otherBefore);
+  });
+
+  it("rebuild of a row model still works with a folded engine registered; unknown ids reject", async () => {
+    const { service } = await boot();
+    service.register({
+      id: "rows",
+      kinds: ["ROW_EVT"],
+      indexes: ["n"],
+      extract: () => [{ fields: { n: "1" } }],
+    });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "ROW_EVT", {}));
+    await service.catchUp([log]);
+    const report = await service.rebuild("rows", [log]);
+    expect(report.eventsScanned).toBe(1);
+    expect((await service.query("rows")).rows.length).toBe(1);
+    await expect(service.rebuild("unknown", [log])).rejects.toThrow(TypeError);
+  });
+
+  it("rebuild resurrects purged state from a plaintext log (D12: erasure needs a shredding-tolerant source)", async () => {
     const { service } = await boot();
     const log = new InMemoryAsyncEventStore();
     await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
@@ -433,7 +477,56 @@ describe("ReadModelService folded models — refresh, erasure, rebuild, pins", (
     await service.purgeFolded("ingest-status", { executionId: X });
     await service.rebuild("ingest-status", [log]);
     expect((await service.getMany("ingest-status", [X])).size).toBe(1);
+  });
 
+  it("rebuild over a shredded payload with a skipping handler does not re-derive the erased value", async () => {
+    const store = new InMemoryReadModelStore();
+    const service = new ReadModelService(store);
+    const p = ingestProjection();
+    await service.registerFolded({
+      projection: {
+        ...p,
+        handlers: {
+          ...p.handlers,
+          STEP_COMPLETED: (s, e) => {
+            const step = (e.payload as { step: unknown }).step;
+            if (typeof step !== "string") return s; // { $shredded: true }: skip, not data
+            return { ...s, status: "running", steps: s.steps + 1, last: step };
+          },
+        },
+      },
+      keyOf,
+      scopeOf,
+    });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: { $shredded: true } }));
+    await service.catchUp([log]);
+    await service.purgeFolded("ingest-status", { executionId: X });
+    await service.rebuild("ingest-status", [log]);
+    const got = (await service.getMany("ingest-status", [X])).get(X);
+    expect(got?.state).toEqual({ status: "queued", steps: 0 });
+    expect(JSON.stringify(got)).not.toContain("shredded-secret");
+  });
+
+  it("a live event arriving during rebuild never folds over the cleared prefix", async () => {
+    const errs: unknown[] = [];
+    const { service } = await boot({ onError: (e) => errs.push(e) });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await log.append(evt(X, 1, "STEP_COMPLETED", { step: "b" }));
+    await service.catchUp([log]);
+    const rebuilding = service.rebuild("ingest-status", [log]);
+    service.handleEvent(evt(X, 1, "STEP_COMPLETED", { step: "b" }));
+    await rebuilding;
+    await service.drain();
+    for (const e of errs) expect(e).toBeInstanceOf(FoldGapError);
+    await service.catchUp([log]); // heals whatever the live event could not apply
+    const got = (await service.getMany("ingest-status", [X])).get(X);
+    expect(got?.sequence).toBe(1);
+    expect(got?.state).toMatchObject({ steps: 2 });
+  });
+
+  it("pins carry the sensitive-map digest", async () => {
     const sens = new ReadModelService(new InMemoryReadModelStore(), {
       sensitive: { STEP_COMPLETED: ["step"] },
     });

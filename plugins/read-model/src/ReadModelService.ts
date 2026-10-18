@@ -276,8 +276,10 @@ export class ReadModelService {
 
   /**
    * Erase folded state by exactly one of executionId / key / scope (D12). A tombstone for an
-   * execution that exists; rebuild un-tombstones — see ADR 0132 D12 for the tolerant-source
-   * obligation.
+   * execution that exists; `rebuild` UN-tombstones it and re-derives the state from the log
+   * whenever the source still holds the plaintext (ADR 0132 D12). An erasure that must survive
+   * a rebuild needs the log itself shredded (ADR 0092 D6) and rebuilds read through a source
+   * that tolerates shredded payloads, with handlers treating `{ $shredded: true }` as skip.
    */
   async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {
     return this.engine(modelId).purge(modelId, selector);
@@ -378,7 +380,15 @@ export class ReadModelService {
     return checkVersionPins(recorded, scoped);
   }
 
-  /** RM-2 — the read model is a cache: drop it and re-derive from the log. */
+  /**
+   * RM-2 — the read model is a cache: drop it and re-derive from the log.
+   *
+   * Erasure caveat (ADR 0132 D12 / ADR 0092 D6): for a folded model this also drops its
+   * tombstones, so state erased with `purgeFolded` is re-derived if the source still holds the
+   * plaintext. For an erasure-safe rebuild, read through a source that tolerates shredded
+   * payloads (`onShredded: "tolerate"`), and make handlers treat `{ $shredded: true }` as
+   * skip, never as data.
+   */
   async rebuild(modelId: string, sources: readonly ReadModelEventSource[]): Promise<CatchUpReport> {
     if (this.folded?.has(modelId)) {
       // Gated reset (drops the frontier under the gate), then a scan of this model alone.
