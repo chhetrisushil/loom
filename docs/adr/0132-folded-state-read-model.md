@@ -388,6 +388,12 @@ seatbelt for a declared classification, not a data-loss-prevention scanner. The 
 state holds identifiers, enums, counters and timestamps; D12's purge is still the erasure path for whatever
 slips through. There is no off switch in v1.
 
+(f) **Lifted-copy detection needs the decrypted value.** On an at-rest source (a raw log whose sealed fields
+are still cipher envelopes) only masking applies: the handler never sees the secret, but there is nothing to
+compare a copy against, so a duplicate carried in an undeclared plain field is stored. The same event
+arriving live, or through the decrypting store, is refused. (g) On the live feed with no declared map, a
+sealed field whose seal marker is absent reaches the handler as delivered; declare the map to protect it.
+
 ### D12 — Erasure: `purgeFolded` tombstones, never deletes the watermark (extends ADR 0093 D2)
 
 ```ts
@@ -427,7 +433,9 @@ The store kit pins the storage half (monotonic, idempotent, version guard). A se
 fold half: for an event log with interleaved executions, (a) incremental live apply, (b) one catch-up,
 (c) catch-up after a partial prefix, (d) two services over one store applying the same events concurrently,
 and (e) `rebuild` all yield byte-identical states. Replay never reads a folded model (queries are reads of
-a cache, unrecorded), so determinism of the kernel is untouched by construction.
+a cache, unrecorded), so determinism of the kernel is untouched by construction. Caveat (D11): a model
+rebuilt from an at-rest source can hold a copy of a sealed value that a decrypted fold would refuse, so
+catch-up and rebuild should prefer decrypted sources.
 
 ### D15 — A bounded per-node state cache on the live apply path (owner decision, 2026-10-19)
 
