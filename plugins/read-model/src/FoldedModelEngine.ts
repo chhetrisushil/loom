@@ -3,7 +3,7 @@ import type { EventEnvelope, ProjectionHandlers } from "@loom/core";
 import { FoldStateCache } from "./foldStateCache";
 import { effectiveFoldVersion, mergeSensitive } from "./sensitiveConfig";
 import { foldView } from "./sensitiveInput";
-import { SensitiveStateError, assertStateClean } from "./sensitiveState";
+import { assertStateClean } from "./sensitiveState";
 import type {
   FoldBase,
   FoldedApplyResult,
@@ -45,7 +45,7 @@ export function foldedCapable(store: ReadModelStore): store is ReadModelStore & 
 
 /** Live contiguity pointers kept per node (ADR 0132 D4). Losing one costs a store read, never correctness. */
 const FRONTIER_MAX = 10_000;
-/** The event with payload and metadata removed: what `onError` sees for a sensitive-state refusal. */
+/** The event with payload and metadata removed: what the folded engine's `onError` always sees (any error kind). */
 const withheld = (e: EventEnvelope): EventEnvelope => {
   const { payload: _p, metadata: _m, ...rest } = e;
   return { ...rest, payload: null } as EventEnvelope;
@@ -456,8 +456,9 @@ export class FoldedModelEngine {
 
   /**
    * Live tail: the engine is shown EVERY event of an execution (ADR 0132 D4). Serialized per
-   * (model, execution); errors go to `onError`, never into the pipeline. For a `SensitiveStateError`
-   * the event passed to `onError` has its payload and metadata removed (the refused secret is never handed on).
+   * (model, execution); errors go to `onError`, never into the pipeline. For EVERY error kind the event
+   * passed to `onError` has its payload and metadata removed (ids, type and sequence only), so a logger
+   * can never print a secret.
    */
   handle(event: EventEnvelope): void {
     for (const model of this.models.values()) {
@@ -465,8 +466,8 @@ export class FoldedModelEngine {
         (err) => {
           // A throwing onError is swallowed: it must not become an unhandled rejection.
           try {
-            // A guard refusal must not hand the plaintext event to onError (it may be logged).
-            this.onError(err, err instanceof SensitiveStateError ? withheld(event) : event);
+            // Never hand the plaintext event to onError (it may be logged).
+            this.onError(err, withheld(event));
           } catch {
             /* swallowed by design */
           }
