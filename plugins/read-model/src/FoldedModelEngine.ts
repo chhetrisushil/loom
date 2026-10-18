@@ -7,7 +7,7 @@ import type {
   FoldedRecord,
   ReadModelStore,
 } from "./types";
-import { FoldVersionMismatchError } from "./types";
+import { FoldGapError, FoldVersionMismatchError } from "./types";
 
 export type FoldedStore = Required<
   Pick<
@@ -111,12 +111,17 @@ export class FoldedModelEngine {
 
   /**
    * Fold `events` (those past the record's watermark) and CAS-write. True when the write applied.
+   * The first event folded must be `watermark + 1`, or at most `accounted + 1` when the caller has
+   * itself accounted for the events up to `accounted` (unhandled ones; Task 4a2). A hole is a
+   * `FoldGapError` and nothing is written (ADR 0132 D4, ADR 0058 D2: the watermark may advance past
+   * events no handler matched, but never past events nobody has seen).
    */
   async foldBatch(
     modelId: string,
     executionId: string,
     rec: FoldBase | undefined,
-    events: readonly EventEnvelope[]
+    events: readonly EventEnvelope[],
+    accounted?: number
   ): Promise<boolean> {
     const model = this.models.get(modelId);
     if (model === undefined)
@@ -124,6 +129,16 @@ export class FoldedModelEngine {
     const from = rec?.sequence ?? -1;
     const todo = events.filter((e) => e.sequence > from);
     if (todo.length === 0) return false;
+    const frontier = Math.max(from, accounted ?? from);
+    if (todo[0]!.sequence > frontier + 1) {
+      throw new FoldGapError(modelId, executionId, frontier, todo[0]!.sequence);
+    }
+    // Every event must follow its predecessor: rejects mid-batch holes, duplicates and unsorted batches.
+    for (let i = 1; i < todo.length; i++) {
+      if (todo[i]!.sequence !== todo[i - 1]!.sequence + 1) {
+        throw new FoldGapError(modelId, executionId, todo[i - 1]!.sequence, todo[i]!.sequence);
+      }
+    }
     const erased = rec?.erased === true;
     // Clone the base once: a mutating handler must not touch the caller's record or cache.
     let state: unknown = rec?.state == null ? null : structuredClone(rec.state);
