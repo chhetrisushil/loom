@@ -37,6 +37,9 @@ export {
   type VectorIndexLike,
 } from "./embedding.js";
 
+export { runFoldedStateConformance } from "./foldedState.js";
+export type { FoldedStateStoreLike } from "./foldedState.js";
+
 export {
   runEventStoreDecoratorConformance,
   runSnapshotStoreDecoratorConformance,
