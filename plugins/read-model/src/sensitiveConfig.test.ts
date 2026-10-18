@@ -31,4 +31,18 @@ describe("sensitive map helpers (ADR 0132 D5, D11)", () => {
     expect(effectiveFoldVersion("1", { B: ["z"], A: ["y", "x"] })).toBe(a);
     expect(effectiveFoldVersion("1", { A: ["x"], B: ["z"] })).not.toBe(a);
   });
+
+  it("rejects a badly shaped map instead of silently not masking", () => {
+    expect(() => mergeSensitive({ A: "email" } as never)).toThrow(TypeError);
+    expect(() => mergeSensitive({ A: ["ok", " "] })).toThrow(/non-blank/);
+    expect(() => mergeSensitive([] as never)).toThrow(TypeError);
+  });
+
+  it("treats inherited names as ordinary event types", () => {
+    expect(mergeSensitive({ constructor: ["x"] }, { constructor: ["y"] })).toEqual({
+      constructor: ["x", "y"],
+    });
+    expect(sensitiveMapFromCovers(["toString.a"])).toEqual({ toString: ["a"] });
+    expect(effectiveFoldVersion("1", {})).toBe("1");
+  });
 });

@@ -1,28 +1,46 @@
 import { createHash } from "node:crypto";
 import type { SensitiveMap } from "./types";
 
+const sortedUnique = (acc: Map<string, string[]>): SensitiveMap =>
+  Object.fromEntries([...acc].map(([k, v]) => [k, [...new Set(v)].sort()]));
+
 /** `["STEP_COMPLETED.output.ssn", …]` (a store's `sealingCapability().covers`) -> a {@link SensitiveMap}. */
 export function sensitiveMapFromCovers(covers: readonly string[]): SensitiveMap {
-  const out: Record<string, string[]> = {};
+  const out = new Map<string, string[]>();
   for (const c of covers) {
     const dot = c.indexOf(".");
     if (dot <= 0 || dot === c.length - 1) continue;
     const type = c.slice(0, dot);
-    out[type] = [...(out[type] ?? []), c.slice(dot + 1)];
+    out.set(type, [...(out.get(type) ?? []), c.slice(dot + 1)]);
   }
-  for (const k of Object.keys(out)) out[k] = [...new Set(out[k])].sort();
-  return out;
+  return sortedUnique(out);
 }
 
-/** Union of any number of (optional) maps. */
-export function mergeSensitive(...maps: (SensitiveMap | undefined)[]): SensitiveMap {
-  const out: Record<string, string[]> = {};
-  for (const m of maps) {
-    for (const [type, paths] of Object.entries(m ?? {}))
-      out[type] = [...(out[type] ?? []), ...paths];
+/** A sensitive map must be a plain object of arrays of non-blank strings; anything else would silently stop masking. */
+export function assertSensitiveMap(map: unknown, where = "sensitive"): void {
+  if (map === undefined) return;
+  if (typeof map !== "object" || map === null || Array.isArray(map)) {
+    throw new TypeError(
+      `${where}: must be an object mapping event types to arrays of payload paths`
+    );
   }
-  for (const k of Object.keys(out)) out[k] = [...new Set(out[k])].sort();
-  return out;
+  for (const [type, paths] of Object.entries(map)) {
+    if (!Array.isArray(paths) || paths.some((p) => typeof p !== "string" || p.trim() === "")) {
+      throw new TypeError(`${where}.${type}: must be an array of non-blank path strings`);
+    }
+  }
+}
+
+/** Union of any number of (optional) maps. Throws `TypeError` for a badly shaped map. */
+export function mergeSensitive(...maps: (SensitiveMap | undefined)[]): SensitiveMap {
+  const out = new Map<string, string[]>();
+  for (const m of maps) {
+    assertSensitiveMap(m);
+    for (const [type, paths] of Object.entries(m ?? {})) {
+      out.set(type, [...(out.get(type) ?? []), ...paths]);
+    }
+  }
+  return sortedUnique(out);
 }
 
 /**
@@ -33,7 +51,7 @@ export function effectiveFoldVersion(version: string, declared: SensitiveMap): s
   const entries = Object.keys(declared)
     .sort()
     .flatMap((type) => {
-      const paths = [...new Set(declared[type])].sort();
+      const paths = [...new Set(Object.hasOwn(declared, type) ? declared[type] : [])].sort();
       return paths.length === 0 ? [] : [[type, paths]];
     });
   if (entries.length === 0) return version;

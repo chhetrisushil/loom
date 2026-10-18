@@ -2,7 +2,7 @@ import { loadProjectionHandlers, projectionEventTypes } from "@loom/core";
 import type { EventEnvelope, ProjectionHandlers } from "@loom/core";
 import { effectiveFoldVersion, mergeSensitive } from "./sensitiveConfig";
 import { foldView } from "./sensitiveInput";
-import { assertStateClean } from "./sensitiveState";
+import { SensitiveStateError, assertStateClean } from "./sensitiveState";
 import type {
   FoldBase,
   FoldedEngineOptions,
@@ -38,6 +38,11 @@ export function foldedCapable(store: ReadModelStore): store is ReadModelStore & 
 
 /** Live contiguity pointers kept per node (ADR 0132 D4). Losing one costs a store read, never correctness. */
 const FRONTIER_MAX = 10_000;
+/** The event with payload and metadata removed: what `onError` sees for a sensitive-state refusal. */
+const withheld = (e: EventEnvelope): EventEnvelope => {
+  const { payload: _p, metadata: _m, ...rest } = e;
+  return { ...rest, payload: null } as EventEnvelope;
+};
 const slot = (modelId: string, executionId: string): string => `${modelId}\u0000${executionId}`;
 
 export interface FoldedModel {
@@ -329,6 +334,8 @@ export class FoldedModelEngine {
         const base = state === null ? structuredClone(model.initial) : state;
         const view = foldView(modelId, e, model.sensitive);
         state = normalize(model, handler(base, view.event));
+        // `lifted` is per event, deliberately not accumulated across the batch, so live (1 event)
+        // and catch-up (N events) refuse identically (D14).
         assertStateClean(
           { modelId, executionId, eventType: e.eventType, sequence: e.sequence },
           state,
@@ -351,7 +358,8 @@ export class FoldedModelEngine {
 
   /**
    * Live tail: the engine is shown EVERY event of an execution (ADR 0132 D4). Serialized per
-   * (model, execution); errors go to `onError`, never into the pipeline.
+   * (model, execution); errors go to `onError`, never into the pipeline. For a `SensitiveStateError`
+   * the event passed to `onError` has its payload and metadata removed (the refused secret is never handed on).
    */
   handle(event: EventEnvelope): void {
     for (const model of this.models.values()) {
@@ -359,7 +367,8 @@ export class FoldedModelEngine {
         (err) => {
           // A throwing onError is swallowed: it must not become an unhandled rejection.
           try {
-            this.onError(err, event);
+            // A guard refusal must not hand the plaintext event to onError (it may be logged).
+            this.onError(err, err instanceof SensitiveStateError ? withheld(event) : event);
           } catch {
             /* swallowed by design */
           }

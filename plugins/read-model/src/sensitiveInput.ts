@@ -15,7 +15,9 @@ import type { SensitiveMap } from "./types";
 
 /** Declared paths for the event's type, plus the `EVENT_TYPE.path` entries of its own `metadata.seal` marker. */
 export function sensitivePathsFor(event: EventEnvelope, declared: SensitiveMap): string[] {
-  const out = new Set<string>(declared[event.eventType] ?? []);
+  const out = new Set<string>(
+    Object.hasOwn(declared, event.eventType) ? declared[event.eventType] : []
+  );
   const covers = (event.metadata as { seal?: { covers?: unknown } } | undefined)?.seal?.covers;
   if (Array.isArray(covers)) {
     const prefix = `${event.eventType}.`;
