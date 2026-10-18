@@ -285,20 +285,20 @@ export class FoldedModelEngine {
    * Fold catch-up / rebuild events for one execution on the same per-(model, execution) queue as the
    * live path (ADR 0132 D4), against the watermark as it stands when the job runs. The final
    * watermark is adopted into the live frontier, never backwards. A refusal (gap, sensitive state,
-   * version mismatch) rejects and adopts nothing.
+   * version mismatch) rejects and adopts nothing. `seen` is the watermark the scan read before
+   * queueing: if the job finds a LOWER one, the model was reset meanwhile and this stale tail is
+   * dropped untouched (the post-reset scan heals it); any other hole still throws.
    */
   foldQueued(
     modelId: string,
     executionId: string,
-    events: readonly EventEnvelope[]
+    events: readonly EventEnvelope[],
+    seen?: number
   ): Promise<boolean> {
     return this.enqueue(modelId, executionId, async () => {
-      const applied = await this.foldBatch(
-        modelId,
-        executionId,
-        await this.mark(modelId, executionId),
-        events
-      );
+      const rec = await this.mark(modelId, executionId);
+      if (seen !== undefined && (rec?.sequence ?? -1) < seen) return false;
+      const applied = await this.foldBatch(modelId, executionId, rec, events);
       const last = events[events.length - 1];
       if (last !== undefined) {
         const k = slot(modelId, executionId);
