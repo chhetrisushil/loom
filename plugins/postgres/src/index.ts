@@ -14,7 +14,11 @@ export type { PgConfig, PoolLike } from "./pool";
 export { EXPIRED_SQL as LEASE_EXPIRED_SQL, PostgresLeaseStore } from "./PostgresLeaseStore";
 export { PostgresTimerStore } from "./PostgresTimerStore";
 export { PostgresDurableStateStore } from "./PostgresDurableStateStore";
-export { PostgresReadModelStore } from "./PostgresReadModelStore";
+export {
+  PostgresReadModelStore,
+  type PostgresReadModelStoreOptions,
+} from "./PostgresReadModelStore";
+export { foldedStateDdl, type FoldedTableOptions } from "./foldedState";
 export { PostgresMemoryStore } from "./PostgresMemoryStore";
 
 // `postgresPool` is public because an app assembling the stores by hand may want a real
