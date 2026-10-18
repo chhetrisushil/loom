@@ -2,6 +2,7 @@ import {
   runBranchRegistryConformance,
   runEventStoreConformance,
   runEventStoreDecoratorConformance,
+  runFoldedStateConformance,
   runLeaseStoreConformance,
   runMemoryStoreConformance,
   runReadModelStoreConformance,
@@ -48,6 +49,7 @@ if (PG_URL === undefined) {
   // SQLite one was held to the kit — so the portable contract was enforced on one backend
   // and merely assumed on the other.
   let nextReadModel = 0;
+  let nextFolded = 0;
   // And for the branch-registry kit, whose cases share fixed ref names ("main", "cand-a").
   // Until now the Postgres BranchRegistry ran against NO kit at all — SQLite was held to the
   // portable contract while the Postgres implementation, the one with hand-written
@@ -123,6 +125,11 @@ if (PG_URL === undefined) {
 
   runReadModelStoreConformance(() => {
     const pool = pools[nextReadModel++ % pools.length] as Pool;
+    return new PostgresReadModelStore(pool);
+  }, "PostgresReadModelStore");
+
+  runFoldedStateConformance(() => {
+    const pool = pools[nextFolded++ % pools.length] as Pool;
     return new PostgresReadModelStore(pool);
   }, "PostgresReadModelStore");
 
