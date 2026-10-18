@@ -161,10 +161,13 @@ export class InMemoryReadModelStore implements ReadModelStore {
   async getFoldedByKey(modelId: string, keys: readonly string[]): Promise<FoldedRecord[]> {
     assertManyKeys(keys, "getFoldedByKey");
     const wanted = new Set(keys);
-    return [...(this.folded.get(modelId)?.values() ?? [])]
-      .filter((r) => r.key !== null && wanted.has(r.key))
-      .sort((a, b) => (a.executionId < b.executionId ? -1 : a.executionId > b.executionId ? 1 : 0))
-      .map((r) => structuredClone(r));
+    return (
+      [...(this.folded.get(modelId)?.values() ?? [])]
+        .filter((r) => r.key !== null && wanted.has(r.key))
+        // UTF-8 bytewise == code-point order (ADR 0132); JS `<` would compare UTF-16 code units.
+        .sort((a, b) => Buffer.compare(Buffer.from(a.executionId), Buffer.from(b.executionId)))
+        .map((r) => structuredClone(r))
+    );
   }
 
   async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {

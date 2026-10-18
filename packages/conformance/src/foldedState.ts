@@ -139,6 +139,15 @@ export function runFoldedStateConformance(
       expect(got.map((r) => r.executionId)).toEqual(["x-1", "x-2"]);
     });
 
+    it("getFoldedByKey orders executionIds by code point, not UTF-16 code unit", async (ctx) => {
+      const s = await open(ctx);
+      // U+1F600 is the surrogate pair D83D DE00, so UTF-16 order puts it BEFORE U+E000.
+      const ids = ["x-\u{1F600}", "x-\uE000", "x-\uFFFF", "x-a"];
+      for (const executionId of ids) await s.applyFolded(ap({ executionId, key: "d1" }));
+      const got = await s.getFoldedByKey("m", ["d1"]);
+      expect(got.map((r) => r.executionId)).toEqual(["x-a", "x-\uE000", "x-\uFFFF", "x-\u{1F600}"]);
+    });
+
     it("purgeFolded tombstones: state gone, sequence kept, later writes advance but never resurrect", async (ctx) => {
       const s = await open(ctx);
       await s.applyFolded(ap({ key: "d1", scope: "u1", upToSequence: 3 }));
