@@ -296,8 +296,12 @@ export interface FoldedApply {
   foldVersion: string;
 }
 
-/** `stale` = an equal-or-lower sequence (idempotent re-apply or a lost race). */
-export type FoldedApplyResult = "applied" | "stale" | "version-mismatch";
+/**
+ * `stale` = an equal-or-lower sequence (idempotent re-apply or a lost race).
+ * `applied-erased` = the sequence advanced on a tombstoned row: the watermark moved, the state stayed
+ * null (D12). It tells a node whose base predates a purge (on another node) to stop folding.
+ */
+export type FoldedApplyResult = "applied" | "applied-erased" | "stale" | "version-mismatch";
 
 export type FoldedSelector = { executionId: string } | { key: string } | { scope: string };
 

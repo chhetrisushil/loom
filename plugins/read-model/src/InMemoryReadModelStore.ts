@@ -146,7 +146,7 @@ export class InMemoryReadModelStore implements ReadModelStore {
       state: prev?.erased === true ? null : structuredClone(a.state),
       erased: prev?.erased ?? false,
     });
-    return "applied";
+    return prev?.erased === true ? "applied-erased" : "applied";
   }
 
   async getFolded(modelId: string, executionIds: readonly string[]): Promise<FoldedRecord[]> {

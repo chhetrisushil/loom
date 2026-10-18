@@ -26,7 +26,9 @@ type Selector = { executionId: string } | { key: string } | { scope: string };
 
 export interface FoldedStateStoreLike {
   beginFold?(modelId: string, foldVersion: string): Promise<{ rebuilt: boolean }>;
-  applyFolded?(a: FoldedApplyLike): Promise<"applied" | "stale" | "version-mismatch">;
+  applyFolded?(
+    a: FoldedApplyLike
+  ): Promise<"applied" | "applied-erased" | "stale" | "version-mismatch">;
   getFolded?(modelId: string, executionIds: readonly string[]): Promise<FoldedRecordLike[]>;
   getFoldedByKey?(modelId: string, keys: readonly string[]): Promise<FoldedRecordLike[]>;
   purgeFolded?(modelId: string, selector: Selector): Promise<number>;
@@ -150,7 +152,7 @@ export function runFoldedStateConformance(
       expect(await s.applyFolded(ap({ upToSequence: 2, state: { n: 2 } }))).toBe("stale");
       expect(await s.applyFolded(ap({ upToSequence: 3, state: { n: 3 } }))).toBe("stale");
       expect((await s.getFolded("m", ["x-1"]))[0]).toMatchObject({ erased: true, sequence: 3 });
-      expect(await s.applyFolded(ap({ upToSequence: 7, state: { n: 7 } }))).toBe("applied");
+      expect(await s.applyFolded(ap({ upToSequence: 7, state: { n: 7 } }))).toBe("applied-erased");
       expect((await s.getFolded("m", ["x-1"]))[0]).toMatchObject({
         state: null,
         erased: true,
