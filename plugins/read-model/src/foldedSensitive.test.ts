@@ -117,8 +117,7 @@ describe("sensitive-state guard — a lifted copy fails loudly on decrypted and 
       sensitive: SENSITIVE,
       onError: (e, ev) => {
         errs.push(e);
-        // only guard refusals withhold the event; e.g. the FoldGapError that follows gets the event as delivered
-        if (e instanceof SensitiveStateError) seen.push(ev);
+        seen.push(ev);
       },
     });
     await s.registerFolded({ projection: proj("owner-mirror", "mirror") }); // copies the PLAIN duplicate

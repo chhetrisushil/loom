@@ -337,6 +337,26 @@ describe("FoldedModelEngine — the live tail (D4)", () => {
     expect(await stored(store)).toBeUndefined();
   });
 
+  it("onError always receives the event without payload or metadata, whatever the error kind", async () => {
+    const seen: { err: unknown; ev: EventEnvelope }[] = [];
+    const engine = new FoldedModelEngine(
+      new InMemoryReadModelStore(),
+      (err, ev) => seen.push({ err, ev }),
+      { liveSource: new InMemoryAsyncEventStore() }
+    );
+    await engine.register({ projection: ingestProjection() });
+    const e = {
+      ...evt(X, 3, "STEP_COMPLETED", { step: "TOPSECRET" }),
+      metadata: { k: "TOPSECRET" },
+    };
+    engine.handle(e as EventEnvelope);
+    await engine.drain();
+    expect(seen[0]?.err).toBeInstanceOf(FoldGapError);
+    expect(seen[0]?.ev.payload).toBeNull();
+    expect(JSON.stringify(seen[0]?.ev)).not.toContain("TOPSECRET");
+    expect(seen[0]?.ev).toMatchObject({ executionId: X, sequence: 3, eventType: "STEP_COMPLETED" });
+  });
+
   it("a handler returning undefined is reported on the live path", async () => {
     const errs: unknown[] = [];
     const { engine } = boot((e) => errs.push(e));
