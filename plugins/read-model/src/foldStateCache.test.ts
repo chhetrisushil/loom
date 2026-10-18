@@ -50,8 +50,20 @@ describe("FoldStateCache (ADR 0132 D15)", () => {
     expect(c.size).toBe(0);
   });
 
-  it("refuses a non-positive or fractional size (disable by not constructing one)", () => {
+  it("stores a private copy: mutating the object passed to put does not change the cached base", () => {
+    const c = new FoldStateCache(4);
+    const original = { sequence: 3, state: { n: 3 }, erased: false };
+    c.put("m", "x", original);
+    original.sequence = 99;
+    original.state.n = 99;
+    expect(c.take("m", "x")).toEqual({ sequence: 3, state: { n: 3 }, erased: false });
+  });
+
+  it("refuses a non-positive, fractional, NaN or infinite size (disable by not constructing one)", () => {
     expect(() => new FoldStateCache(0)).toThrow(RangeError);
+    expect(() => new FoldStateCache(-1)).toThrow(RangeError);
     expect(() => new FoldStateCache(1.5)).toThrow(RangeError);
+    expect(() => new FoldStateCache(Number.NaN)).toThrow(RangeError);
+    expect(() => new FoldStateCache(Number.POSITIVE_INFINITY)).toThrow(RangeError);
   });
 });
