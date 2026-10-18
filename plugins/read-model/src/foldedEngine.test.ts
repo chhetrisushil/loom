@@ -497,4 +497,103 @@ describe("FoldedModelEngine — reads, refresh, purge (D7, D8, D12)", () => {
     expect(errs[0]).toBeInstanceOf(FoldGapError);
     expect(await store.getFolded(ID, [X])).toEqual([]);
   });
+
+  it("purge normalizes the selector (an undefined sibling field is not a match) and refuses blanks", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection(), keyOf });
+    engine.handle(evt(X, 0, "EXECUTION_COMPLETED"));
+    await engine.drain();
+    await expect(engine.purge(ID, { executionId: undefined, key: "  " } as never)).rejects.toThrow(
+      /exactly one/
+    );
+    expect(await engine.purge(ID, { executionId: undefined, key: "d1" } as never)).toBe(1);
+    expect((await store.getFolded(ID, [X]))[0]?.erased).toBe(true);
+  });
+
+  it("refresh validates executionIds", async () => {
+    const { engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    await expect(engine.refresh(ID, [""], [])).rejects.toThrow(TypeError);
+    await expect(
+      engine.refresh(
+        ID,
+        Array.from({ length: 1001 }, (_, i) => `e${i}`),
+        []
+      )
+    ).rejects.toThrow(RangeError);
+  });
+
+  it("refresh never moves the frontier backwards: a live feed ahead of the source raises no gap", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: ingestProjection() });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    engine.handle(evt(X, 1, "NOISE"));
+    engine.handle(evt(X, 2, "NOISE"));
+    await engine.drain();
+    await engine.refresh(ID, [X], [log]); // source only reaches 0; the frontier is at 2
+    engine.handle(evt(X, 3, "STEP_COMPLETED", { step: "b" }));
+    await engine.drain();
+    expect(errs).toEqual([]);
+    expect((await stored(store))?.sequence).toBe(3);
+  });
+
+  it("a live event enqueued while a refresh job is held is serialized behind it, no double fold", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: ingestProjection() });
+    let release!: () => void;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    const log = {
+      readFrom: async (id: string, from: number) => {
+        await held;
+        return [
+          evt(id, 0, "STEP_COMPLETED", { step: "a" }),
+          evt(id, 1, "STEP_COMPLETED", { step: "b" }),
+        ].filter((e) => e.sequence >= from);
+      },
+    };
+    const refreshing = engine.refresh(ID, [X], [log]);
+    engine.handle(evt(X, 1, "STEP_COMPLETED", { step: "b" }));
+    release();
+    await refreshing;
+    await engine.drain();
+    expect(errs).toEqual([]);
+    expect(await stored(store)).toMatchObject({ sequence: 1, state: { steps: 2 } });
+  });
+
+  it("reset racing a handle() cannot fold over the cleared prefix", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await engine.drain();
+    engine.handle(evt(X, 1, "STEP_COMPLETED", { step: "b" })); // in flight when reset starts
+    const resetting = engine.reset(ID);
+    engine.handle(evt(X, 2, "STEP_COMPLETED", { step: "c" })); // arrives during the reset
+    await resetting;
+    await engine.drain();
+    const rec = await stored(store);
+    // Never a state built on a base that no longer exists: either nothing, or the full prefix.
+    expect(rec === undefined || (rec.state as { steps: number }).steps === rec.sequence + 1).toBe(
+      true
+    );
+    expect(errs.every((e) => e instanceof FoldGapError)).toBe(true);
+  });
+
+  it("purge racing a queued apply leaves the row erased with null state", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await engine.drain();
+    engine.handle(evt(X, 1, "STEP_COMPLETED", { step: "b" })); // queued; reads the record before the purge
+    await engine.purge(ID, { executionId: X });
+    engine.handle(evt(X, 2, "STEP_COMPLETED", { step: "c" }));
+    await engine.drain();
+    expect(await stored(store)).toMatchObject({ erased: true, state: null });
+  });
 });

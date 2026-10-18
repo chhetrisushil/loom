@@ -76,6 +76,8 @@ const refreshOptions = (o: FoldedReadOptions): RefreshOptions =>
 export class FoldedModelEngine {
   protected readonly models = new Map<string, FoldedModel>();
   private readonly queues = new Map<string, Promise<void>>();
+  /** modelId -> open while `reset` runs: jobs for that model start only after it is released. */
+  private readonly gates = new Map<string, Promise<void>>();
   /** (model, execution) -> highest sequence this node has accounted for on the live feed. Map order = recency. */
   private readonly frontier = new Map<string, number>();
 
@@ -184,7 +186,7 @@ export class FoldedModelEngine {
    * Read-repair (ADR 0132 D8): fold each execution's log tail past its watermark, on the
    * per-(model, execution) queue so it serializes behind any in-flight live apply. The final
    * watermark is persisted even when the tail is unhandled and adopted into the live frontier.
-   * Returns the number of executions whose state advanced.
+   * Returns the number of executions whose watermark advanced.
    */
   async refresh(
     modelId: string,
@@ -193,6 +195,7 @@ export class FoldedModelEngine {
     opts: RefreshOptions = {}
   ): Promise<number> {
     const model = this.require(modelId);
+    assertManyKeys(executionIds, "refresh");
     const concurrency = opts.concurrency ?? 8;
     if (!Number.isInteger(concurrency) || concurrency < 1) {
       throw new RangeError(
@@ -211,7 +214,12 @@ export class FoldedModelEngine {
               if (events.length === 0) continue;
               if (await this.foldBatch(model.id, id, rec, events)) advanced++;
               // Applied or stale: the store is at least this far, so the live tail must not report a gap.
-              this.setFrontier(slot(model.id, id), events[events.length - 1]!.sequence);
+              // Never move it backwards: the live feed may have observed further unhandled events.
+              const k = slot(model.id, id);
+              this.setFrontier(
+                k,
+                Math.max(this.frontier.get(k) ?? -1, events[events.length - 1]!.sequence)
+              );
               break;
             }
           })
@@ -223,23 +231,42 @@ export class FoldedModelEngine {
 
   async purge(modelId: string, selector: FoldedSelector): Promise<number> {
     this.require(modelId);
-    const set = Object.values(selector).filter((v) => v !== undefined);
-    if (set.length !== 1 || typeof set[0] !== "string" || set[0] === "") {
+    const set = Object.entries(selector).filter(([, v]) => v !== undefined);
+    const [field, value] = set[0] ?? [];
+    if (set.length !== 1 || typeof value !== "string" || value.trim() === "") {
       throw new TypeError(
-        "folded read model purge: the selector must name exactly one of executionId / key / scope, non-empty — an empty selector is not 'every row' (that is `clear`)"
+        "folded read model purge: the selector must name exactly one of executionId / key / scope, non-blank — an empty selector is not 'every row' (that is `clear`)"
       );
     }
-    await this.drain();
-    return this.store.purgeFolded(modelId, selector);
+    // One snapshot is enough: a later apply reads the sticky erased record and writes no state (D12).
+    await Promise.all([...this.queues.values()]);
+    return this.store.purgeFolded(modelId, { [field!]: value } as FoldedSelector);
   }
 
-  /** Drop the model's states and re-create its header (the caller then runs a catch-up scan). */
+  /**
+   * Drop the model's states and re-create its header (the caller then runs a catch-up scan).
+   * Exclusive: jobs for the model queue behind a gate until the reset is done, so none can
+   * re-seed the frontier from, or write over, the rows being cleared.
+   */
   async reset(modelId: string): Promise<void> {
     const model = this.require(modelId);
-    await this.drain();
-    this.dropFrontier(modelId); // the live pointers described states that are about to be gone
-    await this.store.clear(modelId);
-    await this.store.beginFold(modelId, model.version);
+    const before = this.gates.get(modelId);
+    let open!: () => void;
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    this.gates.set(modelId, gate);
+    const prefix = `${modelId}\u0000`;
+    const inFlight = [...this.queues].filter(([k]) => k.startsWith(prefix)).map(([, q]) => q);
+    try {
+      await Promise.all([before, ...inFlight]);
+      this.dropFrontier(modelId); // the live pointers described states that are about to be gone
+      await this.store.clear(modelId);
+      await this.store.beginFold(modelId, model.version);
+    } finally {
+      if (this.gates.get(modelId) === gate) this.gates.delete(modelId);
+      open();
+    }
   }
 
   private require(modelId: string): FoldedModel {
@@ -329,7 +356,11 @@ export class FoldedModelEngine {
 
   protected enqueue<T>(modelId: string, executionId: string, job: () => Promise<T>): Promise<T> {
     const k = slot(modelId, executionId);
-    const next = (this.queues.get(k) ?? Promise.resolve()).then(job);
+    const gate = this.gates.get(modelId);
+    const prev = this.queues.get(k) ?? Promise.resolve();
+    const next = (gate === undefined ? prev : Promise.all([prev, gate]).then(() => undefined)).then(
+      job
+    );
     const tail = next.then(
       () => undefined,
       () => undefined
