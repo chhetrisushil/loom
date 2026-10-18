@@ -171,7 +171,23 @@ export class ReadModelService {
    * results" in decisional-layer queries.
    */
   async catchUp(sources: readonly ReadModelEventSource[]): Promise<CatchUpReport> {
+    return this.scan(sources);
+  }
+
+  /**
+   * The shared scan: ONE `readFrom` per execution from the minimum frontier across row AND folded
+   * models. `only` narrows it to one FOLDED model (rebuild); row models are scanned only when it is
+   * absent. A folded refusal (gap, sensitive state, version mismatch) throws to the caller.
+   */
+  private async scan(
+    sources: readonly ReadModelEventSource[],
+    only?: string
+  ): Promise<CatchUpReport> {
     const report: CatchUpReport = { executionsScanned: 0, eventsScanned: 0, rowsApplied: 0 };
+    const rowModels = only === undefined ? [...this.models.values()] : [];
+    const folded = this.folded;
+    const foldedIds =
+      folded === undefined ? [] : folded.ids().filter((id) => only === undefined || id === only);
     for (const source of sources) {
       if (source.listExecutions === undefined && source.listExecutionsPage === undefined) {
         throw new TypeError(
@@ -182,22 +198,27 @@ export class ReadModelService {
       for await (const executionId of iterateExecutionIds(source)) {
         if (isReservedStream(executionId)) continue;
         report.executionsScanned++;
-        if (this.models.size === 0) continue;
+        if (rowModels.length === 0 && foldedIds.length === 0) continue;
         // Audit fix (DS&A rank 1): ONE shared read per execution from the MIN
         // watermark frontier, filtered per model — not M re-reads of the same
         // events for M models. Idempotent apply keeps correctness unchanged.
         const marks = new Map<string, number>();
         let frontier = Number.POSITIVE_INFINITY;
-        for (const model of this.models.values()) {
+        for (const model of rowModels) {
           const mark = (await this.store.watermark(model.id, executionId)) ?? -1;
           marks.set(model.id, mark);
+          if (mark < frontier) frontier = mark;
+        }
+        for (const id of foldedIds) {
+          const mark = (await folded?.mark(id, executionId))?.sequence ?? -1;
+          marks.set(id, mark);
           if (mark < frontier) frontier = mark;
         }
         const events = await source.readFrom(executionId, frontier + 1);
         if (events.length === 0) continue;
         report.eventsScanned += events.length;
         const tip = events[events.length - 1]!.sequence;
-        for (const model of this.models.values()) {
+        for (const model of rowModels) {
           const from = marks.get(model.id)!;
           if (tip <= from) continue; // this model is already past everything read
           // Set, not the declared array: this is the per-EVENT test on the catch-up
@@ -212,6 +233,11 @@ export class ReadModelService {
           }
           await this.store.apply(model.id, executionId, tip, rows);
           report.rowsApplied += rows.length;
+        }
+        for (const id of foldedIds) {
+          if (tip <= marks.get(id)!) continue;
+          // Through the per-(model, execution) queue, not around it (ADR 0132 D4).
+          await folded?.foldQueued(id, executionId, events);
         }
       }
     }
