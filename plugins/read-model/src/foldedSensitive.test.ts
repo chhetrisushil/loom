@@ -68,8 +68,7 @@ describe("sensitive-state guard — every feed presents the same masked input (D
     await viaRaw.catchUp([raw]);
     const refreshed = await mk();
     await refreshed.refresh("owner-email", [X], [enc]);
-    const rebuilt = await mk();
-    await rebuilt.catchUp([enc]);
+    const rebuilt = await mk(); // only rebuild: its own masking is load-bearing
     await rebuilt.rebuild("owner-email", [raw]);
 
     const expected = { steps: 2, owner: "[redacted]" };
@@ -78,11 +77,11 @@ describe("sensitive-state guard — every feed presents the same masked input (D
     }
   });
 
-  it("a sealed raw log needs no declared map: the event's own seal marker is enough", async () => {
-    const { raw } = await logs();
-    const s = new ReadModelService(new InMemoryReadModelStore());
+  it("a decrypted feed needs no declared map: the event's own seal marker is the only protection", async () => {
+    const { enc } = await logs();
+    const s = new ReadModelService(new InMemoryReadModelStore()); // NO declared map
     await s.registerFolded({ projection: proj("owner-email", "email") });
-    await s.catchUp([raw]);
+    await s.catchUp([enc]);
     expect(await stateOf(s, "owner-email")).toEqual({ steps: 2, owner: "[redacted]" });
   });
 
@@ -98,15 +97,29 @@ describe("sensitive-state guard — every feed presents the same masked input (D
     await s.catchUp([stripped]);
     expect(await stateOf(s, "owner-email")).toEqual({ steps: 2, owner: "[redacted]" });
   });
+
+  it("documented boundary (D11 f/g): live, no declared map, no seal marker -> the field reaches the handler as delivered", async () => {
+    const { events } = await logs(); // plaintext live events carry no marker
+    const s = new ReadModelService(new InMemoryReadModelStore()); // NO declared map: declare it to protect this
+    await s.registerFolded({ projection: proj("owner-email", "email") });
+    for (const e of events) s.handleEvent(e);
+    await s.drain();
+    expect(await stateOf(s, "owner-email")).toEqual({ steps: 2, owner: EMAIL });
+  });
 });
 
-describe("sensitive-state guard — a lifted copy fails loudly on every feed (D11)", () => {
+describe("sensitive-state guard — a lifted copy fails loudly on decrypted and live feeds (D11)", () => {
   it("catch-up throws, the live path reports, nothing is stored, and the message carries no value", async () => {
     const { enc, events } = await logs();
     const errs: unknown[] = [];
+    const seen: EventEnvelope[] = [];
     const s = new ReadModelService(new InMemoryReadModelStore(), {
       sensitive: SENSITIVE,
-      onError: (e) => errs.push(e),
+      onError: (e, ev) => {
+        errs.push(e);
+        // only guard refusals withhold the event; e.g. the FoldGapError that follows gets the event as delivered
+        if (e instanceof SensitiveStateError) seen.push(ev);
+      },
     });
     await s.registerFolded({ projection: proj("owner-mirror", "mirror") }); // copies the PLAIN duplicate
 
@@ -122,8 +135,34 @@ describe("sensitive-state guard — a lifted copy fails loudly on every feed (D1
       expect(e).toMatchObject({ reason: "lifted-value", statePath: "$.owner" });
       expect(e.message).toContain("owner-mirror");
       expect(e.message).not.toContain(EMAIL);
+      expect(JSON.stringify({ ...e, message: e.message, stack: e.stack })).not.toContain(EMAIL);
+    }
+    // onError's event argument withholds payload and metadata
+    expect(seen.length).toBeGreaterThan(0);
+    for (const ev of seen) {
+      expect(JSON.stringify(ev)).not.toContain(EMAIL);
+      expect(ev.payload).toBeNull();
     }
     expect((await s.getMany("owner-mirror", [X])).size).toBe(0); // the watermark never advanced
+  });
+
+  it("pinned limit (D11 f): an at-rest source cannot detect a lifted copy; the next live event is refused", async () => {
+    // On the raw log the sealed `email` is an envelope, so there is no plaintext to compare a copy
+    // against: catch-up stores the plain `mirror` duplicate. Masking still applies to the sealed field.
+    // The live event carries the plaintext, so it IS caught and refused (watermark unchanged).
+    const { raw } = await logs();
+    const errs: unknown[] = [];
+    const s = new ReadModelService(new InMemoryReadModelStore(), {
+      sensitive: SENSITIVE,
+      onError: (e) => errs.push(e),
+    });
+    await s.registerFolded({ projection: proj("owner-mirror", "mirror") });
+    await s.catchUp([raw]); // succeeds
+    expect(await stateOf(s, "owner-mirror")).toEqual({ steps: 2, owner: EMAIL });
+    s.handleEvent(evt(X, 2, "STEP_COMPLETED", { step: "s2", email: EMAIL, mirror: EMAIL }));
+    await s.drain();
+    expect(errs[0]).toBeInstanceOf(SensitiveStateError);
+    expect(await stateOf(s, "owner-mirror")).toEqual({ steps: 2, owner: EMAIL }); // unchanged
   });
 
   it("a safe fold over the same log is untouched (the guard has no false positive on plain fields)", async () => {
