@@ -39,6 +39,17 @@ async function service(
   await s.registerFolded({ projection: ingestProjection(), keyOf, scopeOf });
   return { s, errors };
 }
+/** Literal final state of every corpus execution: the oracle no catch-up path is allowed to define. */
+const oracle = {
+  "u1:wf:ingest-d1": { sequence: 4, state: { status: "done", steps: 2, last: "embed" } },
+  "u1:wf:ingest-d1.2": { sequence: 4, state: { status: "failed", steps: 2, last: "embed" } },
+  "u2:wf:ingest-d2": { sequence: 4, state: { status: "done", steps: 2, last: "embed" } },
+};
+const expectOracle = async (s: ReadModelService) => {
+  const got = await snapshot(s);
+  expect(Object.keys(got).sort()).toEqual(Object.keys(oracle).sort());
+  for (const [id, want] of Object.entries(oracle)) expect(got[id]).toMatchObject(want);
+};
 const snapshot = async (s: ReadModelService) =>
   Object.fromEntries(await s.getMany("ingest-status", ids).then((m) => [...m]));
 
@@ -71,13 +82,16 @@ describe("folded models: rebuild == incremental (D14)", () => {
     await prefix.s.catchUp([log]);
     expect(prefix.errors).toEqual([]);
 
-    const rebuilt = await service(new InMemoryReadModelStore(), { liveSource: log });
-    await rebuilt.s.catchUp([log]);
+    // corrupt first: a store holding only a stale prefix, so a no-op rebuild cannot pass
+    const rebuiltStore = new InMemoryReadModelStore();
+    const rebuilt = await service(rebuiltStore, { liveSource: log });
+    await rebuilt.s.catchUp([await logOf(events.filter((e) => e.sequence < 2))]);
+    expect((await snapshot(rebuilt.s))["u1:wf:ingest-d1"]).toMatchObject({ sequence: 1 });
     await rebuilt.s.rebuild("ingest-status", [log]);
     expect(rebuilt.errors).toEqual([]);
 
     const expected = await snapshot(live.s);
-    expect(Object.keys(expected)).toHaveLength(3);
+    await expectOracle(live.s);
     expect(await snapshot(scan.s)).toEqual(expected);
     expect(await snapshot(prefix.s)).toEqual(expected);
     expect(await snapshot(rebuilt.s)).toEqual(expected);
@@ -112,9 +126,7 @@ describe("folded models: rebuild == incremental (D14)", () => {
     for (const e of events) b.s.handleEvent(e);
     await Promise.all([a.s.drain(), b.s.drain()]);
     await a.s.catchUp([log]); // heals whatever a lost race left out
-    const ref = await service(new InMemoryReadModelStore());
-    await ref.s.catchUp([log]);
-    expect(await snapshot(a.s)).toEqual(await snapshot(ref.s));
+    await expectOracle(a.s);
     expect([...a.errors, ...b.errors]).toEqual([]);
   });
 
@@ -159,12 +171,38 @@ describe("folded models: rebuild == incremental (D14)", () => {
         (i % 2 === 0 ? a : b).s.handleEvent(e);
       });
       await Promise.all([a.s.drain(), b.s.drain()]);
-      for (const e of [...a.errors, ...b.errors]) expect(e).toBeInstanceOf(FoldGapError);
+      const all = [...a.errors, ...b.errors];
+      expect(all.length).toBeGreaterThan(0); // the scenario really produced gaps
+      for (const e of all) expect(e).toBeInstanceOf(FoldGapError);
       await a.s.catchUp([log]);
-      const ref = await service(new InMemoryReadModelStore());
-      await ref.s.catchUp([log]);
-      expect(await snapshot(a.s)).toEqual(await snapshot(ref.s));
-      expect(await snapshot(b.s)).toEqual(await snapshot(ref.s));
+      await expectOracle(a.s);
+    }
+  );
+
+  it.each([
+    ["cache enabled (default)", undefined],
+    ["cache disabled", false],
+  ] as const)(
+    "a node's cached base is stale after another node advanced the store; the next live event still converges, %s",
+    async (_label, foldCache) => {
+      const X0 = ids[0] as string;
+      const events = corpus().filter((e) => e.executionId === X0);
+      const log = await logOf(events);
+      const store = new InMemoryReadModelStore();
+      const a = await service(store, {
+        liveSource: log,
+        ...(foldCache !== undefined && { foldCache }),
+      });
+      const b = await service(store, { liveSource: log });
+      for (const e of events.filter((e) => e.sequence <= 2)) a.s.handleEvent(e); // A caches seq 2
+      await a.s.drain();
+      for (const e of events.filter((e) => e.sequence === 3)) b.s.handleEvent(e); // B advances to 3
+      await b.s.drain();
+      for (const e of events.filter((e) => e.sequence === 4)) a.s.handleEvent(e); // A's base is stale
+      await a.s.drain();
+      expect([...a.errors, ...b.errors]).toEqual([]);
+      const got = await a.s.getMany("ingest-status", [X0]);
+      expect(got.get(X0)).toMatchObject(oracle[X0 as keyof typeof oracle]);
     }
   );
 
