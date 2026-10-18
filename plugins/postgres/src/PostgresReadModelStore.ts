@@ -6,6 +6,12 @@ import type {
   ReadModelStore,
 } from "@loom/plugin-read-model";
 import { assertPurgeFilter, clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
+import {
+  type FoldedNames,
+  type FoldedTableOptions,
+  ensureFoldedTables,
+  foldedNames,
+} from "./foldedState";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
 import { migrate } from "./schema";
 
@@ -17,6 +23,15 @@ interface RowRecord {
   kind: string;
   fields: Record<string, unknown>;
   value: unknown;
+}
+
+/** Placement for the FOLDED tables only (ADR 0132 D10); row-model tables are unaffected. */
+export interface PostgresReadModelStoreOptions extends FoldedTableOptions {
+  /**
+   * Default true. `false` skips ALL DDL (the shared migrate() and the folded tables), so a
+   * role that cannot run DDL works; the app creates the tables from `foldedStateDdl(...)`.
+   */
+  manageSchema?: boolean;
 }
 
 /**
@@ -31,12 +46,31 @@ export class PostgresReadModelStore implements ReadModelStore {
   private readonly pool: PoolLike;
   private readonly ownsPool: boolean;
   private readonly ready: Promise<void>;
+  private readonly names: FoldedNames;
+  private readonly foldedOptions: FoldedTableOptions;
+  private readonly manageSchema: boolean;
+  private foldedReady: Promise<void> | undefined;
 
-  constructor(config: PgConfig) {
+  constructor(config: PgConfig, options: PostgresReadModelStoreOptions = {}) {
+    const { manageSchema = true, ...placement } = options;
+    this.names = foldedNames(placement); // validates identifiers up front
+    this.foldedOptions = placement;
+    this.manageSchema = manageSchema;
     const { pool, owned } = toPool(config);
     this.pool = pool;
     this.ownsPool = owned;
-    this.ready = migrate(this.pool);
+    this.ready = manageSchema ? migrate(this.pool) : Promise.resolve();
+  }
+
+  /** Create the folded tables once (no-op with `manageSchema: false`). Used by the folded methods. */
+  protected async ensureFolded(): Promise<void> {
+    await this.ready;
+    if (!this.manageSchema) return;
+    this.foldedReady ??= ensureFoldedTables(this.pool, this.foldedOptions).catch((err) => {
+      this.foldedReady = undefined;
+      throw err;
+    });
+    await this.foldedReady;
   }
 
   async apply(
@@ -173,6 +207,11 @@ export class PostgresReadModelStore implements ReadModelStore {
     await this.ready;
     await this.pool.query("DELETE FROM read_model_rows WHERE model_id = $1", [modelId]);
     await this.pool.query("DELETE FROM read_model_watermarks WHERE model_id = $1", [modelId]);
+    // Folded tables: drop this model's rows only if they exist; never create them (F8, D10).
+    for (const table of [this.names.state, this.names.folds]) {
+      const { rows } = await this.pool.query("SELECT to_regclass($1) AS t", [table]);
+      if (rows[0]?.t) await this.pool.query(`DELETE FROM ${table} WHERE model_id = $1`, [modelId]);
+    }
   }
 
   async close(): Promise<void> {
