@@ -5,6 +5,7 @@ import { foldView } from "./sensitiveInput";
 import { SensitiveStateError, assertStateClean } from "./sensitiveState";
 import type {
   FoldBase,
+  FoldedApplyResult,
   FoldedEngineOptions,
   FoldedReadModelDefinition,
   FoldedReadOptions,
@@ -306,12 +307,23 @@ export class FoldedModelEngine {
     events: readonly EventEnvelope[],
     accounted?: number
   ): Promise<boolean> {
+    return (await this.foldOutcome(modelId, executionId, rec, events, accounted)) === "applied";
+  }
+
+  /** As {@link foldBatch}, but reports the CAS result of the write. */
+  protected async foldOutcome(
+    modelId: string,
+    executionId: string,
+    rec: FoldBase | undefined,
+    events: readonly EventEnvelope[],
+    accounted?: number
+  ): Promise<FoldedApplyResult | "noop"> {
     const model = this.models.get(modelId);
     if (model === undefined)
       throw new TypeError(`read model "${modelId}" is not a registered folded model`);
     const from = rec?.sequence ?? -1;
     const todo = events.filter((e) => e.sequence > from);
-    if (todo.length === 0) return false;
+    if (todo.length === 0) return "noop";
     const frontier = Math.max(from, accounted ?? from);
     if (todo[0]!.sequence > frontier + 1) {
       throw new FoldGapError(modelId, executionId, frontier, todo[0]!.sequence);
@@ -353,7 +365,7 @@ export class FoldedModelEngine {
       foldVersion: model.version,
     });
     if (result === "version-mismatch") throw new FoldVersionMismatchError(modelId, model.version);
-    return result === "applied";
+    return result;
   }
 
   /**
