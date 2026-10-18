@@ -93,24 +93,28 @@ no-op:
 ```sql
 -- applyFolded (Postgres). $1 model, $2 execution, $3 app_key, $4 scope, $5 sequence,
 -- $6 state (jsonb, may be NULL), $7 fold version
-INSERT INTO "<state>" (model_id, execution_id, app_key, scope, sequence, state, erased)
-SELECT $1, $2, $3::text, $4::text, $5, $6::jsonb, false
-WHERE EXISTS (SELECT 1 FROM "<folds>" h WHERE h.model_id = $1 AND h.version = $7 FOR SHARE OF h)
-ON CONFLICT (model_id, execution_id) DO UPDATE
-   SET sequence = EXCLUDED.sequence,
-       state    = CASE WHEN "<state>".erased THEN NULL ELSE EXCLUDED.state END,
-       app_key  = COALESCE(EXCLUDED.app_key, "<state>".app_key),
-       scope    = COALESCE(EXCLUDED.scope,   "<state>".scope)
- WHERE "<state>".sequence < EXCLUDED.sequence
-RETURNING sequence, erased;
+WITH h AS (SELECT version FROM "<folds>" WHERE model_id = $1 FOR SHARE),
+ins AS (
+  INSERT INTO "<state>" (model_id, execution_id, app_key, scope, sequence, state, erased)
+  SELECT $1, $2, $3::text, $4::text, $5, $6::jsonb, false
+  WHERE EXISTS (SELECT 1 FROM h WHERE h.version = $7)
+  ON CONFLICT (model_id, execution_id) DO UPDATE
+     SET sequence = EXCLUDED.sequence,
+         state    = CASE WHEN "<state>".erased THEN NULL ELSE EXCLUDED.state END,
+         app_key  = COALESCE(EXCLUDED.app_key, "<state>".app_key),
+         scope    = COALESCE(EXCLUDED.scope,   "<state>".scope)
+   WHERE "<state>".sequence < EXCLUDED.sequence
+  RETURNING sequence, erased)
+SELECT (SELECT version FROM h) AS hv, EXISTS (SELECT 1 FROM ins) AS hit, (SELECT erased FROM ins) AS e;
 ```
 
-- `rowCount = 1` → `"applied"`, or `"applied-erased"` when the row was a tombstone (`RETURNING sequence, erased`: the
-  sequence advanced, the state stayed `NULL`). `0` → one more `SELECT version FROM "<folds>" WHERE model_id = $1`
-  distinguishes `"version-mismatch"` from `"stale"` (an equal or lower sequence — an idempotent
-  re-apply). The WHERE on `DO UPDATE` is what makes the watermark monotonic: two nodes folding the same
+- `hit` → `"applied"`, or `"applied-erased"` when the row was a tombstone (`e` true: the sequence advanced,
+  the state stayed `NULL`). No `hit` → the header version `hv` decides, read in the SAME statement: `hv`
+  equal → `"stale"` (an equal or lower sequence — an idempotent re-apply); `hv` different or NULL →
+  `"version-mismatch"`. A second statement would let a `beginFold` commit in between and report a mismatch
+  as `"stale"`. The WHERE on `DO UPDATE` is what makes the watermark monotonic: two nodes folding the same
   tail race, one wins, the other is told `"stale"`, and both wrote the same bytes anyway.
-- `FOR SHARE OF h` serializes against `beginFold`'s `FOR UPDATE` on the same header row (D5): a writer
+- `FOR SHARE` on the header serializes against `beginFold`'s `FOR UPDATE` on the same header row (D5): a writer
   that read the pre-rebuild header blocks until the rebuild commits, then re-evaluates the predicate under
   READ COMMITTED and inserts nothing. Without it a pre-commit snapshot could insert an old-version row
   after the rebuild's DELETE.

@@ -57,4 +57,46 @@ if (PG_URL === undefined) {
       expect(await store.beginFold("f", "v2")).toEqual({ rebuilt: false });
     });
   });
+
+  describe("applyFolded vs a concurrent beginFold (ADR 0132 D5)", () => {
+    it("a writer blocked on the header lock reports version-mismatch, never stale, and stores nothing", async () => {
+      const store = new PostgresReadModelStore(pool);
+      await store.beginFold("race", "v1");
+      const holder = await pool.connect();
+      try {
+        await holder.query("BEGIN");
+        await holder.query(
+          `INSERT INTO read_model_folds (model_id, version) VALUES ('race', 'v2')
+           ON CONFLICT (model_id) DO UPDATE SET version = EXCLUDED.version`
+        );
+        const pending = store.applyFolded({
+          modelId: "race",
+          executionId: "x-9",
+          upToSequence: 1,
+          state: { n: 1 },
+          key: null,
+          scope: null,
+          foldVersion: "v1",
+        });
+        // timing-bound: wait (condition poll, 10 s cap) until the writer is blocked on the lock.
+        const deadline = Date.now() + 10_000;
+        for (;;) {
+          const { rows } = await admin.query(
+            `SELECT 1 FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%WITH h AS%'`
+          );
+          if (rows.length > 0) break;
+          if (Date.now() > deadline)
+            throw new Error("applyFolded never blocked on the header lock");
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        await holder.query("COMMIT");
+        expect(await pending).toBe("version-mismatch");
+        expect(await store.getFolded("race", ["x-9"])).toEqual([]);
+      } finally {
+        await holder.query("ROLLBACK").catch(() => undefined);
+        holder.release();
+      }
+    });
+  });
 }
