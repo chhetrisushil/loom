@@ -8,10 +8,13 @@
   [ADR 0093](0093-read-model-row-purge.md) (purge, watermarks untouched by erasure),
   [ADR 0095](0095-binding-semantics-pin.md) (declared fold `version`),
   [ADR 0049](0049-projection-on-demand-fold-code.md) (`projection$` fold shape),
-  [ADR 0130](0130-sealed-payload-delivery-guard.md) (sealed payloads).
+  [ADR 0130](0130-sealed-payload-delivery-guard.md) (sealed payloads: the envelope shape rule, the
+  `metadata.seal` marker, `sealingCapability`), [`docs/data-classification.md`](../data-classification.md) (K10-R1: classify once,
+  derive every mechanism's wiring).
 - **KERNEL_ABI unchanged; EVENT_SCHEMA unchanged.** No kernel, `@loom/app` or event-type change; wiring
   rides the same `onEvent` seam and catch-up scan as ADR 0058. A plugin SPI grows five **optional**
-  methods: `READ_MODEL_STORE_SPI_VERSION` 1.1.0 → **1.2.0**.
+  methods: `READ_MODEL_STORE_SPI_VERSION` 1.1.0 → **1.2.0**. `@loom/plugin-read-model` gains a dependency on
+  `@loom/classify` (masking vocabulary only; the kernel still names no taxonomy, G3).
 
 ## Context
 
@@ -40,6 +43,7 @@ interface FoldedReadModelDefinition<TState> {
   projection: ProjectionDefinition<TState>;          // from projection$ — id, version, initialState, handlers
   keyOf?:   (executionId: string) => string | undefined;   // app key, e.g. documentId
   scopeOf?: (executionId: string) => string | undefined;   // tenant / RLS scope
+  sensitive?: SensitiveMap;                                // D11: payload paths a handler must never see
 }
 service.registerFolded(def): Promise<{ rebuilt: boolean }>
 ```
@@ -128,7 +132,8 @@ it, or skipping *n−1*, silently corrupts the state. So the engine only folds e
 - **Catch-up / refresh / rebuild**: always `readFrom(executionId, watermark + 1)`.
 - The live path serializes per `(modelId, executionId)` through a promise chain, because the
   read-state → fold → apply sequence is async and two interleaved applies would fold from the same base.
-  Cross-node races are covered by D3, not by this queue.
+  Cross-node races are covered by D3, not by this queue. The base state of a live apply is a `getFolded`
+  read, or the node's bounded cache entry when one exists (D15).
 - Each handler result is round-tripped through JSON before the next event, so the incremental state
   (persisted after every event) and the rebuilt state (folded in one batch) cannot differ by
   non-JSON values (`undefined` properties, `Date`, `Map`). That makes "rebuild == incremental" a property of
@@ -158,6 +163,8 @@ and one `getMany` answers from two folds. Here the declaration is enforced:
 - Honesty limit, as in ADR 0095: a declaration is a claim. An author who edits the fold without bumping
   the version gets no rebuild. Versions are opaque strings with no order, so a rollback to an older
   version also rebuilds (and flaps if old and new nodes keep restarting alternately). Accepted.
+- The version written to the header is the declared `version` plus a digest of the declared sensitive map
+  (D11), so editing the sensitive paths rebuilds the model the same way a code change does.
 - `ReadModelService.pins()` / `checkPins` include folded models, so a derived artifact can still record
   which fold it read.
 
@@ -217,7 +224,7 @@ service.drain(): Promise<void>                                  // await the nod
 `readFrom(id, watermark + 1)` and folds. It is correct from any node, needs no sequence from the caller, and
 is a no-op round trip when the state is already current. Cost: one `getFolded` + one `readFrom` per execution
 per call, so use it on the executions a user action just touched (the one document), not on every list view;
-the plain `getMany` stays one query. The trade-off against fire-and-forget is thus explicit: the default read
+the plain `getMany` stays one query. Neither reads the state cache (D15). The trade-off against fire-and-forget is thus explicit: the default read
 is eventually consistent and free; read-your-writes is opt-in and costs a log tail read.
 
 ### D9 — App key and scope are derived columns; keyed lookup is IN, paging over state is OUT (adapted / rejected)
@@ -250,7 +257,9 @@ foldedStateDdl({ schema, tables }): string       // pure — put it in the app's
   from event data. The folded tables are created lazily on first folded use, under an advisory lock, so
   apps that never register a folded model pay nothing and the shared `migrate()` is untouched.
 - `scope` (nullable `TEXT`, from `scopeOf(executionId)`) is the column an RLS policy keys on, indexed
-  `(model_id, scope)`. For DocMind `scopeOf` is the user-scoped prefix already in the executionId.
+  `(model_id, scope)`. `scopeOf` is derived **synchronously from the executionId** (owner decision, 2026-10-19), so it is knowable at read,
+  purge and RLS time with no lookup. The DocMind example (Loom itself stays generic): its execution ids are
+  `u_<userId>:<name>`, so `scopeOf` returns `<userId>`, and the app's own RLS policy maps scope → tenant through its own table.
 - **Writer and reader are different roles.** The ingest path (`onEvent`, catch-up) writes every tenant's rows
   and must not run under a tenant policy: give it a role with `BYPASSRLS` or a `TO loom_ingest USING (true)
   WITH CHECK (true)` policy. `INSERT … ON CONFLICT` needs SELECT visibility of the conflicting row, so the
@@ -273,16 +282,86 @@ CREATE POLICY ingest_all ON docmind.read_model_state FOR ALL TO loom_ingest USIN
   the id scheme.
 - SQLite has no RLS; tenant isolation there is one file per tenant. `scope` is stored and purgeable anyway.
 
-### D11 — State is stored in plaintext: it must be non-sensitive, or app-sealed
+### D11 — Sensitive-state guard: handlers never see declared-sensitive values, and the engine refuses to persist sealed or lifted ones
 
-The fold sees events *after* the `EncryptingEventStore` has opened them, so whatever the handler copies
-into `state` is written to the read-model table **in the clear**, outside the reach of the key that
-protects the log. The framework cannot detect "sensitive" (the sealed-envelope guard of ADR 0130 only
-recognises ciphertext, which is the safe case), so this is a documented obligation, not a check:
-state holds identifiers, enums, counters and timestamps (`{ status: "parsing", step: "ocr", attempts: 2,
-updatedAt }`), never document text, filenames or user-entered values; where a sensitive value must be
-shown, the handler stores an app-sealed value the reader opens, or the UI reads it from the log under
-the viewer's authority. D12 is the safety net for what slips through.
+The fold sees events *after* decryption: the live `onEvent` carries the plaintext event the runtime
+emitted, and catch-up / refresh / `liveSource` read through `EncryptingEventStore`, which opens sealed
+fields on read. Whatever a handler copies into `state` is then written to the read-model table **in the
+clear**, outside the reach of the key that protects the log. The owner decided (2026-10-19) that v1 must
+not leave this to documentation alone. The guard is built only from primitives Loom already has:
+
+| Reused primitive | Used for |
+|---|---|
+| `sensitive()` marks → `sensitivePathsFromSteps` / the `EncryptingEventStore` `sensitive` map (K10-R1, `docs/data-classification.md`) | the declared set: `eventType → payload dot-paths`, `[]` array wildcards allowed |
+| `metadata.seal.covers` stamped on every envelope that holds a sealed field, and `sealingCapability().covers` (ADR 0130 residuals D7) | the marked set, with no configuration, on every read-through-store feed |
+| The envelope shape rule: a plain object with an OWN string `__loomEnc` (ADR 0130 D2) | recognising ciphertext without keys or knowledge of the cipher |
+| `maskPaths`, `expandPaths`, `REDACTED` (`@loom/classify`) | masking, wildcard resolution, the sentinel `"[redacted]"` |
+| The bounded breadth-first walk, budget 100 000 nodes, exhaustion = fail closed (ADR 0130 D2) | every scan the guard makes |
+
+```ts
+type SensitiveMap = Readonly<Record<string, readonly string[]>>;   // eventType -> payload dot-paths
+
+new ReadModelService(store, { sensitive });        // applies to every folded model on the service
+registerFolded({ projection, sensitive? });        // per model; unioned with the service's map
+sensitiveMapFromCovers(enc.sealingCapability?.()?.covers ?? [])   // derive the map from the sealing store
+```
+
+The effective path set for one event is `sensitive[eventType]` (service ∪ model) ∪ the entries of
+`event.metadata.seal.covers` that name that event type. The marker survives decryption and is present on
+raw reads, so it covers every catch-up source with zero configuration; the declared map is what covers the
+**live** feed, whose event carries no marker. Hand the model the same constant the app gave
+`EncryptingEventStore`.
+
+**Layer 1 — the fold input (pure).** `foldView(event)` gives the handler a *copy* of the event in which
+every effective path is replaced by `"[redacted]"` and any cipher envelope anywhere else in the payload is
+replaced the same way. The original event never reaches a handler, and a handler can still see *that* the
+field was present. Every feed (live, catch-up, refresh, rebuild; strict, tolerant or raw sources) now
+presents byte-identical input, so rebuild == incremental holds regardless of source (D14), and a
+`{ $shredded: true }` under a sensitive path is masked too. While building the view the engine records the
+set of scalar values found under the effective paths of the **original** event (`Lifted`).
+
+**Layer 2 — the state output (pure).** After every handler call, after the JSON round trip (D4) and before
+anything is persisted, `assertStateClean(state, lifted)` walks the new state breadth-first and refuses it
+when it contains:
+
+1. a cipher envelope at any depth (`reason: "sealed-envelope"`) — Loom's own ciphertext is never a legal
+   state value, even one that is validly sealed: the read model has no key lifecycle for it;
+2. a string (length >= 6), or an integer (>= 6 digits), equal to a value lifted from this event's sensitive
+   paths, as a value **or as an object key** (`reason: "lifted-value"`) — this is what catches a handler (or
+   an upstream step) that mirrored the secret into a field nobody declared;
+3. anything it cannot finish verifying inside the walk budget (`reason: "unverifiable"`, fail closed).
+
+The refusal is a typed `SensitiveStateError { modelId, executionId, eventType, sequence, reason,
+statePath }`. The message names the model, the execution and the path inside the state (`$.owner.email`;
+a key hit reports the parent and `<key>`), **never the value**. It follows the poison-event rule of D4: on
+the live path it goes to `onError`, from `catchUp` / `refresh` it throws, and the execution's watermark
+does not advance. Failing loudly beats storing the secret.
+
+**Fold version.** Because the declared map changes what handlers see, it is part of the model's identity:
+the version written to the header (D5) is the declared `version` plus an 8-hex digest of the effective
+declared map (`1+sens.3fa9c01b`; unchanged `version` when the map is empty). Editing the sensitive paths
+rebuilds the model, and an old node with the old map is refused rather than diverging (P5). Pins report the
+effective version.
+
+**Why mask rather than "keep sealed".** The live event arrives plaintext, and a handler cannot be handed an
+envelope it could open; masking is the one representation all four feeds can produce identically. A
+catch-up source may also be the store's `readAtRest()` view (ADR 0130 D9), in which case the node never
+decrypts for the fold at all and layer 1 masks the at-rest envelopes by marker.
+
+**What it catches.** Declared and marked paths never reach a handler; ciphertext never reaches a handler or
+a state; an exact copy (value or key) of a value from a sensitive path of the event being folded is refused
+even when it travelled through an undeclared duplicate field; payloads and states too large to verify are
+refused.
+
+**What it cannot catch — stated plainly.** (a) Sensitive data in a field nobody classified or sealed: the
+classification *is* the declaration, so unclassified means unguarded (K10-R1 G2). (b) A handler that
+transforms a secret before storing it — hashing, truncation, case folding, concatenation, splitting,
+substrings. (c) A copy of a value from an *earlier* event or another execution, or one short enough to fall
+under the thresholds. (d) Data a handler obtains from outside the event (closures, module state, I/O);
+handlers are pure by contract (P2), not sandboxed. (e) Free text in undeclared paths. The guard is a
+seatbelt for a declared classification, not a data-loss-prevention scanner. The author's obligation stands:
+state holds identifiers, enums, counters and timestamps; D12's purge is still the erasure path for whatever
+slips through. There is no off switch in v1.
 
 ### D12 — Erasure: `purgeFolded` tombstones, never deletes the watermark (extends ADR 0093 D2)
 
@@ -298,7 +377,8 @@ events cannot resurrect a partial state from `initialState`. Exactly one selecto
 empty selector is refused, ADR 0093 D3); the call drains the node's in-flight live applies first; it returns
 the number of rows newly tombstoned (a retry returns 0); a backend without the method raises
 `PurgeUnsupportedError`. Compliance wiring is the existing two-step: `eraseSubject(...)` then
-`purgeFolded(model, { scope })`.
+`purgeFolded(model, { scope })`. With D11 declared, the fold never held the declared values, so the purge is the
+backstop for what the guard cannot see, not the primary control.
 
 Un-tombstoning is `rebuild(modelId, sources)` (clear + re-fold), which has the same obligations as
 ADR 0092 D6: rebuild through a source that tolerates shredded payloads, and make the handler treat
@@ -321,13 +401,56 @@ fold half: for an event log with interleaved executions, (a) incremental live ap
 and (e) `rebuild` all yield byte-identical states. Replay never reads a folded model (queries are reads of
 a cache, unrecorded), so determinism of the kernel is untouched by construction.
 
+### D15 — A bounded per-node state cache on the live apply path (owner decision, 2026-10-19)
+
+Without it, every handled live event costs one `getFolded` before its `applyFolded`. A hot execution (tens
+of events in seconds) pays that read every time although this node wrote the previous row a moment ago. The
+owner asked for a cache in v1, under one rule: it must never be able to weaken correctness.
+
+```ts
+new ReadModelService(store, { foldCache: { maxEntries: 1024 } })   // default 1024
+new ReadModelService(store, { foldCache: false })                   // or { maxEntries: 0 }: disabled
+```
+
+A per-node LRU of `(modelId, executionId) → { sequence, state, erased }`, bounded by entry count, owned by
+the `FoldedModelEngine`. The store's monotonic compare-and-set (D3) stays the only authority; the cache is
+only a guess at the *base* a fold starts from.
+
+- **Written** only after this node's own `applyFolded` returned `"applied"` (it holds exactly the row it just
+  wrote), and read only by the live path (`applyLive`). `take` *removes* the entry, so any failure while a
+  handler is running leaves the key absent rather than holding a half-mutated state.
+- **Never decides a gap.** A cached base with `event.sequence > cached + 1` is dropped and the store is
+  re-read first, because another node may be ahead. `event.sequence <= cached` is a safe ignore (the
+  watermark is monotonic).
+- **A lost CAS drops the entry and re-reads once.** `"stale"` from a write that started from a cached base
+  means the cache was behind; the entry is discarded, the store row is read, and the same event is
+  re-evaluated against it (ignored if the other node already folded it). `"version-mismatch"` drops every
+  entry of the model before raising `FoldVersionMismatchError`.
+- **Invalidated** by `registerFolded` / `beginFold` (version change), `purgeFolded` (the model's entries),
+  `rebuild` / `clear` (the model's entries), and by any catch-up, refresh or rebuild write to the same
+  execution (those paths advance the row behind the entry, so they delete it).
+- **Never serves a read.** `getMany`, `getManyByKey` and `refresh` always go to the store: a cache that is
+  correct for the write path (where the CAS catches staleness) would silently return stale data on a read
+  path (where nothing does), and another node's progress or a purge elsewhere would be invisible.
+- **A purge on another node** is covered by the store: the upsert keeps `state = NULL` for an erased row
+  whatever base it was computed from, so a stale cached entry costs one wasted fold, never a resurrection.
+- Memory is bounded by count, not bytes; state is a status-shaped value (D11). A model with large states
+  should lower `maxEntries` or turn the cache off.
+
+Evidence is by counted store reads, never timing: N sequential live events on one execution read the row
+once with the cache and N times without; the entry cap bounds the cache and an eviction costs exactly one
+re-read; a lost CAS costs exactly one re-read and converges; two cached nodes (including nodes that each saw
+only half of the events) converge with the cache disabled and with it enabled.
+
 ## Explicitly out of scope
 
 - **Cross-execution folds** (D2) — would need a merge with enforced laws; separate ADR when a consumer exists.
 - **Paging, range or field-filtered queries over folded state** (D9) — equality by `executionId`/`key`/`scope` only.
 - **Push / subscription** of state changes — `@loom/live-query` territory; a durable model is read on demand.
-- **An in-process state cache** in the live path — v1 does one `getFolded` read per handled event; add an LRU
-  only against a measured ingest rate (the ADR 0058 posture on batching Postgres inserts).
+- **Serving reads from the state cache** (D15) — the cache is write-path only; `getMany` / `refresh` hit the store.
+- **A sensitive-value *detector*** (entropy, regex, ML scanning of state) — D11 guards what is declared or sealed and states
+  its limits; guessing at undeclared sensitivity is a different product.
+- **An off switch for the sensitive-state guard** — not in v1.
 - **State history / snapshots / compaction** — the log is the history; the model is the latest state only.
 - **Event-time or wall-clock folds** — handlers are pure (P2); a handler needing time reads `event.timestamp`.
 - **Automatic RLS role/policy creation** — the DDL helper and ADR text provide the shape; roles are the DBA's.
@@ -337,27 +460,33 @@ a cache, unrecorded), so determinism of the kernel is untouched by construction.
 - DocMind's list view becomes one `getManyByKey(model, docIds, { refreshFrom: [store] })` per page (50 keys,
   one state query; the refresh variant adds one tail read per execution and should be reserved for the row the
   user just acted on) instead of a row query and a client-side fold per document.
-- Live ingest costs one `getFolded` read and one upsert per handled event per model. Acceptable for
-  status-shaped models (tens of events per execution); the cache in "out of scope" is the lever if it is not.
+- Live ingest costs one upsert per handled event per model, plus one `getFolded` read only on a cache miss (D15):
+  the first event of an execution on this node, an eviction, or a lost CAS. `foldCache: false` restores a read per event.
+- Handlers see `"[redacted]"` where a declared-sensitive field was, and a fold that mirrors a secret into state fails
+  loudly instead of storing it (D11). The cost is one bounded walk of the payload per folded event and one of the new
+  state, and an app must hand the model the same sensitive map it gave the encrypting store (or derive it with
+  `sensitiveMapFromCovers`).
 - Changing a fold is now a version bump and a boot-time re-fold, with the old nodes refused rather than
   corrupting — at the price that a rollback re-folds too.
 - The Postgres store gains an options argument and two optional tables; the existing constructor form and
   the shared `migrate()` are unchanged. Third-party backends are unaffected until they implement the five methods.
-- State is a plaintext copy of event data (D11): a new compliance surface, mitigated by the tombstone
-  purge but not eliminated. `docs/compliance.md` gains a section next to the 0093 one.
+- State is still a plaintext copy of whatever event data the guard cannot recognise (D11 states exactly what it can
+  and cannot catch): a compliance surface, reduced by the guard and backstopped by the tombstone purge. `docs/compliance.md`
+  gains a section next to the 0093 one.
 
 ## Principles check
 
 | Principle | How the decisions satisfy it |
 |---|---|
-| **P1** log is truth | The model is a cache with a per-execution watermark; every state is recomputable from the log (D3, D5, D14); read-your-writes repairs *from the log* (D8) instead of treating the store as authoritative. |
-| **P2** pure, deterministic fold | Handlers are the pure `(state, event) => state` of `projection$`; keys/scope are pure functions of `executionId`; per-event JSON normalization removes representation-dependent drift (D4); nothing is read on replay; no clock or randomness enters the fold (D14). |
+| **P1** log is truth | The model is a cache with a per-execution watermark; every state is recomputable from the log (D3, D5, D14); read-your-writes repairs *from the log* (D8) instead of treating the store as authoritative; the state cache is a guess at the base that the store's CAS corrects and it never serves a read (D15). |
+| **P2** pure, deterministic fold | Handlers are the pure `(state, event) => state` of `projection$`; keys/scope are pure functions of `executionId`; per-event JSON normalization removes representation-dependent drift (D4); nothing is read on replay; no clock or randomness enters the fold (D14); the handler's input is a pure function of the event and the declared paths, and those paths are part of the fold version, so changing them rebuilds (D11). |
 | **P3** suspension normal | Nothing here parks or blocks an execution; a suspended execution's state is simply the fold so far. |
 | **P4** plain code | The fold is the author's own function; no DSL. |
-| **P5** static wiring | Models are registered explicitly at boot (D13); no discovery, no environment-conditional registration. The version header makes a drifted deployment refuse rather than diverge (D5). |
+| **P5** static wiring | Models are registered explicitly at boot (D13); no discovery, no environment-conditional registration. The version header (code version + sensitive-map digest) makes a drifted deployment refuse rather than diverge (D5, D11). |
 | **P6** composition | Reuses `ProjectionDefinition`, the existing service/catch-up/store, `iterateExecutionIds`, ADR 0093's purge posture; extends by optional methods, nothing replaced (D1, D6). |
-| **P7** pure core, thin edges | Fold, key/scope derivation, contiguity rule and JSON normalization are pure and unit-tested with the in-memory store; SQL lives only in the backends; `foldedStateDdl` is a pure string builder (D4, D10). |
+| **P7** pure core, thin edges | Fold, key/scope derivation, contiguity rule and JSON normalization are pure and unit-tested with the in-memory store; SQL lives only in the backends; `foldedStateDdl` is a pure string builder; the sensitive-state guard (`foldView`, `assertStateClean`) and the LRU are pure and unit-tested without a database (D4, D10, D11, D15). |
 | **P8** pluggable edges | `ReadModelStore` stays the SPI; in-memory, SQLite, Postgres and any 3P backend implement the same optional methods against one conformance kit (D6). |
 | **P9** logged non-determinism | Not applicable: the model introduces none (no clock, no randomness, no decisions); version bumps are build-time facts, not runtime choices. |
-| **P10** minimal kernel | No kernel/ABI/schema change; the durable write is off the execution's critical path, which is why synchronous apply was rejected (D8); an app that never calls `registerFolded` pays nothing. |
+| **P10** minimal kernel | No kernel/ABI/schema change; the durable write is off the execution's critical path, which is why synchronous apply was rejected (D8); an app that never calls `registerFolded` pays nothing; the cache removes a read from the advisory plane and cannot block it (D15). |
 | **P11** NL compiles to code | Not engaged: no runtime NL input. |
+| **K10-R1 / G2 / G3** classify once, unmarked is a no-op, kernel ignorant of the taxonomy | The guard consumes the existing `sensitive` marks, `metadata.seal` and `sealingCapability`; it adds no class and no kernel knowledge; an unclassified field is unguarded, and D11 says so (D11). |

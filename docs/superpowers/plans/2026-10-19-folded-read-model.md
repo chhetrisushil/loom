@@ -2,25 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a second model kind to `@loom/plugin-read-model` — a durable, per-execution folded-state projection (`registerFolded`, `getMany`, `getManyByKey`, `refresh`, `purgeFolded`) — with in-memory, SQLite and Postgres backends and a conformance kit.
+**Goal:** Add a second model kind to `@loom/plugin-read-model` — a durable, per-execution folded-state projection (`registerFolded`, `getMany`, `getManyByKey`, `refresh`, `purgeFolded`) — with in-memory, SQLite and Postgres backends and a conformance kit, a sensitive-state guard (a folded model must not persist plaintext sensitive data) and a bounded live-path state cache.
 
-**Architecture:** The fold is the existing `ProjectionDefinition` (`projection$`). One state row per `(modelId, executionId)` whose `sequence` IS the watermark, written by a monotonic compare-and-set so nodes converge without locks. A `FoldedModelEngine` (pure core, new file) owns registration, contiguity, per-execution serialization and reads; `ReadModelService` delegates to it and shares the existing `onEvent` seam and catch-up scan. Backends gain five OPTIONAL store methods (SPI 1.1.0 → 1.2.0).
+**Architecture:** The fold is the existing `ProjectionDefinition` (`projection$`). One state row per `(modelId, executionId)` whose `sequence` IS the watermark, written by a monotonic compare-and-set so nodes converge without locks. A `FoldedModelEngine` (pure core, new file) owns registration, contiguity, per-execution serialization and reads; `ReadModelService` delegates to it and shares the existing `onEvent` seam and catch-up scan. Backends gain five OPTIONAL store methods (SPI 1.1.0 → 1.2.0). Fold input is a masked view of the event and every new state passes a pure persist-time check (D11); a per-node LRU of fold bases removes the read before each live apply while the store's CAS stays the authority (D15).
 
 **Tech Stack:** TypeScript, vitest, better-sqlite3, node-postgres, pnpm/turbo, biome.
 
-**Spec:** `docs/adr/0132-folded-state-read-model.md` (decisions D1–D14). Read it first; tasks cite decisions by number.
+**Spec:** `docs/adr/0132-folded-state-read-model.md` (decisions D1–D15). Read it first; tasks cite decisions by number.
 
 ## Global Constraints
 
 - No kernel change: `KERNEL_ABI` and `EVENT_SCHEMA` untouched; no `@loom/app`, `@loom/core` or event-type edits. Layering guard intact (plugins never imported by kernel packages).
 - `READ_MODEL_STORE_SPI_VERSION` becomes `"1.2.0"`; the five new store methods are OPTIONAL (`beginFold?`, `applyFolded?`, `getFolded?`, `getFoldedByKey?`, `purgeFolded?`).
 - A folded model is a cache of the log: rebuild == incremental; nothing reads it on replay.
-- Fold `version` is REQUIRED (non-blank after trim); a changed version rebuilds the model automatically (D5).
+- Fold `version` is REQUIRED (non-blank after trim); a changed version rebuilds the model automatically (D5). The version written to the store is `version` plus a digest of the declared sensitive map (D11).
+- Sensitive-state guard (D11): handlers get a masked copy of the event; a state holding a cipher envelope or a value lifted from a sensitive path is refused with `SensitiveStateError` (never carries a value); `@loom/classify` becomes a dependency of `@loom/plugin-read-model` (masking only; the `__loomEnc` shape rule of ADR 0130 D2 is re-implemented locally, not imported from the crypto plugin); no off switch.
+- State cache (D15): write-path only, default 1024 entries, `foldCache: false` disables; the store's CAS is the authority; `getMany` / `getManyByKey` / `refresh` never read it. Tests prove it with counted store reads, never timing.
 - `getMany*` is capped at `MAX_GET_MANY = 1000` keys.
 - Tests: wait on conditions (`service.drain()`, `until`), never fixed sleeps; no `performance.now()` in `*.test.ts`; Postgres suites gated on `LOOM_TEST_POSTGRES_URL` (never print its value); every package with tests keeps its `tsconfig.test.json` (`pnpm typecheck:tests`).
-- Each task: <= 200 changed lines and <= 10 files. Open the PR as a DRAFT; `gh pr merge --rebase` only.
+- **ONE draft PR PER TASK** (owner decision Q9): each task is <= 200 changed lines and <= 10 files and ships as its own DRAFT PR, stacked in task order (task N's branch is based on task N-1's, or on the task it depends on), merged in order with `gh pr merge --rebase` only; after each merge, rebase the next branch onto `main`. Never squash, never a merge commit.
 - Use `command ls`, never bare `ls`, in shell steps.
-- **Local verify (close-out and before any "ready"):** `pnpm build && npx turbo test --force --concurrency=2 && pnpm typecheck && pnpm typecheck:tests && pnpm lint`
+- **Local verify (every task runs its package tests; the full line below before any PR is marked ready, and at the close-out):** `pnpm build && npx turbo test --force --concurrency=2 && pnpm typecheck && pnpm typecheck:tests && pnpm lint`
 - Commit trailer on every commit: `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`
 
 ---
@@ -31,16 +33,20 @@
 |---|---|
 | `plugins/read-model/src/types.ts` (modify) | Folded types, optional store methods, SPI 1.2.0, error classes, `assertManyKeys` |
 | `plugins/read-model/src/FoldedModelEngine.ts` (create) | Registration, contiguity, serialization, fold, reads, refresh, purge — no I/O of its own |
-| `plugins/read-model/src/ReadModelService.ts` (modify) | `registerFolded`, live fan-out, shared catch-up scan, delegation, pins, rebuild |
+| `plugins/read-model/src/sensitiveState.ts` (create) | Pure persist-time check: `assertStateClean`, `SensitiveStateError`, bounded walk, `Lifted` (D11) |
+| `plugins/read-model/src/sensitiveInput.ts` (create) | Pure fold input: `sensitivePathsFor`, `foldView` (mask + lift) (D11) |
+| `plugins/read-model/src/sensitiveConfig.ts` (create) | `sensitiveMapFromCovers`, `mergeSensitive`, `effectiveFoldVersion` (D5, D11) |
+| `plugins/read-model/src/foldStateCache.ts` (create) | Pure bounded LRU of fold bases (D15) |
+| `plugins/read-model/src/ReadModelService.ts` (modify) | `registerFolded`, live fan-out, shared catch-up scan, delegation, pins, rebuild, `sensitive` / `foldCache` options |
 | `plugins/read-model/src/InMemoryReadModelStore.ts` (modify) | Reference folded methods |
 | `plugins/read-model/src/foldedFixtures.ts` (create) | Test-only ingest-status projection + event helpers (excluded from `index.ts`) |
 | `packages/conformance/src/foldedState.ts` (create) | `runFoldedStateConformance` |
 | `plugins/sqlite/src/SqliteReadModelStore.ts` (modify) | SQLite folded methods |
 | `plugins/postgres/src/foldedState.ts` (create) | Identifier validation, DDL builder, table ensure (pure + thin) |
 | `plugins/postgres/src/PostgresReadModelStore.ts` (modify) | Options arg, folded methods |
-| `docs/plugins.md`, `docs/compliance.md`, `docs/api-reference.org`, `docs/README.md` (modify) | User docs |
+| `docs/plugins.md`, `docs/compliance.md`, `docs/data-classification.md`, `docs/api-reference.org`, `docs/README.md` (modify) | User docs |
 
-Task order: 1 → 2 → 3 → 4a → 4b → 5a → 5b → 6 → 7 → 8 → 9a → 9b → 10. Tasks 8, 9a/9b depend only on 1 and 2 and may run in parallel with 4a–7.
+Task order: 1 → 2 → 3 → 4a → 4b → 5a → 5b → 5c → 6a → 6b → 6c → 7a → 7b → 8 → 9 → 10 → 11 → 12a → 12b → 13a → 13b. Task 5a, 5b and 6a depend only on Task 1 (pure modules) and may start as soon as it merges; 5c needs 4a/4b and 5a/5b; 6b needs 5c and 6a; 7a needs 6c; Task 9 needs 7b. Tasks 11, 12a and 12b depend only on Tasks 1–3 (the store SPI and the kit) and may run in parallel with 4a–10, each as its own stacked PR on Task 3.
 
 ---
 
@@ -52,13 +58,13 @@ Task order: 1 → 2 → 3 → 4a → 4b → 5a → 5b → 6 → 7 → 8 → 9a �
 - Create: `plugins/read-model/src/foldedTypes.test.ts`
 
 **Interfaces:**
-- Produces: `FoldedReadModelDefinition<S>`, `FoldedRecord`, `FoldedApply`, `FoldedApplyResult`, `FoldedSelector`, `FoldedState<S>`, `MAX_GET_MANY`, `assertManyKeys(keys, what)`, `FoldedUnsupportedError`, `FoldGapError`, `FoldVersionMismatchError`, optional `ReadModelStore` methods, `READ_MODEL_STORE_SPI_VERSION = "1.2.0"`.
+- Produces: `FoldedReadModelDefinition<S>` (with optional `sensitive`), `FoldedRecord`, `FoldBase`, `FoldedApply`, `FoldedApplyResult`, `FoldedSelector`, `FoldedState<S>`, `SensitiveMap`, `FoldCacheOptions`, `DEFAULT_FOLD_CACHE_ENTRIES`, `FoldedEngineOptions`, `MAX_GET_MANY`, `assertManyKeys(keys, what)`, `FoldedUnsupportedError`, `FoldGapError`, `FoldVersionMismatchError`, optional `ReadModelStore` methods, `READ_MODEL_STORE_SPI_VERSION = "1.2.0"`.
 
 - [ ] **Step 1: Write the failing test** — `plugins/read-model/src/foldedTypes.test.ts`
 
 ```ts
 import { describe, expect, it } from "vitest";
-import { MAX_GET_MANY, READ_MODEL_STORE_SPI_VERSION, assertManyKeys } from "./types";
+import { DEFAULT_FOLD_CACHE_ENTRIES, MAX_GET_MANY, READ_MODEL_STORE_SPI_VERSION, assertManyKeys } from "./types";
 
 describe("folded SPI types (ADR 0132 D6/D7)", () => {
   it("bumps the SPI to 1.2.0", () => {
@@ -77,6 +83,10 @@ describe("folded SPI types (ADR 0132 D6/D7)", () => {
 
   it("refuses blank keys: a computed-but-empty key must not match everything or nothing", () => {
     expect(() => assertManyKeys(["a", ""], "getManyByKey")).toThrow(TypeError);
+  });
+
+  it("defaults the per-node fold cache to 1024 entries (ADR 0132 D15)", () => {
+    expect(DEFAULT_FOLD_CACHE_ENTRIES).toBe(1024);
   });
 });
 ```
@@ -99,7 +109,12 @@ export interface FoldedReadModelDefinition<TState = unknown> {
   keyOf?: (executionId: string) => string | undefined;
   /** Tenant/RLS scope derived from the executionId ONLY. */
   scopeOf?: (executionId: string) => string | undefined;
+  /** Payload dot-paths a handler must never see (ADR 0132 D11); unioned with the service's `sensitive`. */
+  sensitive?: SensitiveMap;
 }
+
+/** eventType -> payload dot-paths (`[]` wildcards allowed): the shape of `EncryptingEventStore`'s `sensitive` option. */
+export type SensitiveMap = Readonly<Record<string, readonly string[]>>;
 
 /** One stored folded state. `state === null` means "no handled event yet" or erased. */
 export interface FoldedRecord {
@@ -111,6 +126,9 @@ export interface FoldedRecord {
   state: unknown | null;
   erased: boolean;
 }
+
+/** What a fold starts from: a stored record, or a cached copy of one (ADR 0132 D15). */
+export type FoldBase = Pick<FoldedRecord, "sequence" | "state" | "erased">;
 
 export interface FoldedApply {
   modelId: string;
@@ -149,6 +167,23 @@ export function assertManyKeys(keys: readonly string[], what: string): void {
       throw new TypeError(`read-model ${what}: keys must be non-empty strings`);
     }
   }
+}
+
+/** Per-node state cache for the live apply path (ADR 0132 D15). */
+export interface FoldCacheOptions {
+  /** Max (model, execution) entries on this node. 0 disables. Default {@link DEFAULT_FOLD_CACHE_ENTRIES}. */
+  maxEntries?: number;
+}
+export const DEFAULT_FOLD_CACHE_ENTRIES = 1_024;
+
+/** Everything the engine needs beyond the store and `onError`. */
+export interface FoldedEngineOptions {
+  /** Fills a gap in the live tail (D4) — normally this node's own event store. */
+  liveSource?: ReadModelEventSource;
+  /** Service-wide sensitive paths (D11); unioned with each model's own. */
+  sensitive?: SensitiveMap;
+  /** `false` disables the state cache (D15). */
+  cache?: FoldCacheOptions | false;
 }
 
 export class FoldedUnsupportedError extends Error {
@@ -203,7 +238,7 @@ and add to the `ReadModelStore` interface, before `clear`:
   purgeFolded?(modelId: string, selector: FoldedSelector): Promise<number>;
 ```
 
-Update the `clear` doc: "also drops the model's folded states and fold header". In `index.ts` add `MAX_GET_MANY, assertManyKeys, FoldedUnsupportedError, FoldGapError, FoldVersionMismatchError` to the value export list and `FoldedReadModelDefinition, FoldedRecord, FoldedApply, FoldedApplyResult, FoldedSelector, FoldedState` to the type export list.
+Update the `clear` doc: "also drops the model's folded states and fold header". In `index.ts` add `MAX_GET_MANY, DEFAULT_FOLD_CACHE_ENTRIES, assertManyKeys, FoldedUnsupportedError, FoldGapError, FoldVersionMismatchError` to the value export list and `FoldedReadModelDefinition, FoldedRecord, FoldBase, FoldedApply, FoldedApplyResult, FoldedSelector, FoldedState, SensitiveMap, FoldCacheOptions, FoldedEngineOptions` to the type export list.
 
 - [ ] **Step 4: Run, verify it passes**
 
@@ -563,7 +598,7 @@ git commit -m "feat(read-model): in-memory folded state reference backend (ADR 0
 - Consumes: Task 1 types, Task 3 store.
 - Produces:
   - `type FoldedStore`, `foldedCapable(store): store is ReadModelStore & FoldedStore`
-  - `class FoldedModelEngine(store: FoldedStore, onError: (err: unknown, event: EventEnvelope) => void, liveSource?: ReadModelEventSource)` with `register(def): Promise<{rebuilt:boolean}>`, `has(id)`, `ids(): string[]`, `size`, `versions(): [string,string][]`, `handle(event): void`, `mark(modelId, executionId): Promise<FoldedRecord|undefined>`, `foldBatch(modelId, executionId, rec, events): Promise<boolean>`, `drain(): Promise<void>`.
+  - `class FoldedModelEngine(store: FoldedStore, onError: (err: unknown, event: EventEnvelope) => void, options: FoldedEngineOptions = {})` (`liveSource` is read from `options`; `sensitive` and `cache` are honoured from Tasks 5c and 6b) with `register(def): Promise<{rebuilt:boolean}>`, `has(id)`, `ids(): string[]`, `size`, `versions(): [string,string][]`, `handle(event): void`, `mark(modelId, executionId): Promise<FoldedRecord|undefined>`, `foldBatch(modelId, executionId, rec: FoldBase | undefined, events): Promise<boolean>`, `drain(): Promise<void>`.
 
 - [ ] **Step 1: Fixtures + failing tests.** `plugins/read-model/src/foldedFixtures.ts` (test support; NOT exported from `index.ts`):
 
@@ -716,9 +751,10 @@ describe("FoldedModelEngine — fold (D3, D4)", () => {
 import { loadProjectionHandlers, projectionEventTypes } from "@loom/core";
 import type { EventEnvelope, ProjectionHandlers } from "@loom/core";
 import type {
+  FoldBase,
+  FoldedEngineOptions,
   FoldedReadModelDefinition,
   FoldedRecord,
-  ReadModelEventSource,
   ReadModelStore,
 } from "./types";
 import { FoldGapError, FoldVersionMismatchError } from "./types";
@@ -770,7 +806,7 @@ export class FoldedModelEngine {
   constructor(
     protected readonly store: FoldedStore,
     private readonly onError: (err: unknown, event: EventEnvelope) => void,
-    private readonly liveSource?: ReadModelEventSource
+    protected readonly options: FoldedEngineOptions = {}
   ) {}
 
   has(modelId: string): boolean {
@@ -835,7 +871,7 @@ export class FoldedModelEngine {
   async foldBatch(
     modelId: string,
     executionId: string,
-    rec: FoldedRecord | undefined,
+    rec: FoldBase | undefined,
     events: readonly EventEnvelope[]
   ): Promise<boolean> {
     const model = this.models.get(modelId);
@@ -887,7 +923,7 @@ export class FoldedModelEngine {
     if (event.sequence <= from) return;
     let events: readonly EventEnvelope[];
     if (event.sequence === from + 1) events = [event];
-    else if (this.liveSource !== undefined) events = await this.liveSource.readFrom(event.executionId, from + 1);
+    else if (this.options.liveSource !== undefined) events = await this.options.liveSource.readFrom(event.executionId, from + 1);
     else throw new FoldGapError(model.id, event.executionId, from, event.sequence);
     await this.foldBatch(model.id, event.executionId, rec, events);
   }
@@ -968,7 +1004,7 @@ describe("FoldedModelEngine — reads, refresh, purge (D7, D8, D12)", () => {
 
 - [ ] **Step 2: Run, verify fail** → FAIL (`getMany` is not a function).
 
-- [ ] **Step 3: Implement** — in `FoldedModelEngine.ts` add `FoldedSelector, FoldedState` to the type import and `assertManyKeys` to the value import from `./types`, then add methods:
+- [ ] **Step 3: Implement** — in `FoldedModelEngine.ts` add `FoldedSelector, FoldedState, ReadModelEventSource` to the type import and `assertManyKeys` to the value import from `./types`, then add methods:
 
 ```ts
   definition(modelId: string): FoldedReadModelDefinition<never> {
@@ -1094,15 +1130,1053 @@ git commit -m "feat(read-model): folded getMany/getManyByKey/refresh/purge on th
 
 ---
 
-### Task 5a: Service wiring — register, live fan-out, shared catch-up (D13)
+### Task 5a: Sensitive-state guard — the output check (D11)
+
+**Files:**
+- Create: `plugins/read-model/src/sensitiveState.ts`
+- Create: `plugins/read-model/src/sensitiveState.test.ts`
+- Modify: `plugins/read-model/src/index.ts`
+
+**Interfaces:**
+- Produces: `GUARD_WALK_BUDGET = 100_000`, `MIN_LIFTED_STRING = 6`, `MIN_LIFTED_DIGITS = 6`, `Lifted { strings: ReadonlySet<string>; numbers: ReadonlySet<number> }`, `NOTHING_LIFTED`, `isCipherEnvelope(v)`, `isLiftable(v)`, `walkBounded(root, visit): boolean`, `SensitiveStateContext`, `SensitiveStateReason`, `SensitiveStateError`, `assertStateClean(ctx, state, lifted): void`. Pure: no I/O, no store, no clock (P7).
+
+- [ ] **Step 1: Failing test** — `plugins/read-model/src/sensitiveState.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import {
+  GUARD_WALK_BUDGET,
+  type Lifted,
+  NOTHING_LIFTED,
+  SensitiveStateError,
+  assertStateClean,
+  isLiftable,
+} from "./sensitiveState";
+
+const ctx = { modelId: "m", executionId: "x-1", eventType: "STEP_COMPLETED", sequence: 3 };
+const lifted = (strings: string[] = [], numbers: number[] = []): Lifted => ({
+  strings: new Set(strings),
+  numbers: new Set(numbers),
+});
+const refusal = (state: unknown, l: Lifted): SensitiveStateError => {
+  try {
+    assertStateClean(ctx, state, l);
+  } catch (e) {
+    return e as SensitiveStateError;
+  }
+  throw new Error("expected a SensitiveStateError");
+};
+
+describe("assertStateClean — the persist-time check (ADR 0132 D11)", () => {
+  it("passes an ordinary status-shaped state", () => {
+    expect(() => assertStateClean(ctx, { status: "done", steps: 2, tags: ["a"] }, NOTHING_LIFTED)).not.toThrow();
+  });
+
+  it("refuses a sealed envelope at any depth and reports where, not what", () => {
+    const e = refusal({ a: { b: [{ __loomEnc: "loom/aes-256-gcm", ct: "zzzzzzzz" }] } }, NOTHING_LIFTED);
+    expect(e).toBeInstanceOf(SensitiveStateError);
+    expect(e).toMatchObject({ reason: "sealed-envelope", statePath: "$.a.b[0]" });
+    expect(e.message).not.toContain("zzzzzzzz");
+  });
+
+  it("treats a non-string or inherited __loomEnc as an ordinary value (ADR 0130 D2)", () => {
+    expect(() => assertStateClean(ctx, { v: { __loomEnc: 1 } }, NOTHING_LIFTED)).not.toThrow();
+    expect(() => assertStateClean(ctx, { v: Object.create({ __loomEnc: "x" }) }, NOTHING_LIFTED)).not.toThrow();
+  });
+
+  it("refuses a lifted string and names model, execution, event and path — never the value", () => {
+    const secret = "alice@example.com";
+    const e = refusal({ owner: { email: secret } }, lifted([secret]));
+    expect(e).toMatchObject({ reason: "lifted-value", statePath: "$.owner.email" });
+    expect(e.message).toContain('"m"');
+    expect(e.message).toContain('"x-1"');
+    expect(e.message).toContain("STEP_COMPLETED #3");
+    expect(e.message).not.toContain(secret);
+    expect(JSON.stringify(e.context)).not.toContain(secret);
+  });
+
+  it("refuses a lifted value used as an object KEY, without echoing the key", () => {
+    const secret = "alice@example.com";
+    const e = refusal({ byOwner: { [secret]: 1 } }, lifted([secret]));
+    expect(e).toMatchObject({ reason: "lifted-value", statePath: "$.byOwner.<key>" });
+    expect(e.message).not.toContain(secret);
+  });
+
+  it("refuses a lifted number", () => {
+    expect(refusal({ n: [0, 123456789] }, lifted([], [123456789]))).toMatchObject({ statePath: "$.n[1]" });
+  });
+
+  it("does not lift values too short to be meaningful (no false positives on 'ok' or 3)", () => {
+    expect(isLiftable("ok")).toBe(false);
+    expect(isLiftable(12345)).toBe(false);
+    expect(isLiftable("abcdef")).toBe(true);
+    expect(isLiftable(123456)).toBe(true);
+    expect(isLiftable(true)).toBe(false);
+  });
+
+  it("fails closed when the state is too large to verify", () => {
+    const e = refusal({ big: new Array(GUARD_WALK_BUDGET + 1).fill(0) }, NOTHING_LIFTED);
+    expect(e.reason).toBe("unverifiable");
+  });
+});
+```
+
+- [ ] **Step 2: Run, verify fail** — `pnpm --filter @loom/plugin-read-model exec vitest run src/sensitiveState.test.ts` → FAIL (module missing).
+
+- [ ] **Step 3: Implement** `plugins/read-model/src/sensitiveState.ts`:
+
+```ts
+// ── ADR 0132 D11 — the persist-time half of the sensitive-state guard ─────────
+// Pure functions only. The engine calls `assertStateClean` after every handler result and before
+// anything is written; it never reads a store, a clock or a key. Ciphertext is recognised by SHAPE
+// (ADR 0130 D2), so this works on a node that does not load the crypto plugin.
+
+/** Same budget as ADR 0130 D2's bounded walk. Exhausting it is "cannot verify", never "clean". */
+export const GUARD_WALK_BUDGET = 100_000;
+/** Shorter strings / integers are not lifted: "ok" or 3 would flag ordinary state (documented limit). */
+export const MIN_LIFTED_STRING = 6;
+export const MIN_LIFTED_DIGITS = 6;
+
+/** Scalar values found under the sensitive paths of the event being folded. */
+export interface Lifted {
+  readonly strings: ReadonlySet<string>;
+  readonly numbers: ReadonlySet<number>;
+}
+export const NOTHING_LIFTED: Lifted = { strings: new Set<string>(), numbers: new Set<number>() };
+
+/** A plain object with an OWN string `__loomEnc`: a crypto-plugin ciphertext envelope (ADR 0130 D2). */
+export function isCipherEnvelope(v: unknown): boolean {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    Object.hasOwn(v, "__loomEnc") &&
+    typeof (v as { __loomEnc?: unknown }).__loomEnc === "string"
+  );
+}
+
+export function isLiftable(v: unknown): v is string | number {
+  if (typeof v === "string") return v.length >= MIN_LIFTED_STRING;
+  return (
+    typeof v === "number" && Number.isFinite(v) && String(Math.abs(Math.trunc(v))).length >= MIN_LIFTED_DIGITS
+  );
+}
+
+/**
+ * Iterative breadth-first visit of every node under `root` (objects and arrays; depth cannot blow the
+ * stack). Returns false when the node budget ran out, which callers MUST treat as unverifiable.
+ */
+export function walkBounded(root: unknown, visit: (value: unknown) => void): boolean {
+  const queue: unknown[] = [root];
+  for (let i = 0; i < queue.length; i++) {
+    if (queue.length > GUARD_WALK_BUDGET) return false;
+    const v = queue[i];
+    visit(v);
+    if (typeof v !== "object" || v === null) continue;
+    for (const child of Array.isArray(v) ? v : Object.values(v)) queue.push(child);
+  }
+  return queue.length <= GUARD_WALK_BUDGET;
+}
+
+export interface SensitiveStateContext {
+  readonly modelId: string;
+  readonly executionId: string;
+  readonly eventType: string;
+  readonly sequence: number;
+}
+export type SensitiveStateReason = "sealed-envelope" | "lifted-value" | "unverifiable";
+
+const WHY: Record<SensitiveStateReason, string> = {
+  "sealed-envelope": "the new state holds a sealed envelope",
+  "lifted-value": "the new state holds a value copied from a sensitive path",
+  unverifiable: "the new state is too large to verify",
+};
+
+/** Names the model, execution, event and state path. NEVER carries a value, a key or ciphertext. */
+export class SensitiveStateError extends Error {
+  readonly name = "SensitiveStateError";
+  constructor(
+    readonly context: SensitiveStateContext,
+    readonly reason: SensitiveStateReason,
+    readonly statePath: string
+  ) {
+    super(
+      `folded read model "${context.modelId}": ${WHY[reason]} at ${statePath} (execution "${context.executionId}", ${context.eventType} #${context.sequence}) — a folded state is stored in plaintext and must not hold sensitive data (ADR 0132 D11)`
+    );
+  }
+}
+
+/** Refuse a state that would persist ciphertext or a value lifted from a sensitive path. */
+export function assertStateClean(ctx: SensitiveStateContext, state: unknown, lifted: Lifted): void {
+  const queue: [unknown, string][] = [[state, "$"]];
+  for (let i = 0; i < queue.length; i++) {
+    if (queue.length > GUARD_WALK_BUDGET) throw new SensitiveStateError(ctx, "unverifiable", "$");
+    const [v, path] = queue[i] as [unknown, string];
+    if (typeof v === "string") {
+      if (lifted.strings.has(v)) throw new SensitiveStateError(ctx, "lifted-value", path);
+      continue;
+    }
+    if (typeof v === "number") {
+      if (lifted.numbers.has(v)) throw new SensitiveStateError(ctx, "lifted-value", path);
+      continue;
+    }
+    if (typeof v !== "object" || v === null) continue;
+    if (isCipherEnvelope(v)) throw new SensitiveStateError(ctx, "sealed-envelope", path);
+    if (Array.isArray(v)) {
+      v.forEach((child, j) => queue.push([child, `${path}[${j}]`]));
+      continue;
+    }
+    for (const [k, child] of Object.entries(v)) {
+      // A key that IS a lifted value is reported by position only: the path must not echo it.
+      if (lifted.strings.has(k)) throw new SensitiveStateError(ctx, "lifted-value", `${path}.<key>`);
+      queue.push([child, `${path}.${k}`]);
+    }
+  }
+}
+```
+In `index.ts` add `export { SensitiveStateError } from "./sensitiveState"; export type { SensitiveStateContext, SensitiveStateReason } from "./sensitiveState";`.
+
+- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loom/plugin-read-model exec vitest run src/sensitiveState.test.ts && pnpm --filter @loom/plugin-read-model build` → PASS.
+- [ ] **Step 5: Commit**
+
+```bash
+git add plugins/read-model/src/sensitiveState.ts plugins/read-model/src/sensitiveState.test.ts plugins/read-model/src/index.ts
+git commit -m "feat(read-model): sensitive-state guard output check (ADR 0132 D11)"
+```
+
+---
+
+### Task 5b: Sensitive-state guard — the fold input view (D11)
+
+**Files:**
+- Create: `plugins/read-model/src/sensitiveInput.ts`
+- Create: `plugins/read-model/src/sensitiveInput.test.ts`
+- Modify: `plugins/read-model/package.json` (add `"@loom/classify": "workspace:*"` to `dependencies`)
+- Modify: `plugins/read-model/tsconfig.json` (add `{ "path": "../../packages/classify" }` to `references`)
+- Modify: `plugins/read-model/tsconfig.test.json` (same reference, if it lists references)
+- Modify: `pnpm-lock.yaml` (via `pnpm install`; commit only the resulting importer entry)
+
+**Interfaces:**
+- Consumes: Task 1 `SensitiveMap`; Task 5a `Lifted`, `isCipherEnvelope`, `isLiftable`, `walkBounded`, `SensitiveStateError`.
+- Produces: `sensitivePathsFor(event, declared): string[]`, `foldView(modelId, event, declared): { event: EventEnvelope; lifted: Lifted }`.
+
+- [ ] **Step 1: Failing test** — `plugins/read-model/src/sensitiveInput.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { evt } from "./foldedFixtures";
+import { foldView, sensitivePathsFor } from "./sensitiveInput";
+import { GUARD_WALK_BUDGET, SensitiveStateError } from "./sensitiveState";
+
+const sealedField = { __loomEnc: "loom/aes-256-gcm", iv: "iviviviv", ct: "ctctctct" };
+const seal = (covers: string[]) => ({ seal: { v: 1, cipher: "loom/aes-256-gcm", covers } });
+
+describe("sensitivePathsFor (ADR 0132 D11)", () => {
+  it("unions the declared paths with the event's own seal marker, for that event type only", () => {
+    const e = { ...evt("x", 0, "STEP_COMPLETED", {}), metadata: seal(["STEP_COMPLETED.output.ssn", "OTHER.a"]) };
+    expect(sensitivePathsFor(e, { STEP_COMPLETED: ["email", "output.ssn"], OTHER: ["z"] })).toEqual([
+      "email",
+      "output.ssn",
+    ]);
+  });
+
+  it("is empty when nothing is declared and the event carries no marker", () => {
+    expect(sensitivePathsFor(evt("x", 0, "STEP_COMPLETED"), {})).toEqual([]);
+  });
+});
+
+describe("foldView — what a handler is allowed to see", () => {
+  it("masks declared paths, keeps presence, leaves the original event untouched", () => {
+    const e = evt("x", 0, "STEP_COMPLETED", { step: "ocr", email: "alice@example.com" });
+    const { event } = foldView("m", e, { STEP_COMPLETED: ["email"] });
+    expect(event.payload).toEqual({ step: "ocr", email: "[redacted]" });
+    expect(e.payload).toEqual({ step: "ocr", email: "alice@example.com" });
+  });
+
+  it("resolves array wildcards", () => {
+    const e = evt("x", 0, "E", { people: [{ ssn: "111-22-3333", id: "a" }, { ssn: "444-55-6666", id: "b" }] });
+    const { event, lifted } = foldView("m", e, { E: ["people[].ssn"] });
+    expect(event.payload).toEqual({
+      people: [{ ssn: "[redacted]", id: "a" }, { ssn: "[redacted]", id: "b" }],
+    });
+    expect([...lifted.strings].sort()).toEqual(["111-22-3333", "444-55-6666"]);
+  });
+
+  it("lifts only values long enough to mean something, from the original event", () => {
+    const { lifted } = foldView("m", evt("x", 0, "E", { a: "ok", b: "long-enough", n: 7, big: 9876543 }), {
+      E: ["a", "b", "n", "big"],
+    });
+    expect([...lifted.strings]).toEqual(["long-enough"]);
+    expect([...lifted.numbers]).toEqual([9876543]);
+  });
+
+  it("masks a cipher envelope wherever it sits, even with nothing declared, and lifts nothing from ciphertext", () => {
+    const { event, lifted } = foldView("m", evt("x", 0, "E", { step: "ocr", deep: { f: [sealedField] } }), {});
+    expect(event.payload).toEqual({ step: "ocr", deep: { f: ["[redacted]"] } });
+    expect(lifted.strings.size).toBe(0);
+  });
+
+  it("masks an envelope that sits ON a sensitive path (a raw at-rest read) and lifts nothing from it", () => {
+    const { event, lifted } = foldView("m", evt("x", 0, "E", { email: sealedField }), { E: ["email"] });
+    expect(event.payload).toEqual({ email: "[redacted]" });
+    expect(lifted.strings.size).toBe(0);
+  });
+
+  it("masks a { $shredded } placeholder on a sensitive path like any other value", () => {
+    const { event } = foldView("m", evt("x", 0, "E", { email: { $shredded: true } }), { E: ["email"] });
+    expect(event.payload).toEqual({ email: "[redacted]" });
+  });
+
+  it("returns the very same event when there is nothing to hide", () => {
+    const e = evt("x", 0, "E", { a: 1 });
+    expect(foldView("m", e, {}).event).toBe(e);
+  });
+
+  it("fails closed on a payload too large to verify", () => {
+    const e = evt("x", 0, "E", { big: new Array(GUARD_WALK_BUDGET + 1).fill(0) });
+    expect(() => foldView("m", e, {})).toThrow(SensitiveStateError);
+  });
+});
+```
+
+- [ ] **Step 2: Run, verify fail** → FAIL (module missing).
+
+- [ ] **Step 3: Implement.** First `pnpm --filter @loom/plugin-read-model add @loom/classify@workspace:*` (updates `package.json` and the lockfile), add the tsconfig reference(s). Then `plugins/read-model/src/sensitiveInput.ts`:
+
+```ts
+import { REDACTED, expandPaths, maskPaths } from "@loom/classify";
+import type { EventEnvelope } from "@loom/core";
+import {
+  type Lifted,
+  SensitiveStateError,
+  isCipherEnvelope,
+  isLiftable,
+  walkBounded,
+} from "./sensitiveState";
+import type { SensitiveMap } from "./types";
+
+// ── ADR 0132 D11 — the fold-input half of the sensitive-state guard (pure) ────
+
+/** Declared paths for the event's type, plus the `EVENT_TYPE.path` entries of its own `metadata.seal` marker. */
+export function sensitivePathsFor(event: EventEnvelope, declared: SensitiveMap): string[] {
+  const out = new Set<string>(declared[event.eventType] ?? []);
+  const covers = (event.metadata as { seal?: { covers?: unknown } } | undefined)?.seal?.covers;
+  if (Array.isArray(covers)) {
+    const prefix = `${event.eventType}.`;
+    for (const c of covers) if (typeof c === "string" && c.startsWith(prefix)) out.add(c.slice(prefix.length));
+  }
+  return [...out].sort();
+}
+
+function valueAt(root: unknown, path: string): unknown {
+  let v = root;
+  for (const seg of path.split(".")) {
+    if (typeof v !== "object" || v === null || !Object.hasOwn(v, seg)) return undefined;
+    v = (v as Record<string, unknown>)[seg];
+  }
+  return v;
+}
+
+/**
+ * The event a handler is given: every effective sensitive path replaced by `"[redacted]"` and any
+ * cipher envelope elsewhere replaced the same way. Also returns the scalar values found under the
+ * sensitive paths of the ORIGINAL event, which `assertStateClean` checks the new state against.
+ */
+export function foldView(
+  modelId: string,
+  event: EventEnvelope,
+  declared: SensitiveMap
+): { event: EventEnvelope; lifted: Lifted } {
+  const ctx = { modelId, executionId: event.executionId, eventType: event.eventType, sequence: event.sequence };
+  const strings = new Set<string>();
+  const numbers = new Set<number>();
+  const paths = sensitivePathsFor(event, declared);
+  let payload = event.payload;
+  let touched = false;
+  if (paths.length > 0 && typeof payload === "object" && payload !== null) {
+    for (const path of expandPaths(payload, paths)) {
+      const at = valueAt(payload, path);
+      if (at === undefined || isCipherEnvelope(at)) continue; // nothing to lift from ciphertext
+      const done = walkBounded(at, (leaf) => {
+        if (!isLiftable(leaf)) return;
+        if (typeof leaf === "string") strings.add(leaf);
+        else numbers.add(leaf);
+      });
+      if (!done) throw new SensitiveStateError(ctx, "unverifiable", `payload.${path}`);
+    }
+    payload = maskPaths(payload, paths);
+    touched = true;
+  }
+  // Ciphertext anywhere else (a raw at-rest read, or a path nobody declared) never reaches a handler.
+  let sealed = false;
+  if (
+    !walkBounded(payload, (v) => {
+      if (isCipherEnvelope(v)) sealed = true;
+    })
+  ) {
+    throw new SensitiveStateError(ctx, "unverifiable", "payload");
+  }
+  if (sealed) {
+    payload = JSON.parse(JSON.stringify(payload, (_k, v) => (isCipherEnvelope(v) ? REDACTED : v)));
+    touched = true;
+  }
+  return { event: touched ? { ...event, payload } : event, lifted: { strings, numbers } };
+}
+```
+
+- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loom/plugin-read-model exec vitest run src/sensitiveInput.test.ts && pnpm --filter @loom/plugin-read-model build` → PASS. Check the layering guard still passes: `pnpm --filter @loom/spec exec vitest run` (plugins may depend on `@loom/classify`, as the crypto plugin does).
+- [ ] **Step 5: Commit**
+
+```bash
+git add plugins/read-model/src/sensitiveInput.ts plugins/read-model/src/sensitiveInput.test.ts plugins/read-model/package.json plugins/read-model/tsconfig.json plugins/read-model/tsconfig.test.json pnpm-lock.yaml
+git commit -m "feat(read-model): sensitive-state guard fold input view (ADR 0132 D11)"
+```
+
+---
+
+### Task 5c: Sensitive-state guard — configuration and engine wiring (D5, D11)
+
+**Files:**
+- Create: `plugins/read-model/src/sensitiveConfig.ts`
+- Create: `plugins/read-model/src/sensitiveConfig.test.ts`
+- Modify: `plugins/read-model/src/FoldedModelEngine.ts`
+- Modify: `plugins/read-model/src/foldedEngine.test.ts`
+- Modify: `plugins/read-model/src/index.ts`
+
+**Interfaces:**
+- Consumes: Tasks 4a/4b, 5a, 5b.
+- Produces: `sensitiveMapFromCovers(covers)`, `mergeSensitive(...maps)`, `effectiveFoldVersion(version, declared)`; the engine now builds the fold view, runs `assertStateClean` after every handler, and registers under the effective version.
+
+- [ ] **Step 1: Failing tests.** `plugins/read-model/src/sensitiveConfig.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { effectiveFoldVersion, mergeSensitive, sensitiveMapFromCovers } from "./sensitiveConfig";
+
+describe("sensitive map helpers (ADR 0132 D5, D11)", () => {
+  it("derives the map from sealingCapability().covers", () => {
+    expect(
+      sensitiveMapFromCovers(["STEP_COMPLETED.output.ssn", "STEP_COMPLETED.output.dob", "OTHER.a", "BARE"])
+    ).toEqual({ STEP_COMPLETED: ["output.dob", "output.ssn"], OTHER: ["a"] });
+  });
+
+  it("unions maps and de-duplicates paths", () => {
+    expect(mergeSensitive({ A: ["x"] }, undefined, { A: ["x", "y"], B: ["z"] })).toEqual({
+      A: ["x", "y"],
+      B: ["z"],
+    });
+  });
+
+  it("leaves the declared version alone when nothing is declared", () => {
+    expect(effectiveFoldVersion("1", {})).toBe("1");
+    expect(effectiveFoldVersion("1", { A: [] })).toBe("1");
+  });
+
+  it("changes the version when the declared paths change, and not with key or path order", () => {
+    const a = effectiveFoldVersion("1", { A: ["x", "y"], B: ["z"] });
+    expect(a).toMatch(/^1\+sens\.[0-9a-f]{8}$/);
+    expect(effectiveFoldVersion("1", { B: ["z"], A: ["y", "x"] })).toBe(a);
+    expect(effectiveFoldVersion("1", { A: ["x"], B: ["z"] })).not.toBe(a);
+  });
+});
+```
+Append to `foldedEngine.test.ts` (imports: `SensitiveStateError` from `./sensitiveState`):
+
+```ts
+describe("FoldedModelEngine — sensitive-state guard (D11)", () => {
+  const email = "alice@example.com";
+  const leaky = (field: "email" | "mirror") => {
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = (s: object, e: { payload: Record<string, string> }) => ({
+      ...s,
+      status: "running",
+      last: e.payload[field],
+    });
+    return p;
+  };
+
+  it("hands the handler a masked event: a fold that copies a declared field stores the sentinel", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: leaky("email"), sensitive: { STEP_COMPLETED: ["email"] } });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "ocr", email }));
+    await engine.drain();
+    expect((await store.getFolded("ingest-status", [X]))[0]?.state).toMatchObject({ last: "[redacted]" });
+  });
+
+  it("refuses a state that mirrors a sensitive value through an undeclared field, without leaking it", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: leaky("mirror"), sensitive: { STEP_COMPLETED: ["email"] } });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "ocr", email, mirror: email }));
+    await engine.drain();
+    const err = errs[0] as SensitiveStateError;
+    expect(err).toBeInstanceOf(SensitiveStateError);
+    expect(err).toMatchObject({ reason: "lifted-value", statePath: "$.last" });
+    expect(err.message).toContain("ingest-status");
+    expect(err.message).not.toContain(email);
+    expect(await store.getFolded("ingest-status", [X])).toEqual([]); // the watermark did not advance
+  });
+
+  it("refuses a handler that fabricates a sealed envelope into state", async () => {
+    const errs: unknown[] = [];
+    const { engine } = boot((e) => errs.push(e));
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).STEP_COMPLETED = (s: object) => ({ ...s, blob: { __loomEnc: "x" } });
+    await engine.register({ projection: p });
+    engine.handle(evt(X, 0, "STEP_COMPLETED"));
+    await engine.drain();
+    expect(errs[0]).toMatchObject({ name: "SensitiveStateError", reason: "sealed-envelope", statePath: "$.blob" });
+  });
+
+  it("uses the event's own seal marker with no declared map", async () => {
+    const { store, engine } = boot();
+    await engine.register({ projection: leaky("email") });
+    const e = { ...evt(X, 0, "STEP_COMPLETED", { step: "ocr", email }), metadata: { seal: { v: 1, cipher: "c", covers: ["STEP_COMPLETED.email"] } } };
+    engine.handle(e);
+    await engine.drain();
+    expect((await store.getFolded("ingest-status", [X]))[0]?.state).toMatchObject({ last: "[redacted]" });
+  });
+
+  it("registers under a version that includes the declared map: changing the paths rebuilds", async () => {
+    const store = new InMemoryReadModelStore();
+    const a = new FoldedModelEngine(store as never, () => {});
+    expect(await a.register({ projection: ingestProjection(), sensitive: { STEP_COMPLETED: ["email"] } })).toEqual({ rebuilt: false });
+    const b = new FoldedModelEngine(store as never, () => {});
+    expect(await b.register({ projection: ingestProjection(), sensitive: { STEP_COMPLETED: ["email", "phone"] } })).toEqual({ rebuilt: true });
+    expect(b.versions()[0]?.[1]).toMatch(/^1\+sens\./);
+  });
+});
+```
+
+- [ ] **Step 2: Run, verify fail.**
+
+- [ ] **Step 3: Implement.** `plugins/read-model/src/sensitiveConfig.ts`:
+
+```ts
+import { createHash } from "node:crypto";
+import type { SensitiveMap } from "./types";
+
+/** `["STEP_COMPLETED.output.ssn", …]` (a store's `sealingCapability().covers`) -> a {@link SensitiveMap}. */
+export function sensitiveMapFromCovers(covers: readonly string[]): SensitiveMap {
+  const out: Record<string, string[]> = {};
+  for (const c of covers) {
+    const dot = c.indexOf(".");
+    if (dot <= 0 || dot === c.length - 1) continue;
+    (out[c.slice(0, dot)] ??= []).push(c.slice(dot + 1));
+  }
+  for (const k of Object.keys(out)) out[k] = [...new Set(out[k])].sort();
+  return out;
+}
+
+/** Union of any number of (optional) maps. */
+export function mergeSensitive(...maps: (SensitiveMap | undefined)[]): SensitiveMap {
+  const out: Record<string, string[]> = {};
+  for (const m of maps) {
+    for (const [type, paths] of Object.entries(m ?? {})) (out[type] ??= []).push(...paths);
+  }
+  for (const k of Object.keys(out)) out[k] = [...new Set(out[k])].sort();
+  return out;
+}
+
+/**
+ * The version written to the fold header: the declared version, plus a digest of the declared
+ * sensitive map when there is one, so editing the paths rebuilds the model (ADR 0132 D5, D11).
+ */
+export function effectiveFoldVersion(version: string, declared: SensitiveMap): string {
+  const entries = Object.keys(declared)
+    .sort()
+    .flatMap((type) => {
+      const paths = [...new Set(declared[type])].sort();
+      return paths.length === 0 ? [] : [[type, paths]];
+    });
+  if (entries.length === 0) return version;
+  const digest = createHash("sha256").update(JSON.stringify(entries)).digest("hex").slice(0, 8);
+  return `${version}+sens.${digest}`;
+}
+```
+In `FoldedModelEngine.ts`: import `{ effectiveFoldVersion, mergeSensitive } from "./sensitiveConfig"`, `{ foldView } from "./sensitiveInput"`, `{ assertStateClean } from "./sensitiveState"`, type `SensitiveMap`. Add `sensitive: SensitiveMap;` to `FoldedModel`. In `register`, rename the first local to `declaredVersion` (the blank check and its error use it) and, after the duplicate-id check, add:
+
+```ts
+    const sensitive = mergeSensitive(this.options.sensitive, def.sensitive);
+    const version = effectiveFoldVersion(declaredVersion, sensitive);
+```
+then set `sensitive,` in the `model` literal (`beginFold(p.id, version)` and `version` already use the new constant). In `foldBatch`'s loop replace the handler call with:
+
+```ts
+        const view = foldView(modelId, e, model.sensitive);
+        const base = state === null ? structuredClone(model.initial) : state;
+        state = normalize(model, handler(base, view.event));
+        assertStateClean({ modelId, executionId, eventType: e.eventType, sequence: e.sequence }, state, view.lifted);
+```
+In `index.ts` export `sensitiveMapFromCovers` (value) and `SensitiveMap` (type, from Task 1's list).
+
+- [ ] **Step 4: Run** `pnpm --filter @loom/plugin-read-model exec vitest run` → PASS (all prior engine tests unchanged: an empty map and no markers leave events untouched).
+- [ ] **Step 5: Commit**
+
+```bash
+git add plugins/read-model/src/sensitiveConfig.ts plugins/read-model/src/sensitiveConfig.test.ts plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedEngine.test.ts plugins/read-model/src/index.ts
+git commit -m "feat(read-model): wire the sensitive-state guard into the fold and fold version (ADR 0132 D5/D11)"
+```
+
+---
+
+### Task 6a: State cache — the bounded LRU (D15)
+
+**Files:**
+- Create: `plugins/read-model/src/foldStateCache.ts`
+- Create: `plugins/read-model/src/foldStateCache.test.ts`
+
+**Interfaces:**
+- Consumes: Task 1 `FoldBase`.
+- Produces: `class FoldStateCache(maxEntries)` with `size`, `take(modelId, executionId): FoldBase | undefined` (REMOVES the entry), `put(modelId, executionId, entry)`, `delete(modelId, executionId)`, `deleteModel(modelId)`, `clear()`. Pure, no I/O.
+
+- [ ] **Step 1: Failing test** — `plugins/read-model/src/foldStateCache.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { FoldStateCache } from "./foldStateCache";
+
+const base = (sequence: number) => ({ sequence, state: { n: sequence }, erased: false });
+
+describe("FoldStateCache (ADR 0132 D15)", () => {
+  it("take returns the entry and REMOVES it, so a failed fold never leaves a half-mutated base behind", () => {
+    const c = new FoldStateCache(4);
+    c.put("m", "x", base(2));
+    expect(c.take("m", "x")).toEqual(base(2));
+    expect(c.take("m", "x")).toBeUndefined();
+    expect(c.size).toBe(0);
+  });
+
+  it("evicts the least recently used entry beyond maxEntries", () => {
+    const c = new FoldStateCache(2);
+    c.put("m", "a", base(1));
+    c.put("m", "b", base(1));
+    c.put("m", "c", base(1)); // a is the oldest
+    expect(c.size).toBe(2);
+    expect(c.take("m", "a")).toBeUndefined();
+    expect(c.take("m", "b")).toBeDefined();
+  });
+
+  it("a re-put makes the key the most recent", () => {
+    const c = new FoldStateCache(2);
+    c.put("m", "a", base(1));
+    c.put("m", "b", base(1));
+    c.put("m", "a", base(2));
+    c.put("m", "c", base(1)); // b is now the oldest
+    expect(c.take("m", "b")).toBeUndefined();
+    expect(c.take("m", "a")).toEqual(base(2));
+  });
+
+  it("keys are per model", () => {
+    const c = new FoldStateCache(4);
+    c.put("m1", "x", base(1));
+    c.put("m2", "x", base(5));
+    expect(c.take("m2", "x")).toEqual(base(5));
+  });
+
+  it("deleteModel drops one model's entries only; clear drops all", () => {
+    const c = new FoldStateCache(8);
+    c.put("m1", "a", base(1));
+    c.put("m1", "b", base(1));
+    c.put("m2", "a", base(1));
+    c.deleteModel("m1");
+    expect(c.size).toBe(1);
+    c.clear();
+    expect(c.size).toBe(0);
+  });
+
+  it("refuses a non-positive or fractional size (disable by not constructing one)", () => {
+    expect(() => new FoldStateCache(0)).toThrow(RangeError);
+    expect(() => new FoldStateCache(1.5)).toThrow(RangeError);
+  });
+});
+```
+
+- [ ] **Step 2: Run, verify fail** → FAIL.
+- [ ] **Step 3: Implement** `plugins/read-model/src/foldStateCache.ts`:
+
+```ts
+import type { FoldBase } from "./types";
+
+// ── ADR 0132 D15 — a bounded per-node LRU of fold bases (pure) ────────────────
+// The store's monotonic compare-and-set stays the authority; an entry is only a guess at the base a
+// live apply starts from. Map insertion order IS the recency order.
+
+export class FoldStateCache {
+  private readonly entries = new Map<string, FoldBase>();
+
+  constructor(readonly maxEntries: number) {
+    if (!Number.isInteger(maxEntries) || maxEntries < 1) {
+      throw new RangeError(`FoldStateCache: maxEntries must be a positive integer (got ${maxEntries}); disable the cache instead`);
+    }
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  /** Return AND remove: a fold that throws mid-way must leave the key absent, not half-mutated. */
+  take(modelId: string, executionId: string): FoldBase | undefined {
+    const k = key(modelId, executionId);
+    const hit = this.entries.get(k);
+    if (hit !== undefined) this.entries.delete(k);
+    return hit;
+  }
+
+  put(modelId: string, executionId: string, entry: FoldBase): void {
+    const k = key(modelId, executionId);
+    this.entries.delete(k);
+    this.entries.set(k, entry);
+    if (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
+  }
+
+  delete(modelId: string, executionId: string): void {
+    this.entries.delete(key(modelId, executionId));
+  }
+
+  /** O(entries): used on version change, purge and rebuild, which are rare. */
+  deleteModel(modelId: string): void {
+    const prefix = `${modelId}\u0000`;
+    for (const k of [...this.entries.keys()]) if (k.startsWith(prefix)) this.entries.delete(k);
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+}
+
+const key = (modelId: string, executionId: string): string => `${modelId}\u0000${executionId}`;
+```
+
+- [ ] **Step 4: Run, verify pass** — `pnpm --filter @loom/plugin-read-model exec vitest run src/foldStateCache.test.ts`.
+- [ ] **Step 5: Commit**
+
+```bash
+git add plugins/read-model/src/foldStateCache.ts plugins/read-model/src/foldStateCache.test.ts
+git commit -m "feat(read-model): bounded LRU for fold bases (ADR 0132 D15)"
+```
+
+---
+
+### Task 6b: State cache — wired into the live apply path (D4, D15)
+
+**Files:**
+- Modify: `plugins/read-model/src/FoldedModelEngine.ts`
+- Create: `plugins/read-model/src/foldedCache.test.ts`
+
+**Interfaces:**
+- Consumes: Tasks 4a/4b/5c, 6a.
+- Produces on `FoldedModelEngine`: `cacheSize(): number`; `foldOutcome(...)` returning `FoldOutcome { result: FoldedApplyResult | "noop"; record?: FoldBase }`; `foldBatch` keeps its signature (now `rec: FoldBase | undefined`) and invalidates the entry; `applyLive` reads and writes the cache. Cache config comes from `FoldedEngineOptions.cache` (Task 1): default `DEFAULT_FOLD_CACHE_ENTRIES`, `false` or `{ maxEntries: 0 }` disables.
+
+- [ ] **Step 1: Failing tests** — `plugins/read-model/src/foldedCache.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { FoldedModelEngine } from "./FoldedModelEngine";
+import { evt, ingestProjection } from "./foldedFixtures";
+import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
+import type { FoldedRecord } from "./types";
+
+const X = "u1:wf:ingest-d1";
+
+/** Deterministic evidence: how many times the engine went to the store for a base. */
+class CountingStore extends InMemoryReadModelStore {
+  reads = 0;
+  override async getFolded(modelId: string, executionIds: readonly string[]): Promise<FoldedRecord[]> {
+    this.reads++;
+    return super.getFolded(modelId, executionIds);
+  }
+}
+
+async function node(store: CountingStore, opts: ConstructorParameters<typeof FoldedModelEngine>[2] = {}, onError: (e: unknown) => void = (e) => { throw e; }) {
+  const engine = new FoldedModelEngine(store as never, onError, opts);
+  await engine.register({ projection: ingestProjection() });
+  return engine;
+}
+const step = (id: string, n: number) => evt(id, n, "STEP_COMPLETED", { step: `s${n}` });
+const stepsOf = async (store: InMemoryReadModelStore, id = X) =>
+  ((await store.getFolded("ingest-status", [id]))[0]?.state as { steps: number } | undefined)?.steps;
+
+describe("FoldedModelEngine — live-path state cache (D15)", () => {
+  it("reads the row once for N sequential live events on a hot execution", async () => {
+    const store = new CountingStore();
+    const engine = await node(store);
+    for (let i = 0; i < 10; i++) engine.handle(step(X, i));
+    await engine.drain();
+    expect(store.reads).toBe(1); // the first event's base; the other nine come from the cache
+    expect(await stepsOf(store)).toBe(10);
+  });
+
+  it("reads before every apply when the cache is disabled", async () => {
+    for (const cache of [false, { maxEntries: 0 }] as const) {
+      const store = new CountingStore();
+      const engine = await node(store, { cache });
+      for (let i = 0; i < 10; i++) engine.handle(step(X, i));
+      await engine.drain();
+      expect(store.reads).toBe(10);
+      expect(engine.cacheSize()).toBe(0);
+      expect(await stepsOf(store)).toBe(10);
+    }
+  });
+
+  it("is bounded by maxEntries, and an eviction costs exactly one re-read", async () => {
+    const store = new CountingStore();
+    const engine = await node(store, { cache: { maxEntries: 2 } });
+    const [A, B, C] = ["u1:wf:ingest-a", "u1:wf:ingest-b", "u1:wf:ingest-c"];
+    for (const id of [A, B, C]) engine.handle(step(id, 0));
+    await engine.drain();
+    expect(store.reads).toBe(3);
+    expect(engine.cacheSize()).toBe(2); // A was evicted when C was cached
+    engine.handle(step(C, 1)); // hit
+    await engine.drain();
+    expect(store.reads).toBe(3);
+    engine.handle(step(A, 1)); // evicted: one re-read, still correct
+    await engine.drain();
+    expect(store.reads).toBe(4);
+    expect(await stepsOf(store, A)).toBe(2);
+  });
+});
+```
+- [ ] **Step 2: Run, verify fail** (`cacheSize` / `cache` option not honoured).
+
+- [ ] **Step 3: Implement** in `FoldedModelEngine.ts`. Imports: `FoldStateCache` from `./foldStateCache`, `DEFAULT_FOLD_CACHE_ENTRIES` from `./types`. Add the field and constructor body:
+
+```ts
+  private readonly cache: FoldStateCache | undefined;
+
+  // the constructor from Task 4a keeps its parameter properties; its empty body becomes:
+  //   constructor(store, onError, options = {}) {
+  //     const c = options.cache;
+  //     const max = c === false ? 0 : (c?.maxEntries ?? DEFAULT_FOLD_CACHE_ENTRIES);
+  //     this.cache = max > 0 ? new FoldStateCache(max) : undefined;
+  //   }
+
+  cacheSize(): number {
+    return this.cache?.size ?? 0;
+  }
+```
+In `register`, right after `this.models.set(p.id, model)`: `this.cache?.deleteModel(p.id);`. In `purge`, replace `return this.store.purgeFolded(modelId, selector);` with `const n = await this.store.purgeFolded(modelId, selector); this.cache?.deleteModel(modelId); return n;`. In `reset`, add `this.cache?.deleteModel(modelId);` after `await this.drain();`.
+
+Replace `foldBatch` and `applyLive` with:
+
+```ts
+  /** Fold and CAS-write for catch-up / refresh / rebuild. True when the write applied. */
+  async foldBatch(
+    modelId: string,
+    executionId: string,
+    rec: FoldBase | undefined,
+    events: readonly EventEnvelope[]
+  ): Promise<boolean> {
+    try {
+      return (await this.foldOutcome(modelId, executionId, rec, events)).result === "applied";
+    } finally {
+      // These paths advance the row behind any cached base; the live path re-reads rather than trust it.
+      this.cache?.delete(modelId, executionId);
+    }
+  }
+
+  /** As {@link foldBatch}, but reports the CAS result and the record this write produced. */
+  protected async foldOutcome(
+    modelId: string,
+    executionId: string,
+    rec: FoldBase | undefined,
+    events: readonly EventEnvelope[]
+  ): Promise<FoldOutcome> {
+    const model = this.models.get(modelId);
+    if (model === undefined) throw new TypeError(`read model "${modelId}" is not a registered folded model`);
+    const from = rec?.sequence ?? -1;
+    const todo = events.filter((e) => e.sequence > from);
+    if (todo.length === 0) return { result: "noop" };
+    const erased = rec?.erased === true;
+    let state: unknown = rec?.state ?? null;
+    if (!erased) {
+      for (const e of todo) {
+        const handler = model.handlers[e.eventType];
+        if (handler === undefined) continue;
+        const view = foldView(modelId, e, model.sensitive);
+        const base = state === null ? structuredClone(model.initial) : state;
+        state = normalize(model, handler(base, view.event));
+        assertStateClean({ modelId, executionId, eventType: e.eventType, sequence: e.sequence }, state, view.lifted);
+      }
+    }
+    const upToSequence = todo[todo.length - 1]!.sequence;
+    const result = await this.store.applyFolded({
+      modelId,
+      executionId,
+      upToSequence,
+      state,
+      key: model.keyOf?.(executionId) ?? null,
+      scope: model.scopeOf?.(executionId) ?? null,
+      foldVersion: model.version,
+    });
+    if (result === "version-mismatch") {
+      this.cache?.deleteModel(modelId); // another node rebuilt: nothing cached for this model is trustworthy
+      throw new FoldVersionMismatchError(modelId, model.version);
+    }
+    return { result, record: { sequence: upToSequence, state, erased } };
+  }
+
+  private async applyLive(model: FoldedModel, event: EventEnvelope): Promise<void> {
+    const id = event.executionId;
+    // `useCache` is true only on the first pass; every retry goes to the store.
+    for (let useCache = this.cache !== undefined; ; useCache = false) {
+      const cached = useCache ? this.cache?.take(model.id, id) : undefined;
+      const rec: FoldBase | undefined = cached ?? (await this.mark(model.id, id));
+      const from = rec?.sequence ?? -1;
+      if (event.sequence <= from) {
+        if (cached !== undefined) this.cache?.put(model.id, id, cached); // still a valid guess
+        return;
+      }
+      let events: readonly EventEnvelope[];
+      if (event.sequence === from + 1) events = [event];
+      else if (cached !== undefined) continue; // the cache never decides a gap: another node may be ahead
+      else if (this.options.liveSource !== undefined) events = await this.options.liveSource.readFrom(id, from + 1);
+      else throw new FoldGapError(model.id, id, from, event.sequence);
+      const out = await this.foldOutcome(model.id, id, rec, events);
+      if (out.result === "applied" && out.record !== undefined) {
+        this.cache?.put(model.id, id, out.record);
+        return;
+      }
+      if (out.result === "stale" && cached !== undefined) continue; // lost the CAS on a possibly stale base: re-read once
+      return;
+    }
+  }
+```
+and export `interface FoldOutcome { result: FoldedApplyResult | "noop"; record?: FoldBase }`. (`FoldBase` and `FoldedApplyResult` are in the type import from Task 4a.)
+
+- [ ] **Step 4: Run** `pnpm --filter @loom/plugin-read-model exec vitest run` → PASS (all earlier engine/service tests: the cache is on by default and must change no result).
+- [ ] **Step 5: Commit**
+
+```bash
+git add plugins/read-model/src/FoldedModelEngine.ts plugins/read-model/src/foldedCache.test.ts
+git commit -m "feat(read-model): per-node fold-base cache on the live apply path (ADR 0132 D15)"
+```
+
+---
+
+### Task 6c: State cache — correctness under conflict, version, purge and reads (D15)
+
+**Files:**
+- Modify: `plugins/read-model/src/foldedCache.test.ts`
+- Modify: `plugins/read-model/src/FoldedModelEngine.ts` (only if a test exposes a bug; note it in the commit)
+
+**Interfaces:** consumes Task 6b; adds tests only.
+
+- [ ] **Step 1: Write the tests** — append to `foldedCache.test.ts`:
+
+```ts
+describe("FoldedModelEngine — the cache never weakens correctness (D15)", () => {
+  it("a lost CAS drops the entry, re-reads once and converges", async () => {
+    const store = new CountingStore();
+    const a = await node(store);
+    const b = await node(store);
+    for (const i of [0, 1]) a.handle(step(X, i));
+    await a.drain(); // a caches a base at sequence 1
+    for (const i of [2, 3]) b.handle(step(X, i));
+    await b.drain(); // b advances the row to 3 behind a's back
+    const before = store.reads;
+    a.handle(step(X, 2)); // a folds 2 from its stale base -> CAS says stale
+    await a.drain();
+    expect(store.reads - before).toBe(1); // exactly one re-read, then the event is seen as already folded
+    expect(await stepsOf(store)).toBe(4);
+    expect(a.cacheSize()).toBe(0);
+  });
+
+  it("never decides a gap: a cached base behind another node re-reads the store instead of failing", async () => {
+    const errs: unknown[] = [];
+    const store = new CountingStore();
+    const a = await node(store, {}, (e) => errs.push(e)); // NO liveSource: a gap would be a FoldGapError
+    const b = await node(store);
+    a.handle(step(X, 0));
+    await a.drain();
+    for (const i of [1, 2, 3]) b.handle(step(X, i));
+    await b.drain();
+    a.handle(step(X, 4)); // a's cache says 0, the event says 4; the store says 3
+    await a.drain();
+    expect(errs).toEqual([]);
+    expect(await stepsOf(store)).toBe(5);
+  });
+
+  it("a rebuilt model on another node drops this node's entries and refuses its next apply", async () => {
+    const errs: unknown[] = [];
+    const store = new CountingStore();
+    const old = await node(store, {}, (e) => errs.push(e));
+    old.handle(step(X, 0));
+    await old.drain();
+    expect(old.cacheSize()).toBe(1);
+    await new FoldedModelEngine(store as never, () => {}).register({ projection: ingestProjection("2") });
+    old.handle(step(X, 1));
+    await old.drain();
+    expect(String(errs[0])).toMatch(/version "1"/);
+    expect(old.cacheSize()).toBe(0);
+  });
+
+  it("purge and reset drop the model's entries: the next live event reads the store", async () => {
+    const store = new CountingStore();
+    const engine = await node(store);
+    engine.handle(step(X, 0));
+    await engine.drain();
+    expect(await engine.purge("ingest-status", { executionId: X })).toBe(1);
+    expect(engine.cacheSize()).toBe(0);
+    const before = store.reads;
+    engine.handle(step(X, 1)); // tombstoned: sequence advances, state stays absent
+    await engine.drain();
+    expect(store.reads - before).toBe(1);
+    expect((await engine.getMany("ingest-status", [X])).size).toBe(0);
+
+    engine.handle(step("u1:wf:ingest-z", 0));
+    await engine.drain();
+    await engine.reset("ingest-status");
+    expect(engine.cacheSize()).toBe(0);
+  });
+
+  it("reads never come from the cache: getMany sees another node's progress and costs one store read", async () => {
+    const store = new CountingStore();
+    const a = await node(store);
+    const b = await node(store);
+    a.handle(step(X, 0));
+    await a.drain(); // a's cache holds sequence 0
+    for (const i of [1, 2]) b.handle(step(X, i));
+    await b.drain();
+    const before = store.reads;
+    const got = await a.getMany("ingest-status", [X]);
+    expect(store.reads - before).toBe(1);
+    expect(got.get(X)).toMatchObject({ sequence: 2, state: { steps: 3 } });
+  });
+
+  it("refresh and catch-up writes invalidate the entry so a later live event re-reads", async () => {
+    const store = new CountingStore();
+    const engine = await node(store);
+    engine.handle(step(X, 0));
+    await engine.drain();
+    await engine.foldBatch("ingest-status", X, await engine.mark("ingest-status", X), [step(X, 1)]);
+    expect(engine.cacheSize()).toBe(0);
+  });
+});
+```
+
+- [ ] **Step 2: Run** `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedCache.test.ts` → PASS. A failure here is a real correctness bug in Task 6b: fix the engine, never loosen a test or add a wait.
+- [ ] **Step 3: Commit**
+
+```bash
+git add plugins/read-model/src/foldedCache.test.ts plugins/read-model/src/FoldedModelEngine.ts
+git commit -m "test(read-model): fold-base cache stays correct under conflict, rebuild, purge and reads (ADR 0132 D15)"
+```
+
+---
+
+### Task 7a: Service wiring — register, live fan-out, shared catch-up (D13)
 
 **Files:**
 - Modify: `plugins/read-model/src/ReadModelService.ts`
 - Create: `plugins/read-model/src/foldedService.test.ts`
 
 **Interfaces:**
-- Consumes: `FoldedModelEngine`, `foldedCapable`.
-- Produces on `ReadModelService`: `ReadModelServiceOptions.liveSource?: ReadModelEventSource`; `registerFolded<S>(def): Promise<{rebuilt:boolean}>`; `getMany`, `getManyByKey` (delegating; `opts` as engine); `drain(): Promise<void>`; catch-up folds folded models in the same scan.
+- Consumes: `FoldedModelEngine` (with the guard from Task 5c and the cache from Task 6b), `foldedCapable`, `FoldedEngineOptions`.
+- Produces on `ReadModelService`: `ReadModelServiceOptions.liveSource?: ReadModelEventSource`, `.sensitive?: SensitiveMap` (D11), `.foldCache?: FoldCacheOptions | false` (D15), all handed to the engine; `registerFolded<S>(def): Promise<{rebuilt:boolean}>`; `getMany`, `getManyByKey` (delegating; `opts` as engine); `drain(): Promise<void>`; catch-up folds folded models in the same scan.
 
 - [ ] **Step 1: Failing tests** — `plugins/read-model/src/foldedService.test.ts`:
 
@@ -1190,12 +2264,16 @@ describe("ReadModelService folded models — wiring (D13)", () => {
 
 - [ ] **Step 3: Implement** in `ReadModelService.ts`.
 
-(a) Imports: add `FoldedReadModelDefinition, FoldedRecord, FoldedState, ReadModelEventSource` types as needed, `FoldedUnsupportedError` from `./types`, and `import { FoldedModelEngine, foldedCapable } from "./FoldedModelEngine";`.
+(a) Imports: add `FoldCacheOptions, FoldedReadModelDefinition, FoldedRecord, FoldedState, ReadModelEventSource, SensitiveMap` types as needed, `FoldedUnsupportedError` from `./types`, and `import { FoldedModelEngine, foldedCapable } from "./FoldedModelEngine";`.
 
 (b) Options: add to `ReadModelServiceOptions`:
 ```ts
   /** Fills a gap in the live tail (ADR 0132 D4) — normally this node's own event store. */
   liveSource?: ReadModelEventSource;
+  /** Sensitive payload paths every folded model must never see (D11) — the map you gave `EncryptingEventStore`. */
+  sensitive?: SensitiveMap;
+  /** Per-node state cache for the live apply path (D15). Default on; `false` disables. */
+  foldCache?: FoldCacheOptions | false;
 ```
 Keep `options` as `private readonly options: ReadModelServiceOptions` (change the constructor param to `private readonly options: ReadModelServiceOptions = {}` and use `options.onError`, i.e. replace the local `options.onError ??` references with `this.options.onError ??` — the constructor body already reads it).
 
@@ -1207,7 +2285,11 @@ Keep `options` as `private readonly options: ReadModelServiceOptions` (change th
     const id = def.projection.id;
     if (this.models.has(id)) throw new TypeError(`read model "${id}" is already registered`);
     if (!foldedCapable(this.store)) throw new FoldedUnsupportedError(id);
-    this.folded ??= new FoldedModelEngine(this.store, this.onError, this.options.liveSource);
+    this.folded ??= new FoldedModelEngine(this.store, this.onError, {
+      ...(this.options.liveSource !== undefined && { liveSource: this.options.liveSource }),
+      ...(this.options.sensitive !== undefined && { sensitive: this.options.sensitive }),
+      ...(this.options.foldCache !== undefined && { cache: this.options.foldCache }),
+    });
     return this.folded.register(def);
   }
 ```
@@ -1310,7 +2392,7 @@ git commit -m "feat(read-model): registerFolded, live fan-out and shared catch-u
 
 ---
 
-### Task 5b: Service — refresh, purgeFolded, rebuild, pins (D5, D8, D12)
+### Task 7b: Service — refresh, purgeFolded, rebuild, pins (D5, D8, D12)
 
 **Files:**
 - Modify: `plugins/read-model/src/ReadModelService.ts`
@@ -1425,7 +2507,7 @@ git commit -m "feat(read-model): folded refresh, tombstone purge, version rebuil
 
 ---
 
-### Task 6: Rebuild == incremental, and multi-node convergence (D3, D14)
+### Task 8: Rebuild == incremental, multi-node and cached-node convergence (D3, D14, D15)
 
 **Files:**
 - Create: `plugins/read-model/src/foldedConvergence.test.ts`
@@ -1511,6 +2593,43 @@ describe("folded models: rebuild == incremental (D14)", () => {
     expect(await snapshot(a.s)).toEqual(await snapshot(ref.s));
   });
 
+  it("the state cache cannot change a result: cache on, cache off and a disabled-by-size cache agree", async () => {
+    const events = corpus();
+    const log = await logOf(events);
+    const snaps = [];
+    for (const foldCache of [undefined, false, { maxEntries: 1 }] as const) {
+      const s = new ReadModelService(new InMemoryReadModelStore(), foldCache === undefined ? {} : { foldCache });
+      await s.registerFolded({ projection: ingestProjection(), keyOf, scopeOf });
+      for (const e of events) s.handleEvent(e);
+      await s.drain();
+      await s.catchUp([log]);
+      snaps.push(await snapshot(s));
+    }
+    expect(snaps[1]).toEqual(snaps[0]);
+    expect(snaps[2]).toEqual(snaps[0]);
+  });
+
+  it("two cached nodes that each saw only half of the events converge through the log (D15)", async () => {
+    const events = corpus();
+    const log = await logOf(events);
+    const store = new InMemoryReadModelStore();
+    const mk = async () => {
+      const s = new ReadModelService(store, { liveSource: log }); // default cache ON, gaps filled from the log
+      await s.registerFolded({ projection: ingestProjection(), keyOf, scopeOf });
+      return s;
+    };
+    const a = await mk();
+    const b = await mk();
+    events.forEach((e, i) => (i % 2 === 0 ? a : b).handleEvent(e)); // each node's cache goes stale behind the other
+    await Promise.all([a.drain(), b.drain()]);
+    await a.catchUp([log]);
+    const ref = new ReadModelService(new InMemoryReadModelStore());
+    await ref.registerFolded({ projection: ingestProjection(), keyOf, scopeOf });
+    await ref.catchUp([log]);
+    expect(await snapshot(a)).toEqual(await snapshot(ref));
+    expect(await snapshot(b)).toEqual(await snapshot(ref));
+  });
+
   it("getManyByKey returns both generations of a document", async () => {
     const { s } = await service();
     await s.catchUp([await logOf(corpus())]);
@@ -1533,7 +2652,156 @@ git commit -m "test(read-model): folded rebuild==incremental and multi-node conv
 
 ---
 
-### Task 7: Erasure integration with compliance (D11, D12)
+### Task 9: Sensitive-state guard — service-level conformance across every feed (D11, D14)
+
+**Files:**
+- Create: `plugins/read-model/src/foldedSensitive.test.ts`
+
+**Interfaces:** consumes the public service API plus the real `EncryptingEventStore` / `InMemoryKeyStore` from `@loom/plugin-crypto` (a devDependency already). No production change expected; a failure is a guard bug, fix it in the owning file.
+
+- [ ] **Step 1: Write the tests** — `plugins/read-model/src/foldedSensitive.test.ts`:
+
+```ts
+import type { EventEnvelope } from "@loom/core";
+import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+import { projection$ } from "@loom/core";
+import { describe, expect, it } from "vitest";
+import { evt } from "./foldedFixtures";
+import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
+import { ReadModelService } from "./ReadModelService";
+import { sensitiveMapFromCovers } from "./sensitiveConfig";
+import { SensitiveStateError } from "./sensitiveState";
+
+const EMAIL = "alice@example.com";
+const SENSITIVE = { STEP_COMPLETED: ["email"] };
+const X = "u1:wf:ingest-d1";
+
+interface S { steps: number; owner?: string }
+/** Copies BOTH the sealed field and a plain duplicate of it into state, one field per projection. */
+const proj = (id: string, field: "email" | "mirror" | "step") =>
+  projection$<S>({
+    id,
+    name: id,
+    version: "1",
+    initialState: { steps: 0 },
+    handlers: {
+      STEP_COMPLETED: (s, e) => ({ ...s, steps: s.steps + 1, owner: (e.payload as Record<string, string>)[field] }),
+    },
+  });
+
+async function logs() {
+  const raw = new InMemoryAsyncEventStore();
+  const keys = new InMemoryKeyStore();
+  const enc = new EncryptingEventStore(raw, keys, { sensitive: SENSITIVE, subjectOf: (e) => e.executionId.split(":")[0] as string });
+  const events: EventEnvelope[] = [0, 1].map((i) => evt(X, i, "STEP_COMPLETED", { step: `s${i}`, email: EMAIL, mirror: EMAIL }));
+  for (const e of events) await enc.append(e);
+  return { raw, enc, events };
+}
+const stateOf = async (s: ReadModelService, id: string) => (await s.getMany(id, [X])).get(X)?.state;
+
+describe("sensitive-state guard — every feed presents the same masked input (D11)", () => {
+  it("live, catch-up through the encrypting store, catch-up from the sealed raw log, refresh and rebuild agree, and none holds the secret", async () => {
+    const { raw, enc, events } = await logs();
+    const covers = enc.sealingCapability?.()?.covers ?? [];
+    expect(covers).toContain("STEP_COMPLETED.email"); // the derivation path is real, not assumed
+    const sensitive = sensitiveMapFromCovers(covers);
+    const mk = async () => {
+      const s = new ReadModelService(new InMemoryReadModelStore(), { sensitive });
+      await s.registerFolded({ projection: proj("owner-email", "email") });
+      return s;
+    };
+    const live = await mk();
+    for (const e of events) live.handleEvent(e); // the runtime's plaintext events: no seal marker
+    await live.drain();
+    const viaEnc = await mk();
+    await viaEnc.catchUp([enc]);
+    const viaRaw = await mk(); // sealed at rest: envelopes + metadata.seal
+    await viaRaw.catchUp([raw]);
+    const refreshed = await mk();
+    await refreshed.refresh("owner-email", [X], [enc]);
+    const rebuilt = await mk();
+    await rebuilt.catchUp([enc]);
+    await rebuilt.rebuild("owner-email", [raw]);
+
+    const expected = { steps: 2, owner: "[redacted]" };
+    for (const s of [live, viaEnc, viaRaw, refreshed, rebuilt]) {
+      expect(await stateOf(s, "owner-email")).toEqual(expected);
+    }
+  });
+
+  it("a sealed raw log needs no declared map: the event's own seal marker is enough", async () => {
+    const { raw } = await logs();
+    const s = new ReadModelService(new InMemoryReadModelStore());
+    await s.registerFolded({ projection: proj("owner-email", "email") });
+    await s.catchUp([raw]);
+    expect(await stateOf(s, "owner-email")).toEqual({ steps: 2, owner: "[redacted]" });
+  });
+
+  it("ciphertext whose marker was stripped is still never handed to the fold", async () => {
+    const { raw } = await logs();
+    const stripped = {
+      listExecutions: async () => (await raw.listExecutions?.()) ?? [],
+      readFrom: async (id: string, from: number) =>
+        (await raw.readFrom(id, from)).map(({ metadata: _m, ...e }) => e as EventEnvelope),
+    };
+    const s = new ReadModelService(new InMemoryReadModelStore());
+    await s.registerFolded({ projection: proj("owner-email", "email") });
+    await s.catchUp([stripped]);
+    expect(await stateOf(s, "owner-email")).toEqual({ steps: 2, owner: "[redacted]" });
+  });
+});
+
+describe("sensitive-state guard — a lifted copy fails loudly on every feed (D11)", () => {
+  it("catch-up throws, the live path reports, nothing is stored, and the message carries no value", async () => {
+    const { enc, events } = await logs();
+    const errs: unknown[] = [];
+    const s = new ReadModelService(new InMemoryReadModelStore(), { sensitive: SENSITIVE, onError: (e) => errs.push(e) });
+    await s.registerFolded({ projection: proj("owner-mirror", "mirror") }); // copies the PLAIN duplicate
+
+    const thrown = await s.catchUp([enc]).then(() => undefined, (e: unknown) => e);
+    expect(thrown).toBeInstanceOf(SensitiveStateError);
+    for (const e of events) s.handleEvent(e);
+    await s.drain();
+    expect(errs[0]).toBeInstanceOf(SensitiveStateError);
+    for (const e of [thrown, errs[0]] as SensitiveStateError[]) {
+      expect(e).toMatchObject({ reason: "lifted-value", statePath: "$.owner" });
+      expect(e.message).toContain("owner-mirror");
+      expect(e.message).not.toContain(EMAIL);
+    }
+    expect((await s.getMany("owner-mirror", [X])).size).toBe(0); // the watermark never advanced
+  });
+
+  it("a safe fold over the same log is untouched (the guard has no false positive on plain fields)", async () => {
+    const { enc } = await logs();
+    const s = new ReadModelService(new InMemoryReadModelStore(), { sensitive: SENSITIVE });
+    await s.registerFolded({ projection: proj("owner-step", "step") });
+    await s.catchUp([enc]);
+    expect(await stateOf(s, "owner-step")).toEqual({ steps: 2, owner: "s1" });
+  });
+
+  it("changing the declared sensitive paths rebuilds the model on the next registration", async () => {
+    const store = new InMemoryReadModelStore();
+    const first = new ReadModelService(store, { sensitive: SENSITIVE });
+    expect(await first.registerFolded({ projection: proj("owner-step", "step") })).toEqual({ rebuilt: false });
+    const second = new ReadModelService(store, { sensitive: { STEP_COMPLETED: ["email", "phone"] } });
+    expect(await second.registerFolded({ projection: proj("owner-step", "step") })).toEqual({ rebuilt: true });
+  });
+});
+```
+(Adjust the `projection$` import into the first `@loom/core` import; confirm `sealingCapability` is callable on the store instance in this repo state — it is defined on `EncryptingEventStore` at `plugins/crypto/src/EncryptingEventStore.ts:160/234`; if it is only installed lazily, read it from the instance after construction as the ADR 0130 D7 tests do in `plugins/crypto/src/sealMarker.test.ts`.)
+
+- [ ] **Step 2: Run** `pnpm --filter @loom/plugin-read-model exec vitest run src/foldedSensitive.test.ts` → PASS (requires Task 7a: `ReadModelService` takes `sensitive`; if you run this task before 7a, move it after).
+- [ ] **Step 3: Commit**
+
+```bash
+git add plugins/read-model/src/foldedSensitive.test.ts
+git commit -m "test(read-model): sensitive-state guard parity across live, catch-up, refresh, rebuild and raw sources (ADR 0132 D11)"
+```
+
+---
+
+### Task 10: Erasure integration with compliance (D11, D12)
 
 **Files:**
 - Create: `plugins/read-model/src/foldedErasure.test.ts`
@@ -1544,6 +2812,7 @@ git commit -m "test(read-model): folded rebuild==incremental and multi-node conv
   1. After `eraseSubject` for subject A, a folded model that copied a field from A's events still holds it (the hazard — pins D11's "plaintext copy"); `purgeFolded(model, { scope: A })` removes it and returns the count; B's state is untouched.
   2. A rebuild through the STRICT source throws `PayloadShreddedError` (documented hazard); through the tolerant source it completes, and a handler that does `isShredded(payload) ? skip : fold` yields no state for A (not a `$shredded` bucket).
   3. Purge then catch-up through the tolerant source does not resurrect A's state (tombstone sticks).
+  4. With the sensitive map declared (`sensitive: { FILE_ADDED: ["name"] }`, the paths the encrypting store seals), the fold never held A's value at all: after `eraseSubject` the folded state contains the sentinel `"[redacted]"` and no trace of `secret.pdf`, so `purgeFolded` is the backstop for undeclared paths, not the primary control (D11/D12). A second model with no map still shows the hazard in case 1.
   Skeleton for case 1 (adapt names to the helpers in `erasure.test.ts`):
 
 ```ts
@@ -1571,7 +2840,7 @@ git commit -m "test(read-model): folded state erasure via purgeFolded and tolera
 
 ---
 
-### Task 8: SQLite backend (D3, D5, D6, D12)
+### Task 11: SQLite backend (D3, D5, D6, D12)
 
 **Files:**
 - Modify: `plugins/sqlite/src/SqliteReadModelStore.ts`
@@ -1692,7 +2961,7 @@ git commit -m "feat(sqlite): folded-state read model store methods (ADR 0132)"
 
 ---
 
-### Task 9a: Postgres placement — identifiers, DDL builder, table ensure (D10)
+### Task 12a: Postgres placement — identifiers, DDL builder, table ensure (D10)
 
 **Files:**
 - Create: `plugins/postgres/src/foldedState.ts`
@@ -1826,7 +3095,7 @@ git commit -m "feat(postgres): caller-chosen schema/tables and DDL for folded re
 
 ---
 
-### Task 9b: Postgres folded methods, conformance, RLS test (D3, D5, D10, D12)
+### Task 12b: Postgres folded methods, conformance, RLS test (D3, D5, D10, D12)
 
 **Files:**
 - Modify: `plugins/postgres/src/PostgresReadModelStore.ts`
@@ -1989,75 +3258,92 @@ git commit -m "feat(postgres): folded-state read model store, conformance and RL
 
 ---
 
-### Task 10: Docs, ADR bookkeeping, close-out (D11)
+### Task 13a: User docs — plugins, API reference, README (D10, D11, D15)
 
 **Files:**
-- Modify: `docs/plugins.md` (read-model section: folded models, boot order, `getMany`/`refresh`, DocMind-shaped example)
-- Modify: `docs/compliance.md` (new "Folded read-model state" subsection after "Purge the subject's rows")
-- Modify: `docs/api-reference.org` (around line 1116–1143: `registerFolded`, `getMany`, `getManyByKey`, `refresh`, `purgeFolded`, SPI 1.2.0)
+- Modify: `docs/plugins.md` (read-model section: folded models, boot order, `getMany`/`refresh`, the guard, the cache, a DocMind-shaped example)
+- Modify: `docs/api-reference.org` (around line 1116–1143: `registerFolded`, `getMany`, `getManyByKey`, `refresh`, `purgeFolded`, `sensitive`, `foldCache`, `sensitiveMapFromCovers`, `SensitiveStateError`, SPI 1.2.0)
 - Modify: `docs/README.md` (add ADR 0132 to the list near line 175–183)
-- Modify: `docs/adr/0132-folded-state-read-model.md` (Status stays **Proposed** until the owner accepts; add "Implemented in PRs #…" only when merged)
 
-- [ ] **Step 1: `docs/plugins.md`** — add a "Folded-state models" subsection with exactly this wiring (the DocMind shape) and the plaintext warning:
+- [ ] **Step 1: `docs/plugins.md`** — add a "Folded-state models" subsection with exactly this wiring (the DocMind shape) and the rules below it:
 
 ```ts
 const service = new ReadModelService(new PostgresReadModelStore(ingestPool, { schema: "docmind" }), {
   liveSource: eventStore,
+  sensitive: SENSITIVE,            // the SAME map given to EncryptingEventStore (or sensitiveMapFromCovers(...))
+  foldCache: { maxEntries: 1024 }, // the default; `false` disables
   onError: (err) => logger.error(err),
 });
 await service.registerFolded({
   projection: ingestStatus, // projection$({ id, version: "1", initialState, handlers })
   keyOf: (executionId) => /ingest-(.+?)(?:\.\d+)?$/.exec(executionId)?.[1],
-  scopeOf: (executionId) => userPrefixOf(executionId),
+  // DocMind execution ids are `u_<userId>:<name>`: scope = userId. The app's RLS policy maps scope -> tenant
+  // through its own table; Loom stays generic and `scopeOf` stays synchronous.
+  scopeOf: (executionId) => /^u_([^:]+):/.exec(executionId)?.[1],
 });
 const app = defineConfig({ /* … */ onEvent: (e) => service.handleEvent(e) });
-await service.catchUp([eventStore]);                       // boot: heals + re-folds after a version bump
+await service.catchUp([eventStore]);                       // boot: heals + re-folds after a version or sensitive-map change
 
 // request path (a reader instance: PostgresReadModelStore(readerPool, { schema: "docmind", manageSchema: false }))
 const states = await readerService.getManyByKey("ingest-status", pageOfDocumentIds);
-// right after a step the user just caused:
+// right after a step the user just caused (one log-tail read, only for the execution that action touched):
 await service.getMany("ingest-status", [executionId], { refreshFrom: [eventStore] });
 ```
-State the three rules in prose: state must be non-sensitive or app-sealed; keep `version` honest; `refresh` costs a tail read.
+State the rules in prose: (1) **Sensitive state.** Handlers receive events with every declared or sealed-marked path replaced by `"[redacted]"`; a state that holds a sealed envelope or a value copied from a sensitive path is refused with `SensitiveStateError` (model, execution, event and state path; never the value) and the watermark does not advance. Say what it cannot catch (an undeclared field, a transformed copy, a short value, free text) in the same words as ADR 0132 D11, and that state should still hold identifiers, enums, counters and timestamps. (2) Keep `version` honest; the declared sensitive map is part of the fold version, so editing it rebuilds. (3) `refresh` costs a log-tail read: use it on the one execution a user action touched. (4) The state cache serves the live write path only; reads always hit the store; `foldCache: false` disables it.
 
-- [ ] **Step 2: `docs/compliance.md`** — "Folded read-model state": the fold copies plaintext out of the log; erase with `purgeFolded(model, { scope })` after `eraseSubject`; a tombstone keeps the watermark; rebuild needs a tolerant source and `isShredded` handling; link ADR 0132 D11/D12.
+- [ ] **Step 2: `docs/api-reference.org` and `docs/README.md`** — add the entries; in README add a bullet "[0132](adr/0132-folded-state-read-model.md) added durable per-execution folded-state read models with a sensitive-state guard and a bounded live-path cache".
+- [ ] **Step 3: Commit**
 
-- [ ] **Step 3: `docs/api-reference.org` and `docs/README.md`** — add the entries; in README add a bullet "[0132](adr/0132-folded-state-read-model.md) added durable per-execution folded-state read models".
+```bash
+git add docs/plugins.md docs/api-reference.org docs/README.md
+git commit -m "docs: folded-state read models — plugins, API reference, README (ADR 0132)"
+```
 
-- [ ] **Step 4: Full local verify (the close-out)** — run exactly:
+---
+
+### Task 13b: Compliance docs, ADR bookkeeping, close-out (D11, D12)
+
+**Files:**
+- Modify: `docs/compliance.md` (new "Folded read-model state" subsection after "Purge the subject's rows")
+- Modify: `docs/data-classification.md` (one paragraph under "Deriving the wiring": a folded read model consumes the same `sensitive` map)
+- Modify: `docs/adr/0132-folded-state-read-model.md` (Status stays **Proposed** until the owner accepts; add "Implemented in PRs #…" only when merged)
+
+- [ ] **Step 1: `docs/compliance.md`** — "Folded read-model state": the fold copies plaintext out of the log unless the guard stops it; declare the sensitive map (the same one the encrypting store uses) so handlers never see those values and a mirrored copy is refused; list the guard's limits verbatim from ADR 0132 D11; erase what slips through with `purgeFolded(model, { scope })` after `eraseSubject`; a tombstone keeps the watermark; rebuild needs a tolerant source and `isShredded` handling; the state cache holds no data a purge leaves behind (it is dropped on purge and never serves reads); link ADR 0132 D11/D12/D15.
+- [ ] **Step 2: `docs/data-classification.md`** — the paragraph and a two-line example passing `sensitivePathsFromSteps(flow.steps)` to both `EncryptingEventStore` and `ReadModelService({ sensitive })`.
+- [ ] **Step 3: Full local verify (the close-out)** — run exactly:
 
 ```bash
 pnpm build && npx turbo test --force --concurrency=2 && pnpm typecheck && pnpm typecheck:tests && pnpm lint
 ```
 Expected: all green. Fix anything biome reports with `pnpm lint --write` only where it is formatting in files this plan touched.
 
-- [ ] **Step 5: Commit, then open a DRAFT PR** (do not mark ready; ask the owner first — see open questions).
+- [ ] **Step 4: Commit, then open this task's DRAFT PR** (stacked on task 13a's; do not mark ready; ask the owner first).
 
 ```bash
 git add docs/
-git commit -m "docs: folded-state read models (ADR 0132) — plugins, compliance, api reference"
-git push -u origin docs/folded-read-model   # only when the owner says to push
-gh pr create --draft --title "feat(read-model): folded-state durable projections (ADR 0132)" --body "…"   # ends with the Claude Code attribution line
+git commit -m "docs: folded-state compliance and classification notes (ADR 0132)"
+git push -u origin <this task's branch>   # only when the owner says to push
+gh pr create --draft --base <previous task's branch> --title "docs: folded-state compliance notes (ADR 0132)" --body "…"   # ends with the Claude Code attribution line
 ```
-Merge later with `gh pr merge --rebase`.
+Merge later with `gh pr merge --rebase`, in stack order.
 
 ---
 
 ## Self-review (run against the ADR)
 
-- **Spec coverage:** D1 → T1, T4a, T5a. D2 → T4a (key/scope from executionId), T6 (generations). D3 → T2, T3, T8, T9b (CAS statement), T6. D4 → T4a (contiguity, gap, JSON normalize). D5 → T4a (version required), T5b (rebuild + old-node refusal), T2 (header guard). D6 → T1 (SPI), T2 (kit), T3/T8/T9b. D7 → T1 (`assertManyKeys`), T4b, T2. D8 → T4b/T5b (`refresh`, `refreshFrom`, `drain`). D9 → T4b (`getManyByKey`); paging explicitly absent. D10 → T9a/T9b. D11 → T10 docs (+ T7 hazard test). D12 → T3/T8/T9b tombstone, T5b, T7. D13 → T5a. D14 → T6. No gap found.
-- **Placeholders:** the only abbreviated steps are T7's fixture (it MUST copy the harness from `erasure.test.ts`, named explicitly) and T9b's RLS test (specified assertion by assertion); every production code step has full code.
-- **Type consistency:** `FoldedRecord`/`FoldedApply`/`FoldedSelector`/`FoldedState` are defined once in T1 and used verbatim in T3, T4a/b, T8, T9b; `foldedCapable`/`FoldedStore` (T4a) are what T5a imports; `refresh` returns "executions advanced" in T4b and T5b (the ADR D8 wording is corrected in T4b).
-- **Size check (est. changed lines / files):** T1 ~120/3, T2 ~190/3, T3 ~100/2, T4a ~190/3, T4b ~150/3, T5a ~170/2, T5b ~110/2, T6 ~100/1, T7 ~120/1, T8 ~140/2, T9a ~110/3, T9b ~190/4, T10 ~150/5; none exceeds 200 / 10. If a task overruns when implemented, split it a/b at the step boundary before opening its PR.
+- **Spec coverage:** D1 -> T1, T4a, T7a. D2 -> T4a (key/scope from executionId), T8 (generations). D3 -> T2, T3, T11, T12b (CAS statement), T8. D4 -> T4a (contiguity, gap, JSON normalize), T6b (cached base). D5 -> T4a (version required), T5c (effective version), T7b (rebuild + old-node refusal), T2 (header guard). D6 -> T1 (SPI), T2 (kit), T3/T11/T12b. D7 -> T1 (`assertManyKeys`), T4b, T2. D8 -> T4b/T7b (`refresh`, `refreshFrom`, `drain`). D9 -> T4b (`getManyByKey`); paging explicitly absent. D10 -> T12a/T12b. D11 -> T5a (output check), T5b (input view), T5c (config + engine), T9 (parity across feeds), T10 (erasure), T13a/T13b (docs). D12 -> T3/T11/T12b tombstone, T7b, T10. D13 -> T7a. D14 -> T8, T9. D15 -> T6a (LRU), T6b (wiring), T6c (conflict/version/purge/read tests), T7a (options), T8 (two cached nodes). No gap found.
+- **Placeholders:** the only abbreviated steps are T10's fixture (it MUST copy the harness from `erasure.test.ts`, named explicitly) and T12b's RLS test (specified assertion by assertion); every production code step has full code.
+- **Type consistency:** `FoldedRecord`/`FoldedApply`/`FoldedSelector`/`FoldedState`/`FoldBase`/`SensitiveMap`/`FoldCacheOptions`/`FoldedEngineOptions`/`DEFAULT_FOLD_CACHE_ENTRIES` are defined once in T1 and used verbatim after; `Lifted`, `isCipherEnvelope`, `isLiftable`, `walkBounded`, `SensitiveStateError`, `assertStateClean` are defined once in T5a and used by T5b (`foldView`, `sensitivePathsFor`), T5c (engine, `sensitiveMapFromCovers`, `mergeSensitive`, `effectiveFoldVersion`) and T9; `foldedCapable`/`FoldedStore` (T4a) are what T7a imports; `FoldStateCache` (T6a) is what T6b imports; `FoldedModelEngine`'s constructor takes `FoldedEngineOptions` from T4a on, and T7a builds it from `ReadModelServiceOptions` (`liveSource`, `sensitive`, `foldCache`); `refresh` returns "executions advanced" in T4b and T7b.
+- **Size check (est. changed lines / files):** T1 ~140/3, T2 ~190/3, T3 ~100/2, T4a ~190/3, T4b ~150/3, T5a ~150/3, T5b ~190/6, T5c ~180/5, T6a ~120/2, T6b ~170/2, T6c ~130/2, T7a ~190/2, T7b ~110/2, T8 ~140/1, T9 ~150/1, T10 ~125/1, T11 ~140/2, T12a ~110/3, T12b ~190/4, T13a ~130/3, T13b ~90/3; none exceeds 200 / 10. If a task overruns when implemented, split it a/b at the step boundary before opening its PR (T5b and T7a are the likeliest).
 
-## Open questions for the owner
+## Owner decisions (2026-10-19)
 
-1. **Version required for every folded model?** ADR 0095 left `version` optional. *Recommended default:* required (blank = `TypeError`), because auto-rebuild is the point; an unversioned durable fold is the silent-divergence hazard 0095 describes.
-2. **`getMany` surfaces erased/never-matched as absent.** *Recommended default:* yes (indistinguishable to the caller); the alternative (returning `{ erased: true }`) would leak erasure state to UI code.
-3. **Sensitive-state guard.** The framework cannot detect plaintext-sensitive state. *Recommended default:* documentation + tombstone purge only (D11/D12); do not add a heuristic scanner. Reopen if a second consumer stores user content in state.
-4. **`refresh` semantics: log tail read per call.** *Recommended default:* adopt as written; DocMind uses `refreshFrom` only for the execution a user action just touched, and plain `getManyByKey` for list pages. A cheaper "wait until sequence N" API needs a per-node watermark notification channel and is not worth it for one consumer.
-5. **Rolling-deploy behavior:** old-version nodes stop projecting (`FoldVersionMismatchError` to `onError`) until they restart on the new version; a rollback re-folds. *Recommended default:* accept; the alternative (dual-version tables) is overbuilt.
-6. **Postgres schema ownership.** Should the library create tables lazily (default) or only emit `foldedStateDdl`? *Recommended default:* lazy for dev/default, and DocMind sets `manageSchema: false` on both instances and runs `foldedStateDdl({ schema: "docmind" })` in its own migrations beside the RLS policies, since its roles should not have DDL rights.
-7. **In-process state cache in the live path.** *Recommended default:* none in v1 (one extra indexed read per handled event); add an LRU only against a measured ingest rate.
-8. **Where DocMind computes `scopeOf`.** Assumed to be derivable from the executionId prefix; I did not read DocMind to confirm the prefix format. *Recommended default:* the owner confirms the prefix is stable and parseable; otherwise `scope` should come from a lookup table at write time, which would need `scopeOf` to become async (a small ADR amendment).
-9. **Task sequencing / PR split.** *Recommended default:* three draft PRs: (A) tasks 1–7 (plugin + in-memory + kit), (B) task 8 (SQLite), (C) tasks 9a–10 (Postgres + docs), each under the 200 LOC / 10 file rule per task and rebase-merged in order.
+1. **Q1 — fold `version` is required** for every folded model (blank = `TypeError`). Accepted as recommended. Since D11, the version written to the header also carries a digest of the declared sensitive map.
+2. **Q2 — `getMany` / `getManyByKey` omit erased and never-matched executions.** Accepted as recommended: indistinguishable to the caller, so erasure state does not leak to UI code.
+3. **Q3 — a sensitive-state guard ships in v1 (changed from the recommendation).** Handlers receive events with declared or seal-marked paths masked to `"[redacted]"` and with any cipher envelope masked; before persisting, the engine rejects a state holding a sealed envelope or a value lifted from a sensitive path, with a typed `SensitiveStateError` that names the model, execution, event and state path and never the value. Built from `sensitive()` marks / the `sensitive` map, `metadata.seal`, the ADR 0130 envelope shape rule and `@loom/classify` masking; pure (P7); limits stated in ADR 0132 D11. Tasks 5a, 5b, 5c, 9.
+4. **Q4 — `refresh` is one log-tail read per execution**, used only on the execution a user action touched; list pages use the plain `getMany` / `getManyByKey`. Accepted as recommended; no "wait until sequence N" API.
+5. **Q5 — old-version nodes stop projecting** (`FoldVersionMismatchError` to `onError`) until restarted on the new version, and a rollback re-folds. Accepted as recommended; no dual-version tables.
+6. **Q6 — lazy tables by default; `manageSchema: false` for apps that own their DDL** (DocMind runs `foldedStateDdl({ schema: "docmind" })` in its own migrations beside the RLS policies). Accepted as recommended.
+7. **Q7 — an in-process state cache ships in v1 (changed from the recommendation).** A bounded per-node LRU of `(modelId, executionId) -> { sequence, state, erased }` on the live apply path; default 1024 entries, `foldCache: false` or `{ maxEntries: 0 }` disables. The store's compare-and-set stays the authority: a lost CAS drops the entry and re-reads, a cached base never decides a gap, version change / purge / rebuild invalidate, and the cache never serves `getMany` / `getManyByKey` / `refresh`. Tasks 6a, 6b, 6c, 8.
+8. **Q8 — `scopeOf` is derived synchronously from the executionId.** DocMind example (Loom stays generic): its execution ids are `u_<userId>:<name>`, so scope = userId; the app's own RLS policy maps scope -> tenant through its own table. No async `scopeOf`, no ADR amendment.
+9. **Q9 — ONE draft PR PER TASK**, each <= 200 changed lines and <= 10 files, stacked in task order and merged in order with `gh pr merge --rebase`. This replaces the earlier three-PR split (see Global Constraints).
