@@ -776,4 +776,53 @@ describe("FoldedModelEngine — sensitive-state guard (D11)", () => {
     ).rejects.toBeInstanceOf(SensitiveStateError);
     expect(await store.getFolded(ID, [X])).toEqual([]);
   });
+
+  it("rejects a malformed sensitive map at register", async () => {
+    const { engine } = boot();
+    await expect(
+      engine.register({
+        projection: ingestProjection(),
+        sensitive: { STEP_COMPLETED: "email" } as never,
+      })
+    ).rejects.toThrow(TypeError);
+  });
+
+  it("handles an event type named like an inherited member", async () => {
+    const { engine } = boot();
+    const p = ingestProjection();
+    (p.handlers as Record<string, unknown>).constructor = (s: object) => s;
+    await engine.register({ projection: p, sensitive: { STEP_COMPLETED: ["email"] } });
+    await expect(
+      engine.foldBatch(ID, X, undefined, [evt(X, 0, "constructor", { a: 1 })])
+    ).resolves.toBe(true);
+  });
+
+  it("a stale engine cannot fold after the paths changed: version mismatch, nothing written", async () => {
+    const store = new InMemoryReadModelStore();
+    const a = new FoldedModelEngine(store, () => {});
+    await a.register({ projection: ingestProjection(), sensitive: { STEP_COMPLETED: ["email"] } });
+    const b = new FoldedModelEngine(store, () => {});
+    await b.register({
+      projection: ingestProjection(),
+      sensitive: { STEP_COMPLETED: ["email", "phone"] },
+    });
+    await expect(
+      a.foldBatch(ID, X, undefined, [evt(X, 0, "STEP_COMPLETED", { step: "a" })])
+    ).rejects.toBeInstanceOf(FoldVersionMismatchError);
+    expect(await store.getFolded(ID, [X])).toEqual([]);
+  });
+
+  it("hands onError an event without the refused secret", async () => {
+    const seen: unknown[] = [];
+    const { engine } = boot((_e, ev) => seen.push(ev));
+    await engine.register({
+      projection: leaky("mirror"),
+      sensitive: { STEP_COMPLETED: ["email"] },
+    });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "ocr", email, mirror: email }));
+    await engine.drain();
+    expect(seen).toHaveLength(1);
+    expect(JSON.stringify(seen[0])).not.toContain(email);
+    expect(seen[0]).toMatchObject({ executionId: X, sequence: 0 });
+  });
 });
