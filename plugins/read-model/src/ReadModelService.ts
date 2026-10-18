@@ -387,7 +387,9 @@ export class ReadModelService {
    * tombstones, so state erased with `purgeFolded` is re-derived if the source still holds the
    * plaintext. For an erasure-safe rebuild, read through a source that tolerates shredded
    * payloads (`onShredded: "tolerate"`), and make handlers treat `{ $shredded: true }` as
-   * skip, never as data.
+   * skip, never as data. A rebuild that fails part-way (for example through a strict source) leaves
+   * the model cleared, tombstones and watermarks included: a failed rebuild is an unfinished
+   * rebuild, so re-run it through a tolerant source.
    */
   async rebuild(modelId: string, sources: readonly ReadModelEventSource[]): Promise<CatchUpReport> {
     if (this.folded?.has(modelId)) {
