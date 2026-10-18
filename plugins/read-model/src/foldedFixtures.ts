@@ -1,4 +1,5 @@
 import { projection$ } from "@loom/core";
+import type { EventEnvelope } from "@loom/core";
 
 export interface IngestState {
   status: "queued" | "running" | "done" | "failed";
@@ -23,4 +24,26 @@ export function ingestProjection(version = "1") {
       EXECUTION_FAILED: (s) => ({ ...s, status: "failed" }),
     },
   });
+}
+
+/** `u1:wf:ingest-d1` and `u1:wf:ingest-d1.2` -> "d1" (DocMind's generation suffix). */
+export const keyOf = (id: string): string | undefined => /ingest-(.+?)(?:\.\d+)?$/.exec(id)?.[1];
+/** The user-scoped prefix before the first ":". */
+export const scopeOf = (id: string): string | undefined => id.split(":")[0] || undefined;
+
+export function evt(
+  executionId: string,
+  sequence: number,
+  eventType: string,
+  payload: unknown = {}
+): EventEnvelope {
+  return {
+    id: `${executionId}-${sequence}`,
+    workflowId: "wf",
+    executionId,
+    eventType,
+    sequence,
+    timestamp: 1_000 + sequence,
+    payload,
+  };
 }
