@@ -1,5 +1,6 @@
 import { loadProjectionHandlers, projectionEventTypes } from "@loom/core";
 import type { EventEnvelope, ProjectionHandlers } from "@loom/core";
+import { FoldStateCache } from "./foldStateCache";
 import { effectiveFoldVersion, mergeSensitive } from "./sensitiveConfig";
 import { foldView } from "./sensitiveInput";
 import { SensitiveStateError, assertStateClean } from "./sensitiveState";
@@ -17,7 +18,12 @@ import type {
   RefreshOptions,
   SensitiveMap,
 } from "./types";
-import { FoldGapError, FoldVersionMismatchError, assertManyKeys } from "./types";
+import {
+  DEFAULT_FOLD_CACHE_ENTRIES,
+  FoldGapError,
+  FoldVersionMismatchError,
+  assertManyKeys,
+} from "./types";
 
 export type FoldedStore = Required<
   Pick<
@@ -45,6 +51,12 @@ const withheld = (e: EventEnvelope): EventEnvelope => {
   return { ...rest, payload: null } as EventEnvelope;
 };
 const slot = (modelId: string, executionId: string): string => `${modelId}\u0000${executionId}`;
+
+/** The CAS result of a fold and the record it wrote (only present when `result` is "applied"). */
+export interface FoldOutcome {
+  result: FoldedApplyResult | "noop";
+  record?: FoldBase;
+}
 
 export interface FoldedModel {
   id: string;
@@ -92,12 +104,22 @@ export class FoldedModelEngine {
   private readonly gates = new Map<string, Promise<void>>();
   /** (model, execution) -> highest sequence this node has accounted for on the live feed. Map order = recency. */
   private readonly frontier = new Map<string, number>();
+  /** Fold bases this node wrote (D15); undefined when disabled. Write-path only: no read API touches it. */
+  private readonly cache: FoldStateCache | undefined;
 
   constructor(
     protected readonly store: FoldedStore,
     protected readonly onError: (err: unknown, event: EventEnvelope) => void,
     protected readonly options: FoldedEngineOptions = {}
-  ) {}
+  ) {
+    const c = options.cache;
+    const max = c === false ? 0 : (c?.maxEntries ?? DEFAULT_FOLD_CACHE_ENTRIES);
+    this.cache = max > 0 ? new FoldStateCache(max) : undefined;
+  }
+
+  cacheSize(): number {
+    return this.cache?.size ?? 0;
+  }
 
   has(modelId: string): boolean {
     return this.models.has(modelId);
@@ -139,6 +161,7 @@ export class FoldedModelEngine {
       ...(def.scopeOf !== undefined && { scopeOf: def.scopeOf }),
     };
     this.models.set(p.id, model);
+    this.cache?.deleteModel(p.id);
     return { rebuilt };
   }
 
@@ -257,7 +280,9 @@ export class FoldedModelEngine {
     await this.gates.get(modelId);
     // One snapshot is enough: a later apply reads the sticky erased record and writes no state (D12).
     await Promise.all([...this.queues.values()]);
-    return this.store.purgeFolded(modelId, { [field!]: value } as FoldedSelector);
+    const n = await this.store.purgeFolded(modelId, { [field!]: value } as FoldedSelector);
+    this.cache?.deleteModel(modelId);
+    return n;
   }
 
   /**
@@ -278,6 +303,7 @@ export class FoldedModelEngine {
     try {
       await Promise.all([before, ...inFlight]);
       this.dropFrontier(modelId); // the live pointers described states that are about to be gone
+      this.cache?.deleteModel(modelId); // ... and so do the cached bases
       await this.store.clear(modelId);
       await this.store.beginFold(modelId, model.version);
     } finally {
@@ -307,23 +333,30 @@ export class FoldedModelEngine {
     events: readonly EventEnvelope[],
     accounted?: number
   ): Promise<boolean> {
-    return (await this.foldOutcome(modelId, executionId, rec, events, accounted)) === "applied";
+    try {
+      return (
+        (await this.foldOutcome(modelId, executionId, rec, events, accounted)).result === "applied"
+      );
+    } finally {
+      // Catch-up, refresh and rebuild move the row behind any cached base: the live path re-reads.
+      this.cache?.delete(modelId, executionId);
+    }
   }
 
-  /** As {@link foldBatch}, but reports the CAS result of the write. */
+  /** As {@link foldBatch}, but reports the CAS result and the record this write persisted. */
   protected async foldOutcome(
     modelId: string,
     executionId: string,
     rec: FoldBase | undefined,
     events: readonly EventEnvelope[],
     accounted?: number
-  ): Promise<FoldedApplyResult | "noop"> {
+  ): Promise<FoldOutcome> {
     const model = this.models.get(modelId);
     if (model === undefined)
       throw new TypeError(`read model "${modelId}" is not a registered folded model`);
     const from = rec?.sequence ?? -1;
     const todo = events.filter((e) => e.sequence > from);
-    if (todo.length === 0) return "noop";
+    if (todo.length === 0) return { result: "noop" };
     const frontier = Math.max(from, accounted ?? from);
     if (todo[0]!.sequence > frontier + 1) {
       throw new FoldGapError(modelId, executionId, frontier, todo[0]!.sequence);
@@ -355,17 +388,21 @@ export class FoldedModelEngine {
         );
       }
     }
+    const upToSequence = todo[todo.length - 1]!.sequence;
     const result = await this.store.applyFolded({
       modelId,
       executionId,
-      upToSequence: todo[todo.length - 1]!.sequence,
+      upToSequence,
       state,
       key: model.keyOf?.(executionId) ?? null,
       scope: model.scopeOf?.(executionId) ?? null,
       foldVersion: model.version,
     });
-    if (result === "version-mismatch") throw new FoldVersionMismatchError(modelId, model.version);
-    return result;
+    if (result === "version-mismatch") {
+      this.cache?.deleteModel(modelId); // another node rebuilt: no cached base for this model is trustworthy
+      throw new FoldVersionMismatchError(modelId, model.version);
+    }
+    return { result, record: { sequence: upToSequence, state, erased } };
   }
 
   /**
@@ -442,27 +479,45 @@ export class FoldedModelEngine {
       this.observe(k, event.sequence);
       return;
     }
-    const rec = await this.mark(model.id, id);
-    const from = rec?.sequence ?? -1;
-    // The store covers everything through `from`: never let the frontier lag it (a lagging pointer
-    // would drop on the next unhandled event and turn the following handled one into a spurious gap).
-    if ((this.frontier.get(k) ?? -1) < from) this.setFrontier(k, from);
-    if (event.sequence <= from) return;
-    const accounted = Math.max(from, this.frontier.get(k) ?? -1);
-    let events: readonly EventEnvelope[];
-    let through = accounted;
-    if (event.sequence === accounted + 1) events = [event];
-    else if (this.options.liveSource !== undefined) {
-      events = await this.options.liveSource.readFrom(id, from + 1);
-      through = from;
-      // A source that cannot reach the event leaves the hole open: report it, never fold part-way.
-      if (!events.some((e) => e.sequence >= event.sequence)) {
-        throw new FoldGapError(model.id, id, from, event.sequence);
+    // `useCache` is true only on the first pass; every retry goes to the store.
+    for (let useCache = this.cache !== undefined; ; useCache = false) {
+      // take() removes the entry: if anything below throws, the key is absent, never half-folded.
+      const cached = useCache ? this.cache?.take(model.id, id) : undefined;
+      const rec: FoldBase | undefined = cached ?? (await this.mark(model.id, id));
+      const from = rec?.sequence ?? -1;
+      // The store (or this node's own last write, when cached) covers everything through `from`:
+      // never let the frontier lag it (a lagging pointer would drop on the next unhandled event
+      // and turn the following handled one into a spurious gap).
+      if ((this.frontier.get(k) ?? -1) < from) this.setFrontier(k, from);
+      if (event.sequence <= from) {
+        if (cached !== undefined) this.cache?.put(model.id, id, cached); // still a valid guess
+        return;
       }
-    } else throw new FoldGapError(model.id, id, accounted, event.sequence);
-    await this.foldBatch(model.id, id, rec, events, through);
-    // Applied, or "stale" (another node got there first): either way the store is at least this far.
-    const last = events[events.length - 1];
-    if (last !== undefined) this.setFrontier(k, last.sequence);
+      const accounted = Math.max(from, this.frontier.get(k) ?? -1);
+      let events: readonly EventEnvelope[];
+      let through = accounted;
+      if (event.sequence === accounted + 1) events = [event];
+      else if (cached !== undefined)
+        continue; // the cache never decides a gap: another node may be ahead
+      else if (this.options.liveSource !== undefined) {
+        events = await this.options.liveSource.readFrom(id, from + 1);
+        through = from;
+        // A source that cannot reach the event leaves the hole open: report it, never fold part-way.
+        if (!events.some((e) => e.sequence >= event.sequence)) {
+          throw new FoldGapError(model.id, id, from, event.sequence);
+        }
+      } else throw new FoldGapError(model.id, id, accounted, event.sequence);
+      const out = await this.foldOutcome(model.id, id, rec, events, through);
+      if (out.result === "applied" && out.record !== undefined) {
+        // Only this node's own applied write is cached, and it is the exact state that was persisted.
+        this.cache?.put(model.id, id, out.record);
+      } else if (out.result === "stale" && cached !== undefined) {
+        continue; // lost the CAS on a possibly stale base: drop it (taken) and re-read once
+      }
+      // Applied, or "stale" (another node got there first): either way the store is at least this far.
+      const last = events[events.length - 1];
+      if (last !== undefined) this.setFrontier(k, last.sequence);
+      return;
+    }
   }
 }
