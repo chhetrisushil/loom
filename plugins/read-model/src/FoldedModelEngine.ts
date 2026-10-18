@@ -178,7 +178,14 @@ export class FoldedModelEngine {
   handle(event: EventEnvelope): void {
     for (const model of this.models.values()) {
       void this.enqueue(model.id, event.executionId, () => this.applyLive(model, event)).catch(
-        (err) => this.onError(err, event)
+        (err) => {
+          // A throwing onError is swallowed: it must not become an unhandled rejection.
+          try {
+            this.onError(err, event);
+          } catch {
+            /* swallowed by design */
+          }
+        }
       );
     }
   }
@@ -234,6 +241,9 @@ export class FoldedModelEngine {
     }
     const rec = await this.mark(model.id, id);
     const from = rec?.sequence ?? -1;
+    // The store covers everything through `from`: never let the frontier lag it (a lagging pointer
+    // would drop on the next unhandled event and turn the following handled one into a spurious gap).
+    if ((this.frontier.get(k) ?? -1) < from) this.setFrontier(k, from);
     if (event.sequence <= from) return;
     const accounted = Math.max(from, this.frontier.get(k) ?? -1);
     let events: readonly EventEnvelope[];
