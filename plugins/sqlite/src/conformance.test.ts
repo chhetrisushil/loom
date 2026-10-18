@@ -3,12 +3,14 @@ import {
   runContentStoreConformance,
   runDurableStateStoreConformance,
   runEventStoreConformance,
+  runFoldedStateConformance,
   runLeaseStoreConformance,
   runMemoryStoreConformance,
   runReadModelStoreConformance,
   runSnapshotStoreConformance,
   runTimerStoreConformance,
 } from "@loom/conformance";
+import { describe, expect, it } from "vitest";
 import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
 import { SqliteContentStore } from "./SqliteContentStore";
 import { SqliteDurableStateStore } from "./SqliteDurableStateStore";
@@ -32,6 +34,14 @@ runDurableStateStoreConformance(
 );
 
 runReadModelStoreConformance(() => new SqliteReadModelStore(":memory:"), "SqliteReadModelStore");
+runFoldedStateConformance(() => new SqliteReadModelStore(":memory:"), "SqliteReadModelStore");
+describe("SqliteReadModelStore folded", () => {
+  it("implements the folded methods", async () => {
+    const s = new SqliteReadModelStore(":memory:");
+    expect(typeof s.applyFolded).toBe("function");
+    await s.close();
+  });
+});
 runContentStoreConformance(() => new SqliteContentStore(":memory:"), "SqliteContentStore", {
   clocked: (now) => new SqliteContentStore(":memory:", { now }),
 });
