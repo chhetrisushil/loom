@@ -68,6 +68,8 @@ export function runFoldedStateConformance(
       const s = await open(ctx);
       expect(await s.beginFold("m", "v1")).toEqual({ rebuilt: false });
       await s.applyFolded(ap());
+      expect(await s.beginFold("m", "v1")).toEqual({ rebuilt: false });
+      expect(await s.getFolded("m", ["x-1"])).toHaveLength(1);
       await s.beginFold("other", "v1");
       await s.applyFolded(ap({ modelId: "other" }));
       expect(await s.beginFold("m", "v2")).toEqual({ rebuilt: true });
@@ -145,6 +147,9 @@ export function runFoldedStateConformance(
         erased: true,
         sequence: 3,
       });
+      expect(await s.applyFolded(ap({ upToSequence: 2, state: { n: 2 } }))).toBe("stale");
+      expect(await s.applyFolded(ap({ upToSequence: 3, state: { n: 3 } }))).toBe("stale");
+      expect((await s.getFolded("m", ["x-1"]))[0]).toMatchObject({ erased: true, sequence: 3 });
       expect(await s.applyFolded(ap({ upToSequence: 7, state: { n: 7 } }))).toBe("applied");
       expect((await s.getFolded("m", ["x-1"]))[0]).toMatchObject({
         state: null,
@@ -170,8 +175,12 @@ export function runFoldedStateConformance(
     it("clear drops states AND the header: writers are refused until beginFold runs again", async (ctx) => {
       const s = await open(ctx);
       await s.applyFolded(ap());
+      await s.beginFold("other", "v1");
+      await s.applyFolded(ap({ modelId: "other" }));
       await s.clear("m");
       expect(await s.getFolded("m", ["x-1"])).toEqual([]);
+      expect(await s.getFolded("other", ["x-1"])).toHaveLength(1);
+      expect(await s.applyFolded(ap({ modelId: "other", upToSequence: 2 }))).toBe("applied");
       expect(await s.applyFolded(ap())).toBe("version-mismatch");
       await s.beginFold("m", "v1");
       expect(await s.applyFolded(ap())).toBe("applied");
@@ -181,6 +190,8 @@ export function runFoldedStateConformance(
       const s = await open(ctx);
       expect(await s.getFolded("m", [])).toEqual([]);
       const many = Array.from({ length: 1001 }, (_, i) => `x-${i}`);
+      await expect(s.getFolded("m", many.slice(0, 1000))).resolves.toEqual([]);
+      await expect(s.getFoldedByKey("m", many.slice(0, 1000))).resolves.toEqual([]);
       await expect(s.getFolded("m", many)).rejects.toThrow();
       await expect(s.getFoldedByKey("m", many)).rejects.toThrow();
     });
