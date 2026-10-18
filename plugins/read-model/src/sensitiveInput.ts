@@ -1,7 +1,9 @@
 import { REDACTED, expandPaths, maskPaths } from "@loom/classify";
 import type { EventEnvelope } from "@loom/core";
 import {
+  GUARD_WALK_BUDGET,
   type Lifted,
+  type SensitiveStateContext,
   SensitiveStateError,
   isCipherEnvelope,
   isLiftable,
@@ -33,12 +35,59 @@ function valueAt(root: unknown, path: string): unknown {
   return v;
 }
 
+/** Drop duplicates and any path that has a strict ancestor in the set (maskPaths cannot mask both). */
+function pruneOverlap(paths: readonly string[]): string[] {
+  const set = new Set(paths);
+  return [...set].filter((p) => {
+    for (const q of set) if (q !== p && p.startsWith(`${q}.`)) return false;
+    return true;
+  });
+}
+
+/** Lift scalars AND object keys under a sensitive value, never descending into a cipher envelope. */
+function liftFrom(
+  at: unknown,
+  ctx: SensitiveStateContext,
+  path: string,
+  lifted: MutableLifted
+): void {
+  const add = (v: unknown): void => {
+    if (!isLiftable(v)) return;
+    if (typeof v === "string") lifted.strings.add(v);
+    else lifted.numbers.add(v);
+  };
+  const queue: unknown[] = [at];
+  for (let i = 0; i < queue.length; i++) {
+    if (queue.length > GUARD_WALK_BUDGET)
+      throw new SensitiveStateError(ctx, "unverifiable", `payload.${path}`);
+    const v = queue[i];
+    add(v);
+    if (typeof v !== "object" || v === null || isCipherEnvelope(v)) continue;
+    if (Array.isArray(v)) {
+      for (const c of v) queue.push(c);
+      continue;
+    }
+    for (const [k, c] of Object.entries(v)) {
+      add(k);
+      queue.push(c);
+    }
+  }
+}
+
+interface MutableLifted {
+  strings: Set<string>;
+  numbers: Set<number>;
+}
+
+const sealReplacer = (_k: string, v: unknown): unknown => (isCipherEnvelope(v) ? REDACTED : v);
+
 /**
  * The event a handler is given: every effective sensitive path replaced by `"[redacted]"` and any
- * cipher envelope elsewhere replaced the same way. Always a FRESH deep copy (never the shared
- * envelope), so a handler that mutates it cannot affect another model or a row extractor.
- * Also returns the scalar values found under the sensitive paths of the ORIGINAL event, built only
- * through `isLiftable`, which `assertStateClean` checks the new state against.
+ * cipher envelope elsewhere replaced the same way. Always a FRESH JSON-shaped copy (never the shared
+ * envelope), so a handler that mutates it cannot affect another model or a row extractor, and a live
+ * event folds exactly like its catch-up (JSON) twin. Also returns the scalar values and object keys
+ * found under the sensitive paths of the ORIGINAL event, built only through `isLiftable`, which
+ * `assertStateClean` checks the new state against.
  */
 export function foldView(
   modelId: string,
@@ -51,32 +100,46 @@ export function foldView(
     eventType: event.eventType,
     sequence: event.sequence,
   };
-  const strings = new Set<string>();
-  const numbers = new Set<number>();
-  const paths = sensitivePathsFor(event, declared);
-  let payload = event.payload;
-  if (paths.length > 0 && typeof payload === "object" && payload !== null) {
-    for (const path of expandPaths(payload, paths)) {
-      const at = valueAt(payload, path);
-      if (at === undefined || isCipherEnvelope(at)) continue; // nothing to lift from ciphertext
-      const done = walkBounded(at, (leaf) => {
-        if (!isLiftable(leaf)) return;
-        if (typeof leaf === "string") strings.add(leaf);
-        else numbers.add(leaf);
-      });
-      if (!done) throw new SensitiveStateError(ctx, "unverifiable", `payload.${path}`);
+  const unverifiable = (where = "payload"): SensitiveStateError =>
+    new SensitiveStateError(ctx, "unverifiable", where);
+  // Bound the WHOLE payload first, so a huge wildcard array fails closed before any expansion.
+  if (!walkBounded(event.payload, () => {})) throw unverifiable();
+  let norm: unknown;
+  try {
+    norm = event.payload === undefined ? undefined : JSON.parse(JSON.stringify(event.payload));
+  } catch {
+    throw unverifiable(); // not JSON-representable (cycle, BigInt, ...)
+  }
+  const lifted: MutableLifted = { strings: new Set<string>(), numbers: new Set<number>() };
+  let payload = norm;
+  const declaredPaths = sensitivePathsFor(event, declared);
+  if (declaredPaths.length > 0 && typeof norm === "object" && norm !== null) {
+    const paths = pruneOverlap(expandPaths(norm, declaredPaths));
+    const present: string[] = [];
+    for (const path of paths) {
+      const at = valueAt(norm, path);
+      if (at === undefined) continue;
+      present.push(path);
+      liftFrom(at, ctx, path, lifted);
     }
-    payload = maskPaths(payload, paths);
+    // Mask under a wrapper: maskPaths leaves an array root untouched, but paths address it.
+    const masked = (
+      maskPaths(
+        { p: norm },
+        present.map((p) => `p.${p}`)
+      ) as { p: unknown }
+    ).p;
+    for (const path of present) {
+      if (valueAt(masked, path) !== REDACTED) throw unverifiable(`payload.${path}`);
+    }
+    payload = masked;
   }
-  // Ciphertext anywhere else (a raw at-rest read, or a path nobody declared) never reaches a handler.
-  let sealed = false;
-  const complete = walkBounded(payload, (v) => {
-    if (isCipherEnvelope(v)) sealed = true;
-  });
-  if (!complete) throw new SensitiveStateError(ctx, "unverifiable", "payload");
-  if (sealed) {
-    payload = JSON.parse(JSON.stringify(payload, (_k, v) => (isCipherEnvelope(v) ? REDACTED : v)));
+  // Ciphertext anywhere else never reaches a handler; the round trip also copies everything.
+  let view: EventEnvelope;
+  try {
+    view = JSON.parse(JSON.stringify({ ...event, payload }, sealReplacer));
+  } catch {
+    throw unverifiable();
   }
-  // maskPaths shares unmasked subtrees with the original: deep-copy so nothing is shared.
-  return { event: structuredClone({ ...event, payload }), lifted: { strings, numbers } };
+  return { event: view, lifted };
 }
