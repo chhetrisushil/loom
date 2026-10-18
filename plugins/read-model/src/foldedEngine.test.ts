@@ -404,3 +404,97 @@ describe("FoldedModelEngine — live tail hardening", () => {
     expect(order).toEqual(["a", "b", "late"]);
   });
 });
+
+describe("FoldedModelEngine — reads, refresh, purge (D7, D8, D12)", () => {
+  const Y = "u1:wf:ingest-d1.2";
+
+  it("getMany omits absent, never-matched and erased executions; carries the sequence", async () => {
+    const { engine } = boot();
+    await engine.register({ projection: ingestProjection(), keyOf, scopeOf });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await engine.drain();
+    await engine.foldBatch(ID, "u1:wf:ingest-d3", undefined, [evt("u1:wf:ingest-d3", 0, "NOISE")]);
+    const got = await engine.getMany(ID, [X, "u1:wf:ingest-d3", "u1:wf:ingest-nope"]);
+    expect([...got.keys()]).toEqual([X]);
+    expect(got.get(X)).toMatchObject({ sequence: 0, key: "d1", state: { steps: 1 } });
+    await engine.purge(ID, { executionId: X });
+    expect((await engine.getMany(ID, [X])).size).toBe(0);
+  });
+
+  it("getManyByKey groups generations under one key, ordered by executionId", async () => {
+    const { engine } = boot();
+    await engine.register({ projection: ingestProjection(), keyOf });
+    for (const id of [Y, X]) engine.handle(evt(id, 0, "EXECUTION_COMPLETED"));
+    await engine.drain();
+    const got = await engine.getManyByKey(ID, ["d1", "zzz"]);
+    expect(got.get("d1")?.map((s) => s.executionId)).toEqual([X, Y]);
+    expect(got.has("zzz")).toBe(false);
+  });
+
+  it("refresh reads the log tail: read-your-writes without the live feed", async () => {
+    const { engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await log.append(evt(X, 1, "EXECUTION_COMPLETED"));
+    expect((await engine.getMany(ID, [X])).size).toBe(0); // live feed never delivered
+    const got = await engine.getMany(ID, [X], { refreshFrom: [log] });
+    expect(got.get(X)?.state).toMatchObject({ status: "done", steps: 1 });
+    expect(await engine.refresh(ID, [X], [log])).toBe(0); // current: nothing to fold
+  });
+
+  it("refresh persists the watermark over an unhandled tail and the live tail then continues without a gap", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: ingestProjection() });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await log.append(evt(X, 1, "NOISE"));
+    expect(await engine.refresh(ID, [X], [log])).toBe(1);
+    expect((await stored(store))?.sequence).toBe(1);
+    engine.handle(evt(X, 2, "STEP_COMPLETED", { step: "b" }));
+    await engine.drain();
+    expect(errs).toEqual([]);
+    expect((await stored(store))?.sequence).toBe(2);
+  });
+
+  it("purge refuses an empty or multi-field selector", async () => {
+    const { engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    await expect(engine.purge(ID, {} as never)).rejects.toThrow(/exactly one/);
+    await expect(engine.purge(ID, { key: "a", scope: "b" } as never)).rejects.toThrow(
+      /exactly one/
+    );
+  });
+
+  it("getManyByKey with refreshFrom refreshes only executions already known for the key (documented limit)", async () => {
+    const { engine } = boot();
+    await engine.register({ projection: ingestProjection(), keyOf });
+    const log = new InMemoryAsyncEventStore();
+    await log.append(evt(X, 0, "EXECUTION_COMPLETED")); // in the log, never folded: no row, so nothing to look up by key
+    const byKey = await engine.getManyByKey(ID, ["d1"], { refreshFrom: [log] });
+    expect(byKey.size).toBe(0);
+    expect(await engine.refresh(ID, [X], [log], { concurrency: 2 })).toBe(1); // by id it is found
+    expect((await engine.getManyByKey(ID, ["d1"])).get("d1")).toHaveLength(1);
+  });
+
+  it("refresh refuses a non-positive concurrency", async () => {
+    const { engine } = boot();
+    await engine.register({ projection: ingestProjection() });
+    await expect(engine.refresh(ID, [X], [], { concurrency: 0 })).rejects.toThrow(RangeError);
+  });
+
+  it("reset drops the states and the live frontier: a live event after it is a gap, not a fold over the lost prefix", async () => {
+    const errs: unknown[] = [];
+    const { store, engine } = boot((e) => errs.push(e));
+    await engine.register({ projection: ingestProjection() });
+    engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await engine.drain();
+    await engine.reset(ID);
+    expect(await store.getFolded(ID, [X])).toEqual([]);
+    engine.handle(evt(X, 1, "STEP_COMPLETED", { step: "b" })); // the old frontier (0) described states that are gone
+    await engine.drain();
+    expect(errs[0]).toBeInstanceOf(FoldGapError);
+    expect(await store.getFolded(ID, [X])).toEqual([]);
+  });
+});
