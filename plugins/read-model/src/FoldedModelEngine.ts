@@ -238,6 +238,8 @@ export class FoldedModelEngine {
         "folded read model purge: the selector must name exactly one of executionId / key / scope, non-blank — an empty selector is not 'every row' (that is `clear`)"
       );
     }
+    // Behind a running reset, so purgeFolded never overlaps clear (a tombstone would be lost).
+    await this.gates.get(modelId);
     // One snapshot is enough: a later apply reads the sticky erased record and writes no state (D12).
     await Promise.all([...this.queues.values()]);
     return this.store.purgeFolded(modelId, { [field!]: value } as FoldedSelector);

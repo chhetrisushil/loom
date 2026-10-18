@@ -529,11 +529,12 @@ describe("FoldedModelEngine — reads, refresh, purge (D7, D8, D12)", () => {
     await engine.register({ projection: ingestProjection() });
     const log = new InMemoryAsyncEventStore();
     await log.append(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
+    await log.append(evt(X, 1, "NOISE")); // a tail past the watermark, behind the live frontier
     engine.handle(evt(X, 0, "STEP_COMPLETED", { step: "a" }));
     engine.handle(evt(X, 1, "NOISE"));
-    engine.handle(evt(X, 2, "NOISE"));
+    engine.handle(evt(X, 2, "NOISE")); // live frontier at 2, watermark at 0
     await engine.drain();
-    await engine.refresh(ID, [X], [log]); // source only reaches 0; the frontier is at 2
+    expect(await engine.refresh(ID, [X], [log])).toBe(1); // folds [1]: the source reaches only 1
     engine.handle(evt(X, 3, "STEP_COMPLETED", { step: "b" }));
     await engine.drain();
     expect(errs).toEqual([]);
@@ -595,5 +596,37 @@ describe("FoldedModelEngine — reads, refresh, purge (D7, D8, D12)", () => {
     engine.handle(evt(X, 2, "STEP_COMPLETED", { step: "c" }));
     await engine.drain();
     expect(await stored(store)).toMatchObject({ erased: true, state: null });
+  });
+
+  it("purge called while a reset is gated completes after the reset, never overlapping clear", async () => {
+    const order: string[] = [];
+    let release!: () => void;
+    const latch = new Promise<void>((r) => {
+      release = r;
+    });
+    const store = new InMemoryReadModelStore();
+    const clear = store.clear.bind(store);
+    store.clear = async (id) => {
+      order.push("clear:start");
+      await latch;
+      await clear(id);
+      order.push("clear:end");
+    };
+    const purgeFolded = store.purgeFolded.bind(store);
+    store.purgeFolded = async (id, sel) => {
+      order.push("purge");
+      return purgeFolded(id, sel);
+    };
+    const engine = new FoldedModelEngine(store, (e) => {
+      throw e;
+    });
+    await engine.register({ projection: ingestProjection() });
+    await engine.foldBatch(ID, X, undefined, [evt(X, 0, "STEP_COMPLETED", { step: "a" })]);
+    const resetting = engine.reset(ID);
+    while (!order.includes("clear:start")) await Promise.resolve();
+    const purging = engine.purge(ID, { executionId: X });
+    release();
+    await Promise.all([resetting, purging]);
+    expect(order).toEqual(["clear:start", "clear:end", "purge"]);
   });
 });
