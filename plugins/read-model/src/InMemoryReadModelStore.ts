@@ -33,11 +33,6 @@ function matches(row: ReadModelRow, q: ReadModelQuery): boolean {
   return true;
 }
 
-/**
- * Reference in-memory backend — the conformance baseline and the test/dev
- * default. Rows are deep-cloned on write and read (value semantics, matching
- * the JSON round-trip of the durable backends).
- */
 /** Code-point order (== UTF-8 byte order); isomorphic, no Buffer. JS `<` compares UTF-16 units. */
 function compareCodePoints(a: string, b: string): number {
   let i = 0;
@@ -52,6 +47,11 @@ function compareCodePoints(a: string, b: string): number {
   return a.length - i === 0 && b.length - j === 0 ? 0 : a.length - i === 0 ? -1 : 1;
 }
 
+/**
+ * Reference in-memory backend — the conformance baseline and the test/dev
+ * default. Rows are deep-cloned on write and read (value semantics, matching
+ * the JSON round-trip of the durable backends).
+ */
 export class InMemoryReadModelStore implements ReadModelStore {
   private readonly rows = new Map<string, Map<string, ReadModelRow>>();
   private readonly watermarks = new Map<string, Map<string, number>>();
