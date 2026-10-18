@@ -1,9 +1,15 @@
 import { checkVersionPins } from "@loom/core";
 import type { EventEnvelope, PinReport } from "@loom/core";
 import { iterateExecutionIds } from "@loom/event-runtime";
+import { FoldedModelEngine, foldedCapable } from "./FoldedModelEngine";
 import type {
   CatchUpReport,
   ExtractedRow,
+  FoldCacheOptions,
+  FoldedReadModelDefinition,
+  FoldedReadOptions,
+  FoldedSelector,
+  FoldedState,
   ReadModelDefinition,
   ReadModelEventSource,
   ReadModelPage,
@@ -11,8 +17,10 @@ import type {
   ReadModelRow,
   ReadModelScalar,
   ReadModelStore,
+  RefreshOptions,
+  SensitiveMap,
 } from "./types";
-import { PurgeUnsupportedError, assertPurgeFilter } from "./types";
+import { FoldedUnsupportedError, PurgeUnsupportedError, assertPurgeFilter } from "./types";
 
 /**
  * Reserved control streams (`__loom_*`) are kernel bookkeeping — never indexed. Nor is the
@@ -66,6 +74,16 @@ export interface ReadModelServiceOptions {
    * rethrow asynchronously (crash loudly rather than drop silently).
    */
   onError?: (err: unknown, event: EventEnvelope) => void;
+  /**
+   * Fills a genuine hole in the live tail (ADR 0132 D4) — a node that restarts mid-execution, a
+   * missed event; normally this node's own event store. Optional: the engine is shown every event
+   * of an execution it follows from the start, so unhandled events are not holes.
+   */
+  liveSource?: ReadModelEventSource;
+  /** Sensitive payload paths every folded model must never see (D11) — the map you gave `EncryptingEventStore`. */
+  sensitive?: SensitiveMap;
+  /** Per-node state cache for the live apply path (D15). Default on; `false` disables. */
+  foldCache?: FoldCacheOptions | false;
 }
 
 /**
@@ -84,10 +102,11 @@ export class ReadModelService {
   private readonly kindSets = new Map<string, ReadonlySet<string>>();
   private readonly byKind = new Map<string, ReadModelDefinition[]>();
   private readonly onError: (err: unknown, event: EventEnvelope) => void;
+  private folded?: FoldedModelEngine;
 
   constructor(
     private readonly store: ReadModelStore,
-    options: ReadModelServiceOptions = {}
+    private readonly options: ReadModelServiceOptions = {}
   ) {
     this.onError =
       options.onError ??
@@ -102,7 +121,7 @@ export class ReadModelService {
     if (model.kinds.length === 0) {
       throw new TypeError(`read model "${model.id}": kinds must be non-empty`);
     }
-    if (this.models.has(model.id)) {
+    if (this.models.has(model.id) || this.folded?.has(model.id)) {
       throw new TypeError(`read model "${model.id}" is already registered`);
     }
     this.models.set(model.id, model);
@@ -114,9 +133,23 @@ export class ReadModelService {
     }
   }
 
+  /** Register a folded-state model (ADR 0132 D13). One id namespace with row models. */
+  async registerFolded<S>(def: FoldedReadModelDefinition<S>): Promise<{ rebuilt: boolean }> {
+    const id = def.projection.id;
+    if (this.models.has(id)) throw new TypeError(`read model "${id}" is already registered`);
+    if (!foldedCapable(this.store)) throw new FoldedUnsupportedError(id);
+    this.folded ??= new FoldedModelEngine(this.store, this.onError, {
+      ...(this.options.liveSource !== undefined && { liveSource: this.options.liveSource }),
+      ...(this.options.sensitive !== undefined && { sensitive: this.options.sensitive }),
+      ...(this.options.foldCache !== undefined && { cache: this.options.foldCache }),
+    });
+    return this.folded.register(def);
+  }
+
   /** Live tail — synchronous fan-out, asynchronous durable apply (never throws into the pipeline). */
   handleEvent(event: EventEnvelope): void {
     if (isReservedStream(event.executionId)) return;
+    this.folded?.handle(event); // every event, handled or not: the engine needs contiguity
     const interested = this.byKind.get(event.eventType);
     if (interested === undefined) return;
     for (const model of interested) {
@@ -183,6 +216,53 @@ export class ReadModelService {
       }
     }
     return report;
+  }
+
+  async getMany<S = unknown>(
+    modelId: string,
+    executionIds: readonly string[],
+    opts?: FoldedReadOptions
+  ): Promise<Map<string, FoldedState<S>>> {
+    return this.engine(modelId).getMany(modelId, executionIds, opts) as Promise<
+      Map<string, FoldedState<S>>
+    >;
+  }
+
+  async getManyByKey<S = unknown>(
+    modelId: string,
+    keys: readonly string[],
+    opts?: FoldedReadOptions
+  ): Promise<Map<string, FoldedState<S>[]>> {
+    return this.engine(modelId).getManyByKey(modelId, keys, opts) as Promise<
+      Map<string, FoldedState<S>[]>
+    >;
+  }
+
+  /** Fold each execution's log tail past its watermark; resolves to the number advanced (D8). */
+  async refresh(
+    modelId: string,
+    executionIds: readonly string[],
+    sources: readonly ReadModelEventSource[],
+    opts?: RefreshOptions
+  ): Promise<number> {
+    return this.engine(modelId).refresh(modelId, executionIds, sources, opts);
+  }
+
+  /** Erase folded state by exactly one of executionId / key / scope (D12). */
+  async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {
+    return this.engine(modelId).purge(modelId, selector);
+  }
+
+  /** Await this node's in-flight live applies (tests, graceful shutdown). */
+  async drain(): Promise<void> {
+    await this.folded?.drain();
+  }
+
+  private engine(modelId: string): FoldedModelEngine {
+    if (this.folded === undefined || !this.folded.has(modelId)) {
+      throw new TypeError(`read model "${modelId}" is not a registered folded model`);
+    }
+    return this.folded;
   }
 
   query(modelId: string, q?: ReadModelQuery): Promise<ReadModelPage> {

@@ -2,6 +2,7 @@ import { projection$ } from "@loom/core";
 import type { EventEnvelope } from "@loom/core";
 import { FoldedModelEngine, foldedCapable } from "./FoldedModelEngine";
 import { InMemoryReadModelStore } from "./InMemoryReadModelStore";
+import { ReadModelService } from "./ReadModelService";
 import type { FoldedRecord } from "./types";
 
 export interface IngestState {
@@ -82,3 +83,11 @@ export const step = (id: string, n: number) => evt(id, n, "STEP_COMPLETED", { st
 export const stepsOf = async (store: InMemoryReadModelStore, id = X) =>
   ((await store.getFolded("ingest-status", [id]))[0]?.state as { steps: number } | undefined)
     ?.steps;
+
+/** A service over an in-memory store with the ingest projection registered as a folded model. */
+export async function boot(opts: ConstructorParameters<typeof ReadModelService>[1] = {}) {
+  const store = new InMemoryReadModelStore();
+  const service = new ReadModelService(store, opts);
+  await service.registerFolded({ projection: ingestProjection(), keyOf, scopeOf });
+  return { store, service };
+}
