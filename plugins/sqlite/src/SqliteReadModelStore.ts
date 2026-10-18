@@ -1,11 +1,21 @@
 import type {
+  FoldedApply,
+  FoldedApplyResult,
+  FoldedRecord,
+  FoldedSelector,
   ReadModelPage,
   ReadModelQuery,
   ReadModelRow,
   ReadModelScalar,
   ReadModelStore,
 } from "@loom/plugin-read-model";
-import { assertPurgeFilter, clampQueryLimit, parseQueryCursor } from "@loom/plugin-read-model";
+import {
+  assertManyKeys,
+  assertPurgeFilter,
+  clampQueryLimit,
+  foldedSelectorColumn,
+  parseQueryCursor,
+} from "@loom/plugin-read-model";
 import Database from "better-sqlite3";
 
 interface RowRecord {
@@ -16,6 +26,26 @@ interface RowRecord {
   kind: string;
   fields: string;
   value: string;
+}
+
+interface FoldedDbRow {
+  execution_id: string;
+  app_key: string | null;
+  scope: string | null;
+  sequence: number;
+  state: string | null;
+  erased: number;
+}
+
+function toFolded(r: FoldedDbRow): FoldedRecord {
+  return {
+    executionId: r.execution_id,
+    key: r.app_key,
+    scope: r.scope,
+    sequence: r.sequence,
+    state: r.state === null ? null : JSON.parse(r.state),
+    erased: r.erased === 1,
+  };
 }
 
 /**
@@ -61,6 +91,24 @@ export class SqliteReadModelStore implements ReadModelStore {
           sequence INTEGER NOT NULL,
           PRIMARY KEY (model_id, execution_id)
         );
+        CREATE TABLE IF NOT EXISTS read_model_folds (
+          model_id TEXT PRIMARY KEY,
+          version TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS read_model_state (
+          model_id TEXT NOT NULL,
+          execution_id TEXT NOT NULL,
+          app_key TEXT,
+          scope TEXT,
+          sequence INTEGER NOT NULL,
+          state TEXT,
+          erased INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY (model_id, execution_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_rm_state_key
+          ON read_model_state (model_id, app_key) WHERE app_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_rm_state_scope
+          ON read_model_state (model_id, scope) WHERE scope IS NOT NULL;
       `);
       this.insertRowStmt = this.db.prepare(
         `INSERT OR IGNORE INTO read_model_rows
@@ -204,7 +252,111 @@ export class SqliteReadModelStore implements ReadModelStore {
     this.db.transaction(() => {
       this.clearRowsStmt.run(modelId);
       this.clearMarksStmt.run(modelId);
+      // Folded state (ADR 0132): this model only. Tables are created with the others in
+      // the constructor, so clear never has to create anything.
+      this.db.prepare("DELETE FROM read_model_state WHERE model_id = ?").run(modelId);
+      this.db.prepare("DELETE FROM read_model_folds WHERE model_id = ?").run(modelId);
     })();
+  }
+
+  // ── Folded state (ADR 0132 D3, D5, D6, D12) ──────────────────────────────
+
+  async beginFold(modelId: string, foldVersion: string): Promise<{ rebuilt: boolean }> {
+    return this.db.transaction(() => {
+      const prior = this.db
+        .prepare("SELECT version FROM read_model_folds WHERE model_id = ?")
+        .get(modelId) as { version: string } | undefined;
+      this.db
+        .prepare(
+          `INSERT INTO read_model_folds (model_id, version) VALUES (?, ?)
+           ON CONFLICT (model_id) DO UPDATE SET version = excluded.version`
+        )
+        .run(modelId, foldVersion);
+      if (prior === undefined || prior.version === foldVersion) return { rebuilt: false };
+      this.db.prepare("DELETE FROM read_model_state WHERE model_id = ?").run(modelId);
+      return { rebuilt: true };
+    })();
+  }
+
+  async applyFolded(a: FoldedApply): Promise<FoldedApplyResult> {
+    return this.db.transaction((): FoldedApplyResult => {
+      // One statement: header check + monotonic CAS. RETURNING reports the (unchanged)
+      // erased flag so advancing a tombstone is "applied-erased" and keeps state NULL.
+      const hit = this.db
+        .prepare(
+          `INSERT INTO read_model_state
+             (model_id, execution_id, app_key, scope, sequence, state, erased)
+           SELECT ?, ?, ?, ?, ?, ?, 0
+           WHERE EXISTS (SELECT 1 FROM read_model_folds WHERE model_id = ? AND version = ?)
+           ON CONFLICT (model_id, execution_id) DO UPDATE
+             SET sequence = excluded.sequence,
+                 state = CASE WHEN read_model_state.erased = 1 THEN NULL ELSE excluded.state END,
+                 app_key = COALESCE(excluded.app_key, read_model_state.app_key),
+                 scope = COALESCE(excluded.scope, read_model_state.scope)
+             WHERE read_model_state.sequence < excluded.sequence
+           RETURNING erased`
+        )
+        .get(
+          a.modelId,
+          a.executionId,
+          a.key ?? null,
+          a.scope ?? null,
+          a.upToSequence,
+          a.state === null || a.state === undefined ? null : JSON.stringify(a.state),
+          a.modelId,
+          a.foldVersion
+        ) as { erased: number } | undefined;
+      if (hit !== undefined) return hit.erased === 1 ? "applied-erased" : "applied";
+      const hdr = this.db
+        .prepare("SELECT version FROM read_model_folds WHERE model_id = ?")
+        .get(a.modelId) as { version: string } | undefined;
+      return hdr?.version === a.foldVersion ? "stale" : "version-mismatch";
+    })();
+  }
+
+  async getFolded(modelId: string, executionIds: readonly string[]): Promise<FoldedRecord[]> {
+    assertManyKeys(executionIds, "getFolded");
+    const ids = [...new Set(executionIds)];
+    if (ids.length === 0) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT execution_id, app_key, scope, sequence, state, erased FROM read_model_state
+         WHERE model_id = ? AND execution_id IN (${ids.map(() => "?").join(",")})`
+      )
+      .all(modelId, ...ids) as FoldedDbRow[];
+    const byId = new Map(rows.map((r) => [r.execution_id, toFolded(r)]));
+    return ids.flatMap((id) => {
+      const r = byId.get(id);
+      return r === undefined ? [] : [r];
+    });
+  }
+
+  async getFoldedByKey(modelId: string, keys: readonly string[]): Promise<FoldedRecord[]> {
+    assertManyKeys(keys, "getFoldedByKey");
+    const uniq = [...new Set(keys)];
+    if (uniq.length === 0) return [];
+    // BINARY collation = memcmp over UTF-8 = code-point order (ADR 0132), explicit so a
+    // future column collation can never change it.
+    const rows = this.db
+      .prepare(
+        `SELECT execution_id, app_key, scope, sequence, state, erased FROM read_model_state
+         WHERE model_id = ? AND app_key IN (${uniq.map(() => "?").join(",")})
+         ORDER BY execution_id COLLATE BINARY`
+      )
+      .all(modelId, ...uniq) as FoldedDbRow[];
+    return rows.map(toFolded);
+  }
+
+  async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {
+    const [col, val] = foldedSelectorColumn(selector);
+    // Tombstone, never delete: the row IS the watermark (ADR 0132 D12). `col` is one of
+    // three literals from foldedSelectorColumn, never caller input.
+    return this.db
+      .prepare(
+        `UPDATE read_model_state SET state = NULL, erased = 1
+         WHERE model_id = ? AND ${col} = ? AND erased = 0`
+      )
+      .run(modelId, val).changes;
   }
 
   async close(): Promise<void> {
