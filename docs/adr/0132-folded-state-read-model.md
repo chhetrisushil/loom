@@ -1,6 +1,6 @@
 # ADR 0132 — Folded-state read models: durable per-execution projections in `@loom/plugin-read-model`
 
-- Status: **Proposed**
+- Status: **Accepted** (2026-10-19) — owner accepted and merged the implementation stack 2026-10-19.
 - Date: 2026-10-19
 - Implements: the item [ADR 0058](0058-read-model-plugin.md) D4 deferred — *"an aggregate-state
   variant can layer on the same watermark machinery when a consumer needs it."*
@@ -563,7 +563,7 @@ only half of the events) converge with the cache disabled and with it enabled.
 
 ## Implementation
 
-Status stays **Proposed** until the owner accepts the record. Shipped as a stack of draft PRs against
+Accepted by the owner on 2026-10-19. Shipped as a stack of draft PRs against
 `@loom/plugin-read-model`, `@loom/plugin-sqlite` / `@loom/plugin-postgres` and the docs: types and SPI 1.2.0
 (#646), conformance kit (#647), in-memory store (#648), fold engine and live tail (#649-#655), sensitive-state
 guard (#656-#661, #672-#673), state cache (#662-#666), service wiring, catch-up and rebuild (#667-#671),

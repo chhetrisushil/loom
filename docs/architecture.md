@@ -917,5 +917,5 @@ Being honest about the edges:
   - **0131** loom's own evals (Accepted): retrieval gates and cassette-replayed model evals for the
     first-party agentic layer, in a repo-internal unpublished workspace that dogfoods `@loom/eval`,
     with committed regression thresholds and manual-only live re-recording (kernel unchanged)
-  - **0132** folded-state read models (Proposed): durable per-execution `projection$` folds in `@loom/plugin-read-model` — one state row whose sequence is the watermark, a monotonic compare-and-set so nodes converge without locks, a sensitive-state guard, a bounded live-path cache, and `ReadModelStore` SPI 1.2.0 (kernel unchanged)
+  - **0132** folded-state read models (Accepted): durable per-execution `projection$` folds in `@loom/plugin-read-model` — one state row whose sequence is the watermark, a monotonic compare-and-set so nodes converge without locks, a sensitive-state guard, a bounded live-path cache, and `ReadModelStore` SPI 1.2.0 (kernel unchanged)
 - **[Presentation](presentation/loom-deck.md)** — the deck.
