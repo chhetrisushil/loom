@@ -241,6 +241,9 @@ const NOT_A_CAPABILITY = new Set([
   // 0093 — one optional method on the read-model store SPI (a plugin), the same tier as
   // ADR 0058 above: the registry grades runtime subsystems, and this grows an adapter seam.
   "0093",
+  // 0132 — folded-state read models: five optional methods on the same read-model store SPI and
+  // a plugin-side engine, the same tier as ADR 0058/0093 — an adapter seam, not a runtime subsystem.
+  "0132",
   // 0096 — a declared version constant on the Blueprint IR plus an optional registry on the
   // terminal renderer. A contract and an adapter option; no runtime subsystem to grade.
   "0096",
