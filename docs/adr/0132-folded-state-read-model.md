@@ -160,7 +160,9 @@ it, or skipping *n−1*, silently corrupts the state. So the engine only folds e
 
 A handler that throws is reported to `onError` on the live path and **throws** from `catchUp`/`refresh`
 (same stance as ADR 0058's extractors): the execution's watermark does not advance past a poison event,
-which is a loud, bounded failure rather than a silently wrong state.
+which is a loud, bounded failure rather than a silently wrong state. The folded engine's `onError` is
+always handed the event with `payload` and `metadata` removed (whatever the error kind), so an error report
+cannot carry a sensitive value.
 
 ### D5 — Fold-code `version` is required, and a change rebuilds the model automatically
 
@@ -518,9 +520,43 @@ only half of the events) converge with the cache disabled and with it enabled.
   corrupting — at the price that a rollback re-folds too.
 - The Postgres store gains an options argument and two optional tables; the existing constructor form and
   the shared `migrate()` are unchanged. Third-party backends are unaffected until they implement the five methods.
+- **Operations.** (1) A deterministic folded refusal (a `SensitiveStateError`, a handler that always throws on
+  one event) makes `catchUp` throw for that execution, and the catch-up is SHARED: it stops for every later
+  execution, row models included, until the cause is fixed (fix the handler or the sensitive map and redeploy;
+  a changed map rebuilds the model, D11). Watch `onError` and alert on a catch-up that keeps failing.
+  (2) Every Postgres `applyFolded` takes `FOR SHARE` on the model's header row (D3). Shared row locks from
+  many concurrent writers are recorded as a MultiXact, which can churn (`pg_multixact` growth, autovacuum
+  freeze pressure) under heavy parallel ingest; size autovacuum for the folds table accordingly, and keep
+  `beginFold` (rebuild, version change), which takes `FOR UPDATE` on the same row, off the hot path.
 - State is still a plaintext copy of whatever event data the guard cannot recognise (D11 states exactly what it can
   and cannot catch): a compliance surface, reduced by the guard and backstopped by the tombstone purge. `docs/compliance.md`
   gains a section next to the 0093 one.
+
+## Implementation
+
+Status stays **Proposed** until the owner accepts the record. Shipped as a stack of draft PRs against
+`@loom/plugin-read-model`, `@loom/plugin-sqlite` / `@loom/plugin-postgres` and the docs: types and SPI 1.2.0
+(#646), conformance kit (#647), in-memory store (#648), fold engine and live tail (#649-#655), sensitive-state
+guard (#656-#661, #672-#673), state cache (#662-#666), service wiring, catch-up and rebuild (#667-#671),
+erasure (#674-#675), SQLite store (#676-#677), Postgres placement, DDL and store (#678-#682), docs (#683 and
+this record's close-out). No kernel, `KERNEL_ABI` or `EVENT_SCHEMA` change.
+
+Review-driven changes to the design above (the text of D3-D15 already reflects them):
+
+- `applyFolded` returns `"applied-erased"` when it advanced a tombstone, so the engine and cache never treat an
+  erased row as holding state (D3, D12).
+- A per-model reset gate (rebuild, `registerFolded`, purge queue behind it) and a per-model generation counter
+  (an apply that overlapped a purge, reset, register or version mismatch never caches its result) replace
+  "cache invalidation on events" (D15).
+- `onError` is always handed the event without `payload` and `metadata`, for every error kind (D4, D11).
+- Lifted-value detection compares strings of at least 6 characters and integers of at least 6 digits only,
+  and also object keys; other numbers are not lifted (D11).
+- Read-only readers use the STORE (`getFolded` / `getFoldedByKey`), not the service: `registerFolded` writes the
+  header (D10).
+- Postgres `applyFolded` and `beginFold` are one statement each, classifying stale versus version mismatch
+  under the header lock (D3, D5).
+- A failed strict rebuild leaves the model cleared (tombstones and watermarks gone); re-run it through a
+  tolerant source (D12).
 
 ## Principles check
 

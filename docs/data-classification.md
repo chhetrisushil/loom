@@ -87,6 +87,16 @@ const store = new EncryptingEventStore(inner, keys, {
 correctly excluded. Paths are unioned and de-duplicated across steps; the store applies
 each only to events that carry it, so unioning across differently-shaped steps is safe.
 
+A folded read model ([ADR 0132](adr/0132-folded-state-read-model.md) D11) consumes the same `sensitive` map:
+handlers see `"[redacted]"` for those paths and a state that mirrors a lifted value is refused. Hand it the
+constant you gave the encrypting store, so classification is declared once ([compliance](compliance.md#folded-read-model-state-adr-0132)):
+
+```ts
+const sensitive = sensitivePathsFromSteps(flow.steps);
+const store = new EncryptingEventStore(inner, keys, { sensitive });
+const readModels = new ReadModelService(rmStore, { sensitive });
+```
+
 ### Secrets, wired in one line (K10-R2)
 
 `defineConfig({ security: { secrets } })` installs the redaction seam automatically, so `secret()`-marked

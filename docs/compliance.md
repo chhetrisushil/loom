@@ -329,6 +329,41 @@ report would be a successful erasure of zero rows), and a **backend without the 
 (`PurgeUnsupportedError`, naming the fallback). Watermarks are untouched, which is what
 makes the deletion stick: the next catch-up has nothing left to re-read.
 
+### Folded read-model state (ADR 0132)
+
+A [folded read model](plugins.md) keeps one state per execution, folded from the log, so it can copy
+plaintext out of the log (the live event and every catch-up through `EncryptingEventStore` are decrypted).
+What the model does about it, and what stays yours ([ADR 0132 D11, D12, D15](adr/0132-folded-state-read-model.md)):
+
+- **Declare the sensitive map.** Give `ReadModelService({ sensitive })` the same map the encrypting store uses
+  (`sensitivePathsFromSteps(flow.steps)`, see [data classification](data-classification.md)). Handlers then
+  receive a copy of the event with those paths (and any cipher envelope) replaced by `"[redacted]"`, and a
+  state holding an envelope or a value lifted from a sensitive path is refused with `SensitiveStateError`
+  (it names the model, execution, event and state path, never the value). There is no off switch.
+  Prefer decrypted sources for catch-up and rebuild: on an at-rest source only masking applies.
+- **What the guard cannot catch**: (a) data in a field nobody classified; (b) a transformed copy (hash,
+  truncation, case folding, concatenation, substring); (c) a copy from an earlier event or another execution,
+  or one under the length thresholds (6 characters, 6 digits); (d) data a handler gets from outside the event
+  (handlers are pure by contract, not sandboxed); (e) free text in undeclared paths; (f) on an at-rest source
+  there is nothing to compare a copy against; (g) on the live feed with no declared map, a sealed field whose
+  seal marker is absent reaches the handler as delivered. State should hold identifiers, enums, counters and
+  timestamps.
+- **Erase what slips through** with `purgeFolded(model, { scope })` (or `{ executionId }` / `{ key }`) after
+  `eraseSubject`. It writes a **tombstone**: the state becomes `NULL` and `erased` is set, but the
+  watermark is kept. Live and catch-up never resurrect it: later events advance the sequence
+  (`"applied-erased"`) and leave the state empty. Be honest in your records: a tombstone still carries the
+  subject's `executionId` and `scope`. Those are identifiers, not values; if an identifier is itself personal
+  data in your reading of the law, that is a decision for your DPO (ADR 0132 D12).
+- **The cache never keeps erased state.** The per-node state cache is dropped on purge and never serves
+  `getMany`, `getManyByKey` or `refresh`, so a purge leaves no copy behind on any node's read path.
+- **Rebuild un-tombstones.** `rebuild` clears and re-folds, so erased state returns unless the rebuild is
+  erasure-safe: the log must be shredded, the source must tolerate shredded payloads (`onShredded: "tolerate"`),
+  and handlers must skip `{ $shredded: true }`. A rebuild through a strict source fails part-way and leaves
+  the model cleared (tombstones and watermarks gone): re-run it through a tolerant source, never a catch-up
+  from a non-shredded plaintext source.
+- **Error reports are safe.** The folded engine's `onError` receives the event with `payload` and `metadata`
+  removed, whatever the error kind.
+
 ### `clear` + rebuild (the fallback)
 
 Correct, always available, and *O(log)* — measured at 68× the cost of a purge for one
