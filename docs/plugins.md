@@ -234,7 +234,7 @@ A folded model keeps one durable state per execution, folded with an ordinary `p
 ```ts
 const service = new ReadModelService(new PostgresReadModelStore(ingestPool, { schema: "docmind" }), {
   liveSource: eventStore,
-  sensitive: SENSITIVE,            // the SAME map given to EncryptingEventStore (or sensitiveMapFromCovers(...))
+  sensitive: SENSITIVE,            // sensitivePathsFromSteps(steps) UNION sensitiveMapFromCovers(enc.sealingCapability().covers), built after defineConfig
   foldCache: { maxEntries: 1024 }, // the default; `false` disables
   onError: (err) => logger.error(err),
 });
@@ -245,12 +245,13 @@ await service.registerFolded({
   // through its own table; Loom stays generic and `scopeOf` stays synchronous.
   scopeOf: (executionId) => /^u_([^:]+):/.exec(executionId)?.[1],
 });
-const app = defineConfig({ /* … */ onEvent: (e) => service.handleEvent(e) });
+const app = defineConfig({ /* … */ observability: { onEvent: (e) => service.handleEvent(e) } });
 await service.catchUp([eventStore]);                       // boot: heals + re-folds after a version or sensitive-map change
 
 // request path: a read-only RLS role reads through the STORE (no registerFolded, no writes)
 const readerStore = new PostgresReadModelStore(readerPool, { schema: "docmind", manageSchema: false });
 const records = await readerStore.getFoldedByKey("ingest-status", pageOfDocumentIds); // FoldedRecord[]: { executionId, key, scope, sequence, state, erased }
+const states = foldedStates(records); // pure: drops erased and null-state rows, like service.getMany
 const one = await readerStore.getFolded("ingest-status", [executionId]);              // by execution id
 // on the writer service, right after a step the user just caused (one log-tail read, only for the execution that action touched):
 const fresh = await service.getMany("ingest-status", [executionId], { refreshFrom: [eventStore] });
@@ -258,15 +259,20 @@ const fresh = await service.getMany("ingest-status", [executionId], { refreshFro
 
 `ingestPool`, `readerPool`, `eventStore`, `SENSITIVE`, `logger`, `ingestStatus`, `pageOfDocumentIds` and `executionId` are the app's own. The service path (`registerFolded`, `getMany`, `getManyByKey`, `refresh` and `refreshFrom` read-repair) writes the fold header and states, so it needs write rights on the folded tables; a read-only role uses the store methods above.
 
+`SENSITIVE` here is the union of `sensitivePathsFromSteps(steps)` and `sensitiveMapFromCovers(enc.sealingCapability().covers)`, computed after `defineConfig`: `defineConfig` also registers the framework-sealed paths (`EXECUTION_STARTED` `principal.identity.*`, `OUTCOME_RECORDED.recordedBy`, inbox `payload`), which only the store's covers list.
+
 Boot order: `await registerFolded(...)` (may rebuild) -> wire `onEvent` -> `catchUp([store])`. `getMany` / `getManyByKey` accept at most `MAX_GET_MANY` (1000) keys per call.
 
 1. **Sensitive state.** Handlers receive a copy of each event in which every declared or sealed-marked path is replaced by `"[redacted]"`. A state that holds a sealed envelope, or a value copied from a sensitive path of the event being folded, is refused with `SensitiveStateError` (model, execution, event, state path; never the value) and the watermark does not advance. `onError` never receives the payload or metadata, only ids, type and sequence. The guard cannot catch: sensitive data in an undeclared field, a transformed copy (hash, truncation, concatenation), a copy of a value from an earlier event or another execution, a value too short to compare, data a handler obtains from outside the event (handlers are pure by contract, not sandboxed), or free text. State should still hold identifiers, enums, counters and timestamps. Lifted-copy detection needs the decrypted value, so prefer decrypted sources (the store's decrypting read path) for catch-up and rebuild; on a live feed with no declared map, a sealed field without a seal marker reaches the handler as delivered, so declare the map.
 2. **Keep `version` honest.** It is required (non-blank) and a changed `version` rebuilds the model. The declared sensitive map is part of the fold version, so editing it rebuilds too.
 3. **`refresh` costs a log-tail read.** Use it on the one execution a user action touched, by id (`getMany(..., { refreshFrom })` or `refresh`). `getManyByKey(..., { refreshFrom })` refreshes only executions that already have a row for the key, so it cannot discover an execution that was just started.
-4. **`liveSource` is optional.** The engine is shown every event of an execution it follows from its first event, so events no handler matches are not holes. Configure `liveSource` (normally the node's own event store) so a node that restarts mid-execution fills the hole instead of reporting a `FoldGapError` until the next `catchUp`.
+4. **`liveSource` is optional.** The engine is shown every event of an execution it follows from its first event, so events no handler matches are not holes. Configure `liveSource` (normally the node's own event store) so a node that restarts mid-execution fills the hole instead of reporting a `FoldGapError` until the next `catchUp`. It is recommended for any app that resumes executions: a resumed execution's first event on a fresh node is not sequence 0.
 5. **The state cache serves the live write path only.** Default 1024 entries; reads always hit the store; `foldCache: false` (or `{ maxEntries: 0 }`) disables it.
 6. **Erasure.** `purgeFolded(model, { executionId } | { key } | { scope })` tombstones. `rebuild` un-tombstones, so an erasure that must survive a rebuild needs a shredding-tolerant source and handlers that skip `{ $shredded: true }`.
 7. **Postgres row-level security.** Construct the store with `manageSchema: false`, put `foldedStateDdl({ schema, tables })` in the app's own migration, and add a policy on the `scope` column. The schema must already exist (Loom never runs `CREATE SCHEMA`); names are quoted, so quote mixed-case schema or table names in the policy.
+8. **Folded models need uncompacted executions.** A fold reads the log contiguously from its watermark, so an execution whose prefix was compacted cannot be re-folded. Exempt such executions with `retention.compactionExempt` ([ADR 0106](adr/0106-compaction-integrity.md)).
+9. **State is canonicalised.** Object keys of a folded state are stored in Postgres JSONB order (shorter key first, then bytewise) and strings holding NUL or a lone surrogate are refused with `FoldedStateValueError`, so every backend returns the same state.
+10. **Rebuild across nodes.** A same-version rebuild needs the model quiescent on the other nodes; for a multi-node rebuild bump `version` instead (the other nodes' writes are then refused until they redeploy).
 
 ## Scaffolding a plugin
 

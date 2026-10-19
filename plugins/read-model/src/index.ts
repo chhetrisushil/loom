@@ -1,7 +1,7 @@
 export { foldedStates } from "./FoldedModelEngine";
 export { ReadModelService, type ReadModelServiceOptions } from "./ReadModelService";
 export { InMemoryReadModelStore } from "./InMemoryReadModelStore";
-export { sensitiveMapFromCovers } from "./sensitiveConfig";
+export { mergeSensitive, sensitiveMapFromCovers } from "./sensitiveConfig";
 export { SensitiveStateError } from "./sensitiveState";
 export type { SensitiveStateContext, SensitiveStateReason } from "./sensitiveState";
 export {
