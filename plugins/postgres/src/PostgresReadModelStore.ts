@@ -10,6 +10,7 @@ import type {
   ReadModelStore,
 } from "@loom/plugin-read-model";
 import {
+  assertFoldedSelector,
   assertManyKeys,
   assertPurgeFilter,
   clampQueryLimit,
@@ -360,6 +361,7 @@ export class PostgresReadModelStore implements ReadModelStore {
   }
 
   async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {
+    assertFoldedSelector(selector);
     await this.ensureFolded();
     // `col` is one of three literals from foldedSelectorColumn, never caller input.
     const [col, val] = foldedSelectorColumn(selector);

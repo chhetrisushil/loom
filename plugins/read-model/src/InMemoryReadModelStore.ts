@@ -9,7 +9,13 @@ import type {
   ReadModelScalar,
   ReadModelStore,
 } from "./types";
-import { assertManyKeys, assertPurgeFilter, clampQueryLimit, parseQueryCursor } from "./types";
+import {
+  assertFoldedSelector,
+  assertManyKeys,
+  assertPurgeFilter,
+  clampQueryLimit,
+  parseQueryCursor,
+} from "./types";
 
 type Cursor = [timestamp: number, sequence: number, rowId: string];
 
@@ -185,6 +191,7 @@ export class InMemoryReadModelStore implements ReadModelStore {
   }
 
   async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {
+    assertFoldedSelector(selector);
     let n = 0;
     for (const r of this.folded.get(modelId)?.values() ?? []) {
       const hit =

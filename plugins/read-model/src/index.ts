@@ -1,3 +1,4 @@
+export { foldedStates } from "./FoldedModelEngine";
 export { ReadModelService, type ReadModelServiceOptions } from "./ReadModelService";
 export { InMemoryReadModelStore } from "./InMemoryReadModelStore";
 export { sensitiveMapFromCovers } from "./sensitiveConfig";
@@ -7,11 +8,13 @@ export {
   DEFAULT_FOLD_CACHE_ENTRIES,
   FoldGapError,
   FoldVersionMismatchError,
+  FoldedStateValueError,
   FoldedUnsupportedError,
   MAX_GET_MANY,
   MAX_QUERY_LIMIT,
   READ_MODEL_STORE_SPI_VERSION,
   PurgeUnsupportedError,
+  assertFoldedSelector,
   assertManyKeys,
   assertPurgeFilter,
   clampQueryLimit,

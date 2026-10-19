@@ -10,6 +10,7 @@ import type {
   ReadModelStore,
 } from "@loom/plugin-read-model";
 import {
+  assertFoldedSelector,
   assertManyKeys,
   assertPurgeFilter,
   clampQueryLimit,
@@ -359,6 +360,7 @@ export class SqliteReadModelStore implements ReadModelStore {
   }
 
   async purgeFolded(modelId: string, selector: FoldedSelector): Promise<number> {
+    assertFoldedSelector(selector);
     const [col, val] = foldedSelectorColumn(selector);
     // Tombstone, never delete: the row IS the watermark (ADR 0132 D12). `col` is one of
     // three literals from foldedSelectorColumn, never caller input.

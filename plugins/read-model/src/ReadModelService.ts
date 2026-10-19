@@ -108,6 +108,14 @@ export class ReadModelService {
     private readonly store: ReadModelStore,
     private readonly options: ReadModelServiceOptions = {}
   ) {
+    const fc = options.foldCache;
+    if (fc !== undefined && fc !== false && fc.maxEntries !== undefined) {
+      if (!Number.isInteger(fc.maxEntries) || fc.maxEntries < 0) {
+        throw new RangeError(
+          `ReadModelService: foldCache.maxEntries must be an integer >= 0 (got ${fc.maxEntries})`
+        );
+      }
+    }
     this.onError =
       options.onError ??
       ((err) => {
@@ -215,7 +223,11 @@ export class ReadModelService {
           if (mark < frontier) frontier = mark;
         }
         const events = await source.readFrom(executionId, frontier + 1);
-        if (events.length === 0) continue;
+        if (events.length === 0) {
+          // Nothing past the lowest watermark: every folded model is current for this execution.
+          for (const id of foldedIds) await folded?.seedFrontier(id, executionId);
+          continue;
+        }
         report.eventsScanned += events.length;
         const tip = events[events.length - 1]!.sequence;
         for (const model of rowModels) {
@@ -235,7 +247,12 @@ export class ReadModelService {
           report.rowsApplied += rows.length;
         }
         for (const id of foldedIds) {
-          if (tip <= marks.get(id)!) continue;
+          if (tip <= marks.get(id)!) {
+            // Current execution: the store already covers it, so the live feed must not see a gap
+            // behind an unhandled resume event (ADR 0132 D4).
+            await folded?.seedFrontier(id, executionId);
+            continue;
+          }
           // Through the per-(model, execution) queue, not around it (ADR 0132 D4).
           await folded?.foldQueued(id, executionId, events, marks.get(id));
         }

@@ -183,6 +183,23 @@ export function runFoldedStateConformance(
       expect((await s.getFolded("other", ["x-1"]))[0]?.erased).toBe(false);
     });
 
+    it("a state written in JSONB key order (length, then bytes) reads back with the same key order", async (ctx) => {
+      const s = await open(ctx);
+      const state = { a: 1, c: { y: 1, zz: 2, aaa: 3 }, bb: [{ p: 1, q: 2 }] };
+      await s.applyFolded(ap({ state }));
+      const got = (await s.getFolded("m", ["x-1"]))[0]?.state as typeof state;
+      expect(JSON.stringify(got)).toBe(JSON.stringify(state));
+    });
+
+    it("purgeFolded refuses an empty, blank, multi-field or non-string selector and tombstones nothing", async (ctx) => {
+      const s = await open(ctx);
+      await s.applyFolded(ap({ key: "d1", scope: "u1" }));
+      for (const bad of [{}, { key: " " }, { key: "d1", scope: "u1" }, { executionId: 7 }]) {
+        await expect(s.purgeFolded("m", bad as never)).rejects.toThrow(TypeError);
+      }
+      expect((await s.getFolded("m", ["x-1"]))[0]?.erased).toBe(false);
+    });
+
     it("clear drops states AND the header: writers are refused until beginFold runs again", async (ctx) => {
       const s = await open(ctx);
       await s.applyFolded(ap());

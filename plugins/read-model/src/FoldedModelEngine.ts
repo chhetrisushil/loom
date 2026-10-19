@@ -22,6 +22,8 @@ import {
   DEFAULT_FOLD_CACHE_ENTRIES,
   FoldGapError,
   FoldVersionMismatchError,
+  FoldedStateValueError,
+  assertFoldedSelector,
   assertManyKeys,
 } from "./types";
 
@@ -86,7 +88,53 @@ function normalize(model: FoldedModel, next: unknown): unknown {
       `folded read model "${model.id}": state must be a JSON value other than null (NaN/Infinity serialize to null)`
     );
   }
-  return parsed;
+  return canonical(model.id, parsed, "$");
+}
+
+const utf8 = new TextEncoder();
+const BAD_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+function checkString(modelId: string, s: string, path: string): void {
+  if (s.includes("\u0000")) throw new FoldedStateValueError(modelId, path, "nul");
+  if (BAD_SURROGATE.test(s)) throw new FoldedStateValueError(modelId, path, "lone-surrogate");
+}
+
+/** Postgres JSONB key order: shorter UTF-8 key first, then bytewise (ADR 0132 D14). */
+function compareJsonbKeys(a: Uint8Array, b: Uint8Array): number {
+  if (a.length !== b.length) return a.length - b.length;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i]! - b[i]!;
+  return 0;
+}
+
+/**
+ * Re-key every object into JSONB's order and refuse strings no backend stores identically, so the
+ * cache, SQLite, Postgres and memory all hand a handler the same bytes (D14). Never echoes a value.
+ */
+function canonical(modelId: string, v: unknown, path: string): unknown {
+  if (typeof v === "string") {
+    checkString(modelId, v, path);
+    return v;
+  }
+  if (Array.isArray(v)) return v.map((x, i) => canonical(modelId, x, `${path}[${i}]`));
+  if (typeof v !== "object" || v === null) return v;
+  const entries = Object.keys(v).map((k) => {
+    checkString(modelId, k, `${path}.<key>`);
+    return [k, utf8.encode(k)] as const;
+  });
+  entries.sort((a, b) => compareJsonbKeys(a[1], b[1]));
+  return Object.fromEntries(
+    entries.map(([k]) => [k, canonical(modelId, (v as Record<string, unknown>)[k], `${path}.${k}`)])
+  );
+}
+
+/** The records a read-only reader may show: erased and "no handled event yet" rows are omitted (same rule as `getMany`). */
+export function foldedStates(records: readonly FoldedRecord[]): FoldedState<unknown>[] {
+  const out: FoldedState<unknown>[] = [];
+  for (const r of records) {
+    const s = toState(r);
+    if (s !== undefined) out.push(s);
+  }
+  return out;
 }
 
 function toState(r: FoldedRecord): FoldedState<unknown> | undefined {
@@ -308,15 +356,23 @@ export class FoldedModelEngine {
     });
   }
 
+  /** Raise (never lower) the live pointer to a watermark the catch-up scan found already current. */
+  seedFrontier(modelId: string, executionId: string): Promise<void> {
+    // On the queue, re-reading the mark: a reset between the scan and now must not leave a stale pointer.
+    return this.enqueue(modelId, executionId, async () => {
+      const mark = (await this.mark(modelId, executionId))?.sequence ?? -1;
+      if (mark < 0) return;
+      const k = slot(modelId, executionId);
+      this.setFrontier(k, Math.max(this.frontier.get(k) ?? -1, mark));
+    });
+  }
+
   async purge(modelId: string, selector: FoldedSelector): Promise<number> {
     this.require(modelId);
-    const set = Object.entries(selector).filter(([, v]) => v !== undefined);
-    const [field, value] = set[0] ?? [];
-    if (set.length !== 1 || typeof value !== "string" || value.trim() === "") {
-      throw new TypeError(
-        "folded read model purge: the selector must name exactly one of executionId / key / scope, non-blank — an empty selector is not 'every row' (that is `clear`)"
-      );
-    }
+    assertFoldedSelector(selector);
+    const [[field, value]] = Object.entries(selector).filter(([, v]) => v !== undefined) as [
+      [string, string],
+    ];
     // Behind a running reset, so purgeFolded never overlaps clear (a tombstone would be lost).
     await this.gates.get(modelId);
     // One snapshot is enough: a later apply's CAS lands on the sticky erased row and writes no state
@@ -325,7 +381,7 @@ export class FoldedModelEngine {
     await Promise.all([...this.queues.values()]);
     this.invalidate(modelId);
     try {
-      return await this.store.purgeFolded(modelId, { [field!]: value } as FoldedSelector);
+      return await this.store.purgeFolded(modelId, { [field]: value } as FoldedSelector);
     } finally {
       this.invalidate(modelId);
     }
@@ -533,8 +589,18 @@ export class FoldedModelEngine {
     for (let useCache = this.cache !== undefined; ; useCache = false) {
       // take() removes the entry: if anything below throws, the key is absent, never half-folded.
       const gen = this.generation(model.id);
-      const cached = useCache ? this.cache?.take(model.id, id) : undefined;
-      const rec: FoldBase | undefined = cached ?? (await this.mark(model.id, id));
+      let cached = useCache ? this.cache?.take(model.id, id) : undefined;
+      let rec: FoldBase | undefined = cached;
+      if (cached?.erased === true) {
+        // An erased marker is a hint only (D15): another node may have rebuilt the row since, and
+        // folding from this base would insert a partial state. Re-read; still erased -> as before.
+        const fresh = await this.mark(model.id, id);
+        if (fresh?.erased !== true) {
+          cached = undefined;
+          this.frontier.delete(k); // the pointer described the row as another node has since replaced it
+        }
+        rec = fresh;
+      } else rec ??= await this.mark(model.id, id);
       const from = rec?.sequence ?? -1;
       // The store (or this node's own last write, when cached) covers everything through `from`:
       // never let the frontier lag it (a lagging pointer would drop on the next unhandled event

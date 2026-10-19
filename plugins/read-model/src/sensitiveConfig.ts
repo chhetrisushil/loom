@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256Hex } from "@loom/core";
 import type { SensitiveMap } from "./types";
 
 const sortedUnique = (acc: Map<string, string[]>): SensitiveMap =>
@@ -55,6 +55,6 @@ export function effectiveFoldVersion(version: string, declared: SensitiveMap): s
       return paths.length === 0 ? [] : [[type, paths]];
     });
   if (entries.length === 0) return version;
-  const digest = createHash("sha256").update(JSON.stringify(entries)).digest("hex").slice(0, 8);
+  const digest = sha256Hex(JSON.stringify(entries)).slice(0, 8);
   return `${version}+sens.${digest}`;
 }
