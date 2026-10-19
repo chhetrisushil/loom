@@ -183,6 +183,8 @@ per execution instead of once per re-run (`1.19.0`, no ABI change):
   impure moved into an event — and [0093](adr/0093-read-model-row-purge.md) made erasing one subject
   from a read model cost one subject rather than a whole-model rebuild (measured at 68×).
 
+- **Folded-state read models** — [0132](adr/0132-folded-state-read-model.md) added durable per-execution folded-state read models with a sensitive-state guard and a bounded live-path cache.
+
 ## The one-paragraph version
 
 A Loom workflow is an ordinary `async` TypeScript function whose every meaningful step is recorded

@@ -2,7 +2,7 @@
 
 # @loom/plugin-read-model
 
-Durable, checkpointed cross-execution read models for Loom (RM-1..4, db-copilot infra) — app-declared extractors index domain events into a persisted, queryable store; per-execution watermarks + idempotent apply make live tail, catch-up scan, and multi-node ingestion converge; rebuildable from the log, which stays the only authority.
+Durable, checkpointed cross-execution read models for Loom (RM-1..4, db-copilot infra) — app-declared extractors index domain events into a persisted, queryable store; per-execution watermarks + idempotent apply make live tail, catch-up scan, and multi-node ingestion converge; rebuildable from the log, which stays the only authority. Also durable per-execution folded-state models (`registerFolded`, `getMany`, `getManyByKey`, `refresh`, `purgeFolded`; ADR 0132).
 
 ## Entry points
 
