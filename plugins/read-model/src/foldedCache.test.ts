@@ -255,7 +255,7 @@ describe("FoldedModelEngine — live-path state cache (D15)", () => {
     a.handle(step(X, 3));
     await a.drain();
     expect(calls).toBe(2); // the handler never runs over an erased execution
-    expect(store.reads).toBe(0);
+    expect(store.reads).toBe(2); // the erased marker is a hint: one store read per event (I2)
     expect((await store.getFolded("ingest-status", [X]))[0]).toMatchObject({
       state: null,
       erased: true,

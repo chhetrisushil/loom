@@ -240,7 +240,7 @@ export interface ReadModelStore {
 /** Structural read surface of an event store — live store or K10.1 archive (RM-4). */
 export interface ReadModelEventSource {
   listExecutions?(): Promise<string[]>;
-  /** SP-2 — preferred when present: bounded-memory keyset enumeration (SPI 1.2.0). */
+  /** SP-2 — preferred when present: bounded-memory keyset enumeration (event-store SPI 1.2.0). */
   listExecutionsPage?(opts?: {
     cursor?: string;
     limit?: number;
@@ -368,6 +368,38 @@ export function foldedSelectorColumn(
   if ("executionId" in selector) return ["execution_id", selector.executionId];
   if ("key" in selector) return ["app_key", selector.key];
   return ["scope", selector.scope];
+}
+
+/** Refuse a malformed purge selector: exactly one of executionId / key / scope, a non-blank string (ADR 0132 D12). */
+export function assertFoldedSelector(selector: FoldedSelector): void {
+  const set = Object.entries(selector as Record<string, unknown>).filter(
+    ([, v]) => v !== undefined
+  );
+  const [field, value] = set[0] ?? [];
+  if (
+    set.length !== 1 ||
+    (field !== "executionId" && field !== "key" && field !== "scope") ||
+    typeof value !== "string" ||
+    value.trim() === ""
+  ) {
+    throw new TypeError(
+      "folded read model purge: the selector must name exactly one of executionId / key / scope, non-blank — an empty selector is not 'every row' (that is `clear`)"
+    );
+  }
+}
+
+/** A folded state holds a string the durable backends cannot store identically (NUL or a lone surrogate). Never carries the value. */
+export class FoldedStateValueError extends Error {
+  readonly name = "FoldedStateValueError";
+  constructor(
+    readonly modelId: string,
+    readonly path: string,
+    readonly reason: "nul" | "lone-surrogate"
+  ) {
+    super(
+      `folded model "${modelId}": state at "${path}" contains ${reason === "nul" ? "a NUL (\\u0000) character" : "a lone UTF-16 surrogate"} — Postgres JSONB cannot store it, so no backend accepts it (ADR 0132 D14)`
+    );
+  }
 }
 
 export class FoldedUnsupportedError extends Error {
