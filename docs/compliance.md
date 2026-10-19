@@ -335,8 +335,10 @@ A [folded read model](plugins.md) keeps one state per execution, folded from the
 plaintext out of the log (the live event and every catch-up through `EncryptingEventStore` are decrypted).
 What the model does about it, and what stays yours ([ADR 0132 D11, D12, D15](adr/0132-folded-state-read-model.md)):
 
-- **Declare the sensitive map.** Give `ReadModelService({ sensitive })` the same map the encrypting store uses
-  (`sensitivePathsFromSteps(flow.steps)`, see [data classification](data-classification.md)). Handlers then
+- **Declare the sensitive map.** Give `ReadModelService({ sensitive })` the union of
+  `sensitivePathsFromSteps(flow.steps)` and `sensitiveMapFromCovers(enc.sealingCapability().covers)`, computed
+  after `defineConfig` (it also registers the framework-sealed paths: principal identity, `recordedBy`, inbox
+  payloads; see [data classification](data-classification.md)). Handlers then
   receive a copy of the event with those paths (and any cipher envelope) replaced by `"[redacted]"`, and a
   state holding an envelope or a value lifted from a sensitive path is refused with `SensitiveStateError`
   (it names the model, execution, event and state path, never the value). There is no off switch.
@@ -354,15 +356,18 @@ What the model does about it, and what stays yours ([ADR 0132 D11, D12, D15](adr
   (`"applied-erased"`) and leave the state empty. Be honest in your records: a tombstone still carries the
   subject's `executionId` and `scope`. Those are identifiers, not values; if an identifier is itself personal
   data in your reading of the law, that is a decision for your DPO (ADR 0132 D12).
-- **The cache never keeps erased state.** The per-node state cache is dropped on purge and never serves
-  `getMany`, `getManyByKey` or `refresh`, so a purge leaves no copy behind on any node's read path.
+- **The cache is never served.** The per-node state cache feeds only the node's own write path and never
+  answers `getMany`, `getManyByKey` or `refresh`. It is dropped on purge on that node; other nodes may hold the
+  last state they wrote in memory until eviction, restart or the next event for that execution, and an erased
+  marker there is re-checked against the store before use.
 - **Rebuild un-tombstones.** `rebuild` clears and re-folds, so erased state returns unless the rebuild is
   erasure-safe: the log must be shredded, the source must tolerate shredded payloads (`onShredded: "tolerate"`),
   and handlers must skip `{ $shredded: true }`. A rebuild through a strict source fails part-way and leaves
   the model cleared (tombstones and watermarks gone): re-run it through a tolerant source, never a catch-up
   from a non-shredded plaintext source.
 - **Error reports are safe.** The folded engine's `onError` receives the event with `payload` and `metadata`
-  removed, whatever the error kind.
+  removed, whatever the error kind. A row model's `onError` still receives the full event, so do not log it
+  unfiltered.
 
 ### `clear` + rebuild (the fallback)
 

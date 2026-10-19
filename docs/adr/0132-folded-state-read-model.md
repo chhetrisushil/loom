@@ -336,6 +336,13 @@ registerFolded({ projection, sensitive? });        // per model; unioned with th
 sensitiveMapFromCovers(enc.sealingCapability?.()?.covers ?? [])   // derive the map from the sealing store
 ```
 
+Recommended wiring: after `defineConfig`, give the service the union of `sensitivePathsFromSteps(steps)` and
+`sensitiveMapFromCovers(enc.sealingCapability().covers)` (`mergeSensitive` semantics: a plain union per event
+type). `defineConfig` registers the framework-sealed paths with the encrypting store (`EXECUTION_STARTED`
+`principal.identity.{tenant,actor,onBehalfOf}`, `OUTCOME_RECORDED.recordedBy`, and `INBOX_MESSAGE` /
+`MESSAGE_CONSUMED` `payload` when the inbox is on), and only the covers of the built store list them; the
+steps-derived map alone misses them. Taking the union automatically inside the service is a follow-up.
+
 The effective path set for one event is `sensitive[eventType]` (service ∪ model) ∪ the entries of
 `event.metadata.seal.covers` that name that event type. The marker survives decryption and is present on
 raw reads, so it covers every catch-up source with zero configuration; the declared map is what covers the
@@ -407,7 +414,9 @@ service.purgeFolded(modelId, { executionId } | { key } | { scope }): Promise<num
 
 ADR 0093 D2: a purge must not clear a watermark, or the next catch-up re-derives what was erased from a
 log that may still hold it. For folded models the watermark *is* the state row, so deleting the row would
-do exactly that. `purgeFolded` therefore **tombstones**: `state = NULL, erased = true`, `sequence` kept.
+do exactly that. `purgeFolded` therefore **tombstones**: `state = NULL, erased = true`, `sequence` kept
+(the tombstone also keeps its `executionId` and `scope`/`key` columns: they are identifiers, not state, and are the
+row's address and RLS predicate).
 The engine never folds an erased execution (it advances the sequence and leaves the state `NULL`), so later
 events cannot resurrect a partial state from `initialState`. Exactly one selector field is required (an
 empty selector is refused, ADR 0093 D3); the call drains the node's in-flight live applies first; it returns
@@ -443,6 +452,14 @@ and (e) `rebuild` all yield byte-identical states. Replay never reads a folded m
 a cache, unrecorded), so determinism of the kernel is untouched by construction. Caveat (D11): a model
 rebuilt from an at-rest source can hold a copy of a sealed value that a decrypted fold would refuse, so
 catch-up and rebuild should prefer decrypted sources.
+
+**Canonical state.** Postgres `JSONB` reorders object keys (shorter UTF-8 key first, then bytewise) and cannot
+store `\u0000` or a lone surrogate; SQLite and memory keep insertion order. To keep one answer on every backend and
+in the cache, the engine re-keys every object of a new state into JSONB order (recursively) before it is checked and
+persisted, and refuses a string (value or key) containing NUL or a lone surrogate with `FoldedStateValueError`
+(model, state path, reason; never the value). A handler therefore reads back keys in canonical order, not the order
+it built them in; do not rely on insertion order of state keys. The store kit pins that a canonically ordered state
+round-trips with its key order intact.
 
 ### D15 — A bounded per-node state cache on the live apply path (owner decision, 2026-10-19)
 
@@ -480,6 +497,13 @@ only a guess at the *base* a fold starts from.
   whatever base it was computed from, and reports `"applied-erased"`. The node then caches the erased marker, so
   its later events skip the handler (D12: the engine never folds an erased execution). The one fold that raced
   the purge is discarded by the store; it is never resurrected.
+- **A cached erased marker is a hint only.** Before folding from one, the live path re-reads the row: if it is
+  still erased the watermark advances as before; otherwise (another node cleared and rebuilt it) the entry and the
+  live pointer are dropped and the normal path runs, so the marker never extends the race window. The remaining
+  race is cross-node: a same-version `rebuild` clears rows while another node's live apply is in flight, and
+  without a store epoch that cannot be closed. **A same-version rebuild requires the model to be quiescent on
+  other nodes; a multi-node rebuild should bump the fold `version`** (other writers are then refused with
+  `FoldVersionMismatchError`). A store epoch is a follow-up.
 - **A local purge, register, reset or version mismatch** bumps a per-model generation; an apply that began
   before the bump never caches its result, so an in-flight apply cannot re-cache pre-purge state.
 - Memory is bounded by count, not bytes; state is a status-shaped value (D11). A model with large states
@@ -499,6 +523,9 @@ only half of the events) converge with the cache disabled and with it enabled.
 - **A sensitive-value *detector*** (entropy, regex, ML scanning of state) — D11 guards what is declared or sealed and states
   its limits; guessing at undeclared sensitivity is a different product.
 - **An off switch for the sensitive-state guard** — not in v1.
+- **Folded models over compacted executions.** A fold needs the contiguous log from the watermark; an execution whose
+  prefix was compacted cannot be re-folded, and a rebuild or catch-up over it refuses. Exempt executions that feed a
+  folded model with `retention.compactionExempt` (ADR 0106). Continuing past a refused execution is a follow-up.
 - **State history / snapshots / compaction** — the log is the history; the model is the latest state only.
 - **Event-time or wall-clock folds** — handlers are pure (P2); a handler needing time reads `event.timestamp`.
 - **Automatic RLS role/policy creation** — the DDL helper and ADR text provide the shape; roles are the DBA's.
@@ -527,6 +554,9 @@ only half of the events) converge with the cache disabled and with it enabled.
   many concurrent writers are recorded as a MultiXact, which can churn (`pg_multixact` growth, autovacuum
   freeze pressure) under heavy parallel ingest; size autovacuum for the folds table accordingly, and keep
   `beginFold` (rebuild, version change), which takes an exclusive row lock on the header (insert-or-lock `ON CONFLICT DO UPDATE`), off the hot path.
+- **Rebuild on one node.** `rebuild` bumps nothing but clears the rows; until the other nodes catch up, their live
+  applies can be briefly refused or reported as gaps (and healed by the next `catchUp`). Prefer a version bump for a
+  multi-node rebuild (D15).
 - State is still a plaintext copy of whatever event data the guard cannot recognise (D11 states exactly what it can
   and cannot catch): a compliance surface, reduced by the guard and backstopped by the tombstone purge. `docs/compliance.md`
   gains a section next to the 0093 one.

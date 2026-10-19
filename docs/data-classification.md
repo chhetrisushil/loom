@@ -89,11 +89,15 @@ each only to events that carry it, so unioning across differently-shaped steps i
 
 A folded read model ([ADR 0132](adr/0132-folded-state-read-model.md) D11) consumes the same `sensitive` map:
 handlers see `"[redacted]"` for those paths and a state that mirrors a lifted value is refused. Hand it the
-constant you gave the encrypting store, so classification is declared once ([compliance](compliance.md#folded-read-model-state-adr-0132)):
+union of the steps-derived map and the built store's covers, computed after `defineConfig`
+(which registers the framework-sealed paths too), so classification is declared once
+([compliance](compliance.md#folded-read-model-state-adr-0132)):
 
 ```ts
-const sensitive = sensitivePathsFromSteps(flow.steps);
-const store = new EncryptingEventStore(inner, keys, { sensitive });
+const stepPaths = sensitivePathsFromSteps(flow.steps);
+const store = new EncryptingEventStore(inner, keys, { sensitive: stepPaths });
+// ... defineConfig({ ... }) registers principal / outcome / inbox paths on `store` ...
+const sensitive = mergeSensitive(stepPaths, sensitiveMapFromCovers(store.sealingCapability().covers));
 const readModels = new ReadModelService(rmStore, { sensitive });
 ```
 
