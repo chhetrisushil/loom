@@ -114,7 +114,7 @@ SELECT (SELECT version FROM h) AS hv, EXISTS (SELECT 1 FROM ins) AS hit, (SELECT
   `"version-mismatch"`. A second statement would let a `beginFold` commit in between and report a mismatch
   as `"stale"`. The WHERE on `DO UPDATE` is what makes the watermark monotonic: two nodes folding the same
   tail race, one wins, the other is told `"stale"`, and both wrote the same bytes anyway.
-- `FOR SHARE` on the header serializes against `beginFold`'s `FOR UPDATE` on the same header row (D5): a writer
+- `FOR SHARE` on the header serializes against `beginFold`, which takes an exclusive row lock on the header (insert-or-lock `ON CONFLICT DO UPDATE`) (D5): a writer
   that read the pre-rebuild header blocks until the rebuild commits, then re-evaluates the predicate under
   READ COMMITTED and inserts nothing. Without it a pre-commit snapshot could insert an old-version row
   after the rebuild's DELETE.
@@ -174,8 +174,7 @@ and one `getMany` answers from two folds. Here the declaration is enforced:
   "blank is undeclared" rule). A durable fold without a version cannot be rebuilt when it changes.
 - A per-model header `(model_id, version)` lives beside the state. `store.beginFold(modelId, version)`
   runs at registration: first call creates the header; an equal version is a no-op; **a different version
-  deletes that model's state rows and swaps the header, in one transaction** (`SELECT … FOR UPDATE` on the
-  header). `{ rebuilt: true }` is returned. Because the watermark is the row's sequence (D3), "no rows" means
+  deletes that model's state rows and swaps the header, in one transaction** (takes an exclusive row lock on the header (insert-or-lock `ON CONFLICT DO UPDATE`)). `{ rebuilt: true }` is returned. Because the watermark is the row's sequence (D3), "no rows" means
   the next `catchUp(sources)` re-folds every execution from the log — no manual `rebuild()` step.
 - Every `applyFolded` carries the writer's version and is refused (`"version-mismatch"`, surfaced as
   `FoldVersionMismatchError` to `onError`) when it differs from the header. During a rolling deploy the old
@@ -527,7 +526,7 @@ only half of the events) converge with the cache disabled and with it enabled.
   (2) Every Postgres `applyFolded` takes `FOR SHARE` on the model's header row (D3). Shared row locks from
   many concurrent writers are recorded as a MultiXact, which can churn (`pg_multixact` growth, autovacuum
   freeze pressure) under heavy parallel ingest; size autovacuum for the folds table accordingly, and keep
-  `beginFold` (rebuild, version change), which takes `FOR UPDATE` on the same row, off the hot path.
+  `beginFold` (rebuild, version change), which takes an exclusive row lock on the header (insert-or-lock `ON CONFLICT DO UPDATE`), off the hot path.
 - State is still a plaintext copy of whatever event data the guard cannot recognise (D11 states exactly what it can
   and cannot catch): a compliance surface, reduced by the guard and backstopped by the tombstone purge. `docs/compliance.md`
   gains a section next to the 0093 one.
@@ -538,8 +537,8 @@ Status stays **Proposed** until the owner accepts the record. Shipped as a stack
 `@loom/plugin-read-model`, `@loom/plugin-sqlite` / `@loom/plugin-postgres` and the docs: types and SPI 1.2.0
 (#646), conformance kit (#647), in-memory store (#648), fold engine and live tail (#649-#655), sensitive-state
 guard (#656-#661, #672-#673), state cache (#662-#666), service wiring, catch-up and rebuild (#667-#671),
-erasure (#674-#675), SQLite store (#676-#677), Postgres placement, DDL and store (#678-#682), docs (#683 and
-this record's close-out). No kernel, `KERNEL_ABI` or `EVENT_SCHEMA` change.
+erasure (#674-#675), SQLite store (#676-#677), Postgres placement, DDL and store (#678-#682), docs (#683) and
+close-out (#684); the stack is draft PRs #645-#684 (ADR and plan #645). No kernel, `KERNEL_ABI` or `EVENT_SCHEMA` change.
 
 Review-driven changes to the design above (the text of D3-D15 already reflects them):
 
