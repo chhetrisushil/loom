@@ -1126,7 +1126,12 @@ A read model is a CACHE of the log with a watermark, never an authority: drop it
 
 #+begin_src typescript
 class ReadModelService {
-  constructor(store: ReadModelStore, options?: { onError?: (err: unknown, event: EventEnvelope) => void })
+  constructor(store: ReadModelStore, options?: {
+    onError?: (err: unknown, event: EventEnvelope) => void,  // folded models: the event has NO payload/metadata
+    liveSource?: ReadModelEventSource,       // fills a live-tail hole (folded); else FoldGapError until catchUp
+    sensitive?: SensitiveMap,                // eventType -> payload dot-paths; unioned with the model's own (ADR 0132 D11)
+    foldCache?: { maxEntries?: number } | false,   // live write path only; default 1024; false or { maxEntries: 0 } disables
+  })
   register(model: ReadModelDefinition): void      // { id, version?, kinds, indexes, extract }
   handleEvent(event: EventEnvelope): void         // wire into defineConfig({ observability.onEvent })
   catchUp(sources: readonly ReadModelEventSource[]): Promise<CatchUpReport>   // watermark-incremental
@@ -1135,13 +1140,33 @@ class ReadModelService {
   rebuild(modelId: string, sources: readonly ReadModelEventSource[]): Promise<CatchUpReport>
   pins(): Readonly<Record<string, string>>                     // ADR 0095 — declared `version`s
   checkPins(recorded: Readonly<Record<string, string>>): PinReport   // a QUERY: clears nothing
+  // Folded-state models (ADR 0132): one durable state per execution, folded with a projection$ reducer.
+  registerFolded<S>(def: { projection: ProjectionDefinition<S>; keyOf?(executionId: string): string | undefined;
+                           scopeOf?(executionId: string): string | undefined; sensitive?: SensitiveMap }): Promise<{ rebuilt: boolean }>
+  getMany<S>(modelId: string, executionIds: readonly string[], opts?: { refreshFrom?: readonly ReadModelEventSource[]; concurrency?: number }): Promise<Map<string, FoldedState<S>>>
+  getManyByKey<S>(modelId: string, keys: readonly string[], opts?: FoldedReadOptions): Promise<Map<string, FoldedState<S>[]>>
+  refresh(modelId: string, executionIds: readonly string[], sources: readonly ReadModelEventSource[], opts?: { concurrency?: number }): Promise<number>
+  purgeFolded(modelId: string, selector: { executionId: string } | { key: string } | { scope: string }): Promise<number>  // tombstone
+  drain(): Promise<void>                          // await in-flight live applies
 }
 const MAX_QUERY_LIMIT = 10_000                    // backends MUST clamp through clampQueryLimit
 function assertPurgeFilter(where: Record<string, ReadModelScalar>): void  // empty filter is REFUSED
 const READ_MODEL_STORE_SPI_VERSION: string        // pin a third-party row store against this
+const MAX_GET_MANY = 1_000                        // keys per getMany / getManyByKey call; more throws RangeError
+const DEFAULT_FOLD_CACHE_ENTRIES = 1_024
+function sensitiveMapFromCovers(covers: readonly string[]): SensitiveMap  // ["STEP_COMPLETED.output.ssn"] -> { STEP_COMPLETED: ["output.ssn"] }
+class SensitiveStateError extends Error {}        // modelId, executionId, eventType, sequence, reason, statePath; never the value
+class FoldGapError extends Error {}               // a hole in the live tail with no liveSource; the next catchUp heals it
+class FoldVersionMismatchError extends Error {}   // this node's fold version differs from the stored header
+class FoldedUnsupportedError extends Error {}     // the store lacks the optional folded methods
+type FoldedState<S> = { executionId: string; key: string | null; sequence: number; state: S }
 class InMemoryReadModelStore implements ReadModelStore {}
 // durable: SqliteReadModelStore (@loom/plugin-sqlite), PostgresReadModelStore (@loom/plugin-postgres)
+// SPI 1.2.0 adds five OPTIONAL methods: beginFold?, applyFolded?, getFolded?, getFoldedByKey?, purgeFolded?
+// PostgresReadModelStore(pool, { schema?, tables?: { state?, folds? }, manageSchema? }); foldedStateDdl(opts) is the pure DDL for an app migration
 #+end_src
+
+Folded models: ~version~ is required and a changed ~version~ (or sensitive map) rebuilds: ~registerFolded~ swaps the header and drops the model's state, and ~catchUp~ re-folds it. Handlers receive a masked copy of each event (declared and sealed-marked paths become ~"[redacted]"~); a state that holds a cipher envelope or a value lifted from a sensitive path is refused with ~SensitiveStateError~ and the watermark does not advance. ~getMany*~ and ~refresh~ always read the store; the cache serves only the live write path. ~getManyByKey(…, { refreshFrom })~ refreshes only executions that already have a row for the key. ~purgeFolded~ tombstones; ~rebuild~ un-tombstones. See [[file:plugins.md][plugins]] and ADR 0132.
 
 ** ~@loom/plugin-audit-chain~ — a tamper-evident, third-party verifiable log
 
