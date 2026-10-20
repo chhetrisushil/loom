@@ -170,7 +170,9 @@ export function createLlmEffect<TIn = string, TOut = string>(
         },
         // ADR 0133 D5 - reasoning text lives where capture put it, so that is where it is read back.
         ...(reasoningOf()?.store !== undefined && {
-          reasoningResolver: storeResolver(reasoningOf()?.store as NonNullable<LlmReasoningOptions["store"]>),
+          reasoningResolver: storeResolver(
+            reasoningOf()?.store as NonNullable<LlmReasoningOptions["store"]>
+          ),
         }),
       });
       // K8.1 — forward the effect's cooperative-cancellation signal to the
@@ -186,8 +188,7 @@ export function createLlmEffect<TIn = string, TOut = string>(
       // ran, and switching `stream` on cannot change what replay serves.
       const reasoningSink = reasoningOf()?.onDelta;
       const live =
-        reasoningOf()?.live === true &&
-        (ctx.onDelta !== undefined || reasoningSink !== undefined);
+        reasoningOf()?.live === true && (ctx.onDelta !== undefined || reasoningSink !== undefined);
       const raw = await (options.stream === true && options.provider.stream !== undefined
         ? collectStream(options.provider.stream(request as LlmRequest), {
             ...(ctx.signal !== undefined && { signal: ctx.signal }),

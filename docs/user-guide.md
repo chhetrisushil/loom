@@ -940,6 +940,23 @@ Three things worth knowing:
   accounting that arrives after the money is spent.
 
 
+### Model reasoning as audit evidence ([ADR 0133](adr/0133-model-reasoning-audit-capture.md))
+
+A model with extended thinking returns reasoning next to its answer (Anthropic `thinking` blocks, Gemini thought parts). Ask for it at the provider (`new AnthropicProvider({ thinking: { type: "adaptive", display: "summarized" } })`, `new GeminiProvider({ includeThoughts: true })`; unset, nothing is requested), and keep it with one line of config:
+
+```ts
+defineConfig({
+  observability: { reasoning: { store: contentStore } },   // false = explicit opt-out; { live: true } streams it
+  execution: { registerEffects: (fx) => fx.register("model", createAgentModelEffect(provider)) },
+});
+```
+
+What happens: the readable text goes to the sidecar `store` (erasable, content-addressed); the step value carries only a *part* (kind, provider, signature, reference, digest), never text; one `LLM_REASONING_CAPTURED` event names references and digests (the fold ignores it; `@loom/audit-chain` hashes it). `readReasoning(log, store, { executionId, stepId? })` joins them back for an auditor and reports `ok` / `erased` / `digest-mismatch` per part, with the text **tainted**. An effect's own `reasoning: { store, capture, live }` option wins over the app default. With a capable provider and no store, `observability.onWarn` gets one warning per effect at boot.
+
+Continuation: `agentLoop$` puts the recorded parts (and each tool call's `signature`) on the assistant turn and resolves the text from the sidecar when it builds the next request, so a resumed tool loop sends the blocks back unchanged. Any edit of the history invalidates the vendor's signature, so **compaction drops every reasoning part** (tool-call signatures stay), a **model switch** on a `reasoning` runtime drops the parts another route produced, and a part whose text can no longer be reproduced (erased, tampered, never stored) is dropped with every reasoning part after it. Pass `reasoning: { store }` to `createAgentModelEffect` / `registerReasoningRoutes`. The direct (no `reasoningToolId`) routed path journals no reasoning and continues none. Conversations never carry reasoning across turns (history is plain text).
+
+Live view: `createAgentModelEffect(provider, { stream: true, reasoning: { store, live: true, onDelta: hub.reasoningSink() } })` feeds the conversation hub, and `createConversationSseServer({ reasoning: { live: true, store } })` serves `reasoning` and `reasoning-partial` SSE events plus `GET /conversations/:id/reasoning?cursor=<reply cursor>` for the durable record. All off by default; in a shared conversation only the turn's **asker** receives any of it (live, partial or durable), and everyone else gets the same 404 as for a missing conversation.
+
 ### Conversations: chat, barge-in and streaming (`@loom/conversation`, [ADR 0122](adr/0122-conversation-layer-streaming-transport-and-token-budgeting.md))
 
 A chat is one long-lived execution. `conversation$` is its flow: it parks on the inbox for each user turn, answers it with `agentLoop$`, records the exchange, and rotates (`continueAsNew`) every `rotateEveryTurns` so no generation's log grows without bound. Needs `kernel.features.inbox` and `kernel.features.continueAsNew`.

@@ -253,6 +253,22 @@ For the A2A peer the flag's *literal type* selects the output type
 (`A2APeerOutput` vs `TaintedA2APeerOutput`), so a caller who does not opt in compiles exactly as
 before rather than being handed a union to narrow.
 
+### Model reasoning ([ADR 0133](adr/0133-model-reasoning-audit-capture.md))
+
+Reasoning a model returns next to its answer restates what the model saw, so it is classified
+**at least as high as the request that produced it**, and it is derived from tainted input. It is
+kept out of the step value and out of the log:
+
+| Piece | Where it lives | Classification and handling |
+|---|---|---|
+| Readable reasoning text | the reasoning sidecar store (`observability.reasoning.store`), content-addressed | at least the request's class; erasable on its own schedule (the store's); returned **tainted** (`llm-reasoning:<stepId>`) by `readReasoning`, so it cannot reach a prompt instruction position; served to a client only at a transport edge, to the turn's asker alone |
+| Signature / opaque continuation bytes | inline in the step value | no readable content; recorded so a resumed tool loop can send the blocks back |
+| `LLM_REASONING_CAPTURED` | the log (userspace event, ignored by the fold) | references and digests only, never text and never signatures; hash-chained under `@loom/audit-chain` |
+
+Put the store under the same tenant scoping, encryption and retention you give the request
+payloads. Reasoning is corroborating evidence for an audit, not an explanation of what caused the
+output.
+
 ### Limits, stated plainly
 
 - Taint travels on **values**, not through string concatenation. `` `${unwrapTainted(doc)} …` ``

@@ -123,6 +123,10 @@ export interface LlmReasoningPart {
   textRef?: LlmContentRef;
   /** SHA-256 of the text, so a resolved text can be checked. */
   digest?: string;
+  /** Readable text existed and was NOT kept (no store, or capture off): the part cannot be reproduced for continuation, so D5 drops it. */
+  omitted?: true;
+  /** REQUEST-TIME ONLY: the text `resolveRequestContent` fetched from `textRef`, for the provider to map back. Never on a recorded value; `guardRequest` strips it from callers. */
+  text?: string;
 }
 ```
 
@@ -132,6 +136,10 @@ export interface LlmReasoningPart {
 - `LlmReasoningPart` joins the assistant-message content parts (ADR 0120). `guardRequest` refuses a reasoning part
   in any message but `assistant`.
 - `LlmStreamChunk.reasoningDelta?: string` streams readable reasoning (D6).
+- **Asking for it (provider config).** Nothing requests readable reasoning by default.
+  `AnthropicProvider({ thinking: { type: "adaptive", display?: "summarized" | "omitted" } })` is passed through as
+  the request's `thinking`; `GeminiProvider({ includeThoughts: true })` becomes
+  `generationConfig.thinkingConfig.includeThoughts`. Unset, neither key is sent (G2).
 - `LlmCapabilities.reasoning?: boolean`: the provider can return reasoning. It drives the boot warning (D7).
 
 Conformance (`runLlmProviderConformance`): optional, but honest. A provider that reports `reasoning` reports equal
@@ -155,6 +163,12 @@ After the provider returns, and before `parse`:
 
 Properties:
 
+- **Fail-closed store.** A failing `store.put` throws out of the effect, which fails the step and lets the retry
+  policy re-run it: audit evidence that cannot be kept is never silently recorded as less than was configured.
+  With capture off or no store, readable text is dropped and the part is flagged `omitted: true`.
+- **The event's `ref`** is the store's content address as a string (`parts[].ref`), with `digest` (SHA-256 hex of
+  the UTF-8 text) and `size`; the model id is recorded when the effect is told it (`reasoning.model`;
+  `registerReasoningRoutes` passes the route id).
 - **Replay** serves the recorded step value (parts with refs and signatures), runs no effect, emits nothing and reads
   no blob. The event already in the log is ignored by the fold.
 - **Tamper evidence.** With `@loom/audit-chain`, the event and the step value are hash-chained, digests included. An
@@ -194,6 +208,21 @@ was produced. So, for parts sent back to a provider:
 - A call's own `signature` (on `tool_use`) is never dropped by this rule. Gemini validates it on the current turn,
   and it holds no readable content.
 
+**How `agentLoop$` applies it (implemented).** The assistant turn carries the response's reasoning parts first and
+each tool call's `signature` (`assistantMessageOf`). The model effect resolves the parts at request time from the
+same store it captured into (`createAgentModelEffect(provider, { reasoning: { store } })`). On compaction every
+reasoning part still on the transcript is after the edit point, so all are dropped from the kept suffix and from
+the summarizer's input (tool signatures stay). On a `reasoning` runtime a route's model id is known from the
+recorded route decision, so before each effect-backed call the parts a DIFFERENT route produced are dropped (a
+same-provider model switch included: Anthropic binds a block to its model; a provider never sees another
+provider's parts anyway). The rule is per part (produced by this route or not), so after A, B, B the second B call
+still carries B's own part. The direct routed path (no `reasoningToolId`) is not an effect: it has no sidecar and
+journals its response as a decision, so it records NO reasoning (the decision value never carries readable
+text), continues no reasoning blocks and keeps tool signatures. The `conversation` layer builds history from
+plain text, so reasoning never crosses a turn there: rotation and the rolling summary have nothing to drop, and
+a test pins that no request after the first carries a reasoning part. Reasoning parts are also never counted by
+the byte measure, and the drop happens on the live request only: a replay serves the recorded frames.
+
 Dropping is the vendor's documented remedy, so continuation degrades (less carried-over reasoning) instead of
 failing. The decision is a pure function of the journaled transcript plus the resolver's answer, and it runs on the
 live path only, so replay is unaffected. The `agentLoop$` compaction measure counts reasoning parts as **zero
@@ -209,9 +238,20 @@ renders text deltas sees reasoning by accident.
   `inspectsOutput: true` refuses streaming for the whole call (unchanged ADR 0119 rule), which covers reasoning.
 - **Not journaled.** Like text deltas, reasoning deltas are transient. The durable record is D3.
 - **Off by default**, for each call (`live`) and for each transport.
-- **Transport.** `@loom/plugin-conversation-sse` gains an opt-in `reasoning` SSE event type. In **shared mode**
+- **Configured sink.** `createLlmEffect({ reasoning: { live: true, onDelta } })` takes the live sink the way
+  `onDelta` takes the text sink: the runtime reaches it (`Effect.reasoningSink`) only through the delta guards,
+  with the increment still wrapped as untrusted content. `ConversationHub.reasoningSink()` is that sink and
+  unwraps at its own edge, into a bounded in-progress buffer (the same cap as the reply, head dropped) that is
+  superseded together with the reply (one `reset` on a re-run; `endTurn` when the durable message lands).
+- **Transport.** `@loom/plugin-conversation-sse` gains an opt-in `reasoning` option (`true`, or `{ live, store }`)
+  with `reasoning` and `reasoning-partial` SSE event types and, with a `store`,
+  `GET /conversations/:id/reasoning?cursor=<the reply's history cursor>`. In **shared mode**
   (ADR 0122 D10) reasoning deltas go **only to the turn's asker**, never to other participants. The reasoning
-  carries what the asker's turn saw, and the per-viewer filter is not designed to classify free text.
+  carries what the asker's turn saw, and the per-viewer filter is not designed to classify free text. This holds
+  for the live events, the catch-up partial and the durable endpoint alike (`Conversations.reasoningTarget`
+  decides: in shared mode only the reply's asker, the owner included; a non-participant, another tenant, an
+  unknown cursor and a non-reply record get the same 404 as a missing conversation). An event with no asker is
+  never served in shared mode.
 - **Catch-up, the same as text (ADR 0122 D7).** The hub keeps the in-progress reasoning per turn, bounded like the
   in-progress reply, so a client that attaches or reconnects mid-call gets a `reasoning-partial` and then the live
   deltas. Once the call has completed, the durable record is the captured reasoning (D3): the transport serves it,
@@ -228,6 +268,14 @@ configured, off when not.** At boot, when a registered LLM effect's provider dec
 reasoning store is configured, `observability.onWarn` gets one warning per effect naming it: *"`<effect>` can return
 model reasoning, but no reasoning store is configured: reasoning is not kept for audit (only signatures, for
 continuation)"*. `reasoning: false` is the explicit, silent opt-out.
+
+**Implemented as.** `@loom/app` cannot see providers on its own, but every LLM effect built by `createLlmEffect`
+exposes a small hook (`Effect.reasoning`: `capable`, `posture()`, `adopt()`), and `defineConfig` walks
+`EffectRuntime.entries()` right after `execution.registerEffects`: the nearest point at which it sees both the
+registered effects and their providers' declared capabilities. It hands the config to each effect (the effect's own
+options win field by field), then warns once per capable effect left with no store (an effect that set
+`capture: false` itself, or an app with `reasoning: false`, is silent). Effects registered after boot are not
+checked. The warning text names the effect id and the config key.
 
 ### D8 — Second-consumer check (ADR 0083)
 
@@ -257,7 +305,7 @@ decision, and any compliance deployment on a reasoning model.
 ## Consequences
 
 - `@loom/llm` minor bump: optional fields and parts, provider mapping both ways, `readReasoning`, conformance rules.
-  `@loom/agent`, `@loom/conversation`, `@loom/plugin-conversation-sse`, `@loom/app` minor bumps. No breaking change.
+  `@loom/agent`, `@loom/conversation`, `@loom/plugin-conversation-sse`, `@loom/app`, `@loom/effect-runtime` (the guarded reasoning channel, `Effect.reasoningSink`, the `Effect.reasoning` hook, `EffectRuntime.entries()`) and `@loom/conformance` (the parity rule) minor bumps. No breaking change.
 - Kernel, KERNEL_ABI and EVENT_SCHEMA unchanged.
 - `docs/data-classification.md` gains a row: reasoning blobs are classified at least as high as the request that
   produced them.
