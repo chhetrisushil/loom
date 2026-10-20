@@ -136,6 +136,16 @@ export interface LlmReasoningPart {
 - `LlmReasoningPart` joins the assistant-message content parts (ADR 0120). `guardRequest` refuses a reasoning part
   in any message but `assistant`.
 - `LlmStreamChunk.reasoningDelta?: string` streams readable reasoning (D6).
+- **`LlmResponse.layout?: LlmLayoutEntry[]`** (and the terminal chunk): the vendor's block ORDER, as positions
+  only (`"reasoning"` = the next reasoning part, `{ call: id }`, `{ text: n }` = the next `n` characters of
+  `content`). A provider flattens a response into `content` + `reasoning[]` + `toolCalls`, which loses where each
+  block sat, and a signature binds the blocks before it: `thinking, text, tool_use, thinking, tool_use` must not
+  come back as `thinking, thinking, text, tool_use, tool_use`. A provider sets `layout` (via `layoutOf`) ONLY when
+  the response has reasoning AND the order is not the canonical one (reasoning parts, one text, the calls), so a
+  response without reasoning, and a canonical one, keep today's exact shape and byte-identical step value (G2).
+  `assistantMessageOf` replays it (text blocks the vendor returned separately stay separate); a layout that does
+  not fit the response is ignored; the Anthropic mapping no longer regroups blocks and Gemini already emitted in
+  message order. The recorded form adds positions, no new content.
 - **Asking for it (provider config).** Nothing requests readable reasoning by default.
   `AnthropicProvider({ thinking: { type: "adaptive", display?: "summarized" | "omitted" } })` is passed through as
   the request's `thinking`; `GeminiProvider({ includeThoughts: true })` becomes
@@ -177,8 +187,21 @@ Properties:
   continuation drops the part (D5).
 - **At-least-once.** A rerun after a crash between the emit and `STEP_COMPLETED` emits again with a new `attempt`.
   The audit reader groups by `stepId` and marks which attempt's value was recorded; superseded attempts are kept.
-- **Tenant scope.** The emit goes through the same store wrappers as every other event; the blob store is
-  tenant-scoped like the ADR 0054 claim-check store.
+- **Tenant scope and who may resolve a ref.** The emit goes through the same store wrappers as every other event;
+  the blob store is tenant-scoped like the ADR 0054 claim-check store. A content store has no tenancy of its own
+  (whoever can name an address reads it), and a reasoning part's `textRef` rides in a transcript a caller can
+  assemble, where the part's `digest` is the address and so proves nothing. So the stored bytes are **sealed to
+  the capturing execution** (a small envelope naming its `executionId`; the part's and the event's `digest`/`size`
+  stay those of the readable text), and the default resolver serves a blob only to the execution it is sealed to.
+  A ref forged from, or copied out of, another execution resolves to "not yours" (`null`), which D5 treats as a
+  hole: the part and every reasoning part after it are dropped and nothing is sent. This costs cross-execution
+  dedupe (the same text captured by two executions is two blobs, which is what makes erasing one execution's
+  reasoning independent of the other's) and means a FORK, which has a new execution id, continues without its
+  parent's reasoning (the safe degradation). The authorizing seam is the ADR 0120 one: `reasoning.resolve` is a
+  `ContentResolver` called with `{ executionId, stepId, principal, origin: "reasoning" }` that returns the text
+  bytes or `null`; unset, `reasoningStoreResolver(store)` is used. (The media `resolveContent` is not reused: it
+  is built over another store and would answer `null` for every reasoning address, silently dropping all
+  continuation.)
 - **Value shape.** A step value gains `reasoning` parts only when the provider returned reasoning. A provider that
   returns none, or an application whose `parse` ignores the field, sees no change.
 
@@ -188,7 +211,11 @@ Properties:
 blobs, checks each digest and returns `{ parts, status: "ok" | "erased" | "digest-mismatch" }` per part. Readable
 text is returned **wrapped as untrusted content** (ADR 0085, origin `llm-reasoning:<stepId>`), so putting it into a
 prompt is refused in every instruction position. `ctx` gets no reasoning accessor. A flow that calls `readReasoning`
-inside a step gets tainted text recorded as that step's value, which is replay-safe.
+inside a step gets tainted text recorded as that step's value, which is replay-safe. A blob not sealed to the
+queried execution reads as `digest-mismatch`. For an endpoint, `readReasoningBounded(log, store, query, limits)`
+selects by `stepId` / `stepPrefix` BEFORE any `store.get` and caps `maxParts` / `maxBytes` (the event's declared
+size gates the fetch, so nothing past the cap is read), returning the first parts in log order and
+`truncated: true`.
 
 ### D5 — Continuation: send it back unchanged, drop it on any edit
 
@@ -203,16 +230,26 @@ was produced. So, for parts sent back to a provider:
 - When a transcript is **edited** (`agentLoop$` compaction, conversation rotation or rolling summary, a model or
   provider switch), every reasoning part **after the edit point** is dropped from the request. Compaction replaces
   the prefix, so it drops them all.
-- When a part **cannot be resolved** (blob erased, digest mismatch, no store configured and the text was non-empty),
-  that part **and every reasoning part after it** are dropped.
+- When the **tool set or the system prompt changes**, a signature (which covers `tools` and `system`) no longer
+  verifies for any block produced before the change, so EVERY reasoning part on the transcript is dropped from
+  then on (tool-call signatures stay). `agentLoop$` fixes `system` for the run, so the only change it makes
+  mid-loop is the tool menu growing (a `search_tools` hit, a skill activation); the parts are dropped when the
+  menu grows, for good, and turns after it carry fresh blocks produced under the new menu. Stripping EVERY
+  thinking block is always valid, and removing a block together with all blocks after it is valid; removing one
+  from the middle is not, which is why the rule is "from here on, all" and never "this one".
+- When a part **cannot be resolved** (blob erased, the resolver answered `null` because it is not this execution's,
+  digest mismatch, no store configured and the text was non-empty), that part **and every reasoning part after
+  it** are dropped. Only a definitive "not found" counts: a resolver that **throws** (a store outage, a timeout)
+  fails the call, and the step retries per normal effect semantics, rather than silently continuing with less.
 - A call's own `signature` (on `tool_use`) is never dropped by this rule. Gemini validates it on the current turn,
   and it holds no readable content.
 
-**How `agentLoop$` applies it (implemented).** The assistant turn carries the response's reasoning parts first and
-each tool call's `signature` (`assistantMessageOf`). The model effect resolves the parts at request time from the
+**How `agentLoop$` applies it (implemented).** The assistant turn carries the response's reasoning parts in the vendor's order
+(`layout`, falling back to reasoning-first) and each tool call's `signature` (`assistantMessageOf`). The model effect resolves the parts at request time from the
 same store it captured into (`createAgentModelEffect(provider, { reasoning: { store } })`). On compaction every
 reasoning part still on the transcript is after the edit point, so all are dropped from the kept suffix and from
-the summarizer's input (tool signatures stay). On a `reasoning` runtime a route's model id is known from the
+the summarizer's input (tool signatures stay); that includes the reasoning of an in-flight tool round, which is
+valid but loses that reasoning. On a `reasoning` runtime a route's model id is known from the
 recorded route decision, so before each effect-backed call the parts a DIFFERENT route produced are dropped (a
 same-provider model switch included: Anthropic binds a block to its model; a provider never sees another
 provider's parts anyway). The rule is per part (produced by this route or not), so after A, B, B the second B call
@@ -220,13 +257,18 @@ still carries B's own part. The direct routed path (no `reasoningToolId`) is not
 journals its response as a decision, so it records NO reasoning (the decision value never carries readable
 text), continues no reasoning blocks and keeps tool signatures. The `conversation` layer builds history from
 plain text, so reasoning never crosses a turn there: rotation and the rolling summary have nothing to drop, and
-a test pins that no request after the first carries a reasoning part. Reasoning parts are also never counted by
-the byte measure, and the drop happens on the live request only: a replay serves the recorded frames.
+a test pins that no request after the first carries a reasoning part. The routed path's `ReasoningResult` (and its response cache) carry reasoning only as text-free recorded parts
+(`textFreeReasoning`: signature, kind, provider, `omitted: true` when text existed), so readable text never leaves
+the provider/effect layer except through the sidecar and `readReasoning`. The drop happens on the live request
+only: a replay serves the recorded frames.
 
 Dropping is the vendor's documented remedy, so continuation degrades (less carried-over reasoning) instead of
 failing. The decision is a pure function of the journaled transcript plus the resolver's answer, and it runs on the
 live path only, so replay is unaffected. The `agentLoop$` compaction measure counts reasoning parts as **zero
-bytes**, so a run recorded before this change and resumed after it compacts on the same turns.
+bytes**, so a run recorded before this change and resumed after it compacts on the same turns. **Known
+trade-off:** with large preserved thinking the zero-byte measure under-counts the real request, and
+`afterBytes` under-reports what the next request carries; the alternative (counting them) would change when a
+recorded run compacts on resume, which replay stability forbids.
 
 ### D6 — The live view
 
@@ -245,7 +287,10 @@ renders text deltas sees reasoning by accident.
   superseded together with the reply (one `reset` on a re-run; `endTurn` when the durable message lands).
 - **Transport.** `@loom/plugin-conversation-sse` gains an opt-in `reasoning` option (`true`, or `{ live, store }`)
   with `reasoning` and `reasoning-partial` SSE event types and, with a `store`,
-  `GET /conversations/:id/reasoning?cursor=<the reply's history cursor>`. In **shared mode**
+  `GET /conversations/:id/reasoning?cursor=<the reply's history cursor>`. The endpoint reads only the reply's
+  turn (`stepPrefix`, applied before any blob is fetched) and is bounded: at most 256 parts and 1 MiB of readable
+  text per response (`REASONING_RESPONSE_MAX_PARTS` / `_MAX_BYTES`); past either it returns the first parts with
+  `truncated: true`. In **shared mode**
   (ADR 0122 D10) reasoning deltas go **only to the turn's asker**, never to other participants. The reasoning
   carries what the asker's turn saw, and the per-viewer filter is not designed to classify free text. This holds
   for the live events, the catch-up partial and the durable endpoint alike (`Conversations.reasoningTarget`
@@ -267,7 +312,9 @@ the app builds; an effect's own `reasoning` option overrides it. **Capture defau
 configured, off when not.** At boot, when a registered LLM effect's provider declares `capabilities.reasoning` and no
 reasoning store is configured, `observability.onWarn` gets one warning per effect naming it: *"`<effect>` can return
 model reasoning, but no reasoning store is configured: reasoning is not kept for audit (only signatures, for
-continuation)"*. `reasoning: false` is the explicit, silent opt-out.
+continuation)"*. `reasoning: false` is the explicit, silent opt-out for effects with no reasoning policy of their own: an effect
+that configured its own `store` or `capture` keeps it entirely (the app-wide `false` is a default, never an
+override).
 
 **Implemented as.** `@loom/app` cannot see providers on its own, but every LLM effect built by `createLlmEffect`
 exposes a small hook (`Effect.reasoning`: `capable`, `posture()`, `adopt()`), and `defineConfig` walks
