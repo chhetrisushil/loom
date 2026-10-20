@@ -50,6 +50,7 @@ export function assembleStream(chunks: readonly LlmStreamChunk[]): LlmResponse {
     ...(last.toolCalls !== undefined && { toolCalls: last.toolCalls }),
     stopReason: last.stopReason ?? "end_turn",
     ...(last.usage !== undefined && { usage: last.usage }),
+    ...(last.reasoning !== undefined && { reasoning: last.reasoning }),
   };
 }
 
@@ -88,6 +89,11 @@ export interface CollectStreamOptions {
   signal?: AbortSignal;
   /** Transient sink for deltas as they arrive. Never journaled by this function. */
   onDelta?: (delta: string) => void;
+  /**
+   * ADR 0133 D6 - transient sink for readable reasoning increments, a channel SEPARATE from
+   * `onDelta` (and never part of `guard`'s `text`, nor of the interrupted partial). Never journaled.
+   */
+  onReasoningDelta?: (delta: string) => void;
   /** R5 — transient sink for tool-call input fragments. Never journaled. */
   onToolDelta?: (delta: { id: string; name?: string; inputDelta: string }) => void;
   /**
@@ -179,6 +185,9 @@ export async function collectStream(
       }
       if (chunk.delta !== "") options.onDelta?.(chunk.delta);
       if (chunk.toolDelta !== undefined) options.onToolDelta?.(chunk.toolDelta);
+      if (chunk.reasoningDelta !== undefined && chunk.reasoningDelta !== "") {
+        options.onReasoningDelta?.(chunk.reasoningDelta);
+      }
     }
   } catch (err) {
     if (guardError !== undefined) throw guardError;
@@ -203,5 +212,6 @@ export async function collectStream(
     ...(last.toolCalls !== undefined && { toolCalls: last.toolCalls }),
     stopReason: last.stopReason ?? "end_turn",
     ...(last.usage !== undefined && { usage: last.usage }),
+    ...(last.reasoning !== undefined && { reasoning: last.reasoning }),
   };
 }

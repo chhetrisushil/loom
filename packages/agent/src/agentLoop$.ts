@@ -531,6 +531,10 @@ function partBytes(p: LlmContentPartInput): number {
       return p.id.length + p.name.length + JSON.stringify(p.input ?? null).length;
     case "tool_result":
       return p.toolUseId.length + resultContentBytes(p.content);
+    case "reasoning":
+      // ADR 0133 D5: zero bytes, so a run recorded before reasoning parts existed and resumed
+      // after compacts on the same turns.
+      return 0;
   }
 }
 

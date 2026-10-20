@@ -14,6 +14,8 @@ export interface LlmCapabilities {
   image?: MediaTypeSet;
   audio?: MediaTypeSet;
   file?: MediaTypeSet;
+  /** ADR 0133 - the provider can return model reasoning. Drives the boot warning when no reasoning store is configured. */
+  reasoning?: boolean;
 }
 
 /** Thrown, before any network call, when a request carries a modality the provider did not declare. */
