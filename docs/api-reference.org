@@ -2128,11 +2128,11 @@ provider can return reasoning. ~createLlmEffect~ reduces it before ~parseRespons
 ~LlmReasoningPart { type: "reasoning"; kind; provider; signature?; textRef?; digest?; omitted?: true }~ (readable text
 goes to ~reasoning.store~, a ~ReasoningStore { put, get }~, never into a step value; a request-time ~text~ is added
 only to send a part back) and emits the userspace ~LLM_REASONING_CAPTURED~ event (references and digests). A failing
-store ~put~ fails the step. ~readReasoning(log, store, { executionId, stepId? })~ is the audit reader (per step, per
+store ~put~ fails the step. ~readReasoning(log, store, { executionId, stepId?, stepPrefix? })~ is the audit reader (~readReasoningBounded~ adds ~maxParts~ / ~maxBytes~ caps and ~truncated~, applied before any blob is fetched) (per step, per
 attempt, per part ~ok~ / ~erased~ / ~digest-mismatch~; text returned tainted). ~reasoning.onDelta~ is the configured live
 sink (guarded; used with ~live: true~). Exported: ~LlmReasoning~, ~LlmReasoningPart~, ~LlmReasoningKind~,
 ~LlmReasoningOptions~, ~ReasoningStore~, ~LLM_REASONING_CAPTURED~, ~captureReasoning~, ~readReasoning~,
-~reasoningDigest~, ~withoutReasoningParts~, ~hasReasoningParts~. In ~@loom/agent~: ~createAgentModelEffect(provider, { reasoning })~
+~readReasoningBounded~, ~reasoningStoreResolver~, ~textFreeReasoning~, ~layoutOf~, ~LlmLayoutEntry~, ~reasoningDigest~, ~withoutReasoningParts~, ~hasReasoningParts~. In ~@loom/agent~: ~createAgentModelEffect(provider, { reasoning })~
 and ~registerReasoningRoutes(effects, reasoning, { reasoning })~ thread the store; ~agentLoop$~ carries the parts
 (and tool signatures) on the assistant turn and drops every reasoning part on compaction and another route's parts
 on a model switch. ~defineConfig({ observability: { reasoning } })~ sets the default (~{ store?, capture?, live? } | false~).
