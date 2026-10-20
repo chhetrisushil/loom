@@ -261,7 +261,7 @@ kept out of the step value and out of the log:
 
 | Piece | Where it lives | Classification and handling |
 |---|---|---|
-| Readable reasoning text | the reasoning sidecar store (`observability.reasoning.store`), content-addressed | at least the request's class; erasable on its own schedule (the store's); returned **tainted** (`llm-reasoning:<stepId>`) by `readReasoning`, so it cannot reach a prompt instruction position; served to a client only at a transport edge, to the turn's asker alone |
+| Readable reasoning text | the reasoning sidecar store (`observability.reasoning.store`), content-addressed | at least the request's class; erasable on its own schedule (the store's); returned **tainted** (`llm-reasoning:<stepId>`) by `readReasoning`, so it cannot reach a prompt instruction position; served to a client only at a transport edge, to the turn's asker and the conversation's owner alone |
 | Signature / opaque continuation bytes | inline in the step value | no readable content; recorded so a resumed tool loop can send the blocks back |
 | `LLM_REASONING_CAPTURED` | the log (userspace event, ignored by the fold) | references and digests only, never text and never signatures; hash-chained under `@loom/audit-chain` |
 

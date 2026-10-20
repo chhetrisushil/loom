@@ -53,8 +53,8 @@ import { SseSink, frame } from "./sse";
 //   * ISOLATION: a stream is keyed by one conversation id; the live hub and the log reader are both
 //     keyed by it, and a cursor is a position INSIDE that conversation's chain. Shared mode filters
 //     every entry, the stream's deltas and the partial reply PER VIEWER.
-//   * REASONING (ADR 0133 D6) is OFF by default, live and durable. When on, it goes to the turn's ASKER ONLY
-//     (in shared mode never to another participant, the owner included), over its own SSE event types
+//   * REASONING (ADR 0133 D6) is OFF by default, live and durable. When on, it goes to the turn's ASKER and the
+//     conversation's OWNER ONLY (in shared mode never to any other participant), over its own SSE event types
 //     (`reasoning`, `reasoning-partial`) and its own endpoint; a caller who may not have it gets the same 404
 //     as a missing conversation. It is model-derived text restating what the asker's turn saw: it is
 //     unwrapped from its untrusted wrapper HERE, at the transport edge, and nowhere earlier.
@@ -147,7 +147,7 @@ export interface ConversationSseOptions {
    * ADR 0133 D6 - serve the model's reasoning. OFF by default. `true` (or `{ live: true }`) streams the
    * `reasoning` / `reasoning-partial` SSE events; `{ store }` also serves a reply's durable reasoning at
    * `GET <base>/:id/reasoning?cursor=<the reply's history cursor>` (the `ReasoningStore` the model effect
-   * captured into). In SHARED mode only the turn's asker receives any of it.
+   * captured into). In SHARED mode only the turn's asker and the conversation's owner receive any of it.
    */
   reasoning?: boolean | { live?: boolean; store?: ReasoningReader };
   /** Real error behind a 500, with the `errorId` the caller was given. */
@@ -424,12 +424,20 @@ export function createConversationSseServer(
     // the turn ends (the tools it used), so until then nobody else may see its tokens; they get the
     // durable entry (or a bare placeholder) on completion.
     const mine = (asker: string | undefined): boolean => asker === undefined || asker === viewer;
-    // REASONING is stricter than a delta: in shared mode it needs a KNOWN asker that is this viewer (an
-    // event with no asker is never served), in owner mode the stream is already the owner's alone.
+    // REASONING is stricter than a delta: in shared mode it needs the OWNER, or a KNOWN asker that is this
+    // viewer (an event with no asker is never served to anyone else), in owner mode the stream is already the owner's alone.
     const reasoningFrame = (turn: number, text: string) => frame("reasoning", { turn, text });
+    // The conversation's OWNER also receives every turn's reasoning (owner ruling 2026-10-20).
+    const viewerIsOwner =
+      liveReasoning && conversations.mode === "shared"
+        ? await conversations.isOwner(id, principal)
+        : false;
+    if (dropped()) return;
     const askerOnly = (asker: string | undefined): boolean =>
       liveReasoning &&
-      (conversations.mode !== "shared" || (asker !== undefined && asker === viewer));
+      (conversations.mode !== "shared" ||
+        viewerIsOwner ||
+        (asker !== undefined && asker === viewer));
     const unsubscribe = hub.subscribe(id, (ev) => {
       if (ev.type === "reasoning") {
         if (askerOnly(ev.asker)) sink.delta(ev.turn, ev.text, reasoningFrame, "reasoning");
@@ -703,7 +711,7 @@ export function createConversationSseServer(
         const cursor = url.searchParams.get("cursor");
         if (cursor === null)
           throw new BadRequestError("`cursor` (the reply's history cursor) is required");
-        // The audience decision is the conversation's: the asker in shared mode, the owner otherwise.
+        // The audience decision is the conversation's: the asker or the owner in shared mode, the owner otherwise.
         const target = await conversations.reasoningTarget(id, cursor, call);
         const { steps, truncated } = await readReasoningBounded(
           options.eventStore,

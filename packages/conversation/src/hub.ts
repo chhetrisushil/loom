@@ -17,7 +17,7 @@ export type LiveEvent =
   | { type: "delta"; conversationId: string; turn: number; text: string; asker?: string }
   /**
    * ADR 0133 D6 - a readable reasoning increment of the turn's model call. A channel of its own, so no
-   * consumer of reply text sees it by accident; a transport serves it to the turn's ASKER only (`asker`
+   * consumer of reply text sees it by accident; a transport serves it to the turn's ASKER and the conversation's OWNER only (`asker`
    * is always set in shared mode) and only when the host opted in.
    */
   | { type: "reasoning"; conversationId: string; turn: number; text: string; asker?: string }
@@ -278,7 +278,7 @@ export class ConversationHub {
    * Attributed to the turn exactly as {@link deltaSink} is, kept in a bounded in-progress buffer (the
    * same cap as the reply, head dropped) and published as `reasoning` events. This is the transport
    * edge: the increment arrives wrapped as untrusted content and is unwrapped HERE, into the buffer and
-   * the event, which a transport must serve to the turn's asker alone.
+   * the event, which a transport must serve to the turn's asker and the conversation's owner alone.
    */
   reasoningSink(): (delta: TaintedValue<string>) => void {
     return (wrapped: TaintedValue<string>) => {

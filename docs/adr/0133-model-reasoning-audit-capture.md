@@ -293,16 +293,18 @@ renders text deltas sees reasoning by accident.
   turn (`stepPrefix`, applied before any blob is fetched) and is bounded: at most 256 parts and 1 MiB of readable
   text per response (`REASONING_RESPONSE_MAX_PARTS` / `_MAX_BYTES`); past either it returns the first parts with
   `truncated: true`. In **shared mode**
-  (ADR 0122 D10) reasoning deltas go **only to the turn's asker**, never to other participants. The reasoning
-  carries what the asker's turn saw, and the per-viewer filter is not designed to classify free text. This holds
+  (ADR 0122 D10) reasoning deltas go **only to the turn's asker and the conversation's owner** (owner ruling
+  2026-10-20), never to other participants. The reasoning carries what the asker's turn saw, and the per-viewer
+  filter is not designed to classify free text; the owner, who administers the conversation, is the one added reader. This holds
   for the live events, the catch-up partial and the durable endpoint alike (`Conversations.reasoningTarget`
-  decides: in shared mode only the reply's asker, the owner included; a non-participant, another tenant, an
+  decides: in shared mode only the reply's asker or the owner, by the ADR 0111/0122 identity rule (tenant, actor and
+  `onBehalfOf` all equal); any other participant, a non-participant, another tenant, an
   unknown cursor and a non-reply record get the same 404 as a missing conversation). An event with no asker is
-  never served in shared mode.
+  served to the owner alone in shared mode.
 - **Catch-up, the same as text (ADR 0122 D7).** The hub keeps the in-progress reasoning per turn, bounded like the
   in-progress reply, so a client that attaches or reconnects mid-call gets a `reasoning-partial` and then the live
   deltas. Once the call has completed, the durable record is the captured reasoning (D3): the transport serves it,
-  through `readReasoning` and to the same audience (the asker in shared mode), to a client that reconnects later. A
+  through `readReasoning` and to the same audience (the asker and the owner in shared mode), to a client that reconnects later. A
   re-run of the turn by another process emits `reset`, as text does. The remaining gaps are the ones text already
   has (a process restart mid-call, a call on another node) plus one by configuration: with no reasoning store, a
   completed call's reasoning was never kept, so a late client gets none, and the boot warning (D7) names that.
