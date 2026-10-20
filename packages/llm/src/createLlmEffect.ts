@@ -131,10 +131,13 @@ export function createLlmEffect<TIn = string, TOut = string>(
   const reasoningOf = (): LlmReasoningOptions | undefined =>
     adopted === undefined && options.reasoning === undefined
       ? undefined
-      : {
-          ...(adopted === false ? { capture: false } : adopted),
-          ...options.reasoning,
-        };
+      : adopted === false
+        ? // The app-wide `false` is a default for effects with NO policy of their own: an effect that
+          // configured its own store or capture choice keeps it entirely.
+          options.reasoning?.store !== undefined || options.reasoning?.capture !== undefined
+          ? options.reasoning
+          : { capture: false, ...options.reasoning }
+        : { ...adopted, ...options.reasoning };
   const reasoningHook: EffectReasoningHook = {
     capable: options.provider.capabilities?.reasoning === true,
     posture() {
