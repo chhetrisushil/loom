@@ -144,7 +144,9 @@ export interface LlmReasoningPart {
   the response has reasoning AND the order is not the canonical one (reasoning parts, one text, the calls), so a
   response without reasoning, and a canonical one, keep today's exact shape and byte-identical step value (G2).
   `assistantMessageOf` replays it (text blocks the vendor returned separately stay separate); a layout that does
-  not fit the response is ignored; the Anthropic mapping no longer regroups blocks and Gemini already emitted in
+  not fit the response (malformed, text lengths that do not sum to `content`, a reasoning count that differs) drops
+  EVERY reasoning part rather than reorder them (stripping is always valid, moving a block never is), and a named
+  call the loop screened out drops the reasoning parts after it (a suffix drop); the Anthropic mapping no longer regroups blocks and Gemini already emitted in
   message order. The recorded form adds positions, no new content.
 - **Asking for it (provider config).** Nothing requests readable reasoning by default.
   `AnthropicProvider({ thinking: { type: "adaptive", display?: "summarized" | "omitted" } })` is passed through as

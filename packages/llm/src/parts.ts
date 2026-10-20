@@ -270,8 +270,9 @@ export function layoutOf(entries: readonly LlmLayoutEntry[]): LlmLayoutEntry[] |
  * an empty array (providers reject empty content).
  *
  * With a `layout` (ADR 0133 D5) the parts come back in the vendor's own order, text blocks at their
- * positions. A layout that does not fit the response (text lengths not summing to `content`) is
- * ignored; calls or reasoning parts it does not name keep their canonical place at the end.
+ * positions. A layout that does not fit the response (malformed, text lengths not summing to `content`,
+ * or a reasoning count that differs) drops every reasoning part rather than reorder them; a named call
+ * that is missing drops the reasoning parts after it; calls it does not name go at the end.
  */
 export function assistantMessageOf(response: {
   content: string;
@@ -329,18 +330,34 @@ function laidOut(
 ): LlmContentPart[] | undefined {
   const layout = response.layout;
   if (layout === undefined || layout.length === 0) return undefined;
+  // A thinking block is valid only while everything before it is unchanged, so a layout that cannot be
+  // replayed exactly must never be "repaired" by moving blocks (a 400 on a preserved-thinking account).
+  // When it does not fit at all, every reasoning part is dropped instead: stripping is always valid.
   let total = 0;
-  for (const e of layout) if (typeof e === "object" && "text" in e) total += e.text;
-  if (total !== response.content.length) return undefined;
+  let reasoningEntries = 0;
+  for (const e of layout) {
+    if (e === "reasoning") reasoningEntries++;
+    else if (typeof e === "object" && e !== null && typeof (e as { text?: unknown }).text === "number") {
+      total += (e as { text: number }).text;
+    } else if (typeof e !== "object" || e === null || typeof (e as { call?: unknown }).call !== "string") {
+      return canonicalParts(response, []);
+    }
+  }
+  if (total !== response.content.length || reasoningEntries !== recorded.length) {
+    return canonicalParts(response, []);
+  }
   const calls = new Map((response.toolCalls ?? []).map((c) => [c.id, c]));
   const used = new Set<string>();
   const parts: LlmContentPart[] = [];
   let nextReasoning = 0;
   let offset = 0;
+  // Once a named call is missing (screened out by the loop), every later block's prefix has changed:
+  // drop the reasoning parts from there on (a suffix drop), keep the earlier ones.
+  let prefixChanged = false;
   for (const e of layout) {
     if (e === "reasoning") {
-      const r = recorded[nextReasoning++];
-      if (r !== undefined) parts.push(r);
+      const r = recorded[nextReasoning++] as LlmReasoningPart;
+      if (!prefixChanged) parts.push(r);
     } else if ("text" in e) {
       parts.push({ type: "text", text: response.content.slice(offset, offset + e.text) });
       offset += e.text;
@@ -349,13 +366,10 @@ function laidOut(
       if (c !== undefined && !used.has(e.call)) {
         used.add(e.call);
         parts.push(toolUse(c));
-      }
+      } else prefixChanged = true;
     }
   }
-  // Anything the layout did not name keeps its canonical place at the end (a call the loop kept).
-  for (; nextReasoning < recorded.length; nextReasoning++) {
-    parts.push(recorded[nextReasoning] as LlmReasoningPart);
-  }
+  // A call the layout did not name goes after every block, so it changes no block's prefix.
   for (const c of response.toolCalls ?? []) if (!used.has(c.id)) parts.push(toolUse(c));
   return parts;
 }
