@@ -22,6 +22,7 @@ import type {
   LlmToolCall,
 } from "../types";
 import { fenceUntrustedMedia } from "../untrusted";
+import { validateExtraHeaders } from "./extraHeaders";
 
 /**
  * Anthropic's `stop_reason` → the SPI's. ONE implementation, used by both
@@ -34,6 +35,13 @@ function normalizeStopReason(raw: unknown): LlmResponse["stopReason"] {
 }
 
 export interface AnthropicProviderConfig {
+  /**
+   * Extra request headers sent on every request (for example `anthropic-workspace-id`). Header
+   * names and values must be strings without CR/LF; a header the provider sets itself (auth,
+   * protocol, content type) cannot be overridden and throws at construction. Unset, the request
+   * is unchanged.
+   */
+  headers?: Readonly<Record<string, string>>;
   apiKey?: string;
   model?: string;
   baseUrl?: string;
@@ -183,9 +191,15 @@ export class AnthropicProvider implements LlmProvider {
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly thinking: AnthropicProviderConfig["thinking"];
+  private readonly extraHeaders: Readonly<Record<string, string>>;
   readonly capabilities: LlmCapabilities;
 
   constructor(config: AnthropicProviderConfig = {}) {
+    this.extraHeaders = validateExtraHeaders(
+      config.headers,
+      ["x-api-key", "anthropic-version", "content-type", "authorization"],
+      "AnthropicProvider"
+    );
     this.thinking = config.thinking;
     const model = config.model ?? "claude-opus-4-8";
     this.capabilities =
@@ -236,6 +250,7 @@ export class AnthropicProvider implements LlmProvider {
     const resp = await fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
+        ...this.extraHeaders,
         "content-type": "application/json",
         "x-api-key": this.apiKey,
         "anthropic-version": "2023-06-01",
@@ -289,6 +304,7 @@ export class AnthropicProvider implements LlmProvider {
     const resp = await fetch(`${this.baseUrl}/v1/messages`, {
       method: "POST",
       headers: {
+        ...this.extraHeaders,
         "content-type": "application/json",
         "x-api-key": this.apiKey,
         "anthropic-version": "2023-06-01",

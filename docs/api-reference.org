@@ -2068,9 +2068,10 @@ interface LlmRequest { messages: LlmMessage[]; tools?: LlmToolSpec[]; system?: s
 interface LlmResponse { content: string; toolCalls?: LlmToolCall[]; stopReason: "end_turn" | "tool_use" | "max_tokens"; usage?: { inputTokens: number; outputTokens: number }; }
 interface LlmProvider { readonly capabilities?: LlmCapabilities; complete(request: LlmRequest): Promise<LlmResponse>; stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>; }
 
-class AnthropicProvider { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; thinking?: { type: "adaptive"; display?: "summarized" | "omitted" } }) }  // model default "claude-opus-4-8"; thinking -> the request's `thinking` (ADR 0133), unset = not sent
-class OpenAiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities }) }  // model default "gpt-4o"
-class GeminiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; includeThoughts?: boolean }) }  // model default "gemini-2.0-flash"; includeThoughts -> generationConfig.thinkingConfig (ADR 0133)
+class AnthropicProvider { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; headers?: Readonly<Record<string, string>>; thinking?: { type: "adaptive"; display?: "summarized" | "omitted" } }) }  // model default "claude-opus-4-8"; thinking -> the request's `thinking` (ADR 0133), unset = not sent
+class OpenAiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; headers?: Readonly<Record<string, string>> }) }  // model default "gpt-4o"
+class GeminiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; headers?: Readonly<Record<string, string>>; includeThoughts?: boolean }) }  // model default "gemini-2.0-flash"; includeThoughts -> generationConfig.thinkingConfig (ADR 0133)
+// `headers` (all three providers): extra request headers sent on every complete/stream call, e.g. `{ "anthropic-workspace-id": "wrkspc_..." }` for an Anthropic key not scoped to a workspace. Validated at construction (strings, no CR/LF); a header the provider sets itself (x-api-key, authorization, anthropic-version, x-goog-api-key, content-type) cannot be overridden and throws (case-insensitive; the error names the header, never the value). Unset = requests unchanged.
 
 function createLlmEffect<TIn = string, TOut = string>(options: {
   provider: LlmProvider;

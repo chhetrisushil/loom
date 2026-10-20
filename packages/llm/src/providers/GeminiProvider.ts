@@ -14,8 +14,16 @@ import {
 import { inlineData } from "../resolveContent";
 import type { LlmMessage, LlmProvider, LlmRequest, LlmResponse, LlmToolCall } from "../types";
 import { fenceUntrustedMedia } from "../untrusted";
+import { validateExtraHeaders } from "./extraHeaders";
 
 export interface GeminiProviderConfig {
+  /**
+   * Extra request headers sent on every request (for example `anthropic-workspace-id`). Header
+   * names and values must be strings without CR/LF; a header the provider sets itself (auth,
+   * protocol, content type) cannot be overridden and throws at construction. Unset, the request
+   * is unchanged.
+   */
+  headers?: Readonly<Record<string, string>>;
   apiKey?: string;
   model?: string;
   baseUrl?: string;
@@ -155,9 +163,15 @@ export class GeminiProvider implements LlmProvider {
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly includeThoughts: boolean | undefined;
+  private readonly extraHeaders: Readonly<Record<string, string>>;
   readonly capabilities: LlmCapabilities;
 
   constructor(config: GeminiProviderConfig = {}) {
+    this.extraHeaders = validateExtraHeaders(
+      config.headers,
+      ["x-goog-api-key", "content-type", "authorization"],
+      "GeminiProvider"
+    );
     this.includeThoughts = config.includeThoughts;
     const model = config.model ?? "gemini-2.0-flash";
     this.capabilities =
@@ -214,7 +228,11 @@ export class GeminiProvider implements LlmProvider {
     const body = this.buildBody(request);
     const resp = await fetch(`${this.baseUrl}/v1beta/models/${this.model}:generateContent`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey },
+      headers: {
+        ...this.extraHeaders,
+        "content-type": "application/json",
+        "x-goog-api-key": this.apiKey,
+      },
       body: JSON.stringify(body),
       ...(request.signal !== undefined && { signal: request.signal }),
     });
