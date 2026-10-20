@@ -2068,9 +2068,9 @@ interface LlmRequest { messages: LlmMessage[]; tools?: LlmToolSpec[]; system?: s
 interface LlmResponse { content: string; toolCalls?: LlmToolCall[]; stopReason: "end_turn" | "tool_use" | "max_tokens"; usage?: { inputTokens: number; outputTokens: number }; }
 interface LlmProvider { readonly capabilities?: LlmCapabilities; complete(request: LlmRequest): Promise<LlmResponse>; stream?(request: LlmRequest): AsyncIterable<LlmStreamChunk>; }
 
-class AnthropicProvider { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities }) }  // model default "claude-opus-4-8"
+class AnthropicProvider { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; thinking?: { type: "adaptive"; display?: "summarized" | "omitted" } }) }  // model default "claude-opus-4-8"; thinking -> the request's `thinking` (ADR 0133), unset = not sent
 class OpenAiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities }) }  // model default "gpt-4o"
-class GeminiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities }) }  // model default "gemini-2.0-flash"
+class GeminiProvider    { constructor(config?: { apiKey?: string; model?: string; baseUrl?: string; capabilities?: LlmCapabilities; includeThoughts?: boolean }) }  // model default "gemini-2.0-flash"; includeThoughts -> generationConfig.thinkingConfig (ADR 0133)
 
 function createLlmEffect<TIn = string, TOut = string>(options: {
   provider: LlmProvider;
@@ -2080,6 +2080,8 @@ function createLlmEffect<TIn = string, TOut = string>(options: {
   maxInlineBytes?: number; maxInlineTotalBytes?: number; maxResolvedBytes?: number;   // R5 — caps (default 64 KiB per part / 256 KiB inline per request / 32 MiB resolved)
   onToolDelta?: (d: { id: string; name?: string; inputDelta: string }, ctx: EffectContext) => void;   // R5 — transient
   onToolReset?: (attempt: number, ctx: EffectContext) => void;   // R5 — a retry begins: discard the fragments so far
+  reasoning?: { store?: ReasoningStore; capture?: boolean | ((ctx) => boolean); live?: boolean; model?: string;
+                onDelta?: (delta: TaintedValue<string>, ctx: EffectContext) => void };   // ADR 0133 — model reasoning as audit evidence
 }): LlmEffect<TIn, TOut>
 #+end_src
 
@@ -2118,6 +2120,22 @@ use: ~base~ only when the model id matches, else ~{}~), ~GEMINI_CAPABILITIES~,
 ~returnsMedia: true~ returns to hand the model an image/file; never honoured for a tainted output),
 ~isMediaResult~, ~toolResultPart~, and
 ~createAgentModelEffect(provider, { resolveContent, onToolDelta })~ / ~AgentConfig.resolveContent~.
+
+*Model reasoning (ADR 0133).* ~LlmResponse.reasoning~ / the terminal ~LlmStreamChunk.reasoning~ carry
+~LlmReasoning { kind: "text" | "summary" | "redacted"; text?; signature?; provider }~ as the provider
+returned it; ~LlmToolCall.signature~ carries a call's own continuation bytes; ~capabilities.reasoning~ says a
+provider can return reasoning. ~createLlmEffect~ reduces it before ~parseResponse~ to
+~LlmReasoningPart { type: "reasoning"; kind; provider; signature?; textRef?; digest?; omitted?: true }~ (readable text
+goes to ~reasoning.store~, a ~ReasoningStore { put, get }~, never into a step value; a request-time ~text~ is added
+only to send a part back) and emits the userspace ~LLM_REASONING_CAPTURED~ event (references and digests). A failing
+store ~put~ fails the step. ~readReasoning(log, store, { executionId, stepId? })~ is the audit reader (per step, per
+attempt, per part ~ok~ / ~erased~ / ~digest-mismatch~; text returned tainted). ~reasoning.onDelta~ is the configured live
+sink (guarded; used with ~live: true~). Exported: ~LlmReasoning~, ~LlmReasoningPart~, ~LlmReasoningKind~,
+~LlmReasoningOptions~, ~ReasoningStore~, ~LLM_REASONING_CAPTURED~, ~captureReasoning~, ~readReasoning~,
+~reasoningDigest~, ~withoutReasoningParts~, ~hasReasoningParts~. In ~@loom/agent~: ~createAgentModelEffect(provider, { reasoning })~
+and ~registerReasoningRoutes(effects, reasoning, { reasoning })~ thread the store; ~agentLoop$~ carries the parts
+(and tool signatures) on the assistant turn and drops every reasoning part on compaction and another route's parts
+on a model switch. ~defineConfig({ observability: { reasoning } })~ sets the default (~{ store?, capture?, live? } | false~).
 
 Providers talk to vendor HTTP APIs over ~fetch~ — no vendor SDK dependency. In tests, use the VCR providers from [[#dx][~@loom/testing~]].
 
@@ -2644,10 +2662,12 @@ class ConversationHub {
   constructor(o?: { maxSubscribersPerConversation?: number /* 64 */; maxPartialChars?: number /* 65_536 */ });
   wrapProvider(provider: LlmProvider): LlmProvider;                  // a barge-in cuts the generation; the partial survives
   deltaSink(): (delta: string) => void;                              // createAgentModelEffect(..., { stream: true, onDelta })
+  reasoningSink(): (delta: TaintedValue<string>) => void;            // createAgentModelEffect(..., { reasoning: { store, live: true, onDelta } }) — ADR 0133 D6
   subscribe(conversationId, listener: (e: LiveEvent) => void): () => void;   // throws SubscriberLimitError
   partialOf(conversationId): { turn: number; text: string } | undefined;
+  reasoningPartialOf(conversationId): { turn: number; text: string; asker?: string } | undefined;   // bounded like the reply; cleared with it
 }
-type LiveEvent = { type: "delta"; conversationId; turn; text } | { type: "reset"; conversationId; turn }
+type LiveEvent = { type: "delta"; conversationId; turn; text } | { type: "reasoning"; conversationId; turn; text; asker? } | { type: "reset"; conversationId; turn }
 #+end_src
 
 =ConversationConfig= REQUIRES =key= (the HMAC secret every inbox envelope is signed with, both
@@ -2678,6 +2698,7 @@ function createConversationSseServer(o: {
   maxPendingBytes?: number /* 1 MiB */; maxBodyBytes?: number /* 64 KiB */;
   heartbeatMs?: number /* 15_000 */; maxStreamMs?: number /* 15 min */; reauthMs?: number /* 30_000 */; pollMs?: number /* 2_000 */;
   onError?: (errorId: string, err: unknown) => void;
+  reasoning?: boolean | { live?: boolean; store?: ReasoningReader };   // ADR 0133 D6, OFF by default: `reasoning` / `reasoning-partial` events; { store } adds GET …/reasoning?cursor=
   // edge hardening (ADR 0122 D6): strict defaults from the runtime; allowNoRuntimeAuthz?: boolean (refused by default);
   // allowedHosts?: string[] (insecure servers: loopback only); allowCredentials?: boolean (CORS, listed origins only);
   // rateLimit?: { max?: number /* 120 */; windowMs?: number /* 60_000 */ } (POSTs, per principal); now?: () => number;
@@ -2691,7 +2712,9 @@ Shared mode adds =GET /conversations/:id/participants=, =POST …/participants= 
 =POST /conversations/:id/close=, =GET /conversations/:id/history?limit&cursor&direction=,
 =GET /conversations/:id/events= (SSE; =Last-Event-ID= or =?cursor=). SSE events: =status=,
 =partial=, =message= (SSE =id= = the history cursor), =delta=, =reset=, =closed=, =reconnect=,
-=error=. Every refusal for a conversation the caller may not touch is the same =404=. See ADR 0122
+=error=; with the opt-in =reasoning= option also =reasoning= and =reasoning-partial=, and
+=GET /conversations/:id/reasoning?cursor=<the reply's history cursor>= (needs ={ store }=). Reasoning goes to the
+turn's asker only: in shared mode never to another participant, the owner included. Every refusal for a conversation the caller may not touch is the same =404=. See ADR 0122
 D6 for the security model.
 
 ** ~@loom/memory~ — agent memory

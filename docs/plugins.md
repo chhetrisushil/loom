@@ -180,7 +180,8 @@ and compute.
   conversation, send turns, and stream the durable messages and live reply deltas over Server-Sent Events, resuming from
   `Last-Event-ID` (the SSE id is the history cursor, so it works across rotations). Fails closed: authentication is
   required to create the server, a conversation the caller may not touch is indistinguishable from one that does not
-  exist, loopback by default, Origin-checked, bounded per connection.
+  exist, loopback by default, Origin-checked, bounded per connection. Opt-in `reasoning` option (ADR 0133 D6) serves the
+  model's reasoning (`reasoning` / `reasoning-partial` events and a durable `GET …/reasoning`) to the turn's asker only.
 
 **Surfaces**
 

@@ -155,7 +155,7 @@ option:
 |---|---|
 | `execution` | `dispatcher` (where executions run — in-process / remote / Cloud Run), `effectMiddleware` (retries, metering, safety, redaction… — see Step 11), `registerEffects`, `validateInput`, `now`, `envelope` (the autonomy envelope — spawn caps, spend budget, rate limit; see Step 11 "Strict mode") |
 | `security` | `authorizer` (capability protection ring — deny ungranted effects, K2), `policies` (app-global `policy$` via a `PolicyAuthorizer`), `secrets` (`{ resolver }` — resolve `secretRef` input + redact `secret()` output, K10-R2; see [data classification](data-classification.md)), `compliance` (`{ subjectOf, tenantOf?, erase?: { shred } }` — subject index + `app.exportSubject`/`app.eraseSubject`, T3; see [compliance](compliance.md)), `executionAuthorizer`, `resumeAuthenticator`, `onExecutionDenied`, `strict` (the strict profile — see Step 11), `killSwitch` (stop effects system-wide / per tenant / per flow) |
-| `observability` | `onEvent` (tap every committed event), `telemetry`, `onWarn`, `onStorageError` |
+| `observability` | `onEvent` (tap every committed event), `telemetry`, `onWarn`, `onStorageError`, `reasoning` (`{ store?, capture?, live? } \| false` — keep model reasoning for audit, [ADR 0133](adr/0133-model-reasoning-audit-capture.md)) |
 | `durability` | `retention` (`{ archive? }` — expose `app.lifecycle` for `loom retention run`, K10.1), `snapshotEvery`, `heartbeat` (heartbeat leases, [ADR 0130](adr/0130-sealed-payload-delivery-guard.md) D11, below) |
 | `checks` | `validate` (`false \| "warn" \| "error"` — boot-time flow-graph validation), `verify`, `manifest` |
 

@@ -63,7 +63,7 @@ defineConfig({
   autostart: false,        // build, don't run
   kernel: { features: { scopes, inbox, inboxTopicStreams, continueAsNew, redrive } },  // opt-in syscalls
   security:      { … },    // the three rings, strict, crypto, compliance, killSwitch
-  observability: { … },    // onEvent, telemetry, onWarn, onStorageError
+  observability: { … },    // onEvent, telemetry, onWarn, onStorageError, reasoning
   durability:    { … },    // snapshotEvery, retention, heartbeat leases (ADR 0130 D11)
   execution:     { … },    // dispatcher, effectMiddleware, registerEffects, envelope, now
   checks:        { … },    // validate, verify (boot-time pre-flight)
