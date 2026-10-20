@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
-import { AgentLoopConfigError, agentLoop$, configureAgentLoopDefaults } from "@loom/agent";
+import { AgentLoopConfigError, agentLoop$, resetAgentLoopDefaults } from "@loom/agent";
 import type { EffectReasoningDefaults } from "@loom/effect-runtime";
 import { createLlmEffect } from "@loom/llm";
 import type { LlmProvider, ReasoningStore } from "@loom/llm";
 import type { RegisteredFlow } from "@loom/workflow-runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { defineConfig } from "./defineConfig";
 
 // ── ADR 0133 D7 — observability.reasoning and the boot warning ───────────────────
@@ -48,6 +48,8 @@ const llm = (
 function boot(opts: {
   reasoning?: (EffectReasoningDefaults & { requireContinuation?: boolean }) | false;
   effects: Record<string, ReturnType<typeof llm>>;
+  /** Give the app no `onWarn` at all. */
+  noSink?: boolean;
 }) {
   const warnings: string[] = [];
   const app = defineConfig({
@@ -55,7 +57,7 @@ function boot(opts: {
     flows: [] as RegisteredFlow[],
     security: { strict: false },
     observability: {
-      onWarn: (m) => warnings.push(m),
+      ...(opts.noSink !== true && { onWarn: (m: string) => warnings.push(m) }),
       ...(opts.reasoning !== undefined && { reasoning: opts.reasoning }),
     },
     execution: {
@@ -153,7 +155,8 @@ describe("observability.reasoning", () => {
 // ── ADR 0133 D7 - observability.reasoning.requireContinuation (agentLoop$'s direct routed path) ─────
 
 describe("observability.reasoning.requireContinuation (ADR 0133 D7)", () => {
-  afterEach(() => configureAgentLoopDefaults({}));
+  afterEach(() => resetAgentLoopDefaults());
+  beforeEach(() => resetAgentLoopDefaults());
   const direct = (capable: boolean) => ({
     definition: { id: "a", name: "A", tools: [] } as never,
     // Only the route list is read by the configuration check (app has no @loom/reasoning dependency).
@@ -180,15 +183,38 @@ describe("observability.reasoning.requireContinuation (ADR 0133 D7)", () => {
     expect(warnings).toEqual([]);
   });
 
-  it("reasoning: false is silent, and a later app without the option does not inherit the refusal", async () => {
+  it("reasoning: false is silent", async () => {
     const off = boot({ reasoning: false, effects: {} });
     await agentLoop$(ctx, direct(true), { prompt: "x" }).catch(() => undefined);
     expect(off.warnings).toEqual([]);
+  });
+
+  it("fail-closed: a later defineConfig WITHOUT the option cannot turn an earlier app's refusal off", async () => {
     boot({ reasoning: { requireContinuation: true }, effects: {} });
-    const { warnings } = boot({ effects: {} });
-    await agentLoop$(ctx, direct(true), { prompt: "x" }).catch((e) => {
-      expect(e).not.toBeInstanceOf(AgentLoopConfigError);
-    });
-    expect(warnings).toHaveLength(1);
+    boot({ reasoning: {}, effects: {} });
+    boot({ effects: {} });
+    await expect(agentLoop$(ctx, direct(true), { prompt: "x" })).rejects.toBeInstanceOf(
+      AgentLoopConfigError
+    );
+    // A loop's own option still wins for that loop.
+    await agentLoop$(
+      ctx,
+      { ...direct(true), requireReasoningContinuation: false },
+      { prompt: "x" }
+    ).catch((e) => expect(e).not.toBeInstanceOf(AgentLoopConfigError));
+  });
+
+  it("a defineConfig with no onWarn does not reroute an unrelated loop's warning (it goes to process warnings)", async () => {
+    const emitted: string[] = [];
+    const orig = process.emitWarning;
+    process.emitWarning = ((m: string) => void emitted.push(String(m))) as never;
+    try {
+      const { warnings } = boot({ effects: {}, noSink: true });
+      await agentLoop$(ctx, direct(true), { prompt: "x" }).catch(() => undefined);
+      expect(warnings).toEqual([]);
+      expect(emitted.filter((m) => m.includes("discards it every turn"))).toHaveLength(1);
+    } finally {
+      process.emitWarning = orig;
+    }
   });
 });

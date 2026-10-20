@@ -18,6 +18,7 @@ import {
   LLM_INTERRUPTED,
   MAX_INLINE_TOTAL_BYTES,
   assistantMessageOf,
+  base64ByteLength,
   hasReasoningParts,
   withoutReasoningParts,
 } from "@loom/llm";
@@ -468,17 +469,44 @@ function warnReasoningOutsideRing(): void {
 }
 
 // ── ADR 0133 D7 - the direct routed path discards reasoning every turn ─────────
-let loopDefaults: { onWarn?: (m: string) => void; requireReasoningContinuation?: boolean } = {};
+type LoopDefaults = {
+  onWarn?: ((m: string) => void) | undefined;
+  requireReasoningContinuation?: boolean | undefined;
+};
+// Process-wide, but keyed on a global symbol so a duplicate copy of @loom/agent shares ONE slot
+// instead of silently configuring a copy the loop never reads.
+const LOOP_DEFAULTS_KEY = Symbol.for("loom.agent.loopDefaults");
+function loopDefaultsSlot(): LoopDefaults {
+  const g = globalThis as { [LOOP_DEFAULTS_KEY]?: LoopDefaults };
+  let slot = g[LOOP_DEFAULTS_KEY];
+  if (slot === undefined) {
+    slot = {};
+    g[LOOP_DEFAULTS_KEY] = slot;
+  }
+  return slot;
+}
 /**
  * App-wide defaults for `agentLoop$` options that an app (not each call site) owns. `@loom/app`'s
- * `defineConfig` calls this with `observability.onWarn` and `observability.reasoning.requireContinuation`.
- * Replaces the previous defaults; call with `{}` to clear. A loop's own option always wins.
+ * `defineConfig` calls this with `observability.onWarn` (only when the app gave one) and
+ * `observability.reasoning.requireContinuation`. FAIL-CLOSED: `requireReasoningContinuation: true` is
+ * monotonic (once any caller in the process sets it, no later call clears it; use
+ * {@link resetAgentLoopDefaults} in tests), and an omitted field leaves the earlier value alone.
+ * `onWarn` is last-wins. A loop's own option always wins.
  */
 export function configureAgentLoopDefaults(defaults: {
   onWarn?: (message: string) => void;
   requireReasoningContinuation?: boolean;
 }): void {
-  loopDefaults = { ...defaults };
+  const slot = loopDefaultsSlot();
+  if (defaults.onWarn !== undefined) slot.onWarn = defaults.onWarn;
+  if (defaults.requireReasoningContinuation === true) slot.requireReasoningContinuation = true;
+}
+
+/** Clear the process-wide `agentLoop$` defaults (tests; an app never un-requires a refusal). */
+export function resetAgentLoopDefaults(): void {
+  const slot = loopDefaultsSlot();
+  slot.onWarn = undefined;
+  slot.requireReasoningContinuation = undefined;
 }
 
 const warnedDirectReasoning = new WeakSet<object>();
@@ -487,31 +515,35 @@ const warnedDirectReasoning = new WeakSet<object>();
  * and sends no thinking block back, so a reasoning-capable route loses its reasoning every turn (the
  * vendor's documented one-time recovery shape, not a steady state). Warn once per runtime, or refuse.
  */
-function checkDirectPathReasoning(config: AgentLoopConfig): void {
+function checkDirectPathReasoning(config: AgentLoopConfig): boolean {
   const runtime = config.reasoning;
-  if (runtime === undefined || config.reasoningToolId !== undefined) return;
+  if (runtime === undefined || config.reasoningToolId !== undefined) return false;
   const capable = runtime.availableRoutes
     .filter((r) => r.provider.capabilities?.reasoning === true)
     .map((r) => r.id);
-  if (capable.length === 0) return;
+  if (capable.length === 0) return false;
   const named = capable.map((id) => `"${id}"`).join(", ");
-  const refuse = config.requireReasoningContinuation ?? loopDefaults.requireReasoningContinuation;
+  const refuse =
+    config.requireReasoningContinuation ?? loopDefaultsSlot().requireReasoningContinuation;
   if (refuse === true) {
     throw new AgentLoopConfigError(
       `agentLoop$: route ${named} can return model reasoning, but the direct routed path (no \`reasoningToolId\`) discards it every turn. Set \`reasoningToolId\` (see registerReasoningRoutes) to carry it, or drop \`requireReasoningContinuation\`.`
     );
   }
-  if (warnedDirectReasoning.has(runtime)) return;
+  // `requireEffectRing` throws its own error just below: one condition, one message.
+  if (config.requireEffectRing === true) return false;
+  if (warnedDirectReasoning.has(runtime)) return true;
   warnedDirectReasoning.add(runtime);
   const message = `agentLoop$: route ${named} can return model reasoning, but the direct routed path (no \`reasoningToolId\`) discards it every turn (the model never gets its earlier thinking back). Set \`reasoningToolId\` (see registerReasoningRoutes) to carry it.`;
-  const sink = config.onWarn ?? loopDefaults.onWarn;
+  const sink = config.onWarn ?? loopDefaultsSlot().onWarn;
   if (sink !== undefined) {
     sink(message);
-    return;
+    return true;
   }
   const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
     .process;
   proc?.emitWarning?.(message, { code: "LOOM_AGENT_REASONING_DISCARDED" });
+  return true;
 }
 
 let warnedRequireApproval = false;
@@ -711,6 +743,21 @@ function inlineBytesOf(messages: readonly LlmMessageInput[]): number {
   return n;
 }
 
+/** Decoded inline bytes of the top-level media parts of a simple-compaction frame (ADR 0133 D5). */
+function inlineBytesInFrame(frame: LlmMessageInput): number {
+  if (!Array.isArray(frame.content)) return 0;
+  let n = 0;
+  for (const p of frame.content) {
+    if (
+      (p.type === "image" || p.type === "audio" || p.type === "file") &&
+      p.source.kind === "data"
+    ) {
+      n += base64ByteLength(p.source.data) ?? 0;
+    }
+  }
+  return n;
+}
+
 /**
  * Run an agent's ReAct loop with one durable frame per turn.
  *
@@ -744,14 +791,17 @@ export async function agentLoop$(
     // answer, which is what an absent model access would otherwise look like.
     throw new Error("agentLoop$ requires a `modelToolId` or a `reasoning` runtime");
   }
+  // The reasoning-discarded advisory names the same remedy (`reasoningToolId`), so when it covers
+  // this path the ring advisory stays quiet: one message for one condition.
+  const directReasoningCovered = checkDirectPathReasoning(config);
   if (
+    !directReasoningCovered &&
     config.requireEffectRing !== true &&
     config.reasoning !== undefined &&
     config.reasoningToolId === undefined
   ) {
     warnReasoningOutsideRing();
   }
-  checkDirectPathReasoning(config);
   if (config.requireEffectRing === true) {
     if (config.reasoning !== undefined && config.reasoningToolId === undefined) {
       throw new Error(
@@ -1509,7 +1559,8 @@ export async function agentLoop$(
               physOld = [1];
               oldSizes = [messageBytes(frame)];
               transcriptBytes = oldSizes[0] as number;
-              inlineUsed = inlineBytesOf(messages);
+              // The frame flattens result media into top-level parts; they still ride inline in the request.
+              inlineUsed = inlineBytesOf(messages) + inlineBytesInFrame(frame);
             } else if (foldLength > 0) {
               // ADR 0133 D5 - no reasoning on the transcript: the keep-tail shape, unchanged.
               const fold = messages.slice(0, foldLength).map(withoutReasoningParts);
