@@ -1,6 +1,7 @@
 # ADR 0133 — Model reasoning as audit evidence: captured at the provider seam, kept out of the fold
 
-- Status: **Proposed** (2026-10-20). The three open questions of the first draft are resolved by owner ruling of
+- Status: **Accepted** (2026-10-20) — owner accepted after implementation and review (loom PR #688, loom-ui PR #91,
+  the loom-examples `reasoning-audit` example). Proposed earlier the same day; the three open questions of the first draft are resolved by owner ruling of
   2026-10-20 (see "Resolved questions"): continuation is designed in, capture is configurable with a boot warning,
   and the live view ships in this ADR.
 - Date: 2026-10-20

@@ -315,6 +315,18 @@ export const CAPABILITIES: readonly Capability[] = [
     note: "ADR 0127 (U21). 1P plugin, kernel untouched: KERNEL_ABI, EVENT_SCHEMA and every SPI unchanged; depends only on blueprint-runtime and projection-runtime and is not in the @loom/sdk barrel. Written from the Blueprint and the two existing renderers rather than moved from loom-ui's renderer-lit, whose adapter is bound to loom-ui's action stamping, i18n and Lit handle contract. No consumer outside its own suite yet (L2, not L3): the candidates are the a2ui-dashboard and db-observability examples.",
   },
   {
+    id: "model-reasoning",
+    title: "Model Reasoning as Audit Evidence",
+    package: "@loom/llm",
+    level: "L2",
+    summary:
+      "Provider reasoning (Anthropic thinking blocks, Gemini thought parts) captured at the `@loom/llm` seam: readable text goes to a sidecar content store sealed to its execution, the step value holds only signatures, refs and digests, and a userspace `LLM_REASONING_CAPTURED` event the fold ignores records the audit fact. `readReasoning` reads it back tainted. Continuation sends the blocks back unchanged in vendor block order and drops them on any history edit, unresolvable part, tool-set change or model switch; compaction is simple compaction when reasoning is carried. Opt-in live reasoning stream (asker and owner in shared conversations) with reconnect catch-up and a durable endpoint; `observability.reasoning` config with a boot warning.",
+    evidence: {
+      conformanceTest: "packages/llm/src/reasoning.test.ts",
+    },
+    note: "ADR 0133. 1P, kernel untouched: KERNEL_ABI and EVENT_SCHEMA unchanged. Gemini continuation verified live (2026-10-20: a turn without its thoughtSignature is the documented 400); the Anthropic mapping and the drop/compaction rules follow the Anthropic documentation and are verified against recorded wire shapes only. L2: the suite is the evidence; the `reasoning-audit` example lives in the sibling loom-examples repo.",
+  },
+  {
     id: "conversation-sse",
     title: "Conversation SSE Gateway",
     package: "@loom/plugin-conversation-sse",

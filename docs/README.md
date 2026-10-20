@@ -184,7 +184,7 @@ per execution instead of once per re-run (`1.19.0`, no ABI change):
   from a read model cost one subject rather than a whole-model rebuild (measured at 68×).
 
 - **Folded-state read models** — [0132](adr/0132-folded-state-read-model.md) added durable per-execution folded-state read models with a sensitive-state guard and a bounded live-path cache.
-- **Model reasoning as audit evidence** — [0133](adr/0133-model-reasoning-audit-capture.md) (Proposed) captures provider reasoning at the `@loom/llm` seam into an erasable sidecar store, referenced by a userspace event the fold ignores; signatures ride inline for tool-loop continuation.
+- **Model reasoning as audit evidence** — [0133](adr/0133-model-reasoning-audit-capture.md) (Accepted) captures provider reasoning at the `@loom/llm` seam into an erasable sidecar store, referenced by a userspace event the fold ignores; signatures ride inline for tool-loop continuation.
 
 ## The one-paragraph version
 
