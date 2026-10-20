@@ -268,6 +268,8 @@ export class EffectRuntime {
    * sink. It owns every rule that makes a live tail safe:
    *  - REFUSED (undefined) when any middleware `inspectsOutput` — streaming would
    *    deliver text past a check that cannot see it; the call runs non-streamed.
+   *  - A reasoning delta (ADR 0133 D6) passes its own `deltaGuard` instances the same way and
+   *    reaches the per-call sink only.
    *  - Each text delta passes the middleware `deltaGuard`s FIRST; a guard that throws
    *    severs the stream and the offending delta is never delivered.
    *  - Text is delivered as untrusted (tainted) content.
@@ -314,6 +316,9 @@ export class EffectRuntime {
     let settled = false;
     let attempts = 0;
     let guards: Array<(delta: string) => void> = [];
+    // ADR 0133 D6 - reasoning gets guard instances of its own: a guard accumulates the running
+    // TEXT it checks, and reasoning interleaved into it would corrupt that window.
+    let reasoningGuards: Array<(delta: string) => void> = [];
     let sawDone = false;
     let heldUsage: EffectDelta["usage"];
     const dead = (): boolean => settled || base.signal?.aborted === true;
@@ -343,6 +348,24 @@ export class EffectRuntime {
           heldUsage = chunk.usage;
           return;
         }
+        if (chunk.reasoning !== undefined) {
+          const r: TaintedValue<string> = isTainted(chunk.reasoning)
+            ? chunk.reasoning
+            : tainted(chunk.reasoning as unknown as string, `${origin}:reasoning`);
+          // May THROW - the sever, exactly as for text. Runs before delivery.
+          const rtext = unwrapTainted(r);
+          for (const g of reasoningGuards) g(rtext);
+          if (callerSink !== undefined && !dead()) {
+            try {
+              callerSink({ delta: tainted("", origin), reasoning: r });
+            } catch (err) {
+              this.onWarn(
+                `invokeTransient("${toolId}"): onDelta sink threw (ignored): ${String(err)}`
+              );
+            }
+          }
+          return;
+        }
         // An effect that hands over a bare string (a JS caller) still delivers tainted.
         const wrapped: TaintedValue<string> = isTainted(chunk.delta)
           ? chunk.delta
@@ -355,6 +378,9 @@ export class EffectRuntime {
       onExecute: () => {
         attempts += 1;
         guards = factories.map((m) => (m.deltaGuard as NonNullable<typeof m.deltaGuard>)(mwCtx));
+        reasoningGuards = factories.map((m) =>
+          (m.deltaGuard as NonNullable<typeof m.deltaGuard>)(mwCtx)
+        );
         sawDone = false;
         heldUsage = undefined;
         if (attempts > 1) deliver({ delta: tainted("", origin), reset: true, attempt: attempts });
