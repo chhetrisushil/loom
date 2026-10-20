@@ -490,7 +490,7 @@ function loopDefaultsSlot(): LoopDefaults {
  * `defineConfig` calls this with `observability.onWarn` (only when the app gave one) and
  * `observability.reasoning.requireContinuation`. FAIL-CLOSED: `requireReasoningContinuation: true` is
  * monotonic (once any caller in the process sets it, no later call clears it; use
- * {@link resetAgentLoopDefaults} in tests), and an omitted field leaves the earlier value alone.
+ * {@link resetAgentLoopDefaults}, test-only), and an omitted field leaves the earlier value alone.
  * `onWarn` is last-wins. A loop's own option always wins.
  */
 export function configureAgentLoopDefaults(defaults: {
@@ -502,7 +502,11 @@ export function configureAgentLoopDefaults(defaults: {
   if (defaults.requireReasoningContinuation === true) slot.requireReasoningContinuation = true;
 }
 
-/** Clear the process-wide `agentLoop$` defaults (tests; an app never un-requires a refusal). */
+/**
+ * @internal TEST-ONLY. Clears the process-wide `agentLoop$` defaults, including another app's
+ * `requireReasoningContinuation: true` (a fail-closed setting an app never un-requires). Exported
+ * only because tests in sibling packages and repos need a clean slate; production code must not call it.
+ */
 export function resetAgentLoopDefaults(): void {
   const slot = loopDefaultsSlot();
   slot.onWarn = undefined;
@@ -537,8 +541,12 @@ function checkDirectPathReasoning(config: AgentLoopConfig): boolean {
   const message = `agentLoop$: route ${named} can return model reasoning, but the direct routed path (no \`reasoningToolId\`) discards it every turn (the model never gets its earlier thinking back). Set \`reasoningToolId\` (see registerReasoningRoutes) to carry it.`;
   const sink = config.onWarn ?? loopDefaultsSlot().onWarn;
   if (sink !== undefined) {
-    sink(message);
-    return true;
+    try {
+      sink(message);
+      return true;
+    } catch {
+      // A broken warning sink must never fail the run: fall through to the process warning.
+    }
   }
   const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
     .process;

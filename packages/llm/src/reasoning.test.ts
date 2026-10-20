@@ -586,6 +586,41 @@ describe("readReasoning (D4)", () => {
     for (const a of step?.attempts ?? []) expect(a.parts[0]).not.toHaveProperty("text");
   });
 
+  it("reports a redacted block as `redacted`, never `ok`: opaque, no text", async () => {
+    const store = memStore();
+    const events: { eventType: string; payload: unknown }[] = [];
+    const ctx = makeCtx({
+      attempt: 1,
+      emit: ((t: string, p: unknown) => events.push({ eventType: t, payload: p })) as never,
+    });
+    await build(
+      providerWith([
+        { kind: "redacted", signature: "opaque-R", provider: "anthropic" },
+        { kind: "summary", text: "readable", provider: "anthropic" },
+      ]),
+      { store }
+    ).execute("hi", ctx);
+    events.push({ eventType: "STEP_COMPLETED", payload: { stepId: "think", output: {} } });
+    const log = { read: async () => events };
+    const [step] = await readReasoning(log, store, { executionId: "exec-1" });
+    const parts = step?.attempts[0]?.parts ?? [];
+    expect(parts.map((p) => [p.kind, p.status])).toEqual([
+      ["redacted", "redacted"],
+      ["summary", "ok"],
+    ]);
+    expect(parts[0]).not.toHaveProperty("text");
+    const bounded = await readReasoningBounded(
+      log,
+      store,
+      { executionId: "exec-1" },
+      {
+        maxParts: 10,
+        maxBytes: 1000,
+      }
+    );
+    expect(bounded.steps[0]?.attempts[0]?.parts[0]?.status).toBe("redacted");
+  });
+
   it("filters by stepId and does not mark a step that never completed", async () => {
     const store = memStore();
     const log = await logFor(store);

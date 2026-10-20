@@ -210,7 +210,7 @@ Properties:
 ### D4 — Reading it back: an audit reader, not a flow API
 
 `readReasoning(log, store, { executionId, stepId? })` in `@loom/llm` joins `LLM_REASONING_CAPTURED` events to their
-blobs, checks each digest and returns `{ parts, status: "ok" | "erased" | "digest-mismatch" }` per part. Readable
+blobs, checks each digest and returns `{ parts, status: "ok" | "redacted" | "erased" | "digest-mismatch" }` per part (`redacted` is a block the vendor withheld: opaque, never text, not `ok`). Readable
 text is returned **wrapped as untrusted content** (ADR 0085, origin `llm-reasoning:<stepId>`), so putting it into a
 prompt is refused in every instruction position. `ctx` gets no reasoning accessor. A flow that calls `readReasoning`
 inside a step gets tainted text recorded as that step's value, which is replay-safe. A blob not sealed to the

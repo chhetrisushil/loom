@@ -2130,7 +2130,7 @@ provider can return reasoning. ~createLlmEffect~ reduces it before ~parseRespons
 goes to ~reasoning.store~, a ~ReasoningStore { put, get }~, never into a step value; a request-time ~text~ is added
 only to send a part back) and emits the userspace ~LLM_REASONING_CAPTURED~ event (references and digests). A failing
 store ~put~ fails the step. ~readReasoning(log, store, { executionId, stepId?, stepPrefix? })~ is the audit reader (~readReasoningBounded~ adds ~maxParts~ / ~maxBytes~ caps and ~truncated~, applied before any blob is fetched) (per step, per
-attempt, per part ~ok~ / ~erased~ / ~digest-mismatch~; text returned tainted). ~reasoning.onDelta~ is the configured live
+attempt, per part ~ok~ / ~redacted~ / ~erased~ / ~digest-mismatch~; text returned tainted). ~reasoning.onDelta~ is the configured live
 sink (guarded; used with ~live: true~). Exported: ~LlmReasoning~, ~LlmReasoningPart~, ~LlmReasoningKind~,
 ~LlmReasoningOptions~, ~ReasoningStore~, ~LLM_REASONING_CAPTURED~, ~captureReasoning~, ~readReasoning~,
 ~readReasoningBounded~, ~reasoningStoreResolver~, ~textFreeReasoning~, ~layoutOf~, ~LlmLayoutEntry~, ~reasoningDigest~, ~withoutReasoningParts~, ~hasReasoningParts~. In ~@loom/agent~: ~createAgentModelEffect(provider, { reasoning })~
