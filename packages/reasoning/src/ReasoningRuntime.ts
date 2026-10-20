@@ -1,5 +1,10 @@
 import type { LlmResponse } from "@loom/llm";
-import { assertRequestSupported, guardRequest, resolveRequestContent } from "@loom/llm";
+import {
+  assertRequestSupported,
+  guardRequest,
+  resolveRequestContent,
+  textFreeReasoning,
+} from "@loom/llm";
 import { stopReasonConfidence } from "./confidence";
 import { tagRouter } from "./router";
 import type {
@@ -18,6 +23,17 @@ import type {
 // No decision sink → run the decider inline (used by standalone callers outside a
 // durable flow). When a flow passes ctx.decide, the choice is recorded instead.
 const identityDecide: DecideFn = (_id, decider) => Promise.resolve(decider());
+
+/**
+ * ADR 0133 - what leaves this runtime (a result a caller journals, a cache entry) carries reasoning
+ * only in its text-free recorded form: readable text goes to a sidecar through `createLlmEffect`, or
+ * nowhere. The same object when there is no reasoning (G2).
+ */
+function withTextFreeReasoning(res: LlmResponse): LlmResponse {
+  return res.reasoning === undefined
+    ? res
+    : { ...res, reasoning: textFreeReasoning(res.reasoning) };
+}
 
 // The Reasoning Runtime (P3), built as composable stages: route → call → score →
 // elevate. Each route/elevation is a logged decision (P9), so replay is deterministic
@@ -132,6 +148,16 @@ export class ReasoningRuntime {
     signal: AbortSignal | undefined,
     opts: ReasonOptions
   ): Promise<LlmResponse> {
+    // Every path (an invoker, a wrapper serving a record, the cache, the provider) is text-free on exit.
+    return withTextFreeReasoning(await this.callRaw(route, req, signal, opts));
+  }
+
+  private async callRaw(
+    route: ModelRoute,
+    req: ReasoningRequest,
+    signal: AbortSignal | undefined,
+    opts: ReasonOptions
+  ): Promise<LlmResponse> {
     const invoke = opts.invoke;
     if (invoke !== undefined) {
       // R9 — the host makes the call (as an effect, inside the ring). No cache: see ModelInvoker.
@@ -180,12 +206,15 @@ export class ReasoningRuntime {
       }
       // R5 — refs become bytes only now: after the capability check (a refusal must precede any
       // fetch) and after the cache lookup, whose key is the request as written.
-      const res = await route.provider.complete(
-        await resolveRequestContent(guarded, opts.resolveContent, {
-          ...(signal !== undefined && { signal }),
-          // Absent only when there is no resolver; a ref then fails before any fetch.
-          context: opts.resolveContext ?? { executionId: "" },
-        })
+      // ADR 0133: reasoning is reduced BEFORE the cache sees it, so a shared cache never holds text.
+      const res = withTextFreeReasoning(
+        await route.provider.complete(
+          await resolveRequestContent(guarded, opts.resolveContent, {
+            ...(signal !== undefined && { signal }),
+            // Absent only when there is no resolver; a ref then fails before any fetch.
+            context: opts.resolveContext ?? { executionId: "" },
+          })
+        )
       );
       if (cacheKey !== undefined) this.cache?.set(cacheKey, res);
       return res;

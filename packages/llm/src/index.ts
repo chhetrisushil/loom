@@ -35,6 +35,7 @@ export {
   reasoningDigest,
   reasoningStoreResolver,
   sealReasoningText,
+  textFreeReasoning,
 } from "./reasoning";
 export type {
   LlmAudioPart,
