@@ -24,7 +24,11 @@ import type {
 } from "@loom/core";
 import type { ExecutionDispatcher } from "@loom/dispatcher";
 import { EffectRuntime, PolicyAuthorizer } from "@loom/effect-runtime";
-import type { CapabilityAuthorizer, EffectMiddleware } from "@loom/effect-runtime";
+import type {
+  CapabilityAuthorizer,
+  EffectMiddleware,
+  EffectReasoningDefaults,
+} from "@loom/effect-runtime";
 import type {
   BranchRegistry,
   DestructionProof,
@@ -354,6 +358,21 @@ export interface ObservabilityOptions {
    * exactly the storage a cadence is worth setting for.
    */
   onStorageError?: (executionId: string, err: unknown) => void;
+  /**
+   * ADR 0133 D7 - model reasoning as audit evidence: the DEFAULT for every LLM effect registered through
+   * `execution.registerEffects` (a `createLlmEffect` / `createAgentModelEffect` effect's own `reasoning`
+   * option wins, field by field).
+   *
+   * - `store`: where readable reasoning is kept (a content store). Capture is ON when a store is set.
+   * - `capture`: `false`, or a per-call predicate, to override that.
+   * - `live`: let a transport stream reasoning while the call runs (off by default).
+   * - `false`: the explicit, silent opt-out for effects that set nothing themselves: no capture, no warning.
+   *
+   * At boot, an LLM effect whose provider can return reasoning (`capabilities.reasoning`) and that ends
+   * up with no store gets ONE warning through `onWarn` naming it: its reasoning is not kept for audit
+   * (only signatures, for continuation). Effects registered after boot are not checked.
+   */
+  reasoning?: EffectReasoningDefaults | false;
 }
 
 /** `durability.heartbeat` (ADR 0130 D11). */
@@ -1300,7 +1319,7 @@ export const GROUPED_OPTIONS = [
       "crypto",
     ],
   ],
-  ["observability", ["telemetry", "onEvent", "onWarn", "onStorageError"]],
+  ["observability", ["telemetry", "onEvent", "onWarn", "onStorageError", "reasoning"]],
   ["durability", ["snapshotEvery", "retention", "heartbeat"]],
   [
     "execution",
@@ -1362,6 +1381,29 @@ export function normalizeConfig(config: LoomConfig): ResolvedConfig {
 function defaultWarn(message: string): void {
   if (process.env.LOOM_QUIET === "1") return;
   console.warn(`[loom] ${message}`);
+}
+
+/**
+ * ADR 0133 D7 - hand `observability.reasoning` to every LLM effect that can take it, then warn once per
+ * effect whose provider can return reasoning but which is left with no store to keep it in. Runs at boot,
+ * right after `registerEffects`: the nearest point at which the app sees both the registered effects and
+ * their providers' declared capabilities. `false` is silent and keeps nothing.
+ */
+function applyReasoningDefaults(
+  effects: EffectRuntime,
+  defaults: EffectReasoningDefaults | false | undefined,
+  warn: (message: string) => void
+): void {
+  for (const [id, effect] of effects.entries()) {
+    const hook = effect.reasoning;
+    if (hook === undefined) continue;
+    if (defaults !== undefined) hook.adopt(defaults);
+    if (hook.capable && hook.posture() === "unconfigured") {
+      warn(
+        `"${id}" can return model reasoning, but no reasoning store is configured: reasoning is not kept for audit (only signatures, for continuation). Set \`observability.reasoning.store\`, or \`observability.reasoning: false\` to opt out.`
+      );
+    }
+  }
 }
 
 /**
@@ -1514,6 +1556,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // Composition-time effect registration (single-effect dispatchers like
   // mcp.invoke / sandbox.eval register here; P5 — static, at boot).
   config.registerEffects?.(effectRuntime);
+  applyReasoningDefaults(effectRuntime, config.reasoning, config.onWarn ?? defaultWarn);
 
   const projectionRuntime = config.projectionRuntime ?? new InMemoryProjectionRuntime();
   for (const surface of config.surfaces ?? []) {

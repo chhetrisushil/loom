@@ -1,5 +1,5 @@
 import type { TaintedValue } from "@loom/classify";
-import type { Effect, EffectContext, EffectDelta } from "../types";
+import type { Effect, EffectContext, EffectDelta, EffectReasoningHook } from "../types";
 
 export interface LlmEffectOptions {
   /**
@@ -12,6 +12,8 @@ export interface LlmEffectOptions {
   deltaSink?: (chunk: EffectDelta, ctx: EffectContext) => void;
   /** ADR 0133 D6 - the configured reasoning sink the runtime guards (see `Effect.reasoningSink`). */
   reasoningSink?: (delta: TaintedValue<string>, ctx: EffectContext) => void;
+  /** ADR 0133 D7 - what the composition root may ask about the effect's reasoning posture. */
+  reasoning?: EffectReasoningHook;
 }
 
 export class LlmEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TOut> {
@@ -19,6 +21,7 @@ export class LlmEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TOu
   readonly warm?: () => void | Promise<void>;
   readonly deltaSink?: (chunk: EffectDelta, ctx: EffectContext) => void;
   readonly reasoningSink?: (delta: TaintedValue<string>, ctx: EffectContext) => void;
+  readonly reasoning?: EffectReasoningHook;
 
   constructor(
     private readonly fn: (input: TIn, ctx: EffectContext) => Promise<TOut>,
@@ -27,6 +30,7 @@ export class LlmEffect<TIn = unknown, TOut = unknown> implements Effect<TIn, TOu
     if (options.warm !== undefined) this.warm = options.warm;
     if (options.deltaSink !== undefined) this.deltaSink = options.deltaSink;
     if (options.reasoningSink !== undefined) this.reasoningSink = options.reasoningSink;
+    if (options.reasoning !== undefined) this.reasoning = options.reasoning;
   }
 
   execute(input: TIn, ctx: EffectContext): Promise<TOut> {

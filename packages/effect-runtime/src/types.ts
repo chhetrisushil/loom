@@ -266,8 +266,38 @@ export interface ErrorChannelSchema {
   ): { success: true; data: unknown } | { success: false; error: { message: string } };
 }
 
+/**
+ * ADR 0133 D7 - app-level defaults for model-reasoning capture, structural so the composition root
+ * needs no dependency on `@loom/llm`. `store` is the sidecar where readable reasoning is kept
+ * (a content store satisfies it); `capture` defaults to on iff a store is configured.
+ */
+export interface EffectReasoningDefaults {
+  store?: {
+    put(bytes: Uint8Array): Promise<{ readonly __loomContent: string }>;
+    get(ref: { readonly __loomContent: string }): Promise<Uint8Array | null>;
+  };
+  capture?: boolean | ((ctx: EffectContext) => boolean);
+  live?: boolean;
+}
+
+/**
+ * ADR 0133 D7 - what the composition root may ask of an LLM effect about model reasoning: whether its
+ * provider can return any, how it is configured now, and to adopt app-level defaults (the effect's
+ * own settings win field by field). Not part of the call path.
+ */
+export interface EffectReasoningHook {
+  /** The provider declares `capabilities.reasoning`. */
+  readonly capable: boolean;
+  /** `keeps`: a store is configured and capture is not off. `off`: capture is explicitly off. `unconfigured`: neither. */
+  posture(): "keeps" | "off" | "unconfigured";
+  /** Adopt defaults; `false` is the explicit, silent opt-out (capture off) for whatever the effect did not set itself. */
+  adopt(defaults: EffectReasoningDefaults | false): void;
+}
+
 export interface Effect<TIn = unknown, TOut = unknown> {
   kind: EffectKind;
+  /** ADR 0133 D7 - present on an LLM effect built by `createLlmEffect`. */
+  readonly reasoning?: EffectReasoningHook;
   /**
    * K9.3 — the effect's declared delivery semantic. `false` marks a mutating,
    * non-idempotent effect: recovery refuses to silently re-run an attempt in an
