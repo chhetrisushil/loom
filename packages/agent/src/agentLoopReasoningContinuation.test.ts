@@ -11,6 +11,7 @@ import type {
   LlmResponse,
   ReasoningStore,
 } from "@loom/llm";
+import { MAX_INLINE_TOTAL_BYTES } from "@loom/llm";
 import { ReasoningRuntime } from "@loom/reasoning";
 import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
@@ -18,8 +19,14 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { agentLoop$, configureAgentLoopDefaults, registerReasoningRoutes } from "./agentLoop$";
+import {
+  agentLoop$,
+  configureAgentLoopDefaults,
+  registerReasoningRoutes,
+  resetAgentLoopDefaults,
+} from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
+import { mediaResult } from "./toolResultContent";
 
 // ── ADR 0133 D5 — reasoning continuation through agentLoop$ ─────────────────────
 //
@@ -555,6 +562,89 @@ describe("agentLoop$ carries reasoning through the transcript (ADR 0133 D5)", ()
   });
 });
 
+describe("simple compaction keeps the inline media budget honest (ADR 0133 D5)", () => {
+  const mediaLookup = tool$({
+    id: "lookup",
+    name: "Lookup",
+    description: "Looks up",
+    kind: "tool",
+    returnsMedia: true,
+    inputSchema: z.object({}).passthrough(),
+    outputSchema: z.object({}).passthrough(),
+  });
+  const mediaAgent = agent$({ id: "dba", name: "DBA", tools: [mediaLookup] });
+  const piece = Buffer.alloc(60 * 1024, 2).toString("base64"); // 60 KiB each, under the per-part cap
+
+  it("media flattened into the frame still counts: the next oversize result is an isError, never an oversize request", async () => {
+    const seen: LlmRequest[] = [];
+    const provider: LlmProvider = {
+      ...reasoningProvider("m", seen, 3),
+      capabilities: { reasoning: true, image: ["image/png"] },
+    };
+    const effects = new EffectRuntime();
+    effects.register(
+      "model",
+      createAgentModelEffect(provider, { reasoning: { store: memStore() } })
+    );
+    effects.register(
+      "lookup",
+      new ToolEffect(async () =>
+        mediaResult(
+          Array.from({ length: 3 }, () => ({
+            type: "image" as const,
+            mediaType: "image/png",
+            source: { kind: "data" as const, data: piece },
+          }))
+        )
+      )
+    );
+    effects.register("summarize", new ToolEffect(async () => ({ summary: "folded" })));
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+    });
+    const runner: FlowRunner<unknown, unknown> = async (ctx) => ({
+      content: (
+        await agentLoop$(
+          ctx,
+          {
+            definition: mediaAgent,
+            modelToolId: "model",
+            maxIterations: 9,
+            compaction: { toolId: "summarize", afterMessages: 2, keepRecent: 2 },
+          },
+          { prompt: "go" }
+        )
+      ).content,
+    });
+    runtime.registerFlow(flowDef, runner);
+    const h = await runtime.start(flowDef, {}, { executionId: "media-1" });
+    expect((await h.waitForCompletion()).status).toBe("completed");
+
+    const idx = seen.findIndex((r) => frameOf(r) !== undefined);
+    expect(idx).toBeGreaterThan(0);
+    // The frame carries the first result's media inline (flattened to top-level parts).
+    const inlineIn = (r: LlmRequest): number =>
+      r.messages
+        .flatMap((m) => (typeof m.content === "string" ? [] : m.content))
+        .flatMap((p) => (p.type === "tool_result" && Array.isArray(p.content) ? p.content : [p]))
+        .filter((p) => p.type === "image")
+        .reduce(
+          (n, p) =>
+            n +
+            Buffer.from(String((p as { source: { data?: string } }).source.data ?? ""), "base64")
+              .length,
+          0
+        );
+    expect(inlineIn(seen[idx] as LlmRequest)).toBeGreaterThan(0);
+    // No request ever exceeds the cap, and the result after the frame was refused as an error.
+    for (const r of seen) expect(inlineIn(r)).toBeLessThanOrEqual(MAX_INLINE_TOTAL_BYTES);
+    const after = seen[idx + 1] as LlmRequest;
+    expect(JSON.stringify(after)).toContain("store it and return a ref");
+  });
+});
+
 describe("a routed loop drops another model's reasoning (ADR 0133 D5, same-provider switch)", () => {
   function bootRouted(seen: { a: LlmRequest[]; b: LlmRequest[] }, withRing: boolean) {
     const order = ["a", "b", "b", "b"];
@@ -736,6 +826,7 @@ describe("the direct routed path discards reasoning every turn (ADR 0133 D7)", (
   function directRun(opts: {
     capable: boolean;
     ring?: boolean;
+    ringRequired?: boolean;
     onWarn?: (m: string) => void;
     require?: boolean;
     runtime?: ReasoningRuntime;
@@ -762,6 +853,7 @@ describe("the direct routed path discards reasoning every turn (ADR 0133 D7)", (
             definition: dba,
             reasoning,
             ...(opts.ring === true && { reasoningToolId: toolIdFor }),
+            ...(opts.ringRequired === true && { requireEffectRing: true }),
             ...(opts.onWarn !== undefined && { onWarn: opts.onWarn }),
             ...(opts.require !== undefined && { requireReasoningContinuation: opts.require }),
           },
@@ -813,6 +905,40 @@ describe("the direct routed path discards reasoning every turn (ADR 0133 D7)", (
     expect((await directRun({ capable: false, require: true }).value()).ok).toBe(true);
   });
 
+  it("one message for one condition: requireEffectRing on the direct path throws its ring error and no discard warning fires", async () => {
+    const warnings: string[] = [];
+    const a = directRun({ capable: true, ringRequired: true, onWarn: (m) => warnings.push(m) });
+    const out = await a.value();
+    expect(out.error).toBe("Error");
+    expect(String(out.message)).toContain("requireEffectRing");
+    expect(warnings).toEqual([]);
+  });
+
+  it("one message for one condition: the discard warning covers the direct path, so the ring advisory stays quiet", async () => {
+    const proc = process.emitWarning;
+    const codes: string[] = [];
+    process.emitWarning = ((_m: string, o?: { code?: string }) =>
+      void codes.push(o?.code ?? "")) as never;
+    try {
+      await directRun({ capable: true }).go();
+      expect(codes).toEqual(["LOOM_AGENT_REASONING_DISCARDED"]);
+    } finally {
+      process.emitWarning = proc;
+    }
+  });
+
+  it("configureAgentLoopDefaults is fail-closed: the refusal is monotonic and an omitted field changes nothing", async () => {
+    try {
+      configureAgentLoopDefaults({ requireReasoningContinuation: true });
+      configureAgentLoopDefaults({});
+      configureAgentLoopDefaults({ requireReasoningContinuation: false });
+      expect((await directRun({ capable: true }).value()).error).toBe("AgentLoopConfigError");
+    } finally {
+      resetAgentLoopDefaults();
+    }
+    expect((await directRun({ capable: true }).value()).ok).toBe(true);
+  });
+
   it("configureAgentLoopDefaults supplies the app-wide sink and refusal; a loop's own option wins", async () => {
     const warnings: string[] = [];
     configureAgentLoopDefaults({ onWarn: (m) => warnings.push(m) });
@@ -823,7 +949,7 @@ describe("the direct routed path discards reasoning every turn (ADR 0133 D7)", (
       expect((await directRun({ capable: true }).value()).error).toBe("AgentLoopConfigError");
       expect((await directRun({ capable: true, require: false }).value()).ok).toBe(true);
     } finally {
-      configureAgentLoopDefaults({});
+      resetAgentLoopDefaults();
     }
   });
 });

@@ -367,7 +367,19 @@ a process warning (`LOOM_AGENT_REASONING_DISCARDED`). Opt-in refusal: `observabi
 true` (or `requireReasoningContinuation: true` on `agentLoop$`) throws `AgentLoopConfigError` instead, on every
 call. `observability.reasoning: false` silences the warning. Default stays a warning. Nothing fires with
 `reasoningToolId`, with a provider that does not declare the capability, or when nothing is configured. The
-app-wide default is process-wide state, replaced by each `defineConfig`.
+app-wide default is process-wide state and is deliberately **fail-closed**. A non-global channel is not
+feasible: the direct path has no effect, so there is nothing for `defineConfig` to adopt onto (the loop holds a
+caller-built `ReasoningRuntime`, which `defineConfig` never sees). So the slot is keyed on a global symbol (a
+duplicate copy of `@loom/agent` shares it instead of configuring a copy the loop never reads), the refusal is
+**monotonic** (once any `defineConfig` in the process sets `requireContinuation: true`, a later one without it
+cannot clear it; only a loop's own `requireReasoningContinuation: false`, or the test-only
+`resetAgentLoopDefaults()`, overrides), and `observability.onWarn` is installed only when the app **gave** one
+(last wins) - the default sink is never installed globally, so it cannot reroute an unrelated loop's warnings.
+One message per condition: with `requireEffectRing` the ring error is the only message; otherwise the discard
+warning also covers the `reasoning`-without-`reasoningToolId` ring advisory for that call.
+**Resume caveat.** The refusal reads host config, not the journal, so tightening `requireContinuation` fails
+every parked or in-flight direct-path execution on resume (cleanly, before any journal write); loosen it, or
+move those executions to `reasoningToolId`, first.
 
 ### D8 — Second-consumer check (ADR 0083)
 

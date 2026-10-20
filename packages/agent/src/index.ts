@@ -14,6 +14,7 @@ export {
   agentLoop$,
   boundResponse,
   configureAgentLoopDefaults,
+  resetAgentLoopDefaults,
   MAX_RECORDED_RESPONSE_CHARS,
   memoryWriteBackEffect,
   registerReasoningRoutes,

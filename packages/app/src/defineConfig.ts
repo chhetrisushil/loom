@@ -1573,7 +1573,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   );
   // ADR 0133 D7 - agentLoop$ cannot see this config, so hand it the two things it needs.
   configureAgentLoopDefaults({
-    ...(config.reasoning !== false && { onWarn: config.onWarn ?? defaultWarn }),
+    // Only an app that GAVE a sink installs one: the default must not reroute unrelated loops' warnings.
+    ...(config.reasoning !== false && config.onWarn !== undefined && { onWarn: config.onWarn }),
     ...(config.reasoning !== false &&
       config.reasoning?.requireContinuation === true && { requireReasoningContinuation: true }),
   });
