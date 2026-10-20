@@ -18,7 +18,7 @@ import { WorkflowRuntime } from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { agentLoop$, registerReasoningRoutes } from "./agentLoop$";
+import { agentLoop$, configureAgentLoopDefaults, registerReasoningRoutes } from "./agentLoop$";
 import { createAgentModelEffect } from "./createAgentModelEffect";
 
 // ── ADR 0133 D5 — reasoning continuation through agentLoop$ ─────────────────────
@@ -119,6 +119,28 @@ const reasoningIn = (req: LlmRequest): Record<string, unknown>[] =>
   req.messages.flatMap((m) => partsOf(m, "reasoning"));
 const signaturesIn = (req: LlmRequest): unknown[] =>
   req.messages.flatMap((m) => partsOf(m, "tool_use")).map((p) => p.signature);
+
+/** The request's single compaction frame message (simple compaction), if it is one. */
+const frameOf = (r: LlmRequest): LlmMessage | undefined => {
+  const m = r.messages[0];
+  if (m === undefined || typeof m.content === "string") return undefined;
+  const t = m.content[0];
+  return t?.type === "text" && String(t.text).startsWith("Summary of earlier turns")
+    ? m
+    : undefined;
+};
+
+/** Every tool_use is answered by a tool_result in the NEXT message (a provider rejects an open one mid-request). */
+function expectPaired(r: LlmRequest): void {
+  r.messages.forEach((m, i) => {
+    const calls = partsOf(m, "tool_use").map((p) => p.id);
+    if (calls.length === 0) return;
+    const answered = (
+      r.messages[i + 1] ? partsOf(r.messages[i + 1] as LlmMessage, "tool_result") : []
+    ).map((p) => p.toolUseId);
+    expect(answered.sort()).toEqual(calls.sort());
+  });
+}
 
 function boot(opts: {
   seen: LlmRequest[];
@@ -245,7 +267,7 @@ describe("agentLoop$ carries reasoning through the transcript (ADR 0133 D5)", ()
     expect(JSON.stringify(await eventStore.read("c2"))).not.toContain("SECRET-THOUGHT");
   });
 
-  it("compaction drops EVERY reasoning part from the kept suffix and from the summarizer input; tool signatures stay", async () => {
+  it("compaction on a reasoning transcript is SIMPLE: one user message (summary + the in-flight round), no assistant turn, no tool_use, no reasoning; later turns append", async () => {
     const seen: LlmRequest[] = [];
     const summarizerInputs: unknown[] = [];
     const { runtime } = boot({
@@ -258,19 +280,201 @@ describe("agentLoop$ carries reasoning through the transcript (ADR 0133 D5)", ()
     expect((await h.waitForCompletion()).status).toBe("completed");
 
     expect(summarizerInputs.length).toBeGreaterThan(0);
+    // The summarizer sees no reasoning, and the in-flight round (its tool_use + result) is inside it.
     expect(JSON.stringify(summarizerInputs)).not.toContain('"reasoning"');
-    // Before the first compaction reasoning flowed; once the summary replaced the prefix, none of
-    // the kept messages carried a part, yet the kept tool_use still has its signature.
-    const compacted = seen.filter((r) =>
-      r.messages.some((m) => typeof m.content === "string" && m.content.startsWith("Summary of"))
+    const firstIn = summarizerInputs[0] as { messages: LlmMessage[] };
+    expect(firstIn.messages[firstIn.messages.length - 1]?.role).toBe("user");
+    expect(JSON.stringify(firstIn.messages)).toContain("tool_result");
+
+    const idx = seen.findIndex((r) => frameOf(r) !== undefined);
+    expect(idx).toBeGreaterThan(0);
+    const first = seen[idx] as LlmRequest;
+    // [user(summary + results)] exactly: nothing from before the boundary but its summary.
+    expect(first.messages).toHaveLength(1);
+    expect(first.messages[0]?.role).toBe("user");
+    const text = JSON.stringify(first.messages[0]);
+    expect(text).toContain("Summary of earlier turns: folded");
+    expect(text).toContain("Result of lookup (call c");
+    expect(reasoningIn(first)).toEqual([]);
+    expect(first.messages.flatMap((m) => partsOf(m, "tool_use"))).toEqual([]);
+    expect(first.messages.flatMap((m) => partsOf(m, "tool_result"))).toEqual([]);
+    expect(JSON.stringify(first)).not.toContain("SECRET-THOUGHT");
+
+    // The next request appends to the new, stable prefix and carries the NEW reasoning.
+    const next = seen[idx + 1] as LlmRequest;
+    expect(next.messages[0]).toEqual(first.messages[0]);
+    expect(next.messages.length).toBe(3);
+    expect(reasoningIn(next).length).toBe(1);
+    // Pairing holds on every request ever sent: each tool_use is answered by the next message.
+    for (const r of seen) expectPaired(r);
+  });
+
+  it("Gemini-shaped parts take the same path: no functionCall (tool_use) is replayed after compaction", async () => {
+    const seen: LlmRequest[] = [];
+    const effects = new EffectRuntime();
+    effects.register(
+      "model",
+      createAgentModelEffect(reasoningProvider("g", seen, 3, "gemini"), {
+        reasoning: { store: memStore() },
+      })
+    );
+    effects.register("lookup", new ToolEffect(async (input) => ({ ok: true, input })));
+    effects.register("summarize", new ToolEffect(async () => ({ summary: "folded" })));
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+    });
+    const runner: FlowRunner<unknown, unknown> = async (ctx) =>
+      agentLoop$(
+        ctx,
+        {
+          definition: dba,
+          modelToolId: "model",
+          maxIterations: 9,
+          compaction: { toolId: "summarize", afterMessages: 3, keepRecent: 2 },
+        },
+        { prompt: "go" }
+      );
+    runtime.registerFlow(flowDef, runner);
+    const h = await runtime.start(flowDef, {}, { executionId: "g1" });
+    expect((await h.waitForCompletion()).status).toBe("completed");
+    const compacted = seen.filter((r) => frameOf(r) !== undefined);
+    expect(compacted.length).toBeGreaterThan(0);
+    // The request right after the boundary is the frame alone: no functionCall, no thought part.
+    const first = compacted[0] as LlmRequest;
+    expect(first.messages).toHaveLength(1);
+    expect(first.messages.flatMap((m) => partsOf(m, "tool_use"))).toEqual([]);
+    expect(reasoningIn(first)).toEqual([]);
+    for (const r of seen) expectPaired(r);
+  });
+
+  it("without reasoning on the transcript compaction is EXACTLY keep-tail: string summary, kept suffix with its tool_use, same frame ids", async () => {
+    const run = async (withReasoning: boolean) => {
+      const seen: LlmRequest[] = [];
+      const effects = new EffectRuntime();
+      const base = reasoningProvider("m", seen);
+      const provider: LlmProvider = withReasoning
+        ? base
+        : {
+            async complete(r) {
+              const { reasoning: _r, ...rest } = await base.complete(r);
+              return rest;
+            },
+          };
+      effects.register(
+        "model",
+        createAgentModelEffect(provider, { reasoning: { store: memStore() } })
+      );
+      effects.register("lookup", new ToolEffect(async (input) => ({ ok: true, input })));
+      effects.register("summarize", new ToolEffect(async () => ({ summary: "folded" })));
+      const eventStore = new InMemoryAsyncEventStore();
+      const runtime = new WorkflowRuntime({
+        eventStore,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        effectRuntime: effects,
+      });
+      const runner: FlowRunner<unknown, unknown> = async (ctx) =>
+        agentLoop$(
+          ctx,
+          {
+            definition: dba,
+            modelToolId: "model",
+            maxIterations: 9,
+            compaction: { toolId: "summarize", afterMessages: 3, keepRecent: 2 },
+          },
+          { prompt: "go" }
+        );
+      runtime.registerFlow(flowDef, runner);
+      const h = await runtime.start(flowDef, {}, { executionId: "k" });
+      expect((await h.waitForCompletion()).status).toBe("completed");
+      return { seen, ids: compactIds(await eventStore.read("k")) };
+    };
+    const plain = await run(false);
+    const compacted = plain.seen.filter(
+      (r) =>
+        typeof r.messages[0]?.content === "string" && r.messages[0].content.startsWith("Summary")
     );
     expect(compacted.length).toBeGreaterThan(0);
     const first = compacted[0] as LlmRequest;
-    expect(reasoningIn(first)).toEqual([]);
-    expect(signaturesIn(first).length).toBeGreaterThan(0);
+    // Exactly the keep-tail shape: the summary, then the kept suffix with its tool_use + signature.
+    expect(first.messages[0]).toEqual({
+      role: "user",
+      content: "Summary of earlier turns: folded",
+    });
+    expect(first.messages.length).toBeGreaterThan(1);
     expect(signaturesIn(first).every((s) => typeof s === "string")).toBe(true);
-    // The turns AFTER the edit point accumulate reasoning again (valid: produced after the edit).
-    expect(seen.some((r) => reasoningIn(r).length > 0 && !compacted.includes(r))).toBe(true);
+    expect(signaturesIn(first).length).toBeGreaterThan(0);
+    // WHEN the first compaction fires is the same with or without reasoning (later ones differ by
+    // design: a simple compaction leaves a shorter transcript than keep-tail does).
+    expect((await run(true)).ids[0]).toEqual(plain.ids[0]);
+  });
+
+  it("replay: a compacting run recorded without reasoning resumes with ZERO model calls for recorded turns and identical values", async () => {
+    const mk = (seen: LlmRequest[], store?: InMemoryAsyncEventStore) => {
+      const noReasoning = (id: string): LlmProvider => {
+        const base = reasoningProvider(id, seen);
+        return {
+          async complete(r) {
+            const { reasoning: _r, ...rest } = await base.complete(r);
+            return rest;
+          },
+        };
+      };
+      const effects = new EffectRuntime();
+      effects.register("model", createAgentModelEffect(noReasoning("m")));
+      effects.register("lookup", new ToolEffect(async (input) => ({ ok: true, input })));
+      effects.register("summarize", new ToolEffect(async () => ({ summary: "folded" })));
+      const eventStore = store ?? new InMemoryAsyncEventStore();
+      const runtime = new WorkflowRuntime({
+        eventStore,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+        effectRuntime: effects,
+        divergence: "fail",
+      });
+      const runner: FlowRunner<unknown, { content: string }> = async (ctx) => ({
+        content: (
+          await agentLoop$(
+            ctx,
+            {
+              definition: dba,
+              modelToolId: "model",
+              maxIterations: 9,
+              compaction: { toolId: "summarize", afterMessages: 3, keepRecent: 2 },
+            },
+            { prompt: "go" }
+          )
+        ).content,
+      });
+      runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
+      return { runtime, eventStore };
+    };
+    const seen1: LlmRequest[] = [];
+    const first = mk(seen1);
+    const h = await first.runtime.start(flowDef, {}, { executionId: "rq" });
+    expect((await h.waitForCompletion()).status).toBe("completed");
+    const full = await first.eventStore.read("rq");
+    const cutoff = full.findIndex((e: EventEnvelope) =>
+      String((e.payload as { stepId?: string }).stepId ?? "").startsWith("dba#turn:3")
+    );
+    expect(cutoff).toBeGreaterThan(0);
+    const prefix = full.slice(0, cutoff);
+    expect(compactIds(prefix).length).toBeGreaterThan(0);
+    const crashed = new InMemoryAsyncEventStore();
+    for (const e of prefix) await crashed.append(e);
+    const folded = new ReplayVM(prefix, {
+      executionId: "rq",
+      workflowId: "ask",
+      workflowVersion: "1.0.0",
+    }).getState();
+    const seen2: LlmRequest[] = [];
+    const resumed = mk(seen2, crashed);
+    const recovered = await resumed.runtime.restoreFromState(folded);
+    expect((await recovered.waitForCompletion()).status).toBe("completed");
+    // Turns 0..2 (and their compaction) came from the log; only turns 3.. called the model.
+    expect(seen2).toHaveLength(seen1.length - 3);
+    expect(compactIds(await crashed.read("rq"))).toEqual(compactIds(full));
+    expect(JSON.stringify(seen2[0])).toBe(JSON.stringify(seen1[3]));
   });
 
   it("reasoning parts weigh zero bytes: a reasoning run compacts on exactly the turns a reasoning-free run does", async () => {
@@ -523,5 +727,103 @@ describe("a change to the tool set is an edit point (ADR 0133 D5)", () => {
     const seen = await run(false);
     expect(reasoningIn(seen[1] as LlmRequest).map((p) => p.signature)).toEqual(["sig-0"]);
     expect(reasoningIn(seen[2] as LlmRequest).map((p) => p.signature)).toEqual(["sig-0", "sig-1"]);
+  });
+});
+
+// ── ADR 0133 D7 - the direct routed path with a reasoning provider ───────────────────
+
+describe("the direct routed path discards reasoning every turn (ADR 0133 D7)", () => {
+  function directRun(opts: {
+    capable: boolean;
+    ring?: boolean;
+    onWarn?: (m: string) => void;
+    require?: boolean;
+    runtime?: ReasoningRuntime;
+  }) {
+    const seen: LlmRequest[] = [];
+    const provider: LlmProvider = {
+      ...reasoningProvider("p", seen, 0),
+      ...(opts.capable && { capabilities: { reasoning: true } }),
+    };
+    const reasoning =
+      opts.runtime ?? new ReasoningRuntime({ routes: [{ id: "r1", provider, tier: 0 }] });
+    const effects = new EffectRuntime();
+    const toolIdFor = registerReasoningRoutes(effects, reasoning);
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+    });
+    const runner: FlowRunner<unknown, unknown> = async (ctx) => {
+      try {
+        await agentLoop$(
+          ctx,
+          {
+            definition: dba,
+            reasoning,
+            ...(opts.ring === true && { reasoningToolId: toolIdFor }),
+            ...(opts.onWarn !== undefined && { onWarn: opts.onWarn }),
+            ...(opts.require !== undefined && { requireReasoningContinuation: opts.require }),
+          },
+          { prompt: "go" }
+        );
+        return { ok: true };
+      } catch (err) {
+        return { error: (err as Error).name, message: (err as Error).message };
+      }
+    };
+    runtime.registerFlow(flowDef, runner);
+    let n = 0;
+    const value = async (): Promise<Record<string, unknown>> => {
+      const h = await runtime.start(flowDef, {}, { executionId: `d${n++}` });
+      const state = await h.waitForCompletion();
+      return (state.variables._output ?? {}) as Record<string, unknown>;
+    };
+    return { reasoning, value, go: async (): Promise<void> => void (await value()) };
+  }
+
+  it("warns ONCE (through the sink) naming the route when a reasoning-capable provider is on the direct path", async () => {
+    const warnings: string[] = [];
+    const a = directRun({ capable: true, onWarn: (m) => warnings.push(m) });
+    await a.go();
+    await a.go();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('"r1"');
+    expect(warnings[0]).toContain("discards it every turn");
+    expect(warnings[0]).toContain("reasoningToolId");
+  });
+
+  it("negative: no warning with reasoningToolId, nor for a provider without the capability, nor with nothing configured (G2)", async () => {
+    const warnings: string[] = [];
+    await directRun({ capable: true, ring: true, onWarn: (m) => warnings.push(m) }).go();
+    await directRun({ capable: false, onWarn: (m) => warnings.push(m) }).go();
+    await directRun({ capable: false }).go();
+    expect(warnings).toEqual([]);
+  });
+
+  it("requireReasoningContinuation refuses with AgentLoopConfigError (every time, even after a prior warning)", async () => {
+    const a = directRun({ capable: true, require: true });
+    for (let i = 0; i < 2; i++) {
+      const out = await a.value();
+      expect(out.error).toBe("AgentLoopConfigError");
+      expect(String(out.message)).toContain('"r1"');
+    }
+    // negative: the same refusal does not fire on the ring, or for a provider without the capability.
+    expect((await directRun({ capable: true, ring: true, require: true }).value()).ok).toBe(true);
+    expect((await directRun({ capable: false, require: true }).value()).ok).toBe(true);
+  });
+
+  it("configureAgentLoopDefaults supplies the app-wide sink and refusal; a loop's own option wins", async () => {
+    const warnings: string[] = [];
+    configureAgentLoopDefaults({ onWarn: (m) => warnings.push(m) });
+    try {
+      await directRun({ capable: true }).go();
+      expect(warnings).toHaveLength(1);
+      configureAgentLoopDefaults({ requireReasoningContinuation: true });
+      expect((await directRun({ capable: true }).value()).error).toBe("AgentLoopConfigError");
+      expect((await directRun({ capable: true, require: false }).value()).ok).toBe(true);
+    } finally {
+      configureAgentLoopDefaults({});
+    }
   });
 });
