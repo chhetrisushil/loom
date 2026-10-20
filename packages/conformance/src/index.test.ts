@@ -75,6 +75,7 @@ import {
 } from "./index";
 import { checkDeclaredMediaOnWire } from "./mediaWire";
 import { checkPartsReadAsText } from "./partsTextRead";
+import { checkReasoningParity } from "./reasoningParity";
 import { checkToolCallStreamParity } from "./toolCallParity";
 
 /** A minimal in-memory WorkerRuntime for the dispatcher conformance self-test. */
@@ -1122,4 +1123,74 @@ describe("checkPartsReadAsText on the first-party providers (R5)", () => {
       await expect(checkPartsReadAsText(make())).resolves.toBeUndefined();
     });
   }
+});
+
+// --- ADR 0133: reasoning conformance. A provider that reports reasoning passes; each lie fails. ---
+describe("checkReasoningParity (ADR 0133 D2)", () => {
+  const request: LlmRequest = { messages: [{ role: "user", content: "think" }] };
+  const reasoning = [
+    { kind: "summary" as const, text: "weighing", signature: "s", provider: "p" },
+    { kind: "redacted" as const, signature: "opaque", provider: "p" },
+  ];
+  const honest = (
+    overrides: { streamed?: typeof reasoning | undefined; deltas?: string[] } = {}
+  ): LlmProvider => ({
+    async complete() {
+      return { content: "ok", stopReason: "end_turn", reasoning };
+    },
+    async *stream() {
+      for (const d of overrides.deltas ?? ["weigh", "ing"])
+        yield { delta: "", done: false, reasoningDelta: d };
+      yield {
+        delta: "ok",
+        done: true,
+        ...("streamed" in overrides
+          ? overrides.streamed !== undefined && { reasoning: overrides.streamed }
+          : { reasoning }),
+      };
+    },
+  });
+
+  it("passes an honest provider, a provider reporting none, and one with no stream", async () => {
+    await expect(checkReasoningParity(honest(), request)).resolves.toBeUndefined();
+    await expect(checkReasoningParity(echoProvider, request)).resolves.toBeUndefined();
+    const noStream: LlmProvider = {
+      complete: async () => ({ content: "", stopReason: "end_turn", reasoning }),
+    };
+    await expect(checkReasoningParity(noStream, request)).resolves.toBeUndefined();
+  });
+
+  it("fails when the stream drops the reasoning complete reported", async () => {
+    await expect(
+      checkReasoningParity(honest({ streamed: undefined, deltas: [] }), request)
+    ).rejects.toThrow();
+  });
+
+  it("fails when the stream reports different reasoning than complete", async () => {
+    const other = [
+      { ...(reasoning[0] as (typeof reasoning)[0]), signature: "forged" },
+      reasoning[1] as (typeof reasoning)[1],
+    ];
+    await expect(checkReasoningParity(honest({ streamed: other }), request)).rejects.toThrow();
+  });
+
+  it("fails when the deltas do not add up to the terminal readable text", async () => {
+    await expect(checkReasoningParity(honest({ deltas: ["weigh"] }), request)).rejects.toThrow();
+    await expect(
+      checkReasoningParity(honest({ deltas: ["weighing", "!"] }), request)
+    ).rejects.toThrow();
+  });
+
+  it("fails when the stream emits reasoning deltas but neither path reports reasoning", async () => {
+    const liar: LlmProvider = {
+      async complete() {
+        return { content: "ok", stopReason: "end_turn" };
+      },
+      async *stream() {
+        yield { delta: "", done: false, reasoningDelta: "secret" };
+        yield { delta: "ok", done: true };
+      },
+    };
+    await expect(checkReasoningParity(liar, request)).rejects.toThrow();
+  });
 });
