@@ -2135,7 +2135,7 @@ sink (guarded; used with ~live: true~). Exported: ~LlmReasoning~, ~LlmReasoningP
 ~readReasoningBounded~, ~reasoningStoreResolver~, ~textFreeReasoning~, ~layoutOf~, ~LlmLayoutEntry~, ~reasoningDigest~, ~withoutReasoningParts~, ~hasReasoningParts~. In ~@loom/agent~: ~createAgentModelEffect(provider, { reasoning })~
 and ~registerReasoningRoutes(effects, reasoning, { reasoning })~ thread the store; ~agentLoop$~ carries the parts
 (and tool signatures) on the assistant turn and drops every reasoning part on compaction and another route's parts
-on a model switch. ~defineConfig({ observability: { reasoning } })~ sets the default (~{ store?, capture?, live? } | false~).
+on a model switch. ~defineConfig({ observability: { reasoning } })~ sets the default (~{ store?, capture?, live?, requireContinuation? } | false~); ~requireContinuation: true~ makes ~agentLoop$~'s direct routed path (no ~reasoningToolId~) throw ~AgentLoopConfigError~ for a reasoning-capable route instead of warning (also ~AgentLoopConfig.requireReasoningContinuation~ / ~onWarn~, and ~configureAgentLoopDefaults~). With reasoning on the transcript, compaction is the simple shape (one user message of summary + the in-flight round's results).
 
 Providers talk to vendor HTTP APIs over ~fetch~ — no vendor SDK dependency. In tests, use the VCR providers from [[#dx][~@loom/testing~]].
 

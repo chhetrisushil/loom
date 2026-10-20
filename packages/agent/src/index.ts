@@ -13,6 +13,7 @@ export {
   ResponseTooLargeError,
   agentLoop$,
   boundResponse,
+  configureAgentLoopDefaults,
   MAX_RECORDED_RESPONSE_CHARS,
   memoryWriteBackEffect,
   registerReasoningRoutes,

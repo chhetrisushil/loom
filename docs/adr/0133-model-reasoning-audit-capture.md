@@ -231,7 +231,7 @@ was produced. So, for parts sent back to a provider:
 
 - When a transcript is **edited** (`agentLoop$` compaction, conversation rotation or rolling summary, a model or
   provider switch), every reasoning part **after the edit point** is dropped from the request. Compaction replaces
-  the prefix, so it drops them all.
+  the prefix, so it drops them all, and when reasoning is carried it takes the SIMPLE shape below.
 - When the **tool set or the system prompt changes**, a signature (which covers `tools` and `system`) no longer
   verifies for any block produced before the change, so EVERY reasoning part on the transcript is dropped from
   then on (tool-call signatures stay). `agentLoop$` fixes `system` for the run, so the only change it makes
@@ -249,9 +249,8 @@ was produced. So, for parts sent back to a provider:
 **How `agentLoop$` applies it (implemented).** The assistant turn carries the response's reasoning parts in the vendor's order
 (`layout`, falling back to reasoning-first) and each tool call's `signature` (`assistantMessageOf`). The model effect resolves the parts at request time from the
 same store it captured into (`createAgentModelEffect(provider, { reasoning: { store } })`). On compaction every
-reasoning part still on the transcript is after the edit point, so all are dropped from the kept suffix and from
-the summarizer's input (tool signatures stay); that includes the reasoning of an in-flight tool round, which is
-valid but loses that reasoning. On a `reasoning` runtime a route's model id is known from the
+reasoning part still on the transcript is after the edit point, so all are dropped from the summarizer's input
+and from what the next request replays; the shape depends on whether reasoning is carried (next paragraph). On a `reasoning` runtime a route's model id is known from the
 recorded route decision, so before each effect-backed call the parts a DIFFERENT route produced are dropped (a
 same-provider model switch included: Anthropic binds a block to its model; a provider never sees another
 provider's parts anyway). The rule is per part (produced by this route or not), so after A, B, B the second B call
@@ -263,6 +262,35 @@ a test pins that no request after the first carries a reasoning part. The routed
 (`textFreeReasoning`: signature, kind, provider, `omitted: true` when text existed), so readable text never leaves
 the provider/effect layer except through the sidecar and `readReasoning`. The drop happens on the live request
 only: a replay serves the recorded frames.
+
+**Compaction shape (implemented).** The vendor rules, from the Anthropic documentation (not verified live): a
+thinking block's signature binds the top-level system, the set of tools and every earlier message, so an edit
+before a block invalidates it and every later block; with `prefix_mismatch_behavior: "drop_block"` the API drops
+the first mismatched block and every later one "including blocks in an assistant turn whose tool_use is still
+waiting on its tool_result". Stripping every `thinking` and `redacted_thinking` block (each turn's text and
+`tool_use` stay) is a valid request, but is documented as a one-time recovery, "not a steady-state pattern": an
+integration that does it every request loses that reasoning and the prompt-cache benefit. For client-side
+compaction the documented recommendation is "simple compaction": summarize the conversation into a single
+message, start the next request with that summary plus the new user turn, "replay nothing else - no earlier turns,
+no earlier thinking blocks"; keep-tail compaction must strip thinking from retained turns, and "don't compact in
+the middle of a tool round (an assistant turn whose tool_use is still waiting on its tool_result should go back
+with its thinking intact)". A kept tail with an in-flight round therefore cannot keep that round's thinking valid.
+So, when compaction fires (same trigger, same turn, same frame id `#turn:<t>:compact`) AND any message on the
+transcript carries a `reasoning` part, `agentLoop$` uses **simple compaction**: the summarizer is given the WHOLE
+transcript (reasoning stripped, the in-flight round's tool calls and results included) and the next request is a
+single user message holding the summary followed by the in-flight round's results as text parts (a label per
+result, `isError` marked, media parts passed through), with no assistant turn, no `tool_use`, no `tool_result`
+and no thinking block replayed. Taint is unchanged: a result's content keeps its own tainted text part, and the
+summary is tainted when anything it covers was (ADR 0085 positional rule: only in a user message, fenced). Turns
+after it append normally, so their new reasoning is bound to the new, stable prefix. When NO message carries a
+reasoning part, compaction is exactly the previous keep-tail (identical requests, frame ids and decisions; a
+test pins it, and a recorded run replays with zero model calls). The choice is a pure function of the journaled
+transcript. A run recorded by the earlier, unreleased build of this ADR that held reasoning parts at a compaction
+would ask the summarizer a different input on resume.
+
+**The direct routed path.** `agentLoop$` with `reasoning` and no `reasoningToolId` is valid (the API accepts the
+request) but, by the vendor rule above, strips thinking on every request. It is not refused by default, because that
+would break every existing direct-path app on a current Anthropic model; see D7 for the warning and the opt-in refusal.
 
 Dropping is the vendor's documented remedy, so continuation degrades (less carried-over reasoning) instead of
 failing. The decision is a pure function of the journaled transcript plus the resolver's answer, and it runs on the
@@ -328,6 +356,19 @@ options win field by field), then warns once per capable effect left with no sto
 `capture: false` itself, or an app with `reasoning: false`, is silent). Effects registered after boot are not
 checked. The warning text names the effect id and the config key.
 
+**The direct-path check (implemented).** `agentLoop$` is a runner body and cannot see the app config, so the
+check lives where the routes and their providers are first known: the top of each `agentLoop$` call, before any
+model call. When `reasoning` is configured without `reasoningToolId` and a route's provider declares
+`capabilities.reasoning`, it emits ONE warning per `ReasoningRuntime` naming the capable route(s): *"route "<id>"
+can return model reasoning, but the direct routed path (no `reasoningToolId`) discards it every turn ... Set
+`reasoningToolId` (see registerReasoningRoutes) to carry it."* The sink is the loop's own `onWarn`, else the
+app-wide default `defineConfig` hands over through `configureAgentLoopDefaults` (`observability.onWarn`), else
+a process warning (`LOOM_AGENT_REASONING_DISCARDED`). Opt-in refusal: `observability.reasoning.requireContinuation:
+true` (or `requireReasoningContinuation: true` on `agentLoop$`) throws `AgentLoopConfigError` instead, on every
+call. `observability.reasoning: false` silences the warning. Default stays a warning. Nothing fires with
+`reasoningToolId`, with a provider that does not declare the capability, or when nothing is configured. The
+app-wide default is process-wide state, replaced by each `defineConfig`.
+
 ### D8 — Second-consumer check (ADR 0083)
 
 Unrelated consumers: `agentLoop$` (any tool-using agent on a reasoning model, where continuation is a correctness
@@ -342,14 +383,15 @@ decision, and any compliance deployment on a reasoning model.
   with the call signatures removed was refused with the documented 400 ("Function call is missing a
   thought_signature in functionCall parts"). This confirms D5's rule that a call's `signature` is never dropped.
 - **Anthropic: not verified live.** The available key had no API credit; by owner decision the live check is
-  dropped for now. The Anthropic mapping is verified against recorded wire shapes only (as the other provider
-  tests are). Two Anthropic-specific items stay **deferred** until a live check is possible, and the behaviour
-  described above is unchanged:
-  1. Refusing, at boot, `agentLoop$`'s direct routed path (no `reasoningToolId`) when the provider has thinking
-     enabled. That path carries no thinking blocks; whether Anthropic rejects such a tool loop is unconfirmed.
-  2. Keeping the in-flight tool round's thinking across compaction. D5 strips it, which the vendor documents as
-     valid; the vendor also advises against compacting mid tool round, and whether a kept block survives a
-     compacted prefix is unconfirmed.
+  dropped for now, and the Anthropic mapping is verified against recorded wire shapes only (as the other provider
+  tests are). The two Anthropic-specific items are no longer deferred: they are **built from the Anthropic
+  documentation** (the rules quoted in D5, "from the Anthropic documentation (not verified live)"):
+  1. The direct routed path (no `reasoningToolId`) with a reasoning provider is valid per the documentation but
+     discards reasoning every request (the documented non-steady-state pattern), so it gets a warning, and an
+     opt-in refusal (D7).
+  2. Compaction with reasoning carried uses the documented "simple compaction" shape instead of a kept tail
+     (D5), because an in-flight tool round's thinking cannot stay valid across a replaced prefix.
+  If a live check later contradicts either rule, only these two behaviours change.
 
 ## Resolved questions (owner ruling 2026-10-20)
 

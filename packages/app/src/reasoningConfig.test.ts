@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
+import { AgentLoopConfigError, agentLoop$, configureAgentLoopDefaults } from "@loom/agent";
 import type { EffectReasoningDefaults } from "@loom/effect-runtime";
 import { createLlmEffect } from "@loom/llm";
 import type { LlmProvider, ReasoningStore } from "@loom/llm";
 import type { RegisteredFlow } from "@loom/workflow-runtime";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { defineConfig } from "./defineConfig";
 
 // ── ADR 0133 D7 — observability.reasoning and the boot warning ───────────────────
@@ -45,7 +46,7 @@ const llm = (
   });
 
 function boot(opts: {
-  reasoning?: EffectReasoningDefaults | false;
+  reasoning?: (EffectReasoningDefaults & { requireContinuation?: boolean }) | false;
   effects: Record<string, ReturnType<typeof llm>>;
 }) {
   const warnings: string[] = [];
@@ -146,5 +147,48 @@ describe("observability.reasoning", () => {
         reasoning: { store: memStore() },
       } as never)
     ).toThrow(/observability\.reasoning/);
+  });
+});
+
+// ── ADR 0133 D7 - observability.reasoning.requireContinuation (agentLoop$'s direct routed path) ─────
+
+describe("observability.reasoning.requireContinuation (ADR 0133 D7)", () => {
+  afterEach(() => configureAgentLoopDefaults({}));
+  const direct = (capable: boolean) => ({
+    definition: { id: "a", name: "A", tools: [] } as never,
+    // Only the route list is read by the configuration check (app has no @loom/reasoning dependency).
+    reasoning: { availableRoutes: [{ id: "r1", provider: thinker(capable), tier: 0 }] } as never,
+  });
+  const ctx = {} as never; // the configuration check runs before the context is touched
+
+  it("default: the app's onWarn gets one warning naming the route; nothing throws from the check", async () => {
+    const { warnings } = boot({ effects: {} });
+    await agentLoop$(ctx, direct(true), { prompt: "x" }).catch(() => undefined);
+    expect(warnings.filter((w) => w.includes("discards it every turn"))).toHaveLength(1);
+    expect(warnings.join()).toContain('"r1"');
+  });
+
+  it("requireContinuation: true refuses a capable route on the direct path; a non-capable one is untouched", async () => {
+    boot({ reasoning: { requireContinuation: true }, effects: {} });
+    await expect(agentLoop$(ctx, direct(true), { prompt: "x" })).rejects.toBeInstanceOf(
+      AgentLoopConfigError
+    );
+    const { warnings } = boot({ reasoning: { requireContinuation: true }, effects: {} });
+    await agentLoop$(ctx, direct(false), { prompt: "x" }).catch((e) => {
+      expect(e).not.toBeInstanceOf(AgentLoopConfigError);
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it("reasoning: false is silent, and a later app without the option does not inherit the refusal", async () => {
+    const off = boot({ reasoning: false, effects: {} });
+    await agentLoop$(ctx, direct(true), { prompt: "x" }).catch(() => undefined);
+    expect(off.warnings).toEqual([]);
+    boot({ reasoning: { requireContinuation: true }, effects: {} });
+    const { warnings } = boot({ effects: {} });
+    await agentLoop$(ctx, direct(true), { prompt: "x" }).catch((e) => {
+      expect(e).not.toBeInstanceOf(AgentLoopConfigError);
+    });
+    expect(warnings).toHaveLength(1);
   });
 });

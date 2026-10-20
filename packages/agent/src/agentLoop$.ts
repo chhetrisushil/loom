@@ -176,6 +176,15 @@ export interface AgentLoopConfig {
    * keeps today's behaviour.
    */
   requireEffectRing?: boolean;
+  /**
+   * ADR 0133 D7 - refuse (throw {@link AgentLoopConfigError}) when the direct routed path (`reasoning`
+   * without `reasoningToolId`) is used with a route whose provider declares `capabilities.reasoning`:
+   * that path discards the model's reasoning every turn. Default `false` (a one-time warning instead).
+   * `@loom/app`'s `observability.reasoning.requireContinuation` sets the app-wide default.
+   */
+  requireReasoningContinuation?: boolean;
+  /** Where the direct-path reasoning warning goes. Default: the app's `observability.onWarn`, else a process warning. */
+  onWarn?: (message: string) => void;
   systemPrompt?: string;
   /**
    * R17 (ADR 0122) — the id prefix of this loop's frames, decisions and gates. Default: the
@@ -458,6 +467,53 @@ function warnReasoningOutsideRing(): void {
   );
 }
 
+// ── ADR 0133 D7 - the direct routed path discards reasoning every turn ─────────
+let loopDefaults: { onWarn?: (m: string) => void; requireReasoningContinuation?: boolean } = {};
+/**
+ * App-wide defaults for `agentLoop$` options that an app (not each call site) owns. `@loom/app`'s
+ * `defineConfig` calls this with `observability.onWarn` and `observability.reasoning.requireContinuation`.
+ * Replaces the previous defaults; call with `{}` to clear. A loop's own option always wins.
+ */
+export function configureAgentLoopDefaults(defaults: {
+  onWarn?: (message: string) => void;
+  requireReasoningContinuation?: boolean;
+}): void {
+  loopDefaults = { ...defaults };
+}
+
+const warnedDirectReasoning = new WeakSet<object>();
+/**
+ * ADR 0133 D7 - the direct routed path (`reasoning` with no `reasoningToolId`) records no reasoning
+ * and sends no thinking block back, so a reasoning-capable route loses its reasoning every turn (the
+ * vendor's documented one-time recovery shape, not a steady state). Warn once per runtime, or refuse.
+ */
+function checkDirectPathReasoning(config: AgentLoopConfig): void {
+  const runtime = config.reasoning;
+  if (runtime === undefined || config.reasoningToolId !== undefined) return;
+  const capable = runtime.availableRoutes
+    .filter((r) => r.provider.capabilities?.reasoning === true)
+    .map((r) => r.id);
+  if (capable.length === 0) return;
+  const named = capable.map((id) => `"${id}"`).join(", ");
+  const refuse = config.requireReasoningContinuation ?? loopDefaults.requireReasoningContinuation;
+  if (refuse === true) {
+    throw new AgentLoopConfigError(
+      `agentLoop$: route ${named} can return model reasoning, but the direct routed path (no \`reasoningToolId\`) discards it every turn. Set \`reasoningToolId\` (see registerReasoningRoutes) to carry it, or drop \`requireReasoningContinuation\`.`
+    );
+  }
+  if (warnedDirectReasoning.has(runtime)) return;
+  warnedDirectReasoning.add(runtime);
+  const message = `agentLoop$: route ${named} can return model reasoning, but the direct routed path (no \`reasoningToolId\`) discards it every turn (the model never gets its earlier thinking back). Set \`reasoningToolId\` (see registerReasoningRoutes) to carry it.`;
+  const sink = config.onWarn ?? loopDefaults.onWarn;
+  if (sink !== undefined) {
+    sink(message);
+    return;
+  }
+  const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
+    .process;
+  proc?.emitWarning?.(message, { code: "LOOM_AGENT_REASONING_DISCARDED" });
+}
+
 let warnedRequireApproval = false;
 /** One advisory per process: `requireApproval` is the deprecated, inverted-polarity spelling. */
 function warnRequireApprovalDeprecated(): void {
@@ -561,6 +617,59 @@ function resultBytes(part: LlmToolResultPartInput): number {
   return resultContentBytes(part.content);
 }
 
+/** The virtual size of a message, as the measure above counts its parts. */
+function messageBytes(msg: LlmMessageInput): number {
+  return Array.isArray(msg.content)
+    ? msg.content.reduce((n, p) => n + partBytes(p), 0)
+    : textBytes(msg.content);
+}
+
+/**
+ * ADR 0133 D5 - the single user message that starts the request after a SIMPLE compaction: the summary,
+ * then the in-flight round (everything after the latest assistant turn) as text, so no `tool_use`
+ * stays open and no `tool_result` is orphaned. Result content keeps its own part (a tainted text
+ * stays tainted, so the prompt boundary fences it exactly as it fences a tool result); media parts
+ * pass through (a user message may carry them). Only trusted labels are added around them.
+ */
+function simpleCompactionMessage(
+  summary: LlmContent,
+  transcript: readonly LlmMessageInput[]
+): LlmMessageInput {
+  const parts: LlmContentPartInput[] = [{ type: "text", text: summary }];
+  let last = -1;
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    if ((transcript[i] as LlmMessageInput).role === "assistant") {
+      last = i;
+      break;
+    }
+  }
+  const names = new Map<string, string>();
+  if (last >= 0) {
+    const content = (transcript[last] as LlmMessageInput).content;
+    if (Array.isArray(content)) {
+      for (const p of content) if (p.type === "tool_use") names.set(p.id, p.name);
+    }
+  }
+  const tail = last >= 0 ? transcript.slice(last + 1) : [];
+  for (const m of tail) {
+    if (!Array.isArray(m.content)) {
+      parts.push({ type: "text", text: m.content });
+      continue;
+    }
+    for (const p of m.content) {
+      if (p.type === "tool_result") {
+        const label = `Result of ${names.get(p.toolUseId) ?? "a tool call"} (call ${p.toolUseId})${p.isError === true ? " [error]" : ""}:`;
+        parts.push({ type: "text", text: label });
+        if (Array.isArray(p.content)) parts.push(...p.content);
+        else parts.push({ type: "text", text: p.content });
+      } else if (p.type !== "tool_use" && p.type !== "reasoning") {
+        parts.push(p);
+      }
+    }
+  }
+  return { role: "user", content: parts };
+}
+
 /** Whether a message answers tool calls — it must never be the first kept message without its call. */
 function isToolResultMessage(msg: LlmMessageInput): boolean {
   return (
@@ -642,6 +751,7 @@ export async function agentLoop$(
   ) {
     warnReasoningOutsideRing();
   }
+  checkDirectPathReasoning(config);
   if (config.requireEffectRing === true) {
     if (config.reasoning !== undefined && config.reasoningToolId === undefined) {
       throw new Error(
@@ -1371,11 +1481,37 @@ export async function agentLoop$(
             }
             const foldLength = messages.length - keepPhys;
 
-            if (foldLength > 0) {
-              // ADR 0133 D5 - compaction replaces the prefix, so every reasoning part still on the
-              // transcript is after the edit point: none is sent again, and none goes to the
-              // summarizer (its request is a different one, so the blocks would not verify). Tool-call
-              // signatures stay. A pure function of the journaled transcript; replay-safe.
+            if (foldLength > 0 && messages.some(hasReasoningParts)) {
+              // ADR 0133 D5 - the transcript carries reasoning, and a provider's signature binds every
+              // earlier message, so a kept tail (or an open tool round) cannot stay valid after the prefix
+              // is replaced. SIMPLE compaction: the summary covers the WHOLE transcript, the in-flight
+              // round included, and the next request is one user message (summary + that round's
+              // results): no assistant turn, no thinking block, no open tool_use. A pure function of the
+              // journaled transcript; a transcript without reasoning never reaches this branch.
+              const fold = messages.map(withoutReasoningParts);
+              const { summary } = (await ctx.execute(
+                {
+                  _tag: "TaskDefinition",
+                  kind: "memory",
+                  id: `${idPrefix}#turn:${turn}:compact`,
+                  toolId: compaction.toolId,
+                },
+                { messages: fold }
+              )) as { summary: string };
+              const summaryText = `Summary of earlier turns: ${summary}`;
+              const summaryContent: LlmContent = JSON.stringify(fold).includes('"__loomTainted"')
+                ? tainted(summaryText, "agent:compaction-summary")
+                : summaryText;
+              const frame = simpleCompactionMessage(summaryContent, messages);
+              messages.length = 0;
+              reasonedBy.clear();
+              messages.push(frame);
+              physOld = [1];
+              oldSizes = [messageBytes(frame)];
+              transcriptBytes = oldSizes[0] as number;
+              inlineUsed = inlineBytesOf(messages);
+            } else if (foldLength > 0) {
+              // ADR 0133 D5 - no reasoning on the transcript: the keep-tail shape, unchanged.
               const fold = messages.slice(0, foldLength).map(withoutReasoningParts);
               const recent = messages.slice(foldLength).map(withoutReasoningParts);
               const { summary } = (await ctx.execute(

@@ -1,4 +1,4 @@
-import { SkillRegistry } from "@loom/agent";
+import { SkillRegistry, configureAgentLoopDefaults } from "@loom/agent";
 import { agentSurfaceProjection, createSurfaceEmitter } from "@loom/agent-surface";
 import {
   EraseCoordinator,
@@ -371,8 +371,13 @@ export interface ObservabilityOptions {
    * At boot, an LLM effect whose provider can return reasoning (`capabilities.reasoning`) and that ends
    * up with no store gets ONE warning through `onWarn` naming it: its reasoning is not kept for audit
    * (only signatures, for continuation). Effects registered after boot are not checked.
+   *
+   * `requireContinuation: true` (ADR 0133 D7) makes `agentLoop$`'s direct routed path (`reasoning` without
+   * `reasoningToolId`) THROW an `AgentLoopConfigError` when a route's provider declares
+   * `capabilities.reasoning`: that path discards the model's reasoning every turn. Default off, where
+   * `agentLoop$` instead warns once through `onWarn`. With `reasoning: false` the warning is silent too.
    */
-  reasoning?: EffectReasoningDefaults | false;
+  reasoning?: (EffectReasoningDefaults & { requireContinuation?: boolean }) | false;
 }
 
 /** `durability.heartbeat` (ADR 0130 D11). */
@@ -1556,7 +1561,22 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // Composition-time effect registration (single-effect dispatchers like
   // mcp.invoke / sandbox.eval register here; P5 — static, at boot).
   config.registerEffects?.(effectRuntime);
-  applyReasoningDefaults(effectRuntime, config.reasoning, config.onWarn ?? defaultWarn);
+  const { requireContinuation: _requireContinuation, ...effectReasoning } = config.reasoning || {};
+  applyReasoningDefaults(
+    effectRuntime,
+    config.reasoning === false
+      ? false
+      : config.reasoning === undefined
+        ? undefined
+        : effectReasoning,
+    config.onWarn ?? defaultWarn
+  );
+  // ADR 0133 D7 - agentLoop$ cannot see this config, so hand it the two things it needs.
+  configureAgentLoopDefaults({
+    ...(config.reasoning !== false && { onWarn: config.onWarn ?? defaultWarn }),
+    ...(config.reasoning !== false &&
+      config.reasoning?.requireContinuation === true && { requireReasoningContinuation: true }),
+  });
 
   const projectionRuntime = config.projectionRuntime ?? new InMemoryProjectionRuntime();
   for (const surface of config.surfaces ?? []) {
