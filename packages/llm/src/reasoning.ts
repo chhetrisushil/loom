@@ -32,8 +32,16 @@ export interface LlmReasoningOptions {
   store?: ReasoningStore;
   /** Default: on iff a store is configured. `false` is the explicit opt-out. */
   capture?: boolean | ((ctx: EffectContext) => boolean);
-  /** Deliver readable reasoning deltas through the per-call sink (D6). Off by default. */
+  /** Deliver readable reasoning deltas live (D6): through the per-call sink under a runtime pipe, else to `onDelta`. Off by default. */
   live?: boolean;
+  /**
+   * The configured live sink for reasoning, the analogue of `createLlmEffect`'s text `onDelta`
+   * (a transport such as `ConversationHub.reasoningSink()`). Called only when `live` is on and the
+   * call is streamed, with the increment still WRAPPED as untrusted content
+   * (`llm-reasoning:<stepId>`): the sink unwraps it at its own transport edge, never earlier.
+   * Never journaled; not called on replay.
+   */
+  onDelta?: (delta: TaintedValue<string>, ctx: EffectContext) => void;
   /** Recorded on the audit event (the provider SPI does not expose its model id). */
   model?: string;
 }

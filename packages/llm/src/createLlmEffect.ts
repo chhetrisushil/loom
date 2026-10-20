@@ -158,7 +158,10 @@ export function createLlmEffect<TIn = string, TOut = string>(
       // response, which the R8 conformance contract pins equal to what `complete`
       // would have returned — so the journal shape does not depend on which path
       // ran, and switching `stream` on cannot change what replay serves.
-      const live = options.reasoning?.live === true && ctx.onDelta !== undefined;
+      const reasoningSink = options.reasoning?.onDelta;
+      const live =
+        options.reasoning?.live === true &&
+        (ctx.onDelta !== undefined || reasoningSink !== undefined);
       const raw = await (options.stream === true && options.provider.stream !== undefined
         ? collectStream(options.provider.stream(request as LlmRequest), {
             ...(ctx.signal !== undefined && { signal: ctx.signal }),
@@ -180,11 +183,18 @@ export function createLlmEffect<TIn = string, TOut = string>(
             // (so the runtime's delta guards see it, and a guard that throws severs the stream).
             // Off unless `live`; never the configured `onDelta`, which is text-only.
             ...(live && {
-              onReasoningDelta: (delta: string) =>
-                ctx.onDelta?.({
-                  delta: tainted("", `llm:${ctx.stepId}`),
-                  reasoning: tainted(delta, `llm-reasoning:${ctx.stepId}`),
-                }),
+              onReasoningDelta: (delta: string) => {
+                const reasoning = tainted(delta, `llm-reasoning:${ctx.stepId}`);
+                if (ctx.onDelta !== undefined) {
+                  ctx.onDelta({ delta: tainted("", `llm:${ctx.stepId}`), reasoning });
+                } else {
+                  try {
+                    reasoningSink?.(reasoning, ctx);
+                  } catch {
+                    // A live tail is a convenience: it cannot fail the model call (the durable record is D3).
+                  }
+                }
+              },
             }),
             ...(options.onToolDelta !== undefined && {
               onToolDelta: (d: { id: string; name?: string; inputDelta: string }) =>
@@ -222,6 +232,12 @@ export function createLlmEffect<TIn = string, TOut = string>(
     // only when the provider implements one.
     {
       ...(options.provider.warm !== undefined && { warm: () => options.provider.warm?.() }),
+      // ADR 0133 D6 - the configured reasoning sink is reached through the runtime's governed pipe
+      // (delta guards first), only when the app turned live reasoning on.
+      ...(options.reasoning?.live === true &&
+        options.reasoning.onDelta !== undefined && {
+          reasoningSink: options.reasoning.onDelta,
+        }),
       ...((options.onDelta !== undefined ||
         options.onReset !== undefined ||
         options.onToolReset !== undefined) && {

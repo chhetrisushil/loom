@@ -84,7 +84,8 @@ function factOf(ev: EventEnvelope): unknown {
 const isOrd = (v: unknown): v is number =>
   typeof v === "number" && Number.isSafeInteger(v) && v >= 1;
 
-function recordOf(ev: EventEnvelope): MessageRecord | undefined {
+/** The message record a `conversation.message` decision event carries, or `undefined` if it is not one. */
+export function recordOf(ev: EventEnvelope): MessageRecord | undefined {
   const p = factOf(ev) as Partial<MessageRecord> | null | undefined;
   if (p === undefined) return undefined;
   if (

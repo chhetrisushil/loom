@@ -56,4 +56,48 @@ describe("EffectRuntime reasoning deltas", () => {
     await rt.invokeTransient("e", {}, { onDelta: () => {} });
     expect(configured.map((c) => unwrapTainted(c.delta))).toEqual(["text"]);
   });
+  it("reaches the configured reasoningSink only through the guards, tainted, and never the text sink", async () => {
+    const seen: string[] = [];
+    const text: string[] = [];
+    const reasoning: string[] = [];
+    const eff = new LlmEffect<unknown, string>(
+      async (_i, ctx: EffectContext) => {
+        ctx.onDelta?.({ delta: tainted("", "t"), reasoning: tainted("r1", "t") });
+        ctx.onDelta?.({ delta: tainted("text", "t") });
+        ctx.onDelta?.({ delta: tainted("", "t"), reasoning: tainted("BAD", "t") });
+        return "done";
+      },
+      {
+        deltaSink: (c: EffectDelta) => text.push(unwrapTainted(c.delta)),
+        reasoningSink: (d) => reasoning.push(unwrapTainted(d)),
+      }
+    );
+    const rt = new EffectRuntime([guard(seen)]);
+    rt.register("e", eff);
+    await expect(
+      rt.execute("e", {}, { executionId: "x", stepId: "s", workflowId: "w", attempt: 1 } as never)
+    ).rejects.toThrow("severed");
+    expect(reasoning).toEqual(["r1"]); // BAD was severed before delivery
+    expect(text).toEqual(["text"]);
+  });
+
+  it("an effect with ONLY a reasoningSink still gets the governed pipe", async () => {
+    const reasoning: string[] = [];
+    const eff = new LlmEffect<unknown, string>(
+      async (_i, ctx: EffectContext) => {
+        ctx.onDelta?.({ delta: tainted("", "t"), reasoning: tainted("r1", "t") });
+        return "done";
+      },
+      { reasoningSink: (d) => reasoning.push(unwrapTainted(d)) }
+    );
+    const rt = new EffectRuntime();
+    rt.register("e", eff);
+    await rt.execute("e", {}, {
+      executionId: "x",
+      stepId: "s",
+      workflowId: "w",
+      attempt: 1,
+    } as never);
+    expect(reasoning).toEqual(["r1"]);
+  });
 });

@@ -8,10 +8,12 @@
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "src/__fixtures__", "**/*.test.ts"],
   "references": [
+    { "path": "../../packages/classify" },
     { "path": "../../packages/conversation" },
     { "path": "../../packages/core" },
     { "path": "../../packages/effect-runtime" },
     { "path": "../../packages/event-runtime" },
+    { "path": "../../packages/llm" },
     { "path": "../../packages/workflow-runtime" }
   ]
 }

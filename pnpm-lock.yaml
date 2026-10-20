@@ -1751,6 +1751,9 @@ importers:
 
   plugins/conversation-sse:
     dependencies:
+      '@loom/classify':
+        specifier: workspace:*
+        version: link:../../packages/classify
       '@loom/conversation':
         specifier: workspace:*
         version: link:../../packages/conversation
@@ -1763,6 +1766,9 @@ importers:
       '@loom/event-runtime':
         specifier: workspace:*
         version: link:../../packages/event-runtime
+      '@loom/llm':
+        specifier: workspace:*
+        version: link:../../packages/llm
       '@loom/workflow-runtime':
         specifier: workspace:*
         version: link:../../packages/workflow-runtime
@@ -1770,9 +1776,6 @@ importers:
       '@loom/agent':
         specifier: workspace:*
         version: link:../../packages/agent
-      '@loom/llm':
-        specifier: workspace:*
-        version: link:../../packages/llm
       '@loom/snapshot-runtime':
         specifier: workspace:*
         version: link:../../packages/snapshot-runtime

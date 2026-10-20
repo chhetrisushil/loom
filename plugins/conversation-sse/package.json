@@ -20,15 +20,16 @@
     "typecheck:tests": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
+    "@loom/classify": "workspace:*",
     "@loom/conversation": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/effect-runtime": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/llm": "workspace:*",
     "@loom/workflow-runtime": "workspace:*"
   },
   "devDependencies": {
     "@loom/agent": "workspace:*",
-    "@loom/llm": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

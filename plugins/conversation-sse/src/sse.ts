@@ -13,11 +13,14 @@ export function frame(event: string, data: unknown, id?: string): string {
   return `${id !== undefined ? `id: ${id}\n` : ""}event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
+type Build = (turn: number, text: string) => string;
+
 export class SseSink {
   private queue: string[] = [];
   private pending = 0;
   private blocked = false;
-  private coalesced: { turn: number; text: string } | undefined;
+  /** Live (lossy) deltas coalesced while the socket is backed up: one growing entry per channel (reply text, reasoning). */
+  private coalesced = new Map<string, { turn: number; text: string; build: Build }>();
   private closed = false;
 
   constructor(
@@ -35,7 +38,7 @@ export class SseSink {
   close(): void {
     this.closed = true;
     this.queue = [];
-    this.coalesced = undefined;
+    this.coalesced.clear();
   }
 
   /** A durable frame: ordered, never dropped (a slow client is closed instead). */
@@ -48,27 +51,25 @@ export class SseSink {
     this.enqueue(text);
   }
 
-  /** A live reply delta: coalesced while the socket is backed up. */
-  delta(turn: number, text: string, build: (turn: number, text: string) => string): void {
+  /** A live delta (reply text by default; reasoning on its own `channel`): coalesced while the socket is backed up. */
+  delta(turn: number, text: string, build: Build, channel = "delta"): void {
     if (this.closed) return;
     if (!this.blocked) {
       this.write(build(turn, text));
       return;
     }
-    if (this.coalesced !== undefined && this.coalesced.turn !== turn) this.settleCoalesced(build);
-    this.coalesced = { turn, text: (this.coalesced?.text ?? "") + text };
+    const cur = this.coalesced.get(channel);
+    if (cur !== undefined && cur.turn !== turn) this.settle(channel, cur);
+    const base = this.coalesced.get(channel);
+    this.coalesced.set(channel, { turn, text: (base?.text ?? "") + text, build });
     this.pending += text.length;
     if (this.pending > this.maxPendingBytes) this.overflow();
-    this.build = build;
   }
-  private build: ((turn: number, text: string) => string) | undefined;
 
-  private settleCoalesced(build: (turn: number, text: string) => string): void {
-    if (this.coalesced === undefined) return;
-    const c = this.coalesced;
-    this.coalesced = undefined;
+  private settle(channel: string, c: { turn: number; text: string; build: Build }): void {
+    this.coalesced.delete(channel);
     this.pending -= c.text.length;
-    this.enqueue(build(c.turn, c.text));
+    this.enqueue(c.build(c.turn, c.text));
   }
 
   private enqueue(text: string): void {
@@ -95,11 +96,11 @@ export class SseSink {
       this.pending -= next.length;
       this.write(next);
     }
-    if (!this.blocked && this.coalesced !== undefined && this.build !== undefined) {
-      const c = this.coalesced;
-      this.coalesced = undefined;
+    for (const [channel, c] of [...this.coalesced]) {
+      if (this.blocked) break;
+      this.coalesced.delete(channel);
       this.pending -= c.text.length;
-      this.write(this.build(c.turn, c.text));
+      this.write(c.build(c.turn, c.text));
     }
   }
 }

@@ -602,4 +602,37 @@ describe("live reasoning deltas (D6)", () => {
     await live({ live: true }).execute("hi", ctx);
     expect(ctx.emit.mock.calls.map((c) => c[0])).toEqual([LLM_REASONING_CAPTURED]);
   });
+  it("durable path (no per-call sink): the configured reasoning sink gets tainted increments, only when live", async () => {
+    const got: string[] = [];
+    const sink = (d: unknown): void => {
+      expect(isTainted(d)).toBe(true);
+      got.push(unwrapTainted(d as never));
+    };
+    const ctx = makeCtx(); // ctx.onDelta undefined, as under ctx.execute
+    await live(
+      { live: true },
+      { reasoning: { store: memStore(), live: true, onDelta: sink } }
+    ).execute("hi", ctx);
+    expect(got).toEqual(["think ", "more"]);
+    got.length = 0;
+    await live({}, { reasoning: { store: memStore(), onDelta: sink } }).execute("hi", makeCtx());
+    expect(got).toEqual([]); // off by default, even with a sink configured
+  });
+
+  it("a throwing configured reasoning sink cannot fail the model call", async () => {
+    const out = (await live(
+      {},
+      {
+        reasoning: {
+          store: memStore(),
+          live: true,
+          onDelta: () => {
+            throw new Error("tail broke");
+          },
+        },
+        parseResponse: (r) => r,
+      }
+    ).execute("hi", makeCtx())) as LlmCapturedResponse;
+    expect(out.content).toBe("ok");
+  });
 });

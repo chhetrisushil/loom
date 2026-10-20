@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { type TaintedValue, unwrapTainted } from "@loom/classify";
 import { fail } from "@loom/core";
 import { LLM_INTERRUPTED } from "@loom/llm";
 import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
@@ -14,6 +15,12 @@ import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
 /** A live event for a conversation. Deltas and resets only: everything durable comes from the log. */
 export type LiveEvent =
   | { type: "delta"; conversationId: string; turn: number; text: string; asker?: string }
+  /**
+   * ADR 0133 D6 - a readable reasoning increment of the turn's model call. A channel of its own, so no
+   * consumer of reply text sees it by accident; a transport serves it to the turn's ASKER only (`asker`
+   * is always set in shared mode) and only when the host opted in.
+   */
+  | { type: "reasoning"; conversationId: string; turn: number; text: string; asker?: string }
   /** The turn's stream restarted from zero (a crash-recovered re-run asked the model again): discard the partial. */
   | { type: "reset"; conversationId: string; turn: number; asker?: string };
 
@@ -91,6 +98,14 @@ export interface ConversationHubOptions {
   maxPartialChars?: number;
 }
 
+/** The reasoning a conversation's model call has streamed so far (ADR 0133 D6). Same bound and lifetime as {@link PartialReply}. */
+export interface PartialReasoning {
+  turn: number;
+  text: string;
+  /** Shared mode: whose turn it is. For that viewer alone, always. */
+  asker?: string;
+}
+
 /** The reply a conversation is streaming right now. */
 export interface PartialReply {
   turn: number;
@@ -103,6 +118,8 @@ interface Partial {
   turn: number;
   run: number;
   text: string;
+  /** In-progress reasoning (ADR 0133 D6): superseded with the reply when the turn's durable message lands, cleared by a re-run. */
+  reasoning: string;
   asker?: string;
 }
 
@@ -148,6 +165,14 @@ export class ConversationHub {
     return p === undefined || p.text === ""
       ? undefined
       : { turn: p.turn, text: p.text, ...(p.asker !== undefined && { asker: p.asker }) };
+  }
+
+  /** What the turn's model call has streamed of its reasoning, if any. Read it right after {@link subscribe}. */
+  reasoningPartialOf(conversationId: string): PartialReasoning | undefined {
+    const p = this.partials.get(conversationId);
+    return p === undefined || p.reasoning === ""
+      ? undefined
+      : { turn: p.turn, text: p.reasoning, ...(p.asker !== undefined && { asker: p.asker }) };
   }
 
   publish(conversationId: string, event: LiveEvent): void {
@@ -231,32 +256,8 @@ export class ConversationHub {
     return (delta: string) => {
       const s = scope.getStore();
       if (s === undefined || delta === "") return;
-      const cur = this.partials.get(s.conversationId);
-      let part = cur;
-      if (cur === undefined || cur.turn !== s.turn || cur.run !== s.run) {
-        if (cur !== undefined && cur.turn === s.turn) {
-          // The same turn, a different run: a crash-recovered process asked the model again.
-          this.publish(s.conversationId, {
-            type: "reset",
-            conversationId: s.conversationId,
-            turn: s.turn,
-            ...(s.asker !== undefined && { asker: s.asker }),
-          });
-        }
-        if (cur === undefined && this.partials.size >= MAX_TRACKED_TURNS) {
-          // Bounded: a turn that finished in another process never calls `endTurn` here.
-          const oldest = this.partials.keys().next().value;
-          if (oldest !== undefined) this.partials.delete(oldest);
-        }
-        part = {
-          turn: s.turn,
-          run: s.run,
-          text: "",
-          ...(s.asker !== undefined && { asker: s.asker }),
-        };
-        this.partials.set(s.conversationId, part);
-      }
-      if (this.maxPartial > 0 && part !== undefined) {
+      const part = this.partialFor(s);
+      if (this.maxPartial > 0) {
         const text = part.text + delta;
         part.text =
           text.length > this.maxPartial ? text.slice(text.length - this.maxPartial) : text;
@@ -269,5 +270,67 @@ export class ConversationHub {
         ...(s.asker !== undefined && { asker: s.asker }),
       });
     };
+  }
+
+  /**
+   * ADR 0133 D6 - the live reasoning sink, for the model effect's reasoning option:
+   * `createAgentModelEffect(provider, { reasoning: { store, live: true, onDelta: hub.reasoningSink() } })`.
+   * Attributed to the turn exactly as {@link deltaSink} is, kept in a bounded in-progress buffer (the
+   * same cap as the reply, head dropped) and published as `reasoning` events. This is the transport
+   * edge: the increment arrives wrapped as untrusted content and is unwrapped HERE, into the buffer and
+   * the event, which a transport must serve to the turn's asker alone.
+   */
+  reasoningSink(): (delta: TaintedValue<string>) => void {
+    return (wrapped: TaintedValue<string>) => {
+      const s = scope.getStore();
+      const delta = unwrapTainted(wrapped);
+      if (s === undefined || delta === "") return;
+      const part = this.partialFor(s);
+      if (this.maxPartial > 0) {
+        const text = part.reasoning + delta;
+        part.reasoning =
+          text.length > this.maxPartial ? text.slice(text.length - this.maxPartial) : text;
+      }
+      this.publish(s.conversationId, {
+        type: "reasoning",
+        conversationId: s.conversationId,
+        turn: s.turn,
+        text: delta,
+        ...(s.asker !== undefined && { asker: s.asker }),
+      });
+    };
+  }
+
+  /**
+   * The in-progress entry of the running turn, created on its first delta. A different RUN of the same
+   * turn (a crash-recovered process asked the model again) supersedes it - text AND reasoning - with ONE
+   * `reset`, whichever channel notices first.
+   */
+  private partialFor(s: TurnScope): Partial {
+    const cur = this.partials.get(s.conversationId);
+    if (cur !== undefined && cur.turn === s.turn && cur.run === s.run) return cur;
+    if (cur !== undefined && cur.turn === s.turn) {
+      // The same turn, a different run: a crash-recovered process asked the model again.
+      this.publish(s.conversationId, {
+        type: "reset",
+        conversationId: s.conversationId,
+        turn: s.turn,
+        ...(s.asker !== undefined && { asker: s.asker }),
+      });
+    }
+    if (cur === undefined && this.partials.size >= MAX_TRACKED_TURNS) {
+      // Bounded: a turn that finished in another process never calls `endTurn` here.
+      const oldest = this.partials.keys().next().value;
+      if (oldest !== undefined) this.partials.delete(oldest);
+    }
+    const part: Partial = {
+      turn: s.turn,
+      run: s.run,
+      text: "",
+      reasoning: "",
+      ...(s.asker !== undefined && { asker: s.asker }),
+    };
+    this.partials.set(s.conversationId, part);
+    return part;
   }
 }
