@@ -7,12 +7,19 @@ import type {
   LlmContent,
   LlmContentPartInput,
   LlmMessageInput,
+  LlmReasoningOptions,
   LlmResponse,
   LlmToolCall,
   LlmToolResultPartInput,
   LlmToolSpecInput,
 } from "@loom/llm";
-import { LLM_INTERRUPTED, MAX_INLINE_TOTAL_BYTES, assistantMessageOf } from "@loom/llm";
+import {
+  LLM_INTERRUPTED,
+  MAX_INLINE_TOTAL_BYTES,
+  assistantMessageOf,
+  hasReasoningParts,
+  withoutReasoningParts,
+} from "@loom/llm";
 import type { TieredMemory } from "@loom/memory";
 import type { ModelInvoker, ReasonOptions, ReasoningRuntime } from "@loom/reasoning";
 import { approvalViewDigest } from "@loom/workflow-runtime";
@@ -843,11 +850,23 @@ export async function agentLoop$(
   };
   const textMessage = (msg: LlmMessageInput & { content: string }): void =>
     pushMessage(msg, [UTF8.encode(msg.content).length]);
-  const assistantTurn = (response: { content: string; toolCalls?: readonly LlmToolCall[] }): void =>
+  // ADR 0133 D5 - which route produced a message's reasoning parts (routed turns only), by index in
+  // `messages` (the guarded request copies lose object identity; compaction drops them all and clears this). A same-provider
+  // model switch must not send one model's blocks to another (Anthropic binds a block to its model).
+  const reasonedBy = new Map<number, string>();
+  const assistantTurn = (
+    response: {
+      content: string;
+      toolCalls?: readonly LlmToolCall[];
+      reasoning?: readonly object[];
+    },
+    modelId?: string
+  ): void => {
+    const msg = assistantMessageOf(response);
+    if (modelId !== undefined && hasReasoningParts(msg)) reasonedBy.set(messages.length, modelId);
     // The old body journaled the placeholder text for a tool-only turn; its length is what it measured.
-    pushMessage(assistantMessageOf(response), [
-      UTF8.encode(response.content || "(tool calls)").length,
-    ]);
+    pushMessage(msg, [UTF8.encode(response.content || "(tool calls)").length]);
+  };
   const mediaTools = new Set(toolDefs.filter((t) => t.returnsMedia === true).map((t) => t.id));
   // A `kind: "human"` step consumes its resume answer in call order; a turn holding one keeps the
   // original sequential shape whatever `parallelTools` says (see `runToolCalls`).
@@ -1278,6 +1297,26 @@ export async function agentLoop$(
     return (await ctx.execute(task, request)) as LlmResponse; // served from the completed frame
   };
 
+  /**
+   * ADR 0133 D5 - a model request for `routeId`: reasoning parts produced by a DIFFERENT route are
+   * dropped (a same-provider switch included: Anthropic binds a block to its model; other providers'
+   * parts are already omitted by the provider mapping). Pure over the journaled transcript and the
+   * recorded route decisions, so a replay builds the same request. The same object when nothing drops.
+   */
+  const forRoute = <R extends { messages: readonly LlmMessageInput[] }>(
+    request: R,
+    routeId: string
+  ): R => {
+    let changed = false;
+    const next = request.messages.map((m, i) => {
+      const by = reasonedBy.get(i);
+      if (by === undefined || by === routeId) return m;
+      changed = true;
+      return withoutReasoningParts(m);
+    });
+    return changed ? { ...request, messages: next } : request;
+  };
+
   try {
     while (iterations < maxIterations) {
       await checkAbort(ctx, `t${iterations}:turn`);
@@ -1321,8 +1360,12 @@ export async function agentLoop$(
             const foldLength = messages.length - keepPhys;
 
             if (foldLength > 0) {
-              const fold = messages.slice(0, foldLength);
-              const recent = messages.slice(foldLength);
+              // ADR 0133 D5 - compaction replaces the prefix, so every reasoning part still on the
+              // transcript is after the edit point: none is sent again, and none goes to the
+              // summarizer (its request is a different one, so the blocks would not verify). Tool-call
+              // signatures stay. A pure function of the journaled transcript; replay-safe.
+              const fold = messages.slice(0, foldLength).map(withoutReasoningParts);
+              const recent = messages.slice(foldLength).map(withoutReasoningParts);
               const { summary } = (await ctx.execute(
                 {
                   _tag: "TaskDefinition",
@@ -1346,6 +1389,7 @@ export async function agentLoop$(
               }
               const summarySize = UTF8.encode(summaryText).length;
               messages.length = 0;
+              reasonedBy.clear();
               // R17 (ADR 0122) — a summary written over content any of which was untrusted is itself
               // model output derived from untrusted text. Re-inserted as a plain `user` message it would
               // shed the fence; carry the taint so the prompt boundary keeps fencing it.
@@ -1394,7 +1438,7 @@ export async function agentLoop$(
                         : reasoningToolId(route.id),
                     ...(config.turnTimeoutMs !== undefined && { timeoutMs: config.turnTimeoutMs }),
                   },
-                  request satisfies AgentModelCall
+                  forRoute(request, route.id) satisfies AgentModelCall
                 );
         // R10 — no effect id to journal a frame under, so the RESPONSE is journaled as a decision:
         // a replay serves the recorded answer and the provider is not called, so a completed turn is
@@ -1410,7 +1454,11 @@ export async function agentLoop$(
                   `${idPrefix}#turn:${turn}:response:${callSeq++}`,
                   async () => {
                     try {
-                      return boundResponse(await run());
+                      // ADR 0133 - this path has no sidecar to keep reasoning text in and is not an
+                      // effect, so the decision record never carries it (readable text stays out of
+                      // the journal). Tool-call signatures stay; reasoning blocks are not continued.
+                      const { reasoning: _dropped, ...answer } = await run();
+                      return boundResponse(answer);
                     } catch (err) {
                       // The signal landed inside the call: record that, not an unrecorded throw.
                       if (config.signal !== undefined && abortedInsideCall(err)) {
@@ -1449,7 +1497,14 @@ export async function agentLoop$(
         lastContent = routed.content;
         if (routed.stopReason === "end_turn" || !routed.toolCalls?.length) break;
         const screened = screenToolCalls(routed.toolCalls);
-        assistantTurn({ content: routed.content, toolCalls: screened.calls });
+        assistantTurn(
+          {
+            content: routed.content,
+            toolCalls: screened.calls,
+            ...(routed.reasoning !== undefined && { reasoning: routed.reasoning }),
+          },
+          routed.modelId
+        );
         await checkAbort(ctx, `t${turn}:tools`);
         await runToolCalls(screened.calls, turn, screened.oversized);
         continue;
@@ -1478,7 +1533,11 @@ export async function agentLoop$(
       if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
 
       const screened = screenToolCalls(response.toolCalls);
-      assistantTurn({ content: response.content, toolCalls: screened.calls });
+      assistantTurn({
+        content: response.content,
+        toolCalls: screened.calls,
+        ...(response.reasoning !== undefined && { reasoning: response.reasoning }),
+      });
 
       await checkAbort(ctx, `t${turn}:tools`);
       await runToolCalls(screened.calls, turn, screened.oversized);
@@ -1674,7 +1733,7 @@ export interface EffectRegistry {
 export function registerReasoningRoutes(
   effects: EffectRegistry,
   reasoning: ReasoningRuntime,
-  options: { prefix?: string; stream?: boolean } = {}
+  options: { prefix?: string; stream?: boolean; reasoning?: LlmReasoningOptions } = {}
 ): (routeId: string) => string {
   const prefix = options.prefix ?? "model";
   const toolIdFor = (routeId: string): string => `${prefix}:${routeId}`;
@@ -1683,6 +1742,10 @@ export function registerReasoningRoutes(
       toolIdFor(route.id),
       createAgentModelEffect(route.provider, {
         ...(options.stream !== undefined && { stream: options.stream }),
+        // ADR 0133 - one store/policy for every route; the route id is what the audit event records as the model.
+        ...(options.reasoning !== undefined && {
+          reasoning: { ...options.reasoning, model: options.reasoning.model ?? route.id },
+        }),
       })
     );
   }

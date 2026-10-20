@@ -37,6 +37,12 @@ export interface AnthropicProviderConfig {
   baseUrl?: string;
   /** Override the declared modalities (e.g. a model without vision). */
   capabilities?: LlmCapabilities;
+  /**
+   * Extended thinking, passed through as the request's `thinking` (ADR 0133). `display: "summarized"`
+   * asks for a readable summary; the default is the API's (omitted on current models, where only the
+   * signature is returned). Unset, no `thinking` is sent.
+   */
+  thinking?: { type: "adaptive"; display?: "summarized" | "omitted" };
 }
 
 /** Messages API: images (JPEG/PNG/GIF/WebP) and PDF documents; no audio. */
@@ -176,9 +182,11 @@ export class AnthropicProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly thinking: AnthropicProviderConfig["thinking"];
   readonly capabilities: LlmCapabilities;
 
   constructor(config: AnthropicProviderConfig = {}) {
+    this.thinking = config.thinking;
     const model = config.model ?? "claude-opus-4-8";
     this.capabilities =
       config.capabilities ??
@@ -209,6 +217,7 @@ export class AnthropicProvider implements LlmProvider {
 
     if (system !== undefined) body.system = system;
     if (request.temperature !== undefined) body.temperature = request.temperature;
+    if (this.thinking !== undefined) body.thinking = { ...this.thinking };
 
     if (request.tools !== undefined && request.tools.length > 0) {
       body.tools = request.tools.map((t) => ({

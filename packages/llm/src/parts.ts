@@ -239,11 +239,11 @@ export function assistantMessageOf(response: {
   content: string;
   toolCalls?: readonly { id: string; name: string; input: unknown; signature?: string }[];
   /** ADR 0133 - recorded reasoning parts (`LlmReasoningPart`), carried first. Raw `LlmReasoning` is not accepted: readable text never enters a transcript. */
-  reasoning?: readonly { type?: string }[];
+  reasoning?: readonly object[];
 }): { role: "assistant"; content: LlmContentPart[] } {
   const parts: LlmContentPart[] = [];
   for (const r of response.reasoning ?? []) {
-    if (r.type === "reasoning") parts.push(r as LlmReasoningPart);
+    if ((r as { type?: string }).type === "reasoning") parts.push(r as LlmReasoningPart);
   }
   if (response.content !== "") parts.push({ type: "text", text: response.content });
   for (const c of response.toolCalls ?? []) {
@@ -259,6 +259,23 @@ export function assistantMessageOf(response: {
     parts.push({ type: "text", text: "" });
   }
   return { role: "assistant", content: parts };
+}
+
+/**
+ * ADR 0133 D5 - the same message without its `reasoning` parts (the edit-point drop). Returns the
+ * SAME object when it holds none, so callers can compare by identity; tool-call signatures are never
+ * touched. A message left empty keeps the shape `assistantMessageOf` gives an empty turn.
+ */
+export function withoutReasoningParts<M extends { content: unknown }>(message: M): M {
+  const content = message.content;
+  if (!Array.isArray(content) || !content.some((p) => p?.type === "reasoning")) return message;
+  const kept = content.filter((p) => p?.type !== "reasoning");
+  return { ...message, content: kept.length > 0 ? kept : [{ type: "text", text: "" }] };
+}
+
+/** Whether a message holds a `reasoning` part. */
+export function hasReasoningParts(message: { content: unknown }): boolean {
+  return Array.isArray(message.content) && message.content.some((p) => p?.type === "reasoning");
 }
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;

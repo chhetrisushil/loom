@@ -58,6 +58,11 @@ export interface ReasoningResult {
   toolCalls?: LlmToolCall[];
   stopReason: LlmResponse["stopReason"];
   usage?: LlmResponse["usage"];
+  /**
+   * ADR 0133 - the answering route's reasoning, as the call returned it. Through an effect-backed
+   * `invoke` these are recorded `LlmReasoningPart`s; a caller keeps only those (`type: "reasoning"`).
+   */
+  reasoning?: LlmResponse["reasoning"];
   modelId: string;
   confidence: number;
   elevated: boolean;

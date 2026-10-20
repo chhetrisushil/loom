@@ -14,6 +14,11 @@ export interface GeminiProviderConfig {
   baseUrl?: string;
   /** Override the declared modalities. */
   capabilities?: LlmCapabilities;
+  /**
+   * Ask for thought summaries (`generationConfig.thinkingConfig.includeThoughts`, ADR 0133).
+   * Unset, nothing is sent.
+   */
+  includeThoughts?: boolean;
 }
 
 /** `generateContent` takes any inline mime type the model supports; declare the common ones. */
@@ -142,9 +147,11 @@ export class GeminiProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly includeThoughts: boolean | undefined;
   readonly capabilities: LlmCapabilities;
 
   constructor(config: GeminiProviderConfig = {}) {
+    this.includeThoughts = config.includeThoughts;
     const model = config.model ?? "gemini-2.0-flash";
     this.capabilities =
       config.capabilities ??
@@ -172,6 +179,9 @@ export class GeminiProvider implements LlmProvider {
     const generationConfig: Record<string, unknown> = {};
     if (request.maxTokens !== undefined) generationConfig.maxOutputTokens = request.maxTokens;
     if (request.temperature !== undefined) generationConfig.temperature = request.temperature;
+    if (this.includeThoughts !== undefined) {
+      generationConfig.thinkingConfig = { includeThoughts: this.includeThoughts };
+    }
 
     return {
       contents,
