@@ -178,6 +178,32 @@ export async function captureReasoning(
   return parts;
 }
 
+/**
+ * ADR 0133 D2 - the text-free form of anything reasoning-shaped: a recorded part loses any `text`
+ * it carries; a raw {@link LlmReasoning} becomes a part with kind, provider and signature, flagged
+ * `omitted` when it had readable text (the text was not kept, so it cannot be continued). For a
+ * layer that sits between a provider and a journal (a decision, a cache) and has no sidecar:
+ * readable reasoning must reach a sidecar via `createLlmEffect`, or nowhere.
+ */
+export function textFreeReasoning(
+  reasoning: readonly (LlmReasoning | LlmReasoningPart)[]
+): LlmReasoningPart[] {
+  return reasoning.map((r): LlmReasoningPart => {
+    if ((r as { type?: string }).type === "reasoning") {
+      const { text: _text, ...recorded } = r as LlmReasoningPart;
+      return recorded;
+    }
+    const raw = r as LlmReasoning;
+    return {
+      type: "reasoning",
+      kind: raw.kind,
+      provider: raw.provider,
+      ...(raw.signature !== undefined && { signature: raw.signature }),
+      ...((raw.text ?? "") !== "" && { omitted: true as const }),
+    };
+  });
+}
+
 // ── the audit reader (D4) ────────────────────────────────────────────────────
 
 /** The minimal log view `readReasoning` needs: an `EventStore` satisfies it. */

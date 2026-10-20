@@ -165,3 +165,88 @@ describe("response cache (R10 fix round 2)", () => {
     expect((await rt.reason(req, { cacheScope: "t1" })).content).toBe("x");
   });
 });
+
+// ── ADR 0133 — readable reasoning never leaves the provider/effect layer through this runtime ──
+
+describe("reasoning text stays out of ReasoningResult and the cache", () => {
+  const SECRET = "the model weighed the injected instruction";
+  const raw: LlmResponse = {
+    content: "hi",
+    stopReason: "end_turn",
+    reasoning: [
+      { kind: "summary", text: SECRET, signature: "sig-1", provider: "anthropic" },
+      { kind: "redacted", signature: "opaque", provider: "anthropic" },
+      { kind: "text", text: "", signature: "sig-2", provider: "anthropic" },
+    ],
+  };
+
+  it("the direct path returns text-free parts, and the cache holds none", async () => {
+    const provider: LlmProvider = { complete: vi.fn(async () => raw) };
+    const cache = new Map<string, LlmResponse>();
+    const res = await runtime(provider, cache).reason({
+      messages: [{ role: "user", content: "q" }],
+    });
+    expect(JSON.stringify(res)).not.toContain(SECRET);
+    expect(res.reasoning).toEqual([
+      {
+        type: "reasoning",
+        kind: "summary",
+        provider: "anthropic",
+        signature: "sig-1",
+        omitted: true,
+      },
+      { type: "reasoning", kind: "redacted", provider: "anthropic", signature: "opaque" },
+      { type: "reasoning", kind: "text", provider: "anthropic", signature: "sig-2" },
+    ]);
+    expect(cache.size).toBe(1);
+    expect(JSON.stringify([...cache.values()])).not.toContain(SECRET);
+    // a cache hit is just as clean
+    const hit = await runtime(provider, cache).reason({
+      messages: [{ role: "user", content: "q" }],
+    });
+    expect(JSON.stringify(hit)).not.toContain(SECRET);
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("a journaled decision of the whole ReasoningResult carries no reasoning text", async () => {
+    const journal: unknown[] = [];
+    const provider: LlmProvider = { complete: vi.fn(async () => raw) };
+    const res = await runtime(provider).reason(
+      { messages: [{ role: "user", content: "q" }] },
+      {
+        decide: async (id, decider) => {
+          const v = await decider();
+          journal.push(v);
+          return v;
+        },
+        wrapCall: async (_r, run) => {
+          const v = await run();
+          journal.push(v); // what a host journals as the call's record
+          return v;
+        },
+      }
+    );
+    expect(JSON.stringify(journal)).not.toContain(SECRET);
+    expect(JSON.stringify(res)).not.toContain(SECRET);
+  });
+
+  it("an invoker (effect-backed) result, and a wrapper serving a record, are made text-free too", async () => {
+    const provider: LlmProvider = { complete: vi.fn(async () => raw) };
+    const viaInvoke = await runtime(provider).reason(
+      { messages: [{ role: "user", content: "q" }] },
+      { invoke: async () => raw }
+    );
+    expect(JSON.stringify(viaInvoke)).not.toContain(SECRET);
+    const served = await runtime(provider).reason(
+      { messages: [{ role: "user", content: "q" }] },
+      { wrapCall: async () => raw }
+    );
+    expect(JSON.stringify(served)).not.toContain(SECRET);
+  });
+
+  it("G2: a response with no reasoning is passed through untouched", async () => {
+    const provider: LlmProvider = { complete: vi.fn(async () => ok) };
+    const res = await runtime(provider).reason({ messages: [{ role: "user", content: "q" }] });
+    expect("reasoning" in res).toBe(false);
+  });
+});
