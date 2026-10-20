@@ -1,3 +1,4 @@
+import type { EffectContext } from "@loom/effect-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLlmEffect } from "./createLlmEffect";
 import { assistantMessageOf, layoutOf } from "./parts";
@@ -12,7 +13,13 @@ import { GeminiProvider } from "./providers/GeminiProvider";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const ctx = { executionId: "e", stepId: "s", attempt: 1, emit() {} };
+const ctx = {
+  executionId: "e",
+  stepId: "s",
+  workflowId: "wf",
+  attempt: 1,
+  emit() {},
+} as unknown as EffectContext;
 
 const MIXED = [
   { type: "thinking", thinking: "", signature: "SIG_A" },
