@@ -5,9 +5,11 @@ import {
 } from "../capabilities";
 import {
   type LlmContentPart,
+  type LlmLayoutEntry,
   type LlmReasoning,
   type LlmReasoningPart,
   type LlmResultPart,
+  layoutOf,
   textOf,
 } from "../parts";
 import { inlineData } from "../resolveContent";
@@ -113,16 +115,14 @@ function mapReasoningPart(p: LlmReasoningPart): Record<string, unknown> {
 }
 
 /**
- * Reasoning blocks go BEFORE text and `tool_use` blocks (the API requires the thinking block first
- * in an assistant turn), in recorded order. A part from another provider is omitted: its signature
- * means nothing here.
+ * Blocks go back in the order they were recorded (ADR 0133 D5): a signature binds the blocks before
+ * it, so `thinking, text, tool_use, thinking, tool_use` must not be regrouped. A part from another
+ * provider is omitted: its signature means nothing here.
  */
 function mapContent(content: LlmMessage["content"]): string | Record<string, unknown>[] {
   if (typeof content === "string") return content;
   const own = content.filter((p) => p.type !== "reasoning" || p.provider === PROVIDER_ID);
-  const reasoning = own.filter((p) => p.type === "reasoning");
-  const rest = own.filter((p) => p.type !== "reasoning");
-  return fenceUntrustedMedia([...reasoning, ...rest]).map(mapPart);
+  return fenceUntrustedMedia(own).map(mapPart);
 }
 
 /**
@@ -261,10 +261,16 @@ export class AnthropicProvider implements LlmProvider {
 
     const stopReason = normalizeStopReason(data.stop_reason);
     const reasoning: LlmReasoning[] = [];
+    const entries: LlmLayoutEntry[] = [];
     for (const b of data.content) {
       const r = reasoningOf(b);
-      if (r !== undefined) reasoning.push(r);
+      if (r !== undefined) {
+        reasoning.push(r);
+        entries.push("reasoning");
+      } else if (b.type === "text") entries.push({ text: (b as AnthropicTextBlock).text.length });
+      else if (b.type === "tool_use") entries.push({ call: (b as AnthropicToolUseBlock).id });
     }
+    const layout = layoutOf(entries);
 
     return {
       content,
@@ -272,6 +278,7 @@ export class AnthropicProvider implements LlmProvider {
       stopReason,
       usage: { inputTokens: data.usage.input_tokens, outputTokens: data.usage.output_tokens },
       ...(reasoning.length > 0 && { reasoning }),
+      ...(layout !== undefined && { layout }),
     };
   }
 
@@ -318,19 +325,26 @@ export class AnthropicProvider implements LlmProvider {
       }
     >();
     const reasoning: LlmReasoning[] = [];
+    // ADR 0133 D5 - block order, by `content_block_start`; a text block's entry grows with its deltas.
+    const entries: LlmLayoutEntry[] = [];
+    const textEntries = new Map<number, { text: number }>();
     let stopReason: LlmResponse["stopReason"] | undefined;
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
 
-    const terminal = (): LlmStreamChunk => ({
-      delta: "",
-      done: true,
-      ...(toolCalls.length > 0 && { toolCalls }),
-      ...(stopReason !== undefined && { stopReason }),
-      ...(inputTokens !== undefined &&
-        outputTokens !== undefined && { usage: { inputTokens, outputTokens } }),
-      ...(reasoning.length > 0 && { reasoning }),
-    });
+    const terminal = (): LlmStreamChunk => {
+      const layout = layoutOf(entries);
+      return {
+        delta: "",
+        done: true,
+        ...(toolCalls.length > 0 && { toolCalls }),
+        ...(stopReason !== undefined && { stopReason }),
+        ...(inputTokens !== undefined &&
+          outputTokens !== undefined && { usage: { inputTokens, outputTokens } }),
+        ...(reasoning.length > 0 && { reasoning }),
+        ...(layout !== undefined && { layout }),
+      };
+    };
 
     while (true) {
       const { done, value } = await reader.read();
@@ -351,7 +365,12 @@ export class AnthropicProvider implements LlmProvider {
           const event = JSON.parse(json) as Record<string, unknown>;
           if (event.type === "content_block_start") {
             const block = event.content_block as Record<string, unknown> | undefined;
-            if (block?.type === "thinking" || block?.type === "redacted_thinking") {
+            if (block?.type === "text") {
+              const entry = { text: 0 };
+              textEntries.set(Number(event.index), entry);
+              entries.push(entry);
+            } else if (block?.type === "thinking" || block?.type === "redacted_thinking") {
+              entries.push("reasoning");
               openThinking.set(Number(event.index), {
                 type: block.type,
                 thinking: typeof block.thinking === "string" ? block.thinking : "",
@@ -359,6 +378,7 @@ export class AnthropicProvider implements LlmProvider {
                 ...(typeof block.data === "string" && { data: block.data }),
               });
             } else if (block?.type === "tool_use") {
+              entries.push({ call: String(block.id ?? "") });
               openBlocks.set(Number(event.index), {
                 id: String(block.id ?? ""),
                 name: String(block.name ?? ""),
@@ -377,7 +397,15 @@ export class AnthropicProvider implements LlmProvider {
           } else if (event.type === "content_block_delta") {
             const delta = event.delta as Record<string, unknown> | undefined;
             if (delta?.type === "text_delta") {
-              yield { delta: String(delta.text ?? ""), done: false };
+              const text = String(delta.text ?? "");
+              let entry = textEntries.get(Number(event.index));
+              if (entry === undefined) {
+                entry = { text: 0 };
+                textEntries.set(Number(event.index), entry);
+                entries.push(entry);
+              }
+              entry.text += text.length;
+              yield { delta: text, done: false };
             } else if (delta?.type === "thinking_delta") {
               const open = openThinking.get(Number(event.index));
               const fragment = String(delta.thinking ?? "");

@@ -1,13 +1,20 @@
 import type { LlmCapabilities } from "./capabilities";
 import type {
   LlmContent,
+  LlmLayoutEntry,
   LlmMessageContent,
   LlmMessageContentInput,
   LlmReasoning,
   LlmReasoningPart,
 } from "./parts";
 
-export type { LlmContent, LlmReasoning, LlmReasoningKind, LlmReasoningPart } from "./parts";
+export type {
+  LlmContent,
+  LlmLayoutEntry,
+  LlmReasoning,
+  LlmReasoningKind,
+  LlmReasoningPart,
+} from "./parts";
 
 export interface LlmMessage {
   role: "system" | "user" | "assistant";
@@ -79,6 +86,12 @@ export interface LlmResponse {
    * replaces this with {@link LlmReasoningPart}s before `parseResponse`, so text never reaches a step value.
    */
   reasoning?: LlmReasoning[];
+  /**
+   * ADR 0133 D5 - the vendor's block order (reasoning, text and tool-call positions), present ONLY
+   * when there is reasoning AND the order is not the canonical one. Lets a signature-binding provider
+   * get its response back exactly. Positions only; absent otherwise (G2).
+   */
+  layout?: LlmLayoutEntry[];
 }
 
 /** What `parseResponse` receives: reasoning already reduced to its recorded form (ADR 0133 D3). */
@@ -127,6 +140,8 @@ export interface LlmStreamChunk {
   usage?: { inputTokens: number; outputTokens: number };
   /** ADR 0133 - the assembled reasoning; equals what `complete` returns. Terminal chunk only. */
   reasoning?: LlmReasoning[];
+  /** ADR 0133 D5 - the block order; equals what `complete` returns. Terminal chunk only. */
+  layout?: LlmLayoutEntry[];
   /**
    * ADR 0133 D6 - an increment of READABLE reasoning (a summary or text), streamed as it arrives.
    * A separate field from `delta` so no consumer of text deltas sees reasoning by accident.

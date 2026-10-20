@@ -146,7 +146,7 @@ describe("AnthropicProvider reasoning", () => {
     ]);
   });
 
-  it("sends our parts back UNCHANGED, before text and tool_use, in recorded order", async () => {
+  it("sends our parts back UNCHANGED, each block at its recorded position (never regrouped)", async () => {
     const fn = stubJson({
       content: [],
       stop_reason: "end_turn",
@@ -158,9 +158,9 @@ describe("AnthropicProvider reasoning", () => {
         {
           role: "assistant",
           content: [
+            part({ signature: "sig-1", text: "weighing the options" }),
             { type: "text", text: "calling" },
             { type: "tool_use", id: "t1", name: "lookup", input: { q: 1 } },
-            part({ signature: "sig-1", text: "weighing the options" }),
             part({ kind: "text", signature: "sig-2" }),
             part({ kind: "redacted", signature: "opaque-3" }),
           ],
@@ -169,10 +169,10 @@ describe("AnthropicProvider reasoning", () => {
     });
     expect(sentBody(fn).messages[1]?.content).toEqual([
       { type: "thinking", thinking: "weighing the options", signature: "sig-1" },
-      { type: "thinking", thinking: "", signature: "sig-2" },
-      { type: "redacted_thinking", data: "opaque-3" },
       { type: "text", text: "calling" },
       { type: "tool_use", id: "t1", name: "lookup", input: { q: 1 } },
+      { type: "thinking", thinking: "", signature: "sig-2" },
+      { type: "redacted_thinking", data: "opaque-3" },
     ]);
   });
 

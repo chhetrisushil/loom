@@ -68,7 +68,8 @@ function reasoningProvider(
   id: string,
   seen: LlmRequest[],
   toolTurns = 3,
-  providerName = "anthropic"
+  providerName = "anthropic",
+  interleaved = false
 ): LlmProvider {
   return {
     async complete(request: LlmRequest): Promise<LlmResponse> {
@@ -82,6 +83,19 @@ function reasoningProvider(
           provider: providerName,
         },
       ];
+      if (interleaved && turn < toolTurns) {
+        // reasoning, tool_use, reasoning, text: not the canonical order (ADR 0133 D5).
+        return {
+          content: `t${turn}`,
+          toolCalls: [{ id: `c${turn}`, name: "lookup", input: { i: turn } }],
+          stopReason: "tool_use",
+          reasoning: [
+            ...reasoning,
+            { ...reasoning[0], signature: `sig-${id}-${turn}b` } as LlmReasoning,
+          ],
+          layout: ["reasoning", { call: `c${turn}` }, "reasoning", { text: `t${turn}`.length }],
+        };
+      }
       return turn < toolTurns
         ? {
             content: `t${turn}`,
@@ -113,13 +127,17 @@ function boot(opts: {
   compaction?: { afterMessages: number; keepRecent: number };
   summarizerInputs?: unknown[];
   toolTurns?: number;
+  interleaved?: boolean;
 }) {
   const effects = new EffectRuntime();
   effects.register(
     "model",
-    createAgentModelEffect(reasoningProvider("m", opts.seen, opts.toolTurns), {
-      ...(opts.reasoningStore !== undefined && { reasoning: { store: opts.reasoningStore } }),
-    })
+    createAgentModelEffect(
+      reasoningProvider("m", opts.seen, opts.toolTurns, "anthropic", opts.interleaved === true),
+      {
+        ...(opts.reasoningStore !== undefined && { reasoning: { store: opts.reasoningStore } }),
+      }
+    )
   );
   effects.register("lookup", new ToolEffect(async (input) => ({ ok: true, input })));
   effects.register(
@@ -190,6 +208,30 @@ describe("agentLoop$ carries reasoning through the transcript (ADR 0133 D5)", ()
     const log = JSON.stringify(await eventStore.read("c1"));
     expect(log).not.toContain("SECRET-THOUGHT");
     expect(log).toContain("sig-m-0"); // signatures are recorded inline
+  });
+
+  it("sends the vendor's block ORDER back: reasoning, tool_use, reasoning, text (not regrouped)", async () => {
+    const seen: LlmRequest[] = [];
+    const { runtime } = boot({ seen, reasoningStore: memStore(), interleaved: true });
+    const h = await runtime.start(flowDef, {}, { executionId: "c-order" });
+    expect((await h.waitForCompletion()).status).toBe("completed");
+    const assistant = (seen[1] as LlmRequest).messages.find((m) => m.role === "assistant");
+    expect((assistant?.content as { type: string }[]).map((p) => p.type)).toEqual([
+      "reasoning",
+      "tool_use",
+      "reasoning",
+      "text",
+    ]);
+    // Every later request keeps every earlier turn in that order, too.
+    const last = (seen[3] as LlmRequest).messages.filter((m) => m.role === "assistant");
+    for (const m of last) {
+      expect((m.content as { type: string }[]).map((p) => p.type)).toEqual([
+        "reasoning",
+        "tool_use",
+        "reasoning",
+        "text",
+      ]);
+    }
   });
 
   it("with no store the text is not kept: the part is dropped from continuation, the call signature stays", async () => {

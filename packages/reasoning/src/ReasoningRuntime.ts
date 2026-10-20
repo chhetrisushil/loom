@@ -110,6 +110,7 @@ export class ReasoningRuntime {
       stopReason: res.stopReason,
       ...(res.usage !== undefined && { usage: res.usage }),
       ...(res.reasoning !== undefined && { reasoning: res.reasoning }),
+      ...(res.layout !== undefined && { layout: res.layout }),
       modelId: current.id,
       confidence,
       elevated: trace.length > 1,

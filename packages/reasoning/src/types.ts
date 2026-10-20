@@ -63,6 +63,8 @@ export interface ReasoningResult {
    * `invoke` these are recorded `LlmReasoningPart`s; a caller keeps only those (`type: "reasoning"`).
    */
   reasoning?: LlmResponse["reasoning"];
+  /** ADR 0133 D5 - the answering call's block order (positions only), so a transcript can reproduce the vendor sequence. */
+  layout?: LlmResponse["layout"];
   modelId: string;
   confidence: number;
   elevated: boolean;

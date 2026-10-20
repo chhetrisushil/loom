@@ -51,6 +51,7 @@ export function assembleStream(chunks: readonly LlmStreamChunk[]): LlmResponse {
     stopReason: last.stopReason ?? "end_turn",
     ...(last.usage !== undefined && { usage: last.usage }),
     ...(last.reasoning !== undefined && { reasoning: last.reasoning }),
+    ...(last.layout !== undefined && { layout: last.layout }),
   };
 }
 
@@ -213,5 +214,6 @@ export async function collectStream(
     stopReason: last.stopReason ?? "end_turn",
     ...(last.usage !== undefined && { usage: last.usage }),
     ...(last.reasoning !== undefined && { reasoning: last.reasoning }),
+    ...(last.layout !== undefined && { layout: last.layout }),
   };
 }
