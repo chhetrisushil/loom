@@ -31,7 +31,10 @@ export {
   LLM_REASONING_CAPTURED,
   captureReasoning,
   readReasoning,
+  openReasoningText,
   reasoningDigest,
+  reasoningStoreResolver,
+  sealReasoningText,
 } from "./reasoning";
 export type {
   LlmAudioPart,
