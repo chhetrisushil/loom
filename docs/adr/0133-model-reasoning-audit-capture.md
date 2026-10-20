@@ -212,8 +212,13 @@ renders text deltas sees reasoning by accident.
 - **Transport.** `@loom/plugin-conversation-sse` gains an opt-in `reasoning` SSE event type. In **shared mode**
   (ADR 0122 D10) reasoning deltas go **only to the turn's asker**, never to other participants. The reasoning
   carries what the asker's turn saw, and the per-viewer filter is not designed to classify free text.
-- **`Last-Event-ID` resume** does not replay reasoning deltas missed while disconnected: they were never journaled.
-  The client sees a gap marker, not a fabricated stream.
+- **Catch-up, the same as text (ADR 0122 D7).** The hub keeps the in-progress reasoning per turn, bounded like the
+  in-progress reply, so a client that attaches or reconnects mid-call gets a `reasoning-partial` and then the live
+  deltas. Once the call has completed, the durable record is the captured reasoning (D3): the transport serves it,
+  through `readReasoning` and to the same audience (the asker in shared mode), to a client that reconnects later. A
+  re-run of the turn by another process emits `reset`, as text does. The remaining gaps are the ones text already
+  has (a process restart mid-call, a call on another node) plus one by configuration: with no reasoning store, a
+  completed call's reasoning was never kept, so a late client gets none, and the boot warning (D7) names that.
 
 ### D7 — Configuration and the boot warning
 
