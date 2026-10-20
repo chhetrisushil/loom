@@ -211,7 +211,11 @@ export interface ReasoningLogReader {
   read(executionId: string): Promise<readonly { eventType: string; payload: unknown }[]>;
 }
 
-export type ReasoningPartStatus = "ok" | "erased" | "digest-mismatch";
+/**
+ * `redacted`: the vendor withheld this block (opaque data in `signature`, never any text), so there is
+ * nothing to verify or erase; it is NOT `ok` (which would read as "readable and checked").
+ */
+export type ReasoningPartStatus = "ok" | "redacted" | "erased" | "digest-mismatch";
 
 export interface ReasoningPartRead {
   kind: LlmReasoningKind;
@@ -368,6 +372,7 @@ async function readPart(
   executionId: string
 ): Promise<ReasoningPartRead> {
   const base = { kind: part.kind, provider };
+  if (part.kind === "redacted") return { ...base, status: "redacted" };
   if (part.ref === undefined) return { ...base, status: "ok" };
   const stored = await store.get({ __loomContent: part.ref });
   if (stored === null) return { ...base, status: "erased" };

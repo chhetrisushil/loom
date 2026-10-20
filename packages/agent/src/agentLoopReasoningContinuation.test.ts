@@ -927,6 +927,25 @@ describe("the direct routed path discards reasoning every turn (ADR 0133 D7)", (
     }
   });
 
+  it("a throwing onWarn sink never fails the run: the warning falls back to a process warning", async () => {
+    const proc = process.emitWarning;
+    const codes: string[] = [];
+    process.emitWarning = ((_m: string, o?: { code?: string }) =>
+      void codes.push(o?.code ?? "")) as never;
+    try {
+      const out = await directRun({
+        capable: true,
+        onWarn: () => {
+          throw new Error("broken sink");
+        },
+      }).value();
+      expect(out.ok).toBe(true);
+      expect(codes).toEqual(["LOOM_AGENT_REASONING_DISCARDED"]);
+    } finally {
+      process.emitWarning = proc;
+    }
+  });
+
   it("configureAgentLoopDefaults is fail-closed: the refusal is monotonic and an omitted field changes nothing", async () => {
     try {
       configureAgentLoopDefaults({ requireReasoningContinuation: true });
