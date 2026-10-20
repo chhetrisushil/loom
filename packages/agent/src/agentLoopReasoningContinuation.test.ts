@@ -419,3 +419,109 @@ describe("a routed loop drops another model's reasoning (ADR 0133 D5, same-provi
     expect(JSON.stringify(await eventStore.read("rd"))).not.toContain("SECRET-THOUGHT");
   });
 });
+
+describe("a change to the tool set is an edit point (ADR 0133 D5)", () => {
+  const dbSlow = tool$({
+    id: "db_slow_queries",
+    name: "db_slow_queries",
+    description: "List the slowest queries on the database",
+    kind: "tool",
+    inputSchema: z.object({}).passthrough(),
+    outputSchema: z.object({}).passthrough(),
+  });
+
+  /** turn 0 searches (loading a tool), turn 1 calls it, turn 2 answers; every turn carries reasoning. */
+  function searchingProvider(seen: LlmRequest[]): LlmProvider {
+    return {
+      async complete(request) {
+        seen.push(request);
+        const turn = request.messages.filter((m) => m.role === "assistant").length;
+        const reasoning: LlmReasoning[] = [
+          {
+            kind: "summary",
+            text: secretOf(turn),
+            signature: `sig-${turn}`,
+            provider: "anthropic",
+          },
+        ];
+        if (turn === 0) {
+          return {
+            content: "search",
+            toolCalls: [
+              {
+                id: "s0",
+                name: "search_tools",
+                input: { query: "slow queries" },
+                signature: "ts0",
+              },
+            ],
+            stopReason: "tool_use",
+            reasoning,
+          };
+        }
+        if (turn === 1) {
+          return {
+            content: "use it",
+            toolCalls: [{ id: "c1", name: "db_slow_queries", input: {}, signature: "ts1" }],
+            stopReason: "tool_use",
+            reasoning,
+          };
+        }
+        return { content: "final", stopReason: "end_turn", reasoning };
+      },
+    };
+  }
+
+  async function run(toolSearch: boolean) {
+    const seen: LlmRequest[] = [];
+    const effects = new EffectRuntime();
+    effects.register(
+      "model",
+      createAgentModelEffect(searchingProvider(seen), { reasoning: { store: memStore() } })
+    );
+    effects.register("db_slow_queries", new ToolEffect(async () => ({ ok: true })));
+    effects.register("lookup", new ToolEffect(async () => ({ ok: true })));
+    const runtime = new WorkflowRuntime({
+      eventStore: new InMemoryAsyncEventStore(),
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: effects,
+      divergence: "fail",
+    });
+    const runner: FlowRunner<unknown, { content: string }> = async (ctx) => ({
+      content: (
+        await agentLoop$(
+          ctx,
+          {
+            definition: toolSearch
+              ? dba
+              : agent$({ id: "dba2", name: "DBA", tools: [lookup, dbSlow] }),
+            modelToolId: "model",
+            maxIterations: 9,
+            ...(toolSearch && { toolSearch: { catalog: [dbSlow] } }),
+          },
+          { prompt: "go" }
+        )
+      ).content,
+    });
+    runtime.registerFlow(flowDef, runner as FlowRunner<unknown, unknown>);
+    const h = await runtime.start(flowDef, {}, { executionId: toolSearch ? "ts-on" : "ts-off" });
+    expect((await h.waitForCompletion()).status).toBe("completed");
+    return seen;
+  }
+
+  it("after a search grows the menu, EVERY earlier reasoning part is dropped; tool signatures stay", async () => {
+    const seen = await run(true);
+    // The request that carried the search call is made with the tools it was signed under.
+    expect(reasoningIn(seen[1] as LlmRequest)).toEqual([]); // tools grew after turn 0
+    expect(signaturesIn(seen[1] as LlmRequest)).toEqual(["ts0"]);
+    // Turn 1 was produced under the NEW tool set and nothing changed since: it is continued, turn 0's is not.
+    expect(reasoningIn(seen[2] as LlmRequest).map((p) => p.signature)).toEqual(["sig-1"]);
+    expect(signaturesIn(seen[2] as LlmRequest)).toEqual(["ts0", "ts1"]);
+  });
+
+  it("negative: with a fixed tool set no part is dropped", async () => {
+    const seen = await run(false);
+    expect(reasoningIn(seen[1] as LlmRequest).map((p) => p.signature)).toEqual(["sig-0"]);
+    expect(reasoningIn(seen[2] as LlmRequest).map((p) => p.signature)).toEqual(["sig-0", "sig-1"]);
+  });
+});

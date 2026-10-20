@@ -886,6 +886,16 @@ export async function agentLoop$(
     if (added.length === 0) return;
     toolDefs.push(...added);
     tools.push(...toolSpecsFor(added));
+    // ADR 0133 D5 - a provider's reasoning signature binds the SET of tools, so every block produced
+    // under the old menu is invalid under the new one. Drop them all from the transcript for good
+    // (tool-call signatures stay); turns after this one carry fresh, valid blocks. A pure function of
+    // the recorded search/activation result, so a replay lands on the same transcript.
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i] as LlmMessageInput;
+      const stripped = withoutReasoningParts(m);
+      if (stripped !== m) messages[i] = stripped;
+    }
+    reasonedBy.clear();
     menu = buildToolMenu(toolDefs);
     for (const t of added) {
       if (t.returnsMedia === true) mediaTools.add(t.id);
