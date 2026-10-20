@@ -19,7 +19,7 @@ import {
 import { BadRequestError, exposeError } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import type { EventStore } from "@loom/event-runtime";
-import { type ReasoningReader, readReasoning } from "@loom/llm";
+import { type ReasoningReader, readReasoningBounded } from "@loom/llm";
 import {
   ExecutionDeniedError,
   InboxClosedError,
@@ -65,6 +65,15 @@ import { SseSink, frame } from "./sse";
 //     request body and timeouts, a POST rate limit per principal, per-connection pending bytes (a slow
 //     reader is closed), stream lifetime. A connection is re-authenticated periodically; a revoked token
 //     or a removed participant ends the stream.
+
+/**
+ * ADR 0133 D6 - bounds on one `/reasoning` response. The turn's steps are selected before any blob is
+ * fetched, and a reply that still exceeds either cap returns its FIRST parts (log order) with
+ * `truncated: true`. 256 parts covers a long tool loop (a part per model call, a few per call); 1 MiB
+ * of readable text is far past a normal turn and bounds what one request can make the server read.
+ */
+export const REASONING_RESPONSE_MAX_PARTS = 256;
+export const REASONING_RESPONSE_MAX_BYTES = 1024 * 1024;
 
 export interface ConversationSseOptions {
   conversations: Conversations;
@@ -696,11 +705,15 @@ export function createConversationSseServer(
           throw new BadRequestError("`cursor` (the reply's history cursor) is required");
         // The audience decision is the conversation's: the asker in shared mode, the owner otherwise.
         const target = await conversations.reasoningTarget(id, cursor, call);
-        const steps = (
-          await readReasoning(options.eventStore, reasoningStore, {
+        const { steps, truncated } = await readReasoningBounded(
+          options.eventStore,
+          reasoningStore,
+          {
             executionId: target.executionId,
-          })
-        ).filter((s) => target.stepPrefix === undefined || s.stepId.startsWith(target.stepPrefix));
+            ...(target.stepPrefix !== undefined && { stepPrefix: target.stepPrefix }),
+          },
+          { maxParts: REASONING_RESPONSE_MAX_PARTS, maxBytes: REASONING_RESPONSE_MAX_BYTES }
+        );
         sendJson(
           res,
           200,
@@ -721,6 +734,7 @@ export function createConversationSseServer(
                 })),
               })),
             })),
+            ...(truncated && { truncated: true }),
           },
           cors
         );

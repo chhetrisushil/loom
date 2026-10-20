@@ -9,6 +9,7 @@ import type { LlmReasoningPart } from "./parts";
 import {
   LLM_REASONING_CAPTURED,
   readReasoning,
+  readReasoningBounded,
   reasoningDigest,
   reasoningStoreResolver,
   sealReasoningText,
@@ -806,5 +807,82 @@ describe("observability.reasoning: false is a default, not an override (ADR 0133
   it("an effect that set capture: false itself stays off", async () => {
     const r = await run({ capture: false });
     expect(r.store.puts).toBe(0);
+  });
+});
+
+describe("readReasoning bounds apply BEFORE any blob is fetched (D4)", () => {
+  /** `n` steps `t<k>:call`, each with one captured summary part. */
+  async function manySteps(store: ReasoningStore, n: number, text = (k: number) => `thought ${k}`) {
+    const events: { eventType: string; payload: unknown }[] = [];
+    for (let k = 0; k < n; k++) {
+      const ctx = makeCtx({
+        stepId: `t${k}:call`,
+        emit: ((t: string, p: unknown) => events.push({ eventType: t, payload: p })) as never,
+      });
+      await build(providerWith([{ kind: "summary", text: text(k), provider: "anthropic" }]), {
+        store,
+      }).execute("hi", ctx);
+      events.push({ eventType: "STEP_COMPLETED", payload: { stepId: `t${k}:call`, output: {} } });
+    }
+    return { read: async () => events };
+  }
+  const counting = (store: ReasoningStore) => {
+    const seen: string[] = [];
+    return {
+      seen,
+      store: {
+        put: store.put.bind(store),
+        get: async (ref: { __loomContent: string }) => {
+          seen.push(ref.__loomContent);
+          return store.get(ref);
+        },
+      } as ReasoningStore,
+    };
+  };
+
+  it("stepPrefix selects events first: one turn's read gets only that turn's blobs", async () => {
+    const base = memStore();
+    const log = await manySteps(base, 10);
+    const c = counting(base);
+    const steps = await readReasoning(log, c.store, { executionId: "exec-1", stepPrefix: "t3:" });
+    expect(steps.map((s) => s.stepId)).toEqual(["t3:call"]);
+    expect(c.seen).toHaveLength(1); // not 10
+  });
+
+  it("maxParts and maxBytes cap the read, return the FIRST parts, flag truncated, and fetch nothing past the cap", async () => {
+    const base = memStore();
+    const log = await manySteps(base, 10);
+    const byParts = counting(base);
+    const a = await readReasoningBounded(
+      log,
+      byParts.store,
+      { executionId: "exec-1" },
+      { maxParts: 3 }
+    );
+    expect(a.truncated).toBe(true);
+    expect(a.steps.map((s) => s.stepId)).toEqual(["t0:call", "t1:call", "t2:call"]);
+    expect(byParts.seen).toHaveLength(3);
+
+    const byBytes = counting(base);
+    const size = "thought 0".length;
+    const b = await readReasoningBounded(
+      log,
+      byBytes.store,
+      { executionId: "exec-1" },
+      { maxBytes: size * 2 }
+    );
+    expect(b.truncated).toBe(true);
+    expect(b.steps).toHaveLength(2);
+    expect(byBytes.seen).toHaveLength(2);
+
+    // negative: under the caps nothing is flagged
+    const all = await readReasoningBounded(
+      log,
+      base,
+      { executionId: "exec-1" },
+      { maxParts: 10, maxBytes: 1e6 }
+    );
+    expect(all.truncated).toBe(false);
+    expect(all.steps).toHaveLength(10);
   });
 });
