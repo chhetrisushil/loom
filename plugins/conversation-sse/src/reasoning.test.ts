@@ -11,6 +11,7 @@ import {
   openSse,
   post,
 } from "./__fixtures__/harness";
+import { REASONING_RESPONSE_MAX_BYTES, REASONING_RESPONSE_MAX_PARTS } from "./server";
 
 // ── ADR 0133 D6 — live and durable reasoning over SSE ───────────────────────────────────────────
 //
@@ -273,5 +274,136 @@ describe("shared conversation: the turn's asker ONLY", () => {
     expect(
       (await get(`${b.url}/conversations/${id}/reasoning?cursor=${reply.id}`, "tok-bob")).status
     ).toBe(200);
+  });
+});
+
+describe("the durable endpoint is bounded (ADR 0133 D6)", () => {
+  type Parts = { kind: string; status: string; text?: string }[];
+  const partsOf = (body: {
+    steps: { attempts: { parts: Parts }[] }[];
+  }): Parts => body.steps.flatMap((st) => st.attempts.flatMap((a) => a.parts));
+
+  const counted = (inner: ReasoningStore) => {
+    const gets: string[] = [];
+    const store: ReasoningStore = {
+      put: inner.put.bind(inner),
+      get: async (ref) => {
+        gets.push(ref.__loomContent);
+        return inner.get(ref);
+      },
+    };
+    return { store, gets };
+  };
+
+  /** call `nth` thinks "think-<nth>" and answers. */
+  async function* nthThought(_req: unknown, nth: number): AsyncGenerator<LlmStreamChunk> {
+    yield { delta: `a${nth}`, done: false };
+    yield {
+      delta: "",
+      done: true,
+      stopReason: "end_turn",
+      reasoning: [{ kind: "summary", text: `think-${nth}`, provider: "anthropic" }],
+    };
+  }
+
+  it("a request for one turn fetches only that turn's blobs, not the whole execution's", async () => {
+    const { store, gets } = counted(memStore());
+    const b = await up({
+      reasoning: { store, live: true },
+      chunks: nthThought,
+      server: { reasoning: { live: true, store } },
+    });
+    const id = (await post(`${b.url}/conversations`, "tok-alice", {})).body
+      .conversationId as string;
+    const s = track(await openSse(`${b.url}/conversations/${id}/events`, bearer("tok-alice")));
+    const replies: { id: string }[] = [];
+    for (let turn = 1; turn <= 4; turn++) {
+      await post(`${b.url}/conversations/${id}/turns`, "tok-alice", { text: `q${turn}` });
+      replies.push(
+        (await s.waitFor(
+          (e) =>
+            e.event === "message" &&
+            (e.data as { role: string; text?: string }).role === "assistant" &&
+            replies.length === turn - 1 &&
+            !replies.some((r) => r.id === (e.data as { id: string }).id)
+        )) as { id: string }
+      );
+    }
+    gets.length = 0;
+    const res = await get(
+      `${b.url}/conversations/${id}/reasoning?cursor=${(replies[2] as { id: string }).id}`,
+      "tok-alice"
+    );
+    expect(res.status).toBe(200);
+    expect(partsOf(res.body)).toHaveLength(1);
+    expect(gets).toHaveLength(1); // not 4: the other turns' blobs were never fetched
+    expect(res.body.truncated).toBeUndefined();
+  });
+
+  it(`caps a reply at ${REASONING_RESPONSE_MAX_PARTS} parts and flags truncated`, async () => {
+    const { store, gets } = counted(memStore());
+    const many = REASONING_RESPONSE_MAX_PARTS + 20;
+    const b = await up({
+      reasoning: { store, live: true },
+      chunks: async function* () {
+        yield { delta: "a", done: false };
+        yield {
+          delta: "",
+          done: true,
+          stopReason: "end_turn",
+          reasoning: Array.from({ length: many }, (_, i) => ({
+            kind: "summary" as const,
+            text: `p${i}`,
+            provider: "anthropic",
+          })),
+        };
+      },
+      server: { reasoning: { live: true, store } },
+    });
+    const id = (await post(`${b.url}/conversations`, "tok-alice", {})).body
+      .conversationId as string;
+    const s = track(await openSse(`${b.url}/conversations/${id}/events`, bearer("tok-alice")));
+    await post(`${b.url}/conversations/${id}/turns`, "tok-alice", { text: "hi" });
+    const reply = (await s.waitFor(
+      (e) => e.event === "message" && (e.data as { role: string }).role === "assistant"
+    )) as { id: string };
+    gets.length = 0;
+    const res = await get(`${b.url}/conversations/${id}/reasoning?cursor=${reply.id}`, "tok-alice");
+    expect(res.body.truncated).toBe(true);
+    const parts = partsOf(res.body);
+    expect(parts).toHaveLength(REASONING_RESPONSE_MAX_PARTS);
+    expect(parts[0]?.text).toBe("p0"); // the FIRST parts
+    expect(gets).toHaveLength(REASONING_RESPONSE_MAX_PARTS); // nothing past the cap was fetched
+  });
+
+  it("caps the readable bytes too", async () => {
+    const { store } = counted(memStore());
+    const big = "x".repeat(Math.floor(REASONING_RESPONSE_MAX_BYTES * 0.6));
+    const b = await up({
+      reasoning: { store, live: true },
+      chunks: async function* () {
+        yield { delta: "a", done: false };
+        yield {
+          delta: "",
+          done: true,
+          stopReason: "end_turn",
+          reasoning: [
+            { kind: "summary" as const, text: `${big}1`, provider: "anthropic" },
+            { kind: "summary" as const, text: `${big}2`, provider: "anthropic" },
+          ],
+        };
+      },
+      server: { reasoning: { live: true, store } },
+    });
+    const id = (await post(`${b.url}/conversations`, "tok-alice", {})).body
+      .conversationId as string;
+    const s = track(await openSse(`${b.url}/conversations/${id}/events`, bearer("tok-alice")));
+    await post(`${b.url}/conversations/${id}/turns`, "tok-alice", { text: "hi" });
+    const reply = (await s.waitFor(
+      (e) => e.event === "message" && (e.data as { role: string }).role === "assistant"
+    )) as { id: string };
+    const res = await get(`${b.url}/conversations/${id}/reasoning?cursor=${reply.id}`, "tok-alice");
+    expect(res.body.truncated).toBe(true);
+    expect(partsOf(res.body)).toHaveLength(1);
   });
 });

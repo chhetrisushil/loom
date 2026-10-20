@@ -238,6 +238,23 @@ export interface ReasoningStepRead {
   recordedAttempt?: number;
 }
 
+/** Which steps to read and how much: every bound is applied BEFORE a blob is fetched. */
+export interface ReasoningQuery {
+  executionId: string;
+  /** Exactly this step. */
+  stepId?: string;
+  /** Only steps whose id starts with this (a conversation turn's steps), filtered before any `store.get`. */
+  stepPrefix?: string;
+}
+
+/** Bounds for {@link readReasoningBounded}. Reading stops at the first one reached. */
+export interface ReasoningReadLimits {
+  /** Most parts read (each part with a stored text costs one `store.get`). */
+  maxParts?: number;
+  /** Most readable-text bytes read in total. */
+  maxBytes?: number;
+}
+
 /**
  * Join `LLM_REASONING_CAPTURED` events to their blobs. Each part is checked against its digest:
  * an absent blob reports `erased`, an altered one `digest-mismatch`. Readable text comes back
@@ -248,15 +265,42 @@ export interface ReasoningStepRead {
 export async function readReasoning(
   log: ReasoningLogReader,
   store: ReasoningReader,
-  query: { executionId: string; stepId?: string }
+  query: ReasoningQuery
 ): Promise<ReasoningStepRead[]> {
+  return (await readReasoningBounded(log, store, query)).steps;
+}
+
+/**
+ * {@link readReasoning} for an endpoint: the same join, but bounded. `stepId` / `stepPrefix` select
+ * events before any blob is fetched, and `limits` cap the parts and the readable bytes read; when a
+ * cap is reached the first parts (in log order) come back with `truncated: true` and nothing past
+ * the cap is fetched. A part whose declared text size would cross `maxBytes` is neither read nor included.
+ */
+export async function readReasoningBounded(
+  log: ReasoningLogReader,
+  store: ReasoningReader,
+  query: ReasoningQuery,
+  limits: ReasoningReadLimits = {}
+): Promise<{ steps: ReasoningStepRead[]; truncated: boolean }> {
+  const maxParts = limits.maxParts ?? Number.POSITIVE_INFINITY;
+  const maxBytes = limits.maxBytes ?? Number.POSITIVE_INFINITY;
   const events = await log.read(query.executionId);
   const steps = new Map<string, ReasoningStepRead>();
   const latest = new Map<string, ReasoningAttemptRead>();
+  let parts = 0;
+  let bytes = 0;
+  let truncated = false;
   for (const ev of events) {
     if (ev.eventType === LLM_REASONING_CAPTURED) {
+      if (truncated) continue;
       const p = asCaptured(ev.payload);
-      if (p === undefined || (query.stepId !== undefined && p.stepId !== query.stepId)) continue;
+      if (
+        p === undefined ||
+        (query.stepId !== undefined && p.stepId !== query.stepId) ||
+        (query.stepPrefix !== undefined && !p.stepId.startsWith(query.stepPrefix))
+      ) {
+        continue;
+      }
       const attempt: ReasoningAttemptRead = {
         attempt: p.attempt,
         provider: p.provider,
@@ -265,15 +309,29 @@ export async function readReasoning(
         parts: [],
       };
       for (const part of p.parts) {
+        if (parts >= maxParts) {
+          truncated = true;
+          break;
+        }
+        // The event's own `size` (the text's bytes) gates the fetch, so nothing past the cap is read.
+        const size = part.ref !== undefined ? (part.size ?? 0) : 0;
+        if (bytes + size > maxBytes) {
+          truncated = true;
+          break;
+        }
+        parts += 1;
+        bytes += size;
         attempt.parts.push(await readPart(store, part, p.provider, p.stepId, query.executionId));
       }
-      let step = steps.get(p.stepId);
-      if (step === undefined) {
-        step = { stepId: p.stepId, attempts: [] };
-        steps.set(p.stepId, step);
+      if (attempt.parts.length > 0 || !truncated) {
+        let step = steps.get(p.stepId);
+        if (step === undefined) {
+          step = { stepId: p.stepId, attempts: [] };
+          steps.set(p.stepId, step);
+        }
+        step.attempts.push(attempt);
+        latest.set(p.stepId, attempt);
       }
-      step.attempts.push(attempt);
-      latest.set(p.stepId, attempt);
     } else if (ev.eventType === "STEP_COMPLETED") {
       const id = (ev.payload as { stepId?: unknown } | null)?.stepId;
       const attempt = typeof id === "string" ? latest.get(id) : undefined;
@@ -284,7 +342,7 @@ export async function readReasoning(
       }
     }
   }
-  return [...steps.values()];
+  return { steps: [...steps.values()], truncated };
 }
 
 function asCaptured(payload: unknown): LlmReasoningCaptured | undefined {
