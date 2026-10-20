@@ -277,13 +277,44 @@ describe("layoutOf / assistantMessageOf", () => {
     });
   });
 
-  it("a layout that does not fit the content is ignored (canonical fallback)", () => {
+  it("a layout that does not fit the content drops every reasoning part instead of reordering", () => {
     const m = assistantMessageOf({
       content: "hello",
       reasoning: [rp("s")],
       layout: [{ text: 2 }, "reasoning"],
     });
-    expect(m.content.map((p) => p.type)).toEqual(["reasoning", "text"]);
+    expect(m.content.map((p) => p.type)).toEqual(["text"]);
+  });
+
+  it("a reasoning count that differs from the layout drops every reasoning part", () => {
+    const m = assistantMessageOf({
+      content: "",
+      toolCalls: [{ id: "a", name: "n", input: {} }],
+      reasoning: [rp("1"), rp("2")],
+      layout: [{ call: "a" }, "reasoning"],
+    });
+    expect(m.content.map((p) => p.type)).toEqual(["tool_use"]);
+  });
+
+  it("a malformed layout entry (null, primitive) drops reasoning instead of throwing", () => {
+    for (const bad of [null, 7, "x", {}] as unknown[]) {
+      const m = assistantMessageOf({
+        content: "hi",
+        reasoning: [rp("1")],
+        layout: ["reasoning", bad, { text: 2 }] as never,
+      });
+      expect(m.content.map((p) => p.type)).toEqual(["text"]);
+    }
+  });
+
+  it("a named call that is missing drops the reasoning parts after it, keeps those before", () => {
+    const m = assistantMessageOf({
+      content: "",
+      toolCalls: [{ id: "b", name: "n", input: {} }],
+      reasoning: [rp("1"), rp("2")],
+      layout: ["reasoning", { call: "gone" }, "reasoning", { call: "b" }],
+    });
+    expect(m.content.map((p) => (p.type === "tool_use" ? p.id : p.type))).toEqual(["reasoning", "b"]);
   });
 
   it("calls the layout does not name (screened by the loop) keep their place at the end", () => {
