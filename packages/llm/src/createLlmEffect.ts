@@ -9,7 +9,7 @@ import type {
 import { collectStream } from "./assembleStream";
 import type { StreamProgress } from "./assembleStream";
 import { assertRequestSupported } from "./capabilities";
-import { type LlmReasoningOptions, captureReasoning } from "./reasoning";
+import { type LlmReasoningOptions, captureReasoning, reasoningStoreResolver } from "./reasoning";
 import { type ContentResolver, resolveRequestContent } from "./resolveContent";
 import type { LlmCapturedResponse, LlmProvider, LlmRequest, LlmRequestInput } from "./types";
 import { guardRequest } from "./untrusted";
@@ -116,9 +116,8 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
   guard?: (ctx: EffectContext) => (progress: StreamProgress) => void;
 }
 
-/** A `ContentResolver` over the sidecar store: the ref's address IS the store's content address. */
-function storeResolver(store: NonNullable<LlmReasoningOptions["store"]>): ContentResolver {
-  return (ref) => store.get({ __loomContent: ref.address });
+function reasoningResolverOf(r: LlmReasoningOptions | undefined): ContentResolver | undefined {
+  return r?.resolve ?? (r?.store !== undefined ? reasoningStoreResolver(r.store) : undefined);
 }
 
 export function createLlmEffect<TIn = string, TOut = string>(
@@ -163,6 +162,7 @@ export function createLlmEffect<TIn = string, TOut = string>(
       // R5 — fail closed on an undeclared modality BEFORE fetching any content or touching the
       // network, then turn claim-check refs into bytes (live calls only).
       assertRequestSupported(guarded, options.provider.capabilities);
+      const reasoningResolver = reasoningResolverOf(reasoningOf());
       const request = await resolveRequestContent(guarded, options.resolveContent, {
         ...(options.maxResolvedBytes !== undefined && { maxBytes: options.maxResolvedBytes }),
         ...(ctx.signal !== undefined && { signal: ctx.signal }),
@@ -171,12 +171,10 @@ export function createLlmEffect<TIn = string, TOut = string>(
           stepId: ctx.stepId,
           ...(ctx.principal !== undefined && { principal: ctx.principal }),
         },
-        // ADR 0133 D5 - reasoning text lives where capture put it, so that is where it is read back.
-        ...(reasoningOf()?.store !== undefined && {
-          reasoningResolver: storeResolver(
-            reasoningOf()?.store as NonNullable<LlmReasoningOptions["store"]>
-          ),
-        }),
+        // ADR 0133 D5 - reasoning text lives where capture put it, and is read back through an
+        // AUTHORIZING resolver (the ADR 0120 seam, origin "reasoning"): the configured one, else the
+        // sidecar read that serves a blob only to the execution it is sealed to.
+        ...(reasoningResolver !== undefined && { reasoningResolver }),
       });
       // K8.1 — forward the effect's cooperative-cancellation signal to the
       // provider (unless buildRequest already set one), so a cancelled/timed-out

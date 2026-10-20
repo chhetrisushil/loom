@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { type TaintedValue, tainted } from "@loom/classify";
 import type { EffectContext } from "@loom/effect-runtime";
 import type { LlmReasoning, LlmReasoningKind, LlmReasoningPart } from "./parts";
+import type { ContentResolver } from "./resolveContent";
 
 // ── ADR 0133 — model reasoning as audit evidence ─────────────────────────────
 //
@@ -44,6 +45,14 @@ export interface LlmReasoningOptions {
   onDelta?: (delta: TaintedValue<string>, ctx: EffectContext) => void;
   /** Recorded on the audit event (the provider SPI does not expose its model id). */
   model?: string;
+  /**
+   * An AUTHORIZING resolver for a reasoning part's `textRef` (the ADR 0120 `ContentResolver` seam,
+   * called with `origin: "reasoning"` and the call's executionId / stepId / principal). It returns the
+   * readable text's bytes, or `null` for absent / not yours; a throw is an outage and fails the call.
+   * Default: {@link reasoningStoreResolver} over `store`, which serves only blobs sealed to the
+   * calling execution.
+   */
+  resolve?: ContentResolver;
 }
 
 /** One part of an `LLM_REASONING_CAPTURED` payload: references and digests, never text. */
@@ -63,6 +72,43 @@ export interface LlmReasoningCaptured {
 }
 
 const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+// ── the execution seal (ADR 0133 D5, "who may resolve a ref") ─────────────────
+//
+// The sidecar is content-addressed and, like every ContentStore, has no tenancy of its own: whoever
+// can name an address can read it, and a reasoning part's `textRef` rides in a transcript a caller
+// may have assembled. So the stored bytes are SEALED to the execution that captured them (a tiny
+// JSON envelope naming it), and the default resolver serves a blob only to that execution. A forged
+// or copied ref to another execution's blob resolves to `null` (not yours), which the drop rule
+// treats as a hole. The part's `digest` and the audit event's `digest`/`size` stay those of the
+// readable text itself.
+
+/** The bytes stored for `text`: sealed to `executionId`. */
+export function sealReasoningText(text: string, executionId: string): Uint8Array {
+  return enc.encode(JSON.stringify({ e: executionId, t: text }));
+}
+
+/** The text bytes inside a sealed blob, or `null` when it is not sealed to `executionId` (or is not a sealed blob). */
+export function openReasoningText(bytes: Uint8Array, executionId: string): Uint8Array | null {
+  try {
+    const v = JSON.parse(dec.decode(bytes)) as { e?: unknown; t?: unknown } | null;
+    if (v === null || typeof v !== "object" || v.e !== executionId || typeof v.t !== "string") {
+      return null;
+    }
+    return enc.encode(v.t);
+  } catch {
+    return null;
+  }
+}
+
+/** The default reasoning resolver: reads the sidecar and serves a blob only to the execution it is sealed to. */
+export function reasoningStoreResolver(store: ReasoningReader): ContentResolver {
+  return async (ref, ctx) => {
+    const bytes = await store.get({ __loomContent: ref.address });
+    return bytes === null ? null : openReasoningText(bytes, ctx.executionId);
+  };
+}
 
 /** SHA-256 hex of the canonical UTF-8 bytes of `text`. */
 export function reasoningDigest(bytes: Uint8Array): string {
@@ -101,7 +147,7 @@ export async function captureReasoning(
     if (text !== "") {
       if (store !== undefined) {
         const bytes = enc.encode(text);
-        const ref = await store.put(bytes);
+        const ref = await store.put(sealReasoningText(text, ctx.executionId));
         part.textRef = { address: ref.__loomContent, size: bytes.byteLength };
         part.digest = reasoningDigest(bytes);
         audit.push({
@@ -166,8 +212,6 @@ export interface ReasoningStepRead {
   recordedAttempt?: number;
 }
 
-const dec = new TextDecoder();
-
 /**
  * Join `LLM_REASONING_CAPTURED` events to their blobs. Each part is checked against its digest:
  * an absent blob reports `erased`, an altered one `digest-mismatch`. Readable text comes back
@@ -195,7 +239,7 @@ export async function readReasoning(
         parts: [],
       };
       for (const part of p.parts) {
-        attempt.parts.push(await readPart(store, part, p.provider, p.stepId));
+        attempt.parts.push(await readPart(store, part, p.provider, p.stepId, query.executionId));
       }
       let step = steps.get(p.stepId);
       if (step === undefined) {
@@ -236,12 +280,16 @@ async function readPart(
   store: ReasoningReader,
   part: CapturedReasoningPart,
   provider: string,
-  stepId: string
+  stepId: string,
+  executionId: string
 ): Promise<ReasoningPartRead> {
   const base = { kind: part.kind, provider };
   if (part.ref === undefined) return { ...base, status: "ok" };
-  const bytes = await store.get({ __loomContent: part.ref });
-  if (bytes === null) return { ...base, status: "erased" };
+  const stored = await store.get({ __loomContent: part.ref });
+  if (stored === null) return { ...base, status: "erased" };
+  // A blob not sealed to this execution is not what this execution captured.
+  const bytes = openReasoningText(stored, executionId);
+  if (bytes === null) return { ...base, status: "digest-mismatch" };
   if (part.digest === undefined || reasoningDigest(bytes) !== part.digest) {
     return { ...base, status: "digest-mismatch" };
   }

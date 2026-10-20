@@ -6,7 +6,13 @@ import { describe, expect, it, vi } from "vitest";
 import { createLlmEffect } from "./createLlmEffect";
 import { assistantMessageOf } from "./parts";
 import type { LlmReasoningPart } from "./parts";
-import { LLM_REASONING_CAPTURED, readReasoning, reasoningDigest } from "./reasoning";
+import {
+  LLM_REASONING_CAPTURED,
+  readReasoning,
+  reasoningDigest,
+  reasoningStoreResolver,
+  sealReasoningText,
+} from "./reasoning";
 import type { ReasoningStore } from "./reasoning";
 import { resolveRequestContent } from "./resolveContent";
 import type {
@@ -95,7 +101,8 @@ describe("capture (D3)", () => {
     }).execute("hi", makeCtx());
 
     const digest = reasoningDigest(new TextEncoder().encode(SECRET));
-    const address = `sha256:${digest}`;
+    // the stored blob is sealed to the execution, so its address is the sealed bytes' hash
+    const address = [...store.blobs.keys()][0] as string;
     expect(out).toEqual({
       content: "ok",
       stopReason: "end_turn",
@@ -115,7 +122,10 @@ describe("capture (D3)", () => {
     // negative: the readable text is nowhere parse, or the step value, could see it
     expect(JSON.stringify(seen)).not.toContain(SECRET);
     expect(JSON.stringify(out)).not.toContain(SECRET);
-    expect(new TextDecoder().decode(store.blobs.get(address))).toBe(SECRET);
+    expect(JSON.parse(new TextDecoder().decode(store.blobs.get(address)))).toEqual({
+      e: "exec-1",
+      t: SECRET,
+    });
   });
 
   it("emits LLM_REASONING_CAPTURED with references and digests only: no text, no signature", async () => {
@@ -132,7 +142,7 @@ describe("capture (D3)", () => {
       provider: "anthropic",
       model: "claude-x",
       parts: [
-        { kind: "summary", ref: `sha256:${digest}`, digest, size: SECRET.length },
+        { kind: "summary", ref: [...store.blobs.keys()][0], digest, size: SECRET.length },
         { kind: "redacted" },
         { kind: "text" },
       ],
@@ -285,8 +295,7 @@ async function recorded(store: ReasoningStore, texts: string[]): Promise<LlmReas
 }
 
 const ctxArg = { context: { executionId: "exec-1", stepId: "s" } };
-const storeResolver = (store: ReasoningStore) => (ref: { address: string }) =>
-  store.get({ __loomContent: ref.address });
+const storeResolver = (store: ReasoningStore) => reasoningStoreResolver(store);
 const reasoningOf = (req: LlmRequest): (LlmReasoningPart | undefined)[] =>
   req.messages.flatMap((m) =>
     typeof m.content === "string"
@@ -339,7 +348,7 @@ describe("resolution + the drop rule (D5)", () => {
   it("a digest mismatch drops the part and those after it; earlier parts survive", async () => {
     const store = memStore();
     const parts = await recorded(store, ["first", "second", "third"]);
-    store.blobs.set(parts[1]?.textRef?.address as string, new TextEncoder().encode("tampered"));
+    store.blobs.set(parts[1]?.textRef?.address as string, sealReasoningText("tampered", "exec-1"));
     const req = await resolveRequestContent(
       { messages: [{ role: "assistant", content: parts }] },
       undefined,
@@ -412,6 +421,82 @@ describe("resolution + the drop rule (D5)", () => {
       }).execute("hi", makeCtx())
     ).rejects.toThrow("sidecar down");
     expect(provider).not.toHaveBeenCalled();
+  });
+
+  it("a ref captured by ANOTHER execution is refused by the default resolver: dropped, never sent", async () => {
+    const store = memStore();
+    // execution A captures; its part is then (mis)used in execution B's transcript
+    const parts = await recorded(store, ["A's private thoughts"]);
+    let seen: LlmRequest | undefined;
+    const provider: LlmProvider = {
+      async complete(r) {
+        seen = r;
+        return { content: "ok", stopReason: "end_turn" };
+      },
+    };
+    const eff = createLlmEffect<string, unknown>({
+      provider,
+      reasoning: { store },
+      buildRequest: () => ({ messages: [{ role: "assistant", content: parts }] }),
+    });
+    await eff.execute("hi", makeCtx({ executionId: "exec-B" }));
+    expect(reasoningOf(seen as LlmRequest)).toEqual([]);
+    expect(JSON.stringify(seen)).not.toContain("private thoughts");
+    // negative control: the execution that captured it resolves it
+    await eff.execute("hi", makeCtx({ executionId: "exec-1" }));
+    expect(reasoningOf(seen as LlmRequest).map((p) => p?.text)).toEqual(["A's private thoughts"]);
+  });
+
+  it("a configured authorizing resolver is the seam: it is told origin 'reasoning' and the caller", async () => {
+    const store = memStore();
+    const parts = await recorded(store, ["first"]);
+    const asked: { origin: string; executionId: string; stepId?: string }[] = [];
+    let seen: LlmRequest | undefined;
+    const eff = createLlmEffect<string, unknown>({
+      provider: {
+        async complete(r) {
+          seen = r;
+          return { content: "ok", stopReason: "end_turn" };
+        },
+      },
+      reasoning: {
+        store,
+        resolve: async (ref, c) => {
+          asked.push({
+            origin: c.origin,
+            executionId: c.executionId,
+            ...(c.stepId && { stepId: c.stepId }),
+          });
+          return c.executionId === "exec-1" ? reasoningStoreResolver(store)(ref, c) : null;
+        },
+      },
+      buildRequest: () => ({ messages: [{ role: "assistant", content: parts }] }),
+    });
+    await eff.execute("hi", makeCtx({ executionId: "exec-2" }));
+    expect(reasoningOf(seen as LlmRequest)).toEqual([]); // denied -> a hole -> dropped
+    await eff.execute("hi", makeCtx());
+    expect(reasoningOf(seen as LlmRequest).map((p) => p?.text)).toEqual(["first"]);
+    expect(asked.every((a) => a.origin === "reasoning" && a.stepId === "think")).toBe(true);
+    expect(asked.map((a) => a.executionId)).toEqual(["exec-2", "exec-1"]);
+  });
+
+  it("readReasoning refuses a blob sealed to a different execution (digest-mismatch, no text)", async () => {
+    const store = memStore();
+    const log = await (async () => {
+      const events: { eventType: string; payload: unknown }[] = [];
+      await build(providerWith([{ kind: "summary", text: "mine", provider: "anthropic" }]), {
+        store,
+      }).execute(
+        "hi",
+        makeCtx({
+          emit: ((t: string, p: unknown) => events.push({ eventType: t, payload: p })) as never,
+        })
+      );
+      return { read: async () => events };
+    })();
+    const [step] = await readReasoning(log, store, { executionId: "someone-else" });
+    expect(step?.attempts[0]?.parts[0]?.status).toBe("digest-mismatch");
+    expect(step?.attempts[0]?.parts[0]).not.toHaveProperty("text");
   });
 
   it("an all-dropped assistant message keeps the empty-text shape providers accept", async () => {
@@ -493,7 +578,7 @@ describe("readReasoning (D4)", () => {
     const log = await logFor(store);
     const [a1, a2] = [...store.blobs.keys()];
     store.blobs.delete(a1 as string);
-    store.blobs.set(a2 as string, new TextEncoder().encode("tampered"));
+    store.blobs.set(a2 as string, sealReasoningText("tampered", "exec-1"));
     const [step] = await readReasoning(log, store, { executionId: "exec-1" });
     const statuses = step?.attempts.map((a) => a.parts[0]?.status);
     expect(statuses).toEqual(["erased", "digest-mismatch"]);
