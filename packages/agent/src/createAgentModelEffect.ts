@@ -1,6 +1,6 @@
 import type { LlmEffect } from "@loom/effect-runtime";
 import { createLlmEffect } from "@loom/llm";
-import type { ContentResolver, LlmProvider, LlmResponse } from "@loom/llm";
+import type { ContentResolver, LlmProvider, LlmReasoningOptions, LlmResponse } from "@loom/llm";
 import type { AgentModelCall } from "./agentLoop$";
 
 /**
@@ -30,6 +30,12 @@ export function createAgentModelEffect(
     onToolDelta?: (delta: { id: string; name?: string; inputDelta: string }) => void;
     /** R5 — discard the tool-input fragments delivered so far; a retried attempt is starting. */
     onToolReset?: (attempt: number) => void;
+    /**
+     * ADR 0133 - capture the model's reasoning for audit and carry it through the loop. The same
+     * `store` is what the loop's later requests resolve reasoning text from, so one store serves
+     * both. Unset, reasoning parts carry only their signatures.
+     */
+    reasoning?: LlmReasoningOptions;
   } = {}
 ): LlmEffect<AgentModelCall, LlmResponse> {
   return createLlmEffect<AgentModelCall, LlmResponse>({
@@ -38,6 +44,7 @@ export function createAgentModelEffect(
     parseResponse: (response) => response,
     ...(options.stream !== undefined && { stream: options.stream }),
     ...(options.resolveContent !== undefined && { resolveContent: options.resolveContent }),
+    ...(options.reasoning !== undefined && { reasoning: options.reasoning }),
     ...(options.onToolDelta !== undefined && {
       onToolDelta: (delta: { id: string; name?: string; inputDelta: string }) =>
         options.onToolDelta?.(delta),

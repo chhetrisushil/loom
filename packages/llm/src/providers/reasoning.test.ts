@@ -324,3 +324,40 @@ describe("OpenAiProvider reasoning_content (OpenAI-compatible servers)", () => {
     expect(sentBody(fn).messages[0]).toEqual({ role: "assistant", content: "hi" });
   });
 });
+
+describe("provider thinking config (ADR 0133)", () => {
+  const ok = {
+    content: [{ type: "text", text: "x" }],
+    stop_reason: "end_turn",
+    usage: { input_tokens: 1, output_tokens: 1 },
+  };
+  const body = (fn: ReturnType<typeof vi.fn>): Record<string, unknown> =>
+    JSON.parse((fn.mock.calls[0]?.[1] as { body: string }).body);
+
+  it("Anthropic passes `thinking` through to the request body", async () => {
+    const fn = stubJson(ok);
+    await new AnthropicProvider({
+      apiKey: "k",
+      thinking: { type: "adaptive", display: "summarized" },
+    }).complete({ messages: [] });
+    expect(body(fn).thinking).toEqual({ type: "adaptive", display: "summarized" });
+  });
+
+  it("Anthropic sends no `thinking` key when unset (G2)", async () => {
+    const fn = stubJson(ok);
+    await new AnthropicProvider({ apiKey: "k" }).complete({ messages: [] });
+    expect("thinking" in body(fn)).toBe(false);
+  });
+
+  it("Gemini maps includeThoughts to generationConfig.thinkingConfig", async () => {
+    const fn = stubJson({ candidates: [{ content: { parts: [{ text: "x" }] } }] });
+    await new GeminiProvider({ apiKey: "k", includeThoughts: true }).complete({ messages: [] });
+    expect(body(fn).generationConfig).toEqual({ thinkingConfig: { includeThoughts: true } });
+  });
+
+  it("Gemini sends no thinkingConfig when unset (G2)", async () => {
+    const fn = stubJson({ candidates: [{ content: { parts: [{ text: "x" }] } }] });
+    await new GeminiProvider({ apiKey: "k" }).complete({ messages: [] });
+    expect("generationConfig" in body(fn)).toBe(false);
+  });
+});

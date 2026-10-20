@@ -58,9 +58,11 @@ export {
   TaintedContentError,
   assistantMessageOf,
   base64ByteLength,
+  hasReasoningParts,
   hasStructuredParts,
   textOf,
   toParts,
+  withoutReasoningParts,
 } from "./parts";
 export type { LlmCapabilities, MediaTypeSet } from "./capabilities";
 export {
