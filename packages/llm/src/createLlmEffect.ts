@@ -1,6 +1,11 @@
-import { tainted, unwrapTainted } from "@loom/classify";
+import { type TaintedValue, tainted, unwrapTainted } from "@loom/classify";
 import { LlmEffect } from "@loom/effect-runtime";
-import type { EffectContext, EffectDelta } from "@loom/effect-runtime";
+import type {
+  EffectContext,
+  EffectDelta,
+  EffectReasoningDefaults,
+  EffectReasoningHook,
+} from "@loom/effect-runtime";
 import { collectStream } from "./assembleStream";
 import type { StreamProgress } from "./assembleStream";
 import { assertRequestSupported } from "./capabilities";
@@ -120,6 +125,27 @@ export function createLlmEffect<TIn = string, TOut = string>(
   options: CreateLlmEffectOptions<TIn, TOut>
 ): LlmEffect<TIn, TOut> {
   const parse = options.parseResponse ?? ((r: LlmCapturedResponse) => r.content as unknown as TOut);
+  // ADR 0133 D7 - the app's defaults (`observability.reasoning`) are adopted at boot; the effect's own
+  // options win field by field. Resolved per call, so an adoption after construction takes effect.
+  let adopted: EffectReasoningDefaults | false | undefined;
+  const reasoningOf = (): LlmReasoningOptions | undefined =>
+    adopted === undefined && options.reasoning === undefined
+      ? undefined
+      : {
+          ...(adopted === false ? { capture: false } : adopted),
+          ...options.reasoning,
+        };
+  const reasoningHook: EffectReasoningHook = {
+    capable: options.provider.capabilities?.reasoning === true,
+    posture() {
+      const r = reasoningOf();
+      if (r?.capture === false) return "off";
+      return r?.store !== undefined ? "keeps" : "unconfigured";
+    },
+    adopt(defaults) {
+      adopted = defaults;
+    },
+  };
   return new LlmEffect<TIn, TOut>(
     async (input: TIn, ctx: EffectContext) => {
       // The integrity check at the prompt boundary: tainted content is refused
@@ -143,8 +169,8 @@ export function createLlmEffect<TIn = string, TOut = string>(
           ...(ctx.principal !== undefined && { principal: ctx.principal }),
         },
         // ADR 0133 D5 - reasoning text lives where capture put it, so that is where it is read back.
-        ...(options.reasoning?.store !== undefined && {
-          reasoningResolver: storeResolver(options.reasoning.store),
+        ...(reasoningOf()?.store !== undefined && {
+          reasoningResolver: storeResolver(reasoningOf()?.store as NonNullable<LlmReasoningOptions["store"]>),
         }),
       });
       // K8.1 — forward the effect's cooperative-cancellation signal to the
@@ -158,9 +184,9 @@ export function createLlmEffect<TIn = string, TOut = string>(
       // response, which the R8 conformance contract pins equal to what `complete`
       // would have returned — so the journal shape does not depend on which path
       // ran, and switching `stream` on cannot change what replay serves.
-      const reasoningSink = options.reasoning?.onDelta;
+      const reasoningSink = reasoningOf()?.onDelta;
       const live =
-        options.reasoning?.live === true &&
+        reasoningOf()?.live === true &&
         (ctx.onDelta !== undefined || reasoningSink !== undefined);
       const raw = await (options.stream === true && options.provider.stream !== undefined
         ? collectStream(options.provider.stream(request as LlmRequest), {
@@ -223,7 +249,7 @@ export function createLlmEffect<TIn = string, TOut = string>(
         const { reasoning: returned, ...rest } = raw;
         response =
           returned.length > 0
-            ? { ...rest, reasoning: await captureReasoning(returned, options.reasoning, ctx) }
+            ? { ...rest, reasoning: await captureReasoning(returned, reasoningOf(), ctx) }
             : rest;
       }
       return parse(response, input);
@@ -234,10 +260,12 @@ export function createLlmEffect<TIn = string, TOut = string>(
       ...(options.provider.warm !== undefined && { warm: () => options.provider.warm?.() }),
       // ADR 0133 D6 - the configured reasoning sink is reached through the runtime's governed pipe
       // (delta guards first), only when the app turned live reasoning on.
-      ...(options.reasoning?.live === true &&
-        options.reasoning.onDelta !== undefined && {
-          reasoningSink: options.reasoning.onDelta,
-        }),
+      reasoning: reasoningHook,
+      ...(options.reasoning?.onDelta !== undefined && {
+        reasoningSink: (delta: TaintedValue<string>, ctx: EffectContext) => {
+          if (reasoningOf()?.live === true) options.reasoning?.onDelta?.(delta, ctx);
+        },
+      }),
       ...((options.onDelta !== undefined ||
         options.onReset !== undefined ||
         options.onToolReset !== undefined) && {

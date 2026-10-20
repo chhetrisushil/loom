@@ -11,6 +11,8 @@ export type {
   EffectContext,
   EffectKind,
   EffectMiddleware,
+  EffectReasoningDefaults,
+  EffectReasoningHook,
   EffectMode,
   EffectNext,
   ErrorChannelSchema,

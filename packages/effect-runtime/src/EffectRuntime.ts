@@ -417,6 +417,11 @@ export class EffectRuntime {
     return this.registry.has(toolId);
   }
 
+  /** The registered effects, in registration order (read-only; for a composition root's boot-time checks). */
+  entries(): IterableIterator<[string, Effect]> {
+    return this.registry.entries();
+  }
+
   /**
    * Advisory pre-warm for a capability, ahead of when it's needed (latency-only,
    * off the durable path). Spins up the registered effect's own cold resource
