@@ -314,7 +314,10 @@ describe("layoutOf / assistantMessageOf", () => {
       reasoning: [rp("1"), rp("2")],
       layout: ["reasoning", { call: "gone" }, "reasoning", { call: "b" }],
     });
-    expect(m.content.map((p) => (p.type === "tool_use" ? p.id : p.type))).toEqual(["reasoning", "b"]);
+    expect(m.content.map((p) => (p.type === "tool_use" ? p.id : p.type))).toEqual([
+      "reasoning",
+      "b",
+    ]);
   });
 
   it("calls the layout does not name (screened by the loop) keep their place at the end", () => {
