@@ -28,6 +28,7 @@ import {
 } from "./contentTouchContract";
 import { checkDeclaredMediaOnWire } from "./mediaWire";
 import { checkPartsReadAsText } from "./partsTextRead";
+import { checkReasoningParity } from "./reasoningParity";
 import { checkToolCallStreamParity } from "./toolCallParity";
 
 export {
@@ -2548,6 +2549,9 @@ export function runWorkerRuntimeConformance(
  *   turning a parts message into "[object Object]". The kit sends a text-only parts message and
  *   fails a provider that string-coerces it, or whose HTTP body contains "[object Object]" or
  *   lacks the parts' text. Read content with `textOf(content)` or a `typeof` branch.
+ * - Reasoning (ADR 0133) is optional, but honest: a provider that reports `reasoning` reports the
+ *   same on `stream` and `complete`, and the concatenated `reasoningDelta`s equal the terminal
+ *   chunk's readable text. A provider that reports none passes.
  * - A text-only provider that genuinely cannot call tools opts out explicitly with
  *   `{ toolRequest: null }`, which is then visible in that provider's own test file
  *   rather than silently inherited from an unset default.
@@ -2651,6 +2655,10 @@ export function runLlmProviderConformance(
 
     it("a streamed tool call matches the completed one, or the omission is explicit (R8 tool-call parity)", async () => {
       await checkToolCallStreamParity(factory(), opts?.toolRequest);
+    });
+
+    it("reasoning, when reported, is equal on stream and complete, and the deltas equal its readable text (ADR 0133)", async () => {
+      await checkReasoningParity(factory(), req);
     });
   });
 }
