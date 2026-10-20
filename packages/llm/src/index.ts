@@ -8,9 +8,31 @@ export type {
   LlmRequestInput,
   LlmToolCall,
   LlmResponse,
+  LlmCapturedResponse,
   LlmStreamChunk,
   LlmProvider,
+  LlmReasoning,
+  LlmReasoningKind,
+  LlmReasoningPart,
 } from "./types";
+export type {
+  CapturedReasoningPart,
+  LlmReasoningCaptured,
+  LlmReasoningOptions,
+  ReasoningAttemptRead,
+  ReasoningLogReader,
+  ReasoningPartRead,
+  ReasoningPartStatus,
+  ReasoningReader,
+  ReasoningStepRead,
+  ReasoningStore,
+} from "./reasoning";
+export {
+  LLM_REASONING_CAPTURED,
+  captureReasoning,
+  readReasoning,
+  reasoningDigest,
+} from "./reasoning";
 export type {
   LlmAudioPart,
   LlmBinarySource,

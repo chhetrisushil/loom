@@ -1,5 +1,12 @@
 import type { PrincipalChain } from "@loom/effect-runtime";
-import type { LlmContentRef, LlmMediaPart, LlmResultPart } from "./parts";
+import type {
+  LlmContentPart,
+  LlmContentRef,
+  LlmMediaPart,
+  LlmReasoningPart,
+  LlmResultPart,
+} from "./parts";
+import { reasoningDigest } from "./reasoning";
 import type { LlmMessage, LlmRequest } from "./types";
 import { validRefSize } from "./untrusted";
 
@@ -25,7 +32,7 @@ export interface ContentResolveContext {
   readonly executionId: string;
   readonly stepId?: string;
   readonly principal?: PrincipalChain;
-  readonly origin: "tool" | "app";
+  readonly origin: "tool" | "app" | "reasoning";
   /** Bytes still available under the request's budget; return fewer, or `null`/throw, rather than exceed it. */
   readonly maxBytes: number;
   /** Aborts when the call is cancelled or the request's byte budget is already spent. */
@@ -113,6 +120,128 @@ export async function resolveRequestContent(
     maxBytes?: number;
     signal?: AbortSignal;
     /** REQUIRED: who is asking. A resolver cannot authorize a read it cannot attribute. */
+    context: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
+    /**
+     * ADR 0133 D5 - how an assistant `reasoning` part's `textRef` is read. Defaults to `resolver`.
+     * A request with no reasoning parts never calls it.
+     */
+    reasoningResolver?: ContentResolver;
+  }
+): Promise<LlmRequest> {
+  const withReasoning = await resolveReasoningParts(
+    request,
+    options.reasoningResolver ?? resolver,
+    options
+  );
+  return resolveMediaRefs(withReasoning, resolver, options);
+}
+
+const REASONING_FETCH_CAP = 8 * 1024 * 1024;
+
+/**
+ * ADR 0133 D5 (the drop rule for UNRESOLVABLE parts) - resolve each assistant reasoning part's
+ * `textRef`, check its digest, and put the text on the part for the provider to map back unchanged.
+ * A part whose text cannot be reproduced (blob absent or erased, digest or size mismatch, a failing
+ * or missing resolver, or readable text that was never stored) is dropped TOGETHER WITH every
+ * reasoning part after it, across later messages too: a provider's signature covers everything
+ * before the block, so a block after a hole is no longer valid. A pure function of the request and
+ * the resolver's answers. A call's own `tool_use.signature` is never touched. Returns the request
+ * unchanged (same object) when it has no reasoning parts.
+ */
+async function resolveReasoningParts(
+  request: LlmRequest,
+  resolver: ContentResolver | undefined,
+  options: {
+    signal?: AbortSignal;
+    context: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
+  }
+): Promise<LlmRequest> {
+  const addresses = new Map<string, LlmReasoningPart>();
+  for (const m of request.messages) {
+    if (typeof m.content === "string") continue;
+    for (const p of m.content) {
+      if (p.type === "reasoning" && p.textRef !== undefined && !addresses.has(p.textRef.address)) {
+        addresses.set(p.textRef.address, p);
+      }
+    }
+  }
+  const hasReasoning = request.messages.some(
+    (m) => typeof m.content !== "string" && m.content.some((p) => p.type === "reasoning")
+  );
+  if (!hasReasoning) return request;
+
+  // address -> verified text, or undefined when it cannot be reproduced.
+  const texts = new Map<string, string | undefined>();
+  if (resolver !== undefined) {
+    const queue = [...addresses.values()];
+    const worker = async (): Promise<void> => {
+      for (let part = queue.shift(); part !== undefined; part = queue.shift()) {
+        const ref = part.textRef as LlmContentRef;
+        try {
+          const bytes = await resolver(ref, {
+            executionId: options.context.executionId,
+            ...(options.context.stepId !== undefined && { stepId: options.context.stepId }),
+            ...(options.context.principal !== undefined && {
+              principal: options.context.principal,
+            }),
+            origin: "reasoning",
+            maxBytes: REASONING_FETCH_CAP,
+            ...(options.signal !== undefined && { signal: options.signal }),
+          });
+          const ok =
+            bytes !== null &&
+            part.digest !== undefined &&
+            reasoningDigest(bytes) === part.digest &&
+            (ref.size === undefined || bytes.byteLength === ref.size);
+          texts.set(ref.address, ok ? new TextDecoder().decode(bytes) : undefined);
+        } catch {
+          texts.set(ref.address, undefined);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, queue.length) }, worker));
+    // A cancelled call is a cancelled call, not a missing blob.
+    if (options.signal?.aborted === true) throw options.signal.reason ?? new Error("aborted");
+  }
+
+  let dropping = false;
+  const messages: LlmMessage[] = request.messages.map((m) => {
+    if (typeof m.content === "string") return m;
+    if (!m.content.some((p) => p.type === "reasoning")) return m;
+    const kept: LlmContentPart[] = [];
+    for (const p of m.content) {
+      if (p.type !== "reasoning") {
+        kept.push(p);
+        continue;
+      }
+      if (dropping) continue;
+      if (p.omitted === true) {
+        dropping = true;
+        continue;
+      }
+      if (p.textRef === undefined) {
+        kept.push(p);
+        continue;
+      }
+      const text = texts.get(p.textRef.address);
+      if (text === undefined) {
+        dropping = true;
+        continue;
+      }
+      kept.push({ ...p, text });
+    }
+    // Providers reject an empty assistant turn; keep the shape `assistantMessageOf` gives one.
+    return { ...m, content: kept.length > 0 ? kept : [{ type: "text", text: "" }] };
+  });
+  return { ...request, messages };
+}
+
+async function resolveMediaRefs(
+  request: LlmRequest,
+  resolver: ContentResolver | undefined,
+  options: {
+    maxBytes?: number;
+    signal?: AbortSignal;
     context: Pick<ContentResolveContext, "executionId" | "stepId" | "principal">;
   }
 ): Promise<LlmRequest> {

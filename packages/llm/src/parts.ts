@@ -70,6 +70,46 @@ export interface LlmToolUsePart {
   id: string;
   name: string;
   input: unknown;
+  /** Provider-opaque continuation bytes that belong to this call (Gemini `thoughtSignature`). Sent back unchanged; never dropped with reasoning parts (ADR 0133 D5). */
+  signature?: string;
+}
+
+/**
+ * What the model returned as reasoning, in its RECORDED form (ADR 0133 D2): kind, provider,
+ * opaque signature, and a reference to the readable text in a sidecar store. Never readable text
+ * in a step value or a transcript. Assistant messages only.
+ */
+export interface LlmReasoningPart {
+  type: "reasoning";
+  kind: LlmReasoningKind;
+  /** The provider that produced it: a part is only sent back to this provider. */
+  provider: string;
+  signature?: string;
+  /** Where the text lives (sidecar store), when it was captured and is non-empty. */
+  textRef?: LlmContentRef;
+  /** SHA-256 hex of the text, so a resolved text can be checked. */
+  digest?: string;
+  /** The model returned readable text that was NOT kept (no store, or capture off). Such a part cannot be reproduced for continuation, so the drop rule (ADR 0133 D5) drops it. */
+  omitted?: true;
+  /**
+   * REQUEST-TIME ONLY: the readable text `resolveRequestContent` fetched from `textRef`, for the
+   * provider to map back unchanged. Never present on a recorded value.
+   */
+  text?: string;
+}
+
+/** What the provider returned. Never upgrade a `summary` to `text` (ADR 0133 D2). */
+export type LlmReasoningKind = "text" | "summary" | "redacted";
+
+/** Reasoning on a response, as the provider returned it. Lives only on `LlmResponse`, never in a step value. */
+export interface LlmReasoning {
+  kind: LlmReasoningKind;
+  /** Readable text; "" for an omitted-display block; absent for `redacted`. */
+  text?: string;
+  /** Provider-opaque continuation bytes (signature, redacted data). Never read by loom. */
+  signature?: string;
+  /** The provider that produced it (`"anthropic"`, `"gemini"`, ...): parts are only sent back to it. */
+  provider: string;
 }
 
 /** What a tool result may contain: text and media. */
@@ -84,7 +124,12 @@ export interface LlmToolResultPart {
   isError?: boolean;
 }
 
-export type LlmContentPart = LlmTextPart | LlmMediaPart | LlmToolUsePart | LlmToolResultPart;
+export type LlmContentPart =
+  | LlmTextPart
+  | LlmMediaPart
+  | LlmToolUsePart
+  | LlmToolResultPart
+  | LlmReasoningPart;
 export type LlmMessageContent = string | LlmContentPart[];
 
 // ── input side: parts that may still carry provenance ────────────────────────
@@ -115,7 +160,8 @@ export type LlmContentPartInput =
   | LlmTextPartInput
   | LlmMediaPartInput
   | LlmToolUsePart
-  | LlmToolResultPartInput;
+  | LlmToolResultPartInput
+  | LlmReasoningPart;
 export type LlmMessageContentInput = LlmContent | LlmContentPartInput[];
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -191,14 +237,27 @@ export function hasStructuredParts(content: LlmMessageContent): boolean {
  */
 export function assistantMessageOf(response: {
   content: string;
-  toolCalls?: readonly { id: string; name: string; input: unknown }[];
+  toolCalls?: readonly { id: string; name: string; input: unknown; signature?: string }[];
+  /** ADR 0133 - recorded reasoning parts (`LlmReasoningPart`), carried first. Raw `LlmReasoning` is not accepted: readable text never enters a transcript. */
+  reasoning?: readonly { type?: string }[];
 }): { role: "assistant"; content: LlmContentPart[] } {
   const parts: LlmContentPart[] = [];
+  for (const r of response.reasoning ?? []) {
+    if (r.type === "reasoning") parts.push(r as LlmReasoningPart);
+  }
   if (response.content !== "") parts.push({ type: "text", text: response.content });
   for (const c of response.toolCalls ?? []) {
-    parts.push({ type: "tool_use", id: c.id, name: c.name, input: c.input });
+    parts.push({
+      type: "tool_use",
+      id: c.id,
+      name: c.name,
+      input: c.input,
+      ...(c.signature !== undefined && { signature: c.signature }),
+    });
   }
-  if (parts.length === 0) parts.push({ type: "text", text: "" });
+  if (!parts.some((p) => p.type === "text" || p.type === "tool_use")) {
+    parts.push({ type: "text", text: "" });
+  }
   return { role: "assistant", content: parts };
 }
 

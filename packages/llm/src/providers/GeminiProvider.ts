@@ -3,7 +3,7 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { type LlmMediaPart, type LlmResultPart, textOf } from "../parts";
+import { type LlmMediaPart, type LlmReasoning, type LlmResultPart, textOf } from "../parts";
 import { inlineData } from "../resolveContent";
 import type { LlmMessage, LlmProvider, LlmRequest, LlmResponse, LlmToolCall } from "../types";
 import { fenceUntrustedMedia } from "../untrusted";
@@ -21,7 +21,10 @@ export const GEMINI_CAPABILITIES: LlmCapabilities = {
   image: ["image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"],
   audio: ["audio/wav", "audio/mp3", "audio/mpeg", "audio/aac", "audio/ogg", "audio/flac"],
   file: ["application/pdf", "text/plain"],
+  reasoning: true,
 };
+
+const PROVIDER_ID = "gemini";
 
 /** Model families that take media: Gemini 1.5 and later, and the `-latest` aliases (1.0 Pro does not). */
 export const GEMINI_MEDIA_MODELS = [/^gemini-(1\.5|[2-9])/, /^gemini-(flash|pro)(-lite)?-latest$/];
@@ -32,6 +35,9 @@ const SYNTHETIC_ID = "gemini-call-";
 
 interface GeminiPart {
   text?: string;
+  /** ADR 0133 - a thought SUMMARY part (returned when `includeThoughts` is set). */
+  thought?: boolean;
+  thoughtSignature?: string;
   functionCall?: { id?: string; name: string; args?: unknown };
 }
 interface GeminiCandidate {
@@ -70,6 +76,17 @@ export function mapContents(messages: readonly LlmMessage[]): Record<string, unk
         case "text":
           parts.push({ text: p.text });
           break;
+        case "reasoning":
+          // Only our own thought parts go back, unchanged; another provider's signature means
+          // nothing here. A redacted part has no Gemini form.
+          if (p.provider === PROVIDER_ID && p.kind !== "redacted") {
+            parts.push({
+              text: p.text ?? "",
+              thought: true,
+              ...(p.signature !== undefined && { thoughtSignature: p.signature }),
+            });
+          }
+          break;
         case "image":
         case "audio":
         case "file":
@@ -83,6 +100,8 @@ export function mapContents(messages: readonly LlmMessage[]): Record<string, unk
               name: p.name,
               args: p.input ?? {},
             },
+            // Gemini 3 400s a current-turn functionCall sent back without its signature.
+            ...(p.signature !== undefined && { thoughtSignature: p.signature }),
           });
           break;
         case "tool_result": {
@@ -190,14 +209,24 @@ export class GeminiProvider implements LlmProvider {
     const data = (await resp.json()) as GeminiResponse;
     const candidate = data.candidates?.[0];
     const parts = candidate?.content?.parts ?? [];
-    const content = parts.map((p) => p.text ?? "").join("");
+    // A thought part is reasoning, never answer text: it must not leak into `content`.
+    const content = parts.map((p) => (p.thought === true ? "" : (p.text ?? ""))).join("");
     const toolCalls: LlmToolCall[] = [];
+    const reasoning: LlmReasoning[] = [];
     for (const p of parts) {
-      if (p.functionCall !== undefined) {
+      if (p.thought === true) {
+        reasoning.push({
+          kind: "summary",
+          text: p.text ?? "",
+          ...(p.thoughtSignature !== undefined && { signature: p.thoughtSignature }),
+          provider: PROVIDER_ID,
+        });
+      } else if (p.functionCall !== undefined) {
         toolCalls.push({
           id: p.functionCall.id ?? `${SYNTHETIC_ID}${toolCalls.length}`,
           name: p.functionCall.name,
           input: p.functionCall.args ?? {},
+          ...(p.thoughtSignature !== undefined && { signature: p.thoughtSignature }),
         });
       }
     }
@@ -218,6 +247,7 @@ export class GeminiProvider implements LlmProvider {
           outputTokens: data.usageMetadata.candidatesTokenCount ?? 0,
         },
       }),
+      ...(reasoning.length > 0 && { reasoning }),
     };
   }
 }

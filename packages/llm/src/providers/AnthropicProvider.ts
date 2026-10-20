@@ -3,7 +3,13 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { type LlmContentPart, type LlmResultPart, textOf } from "../parts";
+import {
+  type LlmContentPart,
+  type LlmReasoning,
+  type LlmReasoningPart,
+  type LlmResultPart,
+  textOf,
+} from "../parts";
 import { inlineData } from "../resolveContent";
 import type {
   LlmMessage,
@@ -37,7 +43,10 @@ export interface AnthropicProviderConfig {
 const ANTHROPIC_CAPABILITIES: LlmCapabilities = {
   image: ["image/jpeg", "image/png", "image/gif", "image/webp"],
   file: ["application/pdf"],
+  reasoning: true,
 };
+
+const PROVIDER_ID = "anthropic";
 
 /** Model families that take images and PDFs: Claude 3 and later (2.x and Instant do not). */
 const ANTHROPIC_MEDIA_MODELS = [/^claude-(3|[4-9]\d*|opus|sonnet|haiku)/];
@@ -67,6 +76,8 @@ export function mapPart(p: LlmContentPart): Record<string, unknown> {
       throw new Error("Anthropic Messages does not accept audio content");
     case "tool_use":
       return { type: "tool_use", id: p.id, name: p.name, input: p.input };
+    case "reasoning":
+      return mapReasoningPart(p);
     case "tool_result":
       return {
         type: "tool_result",
@@ -80,9 +91,61 @@ export function mapPart(p: LlmContentPart): Record<string, unknown> {
   }
 }
 
+/**
+ * An assistant `reasoning` part -> the vendor block, UNCHANGED (ADR 0133 D5): a `thinking` block with
+ * its text (resolved by `resolveRequestContent`, "" when omitted) and signature, or a
+ * `redacted_thinking` block whose `data` is the recorded signature. Callers drop other providers'
+ * parts first ({@link mapContent}); this is only reached for ours.
+ */
+function mapReasoningPart(p: LlmReasoningPart): Record<string, unknown> {
+  if (p.kind === "redacted") return { type: "redacted_thinking", data: p.signature ?? "" };
+  return {
+    type: "thinking",
+    thinking: p.text ?? "",
+    ...(p.signature !== undefined && { signature: p.signature }),
+  };
+}
+
+/**
+ * Reasoning blocks go BEFORE text and `tool_use` blocks (the API requires the thinking block first
+ * in an assistant turn), in recorded order. A part from another provider is omitted: its signature
+ * means nothing here.
+ */
 function mapContent(content: LlmMessage["content"]): string | Record<string, unknown>[] {
   if (typeof content === "string") return content;
-  return fenceUntrustedMedia(content).map(mapPart);
+  const own = content.filter((p) => p.type !== "reasoning" || p.provider === PROVIDER_ID);
+  const reasoning = own.filter((p) => p.type === "reasoning");
+  const rest = own.filter((p) => p.type !== "reasoning");
+  return fenceUntrustedMedia([...reasoning, ...rest]).map(mapPart);
+}
+
+/**
+ * ADR 0133 D2 - ONE rule, pinned by a test: a non-empty `thinking` text is `summary` (current models
+ * return only summaries; the raw chain of thought is never returned), an empty one is `text` with
+ * `text: ""` (an omitted-display block, the signature carries the reasoning), and `redacted_thinking`
+ * is `redacted` with its `data` as the signature. Shared by `complete` and `stream`.
+ */
+function reasoningOf(block: {
+  type: string;
+  thinking?: unknown;
+  signature?: unknown;
+  data?: unknown;
+}): LlmReasoning | undefined {
+  if (block.type === "redacted_thinking") {
+    return {
+      kind: "redacted",
+      ...(typeof block.data === "string" && { signature: block.data }),
+      provider: PROVIDER_ID,
+    };
+  }
+  if (block.type !== "thinking") return undefined;
+  const text = typeof block.thinking === "string" ? block.thinking : "";
+  return {
+    kind: text === "" ? "text" : "summary",
+    text,
+    ...(typeof block.signature === "string" && { signature: block.signature }),
+    provider: PROVIDER_ID,
+  };
 }
 
 interface AnthropicTextBlock {
@@ -95,7 +158,13 @@ interface AnthropicToolUseBlock {
   name: string;
   input: unknown;
 }
-type AnthropicContentBlock = AnthropicTextBlock | AnthropicToolUseBlock;
+interface AnthropicThinkingBlock {
+  type: "thinking" | "redacted_thinking";
+  thinking?: string;
+  signature?: string;
+  data?: string;
+}
+type AnthropicContentBlock = AnthropicTextBlock | AnthropicToolUseBlock | AnthropicThinkingBlock;
 
 interface AnthropicMessageResponse {
   content: AnthropicContentBlock[];
@@ -182,12 +251,18 @@ export class AnthropicProvider implements LlmProvider {
       .map((b) => ({ id: b.id, name: b.name, input: b.input }));
 
     const stopReason = normalizeStopReason(data.stop_reason);
+    const reasoning: LlmReasoning[] = [];
+    for (const b of data.content) {
+      const r = reasoningOf(b);
+      if (r !== undefined) reasoning.push(r);
+    }
 
     return {
       content,
       ...(toolCalls.length > 0 && { toolCalls }),
       stopReason,
       usage: { inputTokens: data.usage.input_tokens, outputTokens: data.usage.output_tokens },
+      ...(reasoning.length > 0 && { reasoning }),
     };
   }
 
@@ -222,6 +297,18 @@ export class AnthropicProvider implements LlmProvider {
     // `content_block_stop`, not per delta.
     const toolCalls: LlmToolCall[] = [];
     const openBlocks = new Map<number, { id: string; name: string; argsJson: string }>();
+    // ADR 0133 - thinking blocks assemble from `thinking_delta` / `signature_delta`; a block is
+    // closed (and mapped through the same {@link reasoningOf} as `complete`) at `content_block_stop`.
+    const openThinking = new Map<
+      number,
+      {
+        type: "thinking" | "redacted_thinking";
+        thinking: string;
+        signature?: string;
+        data?: string;
+      }
+    >();
+    const reasoning: LlmReasoning[] = [];
     let stopReason: LlmResponse["stopReason"] | undefined;
     let inputTokens: number | undefined;
     let outputTokens: number | undefined;
@@ -233,6 +320,7 @@ export class AnthropicProvider implements LlmProvider {
       ...(stopReason !== undefined && { stopReason }),
       ...(inputTokens !== undefined &&
         outputTokens !== undefined && { usage: { inputTokens, outputTokens } }),
+      ...(reasoning.length > 0 && { reasoning }),
     });
 
     while (true) {
@@ -254,7 +342,14 @@ export class AnthropicProvider implements LlmProvider {
           const event = JSON.parse(json) as Record<string, unknown>;
           if (event.type === "content_block_start") {
             const block = event.content_block as Record<string, unknown> | undefined;
-            if (block?.type === "tool_use") {
+            if (block?.type === "thinking" || block?.type === "redacted_thinking") {
+              openThinking.set(Number(event.index), {
+                type: block.type,
+                thinking: typeof block.thinking === "string" ? block.thinking : "",
+                ...(typeof block.signature === "string" && { signature: block.signature }),
+                ...(typeof block.data === "string" && { data: block.data }),
+              });
+            } else if (block?.type === "tool_use") {
               openBlocks.set(Number(event.index), {
                 id: String(block.id ?? ""),
                 name: String(block.name ?? ""),
@@ -274,6 +369,15 @@ export class AnthropicProvider implements LlmProvider {
             const delta = event.delta as Record<string, unknown> | undefined;
             if (delta?.type === "text_delta") {
               yield { delta: String(delta.text ?? ""), done: false };
+            } else if (delta?.type === "thinking_delta") {
+              const open = openThinking.get(Number(event.index));
+              const fragment = String(delta.thinking ?? "");
+              if (open !== undefined) open.thinking += fragment;
+              if (fragment !== "") yield { delta: "", done: false, reasoningDelta: fragment };
+            } else if (delta?.type === "signature_delta") {
+              const open = openThinking.get(Number(event.index));
+              if (open !== undefined)
+                open.signature = (open.signature ?? "") + String(delta.signature ?? "");
             } else if (delta?.type === "input_json_delta") {
               const open = openBlocks.get(Number(event.index));
               if (open !== undefined) {
@@ -287,6 +391,12 @@ export class AnthropicProvider implements LlmProvider {
               }
             }
           } else if (event.type === "content_block_stop") {
+            const thinking = openThinking.get(Number(event.index));
+            if (thinking !== undefined) {
+              openThinking.delete(Number(event.index));
+              const r = reasoningOf(thinking);
+              if (r !== undefined) reasoning.push(r);
+            }
             const open = openBlocks.get(Number(event.index));
             if (open !== undefined) {
               openBlocks.delete(Number(event.index));

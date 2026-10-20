@@ -4,14 +4,25 @@ import type { EffectContext, EffectDelta } from "@loom/effect-runtime";
 import { collectStream } from "./assembleStream";
 import type { StreamProgress } from "./assembleStream";
 import { assertRequestSupported } from "./capabilities";
+import { type LlmReasoningOptions, captureReasoning } from "./reasoning";
 import { type ContentResolver, resolveRequestContent } from "./resolveContent";
-import type { LlmProvider, LlmRequest, LlmRequestInput, LlmResponse } from "./types";
+import type { LlmCapturedResponse, LlmProvider, LlmRequest, LlmRequestInput } from "./types";
 import { guardRequest } from "./untrusted";
 
 export interface CreateLlmEffectOptions<TIn, TOut> {
   provider: LlmProvider;
   buildRequest: (input: TIn, ctx: EffectContext) => LlmRequestInput;
-  parseResponse?: (response: LlmResponse, input: TIn) => TOut;
+  parseResponse?: (response: LlmCapturedResponse, input: TIn) => TOut;
+  /**
+   * ADR 0133 - model reasoning as audit evidence. Readable text goes to `store` (a sidecar, never
+   * the step value), `parseResponse` sees only recorded `reasoning` parts (kind, provider,
+   * signature, reference, digest), and one `LLM_REASONING_CAPTURED` event names references and
+   * digests. `capture` defaults to on iff a store is configured; `live` streams readable reasoning
+   * deltas through the governed per-call sink as `{ reasoning }` chunks (off by default).
+   * Unset, an app sees no change except that `response.reasoning` parts appear (signatures only)
+   * when a provider returns reasoning.
+   */
+  reasoning?: LlmReasoningOptions;
   /**
    * Consume the provider's `stream` instead of `complete` (R9). OPT-IN: the two
    * paths return the same outcome by the R8 parity contract, but they are
@@ -100,10 +111,15 @@ export interface CreateLlmEffectOptions<TIn, TOut> {
   guard?: (ctx: EffectContext) => (progress: StreamProgress) => void;
 }
 
+/** A `ContentResolver` over the sidecar store: the ref's address IS the store's content address. */
+function storeResolver(store: NonNullable<LlmReasoningOptions["store"]>): ContentResolver {
+  return (ref) => store.get({ __loomContent: ref.address });
+}
+
 export function createLlmEffect<TIn = string, TOut = string>(
   options: CreateLlmEffectOptions<TIn, TOut>
 ): LlmEffect<TIn, TOut> {
-  const parse = options.parseResponse ?? ((r: LlmResponse) => r.content as unknown as TOut);
+  const parse = options.parseResponse ?? ((r: LlmCapturedResponse) => r.content as unknown as TOut);
   return new LlmEffect<TIn, TOut>(
     async (input: TIn, ctx: EffectContext) => {
       // The integrity check at the prompt boundary: tainted content is refused
@@ -126,6 +142,10 @@ export function createLlmEffect<TIn = string, TOut = string>(
           stepId: ctx.stepId,
           ...(ctx.principal !== undefined && { principal: ctx.principal }),
         },
+        // ADR 0133 D5 - reasoning text lives where capture put it, so that is where it is read back.
+        ...(options.reasoning?.store !== undefined && {
+          reasoningResolver: storeResolver(options.reasoning.store),
+        }),
       });
       // K8.1 — forward the effect's cooperative-cancellation signal to the
       // provider (unless buildRequest already set one), so a cancelled/timed-out
@@ -138,7 +158,8 @@ export function createLlmEffect<TIn = string, TOut = string>(
       // response, which the R8 conformance contract pins equal to what `complete`
       // would have returned — so the journal shape does not depend on which path
       // ran, and switching `stream` on cannot change what replay serves.
-      const response = await (options.stream === true && options.provider.stream !== undefined
+      const live = options.reasoning?.live === true && ctx.onDelta !== undefined;
+      const raw = await (options.stream === true && options.provider.stream !== undefined
         ? collectStream(options.provider.stream(request as LlmRequest), {
             ...(ctx.signal !== undefined && { signal: ctx.signal }),
             // ADR 0119 — the per-call sink (ctx.onDelta, set by a decider's scope) AND the
@@ -155,6 +176,16 @@ export function createLlmEffect<TIn = string, TOut = string>(
                 } else options.onDelta?.(delta, ctx);
               },
             }),
+            // ADR 0133 D6 - readable reasoning rides its own field on the governed per-call sink
+            // (so the runtime's delta guards see it, and a guard that throws severs the stream).
+            // Off unless `live`; never the configured `onDelta`, which is text-only.
+            ...(live && {
+              onReasoningDelta: (delta: string) =>
+                ctx.onDelta?.({
+                  delta: tainted("", `llm:${ctx.stepId}`),
+                  reasoning: tainted(delta, `llm-reasoning:${ctx.stepId}`),
+                }),
+            }),
             ...(options.onToolDelta !== undefined && {
               onToolDelta: (d: { id: string; name?: string; inputDelta: string }) =>
                 options.onToolDelta?.(d, ctx),
@@ -170,10 +201,21 @@ export function createLlmEffect<TIn = string, TOut = string>(
         ctx.onDelta?.({
           delta: tainted("", `llm:${ctx.stepId}`),
           done: true,
-          ...(response.usage !== undefined && { usage: response.usage }),
+          ...(raw.usage !== undefined && { usage: raw.usage }),
         });
       }
 
+      // ADR 0133 D3 - readable reasoning is reduced to its recorded form BEFORE parse, so text
+      // never reaches a step value. A response with no reasoning is passed through untouched (G2).
+      // The same object goes through when there is none (callers compare responses by identity).
+      let response: LlmCapturedResponse = raw as LlmCapturedResponse;
+      if (raw.reasoning !== undefined) {
+        const { reasoning: returned, ...rest } = raw;
+        response =
+          returned.length > 0
+            ? { ...rest, reasoning: await captureReasoning(returned, options.reasoning, ctx) }
+            : rest;
+      }
       return parse(response, input);
     },
     // Wire pre-warm to the provider's own warm hook (connection/model cache),
@@ -187,7 +229,10 @@ export function createLlmEffect<TIn = string, TOut = string>(
           if (chunk.reset === true) {
             options.onReset?.(chunk.attempt ?? 2, ctx);
             options.onToolReset?.(chunk.attempt ?? 2, ctx);
-          } else if (chunk.done !== true) options.onDelta?.(unwrapTainted(chunk.delta), ctx);
+          } else if (chunk.done !== true && chunk.reasoning === undefined) {
+            // A reasoning chunk (ADR 0133) is not text: the configured sink is text-only.
+            options.onDelta?.(unwrapTainted(chunk.delta), ctx);
+          }
         },
       }),
     }

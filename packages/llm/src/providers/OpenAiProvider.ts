@@ -3,7 +3,7 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { type LlmMediaPart, type LlmResultPart, textOf } from "../parts";
+import { type LlmMediaPart, type LlmReasoning, type LlmResultPart, textOf } from "../parts";
 import { inlineData } from "../resolveContent";
 import type {
   LlmMessage,
@@ -64,6 +64,11 @@ const OPENAI_MEDIA_MODELS = [
   /^gpt-4-turbo(-\d{4}-\d{2}-\d{2})?$/,
 ];
 const OPENAI_DEFAULT_URL = "https://api.openai.com";
+
+/** ADR 0133 - `reasoning_content` (an OpenAI-compatible server's field) -> reasoning. Shared by `complete` and `stream`. */
+function compatReasoning(text: string): LlmReasoning[] {
+  return text === "" ? [] : [{ kind: "text", text, provider: "openai-compat" }];
+}
 
 function dataUrl(p: LlmMediaPart): string {
   return `data:${p.mediaType};base64,${inlineData(p)}`;
@@ -155,6 +160,8 @@ export function mapMessages(messages: readonly LlmMessage[]): Record<string, unk
       } else if (p.type === "text") userBlocks.push({ type: "text", text: p.text });
       else if (p.type === "tool_use")
         throw new Error("tool_use parts belong in assistant messages");
+      else if (p.type === "reasoning")
+        throw new Error("reasoning parts belong in assistant messages");
       else userBlocks.push(mediaBlock(p));
     }
     const blocks = [...toolMedia, ...userBlocks];
@@ -166,6 +173,8 @@ export function mapMessages(messages: readonly LlmMessage[]): Record<string, unk
 interface OpenAiChoice {
   message?: {
     content?: string | null;
+    /** Some OpenAI-compatible servers return reasoning here; OpenAI's own Chat Completions does not (ADR 0133). */
+    reasoning_content?: string | null;
     tool_calls?: Array<{
       id: string;
       function: { name: string; arguments: string };
@@ -173,6 +182,7 @@ interface OpenAiChoice {
   };
   delta?: {
     content?: string | null;
+    reasoning_content?: string | null;
     tool_calls?: Array<{
       index: number;
       id?: string;
@@ -263,6 +273,7 @@ export class OpenAiProvider implements LlmProvider {
     }));
 
     const stopReason = normalizeFinishReason(choice.finish_reason);
+    const reasoning = compatReasoning(choice.message.reasoning_content ?? "");
 
     return {
       content,
@@ -274,6 +285,7 @@ export class OpenAiProvider implements LlmProvider {
           outputTokens: data.usage.completion_tokens,
         },
       }),
+      ...(reasoning.length > 0 && { reasoning }),
     };
   }
 
@@ -311,6 +323,7 @@ export class OpenAiProvider implements LlmProvider {
     const openCalls = new Map<number, { id: string; name: string; argsJson: string }>();
     let stopReason: LlmResponse["stopReason"] | undefined;
     let usage: { inputTokens: number; outputTokens: number } | undefined;
+    let reasoningText = "";
 
     const terminal = (): LlmStreamChunk => {
       const toolCalls: LlmToolCall[] = [...openCalls.entries()]
@@ -322,6 +335,7 @@ export class OpenAiProvider implements LlmProvider {
         ...(toolCalls.length > 0 && { toolCalls }),
         ...(stopReason !== undefined && { stopReason }),
         ...(usage !== undefined && { usage }),
+        ...(reasoningText !== "" && { reasoning: compatReasoning(reasoningText) }),
       };
     };
 
@@ -354,6 +368,8 @@ export class OpenAiProvider implements LlmProvider {
           }
           const choice = chunk.choices[0];
           const delta = choice?.delta?.content ?? "";
+          const reasoningDelta = choice?.delta?.reasoning_content ?? "";
+          reasoningText += reasoningDelta;
           const toolDeltas: NonNullable<LlmStreamChunk["toolDelta"]>[] = [];
           for (const tc of choice?.delta?.tool_calls ?? []) {
             const open = openCalls.get(tc.index) ?? { id: "", name: "", argsJson: "" };
@@ -374,6 +390,7 @@ export class OpenAiProvider implements LlmProvider {
           if (choice?.finish_reason != null) {
             stopReason = normalizeFinishReason(choice.finish_reason);
           }
+          if (reasoningDelta !== "") yield { delta: "", done: false, reasoningDelta };
           if (delta !== "") {
             yield { delta, done: false };
           }

@@ -342,13 +342,27 @@ function guardParts(
         }
         // The id and name are model output the provider echoes back; the input is arbitrary JSON a
         // tainted value could hide in at any depth. All of it is the model's own call.
-        for (const slot of [p.id, p.name, p.input]) {
+        for (const slot of [p.id, p.name, p.input, p.signature]) {
           const found = findTaint(slot);
           if (found !== undefined) throw new UntrustedContentError("tool_use", found.origin);
         }
         seenToolUses.add(p.id);
         out.push(p);
         break;
+      case "reasoning": {
+        if (role !== "assistant") {
+          throw new InvalidLlmRequestError(
+            "reasoning parts are allowed only in assistant messages"
+          );
+        }
+        // Model output the provider echoes back. The readable text is never taken from the
+        // caller: only `resolveRequestContent` fills it, from the sidecar store, digest-checked.
+        const { text: _text, ...recorded } = p;
+        const found = findTaint(recorded);
+        if (found !== undefined) throw new UntrustedContentError("reasoning", found.origin);
+        out.push(recorded);
+        break;
+      }
       case "tool_result": {
         if (role !== "user") {
           throw new InvalidLlmRequestError("tool_result parts are allowed only in user messages");

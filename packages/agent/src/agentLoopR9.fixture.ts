@@ -294,6 +294,8 @@ function partBytes(p: LlmContentPartInput): number {
       return p.id.length + p.name.length + JSON.stringify(p.input ?? null).length;
     case "tool_result":
       return p.toolUseId.length + resultContentBytes(p.content);
+    case "reasoning":
+      return 0; // ADR 0133 D5: reasoning counts zero bytes, as in agentLoop$
   }
 }
 

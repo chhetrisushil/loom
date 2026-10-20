@@ -1,7 +1,13 @@
 import type { LlmCapabilities } from "./capabilities";
-import type { LlmContent, LlmMessageContent, LlmMessageContentInput } from "./parts";
+import type {
+  LlmContent,
+  LlmMessageContent,
+  LlmMessageContentInput,
+  LlmReasoning,
+  LlmReasoningPart,
+} from "./parts";
 
-export type { LlmContent } from "./parts";
+export type { LlmContent, LlmReasoning, LlmReasoningKind, LlmReasoningPart } from "./parts";
 
 export interface LlmMessage {
   role: "system" | "user" | "assistant";
@@ -58,6 +64,8 @@ export interface LlmToolCall {
   id: string;
   name: string;
   input: unknown;
+  /** Provider-opaque continuation bytes that belong to this call (Gemini `thoughtSignature`); sent back unchanged (ADR 0133). */
+  signature?: string;
 }
 
 export interface LlmResponse {
@@ -65,7 +73,18 @@ export interface LlmResponse {
   toolCalls?: LlmToolCall[];
   stopReason: "end_turn" | "tool_use" | "max_tokens";
   usage?: { inputTokens: number; outputTokens: number };
+  /**
+   * ADR 0133 - the reasoning the provider returned, as it returned it. ABSENT when the provider
+   * returned none (G2). Readable `text` appears only on a provider's own response: `createLlmEffect`
+   * replaces this with {@link LlmReasoningPart}s before `parseResponse`, so text never reaches a step value.
+   */
+  reasoning?: LlmReasoning[];
 }
+
+/** What `parseResponse` receives: reasoning already reduced to its recorded form (ADR 0133 D3). */
+export type LlmCapturedResponse = Omit<LlmResponse, "reasoning"> & {
+  reasoning?: LlmReasoningPart[];
+};
 
 /**
  * One increment of a streamed completion.
@@ -106,6 +125,14 @@ export interface LlmStreamChunk {
   stopReason?: LlmResponse["stopReason"];
   /** Token accounting — what K3 meters and what K8.4 needs to sever mid-flight. Terminal chunk only. */
   usage?: { inputTokens: number; outputTokens: number };
+  /** ADR 0133 - the assembled reasoning; equals what `complete` returns. Terminal chunk only. */
+  reasoning?: LlmReasoning[];
+  /**
+   * ADR 0133 D6 - an increment of READABLE reasoning (a summary or text), streamed as it arrives.
+   * A separate field from `delta` so no consumer of text deltas sees reasoning by accident.
+   * Signatures and redacted data are never streamed. Transient: only the terminal `reasoning` is kept.
+   */
+  reasoningDelta?: string;
 }
 
 export interface LlmProvider {
