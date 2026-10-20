@@ -62,6 +62,12 @@ export interface ResourceSnapshot {
  *   (`TaintedValue<string>`, ADR 0085): model output is third-party text, and the
  *   wrapper makes `guardRequest` refuse it if it is fed back into a prompt. A UI tail
  *   unwraps explicitly (`unwrapTainted`) to display it.
+ * - REASONING chunk (`reasoning` set, `delta` empty; ADR 0133 D6): a readable increment of the
+ *   model's reasoning, a channel SEPARATE from text so no consumer of text deltas sees it by
+ *   accident. Wrapped as untrusted (`llm-reasoning:<stepId>`). It passes the middleware
+ *   `deltaGuard`s (a guard instance of its own, so reasoning never pollutes the running text a
+ *   guard accumulates) and reaches the PER-CALL sink only, never the effect's configured
+ *   `deltaSink`. Live-only and never journaled.
  * - RESET chunk (`reset: true`, `attempt: n`, empty `delta`): attempt `n > 1` of the
  *   call is starting (retry middleware re-ran the effect) — discard everything shown
  *   so far and re-render from this attempt's deltas.
@@ -72,6 +78,8 @@ export interface ResourceSnapshot {
  */
 export interface EffectDelta {
   readonly delta: TaintedValue<string>;
+  /** ADR 0133 D6 - a reasoning increment; `delta` is empty on such a chunk. */
+  readonly reasoning?: TaintedValue<string>;
   readonly done?: true;
   readonly reset?: true;
   readonly attempt?: number;
