@@ -677,3 +677,49 @@ describe("live reasoning deltas (D6)", () => {
     expect(out.content).toBe("ok");
   });
 });
+
+describe("observability.reasoning: false is a default, not an override (ADR 0133 D7)", () => {
+  const run = async (own: Parameters<typeof build>[1]) => {
+    const store = memStore();
+    const eff = build(
+      providerWith(REASONING),
+      own === undefined ? undefined : { ...own, store: own.store ?? store }
+    );
+    eff.reasoning?.adopt(false);
+    const ctx = makeCtx();
+    const out = (await eff.execute("hi", ctx)) as LlmCapturedResponse;
+    return { out, ctx, eff, store };
+  };
+
+  it("an effect with its own store keeps capturing", async () => {
+    const own = memStore();
+    const eff = build(providerWith(REASONING), { store: own });
+    eff.reasoning?.adopt(false);
+    const ctx = makeCtx();
+    const out = (await eff.execute("hi", ctx)) as LlmCapturedResponse;
+    expect(own.puts).toBe(1);
+    expect(out.reasoning?.[0]?.textRef).toBeDefined();
+    expect(ctx.emit).toHaveBeenCalledWith(LLM_REASONING_CAPTURED, expect.anything());
+    expect(eff.reasoning?.posture()).toBe("keeps");
+  });
+
+  it("an effect with its own capture choice keeps it (capture: true with a store)", async () => {
+    const r = await run({ capture: true });
+    expect(r.store.puts).toBe(1);
+  });
+
+  it("an effect with no reasoning config of its own is opted out", async () => {
+    const eff = build(providerWith(REASONING));
+    eff.reasoning?.adopt(false);
+    const ctx = makeCtx();
+    const out = (await eff.execute("hi", ctx)) as LlmCapturedResponse;
+    expect(out.reasoning?.[0]?.omitted).toBe(true);
+    expect(ctx.emit).not.toHaveBeenCalled();
+    expect(eff.reasoning?.posture()).toBe("off");
+  });
+
+  it("an effect that set capture: false itself stays off", async () => {
+    const r = await run({ capture: false });
+    expect(r.store.puts).toBe(0);
+  });
+});
