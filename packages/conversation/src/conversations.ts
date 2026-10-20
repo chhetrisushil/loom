@@ -193,6 +193,12 @@ export interface Conversations {
   viewerKey(principal?: PrincipalChain): string | undefined;
   /** Whether `principal` may (still) read the conversation: a cheap membership check, for a stream to run per delivered message. */
   isParticipant(conversationId: string, principal?: PrincipalChain): Promise<boolean>;
+  /**
+   * Whether `principal` is the conversation's OWNER (the same identity rule as ownership: tenant, actor and
+   * onBehalfOf all equal). Any refusal (unknown conversation, a non-participant, another tenant) is `false`,
+   * never a distinguishable error. ADR 0133 D6 uses it for the live reasoning audience.
+   */
+  isOwner(conversationId: string, principal?: PrincipalChain): Promise<boolean>;
   /** SHARED mode: the participant set. Owner / manager only. */
   participants(conversationId: string, options?: CallOptions): Promise<Identity[]>;
   addParticipant(conversationId: string, who: Identity, options?: CallOptions): Promise<void>;
@@ -201,8 +207,8 @@ export interface Conversations {
   /**
    * ADR 0133 D6 - where the DURABLE reasoning of one assistant reply lives, for a caller entitled to read it.
    * `cursor` is the reply's history cursor. OWNER mode: the owner (the only reader) gets the generation that
-   * ran the turn, narrowed to that turn's steps. SHARED mode: ONLY the reply's asker gets it (the turn's own
-   * execution); every other participant, the owner included, a non-participant, another tenant, an unknown
+   * ran the turn, narrowed to that turn's steps. SHARED mode: the reply's asker AND the conversation's
+   * owner get it (the turn's own execution); every other participant, a non-participant, another tenant, an unknown
    * cursor and a record that is not an assistant reply all get the same `ConversationNotFoundError`.
    * Does not read the reasoning itself: the transport joins it with `readReasoning` and its store.
    */
@@ -588,7 +594,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       return out;
     },
     async reasoningTarget(conversationId, cursor, options) {
-      const { viewer } = await authorize(conversationId, options?.principal, "member");
+      const { viewer, isOwner } = await authorize(conversationId, options?.principal, "member");
       const pos = parseCursor(cursor);
       if (pos === undefined) throw new InvalidCursorError();
       const head = await reader.headGeneration(conversationId);
@@ -602,8 +608,10 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       }
       if (shared !== undefined) {
         // The turn's reasoning carries what the ASKER's turn saw; the per-viewer filter is not designed to
-        // classify free text, so nobody else gets it.
-        if (viewer === undefined || !sameIdentity(rec.asker, viewer)) {
+        // classify free text, so nobody but the asker and the conversation's OWNER (owner ruling
+        // 2026-10-20) gets it.
+        const isAsker = viewer !== undefined && sameIdentity(rec.asker, viewer);
+        if (!isAsker && !isOwner) {
           throw new ConversationNotFoundError(conversationId);
         }
         if (rec.turnExecutionId === undefined) throw new ConversationNotFoundError(conversationId);
@@ -618,6 +626,14 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       try {
         await authorize(conversationId, principal, "member");
         return true;
+      } catch (err) {
+        if (err instanceof ConversationNotFoundError) return false;
+        throw err;
+      }
+    },
+    async isOwner(conversationId, principal) {
+      try {
+        return (await authorize(conversationId, principal, "member")).isOwner;
       } catch (err) {
         if (err instanceof ConversationNotFoundError) return false;
         throw err;

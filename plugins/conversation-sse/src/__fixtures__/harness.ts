@@ -23,6 +23,7 @@ export const alice: PrincipalChain = { actor: "alice", tenant: "t1" };
 export const bob: PrincipalChain = { actor: "bob", tenant: "t2" };
 export const colleague: PrincipalChain = { actor: "carol", tenant: "t1" };
 export const dave: PrincipalChain = { actor: "dave", tenant: "t3" };
+export const eve: PrincipalChain = { actor: "eve", tenant: "t9" };
 export const SECRET = "TOP-SECRET-PAYLOAD";
 const KEY = "sse-envelope-key";
 const SERVICE: PrincipalChain = { actor: "conversation-service", tenant: "svc" };
@@ -38,6 +39,7 @@ export const TOKENS: Record<string, PrincipalChain> = {
   "tok-bob": bob,
   "tok-carol": colleague,
   "tok-dave": dave,
+  "tok-eve": eve,
 };
 
 const kb = tool$({

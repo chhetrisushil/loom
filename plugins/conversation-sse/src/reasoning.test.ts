@@ -197,7 +197,7 @@ describe("owner conversation", () => {
   });
 });
 
-describe("shared conversation: the turn's asker ONLY", () => {
+describe("shared conversation: the turn's asker and the owner ONLY", () => {
   it("bob and dave see the answer but never alice's reasoning, live, partial or durable", async () => {
     const store = memStore();
     const gate = new Latch();
@@ -250,30 +250,54 @@ describe("shared conversation: the turn's asker ONLY", () => {
     }
   });
 
-  it("when bob asks, alice (the owner) is NOT served his reasoning", async () => {
+  it("when bob asks, bob AND alice (the owner) get his reasoning on every channel; dave, carol and another tenant get nothing", async () => {
     const store = memStore();
+    const gate = new Latch();
+    const reached = new Latch();
     const b = await up({
       shared: true,
       reasoning: { store, live: true },
-      chunks: thinking(),
+      chunks: thinking(gate, reached),
       server: { reasoning: { live: true, store } },
     });
     const id = await room(b);
-    const aliceS = track(await openSse(`${b.url}/conversations/${id}/events`, bearer("tok-alice")));
-    const bobS = track(await openSse(`${b.url}/conversations/${id}/events`, bearer("tok-bob")));
+    const sse = async (t: string) =>
+      track(await openSse(`${b.url}/conversations/${id}/events`, bearer(t)));
+    const aliceS = await sse("tok-alice");
+    const bobS = await sse("tok-bob");
+    const daveS = await sse("tok-dave");
     await post(`${b.url}/conversations/${id}/turns`, "tok-bob", { text: "bob asks" });
+    await reached.promise;
+    // Attached mid-call: the catch-up partial goes to the asker and the owner only.
+    const aliceLate = await sse("tok-alice");
+    const bobLate = await sse("tok-bob");
+    const daveLate = await sse("tok-dave");
+    await aliceLate.waitFor((e) => e.event === "reasoning-partial");
+    await bobLate.waitFor((e) => e.event === "reasoning-partial");
+    gate.release();
     const isReply = (e: { event: string; data: unknown }) =>
       e.event === "message" && (e.data as { role: string }).role === "assistant";
     const reply = await bobS.waitFor(isReply);
     await aliceS.waitFor(isReply);
-    expect(reasoningText(bobS)).toBe(T1 + T2);
-    expect(aliceS.events.some((e) => e.event.startsWith("reasoning"))).toBe(false);
-    expect(
-      (await get(`${b.url}/conversations/${id}/reasoning?cursor=${reply.id}`, "tok-alice")).status
-    ).toBe(404);
-    expect(
-      (await get(`${b.url}/conversations/${id}/reasoning?cursor=${reply.id}`, "tok-bob")).status
-    ).toBe(200);
+    await daveS.waitFor(isReply);
+    await daveLate.waitFor(isReply);
+    for (const c of [aliceS, bobS, aliceLate, bobLate]) expect(reasoningText(c)).toBe(T1 + T2);
+    for (const c of [daveS, daveLate]) {
+      expect(c.events.some((e) => e.event.startsWith("reasoning"))).toBe(false);
+      expect(JSON.stringify(c.events)).not.toContain("THOUGHT");
+    }
+    const url = `${b.url}/conversations/${id}/reasoning?cursor=${reply.id}`;
+    expect((await get(url, "tok-alice")).status).toBe(200);
+    expect((await get(url, "tok-bob")).status).toBe(200);
+    const unknown = await get(
+      `${b.url}/conversations/conv-nope/reasoning?cursor=${reply.id}`,
+      "tok-carol"
+    );
+    for (const t of ["tok-dave", "tok-carol", "tok-eve"]) {
+      const r = await get(url, t);
+      expect(r.status).toBe(404);
+      expect(r.body).toEqual(unknown.body);
+    }
   });
 });
 
