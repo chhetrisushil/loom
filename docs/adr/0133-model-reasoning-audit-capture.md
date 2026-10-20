@@ -334,6 +334,23 @@ Unrelated consumers: `agentLoop$` (any tool-using agent on a reasoning model, wh
 need, not only an audit one), the conversation layer when a turn is disputed, a loom-ui planner explaining a layout
 decision, and any compliance deployment on a reasoning model.
 
+## Live verification (2026-10-20)
+
+- **Gemini: verified live** on `gemini-3.8-flash` and `gemini-3-flash-preview`, through loom's `GeminiProvider` with
+  `includeThoughts`. Turn 1 returned a thought summary and a `functionCall` with its `thoughtSignature`; turn 2,
+  built with `assistantMessageOf` from the recorded (text-free) parts, was accepted and answered. The same turn 2
+  with the call signatures removed was refused with the documented 400 ("Function call is missing a
+  thought_signature in functionCall parts"). This confirms D5's rule that a call's `signature` is never dropped.
+- **Anthropic: not verified live.** The available key had no API credit; by owner decision the live check is
+  dropped for now. The Anthropic mapping is verified against recorded wire shapes only (as the other provider
+  tests are). Two Anthropic-specific items stay **deferred** until a live check is possible, and the behaviour
+  described above is unchanged:
+  1. Refusing, at boot, `agentLoop$`'s direct routed path (no `reasoningToolId`) when the provider has thinking
+     enabled. That path carries no thinking blocks; whether Anthropic rejects such a tool loop is unconfirmed.
+  2. Keeping the in-flight tool round's thinking across compaction. D5 strips it, which the vendor documents as
+     valid; the vendor also advises against compacting mid tool round, and whether a kept block survives a
+     compacted prefix is unconfirmed.
+
 ## Resolved questions (owner ruling 2026-10-20)
 
 1. **Provider continuation:** verified against the providers (Context). Designed in as D5: signatures inline,
