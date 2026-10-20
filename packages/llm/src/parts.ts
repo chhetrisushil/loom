@@ -337,9 +337,17 @@ function laidOut(
   let reasoningEntries = 0;
   for (const e of layout) {
     if (e === "reasoning") reasoningEntries++;
-    else if (typeof e === "object" && e !== null && typeof (e as { text?: unknown }).text === "number") {
+    else if (
+      typeof e === "object" &&
+      e !== null &&
+      typeof (e as { text?: unknown }).text === "number"
+    ) {
       total += (e as { text: number }).text;
-    } else if (typeof e !== "object" || e === null || typeof (e as { call?: unknown }).call !== "string") {
+    } else if (
+      typeof e !== "object" ||
+      e === null ||
+      typeof (e as { call?: unknown }).call !== "string"
+    ) {
       return canonicalParts(response, []);
     }
   }
