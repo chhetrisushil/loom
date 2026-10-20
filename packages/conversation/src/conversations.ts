@@ -17,9 +17,12 @@ import { type ConversationFlow, signedEnvelope } from "./conversation";
 import { generationId, generationOf, isValidConversationId } from "./ids";
 import {
   type ConversationReader,
+  InvalidCursorError,
   type ReadOptions,
   type ReadResult,
   createConversationReader,
+  parseCursor,
+  recordOf,
 } from "./reader";
 import { registerSharedTurnEffect } from "./turn";
 import { CONVERSATION_TOPIC, type HistoryEntry } from "./types";
@@ -195,6 +198,19 @@ export interface Conversations {
   addParticipant(conversationId: string, who: Identity, options?: CallOptions): Promise<void>;
   removeParticipant(conversationId: string, who: Identity, options?: CallOptions): Promise<void>;
   readonly reader: ConversationReader;
+  /**
+   * ADR 0133 D6 - where the DURABLE reasoning of one assistant reply lives, for a caller entitled to read it.
+   * `cursor` is the reply's history cursor. OWNER mode: the owner (the only reader) gets the generation that
+   * ran the turn, narrowed to that turn's steps. SHARED mode: ONLY the reply's asker gets it (the turn's own
+   * execution); every other participant, the owner included, a non-participant, another tenant, an unknown
+   * cursor and a record that is not an assistant reply all get the same `ConversationNotFoundError`.
+   * Does not read the reasoning itself: the transport joins it with `readReasoning` and its store.
+   */
+  reasoningTarget(
+    conversationId: string,
+    cursor: string,
+    options?: CallOptions
+  ): Promise<{ executionId: string; stepPrefix?: string }>;
 }
 
 /** The identity fields exactly as `runtime.send` stamps them on a message (ADR 0110 D1). */
@@ -570,6 +586,33 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         out.push(ok ? stripClasses(e, viewer) : restricted(e));
       }
       return out;
+    },
+    async reasoningTarget(conversationId, cursor, options) {
+      const { viewer } = await authorize(conversationId, options?.principal, "member");
+      const pos = parseCursor(cursor);
+      if (pos === undefined) throw new InvalidCursorError();
+      const head = await reader.headGeneration(conversationId);
+      if (head === undefined || pos.g > head) throw new ConversationNotFoundError(conversationId);
+      const ev = (
+        await readRangeOf(eventStore, generationId(conversationId, pos.g), pos.seq, pos.seq)
+      )[0];
+      const rec = ev === undefined ? undefined : recordOf(ev);
+      if (ev === undefined || rec === undefined || rec.role !== "assistant") {
+        throw new ConversationNotFoundError(conversationId);
+      }
+      if (shared !== undefined) {
+        // The turn's reasoning carries what the ASKER's turn saw; the per-viewer filter is not designed to
+        // classify free text, so nobody else gets it.
+        if (viewer === undefined || !sameIdentity(rec.asker, viewer)) {
+          throw new ConversationNotFoundError(conversationId);
+        }
+        if (rec.turnExecutionId === undefined) throw new ConversationNotFoundError(conversationId);
+        return { executionId: rec.turnExecutionId };
+      }
+      const decisionId = (ev.payload as { decisionId?: unknown } | null)?.decisionId;
+      const loop = typeof decisionId === "string" ? /^(conv#o\d+):reply$/.exec(decisionId) : null;
+      if (loop === null) throw new ConversationNotFoundError(conversationId);
+      return { executionId: ev.executionId, stepPrefix: `${loop[1]}#` };
     },
     async isParticipant(conversationId, principal) {
       try {

@@ -4,7 +4,13 @@ import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
-import type { LlmProvider, LlmRequest, LlmResponse, LlmStreamChunk } from "@loom/llm";
+import type {
+  LlmProvider,
+  LlmRequest,
+  LlmResponse,
+  LlmStreamChunk,
+  ReasoningStore,
+} from "@loom/llm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
 import type { ExecutionAuthorizer } from "@loom/workflow-runtime";
@@ -80,6 +86,8 @@ export interface BootOptions {
    * a viewer is cleared for "restricted" only if they are alice or dave.
    */
   shared?: Partial<SharedConfig> | true;
+  /** ADR 0133: capture reasoning into `store`; `live` also streams it to the hub's reasoning sink. */
+  reasoning?: { store: ReasoningStore; live?: boolean };
 }
 
 export const TEST_KEY = "test-envelope-key";
@@ -192,6 +200,12 @@ export function boot(opts: BootOptions = {}) {
     createAgentModelEffect(hub.wrapProvider(provider), {
       stream: opts.chunks !== undefined,
       onDelta: hub.deltaSink(),
+      ...(opts.reasoning !== undefined && {
+        reasoning: {
+          store: opts.reasoning.store,
+          ...(opts.reasoning.live === true && { live: true, onDelta: hub.reasoningSink() }),
+        },
+      }),
     })
   );
   effects.register(

@@ -12,7 +12,7 @@ import { agent$, tool$ } from "@loom/core";
 import { EffectRuntime, GrantTable, ToolEffect } from "@loom/effect-runtime";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
-import type { LlmProvider, LlmRequest, LlmStreamChunk } from "@loom/llm";
+import type { LlmProvider, LlmRequest, LlmStreamChunk, ReasoningStore } from "@loom/llm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime, executionAccessPolicy } from "@loom/workflow-runtime";
 import type { ExecutionAuthorizer } from "@loom/workflow-runtime";
@@ -130,6 +130,8 @@ export interface BootOptions {
   ) => ReturnType<typeof sharedScript> | Promise<ReturnType<typeof sharedScript>>;
   /** Tokens the default authenticate accepts (default {@link TOKENS}). */
   tokens?: Record<string, PrincipalChain>;
+  /** ADR 0133: capture reasoning into `store`; `live` also feeds the hub's reasoning sink. */
+  reasoning?: { store: ReasoningStore; live?: boolean };
 }
 
 export async function boot(opts: BootOptions = {}) {
@@ -179,6 +181,12 @@ export async function boot(opts: BootOptions = {}) {
     createAgentModelEffect(hub.wrapProvider(provider), {
       stream: opts.chunks !== undefined,
       onDelta: hub.deltaSink(),
+      ...(opts.reasoning !== undefined && {
+        reasoning: {
+          store: opts.reasoning.store,
+          ...(opts.reasoning.live === true && { live: true, onDelta: hub.reasoningSink() }),
+        },
+      }),
     })
   );
   effects.register(

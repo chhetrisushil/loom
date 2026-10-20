@@ -47,7 +47,7 @@ export {
   SubscriberLimitError,
   withTurnScope,
 } from "./hub";
-export type { ConversationHubOptions, LiveEvent, PartialReply } from "./hub";
+export type { ConversationHubOptions, LiveEvent, PartialReasoning, PartialReply } from "./hub";
 export {
   InvalidCursorError,
   createConversationReader,

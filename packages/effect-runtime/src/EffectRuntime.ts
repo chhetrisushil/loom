@@ -269,7 +269,8 @@ export class EffectRuntime {
    *  - REFUSED (undefined) when any middleware `inspectsOutput` — streaming would
    *    deliver text past a check that cannot see it; the call runs non-streamed.
    *  - A reasoning delta (ADR 0133 D6) passes its own `deltaGuard` instances the same way and
-   *    reaches the per-call sink only.
+   *    reaches the per-call sink and the effect's configured REASONING sink, never its text
+   *    `deltaSink`.
    *  - Each text delta passes the middleware `deltaGuard`s FIRST; a guard that throws
    *    severs the stream and the offending delta is never delivered.
    *  - Text is delivered as untrusted (tainted) content.
@@ -295,7 +296,11 @@ export class EffectRuntime {
     // The effect's own CONFIGURED sink (createLlmEffect/AgentRunner `onDelta`) is reached
     // only through this pipe, so it is governed exactly like the per-call one.
     const configured = this.registry.get(toolId)?.deltaSink;
-    if (callerSink === undefined && configured === undefined) return undefined;
+    // ADR 0133 D6 - the configured REASONING sink, reached only through this pipe as well.
+    const configuredReasoning = this.registry.get(toolId)?.reasoningSink;
+    if (callerSink === undefined && configured === undefined && configuredReasoning === undefined) {
+      return undefined;
+    }
     const uncovered = this.middleware.findIndex((m) => m.inspectsOutput === true);
     if (uncovered >= 0) {
       const mw = this.middleware[uncovered] as EffectMiddleware;
@@ -361,6 +366,15 @@ export class EffectRuntime {
             } catch (err) {
               this.onWarn(
                 `invokeTransient("${toolId}"): onDelta sink threw (ignored): ${String(err)}`
+              );
+            }
+          }
+          if (configuredReasoning !== undefined && !dead()) {
+            try {
+              configuredReasoning(r, sinkCtx);
+            } catch (err) {
+              this.onWarn(
+                `effect "${toolId}": configured reasoning sink threw (ignored): ${String(err)}`
               );
             }
           }

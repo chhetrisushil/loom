@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
+import { unwrapTainted } from "@loom/classify";
 import {
   type ConversationHub,
   ConversationNotFoundError,
@@ -18,6 +19,7 @@ import {
 import { BadRequestError, exposeError } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
 import type { EventStore } from "@loom/event-runtime";
+import { type ReasoningReader, readReasoning } from "@loom/llm";
 import {
   ExecutionDeniedError,
   InboxClosedError,
@@ -34,6 +36,7 @@ import { SseSink, frame } from "./sse";
 //   POST /conversations/:id/close                close it
 //   GET  /conversations/:id/history              a bounded page   ?limit&cursor&direction
 //   GET  /conversations/:id/events               the SSE stream   Last-Event-ID | ?cursor
+//   GET  /conversations/:id/reasoning?cursor=    a reply's durable model reasoning (opt-in, ADR 0133 D6)
 //   shared mode:
 //   GET  /conversations/:id/participants         the participant set        (owner / manager)
 //   POST /conversations/:id/participants         { actor, tenant?, onBehalfOf? }  add
@@ -50,6 +53,11 @@ import { SseSink, frame } from "./sse";
 //   * ISOLATION: a stream is keyed by one conversation id; the live hub and the log reader are both
 //     keyed by it, and a cursor is a position INSIDE that conversation's chain. Shared mode filters
 //     every entry, the stream's deltas and the partial reply PER VIEWER.
+//   * REASONING (ADR 0133 D6) is OFF by default, live and durable. When on, it goes to the turn's ASKER ONLY
+//     (in shared mode never to another participant, the owner included), over its own SSE event types
+//     (`reasoning`, `reasoning-partial`) and its own endpoint; a caller who may not have it gets the same 404
+//     as a missing conversation. It is model-derived text restating what the asker's turn saw: it is
+//     unwrapped from its untrusted wrapper HERE, at the transport edge, and nowhere earlier.
 //   * LOOPBACK by default; a loopback `Host` allowlist protects an unauthenticated server from DNS
 //     rebinding. CSRF/CORS: a request carrying an `Origin` must name one of `allowedOrigins` (the
 //     `Host` header is never trusted to prove same-origin), POST bodies must be `application/json`.
@@ -126,6 +134,13 @@ export interface ConversationSseOptions {
   headersTimeoutMs?: number;
   /** Open sockets the server accepts at all (`http.Server.maxConnections`). Default 4096. */
   maxSockets?: number;
+  /**
+   * ADR 0133 D6 - serve the model's reasoning. OFF by default. `true` (or `{ live: true }`) streams the
+   * `reasoning` / `reasoning-partial` SSE events; `{ store }` also serves a reply's durable reasoning at
+   * `GET <base>/:id/reasoning?cursor=<the reply's history cursor>` (the `ReasoningStore` the model effect
+   * captured into). In SHARED mode only the turn's asker receives any of it.
+   */
+  reasoning?: boolean | { live?: boolean; store?: ReasoningReader };
   /** Real error behind a 500, with the `errorId` the caller was given. */
   onError?: (errorId: string, err: unknown) => void;
 }
@@ -227,6 +242,9 @@ export function createConversationSseServer(
   const rateMax = options.rateLimit?.max ?? 120;
   const rateWindow = options.rateLimit?.windowMs ?? 60_000;
   const now = options.now ?? Date.now;
+  const reasoningOpt = options.reasoning === true ? { live: true } : options.reasoning || undefined;
+  const liveReasoning = reasoningOpt?.live === true;
+  const reasoningStore = reasoningOpt?.store;
 
   if (options.authenticate === undefined) {
     if (options.insecure !== true) {
@@ -397,12 +415,23 @@ export function createConversationSseServer(
     // the turn ends (the tools it used), so until then nobody else may see its tokens; they get the
     // durable entry (or a bare placeholder) on completion.
     const mine = (asker: string | undefined): boolean => asker === undefined || asker === viewer;
+    // REASONING is stricter than a delta: in shared mode it needs a KNOWN asker that is this viewer (an
+    // event with no asker is never served), in owner mode the stream is already the owner's alone.
+    const reasoningFrame = (turn: number, text: string) => frame("reasoning", { turn, text });
+    const askerOnly = (asker: string | undefined): boolean =>
+      liveReasoning &&
+      (conversations.mode !== "shared" || (asker !== undefined && asker === viewer));
     const unsubscribe = hub.subscribe(id, (ev) => {
+      if (ev.type === "reasoning") {
+        if (askerOnly(ev.asker)) sink.delta(ev.turn, ev.text, reasoningFrame, "reasoning");
+        return;
+      }
       if (!mine(ev.asker)) return;
       if (ev.type === "delta") sink.delta(ev.turn, ev.text, deltaFrame);
       else sink.send(frame("reset", { turn: ev.turn }));
     });
     const partial = hub.partialOf(id);
+    const reasoningPartial = liveReasoning ? hub.reasoningPartialOf(id) : undefined;
 
     perPrincipal.set(key, (perPrincipal.get(key) ?? 0) + 1);
     const handle = { close: () => end() };
@@ -444,6 +473,11 @@ export function createConversationSseServer(
     sink.send(frame("status", status));
     if (partial !== undefined && mine(partial.asker)) {
       sink.send(frame("partial", { turn: partial.turn, text: partial.text }));
+    }
+    if (reasoningPartial !== undefined && askerOnly(reasoningPartial.asker)) {
+      sink.send(
+        frame("reasoning-partial", { turn: reasoningPartial.turn, text: reasoningPartial.text })
+      );
     }
 
     timers.push(setInterval(() => sink.send(": ping\n\n"), heartbeatMs).unref());
@@ -652,6 +686,44 @@ export function createConversationSseServer(
           ...(direction !== null && { direction }),
         });
         sendJson(res, 200, page, cors);
+        return;
+      }
+      if (rest.length === 2 && action === "reasoning" && method === "GET") {
+        // Disabled unless the host gave a store: indistinguishable from a route that does not exist.
+        if (reasoningStore === undefined) throw NOT_FOUND;
+        const cursor = url.searchParams.get("cursor");
+        if (cursor === null)
+          throw new BadRequestError("`cursor` (the reply's history cursor) is required");
+        // The audience decision is the conversation's: the asker in shared mode, the owner otherwise.
+        const target = await conversations.reasoningTarget(id, cursor, call);
+        const steps = (
+          await readReasoning(options.eventStore, reasoningStore, {
+            executionId: target.executionId,
+          })
+        ).filter((s) => target.stepPrefix === undefined || s.stepId.startsWith(target.stepPrefix));
+        sendJson(
+          res,
+          200,
+          {
+            steps: steps.map((s) => ({
+              stepId: s.stepId,
+              ...(s.recordedAttempt !== undefined && { recordedAttempt: s.recordedAttempt }),
+              attempts: s.attempts.map((a) => ({
+                attempt: a.attempt,
+                provider: a.provider,
+                ...(a.model !== undefined && { model: a.model }),
+                recorded: a.recorded,
+                parts: a.parts.map((p) => ({
+                  kind: p.kind,
+                  status: p.status,
+                  // The transport edge: the one place the untrusted wrapper comes off.
+                  ...(p.text !== undefined && { text: unwrapTainted(p.text) }),
+                })),
+              })),
+            })),
+          },
+          cors
+        );
         return;
       }
       if (rest.length === 2 && action === "events" && method === "GET") {

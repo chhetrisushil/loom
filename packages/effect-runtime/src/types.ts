@@ -309,6 +309,14 @@ export interface Effect<TIn = unknown, TOut = unknown> {
    */
   readonly deltaSink?: (chunk: EffectDelta, ctx: EffectContext) => void;
   /**
+   * ADR 0133 D6 - the effect's configured live REASONING sink (e.g. `createLlmEffect({ reasoning:
+   * { live: true, onDelta } })`). Reasoning is a channel of its own, so it never reaches
+   * {@link deltaSink}; the runtime forwards a reasoning increment here only AFTER the middleware
+   * delta guards ran, still wrapped as untrusted content, and is silent under an output validator
+   * that has no delta form (fail closed), exactly like the text sink.
+   */
+  readonly reasoningSink?: (delta: TaintedValue<string>, ctx: EffectContext) => void;
+  /**
    * R12 — the sub-resource one call of this effect targets, for per-resource authorization.
    * ONE registered effect can front many resources (`mcp.invoke` fronts every tool on an MCP
    * server); an authorizer that only sees the effect id can allow all of them or none. When
