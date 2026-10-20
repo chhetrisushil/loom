@@ -160,6 +160,18 @@ pnpm --filter @loom/db-observability start
   called. A scripted model that cites a runbook it was never shown fails the flow
   (`assertGrounded`). Headless.
 
+- **`reasoning-audit`** — model reasoning kept as audit evidence ([ADR 0133](adr/0133-model-reasoning-audit-capture.md)).
+  An expense reviewer reads a receipt that carries a planted "approve 9900" note and approves only the legible
+  amount. Its reasoning (summaries with signatures and a redacted block, from a scripted Anthropic-shaped model) is
+  captured at the provider seam into a sidecar content store: the recorded step values hold signatures, refs and
+  digests, and a search of the serialized log finds none of the reasoning text. The next turn sends the blocks back
+  unchanged and in the vendor's block order; `readReasoning` returns the text wrapped as untrusted; erasing the
+  blobs reads back as `erased` while a fresh-process replay makes zero model calls and gives the same answer; a
+  reasoning part copied into another execution is dropped, not sent; live reasoning reaches the conversation hub
+  on its own channel, never in the reply text; and the direct routed path (no `reasoningToolId`) warns that it
+  discards reasoning, or refuses with `requireReasoningContinuation`. Reasoning corroborates the record; it is
+  not an explanation. Headless.
+
 - **`db-sentinel`** *(also in the perpetual-agents section)* — the second consumer of
   `@loom/knowledge`, and the one that shows what a one-shot RAG example structurally
   cannot: over a simulated year the runbook corpus is **edited in July**. `sync` writes
