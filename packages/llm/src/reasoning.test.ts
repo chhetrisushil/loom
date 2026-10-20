@@ -373,6 +373,47 @@ describe("resolution + the drop rule (D5)", () => {
     expect(reasoningOf(req)).toEqual([]);
   });
 
+  it("a resolver that THROWS fails the call (an outage is not an erasure); null/undefined is erased and dropped", async () => {
+    const store = memStore();
+    const parts = await recorded(store, ["first", "second"]);
+    const messages = [{ role: "assistant" as const, content: parts }];
+    await expect(
+      resolveRequestContent({ messages }, undefined, {
+        ...ctxArg,
+        reasoningResolver: async () => {
+          throw new Error("store timeout");
+        },
+      })
+    ).rejects.toThrow("store timeout");
+    for (const answer of [null, undefined]) {
+      const req = await resolveRequestContent({ messages }, undefined, {
+        ...ctxArg,
+        reasoningResolver: async () => answer as null,
+      });
+      expect(reasoningOf(req)).toEqual([]);
+    }
+  });
+
+  it("createLlmEffect: a failing sidecar read fails the step before the provider is called", async () => {
+    const store = memStore();
+    const parts = await recorded(store, ["first"]);
+    const provider = vi.fn(async () => ({ content: "ok", stopReason: "end_turn" as const }));
+    const down: ReasoningStore = {
+      put: store.put,
+      get: async () => {
+        throw new Error("sidecar down");
+      },
+    };
+    await expect(
+      createLlmEffect<string, unknown>({
+        provider: { complete: provider },
+        reasoning: { store: down },
+        buildRequest: () => ({ messages: [{ role: "assistant", content: parts }] }),
+      }).execute("hi", makeCtx())
+    ).rejects.toThrow("sidecar down");
+    expect(provider).not.toHaveBeenCalled();
+  });
+
   it("an all-dropped assistant message keeps the empty-text shape providers accept", async () => {
     const store = memStore();
     const parts = await recorded(store, ["first"]);
