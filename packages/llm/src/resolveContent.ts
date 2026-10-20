@@ -141,11 +141,12 @@ const REASONING_FETCH_CAP = 8 * 1024 * 1024;
 /**
  * ADR 0133 D5 (the drop rule for UNRESOLVABLE parts) - resolve each assistant reasoning part's
  * `textRef`, check its digest, and put the text on the part for the provider to map back unchanged.
- * A part whose text cannot be reproduced (blob absent or erased, digest or size mismatch, a failing
- * or missing resolver, or readable text that was never stored) is dropped TOGETHER WITH every
- * reasoning part after it, across later messages too: a provider's signature covers everything
- * before the block, so a block after a hole is no longer valid. A pure function of the request and
- * the resolver's answers. A call's own `tool_use.signature` is never touched. Returns the request
+ * A part whose text cannot be reproduced (blob absent or erased - the resolver answered `null` - a
+ * digest or size mismatch, no resolver, or readable text that was never stored) is dropped TOGETHER
+ * WITH every reasoning part after it, across later messages too: a provider's signature covers
+ * everything before the block, so a block after a hole is no longer valid. A resolver that THROWS is
+ * different: that is an outage, not an answer, so the call fails (and the step retries) rather than
+ * quietly continuing with less. A pure function of the request and the resolver's answers. A call's own `tool_use.signature` is never touched. Returns the request
  * unchanged (same object) when it has no reasoning parts.
  */
 async function resolveReasoningParts(
@@ -170,15 +171,19 @@ async function resolveReasoningParts(
   );
   if (!hasReasoning) return request;
 
-  // address -> verified text, or undefined when it cannot be reproduced.
+  // address -> verified text, or undefined when the blob is DEFINITIVELY not reproducible (absent
+  // or erased, digest or size mismatch). A resolver that THROWS (a store outage, a timeout, a
+  // denied read) is not an answer: the error propagates and fails the call, so the step retries per
+  // normal effect semantics instead of silently continuing with less than was recorded.
   const texts = new Map<string, string | undefined>();
   if (resolver !== undefined) {
     const queue = [...addresses.values()];
     const worker = async (): Promise<void> => {
       for (let part = queue.shift(); part !== undefined; part = queue.shift()) {
         const ref = part.textRef as LlmContentRef;
+        let bytes: Uint8Array | null | undefined;
         try {
-          const bytes = await resolver(ref, {
+          bytes = await resolver(ref, {
             executionId: options.context.executionId,
             ...(options.context.stepId !== undefined && { stepId: options.context.stepId }),
             ...(options.context.principal !== undefined && {
@@ -188,15 +193,16 @@ async function resolveReasoningParts(
             maxBytes: REASONING_FETCH_CAP,
             ...(options.signal !== undefined && { signal: options.signal }),
           });
-          const ok =
-            bytes !== null &&
-            part.digest !== undefined &&
-            reasoningDigest(bytes) === part.digest &&
-            (ref.size === undefined || bytes.byteLength === ref.size);
-          texts.set(ref.address, ok ? new TextDecoder().decode(bytes) : undefined);
-        } catch {
-          texts.set(ref.address, undefined);
+        } catch (err) {
+          queue.length = 0; // stop the other workers starting more reads for a call that has failed
+          throw err;
         }
+        const ok =
+          bytes != null &&
+          part.digest !== undefined &&
+          reasoningDigest(bytes) === part.digest &&
+          (ref.size === undefined || bytes.byteLength === ref.size);
+        texts.set(ref.address, ok && bytes != null ? new TextDecoder().decode(bytes) : undefined);
       }
     };
     await Promise.all(Array.from({ length: Math.min(FETCH_CONCURRENCY, queue.length) }, worker));
