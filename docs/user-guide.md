@@ -940,6 +940,18 @@ Three things worth knowing:
   accounting that arrives after the money is spent.
 
 
+### Extra request headers on a provider
+
+`AnthropicProvider`, `OpenAiProvider` and `GeminiProvider` take an optional `headers` map that is sent on every request (complete and stream). The motivating case is an Anthropic API key that is not scoped to a workspace, which the API refuses unless the request carries `anthropic-workspace-id`:
+
+```ts
+const provider = new AnthropicProvider({
+  headers: { "anthropic-workspace-id": process.env.ANTHROPIC_WORKSPACE_ID! },
+});
+```
+
+Names and values must be strings without CR/LF. A header the provider sets itself (`x-api-key`, `authorization`, `anthropic-version`, `x-goog-api-key`, `content-type`) cannot be overridden: the constructor throws (compared case-insensitively). Errors name the header and never print its value. Unset, requests are exactly as before.
+
 ### Model reasoning as audit evidence ([ADR 0133](adr/0133-model-reasoning-audit-capture.md))
 
 A model with extended thinking returns reasoning next to its answer (Anthropic `thinking` blocks, Gemini thought parts). Ask for it at the provider (`new AnthropicProvider({ thinking: { type: "adaptive", display: "summarized" } })`, `new GeminiProvider({ includeThoughts: true })`; unset, nothing is requested), and keep it with one line of config:

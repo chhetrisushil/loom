@@ -14,6 +14,7 @@ import type {
   LlmToolCall,
 } from "../types";
 import { fenceUntrustedMedia } from "../untrusted";
+import { validateExtraHeaders } from "./extraHeaders";
 
 /**
  * OpenAI's `finish_reason` → the SPI's. ONE implementation shared by `complete`
@@ -35,6 +36,13 @@ function parseArguments(argsJson: string): unknown {
 }
 
 export interface OpenAiProviderConfig {
+  /**
+   * Extra request headers sent on every request (for example `anthropic-workspace-id`). Header
+   * names and values must be strings without CR/LF; a header the provider sets itself (auth,
+   * protocol, content type) cannot be overridden and throws at construction. Unset, the request
+   * is unchanged.
+   */
+  headers?: Readonly<Record<string, string>>;
   apiKey?: string;
   model?: string;
   baseUrl?: string;
@@ -201,9 +209,15 @@ export class OpenAiProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly extraHeaders: Readonly<Record<string, string>>;
   readonly capabilities: LlmCapabilities;
 
   constructor(config: OpenAiProviderConfig = {}) {
+    this.extraHeaders = validateExtraHeaders(
+      config.headers,
+      ["authorization", "content-type"],
+      "OpenAiProvider"
+    );
     const model = config.model ?? "gpt-4o";
     // `input_audio` is only accepted by the audio-preview family, not by gpt-4o proper.
     const { audio: _audio, ...noAudio } = OPENAI_CAPABILITIES;
@@ -248,6 +262,7 @@ export class OpenAiProvider implements LlmProvider {
     const resp = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: {
+        ...this.extraHeaders,
         "content-type": "application/json",
         authorization: `Bearer ${this.apiKey}`,
       },
@@ -294,6 +309,7 @@ export class OpenAiProvider implements LlmProvider {
     const resp = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: "POST",
       headers: {
+        ...this.extraHeaders,
         "content-type": "application/json",
         authorization: `Bearer ${this.apiKey}`,
       },
