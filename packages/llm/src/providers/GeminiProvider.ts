@@ -3,7 +3,14 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { type LlmMediaPart, type LlmReasoning, type LlmResultPart, textOf } from "../parts";
+import {
+  type LlmLayoutEntry,
+  type LlmMediaPart,
+  type LlmReasoning,
+  type LlmResultPart,
+  layoutOf,
+  textOf,
+} from "../parts";
 import { inlineData } from "../resolveContent";
 import type { LlmMessage, LlmProvider, LlmRequest, LlmResponse, LlmToolCall } from "../types";
 import { fenceUntrustedMedia } from "../untrusted";
@@ -223,6 +230,8 @@ export class GeminiProvider implements LlmProvider {
     const content = parts.map((p) => (p.thought === true ? "" : (p.text ?? ""))).join("");
     const toolCalls: LlmToolCall[] = [];
     const reasoning: LlmReasoning[] = [];
+    // ADR 0133 D5 - the vendor's part order, so thought / text / functionCall positions round-trip.
+    const entries: LlmLayoutEntry[] = [];
     for (const p of parts) {
       if (p.thought === true) {
         reasoning.push({
@@ -231,15 +240,22 @@ export class GeminiProvider implements LlmProvider {
           ...(p.thoughtSignature !== undefined && { signature: p.thoughtSignature }),
           provider: PROVIDER_ID,
         });
-      } else if (p.functionCall !== undefined) {
+        entries.push("reasoning");
+        continue;
+      }
+      if (p.text !== undefined) entries.push({ text: p.text.length });
+      if (p.functionCall !== undefined) {
+        const id = p.functionCall.id ?? `${SYNTHETIC_ID}${toolCalls.length}`;
         toolCalls.push({
-          id: p.functionCall.id ?? `${SYNTHETIC_ID}${toolCalls.length}`,
+          id,
           name: p.functionCall.name,
           input: p.functionCall.args ?? {},
           ...(p.thoughtSignature !== undefined && { signature: p.thoughtSignature }),
         });
+        entries.push({ call: id });
       }
     }
+    const layout = layoutOf(entries);
     const stopReason =
       toolCalls.length > 0
         ? "tool_use"
@@ -258,6 +274,7 @@ export class GeminiProvider implements LlmProvider {
         },
       }),
       ...(reasoning.length > 0 && { reasoning }),
+      ...(layout !== undefined && { layout }),
     };
   }
 }

@@ -6,6 +6,7 @@ import { ToolEffect } from "@loom/effect-runtime";
 import type {
   LlmContent,
   LlmContentPartInput,
+  LlmLayoutEntry,
   LlmMessageInput,
   LlmReasoningOptions,
   LlmResponse,
@@ -859,6 +860,7 @@ export async function agentLoop$(
       content: string;
       toolCalls?: readonly LlmToolCall[];
       reasoning?: readonly object[];
+      layout?: readonly LlmLayoutEntry[];
     },
     modelId?: string
   ): void => {
@@ -1457,7 +1459,7 @@ export async function agentLoop$(
                       // ADR 0133 - this path has no sidecar to keep reasoning text in and is not an
                       // effect, so the decision record never carries it (readable text stays out of
                       // the journal). Tool-call signatures stay; reasoning blocks are not continued.
-                      const { reasoning: _dropped, ...answer } = await run();
+                      const { reasoning: _dropped, layout: _order, ...answer } = await run();
                       return boundResponse(answer);
                     } catch (err) {
                       // The signal landed inside the call: record that, not an unrecorded throw.
@@ -1502,6 +1504,7 @@ export async function agentLoop$(
             content: routed.content,
             toolCalls: screened.calls,
             ...(routed.reasoning !== undefined && { reasoning: routed.reasoning }),
+            ...(routed.layout !== undefined && { layout: routed.layout }),
           },
           routed.modelId
         );
@@ -1537,6 +1540,7 @@ export async function agentLoop$(
         content: response.content,
         toolCalls: screened.calls,
         ...(response.reasoning !== undefined && { reasoning: response.reasoning }),
+        ...(response.layout !== undefined && { layout: response.layout }),
       });
 
       await checkAbort(ctx, `t${turn}:tools`);

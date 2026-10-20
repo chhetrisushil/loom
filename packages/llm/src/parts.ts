@@ -230,35 +230,134 @@ export function hasStructuredParts(content: LlmMessageContent): boolean {
 }
 
 /**
+ * ADR 0133 D5 - where each block sat in the vendor's response, when that is NOT the canonical order
+ * (reasoning parts, then ONE text, then the tool calls). A provider whose signatures bind block
+ * order (Anthropic preserved thinking) needs the sequence back exactly: `thinking, text, tool_use,
+ * thinking, tool_use` must not become `thinking, thinking, text, tool_use, tool_use`.
+ *
+ * An entry is `"reasoning"` (the next recorded reasoning part), `{ call }` (the tool call with that
+ * id) or `{ text }` (the next `n` characters of the response's `content`). Positions only, no new
+ * content, so nothing readable is added to a step value.
+ */
+export type LlmLayoutEntry = "reasoning" | { call: string } | { text: number };
+
+/**
+ * The layout to record for a response, or `undefined` when none is needed: no reasoning (the shape
+ * stays exactly today's, G2) or the canonical order. Zero-length text blocks are dropped (a provider
+ * rejects an empty text block, so there is nothing to reproduce).
+ */
+export function layoutOf(entries: readonly LlmLayoutEntry[]): LlmLayoutEntry[] | undefined {
+  const kept = entries.filter((e) => typeof e !== "object" || !("text" in e) || e.text > 0);
+  if (!kept.includes("reasoning")) return undefined;
+  // canonical: "reasoning"*, at most one text, calls*. Phase 0 = reasoning, 1 = after the text, 2 = calls.
+  let phase = 0;
+  let canonical = true;
+  for (const e of kept) {
+    if (e === "reasoning") {
+      if (phase !== 0) canonical = false;
+    } else if ("text" in e) {
+      if (phase !== 0) canonical = false;
+      phase = 1;
+    } else phase = 2;
+  }
+  return canonical ? undefined : kept.map((e) => (typeof e === "object" ? { ...e } : e));
+}
+
+/**
  * The `assistant` message that records a model response — text (when any) then one
  * `tool_use` part per call — so the next turn's `tool_result`s have something to
  * answer. A response with neither text nor calls yields an empty text part rather than
  * an empty array (providers reject empty content).
+ *
+ * With a `layout` (ADR 0133 D5) the parts come back in the vendor's own order, text blocks at their
+ * positions. A layout that does not fit the response (text lengths not summing to `content`) is
+ * ignored; calls or reasoning parts it does not name keep their canonical place at the end.
  */
 export function assistantMessageOf(response: {
   content: string;
   toolCalls?: readonly { id: string; name: string; input: unknown; signature?: string }[];
   /** ADR 0133 - recorded reasoning parts (`LlmReasoningPart`), carried first. Raw `LlmReasoning` is not accepted: readable text never enters a transcript. */
   reasoning?: readonly object[];
+  /** ADR 0133 D5 - the vendor's block order, when not canonical. */
+  layout?: readonly LlmLayoutEntry[];
 }): { role: "assistant"; content: LlmContentPart[] } {
-  const parts: LlmContentPart[] = [];
+  const recorded: LlmReasoningPart[] = [];
   for (const r of response.reasoning ?? []) {
-    if ((r as { type?: string }).type === "reasoning") parts.push(r as LlmReasoningPart);
+    if ((r as { type?: string }).type === "reasoning") recorded.push(r as LlmReasoningPart);
   }
-  if (response.content !== "") parts.push({ type: "text", text: response.content });
-  for (const c of response.toolCalls ?? []) {
-    parts.push({
-      type: "tool_use",
-      id: c.id,
-      name: c.name,
-      input: c.input,
-      ...(c.signature !== undefined && { signature: c.signature }),
-    });
-  }
+  const parts: LlmContentPart[] = laidOut(response, recorded) ?? canonicalParts(response, recorded);
   if (!parts.some((p) => p.type === "text" || p.type === "tool_use")) {
     parts.push({ type: "text", text: "" });
   }
   return { role: "assistant", content: parts };
+}
+
+interface ToolCallLike {
+  id: string;
+  name: string;
+  input: unknown;
+  signature?: string;
+}
+
+function toolUse(c: ToolCallLike): LlmToolUsePart {
+  return {
+    type: "tool_use",
+    id: c.id,
+    name: c.name,
+    input: c.input,
+    ...(c.signature !== undefined && { signature: c.signature }),
+  };
+}
+
+function canonicalParts(
+  response: { content: string; toolCalls?: readonly ToolCallLike[] },
+  recorded: readonly LlmReasoningPart[]
+): LlmContentPart[] {
+  const parts: LlmContentPart[] = [...recorded];
+  if (response.content !== "") parts.push({ type: "text", text: response.content });
+  for (const c of response.toolCalls ?? []) parts.push(toolUse(c));
+  return parts;
+}
+
+function laidOut(
+  response: {
+    content: string;
+    toolCalls?: readonly ToolCallLike[];
+    layout?: readonly LlmLayoutEntry[];
+  },
+  recorded: readonly LlmReasoningPart[]
+): LlmContentPart[] | undefined {
+  const layout = response.layout;
+  if (layout === undefined || layout.length === 0) return undefined;
+  let total = 0;
+  for (const e of layout) if (typeof e === "object" && "text" in e) total += e.text;
+  if (total !== response.content.length) return undefined;
+  const calls = new Map((response.toolCalls ?? []).map((c) => [c.id, c]));
+  const used = new Set<string>();
+  const parts: LlmContentPart[] = [];
+  let nextReasoning = 0;
+  let offset = 0;
+  for (const e of layout) {
+    if (e === "reasoning") {
+      const r = recorded[nextReasoning++];
+      if (r !== undefined) parts.push(r);
+    } else if ("text" in e) {
+      parts.push({ type: "text", text: response.content.slice(offset, offset + e.text) });
+      offset += e.text;
+    } else {
+      const c = calls.get(e.call);
+      if (c !== undefined && !used.has(e.call)) {
+        used.add(e.call);
+        parts.push(toolUse(c));
+      }
+    }
+  }
+  // Anything the layout did not name keeps its canonical place at the end (a call the loop kept).
+  for (; nextReasoning < recorded.length; nextReasoning++) {
+    parts.push(recorded[nextReasoning] as LlmReasoningPart);
+  }
+  for (const c of response.toolCalls ?? []) if (!used.has(c.id)) parts.push(toolUse(c));
+  return parts;
 }
 
 /**
