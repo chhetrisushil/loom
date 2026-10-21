@@ -102,6 +102,23 @@ function isTerminalLlmHttp(err: object): boolean {
   return status === 401 || status === 403 || status === 429 || (status >= 500 && status <= 599);
 }
 
+/**
+ * A provider failure, matched like the rest of this file (by name, so a second copy of `@loom/llm`
+ * or an adapter's own class of that name counts): `LlmHttpError` with a numeric `status` (any
+ * status), `LlmStreamError` by its name or any constructor name on its prototype chain.
+ */
+function isProviderOne(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const o = err as { name?: unknown; status?: unknown };
+  if (o.name === "LlmHttpError") return typeof o.status === "number";
+  if (o.name === "LlmStreamError") return true;
+  for (let p = Object.getPrototypeOf(err); p !== null; p = Object.getPrototypeOf(p)) {
+    const n = (p as { constructor?: { name?: string } }).constructor?.name;
+    if (n === "LlmStreamError") return true;
+  }
+  return false;
+}
+
 function isTerminalOne(err: unknown): boolean {
   // ADR 0130 residuals D7 - checked BEFORE any generic ExecutionDeniedError handling: a sealed
   // refusal is an ExecutionDeniedError to its caller, but it is a node-level fact, never feedback.
@@ -155,4 +172,26 @@ export function isTerminalToolError(err: unknown): boolean {
     if (e === undefined) return false;
   }
   return false;
+}
+
+/**
+ * How the conversation's OWN model call classifies a failure (not a tool loop's; `isTerminalToolError`
+ * stays the tool-loop rule). Walks the same bounded `cause` chain.
+ *  - "terminal": some level is a terminal error that is NOT a provider failure (a park, a denial, a
+ *    cancel, a divergence ...): it reaches the runtime, and wins over a provider error anywhere in the chain;
+ *  - "provider": otherwise, some level is a provider failure (`LlmHttpError` of any status,
+ *    `LlmStreamError`): the turn fails with the fixed model-error reason;
+ *  - "other": anything else (also a failed turn, as before).
+ */
+export function classifyModelCallError(err: unknown): "terminal" | "provider" | "other" {
+  let provider = false;
+  let e: unknown = err;
+  for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth++) {
+    if (isProviderOne(e)) provider = true;
+    else if (isTerminalOne(e)) return "terminal";
+    if (typeof e !== "object" || e === null) break;
+    e = (e as { cause?: unknown }).cause;
+    if (e === undefined) break;
+  }
+  return provider ? "provider" : "other";
 }

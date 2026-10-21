@@ -9,7 +9,7 @@ import * as orchestration from "@loom/orchestration";
 import * as workerRuntime from "@loom/worker-runtime";
 import * as workflowRuntime from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
-import { isTerminalToolError } from "./toolFailure";
+import { classifyModelCallError, isTerminalToolError } from "./toolFailure";
 
 // ── R10 fix round 1 (P1-1) — which errors may be fed back to the model ──────────────────────────
 //
@@ -225,5 +225,46 @@ describe("isTerminalToolError — real instances", () => {
     const a = new Error("a");
     (a as { cause?: unknown }).cause = a;
     expect(isTerminalToolError(a)).toBe(false);
+  });
+});
+
+describe("classifyModelCallError — the conversation's own model call", () => {
+  const http = (status: number) => new llm.LlmHttpError("openai", status);
+  const named = (name: string, extra: object = {}) =>
+    Object.assign(new Error("x"), { name }, extra);
+  it("provider failures (any status, by name) are provider, whatever isTerminalToolError says", () => {
+    for (const status of [400, 404, 429, 503]) {
+      expect(classifyModelCallError(named("LlmHttpError", { status }))).toBe("provider");
+    }
+    expect(classifyModelCallError(new llm.LlmStreamError("anthropic", "overloaded_error"))).toBe(
+      "provider"
+    );
+    expect(classifyModelCallError(named("LlmStreamError"))).toBe("provider");
+    expect(classifyModelCallError(new Error("w", { cause: http(529) }))).toBe("provider");
+  });
+  it("a bare LlmHttpError with no numeric status, and ordinary errors, are other", () => {
+    expect(classifyModelCallError(named("LlmHttpError"))).toBe("other");
+    expect(classifyModelCallError(new Error("boom"))).toBe("other");
+    expect(classifyModelCallError("s")).toBe("other");
+  });
+  it("a non-provider terminal error wins at any depth within the bound", () => {
+    const denial = new capability.CapabilityInvokeDeniedError("c", "no");
+    expect(classifyModelCallError(denial)).toBe("terminal");
+    expect(classifyModelCallError(Object.assign(http(503), { cause: denial }))).toBe("terminal");
+    expect(
+      classifyModelCallError(new Error("w", { cause: Object.assign(http(503), { cause: denial }) }))
+    ).toBe("terminal");
+  });
+  it("stays in sync with isTerminalToolError: every terminal provider failure is provider, never terminal", () => {
+    for (const e of [
+      http(401),
+      http(403),
+      http(429),
+      http(500),
+      new llm.LlmStreamError("anthropic", "x"),
+    ]) {
+      expect(isTerminalToolError(e)).toBe(true);
+      expect(classifyModelCallError(e)).toBe("provider");
+    }
   });
 });
