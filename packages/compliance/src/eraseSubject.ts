@@ -6,7 +6,9 @@ import {
   chainIdOfFirst,
   erasureWindowView,
   inboxStreamsOfChainDeep,
+  isKeyUnavailable,
   isPayloadShredded,
+  recordsErasureIntent,
 } from "@loom/event-runtime";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
@@ -95,6 +97,15 @@ export interface EraseCoordinatorOptions {
    */
   snapshotStore?: {
     loadLatest(executionId: string): Promise<{ sequence: number; state: ExecutionState } | null>;
+    /**
+     * Optional (SnapshotStore SPI 1.1.0): the latest snapshot as stored at rest, readable after the
+     * subject's key is destroyed. Used ONLY in the destroy window (see `foldExecution`), so a
+     * sealing store (`EncryptingSnapshotStore`) does not make the erasure's retry throw
+     * `KeyUnavailableError`. Without it that retry cannot read a sealed checkpoint and rethrows.
+     */
+    loadLatestSealed?(
+      executionId: string
+    ): Promise<{ sequence: number; state: ExecutionState } | null>;
   };
 }
 
@@ -368,6 +379,42 @@ export class EraseCoordinator {
     }
   }
 
+  /**
+   * The latest checkpoint, or — in the destroy window — its at-rest form. A sealing snapshot store
+   * throws `KeyUnavailableError` for a sealed checkpoint whose key is destroyed while no
+   * `PAYLOAD_SHREDDED` exists yet (the crash between `keys.destroy` and the tombstones), and
+   * `PayloadShreddedError` once a shred is recorded. Both are handled exactly like the event read
+   * (`readErasedOk`) and `shredSubject` (`loadLatestSealed`): the proven shred reads sealed, the
+   * unavailable key only when the log holds this subject's erase intent AND `proof` shows the key
+   * store destroyed it. Anything else (a key merely missing, no intent) is rethrown: real key loss
+   * is never masked. `opaque` is set when the sealed state carries no plaintext status.
+   */
+  private async readSnapshotErasedOk(
+    executionId: string,
+    events: readonly EventEnvelope[],
+    proof: DestructionProof | undefined
+  ): Promise<{
+    snapshot: { sequence: number; state: ExecutionState } | null;
+    opaque: boolean;
+  }> {
+    const store = this.options.snapshotStore;
+    if (store === undefined) return { snapshot: null, opaque: false };
+    try {
+      return { snapshot: await store.loadLatest(executionId), opaque: false };
+    } catch (err) {
+      const sealedRead = store.loadLatestSealed?.bind(store);
+      let inWindow = isPayloadShredded(err);
+      if (!inWindow && isKeyUnavailable(err) && recordsErasureIntent(events, err.subjectId)) {
+        inWindow = proof !== undefined && (await proof(err.subjectId)) === true;
+      }
+      if (!inWindow || sealedRead === undefined) throw err;
+      const snapshot = await sealedRead(executionId);
+      const opaque =
+        typeof (snapshot?.state as { status?: unknown } | undefined)?.status !== "string";
+      return { snapshot, opaque };
+    }
+  }
+
   /** One execution's folded status and its first event, or `undefined` when its log is gone. */
   private async foldExecution(
     executionId: string,
@@ -376,11 +423,22 @@ export class EraseCoordinator {
     const events = await this.readErasedOk(executionId, proof);
     const first = events[0];
     if (first === undefined) return undefined;
-    const snapshot = (await this.options.snapshotStore?.loadLatest(executionId)) ?? null;
+    const read = await this.readSnapshotErasedOk(executionId, events, proof);
+    const snapshot = read.snapshot;
     // Fill a blank legacy identity; a NON-blank one naming another execution is a store or
     // tenant-scoping defect, refused as everywhere else a fold is seeded (ADR 0106).
-    if (snapshot !== null) {
+    if (snapshot !== null && !read.opaque) {
       assertSnapshotIdentity(snapshot.state, executionId, first.workflowId ?? "");
+    }
+    if (read.opaque && snapshot !== null) {
+      // Whole-state sealed checkpoint whose key is gone: its status is unreadable. Fold the log
+      // above it; if that does not settle a status, the durable erase intent does (it is only ever
+      // written to a quiescent log, and the key is proved destroyed), so it reads terminal.
+      const tail = foldEvents(
+        events.filter((e) => e.sequence > snapshot.sequence),
+        { executionId }
+      );
+      return { status: tail.status === "pending" ? "completed" : tail.status, first };
     }
     const state =
       snapshot !== null
