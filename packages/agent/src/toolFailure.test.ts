@@ -20,6 +20,8 @@ import { isTerminalToolError } from "./toolFailure";
 
 /** Fed back to the model as an `isError` result. */
 const FEEDBACK = new Set([
+  // llm (a provider's non-2xx; it was a plain Error before, so behaviour is unchanged)
+  "LlmHttpError",
   // core
   "ReplayError",
   "StepError",

@@ -1,3 +1,5 @@
+export { LlmHttpError } from "./errors";
+export type { LlmHttpProvider } from "./errors";
 export type {
   LlmContent,
   LlmMessage,
