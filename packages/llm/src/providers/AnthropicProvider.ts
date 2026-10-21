@@ -3,7 +3,16 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { LlmHttpError, LlmStreamError, drainBody } from "../errors";
+import {
+  DEFAULT_MAX_LINE_BYTES,
+  DEFAULT_MAX_RESPONSE_BYTES,
+  LlmHttpError,
+  LlmStreamError,
+  StreamLimiter,
+  drainBody,
+  readBoundedJson,
+  resolveLimit,
+} from "../errors";
 import {
   type LlmContentPart,
   type LlmLayoutEntry,
@@ -46,6 +55,13 @@ export interface AnthropicProviderConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  /**
+   * Cap on a complete response body and on the total bytes read from a stream (default 8 MiB).
+   * Over it the body is cancelled and `LlmResponseLimitError` (provider and reason only) is thrown.
+   */
+  maxResponseBytes?: number;
+  /** Cap on one line of a stream (default 1 MiB); over it, `LlmResponseLimitError`. */
+  maxLineBytes?: number;
   /** Override the declared modalities (e.g. a model without vision). */
   capabilities?: LlmCapabilities;
   /**
@@ -191,6 +207,8 @@ export class AnthropicProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly maxResponseBytes: number;
+  private readonly maxLineBytes: number;
   private readonly thinking: AnthropicProviderConfig["thinking"];
   private readonly extraHeaders: Readonly<Record<string, string>>;
   readonly capabilities: LlmCapabilities;
@@ -213,6 +231,12 @@ export class AnthropicProvider implements LlmProvider {
       (typeof process !== "undefined" ? (process.env.ANTHROPIC_API_KEY ?? "") : "");
     this.model = config.model ?? "claude-opus-4-8";
     this.baseUrl = config.baseUrl ?? ANTHROPIC_DEFAULT_URL;
+    this.maxResponseBytes = resolveLimit(
+      config.maxResponseBytes,
+      DEFAULT_MAX_RESPONSE_BYTES,
+      "maxResponseBytes"
+    );
+    this.maxLineBytes = resolveLimit(config.maxLineBytes, DEFAULT_MAX_LINE_BYTES, "maxLineBytes");
   }
 
   private buildBody(request: LlmRequest): Record<string, unknown> {
@@ -258,6 +282,8 @@ export class AnthropicProvider implements LlmProvider {
       },
       body: JSON.stringify(body),
       ...(request.signal !== undefined && { signal: request.signal }),
+      // Never follow a redirect: it would re-send the body and the API key to another origin.
+      redirect: "error",
     });
 
     if (!resp.ok) {
@@ -265,7 +291,11 @@ export class AnthropicProvider implements LlmProvider {
       throw new LlmHttpError("anthropic", resp.status);
     }
 
-    const data = (await resp.json()) as AnthropicMessageResponse;
+    const data = (await readBoundedJson(
+      resp,
+      "anthropic",
+      this.maxResponseBytes
+    )) as AnthropicMessageResponse;
 
     const content = data.content
       .filter((b): b is AnthropicTextBlock => b.type === "text")
@@ -313,6 +343,8 @@ export class AnthropicProvider implements LlmProvider {
       },
       body: JSON.stringify(body),
       ...(request.signal !== undefined && { signal: request.signal }),
+      // Never follow a redirect: it would re-send the body and the API key to another origin.
+      redirect: "error",
     });
 
     if (!resp.ok) {
@@ -323,6 +355,7 @@ export class AnthropicProvider implements LlmProvider {
     if (!resp.body) return;
 
     const reader = resp.body.getReader();
+    const limiter = new StreamLimiter("anthropic", this.maxResponseBytes, this.maxLineBytes);
     const decoder = new TextDecoder();
     let buffer = "";
 
@@ -369,10 +402,12 @@ export class AnthropicProvider implements LlmProvider {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        limiter.chunk(value);
         buffer += decoder.decode(value, { stream: true });
 
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
+        limiter.lines(lines, buffer);
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;

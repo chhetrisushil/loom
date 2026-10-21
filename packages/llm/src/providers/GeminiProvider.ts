@@ -3,7 +3,14 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { LlmHttpError, drainBody } from "../errors";
+import {
+  DEFAULT_MAX_LINE_BYTES,
+  DEFAULT_MAX_RESPONSE_BYTES,
+  LlmHttpError,
+  drainBody,
+  readBoundedJson,
+  resolveLimit,
+} from "../errors";
 import {
   type LlmLayoutEntry,
   type LlmMediaPart,
@@ -28,6 +35,13 @@ export interface GeminiProviderConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  /**
+   * Cap on a complete response body and on the total bytes read from a stream (default 8 MiB).
+   * Over it the body is cancelled and `LlmResponseLimitError` (provider and reason only) is thrown.
+   */
+  maxResponseBytes?: number;
+  /** Cap on one line of a stream (default 1 MiB); over it, `LlmResponseLimitError`. */
+  maxLineBytes?: number;
   /** Override the declared modalities. */
   capabilities?: LlmCapabilities;
   /**
@@ -172,6 +186,8 @@ export class GeminiProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly maxResponseBytes: number;
+  private readonly maxLineBytes: number;
   private readonly includeThoughts: boolean | undefined;
   private readonly thinkingBudget: number | undefined;
   private readonly extraHeaders: Readonly<Record<string, string>>;
@@ -203,6 +219,12 @@ export class GeminiProvider implements LlmProvider {
         : "");
     this.model = config.model ?? "gemini-2.0-flash";
     this.baseUrl = config.baseUrl ?? GEMINI_DEFAULT_URL;
+    this.maxResponseBytes = resolveLimit(
+      config.maxResponseBytes,
+      DEFAULT_MAX_RESPONSE_BYTES,
+      "maxResponseBytes"
+    );
+    this.maxLineBytes = resolveLimit(config.maxLineBytes, DEFAULT_MAX_LINE_BYTES, "maxLineBytes");
   }
 
   private buildBody(request: LlmRequest): Record<string, unknown> {
@@ -253,6 +275,8 @@ export class GeminiProvider implements LlmProvider {
       },
       body: JSON.stringify(body),
       ...(request.signal !== undefined && { signal: request.signal }),
+      // Never follow a redirect: it would re-send the body and the API key to another origin.
+      redirect: "error",
     });
 
     if (!resp.ok) {
@@ -260,7 +284,7 @@ export class GeminiProvider implements LlmProvider {
       throw new LlmHttpError("gemini", resp.status);
     }
 
-    const data = (await resp.json()) as GeminiResponse;
+    const data = (await readBoundedJson(resp, "gemini", this.maxResponseBytes)) as GeminiResponse;
     const candidate = data.candidates?.[0];
     const parts = candidate?.content?.parts ?? [];
     // A thought part is reasoning, never answer text: it must not leak into `content`.

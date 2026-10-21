@@ -73,6 +73,7 @@ const FEEDBACK = new Set([
 /** Reaches the runtime. */
 const TERMINAL = new Set([
   "LlmStreamError",
+  "LlmResponseLimitError",
   "SuspendError",
   "CapabilityDeniedError",
   "CapabilityInvokeDeniedError",
