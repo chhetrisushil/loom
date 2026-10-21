@@ -1,4 +1,4 @@
-export { LlmHttpError } from "./errors";
+export { LlmHttpError, LlmStreamError } from "./errors";
 export type { LlmHttpProvider } from "./errors";
 export type {
   LlmContent,

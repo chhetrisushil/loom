@@ -3,7 +3,7 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { LlmHttpError } from "../errors";
+import { LlmHttpError, drainBody } from "../errors";
 import {
   type LlmLayoutEntry,
   type LlmMediaPart,
@@ -38,8 +38,10 @@ export interface GeminiProviderConfig {
   /**
    * Cap on thinking tokens (`generationConfig.thinkingConfig.thinkingBudget`). Thinking tokens
    * count against `maxOutputTokens`, so without a cap a small output budget can be spent entirely
-   * on thinking (`MAX_TOKENS`, no text). A non-negative integer; `0` disables thinking on models
-   * that allow it. Unset, nothing is sent.
+   * on thinking (`MAX_TOKENS`, no text). An integer: `-1` lets the model decide (dynamic), `0`
+   * disables thinking on models that allow it. The accepted range is per model and enforced by the
+   * server (Gemini 2.5: Pro 128-32768, cannot be disabled; Flash 0-24576; Flash-Lite 512-24576, `0`
+   * disables). Unset, nothing is sent.
    */
   thinkingBudget?: number;
 }
@@ -184,9 +186,9 @@ export class GeminiProvider implements LlmProvider {
     this.includeThoughts = config.includeThoughts;
     if (
       config.thinkingBudget !== undefined &&
-      !(Number.isInteger(config.thinkingBudget) && config.thinkingBudget >= 0)
+      !(Number.isInteger(config.thinkingBudget) && config.thinkingBudget >= -1)
     )
-      throw new RangeError("thinkingBudget must be a non-negative integer");
+      throw new RangeError("thinkingBudget must be an integer >= -1 (-1 = dynamic)");
     this.thinkingBudget = config.thinkingBudget;
     const model = config.model ?? "gemini-2.0-flash";
     this.capabilities =
@@ -254,6 +256,7 @@ export class GeminiProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
+      await drainBody(resp);
       throw new LlmHttpError("gemini", resp.status);
     }
 

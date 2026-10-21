@@ -20,7 +20,8 @@ import { isTerminalToolError } from "./toolFailure";
 
 /** Fed back to the model as an `isError` result. */
 const FEEDBACK = new Set([
-  // llm (a provider's non-2xx; it was a plain Error before, so behaviour is unchanged)
+  // llm: a provider's non-2xx is classified by STATUS (see the LlmHttpError block below); a bare
+  // instance has no status, so it is feedback
   "LlmHttpError",
   // core
   "ReplayError",
@@ -71,6 +72,7 @@ const FEEDBACK = new Set([
 
 /** Reaches the runtime. */
 const TERMINAL = new Set([
+  "LlmStreamError",
   "SuspendError",
   "CapabilityDeniedError",
   "CapabilityInvokeDeniedError",
@@ -157,6 +159,33 @@ describe("every exported error class is classified (fitness)", () => {
       });
     }
   }
+});
+
+describe("isTerminalToolError — LlmHttpError is classified by status", () => {
+  const http = (status: number) => new llm.LlmHttpError("openai", status);
+
+  it.each([401, 403, 429, 500, 502, 503, 504, 529, 599])(
+    "%i is terminal (configuration, rate limit or transient: not the model's to fix)",
+    (status) => {
+      expect(isTerminalToolError(http(status))).toBe(true);
+    }
+  );
+
+  it.each([400, 404, 408, 409, 413, 422])(
+    "%i is feedback (the model can adapt the request)",
+    (status) => {
+      expect(isTerminalToolError(http(status))).toBe(false);
+    }
+  );
+
+  it("is found through a cause chain", () => {
+    expect(isTerminalToolError(new Error("tool failed", { cause: http(429) }))).toBe(true);
+    expect(isTerminalToolError(new Error("tool failed", { cause: http(400) }))).toBe(false);
+  });
+
+  it("a mid-stream provider error is terminal", () => {
+    expect(isTerminalToolError(new llm.LlmStreamError("anthropic", "overloaded_error"))).toBe(true);
+  });
 });
 
 describe("isTerminalToolError — real instances", () => {

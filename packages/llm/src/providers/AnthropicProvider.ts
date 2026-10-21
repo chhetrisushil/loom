@@ -3,7 +3,7 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { LlmHttpError } from "../errors";
+import { LlmHttpError, LlmStreamError, drainBody } from "../errors";
 import {
   type LlmContentPart,
   type LlmLayoutEntry,
@@ -261,6 +261,7 @@ export class AnthropicProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
+      await drainBody(resp);
       throw new LlmHttpError("anthropic", resp.status);
     }
 
@@ -315,6 +316,7 @@ export class AnthropicProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
+      await drainBody(resp);
       throw new LlmHttpError("anthropic", resp.status);
     }
 
@@ -363,128 +365,141 @@ export class AnthropicProvider implements LlmProvider {
       };
     };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const json = line.slice(6).trim();
-        if (json === "[DONE]") {
-          yield terminal();
-          return;
-        }
-        try {
-          const event = JSON.parse(json) as Record<string, unknown>;
-          if (event.type === "content_block_start") {
-            const block = event.content_block as Record<string, unknown> | undefined;
-            if (block?.type === "text") {
-              const entry = { text: 0 };
-              textEntries.set(Number(event.index), entry);
-              entries.push(entry);
-            } else if (block?.type === "thinking" || block?.type === "redacted_thinking") {
-              entries.push("reasoning");
-              openThinking.set(Number(event.index), {
-                type: block.type,
-                thinking: typeof block.thinking === "string" ? block.thinking : "",
-                ...(typeof block.signature === "string" && { signature: block.signature }),
-                ...(typeof block.data === "string" && { data: block.data }),
-              });
-            } else if (block?.type === "tool_use") {
-              entries.push({ call: String(block.id ?? "") });
-              openBlocks.set(Number(event.index), {
-                id: String(block.id ?? ""),
-                name: String(block.name ?? ""),
-                argsJson: "",
-              });
-              yield {
-                delta: "",
-                done: false,
-                toolDelta: {
-                  id: String(block.id ?? ""),
-                  name: String(block.name ?? ""),
-                  inputDelta: "",
-                },
-              };
-            }
-          } else if (event.type === "content_block_delta") {
-            const delta = event.delta as Record<string, unknown> | undefined;
-            if (delta?.type === "text_delta") {
-              const text = String(delta.text ?? "");
-              let entry = textEntries.get(Number(event.index));
-              if (entry === undefined) {
-                entry = { text: 0 };
-                textEntries.set(Number(event.index), entry);
-                entries.push(entry);
-              }
-              entry.text += text.length;
-              yield { delta: text, done: false };
-            } else if (delta?.type === "thinking_delta") {
-              const open = openThinking.get(Number(event.index));
-              const fragment = String(delta.thinking ?? "");
-              if (open !== undefined) open.thinking += fragment;
-              if (fragment !== "") yield { delta: "", done: false, reasoningDelta: fragment };
-            } else if (delta?.type === "signature_delta") {
-              const open = openThinking.get(Number(event.index));
-              if (open !== undefined)
-                open.signature = (open.signature ?? "") + String(delta.signature ?? "");
-            } else if (delta?.type === "input_json_delta") {
-              const open = openBlocks.get(Number(event.index));
-              if (open !== undefined) {
-                const fragment = String(delta.partial_json ?? "");
-                open.argsJson += fragment;
-                yield {
-                  delta: "",
-                  done: false,
-                  toolDelta: { id: open.id, inputDelta: fragment },
-                };
-              }
-            }
-          } else if (event.type === "content_block_stop") {
-            const thinking = openThinking.get(Number(event.index));
-            if (thinking !== undefined) {
-              openThinking.delete(Number(event.index));
-              const r = reasoningOf(thinking);
-              if (r !== undefined) reasoning.push(r);
-            }
-            const open = openBlocks.get(Number(event.index));
-            if (open !== undefined) {
-              openBlocks.delete(Number(event.index));
-              // An empty argument object streams as no deltas at all, which is `{}`,
-              // not a parse error.
-              let input: unknown = {};
-              try {
-                input = open.argsJson === "" ? {} : JSON.parse(open.argsJson);
-              } catch {
-                // Malformed arguments are reported as-is rather than dropped: the
-                // agent loop must be able to see WHY a call could not be made.
-                input = { __unparsedArguments: open.argsJson };
-              }
-              toolCalls.push({ id: open.id, name: open.name, input });
-            }
-          } else if (event.type === "message_delta") {
-            // Carries the stop reason and the OUTPUT token count (input tokens came
-            // with message_start).
-            const delta = event.delta as Record<string, unknown> | undefined;
-            stopReason = normalizeStopReason(delta?.stop_reason);
-            const usage = event.usage as Record<string, unknown> | undefined;
-            if (usage?.output_tokens !== undefined) outputTokens = Number(usage.output_tokens);
-          } else if (event.type === "message_start") {
-            const message = event.message as Record<string, unknown> | undefined;
-            const usage = message?.usage as Record<string, unknown> | undefined;
-            if (usage?.input_tokens !== undefined) inputTokens = Number(usage.input_tokens);
-            if (usage?.output_tokens !== undefined) outputTokens = Number(usage.output_tokens);
-          } else if (event.type === "message_stop") {
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6).trim();
+          if (json === "[DONE]") {
             yield terminal();
             return;
           }
-        } catch {
-          // skip malformed SSE lines
+          try {
+            const event = JSON.parse(json) as Record<string, unknown>;
+            if (event.type === "content_block_start") {
+              const block = event.content_block as Record<string, unknown> | undefined;
+              if (block?.type === "text") {
+                const entry = { text: 0 };
+                textEntries.set(Number(event.index), entry);
+                entries.push(entry);
+              } else if (block?.type === "thinking" || block?.type === "redacted_thinking") {
+                entries.push("reasoning");
+                openThinking.set(Number(event.index), {
+                  type: block.type,
+                  thinking: typeof block.thinking === "string" ? block.thinking : "",
+                  ...(typeof block.signature === "string" && { signature: block.signature }),
+                  ...(typeof block.data === "string" && { data: block.data }),
+                });
+              } else if (block?.type === "tool_use") {
+                entries.push({ call: String(block.id ?? "") });
+                openBlocks.set(Number(event.index), {
+                  id: String(block.id ?? ""),
+                  name: String(block.name ?? ""),
+                  argsJson: "",
+                });
+                yield {
+                  delta: "",
+                  done: false,
+                  toolDelta: {
+                    id: String(block.id ?? ""),
+                    name: String(block.name ?? ""),
+                    inputDelta: "",
+                  },
+                };
+              }
+            } else if (event.type === "content_block_delta") {
+              const delta = event.delta as Record<string, unknown> | undefined;
+              if (delta?.type === "text_delta") {
+                const text = String(delta.text ?? "");
+                let entry = textEntries.get(Number(event.index));
+                if (entry === undefined) {
+                  entry = { text: 0 };
+                  textEntries.set(Number(event.index), entry);
+                  entries.push(entry);
+                }
+                entry.text += text.length;
+                yield { delta: text, done: false };
+              } else if (delta?.type === "thinking_delta") {
+                const open = openThinking.get(Number(event.index));
+                const fragment = String(delta.thinking ?? "");
+                if (open !== undefined) open.thinking += fragment;
+                if (fragment !== "") yield { delta: "", done: false, reasoningDelta: fragment };
+              } else if (delta?.type === "signature_delta") {
+                const open = openThinking.get(Number(event.index));
+                if (open !== undefined)
+                  open.signature = (open.signature ?? "") + String(delta.signature ?? "");
+              } else if (delta?.type === "input_json_delta") {
+                const open = openBlocks.get(Number(event.index));
+                if (open !== undefined) {
+                  const fragment = String(delta.partial_json ?? "");
+                  open.argsJson += fragment;
+                  yield {
+                    delta: "",
+                    done: false,
+                    toolDelta: { id: open.id, inputDelta: fragment },
+                  };
+                }
+              }
+            } else if (event.type === "content_block_stop") {
+              const thinking = openThinking.get(Number(event.index));
+              if (thinking !== undefined) {
+                openThinking.delete(Number(event.index));
+                const r = reasoningOf(thinking);
+                if (r !== undefined) reasoning.push(r);
+              }
+              const open = openBlocks.get(Number(event.index));
+              if (open !== undefined) {
+                openBlocks.delete(Number(event.index));
+                // An empty argument object streams as no deltas at all, which is `{}`,
+                // not a parse error.
+                let input: unknown = {};
+                try {
+                  input = open.argsJson === "" ? {} : JSON.parse(open.argsJson);
+                } catch {
+                  // Malformed arguments are reported as-is rather than dropped: the
+                  // agent loop must be able to see WHY a call could not be made.
+                  input = { __unparsedArguments: open.argsJson };
+                }
+                toolCalls.push({ id: open.id, name: open.name, input });
+              }
+            } else if (event.type === "message_delta") {
+              // Carries the stop reason and the OUTPUT token count (input tokens came
+              // with message_start).
+              const delta = event.delta as Record<string, unknown> | undefined;
+              stopReason = normalizeStopReason(delta?.stop_reason);
+              const usage = event.usage as Record<string, unknown> | undefined;
+              if (usage?.output_tokens !== undefined) outputTokens = Number(usage.output_tokens);
+            } else if (event.type === "message_start") {
+              const message = event.message as Record<string, unknown> | undefined;
+              const usage = message?.usage as Record<string, unknown> | undefined;
+              if (usage?.input_tokens !== undefined) inputTokens = Number(usage.input_tokens);
+              if (usage?.output_tokens !== undefined) outputTokens = Number(usage.output_tokens);
+            } else if (event.type === "message_stop") {
+              yield terminal();
+              return;
+            } else if (event.type === "error") {
+              // The message text can echo the prompt: only the error type is kept.
+              const err = event.error as Record<string, unknown> | undefined;
+              throw new LlmStreamError("anthropic", err?.type);
+            }
+          } catch (e) {
+            if (e instanceof LlmStreamError) throw e;
+            // skip malformed SSE lines
+          }
         }
+      }
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        // already closed or released: nothing to free
       }
     }
   }

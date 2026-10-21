@@ -78,12 +78,29 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "DuplicateSequenceError",
   "EgressDeniedError",
   "SpawnLimitExceededError",
+  // a provider reported an error inside a 200 stream (overloaded, server error): transient
+  // infrastructure, left to the step retry policy, not the model
+  "LlmStreamError",
 ]);
 
 const MAX_CAUSE_DEPTH = 5;
 
 /** The brand `@loom/workflow-runtime` puts on both sealed refusals (`isSealedUnreadable`). */
 const SEALED_UNREADABLE = Symbol.for("loom.sealedUnreadable");
+
+/**
+ * `LlmHttpError` (`@loom/llm`) is classified by STATUS, matched by name and a numeric `status` so
+ * this file needs no import. TERMINAL: 401/403 (configuration), 429 (rate limit: the same stop as
+ * `RateLimitExceededError`) and 5xx/529 (transient: the step retry policy's to handle, not the
+ * model's). FEEDBACK: every other status (400/404/408/409/413/422 ...): a request the model can
+ * adapt. A bare instance with no status is feedback.
+ */
+function isTerminalLlmHttp(err: object): boolean {
+  if ((err as { name?: unknown }).name !== "LlmHttpError") return false;
+  const status = (err as { status?: unknown }).status;
+  if (typeof status !== "number") return false;
+  return status === 401 || status === 403 || status === 429 || (status >= 500 && status <= 599);
+}
 
 function isTerminalOne(err: unknown): boolean {
   // ADR 0130 residuals D7 - checked BEFORE any generic ExecutionDeniedError handling: a sealed
@@ -103,6 +120,7 @@ function isTerminalOne(err: unknown): boolean {
     return true;
   }
   if (typeof err !== "object" || err === null) return false;
+  if (isTerminalLlmHttp(err)) return true;
   // A class that declares itself non-retryable is a decision, not a fault (the middleware's own rule).
   if ((err as { retryable?: unknown }).retryable === false) return true;
   if (TERMINAL_ERROR_NAMES.has((err as { name?: string }).name ?? "")) return true;
