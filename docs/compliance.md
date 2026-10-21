@@ -256,6 +256,9 @@ nothing is appended, the execution is never failed, and a node that CAN open it 
   event arrives. Call `eraseSubject` again (an operator or app retry; after a restart too, since the
   intent is in the log); that retry runs the liveness gate, `finishedChains`, the shred, the
   inbox-stream purge and the park bookkeeping.
+  Known residual: a log compacted through its tip whose checkpoint is sealed, with no tail evidence,
+  is read as terminal on the erase intent alone (`shredSubject`'s own rule); a parked owner in exactly
+  that shape would be shredded and left suspended. Its inbox streams are still kept.
   **Intent is not destruction (round 5).** A dangling intent (a crash before `keys.destroy`, or
   intent N of M failed) leaves the key ALIVE on the node that wrote it, and a retry on a wrong-key
   node would see the intent. So the retry also needs the KEY STORE's proof: the optional
