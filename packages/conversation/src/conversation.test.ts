@@ -1,4 +1,9 @@
-import { LlmHttpError, LlmStreamError } from "@loom/llm";
+import {
+  LlmHttpError,
+  LlmResponseInvalidError,
+  LlmResponseLimitError,
+  LlmStreamError,
+} from "@loom/llm";
 import { InboxClosedError } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import {
@@ -161,6 +166,9 @@ describe("conversation: turns", () => {
     ["LlmHttpError 429", () => new LlmHttpError("anthropic", 429)],
     ["LlmHttpError 401", () => new LlmHttpError("anthropic", 401)],
     ["LlmStreamError", () => new LlmStreamError("anthropic", "overloaded_error")],
+    ["LlmHttpError 307 (a redirect, never followed)", () => new LlmHttpError("anthropic", 307)],
+    ["LlmResponseLimitError", () => new LlmResponseLimitError("anthropic", "body")],
+    ["LlmResponseInvalidError", () => new LlmResponseInvalidError("anthropic")],
     // matched by name, like the agent's classification: another copy of the package, an adapter's class
     [
       "a plain Error named LlmStreamError",

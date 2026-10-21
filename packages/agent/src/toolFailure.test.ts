@@ -74,6 +74,7 @@ const FEEDBACK = new Set([
 const TERMINAL = new Set([
   "LlmStreamError",
   "LlmResponseLimitError",
+  "LlmResponseInvalidError",
   "SuspendError",
   "CapabilityDeniedError",
   "CapabilityInvokeDeniedError",
@@ -178,6 +179,22 @@ describe("isTerminalToolError — LlmHttpError is classified by status", () => {
       expect(isTerminalToolError(http(status))).toBe(false);
     }
   );
+
+  it("a 3xx (a redirect, never followed) is terminal and declares itself non-retryable", () => {
+    for (const st of [301, 307, 308]) {
+      expect(isTerminalToolError(http(st))).toBe(true);
+      expect((http(st) as { retryable?: unknown }).retryable).toBe(false);
+    }
+    expect((http(503) as { retryable?: unknown }).retryable).toBeUndefined();
+  });
+
+  it("a response limit or invalid body is a provider failure for the conversation's model call", () => {
+    expect(classifyModelCallError(new llm.LlmResponseLimitError("openai", "body"))).toBe(
+      "provider"
+    );
+    expect(classifyModelCallError(new llm.LlmResponseInvalidError("openai"))).toBe("provider");
+    expect(classifyModelCallError(http(307))).toBe("provider");
+  });
 
   it("is found through a cause chain", () => {
     expect(isTerminalToolError(new Error("tool failed", { cause: http(429) }))).toBe(true);
