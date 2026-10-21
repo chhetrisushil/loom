@@ -161,6 +161,36 @@ describe("conversation: turns", () => {
     ["LlmHttpError 429", () => new LlmHttpError("anthropic", 429)],
     ["LlmHttpError 401", () => new LlmHttpError("anthropic", 401)],
     ["LlmStreamError", () => new LlmStreamError("anthropic", "overloaded_error")],
+    // matched by name, like the agent's classification: another copy of the package, an adapter's class
+    [
+      "a plain Error named LlmStreamError",
+      () => Object.assign(new Error("x"), { name: "LlmStreamError" }),
+    ],
+    [
+      "a foreign class named LlmHttpError with status 503",
+      () => {
+        class LlmHttpError extends Error {
+          readonly status = 503;
+          constructor() {
+            super("x");
+            this.name = "LlmHttpError";
+          }
+        }
+        return new LlmHttpError();
+      },
+    ],
+    [
+      "a subclass of a foreign LlmStreamError",
+      () => {
+        class LlmStreamError extends Error {}
+        class Mine extends LlmStreamError {}
+        return new Mine("x");
+      },
+    ],
+    [
+      "a provider error wrapped in a cause",
+      () => new Error("wrapped", { cause: new LlmHttpError("anthropic", 529) }),
+    ],
   ];
   for (const shared of [false, true]) {
     for (const [label, make] of providerFailures) {
@@ -201,6 +231,21 @@ describe("conversation: turns", () => {
     const b = boot({
       reply: () => {
         throw Object.assign(new Error("policy stop"), { retryable: false });
+      },
+    });
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "one");
+    await until(
+      async () => (await b.runtime.systemStateReader().loadState(id))?.status === "failed"
+    );
+  });
+
+  it("a terminal non-provider error deeper in the cause chain still wins over a provider error", async () => {
+    const b = boot({
+      reply: () => {
+        throw Object.assign(new LlmHttpError("anthropic", 503), {
+          cause: Object.assign(new Error("policy stop"), { retryable: false }),
+        });
       },
     });
     const { conversationId: id } = await b.conv.start();

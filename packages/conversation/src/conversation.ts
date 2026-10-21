@@ -3,8 +3,8 @@ import {
   type AgentHistoryMessage,
   type InterruptedAgentRun,
   agentLoop$,
+  classifyModelCallError,
   continueEvery,
-  isTerminalToolError,
 } from "@loom/agent";
 import { tainted, unwrapTainted } from "@loom/classify";
 import { TypedFailure, flow$, fnv1a64 } from "@loom/core";
@@ -27,7 +27,6 @@ import {
 } from "./budget";
 import { withTurnScope } from "./hub";
 import { conversationIdOf } from "./ids";
-import { isProviderError } from "./providerError";
 import {
   type TurnInput,
   type TurnResult,
@@ -795,7 +794,7 @@ export function conversationRunner(
         if (e instanceof TypedFailure && e.channel === AGENT_INTERRUPTED) {
           status = "interrupted";
           reply = clip((e.payload as InterruptedAgentRun).content ?? "", maxReplyChars);
-        } else if (!isProviderError(e) && isTerminalToolError(e)) {
+        } else if (classifyModelCallError(e) === "terminal") {
           throw e; // a park, an authority/safety stop, a cancel, a replay divergence: not a failed turn
         } else {
           // The user sees a FIXED reason and a correlation id; the real error goes to the host's log.
