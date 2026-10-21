@@ -165,6 +165,33 @@ export class ShredIncompleteError extends Error {
 }
 
 /**
+ * Append one erasure lifecycle event (`ERASURE_PENDING`, `PAYLOAD_SHREDDED`) out of band.
+ *
+ * An execution that ever held a fence (a resumed conversation, an inbox wake, a `cancel` Loom
+ * fenced, a worker, recovery) refuses an UNFENCED append with `StaleFenceError`, so erasure could
+ * never complete for it. Mirrors the repair `LogLifecycle.rehomeExecution` makes: try the plain
+ * append first, and only on `StaleFenceError` acquire a fence and retry under it. An execution
+ * that was never fenced is therefore not given one (a fence would refuse every later unfenced
+ * write to its log).
+ *
+ * Safe to supersede the current holder because shredding happens only once every execution of the
+ * subject is TERMINAL (`EraseCoordinator`, eraseSubject.ts): a terminal log has no legitimate
+ * writer left, and the holder of its old token is a zombie that must not write. A caller that
+ * shreds a LIVE execution directly (`force`, or a parked owner in place) supersedes whoever holds
+ * its fence, as any `acquireFence` does.
+ */
+async function appendLifecycle(store: EventStore, event: EventEnvelope): Promise<void> {
+  try {
+    await store.append(event);
+  } catch (err) {
+    const stale = (err as { name?: unknown } | null)?.name === "StaleFenceError";
+    if (!stale || store.acquireFence === undefined) throw err;
+    const fence = await store.acquireFence(event.executionId);
+    await store.append({ ...event, metadata: { ...event.metadata, fence } });
+  }
+}
+
+/**
  * K10.2 — crypto-shred a subject: destroy its key (irreversible erasure of every
  * sensitive field encrypted under it, in events AND snapshots), then append a
  * durable `PAYLOAD_SHREDDED` tombstone to each affected execution's log.
@@ -283,7 +310,7 @@ export async function shredSubject(
   //     present (the retry destroys it); a crash after the destroy leaves intent + no tombstone
   //     (the retry window, which the intent proves). An intent that cannot be written aborts
   //     BEFORE anything irreversible. `ERASURE_PENDING` is an existing, ignorable, pure-audit kind.
-  for (const intent of intents) await rawEventStore.append(intent);
+  for (const intent of intents) await appendLifecycle(rawEventStore, intent);
 
   // 2. Destroy the key — the erasure is effective even if a tombstone append below fails
   //    (the data is already unrecoverable). Destroying an absent key is a no-op.
@@ -295,7 +322,7 @@ export async function shredSubject(
   const failures: Array<{ executionId: string; error: unknown }> = [];
   for (const tombstone of pending) {
     try {
-      await rawEventStore.append(tombstone);
+      await appendLifecycle(rawEventStore, tombstone);
     } catch (error) {
       failures.push({ executionId: tombstone.executionId, error });
     }
