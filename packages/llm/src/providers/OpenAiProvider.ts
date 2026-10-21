@@ -3,6 +3,7 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
+import { LlmHttpError } from "../errors";
 import { type LlmMediaPart, type LlmReasoning, type LlmResultPart, textOf } from "../parts";
 import { inlineData } from "../resolveContent";
 import type {
@@ -286,7 +287,7 @@ export class OpenAiProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
-      throw new Error(`OpenAI API error ${resp.status}: ${await resp.text()}`);
+      throw new LlmHttpError("openai", resp.status);
     }
 
     const data = (await resp.json()) as OpenAiChatResponse;
@@ -339,7 +340,7 @@ export class OpenAiProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
-      throw new Error(`OpenAI API error ${resp.status}: ${await resp.text()}`);
+      throw new LlmHttpError("openai", resp.status);
     }
 
     if (!resp.body) return;

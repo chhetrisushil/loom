@@ -3,6 +3,7 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
+import { LlmHttpError } from "../errors";
 import {
   type LlmContentPart,
   type LlmLayoutEntry,
@@ -260,7 +261,7 @@ export class AnthropicProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
-      throw new Error(`Anthropic API error ${resp.status}: ${await resp.text()}`);
+      throw new LlmHttpError("anthropic", resp.status);
     }
 
     const data = (await resp.json()) as AnthropicMessageResponse;
@@ -314,7 +315,7 @@ export class AnthropicProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
-      throw new Error(`Anthropic API error ${resp.status}: ${await resp.text()}`);
+      throw new LlmHttpError("anthropic", resp.status);
     }
 
     if (!resp.body) return;

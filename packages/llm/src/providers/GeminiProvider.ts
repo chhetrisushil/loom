@@ -3,6 +3,7 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
+import { LlmHttpError } from "../errors";
 import {
   type LlmLayoutEntry,
   type LlmMediaPart,
@@ -238,7 +239,7 @@ export class GeminiProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
-      throw new Error(`Gemini API error ${resp.status}: ${await resp.text()}`);
+      throw new LlmHttpError("gemini", resp.status);
     }
 
     const data = (await resp.json()) as GeminiResponse;
