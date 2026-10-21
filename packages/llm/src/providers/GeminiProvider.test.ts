@@ -49,4 +49,35 @@ describe("GeminiProvider", () => {
     const res = await new GeminiProvider({ apiKey: "k" }).complete({ messages: [], maxTokens: 1 });
     expect(res.stopReason).toBe("max_tokens");
   });
+
+  it("sends thinkingBudget, merged with includeThoughts, and nothing when unset", async () => {
+    const fetchFn = stubFetch({
+      candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+    });
+    await new GeminiProvider({ apiKey: "k", thinkingBudget: 0, includeThoughts: true }).complete({
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const body = JSON.parse((fetchFn.mock.calls[0]![1] as { body: string }).body);
+    expect(body.generationConfig.thinkingConfig).toEqual({
+      includeThoughts: true,
+      thinkingBudget: 0,
+    });
+
+    const plain = stubFetch({
+      candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }],
+    });
+    await new GeminiProvider({ apiKey: "k" }).complete({
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(JSON.parse((plain.mock.calls[0]![1] as { body: string }).body)).not.toHaveProperty(
+      "generationConfig"
+    );
+  });
+
+  it("refuses a bad thinkingBudget at construction", () => {
+    for (const bad of [-1, 1.5, Number.NaN])
+      expect(() => new GeminiProvider({ apiKey: "k", thinkingBudget: bad })).toThrow(
+        /^thinkingBudget must be a non-negative integer$/
+      );
+  });
 });
