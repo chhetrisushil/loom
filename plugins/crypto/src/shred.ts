@@ -3,6 +3,7 @@ import {
   type EventStore,
   KeyUnavailableError,
   headOf,
+  isAnsweringKind,
   isKeyUnavailable,
   isPayloadShredded,
   isReservedStream,
@@ -11,6 +12,7 @@ import {
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { hasEnvelope } from "./crypto";
 import type { KeyStore } from "./keystore";
+import { openWholeState } from "./snapshotSeal";
 
 export interface ShredOptions {
   /** The erasure subject whose key is destroyed. Default: the executionId. */
@@ -69,6 +71,8 @@ type Resolution =
       sealed: boolean;
       /** The log shows no runner: a terminal event, or a parked (suspended) tip. */
       quiescent: boolean;
+      /** The head the classification was made at: the compare-and-set is tied to it. */
+      classifiedHead: number;
     };
 
 const TERMINAL_EVENTS = new Set([
@@ -78,19 +82,51 @@ const TERMINAL_EVENTS = new Set([
   "EXECUTION_CONTINUED",
 ]);
 const TERMINAL_STATUS = new Set(["completed", "failed", "cancelled", "continued"]);
-const OWN_EVENTS = new Set(["ERASURE_PENDING", "PAYLOAD_SHREDDED"]);
 
 /**
- * Does the log show NO runner? True when a terminal event is in the tail (terminal is absorbing),
- * the tail's tip (ignoring this shredder's own events) is a park, or, with an empty tail, the
- * snapshot state is terminal or suspended. False means a live execution may hold the fence.
+ * The execution status a snapshot records, or `undefined` when it cannot be read. With `sealState`
+ * the whole state is a ciphertext envelope, so it is opened with the subject's key (still present
+ * on the first call; gone on a retry, where the caller falls back to the erase intent in the log).
  */
-function isQuiescent(tail: readonly EventEnvelope[], snapshotState: unknown): boolean {
-  if (tail.some((e) => TERMINAL_EVENTS.has(e.eventType))) return true;
-  const tip = [...tail].reverse().find((e) => !OWN_EVENTS.has(e.eventType));
-  if (tip !== undefined) return tip.eventType === "EXECUTION_SUSPENDED";
-  const status = (snapshotState as { status?: unknown } | null | undefined)?.status;
-  return typeof status === "string" && (TERMINAL_STATUS.has(status) || status === "suspended");
+async function snapshotStatus(
+  latest: { sequence: number; state: unknown } | null,
+  executionId: string,
+  keys: KeyStore,
+  subjectId: string
+): Promise<string | undefined> {
+  if (latest === null) return undefined;
+  const plain = (latest.state as { status?: unknown } | null | undefined)?.status;
+  if (typeof plain === "string") return plain;
+  const key = await keys.get(subjectId);
+  if (key === null) return undefined;
+  const opened = openWholeState(
+    { executionId, sequence: latest.sequence, state: latest.state },
+    key
+  );
+  const status = (opened as { status?: unknown } | null | undefined)?.status;
+  return typeof status === "string" ? status : undefined;
+}
+
+/**
+ * Does the log show NO runner? Judged from data that sealing never hides: the LAST answering event
+ * of the tail (`isAnsweringKind`, ignoring audit rows and this shredder's own events). A terminal
+ * kind or a park is quiescent; a resume (a terminal followed by a re-open included) or a start with
+ * no park is live. With no answering event above the snapshot, the snapshot's status decides
+ * (opened with the key when sealed); if that is unreadable (a retry after the key was destroyed),
+ * the erase intent already in the log is the proof, because it was only written to a quiescent log.
+ * Anything else is "live": the caller then refuses rather than supersede a possible holder.
+ */
+function classify(
+  tail: readonly EventEnvelope[],
+  snapshot: string | undefined,
+  hasIntent: boolean
+): boolean {
+  const last = [...tail].reverse().find((e) => isAnsweringKind(e));
+  if (last !== undefined) {
+    return TERMINAL_EVENTS.has(last.eventType) || last.eventType === "EXECUTION_SUSPENDED";
+  }
+  if (snapshot !== undefined) return TERMINAL_STATUS.has(snapshot) || snapshot === "suspended";
+  return hasIntent;
 }
 
 /** Whether a folded state records this subject's erase intent (an `ERASURE_PENDING` folded by compaction). */
@@ -120,6 +156,7 @@ export function recordsShred(state: unknown, subjectId: string): boolean {
  * The sequence is the folded tip + 1.
  */
 async function resolve(
+  keys: KeyStore,
   store: EventStore,
   executionId: string,
   subjectId: string,
@@ -158,7 +195,11 @@ async function resolve(
     (latest !== null && recordsIntentInState(latest.state, subjectId));
   const sealed =
     tail.some((e) => hasEnvelope(e.payload)) || (latest !== null && hasEnvelope(latest.state));
-  const quiescent = isQuiescent(tail, latest?.state);
+  const quiescent = classify(
+    tail,
+    await snapshotStatus(latest, executionId, keys, subjectId),
+    hasIntent
+  );
   let next: number;
   if (options.tombstoneSequenceOf !== undefined) {
     next = await options.tombstoneSequenceOf(executionId);
@@ -169,10 +210,22 @@ async function resolve(
         : ((await headOf(store, executionId)) ?? -1);
     next = Math.max(head, latest?.sequence ?? -1) + 1;
   }
+  const classifiedHead =
+    tail.length > 0
+      ? tail[tail.length - 1]!.sequence
+      : Math.max((await headOf(store, executionId)) ?? -1, latest?.sequence ?? -1);
   // No intent yet: it takes `next`, the tombstone follows it.
   return hasIntent
-    ? { done: false, sequence: next, hasIntent, sealed, quiescent }
-    : { done: false, sequence: next + 1, intentSequence: next, hasIntent, sealed, quiescent };
+    ? { done: false, sequence: next, hasIntent, sealed, quiescent, classifiedHead }
+    : {
+        done: false,
+        sequence: next + 1,
+        intentSequence: next,
+        hasIntent,
+        sealed,
+        quiescent,
+        classifiedHead,
+      };
 }
 
 /** Thrown when some tombstones could not be written. Re-running `shredSubject` completes them. */
@@ -193,6 +246,8 @@ export class ShredIncompleteError extends Error {
 interface LifecycleState {
   /** The log shows no runner (terminal or parked), so taking its fence supersedes nobody live. */
   quiescent: boolean;
+  /** The head the log was classified at, advanced by this call's own appends. */
+  head: number;
   /** The token acquired for this execution by an earlier append of this call; reused by the next. */
   fence?: number;
 }
@@ -232,22 +287,28 @@ async function appendLifecycle(
   });
   try {
     await store.append(state.fence !== undefined ? withFence(state.fence) : event);
+    state.head = event.sequence;
     return;
   } catch (err) {
     if (!isStaleFence(err) || store.acquireFence === undefined || !state.quiescent) throw err;
-    // Escalate: observe, then take the token by compare-and-set on that very observation.
+    // Escalate: observe, then take the token by compare-and-set on that very observation, which
+    // must still be the head the log was classified at (plus this call's own appends): a resume
+    // between the classification and now moves the head and the shred refuses.
     let fence: number;
     if (store.appendIfUnchanged !== undefined && store.acquireFenceIf !== undefined) {
       const seen = await store.appendIfUnchanged(id, null);
-      if (seen.appended || seen.head === null) throw err;
-      const got = await store.acquireFenceIf(id, { fence: seen.fence, parkSeq: seen.head });
+      if (seen.appended || seen.head !== state.head) throw err;
+      const got = await store.acquireFenceIf(id, { fence: seen.fence, parkSeq: state.head });
       if ("stale" in got) throw err; // the holder moved: not ours to supersede
       fence = got.fence;
     } else {
+      // A store that cannot compare-and-set: the best available check, immediately before.
+      if (((await headOf(store, id)) ?? -1) !== state.head) throw err;
       fence = await store.acquireFence(id);
     }
     state.fence = fence;
     await store.append(withFence(fence));
+    state.head = event.sequence;
   }
 }
 
@@ -313,10 +374,10 @@ export async function shredSubject(
   const lifecycle = new Map<string, LifecycleState>();
   const windowed: string[] = []; // intent present, sealed data, tombstone missing
   for (const exId of executionIds) {
-    const resolution = await resolve(rawEventStore, exId, subjectId, options);
+    const resolution = await resolve(keys, rawEventStore, exId, subjectId, options);
     if (resolution.done) continue;
     const sequence = resolution.sequence;
-    lifecycle.set(exId, { quiescent: resolution.quiescent });
+    lifecycle.set(exId, { quiescent: resolution.quiescent, head: resolution.classifiedHead });
     if (resolution.hasIntent && resolution.sealed) windowed.push(exId);
     if (!resolution.hasIntent) {
       if (resolution.sealed) lackIntent.push(exId);

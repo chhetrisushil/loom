@@ -22,18 +22,7 @@ import {
 } from "./errors";
 import type { KeyStore } from "./keystore";
 import { recordsShred } from "./shred";
-
-function isWholeStateEnvelope(state: unknown): boolean {
-  return typeof state === "object" && state !== null && "__loomEnc" in state;
-}
-
-/** Versioned tag of the whole-state AAD binding; stored in the envelope (`aad`). */
-const SNAP_AAD_V = "loom-snap-v1";
-
-/** The context a whole-state envelope is bound to: the slot it lives in. */
-function slotOf(s: Pick<Snapshot, "executionId" | "sequence">): string {
-  return `${s.executionId}|${s.sequence}`;
-}
+import { SNAP_AAD_V, isWholeStateEnvelope, slotOf } from "./snapshotSeal";
 
 /**
  * Legacy opening (a snapshot written by a static-path store). In sealState mode the previous

@@ -117,8 +117,9 @@ const result = await app.eraseSubject("user-42");
 itself. An execution that ever acquired a fence (a fenced resume or inbox wake, a remote cancel,
 a worker, recovery, and every parked owner that `parked: "shred"` cancels) refuses an unfenced
 append, so on `StaleFenceError` the shredder takes a fence and retries; an execution that was
-never fenced is not given one. It does so only when the log shows no runner (a terminal event or
-a parked tip), by compare-and-set where the store supports it. A direct call on a live fenced
+never fenced is not given one. It does so only when the log shows no runner (its last answering
+event is a terminal or a park), by compare-and-set on the head it classified where the store
+supports it. A direct call on a live fenced
 execution still fails with `StaleFenceError`, before the key is destroyed. `eraseSubject` shreds
 only terminal executions. A shredder you write yourself must do the same.
 
