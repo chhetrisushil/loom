@@ -266,6 +266,29 @@ for (const backend of inboxBackends("erfence").filter((b) => b.name !== "sqlite"
       expect(await eventsOf(ctx.raw.eventStore, e, "PAYLOAD_SHREDDED")).toHaveLength(1);
     });
 
+    it("a fenced log COMPACTED THROUGH ITS TIP ([0] + a sealed checkpoint) is shredded (direct call and coordinator)", async () => {
+      for (const direct of [true, false]) {
+        const ctx = app();
+        const e = id();
+        await completedFenced(ctx, e);
+        await snapshotAtTip(ctx, e);
+        const tip = ((await ctx.raw.eventStore.read(e)).at(-1) as { sequence: number }).sequence;
+        await ctx.raw.eventStore.truncatePrefix?.(e, tip);
+        expect((await ctx.raw.eventStore.read(e)).map((x) => x.sequence)).toEqual([0]);
+        await expectFenced(ctx.raw, e);
+
+        if (direct) await ctx.shredDirect([e]);
+        else {
+          const r = await (await ctx.coordinator([e])).eraseSubject("alice");
+          expect(r).toMatchObject({ outcome: "erased", erased: [e] });
+        }
+        const log = await ctx.raw.eventStore.read(e);
+        expect(log.filter((x) => x.eventType === "PAYLOAD_SHREDDED")).toHaveLength(1);
+        expect(log.at(-1)?.sequence).toBeGreaterThan(tip); // the tombstone follows the FOLDED tip
+        expect(await ctx.keys.get("alice")).toBeNull();
+      }
+    });
+
     it("GUARD: a terminal followed by a re-open (EXECUTION_RESUMED) reads as LIVE: refuses, key intact", async () => {
       const ctx = app();
       const e = id();

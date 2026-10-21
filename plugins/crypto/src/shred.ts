@@ -71,7 +71,7 @@ type Resolution =
       sealed: boolean;
       /** The log shows no runner: a terminal event, or a parked (suspended) tip. */
       quiescent: boolean;
-      /** The head the classification was made at: the compare-and-set is tied to it. */
+      /** The STORED head the classification was made at: the compare-and-set is tied to it. */
       classifiedHead: number;
     };
 
@@ -210,10 +210,11 @@ async function resolve(
         : ((await headOf(store, executionId)) ?? -1);
     next = Math.max(head, latest?.sequence ?? -1) + 1;
   }
+  // The STORED head (what `acquireFenceIf` / `appendIfUnchanged` compare against), NOT the folded
+  // tip: a log compacted through its tip is `[0]` plus a checkpoint, whose stored head is 0 while
+  // the folded tip is the checkpoint's sequence.
   const classifiedHead =
-    tail.length > 0
-      ? tail[tail.length - 1]!.sequence
-      : Math.max((await headOf(store, executionId)) ?? -1, latest?.sequence ?? -1);
+    tail.length > 0 ? tail[tail.length - 1]!.sequence : ((await headOf(store, executionId)) ?? -1);
   // No intent yet: it takes `next`, the tombstone follows it.
   return hasIntent
     ? { done: false, sequence: next, hasIntent, sealed, quiescent, classifiedHead }
