@@ -114,11 +114,13 @@ const result = await app.eraseSubject("user-42");
 ```
 
 `shredSubject` appends its `ERASURE_PENDING` and `PAYLOAD_SHREDDED` events to the raw store
-itself. An execution that ever held a fence (a conversation resumed by its inbox, an owner
-cancelled by `parked: "shred"`) refuses an unfenced append, so on `StaleFenceError` the shredder
-acquires a fence and retries; an execution that was never fenced is not given one. This is safe
-because the coordinator shreds only once every execution of the subject is terminal. A shredder
-you write yourself must do the same.
+itself. An execution that ever acquired a fence (a fenced resume or inbox wake, a remote cancel,
+a worker, recovery, and every parked owner that `parked: "shred"` cancels) refuses an unfenced
+append, so on `StaleFenceError` the shredder takes a fence and retries; an execution that was
+never fenced is not given one. It does so only when the log shows no runner (a terminal event or
+a parked tip), by compare-and-set where the store supports it. A direct call on a live fenced
+execution still fails with `StaleFenceError`, before the key is destroyed. `eraseSubject` shreds
+only terminal executions. A shredder you write yourself must do the same.
 
 The **one hard rule** (T3-R4.5): never shred a fold that is still in flight. Erasure is
 **liveness-gated**:
