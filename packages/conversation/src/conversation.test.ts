@@ -235,24 +235,78 @@ describe("conversation: turns", () => {
     }
   }
 
-  it("a genuinely terminal non-provider error still fails the execution, not the turn", async () => {
-    const b = boot({
-      reply: () => {
-        throw Object.assign(new Error("policy stop"), { retryable: false });
-      },
-    });
-    const { conversationId: id } = await b.conv.start();
-    await b.conv.sendTurn(id, "one");
-    await until(
-      async () => (await b.runtime.systemStateReader().loadState(id))?.status === "failed"
-    );
-  });
+  const nonRetryable = (msg: string) => Object.assign(new Error(msg), { retryable: false });
+  const notFailedTurn: [string, () => Error][] = [
+    ["an error declaring retryable=false", () => nonRetryable("policy stop")],
+    [
+      "a retryable=false error wrapped in a cause",
+      () => new Error("wrapped", { cause: nonRetryable("policy stop") }),
+    ],
+    [
+      "a retryable=false error under a provider error",
+      () => Object.assign(new LlmHttpError("anthropic", 503), { cause: nonRetryable("x") }),
+    ],
+    [
+      "a provider error that declares retryable=false",
+      () => Object.assign(new LlmHttpError("anthropic", 400), { retryable: false }),
+    ],
+  ];
+  for (const shared of [false, true]) {
+    for (const [label, make] of notFailedTurn) {
+      it(`${shared ? "shared: " : ""}${label} from the model call fails THAT turn, not the conversation; the next turn works`, async () => {
+        const b = boot({
+          ...(shared && { shared: true }),
+          reply: (req, nth) => {
+            if (nth === 1) throw make();
+            return shared ? sharedScript(req) : { content: "ok", stopReason: "end_turn" };
+          },
+        });
+        const who = shared ? { principal: alice } : undefined;
+        const { conversationId: id } = await b.conv.start(who);
+        await b.conv.sendTurn(id, "one", who);
+        const first = await messages(b, id, 2, who?.principal);
+        expect(first[1]).toMatchObject({ status: "failed", reason: "model-error" });
+        await b.conv.sendTurn(id, "two", who);
+        expect((await messages(b, id, 4, who?.principal))[3]).toMatchObject({
+          status: "complete",
+        });
+        expect((await b.runtime.systemStateReader().loadState(id))?.status).not.toBe("failed");
+      });
+    }
+  }
 
-  it("a terminal non-provider error deeper in the cause chain still wins over a provider error", async () => {
+  // Control flow is still the runtime's: a kill switch / a cancel is not a failed turn.
+  const controlFlow = ["KillSwitchEngagedError", "ExecutionCancelledError"];
+  for (const shared of [false, true]) {
+    for (const name of controlFlow) {
+      it(`${shared ? "shared: " : ""}${name} from the model call still fails the execution, not the turn`, async () => {
+        const b = boot({
+          ...(shared && { shared: true }),
+          reply: () => {
+            throw Object.assign(new Error("stop"), { name, retryable: false });
+          },
+        });
+        const who = shared ? { principal: alice } : undefined;
+        const { conversationId: id } = await b.conv.start(who);
+        await b.conv.sendTurn(id, "one", who);
+        if (shared) {
+          // the turn's own execution takes the stop; the asker sees a turn failure, never "model-error"
+          const first = await messages(b, id, 2, alice);
+          expect(first[1]).toMatchObject({ status: "failed", reason: "turn-failed" });
+          return;
+        }
+        await until(
+          async () => (await b.runtime.systemStateReader().loadState(id))?.status === "failed"
+        );
+      });
+    }
+  }
+
+  it("a control-flow error deeper in the cause chain still wins over a provider error", async () => {
     const b = boot({
       reply: () => {
         throw Object.assign(new LlmHttpError("anthropic", 503), {
-          cause: Object.assign(new Error("policy stop"), { retryable: false }),
+          cause: Object.assign(new Error("stop"), { name: "KillSwitchEngagedError" }),
         });
       },
     });

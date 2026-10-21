@@ -135,7 +135,12 @@ function isProviderOne(err: unknown): boolean {
   return false;
 }
 
-function isTerminalOne(err: unknown): boolean {
+/**
+ * `declaredNonRetryable`: whether an error that merely sets `retryable === false` counts. The tool
+ * loop honours it (a third-party tool's "stop" hook); the conversation's own model call does NOT
+ * (see `classifyModelCallError`).
+ */
+function isTerminalOne(err: unknown, declaredNonRetryable = true): boolean {
   // ADR 0130 residuals D7 - checked BEFORE any generic ExecutionDeniedError handling: a sealed
   // refusal is an ExecutionDeniedError to its caller, but it is a node-level fact, never feedback.
   if (
@@ -155,7 +160,7 @@ function isTerminalOne(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   if (isTerminalLlmHttp(err)) return true;
   // A class that declares itself non-retryable is a decision, not a fault (the middleware's own rule).
-  if ((err as { retryable?: unknown }).retryable === false) return true;
+  if (declaredNonRetryable && (err as { retryable?: unknown }).retryable === false) return true;
   if (TERMINAL_ERROR_NAMES.has((err as { name?: string }).name ?? "")) return true;
   for (let p = Object.getPrototypeOf(err); p !== null; p = Object.getPrototypeOf(p)) {
     const ctor = (p as { constructor?: { name?: string } }).constructor;
@@ -193,18 +198,25 @@ export function isTerminalToolError(err: unknown): boolean {
 /**
  * How the conversation's OWN model call classifies a failure (not a tool loop's; `isTerminalToolError`
  * stays the tool-loop rule). Walks the same bounded `cause` chain.
- *  - "terminal": some level is a terminal error that is NOT a provider failure (a park, a denial, a
- *    cancel, a divergence ...): it reaches the runtime, and wins over a provider error anywhere in the chain;
+ *  - "terminal": some level is CONTROL FLOW that is not a provider failure: a park (`SuspendError`),
+ *    an authority or safety stop (denial, kill switch, quota), a cancel, a replay divergence, a lost
+ *    fence or lease ... (the named classes and sealed refusals of `isTerminalToolError`). It reaches
+ *    the runtime, and wins over a provider error anywhere in the chain;
  *  - "provider": otherwise, some level is a provider failure (`LlmHttpError` of any status,
  *    `LlmStreamError`, `LlmResponseLimitError`, `LlmResponseInvalidError`): the turn fails with the fixed model-error reason;
- *  - "other": anything else (also a failed turn, as before).
+ *  - "other": anything else, retryable or not: also a failed turn with the model-error reason.
+ *
+ * Unlike the tool loop, an error that merely declares `retryable === false` is NOT control flow here:
+ * an app's model adapter that maps a 400/401 to a non-retryable error must end the TURN failed, not
+ * fail the whole conversation execution. (A control-flow class that also sets `retryable = false`
+ * is still terminal, by its name.)
  */
 export function classifyModelCallError(err: unknown): "terminal" | "provider" | "other" {
   let provider = false;
   let e: unknown = err;
   for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth++) {
     if (isProviderOne(e)) provider = true;
-    else if (isTerminalOne(e)) return "terminal";
+    else if (isTerminalOne(e, false)) return "terminal";
     if (typeof e !== "object" || e === null) break;
     e = (e as { cause?: unknown }).cause;
     if (e === undefined) break;

@@ -795,7 +795,7 @@ export function conversationRunner(
           status = "interrupted";
           reply = clip((e.payload as InterruptedAgentRun).content ?? "", maxReplyChars);
         } else if (classifyModelCallError(e) === "terminal") {
-          throw e; // a park, an authority/safety stop, a cancel, a replay divergence: not a failed turn
+          throw e; // control flow only (a park, an authority/safety stop, a cancel, a replay divergence): not a failed turn. Any other error, even retryable=false, ends the turn failed below
         } else {
           // The user sees a FIXED reason and a correlation id; the real error goes to the host's log.
           status = "failed";
