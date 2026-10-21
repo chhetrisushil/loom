@@ -878,6 +878,10 @@ const FENCE_IF_ATTEMPTS = 3;
 /** `cancel`'s rounds (re-read, fence, append) before a persistently lost slot surfaces to the caller. */
 const CANCEL_ATTEMPTS = 8;
 
+/** A status `cancel` has nothing to write for: terminal, or handed to a successor. */
+const isSettledStatus = (status: string): boolean =>
+  status === "continued" || status === "cancelled" || status === "completed" || status === "failed";
+
 /** The `parent` recorded on an execution's sequence 0 (`undefined` for any other envelope). */
 function parentOfFirst(first: EventEnvelope | undefined): string | undefined {
   if (first === undefined || first.sequence !== 0 || first.eventType !== "EXECUTION_STARTED") {
@@ -2957,7 +2961,7 @@ export class WorkflowRuntime {
    * (ADR 0118), so a wake that resumed it first wins cleanly and the cancel then aborts that
    * live runner (or cancels at the true tip) instead of superseding it and losing the slot. A
    * lost slot (`DuplicateSequenceError` / `StaleFenceError`) is retried by re-reading state; the
-   * execution is never left resumed with no driver. Persistent contention rethrows the last error.
+   * execution is never left resumed with no driver. Persistent contention (8 rounds) rethrows the last lost-slot error, one of DuplicateSequenceError, StaleFenceError, ResumeRefusedError (not-suspended) or ResumeContendedError: all mean "still contended, retry".
    */
   async cancel(
     executionId: string,
@@ -3053,27 +3057,58 @@ export class WorkflowRuntime {
       if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
       return true;
     }
-    // The fold below is a SNAPSHOT: a wake (an inbox delivery, a resume, a timer) can answer the park
-    // and start a runner between it and our fence. So every round re-checks the live registry,
-    // answers a park CONDITIONALLY (ADR 0118: a concurrent answer makes our fold stale instead of
-    // being superseded mid-body), re-reads past the fold under the token it holds, and retries a
-    // lost slot by re-reading state. The only outcomes are a durable `EXECUTION_CANCELLED`, an
-    // accurate `false` (the execution finished meanwhile), or a live runner that was aborted.
+    const r = await this.cancelOne(executionId, reason);
+    if (r.state === null) {
+      throw new Error(`No execution found for id: ${executionId}`);
+    }
+    if (r.performed) {
+      if (r.live !== true) await this.retireInbox(chainIdOf(r.state, executionId));
+      if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
+      return true;
+    }
+    // Settled without a write of ours: continued / cancelled / completed / failed.
+    return (await this.cancelSettled(r.state, executionId, reason, recheck)) ?? false;
+  }
+
+  /**
+   * Durably cancel ONE execution (no chain walk, no authorization: the caller did both). Shared by
+   * `cancel` and `cancelForward`, so the direct and the chain route cannot diverge again.
+   *
+   * The fold it starts from is a SNAPSHOT: a wake (an inbox delivery, a resume, a timer) can answer
+   * the park and start a runner between that fold and our fence. So every round re-folds, answers
+   * a park CONDITIONALLY (ADR 0118: a concurrent answer makes our fold stale instead of
+   * superseding the woken runner mid-body), re-reads past the fold under the token it holds,
+   * appends at the true tip, and retries a lost slot by re-reading state (after a small jittered
+   * backoff). A local runner is aborted through its handle, except one THIS call has already
+   * fenced out (its journal can no longer write, so trusting it would report a cancel that never
+   * landed): that one gets its abort signal fired and the durable path continues.
+   *
+   * Resolves `{ performed: true }` once the cancellation is durable (or a healthy live runner was
+   * told to cancel) and `{ performed: false }` with the state it settled on when there was nothing
+   * left to cancel; `state` is `null` for an unknown id. Throws the last lost-slot error after
+   * {@link CANCEL_ATTEMPTS} rounds.
+   */
+  private async cancelOne(
+    executionId: string,
+    reason: unknown
+  ): Promise<{ performed: boolean; live?: true; state: ExecutionState | null }> {
+    const store = this.eventStore;
     let lost: unknown;
+    let fencedHere = false;
     for (let attempt = 1; attempt <= CANCEL_ATTEMPTS; attempt++) {
+      if (attempt > 1) {
+        const ms = Math.floor(Math.random() * Math.min(40, 2 ** attempt));
+        if (ms > 0) await new Promise<void>((resolve) => setTimeout(resolve, ms));
+      }
       const liveNow = this.liveHandles.get(executionId);
       if (liveNow !== undefined) {
-        liveNow.cancel(reason);
-        if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
-        return true;
+        liveNow.cancel(reason); // fires the abort signal either way
+        if (!fencedHere) return { performed: true, live: true, state: liveNow.getState() };
+        // Fenced out by our own earlier round: its CANCELLED write cannot land. Stay durable.
       }
       let state = await this.foldStateForCancel(executionId);
-      if (state === null) {
-        throw new Error(`No execution found for id: ${executionId}`);
-      }
-      const settled = await this.cancelSettled(state, executionId, reason, recheck);
-      if (settled !== undefined) return settled;
-      const store = this.eventStore;
+      if (state === null) return { performed: false, state: null };
+      if (isSettledStatus(state.status)) return { performed: false, state };
       let fence: number | undefined;
       let parkSeq: number | undefined;
       if (state.status === "suspended" && store.acquireFenceIf !== undefined) {
@@ -3094,12 +3129,13 @@ export class WorkflowRuntime {
             executionId,
             { eventType: "EXECUTION_CANCELLED", payload: null },
             parkSeq,
-            options?.system,
+            undefined,
             { vm: new ReplayVM([], state), events: undefined },
             false,
             true
           );
           fence = got.fence;
+          fencedHere = fence !== undefined;
           state = got.vm.getState();
         } catch (err) {
           // The park was answered (or the token kept moving): re-read and re-judge.
@@ -3115,6 +3151,11 @@ export class WorkflowRuntime {
         // A running owner presumed dead (or a store without the conditional): kill semantics. Re-read
         // past the fold UNDER the token now held, so the terminal event lands at the true tip.
         fence = await this.fenceOf(executionId);
+        if (fence !== undefined) {
+          fencedHere = true;
+          // The token fenced any local runner out; fire its abort signal so an in-flight effect stops.
+          this.liveHandles.get(executionId)?.cancel(reason);
+        }
         try {
           const tail = await store.readFrom(executionId, state.sequence + 1);
           if (tail.length > 0) state = new ReplayVM(tail, state).getState();
@@ -3122,8 +3163,7 @@ export class WorkflowRuntime {
           if (!isPayloadShredded(err)) throw err; // an erased tail is unreadable; the fold in hand stands
         }
       }
-      const again = await this.cancelSettled(state, executionId, reason, recheck);
-      if (again !== undefined) return again;
+      if (isSettledStatus(state.status)) return { performed: false, state };
       const sequence = state.sequence + 1;
       const envelope: EventEnvelope = {
         id: `${executionId}-${sequence}`,
@@ -3145,9 +3185,7 @@ export class WorkflowRuntime {
         throw err;
       }
       this.onEvent?.(envelope);
-      await this.retireInbox(chainIdOf(state, executionId));
-      if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
-      return true;
+      return { performed: true, state };
     }
     throw lost;
   }
@@ -8491,40 +8529,15 @@ export class WorkflowRuntime {
     for (let hop = 0; hop <= this.maxChainHops; hop++) {
       // a hop past the addressed id is authorized against ITS owner before anything is cancelled
       if (hop > 0 && recheck !== undefined) await recheck(id);
-      let state: ExecutionState | null;
-      const live = this.liveHandles.get(id);
-      if (live !== undefined) {
-        live.cancel(reason);
+      const r = await this.cancelOne(id, reason);
+      if (r.state === null) {
+        if (hop === 0) throw new Error(`No execution found for id: ${id}`);
+        return performed;
+      }
+      const state = r.state;
+      if (r.performed) {
         performed = true;
-        state = live.getState();
-      } else {
-        state = await this.foldState(id);
-        if (state === null) {
-          if (hop === 0) throw new Error(`No execution found for id: ${id}`);
-          return performed;
-        }
-        if (
-          state.status === "running" ||
-          state.status === "pending" ||
-          state.status === "suspended"
-        ) {
-          const fence = await this.fenceOf(id);
-          const sequence = state.sequence + 1;
-          const envelope: EventEnvelope = {
-            id: `${id}-${sequence}`,
-            workflowId: state.workflowId,
-            executionId: id,
-            eventType: "EXECUTION_CANCELLED",
-            sequence,
-            timestamp: this.now(),
-            payload: { ...(reason !== undefined && { reason: String(reason) }) },
-            ...(fence !== undefined && { metadata: { fence } }),
-          };
-          await this.eventStore.append(envelope);
-          this.onEvent?.(envelope);
-          await this.retireInbox(chainIdOf(state, id));
-          performed = true;
-        }
+        if (r.live !== true) await this.retireInbox(chainIdOf(state, id));
       }
       let next: string | undefined;
       if (state.status === "continued") {

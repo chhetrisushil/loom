@@ -114,6 +114,25 @@ describe("a branch nobody answered blocks its parent forever", () => {
     expect(await app.lifecycle.applyRetention("p2", FOREVER, Date.now() + 1)).toBe("reclaimed");
   });
 
+  it("does not count a branch that finished on its own during the pass as retired", async () => {
+    const app = boot();
+    await parentWithBranch(app, ["p4", "b4"]);
+
+    const summary = await retireAbandonedBranches(app.runtime, app.branchRegistry, "p4", {
+      // the owner answers the branch after it was judged abandoned, before the pass cancels it
+      isAbandoned: async (c) => {
+        await (
+          await app.runtime.resume(c.executionId, { eventType: "Approval", payload: {} })
+        ).waitForCompletion();
+        return true;
+      },
+    });
+
+    expect(summary).toMatchObject({ scanned: 1, candidates: 1, retired: 0, failed: 0 });
+    expect(summary.remaining).toEqual([]);
+    expect((await app.runtime.loadState("b4"))?.status).toBe("completed");
+  });
+
   it("leaves a branch the predicate does not claim, and reports it as still open", async () => {
     const app = boot();
     await parentWithBranch(app, ["p3", "b3"]);
