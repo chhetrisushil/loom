@@ -35,6 +35,7 @@
     "ulid": "^2.3.0"
   },
   "devDependencies": {
+    "@loom/compliance": "workspace:*",
     "@loom/conformance": "workspace:*",
     "@loom/middleware": "workspace:*",
     "@loom/plugin-content": "workspace:*",

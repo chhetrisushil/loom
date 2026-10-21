@@ -1530,6 +1530,9 @@ importers:
         specifier: ^2.3.0
         version: 2.4.0
     devDependencies:
+      '@loom/compliance':
+        specifier: workspace:*
+        version: link:../compliance
       '@loom/conformance':
         specifier: workspace:*
         version: link:../conformance
