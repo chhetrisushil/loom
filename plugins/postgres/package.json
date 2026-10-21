@@ -31,8 +31,6 @@
   },
   "devDependencies": {
     "@loom/replay-vm": "workspace:*",
-    "@loom/compliance": "workspace:*",
-    "@loom/plugin-crypto": "workspace:*",
     "@types/node": "^22.0.0",
     "@types/pg": "^8.11.0",
     "typescript": "^5.6.3",

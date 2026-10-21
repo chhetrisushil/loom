@@ -3,9 +3,9 @@ import {
   type EventStore,
   KeyUnavailableError,
   headOf,
-  isAnsweringKind,
   isKeyUnavailable,
   isPayloadShredded,
+  isQuiescent,
   isReservedStream,
   recordsErasureIntent,
 } from "@loom/event-runtime";
@@ -75,14 +75,6 @@ type Resolution =
       classifiedHead: number;
     };
 
-const TERMINAL_EVENTS = new Set([
-  "EXECUTION_COMPLETED",
-  "EXECUTION_FAILED",
-  "EXECUTION_CANCELLED",
-  "EXECUTION_CONTINUED",
-]);
-const TERMINAL_STATUS = new Set(["completed", "failed", "cancelled", "continued"]);
-
 /**
  * The execution status a snapshot records, or `undefined` when it cannot be read. With `sealState`
  * the whole state is a ciphertext envelope, so it is opened with the subject's key (still present
@@ -105,28 +97,6 @@ async function snapshotStatus(
   );
   const status = (opened as { status?: unknown } | null | undefined)?.status;
   return typeof status === "string" ? status : undefined;
-}
-
-/**
- * Does the log show NO runner? Judged from data that sealing never hides: the LAST answering event
- * of the tail (`isAnsweringKind`, ignoring audit rows and this shredder's own events). A terminal
- * kind or a park is quiescent; a resume (a terminal followed by a re-open included) or a start with
- * no park is live. With no answering event above the snapshot, the snapshot's status decides
- * (opened with the key when sealed); if that is unreadable (a retry after the key was destroyed),
- * the erase intent already in the log is the proof, because it was only written to a quiescent log.
- * Anything else is "live": the caller then refuses rather than supersede a possible holder.
- */
-function classify(
-  tail: readonly EventEnvelope[],
-  snapshot: string | undefined,
-  hasIntent: boolean
-): boolean {
-  const last = [...tail].reverse().find((e) => isAnsweringKind(e));
-  if (last !== undefined) {
-    return TERMINAL_EVENTS.has(last.eventType) || last.eventType === "EXECUTION_SUSPENDED";
-  }
-  if (snapshot !== undefined) return TERMINAL_STATUS.has(snapshot) || snapshot === "suspended";
-  return hasIntent;
 }
 
 /** Whether a folded state records this subject's erase intent (an `ERASURE_PENDING` folded by compaction). */
@@ -195,7 +165,7 @@ async function resolve(
     (latest !== null && recordsIntentInState(latest.state, subjectId));
   const sealed =
     tail.some((e) => hasEnvelope(e.payload)) || (latest !== null && hasEnvelope(latest.state));
-  const quiescent = classify(
+  const quiescent = isQuiescent(
     tail,
     await snapshotStatus(latest, executionId, keys, subjectId),
     hasIntent

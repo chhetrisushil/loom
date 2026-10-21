@@ -7,6 +7,7 @@ export {
   KEY_UNAVAILABLE_CODE,
   KeyUnavailableError,
   erasureWindowView,
+  isErasureWindow,
   isKeyUnavailable,
   recordsErasureIntent,
 } from "./keyUnavailable";
@@ -66,7 +67,12 @@ export {
 } from "./types";
 export { StaleFenceError, fenceOf } from "./fencing";
 export { creationMarker } from "./creationMarker";
-export { EVENT_KIND_CLASS, isAnsweringKind, type EventKindClass } from "./eventKindClass";
+export {
+  EVENT_KIND_CLASS,
+  isAnsweringKind,
+  isQuiescent,
+  type EventKindClass,
+} from "./eventKindClass";
 export {
   InMemoryLeaseStore,
   LEASE_STORE_SPI_VERSION,
