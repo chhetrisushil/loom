@@ -138,13 +138,15 @@ export async function retireAbandonedBranches(
     options.onCandidate?.(candidate);
     if (options.dryRun === true) continue;
     try {
-      await runtime.cancel(
+      const cancelled = await runtime.cancel(
         child.executionId,
         options.reason?.(candidate) ??
           `branch abandoned: forked from ${parentExecutionId} at ${child.forkSequence}`,
         runtime.systemOptions()
       );
-      summary.retired++;
+      // `false`: the branch reached a terminal state on its own (it completed, failed, or was already
+      // cancelled), which is not a retirement by this pass. It is neither failed nor remaining.
+      if (cancelled) summary.retired++;
     } catch {
       summary.failed++;
       summary.remaining.push(candidate);
