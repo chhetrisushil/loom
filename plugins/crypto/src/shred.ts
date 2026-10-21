@@ -67,7 +67,31 @@ type Resolution =
       hasIntent: boolean;
       /** Whether the log (tail or latest snapshot) holds sealed (encrypted) data. */
       sealed: boolean;
+      /** The log shows no runner: a terminal event, or a parked (suspended) tip. */
+      quiescent: boolean;
     };
+
+const TERMINAL_EVENTS = new Set([
+  "EXECUTION_COMPLETED",
+  "EXECUTION_FAILED",
+  "EXECUTION_CANCELLED",
+  "EXECUTION_CONTINUED",
+]);
+const TERMINAL_STATUS = new Set(["completed", "failed", "cancelled", "continued"]);
+const OWN_EVENTS = new Set(["ERASURE_PENDING", "PAYLOAD_SHREDDED"]);
+
+/**
+ * Does the log show NO runner? True when a terminal event is in the tail (terminal is absorbing),
+ * the tail's tip (ignoring this shredder's own events) is a park, or, with an empty tail, the
+ * snapshot state is terminal or suspended. False means a live execution may hold the fence.
+ */
+function isQuiescent(tail: readonly EventEnvelope[], snapshotState: unknown): boolean {
+  if (tail.some((e) => TERMINAL_EVENTS.has(e.eventType))) return true;
+  const tip = [...tail].reverse().find((e) => !OWN_EVENTS.has(e.eventType));
+  if (tip !== undefined) return tip.eventType === "EXECUTION_SUSPENDED";
+  const status = (snapshotState as { status?: unknown } | null | undefined)?.status;
+  return typeof status === "string" && (TERMINAL_STATUS.has(status) || status === "suspended");
+}
 
 /** Whether a folded state records this subject's erase intent (an `ERASURE_PENDING` folded by compaction). */
 function recordsIntentInState(state: unknown, subjectId: string): boolean {
@@ -134,6 +158,7 @@ async function resolve(
     (latest !== null && recordsIntentInState(latest.state, subjectId));
   const sealed =
     tail.some((e) => hasEnvelope(e.payload)) || (latest !== null && hasEnvelope(latest.state));
+  const quiescent = isQuiescent(tail, latest?.state);
   let next: number;
   if (options.tombstoneSequenceOf !== undefined) {
     next = await options.tombstoneSequenceOf(executionId);
@@ -146,8 +171,8 @@ async function resolve(
   }
   // No intent yet: it takes `next`, the tombstone follows it.
   return hasIntent
-    ? { done: false, sequence: next, hasIntent, sealed }
-    : { done: false, sequence: next + 1, intentSequence: next, hasIntent, sealed };
+    ? { done: false, sequence: next, hasIntent, sealed, quiescent }
+    : { done: false, sequence: next + 1, intentSequence: next, hasIntent, sealed, quiescent };
 }
 
 /** Thrown when some tombstones could not be written. Re-running `shredSubject` completes them. */
@@ -164,30 +189,65 @@ export class ShredIncompleteError extends Error {
   }
 }
 
+/** Per-execution state for the out-of-band lifecycle appends of one `shredSubject` call. */
+interface LifecycleState {
+  /** The log shows no runner (terminal or parked), so taking its fence supersedes nobody live. */
+  quiescent: boolean;
+  /** The token acquired for this execution by an earlier append of this call; reused by the next. */
+  fence?: number;
+}
+
+const isStaleFence = (err: unknown): boolean =>
+  (err as { name?: unknown } | null)?.name === "StaleFenceError";
+
 /**
  * Append one erasure lifecycle event (`ERASURE_PENDING`, `PAYLOAD_SHREDDED`) out of band.
  *
- * An execution that ever held a fence (a resumed conversation, an inbox wake, a `cancel` Loom
- * fenced, a worker, recovery) refuses an UNFENCED append with `StaleFenceError`, so erasure could
- * never complete for it. Mirrors the repair `LogLifecycle.rehomeExecution` makes: try the plain
- * append first, and only on `StaleFenceError` acquire a fence and retry under it. An execution
- * that was never fenced is therefore not given one (a fence would refuse every later unfenced
- * write to its log).
+ * An execution that ever held a fence (a fenced resume or inbox wake, a remote cancel, a worker,
+ * recovery, every parked owner `eraseSubject({ parked: "shred" })` cancels) refuses an UNFENCED
+ * append with `StaleFenceError`, so erasure could never complete for it. Mirrors the repair
+ * `LogLifecycle.rehomeExecution` makes: try the plain append first, and only on `StaleFenceError`
+ * take a fence and retry under it. An execution that was never fenced is therefore not given one
+ * (a fence would refuse every later unfenced write to its log). The token is reused for the next
+ * append of the same call.
  *
- * Safe to supersede the current holder because shredding happens only once every execution of the
- * subject is TERMINAL (`EraseCoordinator`, eraseSubject.ts): a terminal log has no legitimate
- * writer left, and the holder of its old token is a zombie that must not write. A caller that
- * shreds a LIVE execution directly (`force`, or a parked owner in place) supersedes whoever holds
- * its fence, as any `acquireFence` does.
+ * Escalation is guarded: the fence is taken only when the log shows no runner (a terminal event or
+ * a parked tip), and by compare-and-set on exactly the observed `{head, fence}` where the store
+ * offers `acquireFenceIf` (as `LogLifecycle.restoreTerminalEvent` does), so a holder that moved is
+ * never superseded. Otherwise the original `StaleFenceError` is rethrown: a direct `shredSubject`
+ * on a live fenced execution refuses, before the key is destroyed, as it always did.
+ *
+ * Shredding by `EraseCoordinator` happens only once every execution of the subject is terminal
+ * (eraseSubject.ts), so the guard always passes there.
  */
-async function appendLifecycle(store: EventStore, event: EventEnvelope): Promise<void> {
+async function appendLifecycle(
+  store: EventStore,
+  event: EventEnvelope,
+  state: LifecycleState
+): Promise<void> {
+  const id = event.executionId;
+  const withFence = (fence: number): EventEnvelope => ({
+    ...event,
+    metadata: { ...event.metadata, fence },
+  });
   try {
-    await store.append(event);
+    await store.append(state.fence !== undefined ? withFence(state.fence) : event);
+    return;
   } catch (err) {
-    const stale = (err as { name?: unknown } | null)?.name === "StaleFenceError";
-    if (!stale || store.acquireFence === undefined) throw err;
-    const fence = await store.acquireFence(event.executionId);
-    await store.append({ ...event, metadata: { ...event.metadata, fence } });
+    if (!isStaleFence(err) || store.acquireFence === undefined || !state.quiescent) throw err;
+    // Escalate: observe, then take the token by compare-and-set on that very observation.
+    let fence: number;
+    if (store.appendIfUnchanged !== undefined && store.acquireFenceIf !== undefined) {
+      const seen = await store.appendIfUnchanged(id, null);
+      if (seen.appended || seen.head === null) throw err;
+      const got = await store.acquireFenceIf(id, { fence: seen.fence, parkSeq: seen.head });
+      if ("stale" in got) throw err; // the holder moved: not ours to supersede
+      fence = got.fence;
+    } else {
+      fence = await store.acquireFence(id);
+    }
+    state.fence = fence;
+    await store.append(withFence(fence));
   }
 }
 
@@ -250,11 +310,13 @@ export async function shredSubject(
   const pending: EventEnvelope[] = [];
   const intents: EventEnvelope[] = [];
   const lackIntent: string[] = [];
+  const lifecycle = new Map<string, LifecycleState>();
   const windowed: string[] = []; // intent present, sealed data, tombstone missing
   for (const exId of executionIds) {
     const resolution = await resolve(rawEventStore, exId, subjectId, options);
     if (resolution.done) continue;
     const sequence = resolution.sequence;
+    lifecycle.set(exId, { quiescent: resolution.quiescent });
     if (resolution.hasIntent && resolution.sealed) windowed.push(exId);
     if (!resolution.hasIntent) {
       if (resolution.sealed) lackIntent.push(exId);
@@ -310,7 +372,9 @@ export async function shredSubject(
   //     present (the retry destroys it); a crash after the destroy leaves intent + no tombstone
   //     (the retry window, which the intent proves). An intent that cannot be written aborts
   //     BEFORE anything irreversible. `ERASURE_PENDING` is an existing, ignorable, pure-audit kind.
-  for (const intent of intents) await appendLifecycle(rawEventStore, intent);
+  for (const intent of intents) {
+    await appendLifecycle(rawEventStore, intent, lifecycle.get(intent.executionId)!);
+  }
 
   // 2. Destroy the key — the erasure is effective even if a tombstone append below fails
   //    (the data is already unrecoverable). Destroying an absent key is a no-op.
@@ -322,7 +386,7 @@ export async function shredSubject(
   const failures: Array<{ executionId: string; error: unknown }> = [];
   for (const tombstone of pending) {
     try {
-      await appendLifecycle(rawEventStore, tombstone);
+      await appendLifecycle(rawEventStore, tombstone, lifecycle.get(tombstone.executionId)!);
     } catch (error) {
       failures.push({ executionId: tombstone.executionId, error });
     }

@@ -4,11 +4,12 @@ import {
   EncryptingEventStore,
   InMemoryKeyStore,
   type KeyStore,
+  ShredIncompleteError,
   shredSubject,
 } from "@loom/plugin-crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { inboxBackends } from "./__tests__/r2Backends";
-import { build, eventsOf, flow, sealedSnapshots, until } from "./__tests__/r2Harness";
+import { Latch, build, eventsOf, flow, sealedSnapshots, slow, until } from "./__tests__/r2Harness";
 
 // Erasure of an execution that holds a FENCE. `shredSubject` is a lifecycle writer that appends
 // out of band (ERASURE_PENDING, PAYLOAD_SHREDDED); an unfenced append to a log whose fence token is
@@ -35,7 +36,7 @@ for (const backend of inboxBackends("erfence").filter((b) => b.name !== "sqlite"
     let seq = 0;
     const id = () => `alice-${backend.name}-${++seq}-${Math.random().toString(36).slice(2, 6)}`;
 
-    function app() {
+    function app(latch?: Latch) {
       const raw = backend.make();
       const keys: KeyStore = new InMemoryKeyStore();
       const store = new EncryptingEventStore(raw.eventStore, keys, {
@@ -44,7 +45,12 @@ for (const backend of inboxBackends("erfence").filter((b) => b.name !== "sqlite"
       });
       const h = build(
         { principalIdentity: "encrypted" },
-        { ...raw, eventStore: store, snapshotStore: sealedSnapshots(store, raw.snapshotStore) }
+        {
+          ...raw,
+          eventStore: store,
+          snapshotStore: sealedSnapshots(store, raw.snapshotStore),
+          ...(latch !== undefined && { latch }),
+        }
       );
       const acquire = vi.spyOn(
         raw.eventStore as Required<Pick<EventStore, "acquireFence">>,
@@ -68,7 +74,14 @@ for (const backend of inboxBackends("erfence").filter((b) => b.name !== "sqlite"
           cancel: (executionId, reason) => h.rt.cancel(executionId, reason, h.rt.systemOptions()),
         });
       };
-      return { raw, keys, h, acquire, coordinator };
+      /** A direct caller of the shredder (docs: plugins/crypto/README.md), no coordinator. */
+      const shredDirect = (ids: string[], eventStore: EventStore = raw.eventStore) =>
+        shredSubject(keys, eventStore, ids[0] as string, {
+          subjectId: "alice",
+          executionIds: ids,
+          snapshotStore: raw.snapshotStore,
+        });
+      return { raw, keys, h, acquire, coordinator, shredDirect };
     }
 
     const parksOnGate = () =>
@@ -76,6 +89,22 @@ for (const backend of inboxBackends("erfence").filter((b) => b.name !== "sqlite"
         await ctx.suspend({ on: "Go" });
         return "done";
       });
+    const parksThenRuns = () =>
+      flow("w", async (ctx) => {
+        await ctx.suspend({ on: "Go" });
+        await ctx.run(slow, {});
+        return "done";
+      });
+    /** Resume a parked execution under a fence (the token becomes >= 1). */
+    const fencedResume = async (h: ReturnType<typeof app>["h"], e: string) =>
+      h.rt.resume(
+        e,
+        { eventType: "Go", payload: null },
+        {
+          ...h.rt.systemOptions(),
+          fenceIfParkedAt: (await h.rt.parkedAtSequence(e, h.rt.systemOptions())) as number,
+        }
+      );
     const quick = () => flow("w", async () => "done");
 
     /** The log holds a fence token >= 1: a plain (unfenced) append is refused. */
@@ -94,7 +123,7 @@ for (const backend of inboxBackends("erfence").filter((b) => b.name !== "sqlite"
       ).rejects.toMatchObject({ name: "StaleFenceError" });
     }
 
-    it("an execution resumed under a fence (every inbox wake and fenced resume) is shredded: erased, with a tombstone", async () => {
+    it("an execution resumed under a fence (a fenced resume or inbox wake) is shredded: erased, with a tombstone", async () => {
       const { raw, keys, h, coordinator } = app();
       const f = parksOnGate();
       h.rt.registerFlow(f.definition, f.runner);
@@ -151,6 +180,92 @@ for (const backend of inboxBackends("erfence").filter((b) => b.name !== "sqlite"
       expect(await eventsOf(raw.eventStore, e, "PAYLOAD_SHREDDED")).toHaveLength(1);
       expect(await keys.get("alice")).toBeNull();
       expect(acquire).not.toHaveBeenCalled();
+    });
+
+    it("GUARD: a direct shredSubject on a LIVE fenced execution refuses (StaleFenceError) before the key is destroyed", async () => {
+      const latch = new Latch();
+      const { raw, keys, h, shredDirect } = app(latch);
+      const f = parksThenRuns();
+      h.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await h.rt.start(f, {}, { executionId: e, principal })).waitForSuspend();
+      const resumed = await fencedResume(h, e);
+      try {
+        await latch.entered;
+        await until(async () => (await eventsOf(raw.eventStore, e, "STEP_STARTED")).length > 0);
+        await expectFenced(raw, e);
+        const keyBefore = await keys.get("alice");
+        expect(keyBefore).not.toBeNull();
+
+        await expect(shredDirect([e])).rejects.toMatchObject({ name: "StaleFenceError" });
+        // Nothing irreversible happened and nobody was superseded.
+        expect(await keys.get("alice")).not.toBeNull();
+        expect(await eventsOf(raw.eventStore, e, "ERASURE_PENDING")).toHaveLength(0);
+        expect(await eventsOf(raw.eventStore, e, "PAYLOAD_SHREDDED")).toHaveLength(0);
+      } finally {
+        latch.release();
+      }
+      await resumed.waitForCompletion(); // the live holder was never fenced out
+      expect((await h.rt.loadState(e, h.rt.systemOptions()))?.status).toBe("completed");
+    });
+
+    it("a ShredIncompleteError retry completes a FENCED log (key already gone)", async () => {
+      const { raw, keys, h, shredDirect } = app();
+      const f = parksOnGate();
+      h.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await h.rt.start(f, {}, { executionId: e, principal })).waitForSuspend();
+      await (await fencedResume(h, e)).waitForCompletion();
+      await until(
+        async () => (await raw.eventStore.read(e)).at(-1)?.eventType === "EXECUTION_COMPLETED"
+      );
+      await expectFenced(raw, e);
+
+      // The first tombstone append is lost (a transient failure); the intent and the destroy landed.
+      let dropped = false;
+      const flaky = new Proxy(raw.eventStore, {
+        get(target, prop) {
+          const v = Reflect.get(target, prop, target);
+          if (prop !== "append") return typeof v === "function" ? v.bind(target) : v;
+          return async (ev: { eventType: string }) => {
+            if (ev.eventType === "PAYLOAD_SHREDDED" && !dropped) {
+              dropped = true;
+              throw new Error("transient");
+            }
+            return target.append(ev as never);
+          };
+        },
+      });
+      await expect(shredDirect([e], flaky)).rejects.toBeInstanceOf(ShredIncompleteError);
+      expect(await keys.get("alice")).toBeNull();
+      expect(await eventsOf(raw.eventStore, e, "PAYLOAD_SHREDDED")).toHaveLength(0);
+
+      await shredDirect([e]); // the documented retry, same arguments
+      expect(await eventsOf(raw.eventStore, e, "PAYLOAD_SHREDDED")).toHaveLength(1);
+      expect(await eventsOf(raw.eventStore, e, "ERASURE_PENDING")).toHaveLength(1);
+    });
+
+    it("the defer path (handleEvent) completes a parked erasure once a fenced execution terminates", async () => {
+      const { raw, keys, h, coordinator } = app();
+      const f = parksOnGate();
+      h.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await h.rt.start(f, {}, { executionId: e, principal })).waitForSuspend();
+      const coord = await coordinator([e]);
+      expect(await coord.eraseSubject("alice")).toMatchObject({ outcome: "parked", pending: [e] });
+      expect(await keys.get("alice")).not.toBeNull();
+
+      await (await fencedResume(h, e)).waitForCompletion();
+      await until(
+        async () => (await raw.eventStore.read(e)).at(-1)?.eventType === "EXECUTION_COMPLETED"
+      );
+      await expectFenced(raw, e);
+      const done = (await eventsOf(raw.eventStore, e, "EXECUTION_COMPLETED"))[0] as never;
+      await coord.handleEvent(done);
+
+      expect(await eventsOf(raw.eventStore, e, "PAYLOAD_SHREDDED")).toHaveLength(1);
+      expect(await keys.get("alice")).toBeNull();
+      expect(coord.pendingSubjects()).toEqual([]);
     });
   });
 }

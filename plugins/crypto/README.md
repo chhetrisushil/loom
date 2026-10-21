@@ -37,6 +37,8 @@ const snapshotStore = new EncryptingSnapshotStore(innerSnaps, keys, {
 // compacted (ADR 0106).
 await shredSubject(keys, innerEvents, executionId, { reason: "gdpr-erasure", snapshotStore: innerSnaps });
 // key destroyed; PAYLOAD_SHREDDED tombstoned; reads of the sensitive fields now throw.
+// Call it for a terminal (or parked) execution: on a log that holds a fence it takes the fence only
+// when the log shows no runner, and a live fenced execution refuses with StaleFenceError, key intact.
 ```
 
 ## Guarantees (and non-guarantees)
