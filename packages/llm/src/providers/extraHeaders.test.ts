@@ -5,17 +5,9 @@ import { OpenAiProvider } from "./OpenAiProvider";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const emptyStream = (): ReadableStream<Uint8Array> =>
-  new ReadableStream({
-    start(c) {
-      c.close();
-    },
-  });
-
 function stubFetch(json: unknown): ReturnType<typeof vi.fn> {
-  const fn = vi.fn(
-    async () => ({ ok: true, json: async () => json, body: emptyStream() }) as unknown as Response
-  );
+  // A real Response: the body is the JSON text (a stream reads it as non-`data:` lines and ends).
+  const fn = vi.fn(async () => new Response(JSON.stringify(json), { status: 200 }));
   vi.stubGlobal("fetch", fn);
   return fn;
 }

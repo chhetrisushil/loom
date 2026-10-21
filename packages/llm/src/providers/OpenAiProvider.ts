@@ -3,7 +3,16 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { LlmHttpError, LlmStreamError, drainBody } from "../errors";
+import {
+  DEFAULT_MAX_LINE_BYTES,
+  DEFAULT_MAX_RESPONSE_BYTES,
+  LlmHttpError,
+  LlmStreamError,
+  StreamLimiter,
+  drainBody,
+  readBoundedJson,
+  resolveLimit,
+} from "../errors";
 import { type LlmMediaPart, type LlmReasoning, type LlmResultPart, textOf } from "../parts";
 import { inlineData } from "../resolveContent";
 import type {
@@ -53,6 +62,13 @@ export interface OpenAiProviderConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
+  /**
+   * Cap on a complete response body and on the total bytes read from a stream (default 8 MiB).
+   * Over it the body is cancelled and `LlmResponseLimitError` (provider and reason only) is thrown.
+   */
+  maxResponseBytes?: number;
+  /** Cap on one line of a stream (default 1 MiB); over it, `LlmResponseLimitError`. */
+  maxLineBytes?: number;
   /** Override the declared modalities (e.g. a model without vision or audio input). */
   capabilities?: LlmCapabilities;
 }
@@ -226,6 +242,8 @@ export class OpenAiProvider implements LlmProvider {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly maxResponseBytes: number;
+  private readonly maxLineBytes: number;
   private readonly extraHeaders: Readonly<Record<string, string>>;
   private readonly reasoningEffort: OpenAiProviderConfig["reasoningEffort"];
   readonly capabilities: LlmCapabilities;
@@ -253,6 +271,12 @@ export class OpenAiProvider implements LlmProvider {
       config.apiKey ?? (typeof process !== "undefined" ? (process.env.OPENAI_API_KEY ?? "") : "");
     this.model = config.model ?? "gpt-4o";
     this.baseUrl = config.baseUrl ?? OPENAI_DEFAULT_URL;
+    this.maxResponseBytes = resolveLimit(
+      config.maxResponseBytes,
+      DEFAULT_MAX_RESPONSE_BYTES,
+      "maxResponseBytes"
+    );
+    this.maxLineBytes = resolveLimit(config.maxLineBytes, DEFAULT_MAX_LINE_BYTES, "maxLineBytes");
   }
 
   private buildBody(request: LlmRequest, stream = false): Record<string, unknown> {
@@ -288,6 +312,8 @@ export class OpenAiProvider implements LlmProvider {
       },
       body: JSON.stringify(this.buildBody(request)),
       ...(request.signal !== undefined && { signal: request.signal }),
+      // Never follow a redirect: it would re-send the body and the API key to another origin.
+      redirect: "error",
     });
 
     if (!resp.ok) {
@@ -295,7 +321,11 @@ export class OpenAiProvider implements LlmProvider {
       throw new LlmHttpError("openai", resp.status);
     }
 
-    const data = (await resp.json()) as OpenAiChatResponse;
+    const data = (await readBoundedJson(
+      resp,
+      "openai",
+      this.maxResponseBytes
+    )) as OpenAiChatResponse;
     const choice = data.choices[0];
     if (!choice?.message) {
       return { content: "", stopReason: "end_turn" };
@@ -342,6 +372,8 @@ export class OpenAiProvider implements LlmProvider {
         stream_options: { include_usage: true },
       }),
       ...(request.signal !== undefined && { signal: request.signal }),
+      // Never follow a redirect: it would re-send the body and the API key to another origin.
+      redirect: "error",
     });
 
     if (!resp.ok) {
@@ -352,6 +384,7 @@ export class OpenAiProvider implements LlmProvider {
     if (!resp.body) return;
 
     const reader = resp.body.getReader();
+    const limiter = new StreamLimiter("openai", this.maxResponseBytes, this.maxLineBytes);
     const decoder = new TextDecoder();
     let buffer = "";
 
@@ -381,10 +414,12 @@ export class OpenAiProvider implements LlmProvider {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        limiter.chunk(value);
         buffer += decoder.decode(value, { stream: true });
 
         const lines = buffer.split("\n");
         buffer = lines.pop() ?? "";
+        limiter.lines(lines, buffer);
 
         for (const line of lines) {
           if (!line.startsWith("data: ")) continue;

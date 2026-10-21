@@ -81,6 +81,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   // a provider reported an error inside a 200 stream (overloaded, server error): transient
   // infrastructure, left to the step retry policy, not the model
   "LlmStreamError",
+  // a provider response over the configured size cap: a misbehaving endpoint, not the model's to fix
+  "LlmResponseLimitError",
 ]);
 
 const MAX_CAUSE_DEPTH = 5;
@@ -111,10 +113,10 @@ function isProviderOne(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const o = err as { name?: unknown; status?: unknown };
   if (o.name === "LlmHttpError") return typeof o.status === "number";
-  if (o.name === "LlmStreamError") return true;
+  if (o.name === "LlmStreamError" || o.name === "LlmResponseLimitError") return true;
   for (let p = Object.getPrototypeOf(err); p !== null; p = Object.getPrototypeOf(p)) {
     const n = (p as { constructor?: { name?: string } }).constructor?.name;
-    if (n === "LlmStreamError") return true;
+    if (n === "LlmStreamError" || n === "LlmResponseLimitError") return true;
   }
   return false;
 }

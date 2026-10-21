@@ -1,5 +1,5 @@
-export { LlmHttpError, LlmStreamError } from "./errors";
-export type { LlmHttpProvider } from "./errors";
+export { LlmHttpError, LlmResponseLimitError, LlmStreamError } from "./errors";
+export type { LlmHttpProvider, LlmResponseLimitReason } from "./errors";
 export type {
   LlmContent,
   LlmMessage,
