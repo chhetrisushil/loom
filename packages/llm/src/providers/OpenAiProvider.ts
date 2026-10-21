@@ -36,6 +36,8 @@ function parseArguments(argsJson: string): unknown {
 }
 
 export interface OpenAiProviderConfig {
+  /** Sent as `reasoning_effort` when set; servers that support reasoning return it only when asked. */
+  reasoningEffort?: "low" | "medium" | "high";
   /**
    * Extra request headers sent on every request (for example `anthropic-workspace-id`). Header
    * names and values must be strings without CR/LF; a header the provider sets itself (auth,
@@ -76,6 +78,14 @@ const OPENAI_DEFAULT_URL = "https://api.openai.com";
 /** ADR 0133 - `reasoning_content` (an OpenAI-compatible server's field) -> reasoning. Shared by `complete` and `stream`. */
 function compatReasoning(text: string): LlmReasoning[] {
   return text === "" ? [] : [{ kind: "text", text, provider: "openai-compat" }];
+}
+
+/** `reasoning_content` (DeepSeek-style servers) or `reasoning` (Ollama and others); the first non-empty wins. */
+function readReasoningField(x: {
+  reasoning_content?: string | null;
+  reasoning?: string | null;
+}): string {
+  return x.reasoning_content || x.reasoning || "";
 }
 
 function dataUrl(p: LlmMediaPart): string {
@@ -183,6 +193,7 @@ interface OpenAiChoice {
     content?: string | null;
     /** Some OpenAI-compatible servers return reasoning here; OpenAI's own Chat Completions does not (ADR 0133). */
     reasoning_content?: string | null;
+    reasoning?: string | null;
     tool_calls?: Array<{
       id: string;
       function: { name: string; arguments: string };
@@ -191,6 +202,7 @@ interface OpenAiChoice {
   delta?: {
     content?: string | null;
     reasoning_content?: string | null;
+    reasoning?: string | null;
     tool_calls?: Array<{
       index: number;
       id?: string;
@@ -210,9 +222,11 @@ export class OpenAiProvider implements LlmProvider {
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly extraHeaders: Readonly<Record<string, string>>;
+  private readonly reasoningEffort: OpenAiProviderConfig["reasoningEffort"];
   readonly capabilities: LlmCapabilities;
 
   constructor(config: OpenAiProviderConfig = {}) {
+    this.reasoningEffort = config.reasoningEffort;
     this.extraHeaders = validateExtraHeaders(
       config.headers,
       ["authorization", "content-type"],
@@ -246,6 +260,7 @@ export class OpenAiProvider implements LlmProvider {
 
     if (request.maxTokens !== undefined) body.max_tokens = request.maxTokens;
     if (request.temperature !== undefined) body.temperature = request.temperature;
+    if (this.reasoningEffort !== undefined) body.reasoning_effort = this.reasoningEffort;
 
     if (request.tools !== undefined && request.tools.length > 0) {
       body.tools = request.tools.map((t) => ({
@@ -288,7 +303,7 @@ export class OpenAiProvider implements LlmProvider {
     }));
 
     const stopReason = normalizeFinishReason(choice.finish_reason);
-    const reasoning = compatReasoning(choice.message.reasoning_content ?? "");
+    const reasoning = compatReasoning(readReasoningField(choice.message));
 
     return {
       content,
@@ -384,7 +399,7 @@ export class OpenAiProvider implements LlmProvider {
           }
           const choice = chunk.choices[0];
           const delta = choice?.delta?.content ?? "";
-          const reasoningDelta = choice?.delta?.reasoning_content ?? "";
+          const reasoningDelta = readReasoningField(choice?.delta ?? {});
           reasoningText += reasoningDelta;
           const toolDeltas: NonNullable<LlmStreamChunk["toolDelta"]>[] = [];
           for (const tc of choice?.delta?.tool_calls ?? []) {
