@@ -227,6 +227,20 @@ for (const backend of inboxBackends("erwin").filter((b) => b.name !== "sqlite"))
         expect(await w.events.read(inbox)).toEqual([]);
       });
 
+      it("a gap-free log that stops short of the checkpoint is treated as compacted: its stream is kept", async () => {
+        const x = `e-${uid()}`;
+        const w = world({ subjects: { [x]: "ann" } });
+        await w.events.append(started(x, "ann"));
+        await w.events.append(ev(x, 1, "EXECUTION_COMPLETED", {}));
+        await w.save(x, "completed", 5); // the checkpoint is ahead of what the log holds
+        const inbox = `${INBOX_STREAM_PREFIX}${x}`;
+        await w.events.append({ ...ev(inbox, 0, "MESSAGE_SENT", { n: 1 }), id: `m-${x}` });
+        const coord = await w.coordinator();
+        await expect(coord.eraseSubject("ann")).rejects.toBeInstanceOf(ShredIncompleteError);
+        expect((await coord.eraseSubject("ann")).outcome).toBe("erased");
+        expect((await w.events.read(inbox)).length).toBe(1); // no proven head: kept
+      });
+
       for (const seal of ["state", "paths"] as const) {
         it(`a suspended owner in the window stays parked (seal=${seal}), as with path sealing`, async () => {
           const x = `e-${uid()}`;

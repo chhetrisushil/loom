@@ -8,6 +8,7 @@ import {
   inboxStreamsOfChainDeep,
   isAnsweringKind,
   isErasureWindow,
+  isKeyUnavailable,
   isPayloadShredded,
   isQuiescent,
   recordsErasureIntent,
@@ -407,6 +408,7 @@ export class EraseCoordinator {
   ): Promise<{
     snapshot: { executionId?: string; sequence: number; state: ExecutionState } | null;
     opaque: boolean;
+    subjectId?: string;
   }> {
     const store = this.options.snapshotStore;
     if (store === undefined) return { snapshot: null, opaque: false };
@@ -419,7 +421,7 @@ export class EraseCoordinator {
       const snapshot = await sealedRead(executionId);
       const opaque =
         typeof (snapshot?.state as { status?: unknown } | undefined)?.status !== "string";
-      return { snapshot, opaque };
+      return { snapshot, opaque, ...(isKeyUnavailable(err) && { subjectId: err.subjectId }) };
     }
   }
 
@@ -449,10 +451,16 @@ export class EraseCoordinator {
     }
     if (read.opaque && snapshot !== null) {
       // A whole-state sealed checkpoint whose key is gone: its status is unreadable.
-      // (1) The log is not compacted (gap-free from 0; compaction keeps
-      // only sequence 0 of the prefix): ignore the checkpoint and fold the WHOLE log by its plaintext event types, the no-snapshot path. Exact: continued, suspended and a re-open
-      // after the intent all read as they are.
-      if (events.every((e, i) => e.sequence === i)) {
+      // (1) The log is not compacted: gap-free from 0 AND reaching the checkpoint (compaction
+      // keeps only sequence 0 of the prefix). Then ignore the checkpoint and fold the WHOLE log by
+      // its plaintext event types, the no-snapshot path: continued, suspended and a re-open after
+      // the intent all read as they are.
+      const last0 = events[events.length - 1];
+      if (
+        events.every((e, i) => e.sequence === i) &&
+        last0 !== undefined &&
+        last0.sequence >= snapshot.sequence
+      ) {
         return { status: foldEvents(events, { executionId }).status, first };
       }
       // (2) Compacted: only the tail above the checkpoint is left. Judge it by the rule
@@ -460,7 +468,8 @@ export class EraseCoordinator {
       // a non-`continued` terminal kind; anything less keeps the inbox streams (the key's
       // destruction already makes their payloads unreadable).
       const tail = events.filter((e) => e.sequence > snapshot.sequence);
-      const quiescent = isQuiescent(tail, undefined, recordsErasureIntent(events));
+      // The intent is looked for under THIS subject (the one whose key is gone), as shredSubject does.
+      const quiescent = isQuiescent(tail, undefined, recordsErasureIntent(events, read.subjectId));
       const last = [...tail].reverse().find((e) => isAnsweringKind(e));
       const status = !quiescent
         ? foldEvents(tail, { executionId }).status
