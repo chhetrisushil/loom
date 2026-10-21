@@ -6,8 +6,10 @@ import {
   chainIdOfFirst,
   erasureWindowView,
   inboxStreamsOfChainDeep,
-  isKeyUnavailable,
+  isAnsweringKind,
+  isErasureWindow,
   isPayloadShredded,
+  isQuiescent,
   recordsErasureIntent,
 } from "@loom/event-runtime";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
@@ -34,6 +36,12 @@ const TERMINAL_STATUS = new Set<ExecutionState["status"]>([
   "failed",
   "cancelled",
   "continued",
+]);
+const TERMINAL_STATUS_OF_EVENT = new Map<string, ExecutionState["status"]>([
+  ["EXECUTION_COMPLETED", "completed"],
+  ["EXECUTION_FAILED", "failed"],
+  ["EXECUTION_CANCELLED", "cancelled"],
+  ["EXECUTION_CONTINUED", "continued"],
 ]);
 const TERMINAL_EVENTS = new Set([
   "EXECUTION_COMPLETED",
@@ -96,7 +104,9 @@ export interface EraseCoordinatorOptions {
    * this, liveness folds on the latest snapshot. Pass it whenever the log can be compacted.
    */
   snapshotStore?: {
-    loadLatest(executionId: string): Promise<{ sequence: number; state: ExecutionState } | null>;
+    loadLatest(
+      executionId: string
+    ): Promise<{ executionId?: string; sequence: number; state: ExecutionState } | null>;
     /**
      * Optional (SnapshotStore SPI 1.1.0): the latest snapshot as stored at rest, readable after the
      * subject's key is destroyed. Used ONLY in the destroy window (see `foldExecution`), so a
@@ -105,7 +115,7 @@ export interface EraseCoordinatorOptions {
      */
     loadLatestSealed?(
       executionId: string
-    ): Promise<{ sequence: number; state: ExecutionState } | null>;
+    ): Promise<{ executionId?: string; sequence: number; state: ExecutionState } | null>;
   };
 }
 
@@ -310,6 +320,7 @@ export class EraseCoordinator {
       const folded = await this.foldExecution(executionId, proof);
       if (folded === undefined) continue;
       if (!TERMINAL_STATUS.has(folded.status) || folded.status === "continued") continue;
+      if (folded.head === false) continue; // terminal, but not PROVEN a chain head: keep its streams
       chains.add(chainIdOfFirst(folded.first, executionId));
     }
     const streams: InboxStreams[] = [];
@@ -394,7 +405,7 @@ export class EraseCoordinator {
     events: readonly EventEnvelope[],
     proof: DestructionProof | undefined
   ): Promise<{
-    snapshot: { sequence: number; state: ExecutionState } | null;
+    snapshot: { executionId?: string; sequence: number; state: ExecutionState } | null;
     opaque: boolean;
   }> {
     const store = this.options.snapshotStore;
@@ -403,10 +414,7 @@ export class EraseCoordinator {
       return { snapshot: await store.loadLatest(executionId), opaque: false };
     } catch (err) {
       const sealedRead = store.loadLatestSealed?.bind(store);
-      let inWindow = isPayloadShredded(err);
-      if (!inWindow && isKeyUnavailable(err) && recordsErasureIntent(events, err.subjectId)) {
-        inWindow = proof !== undefined && (await proof(err.subjectId)) === true;
-      }
+      const inWindow = isPayloadShredded(err) || (await isErasureWindow(err, events, proof));
       if (!inWindow || sealedRead === undefined) throw err;
       const snapshot = await sealedRead(executionId);
       const opaque =
@@ -419,7 +427,9 @@ export class EraseCoordinator {
   private async foldExecution(
     executionId: string,
     proof: DestructionProof | undefined
-  ): Promise<{ status: ExecutionState["status"]; first: EventEnvelope } | undefined> {
+  ): Promise<
+    { status: ExecutionState["status"]; first: EventEnvelope; head?: boolean } | undefined
+  > {
     const events = await this.readErasedOk(executionId, proof);
     const first = events[0];
     if (first === undefined) return undefined;
@@ -427,18 +437,40 @@ export class EraseCoordinator {
     const snapshot = read.snapshot;
     // Fill a blank legacy identity; a NON-blank one naming another execution is a store or
     // tenant-scoping defect, refused as everywhere else a fold is seeded (ADR 0106).
-    if (snapshot !== null && !read.opaque) {
-      assertSnapshotIdentity(snapshot.state, executionId, first.workflowId ?? "");
+    if (snapshot !== null) {
+      // The row's index columns are plaintext even when its state is sealed: always refuse a
+      // checkpoint of another execution (a store or tenant-scoping defect, ADR 0106).
+      if (snapshot.executionId !== undefined && snapshot.executionId !== executionId) {
+        throw new TypeError(
+          `snapshot store returned a checkpoint of "${snapshot.executionId}" for "${executionId}"`
+        );
+      }
+      if (!read.opaque) assertSnapshotIdentity(snapshot.state, executionId, first.workflowId ?? "");
     }
     if (read.opaque && snapshot !== null) {
-      // Whole-state sealed checkpoint whose key is gone: its status is unreadable. Fold the log
-      // above it; if that does not settle a status, the durable erase intent does (it is only ever
-      // written to a quiescent log, and the key is proved destroyed), so it reads terminal.
-      const tail = foldEvents(
-        events.filter((e) => e.sequence > snapshot.sequence),
-        { executionId }
-      );
-      return { status: tail.status === "pending" ? "completed" : tail.status, first };
+      // A whole-state sealed checkpoint whose key is gone: its status is unreadable.
+      // (1) The log is not compacted (gap-free from 0; compaction keeps
+      // only sequence 0 of the prefix): ignore the checkpoint and fold the WHOLE log by its plaintext event types, the no-snapshot path. Exact: continued, suspended and a re-open
+      // after the intent all read as they are.
+      if (events.every((e, i) => e.sequence === i)) {
+        return { status: foldEvents(events, { executionId }).status, first };
+      }
+      // (2) Compacted: only the tail above the checkpoint is left. Judge it by the rule
+      // `shredSubject` uses (`isQuiescent`). A chain HEAD is claimed only when the tail itself shows
+      // a non-`continued` terminal kind; anything less keeps the inbox streams (the key's
+      // destruction already makes their payloads unreadable).
+      const tail = events.filter((e) => e.sequence > snapshot.sequence);
+      const quiescent = isQuiescent(tail, undefined, recordsErasureIntent(events));
+      const last = [...tail].reverse().find((e) => isAnsweringKind(e));
+      const status = !quiescent
+        ? foldEvents(tail, { executionId }).status
+        : last?.eventType === "EXECUTION_SUSPENDED"
+          ? "suspended"
+          : last === undefined
+            ? "completed" // quiescent on the intent alone: terminal for liveness, head unproven
+            : (TERMINAL_STATUS_OF_EVENT.get(last.eventType) ?? "completed");
+      const head = last !== undefined && status !== "continued" && TERMINAL_STATUS.has(status);
+      return { status, first, head };
     }
     const state =
       snapshot !== null

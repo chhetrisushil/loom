@@ -1,4 +1,4 @@
-import { type EventKind, KERNEL_EVENT_KINDS } from "@loom/core";
+import { type EventEnvelope, type EventKind, KERNEL_EVENT_KINDS } from "@loom/core";
 
 // ADR 0118 D1 — which kernel event kinds ANSWER a park.
 //
@@ -88,4 +88,40 @@ export function isAnsweringKind(event: ClassifiableEvent): boolean {
     return EVENT_KIND_CLASS[event.eventType as EventKind] === "answering";
   }
   return event.metadata?.kernel === true;
+}
+
+const QUIESCENT_TERMINAL_EVENTS = new Set([
+  "EXECUTION_COMPLETED",
+  "EXECUTION_FAILED",
+  "EXECUTION_CANCELLED",
+  "EXECUTION_CONTINUED",
+]);
+const QUIESCENT_TERMINAL_STATUS = new Set(["completed", "failed", "cancelled", "continued"]);
+
+/**
+ * Does the log show NO runner? The ONE rule `shredSubject` (before it takes a fence) and the
+ * erasure coordinator (in the destroy window, for a compacted log with a sealed checkpoint) share.
+ * Judged from data that sealing never hides: the LAST answering event of `tail`
+ * (`isAnsweringKind`, ignoring audit rows and the shredder's own events). A terminal kind or a park
+ * is quiescent; a resume (a terminal followed by a re-open included) or a start with no park is
+ * live. With no answering event in `tail`, the checkpoint's `snapshotStatus` decides when it is
+ * readable; if it is not (a retry after the key was destroyed), the erase intent already in the
+ * log is the proof, because it was only written to a quiescent log. Quiescent is NOT "terminal
+ * chain head": a parked (`suspended`) owner is quiescent.
+ */
+export function isQuiescent(
+  tail: readonly EventEnvelope[],
+  snapshotStatus: string | undefined,
+  hasIntent: boolean
+): boolean {
+  const last = [...tail].reverse().find((e) => isAnsweringKind(e));
+  if (last !== undefined) {
+    return (
+      QUIESCENT_TERMINAL_EVENTS.has(last.eventType) || last.eventType === "EXECUTION_SUSPENDED"
+    );
+  }
+  if (snapshotStatus !== undefined) {
+    return QUIESCENT_TERMINAL_STATUS.has(snapshotStatus) || snapshotStatus === "suspended";
+  }
+  return hasIntent;
 }

@@ -78,7 +78,21 @@ export async function erasureWindowView(
   destroyed?: DestructionProof
 ): Promise<readonly EventEnvelope[] | undefined> {
   if (!isKeyUnavailable(err) || !err.redacted) return undefined;
-  if (!recordsErasureIntent(err.redacted, err.subjectId)) return undefined;
-  if (destroyed === undefined || (await destroyed(err.subjectId)) !== true) return undefined;
-  return err.redacted;
+  return (await isErasureWindow(err, err.redacted, destroyed)) ? err.redacted : undefined;
+}
+
+/**
+ * The ONE gate of the retry window: `err` is a {@link KeyUnavailableError} AND `events` (the
+ * stream's log, redacted or raw) records this subject's erase intent AND `destroyed` proves the key
+ * store destroyed the key. Every read in the window (event log, sealed checkpoint) uses it, so
+ * they cannot drift. No proof, or a false one, fails closed.
+ */
+export async function isErasureWindow(
+  err: unknown,
+  events: readonly Pick<EventEnvelope, "eventType" | "payload">[],
+  destroyed?: DestructionProof
+): Promise<boolean> {
+  if (!isKeyUnavailable(err)) return false;
+  if (!recordsErasureIntent(events, err.subjectId)) return false;
+  return destroyed !== undefined && (await destroyed(err.subjectId)) === true;
 }

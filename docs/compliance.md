@@ -244,13 +244,18 @@ nothing is appended, the execution is never failed, and a node that CAN open it 
   execution's latest checkpoint (`snapshotStore`), and a sealing store (`EncryptingSnapshotStore`,
   notably `sealState: true`) cannot open it once the key is gone. In the window the coordinator reads
   it through the store's `loadLatestSealed` (SnapshotStore SPI 1.1.0, as `shredSubject` does) under
-  the same gate: this subject's erase intent in the log AND the destruction proof. A whole-state
-  sealed checkpoint has no readable status, so liveness is folded from the log above it and, when
-  that settles nothing, the intent (written only to a quiescent log) reads it as terminal. A key
-  that is unavailable but not proved destroyed, or with no intent, still throws
-  `KeyUnavailableError`. So a crash between `keys.destroy` and the tombstones is finished by simply
-  calling `eraseSubject` again (or by the next terminal event of a parked request): the liveness
-  gate, `finishedChains`, the inbox-stream purge and the park bookkeeping all run on that retry.
+  the same single gate (`isErasureWindow`: this subject's erase intent in the log AND the destruction
+  proof). A whole-state sealed checkpoint has no readable status, so the coordinator does not guess
+  it from the intent: an uncompacted log is folded whole by its plaintext event types (a `continued`,
+  `suspended` or re-opened execution reads as it is, the same as with path sealing); a log compacted
+  past its prefix is judged by the rule `shredSubject` uses (`isQuiescent`), and its inbox streams
+  are purged only when the tail shows a non-`continued` terminal event (otherwise they are left, and
+  the destroyed key already makes their payloads unreadable). A key that is unavailable but not proved
+  destroyed, or with no intent, still throws `KeyUnavailableError`. Nothing re-drives a crashed erasure
+  by itself: in the window every execution of the subject is already terminal, so no further terminal
+  event arrives. Call `eraseSubject` again (an operator or app retry; after a restart too, since the
+  intent is in the log); that retry runs the liveness gate, `finishedChains`, the shred, the
+  inbox-stream purge and the park bookkeeping.
   **Intent is not destruction (round 5).** A dangling intent (a crash before `keys.destroy`, or
   intent N of M failed) leaves the key ALIVE on the node that wrote it, and a retry on a wrong-key
   node would see the intent. So the retry also needs the KEY STORE's proof: the optional
