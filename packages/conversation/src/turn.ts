@@ -24,6 +24,7 @@ import {
 } from "./access";
 import type { BargeInSource, StoredInboxMessage } from "./bargeIn";
 import { withTurnScope } from "./hub";
+import { isProviderError } from "./providerError";
 import { type ConversationConfig, USER_ORIGIN } from "./types";
 
 // ── SHARED MODE: a turn is its own execution, started as the ASKER (ADR 0122 D10) ───────────────────
@@ -125,7 +126,7 @@ export function sharedTurnFlow(
           ...(config.agent.memory !== undefined && scope !== undefined && { memoryScope: scope }),
         };
       }
-      if (isTerminalToolError(e)) {
+      if (!isProviderError(e) && isTerminalToolError(e)) {
         // An authority refusal is a user-visible outcome of THIS asker's turn; the rest (a park, a
         // cancel, a divergence) is the runtime's and propagates.
         if (e instanceof Error && DENIED.test(e.name)) {
