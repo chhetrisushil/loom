@@ -1967,9 +1967,15 @@ importers:
         specifier: ^8.13.0
         version: 8.22.0
     devDependencies:
+      '@loom/compliance':
+        specifier: workspace:*
+        version: link:../../packages/compliance
       '@loom/conformance':
         specifier: workspace:*
         version: link:../../packages/conformance
+      '@loom/plugin-crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@loom/plugin-sqlite':
         specifier: workspace:*
         version: link:../sqlite
