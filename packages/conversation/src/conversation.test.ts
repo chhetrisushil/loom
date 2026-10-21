@@ -1,6 +1,16 @@
+import { LlmHttpError, LlmStreamError } from "@loom/llm";
 import { InboxClosedError } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
-import { Latch, boot, lastUserText, messages, signRaw, until } from "./__fixtures__/harness";
+import {
+  Latch,
+  alice,
+  boot,
+  lastUserText,
+  messages,
+  sharedScript,
+  signRaw,
+  until,
+} from "./__fixtures__/harness";
 import { CONVERSATION_TOPIC } from "./index";
 
 describe("conversation: turns", () => {
@@ -144,6 +154,60 @@ describe("conversation: turns", () => {
     await b.conv.sendTurn(id, "two");
     expect((await messages(b, id, 4))[3]).toMatchObject({ text: "ok", status: "complete" });
     expect(seen).toHaveLength(1); // not re-reported on the replay a wake performs
+  });
+
+  const providerFailures: [string, () => Error][] = [
+    ["LlmHttpError 503", () => new LlmHttpError("anthropic", 503)],
+    ["LlmHttpError 429", () => new LlmHttpError("anthropic", 429)],
+    ["LlmHttpError 401", () => new LlmHttpError("anthropic", 401)],
+    ["LlmStreamError", () => new LlmStreamError("anthropic", "overloaded_error")],
+  ];
+  for (const shared of [false, true]) {
+    for (const [label, make] of providerFailures) {
+      it(`${shared ? "shared: " : ""}${label} from the model call fails THAT turn with the fixed reason; the next turn works`, async () => {
+        const seen: unknown[] = [];
+        const b = boot({
+          ...(shared && { shared: true }),
+          config: { onError: (_id, err) => seen.push(err) },
+          reply: (req, nth) => {
+            if (nth === 1) throw make();
+            return shared ? sharedScript(req) : { content: "ok", stopReason: "end_turn" };
+          },
+        });
+        const { conversationId: id } = await b.conv.start(
+          shared ? { principal: alice } : undefined
+        );
+        const who = shared ? { principal: alice } : undefined;
+        await b.conv.sendTurn(id, "one", who);
+        const first = await messages(b, id, 2, shared ? alice : undefined);
+        expect(first[1]).toMatchObject({
+          role: "assistant",
+          status: "failed",
+          reason: "model-error",
+        });
+        expect(JSON.stringify(first)).not.toMatch(/API error|stream error|overloaded/);
+        expect(seen).toHaveLength(1);
+        await b.conv.sendTurn(id, "two", who);
+        expect((await messages(b, id, 4, shared ? alice : undefined))[3]).toMatchObject({
+          status: "complete",
+        });
+        const st = await b.runtime.systemStateReader().loadState(id);
+        expect(st?.status).not.toBe("failed");
+      });
+    }
+  }
+
+  it("a genuinely terminal non-provider error still fails the execution, not the turn", async () => {
+    const b = boot({
+      reply: () => {
+        throw Object.assign(new Error("policy stop"), { retryable: false });
+      },
+    });
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "one");
+    await until(
+      async () => (await b.runtime.systemStateReader().loadState(id))?.status === "failed"
+    );
   });
 
   it("close ends the conversation; a later send is refused", async () => {
