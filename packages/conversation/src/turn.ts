@@ -127,7 +127,8 @@ export function sharedTurnFlow(
       }
       if (classifyModelCallError(e) === "terminal") {
         // An authority refusal is a user-visible outcome of THIS asker's turn; the rest (a park, a
-        // cancel, a divergence) is the runtime's and propagates.
+        // cancel, a divergence) is the runtime's and propagates. Any other model error, even one that
+        // declares retryable=false, falls through to a failed turn with the fixed model-error reason.
         if (e instanceof Error && DENIED.test(e.name)) {
           config.onError?.(errorId, e, { conversationId: input.conversationId, turn: input.turn });
           return { status: "failed", content: "", tools: [], reason: "denied", errorId };

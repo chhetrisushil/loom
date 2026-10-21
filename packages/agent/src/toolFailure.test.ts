@@ -273,6 +273,29 @@ describe("classifyModelCallError — the conversation's own model call", () => {
       classifyModelCallError(new Error("w", { cause: Object.assign(http(503), { cause: denial }) }))
     ).toBe("terminal");
   });
+  it("retryable=false alone is NOT terminal on the model call (plain, wrapped, or on a provider error)", () => {
+    const nr = (e: Error = new Error("x")) => Object.assign(e, { retryable: false });
+    expect(isTerminalToolError(nr())).toBe(true); // the tool loop keeps the rule
+    expect(classifyModelCallError(nr())).toBe("other");
+    expect(classifyModelCallError(new Error("w", { cause: nr() }))).toBe("other");
+    expect(classifyModelCallError(nr(http(400)))).toBe("provider");
+    expect(classifyModelCallError(Object.assign(http(503), { cause: nr() }))).toBe("provider");
+  });
+  it("control flow is terminal on the model call: park, denial, cancel, kill switch, even with retryable=false", () => {
+    expect(classifyModelCallError(new core.SuspendError({ on: "Gate" }))).toBe("terminal");
+    for (const name of [
+      "KillSwitchEngagedError",
+      "ExecutionCancelledError",
+      "QuotaExceededError",
+    ]) {
+      expect(classifyModelCallError(named(name))).toBe("terminal");
+      expect(classifyModelCallError(named(name, { retryable: false }))).toBe("terminal");
+    }
+    const denial = new capability.CapabilityInvokeDeniedError("c", "no");
+    expect(
+      classifyModelCallError(Object.assign(new Error("w"), { retryable: false, cause: denial }))
+    ).toBe("terminal");
+  });
   it("stays in sync with isTerminalToolError: every terminal provider failure is provider, never terminal", () => {
     for (const e of [
       http(401),
