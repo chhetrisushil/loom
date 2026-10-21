@@ -83,6 +83,8 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "LlmStreamError",
   // a provider response over the configured size cap: a misbehaving endpoint, not the model's to fix
   "LlmResponseLimitError",
+  // a 2xx whose body is not JSON: the same misbehaving endpoint
+  "LlmResponseInvalidError",
 ]);
 
 const MAX_CAUSE_DEPTH = 5;
@@ -92,7 +94,7 @@ const SEALED_UNREADABLE = Symbol.for("loom.sealedUnreadable");
 
 /**
  * `LlmHttpError` (`@loom/llm`) is classified by STATUS, matched by name and a numeric `status` so
- * this file needs no import. TERMINAL: 401/403 (configuration), 429 (rate limit: the same stop as
+ * this file needs no import. TERMINAL: 3xx (a redirect, never followed: the base URL is wrong or intercepted; not retryable), 401/403 (configuration), 429 (rate limit: the same stop as
  * `RateLimitExceededError`) and 5xx/529 (transient: the step retry policy's to handle, not the
  * model's). FEEDBACK: every other status (400/404/408/409/413/422 ...): a request the model can
  * adapt. A bare instance with no status is feedback.
@@ -101,22 +103,34 @@ function isTerminalLlmHttp(err: object): boolean {
   if ((err as { name?: unknown }).name !== "LlmHttpError") return false;
   const status = (err as { status?: unknown }).status;
   if (typeof status !== "number") return false;
-  return status === 401 || status === 403 || status === 429 || (status >= 500 && status <= 599);
+  return (
+    status === 401 ||
+    status === 403 ||
+    status === 429 ||
+    (status >= 300 && status <= 399) ||
+    (status >= 500 && status <= 599)
+  );
 }
 
 /**
  * A provider failure, matched like the rest of this file (by name, so a second copy of `@loom/llm`
  * or an adapter's own class of that name counts): `LlmHttpError` with a numeric `status` (any
- * status), `LlmStreamError` by its name or any constructor name on its prototype chain.
+ * status), `LlmResponseLimitError`, `LlmResponseInvalidError`, `LlmStreamError` by its name or any constructor name on its prototype chain.
  */
 function isProviderOne(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
   const o = err as { name?: unknown; status?: unknown };
   if (o.name === "LlmHttpError") return typeof o.status === "number";
-  if (o.name === "LlmStreamError" || o.name === "LlmResponseLimitError") return true;
+  if (
+    o.name === "LlmStreamError" ||
+    o.name === "LlmResponseLimitError" ||
+    o.name === "LlmResponseInvalidError"
+  )
+    return true;
   for (let p = Object.getPrototypeOf(err); p !== null; p = Object.getPrototypeOf(p)) {
     const n = (p as { constructor?: { name?: string } }).constructor?.name;
-    if (n === "LlmStreamError" || n === "LlmResponseLimitError") return true;
+    if (n === "LlmStreamError" || n === "LlmResponseLimitError" || n === "LlmResponseInvalidError")
+      return true;
   }
   return false;
 }
@@ -182,7 +196,7 @@ export function isTerminalToolError(err: unknown): boolean {
  *  - "terminal": some level is a terminal error that is NOT a provider failure (a park, a denial, a
  *    cancel, a divergence ...): it reaches the runtime, and wins over a provider error anywhere in the chain;
  *  - "provider": otherwise, some level is a provider failure (`LlmHttpError` of any status,
- *    `LlmStreamError`): the turn fails with the fixed model-error reason;
+ *    `LlmStreamError`, `LlmResponseLimitError`, `LlmResponseInvalidError`): the turn fails with the fixed model-error reason;
  *  - "other": anything else (also a failed turn, as before).
  */
 export function classifyModelCallError(err: unknown): "terminal" | "provider" | "other" {

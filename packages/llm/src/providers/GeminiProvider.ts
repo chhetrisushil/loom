@@ -6,6 +6,7 @@ import {
 import {
   DEFAULT_MAX_LINE_BYTES,
   DEFAULT_MAX_RESPONSE_BYTES,
+  DEFAULT_MAX_STREAM_BYTES,
   LlmHttpError,
   drainBody,
   readBoundedJson,
@@ -36,11 +37,13 @@ export interface GeminiProviderConfig {
   model?: string;
   baseUrl?: string;
   /**
-   * Cap on a complete response body and on the total bytes read from a stream (default 8 MiB).
-   * Over it the body is cancelled and `LlmResponseLimitError` (provider and reason only) is thrown.
+   * Cap on a complete response body, in bytes after decompression (default 8 MiB). Over it the
+   * body is cancelled and `LlmResponseLimitError` (provider and reason only) is thrown.
    */
   maxResponseBytes?: number;
-  /** Cap on one line of a stream (default 1 MiB); over it, `LlmResponseLimitError`. */
+  /** Cap on the total bytes read from a stream (default 128 MiB); same error. */
+  maxStreamBytes?: number;
+  /** Cap on one line of a stream, in UTF-8 bytes (default 1 MiB); same error. */
   maxLineBytes?: number;
   /** Override the declared modalities. */
   capabilities?: LlmCapabilities;
@@ -187,6 +190,7 @@ export class GeminiProvider implements LlmProvider {
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly maxResponseBytes: number;
+  private readonly maxStreamBytes: number;
   private readonly maxLineBytes: number;
   private readonly includeThoughts: boolean | undefined;
   private readonly thinkingBudget: number | undefined;
@@ -223,6 +227,11 @@ export class GeminiProvider implements LlmProvider {
       config.maxResponseBytes,
       DEFAULT_MAX_RESPONSE_BYTES,
       "maxResponseBytes"
+    );
+    this.maxStreamBytes = resolveLimit(
+      config.maxStreamBytes,
+      DEFAULT_MAX_STREAM_BYTES,
+      "maxStreamBytes"
     );
     this.maxLineBytes = resolveLimit(config.maxLineBytes, DEFAULT_MAX_LINE_BYTES, "maxLineBytes");
   }
@@ -275,8 +284,9 @@ export class GeminiProvider implements LlmProvider {
       },
       body: JSON.stringify(body),
       ...(request.signal !== undefined && { signal: request.signal }),
-      // Never follow a redirect: it would re-send the body and the API key to another origin.
-      redirect: "error",
+      // Never follow a redirect (it would re-send the body and credentials to another origin): a 3xx
+      // comes back as a response and becomes `LlmHttpError(provider, status)` below.
+      redirect: "manual",
     });
 
     if (!resp.ok) {
