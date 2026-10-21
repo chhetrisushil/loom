@@ -289,7 +289,17 @@ export class OpenAiProvider implements LlmProvider {
   }
 
   private buildBody(request: LlmRequest, stream = false): Record<string, unknown> {
-    const messages = mapMessages(request.messages);
+    // `request.system` leads, and wins over any system-role message (Anthropic's precedence);
+    // without it, system-role messages pass through in place.
+    const mapped = mapMessages(
+      request.system !== undefined
+        ? request.messages.filter((m) => m.role !== "system")
+        : request.messages
+    );
+    const messages =
+      request.system !== undefined
+        ? [{ role: "system", content: request.system }, ...mapped]
+        : mapped;
     const body: Record<string, unknown> = {
       model: this.model,
       messages,
