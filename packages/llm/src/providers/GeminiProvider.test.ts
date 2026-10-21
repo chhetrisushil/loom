@@ -75,9 +75,29 @@ describe("GeminiProvider", () => {
   });
 
   it("refuses a bad thinkingBudget at construction", () => {
-    for (const bad of [-1, 1.5, Number.NaN])
+    for (const bad of [-2, 1.5, Number.NaN])
       expect(() => new GeminiProvider({ apiKey: "k", thinkingBudget: bad })).toThrow(
-        /^thinkingBudget must be a non-negative integer$/
+        /^thinkingBudget must be an integer >= -1 \(-1 = dynamic\)$/
       );
+  });
+
+  it("accepts -1 (dynamic thinking) and sends it", async () => {
+    const f = vi.fn(
+      async () =>
+        ({
+          ok: true,
+          json: async () => ({
+            candidates: [{ content: { parts: [{ text: "x" }] }, finishReason: "STOP" }],
+          }),
+        }) as unknown as Response
+    );
+    vi.stubGlobal("fetch", f);
+    await new GeminiProvider({ apiKey: "k", thinkingBudget: -1 }).complete({
+      messages: [{ role: "user", content: "hi" }],
+    });
+    expect(
+      JSON.parse((f.mock.calls[0] as unknown as [string, { body: string }])[1].body)
+        .generationConfig.thinkingConfig.thinkingBudget
+    ).toBe(-1);
   });
 });

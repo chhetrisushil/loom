@@ -3,7 +3,7 @@ import {
   assertRequestSupported,
   capabilitiesForModel,
 } from "../capabilities";
-import { LlmHttpError } from "../errors";
+import { LlmHttpError, LlmStreamError, drainBody } from "../errors";
 import { type LlmMediaPart, type LlmReasoning, type LlmResultPart, textOf } from "../parts";
 import { inlineData } from "../resolveContent";
 import type {
@@ -37,8 +37,12 @@ function parseArguments(argsJson: string): unknown {
 }
 
 export interface OpenAiProviderConfig {
-  /** Sent as `reasoning_effort` when set; servers that support reasoning return it only when asked. */
-  reasoningEffort?: "low" | "medium" | "high";
+  /**
+   * Sent as `reasoning_effort` when set; servers that support reasoning return it only when asked.
+   * Which values a model accepts varies: `"minimal"` (gpt-5) and `"none"` (gpt-5.1+, Ollama) are
+   * not accepted everywhere, and an unsupported value is refused by the server, not by this client.
+   */
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
   /**
    * Extra request headers sent on every request (for example `anthropic-workspace-id`). Header
    * names and values must be strings without CR/LF; a header the provider sets itself (auth,
@@ -287,6 +291,7 @@ export class OpenAiProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
+      await drainBody(resp);
       throw new LlmHttpError("openai", resp.status);
     }
 
@@ -340,6 +345,7 @@ export class OpenAiProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
+      await drainBody(resp);
       throw new LlmHttpError("openai", resp.status);
     }
 
@@ -371,70 +377,84 @@ export class OpenAiProvider implements LlmProvider {
       };
     };
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
 
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
 
-      for (const line of lines) {
-        if (!line.startsWith("data: ")) continue;
-        const json = line.slice(6).trim();
-        if (json === "[DONE]") {
-          yield terminal();
-          return;
-        }
-        try {
-          const chunk = JSON.parse(json) as OpenAiChatResponse;
-          // The usage-only chunk (`include_usage`) arrives AFTER the finished
-          // choice and carries an empty `choices` array, so it must be read before
-          // any early return on finish_reason — which is why the terminal chunk is
-          // emitted at [DONE], not at the finish.
-          if (chunk.usage !== undefined) {
-            usage = {
-              inputTokens: chunk.usage.prompt_tokens,
-              outputTokens: chunk.usage.completion_tokens,
-            };
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6).trim();
+          if (json === "[DONE]") {
+            yield terminal();
+            return;
           }
-          const choice = chunk.choices[0];
-          const delta = choice?.delta?.content ?? "";
-          const reasoningDelta = readReasoningField(choice?.delta ?? {});
-          reasoningText += reasoningDelta;
-          const toolDeltas: NonNullable<LlmStreamChunk["toolDelta"]>[] = [];
-          for (const tc of choice?.delta?.tool_calls ?? []) {
-            const open = openCalls.get(tc.index) ?? { id: "", name: "", argsJson: "" };
-            if (tc.id !== undefined) open.id = tc.id;
-            if (tc.function?.name !== undefined) open.name = tc.function.name;
-            if (tc.function?.arguments !== undefined) open.argsJson += tc.function.arguments;
-            const first = !openCalls.has(tc.index);
-            openCalls.set(tc.index, open);
-            const inputDelta = tc.function?.arguments ?? "";
-            if (first || inputDelta !== "") {
-              toolDeltas.push({
-                id: open.id,
-                ...(first && { name: open.name }),
-                inputDelta,
-              });
+          try {
+            const chunk = JSON.parse(json) as OpenAiChatResponse;
+            const streamed = (chunk as { error?: { code?: unknown; type?: unknown } | null }).error;
+            if (streamed !== undefined && streamed !== null) {
+              // The message text can echo the prompt: only the code or type is kept.
+              throw new LlmStreamError("openai", streamed.code ?? streamed.type);
             }
+            // The usage-only chunk (`include_usage`) arrives AFTER the finished
+            // choice and carries an empty `choices` array, so it must be read before
+            // any early return on finish_reason — which is why the terminal chunk is
+            // emitted at [DONE], not at the finish.
+            if (chunk.usage !== undefined) {
+              usage = {
+                inputTokens: chunk.usage.prompt_tokens,
+                outputTokens: chunk.usage.completion_tokens,
+              };
+            }
+            const choice = chunk.choices[0];
+            const delta = choice?.delta?.content ?? "";
+            const reasoningDelta = readReasoningField(choice?.delta ?? {});
+            reasoningText += reasoningDelta;
+            const toolDeltas: NonNullable<LlmStreamChunk["toolDelta"]>[] = [];
+            for (const tc of choice?.delta?.tool_calls ?? []) {
+              const open = openCalls.get(tc.index) ?? { id: "", name: "", argsJson: "" };
+              if (tc.id !== undefined) open.id = tc.id;
+              if (tc.function?.name !== undefined) open.name = tc.function.name;
+              if (tc.function?.arguments !== undefined) open.argsJson += tc.function.arguments;
+              const first = !openCalls.has(tc.index);
+              openCalls.set(tc.index, open);
+              const inputDelta = tc.function?.arguments ?? "";
+              if (first || inputDelta !== "") {
+                toolDeltas.push({
+                  id: open.id,
+                  ...(first && { name: open.name }),
+                  inputDelta,
+                });
+              }
+            }
+            if (choice?.finish_reason != null) {
+              stopReason = normalizeFinishReason(choice.finish_reason);
+            }
+            if (reasoningDelta !== "") yield { delta: "", done: false, reasoningDelta };
+            if (delta !== "") {
+              yield { delta, done: false };
+            }
+            for (const toolDelta of toolDeltas) yield { delta: "", done: false, toolDelta };
+          } catch (e) {
+            if (e instanceof LlmStreamError) throw e;
+            // skip malformed SSE lines
           }
-          if (choice?.finish_reason != null) {
-            stopReason = normalizeFinishReason(choice.finish_reason);
-          }
-          if (reasoningDelta !== "") yield { delta: "", done: false, reasoningDelta };
-          if (delta !== "") {
-            yield { delta, done: false };
-          }
-          for (const toolDelta of toolDeltas) yield { delta: "", done: false, toolDelta };
-        } catch {
-          // skip malformed SSE lines
         }
       }
-    }
 
-    // The stream ended without an explicit [DONE] (some gateways omit it): the
-    // terminal chunk is still owed, or `assembleStream` would reject the stream.
-    yield terminal();
+      // The stream ended without an explicit [DONE] (some gateways omit it): the
+      // terminal chunk is still owed, or `assembleStream` would reject the stream.
+      yield terminal();
+    } finally {
+      try {
+        await reader.cancel();
+      } catch {
+        // already closed or released: nothing to free
+      }
+    }
   }
 }

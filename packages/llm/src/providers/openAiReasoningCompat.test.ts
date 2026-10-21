@@ -78,6 +78,30 @@ describe("OpenAiProvider reasoning on OpenAI-compatible servers", () => {
     ]);
   });
 
+  it("streams with both reasoning fields present: reasoning_content wins", async () => {
+    stubSse([
+      { choices: [{ delta: { reasoning_content: "a", reasoning: "b" } }] },
+      { choices: [{ delta: { content: "yes" }, finish_reason: "stop" }] },
+    ]);
+    const chunks = [];
+    for await (const c of new OpenAiProvider({ apiKey: "k" }).stream(ASK)) chunks.push(c);
+    expect(
+      chunks.filter((c) => c.reasoningDelta !== undefined).map((c) => c.reasoningDelta)
+    ).toEqual(["a"]);
+    expect(chunks.at(-1)?.reasoning?.[0]?.text).toBe("a");
+  });
+
+  it.each(["none", "minimal", "low", "medium", "high"] as const)(
+    "sends reasoning_effort %s",
+    async (effort) => {
+      const f = stubJson({ choices: [{ message: { content: "x" }, finish_reason: "stop" }] });
+      await new OpenAiProvider({ apiKey: "k", reasoningEffort: effort }).complete(ASK);
+      expect(JSON.parse((f.mock.calls[0]?.[1] as { body: string }).body).reasoning_effort).toBe(
+        effort
+      );
+    }
+  );
+
   it("sends reasoning_effort only when configured", async () => {
     const withEffort = stubJson({
       choices: [{ message: { content: "x" }, finish_reason: "stop" }],
