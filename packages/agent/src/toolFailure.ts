@@ -196,30 +196,99 @@ export function isTerminalToolError(err: unknown): boolean {
 }
 
 /**
- * How the conversation's OWN model call classifies a failure (not a tool loop's; `isTerminalToolError`
- * stays the tool-loop rule). Walks the same bounded `cause` chain.
- *  - "terminal": some level is CONTROL FLOW that is not a provider failure: a park (`SuspendError`),
- *    an authority or safety stop (denial, kill switch, quota), a cancel, a replay divergence, a lost
- *    fence or lease ... (the named classes and sealed refusals of `isTerminalToolError`). It reaches
- *    the runtime, and wins over a provider error anywhere in the chain;
- *  - "provider": otherwise, some level is a provider failure (`LlmHttpError` of any status,
- *    `LlmStreamError`, `LlmResponseLimitError`, `LlmResponseInvalidError`): the turn fails with the fixed model-error reason;
- *  - "other": anything else, retryable or not: also a failed turn with the model-error reason.
- *
- * Unlike the tool loop, an error that merely declares `retryable === false` is NOT control flow here:
- * an app's model adapter that maps a 400/401 to a non-retryable error must end the TURN failed, not
- * fail the whole conversation execution. (A control-flow class that also sets `retryable = false`
- * is still terminal, by its name.)
+ * Errors the tool loop re-raises as fatal (`isTerminalToolError`), remembered so the conversation can
+ * tell a TOOL's failure from the model's: its catch wraps the whole loop. A WeakSet, so the error
+ * object is not mutated (it may be frozen) and nothing is retained.
  */
-export function classifyModelCallError(err: unknown): "terminal" | "provider" | "other" {
-  let provider = false;
+const toolRaised = new WeakSet<object>();
+
+/** Internal (not exported from the package): `agentLoop$` marks an error it re-raises from a tool. */
+export function markToolRaised(err: unknown): void {
+  if (typeof err === "object" && err !== null) toolRaised.add(err);
+}
+
+/** How the conversation reports a failed model call / agent loop. */
+export type ModelCallFailure =
+  | "terminal"
+  | "denied"
+  | "rate-limited"
+  | "quota"
+  | "tool-error"
+  | "model-error";
+
+const DENIED_NAME = /Denied|Forbidden|Unauthori[sz]ed/;
+
+function nameOnChain(err: object, name: string): boolean {
+  if ((err as { name?: unknown }).name === name) return true;
+  for (let p = Object.getPrototypeOf(err); p !== null; p = Object.getPrototypeOf(p)) {
+    if ((p as { constructor?: { name?: string } }).constructor?.name === name) return true;
+  }
+  return false;
+}
+
+/**
+ * What the conversation does with a failure of its OWN agent loop (the model call and, because the
+ * conversation's catch wraps the whole loop, a tool error the loop re-raised). Walks the same bounded
+ * `cause` chain as `isTerminalToolError`. In precedence order:
+ *  - "terminal": CONTROL FLOW anywhere in the chain (a park, a cancel, a kill switch, a replay
+ *    divergence, a lost fence or lease, an authority error ...): reaches the runtime, not a failed turn;
+ *  - "denied": the error ITSELF (top level) is a terminal authority refusal whose name says so
+ *    (`...Denied...`, `Forbidden`, `Unauthorized`; never a sealed refusal): the turn ends `denied`;
+ *  - "rate-limited" / "quota": `RateLimitExceededError` / `QuotaExceededError` in the chain: the
+ *    turn ends failed with that distinct reason (they stay terminal for TOOL loops);
+ *  - "tool-error": otherwise, an error the tool loop re-raised as fatal (e.g. a tool that threw
+ *    `retryable = false`);
+ *  - "model-error": anything else, retryable or not, provider or not.
+ * An error that merely declares `retryable === false` is NOT control flow here (unlike the tool loop):
+ * an app's model adapter that maps a 400/401 to a non-retryable error must end the TURN failed.
+ */
+export function classifyModelCallFailure(err: unknown): ModelCallFailure {
+  let rate = false;
+  let quota = false;
+  let tool = false;
   let e: unknown = err;
   for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth++) {
-    if (isProviderOne(e)) provider = true;
-    else if (isTerminalOne(e, false)) return "terminal";
+    if (typeof e === "object" && e !== null && toolRaised.has(e)) tool = true;
+    if (isProviderOne(e)) {
+      // a provider failure: fails the turn unless control flow shows up deeper
+    } else if (typeof e === "object" && e !== null && nameOnChain(e, "RateLimitExceededError")) {
+      rate = true;
+    } else if (typeof e === "object" && e !== null && nameOnChain(e, "QuotaExceededError")) {
+      quota = true;
+    } else if (isTerminalOne(e, false)) {
+      if (
+        depth === 0 &&
+        typeof e === "object" &&
+        e !== null &&
+        DENIED_NAME.test((e as { name?: string }).name ?? "") &&
+        (e as Record<symbol, unknown>)[SEALED_UNREADABLE] !== true
+      ) {
+        return "denied";
+      }
+      return "terminal";
+    }
     if (typeof e !== "object" || e === null) break;
     e = (e as { cause?: unknown }).cause;
     if (e === undefined) break;
   }
-  return provider ? "provider" : "other";
+  if (rate) return "rate-limited";
+  if (quota) return "quota";
+  return tool ? "tool-error" : "model-error";
+}
+
+/**
+ * Compatibility form of `classifyModelCallFailure`: "terminal" (control flow, including a top-level
+ * denial), "provider" (a provider failure somewhere in the chain), "other".
+ */
+export function classifyModelCallError(err: unknown): "terminal" | "provider" | "other" {
+  const f = classifyModelCallFailure(err);
+  if (f === "terminal" || f === "denied") return "terminal";
+  let e: unknown = err;
+  for (let depth = 0; depth <= MAX_CAUSE_DEPTH; depth++) {
+    if (isProviderOne(e)) return "provider";
+    if (typeof e !== "object" || e === null) break;
+    e = (e as { cause?: unknown }).cause;
+    if (e === undefined) break;
+  }
+  return "other";
 }

@@ -19,7 +19,12 @@ export {
   memoryWriteBackEffect,
   registerReasoningRoutes,
 } from "./agentLoop$";
-export { classifyModelCallError, isTerminalToolError } from "./toolFailure";
+export {
+  classifyModelCallError,
+  classifyModelCallFailure,
+  isTerminalToolError,
+  type ModelCallFailure,
+} from "./toolFailure";
 export type {
   AgentLoopConfig,
   AgentModelCall,

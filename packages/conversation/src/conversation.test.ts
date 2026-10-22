@@ -1,3 +1,5 @@
+import { SuspendError, agent$ } from "@loom/core";
+import { ToolEffect } from "@loom/effect-runtime";
 import {
   LlmHttpError,
   LlmResponseInvalidError,
@@ -10,6 +12,7 @@ import {
   Latch,
   alice,
   boot,
+  kb,
   lastUserText,
   messages,
   sharedScript,
@@ -279,27 +282,147 @@ describe("conversation: turns", () => {
   const controlFlow = ["KillSwitchEngagedError", "ExecutionCancelledError"];
   for (const shared of [false, true]) {
     for (const name of controlFlow) {
-      it(`${shared ? "shared: " : ""}${name} from the model call still fails the execution, not the turn`, async () => {
+      it(`${shared ? "shared: " : ""}${name} from the model call is the runtime's, not a failed turn`, async () => {
         const b = boot({
           ...(shared && { shared: true }),
-          reply: () => {
-            throw Object.assign(new Error("stop"), { name, retryable: false });
+          reply: (req, nth) => {
+            if (nth === 1) throw Object.assign(new Error("stop"), { name, retryable: false });
+            return shared ? sharedScript(req) : { content: "ok", stopReason: "end_turn" };
           },
         });
         const who = shared ? { principal: alice } : undefined;
         const { conversationId: id } = await b.conv.start(who);
         await b.conv.sendTurn(id, "one", who);
         if (shared) {
-          // the turn's own execution takes the stop; the asker sees a turn failure, never "model-error"
+          // the turn's own execution takes the stop; the asker sees a turn failure, never a model reason,
+          // and the CONVERSATION is alive: the next turn works
           const first = await messages(b, id, 2, alice);
           expect(first[1]).toMatchObject({ status: "failed", reason: "turn-failed" });
+          await b.conv.sendTurn(id, "two", who);
+          expect((await messages(b, id, 4, alice))[3]).toMatchObject({ status: "complete" });
+          expect((await b.runtime.systemStateReader().loadState(id))?.status).not.toBe("failed");
           return;
         }
+        // solo: the conversation execution itself takes the stop (documented difference)
         await until(
           async () => (await b.runtime.systemStateReader().loadState(id))?.status === "failed"
         );
       });
     }
+  }
+
+  it("solo: a park (SuspendError) from the model call parks the conversation; it is not a failed turn", async () => {
+    const b = boot({
+      reply: () => {
+        throw new SuspendError({ on: "Gate" });
+      },
+    });
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "one");
+    await until(async () => b.calls.n >= 1);
+    await new Promise((r) => setTimeout(r, 300)); // timing-bound: let a (wrong) failed reply land
+    const st = await b.runtime.systemStateReader().loadState(id);
+    expect(st?.status).not.toBe("failed");
+    const page = await b.conv.history(id);
+    expect(page.entries.filter((m) => m.role === "assistant")).toHaveLength(0);
+  });
+
+  // Distinct fixed reasons, conversation survives, both modes.
+  const reasons: [string, () => Error, string][] = [
+    [
+      "a top-level authority denial",
+      () => Object.assign(new Error("no"), { name: "CapabilityInvokeDeniedError" }),
+      "denied",
+    ],
+    [
+      "RateLimitExceededError",
+      () => Object.assign(new Error("slow"), { name: "RateLimitExceededError", retryable: false }),
+      "rate-limited",
+    ],
+    [
+      "QuotaExceededError",
+      () => Object.assign(new Error("spent"), { name: "QuotaExceededError", retryable: false }),
+      "quota",
+    ],
+  ];
+  for (const shared of [false, true]) {
+    for (const [label, make, reason] of reasons) {
+      it(`${shared ? "shared: " : ""}${label} from the model call ends the turn ${reason}; the next turn works`, async () => {
+        const b = boot({
+          ...(shared && { shared: true }),
+          reply: (req, nth) => {
+            if (nth === 1) throw make();
+            return shared ? sharedScript(req) : { content: "ok", stopReason: "end_turn" };
+          },
+        });
+        const who = shared ? { principal: alice } : undefined;
+        const { conversationId: id } = await b.conv.start(who);
+        await b.conv.sendTurn(id, "one", who);
+        expect((await messages(b, id, 2, who?.principal))[1]).toMatchObject({
+          status: "failed",
+          reason,
+        });
+        await b.conv.sendTurn(id, "two", who);
+        expect((await messages(b, id, 4, who?.principal))[3]).toMatchObject({
+          status: "complete",
+        });
+        expect((await b.runtime.systemStateReader().loadState(id))?.status).not.toBe("failed");
+      });
+    }
+  }
+
+  it("a wrapped authority denial is still the runtime's (only a top-level denial ends the turn)", async () => {
+    const b = boot({
+      reply: () => {
+        throw new Error("w", {
+          cause: Object.assign(new Error("no"), { name: "CapabilityInvokeDeniedError" }),
+        });
+      },
+    });
+    const { conversationId: id } = await b.conv.start();
+    await b.conv.sendTurn(id, "one");
+    await until(
+      async () => (await b.runtime.systemStateReader().loadState(id))?.status === "failed"
+    );
+  });
+
+  for (const shared of [false, true]) {
+    it(`${shared ? "shared: " : ""}a tool throwing a non-retryable error ends the turn with tool-error; the next turn works`, async () => {
+      let boom = true;
+      const b = boot({
+        ...(shared
+          ? { shared: true }
+          : {
+              config: {
+                agent: {
+                  definition: agent$({ id: "chat", name: "Chat", tools: [kb] }),
+                  modelToolId: "model",
+                },
+              },
+            }),
+        extraEffects: (e) =>
+          e.register(
+            "kb",
+            new ToolEffect(async () => {
+              if (boom) {
+                boom = false;
+                throw Object.assign(new Error("tool policy stop"), { retryable: false });
+              }
+              return { fact: "f" };
+            })
+          ),
+        reply: (req) => sharedScript(req),
+      });
+      const who = shared ? { principal: alice } : undefined;
+      const { conversationId: id } = await b.conv.start(who);
+      await b.conv.sendTurn(id, "use kb", who);
+      expect((await messages(b, id, 2, who?.principal))[1]).toMatchObject({
+        status: "failed",
+        reason: "tool-error",
+      });
+      await b.conv.sendTurn(id, "use kb again", who);
+      expect((await messages(b, id, 4, who?.principal))[3]).toMatchObject({ status: "complete" });
+    });
   }
 
   it("a control-flow error deeper in the cause chain still wins over a provider error", async () => {

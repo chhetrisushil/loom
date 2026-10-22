@@ -9,7 +9,12 @@ import * as orchestration from "@loom/orchestration";
 import * as workerRuntime from "@loom/worker-runtime";
 import * as workflowRuntime from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
-import { classifyModelCallError, isTerminalToolError } from "./toolFailure";
+import {
+  classifyModelCallError,
+  classifyModelCallFailure,
+  isTerminalToolError,
+  markToolRaised,
+} from "./toolFailure";
 
 // ── R10 fix round 1 (P1-1) — which errors may be fed back to the model ──────────────────────────
 //
@@ -286,7 +291,7 @@ describe("classifyModelCallError — the conversation's own model call", () => {
     for (const name of [
       "KillSwitchEngagedError",
       "ExecutionCancelledError",
-      "QuotaExceededError",
+      "FlowDivergenceError",
     ]) {
       expect(classifyModelCallError(named(name))).toBe("terminal");
       expect(classifyModelCallError(named(name, { retryable: false }))).toBe("terminal");
@@ -295,6 +300,44 @@ describe("classifyModelCallError — the conversation's own model call", () => {
     expect(
       classifyModelCallError(Object.assign(new Error("w"), { retryable: false, cause: denial }))
     ).toBe("terminal");
+  });
+  it("classifyModelCallFailure: rate limit and quota are their own failed-turn reasons, terminal for tools", () => {
+    for (const [name, want] of [
+      ["RateLimitExceededError", "rate-limited"],
+      ["QuotaExceededError", "quota"],
+    ] as const) {
+      const e = named(name, { retryable: false });
+      expect(isTerminalToolError(e)).toBe(true);
+      expect(classifyModelCallFailure(e)).toBe(want);
+      expect(classifyModelCallFailure(new Error("w", { cause: e }))).toBe(want);
+      expect(classifyModelCallError(e)).toBe("other");
+    }
+    // control flow deeper still wins
+    const kill = named("KillSwitchEngagedError");
+    expect(
+      classifyModelCallFailure(Object.assign(named("QuotaExceededError"), { cause: kill }))
+    ).toBe("terminal");
+  });
+  it("classifyModelCallFailure: only a TOP-LEVEL, non-sealed authority denial is `denied`", () => {
+    const denial = new capability.CapabilityInvokeDeniedError("c", "no");
+    expect(classifyModelCallFailure(denial)).toBe("denied");
+    expect(classifyModelCallFailure(new Error("w", { cause: denial }))).toBe("terminal");
+    const sealed = Object.assign(named("ExecutionDeniedError"), {
+      [Symbol.for("loom.sealedUnreadable")]: true,
+    });
+    expect(classifyModelCallFailure(sealed)).toBe("terminal");
+    expect(classifyModelCallFailure(named("KillSwitchEngagedError"))).toBe("terminal");
+  });
+  it("classifyModelCallFailure: a tool-raised error is tool-error; the rest is model-error", () => {
+    const toolErr = Object.assign(new Error("t"), { retryable: false });
+    markToolRaised(toolErr);
+    expect(classifyModelCallFailure(toolErr)).toBe("tool-error");
+    expect(classifyModelCallFailure(new Error("w", { cause: toolErr }))).toBe("tool-error");
+    expect(classifyModelCallFailure(Object.assign(new Error("m"), { retryable: false }))).toBe(
+      "model-error"
+    );
+    expect(classifyModelCallFailure(http(503))).toBe("model-error");
+    expect(classifyModelCallFailure("s")).toBe("model-error");
   });
   it("stays in sync with isTerminalToolError: every terminal provider failure is provider, never terminal", () => {
     for (const e of [

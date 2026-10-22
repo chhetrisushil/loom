@@ -32,7 +32,7 @@ import { createAgentModelEffect } from "./createAgentModelEffect";
 import { AGENT_INTERRUPTED, type InterruptedAgentRun } from "./interrupted";
 import { OVERSIZED_INPUT_REFUSAL, screenToolCalls } from "./screenToolCalls";
 import { type SkillActivationConfig, SkillActivationSession } from "./skillActivation";
-import { isTerminalToolError } from "./toolFailure";
+import { isTerminalToolError, markToolRaised } from "./toolFailure";
 import { inlineBytesIn, toolResultPart } from "./toolResultContent";
 import { buildToolMenu, toolSpecFor } from "./toolSchema";
 import { type ToolSearchConfig, ToolSearchError, ToolSearchSession } from "./toolSearchSession";
@@ -1342,7 +1342,10 @@ export async function agentLoop$(
             return { ok: true as const };
           } catch (err) {
             // Authority, safety, park, cancel and divergence are the runtime's: not recorded.
-            if (fatal(err)) throw err;
+            if (fatal(err)) {
+              markToolRaised(err);
+              throw err;
+            }
             return { failed: failureOutput(toolCall.name, err) };
           }
         },
@@ -1363,6 +1366,7 @@ export async function agentLoop$(
       // divergence are the runtime's (see `isTerminalToolError`); `toolErrors: "fail"` opts out.
       if (fatal(err)) {
         fatalSeen = true;
+        markToolRaised(err);
         throw err;
       }
       return { output: failureOutput(toolCall.name, err), isError: true };

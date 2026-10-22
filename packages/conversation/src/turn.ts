@@ -3,7 +3,7 @@ import {
   type AgentHistoryMessage,
   type InterruptedAgentRun,
   agentLoop$,
-  classifyModelCallError,
+  classifyModelCallFailure,
 } from "@loom/agent";
 import { TypedFailure, flow$, fnv1a64 } from "@loom/core";
 import { ToolEffect } from "@loom/effect-runtime";
@@ -54,7 +54,14 @@ export interface TurnResult {
   /** Names of the tools the turn called (for classification). */
   tools: string[];
   /** A fixed, user-safe reason for `failed`. */
-  reason?: "denied" | "model-error" | "turn-failed" | "cancelled";
+  reason?:
+    | "denied"
+    | "model-error"
+    | "rate-limited"
+    | "quota"
+    | "tool-error"
+    | "turn-failed"
+    | "cancelled";
   errorId?: string;
   /** The memory scope this turn recalled from / wrote to, when the agent has a memory. */
   memoryScope?: string;
@@ -69,8 +76,6 @@ export interface TurnResult {
  */
 export const turnExecutionId = (conversationId: string, ord: number, key: string): string =>
   `turn:${conversationId}:o${ord}:${sign(key, { conversationId, ord, purpose: "turn-id" }).slice(0, 24)}`;
-
-const DENIED = /Denied|Forbidden|Unauthori[sz]ed/;
 
 /** The flow a shared turn runs as (one `agentLoop$`), with the abort signals the effect registers. */
 export function sharedTurnFlow(
@@ -125,18 +130,12 @@ export function sharedTurnFlow(
           ...(config.agent.memory !== undefined && scope !== undefined && { memoryScope: scope }),
         };
       }
-      if (classifyModelCallError(e) === "terminal") {
-        // An authority refusal is a user-visible outcome of THIS asker's turn; the rest (a park, a
-        // cancel, a divergence) is the runtime's and propagates. Any other model error, even one that
-        // declares retryable=false, falls through to a failed turn with the fixed model-error reason.
-        if (e instanceof Error && DENIED.test(e.name)) {
-          config.onError?.(errorId, e, { conversationId: input.conversationId, turn: input.turn });
-          return { status: "failed", content: "", tools: [], reason: "denied", errorId };
-        }
-        throw e;
-      }
+      // Control flow (a park, a cancel, a kill switch, a divergence) is the runtime's and propagates;
+      // every other failure, even retryable=false, ends the turn failed with a fixed reason.
+      const kind = classifyModelCallFailure(e);
+      if (kind === "terminal") throw e;
       config.onError?.(errorId, e, { conversationId: input.conversationId, turn: input.turn });
-      return { status: "failed", content: "", tools: [], reason: "model-error", errorId };
+      return { status: "failed", content: "", tools: [], reason: kind, errorId };
     }
   };
   return { definition, runner } as unknown as RegisteredFlow<
