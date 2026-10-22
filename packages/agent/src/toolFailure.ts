@@ -94,7 +94,7 @@ const SEALED_UNREADABLE = Symbol.for("loom.sealedUnreadable");
 
 /**
  * `LlmHttpError` (`@loom/llm`) is classified by STATUS, matched by name and a numeric `status` so
- * this file needs no import. TERMINAL: 3xx (a redirect, never followed: the base URL is wrong or intercepted; not retryable), 401/403 (configuration), 429 (rate limit: the same stop as
+ * this file needs no import. TERMINAL: 3xx (a redirect, never followed: the base URL is wrong or intercepted; not retryable), 401/403 or any `kind: "auth"` such as Google's 400 API_KEY_INVALID (configuration), 429 (rate limit: the same stop as
  * `RateLimitExceededError`) and 5xx/529 (transient: the step retry policy's to handle, not the
  * model's). FEEDBACK: every other status (400/404/408/409/413/422 ...): a request the model can
  * adapt. A bare instance with no status is feedback.
@@ -104,6 +104,7 @@ function isTerminalLlmHttp(err: object): boolean {
   const status = (err as { status?: unknown }).status;
   if (typeof status !== "number") return false;
   return (
+    (err as { kind?: unknown }).kind === "auth" ||
     status === 401 ||
     status === 403 ||
     status === 429 ||

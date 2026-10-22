@@ -24,7 +24,13 @@ export class LlmHttpError extends Error {
   readonly provider: LlmHttpProvider;
   /** Set to `false` for a 3xx (a redirect, never followed): retrying cannot help. */
   readonly retryable?: false;
-  constructor(provider: LlmHttpProvider, status: number) {
+  /**
+   * Why the request failed, when the status alone cannot say. Closed: `"auth"` means the
+   * credential was refused (401/403, or a 400 the provider's own error code names as a bad key), a
+   * configuration fault rather than a malformed request. Absent otherwise.
+   */
+  readonly kind?: "auth";
+  constructor(provider: LlmHttpProvider, status: number, kind?: "auth") {
     super(`${LABEL[provider]} API error ${status}`);
     this.name = "LlmHttpError";
     this.status = status;
@@ -32,6 +38,50 @@ export class LlmHttpError extends Error {
     // A redirect is never followed (it would re-send the body and credentials elsewhere), and
     // asking again changes nothing: the base URL is misconfigured or the path is intercepted.
     if (status >= 300 && status < 400) this.retryable = false;
+    if (kind === "auth" || status === 401 || status === 403) this.kind = "auth";
+  }
+}
+
+/** The most of a non-2xx body that is ever read to look for a provider error code. */
+export const MAX_ERROR_BODY_BYTES = 16 * 1024;
+
+/**
+ * Read at most `maxBytes` of a non-2xx body and parse it as JSON, then release the body. Returns
+ * `undefined` for anything else (over the bound, unreadable, not JSON): the caller only ever looks
+ * for a fixed error code in the result and keeps nothing of it.
+ */
+export async function readBoundedErrorJson(
+  resp: Response,
+  maxBytes: number = MAX_ERROR_BODY_BYTES
+): Promise<unknown> {
+  const reader = resp.body?.getReader?.();
+  if (!reader) {
+    await drainBody(resp);
+    return undefined;
+  }
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return undefined;
+      }
+      parts.push(value);
+    }
+    const all = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) {
+      all.set(p, off);
+      off += p.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(all));
+  } catch {
+    await reader.cancel().catch(() => undefined);
+    return undefined;
   }
 }
 

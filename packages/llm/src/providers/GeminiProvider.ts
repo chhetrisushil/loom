@@ -9,6 +9,7 @@ import {
   DEFAULT_MAX_STREAM_BYTES,
   LlmHttpError,
   drainBody,
+  readBoundedErrorJson,
   readBoundedJson,
   resolveLimit,
 } from "../errors";
@@ -181,6 +182,24 @@ export function mapContents(messages: readonly LlmMessage[]): Record<string, unk
   return out;
 }
 
+/**
+ * `google.rpc.ErrorInfo.reason` values that mean the API key itself was refused. Only
+ * `API_KEY_INVALID` is documented for this (googleapis `google/api/error_reason.proto`; there is no
+ * separate documented reason for an expired key); the `API_KEY_*_BLOCKED` reasons are restrictions, not a bad key.
+ */
+function isApiKeyInvalid(body: unknown): boolean {
+  const details = (body as { error?: { details?: unknown } } | null)?.error?.details;
+  return (
+    Array.isArray(details) &&
+    details.some(
+      (d) =>
+        typeof d === "object" &&
+        d !== null &&
+        (d as { reason?: unknown }).reason === "API_KEY_INVALID"
+    )
+  );
+}
+
 // A Google Gemini (Generative Language API) provider — the same fetch-based shape as
 // OpenAiProvider / AnthropicProvider, mapping the Loom `LlmRequest`/`LlmResponse` contract
 // onto Gemini's `generateContent`. Gemini uses roles "user" / "model" (no "assistant") and
@@ -287,6 +306,12 @@ export class GeminiProvider implements LlmProvider {
     });
 
     if (!resp.ok) {
+      // Google answers a bad/expired API key with a 400 whose ErrorInfo names the reason; the
+      // status alone reads as a malformed request. Only a 400 is inspected, bounded, and nothing of
+      // the body is kept.
+      if (resp.status === 400 && isApiKeyInvalid(await readBoundedErrorJson(resp))) {
+        throw new LlmHttpError("gemini", 400, "auth");
+      }
       await drainBody(resp);
       throw new LlmHttpError("gemini", resp.status);
     }
