@@ -182,13 +182,13 @@ export function mapContents(messages: readonly LlmMessage[]): Record<string, unk
   return out;
 }
 
+const ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo";
+
 /**
  * `google.rpc.ErrorInfo.reason` values that mean the API key itself was refused. Only
  * `API_KEY_INVALID` is documented for this (googleapis `google/api/error_reason.proto`; there is no
  * separate documented reason for an expired key); the `API_KEY_*_BLOCKED` reasons are restrictions, not a bad key.
  */
-const ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo";
-
 function isApiKeyInvalid(body: unknown): boolean {
   const details = (body as { error?: { details?: unknown } } | null)?.error?.details;
   return (
