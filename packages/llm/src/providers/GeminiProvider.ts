@@ -187,6 +187,8 @@ export function mapContents(messages: readonly LlmMessage[]): Record<string, unk
  * `API_KEY_INVALID` is documented for this (googleapis `google/api/error_reason.proto`; there is no
  * separate documented reason for an expired key); the `API_KEY_*_BLOCKED` reasons are restrictions, not a bad key.
  */
+const ERROR_INFO_TYPE = "type.googleapis.com/google.rpc.ErrorInfo";
+
 function isApiKeyInvalid(body: unknown): boolean {
   const details = (body as { error?: { details?: unknown } } | null)?.error?.details;
   return (
@@ -195,6 +197,7 @@ function isApiKeyInvalid(body: unknown): boolean {
       (d) =>
         typeof d === "object" &&
         d !== null &&
+        (d as { "@type"?: unknown })["@type"] === ERROR_INFO_TYPE &&
         (d as { reason?: unknown }).reason === "API_KEY_INVALID"
     )
   );
@@ -309,8 +312,12 @@ export class GeminiProvider implements LlmProvider {
       // Google answers a bad/expired API key with a 400 whose ErrorInfo names the reason; the
       // status alone reads as a malformed request. Only a 400 is inspected, bounded, and nothing of
       // the body is kept.
-      if (resp.status === 400 && isApiKeyInvalid(await readBoundedErrorJson(resp))) {
-        throw new LlmHttpError("gemini", 400, "auth");
+      if (resp.status === 400) {
+        // The bounded read consumes or cancels the body itself.
+        const kind = isApiKeyInvalid(await readBoundedErrorJson(resp, request.signal))
+          ? "auth"
+          : undefined;
+        throw new LlmHttpError("gemini", 400, kind);
       }
       await drainBody(resp);
       throw new LlmHttpError("gemini", resp.status);

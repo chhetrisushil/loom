@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LlmHttpError } from "../errors";
+import { ERROR_BODY_READ_TIMEOUT_MS, LlmHttpError } from "../errors";
 import { AnthropicProvider } from "./AnthropicProvider";
 import { GeminiProvider } from "./GeminiProvider";
 import { OpenAiProvider } from "./OpenAiProvider";
@@ -146,12 +146,82 @@ describe("LlmHttpError kind", () => {
     expect(err.kind).toBeUndefined();
   });
 
+  it("gemini 400 with the reason on a non-ErrorInfo detail has no kind", async () => {
+    const body = JSON.stringify({
+      error: {
+        details: [
+          { "@type": "type.googleapis.com/google.rpc.BadRequest", reason: "API_KEY_INVALID" },
+          { reason: "API_KEY_INVALID" },
+        ],
+      },
+    });
+    const err = (await gemini(body)) as LlmHttpError;
+    expect(err).toMatchObject({ status: 400 });
+    expect(err.kind).toBeUndefined();
+  });
+
   it("gemini does not read the body of a non-400 error other than auth", async () => {
-    const spy = failing(500, info("API_KEY_INVALID"));
+    const cancel = vi.fn(async () => undefined);
+    const getReader = vi.fn();
+    const text = vi.fn(async () => info("API_KEY_INVALID"));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          ({ ok: false, status: 500, text, body: { cancel, getReader } }) as unknown as Response
+      )
+    );
     const err = (await new GeminiProvider({ apiKey: "k" })
       .complete(ASK)
       .catch((e) => e)) as LlmHttpError;
     expect(err.kind).toBeUndefined();
-    expect(spy.text).not.toHaveBeenCalled();
+    expect(getReader).not.toHaveBeenCalled();
+    expect(text).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  describe("a stalled 400 body", () => {
+    const stalled = () => {
+      const cancel = vi.fn();
+      const stream = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('{"error":'));
+        },
+        cancel,
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(stream, { status: 400 }))
+      );
+      return cancel;
+    };
+
+    it("throws promptly without a signal once the read deadline passes, and cancels the body", async () => {
+      vi.useFakeTimers();
+      try {
+        const cancel = stalled();
+        const pending = new GeminiProvider({ apiKey: "k" }).complete(ASK).catch((e: unknown) => e);
+        await vi.advanceTimersByTimeAsync(ERROR_BODY_READ_TIMEOUT_MS + 1);
+        const err = (await pending) as LlmHttpError;
+        expect(err).toMatchObject({ status: 400 });
+        expect(err.kind).toBeUndefined();
+        expect(cancel).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("also stops on the caller's signal before the deadline", async () => {
+      const cancel = stalled();
+      const ac = new AbortController();
+      const pending = new GeminiProvider({ apiKey: "k" })
+        .complete({ ...ASK, signal: ac.signal })
+        .catch((e: unknown) => e);
+      setTimeout(() => ac.abort(), 10);
+      const err = (await pending) as LlmHttpError;
+      expect(err).toMatchObject({ status: 400 });
+      expect(err.kind).toBeUndefined();
+      expect(cancel).toHaveBeenCalledTimes(1);
+    });
   });
 });

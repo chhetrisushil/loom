@@ -14,6 +14,9 @@ export async function drainBody(resp: Response): Promise<void> {
   await resp.body?.cancel().catch(() => undefined);
 }
 
+/** Why a request failed when the status alone cannot say. Closed; `"auth"` is a refused credential. */
+export type LlmHttpErrorKind = "auth";
+
 /**
  * A provider's HTTP API answered with a non-2xx status. `status` is what a caller should branch
  * on. The response body is deliberately NOT kept: it can echo the prompt, so it is never put in
@@ -29,8 +32,8 @@ export class LlmHttpError extends Error {
    * credential was refused (401/403, or a 400 the provider's own error code names as a bad key), a
    * configuration fault rather than a malformed request. Absent otherwise.
    */
-  readonly kind?: "auth";
-  constructor(provider: LlmHttpProvider, status: number, kind?: "auth") {
+  readonly kind?: LlmHttpErrorKind;
+  constructor(provider: LlmHttpProvider, status: number, kind?: LlmHttpErrorKind) {
     super(`${LABEL[provider]} API error ${status}`);
     this.name = "LlmHttpError";
     this.status = status;
@@ -45,32 +48,48 @@ export class LlmHttpError extends Error {
 /** The most of a non-2xx body that is ever read to look for a provider error code. */
 export const MAX_ERROR_BODY_BYTES = 16 * 1024;
 
+/** The longest the error-body read may take; a server that stalls after the headers is given up on. */
+export const ERROR_BODY_READ_TIMEOUT_MS = 2000;
+
 /**
- * Read at most `maxBytes` of a non-2xx body and parse it as JSON, then release the body. Returns
- * `undefined` for anything else (over the bound, unreadable, not JSON): the caller only ever looks
- * for a fixed error code in the result and keeps nothing of it.
+ * Read at most `maxBytes` of a non-2xx body, for at most `timeoutMs` (and no longer than `signal`
+ * allows), and parse it as JSON. The body is always consumed or cancelled and its reader released
+ * before this returns, so the caller need not drain it. Returns `undefined` for anything else (over
+ * the bound, too slow, aborted, unreadable, not JSON): the caller only ever looks for a fixed error
+ * code in the result and keeps nothing of it.
  */
 export async function readBoundedErrorJson(
   resp: Response,
-  maxBytes: number = MAX_ERROR_BODY_BYTES
+  signal?: AbortSignal,
+  maxBytes: number = MAX_ERROR_BODY_BYTES,
+  timeoutMs: number = ERROR_BODY_READ_TIMEOUT_MS
 ): Promise<unknown> {
   const reader = resp.body?.getReader?.();
   if (!reader) {
     await drainBody(resp);
     return undefined;
   }
-  const parts: Uint8Array[] = [];
-  let total = 0;
+  let onAbort: (() => void) | undefined;
+  const stop = new Promise<"stop">((resolve) => {
+    onAbort = () => resolve("stop");
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+  });
+  const timer = setTimeout(() => onAbort?.(), timeoutMs);
+  let finished = false;
   try {
+    const parts: Uint8Array[] = [];
+    let total = 0;
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return undefined;
+      const next = await Promise.race([reader.read(), stop]);
+      if (next === "stop") return undefined;
+      if (next.done) {
+        finished = true;
+        break;
       }
-      parts.push(value);
+      total += next.value.byteLength;
+      if (total > maxBytes) return undefined;
+      parts.push(next.value);
     }
     const all = new Uint8Array(total);
     let off = 0;
@@ -80,8 +99,17 @@ export async function readBoundedErrorJson(
     }
     return JSON.parse(new TextDecoder().decode(all));
   } catch {
-    await reader.cancel().catch(() => undefined);
     return undefined;
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
+    // Not awaited: a stalled source must not delay the caller's throw.
+    if (!finished) reader.cancel().catch(() => undefined);
+    try {
+      reader.releaseLock();
+    } catch {
+      // A read is still pending on an older runtime; the cancel above settles it.
+    }
   }
 }
 
