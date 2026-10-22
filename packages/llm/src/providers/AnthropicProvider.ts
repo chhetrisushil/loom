@@ -21,7 +21,6 @@ import {
   type LlmReasoningPart,
   type LlmResultPart,
   layoutOf,
-  textOf,
 } from "../parts";
 import { inlineData } from "../resolveContent";
 import type {
@@ -34,6 +33,7 @@ import type {
 } from "../types";
 import { fenceUntrustedMedia } from "../untrusted";
 import { validateExtraHeaders } from "./extraHeaders";
+import { resolveSystem } from "./systemPrompt";
 
 /**
  * Anthropic's `stop_reason` → the SPI's. ONE implementation, used by both
@@ -249,9 +249,7 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   private buildBody(request: LlmRequest): Record<string, unknown> {
-    const systemMsg = request.messages.find((m) => m.role === "system");
-    const system =
-      request.system ?? (systemMsg !== undefined ? textOf(systemMsg.content) : undefined);
+    const system = resolveSystem(request);
 
     const messages = request.messages
       .filter((m) => m.role !== "system")

@@ -18,12 +18,12 @@ import {
   type LlmReasoning,
   type LlmResultPart,
   layoutOf,
-  textOf,
 } from "../parts";
 import { inlineData } from "../resolveContent";
 import type { LlmMessage, LlmProvider, LlmRequest, LlmResponse, LlmToolCall } from "../types";
 import { fenceUntrustedMedia } from "../untrusted";
 import { validateExtraHeaders } from "./extraHeaders";
+import { resolveSystem } from "./systemPrompt";
 
 export interface GeminiProviderConfig {
   /**
@@ -237,11 +237,8 @@ export class GeminiProvider implements LlmProvider {
   }
 
   private buildBody(request: LlmRequest): Record<string, unknown> {
-    // Collect any system messages + the request-level `system` into one instruction.
-    const systemText = [
-      ...request.messages.filter((m) => m.role === "system").map((m) => textOf(m.content)),
-      ...(request.system !== undefined ? [request.system] : []),
-    ].join("\n\n");
+    // The one system-prompt rule (see `resolveSystem`).
+    const systemText = resolveSystem(request) ?? "";
 
     const contents = mapContents(request.messages);
 
