@@ -178,6 +178,11 @@ describe("isTerminalToolError — LlmHttpError is classified by status", () => {
     }
   );
 
+  it("a 400 the provider marked kind auth is terminal (configuration), a plain 400 is not", () => {
+    expect(isTerminalToolError(new llm.LlmHttpError("gemini", 400, "auth"))).toBe(true);
+    expect(isTerminalToolError(new llm.LlmHttpError("gemini", 400))).toBe(false);
+  });
+
   it.each([400, 404, 408, 409, 413, 422])(
     "%i is feedback (the model can adapt the request)",
     (status) => {
