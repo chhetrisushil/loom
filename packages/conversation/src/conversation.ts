@@ -3,7 +3,7 @@ import {
   type AgentHistoryMessage,
   type InterruptedAgentRun,
   agentLoop$,
-  classifyModelCallError,
+  classifyModelCallFailure,
   continueEvery,
 } from "@loom/agent";
 import { tainted, unwrapTainted } from "@loom/classify";
@@ -794,12 +794,14 @@ export function conversationRunner(
         if (e instanceof TypedFailure && e.channel === AGENT_INTERRUPTED) {
           status = "interrupted";
           reply = clip((e.payload as InterruptedAgentRun).content ?? "", maxReplyChars);
-        } else if (classifyModelCallError(e) === "terminal") {
-          throw e; // control flow only (a park, an authority/safety stop, a cancel, a replay divergence): not a failed turn. Any other error, even retryable=false, ends the turn failed below
         } else {
+          const kind = classifyModelCallFailure(e);
+          // Control flow only (a park, an authority/safety stop, a cancel, a replay divergence) is the
+          // runtime's, not a failed turn. Any other error, even retryable=false, ends the turn failed.
+          if (kind === "terminal") throw e;
           // The user sees a FIXED reason and a correlation id; the real error goes to the host's log.
           status = "failed";
-          reason = "model-error";
+          reason = kind;
           errorId = `err-${fnv1a64(`${ctx.executionId}:${ord}`)}`;
           failure = e;
         }
