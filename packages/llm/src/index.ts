@@ -4,7 +4,7 @@ export {
   LlmResponseLimitError,
   LlmStreamError,
 } from "./errors";
-export type { LlmHttpProvider, LlmResponseLimitReason } from "./errors";
+export type { LlmHttpErrorKind, LlmHttpProvider, LlmResponseLimitReason } from "./errors";
 export type {
   LlmContent,
   LlmMessage,
