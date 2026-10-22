@@ -60,6 +60,11 @@ export interface LlmRequestInput extends Omit<LlmRequest, "messages" | "tools" |
 export interface LlmRequest {
   messages: LlmMessage[];
   tools?: LlmToolSpec[];
+  /**
+   * The system prompt. ONE rule for every provider: a non-empty `system` wins and the system-role
+   * entries in `messages` are dropped; an empty string counts as unset; with no `system`, the
+   * system-role messages' text is joined in order (blank-line separated) and sent as the system prompt.
+   */
   system?: string;
   maxTokens?: number;
   temperature?: number;

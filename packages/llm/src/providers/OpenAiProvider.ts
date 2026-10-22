@@ -26,6 +26,7 @@ import type {
 } from "../types";
 import { fenceUntrustedMedia } from "../untrusted";
 import { validateExtraHeaders } from "./extraHeaders";
+import { resolveSystem } from "./systemPrompt";
 
 /**
  * OpenAI's `finish_reason` → the SPI's. ONE implementation shared by `complete`
@@ -289,17 +290,11 @@ export class OpenAiProvider implements LlmProvider {
   }
 
   private buildBody(request: LlmRequest, stream = false): Record<string, unknown> {
-    // `request.system` leads, and wins over any system-role message (Anthropic's precedence);
-    // without it, system-role messages pass through in place.
-    const mapped = mapMessages(
-      request.system !== undefined
-        ? request.messages.filter((m) => m.role !== "system")
-        : request.messages
-    );
+    // The one system-prompt rule (see `resolveSystem`): a single leading system message.
+    const system = resolveSystem(request);
+    const mapped = mapMessages(request.messages.filter((m) => m.role !== "system"));
     const messages =
-      request.system !== undefined
-        ? [{ role: "system", content: request.system }, ...mapped]
-        : mapped;
+      system !== undefined ? [{ role: "system", content: system }, ...mapped] : mapped;
     const body: Record<string, unknown> = {
       model: this.model,
       messages,
