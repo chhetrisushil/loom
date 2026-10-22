@@ -13,7 +13,7 @@ type Body = Record<string, unknown>;
 
 /** Run `call` against a fetch that refuses, and return the request body that was sent. */
 async function sent(call: () => Promise<unknown> | AsyncIterable<unknown>): Promise<Body> {
-  const fn = vi.fn(async () => {
+  const fn = vi.fn(async (_url: unknown, _init: unknown): Promise<Response> => {
     throw new Error("stop");
   });
   vi.stubGlobal("fetch", fn);
@@ -73,7 +73,9 @@ for (const c of cases) {
       const run = (req: LlmRequest) =>
         sent(() => {
           const p = c.make();
-          return mode === "complete" ? p.complete(req) : p.stream(req);
+          return mode === "complete"
+            ? p.complete(req)
+            : (p.stream as NonNullable<typeof p.stream>)(req);
         });
 
       it("a non-empty request.system is sent, and system-role messages are dropped", async () => {
