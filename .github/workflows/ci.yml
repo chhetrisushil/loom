@@ -56,6 +56,11 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - name: Install zsh
+        # tools/cli parses its generated zsh completion script with `zsh -n`; the runner image
+        # ships bash only.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends zsh
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
