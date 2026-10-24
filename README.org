@@ -1,6 +1,10 @@
 #+title: Loom
 #+author: Sushil Chhetri
 
+#+begin_quote
+*Disclaimer:* The idea behind Loom is mine (Sushil Chhetri), but the codebase is vibe coded using Claude ([[https://claude.com/claude-code][Claude Code]]).
+#+end_quote
+
 *The execution kernel for intelligent software — durable, event-sourced, deterministic.*
 
 Loom treats an intelligent workflow as a *process that unfolds over time*, not a request that
