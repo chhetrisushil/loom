@@ -310,11 +310,31 @@ suite("interest-filtered NOTIFY delivery", () => {
   it("a lookup that never returns is dropped after the timeout (warned once) and later events still arrive", async () => {
     const real = track(new Pool(scoped()));
     const warnings: string[] = [];
+    // The 50 ms budget is the reader's, for EVERY lookup: a real SELECT on a loaded runner (a
+    // second pooled connection to open, the CPU shared with other suites) can exceed it too and
+    // be dropped as well (CI saw `until: timed out` with one of 1 and 2 missing). So only
+    // sequence 0's lookup goes unanswered; the later ones answer at once with the row the
+    // writer appended, and only the hung one can lose its race with the timer.
     const hung = wrapPool(real, (text, params) => {
-      if (typeof text === "string" && text.startsWith(LOOKUP) && params?.[1] === 0) {
-        return new Promise(() => {}); // half-open socket: never settles
+      if (typeof text !== "string" || !text.startsWith(LOOKUP) || params?.[0] !== ID("hung")) {
+        return undefined;
       }
-      return undefined;
+      if (params[1] === 0) return new Promise(() => {}); // half-open socket: never settles
+      const e = evt(ID("hung"), params[1] as number);
+      return Promise.resolve({
+        rows: [
+          {
+            id: e.id,
+            workflow_id: e.workflowId,
+            execution_id: e.executionId,
+            event_type: e.eventType,
+            sequence: String(e.sequence),
+            timestamp: String(e.timestamp),
+            payload: e.payload,
+            metadata: null,
+          },
+        ],
+      });
     });
     const writer = new PostgresEventStore(track(new Pool(scoped())), { notifyBuckets: 8 });
     const reader = new PostgresEventStore(hung, {

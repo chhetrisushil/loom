@@ -6915,29 +6915,36 @@ export class WorkflowRuntime {
     let fenced = await this.parkWasFenced(executionId, parkSeq);
     for (let attempt = 1; attempt <= NOTIFY_ATTEMPTS; attempt++) {
       try {
-        const got = fenced
-          ? await this.acquireFenceIfParked(
-              executionId,
-              {
-                eventType: INBOX_DELIVERY,
-                ...(wait !== undefined && { waitId: wait.waitId }),
-                payload: null,
-              },
-              parkSeq,
-              this.systemOptions().system,
-              { vm: new ReplayVM([], state), events: undefined },
-              true,
-              wait === undefined
-            )
-          : {
-              fence: undefined,
-              // Whatever was appended since `state` (an earlier chunk of this very scan, an app
-              // emit, a timer fire): fold it in, or the batch lands at a stale sequence.
-              vm: await (async () => {
-                const tail = await this.eventStore.readFrom(executionId, state.sequence + 1);
-                return tail.length === 0 ? new ReplayVM([], state) : new ReplayVM(tail, state);
-              })(),
-            };
+        let got: { fence: number | undefined; vm: ReplayVM };
+        if (fenced) {
+          got = await this.acquireFenceIfParked(
+            executionId,
+            {
+              eventType: INBOX_DELIVERY,
+              ...(wait !== undefined && { waitId: wait.waitId }),
+              payload: null,
+            },
+            parkSeq,
+            this.systemOptions().system,
+            { vm: new ReplayVM([], state), events: undefined },
+            true,
+            wait === undefined
+          );
+        } else {
+          // Whatever was appended since `state` (an earlier chunk of this very scan, an app emit, a
+          // timer fire): fold it in, or the batch lands at a stale sequence. But only IGNORABLE
+          // events may be folded past: no fence condition guards this append, so a tail that
+          // answered the park (a delivery resumed the owner) or holds a newer one must refuse here.
+          // Appending at its tip would land a fact in a RUNNING owner's log and take the sequence
+          // its own next append needs, wedging it. A rival landing after this read collides on the
+          // store's (executionId, sequence) uniqueness instead.
+          const tail = await this.eventStore.readFrom(executionId, state.sequence + 1);
+          const vm = tail.length === 0 ? new ReplayVM([], state) : new ReplayVM(tail, state);
+          if (vm.getState().status !== "suspended" || lastSuspendSequence(tail) !== undefined) {
+            return "gone";
+          }
+          got = { fence: undefined, vm };
+        }
         if (guard && staleInboxBatch(got.vm.getState(), pre)) return "stale";
         const journal = new ExecutionJournal(
           this.eventStore,
