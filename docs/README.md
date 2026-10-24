@@ -14,6 +14,7 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Composed surfaces](composed-surfaces.md)** | Record a runtime-composed UI as a durable artifact: validate → content-address → `ctx.emit` → replay, with pinning, and what not to do. |
 | **[Transient manifest interpreter](transient-interpreter.md)** | Run a hot, content-addressed read path with zero events, escalating to a durable run only when a repair must be recorded. |
 | **[Data-protection patterns](data-protection-patterns.md)** | The assembly order for long-running observer agents: redaction, shredding, pinned retention, tenant scoping, residency. |
+| **[Security guardrails overview](security-overview.md)** | For security reviewers: trust boundaries and threat model, every guardrail loom ships with its ADR, code and tests, known residual risks, and the integrator checklist. |
 | **[Acceptance governance](acceptance-governance.md)** | The self-quieting loop: OUTCOME_RECORDED → rankFromOutcomes → rankedRouter — proactivity trained by usage. |
 | **[Architecture](architecture.md)** | Understand the mission, core principles (P1–P11), the runtime model, and *why* each decision was made. |
 | **[Codebase guide](codebase-guide.md)** | Where to start reading loom and loom-ui, the package map, and walkthroughs of the data and control flow. |
