@@ -281,7 +281,10 @@ if (PG_URL === undefined) {
         const boot = poolFor(s);
         await migrate(boot); // the migrator (superuser) installs everything
         await boot.end();
-        await admin(`CREATE ROLE ${role} LOGIN`);
+        // Same password as the admin URL: poolFor keeps it, and CI's Postgres
+        // authenticates TCP logins by password (a local trust cluster ignores it).
+        const pw = decodeURIComponent(new URL(url).password).replaceAll("'", "''");
+        await admin(`CREATE ROLE ${role} LOGIN${pw === "" ? "" : ` PASSWORD '${pw}'`}`);
         roles.push(role);
         await admin(`
           DO $$ DECLARE r record; BEGIN
