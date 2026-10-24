@@ -219,7 +219,14 @@ for (const backend of inboxBackends("discard")) {
       });
       const store = Object.create(inner) as typeof inner;
       store.head = async (sid: string) => {
-        if (holdHead && sid === inboxStreamId(e)) {
+        // Only the DISCARD's read: the post-park notify scan reads this same head in the
+        // background, and holding that pass instead would queue the hot delivery behind it.
+        // (`headOf` calls `head` synchronously, so the discard is on this stack.)
+        if (
+          holdHead &&
+          sid === inboxStreamId(e) &&
+          new Error().stack?.includes("discardInboxCore") === true
+        ) {
           holdHead = false;
           arrived();
           await gate;
