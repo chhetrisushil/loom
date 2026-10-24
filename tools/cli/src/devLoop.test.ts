@@ -23,12 +23,22 @@ import { watchTree } from "./watch";
 // modes are exercised: real `fs.watch` where the platform has it, and forced polling.
 
 // Count (and pass through) fs.watch calls, so the re-arm test can prove a fresh watcher was made.
-const watchCalls = vi.hoisted(() => ({ fn: undefined as unknown }));
+// `fixedIno` makes statSync report one inode number for every path, as Linux often does for a
+// directory deleted and recreated in place.
+const watchCalls = vi.hoisted(() => ({
+  fn: undefined as unknown,
+  fixedIno: undefined as number | undefined,
+}));
 vi.mock("node:fs", async (importOriginal) => {
   const orig = await importOriginal<typeof import("node:fs")>();
   const spy = vi.fn(orig.watch);
   watchCalls.fn = spy;
-  return { ...orig, default: orig, watch: spy };
+  const statSync = ((...args: Parameters<typeof orig.statSync>) => {
+    const st = orig.statSync(...args);
+    if (st !== undefined && watchCalls.fixedIno !== undefined) st.ino = watchCalls.fixedIno;
+    return st;
+  }) as typeof orig.statSync;
+  return { ...orig, default: orig, watch: spy, statSync };
 });
 
 const CEILING = 30_000;
@@ -179,6 +189,30 @@ describe("watchTree", () => {
       await until(() => watchSpy.mock.calls.length >= 2);
       expect(w.mode).toBe("watch");
     } finally {
+      w.close();
+    }
+  });
+
+  it("re-arms when the recreated root reuses the old inode number (Linux ext4)", async () => {
+    const watchSpy = watchCalls.fn as ReturnType<typeof vi.fn>;
+    watchSpy.mockClear();
+    watchCalls.fixedIno = 4242;
+    const w = watchTree(root, {
+      debounceMs: 20,
+      pollMs: 50,
+      safetyMs: 100,
+      onChange: () => undefined,
+      onError: () => undefined,
+    });
+    try {
+      if (w.mode !== "watch") return; // no recursive fs.watch on this platform: nothing to re-arm
+      expect(watchSpy).toHaveBeenCalledTimes(1);
+      rmSync(root, { recursive: true, force: true });
+      mkdirSync(root, { recursive: true }); // same inode number, new directory
+      await until(() => watchSpy.mock.calls.length >= 2);
+      expect(w.mode).toBe("watch");
+    } finally {
+      watchCalls.fixedIno = undefined;
       w.close();
     }
   });

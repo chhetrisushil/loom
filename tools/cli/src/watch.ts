@@ -127,7 +127,7 @@ export function watchTree(root: string, options: TreeWatchOptions): TreeWatcher 
   let poller: NodeJS.Timeout | undefined;
   let watcher: fs.FSWatcher | undefined;
   let safety: NodeJS.Timeout | undefined;
-  let armedIno: number | undefined;
+  let armedId: string | undefined;
   let unsupported = false;
   let firstEventAt: number | undefined;
   let mode: "watch" | "poll" = "poll";
@@ -189,9 +189,12 @@ export function watchTree(root: string, options: TreeWatchOptions): TreeWatcher 
     if (poller === undefined) poller = setInterval(schedule, pollMs);
   };
 
-  const inoOf = (): number | undefined => {
+  // The root's identity. Linux (ext4) often hands a deleted-and-recreated directory the SAME
+  // inode number, so the birth time is part of it; where the platform has none it reads as 0.
+  const idOf = (): string | undefined => {
     try {
-      return fs.statSync(root).ino;
+      const st = fs.statSync(root);
+      return `${st.ino}:${st.birthtimeMs}`;
     } catch {
       return undefined;
     }
@@ -225,7 +228,7 @@ export function watchTree(root: string, options: TreeWatchOptions): TreeWatcher 
       const w = fs.watch(root, { recursive: true }, (_event, filename) => {
         if (shouldSchedule(filename)) schedule();
       });
-      armedIno = inoOf();
+      armedId = idOf();
       watcher = w;
       mode = "watch";
       w.on("error", (err) => {
@@ -249,9 +252,9 @@ export function watchTree(root: string, options: TreeWatchOptions): TreeWatcher 
   }
   if (options.forcePoll !== true && !unsupported) {
     safety = setInterval(() => {
-      const ino = inoOf();
-      if (watcher !== undefined && ino !== armedIno) dropWatcher(watcher); // root replaced
-      if (watcher === undefined && ino !== undefined && !arm() && unsupported) startPolling();
+      const id = idOf();
+      if (watcher !== undefined && id !== armedId) dropWatcher(watcher); // root replaced
+      if (watcher === undefined && id !== undefined && !arm() && unsupported) startPolling();
       if (poller !== undefined && watcher !== undefined) {
         clearInterval(poller); // the watcher is back: polling is redundant
         poller = undefined;
