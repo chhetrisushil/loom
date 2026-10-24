@@ -70,7 +70,7 @@ These come from `loom/docs/architecture.md` section 2; almost every odd-looking 
 
 ### Kernel hardening rings
 
-The kernel exposes a versioned syscall ABI (K1: `execute`, `run`, `decide`, `parallel`, `suspend`, `sleep`, `receive`, `select`, `continueAsNew`, `emit`, `stream`) and a set of opt-in rings, each of which logs its verdict as an ordinary event: authority K2 (`EFFECT_DENIED`), quotas K3, fault supervision K4, event-schema governance K5, safety K6, isolation and egress K7, cancellation and deadlines K8, delivery and fencing K9, log lifecycle and crypto-shredding K10, flow-code versioning K11, identity and tenancy K12, durable timers T1 and the wire ABI T2.
+The kernel exposes a versioned syscall ABI (K1: `execute`, `run`, `decide`, `parallel`, `suspend`, `sleep`, `receive`, `select`, `continueAsNew`, `emit`, `stream`, `sleepUntil`, `ui`, `negotiateBudget`) and a set of opt-in rings, each of which logs its verdict as an ordinary event: authority K2 (`EFFECT_DENIED`), quotas K3, fault supervision K4, event-schema governance K5, safety K6, isolation and egress K7, cancellation and deadlines K8, delivery and fencing K9, log lifecycle and crypto-shredding K10, flow-code versioning K11, identity and tenancy K12, durable timers T1 and the wire ABI T2.
 
 ### loom-ui's design in one paragraph
 
@@ -100,7 +100,7 @@ Line numbers below are approximate (as of loom `b0cb9461`); search for the symbo
 | --- | --- | --- |
 | `@loom/core` | `src/builders/*.ts`, `src/types/definitions.ts`, `src/types/execution.ts` | Authoring builders (`step$`, `flow$`, `tool$`, `agent$`, `projection$`, `schedule$`, `policy$`, `skill$`, `memory$`) and shared types. Pure declarations, no runtime. Also `flowHash.ts` (the `flowContentHash` that pins in-flight executions to code). |
 | `@loom/workflow-runtime` | `src/WorkflowRuntime.ts` (`start` ~L3480, `resume` ~L3768, `resumeAs` ~L6991, `loadState` ~L7279, `fork` ~L7559, private `execute` ~L8602) | Drives executions: bootstraps, authorizes, builds the journal and context, runs the flow, handles suspend, cancel, deadlines, leases, inbox and continue-as-new. 9,400 lines; read by method, not top to bottom. |
-| | `src/WorkflowContext.ts` (`execute` L754, `run` L1132, `decide` L1140, `parallel` L1322, `suspend` L1761, `continueAsNew` L1804, `receive`/`select` L1867, `sleep` L2402) | The syscall surface a flow sees as `ctx`. Each call is either served from the log or executed live and journaled. |
+| | `src/WorkflowContext.ts` (`execute` L754, `run` L1132, `decide` L1140, `parallel` L1322, `suspend` L1761, `continueAsNew` L1804, `receive`/`select` L1867, `sleep` L2402; also `sleepUntil`, `emit`, `stream`, `ui`, `negotiateBudget`) | The syscall surface a flow sees as `ctx`. Each call is either served from the log or executed live and journaled. |
 | | `src/ExecutionJournal.ts` | The single sequence allocator and the only caller of `eventStore.append`. Folds synchronously, writes asynchronously on a FIFO tail. |
 | | `src/abi.ts`, `src/types.ts` | `KERNEL_ABI` (the versioned syscall ABI, K1) and the runtime's public types (`RegisteredFlow`, `FlowRunner`, `RunOptions`, `ExecutionHandle`). |
 | | `TimerService.ts`, `inbox.ts`, `leaseKeeper.ts`, `driverLease.ts`, `LogLifecycle.ts`, `recoverAbandoned.ts` | Durable timers (T1), inbox messaging, driver leases and fencing (K9), retention and shredding (K10), crash recovery. |
