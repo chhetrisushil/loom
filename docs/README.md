@@ -16,6 +16,7 @@ Start here. The docs are a progressive funnel — read top to bottom, or jump to
 | **[Data-protection patterns](data-protection-patterns.md)** | The assembly order for long-running observer agents: redaction, shredding, pinned retention, tenant scoping, residency. |
 | **[Acceptance governance](acceptance-governance.md)** | The self-quieting loop: OUTCOME_RECORDED → rankFromOutcomes → rankedRouter — proactivity trained by usage. |
 | **[Architecture](architecture.md)** | Understand the mission, core principles (P1–P11), the runtime model, and *why* each decision was made. |
+| **[Codebase guide](codebase-guide.md)** | Where to start reading loom and loom-ui, the package map, and walkthroughs of the data and control flow. |
 | **[Loom 2.0 deep-dives](loom-2.0/00-overview.md)** | The execution-kernel evolution in full detail: data structures, algorithms, and diagrams for every subsystem. |
 | **[Presentation](presentation/loom-deck.md)** | Present Loom — the flagship deck (Marp). More decks in [`presentation/`](presentation/). |
 | **[ADRs](adr/)** | Read the full decision history (0001–0133), one record per decision — including rejections (e.g. ADR 0067). |
