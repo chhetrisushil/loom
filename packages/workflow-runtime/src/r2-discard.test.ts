@@ -62,6 +62,9 @@ for (const backend of inboxBackends("discard")) {
       expect(refused).toBeInstanceOf(InboxFullError);
       expect((refused as Error).message).toMatch(/inbox sequence 0/);
 
+      // The last hot message's consumption is durable, but the resumed owner may not have parked
+      // again yet, and a discard needs a parked owner: wait for the park.
+      await until(async () => (await h.rt.loadState(e))?.status === "suspended");
       const res = await h.rt.discardInbox(
         e,
         { topic: "cold", throughSeq: 0, reason: "stale" },
@@ -198,6 +201,59 @@ for (const backend of inboxBackends("discard")) {
       expect(await hotConsumed()).toEqual(Array.from({ length: 12 }, (_, i) => i));
       // none of the cold messages was ever delivered (the flow never reads that topic)
       expect(cursorsOf((await h.rt.loadState(e))?.variables ?? {}).cold).toBeGreaterThan(0);
+    });
+
+    it("a delivery that resumes the owner between the discard's fold and its append: refused, nothing lands in the running owner's log", async () => {
+      // The discard folds the owner as parked, then (held here, on its read of the stream's head)
+      // a delivery resumes it. The unfenced append used to fold that tail in and land at the tip
+      // anyway: a fact in a RUNNING owner's log, taking the sequence its own next append needs.
+      const { eventStore: inner, ...rest } = backend.make();
+      let holdHead = false;
+      let arrived!: () => void;
+      const atHead = new Promise<void>((r) => {
+        arrived = r;
+      });
+      let letGo!: () => void;
+      const gate = new Promise<void>((r) => {
+        letGo = r;
+      });
+      const store = Object.create(inner) as typeof inner;
+      store.head = async (sid: string) => {
+        if (holdHead && sid === inboxStreamId(e)) {
+          holdHead = false;
+          arrived();
+          await gate;
+        }
+        return (inner.head as NonNullable<typeof inner.head>).call(inner, sid);
+      };
+      const latch = new Latch();
+      const h = build({}, { ...rest, eventStore: store, latch });
+      const f = flow("w", async (ctx) => {
+        unwrapTainted(await ctx.receive("hot"));
+        await ctx.run(slow, {});
+        return unwrapTainted(await ctx.receive<string>("cold"));
+      });
+      h.rt.registerFlow(f.definition, f.runner);
+      const e = id();
+      await (await h.rt.start(f, {}, { executionId: e })).waitForSuspend();
+      const cold = await h.rt.send(e, { topic: "cold", payload: "keep", messageId: "c" });
+      holdHead = true;
+      const discard = h.rt
+        .discardInbox(e, { topic: "cold", throughSeq: cold.inboxSeq }, { principal: OPERATOR })
+        .catch((x) => x);
+      await atHead; // the discard has folded the owner as parked
+      await h.rt.send(e, { topic: "hot", payload: 1, messageId: "h" });
+      await latch.entered; // resumed and running, held inside `slow`
+      await until(async () => (await kinds(h.eventStore, e)).includes("STEP_STARTED"));
+      const before = await kinds(h.eventStore, e);
+      letGo();
+      const err = await discard;
+      expect(err).toBeInstanceOf(InboxDiscardRefusedError);
+      expect(err.reason).toBe("not-parked");
+      expect(await kinds(h.eventStore, e)).toEqual(before);
+      latch.release();
+      await until(async () => (await h.rt.loadState(e))?.status === "completed", 8000);
+      expect((await h.rt.loadState(e))?.variables._output).toBe("keep"); // NOT discarded
     });
 
     it("many discards add one answer entry, not one per discard", async () => {
