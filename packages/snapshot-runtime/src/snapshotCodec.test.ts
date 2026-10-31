@@ -4,12 +4,16 @@ import { describe, expect, it } from "vitest";
 import {
   FRAME_JSON,
   FRAME_ZSTD,
+  MAX_DECODED_STATE_BYTES,
+  SNAPSHOT_FRAME_SENTINEL,
   SnapshotCodecUnavailableError,
   SnapshotDecodeError,
+  SnapshotStateTooLargeError,
   decodeState,
   decodeStateMaybeLegacy,
   encodeState,
   isFramedState,
+  isSnapshotFrameSentinel,
   parseSnapshotCodec,
   zstdAvailable,
 } from "./snapshotCodec";
@@ -114,6 +118,67 @@ zstd("snapshot codec (ADR 0140)", () => {
     expect(() => decodeState(frame.subarray(0, frame.length - 9))).toThrow(SnapshotDecodeError);
   });
 
+  it("a frame WITHOUT the content checksum is refused (we always write it; one without was not ours)", () => {
+    const c = zlib.constants as Record<string, number>;
+    const json = Buffer.from(JSON.stringify({ a: "x".repeat(100) }));
+    const noCk = (
+      zlib as unknown as { zstdCompressSync(b: Buffer, o: object): Buffer }
+    ).zstdCompressSync(json, { params: { [c.ZSTD_c_checksumFlag as number]: 0 } });
+    expect(() => decodeState(Buffer.concat([Buffer.of(FRAME_ZSTD), noCk]))).toThrow(
+      /no content checksum/
+    );
+  });
+
+  it("trailing bytes after the frame are refused, as is a second concatenated frame", () => {
+    const good = encodeState({ a: "y".repeat(100) }, "zstd");
+    expect(() => decodeState(Buffer.concat([good, Buffer.from("zz")]))).toThrow(/trailing byte/);
+    expect(() => decodeState(Buffer.concat([good, good.subarray(1)]))).toThrow(/trailing byte/);
+  });
+
+  it("a decompression bomb that DECLARES its size is refused from the header, before any inflation", () => {
+    // A hand-built, structurally valid frame (13-byte header, one raw 1-byte block, checksum) that
+    // declares 600 MiB of content: ~25 bytes on disk. Nothing may be allocated for it.
+    const header = Buffer.alloc(5 + 1 + 8);
+    header.writeUInt32LE(0xfd2fb528, 0);
+    header[4] = 0xc4; // FCS flag 3 (8 bytes), multi-segment, content checksum on
+    header[5] = 0x00; // window descriptor
+    header.writeBigUInt64LE(BigInt(600 * 1024 * 1024), 6);
+    const frame = Buffer.concat([
+      Buffer.of(FRAME_ZSTD),
+      header,
+      Buffer.from([0x09, 0x00, 0x00, 0x20]), // last raw block, size 1
+      Buffer.alloc(4),
+    ]);
+    expect(() => decodeState(frame)).toThrow(SnapshotStateTooLargeError);
+    expect(() => decodeState(frame)).toThrow(/600\d* decoded bytes|decoded bytes/);
+    expect(new SnapshotStateTooLargeError(1).message).toMatch(String(MAX_DECODED_STATE_BYTES));
+  });
+
+  it("a bomb that does NOT declare its size is stopped at the ceiling (typed, not a raw ERR_BUFFER_TOO_LARGE)", async () => {
+    // Streamed, so the frame carries no content size: 257 MiB of spaces in 1 MiB writes (~10 KB stored).
+    const stream = (
+      zlib as unknown as {
+        createZstdCompress(o?: object): NodeJS.ReadWriteStream;
+      }
+    ).createZstdCompress({ params: { [zlib.constants.ZSTD_c_checksumFlag as number]: 1 } });
+    const chunks: Buffer[] = [];
+    stream.on("data", (d: Buffer) => chunks.push(d));
+    const done = new Promise<void>((res, rej) => {
+      stream.on("end", () => res());
+      stream.on("error", rej);
+    });
+    const mib = Buffer.alloc(1024 * 1024, 0x20);
+    for (let i = 0; i < MAX_DECODED_STATE_BYTES / mib.length + 1; i++) stream.write(mib);
+    stream.end();
+    await done;
+    // the stream closes with a second, empty frame: keep only the first
+    const all = Buffer.concat(chunks);
+    const second = all.indexOf(Buffer.from([0x28, 0xb5, 0x2f, 0xfd]), 4);
+    const frame = Buffer.concat([Buffer.of(FRAME_ZSTD), all.subarray(0, second)]);
+    expect(frame.length).toBeLessThan(1024 * 1024);
+    expect(() => decodeState(frame)).toThrow(SnapshotStateTooLargeError);
+  }, 60_000);
+
   it("decodeStateMaybeLegacy reads a bare JSON text AND a frame (the sealed-envelope dispatch)", () => {
     const state = { v: [1, { a: "b" }] };
     expect(decodeStateMaybeLegacy(Buffer.from(JSON.stringify(state)))).toStrictEqual(state);
@@ -143,5 +208,17 @@ zstd("snapshot codec (ADR 0140)", () => {
 describe("snapshot codec availability", () => {
   it("SnapshotCodecUnavailableError names the Node requirement", () => {
     expect(new SnapshotCodecUnavailableError("zstd").message).toMatch(/Node >= 22\.15/);
+  });
+});
+
+describe("SNAPSHOT_FRAME_SENTINEL (ADR 0140 D5)", () => {
+  it("is exactly one top-level string __loomEnc, and only that value is recognised", () => {
+    expect(isSnapshotFrameSentinel(SNAPSHOT_FRAME_SENTINEL)).toBe(true);
+    expect(isSnapshotFrameSentinel({ ...SNAPSHOT_FRAME_SENTINEL })).toBe(true);
+    expect(isSnapshotFrameSentinel({ ...SNAPSHOT_FRAME_SENTINEL, extra: 1 })).toBe(false);
+    expect(isSnapshotFrameSentinel({ __loomEnc: "loom/aes-256-gcm" })).toBe(false);
+    expect(isSnapshotFrameSentinel(null)).toBe(false);
+    expect(isSnapshotFrameSentinel([SNAPSHOT_FRAME_SENTINEL])).toBe(false);
+    expect(typeof SNAPSHOT_FRAME_SENTINEL.__loomEnc).toBe("string");
   });
 });

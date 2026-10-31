@@ -14,8 +14,8 @@
 - Version impact: **none to a contract.** `SNAPSHOT_STORE_SPI_VERSION` stays **1.2.0** (the `Snapshot` a store
   accepts and returns is unchanged: the codec lives inside each store and is invisible at the SPI), `KERNEL_ABI`,
   `EVENT_SCHEMA` and every other SPI are unchanged. New additive options on existing stores and presets, a new
-  `durability.snapshots` config group, a new `loom snapshot show` command, and a new nullable column on
-  Postgres `snapshots` that exists only when the operator opts in.
+  `durability.snapshots` config group, a new `loom snapshot show` command, a new nullable column and a `NOT VALID` CHECK on
+  Postgres `snapshots` that exist only when the operator opts in (`state` stays `NOT NULL`).
 - Placement: **1P**, in `@loom/snapshot-runtime` (the codec), `@loom/plugin-sqlite`, `@loom/plugin-postgres`,
   `@loom/plugin-crypto`, `@loom/app` (config) and the CLI. Kernel untouched. Reviewed as storage + schema
   migration + a security boundary (the sealed path).
@@ -55,28 +55,36 @@ stay OWN keys, lone surrogates are escaped by `JSON.stringify` and restored by `
 Both format bytes are control characters, which can never start a JSON text, so a reader that may meet a
 pre-codec bare-JSON plaintext (D3) tells the two apart by the first byte alone. An unknown byte (a newer loom's
 frame) is a loud `SnapshotDecodeError`, never a guess; a corrupted payload fails the zstd checksum rather than
-decoding to a wrong state; decompression is capped (1 GiB) so a tampered row cannot allocate without bound.
-No dictionary.
+decoding to a wrong state; decompression is bounded so a tampered row cannot allocate without bound: the frame header is walked
+first (O(blocks), no inflation) and a frame that DECLARES more than 256 MiB (`MAX_DECODED_STATE_BYTES`) is refused
+with the typed `SnapshotStateTooLargeError` before a byte is inflated (a 19 KB frame can declare 600 MiB); one
+that declares nothing is stopped at the same ceiling (`ERR_BUFFER_TOO_LARGE` is mapped to the same error). We
+always write the content checksum and exactly one frame, so a frame WITHOUT the checksum flag, or followed by
+trailing bytes (including a second concatenated frame, which the library would otherwise decode silently),
+is refused as not ours. No dictionary.
 
 ### D2 — Per-backend storage: reads dispatch on the stored format, nothing is rewritten
 
 - **Postgres.** A new `snapshots.state_z BYTEA` column (TOAST storage `EXTERNAL`: the bytes are already
-  compressed, the server must not try again). A codec row has `state NULL` and `state_z` set; a legacy row is the
-  reverse. `state`'s `NOT NULL` is dropped (catalog-only, no scan), and a `CHECK (state IS NULL OR state_z IS
-  NULL)` is added `NOT VALID` (enforced for every later write, no table scan: every existing row satisfies it by
-  construction). `PostgresSnapshotStore` reads with `SELECT *` and dispatches on the row: `state_z` present means
+  compressed, the server must not try again). A codec row has `state_z` set and `state` holding the fixed
+  SENTINEL `{"__loomEnc":"loom.snapshot-frame/state_z"}` (`SNAPSHOT_FRAME_SENTINEL`, D5); a legacy row has
+  `state_z NULL`. `state` STAYS `NOT NULL`. A `CHECK (state_z IS NULL OR state = '<sentinel>'::jsonb)` named
+  `snapshots_frame_sentinel` is added `NOT VALID` (enforced for every later write, no table scan: every existing
+  row has `state_z NULL`, so satisfies it by construction). `PostgresSnapshotStore` reads with `SELECT *` and dispatches on the row: `state_z` present means
   a frame, else JSONB. It reads BOTH whatever it is configured to write.
 - **SQLite.** No DDL: the existing `state TEXT` column holds a `BLOB` for a frame (SQLite is dynamically typed;
   the storage class is the discriminator: `string` is legacy JSON text, `Buffer` is a frame). No migration, no
-  lock. An older loom that meets a frame fails loudly (`JSON.parse` of a binary value throws).
+  lock. An older loom that meets a frame fails loudly (`JSON.parse` of a binary value throws; tested).
 - **In-memory.** `InMemoryAsyncSnapshotStore({ codec })`: with `"zstd"` it holds frames and decodes on every read
   (so a read is an independent copy and the store exercises the real format); default holds the saved object.
 
 Old rows stay readable forever and are never rewritten (a re-save by id replaces a row, in the format then
 configured). A re-save by id over a row of the other format flips it and, on Postgres, clears the other column:
-a store that knows the column exists writes `state_z = NULL` on a JSONB upsert; a store that probed BEFORE
-another node opted in does not know it, and the `CHECK` turns its write into a loud `23514` instead of a silently
-stale frame (the mixed-config-fleet case).
+a store that knows the column exists writes `state_z = NULL` on a JSONB upsert. Whether the column exists is
+read from the catalog alone (not from whether THIS store's own provisioning succeeded: a peer may have added
+the column while this store's ALTER timed out). A store that probed BEFORE another node opted in does not know
+it, and the `CHECK` turns its write into a `23514`; the store then re-probes, and if the column exists
+now, retries the upsert correctly (clearing `state_z`), else rethrows. No stale frame is ever left.
 
 ### D3 — Compress BEFORE sealing
 
@@ -96,10 +104,20 @@ text every earlier envelope holds, by the first byte. Consequences, all delibera
   codec only in the backend (below the seal) stays within 30% of today's.
 - **The cost, stated (this reverses ADR 0136 D4's deferral to an explicit, opt-in decision).** Ciphertext length
   now reveals the COMPRESSED length of the state, the CRIME/BREACH family of leaks when a party can both
-  influence the plaintext and observe stored sizes. The state is the folded execution written by the runtime, not
-  an attacker-chosen string compressed beside a secret in one request, so the practical oracle is narrow, but an
-  operator whose threat model includes it keeps `codec` off. It applies to `sealState` only (a static-path store
-  seals small fields; passing `codec` without `sealState` throws).
+  influence part of the plaintext (tool output, inbox text) that is stored beside a secret, and observe stored
+  sizes (a database reader, a storage metric, a backup listing) across repeated re-saves. The state is the folded
+  execution written by the runtime, not one request, so the practical oracle is narrow, but it is real, so it is
+  never implied by choosing a codec: **`lengthLeak: "accept"` is REQUIRED** with `codec` + `sealState`
+  (`new EncryptingSnapshotStore(inner, keys, { sealState: true, codec: "zstd", lengthLeak: "accept" })`), else
+  construction throws `TypeError` (fail closed). `defineConfig` takes the same acknowledgment as
+  `durability.snapshots.lengthLeak: "accept"` and THROWS at boot without it when the default sealed
+  checkpoint store would compress. It applies to `sealState` only (a static-path store seals small fields;
+  passing `codec` without `sealState` throws).
+- **Metrics must not carry the oracle.** `ProfilingSnapshotStore` therefore never reports stored (compressed)
+  size over a store that `sealsWholeState`: it measures the JSON text size instead, and an explicit
+  `measure: "stored"` there throws. The caveat: a profiler placed BELOW a sealing store (wrapped around the raw
+  backend) is handed only the envelope and cannot tell; its sizes are the ciphertext lengths, so do not expose
+  that placement's histogram to an untrusted metrics reader.
 
 ### D4 — Node version: refuse loudly, never fall back silently
 
@@ -119,10 +137,10 @@ pattern applied again:
 
 - its OWN short transaction, AFTER the main migration committed, under the same migration advisory lock (taken
   before the probes so they see a settled catalog): it can neither extend nor reorder the conversions' locks;
-- a catalog probe first (`pg_attribute`, `pg_constraint`): when the column, the nullable `state` and the CHECK
-  already exist it takes NO table lock, so every boot after the first is lock-free;
+- a catalog probe first (`pg_attribute`, `pg_constraint`): when the column and the CHECK already exist it takes
+  NO table lock, so every boot after the first is lock-free;
 - otherwise the statements run in ONE transaction under ONE `ACCESS EXCLUSIVE` acquisition with `lock_timeout` =
-  min(`lockTimeoutMs`, 200 ms). Each is catalog-only, so the lock is held for microseconds once granted; while it
+  min(`lockTimeoutMs`, 200 ms). Each is catalog-only (a nullable column without a default is not a rewrite; a `NOT VALID` CHECK does not scan), so the lock is held for microseconds once granted; while it
   WAITS, snapshot I/O (hence resume) queues behind it for at most that timeout, per boot, until a boot finds the
   table free;
 - on the same soft SQLSTATEs as ADR 0136 (`lock_not_available`, `insufficient_privilege`, `deadlock_detected`,
@@ -134,17 +152,30 @@ pattern applied again:
 A store that does NOT opt in does no DDL; it makes one lock-free catalog read at boot (`state_z` present?) so a
 JSONB re-save never leaves a stale frame (D2).
 
-**Rollout order.** Upgrade every node to a build that reads frames first, then opt in. A pre-0140 Postgres store
-that meets a frame row reads `state NULL` as the state; do not roll back below this build once frames exist
-(re-save is not needed to downgrade, but the older code cannot read the frame rows). SQLite fails loudly instead.
+**Rollout order.** Upgrade every node to a build that reads frames first, then opt in.
+
+**An older node reading a frame row is NOT harmless, so the row is built to make it fail loudly.** A first
+design dropped `state`'s `NOT NULL` and left `state NULL` on a frame row; review showed a pre-0140 reader would
+take that NULL as "no state" (or an empty fold). So `state` stays `NOT NULL` and holds `SNAPSHOT_FRAME_SENTINEL`,
+a top-level string `__loomEnc`, a shape every older reader already refuses: the runtime's `SealGuardedSnapshotStore`
+reads it as an unopened sealed checkpoint (`SealedStreamUnreadableError`); the content sweep counts it as a sealed
+snapshot and an erasing pass throws `SealedSnapshotScanError` (a dry run lists it); an older `EncryptingSnapshotStore`
+passes it through (it is not its cipher id) into that guard; and anything that seeds a fold from it trips
+`assertSnapshotIdentity` (`SnapshotIdentityMismatchError`: the sentinel names no execution). SQLite fails loudly
+on its own (`JSON.parse` of a BLOB). A reader that knows the codec decodes `state_z` first, and treats the
+sentinel WITHOUT a frame (the column dropped or nulled) as corruption (it throws, it never seeds a state). Tests:
+`packages/workflow-runtime/src/snapshotFrameSentinel.test.ts`, `plugins/content/src/gc.test.ts`,
+`plugins/postgres/src/snapshotCodec.test.ts` (raw SQL: `state` is `NOT NULL`, equals the sentinel, and a real
+state beside a frame is refused by the CHECK).
 
 ### D6 — Every reader goes through the stores, so every reader decodes
 
 No code outside the stores reads `snapshots.state`; everything calls `loadLatest` / `loadAt` /
 `loadLatestBefore` / `loadLatestSealed`, which now decode: the runtime's resume and fork, pruning (a range
 `DELETE`, no state read), compaction checkpoints, the ADR 0138 legacy-checkpoint archive segment (it copies the
-DECODED `Snapshot` into the segment, so the archived checkpoint is the exact JSON that was saved, which under
-JSONB it never was: key order), the content sweep (`snapshots.loadLatest*` to pin refs), `exportSubject`, the CLI
+DECODED `Snapshot` into the segment, so a checkpoint written as a frame is archived as the exact JSON that was
+saved; a checkpoint written BEFORE the opt-in is a JSONB row and is archived as JSONB returns it, key order
+included: byte-exactness holds for frame rows only), the content sweep (`snapshots.loadLatest*` to pin refs), `exportSubject`, the CLI
 (`loom retention`, `sweep content`, `repair`, `learn`, `debug`), and the conformance kit. The SQL a human might
 have run (`state->…`) cannot traverse a frame: use D7. `docs/` was searched for that advice; none existed.
 
@@ -161,14 +192,17 @@ either format decodes. Read-only; `--db` also needs `--snap`; exit 1 when there 
 - `new PostgresSnapshotStore(pool, { codec, migrationLockTimeoutMs, onWarn })`, `postgresStorage({ snapshotCodec })`,
   `migratePostgresStores(pool, { snapshotCodec })`.
 - `new InMemoryAsyncSnapshotStore({ codec })`, `new EncryptingSnapshotStore(inner, keys, { sealState, codec })`.
-- `defineConfig({ durability: { snapshots: { codec: "zstd" } } })`: validated at boot (an unknown codec or key is
-  a `TypeError`; a codec this Node cannot write throws). It applies to the stores `defineConfig` builds itself:
+- `defineConfig({ durability: { snapshots: { codec: "zstd", lengthLeak? } } })`: validated at boot (an unknown codec or key is
+  a `TypeError`; a codec this Node cannot write throws; the sealed default store needs `lengthLeak: "accept"`, D3). It applies to the stores `defineConfig` builds itself:
   `storage: { kind: "memory" }` and the default sealed checkpoint store of an encrypting custom event store
   (compressed BEFORE sealed). A snapshot store the app passes is already built, so it must be given the codec at
-  its own construction; `defineConfig` warns when such a store reports (`snapshotCodec`) a codec that disagrees.
+  its own construction. `defineConfig` THROWS (`TypeError`) when such a store reports (`snapshotCodec`) a codec that
+  disagrees (the opt-in would be silently dropped), and warns when it reports none (a hand-rolled store cannot
+  say). The marker travels up through every snapshot decorator (`forwardStoreMarkers`, asserted per decorator by
+  the conformance kit's `snapshotCodecMarkerProblems`), so a wrapper cannot hide it.
 - `ProfilingSnapshotStore` measures STORED bytes (the frame) by default when the wrapped store reports
   `snapshotCodec: "zstd"` (`measure: "stored" | "json"` overrides), so a zstd deployment's size histogram shows
-  what is on disk.
+  what is on disk, except over a sealing store (D3).
 
 ### D9 — What this does not change
 
@@ -200,9 +234,9 @@ the ranking is what carries over. Only the byte comparison is asserted; wall clo
 - Opt-in, so an existing deployment changes nothing: no DDL, no new column, the same bytes.
 - With the codec: about 0.8x the bytes of JSONB on plain agent state, about 0.5-0.6x claim-checked, a faster
   resume read, key order preserved, and a sealed state that actually shrinks (D3).
-- A Postgres operator who opts in gets one extra nullable column and a `NOT VALID` CHECK, provisioned fail-soft
+- A Postgres operator who opts in gets one extra nullable column and a `NOT VALID` CHECK (`state` stays `NOT NULL`), provisioned fail-soft
   with at most a ~200 ms snapshot-I/O stall per boot while a long reader holds the table.
-- The cost of the sealed path (D3) is a conscious, documented length leak.
+- The cost of the sealed path (D3) is a conscious, documented length leak, acknowledged in code (`lengthLeak: "accept"`).
 - Tests: `snapshotCodec.test.ts` (round trip and byte-identical JSON for plain, claim-checked and adversarial
   states: `__proto__`, lone surrogates, deep nesting, 2,000 steps; corruption; unknown format), the in-memory,
   SQLite and Postgres suites (mixed old and new rows, opt-out reads frames, re-save flips format, fail-soft under

@@ -55,7 +55,7 @@ import {
   runSnapshotStoreDecoratorConformance,
   sealingForwardingProblems,
 } from "./decorators";
-import { tenantMarkerProblems } from "./decorators";
+import { snapshotCodecMarkerProblems, tenantMarkerProblems } from "./decorators";
 import {
   type ContentStoreLike,
   eventStoreAtRestProblem,
@@ -1232,5 +1232,34 @@ describe("tenantMarkerProblems (decorator kit negative)", () => {
     expect(tenantMarkerProblems("Liar", liar, inner, false)).toEqual([
       expect.stringContaining('reports tenantScope "other"'),
     ]);
+  });
+});
+
+// The snapshot-codec marker case must FIRE (ADR 0140 M2): a decorator that hides the wrapped store's
+// `snapshotCodec` made `defineConfig` read a zstd store as "reports nothing" and drop the opt-in.
+describe("snapshotCodecMarkerProblems (decorator kit negative)", () => {
+  const inner = () => new InMemoryAsyncSnapshotStore();
+  it("passes a decorator that forwards the marker", () => {
+    expect(
+      snapshotCodecMarkerProblems(
+        "Fwd",
+        (s) => new ProfilingSnapshotStore(s as never),
+        inner,
+        false
+      )
+    ).toEqual([]);
+  });
+  it("fails a decorator that hides the marker, and one that reports another codec", () => {
+    const hider = (s: never) => ({ inner: s });
+    expect(snapshotCodecMarkerProblems("Hider", hider, inner, false)).toEqual([
+      expect.stringContaining("hides the snapshotCodec marker"),
+    ]);
+    const liar = () => ({ snapshotCodec: "none" });
+    expect(snapshotCodecMarkerProblems("Liar", liar, inner, false)).toEqual([
+      expect.stringContaining('reports snapshotCodec "none"'),
+    ]);
+    // an `own` decorator (a sealing store) may report its own codec, but must report one
+    expect(snapshotCodecMarkerProblems("Own", liar, inner, true)).toEqual([]);
+    expect(snapshotCodecMarkerProblems("OwnHider", hider, inner, true)).toHaveLength(1);
   });
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert";
 import { runSnapshotStoreConformance } from "@loom/conformance";
 import type { ExecutionState } from "@loom/core";
-import { type Snapshot, zstdAvailable } from "@loom/snapshot-runtime";
+import { SNAPSHOT_FRAME_SENTINEL, type Snapshot, zstdAvailable } from "@loom/snapshot-runtime";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { PostgresSnapshotStore } from "./PostgresSnapshotStore";
@@ -87,15 +87,15 @@ suite("PostgresSnapshotStore codec: zstd (ADR 0140)", () => {
     await store.close();
   });
 
-  it("provisions state_z BYTEA (EXTERNAL), drops state NOT NULL, adds the one-format CHECK; idempotent", async () => {
+  it("provisions state_z BYTEA (EXTERNAL) and the sentinel CHECK; state STAYS NOT NULL; idempotent", async () => {
     const onWarn = vi.fn();
     const store = new PostgresSnapshotStore(openPool(), { codec: "zstd", onWarn });
     await store.save(snap("a", 1, bigState("a")));
     const cols = await columnInfo();
     expect(cols.state_z).toEqual({ notnull: false, storage: "e" });
-    expect(cols.state?.notnull).toBe(false);
+    expect(cols.state?.notnull).toBe(true);
     const { rows } = await admin.query(
-      `SELECT convalidated FROM pg_constraint WHERE conrelid = '${schema}.snapshots'::regclass AND conname = 'snapshots_one_format'`
+      `SELECT convalidated FROM pg_constraint WHERE conrelid = '${schema}.snapshots'::regclass AND conname = 'snapshots_frame_sentinel'`
     );
     expect(rows).toHaveLength(1);
     // a second boot on a fresh pool: probes the catalog, changes nothing, says nothing
@@ -106,11 +106,11 @@ suite("PostgresSnapshotStore codec: zstd (ADR 0140)", () => {
     await again.close();
   });
 
-  it("stores a frame in state_z (state NULL), far smaller than the JSON", async () => {
+  it("stores a frame in state_z (state = the fixed sentinel, NOT NULL), far smaller than the JSON", async () => {
     const store = new PostgresSnapshotStore(openPool(), { codec: "zstd" });
     await store.save(snap("a", 1, bigState("a")));
     const row = await rawRow("a");
-    expect(row.state).toBeNull();
+    expect(row.state).toEqual(SNAPSHOT_FRAME_SENTINEL);
     expect(Buffer.isBuffer(row.state_z)).toBe(true);
     expect(row.state_z[0]).toBe(0x02);
     expect(Number(row.n)).toBeLessThan(JSON.stringify(bigState("a")).length / 5);
@@ -163,21 +163,108 @@ suite("PostgresSnapshotStore codec: zstd (ADR 0140)", () => {
     expect((await z.loadLatest("x"))?.state).toEqual({ v: "jsonb" });
     // and the other direction
     await z.save(snap("a", 1, { v: "frame-again" }));
-    expect((await rawRow("a")).state).toBeNull();
+    expect((await rawRow("a")).state).toEqual(SNAPSHOT_FRAME_SENTINEL);
     expect((await off.loadLatest("x"))?.state).toEqual({ v: "frame-again" });
     await z.close();
     await off.close();
   });
 
-  it("a node that probed BEFORE another opted in fails loudly (CHECK) rather than leaving a stale frame", async () => {
+  it("a node that probed BEFORE another opted in re-probes on the CHECK violation and retries (no stale frame)", async () => {
     const early = new PostgresSnapshotStore(openPool()); // column absent when it probed
     await early.save(snap("seed", 99, { v: 0 }));
     const z = new PostgresSnapshotStore(openPool(), { codec: "zstd" });
     await z.save(snap("a", 1, { v: "frame" }));
-    await expect(early.save(snap("a", 1, { v: "jsonb" }))).rejects.toMatchObject({ code: "23514" });
-    expect((await z.loadLatestBefore("x", 1))?.state).toEqual({ v: "frame" });
+    // early still believes there is no state_z: its UPDATE leaves the frame, the CHECK (23514) fires,
+    // it re-probes, finds the column, and retries with `state_z = NULL`.
+    await early.save(snap("a", 1, { v: "jsonb" }));
+    const row = await rawRow("a");
+    expect(row.state_z).toBeNull();
+    expect(row.state).toEqual({ v: "jsonb" });
+    expect((await z.loadLatestBefore("x", 1))?.state).toEqual({ v: "jsonb" });
     await early.close();
     await z.close();
+  });
+
+  it("a JSONB save that violates the CHECK for any OTHER reason still throws (no blind retry)", async () => {
+    const z = new PostgresSnapshotStore(openPool(), { codec: "zstd" });
+    await z.save(snap("a", 1, { v: "frame" }));
+    // hasFrameColumn is already true, so a 23514 is not a stale probe: it must surface.
+    const err = Object.assign(new Error("check"), { code: "23514" });
+    const pool = openPool();
+    const store = new PostgresSnapshotStore(pool);
+    await store.save(snap("seed", 99, { v: 0 }));
+    vi.spyOn(pool, "query").mockRejectedValueOnce(err);
+    await expect(store.save(snap("b", 2, { v: 2 }))).rejects.toBe(err);
+    vi.restoreAllMocks();
+    await z.close();
+    await store.close();
+  });
+
+  it("hasFrameColumn comes from the catalog even when this store's own provisioning failed (a peer's frame is cleared on re-save)", async () => {
+    await migrate(openPool());
+    // A peer added the column but this store cannot finish provisioning (the CHECK is missing and the
+    // ALTER cannot get its lock): writeFrames stays false, yet the column EXISTS.
+    await admin.query(`ALTER TABLE ${schema}.snapshots ADD COLUMN state_z BYTEA`);
+    await admin.query(
+      `INSERT INTO ${schema}.snapshots (id, execution_id, workflow_id, sequence, state, state_z, created_at)
+       VALUES ('a', 'x', 'wf', 1, '{"v":"peer"}'::jsonb, '\\x02aa'::bytea, 1)`
+    );
+    const holder = await openPool().connect();
+    await holder.query("BEGIN");
+    await holder.query("LOCK TABLE snapshots IN ACCESS SHARE MODE");
+    const onWarn = vi.fn();
+    const failed = new PostgresSnapshotStore(openPool(), {
+      codec: "zstd",
+      onWarn,
+      migrationLockTimeoutMs: 100,
+    });
+    try {
+      await failed.save(snap("a", 1, { v: "jsonb" })); // JSONB fallback over the peer's frame row
+      expect(onWarn).toHaveBeenCalled(); // provisioning did fail
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+    }
+    const row = await rawRow("a");
+    expect(row.state_z).toBeNull();
+    expect(row.state).toEqual({ v: "jsonb" });
+    await failed.close();
+  });
+
+  it("a frame row without its frame (sentinel, state_z NULL) is corruption: the reader throws, never seeds a state", async () => {
+    const store = new PostgresSnapshotStore(openPool(), { codec: "zstd" });
+    await store.save(snap("a", 1, { v: "frame" }));
+    await admin.query(`UPDATE ${schema}.snapshots SET state_z = NULL`);
+    await expect(store.loadLatest("x")).rejects.toThrow(/marked as a codec frame/);
+    await store.close();
+  });
+
+  it("an OLD node's read of a frame row sees a non-null, non-state value (the sentinel), never NULL", async () => {
+    const store = new PostgresSnapshotStore(openPool(), { codec: "zstd" });
+    await store.save(snap("a", 1, bigState("a")));
+    // What a node that predates the codec reads: `SELECT *`, handing `state` up as the state. Its seal
+    // guard / content sweep / identity check each fail loudly on this value (packages/workflow-runtime
+    // snapshotFrameSentinel.test.ts, plugins/content gc.test.ts).
+    const { rows } = await admin.query(`SELECT state FROM ${schema}.snapshots WHERE id = 'a'`);
+    expect(rows[0].state).toEqual(SNAPSHOT_FRAME_SENTINEL);
+    await store.close();
+  });
+
+  it("raw SQL: state is NOT NULL on every row and equals the sentinel on frame rows; a real state with a frame is refused by the CHECK", async () => {
+    const store = new PostgresSnapshotStore(openPool(), { codec: "zstd" });
+    await store.save(snap("a", 1, { v: 1 }));
+    const { rows } = await admin.query(
+      `SELECT state IS NULL AS isnull, state = $1::jsonb AS issentinel FROM ${schema}.snapshots WHERE id = 'a'`,
+      [JSON.stringify(SNAPSHOT_FRAME_SENTINEL)]
+    );
+    expect(rows[0]).toEqual({ isnull: false, issentinel: true });
+    await expect(
+      admin.query(`UPDATE ${schema}.snapshots SET state = '{"v":1}'::jsonb WHERE id = 'a'`)
+    ).rejects.toMatchObject({ code: "23514" });
+    await expect(
+      admin.query(`UPDATE ${schema}.snapshots SET state = NULL WHERE id = 'a'`)
+    ).rejects.toMatchObject({ code: "23502" });
+    await store.close();
   });
 
   it("deleteExecution and pruneSnapshots work over frame rows", async () => {
@@ -194,7 +281,7 @@ suite("PostgresSnapshotStore codec: zstd (ADR 0140)", () => {
     const store = new PostgresSnapshotStore(openPool(), { codec: "zstd" });
     await store.save(snap("a", 1, bigState("a")));
     await admin.query(`UPDATE ${schema}.snapshots SET state_z = '\\x02deadbeef'::bytea`);
-    await expect(store.loadLatest("x")).rejects.toThrow(/does not decode/);
+    await expect(store.loadLatest("x")).rejects.toThrow(/does not decode|malformed/);
     await store.close();
   });
 

@@ -348,8 +348,12 @@ with `sqliteStorage({ snapshotCodec: "zstd" })` / `postgresStorage({ snapshotCod
 `durability: { snapshots: { codec: "zstd" } }` for the stores `defineConfig` builds). It is OFF by
 default and needs Node >= 22.15 (it refuses loudly otherwise). Old snapshots stay readable and are never
 rewritten; upgrade every node before opting in. With an `EncryptingSnapshotStore` pass
-`{ sealState: true, codec: "zstd" }` so the state is compressed BEFORE it is sealed (ciphertext does not
-compress); the length of the ciphertext then reveals the compressed length, a documented trade. Read a
+`{ sealState: true, codec: "zstd", lengthLeak: "accept" }` so the state is compressed BEFORE it is sealed (ciphertext does not
+compress); the length of the ciphertext then reveals the compressed length (a CRIME/BREACH-style oracle), so the
+acknowledgment is required (construction throws without it; `defineConfig` takes
+`durability.snapshots.lengthLeak: "accept"`), and `ProfilingSnapshotStore` never reports stored size over a sealing store.
+A snapshot store you pass to `defineConfig` whose codec disagrees with `durability.snapshots.codec` makes boot throw.
+On Postgres `state` stays `NOT NULL` (a frame row holds a fixed sentinel there so an older node fails loudly). Read a
 snapshot with `loom snapshot show <executionId>` (SQL on `snapshots.state` cannot traverse a frame), and
 note `ProfilingSnapshotStore` reports stored (compressed) bytes for a zstd store.
 

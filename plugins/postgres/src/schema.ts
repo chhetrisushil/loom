@@ -1,5 +1,6 @@
 import { KERNEL_EVENT_KINDS } from "@loom/core";
 import { EVENT_KIND_CLASS } from "@loom/event-runtime";
+import { SNAPSHOT_FRAME_SENTINEL } from "@loom/snapshot-runtime";
 import type { PoolLike } from "./pool";
 
 /** The kernel kinds that answer a park (ADR 0118 D1), from the one classification map. */
@@ -113,7 +114,7 @@ export interface MigrateOptions {
   snapshotCompression?: "lz4" | "default";
   /**
    * ADR 0140 - `"zstd"` also provisions the `snapshots.state_z BYTEA` column the zstd snapshot codec
-   * writes (and drops `state`'s NOT NULL, since a codec row keeps its state in `state_z`). OPT-IN, fail
+   * writes (`state` stays NOT NULL: a codec row keeps a fixed sentinel there). OPT-IN, fail
    * soft, own short transaction with its own lock wait of min(`lockTimeoutMs`, 200 ms); see
    * {@link ensureSnapshotZstd}. Unlike the other options it is NOT decided by the first migrator of a
    * pool: it runs for whoever asks (it is idempotent and memoized per pool). `PostgresSnapshotStore`
@@ -349,9 +350,10 @@ const zstdReady = new WeakMap<PoolLike, Promise<boolean>>();
 
 /**
  * ADR 0140 - provision the BYTEA column of the zstd snapshot codec: `snapshots.state_z BYTEA` (TOAST
- * storage EXTERNAL: the bytes are already compressed, so the server must not try again) and `state DROP
- * NOT NULL` (a codec row keeps its state in `state_z`, so `state` is NULL). Resolves `true` when both
- * hold, `false` when it could not be done (reported ONCE through `onWarn`; the caller then keeps writing
+ * storage EXTERNAL: the bytes are already compressed, so the server must not try again) and a `NOT VALID`
+ * CHECK tying it to `state`, which stays NOT NULL (a codec row keeps a fixed sentinel in `state`, so a
+ * node that predates the codec fails loudly on it instead of reading NULL as "no state"). Resolves `true`
+ * when both hold, `false` when it could not be done (reported ONCE through `onWarn`; the caller then keeps writing
  * JSONB, which is always correct, and the next boot retries).
  *
  * Same discipline as ADR 0136's lz4 step: its OWN short transaction under the migration advisory lock
@@ -359,7 +361,7 @@ const zstdReady = new WeakMap<PoolLike, Promise<boolean>>();
  * can neither extend nor reorder the conversions' locks. The catalog probe means every boot after the
  * first takes NO table lock. When it must alter, the statements run in ONE transaction under ONE
  * ACCESS EXCLUSIVE acquisition with `lock_timeout` = min(`lockTimeoutMs`, 200 ms): each is catalog-only
- * (a nullable column without a default is not a rewrite; DROP NOT NULL does not scan), so the lock is
+ * (a nullable column without a default is not a rewrite; a NOT VALID CHECK does not scan), so the lock is
  * held for microseconds once granted, and while it WAITS snapshot I/O queues behind it for at most that
  * timeout. Memoized per pool when it succeeds (a failure is retried by the next caller).
  *
@@ -424,31 +426,29 @@ async function addZstdColumn(
       [rows[0]?.st ?? "0", rows[0]?.lt ?? "0"]
     );
     const cur = await client.query(
-      `SELECT attname::text AS name, attnotnull AS notnull FROM pg_attribute
-       WHERE attrelid = 'snapshots'::regclass AND attname IN ('state', 'state_z') AND NOT attisdropped`
+      `SELECT 1 FROM pg_attribute
+       WHERE attrelid = 'snapshots'::regclass AND attname = 'state_z' AND NOT attisdropped`
     );
-    const hasZ = cur.rows.some((r) => r.name === "state_z");
-    const stateNotNull = cur.rows.some((r) => r.name === "state" && r.notnull === true);
+    const hasZ = cur.rows.length > 0;
     const hasCheck =
       (
         await client.query(
-          "SELECT 1 FROM pg_constraint WHERE conrelid = 'snapshots'::regclass AND conname = 'snapshots_one_format'"
+          "SELECT 1 FROM pg_constraint WHERE conrelid = 'snapshots'::regclass AND conname = 'snapshots_frame_sentinel'"
         )
       ).rows.length > 0;
-    if (!hasZ || stateNotNull || !hasCheck) {
+    if (!hasZ || !hasCheck) {
       await client.query("SELECT set_config('lock_timeout', $1, true)", [`${lockWaitMs}ms`]);
       if (!hasZ) {
         await client.query("ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS state_z BYTEA");
         await client.query("ALTER TABLE snapshots ALTER COLUMN state_z SET STORAGE EXTERNAL");
       }
-      if (stateNotNull)
-        await client.query("ALTER TABLE snapshots ALTER COLUMN state DROP NOT NULL");
-      // At most one format per row. NOT VALID: enforced for every later write but no table scan (the
-      // column is new, so every existing row satisfies it by construction). It turns a mixed-config fleet's
-      // JSONB re-save over a frame row into a loud error instead of a silently stale snapshot.
+      // A frame row keeps the fixed sentinel in `state` (which stays NOT NULL, so no older reader ever
+      // sees NULL). NOT VALID: enforced for every later write but no table scan (the column is new, so
+      // every existing row satisfies it by construction). It turns a mixed-config fleet's JSONB re-save
+      // over a frame row into a loud error instead of a silently stale snapshot.
       if (!hasCheck) {
         await client.query(
-          "ALTER TABLE snapshots ADD CONSTRAINT snapshots_one_format CHECK (state IS NULL OR state_z IS NULL) NOT VALID"
+          `ALTER TABLE snapshots ADD CONSTRAINT snapshots_frame_sentinel CHECK (state_z IS NULL OR state = '${JSON.stringify(SNAPSHOT_FRAME_SENTINEL)}'::jsonb) NOT VALID`
         );
       }
     }

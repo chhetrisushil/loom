@@ -30,9 +30,36 @@ export const FRAME_ZSTD = 0x02;
 const ZSTD_LEVEL = 3;
 /**
  * A decompression ceiling. A snapshot row is trusted storage, but a corrupted or tampered one must not
- * be able to allocate without bound. 1 GiB is far above any state a resume could usefully read.
+ * be able to allocate without bound (a 19 KB frame can declare 600 MiB). 256 MiB is far above any state a
+ * resume could usefully read. A frame that DECLARES a larger content size is refused before a byte is
+ * inflated; one that does not declare it is stopped at this ceiling.
  */
-export const MAX_DECODED_STATE_BYTES = 1024 * 1024 * 1024;
+export const MAX_DECODED_STATE_BYTES = 256 * 1024 * 1024;
+
+/**
+ * The value a store writes into a legacy-format column (Postgres `snapshots.state`, `NOT NULL`) of a row
+ * whose real state lives in a codec frame (`state_z`). It is NOT a state. It is chosen so that every
+ * reader that predates the codec FAILS LOUDLY on it instead of reading a null or an empty state:
+ * the runtime's seal guard reads a top-level string `__loomEnc` as an unopened sealed checkpoint
+ * (`SealedStreamUnreadableError`), the content sweep counts it as a sealed snapshot and refuses
+ * (`SealedSnapshotScanError`), the crypto store does not mistake it for its own cipher, and anything that
+ * seeds a fold from it trips `assertSnapshotIdentity` (no `executionId`). A reader that knows the codec
+ * decodes `state_z` first and treats this value WITHOUT a frame as corruption.
+ */
+export const SNAPSHOT_FRAME_SENTINEL: Readonly<{ __loomEnc: string }> = Object.freeze({
+  __loomEnc: "loom.snapshot-frame/state_z",
+});
+
+/** Whether `value` is exactly {@link SNAPSHOT_FRAME_SENTINEL}. */
+export function isSnapshotFrameSentinel(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length === 1 &&
+    keys[0] === "__loomEnc" &&
+    (value as { __loomEnc?: unknown }).__loomEnc === SNAPSHOT_FRAME_SENTINEL.__loomEnc
+  );
+}
 
 /** The opt-in was requested on a runtime whose Node has no `zlib.zstd*` (needs >= 22.15). */
 export class SnapshotCodecUnavailableError extends Error {
@@ -49,6 +76,18 @@ export class SnapshotDecodeError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "SnapshotDecodeError";
+  }
+}
+
+/** A frame declares (or inflates to) more than {@link MAX_DECODED_STATE_BYTES}. Typed, so callers can tell it from corruption. */
+export class SnapshotStateTooLargeError extends SnapshotDecodeError {
+  constructor(declared: number | undefined) {
+    super(
+      declared === undefined
+        ? `snapshot state inflates past the ${MAX_DECODED_STATE_BYTES}-byte decode ceiling`
+        : `snapshot state declares ${declared} decoded bytes, over the ${MAX_DECODED_STATE_BYTES}-byte decode ceiling`
+    );
+    this.name = "SnapshotStateTooLargeError";
   }
 }
 
@@ -86,10 +125,67 @@ function zstdCompress(raw: Buffer): Buffer {
   });
 }
 
+/**
+ * Walk the header and block headers of the FIRST zstd frame of `buf` (O(blocks), no inflation) and
+ * return where it ends, whether it carries the content checksum, and its declared content size.
+ * Throws {@link SnapshotDecodeError} on anything that is not a well-formed frame.
+ */
+function zstdFrameInfo(buf: Buffer): { end: number; checksum: boolean; contentSize?: number } {
+  const bad = (why: string): never => {
+    throw new SnapshotDecodeError(`snapshot zstd frame is malformed: ${why}`);
+  };
+  if (buf.length < 6 || buf.readUInt32LE(0) !== 0xfd2fb528) return bad("bad magic");
+  const d = buf[4] as number;
+  const fcsFlag = d >> 6;
+  const single = ((d >> 5) & 1) === 1;
+  const checksum = ((d >> 2) & 1) === 1;
+  if (((d >> 3) & 1) === 1) return bad("reserved bit set");
+  let pos = 5 + (single ? 0 : 1) + ([0, 1, 2, 4] as const)[d & 3]!;
+  const fcsBytes = fcsFlag === 0 ? (single ? 1 : 0) : ([0, 2, 4, 8] as const)[fcsFlag]!;
+  let contentSize: number | undefined;
+  if (pos + fcsBytes > buf.length) return bad("truncated header");
+  if (fcsBytes === 1) contentSize = buf[pos];
+  else if (fcsBytes === 2) contentSize = buf.readUInt16LE(pos) + 256;
+  else if (fcsBytes === 4) contentSize = buf.readUInt32LE(pos);
+  else if (fcsBytes === 8) contentSize = Number(buf.readBigUInt64LE(pos));
+  pos += fcsBytes;
+  for (;;) {
+    if (pos + 3 > buf.length) return bad("truncated block header");
+    const h = buf[pos]! | (buf[pos + 1]! << 8) | (buf[pos + 2]! << 16);
+    const type = (h >> 1) & 3;
+    if (type === 3) return bad("reserved block type");
+    pos += 3 + (type === 1 ? 1 : h >>> 3);
+    if (pos > buf.length) return bad("truncated block");
+    if ((h & 1) === 1) break;
+  }
+  if (checksum) pos += 4;
+  if (pos > buf.length) return bad("truncated checksum");
+  return { end: pos, checksum, ...(contentSize !== undefined && { contentSize }) };
+}
+
 function zstdDecompress(buf: Buffer): Buffer {
-  return (zlib as unknown as ZstdZlib).zstdDecompressSync(buf, {
-    maxOutputLength: MAX_DECODED_STATE_BYTES,
-  });
+  const info = zstdFrameInfo(buf);
+  // We always write the content checksum, so a frame without one was not written by us.
+  if (!info.checksum) throw new SnapshotDecodeError("snapshot zstd frame has no content checksum");
+  // Exactly one frame: anything after it would be silently decoded (or ignored) by the library.
+  if (info.end !== buf.length) {
+    throw new SnapshotDecodeError(
+      `snapshot zstd frame is followed by ${buf.length - info.end} trailing byte(s)`
+    );
+  }
+  if (info.contentSize !== undefined && info.contentSize > MAX_DECODED_STATE_BYTES) {
+    throw new SnapshotStateTooLargeError(info.contentSize);
+  }
+  try {
+    return (zlib as unknown as ZstdZlib).zstdDecompressSync(buf, {
+      maxOutputLength: MAX_DECODED_STATE_BYTES,
+    });
+  } catch (err) {
+    if ((err as { code?: unknown }).code === "ERR_BUFFER_TOO_LARGE") {
+      throw new SnapshotStateTooLargeError(undefined);
+    }
+    throw err;
+  }
 }
 
 function asBuffer(bytes: Uint8Array): Buffer {
@@ -132,6 +228,7 @@ function decodeFrame(bytes: Uint8Array): unknown {
       const body = buf.subarray(1);
       return JSON.parse((fmt === FRAME_ZSTD ? zstdDecompress(body) : body).toString("utf-8"));
     } catch (err) {
+      if (err instanceof SnapshotDecodeError) throw err;
       throw new SnapshotDecodeError(
         `snapshot state (format 0x${fmt.toString(16).padStart(2, "0")}) does not decode: ${(err as Error).message}`,
         { cause: err }
