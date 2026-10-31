@@ -950,7 +950,9 @@ export class LogLifecycle {
     }
     const before = newest.sequence;
     if (!Number.isSafeInteger(before)) {
-      throw new RangeError(`pruneSnapshots: the snapshot store reported sequence ${String(before)}`);
+      throw new RangeError(
+        `pruneSnapshots: the snapshot store reported sequence ${String(before)}`
+      );
     }
 
     // `after`: the anchor of a compacted log, or -1 (the whole range) for a gap-free one.
@@ -985,7 +987,9 @@ export class LogLifecycle {
       if (anchor === null) return 0;
       after = anchor.sequence;
       if (!Number.isSafeInteger(after)) {
-        throw new RangeError(`pruneSnapshots: the snapshot store reported sequence ${String(after)}`);
+        throw new RangeError(
+          `pruneSnapshots: the snapshot store reported sequence ${String(after)}`
+        );
       }
     }
     if (before - after <= 1) return 0;

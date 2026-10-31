@@ -426,10 +426,16 @@ describe("ADR 0134 — LogLifecycle.pruneSnapshots", () => {
       return inner(...a);
     };
     const before = await snapshotSequences(app, "e1");
-    for (const bad of [3.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 60, null as unknown as number]) {
-      await expect(
-        app.lifecycle.pruneSnapshots("e1", { keepSequences: [1, bad] })
-      ).rejects.toThrow(RangeError);
+    for (const bad of [
+      3.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      2 ** 60,
+      null as unknown as number,
+    ]) {
+      await expect(app.lifecycle.pruneSnapshots("e1", { keepSequences: [1, bad] })).rejects.toThrow(
+        RangeError
+      );
     }
     expect(calls).toBe(0);
     expect(await snapshotSequences(app, "e1")).toEqual(before);

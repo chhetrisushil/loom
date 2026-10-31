@@ -973,7 +973,7 @@ describe("ADR 0134 D6 - snapshot pruning refuses while the blank stream is unrep
     return n;
   };
 
-  it("refuses with a re-homable blank stream, deletes nothing; succeeds after the repair (which leaves \"\" in place)", async () => {
+  it('refuses with a re-homable blank stream, deletes nothing; succeeds after the repair (which leaves "" in place)', async () => {
     const h = await history(1);
     const app = boot();
     await pre0106(app, "e1", h, "resumed");
