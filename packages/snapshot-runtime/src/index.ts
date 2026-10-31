@@ -21,3 +21,18 @@ export type {
   SnapshotSizeBucket,
   SnapshotSizeProfile,
 } from "./ProfilingSnapshotStore";
+export {
+  FRAME_JSON,
+  FRAME_ZSTD,
+  MAX_DECODED_STATE_BYTES,
+  SnapshotCodecUnavailableError,
+  SnapshotDecodeError,
+  assertSnapshotCodecAvailable,
+  decodeState,
+  decodeStateMaybeLegacy,
+  encodeState,
+  isFramedState,
+  parseSnapshotCodec,
+  zstdAvailable,
+} from "./snapshotCodec";
+export type { SnapshotCodecName } from "./snapshotCodec";

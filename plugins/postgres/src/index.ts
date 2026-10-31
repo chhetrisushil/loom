@@ -3,10 +3,15 @@ export {
   MAX_EXECUTION_ID_BYTES,
   PostgresEventStore,
 } from "./PostgresEventStore";
-export { PostgresSnapshotStore } from "./PostgresSnapshotStore";
+export { PostgresSnapshotStore, type PostgresSnapshotStoreOptions } from "./PostgresSnapshotStore";
 export { PostgresArchiveStore } from "./PostgresArchiveStore";
 export { PostgresBranchRegistry } from "./PostgresBranchRegistry";
-export { migrate as migratePostgresStores, backfillParkFences, NOTIFY_CHANNEL } from "./schema";
+export {
+  migrate as migratePostgresStores,
+  ensureSnapshotZstd,
+  backfillParkFences,
+  NOTIFY_CHANNEL,
+} from "./schema";
 export type { MigrateOptions, BackfillParkFencesOptions } from "./schema";
 // `PoolLike` is the whole pool surface these stores use. Exported because it is the
 // contract for bringing your own pool: satisfy it and the stores take it, whichever copy

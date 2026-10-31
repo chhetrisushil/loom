@@ -81,6 +81,9 @@ observe
   loom profile <store-flags> <executionId> [--json]     flame graph + latency breakdown
   loom introspect <store-flags> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
   loom optimize <store-flags> <executionId>       advisory optimization report (recommendations)
+  loom snapshot show <store-flags> <executionId> [--at SEQ] [--redact a,b]  print a stored snapshot, DECODED
+                                                  (JSON; a zstd BYTEA/BLOB frame is decoded, an
+                                                   encrypting store opens it; --db also needs --snap)
   loom census <store-flags> [--buckets 5m,1h,6h,24h] [--sample N] [--json]  what is stuck, and is anything watching it
                                                   (read-only; takes no predicate; --sample: ids kept
                                                    per band, default 5)
@@ -726,6 +729,17 @@ async function dispatch(
       const executionId = requirePositional(positionals, "executionId");
       const { cmdOptimize } = await import("./optimize");
       out(await cmdOptimize(storeFlagsOf(flags), executionId));
+      return 0;
+    }
+    case "snapshot": {
+      const sub = requirePositional(positionals, "show");
+      if (sub !== "show")
+        throw new UsageError(`unknown subcommand "snapshot ${sub}" — expected show`);
+      if (!hasStoreFlagsOrDiscover(flags, "snapshot")) return storeFlagError("snapshot");
+      const executionId = requirePositional(positionals.slice(1), "executionId");
+      const at = flags.at !== undefined ? Number.parseInt(flags.at, 10) : undefined;
+      const { cmdSnapshotShow } = await import("./snapshot");
+      out(await cmdSnapshotShow(storeFlagsOf(flags), executionId, at, parseRedact(flags.redact)));
       return 0;
     }
     case "learn": {

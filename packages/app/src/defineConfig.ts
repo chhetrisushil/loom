@@ -73,7 +73,12 @@ import {
 } from "@loom/plugin-crypto";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
-import type { SnapshotStore } from "@loom/snapshot-runtime";
+import {
+  type SnapshotCodecName,
+  type SnapshotStore,
+  assertSnapshotCodecAvailable,
+  parseSnapshotCodec,
+} from "@loom/snapshot-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime/memory";
 import {
   composeAdapters,
@@ -479,6 +484,24 @@ function isLeaseStore(v: unknown): v is LeaseStore {
   );
 }
 
+/** Validate `durability.snapshots` (TypeError on bad values; a codec this Node cannot write THROWS). */
+function resolveSnapshotCodec(snapshots: unknown): SnapshotCodecName {
+  if (snapshots === undefined) return "none";
+  if (typeof snapshots !== "object" || snapshots === null || Array.isArray(snapshots)) {
+    throw new TypeError("defineConfig: durability.snapshots must be an object");
+  }
+  for (const k of Object.keys(snapshots)) {
+    if (k !== "codec") {
+      throw new TypeError(
+        `defineConfig: durability.snapshots.${k} is not an option (expected codec)`
+      );
+    }
+  }
+  const codec = parseSnapshotCodec((snapshots as { codec?: unknown }).codec);
+  assertSnapshotCodecAvailable(codec);
+  return codec;
+}
+
 /** Validate `durability.heartbeat` (TypeError on bad values) and resolve the lease store (D11 "Config"). */
 function resolveHeartbeat(
   raw: HeartbeatConfig | undefined,
@@ -587,6 +610,23 @@ export interface DurabilityOptions {
    * in-memory fallback against a shared store. `enabled: false` reproduces the pre-D11 behaviour.
    */
   heartbeat?: HeartbeatConfig;
+  /**
+   * ADR 0140 - how folded-state snapshots are STORED. OPT-IN; the default stores them exactly as before.
+   *
+   * `codec: "zstd"` writes each state as zstd-3 compressed JSON behind a format byte (about 0.8x the bytes
+   * of Postgres JSONB on plain agent state, about 0.6x claim-checked, and a faster resume read; the log and
+   * the compaction archive stay the audit record, the snapshot decodes to the IDENTICAL state). Old
+   * snapshots stay readable and are never rewritten. Needs Node >= 22.15: `defineConfig` THROWS at boot
+   * when the codec is requested on an older Node, never silently falls back.
+   *
+   * What it applies to: the stores `defineConfig` itself builds (`storage: { kind: "memory" }`, and the
+   * default sealed checkpoint store for an encrypting custom event store, where the state is compressed
+   * BEFORE it is sealed). A snapshot store YOU pass is already built: give it the codec yourself
+   * (`sqliteStorage({ snapshotCodec: "zstd" })`, `postgresStorage({ snapshotCodec: "zstd" })`,
+   * `new EncryptingSnapshotStore(inner, keys, { sealState: true, codec: "zstd" })`). `defineConfig`
+   * warns when such a store reports a codec that disagrees with this option.
+   */
+  snapshots?: { codec?: SnapshotCodecName };
   /**
    * Take a mid-run snapshot every N committed events, and a matching one at completion,
    * bounding what a later `loadState`/resume has to fold.
@@ -1280,8 +1320,12 @@ function keyStoreProof(crypto: unknown): DestructionProof | undefined {
  * store. When that store encrypts (structural `keys`), the default seals the WHOLE folded state under
  * the same KeyStore instead of being refused at boot; otherwise it is the plain in-memory store.
  */
-function defaultSnapshotStore(eventStore: EventStore, warn: (m: string) => void): SnapshotStore {
-  const inner = new InMemoryAsyncSnapshotStore();
+function defaultSnapshotStore(
+  eventStore: EventStore,
+  warn: (m: string) => void,
+  codec: SnapshotCodecName
+): SnapshotStore {
+  const inner = new InMemoryAsyncSnapshotStore({ codec });
   const keys = (eventStore as { keys?: unknown }).keys;
   if (keys === undefined) {
     // A node-local, unbounded, volatile checkpoint store under a durable log: a restart forgets every
@@ -1302,7 +1346,9 @@ function defaultSnapshotStore(eventStore: EventStore, warn: (m: string) => void)
   // The default keys snapshots by executionId. An event store whose `subjectOf` maps elsewhere is not
   // visible from here (the field is private and decorators do not carry it): pass an explicit
   // `EncryptingSnapshotStore({ subjectOf })` in that case (docs/compliance.md).
-  return new EncryptingSnapshotStore(inner, keys, { sealState: true });
+  // ADR 0140: the state is compressed BEFORE it is sealed (`codec`); the in-memory store below then holds
+  // the envelope, which its own frame shrinks a further ~25% (base64 to bytes).
+  return new EncryptingSnapshotStore(inner, keys, { sealState: true, codec });
 }
 
 function isKeyStore(keys: unknown): keys is KeyStore {
@@ -1327,14 +1373,25 @@ function isInMemoryEventStore(store: unknown): boolean {
   return false;
 }
 
-function buildStores(storage: StorageConfig, warn: (m: string) => void): LoomStores {
+function buildStores(
+  storage: StorageConfig,
+  warn: (m: string) => void,
+  codec: SnapshotCodecName
+): LoomStores {
   if (storage.kind === "custom") {
+    const reported = (storage.snapshotStore as { snapshotCodec?: unknown } | undefined)
+      ?.snapshotCodec;
+    if (codec !== "none" && reported !== undefined && reported !== codec) {
+      warn(
+        `durability.snapshots.codec is "${codec}" but the snapshotStore you supplied reports codec ${JSON.stringify(reported)}: defineConfig does not rebuild a store you pass. Give the store the codec (sqliteStorage/postgresStorage({ snapshotCodec }), EncryptingSnapshotStore({ codec })).`
+      );
+    }
     // Bring your own backend — used verbatim. Concrete backends arrive this way via
     // a store plugin's preset (`sqliteStorage()`, `postgresStorage()`, …), so
     // `@loom/app` stays free of any vendor dependency (ADR 0043).
     return {
       eventStore: storage.eventStore,
-      snapshotStore: storage.snapshotStore ?? defaultSnapshotStore(storage.eventStore, warn),
+      snapshotStore: storage.snapshotStore ?? defaultSnapshotStore(storage.eventStore, warn, codec),
       ...(storage.branchRegistry !== undefined && { branchRegistry: storage.branchRegistry }),
       ...defaultArchive(storage, warn),
     };
@@ -1342,7 +1399,7 @@ function buildStores(storage: StorageConfig, warn: (m: string) => void): LoomSto
   // storage.kind === "memory" — the only backend the composition root itself knows.
   return {
     eventStore: new InMemoryAsyncEventStore(),
-    snapshotStore: new InMemoryAsyncSnapshotStore(),
+    snapshotStore: new InMemoryAsyncSnapshotStore({ codec }),
     archiveStore: new InMemoryArchiveStore(),
   };
 }
@@ -1429,7 +1486,7 @@ export const GROUPED_OPTIONS = [
     ],
   ],
   ["observability", ["telemetry", "onEvent", "onWarn", "onStorageError", "reasoning"]],
-  ["durability", ["snapshotEvery", "retention", "heartbeat"]],
+  ["durability", ["snapshotEvery", "retention", "heartbeat", "snapshots"]],
   [
     "execution",
     [
@@ -1569,7 +1626,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   const ledger = new BudgetLedger();
   const spawn = resolveSpawn(config.envelope?.spawn, strict);
   const envelopeActive = Object.keys(spawn).length > 0 || budgetConfigured(config.envelope, strict);
-  const stores = buildStores(config.storage, warnOut);
+  const snapshotCodec = resolveSnapshotCodec(config.snapshots);
+  const stores = buildStores(config.storage, warnOut, snapshotCodec);
   // ADR 0130 D11 -- validated and resolved at boot, before any runtime exists.
   const heartbeat = resolveHeartbeat(config.heartbeat, config.storage);
   const heartbeatDeps: { heartbeat?: HeartbeatOptions } =

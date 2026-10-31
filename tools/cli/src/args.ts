@@ -301,6 +301,12 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     usage: ["loom optimize <store-flags> <executionId>"],
     flags: { ...STORE },
   },
+  snapshot: {
+    summary: "print a stored snapshot, decoded (zstd frame or JSON)",
+    usage: ["loom snapshot show <store-flags> <executionId> [--at SEQ] [--redact a,b]"],
+    subcommands: ["show"],
+    flags: { ...STORE, at: "int", redact: "string" },
+  },
   learn: {
     summary: "learning coverage report; shadow-evaluate a candidate policy on real logs",
     usage: [

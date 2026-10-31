@@ -1,5 +1,10 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { expandPaths, hasWildcard } from "@loom/classify";
+import {
+  type SnapshotCodecName,
+  decodeStateMaybeLegacy,
+  encodeState,
+} from "@loom/snapshot-runtime";
 
 // ── K10.2 — field-level AES-256-GCM envelope ─────────────────────────────────
 //
@@ -77,7 +82,8 @@ export function encryptValue(
   key: Buffer,
   value: unknown,
   aad?: EnvelopeAad,
-  ivOverride?: Uint8Array
+  ivOverride?: Uint8Array,
+  codec?: SnapshotCodecName
 ): EncEnvelope {
   // Production default: a fresh random IV per value. `ivOverride` exists only for the deterministic
   // cipher seam (testing subpath); a reused IV under AES-GCM breaks confidentiality.
@@ -85,7 +91,14 @@ export function encryptValue(
   if (iv.length !== 12) throw new RangeError("an AES-GCM IV must be exactly 12 bytes");
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   if (aad !== undefined) cipher.setAAD(aadBytes(aad.v, aad.bind));
-  const plaintext = Buffer.from(JSON.stringify(value ?? null), "utf-8");
+  // ADR 0140 - COMPRESS BEFORE SEALING: ciphertext is incompressible, so a codec has to run on the
+  // plaintext. With a codec the plaintext is a self-describing frame (a control byte no JSON text can
+  // start with, so it needs no envelope field and is covered by the GCM tag); without one it is the JSON
+  // text exactly as it always was.
+  const plaintext =
+    codec === undefined || codec === "none"
+      ? Buffer.from(JSON.stringify(value ?? null), "utf-8")
+      : encodeState(value ?? null, codec);
   const data = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return {
     __loomEnc: ENC_TAG,
@@ -118,7 +131,8 @@ export function decryptValue(key: Buffer, envelope: unknown, bind?: string): unk
     decipher.update(Buffer.from(envelope.data, "base64")),
     decipher.final(),
   ]);
-  return JSON.parse(plaintext.toString("utf-8")) as unknown;
+  // A frame (ADR 0140) or the bare JSON text every earlier envelope holds.
+  return decodeStateMaybeLegacy(plaintext);
 }
 
 /** True if any path in `obj` still holds an encryption envelope. */

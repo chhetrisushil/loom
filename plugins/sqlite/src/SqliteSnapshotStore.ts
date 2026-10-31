@@ -1,5 +1,13 @@
 import type { ExecutionState } from "@loom/core";
-import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import {
+  type Snapshot,
+  type SnapshotCodecName,
+  type SnapshotStore,
+  assertSnapshotCodecAvailable,
+  decodeState,
+  encodeState,
+  parseSnapshotCodec,
+} from "@loom/snapshot-runtime";
 import Database from "better-sqlite3";
 import { migrate } from "./snapshotSchema";
 
@@ -8,8 +16,20 @@ interface SnapshotRow {
   execution_id: string;
   workflow_id: string;
   sequence: number;
-  state: string;
+  // TEXT for a pre-codec row (JSON text); a BLOB (Buffer) for an ADR 0140 codec frame. SQLite is dynamically
+  // typed, so the TEXT-declared column holds either; the storage class IS the format discriminator.
+  state: string | Buffer;
   created_at: number;
+}
+
+export interface SqliteSnapshotStoreOptions {
+  /**
+   * ADR 0140 - how NEW snapshots are written. `"none"` (default): JSON text, byte-identical to before.
+   * `"zstd"`: a BLOB frame (format byte + zstd-compressed JSON) in the same `state` column. Reads accept
+   * BOTH whatever this is set to, and nothing is rewritten. Throws at construction on a Node without zstd
+   * (>= 22.15). No schema change: SQLite's column affinity keeps a BLOB a BLOB.
+   */
+  codec?: SnapshotCodecName;
 }
 
 function rowToSnapshot(row: SnapshotRow): Snapshot {
@@ -18,15 +38,21 @@ function rowToSnapshot(row: SnapshotRow): Snapshot {
     executionId: row.execution_id,
     workflowId: row.workflow_id,
     sequence: row.sequence,
-    state: JSON.parse(row.state) as ExecutionState,
+    state: (typeof row.state === "string"
+      ? JSON.parse(row.state)
+      : decodeState(row.state)) as ExecutionState,
     createdAt: row.created_at,
   };
 }
 
 export class SqliteSnapshotStore implements SnapshotStore {
   private readonly db: Database.Database;
+  /** ADR 0140 - the codec new snapshots are written with (structural; `ProfilingSnapshotStore` reads it). */
+  readonly snapshotCodec: SnapshotCodecName;
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: SqliteSnapshotStoreOptions = {}) {
+    this.snapshotCodec = parseSnapshotCodec(options.codec);
+    assertSnapshotCodecAvailable(this.snapshotCodec);
     this.db = new Database(dbPath);
     try {
       this.db.pragma("journal_mode = WAL");
@@ -40,7 +66,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
 
   async save(snapshot: Snapshot): Promise<void> {
     this.db
-      .prepare<[string, string, string, number, string, number]>(`
+      .prepare<[string, string, string, number, string | Buffer, number]>(`
         INSERT OR REPLACE INTO snapshots (id, execution_id, workflow_id, sequence, state, created_at)
         VALUES (?, ?, ?, ?, ?, ?)
       `)
@@ -49,7 +75,9 @@ export class SqliteSnapshotStore implements SnapshotStore {
         snapshot.executionId,
         snapshot.workflowId,
         snapshot.sequence,
-        JSON.stringify(snapshot.state),
+        this.snapshotCodec === "none"
+          ? JSON.stringify(snapshot.state)
+          : encodeState(snapshot.state, this.snapshotCodec),
         snapshot.createdAt
       );
   }
