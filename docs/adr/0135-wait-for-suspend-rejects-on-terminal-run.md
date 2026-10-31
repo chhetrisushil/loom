@@ -23,12 +23,15 @@ When the run terminates before parking, `waitForSuspend()` REJECTS with `Executi
 - `status`: `state.status`.
 - `cause`: the error `waitForCompletion()` rejects with, for a failure or a cancellation.
 
-Ordering: `waitForCompletion()` settles first, then `waitForSuspend()` rejects, in every terminal path, so
-`Promise.race([waitForCompletion(), waitForSuspend()])` (either order) resolves as it always did. The
-in-repo racers (`runAgentOnce`, the worker runtime, the timer service, orchestration, the CLI lifecycle)
-need no change. A storage, lease or seal failure is not a termination: both promises still reject with that
-error. The internal no-op `.catch` on the suspend promise stays, so a caller that never calls
-`waitForSuspend()` gets no unhandled rejection.
+Ordering: the `waitForSuspend()` call returns a DERIVED promise that settles at least one microtask after the
+internal suspend promise, and the internal rejection happens after `waitForCompletion()` has settled. So
+`Promise.race([waitForCompletion(), waitForSuspend()])` (either array order) resolves with the completion, or
+rejects with the original failure, whether the caller attached before the run ended or after it had settled
+(returning the already-rejected promise itself would have let array order decide). The in-repo racers
+(`runAgentOnce`, the worker runtime, the timer service, orchestration, the CLI lifecycle) need no change;
+`LocalWorkerRuntime.execute` lists the completion first as defence in depth. A storage, lease or seal failure
+is not a termination: both promises still reject with that error. The internal no-op `.catch` on the
+suspend promise stays, so a caller that never calls `waitForSuspend()` gets no unhandled rejection.
 
 ## Consequences
 
@@ -38,3 +41,10 @@ error. The internal no-op `.catch` on the suspend promise stays, so a caller tha
 - Rejected alternative: resolve `waitForSuspend()` with the terminal state. It would make "suspended" and
   "finished" indistinguishable by promise alone, and a caller that then resumed would resume a terminal run.
 - Rejected alternative: leave it pending and document it. The hang is undetectable from the caller's side.
+- A caller that attaches only `.then` to `waitForSuspend()` (no `.catch`) now gets an unhandled rejection when
+  the run ends without parking. That is inherent to rejecting: attach a rejection handler. The internal guard
+  covers only callers that never call the method. `ExecutionTerminatedError.state` is the plaintext folded
+  state, so it is non-enumerable and stays out of `JSON.stringify` and error serialisers.
+- `isTerminalToolError` classifies `ExecutionTerminatedError` by its status: with no cause (completed,
+  continued) it is terminal; with a cause (failed, cancelled) the cause is classified, so a tool awaiting a
+  child's `waitForSuspend()` gets the same verdict as one awaiting its `waitForCompletion()`.
