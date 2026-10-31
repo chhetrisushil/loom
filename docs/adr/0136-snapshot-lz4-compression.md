@@ -54,15 +54,26 @@ column is not touched. Because the measured effect is more bytes for faster I/O,
 trade; the default stays what #706's goal needs (smallest at rest). `"default"` never reverts a column that
 already uses lz4 (switching back is an explicit `ALTER … SET COMPRESSION pglz`, which is also new-values-only).
 
-When lz4 is requested the migration, inside its existing transaction and advisory lock:
+When lz4 is requested the migration, AFTER the main migration commits, runs one more SHORT transaction
+(its own, under the same advisory lock, taken before the probes so they see a settled catalog):
 
 1. reads `SHOW server_version_num`; below 140000 it skips;
-2. probes `pg_attribute.attcompression`; already `l` means a no-op that takes no lock (`SET COMPRESSION`
-   needs ACCESS EXCLUSIVE, so a catalog probe keeps every later boot lock-free, like the index probes);
-3. runs the `ALTER` inside a savepoint with `lock_timeout = lockTimeoutMs`, and on `feature_not_supported`
-   (server built without lz4), `invalid_parameter_value`, `syntax_error`, `insufficient_privilege`,
-   `lock_not_available`, `query_canceled` or `deadlock_detected` rolls back to the savepoint and continues.
-   Any other error still fails the migration.
+2. probes `pg_attribute.attcompression`; already `l` means a no-op that takes no table lock (`SET
+   COMPRESSION` needs ACCESS EXCLUSIVE, so a catalog probe keeps every later boot lock-free, like the index
+   probes);
+3. runs the `ALTER` with its OWN `lock_timeout` of min(`lockTimeoutMs`, 200 ms). The `ALTER` is metadata-only
+   (instant once it has the lock) but while it WAITS every snapshot load/save queues behind it (measured: a
+   plain `SELECT` blocked 1.5 s), so it must not borrow the conversion budget: with a long reader on
+   `snapshots`, a booting node stalls snapshot I/O, hence resume, for at most ~200 ms, per boot, until a boot
+   finds the table free. On `feature_not_supported` (server built without lz4), `invalid_parameter_value`,
+   `syntax_error`, `undefined_column` (a fork without `attcompression`), `insufficient_privilege`,
+   `lock_not_available`, `query_canceled` or `deadlock_detected` the transaction rolls back and the migration
+   continues; the next boot retries. Any other error still fails the migration.
+
+Running it after the main COMMIT (not inside that transaction) means no lock from the `events`/`refs`
+conversions is held across it, so it can neither extend their ACCESS EXCLUSIVE nor create an
+events-then-snapshots lock order. Like every option it is decided by the first migrator of a pool: requesting
+lz4 on a pool another store already migrated is ignored.
 
 A skip is reported ONCE per migration through the existing `onWarn` seam (default `console.warn`; no new
 logging path): the operator asked for lz4 and is not getting it, which silence would hide. Not requesting lz4

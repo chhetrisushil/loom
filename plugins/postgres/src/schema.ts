@@ -60,7 +60,7 @@ export interface MigrateOptions {
    * boot continues). Short on purpose: while an ALTER waits, every append/putRef against
    * ITS table queues behind it. Default 2000 ms.
    *
-   * Governs all THREE waits (L21 `refs`, L10 `events.execution_id`, and the ADR 0129
+   * Governs the three conversion waits (L21 `refs`, L10 `events.execution_id`, and the ADR 0129
    * `events.incarnation` column + trigger), but NOT as one shared budget — each reads
    * `loom.migration_lock_timeout` and applies it to its OWN wait independently. The waits are
    * sequential, so a boot can stall up to **2× lockTimeoutMs** (4000 ms by default) behind
@@ -68,7 +68,8 @@ export interface MigrateOptions {
    * up to **4× lockTimeoutMs** against it (L10's wait, then the incarnation ALTER and CREATE
    * TRIGGER; the incarnation step is skipped outright after a transient L10 failure, so that
    * worst case needs the holder to release in between). Each wait still only blocks writers to
-   * the ONE table it is waiting on.
+   * the ONE table it is waiting on. The opt-in `snapshotCompression: "lz4"` step is NOT part of
+   * this budget: it runs after the commit with its own wait of min(lockTimeoutMs, 200 ms).
    *
    * The migration runs ONCE per pool and the first migrator's value wins, so the reliable way
    * to set it is `await migratePostgresStores(pool, { lockTimeoutMs })` BEFORE constructing any
@@ -99,8 +100,13 @@ export interface MigrateOptions {
    * `ALTER TABLE snapshots ALTER COLUMN state SET COMPRESSION lz4` (PostgreSQL 14+ built with lz4),
    * which only affects values written AFTER it (existing rows stay pglz until rewritten; nothing here
    * rewrites them). On a server that cannot do it (older than 14, built without lz4, a non-owner role,
-   * the table locked past `lockTimeoutMs`) the migration does NOT fail: it keeps the default
-   * compression and reports one message through `onWarn`. `"default"` (the default) leaves the column
+   * the table locked past its own short wait) the migration does NOT fail: it keeps the default
+   * compression, reports one message through `onWarn`, and the next boot retries.
+   * The `ALTER` needs ACCESS EXCLUSIVE on `snapshots`, and while it waits every snapshot load/save
+   * queues behind it, so it runs in its OWN transaction after the main commit with a wait of
+   * min(`lockTimeoutMs`, 200 ms): a boot can stall snapshot I/O (hence resume) by at most that, and
+   * only while some long reader/writer holds the table. Like every option here, it is decided by the
+   * FIRST migrator of a pool: asking for `"lz4"` on a pool another store already migrated is ignored. `"default"` (the default) leaves the column
    * alone and never reverts a column that already uses lz4. Measured (ADR 0136): lz4 stores ~1.5x MORE
    * bytes than pglz but reads ~20% and writes ~2.4x faster, so it is a speed choice, not a size one.
    */
@@ -223,15 +229,16 @@ async function runMigration(
       "SELECT NULLIF(current_setting('loom.incarnation_skip', true), '') AS why"
     );
     const why = skipped.rows[0]?.why;
-    // ADR 0136 — inside the same transaction and lock; fails soft, so it can never fail the migration.
+    await client.query("COMMIT");
+    // ADR 0136 — AFTER the main commit, in its OWN short transaction (ADR 0136 D1): no lock from
+    // the conversions above is held across it, and it can never extend them. Fails soft.
     const lz4Skipped =
       snapshotCompression === "lz4"
-        ? await setSnapshotLz4(client, lockTimeoutMs, callerLockTimeout)
+        ? await setSnapshotLz4(client, Math.min(lockTimeoutMs, LZ4_LOCK_TIMEOUT_MS))
         : undefined;
-    await client.query("COMMIT");
     if (lz4Skipped !== undefined) {
       (onWarn ?? ((m: string) => console.warn(m)))(
-        `loom: @loom/plugin-postgres kept the default (pglz) compression for snapshots.state (${lz4Skipped}). Snapshots stay correct; drop the snapshotCompression: "lz4" option to silence this.`
+        `loom: @loom/plugin-postgres kept the default (pglz) compression for snapshots.state (${lz4Skipped}). Snapshots stay correct; the next boot retries. Drop the snapshotCompression: "lz4" option to silence this.`
       );
     }
     if (why !== null && why !== undefined) {
@@ -248,11 +255,12 @@ async function runMigration(
   }
 }
 
-/** SQLSTATEs a failed `SET COMPRESSION lz4` may raise that must not fail the migration. */
+/** SQLSTATEs a failed lz4 step may raise that must not fail the migration. */
 const LZ4_SOFT_FAILURES = new Set([
   "0A000", // feature_not_supported: "this build does not support compression with LZ4"
   "22023", // invalid_parameter_value: unknown compression method
   "42601", // syntax_error: a server older than 14 has no SET COMPRESSION
+  "42703", // undefined_column: a fork without pg_attribute.attcompression
   "42501", // insufficient_privilege: not the table owner
   "55P03", // lock_not_available: lock_timeout expired
   "57014", // query_canceled
@@ -260,37 +268,60 @@ const LZ4_SOFT_FAILURES = new Set([
 ]);
 
 /**
- * ADR 0136 — switch `snapshots.state` to lz4 TOAST compression, soft. Returns why it was skipped, or
- * `undefined` when the column is (now) lz4. The catalog probe makes every later boot a no-op that takes
- * no lock (`SET COMPRESSION` asks for ACCESS EXCLUSIVE), the same discipline as the index probes.
+ * The lz4 step's OWN lock wait. `SET COMPRESSION` is metadata-only (instant once it holds the lock) but
+ * asks for ACCESS EXCLUSIVE, and while it waits every snapshot load/save queues behind it, so it must not
+ * borrow the (longer) conversion budget: the stall is bounded by this, per boot, until it succeeds.
+ */
+const LZ4_LOCK_TIMEOUT_MS = 200;
+
+/**
+ * ADR 0136 — switch `snapshots.state` to lz4 TOAST compression, soft, in its own transaction under the
+ * migration advisory lock (taken BEFORE the probes, so they see the settled catalog). Returns why it was
+ * skipped, or `undefined` when the column is (now) lz4. The catalog probe makes every later boot a no-op
+ * that takes no table lock.
  */
 async function setSnapshotLz4(
   client: {
     query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
   },
-  lockTimeoutMs: number,
-  callerLockTimeout: string
+  lockWaitMs: number
 ): Promise<string | undefined> {
-  const v = await client.query("SHOW server_version_num");
-  const version = Number(v.rows[0]?.server_version_num);
-  if (!(version >= 140000))
-    return `PostgreSQL ${Number.isFinite(version) ? version : "?"} is older than 14`;
-  const cur = await client.query(
-    "SELECT attcompression::text AS c FROM pg_attribute WHERE attrelid = 'snapshots'::regclass AND attname = 'state' AND NOT attisdropped"
-  );
-  if (cur.rows[0]?.c === "l") return undefined;
-  await client.query("SAVEPOINT loom_snapshot_lz4");
+  await client.query("BEGIN");
   try {
-    await client.query("SELECT set_config('lock_timeout', $1, true)", [`${lockTimeoutMs}ms`]);
-    await client.query("ALTER TABLE snapshots ALTER COLUMN state SET COMPRESSION lz4");
-    await client.query("SELECT set_config('lock_timeout', $1, true)", [callerLockTimeout]);
-    await client.query("RELEASE SAVEPOINT loom_snapshot_lz4");
+    const { rows } = await client.query(
+      "SELECT current_setting('statement_timeout') AS st, current_setting('lock_timeout') AS lt"
+    );
+    // Same discipline as the main migration: waiting on a peer's migration is intended serialization.
+    await client.query(
+      "SELECT set_config('statement_timeout', '0', true), set_config('lock_timeout', '0', true)"
+    );
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [
+      MIGRATION_LOCK_NAMESPACE,
+      MIGRATION_LOCK_ID,
+    ]);
+    await client.query(
+      "SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)",
+      [rows[0]?.st ?? "0", rows[0]?.lt ?? "0"]
+    );
+    const v = await client.query("SHOW server_version_num");
+    const version = Number(v.rows[0]?.server_version_num);
+    if (!(version >= 140000)) {
+      await client.query("COMMIT");
+      return `PostgreSQL ${Number.isFinite(version) ? version : "?"} is older than 14`;
+    }
+    const cur = await client.query(
+      "SELECT attcompression::text AS c FROM pg_attribute WHERE attrelid = 'snapshots'::regclass AND attname = 'state' AND NOT attisdropped"
+    );
+    if (cur.rows[0]?.c !== "l") {
+      await client.query("SELECT set_config('lock_timeout', $1, true)", [`${lockWaitMs}ms`]);
+      await client.query("ALTER TABLE snapshots ALTER COLUMN state SET COMPRESSION lz4");
+    }
+    await client.query("COMMIT");
     return undefined;
   } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
     const code = (err as { code?: unknown }).code;
     if (typeof code !== "string" || !LZ4_SOFT_FAILURES.has(code)) throw err;
-    await client.query("ROLLBACK TO SAVEPOINT loom_snapshot_lz4");
-    await client.query("SELECT set_config('lock_timeout', $1, true)", [callerLockTimeout]);
     return `${code}: ${(err as Error).message}`;
   }
 }
