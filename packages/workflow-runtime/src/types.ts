@@ -1160,10 +1160,13 @@ export interface ExecutionHandle {
    * Resolves with the folded state when the run PARKS (a gate, a wait, a timer). If the run ends
    * without parking - it completes, fails, is cancelled or continues as new - this REJECTS with
    * `ExecutionTerminatedError` (`state` = the terminal state, `cause` = the failure or
-   * cancellation), after `waitForCompletion()` has settled, so a `Promise.race` of the two resolves
-   * as it always did. A storage, lease or seal failure rejects both promises with that error
-   * instead. Before this contract (issue #710) it stayed pending forever on a terminal run.
-   * A caller that never calls it gets no unhandled rejection.
+   * cancellation). The returned promise settles at least one microtask AFTER `waitForCompletion()`
+   * has settled, so `Promise.race([waitForCompletion(), waitForSuspend()])` (either array order)
+   * resolves with the completion, or rejects with the ORIGINAL failure, whether you attached before
+   * the run ended or long after. A storage, lease or seal failure rejects both promises with that
+   * error instead. Before this contract (issue #710) it stayed pending forever on a terminal run.
+   * ATTACH A REJECTION HANDLER: a `waitForSuspend().then(fn)` with no `.catch` raises an unhandled
+   * rejection when the run ends without parking. A caller that never calls the method gets none.
    */
   waitForSuspend(): Promise<ExecutionState>;
   getState(): ExecutionState;

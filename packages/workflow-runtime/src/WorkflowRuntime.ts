@@ -9399,7 +9399,17 @@ export class WorkflowRuntime {
     const handle: ExecutionHandle = {
       executionId,
       waitForCompletion: () => completionPromise,
-      waitForSuspend: () => suspendPromise,
+      // A DERIVED promise: it settles at least one microtask after `suspendPromise`, so a caller that
+      // attaches AFTER the run settled and races it against `waitForCompletion()` (already settled)
+      // still sees the completion first, whatever the array order (issue #710). Each call returns a
+      // fresh promise; the caller owns its rejection handling.
+      waitForSuspend: () =>
+        suspendPromise.then(
+          (v) => v,
+          (e: unknown) => {
+            throw e;
+          }
+        ),
       getState: () => vm.getState(),
       cancel,
     };

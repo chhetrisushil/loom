@@ -12,8 +12,9 @@ import type { ExecutionState } from "@loom/core";
  * - `cause` is the error `waitForCompletion()` rejects with, when it rejects (a failure or a
  *   cancellation); absent for a completion and for a continue-as-new.
  *
- * `waitForCompletion()` settles BEFORE `waitForSuspend()` rejects, so a `Promise.race` of the two
- * (either order) resolves exactly as it did before. A storage, lease or seal failure is NOT a
+ * `waitForSuspend()` returns a promise that settles at least one microtask AFTER `waitForCompletion()`,
+ * so a `Promise.race` of the two (either array order, attached live or after the run ended) resolves
+ * with the completion, or rejects with the original failure. A storage, lease or seal failure is NOT a
  * termination: both promises still reject with that error.
  */
 export class ExecutionTerminatedError extends Error {
