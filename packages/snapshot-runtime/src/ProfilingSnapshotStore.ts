@@ -1,5 +1,6 @@
 import { type DecoratorPlan, installOptional } from "@loom/event-runtime";
 import { BoundedTopN } from "./BoundedTopN";
+import { encodeState } from "./snapshotCodec";
 import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "./types";
 
 /** Bucket `i` counts sizes in `(2^(i-1), 2^i]` (bucket 0 is `0..1`); the last is open-ended. */
@@ -64,6 +65,15 @@ export interface ProfilingSnapshotStoreOptions {
   sampleRate?: number;
   /** Source of `[0,1)` numbers for sampling; inject a fake in tests (default `Math.random`). */
   sampler?: () => number;
+  /**
+   * What a "size" is. `"json"` (default when the wrapped store writes no codec): the UTF-8 text of
+   * `JSON.stringify(state)`. `"stored"`: the bytes a codec frame occupies, i.e. what the backend keeps
+   * (ADR 0140: with `codec: "zstd"` that is the compressed size); it needs the wrapped store to report
+   * `snapshotCodec`, else it is the same as `"json"` plus the one format byte. Default `"stored"` when
+   * the wrapped store reports `snapshotCodec: "zstd"`, so a zstd deployment's histogram shows real bytes.
+   * `"stored"` compresses once per measured save (synchronously, like the stringify): use `sampleRate`.
+   */
+  measure?: "json" | "stored";
   /** Told about a measurement or hook that threw. Itself guarded: a throw here is swallowed too. */
   onMeasurementError?: (executionId: string, error: unknown) => void;
 }
@@ -138,6 +148,8 @@ export class ProfilingSnapshotStore implements SnapshotStore {
    */
   private readonly flagged = new Map<string, number>();
   private readonly dedupeCapacity: number;
+  private readonly codec: "none" | "zstd";
+  private readonly stored: boolean;
   private readonly sampleRate: number;
   private readonly sampler: () => number;
 
@@ -164,6 +176,9 @@ export class ProfilingSnapshotStore implements SnapshotStore {
         "ProfilingSnapshotStore: onLargeSnapshot requires largeThresholdBytes (it would never fire)"
       );
     }
+    const innerCodec = (inner as { snapshotCodec?: unknown }).snapshotCodec;
+    this.codec = innerCodec === "zstd" ? "zstd" : "none";
+    this.stored = (options.measure ?? (this.codec === "zstd" ? "stored" : "json")) === "stored";
     this.dedupeCapacity = dedupe;
     this.sampleRate = rate;
     this.sampler = options.sampler ?? Math.random;
@@ -204,6 +219,11 @@ export class ProfilingSnapshotStore implements SnapshotStore {
   private measure(snapshot: Snapshot): number | undefined {
     if (this.sampleRate < 1 && !(this.sampler() < this.sampleRate)) return undefined;
     try {
+      if (this.stored) {
+        return JSON.stringify(snapshot.state) === undefined
+          ? 0
+          : encodeState(snapshot.state, this.codec).length;
+      }
       const json = JSON.stringify(snapshot.state);
       return json === undefined ? 0 : utf8ByteLength(json);
     } catch (error) {

@@ -338,6 +338,21 @@ and the hook needs `largeThresholdBytes` (the constructor throws otherwise). Mem
 again. Saves that complete out of order never overwrite a newer size, and a prune forgets an
 execution only when its latest snapshot was deleted.
 
+**Make snapshots smaller (opt-in zstd codec, [ADR 0140](adr/0140-snapshot-zstd-codec.md)).** The
+codec stores each state as zstd-3 compressed JSON behind a format byte: a `state_z BYTEA` column on
+Postgres (storage `EXTERNAL`), a BLOB in SQLite's `state` column, a frame in memory. Measured on a
+running agent execution at 200 turns (`snapshotCodec.perf.test.ts`, `pnpm test:perf`): 138 KB vs
+174 KB as JSONB pglz (0.79x) plain, 13.7 KB vs 27.7 KB (0.49x) claim-checked, and the resume read is
+about 1.8x faster (the JSONB server cost, `jsonb_out` plus detoast, is what it removes). Turn it on
+with `sqliteStorage({ snapshotCodec: "zstd" })` / `postgresStorage({ snapshotCodec: "zstd" })` (or
+`durability: { snapshots: { codec: "zstd" } }` for the stores `defineConfig` builds). It is OFF by
+default and needs Node >= 22.15 (it refuses loudly otherwise). Old snapshots stay readable and are never
+rewritten; upgrade every node before opting in. With an `EncryptingSnapshotStore` pass
+`{ sealState: true, codec: "zstd" }` so the state is compressed BEFORE it is sealed (ciphertext does not
+compress); the length of the ciphertext then reveals the compressed length, a documented trade. Read a
+snapshot with `loom snapshot show <executionId>` (SQL on `snapshots.state` cannot traverse a frame), and
+note `ProfilingSnapshotStore` reports stored (compressed) bytes for a zstd store.
+
 **Is your workload even write-bound?** Wrap your store in `ProfilingEventStore` and add
 `effectTimingMiddleware` to your effect runtime, run real traffic, and compare
 `totalWriteMs` against `totalEffectMs`. The measured crossover is ~2–3 ms of effect latency

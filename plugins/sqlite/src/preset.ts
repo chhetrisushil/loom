@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { LeaseStore } from "@loom/event-runtime";
 import type { CustomStorage } from "@loom/plugin-kit";
+import type { SnapshotCodecName } from "@loom/snapshot-runtime";
 import { SqliteArchiveStore } from "./SqliteArchiveStore";
 import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
 import { SqliteEventStore } from "./SqliteEventStore";
@@ -13,6 +14,12 @@ export interface SqliteStorageOptions {
   dir?: string;
   /** Also provision a branch registry (its own DB file to avoid write contention). */
   branching?: boolean;
+  /**
+   * ADR 0140 - opt in to zstd-compressed snapshot states (default `"none"`: JSON text, as before).
+   * Needs Node >= 22.15 (throws at construction otherwise). Old snapshots stay readable; see
+   * `SqliteSnapshotStoreOptions.codec`.
+   */
+  snapshotCodec?: SnapshotCodecName;
 }
 
 /**
@@ -44,7 +51,9 @@ export function sqliteStorage(
   return {
     kind: "custom",
     eventStore,
-    snapshotStore: new SqliteSnapshotStore(join(dir, "snapshots.db")),
+    snapshotStore: new SqliteSnapshotStore(join(dir, "snapshots.db"), {
+      ...(options.snapshotCodec !== undefined && { codec: options.snapshotCodec }),
+    }),
     archiveStore: new SqliteArchiveStore(join(dir, "archive.db")),
     get leaseStore(): LeaseStore {
       lease ??= new SqliteLeaseStore(join(dir, "events.db"));

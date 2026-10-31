@@ -1,5 +1,6 @@
 import type { LeaseStore } from "@loom/event-runtime";
 import type { CustomStorage } from "@loom/plugin-kit";
+import type { SnapshotCodecName } from "@loom/snapshot-runtime";
 import type { Pool, PoolConfig } from "pg";
 import { PostgresArchiveStore } from "./PostgresArchiveStore";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
@@ -28,6 +29,13 @@ export interface PostgresStorageOptions {
   backfillParkFences?: boolean;
   /** ADR 0136 — opt in to lz4 for `snapshots.state` (default `"default"`); see `MigrateOptions.snapshotCompression`. */
   snapshotCompression?: "lz4" | "default";
+  /**
+   * ADR 0140 - opt in to zstd-compressed snapshot states in a `snapshots.state_z BYTEA` column (default
+   * `"none"`: JSONB, schema untouched). Needs Node >= 22.15 (throws at construction otherwise). The column
+   * is provisioned at boot, fail soft (one warning, JSONB writes continue). Old snapshots stay readable and
+   * are never rewritten; see `PostgresSnapshotStoreOptions.codec`.
+   */
+  snapshotCodec?: SnapshotCodecName;
 }
 
 /**
@@ -67,7 +75,12 @@ export function postgresStorage(
       snapshotCompression: options.snapshotCompression,
     }),
   });
-  const snapshotStore = new PostgresSnapshotStore(pool);
+  const snapshotStore = new PostgresSnapshotStore(pool, {
+    ...(options.snapshotCodec !== undefined && { codec: options.snapshotCodec }),
+    ...(options.migrationLockTimeoutMs !== undefined && {
+      migrationLockTimeoutMs: options.migrationLockTimeoutMs,
+    }),
+  });
   const archiveStore = new PostgresArchiveStore(pool);
   const leaseStore = new PostgresLeaseStore(pool);
   const branchRegistry = options.branching === true ? new PostgresBranchRegistry(pool) : undefined;

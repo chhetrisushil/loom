@@ -87,6 +87,7 @@ it is refused, and next to `--db` it is read as the execution id (`loom logs --d
 | `loom profile <store-flags> <id>` | flame graph + latency breakdown |
 | `loom introspect <store-flags> <id>` | execution / task / decision / resource graphs |
 | `loom optimize <store-flags> <id>` | advisory recommendations |
+| `loom snapshot show <store-flags> <id> [--at SEQ]` | a stored snapshot, decoded |
 | `loom learn report\|eval` | trajectories, coverage, shadow-evaluate a policy |
 | `loom census <store-flags> [--buckets 5m,1h,6h,24h] [--sample N]` | what is stuck, and is anything watching it (takes no predicate) |
 | `loom compliance report` | data-subject inventory |

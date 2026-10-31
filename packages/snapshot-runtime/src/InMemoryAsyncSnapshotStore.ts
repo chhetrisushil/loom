@@ -1,3 +1,10 @@
+import {
+  type SnapshotCodecName,
+  assertSnapshotCodecAvailable,
+  decodeState,
+  encodeState,
+  parseSnapshotCodec,
+} from "./snapshotCodec";
 import type { Snapshot, SnapshotStore } from "./types";
 
 // Binary-search bounds over a snapshot list kept sorted ascending by `sequence`.
@@ -28,6 +35,13 @@ function upperBound(list: readonly Snapshot[], seq: number): number {
 export interface InMemoryAsyncSnapshotStoreOptions {
   /** Artificial per-operation delay (ms) to model network latency. Default 0. */
   latencyMs?: number;
+  /**
+   * ADR 0140 - `"zstd"` stores each state as a codec frame (zstd-compressed JSON) and decodes it on
+   * every read, so a caller gets a fresh, independent copy and the store exercises the same format the
+   * durable stores write. Default `"none"`: the very object saved is held and returned (today's behaviour).
+   * Throws at construction on a Node without zstd (>= 22.15).
+   */
+  codec?: SnapshotCodecName;
 }
 
 /**
@@ -38,9 +52,22 @@ export interface InMemoryAsyncSnapshotStoreOptions {
 export class InMemoryAsyncSnapshotStore implements SnapshotStore {
   private readonly snapshots = new Map<string, Snapshot[]>();
   private readonly latencyMs: number;
+  /** ADR 0140 - the codec this store WRITES (`"none"` holds the saved object itself). Structural, read by `defineConfig`. */
+  readonly snapshotCodec: SnapshotCodecName;
+  // Codec frames, keyed by the held snapshot (whose own `state` is then a placeholder). Empty when `"none"`.
+  private readonly frames = new WeakMap<Snapshot, Buffer>();
 
   constructor(options: InMemoryAsyncSnapshotStoreOptions = {}) {
     this.latencyMs = options.latencyMs ?? 0;
+    this.snapshotCodec = parseSnapshotCodec(options.codec);
+    assertSnapshotCodecAvailable(this.snapshotCodec);
+  }
+
+  // A read hands back the decoded state of a framed snapshot, the held object otherwise.
+  private out(s: Snapshot | null | undefined): Snapshot | null {
+    if (s === undefined || s === null) return null;
+    const frame = this.frames.get(s);
+    return frame === undefined ? s : { ...s, state: decodeState(frame) };
   }
 
   private async tick(): Promise<void> {
@@ -48,8 +75,14 @@ export class InMemoryAsyncSnapshotStore implements SnapshotStore {
     else await Promise.resolve();
   }
 
-  async save(snapshot: Snapshot): Promise<void> {
+  async save(saved: Snapshot): Promise<void> {
     await this.tick();
+    let snapshot = saved;
+    if (this.snapshotCodec !== "none") {
+      const frame = encodeState(saved.state, this.snapshotCodec);
+      snapshot = { ...saved, state: undefined as never };
+      this.frames.set(snapshot, frame);
+    }
     const list = this.snapshots.get(snapshot.executionId) ?? [];
     // Keep each execution's snapshots sorted by sequence with STABLE insertion
     // (a new snapshot goes after any existing ones sharing its sequence). This
@@ -67,7 +100,7 @@ export class InMemoryAsyncSnapshotStore implements SnapshotStore {
     await this.tick();
     const list = this.snapshots.get(executionId);
     if (!list || list.length === 0) return null;
-    return list[list.length - 1] as Snapshot; // greatest sequence, last-inserted on ties
+    return this.out(list[list.length - 1]); // greatest sequence, last-inserted on ties
   }
 
   /** Nothing here is sealed: at rest IS what `loadLatest` returns (SPI 1.1.0). */
@@ -82,7 +115,7 @@ export class InMemoryAsyncSnapshotStore implements SnapshotStore {
     // First element with this exact sequence (matches the old `find` semantics).
     const idx = lowerBound(list, sequence);
     const hit = list[idx];
-    return hit !== undefined && hit.sequence === sequence ? hit : null;
+    return hit !== undefined && hit.sequence === sequence ? this.out(hit) : null;
   }
 
   async loadLatestBefore(executionId: string, sequence: number): Promise<Snapshot | null> {
@@ -91,7 +124,7 @@ export class InMemoryAsyncSnapshotStore implements SnapshotStore {
     if (!list || list.length === 0) return null;
     // Rightmost snapshot with sequence <= target: (first index > target) - 1.
     const idx = upperBound(list, sequence) - 1;
-    return idx >= 0 ? (list[idx] as Snapshot) : null;
+    return idx >= 0 ? this.out(list[idx]) : null;
   }
 
   async deleteExecution(executionId: string): Promise<void> {

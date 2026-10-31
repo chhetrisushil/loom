@@ -111,9 +111,28 @@ export interface MigrateOptions {
    * bytes than pglz but reads ~20% and writes ~2.4x faster, so it is a speed choice, not a size one.
    */
   snapshotCompression?: "lz4" | "default";
+  /**
+   * ADR 0140 - `"zstd"` also provisions the `snapshots.state_z BYTEA` column the zstd snapshot codec
+   * writes (and drops `state`'s NOT NULL, since a codec row keeps its state in `state_z`). OPT-IN, fail
+   * soft, own short transaction with its own lock wait of min(`lockTimeoutMs`, 200 ms); see
+   * {@link ensureSnapshotZstd}. Unlike the other options it is NOT decided by the first migrator of a
+   * pool: it runs for whoever asks (it is idempotent and memoized per pool). `PostgresSnapshotStore`
+   * asks for it itself when built with `codec: "zstd"`, so this is for provisioning ahead of time.
+   */
+  snapshotCodec?: "zstd" | "none";
 }
 
 export async function migrate(pool: PoolLike, options: MigrateOptions = {}): Promise<void> {
+  const base = migrateOnce(pool, options);
+  if (options.snapshotCodec !== "zstd") return base;
+  await base;
+  await ensureSnapshotZstd(pool, {
+    lockTimeoutMs: options.lockTimeoutMs ?? 2000,
+    ...(options.onWarn !== undefined && { onWarn: options.onWarn }),
+  });
+}
+
+function migrateOnce(pool: PoolLike, options: MigrateOptions): Promise<void> {
   const inFlight = migrations.get(pool);
   if (inFlight !== undefined) return inFlight;
 
@@ -315,6 +334,123 @@ async function setSnapshotLz4(
     if (cur.rows[0]?.c !== "l") {
       await client.query("SELECT set_config('lock_timeout', $1, true)", [`${lockWaitMs}ms`]);
       await client.query("ALTER TABLE snapshots ALTER COLUMN state SET COMPRESSION lz4");
+    }
+    await client.query("COMMIT");
+    return undefined;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    const code = (err as { code?: unknown }).code;
+    if (typeof code !== "string" || !LZ4_SOFT_FAILURES.has(code)) throw err;
+    return `${code}: ${(err as Error).message}`;
+  }
+}
+
+const zstdReady = new WeakMap<PoolLike, Promise<boolean>>();
+
+/**
+ * ADR 0140 - provision the BYTEA column of the zstd snapshot codec: `snapshots.state_z BYTEA` (TOAST
+ * storage EXTERNAL: the bytes are already compressed, so the server must not try again) and `state DROP
+ * NOT NULL` (a codec row keeps its state in `state_z`, so `state` is NULL). Resolves `true` when both
+ * hold, `false` when it could not be done (reported ONCE through `onWarn`; the caller then keeps writing
+ * JSONB, which is always correct, and the next boot retries).
+ *
+ * Same discipline as ADR 0136's lz4 step: its OWN short transaction under the migration advisory lock
+ * (taken before the probes, so they see a settled catalog), after the main migration committed, so it
+ * can neither extend nor reorder the conversions' locks. The catalog probe means every boot after the
+ * first takes NO table lock. When it must alter, the statements run in ONE transaction under ONE
+ * ACCESS EXCLUSIVE acquisition with `lock_timeout` = min(`lockTimeoutMs`, 200 ms): each is catalog-only
+ * (a nullable column without a default is not a rewrite; DROP NOT NULL does not scan), so the lock is
+ * held for microseconds once granted, and while it WAITS snapshot I/O queues behind it for at most that
+ * timeout. Memoized per pool when it succeeds (a failure is retried by the next caller).
+ *
+ * `migrate(pool)` MUST have completed first (it creates `snapshots`).
+ */
+export function ensureSnapshotZstd(
+  pool: PoolLike,
+  options: { lockTimeoutMs?: number; onWarn?: (message: string) => void } = {}
+): Promise<boolean> {
+  const memo = zstdReady.get(pool);
+  if (memo !== undefined) return memo;
+  const run = (async () => {
+    const client = await pool.connect();
+    try {
+      const why = await addZstdColumn(
+        client,
+        Math.min(options.lockTimeoutMs ?? 2000, LZ4_LOCK_TIMEOUT_MS)
+      );
+      if (why !== undefined) {
+        (options.onWarn ?? ((m: string) => console.warn(m)))(
+          `loom: @loom/plugin-postgres could not provision snapshots.state_z for the zstd snapshot codec (${why}). Snapshots are still written as JSONB (always correct, just larger); the next boot retries. Drop the snapshot codec option to silence this.`
+        );
+        return false;
+      }
+      return true;
+    } finally {
+      client.release();
+    }
+  })();
+  zstdReady.set(pool, run);
+  run.then(
+    (ok) => {
+      if (!ok && zstdReady.get(pool) === run) zstdReady.delete(pool);
+    },
+    () => {
+      if (zstdReady.get(pool) === run) zstdReady.delete(pool);
+    }
+  );
+  return run;
+}
+
+async function addZstdColumn(
+  client: {
+    query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
+  },
+  lockWaitMs: number
+): Promise<string | undefined> {
+  await client.query("BEGIN");
+  try {
+    const { rows } = await client.query(
+      "SELECT current_setting('statement_timeout') AS st, current_setting('lock_timeout') AS lt"
+    );
+    await client.query(
+      "SELECT set_config('statement_timeout', '0', true), set_config('lock_timeout', '0', true)"
+    );
+    await client.query("SELECT pg_advisory_xact_lock($1, $2)", [
+      MIGRATION_LOCK_NAMESPACE,
+      MIGRATION_LOCK_ID,
+    ]);
+    await client.query(
+      "SELECT set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true)",
+      [rows[0]?.st ?? "0", rows[0]?.lt ?? "0"]
+    );
+    const cur = await client.query(
+      `SELECT attname::text AS name, attnotnull AS notnull FROM pg_attribute
+       WHERE attrelid = 'snapshots'::regclass AND attname IN ('state', 'state_z') AND NOT attisdropped`
+    );
+    const hasZ = cur.rows.some((r) => r.name === "state_z");
+    const stateNotNull = cur.rows.some((r) => r.name === "state" && r.notnull === true);
+    const hasCheck =
+      (
+        await client.query(
+          "SELECT 1 FROM pg_constraint WHERE conrelid = 'snapshots'::regclass AND conname = 'snapshots_one_format'"
+        )
+      ).rows.length > 0;
+    if (!hasZ || stateNotNull || !hasCheck) {
+      await client.query("SELECT set_config('lock_timeout', $1, true)", [`${lockWaitMs}ms`]);
+      if (!hasZ) {
+        await client.query("ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS state_z BYTEA");
+        await client.query("ALTER TABLE snapshots ALTER COLUMN state_z SET STORAGE EXTERNAL");
+      }
+      if (stateNotNull)
+        await client.query("ALTER TABLE snapshots ALTER COLUMN state DROP NOT NULL");
+      // At most one format per row. NOT VALID: enforced for every later write but no table scan (the
+      // column is new, so every existing row satisfies it by construction). It turns a mixed-config fleet's
+      // JSONB re-save over a frame row into a loud error instead of a silently stale snapshot.
+      if (!hasCheck) {
+        await client.query(
+          "ALTER TABLE snapshots ADD CONSTRAINT snapshots_one_format CHECK (state IS NULL OR state_z IS NULL) NOT VALID"
+        );
+      }
     }
     await client.query("COMMIT");
     return undefined;

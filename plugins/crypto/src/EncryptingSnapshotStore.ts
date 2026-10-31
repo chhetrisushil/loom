@@ -5,7 +5,14 @@ import {
   KeyUnavailableError,
   installOptional,
 } from "@loom/event-runtime";
-import type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
+import {
+  type OptionalSnapshotStoreMethod,
+  type Snapshot,
+  type SnapshotCodecName,
+  type SnapshotStore,
+  assertSnapshotCodecAvailable,
+  parseSnapshotCodec,
+} from "@loom/snapshot-runtime";
 import {
   type IvSource,
   assertIvSourceAllowed,
@@ -70,6 +77,19 @@ export interface EncryptingSnapshotStoreOptions {
    */
   legacyPlaintext?: "load" | "refuse";
   /**
+   * `sealState` only. ADR 0140 - `"zstd"` COMPRESSES THE STATE BEFORE SEALING it: ciphertext is
+   * incompressible, so a codec in the backend below this store (a BYTEA column) can only ever see
+   * random-looking base64. The plaintext inside the envelope becomes a self-describing codec frame, so
+   * the envelope shape, the AAD binding and every reader (`openWholeState`, shredding) are unchanged and
+   * a pre-codec envelope still opens. Default `"none"`: byte-for-byte today's behaviour. Throws at
+   * construction on a Node without zstd (>= 22.15), or without `sealState`. The cost, stated (ADR 0136
+   * D4): the ciphertext length now reveals the COMPRESSED length of the state, which a party who can
+   * both influence the plaintext and observe stored sizes could use as an oracle (CRIME/BREACH family).
+   * The state is the folded execution, written by the runtime, never an attacker-chosen string compressed
+   * beside a secret in one request, but an operator who holds that threat model keeps this off.
+   */
+  codec?: SnapshotCodecName;
+  /**
    * `sealState` only. The dot-paths a previous static-path configuration sealed. When given,
    * legacy snapshots open ONLY those paths (any other envelope-shaped value is left as stored);
    * when absent, every envelope-shaped value is tried and left as stored if it does not open.
@@ -120,6 +140,8 @@ export class EncryptingSnapshotStore implements SnapshotStore {
    * Absent (not `false`) in static-path mode.
    */
   readonly sealsWholeState?: true;
+  /** ADR 0140 - the codec the sealed plaintext is compressed with (`ProfilingSnapshotStore` reads it). */
+  readonly snapshotCodec: SnapshotCodecName;
   private sensitive: readonly string[];
   private readonly legacyPlaintext: "load" | "refuse";
   private readonly legacySensitive: readonly string[] | undefined;
@@ -153,6 +175,15 @@ export class EncryptingSnapshotStore implements SnapshotStore {
       throw new TypeError(
         "EncryptingSnapshotStore: pass `sealState: true` (recommended) or a `sensitive` path list."
       );
+    }
+    this.snapshotCodec = parseSnapshotCodec(options.codec);
+    if (this.snapshotCodec !== "none") {
+      if (options.sealState !== true) {
+        throw new TypeError(
+          "EncryptingSnapshotStore: `codec` only applies with `sealState: true` (it compresses the whole state before sealing it; a static-path store seals small fields)."
+        );
+      }
+      assertSnapshotCodecAvailable(this.snapshotCodec);
     }
     this.sensitive = [...(options.sensitive ?? [])];
     this.legacyPlaintext = options.legacyPlaintext ?? "load";
@@ -213,7 +244,8 @@ export class EncryptingSnapshotStore implements SnapshotStore {
           streamId: snapshot.executionId,
           sequence: snapshot.sequence,
           path: "state",
-        })
+        }),
+        this.snapshotCodec
       );
       return this.inner.save({ ...snapshot, state: sealed as never });
     }
