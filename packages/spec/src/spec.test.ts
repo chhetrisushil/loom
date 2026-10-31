@@ -34,7 +34,7 @@ describe("kernelManifest", () => {
   it("ADR 0130 residuals S1 reserves EVENT_SCHEMA 1.25.0 / EventStore SPI 2.5.0 and changes NOTHING in the kernel ABI", () => {
     const m = kernelManifest();
     expect(m.eventSchema.version).toBe("1.26.0");
-    expect(m.spis.eventStore).toBe("2.5.0");
+    expect(m.spis.eventStore).toBe("2.6.0");
     // KERNEL_ABI is the syscall surface: the new facts are folded kinds, not syscalls, and the new
     // ops are type-only. Both the version and the table must be exactly what they were.
     expect(m.kernelAbi.version).toBe("1.3.0");
@@ -435,11 +435,11 @@ describe("checkCompatibility", () => {
     // TenantScopedEventStore can no longer tolerate — the reason the bump is MAJOR. 2.1.0,
     // 2.2.0, 2.3.0, 2.4.0 and 2.5.0 are MINORs (acquireFenceIf; appendIfUnchanged; the incarnation anchor
     // MUST; storeNow; sealingCapability): a 2.0.0 store still conforms.
-    expect(kernelManifest().spis.eventStore).toBe("2.5.0");
+    expect(kernelManifest().spis.eventStore).toBe("2.6.0");
     const report = checkCompatibility({ eventStoreSpi: "1.5.0" });
     expect(report.ok).toBe(false);
     expect(report.issues).toEqual([
-      expect.objectContaining({ component: "eventStoreSpi", expected: "2.5.0", actual: "1.5.0" }),
+      expect.objectContaining({ component: "eventStoreSpi", expected: "2.6.0", actual: "1.5.0" }),
     ]);
     expect(checkCompatibility({ eventStoreSpi: "2.0.0" }).ok).toBe(true);
     expect(checkCompatibility({ eventStoreSpi: "2.1.0" }).ok).toBe(true);

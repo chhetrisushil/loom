@@ -71,7 +71,7 @@ The capability authorizer runs before any middleware, and isolation is innermost
 
 ## 3. Integrity of the durable log
 
-The log is append-only, single-writer and replay-deterministic, and with `@loom/plugin-audit-chain` wired it is cryptographically tamper-evident. Current contract versions: `EVENT_SCHEMA` 1.25.0, `KERNEL_ABI` 1.3.0, `EVENT_STORE_SPI` 2.5.0.
+The log is append-only, single-writer and replay-deterministic, and with `@loom/plugin-audit-chain` wired it is cryptographically tamper-evident. Current contract versions: `EVENT_SCHEMA` 1.25.0, `KERNEL_ABI` 1.3.0, `EVENT_STORE_SPI` 2.6.0.
 
 ### Single writer and fencing (ADR 0021, 0118, 0129)
 

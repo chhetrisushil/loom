@@ -7,6 +7,7 @@ import {
   InMemoryAsyncEventStore,
 } from "@loom/event-runtime";
 import {
+  PostgresArchiveStore,
   PostgresEventStore,
   PostgresSnapshotStore,
   migratePostgresStores,
@@ -32,6 +33,7 @@ import { z } from "zod";
 // served-from-the-fold calls. It is reported to show WHERE the remaining growth is.
 
 const PG_URL = process.env.LOOM_BENCH_POSTGRES_URL ?? process.env.LOOM_TEST_POSTGRES_URL;
+const ARCHIVE = process.env.LOOM_BENCH_ARCHIVE ?? "memory"; // "memory" | "postgres"
 const BACKEND = process.env.LOOM_BENCH_BACKEND ?? (PG_URL !== undefined ? "postgres" : "memory");
 const any = z.any();
 
@@ -107,13 +109,18 @@ async function main(): Promise<void> {
       snapshotStore: s.snaps,
       effectRuntime: new EffectRuntime(),
       inboxEnabled: true,
-      inboxArchive: new InMemoryArchiveStore(), // ADR 0139: an inbox trim MOVES envelopes into an archive
+      // ADR 0139: an inbox trim MOVES envelopes into an archive. LOOM_BENCH_ARCHIVE=postgres measures the trim
+      // against a durable archive (the realistic cost); the default is the in-memory one.
+      inboxArchive:
+        ARCHIVE === "postgres" && pool !== undefined
+          ? new PostgresArchiveStore(pool)
+          : new InMemoryArchiveStore(),
       inboxMaxBacklog: 1_000_000,
       onWarn: () => {},
     });
     return { runtime, ...s };
   };
-  console.log(`backend=${BACKEND}`);
+  console.log(`backend=${BACKEND} archive=${ARCHIVE}`);
 
   // ── A. send vs stream length ────────────────────────────────────────────────────────────────
   {

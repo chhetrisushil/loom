@@ -816,6 +816,34 @@ export async function sweepUnpinnedContent(
     do {
       const page = await archive.listExecutions({ ...(cursor !== undefined && { cursor }) });
       for (const executionId of page.executionIds) {
+        // ADR 0139 - a reserved stream that is DELETED (nothing live to derive a gap from) is judged by
+        // the archive's own extent: a hole between its first possible sequence and its last archived one
+        // (a trim before the archive existed) is history nothing holds, exactly like a live stream's gap.
+        if (isReservedStream(executionId) && !executionId.startsWith("__loom_late__:")) {
+          if (!archivedRanges.has(executionId)) {
+            const headers = await archive.headers(executionId);
+            const first = isInboxTopicStream(executionId) ? INBOX_TOPIC_SEQ_BASE : 1;
+            const extent = headers.length > 0 ? headers[headers.length - 1]!.through : -1;
+            const holes = missingRunsFrom(
+              headers.flatMap((h) =>
+                Array.from(new Set([h.from, h.through])).map((sequence) => ({ sequence }))
+              ),
+              first,
+              extent
+            ).filter(
+              ([x, y]) =>
+                !rangeCovered(
+                  x,
+                  y,
+                  headers.map((h) => [h.from, h.through] as const)
+                )
+            );
+            if (holes.length > 0) {
+              compactedLogs.add(executionId);
+              archivedRanges.set(executionId, holes);
+            }
+          }
+        }
         let segments: Awaited<ReturnType<ArchiveStore["read"]>>;
         try {
           segments = await archive.read(executionId);

@@ -60,8 +60,10 @@ export {
   chainIdOfFirst,
   hasInboxStreamShape,
   inboxChainOf,
-  RESERVED_LATE_SUFFIX,
+  RESERVED_LATE_PREFIX,
+  archiveChainOf,
   reservedLateKey,
+  reservedLateOrigin,
   inboxRegistryStreamId,
   inboxStreamsOfChain,
   inboxStreamsOfChainDeep,
@@ -128,6 +130,19 @@ export type {
   ArchiveSegmentKind,
   ArchiveStore,
 } from "./archiveSpi";
-export { assertSegmentDigest, buildSegment, pageIds, segmentDigest } from "./archive";
+export {
+  SENDER_ERASED,
+  archivedReservedStreams,
+  assertReservedSegmentDigest,
+  assertSegmentDigest,
+  buildReservedSegment,
+  buildSegment,
+  isSenderErased,
+  maskSender,
+  pageIds,
+  reservedSegmentDigest,
+  sameReservedEnvelope,
+  segmentDigest,
+} from "./archive";
 export { TenantScopedArchiveStore } from "./TenantScopedArchiveStore";
 export { InMemoryArchiveStore } from "./InMemoryArchiveStore";

@@ -323,6 +323,23 @@ export class InMemoryAsyncEventStore implements EventStore {
     this.incarnations.delete(executionId);
   }
 
+  async deleteThrough(executionId: string, through: number): Promise<void> {
+    await this.tick();
+    const list = this.log.get(executionId);
+    if (list === undefined) return;
+    // One synchronous pass (no reader sees half of it): sequence 0 goes too, unlike truncatePrefix.
+    const kept: EventEnvelope[] = [];
+    for (const e of list) {
+      if (e.sequence > through) kept.push(e);
+      else this.ids.delete(e.id);
+    }
+    if (kept.length === 0) {
+      await this.deleteExecution(executionId);
+      return;
+    }
+    this.log.set(executionId, kept);
+  }
+
   private setLog(executionId: string, list: EventEnvelope[]): void {
     if (!this.log.has(executionId)) this.sortedIds = undefined;
     if (list[0]?.sequence === 0 && !this.incarnations.has(executionId)) {

@@ -260,7 +260,7 @@ describe("P3-3 — backpressure and trim are bounded", () => {
     const view = Object.create(inner) as EventStore;
     const origRange = inner.readRange?.bind(inner);
     view.readRange = async (id: string, lo: number, hi: number) => {
-      seen.push(lo);
+      if (id.startsWith("__loom_inbox__")) seen.push(lo); // (not the owner-bootstrap read of the archive incarnation)
       return (origRange as NonNullable<typeof origRange>)(id, lo, hi);
     };
     const cursors = { x: 289 };

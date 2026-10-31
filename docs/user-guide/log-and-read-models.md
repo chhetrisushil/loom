@@ -219,7 +219,7 @@ trim and a retired chain's delete MOVE the envelopes (ids, timestamps, sender me
 the compaction archive is handed to the runtime (`inboxArchive`); a hand-built runtime without it trims and deletes
 nothing and reports a `ReservedStreamArchiveRequiredError` per chain through `onStorageError`. Read it back with
 `life.readReservedWithArchive(streamId)` / `life.reservedArchiveCoverage(streamId)`; `exportSubject` returns it as
-`reservedStreams`; a re-created stream starts above the archive, and a straggler lands in `<stream>#late-<n>`.
+`reservedStreams`; a re-created stream starts above the archive, and a straggler lands in a late run (`__loom_late__:<stream>@<n>`). The terminal delete is bounded by what was archived (`EventStore.deleteThrough`; a store without it keeps the stream), the inbox needs an archive at construction (`inboxArchive`, defaulted for an in-memory store, `"none"` to decline), and erasing a subject deletes its archived copies from a plaintext archive.
 
 Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-memory, SQLite,
 and Postgres); a store that omits them can't be swept. A compacted execution resumes, and

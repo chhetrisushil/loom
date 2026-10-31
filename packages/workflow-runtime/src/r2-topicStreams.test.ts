@@ -507,13 +507,14 @@ for (const backend of inboxBackends("topics")) {
       const gate = new Promise<void>((r) => {
         release = r;
       });
-      view.deleteExecution = async (target) => {
+      // ADR 0139 D8: a retirement deletes THROUGH what it archived (deleteThrough), not the whole stream
+      view.deleteThrough = async (target, through) => {
         if (armed && target === inboxRegistryStreamId(e)) {
           armed = false;
           reachedRegDelete();
           await gate;
         }
-        return be.eventStore.deleteExecution!(target);
+        return be.eventStore.deleteThrough!(target, through);
       };
       const a = build({ inboxTopicStreams: true }, { ...be, eventStore: view });
       await enable(a);

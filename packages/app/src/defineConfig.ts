@@ -971,6 +971,14 @@ export interface LoomConfig {
       /** ADR 0110 D10b — topics one chain may have per-topic streams for (its registry's size). Default 64. */
       maxTopics?: number;
       /**
+       * ADR 0139 M1 - the inbox MOVES what a trim or delete removes into the compaction archive. With the
+       * inbox on and no archive resolvable (a durable custom store without `storage.archiveStore` /
+       * `durability.retention.compactionArchive`), `defineConfig` THROWS. `"none"` is the explicit
+       * opt-out: nothing is trimmed or deleted (said at boot), and the streams grow until `maxRetained`
+       * refuses sends.
+       */
+      archive?: "none";
+      /**
        * ADR 0130 residuals D9 — held (quarantined) messages per chain: bounds the retained span of the
        * chain's `__loom_quarantine__:` stream and refuses `quarantineInbox` past it. Default 256,
        * ceiling 1024 (the fold's own cap; a larger value is refused at composition).
@@ -1334,7 +1342,7 @@ function defaultArchive(
   if (archive === undefined) {
     if (!isInMemoryEventStore(storage.eventStore)) {
       warn(
-        "storage.archiveStore was omitted for a custom event store that is not in-memory: `lifecycle.compact` will REFUSE (CompactionArchiveRequiredError) and, with kernel.features.inbox, the inbox's reserved streams will NOT be trimmed or deleted (ReservedStreamArchiveRequiredError, ADR 0139), because both MOVE the envelopes they remove into an archive and a volatile default would forget them on restart. Pass `archiveStore` (sqliteStorage()/postgresStorage() supply one; for an encrypting event store it is sealed under the event store's KeyStore automatically), or `durability.retention.compactionArchive`."
+        "storage.archiveStore was omitted for a custom event store that is not in-memory: `lifecycle.compact` will REFUSE (CompactionArchiveRequiredError) and, with kernel.features.inbox, defineConfig will THROW (InboxArchiveRequiredError, ADR 0139) unless `kernel.inbox.archive` is set to 'none' (declines it), because both MOVE the envelopes they remove into an archive and a volatile default would forget them on restart. Pass `archiveStore` (sqliteStorage()/postgresStorage() supply one; for an encrypting event store it is sealed under the event store's KeyStore automatically), or `durability.retention.compactionArchive`."
       );
       return {};
     }
@@ -1350,8 +1358,12 @@ function sealArchiveLike(archive: ArchiveStore, eventStore: EventStore | undefin
     return archive;
   }
   const subjectOf = (eventStore as { subjectOf?: unknown } | undefined)?.subjectOf;
+  const senderSubjectOf = (eventStore as { senderSubjectOf?: unknown } | undefined)
+    ?.senderSubjectOf;
   return new EncryptingArchiveStore(archive, keys, {
     ...(typeof subjectOf === "function" && { subjectOf: subjectOf as never }),
+    // ADR 0139 D12: the archive seals a message's sender under the SENDER's subject, as the log does.
+    ...(typeof senderSubjectOf === "function" && { senderSubjectOf: senderSubjectOf as never }),
     // ADR 0139: a chain's reserved streams seal under the OWNER's subject; a custom subjectOf that reads
     // the workflow id resolves it from the owner's first event, as the event store does.
     ownerWorkflowId: async (chainId) =>
@@ -1713,6 +1725,18 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // yields no proof and the window fails closed.
   const destroyedProof: DestructionProof | undefined =
     config.compliance?.erase?.destroyed ?? keyStoreProof(config.crypto);
+  // ADR 0138: the compaction archive. ADR 0139: the SAME store is where the inbox's reserved streams MOVE
+  // the envelopes a trim or a terminal delete removes (resolved here, before the runtime that uses it).
+  // ADR 0130 residuals D7: compaction folds a log into a checkpoint, so it reads through the runtime's
+  // GUARDED store (a stream this node cannot open is refused, never checkpointed as ciphertext).
+  const compactionArchive =
+    config.retention?.compactionArchive !== undefined
+      ? sealArchiveLike(
+          config.retention.compactionArchive,
+          config.storage.kind === "custom" ? config.storage.eventStore : undefined
+        )
+      : stores.archiveStore;
+
   const eraseCoordinator =
     subjectIndex !== undefined && config.compliance?.erase !== undefined
       ? new EraseCoordinator({
@@ -1723,6 +1747,8 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
           eventStore: stores.eventStore,
           snapshotStore: stores.snapshotStore,
           shred: config.compliance.erase.shred,
+          // ADR 0138 / 0139: erasure reckons with the archive that holds the subject's moved envelopes.
+          ...(compactionArchive !== undefined && { archives: [compactionArchive] }),
           ...(destroyedProof !== undefined && { destroyed: destroyedProof }),
           // `parked: "shred"` cancels each parked owner first, under the runtime's own authority.
           // `runtime` is assigned below; nothing erases before defineConfig returns.
@@ -1752,18 +1778,6 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     telemetryHook?.(event);
     config.onEvent?.(event);
   };
-
-  // ADR 0138: the compaction archive. ADR 0139: the SAME store is where the inbox's reserved streams MOVE
-  // the envelopes a trim or a terminal delete removes (resolved here, before the runtime that uses it).
-  // ADR 0130 residuals D7: compaction folds a log into a checkpoint, so it reads through the runtime's
-  // GUARDED store (a stream this node cannot open is refused, never checkpointed as ciphertext).
-  const compactionArchive =
-    config.retention?.compactionArchive !== undefined
-      ? sealArchiveLike(
-          config.retention.compactionArchive,
-          config.storage.kind === "custom" ? config.storage.eventStore : undefined
-        )
-      : stores.archiveStore;
 
   const runtime = new WorkflowRuntime({
     eventStore: stores.eventStore,
@@ -1799,7 +1813,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     }),
     ...(config.kernel?.features?.inbox === true && {
       inboxEnabled: true,
-      ...(compactionArchive !== undefined && { inboxArchive: compactionArchive }),
+      ...(config.kernel.inbox?.archive === "none"
+        ? { inboxArchive: "none" as const }
+        : compactionArchive !== undefined && { inboxArchive: compactionArchive }),
       ...(config.retention?.tenant !== undefined && {
         inboxArchiveTenant: config.retention.tenant,
       }),

@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import {
+  type ArchiveStore,
   type AtRestEventReader,
   type DecoratorPlan,
   type EventStore,
@@ -11,6 +12,7 @@ import {
   inboxChainOf,
   installOptional,
 } from "@loom/event-runtime";
+import { EncryptingArchiveStore } from "./EncryptingArchiveStore";
 import {
   CIPHER_ID,
   type IvSource,
@@ -23,6 +25,13 @@ import {
 } from "./crypto";
 import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import type { KeyStore } from "./keystore";
+import {
+  type SenderSubjectOf,
+  isSealedSender,
+  openSender,
+  plaintextSenderOf,
+  sealSender,
+} from "./senderSeal";
 import { defaultSubjectOf } from "./subject";
 
 export interface EncryptingEventStoreOptions {
@@ -40,6 +49,15 @@ export interface EncryptingEventStoreOptions {
    * subject of the chain's generation-0 execution, so an in-flight payload is erased with its owner.
    */
   subjectOf?: (envelope: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
+  /**
+   * ADR 0139 D12 - the erasure SUBJECT of a message's SENDER. When set, an inbox envelope's
+   * `payload.sender` (actor, tenant, onBehalfOf) is sealed under the SENDER's key, not the owner's, so
+   * erasing the sender shreds their identity in every other chain's inbox (and archive) while the message
+   * body stays under the owner's record. A read whose sender key is gone gets `{ erased: true }`. Return
+   * an OPAQUE handle (it is stored in the clear beside the ciphertext, so never the identity itself), or
+   * `undefined` for an anonymous sender. Share it with the archive (`sealArchive` does).
+   */
+  senderSubjectOf?: SenderSubjectOf;
   /**
    * K10-R4 — what a read does when the subject's key has been DESTROYED (crypto-shredded):
    *  - `"throw"` (**default**): {@link PayloadShreddedError}. The authoritative fold MUST
@@ -146,6 +164,8 @@ export class EncryptingEventStore implements EventStore {
   /** PUBLIC so the compaction-archive guard can compare it, by identity, with the archive's (ADR 0138). */
   readonly subjectOf: (e: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
   private readonly onShredded: "throw" | "tolerate";
+  /** PUBLIC so the archive and the kernel guard can read the SAME sender mapping (ADR 0139 D12). */
+  readonly senderSubjectOf: SenderSubjectOf | undefined;
   private readonly ivSource: IvSource | undefined;
   /** Streams (and subjects) whose `PAYLOAD_SHREDDED` tombstone has been seen: a tombstone is permanent. */
   private readonly shreddedSeen = new Set<string>();
@@ -163,10 +183,24 @@ export class EncryptingEventStore implements EventStore {
   readonly readAtRest?: NonNullable<EventStore["readAtRest"]>;
   readonly copyPrefix?: NonNullable<EventStore["copyPrefix"]>;
   readonly deleteExecution?: NonNullable<EventStore["deleteExecution"]>;
+  readonly deleteThrough?: NonNullable<EventStore["deleteThrough"]>;
   readonly truncatePrefix?: NonNullable<EventStore["truncatePrefix"]>;
   readonly truncatePrefixKeeping?: NonNullable<EventStore["truncatePrefixKeeping"]>;
   readonly listExecutions?: NonNullable<EventStore["listExecutions"]>;
   readonly listExecutionsPage?: NonNullable<EventStore["listExecutionsPage"]>;
+
+  /**
+   * ADR 0139 M1: seal an archive under THIS store's KeyStore and subject mapping, the way `defineConfig`
+   * does for a compaction archive, so a runtime that defaults an in-memory archive for the inbox keeps it
+   * inside the erasure boundary. Found structurally by the kernel (`sealArchive` on any layer of the stack).
+   */
+  sealArchive(archive: ArchiveStore): ArchiveStore {
+    return new EncryptingArchiveStore(archive, this.keys, {
+      subjectOf: this.subjectOf,
+      ...(this.senderSubjectOf !== undefined && { senderSubjectOf: this.senderSubjectOf }),
+      ownerWorkflowId: async (chainId) => (await this.readRange?.(chainId, 0, 0))?.[0]?.workflowId,
+    });
+  }
 
   constructor(
     private readonly inner: EventStore,
@@ -182,13 +216,15 @@ export class EncryptingEventStore implements EventStore {
     this.sensitive = { ...options.sensitive };
     this.subjectOf = options.subjectOf ?? defaultSubjectOf;
     this.onShredded = options.onShredded ?? "throw";
+    this.senderSubjectOf = options.senderSubjectOf;
     assertIvSourceAllowed(options.ivSource, "EncryptingEventStore");
     this.ivSource = options.ivSource;
     const plan = {
       // One key lookup per DISTINCT subject in the batch, not one per envelope: a coalesced
       // batch is many executions, and `keys.getOrCreate` is a real lookup (a KMS or table).
       // `Promise.all` keeps array order, which is the SPI's per-execution order.
-      appendBatch: async (envelopes) => {
+      appendBatch: async (all) => {
+        const envelopes = await Promise.all(all.map((e) => this.sealSenderOf(e)));
         const keyFor = new Map<string, Promise<Buffer>>();
         const encrypted = await Promise.all(
           envelopes.map(async (envelope) => {
@@ -243,6 +279,7 @@ export class EncryptingEventStore implements EventStore {
       // copies what it read through this store, i.e. plaintext — and `LogLifecycle` refuses
       // an archive that does not share these keys (ADR 0022 Amendment, "unsafe-archive").
       deleteExecution: "forward",
+      deleteThrough: "forward",
       // Truncating ciphertext only reduces data too. Compaction's SNAPSHOT is the hazard —
       // the decrypted fold — and `LogLifecycle.compact` throws `UnsafeCompactionError` unless
       // the snapshot store shares these keys.
@@ -417,7 +454,48 @@ export class EncryptingEventStore implements EventStore {
     return { ...envelope, payload, metadata: { ...envelope.metadata, seal: marker } };
   }
 
-  async append(envelope: EventEnvelope): Promise<void> {
+  /** ADR 0139 D12: seal an inbox message's sender under the SENDER's subject (a no-op elsewhere). */
+  private async sealSenderOf(envelope: EventEnvelope): Promise<EventEnvelope> {
+    if (this.senderSubjectOf === undefined || envelope.eventType !== "INBOX_MESSAGE")
+      return envelope;
+    if (inboxChainOf(envelope.executionId) === undefined) return envelope;
+    const sender = plaintextSenderOf(envelope.payload);
+    if (sender === undefined) return envelope;
+    const subject = this.senderSubjectOf(sender);
+    if (subject === undefined) return envelope;
+    if (subject === "") {
+      throw new TypeError(
+        'EncryptingEventStore: senderSubjectOf resolved to "" and the crypto layer refuses to seal under it. Return undefined for an anonymous sender.'
+      );
+    }
+    const sealed = sealSender(await this.keys.getOrCreate(subject), subject, sender);
+    return { ...envelope, payload: { ...(envelope.payload as object), sender: sealed } };
+  }
+
+  /** ADR 0139 D12: open the sealed senders of an inbox stream's events (identity, or the erased marker). */
+  private async openSenders(
+    executionId: string,
+    events: EventEnvelope[]
+  ): Promise<EventEnvelope[]> {
+    if (this.senderSubjectOf === undefined || inboxChainOf(executionId) === undefined)
+      return events;
+    if (!events.some((e) => isSealedSender((e.payload as { sender?: unknown } | null)?.sender))) {
+      return events;
+    }
+    return Promise.all(
+      events.map(async (e) => {
+        const sender = (e.payload as { sender?: unknown } | null)?.sender;
+        if (!isSealedSender(sender)) return e;
+        return {
+          ...e,
+          payload: { ...(e.payload as object), sender: await openSender(this.keys, sender) },
+        };
+      })
+    );
+  }
+
+  async append(original: EventEnvelope): Promise<void> {
+    const envelope = await this.sealSenderOf(original);
     const paths = pathsFor(this.sensitive, envelope.eventType);
     if (paths !== undefined && paths.length > 0 && isPreSealedCopy(envelope, paths)) {
       return this.inner.append(envelope); // a verbatim quarantine copy: already sealed, marker kept
@@ -433,6 +511,13 @@ export class EncryptingEventStore implements EventStore {
   }
 
   private async decryptAll(executionId: string, events: EventEnvelope[]): Promise<EventEnvelope[]> {
+    return this.openSenders(executionId, await this.decryptOwner(executionId, events));
+  }
+
+  private async decryptOwner(
+    executionId: string,
+    events: EventEnvelope[]
+  ): Promise<EventEnvelope[]> {
     // Single walk: compute the per-event envelope flag ONCE (was walked twice —
     // an all-events `.some()` fast-path check plus a second `hasEnvelope` inside
     // the map). Fast path: no marked event carries ciphertext → verbatim.

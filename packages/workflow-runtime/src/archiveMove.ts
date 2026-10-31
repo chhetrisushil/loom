@@ -5,12 +5,18 @@ import {
   type ArchiveSegmentHeader,
   type ArchiveStore,
   type EventStore,
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  assertReservedSegmentDigest,
   assertSegmentDigest,
+  buildReservedSegment,
   buildSegment,
-  compareExecutionIds,
-  isReservedStream,
+  decoratedInnerOf,
+  inboxChainOf,
   readRangeOf,
   reservedLateKey,
+  reservedLateOrigin,
+  sameReservedEnvelope,
   segmentDigest,
 } from "@loom/event-runtime";
 import {
@@ -20,6 +26,7 @@ import {
   plaintextArchiveReason,
   tenantScopeOf,
 } from "./checkpointGuard";
+import { INBOX_FLOOR_KIND } from "./inbox";
 
 // ── ADR 0138 — moving envelopes into the archive before anything removes them ────────────────────
 
@@ -31,9 +38,10 @@ import {
 async function archivedBySequence(
   executionId: string,
   archive: ArchiveStore,
-  events: readonly EventEnvelope[]
-): Promise<Map<number, string>> {
-  const held = new Map<number, string>();
+  events: readonly EventEnvelope[],
+  reserved = false
+): Promise<Map<number, EventEnvelope>> {
+  const held = new Map<number, EventEnvelope>();
   const runs: EventEnvelope[][] = [];
   for (const e of events) {
     const run = runs[runs.length - 1];
@@ -46,9 +54,10 @@ async function archivedBySequence(
       through: run[run.length - 1]!.sequence,
     });
     for (const seg of segments) {
-      assertSegmentDigest(executionId, seg);
+      if (reserved) assertReservedSegmentDigest(executionId, seg);
+      else assertSegmentDigest(executionId, seg);
       if (seg.kind === "legacy-checkpoint") continue; // a checkpoint, not the events it summarizes
-      for (const e of seg.envelopes) held.set(e.sequence, segmentDigest([e]));
+      for (const e of seg.envelopes) held.set(e.sequence, e);
     }
   }
   return held;
@@ -75,7 +84,10 @@ export async function appendMoved(
   const already = removed.filter((e) => e.sequence <= lastThrough);
   if (already.length > 0) {
     const held = await archivedBySequence(executionId, archive, already);
-    const missing = already.filter((e) => held.get(e.sequence) !== segmentDigest([e]));
+    const missing = already.filter((e) => {
+      const h = held.get(e.sequence);
+      return h === undefined || segmentDigest([h]) !== segmentDigest([e]);
+    });
     if (missing.length > 0)
       throw new ArchiveGapError(
         executionId,
@@ -85,26 +97,100 @@ export async function appendMoved(
   }
   const fresh = removed.filter((e) => e.sequence > lastThrough);
   if (fresh.length === 0) return;
-  // The first segment starts at its first removed event; later ones abut the previous segment.
-  await archive.append(
-    executionId,
-    buildSegment(
-      fresh,
-      incarnation,
-      lastThrough >= 0 ? lastThrough + 1 : fresh[0]!.sequence,
-      through
-    )
-  );
+  // A segment starts at its first removed event, never below it (ADR 0139 B2): abutting the previous
+  // segment would claim the range between them, which nothing may have held (a compaction by a node
+  // that did not archive, a reserved-stream trim before the archive existed). That gap then reads as
+  // unarchived, which is the truth.
+  await archive.append(executionId, buildSegment(fresh, incarnation, fresh[0]!.sequence, through));
+}
+
+/** Does the archive hold exactly `e` (a reserved-stream envelope) at its sequence? */
+function isHeld(held: ReadonlyMap<number, EventEnvelope>, e: EventEnvelope): boolean {
+  const h = held.get(e.sequence);
+  return h !== undefined && sameReservedEnvelope(e, h);
+}
+
+/** Split ascending `envelopes` into maximal runs of consecutive sequences. */
+function consecutiveRuns(envelopes: readonly EventEnvelope[]): EventEnvelope[][] {
+  const runs: EventEnvelope[][] = [];
+  for (const e of envelopes) {
+    const run = runs[runs.length - 1];
+    if (run !== undefined && e.sequence === run[run.length - 1]!.sequence + 1) run.push(e);
+    else runs.push([e]);
+  }
+  return runs;
+}
+
+/**
+ * Append `envelopes` (ascending, all above `lastThrough`) to the archive key `key` as one segment per
+ * run of consecutive sequences, each covering EXACTLY its run (ADR 0139 B2): a segment's range is a
+ * claim that nothing in it is missing, so it never reaches across a sequence the stream did not hold.
+ * The one exception is a run that starts on an {@link INBOX_FLOOR_KIND} marker right after the archive's
+ * last segment: a seeded floor (a fork, a re-open, a re-created stream) skips sequences by design, and
+ * the range up to the marker never held a message. Returns the last sequence archived.
+ */
+async function appendRuns(
+  archive: ArchiveStore,
+  key: string,
+  incarnation: string,
+  envelopes: readonly EventEnvelope[],
+  lastThrough: number
+): Promise<number> {
+  let prev = lastThrough;
+  for (const [i, run] of consecutiveRuns(envelopes).entries()) {
+    const first = run[0]!;
+    const from =
+      i === 0 && prev >= 0 && first.eventType === INBOX_FLOOR_KIND ? prev + 1 : first.sequence;
+    const through = run[run.length - 1]!.sequence;
+    await archive.append(key, buildReservedSegment(run, incarnation, from, through));
+    prev = through;
+  }
+  return prev;
 }
 
 // ── ADR 0139 — reserved streams (the inbox, its topic streams, the quarantine copies) ─────────────
 
+/** Whether `store` (through any decorators) bottoms out in the in-memory event store. */
+function isInMemoryStack(store: unknown): boolean {
+  let cur: unknown = store;
+  for (let i = 0; i < 16 && typeof cur === "object" && cur !== null; i++) {
+    if (cur instanceof InMemoryAsyncEventStore) return true;
+    cur = decoratedInnerOf(cur) ?? (cur as { inner?: unknown }).inner;
+  }
+  return false;
+}
+
+/** The first layer of `store`'s decorator stack that offers `member` as a function. */
+function findSealer(store: unknown): ((inner: ArchiveStore) => ArchiveStore) | undefined {
+  let cur: unknown = store;
+  for (let i = 0; i < 16 && typeof cur === "object" && cur !== null; i++) {
+    const f = (cur as { sealArchive?: unknown }).sealArchive;
+    if (typeof f === "function") return (f as (a: ArchiveStore) => ArchiveStore).bind(cur);
+    cur = decoratedInnerOf(cur) ?? (cur as { inner?: unknown }).inner;
+  }
+  return undefined;
+}
+
 /**
- * The incarnation of a RESERVED stream (ADR 0139 D2). A reserved stream has no per-run bootstrap
- * envelope to digest (a topic stream starts at `INBOX_TOPIC_SEQ_BASE` with a message, the legacy
- * stream's sequence 0 is a message, the quarantine's a payload-free anchor), so it is derived from the
- * stream id: a constant of the stream. A leftover from another run of the same stream id is then not
- * told apart by the header but by the byte-for-byte check every move makes ({@link ArchiveGapError}).
+ * ADR 0139 M1 - the inbox archive a runtime defaults to when the app gave none: an IN-MEMORY event store
+ * (nothing durable to lose, so a volatile archive loses nothing the log would have kept) gets an in-memory
+ * archive, sealed under the log's KeyStore when the log seals (the sealing event store offers
+ * `sealArchive`). `undefined` for a durable store, for a tenant-scoped one, and for a sealing store that
+ * cannot seal an archive: the caller then refuses at construction.
+ */
+export function defaultInboxArchive(store: EventStore): ArchiveStore | undefined {
+  if (!isInMemoryStack(store) || tenantScopeOf(store) !== undefined) return undefined;
+  let archive: ArchiveStore = new InMemoryArchiveStore();
+  if (plaintextArchiveReason(store, archive) === undefined) return archive;
+  const seal = findSealer(store);
+  if (seal === undefined) return undefined;
+  archive = seal(archive);
+  return plaintextArchiveReason(store, archive) === undefined ? archive : undefined;
+}
+
+/**
+ * The FALLBACK incarnation of a RESERVED stream (ADR 0139 D2): a constant of the stream id, used only when
+ * the chain's owner has no bootstrap envelope to derive it from (see {@link reservedIncarnationOf}).
  */
 export function reservedIncarnation(streamId: string): string {
   return segmentDigest([
@@ -118,6 +204,27 @@ export function reservedIncarnation(streamId: string): string {
       payload: { stream: streamId },
     },
   ]);
+}
+
+/**
+ * The incarnation of a RESERVED stream's archive run (ADR 0139 D2, amended): the {@link segmentDigest} of
+ * the CHAIN OWNER's bootstrap envelope (sequence 0 of the execution named by the chain id), exactly as
+ * ADR 0138 H2 binds a compaction segment to its log. A reserved stream has no bootstrap of its own, but
+ * its owner does, and it differs between two lives of the chain id (a retention delete that kept the
+ * archive, then the id reused), so a segment of the previous run is refused ({@link
+ * ArchiveIncarnationError}) instead of read as this run's history. A late-run key resolves to the same
+ * owner as its stream. When the owner has no bootstrap (an orphan stream) it falls back to
+ * {@link reservedIncarnation}, a constant of the stream: the byte-for-byte comparison of every move still
+ * stands. One point read of the owner's sequence 0 per call.
+ */
+export async function reservedIncarnationOf(
+  store: Pick<EventStore, "read" | "readFrom" | "readRange">,
+  streamKey: string
+): Promise<string> {
+  const origin = reservedLateOrigin(streamKey)?.streamId ?? streamKey;
+  const chain = inboxChainOf(origin);
+  const bootstrap = chain === undefined ? undefined : (await readRangeOf(store, chain, 0, 0))[0];
+  return bootstrap === undefined ? reservedIncarnation(origin) : segmentDigest([bootstrap]);
 }
 
 /**
@@ -149,33 +256,38 @@ export class ReservedStreamArchive {
     this.checked = true;
   }
 
-  /** The archive's last archived sequence per stream, remembered so a trim costs no header read (bounded). */
-  private readonly known = new Map<string, number>();
+  /**
+   * The archive's last archived sequence per stream and the incarnation it was checked against,
+   * remembered so a trim costs no header read (bounded).
+   */
+  private readonly known = new Map<string, { through: number; incarnation: string }>();
   private static readonly KNOWN_MAX = 4096;
 
-  private remember(streamId: string, lastThrough: number): void {
+  private remember(streamId: string, through: number, incarnation: string): void {
     if (this.known.size >= ReservedStreamArchive.KNOWN_MAX && !this.known.has(streamId)) {
       this.known.clear();
     }
-    this.known.set(streamId, lastThrough);
+    this.known.set(streamId, { through, incarnation });
   }
 
   /** The stream's archive state from the headers (always fresh), with the foreign-incarnation guard. */
-  private async lastThroughOf(streamId: string): Promise<number> {
+  private async lastThroughOf(streamId: string, incarnation: string): Promise<number> {
     const headers = await this.archive.headers(streamId);
-    const incarnation = reservedIncarnation(streamId);
     const foreign = headers.find((h) => h.incarnation !== incarnation);
     if (foreign !== undefined) {
       throw new ArchiveIncarnationError(streamId, foreign.incarnation, incarnation);
     }
     const lastThrough = headers.length > 0 ? headers[headers.length - 1]!.through : -1;
-    this.remember(streamId, lastThrough);
+    this.remember(streamId, lastThrough, incarnation);
     return lastThrough;
   }
 
   /** {@link ArchiveFloor}: the first sequence of `streamId` the archive has not used, if it holds any. */
   readonly floorOf = async (streamId: string): Promise<number | undefined> => {
-    const lastThrough = await this.lastThroughOf(streamId);
+    const lastThrough = await this.lastThroughOf(
+      streamId,
+      await reservedIncarnationOf(this.store, streamId)
+    );
     return lastThrough < 0 ? undefined : lastThrough + 1;
   };
 
@@ -190,13 +302,17 @@ export class ReservedStreamArchive {
   async moveThrough(streamId: string, through: number): Promise<void> {
     this.check(streamId);
     for (let attempt = 0; ; attempt++) {
+      // The owner's bootstrap is read on EVERY move (one point read): a cached incarnation could outlive
+      // a retention delete and an id reuse, and the move would extend the previous run's archive.
+      const incarnation = await reservedIncarnationOf(this.store, streamId);
+      const cached = this.known.get(streamId);
       const lastThrough =
-        attempt === 0 && this.known.has(streamId)
-          ? (this.known.get(streamId) as number)
-          : await this.lastThroughOf(streamId);
+        attempt === 0 && cached !== undefined && cached.incarnation === incarnation
+          ? cached.through
+          : await this.lastThroughOf(streamId, incarnation);
       const events = await readRangeOf(this.store, streamId, lastThrough < 0 ? 0 : 1, through);
       try {
-        await this.move(streamId, lastThrough, events, through, "trim");
+        await this.move(streamId, lastThrough, events, "trim", incarnation);
         return;
       } catch (err) {
         if (!(err instanceof ArchiveConflictError) || attempt > 0) throw err;
@@ -206,53 +322,48 @@ export class ReservedStreamArchive {
   }
 
   /**
-   * Archive the WHOLE stream (a delete is about to remove it). The stream's sequence 0, if present, is
-   * verified against the archive (or archived, when nothing was).
+   * Archive the WHOLE stream (a delete is about to remove it) and return the highest sequence archived
+   * (`undefined` when the stream holds nothing). The caller deletes THROUGH that sequence
+   * (`EventStore.deleteThrough`), never the whole stream: a message appended after the read above lands
+   * above it and survives (ADR 0139 D8). Every envelope, sequence 0 included, is compared byte-for-byte
+   * with what the archive holds at that sequence; one it does not hold (a re-created stream's own 0,
+   * stamped with the clock) is a straggler and goes to a late run (D4), never dropped.
    */
-  async moveAll(streamId: string): Promise<void> {
+  async moveAll(streamId: string): Promise<number | undefined> {
     this.check(streamId);
     const all = await this.store.read(streamId);
-    if (all.length === 0) return;
-    const lastThrough = await this.lastThroughOf(streamId);
-    // Sequence 0 is archived once, with the stream's first segment; a re-created stream's own 0 (the
-    // quarantine's payload-free anchor, stamped with the clock) is not a fact to keep a second time.
-    const events = lastThrough >= 0 ? all.filter((e) => e.sequence !== 0) : all;
-    await this.move(streamId, lastThrough, events, all[all.length - 1]!.sequence, "delete");
+    if (all.length === 0) return undefined;
+    const incarnation = await reservedIncarnationOf(this.store, streamId);
+    const lastThrough = await this.lastThroughOf(streamId, incarnation);
+    const through = all[all.length - 1]!.sequence;
+    await this.move(streamId, lastThrough, all, "delete", incarnation);
     this.known.delete(streamId); // the stream is about to be re-created from scratch
+    return through;
   }
 
   private async move(
     streamId: string,
     lastThrough: number,
     events: readonly EventEnvelope[],
-    through: number,
-    op: "trim" | "delete"
+    op: "trim" | "delete",
+    incarnation: string
   ): Promise<void> {
     if (events.length === 0) return;
-    const incarnation = reservedIncarnation(streamId);
     let stragglers: EventEnvelope[] = [];
     let rest = events;
     if (lastThrough >= 0) {
       const already = events.filter((e) => e.sequence <= lastThrough);
       if (already.length > 0) {
-        const held = await archivedBySequence(streamId, this.archive, already);
-        stragglers = already.filter((e) => held.get(e.sequence) !== segmentDigest([e]));
+        const held = await archivedBySequence(streamId, this.archive, already, true);
+        stragglers = already.filter((e) => !isHeld(held, e));
         rest = events.filter((e) => e.sequence > lastThrough);
       }
     }
     if (rest.length > 0) {
-      await this.archive.append(
-        streamId,
-        buildSegment(
-          rest,
-          incarnation,
-          lastThrough >= 0 ? lastThrough + 1 : rest[0]!.sequence,
-          through
-        )
-      );
-      this.remember(streamId, through);
+      const last = await appendRuns(this.archive, streamId, incarnation, rest, lastThrough);
+      this.remember(streamId, last, incarnation);
     }
-    if (stragglers.length > 0) await this.moveLate(streamId, stragglers, op);
+    if (stragglers.length > 0) await this.moveLate(streamId, stragglers, op, incarnation);
   }
 
   /** The most late runs a stream may have before the move gives up (fail closed). */
@@ -266,26 +377,26 @@ export class ReservedStreamArchive {
   private async moveLate(
     streamId: string,
     stragglers: readonly EventEnvelope[],
-    op: "trim" | "delete"
+    op: "trim" | "delete",
+    incarnation: string
   ): Promise<void> {
-    const first = stragglers[0]!.sequence;
-    const last = stragglers[stragglers.length - 1]!.sequence;
-    const digest = segmentDigest(stragglers);
     for (let n = 1; n <= ReservedStreamArchive.MAX_LATE_RUNS; n++) {
       const key = reservedLateKey(streamId, n);
       const headers = await this.archive.headers(key);
-      const incarnation = reservedIncarnation(key);
       const foreign = headers.find((h) => h.incarnation !== incarnation);
       if (foreign !== undefined) {
         throw new ArchiveIncarnationError(key, foreign.incarnation, incarnation);
       }
-      if (headers.some((h) => h.through === last && h.digest === digest)) return; // already moved
       const lastThrough = headers.length > 0 ? headers[headers.length - 1]!.through : -1;
-      if (first <= lastThrough) continue;
-      await this.archive.append(
-        key,
-        buildSegment(stragglers, incarnation, lastThrough >= 0 ? lastThrough + 1 : first, last)
-      );
+      const already = stragglers.filter((e) => e.sequence <= lastThrough);
+      if (already.length > 0) {
+        // An earlier attempt may have archived these (a crash before the removal): all held byte-for-byte
+        // is a repeat, anything else means this key's run is taken by other envelopes - try the next.
+        const held = await archivedBySequence(key, this.archive, already, true);
+        if (already.some((e) => !isHeld(held, e))) continue;
+      }
+      const rest = stragglers.filter((e) => e.sequence > lastThrough);
+      if (rest.length > 0) await appendRuns(this.archive, key, incarnation, rest, lastThrough);
       return;
     }
     throw new ArchiveGapError(
@@ -294,35 +405,4 @@ export class ReservedStreamArchive {
       op
     );
   }
-}
-
-/** The ids of the reserved streams of `chainId` the archive holds segments for (a keyset prefix scan). */
-export async function archivedReservedStreams(
-  archive: Pick<ArchiveStore, "listExecutions">,
-  prefixes: readonly string[],
-  chainId: string,
-  chainOf: (streamId: string) => string | undefined
-): Promise<string[]> {
-  const found: string[] = [];
-  for (const prefix of prefixes) {
-    // The cursor is EXCLUSIVE and the stream whose id IS the prefix must be listed, so start one
-    // character short of it and skip what sorts before the prefix.
-    let cursor: string | undefined = prefix.slice(0, -1);
-    for (;;) {
-      const page: Awaited<ReturnType<ArchiveStore["listExecutions"]>> =
-        await archive.listExecutions({ cursor, limit: 200 });
-      let past = false;
-      for (const id of page.executionIds) {
-        if (!id.startsWith(prefix)) {
-          if (compareExecutionIds(id, prefix) < 0) continue;
-          past = true;
-          break;
-        }
-        if (isReservedStream(id) && chainOf(id) === chainId) found.push(id);
-      }
-      if (past || page.nextCursor === undefined || page.nextCursor === cursor) break;
-      cursor = page.nextCursor;
-    }
-  }
-  return found;
 }

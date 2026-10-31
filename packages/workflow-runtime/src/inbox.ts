@@ -17,7 +17,10 @@ import {
 import type { EventStore } from "@loom/event-runtime";
 import { QUARANTINE_FOLD_CAP } from "@loom/replay-vm";
 import type { ReservedStreamArchive } from "./archiveMove";
-import { ReservedStreamArchiveRequiredError } from "./checkpointGuard";
+import {
+  ReservedStreamArchiveRequiredError,
+  ReservedStreamDeleteUnsupportedError,
+} from "./checkpointGuard";
 import { SealedPayloadUnreadableError } from "./types";
 import type { InboxMessage, InboxSource } from "./types";
 
@@ -567,26 +570,32 @@ export async function deleteInbox(
    */
   archive?: ReservedStreamArchive | "discard"
 ): Promise<void> {
-  if (store.deleteExecution === undefined) return;
+  if (store.deleteExecution === undefined && store.deleteThrough === undefined) return;
   const { legacy, registry, topics, quarantine } = await (deep
     ? inboxStreamsOfChainDeep
     : inboxStreamsOfChain)(store, chainId);
   const streams = [...topics, legacy, quarantine, ...(registry !== undefined ? [registry] : [])];
+  if (archive === "discard") {
+    if (store.deleteExecution === undefined) return;
+    for (const stream of streams) await store.deleteExecution(stream);
+    return;
+  }
   // Archive EVERY stream before deleting ANY: a refusal or a failure on the last one must not leave
   // the earlier ones deleted (a retry then finds the chain whole).
+  const archived: Array<[stream: string, through: number]> = [];
   for (const stream of streams) {
-    if (archive === "discard") continue;
-    // A point read of the head: a stream that holds nothing has nothing to lose, and most chains'
-    // streams are empty by the time they are retired.
+    // A point read of the head: a stream that holds nothing has nothing to lose (and nothing to
+    // delete: a message appended since survives), and most chains' streams are empty by the time they
+    // are retired.
     if ((await headOf(store, stream)) === null) continue;
     if (archive === undefined) throw new ReservedStreamArchiveRequiredError(stream, "delete");
-    await archive.moveAll(stream);
+    // ADR 0139 D8: the delete is bounded by what was archived; a store that cannot do that is refused
+    // before anything moves (never a whole-stream delete that could take an unarchived append).
+    if (store.deleteThrough === undefined) throw new ReservedStreamDeleteUnsupportedError(stream);
+    const through = await archive.moveAll(stream);
+    if (through !== undefined) archived.push([stream, through]);
   }
-  for (const stream of topics) await store.deleteExecution(stream);
-  await store.deleteExecution(legacy);
-  // ADR 0130 residuals D9: the chain's quarantine copies go with it (sealed under the same owner key).
-  await store.deleteExecution(quarantine);
-  if (registry !== undefined) await store.deleteExecution(registry);
+  for (const [stream, through] of archived) await store.deleteThrough?.(stream, through);
 }
 
 /** Delete the consumed prefix of one TOPIC's stream (every entry up to the cursor, never the head). */

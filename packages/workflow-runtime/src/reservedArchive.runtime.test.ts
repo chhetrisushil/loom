@@ -1,14 +1,19 @@
 import { unwrapTainted } from "@loom/classify";
+import { EffectRuntime } from "@loom/effect-runtime";
 import {
   type ArchiveStore,
   type EventStore,
   InMemoryArchiveStore,
   InMemoryAsyncEventStore,
 } from "@loom/event-runtime";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
+import { SqliteEventStore } from "@loom/plugin-sqlite";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { LogLifecycle } from "./LogLifecycle";
+import { WorkflowRuntime } from "./WorkflowRuntime";
 import { build, flow, settle, until } from "./__tests__/r2Harness";
-import { ReservedStreamArchiveRequiredError } from "./checkpointGuard";
+import { InboxArchiveRequiredError, ReservedStreamArchiveRequiredError } from "./checkpointGuard";
 import { appendInboxMessage, inboxStreamId } from "./inbox";
 
 // ADR 0139 (#728) end to end: the runtime trims the consumed prefix and deletes a retired chain's streams
@@ -58,7 +63,7 @@ describe("the runtime moves the inbox's reserved stream into the archive", () =>
     await until(async () => (await h.archive.headers(stream)).length > 0, 8000);
     await until(async () => !(await inner.read(stream)).some((x) => x.sequence === 1), 8000);
     const life = new LogLifecycle(inner, h.snapshotStore, { compactionArchive: h.archive });
-    expect(clone(await life.readReservedWithArchive(stream))).toEqual(original);
+    expect(clone((await life.readReservedWithArchive(stream)).events)).toEqual(original);
 
     // the owner finishes: the chain's streams are retired AFTER being moved
     await until(async () => (await h.rt.loadState(e))?.suspendedOn?.on === "hold", 8000);
@@ -66,7 +71,7 @@ describe("the runtime moves the inbox's reserved stream into the archive", () =>
     await h.rt.resume(e, { eventType: "hold", payload: { ok: true } }, { fence });
     await until(async () => (await h.rt.loadState(e))?.status === "completed", 8000);
     await until(async () => (await inner.read(stream)).length === 0, 8000);
-    expect(clone(await life.readReservedWithArchive(stream))).toEqual(original);
+    expect(clone((await life.readReservedWithArchive(stream)).events)).toEqual(original);
     expect(h.storageErrors).toEqual([]);
   });
 
@@ -172,5 +177,104 @@ describe("the runtime moves the inbox's reserved stream into the archive", () =>
     expect(calls.append).toBeLessThanOrEqual(4);
     expect(calls.headers).toBeLessThanOrEqual(12);
     expect(calls.read).toBe(0); // the resume/trim path never READS the archive bodies
+  });
+});
+
+describe("resume never reads the archive (ADR 0139)", () => {
+  it("a crash and a fresh runtime over the same stores resume and drain the inbox with zero archive reads", async () => {
+    const calls = { read: 0, headers: 0, append: 0 };
+    const real = new InMemoryArchiveStore();
+    const counting = new Proxy(real, {
+      get(target, prop, recv) {
+        const v = Reflect.get(target, prop, recv) as unknown;
+        if (typeof v !== "function") return v;
+        return (...a: unknown[]) => {
+          if (prop === "read") calls.read++;
+          if (prop === "headers") calls.headers++;
+          if (prop === "append") calls.append++;
+          return (v as (...x: unknown[]) => unknown).apply(target, a);
+        };
+      },
+    }) as ArchiveStore;
+    const inner = new InMemoryAsyncEventStore();
+    const h = build({}, { eventStore: inner, archive: counting });
+    const e = "arch-resume";
+    const f = recv3();
+    await park(h, f, e);
+    await sendDirect(inner, e, 5);
+    await h.rt.notifyInbox(e).then((x) => x && settle(x));
+    await until(async () => (await real.headers(inboxStreamId(e))).length > 0, 8000);
+    await until(async () => (await h.rt.loadState(e))?.suspendedOn?.on === "hold", 8000);
+    // "crash": a brand-new runtime over the same stores; archive counters from here on
+    calls.read = 0;
+    const second = h.sibling();
+    second.registerFlow(f.definition, f.runner);
+    // the new node folds the log (replay), drives the inbox, runs the recovery sweep over it
+    expect((await second.loadState(e))?.suspendedOn?.on).toBe("hold");
+    await second.notifyInbox(e).then((x) => x && settle(x));
+    await sendDirect(inner, e, 1); // a message arriving after the crash is appended and woken for
+    await second.notifyInbox(e).then((x) => x && settle(x));
+    expect((await second.loadState(e))?.suspendedOn?.on).toBe("hold");
+    expect(calls.read).toBe(0); // replay, the recovery sweep and a send never read the archive bodies
+  });
+});
+
+describe("the inbox archive is required, defaulted or explicitly declined (ADR 0139 M1)", () => {
+  const bare = (eventStore: EventStore, extra: Record<string, unknown> = {}) =>
+    new WorkflowRuntime({
+      eventStore,
+      snapshotStore: new InMemoryAsyncSnapshotStore(),
+      effectRuntime: new EffectRuntime(),
+      inboxEnabled: true,
+      ...extra,
+    } as never);
+
+  it("a durable store with the inbox on and NO archive refuses to construct, naming the fix", () => {
+    expect(() => bare(new SqliteEventStore(":memory:"))).toThrow(InboxArchiveRequiredError);
+    expect(() => bare(new SqliteEventStore(":memory:"))).toThrow(/inboxArchive/);
+  });
+
+  it("an in-memory store defaults an in-memory archive; a sealing one gets it sealed under its KeyStore", () => {
+    const plain = bare(new InMemoryAsyncEventStore());
+    expect((plain as unknown as { reservedArchive?: unknown }).reservedArchive).toBeDefined();
+    const sealing = new EncryptingEventStore(
+      new InMemoryAsyncEventStore(),
+      new InMemoryKeyStore(),
+      {
+        sensitive: { INBOX_MESSAGE: ["payload"] },
+      }
+    );
+    const rt = bare(sealing, { allowPlaintextCheckpoints: true });
+    const archive = (rt as unknown as { reservedArchive: { archive: object } }).reservedArchive
+      .archive as { sealsSegments?: boolean; keys?: unknown };
+    expect(archive.sealsSegments).toBe(true);
+    expect(archive.keys).toBe(sealing.keys);
+  });
+
+  it('"none" is the explicit opt-out: said at boot, and every skipped maintenance reaches onWarn when onStorageError is unwired', async () => {
+    const warnings: string[] = [];
+    const inner = new InMemoryAsyncEventStore();
+    const h = build(
+      { onStorageError: undefined as never, onWarn: (m: string) => warnings.push(m) },
+      { eventStore: inner, archive: null }
+    );
+    expect(warnings.some((m) => /inboxArchive: "none"/.test(m))).toBe(true);
+    const e = "arch-m1";
+    await park(h, recv3(), e);
+    await sendDirect(inner, e, 5);
+    await h.rt.notifyInbox(e).then((x) => x && settle(x));
+    await until(
+      async () => warnings.some((m) => /inbox maintenance of chain "arch-m1" failed/.test(m)),
+      8000
+    );
+    expect(h.storageErrors).toEqual([]); // nothing was wired, nothing was swallowed
+  });
+
+  it("InboxFullError names the missing archive when that is why the inbox fills", () => {
+    const h = build({}, { archive: null });
+    const err = (
+      h.rt as unknown as { inboxFullError(e: string, f: { unconsumed: number }): Error }
+    ).inboxFullError("x", { unconsumed: 3 });
+    expect(err.message).toMatch(/no inboxArchive is configured/);
   });
 });

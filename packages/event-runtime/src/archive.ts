@@ -5,9 +5,17 @@ import {
   type ArchiveExecutionPage,
   type ArchiveSegment,
   type ArchiveSegmentKind,
+  type ArchiveStore,
   ArchiveUnserializableError,
 } from "./archiveSpi";
 import { compareExecutionIds } from "./executionIdOrder";
+import {
+  INBOX_STREAM_PREFIX,
+  QUARANTINE_STREAM_PREFIX,
+  RESERVED_LATE_PREFIX,
+  archiveChainOf,
+  isReservedStream,
+} from "./types";
 
 /**
  * The JSON form of the envelopes, which is what every backend stores and returns (a `Date` becomes
@@ -56,6 +64,75 @@ export function buildSegment(
   };
 }
 
+// ── ADR 0139 D12 - the sender field of an archived inbox envelope is the one erasable part ──────────
+
+/** `payload.sender` after the sender was erased (sealed under their subject and shredded, or redacted). */
+export const SENDER_ERASED = Object.freeze({ erased: true as const });
+
+/** Whether a stored `sender` value is the {@link SENDER_ERASED} marker. */
+export function isSenderErased(v: unknown): boolean {
+  return typeof v === "object" && v !== null && (v as { erased?: unknown }).erased === true;
+}
+
+/**
+ * The envelope with an inbox message's `payload.sender` masked (`null`). The digest of a RESERVED
+ * stream's segment is taken over this form, so the one thing an erasure may change afterwards - the
+ * sender's identity, sealed under THEIR subject and shredded with it, or redacted in a plaintext archive
+ * (a recorded redaction, ADR 0139 D12) - does not turn into a digest mismatch on the audit read. Every
+ * other byte stays covered, and a live envelope is compared with its archived copy by
+ * {@link sameReservedEnvelope}, which still tells two DIFFERENT live senders apart.
+ */
+export function maskSender(e: EventEnvelope): EventEnvelope {
+  if (e.eventType !== "INBOX_MESSAGE") return e;
+  const p = e.payload as { sender?: unknown } | null | undefined;
+  if (p === null || typeof p !== "object" || p.sender === undefined) return e;
+  return { ...e, payload: { ...p, sender: null } };
+}
+
+/** {@link segmentDigest} over {@link maskSender}-masked envelopes (the digest of a reserved-stream segment). */
+export function reservedSegmentDigest(envelopes: readonly EventEnvelope[]): string {
+  return segmentDigest(envelopes.map(maskSender));
+}
+
+/** {@link buildSegment} with the reserved-stream digest. */
+export function buildReservedSegment(
+  envelopes: readonly EventEnvelope[],
+  incarnation: string,
+  from: number = envelopes[0]!.sequence,
+  through: number = envelopes[envelopes.length - 1]!.sequence
+): ArchiveSegment {
+  return {
+    ...buildSegment(envelopes, incarnation, from, through),
+    digest: reservedSegmentDigest(envelopes),
+  };
+}
+
+/** {@link assertSegmentDigest} for a reserved-stream segment. */
+export function assertReservedSegmentDigest(executionId: string, segment: ArchiveSegment): void {
+  const actual = reservedSegmentDigest(segment.envelopes);
+  if (actual !== segment.digest || segment.envelopes.length !== segment.count) {
+    throw new ArchiveDigestError(
+      executionId,
+      segment.from,
+      segment.through,
+      segment.digest,
+      actual
+    );
+  }
+}
+
+/**
+ * Are `live` and `archived` the same inbox envelope? Equal masked digests, and the senders either equal
+ * or at least one of them erased (an erased sender is the same fact with its identity removed).
+ */
+export function sameReservedEnvelope(live: EventEnvelope, archived: EventEnvelope): boolean {
+  if (segmentDigest([maskSender(live)]) !== segmentDigest([maskSender(archived)])) return false;
+  const a = (live.payload as { sender?: unknown } | null)?.sender;
+  const b = (archived.payload as { sender?: unknown } | null)?.sender;
+  if (isSenderErased(a) || isSenderErased(b)) return true;
+  return segmentDigest([{ ...live, payload: a }]) === segmentDigest([{ ...archived, payload: b }]);
+}
+
 /** One page of ids from an ascending list, keyset by exclusive cursor (shared by the backends' tests and memory store). */
 export function pageIds(
   sorted: readonly string[],
@@ -84,4 +161,40 @@ export function assertSegmentDigest(executionId: string, segment: ArchiveSegment
       actual
     );
   }
+}
+
+/**
+ * The ids of the reserved streams of `chainId` the archive holds segments for (keyset prefix scans, ADR
+ * 0139): the chain's inbox (legacy, per-topic, registry) and quarantine streams, and the late runs split
+ * from them. The late keys all sit under one prefix, so their scan walks every late run of every chain
+ * (they exist only after a raced send or a node without an archive floor: a handful at most); the listing
+ * is paged by 200.
+ */
+export async function archivedReservedStreams(
+  archive: Pick<ArchiveStore, "listExecutions">,
+  chainId: string
+): Promise<string[]> {
+  const found: string[] = [];
+  const own = [`${INBOX_STREAM_PREFIX}${chainId}`, `${QUARANTINE_STREAM_PREFIX}${chainId}`];
+  const prefixes = [...own, ...own.map((p) => `${RESERVED_LATE_PREFIX}${p}`)];
+  for (const prefix of prefixes) {
+    // The cursor is EXCLUSIVE and the stream whose id IS the prefix must be listed, so start one
+    // character short of it and skip what sorts before the prefix.
+    let cursor: string | undefined = prefix.slice(0, -1);
+    for (;;) {
+      const page: ArchiveExecutionPage = await archive.listExecutions({ cursor, limit: 200 });
+      let past = false;
+      for (const id of page.executionIds) {
+        if (!id.startsWith(prefix)) {
+          if (compareExecutionIds(id, prefix) < 0) continue;
+          past = true;
+          break;
+        }
+        if (isReservedStream(id) && archiveChainOf(id) === chainId) found.push(id);
+      }
+      if (past || page.nextCursor === undefined || page.nextCursor === cursor) break;
+      cursor = page.nextCursor;
+    }
+  }
+  return found;
 }

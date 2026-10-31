@@ -78,6 +78,11 @@ export type { EventEnvelope };
  *   decorator forwards it (`EncryptingEventStore` overrides it with its inner store's raw reads,
  *   `ShardedEventStore` routes per stream). Additive: no existing method changed, so a 2.4.0 store
  *   conforms.
+ * 2.6.0: the optional `deleteThrough(executionId, through)` (ADR 0139 D8): one atomic delete of every
+ *   event with `sequence <= through`, sequence 0 included. A caller that archived a stream up to
+ *   `through` (the terminal delete of a durable inbox) removes exactly what it archived, so a message
+ *   appended in between survives. Every decorator forwards it. Additive: no existing method changed, so a
+ *   2.5.0 store conforms (a caller then refuses the delete it cannot make safe).
  *
  * Every optional method is listed in {@link OPTIONAL_EVENT_STORE_METHODS}; adding one here
  * without listing it there is a compile error. `OptionalEventStoreMethod` is derived from this
@@ -87,7 +92,7 @@ export type { EventEnvelope };
  * no plan at all is caught by the decorator conformance kit instead (and the `packages/spec`
  * fitness test makes every in-repo decorator run it).
  */
-export const EVENT_STORE_SPI_VERSION = "2.5.0";
+export const EVENT_STORE_SPI_VERSION = "2.6.0";
 
 /**
  * Reserved-stream prefix. Control facts (retention `__loom_lifecycle__`, erasure
@@ -205,16 +210,27 @@ export const INBOX_LAYOUT_STREAM = "__loom_inbox_layout__";
 const TOPIC_STREAM_SUFFIX = /#[0-9a-f]{16}$/;
 
 /**
- * ADR 0139: the suffix of an ARCHIVE key (never a live stream) that holds envelopes of a reserved stream
- * which could not extend the stream's main archive run (`<stream>#late-<n>`): a straggler appended below
- * the archive's last sequence, for example by a send that raced the owner's terminal delete. It names the
- * same chain as the stream it belongs to.
+ * ADR 0139 D4: the prefix of an ARCHIVE key (never a live stream) that holds envelopes of a reserved
+ * stream which could not extend the stream's main archive run: a straggler appended at or below the
+ * archive's last sequence, for example by a send that raced the owner's terminal delete. The key is
+ * `__loom_late__:<stream>@<n>`. It begins with {@link RESERVED_STREAM_PREFIX}, which `start` refuses for
+ * every execution id, so no live chain or execution can ever have that shape, and {@link inboxChainOf}
+ * (live ids only) is untouched: an archive-key context asks {@link archiveChainOf} instead.
  */
-export const RESERVED_LATE_SUFFIX = /#late-[1-9][0-9]*$/;
+export const RESERVED_LATE_PREFIX = "__loom_late__:";
 
-/** The archive key of the `n`th (1-based) late run of a reserved stream (see {@link RESERVED_LATE_SUFFIX}). */
+const LATE_KEY = /^(.+)@([1-9][0-9]*)$/;
+
+/** The archive key of the `n`th (1-based) late run of a reserved stream (see {@link RESERVED_LATE_PREFIX}). */
 export function reservedLateKey(streamId: string, n: number): string {
-  return `${streamId}#late-${n}`;
+  return `${RESERVED_LATE_PREFIX}${streamId}@${n}`;
+}
+
+/** The reserved stream (and run number) an archive key of {@link reservedLateKey} shape belongs to. */
+export function reservedLateOrigin(key: string): { streamId: string; n: number } | undefined {
+  if (!key.startsWith(RESERVED_LATE_PREFIX)) return undefined;
+  const m = LATE_KEY.exec(key.slice(RESERVED_LATE_PREFIX.length));
+  return m === null ? undefined : { streamId: m[1] as string, n: Number(m[2]) };
 }
 
 /** The 16-hex-digit stream suffix of `topic` (first 8 bytes of its SHA-256). */
@@ -237,11 +253,7 @@ export function inboxRegistryStreamId(chainId: string): string {
  * (`<x>#<16 hex>` or `<x>#reg`)? Such an id is refused at `start` once the inbox is on.
  */
 export function hasInboxStreamShape(id: string): boolean {
-  return (
-    id.endsWith(INBOX_REGISTRY_SUFFIX) ||
-    TOPIC_STREAM_SUFFIX.test(id) ||
-    RESERVED_LATE_SUFFIX.test(id)
-  );
+  return id.endsWith(INBOX_REGISTRY_SUFFIX) || TOPIC_STREAM_SUFFIX.test(id);
 }
 
 /**
@@ -250,9 +262,7 @@ export function hasInboxStreamShape(id: string): boolean {
  * fresh one), so a decorator that maps executions to erasure subjects can map the chain's streams
  * (legacy, per-topic and registry alike) to the same subject as its owner.
  */
-export function inboxChainOf(id: string): string | undefined {
-  // ADR 0139: an archive key of stragglers belongs to the chain of the stream it was split from.
-  const executionId = id.replace(RESERVED_LATE_SUFFIX, "");
+export function inboxChainOf(executionId: string): string | undefined {
   if (executionId.startsWith(QUARANTINE_STREAM_PREFIX)) {
     // ADR 0130 residuals D9 (reserved): the quarantine copy belongs to the chain, under the same owner subject.
     const quarantined = executionId.slice(QUARANTINE_STREAM_PREFIX.length);
@@ -263,6 +273,16 @@ export function inboxChainOf(id: string): string | undefined {
   if (chain.endsWith(INBOX_REGISTRY_SUFFIX)) chain = chain.slice(0, -INBOX_REGISTRY_SUFFIX.length);
   else if (TOPIC_STREAM_SUFFIX.test(chain)) chain = chain.slice(0, -17);
   return chain.length > 0 ? chain : undefined;
+}
+
+/**
+ * {@link inboxChainOf} for an ARCHIVE key: the same chain for a reserved stream's own key, and, for a
+ * late-run key ({@link reservedLateKey}), the chain of the stream it was split from. Archive-key
+ * contexts only (the sealing subject of `EncryptingArchiveStore`, the archive listings); a live stream
+ * id is never a late key, so live code keeps calling {@link inboxChainOf}.
+ */
+export function archiveChainOf(key: string): string | undefined {
+  return inboxChainOf(reservedLateOrigin(key)?.streamId ?? key);
 }
 
 /** The inbox streams of one chain, from {@link inboxStreamsOfChain}. */
@@ -583,6 +603,18 @@ export interface EventStore {
    */
   deleteExecution?(executionId: string): Promise<void>;
   /**
+   * OPTIONAL (SPI 2.6.0, ADR 0139 D8). Delete every event of an execution with `sequence <= through`,
+   * INCLUDING sequence 0 (unlike {@link truncatePrefix}, which preserves it), in ONE atomic operation
+   * (SQL: a single `DELETE ... WHERE sequence <= $through`; never a read followed by a delete). Events
+   * above `through` are untouched: a message appended AFTER the caller read the stream (the reason this
+   * exists) survives as the live remainder of the stream, instead of being swept away by a whole-stream
+   * {@link deleteExecution} that archived only what it had read. When nothing remains the execution is
+   * gone exactly as after `deleteExecution` (fence bookkeeping included). A store that omits it cannot
+   * be deleted safely by a caller that must not lose a concurrent append; such a caller REFUSES rather
+   * than falling back to `deleteExecution`.
+   */
+  deleteThrough?(executionId: string, through: number): Promise<void>;
+  /**
    * OPTIONAL (K10.4 compaction). Delete the prefix `(0..throughSequence]` of an
    * execution's log — **sequence 0 (the EXECUTION_STARTED bootstrap) is always
    * preserved** as the execution's metadata anchor (resume reads input/workflowId
@@ -697,6 +729,7 @@ export const OPTIONAL_EVENT_STORE_METHODS = [
   "readAtRest",
   "copyPrefix",
   "deleteExecution",
+  "deleteThrough",
   "truncatePrefix",
   "truncatePrefixKeeping",
   "listExecutions",

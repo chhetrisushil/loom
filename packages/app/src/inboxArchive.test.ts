@@ -2,7 +2,10 @@ import { unwrapTainted } from "@loom/classify";
 import type { FlowDefinition } from "@loom/core";
 import { type EventStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
-import { ReservedStreamArchiveRequiredError } from "@loom/workflow-runtime";
+import {
+  InboxArchiveRequiredError,
+  ReservedStreamArchiveRequiredError,
+} from "@loom/workflow-runtime";
 import type { FlowRunner } from "@loom/workflow-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -109,10 +112,19 @@ describe("defineConfig - the inbox archive (ADR 0139)", () => {
       }
     }
     const eventStore = delegate as unknown as EventStore;
+    // ADR 0139 M1: the inbox on with no resolvable archive REFUSES to compose; "none" is the explicit opt-out
+    expect(() =>
+      defineConfig({
+        storage: { kind: "custom", eventStore, snapshotStore: new InMemoryAsyncSnapshotStore() },
+        autostart: false,
+        kernel: { features: { inbox: true } },
+        observability: { onWarn: () => undefined },
+      })
+    ).toThrow(InboxArchiveRequiredError);
     const app = defineConfig({
       storage: { kind: "custom", eventStore, snapshotStore: new InMemoryAsyncSnapshotStore() },
       autostart: false,
-      kernel: { features: { inbox: true } },
+      kernel: { features: { inbox: true }, inbox: { archive: "none" } },
       observability: { onWarn: () => undefined, onStorageError: (_id, e) => errors.push(e) },
     });
     app.runtime.registerFlow(definition, runner);

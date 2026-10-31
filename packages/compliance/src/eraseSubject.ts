@@ -1,8 +1,10 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
+  type ArchiveStore,
   type DestructionProof,
   type EventStore,
   type InboxStreams,
+  archivedReservedStreams,
   chainIdOfFirst,
   erasureWindowView,
   inboxStreamsOfChainDeep,
@@ -52,6 +54,59 @@ const TERMINAL_EVENTS = new Set([
 ]);
 
 /**
+ * A compaction / inbox archive (ADR 0138 / 0139) erasure must reckon with. A PLAINTEXT archive
+ * (`sealsSegments` not `true`) holds the subject's moved envelopes in the clear, so a key's destruction
+ * does not reach them: erasure DELETES the subject's segments from it (`deleteExecution`). A SEALING
+ * archive (`EncryptingArchiveStore`, same KeyStore as the log) is erased by the shred itself.
+ */
+export type ErasableArchive = Pick<ArchiveStore, "headers" | "listExecutions" | "read" | "append"> &
+  Partial<Pick<ArchiveStore, "deleteExecution">> & { readonly sealsSegments?: unknown };
+
+/** What an erasure removed from the plaintext archives (recorded durably as `ERASURE_ARCHIVE_DELETED`). */
+export interface ArchivedCopiesDeleted {
+  /** Executions whose ADR 0138 compaction segments were deleted. */
+  executions: string[];
+  /** Reserved streams (inbox, topic, registry, quarantine, late runs; ADR 0139) whose archived segments were deleted. */
+  reservedStreams: string[];
+}
+
+/** One archived reserved stream whose sender fields erasure redacted (ADR 0139 D12). */
+export interface SenderRedaction {
+  streamId: string;
+  /** How many archived envelopes had the erased subject's identity replaced by `{ erased: true }`. */
+  envelopes: number;
+}
+
+/** Does `sender` identify the erased subject? */
+export type SenderMatcher = (
+  subjectId: string,
+  tenant: string,
+  sender: { actor?: string; tenant?: string; onBehalfOf?: string }
+) => boolean;
+
+/** The default: the sender's `actor` is the subject id (and, in a tenant partition, the tenant agrees). */
+export const defaultSenderMatches: SenderMatcher = (subjectId, tenant, sender) =>
+  sender.actor === subjectId && (tenant === DEFAULT_TENANT || sender.tenant === tenant);
+
+/** The staging prefix of a segment rewrite (crash safety: the redacted copy exists before the original goes). */
+const REDACT_STAGE = "__loom_redact__:";
+
+/**
+ * Erasure cannot complete while a plaintext archive still holds the subject's segments and offers no
+ * way to delete them. Thrown BEFORE the key is destroyed (nothing was shredded).
+ */
+export class ArchivedCopiesRemainError extends Error {
+  readonly retryable = false;
+  constructor(readonly streams: readonly string[]) {
+    super(
+      `refusing to erase: a plaintext archive holds the subject's archived copies (${streams.slice(0, 5).join(", ")}${streams.length > 5 ? ` (+${streams.length - 5} more)` : ""}) and has no deleteExecution, so erasure could not remove them (a key's destruction does not reach plaintext). Use an archive that can delete (the in-memory, SQLite and Postgres archives can), or seal the archive under the event store's KeyStore (EncryptingArchiveStore). Nothing was shredded.`
+    );
+    this.name = "ArchivedCopiesRemainError";
+    Object.setPrototypeOf(this, ArchivedCopiesRemainError.prototype);
+  }
+}
+
+/**
  * Destroy a subject's erasure key across the given executions. Wire this to the crypto
  * plugin's `shredSubject` (bound to the KeyStore + raw store + snapshot store). MUST be
  * idempotent — a re-invocation for an already-erased subject must not double-tombstone.
@@ -77,6 +132,23 @@ export interface EraseCoordinatorOptions {
   eventStore: Pick<EventStore, "read" | "append"> &
     Partial<Pick<EventStore, "deleteExecution" | "listExecutionsPage">>;
   shred: Shredder;
+  /**
+   * ADR 0138 / 0139 - the archives that may hold the subject's moved envelopes (`defineConfig` wires the
+   * compaction archive, which is also the inbox archive). Over a PLAINTEXT archive erasure DELETES the
+   * subject's compaction segments and their chains' reserved-stream segments after the shred and records
+   * what it deleted; it never reports `erased` while plaintext copies remain. A sealing archive needs
+   * nothing: the key's destruction makes its segments unreadable.
+   */
+  archives?: readonly ErasableArchive[];
+  /**
+   * ADR 0139 D12 - which archived inbox envelopes name the erased subject as their SENDER (default:
+   * `sender.actor === subjectId`, and `sender.tenant === tenant` in a tenant partition). Over a PLAINTEXT
+   * archive erasure rewrites those envelopes' `payload.sender` to `{ erased: true }` in the OTHER chains'
+   * archived reserved segments (their digest masks the sender, so it stays valid) and journals
+   * `ERASURE_SENDER_REDACTED`. A SEALING archive needs nothing: the sender is sealed under the SENDER's
+   * subject (`senderSubjectOf` on the crypto stores) and the shred erases it.
+   */
+  senderMatches?: SenderMatcher;
   /**
    * ADR 0130 D7 (round 5) - proof that the key store destroyed a subject's key
    * (`(s) => keys.wasDestroyed(s)`). A PROOF function only: returning `true` for a key that was
@@ -126,6 +198,13 @@ export interface EraseSubjectResult {
   outcome: "erased" | "parked" | "unknown";
   /** Executions whose data is now shredded (all of the subject's, when erased). */
   erased: string[];
+  /**
+   * What the erasure deleted from plaintext archives (ADR 0138 / 0139); present when it deleted anything.
+   * The same fact is journaled on the control stream as `ERASURE_ARCHIVE_DELETED`.
+   */
+  archivedCopiesDeleted?: ArchivedCopiesDeleted;
+  /** Archived reserved segments of OTHER chains whose sender fields naming the subject were redacted (plaintext archives). */
+  senderRedactions?: SenderRedaction[];
   /** Live executions blocking completion (a parked request completes when these terminate). */
   pending: string[];
   /**
@@ -237,18 +316,25 @@ export class EraseCoordinator {
     if (live.length === 0) {
       // Resolved BEFORE the key is destroyed: a decrypting store cannot read these logs afterwards.
       const chains = await this.finishedChains(executions, proof);
+      // ADR 0138 / 0139: a plaintext archive that cannot delete would outlive the erasure - refuse BEFORE
+      // the key is destroyed.
+      await this.assertArchivesErasable(executions, chains);
       if (options.force !== undefined) {
         await this.options.shred(subjectId, executions, { force: options.force });
       } else {
         await this.options.shred(subjectId, executions);
       }
       await this.purgeInboxStreams(chains);
+      const archived = await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
+      const redactions = await this.redactSenderCopies(subjectId, tenant);
       this.parked.delete(parkKey(tenant, subjectId));
       return {
         subjectId,
         outcome: "erased",
         erased: executions,
         pending: [],
+        ...(archived !== undefined && { archivedCopiesDeleted: archived }),
+        ...(redactions.length > 0 && { senderRedactions: redactions }),
         ...(shredParked && { parkedShredded: parkedOwners }),
       };
     }
@@ -270,9 +356,198 @@ export class EraseCoordinator {
     const executions = this.options.index.executionsOf(subjectId, tenant);
     if ((await this.liveExecutions(executions, this.options.destroyed)).length > 0) return; // still blocked
     const chains = await this.finishedChains(executions, this.options.destroyed);
+    await this.assertArchivesErasable(executions, chains);
     await this.options.shred(subjectId, executions);
     await this.purgeInboxStreams(chains);
+    await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
+    await this.redactSenderCopies(subjectId, tenant);
     this.parked.delete(parkKey(tenant, subjectId));
+  }
+
+  /**
+   * ADR 0139 D12 - a PLAINTEXT archive holds other chains' reserved segments naming the erased subject as
+   * the sender. They are rewritten in place with the identity replaced by `{ erased: true }` (the segment
+   * digest masks the sender, so it still verifies), through a staging key so a crash never loses the
+   * segment, and journaled (`ERASURE_SENDER_REDACTED`). Cost: one pass over the archive's reserved keys.
+   * A live, not yet archived envelope keeps its sender until it is trimmed (a plaintext store has no
+   * key to shred; seal the sender with `senderSubjectOf` for that).
+   */
+  private async redactSenderCopies(subjectId: string, tenant: string): Promise<SenderRedaction[]> {
+    const matches = this.options.senderMatches ?? defaultSenderMatches;
+    const out: SenderRedaction[] = [];
+    for (const archive of this.plaintextArchives()) {
+      const del = archive.deleteExecution;
+      const readAll = (archive as Partial<ArchiveStore>).read;
+      const append = (archive as Partial<ArchiveStore>).append;
+      if (del === undefined || readAll === undefined || append === undefined) continue;
+      const read = readAll.bind(archive);
+      const add = append.bind(archive);
+      const remove = del.bind(archive);
+      await this.recoverRedactions(archive, read, add, remove);
+      for (const prefix of ["__loom_inbox__:", "__loom_quarantine__:", "__loom_late__:"]) {
+        let cursor: string | undefined = prefix.slice(0, -1);
+        for (;;) {
+          const page = await archive.listExecutions({ cursor, limit: 200 });
+          let past = false;
+          for (const key of page.executionIds) {
+            if (!key.startsWith(prefix)) {
+              if (key < prefix) continue;
+              past = true;
+              break;
+            }
+            const segments = await read(key);
+            let changed = 0;
+            const rewritten = segments.map((seg) => ({
+              ...seg,
+              envelopes: seg.envelopes.map((e) => {
+                const sender = (e.payload as { sender?: unknown } | null)?.sender;
+                if (
+                  e.eventType !== "INBOX_MESSAGE" ||
+                  typeof sender !== "object" ||
+                  sender === null ||
+                  !matches(subjectId, tenant, sender as never)
+                ) {
+                  return e;
+                }
+                changed++;
+                return { ...e, payload: { ...(e.payload as object), sender: { erased: true } } };
+              }),
+            }));
+            if (changed === 0) continue;
+            await this.rewriteSegments(key, rewritten, add, remove);
+            out.push({ streamId: key, envelopes: changed });
+          }
+          if (past || page.nextCursor === undefined || page.nextCursor === cursor) break;
+          cursor = page.nextCursor;
+        }
+      }
+    }
+    if (out.length > 0) await this.appendSenderRedacted(subjectId, tenant, out);
+    return out;
+  }
+
+  /** Replace `key`'s segments: the redacted copy is staged FIRST, so a crash leaves one of the two whole. */
+  private async rewriteSegments(
+    key: string,
+    segments: Awaited<ReturnType<ArchiveStore["read"]>>,
+    add: ArchiveStore["append"],
+    remove: NonNullable<ArchiveStore["deleteExecution"]>
+  ): Promise<void> {
+    const stage = `${REDACT_STAGE}${key}`;
+    for (const seg of segments) await add(stage, seg);
+    await remove(key);
+    for (const seg of segments) await add(key, seg);
+    await remove(stage);
+  }
+
+  /** A crash mid-rewrite: restore a staged copy whose original is gone; drop a stage whose original is whole. */
+  private async recoverRedactions(
+    archive: ErasableArchive,
+    read: ArchiveStore["read"],
+    add: ArchiveStore["append"],
+    remove: NonNullable<ArchiveStore["deleteExecution"]>
+  ): Promise<void> {
+    let cursor: string | undefined = REDACT_STAGE.slice(0, -1);
+    for (;;) {
+      const page = await archive.listExecutions({ cursor, limit: 200 });
+      let past = false;
+      for (const stage of page.executionIds) {
+        if (!stage.startsWith(REDACT_STAGE)) {
+          if (stage < REDACT_STAGE) continue;
+          past = true;
+          break;
+        }
+        const key = stage.slice(REDACT_STAGE.length);
+        if ((await archive.headers(key)).length === 0) {
+          for (const seg of await read(stage)) await add(key, seg);
+        }
+        await remove(stage);
+      }
+      if (past || page.nextCursor === undefined || page.nextCursor === cursor) break;
+      cursor = page.nextCursor;
+    }
+  }
+
+  private async appendSenderRedacted(
+    subjectId: string,
+    tenant: string,
+    redactions: readonly SenderRedaction[]
+  ): Promise<void> {
+    const prior = await this.options.eventStore.read(ERASURE_STREAM);
+    await this.options.eventStore.append({
+      id: `erasure-${prior.length}`,
+      workflowId: ERASURE_STREAM,
+      executionId: ERASURE_STREAM,
+      eventType: "ERASURE_SENDER_REDACTED",
+      sequence: prior.length,
+      timestamp: 0,
+      payload: { subjectId, ...(tenant !== DEFAULT_TENANT && { tenant }), redactions },
+    });
+  }
+
+  /** The plaintext archives (`sealsSegments` is not `true`); a sealing one is erased by the shred. */
+  private plaintextArchives(): ErasableArchive[] {
+    return (this.options.archives ?? []).filter((a) => a.sealsSegments !== true);
+  }
+
+  /** Every archive key holding the subject's copies: its executions' compaction segments and its chains' reserved segments. */
+  private async archivedKeys(
+    archive: ErasableArchive,
+    executions: readonly string[],
+    chains: readonly FinishedChain[]
+  ): Promise<{ executions: string[]; reservedStreams: string[] }> {
+    const held: string[] = [];
+    for (const id of executions) {
+      if ((await archive.headers(id)).length > 0) held.push(id);
+    }
+    const reserved: string[] = [];
+    for (const { chainId } of chains) {
+      reserved.push(...(await archivedReservedStreams(archive, chainId)));
+    }
+    return { executions: held, reservedStreams: reserved };
+  }
+
+  private async assertArchivesErasable(
+    executions: readonly string[],
+    chains: readonly FinishedChain[]
+  ): Promise<void> {
+    for (const archive of this.plaintextArchives()) {
+      if (archive.deleteExecution !== undefined) continue;
+      const keys = await this.archivedKeys(archive, executions, chains);
+      const all = [...keys.executions, ...keys.reservedStreams];
+      if (all.length > 0) throw new ArchivedCopiesRemainError(all);
+    }
+  }
+
+  /**
+   * ADR 0138 / 0139 - the physical half of erasure for the ARCHIVES: delete the subject's compaction
+   * segments and its chains' reserved-stream segments from every plaintext archive, then journal what was
+   * deleted (`ERASURE_ARCHIVE_DELETED` on the control stream). Idempotent: a retry after a crash finds
+   * nothing left and records nothing. Over a sealing archive the shred has already made the segments
+   * unreadable, so nothing is deleted.
+   */
+  private async deleteArchivedCopies(
+    subjectId: string,
+    tenant: string,
+    executions: readonly string[],
+    chains: readonly FinishedChain[]
+  ): Promise<ArchivedCopiesDeleted | undefined> {
+    const deleted: ArchivedCopiesDeleted = { executions: [], reservedStreams: [] };
+    for (const archive of this.plaintextArchives()) {
+      if (archive.deleteExecution === undefined) continue; // asserted before the shred
+      const keys = await this.archivedKeys(archive, executions, chains);
+      for (const id of keys.executions) {
+        await archive.deleteExecution(id);
+        deleted.executions.push(id);
+      }
+      for (const id of keys.reservedStreams) {
+        await archive.deleteExecution(id);
+        deleted.reservedStreams.push(id);
+      }
+    }
+    if (deleted.executions.length === 0 && deleted.reservedStreams.length === 0) return undefined;
+    await this.appendArchiveDeleted(subjectId, tenant, deleted);
+    return deleted;
   }
 
   /**
@@ -291,10 +566,12 @@ export class EraseCoordinator {
    * cannot be deleted (a consumer then receives the `{ $shredded: true }` marker, never the raw
    * value).
    */
-  private async purgeInboxStreams(chains: readonly InboxStreams[]): Promise<void> {
+  private async purgeInboxStreams(chains: readonly FinishedChain[]): Promise<void> {
     const remove = this.options.eventStore.deleteExecution?.bind(this.options.eventStore);
     if (remove === undefined) return;
-    for (const { legacy, registry, topics, quarantine } of chains) {
+    for (const {
+      streams: { legacy, registry, topics, quarantine },
+    } of chains) {
       // ADR 0110 D10b — EVERY stream of the chain: its per-topic streams, the legacy one and, last,
       // the registry that names the topic streams (a crash midway leaves them findable).
       for (const stream of topics) await remove(stream);
@@ -314,8 +591,8 @@ export class EraseCoordinator {
   private async finishedChains(
     executions: readonly string[],
     proof: DestructionProof | undefined
-  ): Promise<InboxStreams[]> {
-    if (this.options.eventStore.deleteExecution === undefined) return [];
+  ): Promise<FinishedChain[]> {
+    // (a store that cannot delete streams still has chains whose ARCHIVED segments erasure removes)
     const chains = new Set<string>();
     for (const executionId of executions) {
       const folded = await this.foldExecution(executionId, proof);
@@ -324,7 +601,7 @@ export class EraseCoordinator {
       if (folded.head === false) continue; // terminal, but not PROVEN a chain head: keep its streams
       chains.add(chainIdOfFirst(folded.first, executionId));
     }
-    const streams: InboxStreams[] = [];
+    const streams: FinishedChain[] = [];
     const store = this.options.eventStore;
     const view = {
       read: (id: string) => this.readErasedOk(id, proof),
@@ -334,7 +611,9 @@ export class EraseCoordinator {
         listExecutionsPage: store.listExecutionsPage.bind(store),
       }),
     };
-    for (const chain of chains) streams.push(await inboxStreamsOfChainDeep(view, chain));
+    for (const chainId of chains) {
+      streams.push({ chainId, streams: await inboxStreamsOfChainDeep(view, chainId) });
+    }
     return streams;
   }
 
@@ -498,6 +777,23 @@ export class EraseCoordinator {
     return { status: state.status, first };
   }
 
+  private async appendArchiveDeleted(
+    subjectId: string,
+    tenant: string,
+    deleted: ArchivedCopiesDeleted
+  ): Promise<void> {
+    const prior = await this.options.eventStore.read(ERASURE_STREAM);
+    await this.options.eventStore.append({
+      id: `erasure-${prior.length}`,
+      workflowId: ERASURE_STREAM,
+      executionId: ERASURE_STREAM,
+      eventType: "ERASURE_ARCHIVE_DELETED",
+      sequence: prior.length,
+      timestamp: 0,
+      payload: { subjectId, ...(tenant !== DEFAULT_TENANT && { tenant }), ...deleted },
+    });
+  }
+
   // `prior.length` is the next sequence only because a reserved stream is never compacted:
   // `LogLifecycle.compact` refuses one (ADR 0106).
   private async appendPending(subjectId: string, tenant: string): Promise<void> {
@@ -512,6 +808,12 @@ export class EraseCoordinator {
       payload: { subjectId, ...(tenant !== DEFAULT_TENANT && { tenant }) },
     });
   }
+}
+
+/** A chain whose head the subject owned, with the live streams of its inbox. */
+interface FinishedChain {
+  chainId: string;
+  streams: InboxStreams;
 }
 
 // `tenant\x00subject` — NUL separates the two id spaces (never appears in a real id), so a

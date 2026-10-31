@@ -1751,6 +1751,53 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect(result.unarchivedAcknowledged).toEqual([]);
     });
 
+    it("ADR 0139 B2 - a DELETED reserved stream whose archive skips a range (a pre-ADR trim) is refused by the erasing pass, a whole one passes", async () => {
+      const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
+      const { clock, content } = clockedStore(OLD);
+      clock.now = NOW;
+      const message = (stream: string, sequence: number) =>
+        evt(
+          stream,
+          sequence,
+          "INBOX_MESSAGE",
+          { topic: "a", messageId: `m${sequence}`, payload: "p", sender: {} },
+          OLD
+        );
+      const sweep = (archive: unknown, acknowledge = false) =>
+        sweepUnpinnedContent({
+          eventStores: [new InMemoryAsyncEventStore()], // nothing live: both streams were deleted
+          snapshotStores: [],
+          archiveStores: [archive] as never,
+          contentStore: content,
+          pinnedEventTypes: [],
+          olderThanMs: TTL,
+          now: NOW,
+          reclaimOrphans: erasing,
+          ...(acknowledge && { acknowledgeUnarchivedLogs: true }),
+        });
+      const gappy = "__loom_inbox__:gappy";
+      const whole = "__loom_inbox__:whole";
+      const archive = new InMemoryArchiveStore();
+      // trimmed before the archive existed: 1..5 are gone, the segments are [0,0] and [6,7]
+      await archive.append(gappy, buildSegment([message(gappy, 0)], "inc", 0, 0));
+      await archive.append(
+        gappy,
+        buildSegment([message(gappy, 6), message(gappy, 7)], "inc", 6, 7)
+      );
+      await expect(sweep(archive)).rejects.toMatchObject({
+        name: "ArchiveStoresRequiredError",
+        reason: "uncovered",
+        executionIds: [gappy],
+      });
+      expect((await sweep(archive, true)).unarchivedAcknowledged).toEqual([gappy]);
+      const clean = new InMemoryArchiveStore();
+      await clean.append(
+        whole,
+        buildSegment([message(whole, 0), message(whole, 1), message(whole, 2)], "inc", 0, 2)
+      );
+      expect((await sweep(clean)).unarchivedAcknowledged).toEqual([]);
+    });
+
     it("ADR 0138 - coverage is checked regardless of the mark: a missing segment is refused; the full archive passes; the explicit acknowledgment passes AND is reported; a dry run is exempt", async () => {
       const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
       const { clock, content } = clockedStore(OLD);
