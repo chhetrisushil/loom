@@ -120,6 +120,7 @@ const TERMINAL = new Set([
   "DuplicateSequenceError",
   "EgressDeniedError",
   "SpawnLimitExceededError",
+  "ExecutionTerminatedError",
   "ContinueAsNewRefusedError",
   "CarryTooLargeError",
   "ContinueAsNewUnavailableError",
