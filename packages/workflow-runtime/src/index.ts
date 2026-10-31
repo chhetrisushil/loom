@@ -138,6 +138,7 @@ export {
   LogLifecycle,
   assertPinnedEventTypes,
   UnsafeCompactionError,
+  BlankStreamUnrepairedError,
   CompactionCheckpointMissingError,
   type RetentionPolicy,
   type ArchiveStores,

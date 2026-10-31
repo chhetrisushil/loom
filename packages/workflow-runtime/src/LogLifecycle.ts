@@ -188,6 +188,24 @@ export class CompactionCheckpointMissingError extends Error {
 }
 
 /**
+ * ADR 0134 D6 - `pruneSnapshots` refused because the pre-0106 blank stream (execution `""`) still
+ * holds events `loom repair blank-stream` (ADR 0107) has not re-homed. The snapshots a pruning
+ * would delete include the blank-identity ones that are the PROOF of whose those events are.
+ * Nothing was deleted.
+ */
+export class BlankStreamUnrepairedError extends Error {
+  constructor(
+    readonly rehomable: number,
+    readonly unattributed: number
+  ) {
+    super(
+      `refusing to prune snapshots: the blank execution "" still holds events the pre-0106 compaction bug misfiled (${rehomable} segment(s) re-homable, ${unattributed} unattributed run(s)), and blank-identity snapshots are the proof of whose they are. Finish the repair first (\`loom repair blank-stream\`, ADR 0107). Nothing was deleted.`
+    );
+    this.name = "BlankStreamUnrepairedError";
+  }
+}
+
+/**
  * The highest sequence missing BELOW the log's tip, or -1 when the log is contiguous from 0.
  * Compaction is the only thing that removes events; it always removes its own checkpoint's
  * slot and never the tip unless nothing is kept (the TIP RULE, ADR 0106), so this is exactly
@@ -285,6 +303,27 @@ export class LogLifecycle {
 
   /** {@link LogLifecycle} options' `pinnedEventTypes`, as a set. */
   private readonly keep: ReadonlySet<string>;
+
+  /**
+   * ADR 0134 D6 - the tail of each execution's in-process `compact`/`pruneSnapshots` chain. An
+   * entry exists only while an operation is queued or running and is removed when the chain
+   * drains, so the map is bounded by the executions in flight.
+   */
+  private readonly exclusive = new Map<string, Promise<void>>();
+
+  private withExecution<T>(executionId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.exclusive.get(executionId) ?? Promise.resolve();
+    const run = prev.then(fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined
+    );
+    this.exclusive.set(executionId, tail);
+    void tail.then(() => {
+      if (this.exclusive.get(executionId) === tail) this.exclusive.delete(executionId);
+    });
+    return run;
+  }
 
   /** Executions already warned about (bounded, FIFO) — a sweep warns once per execution. */
   private readonly warned = new Set<string>();
@@ -690,7 +729,12 @@ export class LogLifecycle {
    * store does not share its KeyStore, and {@link PlaintextCheckpointError} (ADR 0130 D8) when it
    * shares the KeyStore but does not seal the WHOLE state (unless `allowPlaintextCheckpoints`).
    */
-  async compact(executionId: string): Promise<number | null> {
+  compact(executionId: string): Promise<number | null> {
+    // ADR 0134 D6 - serialized with `pruneSnapshots` on the same execution (in this process).
+    return this.withExecution(executionId, () => this.compactOnce(executionId));
+  }
+
+  private async compactOnce(executionId: string): Promise<number | null> {
     if (executionId === "") {
       throw new TypeError(
         `refusing to compact "": a blank id names no execution. Its stream holds what the pre-0106 compaction bug misfiled — census and repair it with LogLifecycle.blankStreamCensus / rehomeBlankStream (ADR 0107); compacting it would fold unrelated executions together and delete the evidence.`
@@ -835,14 +879,27 @@ export class LogLifecycle {
    * served after, with the same state: a base above the gap folds a contiguous suffix.
    *
    * Resolves with the number deleted; `0` when the store cannot prune, the execution is exempt
-   * (`compactionExempt`: a hold also holds its snapshots), or there is nothing prunable.
-   * Costs one log read (as `compact` does) and a bounded number of snapshot point reads
-   * (`keepLatest`, plus a walk only for a gapped log that has neither a snapshot at its gap nor
-   * a fork seed). The delete is one statement.
+   * (`compactionExempt`: a hold also holds its snapshots), there is nothing prunable, or a
+   * compaction from another process landed while it was deciding (nothing deleted; retry).
+   * Serialized with `compact` per execution in this process; two PROCESSES must not run them on
+   * one execution at once (ADR 0134 D6). Refuses with {@link BlankStreamUnrepairedError} while
+   * the pre-0106 blank stream still has events to re-home, and with a `RangeError` for a
+   * `keepSequences` entry that is not a safe integer. Costs two log reads (before and after the
+   * snapshot reads), `keepLatest` snapshot point reads, plus a walk of the snapshots above the
+   * gap (O(snapshots above the gap)) only for a gapped log with neither a snapshot at its gap
+   * nor a fork seed; one `head` read of `""`. The delete is one statement.
    */
-  async pruneSnapshots(
+  pruneSnapshots(
     executionId: string,
     options: { keepLatest?: number; keepSequences?: readonly number[] } = {}
+  ): Promise<number> {
+    // ADR 0134 D6 - serialized with `compact` on the same execution (in this process).
+    return this.withExecution(executionId, () => this.pruneOnce(executionId, options));
+  }
+
+  private async pruneOnce(
+    executionId: string,
+    options: { keepLatest?: number; keepSequences?: readonly number[] }
   ): Promise<number> {
     if (executionId === "" || isReservedStream(executionId)) {
       throw new TypeError(
@@ -855,6 +912,16 @@ export class LogLifecycle {
         `pruneSnapshots: keepLatest must be an integer >= 1 (the latest snapshot is never pruned); got ${String(keepLatest)}`
       );
     }
+    // The SPI takes safe integers; backends disagree about anything else (Postgres throws on 3.5,
+    // SQLite ignores NaN, memory deletes). Refused here, before any read or delete.
+    const keepSequences = options.keepSequences ?? [];
+    for (const k of keepSequences) {
+      if (!Number.isSafeInteger(k)) {
+        throw new RangeError(
+          `pruneSnapshots: every keepSequences entry must be a safe integer; got ${String(k)}`
+        );
+      }
+    }
     const snapshots = this.snapshotStore;
     if (snapshots.pruneSnapshots === undefined) return 0;
     if (
@@ -863,6 +930,7 @@ export class LogLifecycle {
     ) {
       return 0;
     }
+    await this.assertBlankStreamRepaired();
     const events = await this.eventStore.read(executionId);
     // Nothing to anchor on, or compacted through the tip (`[0]`): the checkpoint is the latest
     // snapshot and the older ones are the exact fork points below it.
@@ -881,6 +949,9 @@ export class LogLifecycle {
       if (newest === null) return 0; // fewer than keepLatest snapshots: all are kept
     }
     const before = newest.sequence;
+    if (!Number.isSafeInteger(before)) {
+      throw new RangeError(`pruneSnapshots: the snapshot store reported sequence ${String(before)}`);
+    }
 
     // `after`: the anchor of a compacted log, or -1 (the whole range) for a gap-free one.
     let after = -1;
@@ -913,11 +984,32 @@ export class LogLifecycle {
       // No checkpoint at or above the gap: `compact` would refuse this log. Prune nothing.
       if (anchor === null) return 0;
       after = anchor.sequence;
+      if (!Number.isSafeInteger(after)) {
+        throw new RangeError(`pruneSnapshots: the snapshot store reported sequence ${String(after)}`);
+      }
     }
     if (before - after <= 1) return 0;
-    return snapshots.pruneSnapshots(executionId, { after, before }, [
-      ...(options.keepSequences ?? []),
-    ]);
+    // The bounds were derived from a log read BEFORE the snapshot reads above. A compaction in
+    // another process may have landed since (this process's own is excluded): a gap that moved
+    // means `after` no longer protects the new checkpoint, so delete nothing. Retry later.
+    const again = await this.eventStore.read(executionId);
+    if (highestMissing(again) !== gap) return 0;
+    return snapshots.pruneSnapshots(executionId, { after, before }, [...keepSequences]);
+  }
+
+  /**
+   * ADR 0134 D6 - refuse while `loom repair blank-stream` still has work. The repair LEAVES the
+   * blank stream in place as evidence, so "repaired" is not "empty": one `head` read says whether
+   * a blank stream exists at all (the common case: it does not), and only then the census says
+   * whether any segment is still re-homable or any run unattributed.
+   */
+  private async assertBlankStreamRepaired(): Promise<void> {
+    if ((await headOf(this.eventStore, "")) === null) return;
+    const census = await this.blankStreamCensus();
+    const rehomable = census.segments.filter((x) => x.status === "rehomable").length;
+    if (rehomable > 0 || census.unattributed.length > 0) {
+      throw new BlankStreamUnrepairedError(rehomable, census.unattributed.length);
+    }
   }
 
   /**
