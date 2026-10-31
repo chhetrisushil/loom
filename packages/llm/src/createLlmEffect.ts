@@ -168,6 +168,7 @@ export function createLlmEffect<TIn = string, TOut = string>(
         ...(ctx.signal !== undefined && { signal: ctx.signal }),
         context: {
           executionId: ctx.executionId,
+          workflowId: ctx.workflowId,
           stepId: ctx.stepId,
           ...(ctx.principal !== undefined && { principal: ctx.principal }),
         },
