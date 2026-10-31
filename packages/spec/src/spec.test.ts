@@ -370,6 +370,10 @@ const NOT_A_CAPABILITY = new Set([
   // 0137 - agent state growth (issue #721): a report-only warning and a built-in summarizer effect in
   // `@loom/agent`, compaction still opt-in. No event, SPI, ABI or subsystem change; nothing to grade.
   "0137",
+  // 0140 - the opt-in `execution.claimCheck` for agent tool outputs (issue #731): a grouped config option that
+  // wires the existing claim-check middleware (ADR 0054) with a default digest. No event, SPI, ABI or subsystem
+  // change; nothing to grade.
+  "0140",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

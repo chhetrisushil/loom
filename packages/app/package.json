@@ -45,6 +45,7 @@
   "devDependencies": {
     "@loom/compiler": "workspace:*",
     "@loom/llm": "workspace:*",
+    "@loom/plugin-content": "workspace:*",
     "@loom/scaffold": "workspace:*",
     "@types/node": "^22.0.0",
     "typescript": "^5.6.3",

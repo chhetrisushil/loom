@@ -67,3 +67,9 @@ Additive public API on `@loom/agent`: `AgentLoopConfig.warnTranscriptBytes`, `DE
 `createSummarizerEffect`, `DEFAULT_SUMMARIZER_INSTRUCTION`, `SUMMARIZER_INPUT_ORIGIN`, and (moved)
 `summarizerText` / `SUMMARIZER_TEXT_TRUNCATED`. An existing uncompacted loop that crosses 256 KiB now logs
 one warning; set `warnTranscriptBytes: false` to silence it.
+
+## Amendment (2026-10-31) — the warning also names claim-check
+
+[ADR 0140](0140-agent-claim-check-opt-in.md) adds the opt-in `execution.claimCheck`, and the warning text now
+names it beside `compaction` (tool outputs are about 80% of the state). Still report-only, still one warning
+per run, still fires with claim-check on (compaction is what bounds the transcript).

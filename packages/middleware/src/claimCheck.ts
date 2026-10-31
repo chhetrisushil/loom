@@ -119,6 +119,13 @@ export interface ClaimCheckOptions {
    * only — their orchestration can branch on nothing but existence.
    */
   digests?: Readonly<Record<string, (result: unknown) => unknown>>;
+  /**
+   * The projection used for an offloaded result whose tool has NO entry in {@link digests}
+   * (a per-tool digest always wins). Same contract as a digest: PURE w.r.t. the result, because it is
+   * recorded inline in the envelope. Unset (the default) keeps the classic behaviour: such a tool
+   * records `{ ref, size }` only. {@link previewDigest} is a ready-made one.
+   */
+  defaultDigest?: (result: unknown, toolId: string | undefined) => unknown;
   /** CC-3 — called after each offload (metrics/log-budget regression tracking). */
   onOffload?: (info: ClaimCheckInfo) => void;
 }
@@ -200,12 +207,14 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
     if (bytes.byteLength <= cap) return result;
 
     const ref = await options.store.put(bytes);
-    const digest = ctx.toolId === undefined ? undefined : options.digests?.[ctx.toolId];
+    const declared = ctx.toolId === undefined ? undefined : options.digests?.[ctx.toolId];
+    const projected =
+      declared !== undefined ? declared(result) : options.defaultDigest?.(result, ctx.toolId);
     const envelope: ClaimCheckEnvelope = {
       __loomClaimCheck: true,
       ref: { __loomContent: ref.__loomContent },
       size: bytes.byteLength,
-      ...(digest !== undefined && { digest: digest(result) }),
+      ...(projected !== undefined && { digest: projected }),
     };
     options.onOffload?.({
       ...(ctx.toolId !== undefined && { toolId: ctx.toolId }),
@@ -216,6 +225,44 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
       contentAddress: ref.__loomContent,
     });
     return envelope;
+  };
+}
+
+/** What {@link previewDigest} records: the head of the result's JSON text. */
+export interface PreviewDigest {
+  /** The first `maxChars` UTF-16 code units of `JSON.stringify(result)`, never ending mid-surrogate-pair. */
+  readonly preview: string;
+}
+
+/**
+ * A ready-made `defaultDigest` (CC-2): the first `maxChars` (default 256) characters of the result's
+ * JSON text, so the model sees what an offloaded tool result BEGAN with instead of a bare hash. Pure
+ * and deterministic (a function of the result only). It is NOT a summary: it is a head, and it can cut
+ * a JSON string anywhere.
+ *
+ * Untrusted content is never previewed: a result carrying an ADR 0085 taint marker ANYWHERE (a nested
+ * `{ __loomTainted }` wrapper, such as an A2A reply's `content`) yields no digest at all, because a
+ * digest rides into the model's prompt as ordinary text and would launder the taint. A result JSON cannot
+ * encode yields none either.
+ */
+export function previewDigest(
+  maxChars = 256
+): (result: unknown, toolId?: string) => PreviewDigest | undefined {
+  return (result) => {
+    let json: string | undefined;
+    try {
+      json = JSON.stringify(result);
+    } catch {
+      return undefined;
+    }
+    if (json === undefined || json.includes('"__loomTainted"')) return undefined;
+    let end = Math.min(maxChars, json.length);
+    // Never end on a lone high surrogate (it would not round-trip through UTF-8).
+    if (end < json.length && end > 0) {
+      const last = json.charCodeAt(end - 1);
+      if (last >= 0xd800 && last <= 0xdbff) end--;
+    }
+    return { preview: json.slice(0, end) };
   };
 }
 

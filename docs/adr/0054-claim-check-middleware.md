@@ -73,3 +73,12 @@ contract as-is.
   findings needs the K10.6 pin seam (W3, next) before aggressive TTLs are safe.
 - `isClaimCheck`/`ClaimCheckEnvelope` are the shared vocabulary W3's pin index and W6's lint
   build on.
+
+## Amendment (2026-10-31) — a documented opt-in for agent workloads, and a default digest
+
+[ADR 0140](0140-agent-claim-check-opt-in.md) wires this middleware for `agentLoop$` tools with one grouped
+option, `defineConfig({ execution: { claimCheck: { store, toolIds } } })` (off unless set). `claimCheckMiddleware`
+gains an optional `defaultDigest(result, toolId)`, used for an offloaded result whose tool has no `digests`
+entry (a declared digest always wins), and `@loom/middleware` exports `previewDigest(maxChars)`, a ready-made
+one that records the head of the result's JSON text and nothing at all for a result carrying an ADR 0085 taint
+marker. Unset, `defaultDigest` changes nothing (D2's "`{ ref, size }` only" still holds).

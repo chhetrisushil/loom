@@ -56,10 +56,14 @@ import { InMemoryMemoryStore, MemoryRuntime } from "@loom/memory";
 import type { MemoryStore } from "@loom/memory";
 import {
   BudgetLedger,
+  type ClaimCheckOptions,
+  type ClaimCheckStore,
   InMemoryKillSwitch,
   type KillSwitchRegistry,
   type SecretResolver,
+  claimCheckMiddleware,
   killSwitchMiddleware,
+  previewDigest,
   redactOutputFrom,
   redactionMiddleware,
   secretOutputPathsByStep,
@@ -479,6 +483,85 @@ function isLeaseStore(v: unknown): v is LeaseStore {
   );
 }
 
+/** The claim-check cap used when `execution.claimCheck.inlineCapBytes` is unset: 1 KiB (measured, ADR 0140). */
+export const DEFAULT_CLAIM_CHECK_CAP_BYTES = 1024;
+/** Characters of a claim-checked result's head recorded as its default digest (ADR 0140 D3). */
+export const DEFAULT_CLAIM_CHECK_PREVIEW_CHARS = 256;
+
+/**
+ * ADR 0140 -- the opt-in claim-check for tool outputs, `execution.claimCheck`. Tool outputs are ~80% of an
+ * `agentLoop$` run's folded state (docs/scaling.md section 5); this offloads the over-cap ones to YOUR content
+ * store and records `{ __loomClaimCheck, ref, size, digest? }` in their place. OFF unless this is set.
+ */
+export interface ClaimCheckConfig {
+  /**
+   * Where the offloaded bytes go: the app's content store (the one you also give `sweepUnpinnedContent`).
+   * `app` has no content store of its own, so it is supplied here. Any `ContentStore` satisfies it.
+   */
+  store: ClaimCheckStore;
+  /**
+   * The tool ids to claim-check, i.e. the `name` of each tool the agent can call (`agentLoop$` runs a tool
+   * under its own name as the effect id). REQUIRED and explicit on purpose: there is no "all". The model
+   * effect (`modelToolId`), the summarizer and any other effect whose result the loop reads INLINE must not
+   * be offloaded, and the middleware cannot tell them from a tool.
+   */
+  toolIds: readonly string[];
+  /** A result whose JSON text is at most this many UTF-8 bytes stays inline. Default {@link DEFAULT_CLAIM_CHECK_CAP_BYTES} (1 KiB). */
+  inlineCapBytes?: number;
+  /**
+   * Per-tool digests: the tool's deterministic projection of its result (ADR 0054 CC-2), recorded in the
+   * envelope and the only part of an offloaded result the model sees (ADR 0087). A tool listed here
+   * REPLACES the default preview. MUST be pure, and MUST NOT echo untrusted (tainted) content: a digest is
+   * ordinary prompt text.
+   */
+  digests?: ClaimCheckOptions["digests"];
+  /**
+   * How many leading characters of the result's JSON a tool WITHOUT a `digests` entry records as
+   * `digest: { preview }` (default {@link DEFAULT_CLAIM_CHECK_PREVIEW_CHARS}). `false` records no digest, so the
+   * model sees only the ref and size. A result carrying a taint marker is never previewed.
+   */
+  preview?: number | false;
+  /** Called after each offload (metrics; ADR 0054 CC-3). */
+  onOffload?: ClaimCheckOptions["onOffload"];
+}
+
+/** Validate `execution.claimCheck` (TypeError on bad values) and build its middleware. */
+function claimCheckFrom(raw: ClaimCheckConfig | undefined): EffectMiddleware | undefined {
+  if (raw === undefined) return undefined;
+  const bad = (what: string): never => {
+    throw new TypeError(`defineConfig: execution.claimCheck.${what}`);
+  };
+  if (typeof raw !== "object" || raw === null) return bad("must be an object");
+  if (typeof raw.store?.put !== "function") {
+    bad("store must be a content store (an object with put())");
+  }
+  if (!Array.isArray(raw.toolIds) || raw.toolIds.length === 0) {
+    bad(
+      'toolIds must be a non-empty array of tool ids (the tools whose results are offloaded; there is no "all": the model and summarizer effects must stay inline)'
+    );
+  }
+  for (const id of raw.toolIds) {
+    if (typeof id !== "string" || id.length === 0) bad("toolIds must be non-empty strings");
+  }
+  const cap = raw.inlineCapBytes ?? DEFAULT_CLAIM_CHECK_CAP_BYTES;
+  if (!Number.isSafeInteger(cap) || cap < 0) bad("inlineCapBytes must be a non-negative integer");
+  const preview = raw.preview ?? DEFAULT_CLAIM_CHECK_PREVIEW_CHARS;
+  if (preview !== false && (!Number.isSafeInteger(preview) || preview < 0)) {
+    bad("preview must be a non-negative integer, or false for no default digest");
+  }
+  const tools = new Set(raw.toolIds);
+  const inner = claimCheckMiddleware({
+    store: raw.store,
+    inlineCapBytes: cap,
+    ...(raw.digests !== undefined && { digests: raw.digests }),
+    ...(preview !== false && preview > 0 && { defaultDigest: previewDigest(preview) }),
+    ...(raw.onOffload !== undefined && { onOffload: raw.onOffload }),
+  });
+  // Only the listed tools reach the middleware: everything else is passed through untouched.
+  return (ctx, input, next) =>
+    ctx.toolId !== undefined && tools.has(ctx.toolId) ? inner(ctx, input, next) : next();
+}
+
 /** Validate `durability.heartbeat` (TypeError on bad values) and resolve the lease store (D11 "Config"). */
 function resolveHeartbeat(
   raw: HeartbeatConfig | undefined,
@@ -650,6 +733,20 @@ export interface ExecutionOptions {
   dispatcher?: ExecutionDispatcher;
   /** Static, ordered effect middleware (retries, logging, …). */
   effectMiddleware?: EffectMiddleware[];
+  /**
+   * ADR 0140 -- OPT-IN claim-check of large tool outputs, the one-line lever against agent state growth
+   * (tool outputs are ~80% of an `agentLoop$` run's state; docs/scaling.md section 5):
+   *
+   *     execution: { claimCheck: { store: contentStore, toolIds: ["search", "fetch_page"] } }
+   *
+   * A listed tool's result over `inlineCapBytes` (default 1 KiB) goes to `store` and the log records
+   * `{ __loomClaimCheck, ref, size, digest }` in its place; smaller results stay inline. The model sees
+   * that envelope, never the resolved bytes (ADR 0087): give a tool a `digests` entry, or accept the
+   * default `{ preview }` head. UNSET (the default) adds no middleware and changes nothing. The middleware
+   * runs just inside the kill switch and outside secret redaction, so what is stored is already redacted.
+   * See {@link ClaimCheckConfig}.
+   */
+  claimCheck?: ClaimCheckConfig;
   /**
    * ADR 0112 D2 — error classes a fail-fast `parallel` scope may rehydrate BY NAME. The scope
    * journals the failing error's name and message; the first run and every re-run throw the
@@ -1435,6 +1532,7 @@ export const GROUPED_OPTIONS = [
     [
       "dispatcher",
       "effectMiddleware",
+      "claimCheck",
       "registerEffects",
       "now",
       "validateInput",
@@ -1615,6 +1713,10 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       })
     );
   }
+  // ADR 0140 -- opt-in claim-check, OUTSIDE redaction (it stores what redaction already scrubbed) and
+  // inside the kill switch (a stopped effect must not run, let alone store). Absent unless configured.
+  const claimCheck = claimCheckFrom(config.claimCheck);
+  if (claimCheck !== undefined) effectMiddleware.unshift(claimCheck);
   if (killSwitch !== undefined) effectMiddleware.unshift(killSwitchMiddleware(killSwitch));
   // Policy enforcement (policy$ → K2 ring). Per-flow policies are read from each flow's
   // `policies` (config.flows + flowModules — read by shape, no runtime needed yet); `config.policies`

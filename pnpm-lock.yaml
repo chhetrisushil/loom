@@ -374,6 +374,9 @@ importers:
       '@loom/llm':
         specifier: workspace:*
         version: link:../llm
+      '@loom/plugin-content':
+        specifier: workspace:*
+        version: link:../../plugins/content
       '@loom/scaffold':
         specifier: workspace:*
         version: link:../../tools/scaffold

@@ -193,7 +193,8 @@ export interface AgentLoopConfig {
    * journals its whole model input, so uncompacted state grows O(turns^2) (see docs/scaling.md,
    * "Agent state growth"). Default {@link DEFAULT_STATE_GROWTH_WARN_BYTES} (256 KiB); `false` turns it
    * off. Report-only: it changes no behaviour, writes nothing to the log, and is a pure function of
-   * journaled content (a replay in a fresh process warns again at the same turn).
+   * journaled content (a replay in a fresh process warns again at the same turn). The warning also names the
+   * opt-in claim-check of large tool outputs, `defineConfig({ execution: { claimCheck } })` (ADR 0140).
    */
   warnTranscriptBytes?: number | false;
   systemPrompt?: string;
@@ -1687,7 +1688,7 @@ export async function agentLoop$(
         warnedStateGrowth = true;
         emitLoopWarning(
           config,
-          `agentLoop$: the transcript is ${transcriptBytes} bytes by the loop's compaction measure (> ${warnBytes}; text and tool-result bytes, not JSON size), every turn's whole model input is journaled, and this loop has no \`compaction\`, so its journaled state grows O(turns^2) and resume reads it all. Set \`compaction: { toolId, afterBytes }\` (\`createSummarizerEffect(provider)\` is a ready-made toolId); see docs/scaling.md "Agent state growth". Silence with \`warnTranscriptBytes: false\`.`,
+          `agentLoop$: the transcript is ${transcriptBytes} bytes by the loop's compaction measure (> ${warnBytes}; text and tool-result bytes, not JSON size), every turn's whole model input is journaled, and this loop has no \`compaction\`, so its journaled state grows O(turns^2) and resume reads it all. Set \`compaction: { toolId, afterBytes }\` (\`createSummarizerEffect(provider)\` is a ready-made toolId); to also shrink the tool outputs (about 80% of the state) opt in to claim-check with \`defineConfig({ execution: { claimCheck: { store, toolIds } } })\` (ADR 0140); see docs/scaling.md "Agent state growth". Silence with \`warnTranscriptBytes: false\`.`,
           "LOOM_AGENT_STATE_GROWTH"
         );
       }
