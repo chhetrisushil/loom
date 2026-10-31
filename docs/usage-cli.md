@@ -79,6 +79,9 @@ observe
   loom profile <store-flags> <executionId> [--json]     flame graph + latency breakdown
   loom introspect <store-flags> <executionId> [--graph N] [--json]  execution/task/decision/resource graphs
   loom optimize <store-flags> <executionId>       advisory optimization report (recommendations)
+  loom snapshot show <store-flags> <executionId> [--at SEQ] [--redact a,b]  print a stored snapshot, DECODED
+                                                  (JSON; a zstd BYTEA/BLOB frame is decoded, an
+                                                   encrypting store opens it; --db also needs --snap)
   loom census <store-flags> [--buckets 5m,1h,6h,24h] [--sample N] [--json]  what is stuck, and is anything watching it
                                                   (read-only; takes no predicate; --sample: ids kept
                                                    per band, default 5)
@@ -666,6 +669,17 @@ suspended on: ApprovalGranted
 frames:
     collect-metrics: completed
     remediate: pending
+```
+
+### `loom snapshot show <store-flags> <executionId> [--at SEQ] [--redact a,b]`
+
+Print one stored **snapshot**, decoded, as indented JSON (`id`, `executionId`, `workflowId`, `sequence`, `createdAt`, `state`). Without `--at` it is the latest snapshot; with `--at SEQ`, the one stored at exactly `SEQ` (a snapshot at another sequence is a different state, so it errors and says so rather than substituting a neighbour).
+
+Use it instead of SQL on `snapshots.state`: with the opt-in zstd snapshot codec ([ADR 0140](adr/0140-snapshot-zstd-codec.md)) the state lives in a `BYTEA`/`BLOB` frame that `state->` cannot traverse, and the command reads it through the same snapshot store the runtime resumes from (either storage format decodes; an encrypting store opens it). `--redact` masks output dot-paths as in `loom debug`. With `--db` it also needs `--snap <snapshots.db>`; with `--config` it uses the app's own snapshot store. It is read-only, and exits `1` when there is no such snapshot and `2` when the store has no snapshot store.
+
+```bash
+npx loom snapshot show --db .data/events.db --snap .data/snapshots.db 01J8…
+npx loom snapshot show --config ./loom.config.js 01J8… --at 40 --redact variables._input.ssn
 ```
 
 ### `loom inspect --db <path> [--port N]`
@@ -1318,6 +1332,7 @@ npx loom plugin search postgres
 | `loom ls` | list executions + what each suspended one waits on | store *(req)*, `--status`, `--workflow`, `--since`, `--limit` | unknown store (a store that cannot enumerate is exit `2`) |
 | `loom logs` | print the event timeline | store *(req)*, `--redact`, `-v`, `--type`, `--from`, `--to`, `--follow` | unknown execution id; `--db` file missing |
 | `loom debug` | folded state at / after a sequence | store *(req)*, `--at N`, `--redact` | unknown execution id; `--db` file missing |
+| `loom snapshot show` | a stored snapshot, decoded (zstd frame or JSON) | store *(req)* (`--db` also needs `--snap`), `--at SEQ`, `--redact` | no snapshot for the id / sequence |
 | `loom inspect` (`dev`) | web timeline + time-travel slider | store *(req)*, `--port 0` | `--db` file missing |
 | `loom profile` | flame graph + latency breakdown | store *(req)* | unknown execution id; `--db` file missing |
 | `loom introspect` | execution/task/decision/resource graphs | store *(req)*, `--graph <name>` | unknown execution id (unknown `--graph` is exit `2`) |
