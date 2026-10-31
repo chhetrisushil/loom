@@ -3053,6 +3053,10 @@ export class WorkflowRuntime {
     }
 
     if (live !== undefined) {
+      // Issue #712 - a run whose COMPLETED / FAILED is committed (the handle lingers until its drain
+      // settles) is terminal: report it as the durable path does (`cancelSettled` -> false), write nothing.
+      const liveStatus = live.getState().status;
+      if (liveStatus === "completed" || liveStatus === "failed") return false;
       live.cancel(reason);
       // ADR 0109 D2 (i) — a successor may have started in the start-to-commit window.
       if (this.continueAsNewEnabled) await this.cancelSuccessorsOf(executionId, reason, recheck);
@@ -8923,8 +8927,12 @@ export class WorkflowRuntime {
     // ADR 0109 D2 — set the instant `EXECUTION_CONTINUED` is committed to this predecessor: from then
     // on nothing may follow it in this log (a cancel would fold `continued` -> `cancelled`).
     let rotated = false;
+    // Issue #712 - set the instant `EXECUTION_COMPLETED` / `EXECUTION_FAILED` is committed: a cancel
+    // that lands in the drain that follows must not append a second terminal (the same rule `rotated`
+    // gives `EXECUTION_CONTINUED`), exactly as `cancel(id)` is a no-op on a durably terminal run.
+    let terminalCommitted = false;
     const cancel = (reason?: unknown): void => {
-      if (cancelled || rotated) return;
+      if (cancelled || rotated || terminalCommitted) return;
       cancelled = true;
       // A caller-supplied Error is the abort reason as-is; otherwise a named
       // ExecutionCancelledError, so every consumer of the signal can classify it. ONE
@@ -9135,6 +9143,7 @@ export class WorkflowRuntime {
           if (durable) await this.retireInbox(chainIdOf(vm.peekState(), executionId));
           return;
         }
+        terminalCommitted = true;
         journal.commit("EXECUTION_COMPLETED", { output });
         // ADR 0112 D3 — nothing from this execution's own (abandoned) work follows its terminal.
         ctx.seal();
@@ -9376,6 +9385,7 @@ export class WorkflowRuntime {
           return;
         }
 
+        terminalCommitted = true;
         journal.commit("EXECUTION_FAILED", { error: String(err) });
         ctx.seal();
         try {

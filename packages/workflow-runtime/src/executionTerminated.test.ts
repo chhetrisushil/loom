@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { build, echo, flow, until } from "./__tests__/r2Harness";
+import { Latch, build, echo, flow, slow, until } from "./__tests__/r2Harness";
 import { ExecutionTerminatedError } from "./index";
 import type { ExecutionHandle } from "./types";
 
@@ -49,15 +49,18 @@ describe("ExecutionHandle.waitForSuspend on a terminal run (#710)", () => {
   });
 
   it("rejects when the run is cancelled", async () => {
-    const h = build();
+    const latch = new Latch(); // never released: the resumed run is genuinely mid-flight, not finished
+    const h = build({}, { latch });
     const f = flow("cancelled", async (ctx) => {
       await ctx.suspend({ on: "never" });
+      await ctx.run(slow, {});
     });
     h.rt.registerFlow(f.definition, f.runner);
     const handle = await h.rt.start(f, {}, { executionId: "x" });
     // park first, then resume into a run that we cancel mid-flight
     await handle.waitForSuspend();
     const live = await h.rt.resume("x", { eventType: "never", payload: 1 });
+    await latch.entered;
     live.cancel("stop");
     const completion = await caught(live.waitForCompletion());
     const err = (await caught(live.waitForSuspend())) as ExecutionTerminatedError;
