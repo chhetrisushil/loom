@@ -161,10 +161,13 @@ function isTerminalOne(err: unknown, declaredNonRetryable = true): boolean {
   }
   if (typeof err !== "object" || err === null) return false;
   // A run that ended before it parked, seen by a waiter on its suspend promise (ADR 0135). It is
-  // classified by STATUS, not by name: with no cause (completed, continued) there is no failure to
-  // adapt to, so it is terminal; with one (failed, cancelled) it is the same failure
-  // `waitForCompletion()` would reject with, so the caller walks to the cause (isTerminalToolError).
-  if (err instanceof ExecutionTerminatedError) return err.cause === undefined;
+  // classified by STATUS, not by name: completed and continued have no failure to adapt to, so they
+  // are terminal; failed and cancelled carry the failure `waitForCompletion()` would reject with, so
+  // the caller walks to the cause (isTerminalToolError). Not by the cause's presence: a flow that
+  // threw `undefined` fails with no cause, and that is feedback like any other failure.
+  if (err instanceof ExecutionTerminatedError) {
+    return err.status !== "failed" && err.status !== "cancelled";
+  }
   if (isTerminalLlmHttp(err)) return true;
   // A class that declares itself non-retryable is a decision, not a fault (the middleware's own rule).
   if (declaredNonRetryable && (err as { retryable?: unknown }).retryable === false) return true;
