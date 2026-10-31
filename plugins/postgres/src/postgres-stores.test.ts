@@ -516,6 +516,50 @@ suite("@loom/plugin-postgres", () => {
     });
   });
 
+  describe("PostgresSnapshotStore.pruneSnapshots (SPI 1.2.0, ADR 0134)", () => {
+    let store: PostgresSnapshotStore;
+    beforeEach(() => {
+      store = new PostgresSnapshotStore(PG_URL as string);
+    });
+    afterEach(async () => {
+      await store.close();
+    });
+
+    const mk = (executionId: string, sequence: number): Snapshot => ({
+      id: `${executionId}-${sequence}`,
+      executionId,
+      workflowId: "wf",
+      sequence,
+      state: { executionId, workflowId: "wf", sequence } as unknown as ExecutionState,
+      createdAt: sequence,
+    });
+    const seqs = async (id: string): Promise<number[]> => {
+      const out: number[] = [];
+      for (let s = 0; s <= 10; s++) if ((await store.loadAt(id, s)) !== null) out.push(s);
+      return out;
+    };
+
+    it("deletes the exclusive range minus the keep-set in one statement, per execution", async () => {
+      const id = `prune-${process.pid}-a`;
+      const other = `prune-${process.pid}-b`;
+      await store.deleteExecution(id);
+      await store.deleteExecution(other);
+      for (const s of [0, 1, 2, 3, 4, 5, 6]) {
+        await store.save(mk(id, s));
+        await store.save(mk(other, s));
+      }
+      expect(await store.pruneSnapshots(id, { after: 0, before: 6 }, [3])).toBe(4);
+      expect(await seqs(id)).toEqual([0, 3, 6]);
+      expect(await seqs(other)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+      expect(await store.pruneSnapshots(id, { after: 0, before: 6 }, [3])).toBe(0);
+      expect(await store.pruneSnapshots(id, { after: 6, before: 0 })).toBe(0);
+      expect(await store.pruneSnapshots(id, { after: -1, before: 6 })).toBe(2);
+      expect(await seqs(id)).toEqual([6]);
+      await store.deleteExecution(id);
+      await store.deleteExecution(other);
+    });
+  });
+
   describe("PostgresBranchRegistry", () => {
     let reg: PostgresBranchRegistry;
     let clock: number;

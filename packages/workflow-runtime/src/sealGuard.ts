@@ -526,6 +526,7 @@ type SnapshotPlan = DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
 export class SealGuardedSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   readonly loadLatestSealed?: NonNullable<SnapshotStore["loadLatestSealed"]>;
+  readonly pruneSnapshots?: NonNullable<SnapshotStore["pruneSnapshots"]>;
 
   constructor(
     readonly inner: SnapshotStore,
@@ -534,6 +535,8 @@ export class SealGuardedSnapshotStore implements SnapshotStore {
     const plan = {
       deleteExecution: "forward",
       loadLatestSealed: "forward",
+      // ADR 0134 — a range delete reads and returns no state, so there is nothing to guard.
+      pruneSnapshots: "forward",
     } satisfies SnapshotPlan;
     installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }

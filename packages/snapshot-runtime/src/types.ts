@@ -6,8 +6,10 @@ import type { ExecutionState } from "@loom/core";
  *
  * 1.1.0: added optional `loadLatestSealed()` (ADR 0106 — the latest snapshot as stored at
  *   rest, readable after a crypto-shred destroyed the subject's key).
+ * 1.2.0: added optional `pruneSnapshots()` (ADR 0134 — delete an execution's snapshots inside
+ *   an exclusive sequence range, minus an explicit keep-set, in one bounded statement).
  */
-export const SNAPSHOT_STORE_SPI_VERSION = "1.1.0";
+export const SNAPSHOT_STORE_SPI_VERSION = "1.2.0";
 
 export interface Snapshot {
   id: string;
@@ -48,6 +50,24 @@ export interface SnapshotStore {
    * (forward it, or refuse it with a reason) — its `DecoratorPlan` does not compile otherwise.
    */
   loadLatestSealed?(executionId: string): Promise<Snapshot | null>;
+  /**
+   * OPTIONAL (SPI 1.2.0, ADR 0134). Delete the execution's snapshots whose sequence lies
+   * STRICTLY between `range.after` and `range.before` (`after < sequence < before`), except
+   * those whose sequence is in `keep`, and resolve with how many were deleted. ONE bounded
+   * statement, never a per-row loop. Snapshots are a cache over the log, but not every one is
+   * expendable (a compaction checkpoint is the only record of the state below its gap), so
+   * the CALLER decides the range and keep-set (`LogLifecycle.pruneSnapshots`); a store applies
+   * them literally and never decides what is safe. Both bounds are exclusive on purpose: a
+   * caller that passes the sequence of a snapshot it must keep as a bound cannot delete it by
+   * an off-by-one. An empty or inverted range deletes nothing. Several snapshots sharing one
+   * sequence are all deleted or all kept. Idempotent. Every decorator must decide it
+   * (forward it, or refuse it with a reason) — its `DecoratorPlan` does not compile otherwise.
+   */
+  pruneSnapshots?(
+    executionId: string,
+    range: { readonly after: number; readonly before: number },
+    keep?: readonly number[]
+  ): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -65,6 +85,7 @@ export type OptionalSnapshotStoreMethod = {
 export const OPTIONAL_SNAPSHOT_STORE_METHODS = [
   "deleteExecution",
   "loadLatestSealed",
+  "pruneSnapshots",
 ] as const satisfies readonly OptionalSnapshotStoreMethod[];
 
 type _MissingOptionalSnapshotMethod = Exclude<

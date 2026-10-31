@@ -1234,6 +1234,36 @@ export function runSnapshotStoreConformance(
       await store.close();
     });
 
+    it("pruneSnapshots (if implemented) deletes the exclusive range minus the keep-set, per execution (SPI 1.2.0)", async () => {
+      const store = factory();
+      if (store.pruneSnapshots === undefined) return void (await store.close());
+      const seqs = async (id: string) => {
+        const out: number[] = [];
+        for (let s = 0; s <= 10; s++) if ((await store.loadAt(id, s)) !== null) out.push(s);
+        return out;
+      };
+      for (const s of [0, 1, 2, 3, 4, 5, 6]) {
+        await store.save(snap("p", s));
+        await store.save(snap("other", s));
+      }
+      // Both bounds are exclusive: 0 and 6 survive; the keep-set spares 3.
+      expect(await store.pruneSnapshots("p", { after: 0, before: 6 }, [3])).toBe(4);
+      expect(await seqs("p")).toEqual([0, 3, 6]);
+      // Another execution is untouched.
+      expect(await seqs("other")).toEqual([0, 1, 2, 3, 4, 5, 6]);
+      // Idempotent; an empty or inverted range and an unknown execution delete nothing.
+      expect(await store.pruneSnapshots("p", { after: 0, before: 6 }, [3])).toBe(0);
+      expect(await store.pruneSnapshots("p", { after: 4, before: 4 })).toBe(0);
+      expect(await store.pruneSnapshots("p", { after: 6, before: 0 })).toBe(0);
+      expect(await store.pruneSnapshots("nope", { after: -1, before: 99 })).toBe(0);
+      expect(await seqs("p")).toEqual([0, 3, 6]);
+      // The keep-set is optional, and -1 reaches sequence 0.
+      expect(await store.pruneSnapshots("p", { after: -1, before: 6 })).toBe(2);
+      expect((await store.loadLatest("p"))?.sequence).toBe(6);
+      expect(await seqs("p")).toEqual([6]);
+      await store.close();
+    });
+
     it("deleteExecution removes an execution's snapshots (when supported)", async () => {
       const store = factory();
       if (store.deleteExecution === undefined) return; // OPTIONAL (K10.1)

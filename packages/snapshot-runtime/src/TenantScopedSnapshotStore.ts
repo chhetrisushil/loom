@@ -11,6 +11,7 @@ const SEP = ":"; // ":" is not in the ULID alphabet — an unambiguous, collisio
 export class TenantScopedSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   readonly loadLatestSealed?: NonNullable<SnapshotStore["loadLatestSealed"]>;
+  readonly pruneSnapshots?: NonNullable<SnapshotStore["pruneSnapshots"]>;
 
   constructor(
     private readonly inner: SnapshotStore,
@@ -27,6 +28,8 @@ export class TenantScopedSnapshotStore implements SnapshotStore {
       deleteExecution: (id) => inner.deleteExecution!(this.scope(id)),
       // ADR 0106 — a shred retry over a tenant-scoped encrypting store reads through here.
       loadLatestSealed: async (id) => this.unscope(await inner.loadLatestSealed!(this.scope(id))),
+      // ADR 0134 — the id is scoped, so a tenant can only prune its own snapshots.
+      pruneSnapshots: (id, range, keep) => inner.pruneSnapshots!(this.scope(id), range, keep),
     } satisfies DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
     installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }

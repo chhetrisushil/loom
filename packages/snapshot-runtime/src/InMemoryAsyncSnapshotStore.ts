@@ -99,6 +99,30 @@ export class InMemoryAsyncSnapshotStore implements SnapshotStore {
     this.snapshots.delete(executionId);
   }
 
+  async pruneSnapshots(
+    executionId: string,
+    range: { readonly after: number; readonly before: number },
+    keep: readonly number[] = []
+  ): Promise<number> {
+    await this.tick();
+    const list = this.snapshots.get(executionId);
+    if (!list) return 0;
+    // The list is sorted by sequence: the candidates are the contiguous slice (after, before).
+    const lo = upperBound(list, range.after);
+    const hi = lowerBound(list, range.before);
+    if (hi <= lo) return 0;
+    const spared = new Set(keep);
+    const doomed = list.slice(lo, hi).filter((s) => !spared.has(s.sequence));
+    if (doomed.length === 0) return 0;
+    const kept = [
+      ...list.slice(0, lo),
+      ...list.slice(lo, hi).filter((s) => spared.has(s.sequence)),
+      ...list.slice(hi),
+    ];
+    this.snapshots.set(executionId, kept);
+    return doomed.length;
+  }
+
   async close(): Promise<void> {
     this.snapshots.clear();
   }
