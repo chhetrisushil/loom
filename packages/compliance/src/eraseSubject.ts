@@ -17,6 +17,7 @@ import {
   isKeyUnavailable,
   isPayloadShredded,
   isQuiescent,
+  iterateExecutionIds,
   recordsErasureIntent,
   senderDigestOf,
   senderErasedMarker,
@@ -70,6 +71,29 @@ export type ErasableArchive = Pick<ArchiveStore, "headers" | "listExecutions" | 
     readonly sealsSegments?: unknown;
   };
 
+/**
+ * ADR 0140 - the content store the opt-in agent claim-check offloads tool outputs to. Over a PLAINTEXT store
+ * (`sealsContent` not `true`) a key's destruction does not reach a blob, so erasure DELETES the blobs the
+ * subject's envelopes cite (those no other, non-erased execution still cites: ADR 0120 owner-set
+ * semantics) and records it (`ERASURE_CONTENT_DELETE_INTENDED` then `ERASURE_CONTENT_DELETED`). A store
+ * that seals each blob under its owning subject's key is erased by the shred itself.
+ */
+export interface ErasableContent {
+  delete(ref: { __loomContent: string }): Promise<void>;
+  /** Optional (ContentStore SPI 1.3.0): a conditional delete that spares a blob re-put since `cutoffMs`. */
+  deleteIfUntouchedSince?(ref: { __loomContent: string }, cutoffMs: number): Promise<boolean>;
+  touchClock?(): Promise<number>;
+  readonly sealsContent?: unknown;
+}
+
+/** What an erasure removed from the content store (recorded durably as `ERASURE_CONTENT_DELETED`). */
+export interface ContentCopiesDeleted {
+  /** Blobs deleted. */
+  deleted: number;
+  /** Blobs the subject's envelopes cited that another, non-erased execution still cites (kept). */
+  retained: number;
+}
+
 /** What an erasure removed from the plaintext archives (recorded durably as `ERASURE_ARCHIVE_DELETED`). */
 export interface ArchivedCopiesDeleted {
   /** Executions whose ADR 0138 compaction segments were deleted. */
@@ -106,6 +130,8 @@ const REDACT_STAGE = "__loom_redact__:";
 /** The control-stream event types of the erasure's archive work (intent first, then the completion). */
 const ARCHIVE_DELETE_INTENDED = "ERASURE_ARCHIVE_DELETE_INTENDED";
 const ARCHIVE_DELETED = "ERASURE_ARCHIVE_DELETED";
+const CONTENT_DELETE_INTENDED = "ERASURE_CONTENT_DELETE_INTENDED";
+const CONTENT_DELETED = "ERASURE_CONTENT_DELETED";
 const SENDER_REDACTION_INTENDED = "ERASURE_SENDER_REDACTION_INTENDED";
 const SENDER_REDACTED = "ERASURE_SENDER_REDACTED";
 
@@ -144,6 +170,44 @@ export class SenderRedactionUnsupportedError extends Error {
 }
 
 /**
+ * Erasure cannot complete: the subject's logs cite claim-checked blobs (ADR 0140) in a content store that
+ * erasure cannot delete from, or cannot prove other executions do not cite. Thrown BEFORE the key is
+ * destroyed (nothing was shredded).
+ */
+export class ContentCopiesRemainError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly count: number,
+    why: string
+  ) {
+    super(
+      `refusing to erase: the subject's executions cite ${count} claim-checked blob(s) in a PLAINTEXT content store and ${why}, so a key's destruction would leave the subject's tool outputs behind. Nothing was shredded.`
+    );
+    this.name = "ContentCopiesRemainError";
+    Object.setPrototypeOf(this, ContentCopiesRemainError.prototype);
+  }
+}
+
+/** Every claim-check envelope ref `value` cites (iterative, cycle-safe; the `ref` leaf is not descended). */
+export function claimCheckRefsOf(value: unknown, into: Set<string> = new Set()): Set<string> {
+  const stack: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (typeof current !== "object" || current === null || seen.has(current)) continue;
+    seen.add(current);
+    const env = current as { __loomClaimCheck?: unknown; ref?: { __loomContent?: unknown } | null };
+    const address = env.__loomClaimCheck === true ? env.ref?.__loomContent : undefined;
+    if (typeof address === "string") into.add(address);
+    for (const [key, item] of Object.entries(current)) {
+      if (typeof address === "string" && key === "ref") continue;
+      stack.push(item);
+    }
+  }
+  return into;
+}
+
+/**
  * Destroy a subject's erasure key across the given executions. Wire this to the crypto
  * plugin's `shredSubject` (bound to the KeyStore + raw store + snapshot store). MUST be
  * idempotent — a re-invocation for an already-erased subject must not double-tombstone.
@@ -167,7 +231,7 @@ export interface EraseCoordinatorOptions {
    * (the crypto plugin seals inbox payloads under the owner's subject).
    */
   eventStore: Pick<EventStore, "read" | "append"> &
-    Partial<Pick<EventStore, "deleteExecution" | "listExecutionsPage">>;
+    Partial<Pick<EventStore, "deleteExecution" | "listExecutionsPage" | "listExecutions">>;
   shred: Shredder;
   /**
    * ADR 0138 / 0139 - the archives that may hold the subject's moved envelopes (`defineConfig` wires the
@@ -177,6 +241,14 @@ export interface EraseCoordinatorOptions {
    * nothing: the key's destruction makes its segments unreadable.
    */
   archives?: readonly ErasableArchive[];
+  /**
+   * ADR 0140 - the content store claim-checked tool outputs were offloaded to (`defineConfig` wires
+   * `execution.claimCheck.store`). Over a PLAINTEXT store erasure collects the envelope refs the subject's
+   * executions cite (live logs, archive segments, snapshots) BEFORE the shred, then deletes each one no other
+   * non-erased execution still cites, journaling the intent first. Refused before the shred when blobs are
+   * cited and this is absent, cannot delete, or the event store cannot be enumerated.
+   */
+  content?: ErasableContent;
   /**
    * ADR 0139 D12 - which archived inbox envelopes name the erased subject as their SENDER (default:
    * `sender.actor === subjectId`, and `sender.tenant === tenant` in a tenant partition). Over a PLAINTEXT
@@ -264,6 +336,8 @@ export interface EraseSubjectResult {
    * The same fact is journaled on the control stream as `ERASURE_ARCHIVE_DELETED`.
    */
   archivedCopiesDeleted?: ArchivedCopiesDeleted;
+  /** Claim-checked blobs (ADR 0140) the erasure deleted from a plaintext content store; present when it deleted or kept any it found. */
+  contentDeleted?: ContentCopiesDeleted;
   /** Archived reserved segments of OTHER chains whose sender fields naming the subject were redacted (plaintext archives). */
   senderRedactions?: SenderRedaction[];
   /** Live executions blocking completion (a parked request completes when these terminate). */
@@ -436,6 +510,9 @@ export class EraseCoordinator {
       // ADR 0138 / 0139: a plaintext archive that cannot delete would outlive the erasure - refuse BEFORE
       // the key is destroyed.
       await this.assertArchivesErasable(subjectId, tenant, executions, chains);
+      // ADR 0140: the claim-checked blobs the subject's logs cite, collected (and the intent journaled)
+      // BEFORE the key is destroyed - afterwards the logs are unreadable.
+      const content = await this.planContentDeletion(subjectId, tenant, executions, proof);
       if (options.force !== undefined) {
         await this.options.shred(subjectId, executions, { force: options.force });
       } else {
@@ -444,6 +521,7 @@ export class EraseCoordinator {
       await this.options.eraseSender?.(subjectId, tenant);
       await this.purgeInboxStreams(chains);
       const archived = await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
+      const contentDeleted = await this.finishContentDeletion(subjectId, tenant, content);
       const redactions = await this.redactSenderCopies(subjectId, tenant);
       this.parked.delete(parkKey(tenant, subjectId));
       return {
@@ -452,6 +530,7 @@ export class EraseCoordinator {
         erased: executions,
         pending: [],
         ...(archived !== undefined && { archivedCopiesDeleted: archived }),
+        ...(contentDeleted !== undefined && { contentDeleted }),
         ...(redactions.length > 0 && { senderRedactions: redactions }),
         ...(shredParked && { parkedShredded: parkedOwners }),
       };
@@ -475,10 +554,17 @@ export class EraseCoordinator {
     if ((await this.liveExecutions(executions, this.options.destroyed)).length > 0) return; // still blocked
     const chains = await this.finishedChains(executions, this.options.destroyed);
     await this.assertArchivesErasable(subjectId, tenant, executions, chains);
+    const content = await this.planContentDeletion(
+      subjectId,
+      tenant,
+      executions,
+      this.options.destroyed
+    );
     await this.options.shred(subjectId, executions);
     await this.options.eraseSender?.(subjectId, tenant);
     await this.purgeInboxStreams(chains);
     await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
+    await this.finishContentDeletion(subjectId, tenant, content);
     await this.redactSenderCopies(subjectId, tenant);
     this.parked.delete(parkKey(tenant, subjectId));
   }
@@ -772,6 +858,153 @@ export class EraseCoordinator {
         if (held.length > 0) throw new SenderRedactionUnsupportedError(held);
       }
     }
+  }
+
+  // ── ADR 0140 - claim-checked blobs ──────────────────────────────────────────────
+
+  /** Does the content store seal per subject (so the shred already erased its blobs)? */
+  private sealsContent(): boolean {
+    return this.options.content?.sealsContent === true;
+  }
+
+  /** Every claim-check ref one execution cites: its live log, its archive segments and its snapshot. */
+  private async refsOfExecution(
+    executionId: string,
+    proof: DestructionProof | undefined,
+    into: Set<string>
+  ): Promise<void> {
+    const events = await this.readErasedOk(executionId, proof);
+    for (const e of events) claimCheckRefsOf(e.payload, into);
+    const read = await this.readSnapshotErasedOk(executionId, events, proof);
+    if (read.snapshot !== null && !read.opaque) claimCheckRefsOf(read.snapshot.state, into);
+    for (const archive of this.options.archives ?? []) {
+      try {
+        if ((await archive.headers(executionId)).length === 0) continue;
+        for (const seg of await archive.read(executionId)) {
+          for (const e of seg.envelopes) claimCheckRefsOf(e.payload, into);
+        }
+      } catch (err) {
+        // A sealed segment whose key is already gone cites nothing anyone can read.
+        if (!isPayloadShredded(err) && !isKeyUnavailable(err)) throw err;
+      }
+    }
+  }
+
+  /**
+   * BEFORE the shred: collect the claim-check refs the subject's executions cite, drop every one another
+   * (non-erased) execution still cites, refuse when the remainder cannot be deleted, and journal the INTENT
+   * (`ERASURE_CONTENT_DELETE_INTENDED`: the addresses and the touch cutoff). A retry after a crash finds the
+   * open intent and finishes it. `undefined`: nothing to do (no content store sealing, no refs, no intent).
+   */
+  private async planContentDeletion(
+    subjectId: string,
+    tenant: string,
+    executions: readonly string[],
+    proof: DestructionProof | undefined
+  ): Promise<
+    { intentId?: string; addresses: string[]; retained: number; cutoff?: number } | undefined
+  > {
+    if (this.sealsContent()) return undefined; // the shred erases a per-subject-sealed blob
+    const open = await this.openIntent(CONTENT_DELETE_INTENDED, CONTENT_DELETED, subjectId, tenant);
+    const mine = new Set<string>();
+    for (const id of executions) await this.refsOfExecution(id, proof, mine);
+    if (mine.size === 0 && open === undefined) return undefined;
+    const content = this.options.content;
+    const store = this.options.eventStore;
+    const enumerable = store.listExecutionsPage !== undefined || store.listExecutions !== undefined;
+    if (mine.size > 0) {
+      if (content === undefined) {
+        throw new ContentCopiesRemainError(mine.size, "no content store is wired to the erasure");
+      }
+      if (typeof content.delete !== "function") {
+        throw new ContentCopiesRemainError(mine.size, "the content store cannot delete");
+      }
+      if (!enumerable) {
+        throw new ContentCopiesRemainError(
+          mine.size,
+          "the event store cannot be enumerated, so erasure cannot tell whether another execution still cites them"
+        );
+      }
+    }
+    // The blobs another, non-erased execution still cites STAY (a deduplicated identical blob).
+    const cutoff = content?.touchClock !== undefined ? await content.touchClock() : undefined;
+    const stillCited = new Set<string>();
+    if (mine.size > 0) {
+      const own = new Set(executions);
+      const ids = new Set<string>();
+      for await (const id of iterateExecutionIds(store)) ids.add(id);
+      for (const archive of this.options.archives ?? []) {
+        let cursor: string | undefined;
+        for (;;) {
+          const page = await archive.listExecutions({
+            ...(cursor !== undefined && { cursor }),
+            limit: 500,
+          });
+          for (const id of page.executionIds) ids.add(id);
+          if (page.nextCursor === undefined || page.nextCursor === cursor) break;
+          cursor = page.nextCursor;
+        }
+      }
+      for (const id of ids) {
+        if (own.has(id) || id === ERASURE_STREAM) continue;
+        const cited = new Set<string>();
+        await this.refsOfExecution(id, proof, cited);
+        for (const a of cited) if (mine.has(a)) stillCited.add(a);
+        if (stillCited.size === mine.size) break;
+      }
+    }
+    const addresses = new Set<string>();
+    const prior = open?.payload as { addresses?: string[]; cutoff?: number } | undefined;
+    for (const a of prior?.addresses ?? []) addresses.add(a);
+    for (const a of mine) if (!stillCited.has(a)) addresses.add(a);
+    const retained = stillCited.size;
+    const intentId =
+      open?.id ??
+      (addresses.size > 0 || retained > 0
+        ? await this.appendIntent(CONTENT_DELETE_INTENDED, subjectId, tenant, {
+            addresses: [...addresses],
+            retained,
+            ...(cutoff !== undefined && { cutoff }),
+          })
+        : undefined);
+    return {
+      ...(intentId !== undefined && { intentId }),
+      addresses: [...addresses],
+      retained,
+      ...(prior?.cutoff !== undefined
+        ? { cutoff: Math.min(prior.cutoff, cutoff ?? prior.cutoff) }
+        : cutoff !== undefined
+          ? { cutoff }
+          : {}),
+    };
+  }
+
+  /** AFTER the shred: delete the planned blobs, then journal the completion naming the intent. */
+  private async finishContentDeletion(
+    subjectId: string,
+    tenant: string,
+    plan: { intentId?: string; addresses: string[]; retained: number; cutoff?: number } | undefined
+  ): Promise<ContentCopiesDeleted | undefined> {
+    if (plan === undefined || plan.intentId === undefined) return undefined;
+    const content = this.options.content;
+    let deleted = 0;
+    for (const address of plan.addresses) {
+      const ref = { __loomContent: address };
+      if (content === undefined) break; // planned only when a store was wired
+      if (plan.cutoff !== undefined && content.deleteIfUntouchedSince !== undefined) {
+        // A concurrent re-put (another subject's identical blob) bumped the touch time: spared.
+        if (await content.deleteIfUntouchedSince(ref, plan.cutoff)) deleted++;
+        else plan.retained++;
+      } else {
+        await content.delete(ref); // idempotent: an absent blob is a no-op
+        deleted++;
+      }
+    }
+    await this.appendCompletion(CONTENT_DELETED, subjectId, tenant, plan.intentId, {
+      deleted,
+      retained: plan.retained,
+    });
+    return { deleted, retained: plan.retained };
   }
 
   /**

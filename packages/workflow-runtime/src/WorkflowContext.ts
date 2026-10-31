@@ -1003,6 +1003,8 @@ export class WorkflowContextImpl implements WorkflowContext {
       stepId: id,
       workflowId: this.workflowId,
       attempt: this.vm.peekState().frames[id]?.attempts ?? 1,
+      // ADR 0140 - the frame's task kind, so middleware can tell an agent's tool frames from its model turn.
+      ...("kind" in task && typeof task.kind === "string" && { taskKind: task.kind }),
       emit: (eventType: string, payload: unknown) =>
         this.commit(
           eventType,

@@ -2,6 +2,7 @@ import type { EventEnvelope, ExecutionState } from "@loom/core";
 import { type DestructionProof, type EventStore, erasureWindowView } from "@loom/event-runtime";
 import { foldEvents } from "@loom/replay-vm";
 import type { SubjectIndex } from "./SubjectIndex";
+import { claimCheckRefsOf } from "./eraseSubject";
 
 // ── T3-R2/R3 — subject access & portability (GDPR Art. 15/20) ──────────────────
 //
@@ -27,6 +28,22 @@ export interface UnarchivedRange {
   readonly why: "legacy" | "missing";
 }
 
+/**
+ * ADR 0140 - one claim-checked tool output a subject's log cites, RESOLVED from the content store: the log
+ * holds only `{ ref, size, digest }`, so an access/portability export that returned the envelope alone
+ * would omit the data. `value` is the decoded JSON; `bytesBase64` a stream-typed (non-JSON) blob;
+ * `missing` a blob the store no longer holds (erased or reclaimed).
+ */
+export interface ClaimCheckedBlob {
+  /** The blob's content address. */
+  address: string;
+  size?: number;
+  digest?: unknown;
+  value?: unknown;
+  bytesBase64?: string;
+  missing?: true;
+}
+
 /** One execution's contribution to a subject export. */
 export interface SubjectExecutionExport {
   executionId: string;
@@ -36,6 +53,11 @@ export interface SubjectExecutionExport {
   state: ExecutionState;
   /** Raw event log — the Art. 20 "portability" view (machine-readable). Omitted if not requested. */
   events?: EventEnvelope[];
+  /**
+   * ADR 0140 - the claim-checked tool outputs this execution's events cite, resolved (see
+   * {@link ClaimCheckedBlob}). Present only when `content` was given and the log cites any.
+   */
+  claimChecked?: ClaimCheckedBlob[];
   /**
    * ADR 0138 - checkpoints of a log compacted BEFORE the compaction archive existed (their removed
    * events survive only as a folded state). Present only when such an execution is exported.
@@ -107,6 +129,11 @@ export interface ExportSubjectOptions {
       }>
     >;
   };
+  /**
+   * ADR 0140 - the content store claim-checked tool outputs were offloaded to. Given, each execution's
+   * export resolves the blobs its events cite (`claimChecked`), so the export is the data, not just refs.
+   */
+  content?: { get(ref: { __loomContent: string }): Promise<Uint8Array | null> };
   /** Include the raw event log per execution (Art. 20 portability). Default `true`. */
   includeEvents?: boolean;
   /** T3-R2.4 — scope the export to a tenant (default: the single partition). */
@@ -176,12 +203,15 @@ export async function exportSubject(
     const reserved = erasureWindow
       ? []
       : ((await options.archive?.readReservedArchive?.(executionId)) ?? []);
+    const claimChecked =
+      options.content === undefined ? [] : await resolveBlobs(options.content, events);
     executions.push({
       executionId,
       workflowId,
       status: state.status,
       state,
       ...(includeEvents && { events }),
+      ...(claimChecked.length > 0 && { claimChecked }),
       ...(legacy.length > 0 && { legacyCheckpoints: legacy }),
       ...(reserved.length > 0 && {
         reservedStreams: reserved.map((r) => ({ ...r, unarchived: [...r.unarchived] })),
@@ -191,4 +221,64 @@ export async function exportSubject(
     });
   }
   return { subjectId, executions };
+}
+
+/** Resolve every claim-check envelope the events cite (deduped by address), in first-seen order. */
+async function resolveBlobs(
+  content: NonNullable<ExportSubjectOptions["content"]>,
+  events: readonly EventEnvelope[]
+): Promise<ClaimCheckedBlob[]> {
+  const meta = new Map<string, { size?: number; digest?: unknown; codec?: string }>();
+  for (const e of events) collectEnvelopes(e.payload, meta);
+  const out: ClaimCheckedBlob[] = [];
+  for (const [address, m] of meta) {
+    const bytes = await content.get({ __loomContent: address });
+    const base = {
+      address,
+      ...(m.size !== undefined && { size: m.size }),
+      ...(m.digest !== undefined && { digest: m.digest }),
+    };
+    if (bytes === null) {
+      out.push({ ...base, missing: true });
+    } else if (m.codec === undefined || m.codec === "json") {
+      out.push({ ...base, value: JSON.parse(new TextDecoder().decode(bytes)) as unknown });
+    } else {
+      out.push({ ...base, bytesBase64: Buffer.from(bytes).toString("base64") });
+    }
+  }
+  return out;
+}
+
+function collectEnvelopes(
+  value: unknown,
+  into: Map<string, { size?: number; digest?: unknown; codec?: string }>
+): void {
+  const addresses = claimCheckRefsOf(value);
+  if (addresses.size === 0) return;
+  const stack: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (typeof cur !== "object" || cur === null || seen.has(cur)) continue;
+    seen.add(cur);
+    const env = cur as {
+      __loomClaimCheck?: unknown;
+      ref?: { __loomContent?: unknown };
+      size?: unknown;
+      digest?: unknown;
+      codec?: unknown;
+    };
+    const address = env.__loomClaimCheck === true ? env.ref?.__loomContent : undefined;
+    if (typeof address === "string" && !into.has(address)) {
+      into.set(address, {
+        ...(typeof env.size === "number" && { size: env.size }),
+        ...(env.digest !== undefined && { digest: env.digest }),
+        ...(typeof env.codec === "string" && { codec: env.codec }),
+      });
+    }
+    for (const [k, item] of Object.entries(cur)) {
+      if (typeof address === "string" && k === "ref") continue;
+      stack.push(item);
+    }
+  }
 }

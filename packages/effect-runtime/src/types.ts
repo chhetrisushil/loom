@@ -103,6 +103,14 @@ export interface EffectContext {
    */
   readonly toolId?: string;
   /**
+   * ADR 0140 - the `TaskDefinition.kind` of the durable frame this effect runs in (`"tool"` for an
+   * `agentLoop$` tool call, `"llm"` for its model turn, `"memory"` for its compaction), set by the workflow
+   * runtime on durable steps. Absent on a transient (`invokeTransient`) call and on hand-built contexts.
+   * Lets middleware that must touch only an agent's TOOL frames (the opt-in claim-check) tell them from
+   * a model or summarizer call that shares no id vocabulary with them.
+   */
+  readonly taskKind?: string;
+  /**
    * L30 — set only on a transient call stamped as an execution (`ctx.decide`'s
    * scope). Several such calls share `(executionId, stepId = toolId)`, so a site
    * that mints an id from those two (A2A task id, redaction secret-ref id) MUST

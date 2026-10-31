@@ -2,6 +2,7 @@ import { SkillRegistry, configureAgentLoopDefaults } from "@loom/agent";
 import { agentSurfaceProjection, createSurfaceEmitter } from "@loom/agent-surface";
 import {
   DEFAULT_TENANT as DEFAULT_ERASE_TENANT,
+  type ErasableContent,
   EraseCoordinator,
   type EraseSubjectOptions,
   type EraseSubjectResult,
@@ -498,7 +499,17 @@ export interface ClaimCheckConfig {
    * Where the offloaded bytes go: the app's content store (the one you also give `sweepUnpinnedContent`).
    * `app` has no content store of its own, so it is supplied here. Any `ContentStore` satisfies it.
    */
-  store: ClaimCheckStore;
+  store: ClaimCheckStore & {
+    /** Required with `compliance.erase`: erasing a subject deletes the blobs their tool outputs went to. */
+    delete?(ref: { __loomContent: string }): Promise<void>;
+    /** Read side: lets `app.exportSubject` return the resolved tool outputs, not just their refs. */
+    get?(ref: { __loomContent: string }): Promise<Uint8Array | null>;
+    /**
+     * `true` for a store that seals each blob under its owning subject's key, so the shred erases it.
+     * REQUIRED with `security.crypto` (none ships yet, ADR 0140 D8); otherwise leave it unset.
+     */
+    readonly sealsContent?: boolean;
+  };
   /**
    * The tool ids to claim-check, i.e. the `name` of each tool the agent can call (`agentLoop$` runs a tool
    * under its own name as the effect id). REQUIRED and explicit on purpose: there is no "all". The model
@@ -521,12 +532,44 @@ export interface ClaimCheckConfig {
    * model sees only the ref and size. A result carrying a taint marker is never previewed.
    */
   preview?: number | false;
-  /** Called after each offload (metrics; ADR 0054 CC-3). */
+  /**
+   * Called after each offload (metrics; ADR 0054 CC-3). A throw is caught and reported through `onWarn`: the
+   * tool has already run and its result is recorded as the envelope, so a failing hook must not fail the call.
+   */
   onOffload?: ClaimCheckOptions["onOffload"];
+  /**
+   * THE AUDIT TRADE. By default every offloaded blob is RETAINED (`retain: true` on the envelope): the log
+   * no longer holds the tool output, so the blob is the only copy and the content sweep never TTL-reclaims
+   * it while any log, archive segment or snapshot cites it (ADR 0140 D6; auditability stays intact). List
+   * tool ids here (or `true` for all) to mark their blobs RECLAIMABLE instead: genuine telemetry whose
+   * bytes may be reclaimed by `sweepUnpinnedContent` after the TTL, leaving a log that names a blob that
+   * may be gone (`resolveClaimCheck` then returns `null`). Choose it only for output nobody will audit.
+   */
+  reclaimable?: true | readonly string[];
 }
 
-/** Validate `execution.claimCheck` (TypeError on bad values) and build its middleware. */
-function claimCheckFrom(raw: ClaimCheckConfig | undefined): EffectMiddleware | undefined {
+/** A tool-call frame of `agentLoop$`: task kind `tool`, step id `<loop>#turn:<i>:tool:<j>` (ADR 0061 D1). */
+const AGENT_TOOL_STEP = /#turn:\d+:tool:\d+$/;
+
+/** What {@link claimCheckFrom} resolved: the middleware plus the pieces erasure and export wire to. */
+interface ResolvedClaimCheck {
+  middleware: EffectMiddleware;
+  /** The tool ids the opt-in covers (boot checks read them). */
+  toolIds: readonly string[];
+  store: ClaimCheckStore;
+}
+
+/**
+ * Validate `execution.claimCheck` (TypeError on bad values) and build its middleware. FAILS CLOSED against
+ * the two combinations that would leave an erased subject's data behind (ADR 0140 D8): a configured
+ * `security.crypto` needs a store that seals per subject (`sealsContent: true`; none ships yet), and a
+ * `compliance.erase` needs a store that can `delete`.
+ */
+function claimCheckFrom(
+  raw: ClaimCheckConfig | undefined,
+  posture: { crypto: boolean; erase: boolean },
+  onWarn: (message: string) => void
+): ResolvedClaimCheck | undefined {
   if (raw === undefined) return undefined;
   const bad = (what: string): never => {
     throw new TypeError(`defineConfig: execution.claimCheck.${what}`);
@@ -549,17 +592,73 @@ function claimCheckFrom(raw: ClaimCheckConfig | undefined): EffectMiddleware | u
   if (preview !== false && (!Number.isSafeInteger(preview) || preview < 0)) {
     bad("preview must be a non-negative integer, or false for no default digest");
   }
+  const reclaimable = raw.reclaimable ?? [];
+  if (
+    reclaimable !== true &&
+    (!Array.isArray(reclaimable) || reclaimable.some((id) => typeof id !== "string"))
+  ) {
+    bad("reclaimable must be true or an array of tool ids");
+  }
+  if (Array.isArray(reclaimable)) {
+    for (const id of reclaimable) {
+      if (!raw.toolIds.includes(id)) bad(`reclaimable names "${id}", which is not in toolIds`);
+    }
+  }
+  const sealsContent = (raw.store as { sealsContent?: unknown }).sealsContent === true;
+  if (posture.crypto && !sealsContent) {
+    throw new TypeError(
+      "defineConfig: execution.claimCheck with security.crypto is refused: the offloaded tool outputs would sit in the content store in PLAINTEXT, outside the per-subject keys that seal the log, so erasing a subject (a key's destruction) could not reach them. The ContentStore SPI has no subject on put/get, so no per-subject sealing store ships yet. Either drop execution.claimCheck, or pass a store that seals each blob under its owning subject's key and declares `sealsContent: true`. Nothing was composed."
+    );
+  }
+  if (posture.erase && !sealsContent && typeof raw.store.delete !== "function") {
+    throw new TypeError(
+      "defineConfig: execution.claimCheck with compliance.erase needs a content store that can delete(): erasing a subject must remove the blobs their tool outputs were offloaded to, and a store without delete() would leave them behind. Nothing was composed."
+    );
+  }
   const tools = new Set(raw.toolIds);
+  const everyReclaimable = reclaimable === true;
+  const reclaimableTools = new Set(Array.isArray(reclaimable) ? reclaimable : []);
+  const userOffload = raw.onOffload;
   const inner = claimCheckMiddleware({
     store: raw.store,
     inlineCapBytes: cap,
     ...(raw.digests !== undefined && { digests: raw.digests }),
     ...(preview !== false && preview > 0 && { defaultDigest: previewDigest(preview) }),
-    ...(raw.onOffload !== undefined && { onOffload: raw.onOffload }),
+    // L9: the tool already ran and its result is recorded as the envelope; a throwing metrics hook must
+    // not turn that into a failed tool call. Reported, never swallowed silently.
+    ...(userOffload !== undefined && {
+      onOffload: (info: Parameters<NonNullable<ClaimCheckOptions["onOffload"]>>[0]) => {
+        try {
+          userOffload(info);
+        } catch (err) {
+          onWarn(
+            `execution.claimCheck.onOffload threw for "${info.toolId ?? info.stepId}" (the offload stands): ${err instanceof Error ? err.message : String(err)}`
+          );
+        }
+      },
+    }),
+    // ADR 0140 D6: the blob is the only copy of a value the log once held; retained unless opted out.
+    retain: (toolId) =>
+      !everyReclaimable && !(toolId !== undefined && reclaimableTools.has(toolId)),
+    // M6: a media result is rendered by the loop from its own parts; offloading it would blind the model.
+    passThrough: (result) =>
+      typeof result === "object" &&
+      result !== null &&
+      (result as { __loomMediaResult?: unknown }).__loomMediaResult === true &&
+      Array.isArray((result as { parts?: unknown }).parts),
+    // M7: a tool cannot hand the log an envelope of its own making.
+    envelopesAreData: true,
   });
-  // Only the listed tools reach the middleware: everything else is passed through untouched.
-  return (ctx, input, next) =>
-    ctx.toolId !== undefined && tools.has(ctx.toolId) ? inner(ctx, input, next) : next();
+  // Only an AGENT TOOL FRAME of a listed tool reaches the middleware (M5): not `invokeTransient`, not a
+  // model or summarizer call that happens to share an id, not a hand-written flow step.
+  const middleware: EffectMiddleware = (ctx, input, next) =>
+    ctx.toolId !== undefined &&
+    tools.has(ctx.toolId) &&
+    ctx.taskKind === "tool" &&
+    AGENT_TOOL_STEP.test(ctx.stepId)
+      ? inner(ctx, input, next)
+      : next();
+  return { middleware, toolIds: raw.toolIds, store: raw.store };
 }
 
 /** Validate `durability.heartbeat` (TypeError on bad values) and resolve the lease store (D11 "Config"). */
@@ -1715,8 +1814,12 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   }
   // ADR 0140 -- opt-in claim-check, OUTSIDE redaction (it stores what redaction already scrubbed) and
   // inside the kill switch (a stopped effect must not run, let alone store). Absent unless configured.
-  const claimCheck = claimCheckFrom(config.claimCheck);
-  if (claimCheck !== undefined) effectMiddleware.unshift(claimCheck);
+  const claimCheck = claimCheckFrom(
+    config.claimCheck,
+    { crypto: config.crypto !== undefined, erase: config.compliance?.erase !== undefined },
+    config.onWarn ?? defaultWarn
+  );
+  if (claimCheck !== undefined) effectMiddleware.unshift(claimCheck.middleware);
   if (killSwitch !== undefined) effectMiddleware.unshift(killSwitchMiddleware(killSwitch));
   // Policy enforcement (policy$ → K2 ring). Per-flow policies are read from each flow's
   // `policies` (config.flows + flowModules — read by shape, no runtime needed yet); `config.policies`
@@ -1767,6 +1870,15 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // Composition-time effect registration (single-effect dispatchers like
   // mcp.invoke / sandbox.eval register here; P5 — static, at boot).
   config.registerEffects?.(effectRuntime);
+  // ADR 0140 M5: a listed id that is a model (or summarizer) effect would have its result offloaded INLINE
+  // reads break; refuse at boot where the registry can tell. (A tool registered later is checked at run time.)
+  for (const id of claimCheck?.toolIds ?? []) {
+    if (effectRuntime.kindOf(id) === "llm") {
+      throw new TypeError(
+        `defineConfig: execution.claimCheck.toolIds lists "${id}", which is a model (llm) effect: its result is read inline by the loop and must never be offloaded. List only tools.`
+      );
+    }
+  }
   const { requireContinuation: _requireContinuation, ...effectReasoning } = config.reasoning || {};
   applyReasoningDefaults(
     effectRuntime,
@@ -1897,6 +2009,10 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
           shred: config.compliance.erase.shred,
           // ADR 0138 / 0139: erasure reckons with the archive that holds the subject's moved envelopes.
           ...(compactionArchive !== undefined && { archives: [compactionArchive] }),
+          // ADR 0140: the blobs the opt-in claim-check offloaded tool outputs to are erased with the subject.
+          ...(claimCheck !== undefined && {
+            content: claimCheck.store as unknown as ErasableContent,
+          }),
           // ADR 0139 N6: erasing a subject also erases them as a message SENDER (the crypto layer's keyed
           // handle and its seed), in the tenant partition the erasure names.
           ...(senderEraser !== undefined && {
@@ -2391,6 +2507,13 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         ...(options?.tenant !== undefined && { tenant: options.tenant }),
         ...(destroyedProof !== undefined && { destroyed: destroyedProof }),
         ...(options?.force !== undefined && { force: options.force }),
+        // ADR 0140: resolve the claim-checked tool outputs the subject's log cites.
+        ...(claimCheck !== undefined &&
+          typeof (claimCheck.store as { get?: unknown }).get === "function" && {
+            content: claimCheck.store as unknown as {
+              get(ref: { __loomContent: string }): Promise<Uint8Array | null>;
+            },
+          }),
         // ADR 0138: an Art. 15/20 export includes what compaction MOVED into the archive. Read through a
         // lifecycle over the same RAW store (see above), so the archive read opens with this app's keys.
         ...(compactionArchive !== undefined && {

@@ -1,3 +1,4 @@
+import { isTainted, taintOf, tainted } from "@loom/classify";
 import type { EffectMiddleware } from "@loom/effect-runtime";
 
 // ── ADR 0051 D3 / ADR 0054 — claim-check: the reference IS the recorded value ─
@@ -43,6 +44,13 @@ export interface ClaimCheckEnvelope {
    * resolve those with {@link resolveClaimCheckBytes}, not JSON parsing.
    */
   readonly codec?: string;
+  /**
+   * ADR 0140 - `true`: the offloaded bytes are the ONLY copy of a value the log once held (the opt-in
+   * agent claim-check), so the content sweep treats the ref as LOAD-BEARING: kept while any live log,
+   * archive segment or snapshot cites it, freed only when that history is erased or discarded. Absent
+   * (the classic ADR 0054 telemetry offload): the ref is TTL-reclaimable (ADR 0055 D4).
+   */
+  readonly retain?: true;
 }
 
 // ── ST-2 (ADR 0059) — stream-typed tool results ───────────────────────────────
@@ -128,6 +136,38 @@ export interface ClaimCheckOptions {
   defaultDigest?: (result: unknown, toolId: string | undefined) => unknown;
   /** CC-3 — called after each offload (metrics/log-budget regression tracking). */
   onOffload?: (info: ClaimCheckInfo) => void;
+  /**
+   * ADR 0140 - mark the envelope `retain: true` (see {@link ClaimCheckEnvelope.retain}): the offloaded
+   * blob is audit evidence the content sweep must not TTL-reclaim. A function decides per tool id. Default
+   * unset: the classic reclaimable telemetry offload.
+   */
+  retain?: boolean | ((toolId: string | undefined) => boolean);
+  /**
+   * ADR 0140 - results this returns `true` for pass through UNTOUCHED, never offloaded (e.g. a media
+   * result, whose parts the loop renders itself). Runs before the cap.
+   */
+  passThrough?: (result: unknown, toolId: string | undefined) => boolean;
+  /**
+   * ADR 0140 - treat a result that already LOOKS like an envelope as DATA, not as a ref this middleware
+   * made: it is force-offloaded like any other value, so the log never records a tool-forged
+   * `{ __loomClaimCheck, ref }` the sweep, the resolvers or the model would trust. Default unset: an
+   * existing envelope passes through (stacked wiring, never double-wrapped).
+   */
+  envelopesAreData?: boolean;
+}
+
+/** The first taint origin found anywhere in `value` (iterative, cycle-safe), or undefined. */
+function firstTaintOrigin(value: unknown): string | undefined {
+  const stack: unknown[] = [value];
+  const seen = new WeakSet<object>();
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (typeof current !== "object" || current === null || seen.has(current)) continue;
+    seen.add(current);
+    if (isTainted(current)) return taintOf(current)?.origin ?? "unknown";
+    for (const item of Array.isArray(current) ? current : Object.values(current)) stack.push(item);
+  }
+  return undefined;
 }
 
 /**
@@ -145,7 +185,12 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
   const encoder = new TextEncoder();
   return async (ctx, _input, next): Promise<unknown> => {
     const result = await next();
-    if (isClaimCheck(result)) return result; // already an envelope (stacked wiring) — never double-wrap
+    if (options.passThrough?.(result, ctx.toolId) === true) return result;
+    // already an envelope (stacked wiring) — never double-wrap; unless envelopes are DATA (ADR 0140 M7)
+    const forged = options.envelopesAreData === true && isClaimCheck(result);
+    if (!forged && isClaimCheck(result)) return result;
+    const retain =
+      typeof options.retain === "function" ? options.retain(ctx.toolId) : options.retain === true;
 
     // ST-2 — stream-typed result: ALWAYS offloads (a stream is a declared-big
     // payload), never buffered by the middleware (a counting wrapper is the only
@@ -184,6 +229,7 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
         size,
         codec: result.codec ?? "bytes",
         ...(result.digest !== undefined && { digest: result.digest }),
+        ...(retain && { retain: true as const }),
       };
       options.onOffload?.({
         ...(ctx.toolId !== undefined && { toolId: ctx.toolId }),
@@ -204,7 +250,7 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
     }
     if (json === undefined) return result;
     const bytes = encoder.encode(json);
-    if (bytes.byteLength <= cap) return result;
+    if (!forged && bytes.byteLength <= cap) return result;
 
     const ref = await options.store.put(bytes);
     const declared = ctx.toolId === undefined ? undefined : options.digests?.[ctx.toolId];
@@ -215,6 +261,7 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
       ref: { __loomContent: ref.__loomContent },
       size: bytes.byteLength,
       ...(projected !== undefined && { digest: projected }),
+      ...(retain && { retain: true as const }),
     };
     options.onOffload?.({
       ...(ctx.toolId !== undefined && { toolId: ctx.toolId }),
@@ -224,7 +271,11 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
       size: bytes.byteLength,
       contentAddress: ref.__loomContent,
     });
-    return envelope;
+    // ADR 0085 / 0140 - an offloaded result that carried untrusted content (a tainted top level OR a
+    // nested marker) must not launder it into a clean-looking envelope + digest: the envelope itself is
+    // tainted, so the loop fences it and records the taint (the sweep still finds the inner envelope).
+    const origin = json.includes('"__loomTainted"') ? firstTaintOrigin(result) : undefined;
+    return origin === undefined ? envelope : tainted(envelope, origin);
   };
 }
 
@@ -232,6 +283,8 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
 export interface PreviewDigest {
   /** The first `maxChars` UTF-16 code units of `JSON.stringify(result)`, never ending mid-surrogate-pair. */
   readonly preview: string;
+  /** `true` when the result's JSON continues past the preview (the tail is NOT shown); absent when the preview is the whole text. */
+  readonly truncated?: true;
 }
 
 /**
@@ -262,7 +315,7 @@ export function previewDigest(
       const last = json.charCodeAt(end - 1);
       if (last >= 0xd800 && last <= 0xdbff) end--;
     }
-    return { preview: json.slice(0, end) };
+    return { preview: json.slice(0, end), ...(end < json.length && { truncated: true as const }) };
   };
 }
 

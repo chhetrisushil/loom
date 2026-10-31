@@ -1610,7 +1610,7 @@ export async function agentLoop$(
               // results): no assistant turn, no thinking block, no open tool_use. A pure function of the
               // journaled transcript; a transcript without reasoning never reaches this branch.
               const fold = messages.map(withoutReasoningParts);
-              const { summary } = (await ctx.execute(
+              const compacted = await ctx.execute(
                 {
                   _tag: "TaskDefinition",
                   kind: "memory",
@@ -1618,7 +1618,9 @@ export async function agentLoop$(
                   toolId: compaction.toolId,
                 },
                 { messages: fold }
-              )) as { summary: string };
+              );
+              assertNotClaimChecked("compaction", compaction.toolId, compacted);
+              const { summary } = compacted as { summary: string };
               const summaryText = `Summary of earlier turns: ${summary}`;
               const summaryContent: LlmContent = JSON.stringify(fold).includes('"__loomTainted"')
                 ? tainted(summaryText, "agent:compaction-summary")
@@ -1636,7 +1638,7 @@ export async function agentLoop$(
               // ADR 0133 D5 - no reasoning on the transcript: the keep-tail shape, unchanged.
               const fold = messages.slice(0, foldLength).map(withoutReasoningParts);
               const recent = messages.slice(foldLength).map(withoutReasoningParts);
-              const { summary } = (await ctx.execute(
+              const compacted = await ctx.execute(
                 {
                   _tag: "TaskDefinition",
                   kind: "memory",
@@ -1644,7 +1646,9 @@ export async function agentLoop$(
                   toolId: compaction.toolId,
                 },
                 { messages: fold }
-              )) as { summary: string };
+              );
+              assertNotClaimChecked("compaction", compaction.toolId, compacted);
+              const { summary } = compacted as { summary: string };
               const summaryText = `Summary of earlier turns: ${summary}`;
               // Rebuild the virtual transcript exactly as the old body would hold it: the summary plus
               // its `keepOld` newest messages. Physical messages pulled in beyond that (the alignment's
@@ -1688,7 +1692,7 @@ export async function agentLoop$(
         warnedStateGrowth = true;
         emitLoopWarning(
           config,
-          `agentLoop$: the transcript is ${transcriptBytes} bytes by the loop's compaction measure (> ${warnBytes}; text and tool-result bytes, not JSON size), every turn's whole model input is journaled, and this loop has no \`compaction\`, so its journaled state grows O(turns^2) and resume reads it all. Set \`compaction: { toolId, afterBytes }\` (\`createSummarizerEffect(provider)\` is a ready-made toolId); to also shrink the tool outputs (about 80% of the state) opt in to claim-check with \`defineConfig({ execution: { claimCheck: { store, toolIds } } })\` (ADR 0140); see docs/scaling.md "Agent state growth". Silence with \`warnTranscriptBytes: false\`.`,
+          `agentLoop$: the transcript is ${transcriptBytes} bytes by the loop's compaction measure (> ${warnBytes}; text and tool-result bytes, not JSON size), every turn's whole model input is journaled, and this loop has no \`compaction\`, so its journaled state grows O(turns^2) and resume reads it all. Set \`compaction: { toolId, afterBytes }\` (\`createSummarizerEffect(provider)\` is a ready-made toolId); to also shrink the tool outputs (about 80% of the state) opt in to claim-check with \`defineConfig({ execution: { claimCheck: { store, toolIds } } })\` (ADR 0140), which WITHHOLDS an offloaded tool's result from the model except its digest/preview, so list only tools whose output the model does not need in full; see docs/scaling.md "Agent state growth". Silence with \`warnTranscriptBytes: false\`.`,
           "LOOM_AGENT_STATE_GROWTH"
         );
       }
@@ -1815,6 +1819,7 @@ export async function agentLoop$(
         turnRequest
       );
 
+      assertNotClaimChecked("model", config.modelToolId, response);
       lastContent = response.content;
       if (response.stopReason === "end_turn" || !response.toolCalls?.length) break;
 
@@ -2037,4 +2042,22 @@ export function registerReasoningRoutes(
     );
   }
   return toolIdFor;
+}
+
+/**
+ * ADR 0140 - the model turn and the compaction summary are read INLINE by the loop. If the opt-in claim-check
+ * (`defineConfig({ execution: { claimCheck: { toolIds } } })`) was pointed at the model or summarizer effect, its
+ * result is a `{ __loomClaimCheck, ref }` envelope the loop cannot read: fail with the cause named, not a
+ * confusing "no content" or an undefined `summary`.
+ */
+function assertNotClaimChecked(what: string, toolId: string | undefined, value: unknown): void {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { __loomClaimCheck?: unknown }).__loomClaimCheck === true
+  ) {
+    throw new Error(
+      `agentLoop$: the ${what} effect "${toolId ?? "(reasoning)"}" returned a claim-check envelope, so \`execution.claimCheck.toolIds\` lists it. The loop reads the ${what} result inline; list only your TOOLS' ids there (ADR 0140).`
+    );
+  }
 }

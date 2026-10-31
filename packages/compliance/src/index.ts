@@ -8,17 +8,22 @@ export {
 export {
   exportSubject,
   type ExportSubjectOptions,
+  type ClaimCheckedBlob,
   type SubjectExecutionExport,
   type SubjectExport,
   type UnarchivedRange,
 } from "./exportSubject";
 export {
   ArchivedCopiesRemainError,
+  ContentCopiesRemainError,
+  claimCheckRefsOf,
   SenderRedactionUnsupportedError,
   defaultSenderMatches,
   EraseCoordinator,
   ERASURE_STREAM,
   type ArchivedCopiesDeleted,
+  type ContentCopiesDeleted,
+  type ErasableContent,
   type EraseCoordinatorOptions,
   type ErasableArchive,
   type SenderMatcher,

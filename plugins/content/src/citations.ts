@@ -26,8 +26,11 @@ function mediaSourceAddress(value: object): string | undefined {
  * string `__loomContent` is a ref leaf — this covers bare ADR 0046
  * `ContentRef`s (e.g. a finding's `evidence` list, an externalized field) AND
  * the `ref` of an ADR 0054 claim-check envelope. `inEnvelope` is true ONLY for
- * an envelope's own `ref` — the offloaded value, the one citation whose erasure
- * is replay-invisible (ADR 0055 D4). Every other envelope field (`digest` above
+ * a RECLAIMABLE envelope's own `ref` — the offloaded value, the one citation whose
+ * erasure is replay-invisible (ADR 0055 D4). An envelope marked `retain: true` (ADR 0140:
+ * the opt-in agent claim-check, whose offloaded bytes are the ONLY copy of a tool output the
+ * log once held) reports its ref as load-bearing (`inEnvelope` false): kept while any live
+ * log, archive segment or snapshot cites it, freed only when that history is deleted. Every other envelope field (`digest` above
  * all: orchestration branches on it) is recorded, replay-visible data and is
  * walked in the envelope's own context like any other payload.
  *
@@ -71,7 +74,10 @@ export function visitCitedAddresses(
       continue;
     }
     const offloaded = envelopeRef(current);
-    if (offloaded !== undefined) visit(offloaded, true);
+    // ADR 0140 - a RETAINED envelope's blob is audit evidence, not telemetry: load-bearing.
+    if (offloaded !== undefined) {
+      visit(offloaded, (current as { retain?: unknown }).retain !== true);
+    }
     for (const [key, item] of Object.entries(current)) {
       if (offloaded !== undefined && key === "ref") continue;
       stack.push(item);
