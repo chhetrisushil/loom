@@ -405,9 +405,21 @@ describe("ProfilingSnapshotStore", () => {
       expect(store.profile().largest.map((l) => l.sequence)).toEqual([3]);
     });
 
+    it("F2: the range bounds are exclusive: a held sequence equal to range.after survives", async () => {
+      const inner = new InMemoryAsyncSnapshotStore();
+      const store = new ProfilingSnapshotStore(inner);
+      await store.save(sized("a", 100, 3));
+      await inner.save(sized("a", 100, 5)); // written around the profiler, so rows go
+      expect(await store.pruneSnapshots!("a", { after: 3, before: 10 })).toBe(1);
+      expect(store.profile().largest.map((l) => l.sequence)).toEqual([3]);
+    });
+
     it("F5: onLargeSnapshot without largeThresholdBytes throws", () => {
       expect(
-        () => new ProfilingSnapshotStore(new InMemoryAsyncSnapshotStore(), { onLargeSnapshot: () => {} })
+        () =>
+          new ProfilingSnapshotStore(new InMemoryAsyncSnapshotStore(), {
+            onLargeSnapshot: () => {},
+          })
       ).toThrow(RangeError);
     });
 
@@ -466,6 +478,10 @@ describe("ProfilingSnapshotStore", () => {
       expect(top.remove("d")).toBe(true);
       expect(top.check()).toBe(true);
       expect(top.remove("zzz")).toBe(false);
+      const solo = new BoundedTopN(2);
+      solo.offer("only", 3, 1);
+      expect(solo.remove("only")).toBe(true); // the element IS the last one: pop path
+      expect(solo.size).toBe(0);
       expect(top.remove("a")).toBe(false);
       expect(top.size).toBe(2);
     });
@@ -529,7 +545,7 @@ describe("ProfilingSnapshotStore", () => {
       await store.save(sized("a", 20, 2));
       await store.save(sized("a", 20, 4));
       expect((await store.loadLatestBefore("a", 3))?.sequence).toBe(2);
-      expect((await store.loadAt("a", 3))).toBeNull();
+      expect(await store.loadAt("a", 3)).toBeNull();
     });
 
     it("resetProfile zeroes the WHOLE profile, including the histogram and measurement errors", async () => {
