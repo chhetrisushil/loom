@@ -106,6 +106,7 @@ Three backends ship **[code]** (`InMemoryAsyncEventStore`, `SqliteEventStore`,
 | `ContentResolvingEventStore` | payload externalization | none |
 | `hashChainedEventStore` | tamper-evident chain (`@loom/plugin-audit-chain`) | `truncatePrefix` and `truncatePrefixKeeping`, because a compacted log fails `verifyChain` |
 | `CoalescingEventStore` / `ShardedEventStore` / `ProfilingEventStore` | batching, partitioning, write profiling (section 3) | none |
+| `TenantScopedSnapshotStore` / `ProfilingSnapshotStore` | snapshot key-prefix isolation, snapshot size profiling (below) | none |
 
 Every one of them forwards, overrides or explicitly refuses each optional method (a
 `DecoratorPlan` via `installOptional`, ADR 0074 Amendment). Each is also held to
@@ -319,6 +320,16 @@ is the check.
 healthy writers coalesced with it abort too. Nothing of theirs lands, and recovery re-drives
 them. That is fine while fencing is rare. If fencing is common in your deployment, lower
 `maxBatch`.
+
+**Are your snapshots even big?** Wrap your `SnapshotStore` in `ProfilingSnapshotStore`
+(`@loom/snapshot-runtime`) before building anything for snapshot growth. `profile()` reports
+saves, total and max bytes, a power-of-two `histogram` and `largest` (the top N executions by
+their latest snapshot size); `onLargeSnapshot(executionId, bytes)` fires once when an
+execution first crosses `largeThresholdBytes`. Placement decides the question: wrapped OUTSIDE
+`EncryptingSnapshotStore` it measures the plaintext state, around the raw backend it measures
+what is stored (ciphertext). It costs one extra `JSON.stringify` per measured save, off the
+resume path; set `sampleRate` if that shows up. Memory is bounded (a top-N heap and an LRU
+dedupe set), so an execution evicted from the dedupe set may fire again.
 
 **Is your workload even write-bound?** Wrap your store in `ProfilingEventStore` and add
 `effectTimingMiddleware` to your effect runtime, run real traffic, and compare
