@@ -45,6 +45,12 @@ suspend promise stays, so a caller that never calls `waitForSuspend()` gets no u
   the run ends without parking. That is inherent to rejecting: attach a rejection handler. The internal guard
   covers only callers that never call the method. `ExecutionTerminatedError.state` is the plaintext folded
   state, so it is non-enumerable and stays out of `JSON.stringify` and error serialisers.
-- `isTerminalToolError` classifies `ExecutionTerminatedError` by its status: with no cause (completed,
-  continued) it is terminal; with a cause (failed, cancelled) the cause is classified, so a tool awaiting a
-  child's `waitForSuspend()` gets the same verdict as one awaiting its `waitForCompletion()`.
+- `isTerminalToolError` classifies `ExecutionTerminatedError` by its status: completed and continued are
+  terminal; for failed and cancelled the cause is classified (a flow that threw `undefined` has none, and
+  is feedback), so a tool awaiting a child's `waitForSuspend()` gets the same verdict as one awaiting its
+  `waitForCompletion()`.
+- The derived promise also moves the PARK path by a microtask: when a `waitForSuspend()` caller resumes, the
+  run's handle cleanup (`liveHandles`, `startRecords`, the lease release) has already happened. Before, the
+  caller usually ran first, by microtask accident. Nothing in the repo relied on that, and the new order is
+  the safer one (a `cancel` right after a park takes the durable path, not the stale live handle), but a
+  test must not assume the parked run is still live after `await waitForSuspend()`.
