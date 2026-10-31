@@ -28,6 +28,7 @@
     "@loom/classify": "workspace:*",
     "@loom/core": "workspace:*",
     "@loom/event-runtime": "workspace:*",
+    "@loom/plugin-content": "workspace:*",
     "@loom/snapshot-runtime": "workspace:*"
   },
   "devDependencies": {

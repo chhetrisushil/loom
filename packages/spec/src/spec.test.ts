@@ -381,6 +381,10 @@ const NOT_A_CAPABILITY = new Set([
   // function that swaps the returned log's `toolOutput` for a status/digest/stepId. No event, SPI, ABI or
   // subsystem change; nothing to grade.
   "0142",
+  // 0143 - `EncryptingContentStore` (issue #737): ContentStore SPI 1.5.0 adds an OPTIONAL owner argument and a
+  // `sealsContent` marker, and a 1P store seals per subject. The SPI version bump is the contract change (the
+  // compatibility matrix carries it); no new capability, event, ABI or subsystem to grade.
+  "0143",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

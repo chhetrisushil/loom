@@ -1,5 +1,7 @@
 export { InMemoryKeyStore, type KeyStore } from "./keystore";
 export {
+  ContentAccessRequiredError,
+  ContentUndecryptableError,
   OwnerUnresolvedError,
   PayloadShreddedError,
   PayloadUndecryptableError,
@@ -12,6 +14,10 @@ export {
   SHREDDED,
   isShredded,
 } from "./EncryptingEventStore";
+export {
+  EncryptingContentStore,
+  type EncryptingContentStoreOptions,
+} from "./EncryptingContentStore";
 export {
   EncryptingSnapshotStore,
   type EncryptingSnapshotStoreOptions,

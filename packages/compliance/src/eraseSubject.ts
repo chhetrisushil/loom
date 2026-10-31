@@ -76,7 +76,8 @@ export type ErasableArchive = Pick<ArchiveStore, "headers" | "listExecutions" | 
  * (`sealsContent` not `true`) a key's destruction does not reach a blob, so erasure DELETES the blobs the
  * subject's envelopes cite (those no other, non-erased execution still cites: ADR 0120 owner-set
  * semantics) and records it (`ERASURE_CONTENT_DELETE_INTENDED` then `ERASURE_CONTENT_DELETED`). A store
- * that seals each blob under its owning subject's key is erased by the shred itself.
+ * that seals each blob under its owning subject's key (ADR 0143) is erased by the shred itself; the erasure
+ * still journals the blobs it covered and deletes the unreadable ciphertext where the store can.
  */
 export interface ErasableContent {
   delete(ref: { __loomContent: string }): Promise<void>;
@@ -92,6 +93,11 @@ export interface ContentCopiesDeleted {
   deleted: number;
   /** Blobs the subject's envelopes cited that another, non-erased execution still cites (kept). */
   retained: number;
+  /**
+   * ADR 0143: over a store that SEALS per subject, how many blobs the shred made unreadable (all the
+   * subject's cited blobs; `deleted` of them were also physically removed). Absent over a plaintext store.
+   */
+  sealed?: number;
 }
 
 /** What an erasure removed from the plaintext archives (recorded durably as `ERASURE_ARCHIVE_DELETED`). */
@@ -946,13 +952,30 @@ export class EraseCoordinator {
     executions: readonly string[],
     proof: DestructionProof | undefined
   ): Promise<
-    { intentId?: string; addresses: string[]; retained: number; cutoff?: number } | undefined
+    | { intentId?: string; addresses: string[]; retained: number; cutoff?: number; sealed?: true }
+    | undefined
   > {
-    if (this.sealsContent()) return undefined; // the shred erases a per-subject-sealed blob
     const open = await this.openIntent(CONTENT_DELETE_INTENDED, CONTENT_DELETED, subjectId, tenant);
     const mine = new Set<string>();
     for (const id of executions) await this.refsOfExecution(id, proof, mine);
     if (mine.size === 0 && open === undefined) return undefined;
+    if (this.sealsContent()) {
+      // ADR 0143: a store that seals each blob under the subject's key. The SHRED erases them (no plaintext
+      // copy exists to remove), and the addresses are subject-scoped, so no other subject's blob can share
+      // one (no owner-set scan, no conditional delete). Erasure still RECORDS what it covered (the intent,
+      // BEFORE the shred; the completion after) and deletes the now-unreadable ciphertext where the store
+      // can, so the audit trail names the blobs and storage is reclaimed.
+      const prior = (open?.payload as { addresses?: string[] } | undefined)?.addresses ?? [];
+      const sealed = [...new Set([...prior, ...mine])];
+      const intentId =
+        open?.id ??
+        (await this.appendIntent(CONTENT_DELETE_INTENDED, subjectId, tenant, {
+          addresses: sealed,
+          retained: 0,
+          sealed: true,
+        }));
+      return { intentId, addresses: sealed, retained: 0, sealed: true };
+    }
     const content = this.options.content;
     const store = this.options.eventStore;
     const enumerable = store.listExecutionsPage !== undefined || store.listExecutions !== undefined;
@@ -1049,11 +1072,27 @@ export class EraseCoordinator {
   private async finishContentDeletion(
     subjectId: string,
     tenant: string,
-    plan: { intentId?: string; addresses: string[]; retained: number; cutoff?: number } | undefined
+    plan:
+      | { intentId?: string; addresses: string[]; retained: number; cutoff?: number; sealed?: true }
+      | undefined
   ): Promise<ContentCopiesDeleted | undefined> {
     if (plan === undefined || plan.intentId === undefined) return undefined;
     const content = this.options.content;
     let deleted = 0;
+    if (plan.sealed === true) {
+      // The shred already made every blob unreadable. Reclaim the ciphertext where the store can delete.
+      for (const address of plan.addresses) {
+        if (typeof content?.delete !== "function") break;
+        await content.delete({ __loomContent: address });
+        deleted++;
+      }
+      await this.appendCompletion(CONTENT_DELETED, subjectId, tenant, plan.intentId, {
+        deleted,
+        retained: 0,
+        sealed: plan.addresses.length,
+      });
+      return { deleted, retained: 0, sealed: plan.addresses.length };
+    }
     for (const address of plan.addresses) {
       const ref = { __loomContent: address };
       if (content === undefined) break; // planned only when a store was wired
