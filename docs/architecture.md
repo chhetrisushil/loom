@@ -805,7 +805,7 @@ Being honest about the edges:
 - **[User Guide](user-guide.md)** — every feature area with examples.
 - **[Data classification](data-classification.md)** — field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6).
 - **[Compliance](compliance.md)** — data-subject rights: subject index, export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3).
-- **[ADRs](adr/)** — the full decision history (0001–0133), one line per range:
+- **[ADRs](adr/)** — the full decision history (0001–0134), one line per range:
   - **0016–0026** cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series
   - **0036–0041** the three-direction arc
   - **0042** the AI-native brownfield `appgen`
@@ -919,4 +919,5 @@ Being honest about the edges:
     with committed regression thresholds and manual-only live re-recording (kernel unchanged)
   - **0132** folded-state read models (Accepted): durable per-execution `projection$` folds in `@loom/plugin-read-model` — one state row whose sequence is the watermark, a monotonic compare-and-set so nodes converge without locks, a sensitive-state guard, a bounded live-path cache, and `ReadModelStore` SPI 1.2.0 (kernel unchanged)
   - **0133** model reasoning as audit evidence (Accepted): provider reasoning captured at the `@loom/llm` seam into an erasable sidecar content store, referenced by a userspace `LLM_REASONING_CAPTURED` event the fold ignores; the step value is unchanged (kernel unchanged)
+  - **0134** snapshot pruning (Proposed): optional `SnapshotStore.pruneSnapshots` (SPI 1.2.0) and `LogLifecycle.pruneSnapshots`, off by default; keeps the latest, every compaction checkpoint and the fork points it serves; deltas and Merkle state deferred (kernel unchanged)
 - **[Presentation](presentation/loom-deck.md)** — the deck.
