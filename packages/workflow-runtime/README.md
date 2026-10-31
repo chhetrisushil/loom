@@ -73,7 +73,7 @@ const approveFlow: RegisteredFlow = {
 
 const app = defineConfig({ storage: { kind: "memory" }, flows: [approveFlow] });
 const handle = await app.runtime.start(approveFlow, { target: "prod-db" });
-await handle.waitForSuspend(); // status "suspended"; state lives in the log
+await handle.waitForSuspend(); // status "suspended"; state lives in the log (rejects with ExecutionTerminatedError if the run ends without parking)
 const resumed = await app.runtime.resume(handle.executionId, {
   eventType: "ApprovalGranted",
   payload: { approved: true, approvedBy: "ada" },

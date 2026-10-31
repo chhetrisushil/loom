@@ -8,13 +8,15 @@ import { z } from "zod";
 import { LogLifecycle } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { until } from "./__tests__/r2Harness";
+import { ExecutionTerminatedError } from "./executionTerminated";
 import type { ExecutionHandle, FlowRunner } from "./types";
 
 // Issue #710 — "the second resume of a compacted execution never resolves waitForSuspend".
 // Root cause: NOT compaction. In the reported shape (PR #709's 4-gate flow, compacted at gate 3,
 // resumed at gates 3 and 4) the second resume answers the LAST gate, so the run COMPLETES, and a
-// handle whose run terminates without parking never settles `waitForSuspend` (only
-// `waitForCompletion`). The same happens with no compaction at all. These cases pin that
+// handle whose run terminated without parking never settled `waitForSuspend` (only
+// `waitForCompletion`). The same happened with no compaction at all. The fix is the contract:
+// `waitForSuspend` rejects with `ExecutionTerminatedError` on a terminal run. These cases pin that
 // compaction is invisible to the handle: every resume's settlement matches the uncompacted control.
 
 const io = z.object({ n: z.number() });
@@ -79,8 +81,8 @@ async function settlement(app: App, id: string, h: ExecutionHandle, from: number
     (s) => {
       suspended = s.status;
     },
-    () => {
-      suspended = "rejected";
+    (e: unknown) => {
+      suspended = e instanceof ExecutionTerminatedError ? `terminated:${e.status}` : "rejected";
     }
   );
   void h.waitForCompletion().then(
@@ -97,7 +99,10 @@ async function settlement(app: App, id: string, h: ExecutionHandle, from: number
     status = st?.status;
     return (status === "suspended" || status === "completed") && st!.sequence > from + 1;
   }, 5_000);
-  await until(() => (status === "completed" ? completed : suspended) !== undefined, 5_000);
+  await until(
+    () => suspended !== undefined && (status !== "completed" || completed !== undefined),
+    5_000
+  );
   return { status, suspended, completed };
 }
 
@@ -116,8 +121,9 @@ async function toFirstGate(app: App, id: string) {
 }
 
 const PARKED = { status: "suspended", suspended: "suspended", completed: undefined };
-// The last gate: the run completes; waitForSuspend stays pending (the reported "hang").
-const FINISHED = { status: "completed", suspended: undefined, completed: "completed" };
+// The last gate: the run completes, so waitForSuspend REJECTS with ExecutionTerminatedError (it
+// used to stay pending, which was the reported "hang").
+const FINISHED = { status: "completed", suspended: "terminated:completed", completed: "completed" };
 const WANT = [PARKED, PARKED, PARKED, FINISHED];
 
 async function scenario(
