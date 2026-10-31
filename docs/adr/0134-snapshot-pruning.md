@@ -87,7 +87,7 @@ Future work: with no `pinnedEventTypes` configured a gap could be detected from 
 instead of a full read; not done, because it is not proven equivalent for every log shape ADR 0106
 describes (gap-free, gapped, `[0]`).
 Over `EncryptingEventStore`/`SealGuardedSnapshotStore` stacks the log read needs the subject's key, so
-pruning an erased (shredded) execution is refused by the read, never a wrong delete.
+pruning a shredded execution is expected to fail at that read (a refusal, never a wrong delete).
 
 ### D3 — The safety invariant
 
