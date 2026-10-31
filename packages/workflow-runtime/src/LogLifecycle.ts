@@ -187,6 +187,20 @@ export class CompactionCheckpointMissingError extends Error {
   }
 }
 
+/** Options of {@link LogLifecycle.pruneSnapshots}. */
+export interface PruneSnapshotsOptions {
+  /** Newest snapshots to keep (integer >= 1, default 1). */
+  keepLatest?: number;
+  /** Extra snapshot sequences to keep. */
+  keepSequences?: readonly number[];
+  /**
+   * ADR 0134 D6 - proceed when the ONLY thing blocking is unattributed runs in the pre-0106 blank
+   * stream (events nobody can prove the owner of, so no repair will ever settle them). Default
+   * false. A re-homable segment always refuses, with or without this.
+   */
+  acceptUnattributedBlankStream?: boolean;
+}
+
 /**
  * ADR 0134 D6 - `pruneSnapshots` refused because the pre-0106 blank stream (execution `""`) still
  * holds events `loom repair blank-stream` (ADR 0107) has not re-homed. The snapshots a pruning
@@ -202,6 +216,21 @@ export class BlankStreamUnrepairedError extends Error {
       `refusing to prune snapshots: the blank execution "" still holds events the pre-0106 compaction bug misfiled (${rehomable} segment(s) re-homable, ${unattributed} unattributed run(s)), and blank-identity snapshots are the proof of whose they are. Finish the repair first (\`loom repair blank-stream\`, ADR 0107). Nothing was deleted.`
     );
     this.name = "BlankStreamUnrepairedError";
+  }
+}
+
+/**
+ * ADR 0134 D6 - `pruneSnapshots` could not decide whether the pre-0106 blank stream is repaired:
+ * the store holds one, and the census that settles it enumerates every execution, which this event
+ * store cannot (it implements neither `listExecutions` nor `listExecutionsPage`). A refusal, never
+ * a delete: nothing was deleted.
+ */
+export class BlankStreamCensusUnavailableError extends Error {
+  constructor(readonly missing: readonly string[] = ["listExecutions", "listExecutionsPage"]) {
+    super(
+      `refusing to prune snapshots: the blank execution "" holds events, and deciding whether they are repaired needs the event store to enumerate executions, but it implements neither ${missing.join(" nor ")}. Nothing was deleted.`
+    );
+    this.name = "BlankStreamCensusUnavailableError";
   }
 }
 
@@ -310,6 +339,13 @@ export class LogLifecycle {
    * drains, so the map is bounded by the executions in flight.
    */
   private readonly exclusive = new Map<string, Promise<void>>();
+
+  /**
+   * ADR 0134 D6 - the last blank-stream verdict with NO re-homable segment, keyed by the head
+   * sequence of `""` it was taken at: `unattributed` runs then. A refusal for a re-homable segment
+   * is never stored. Cleared by `rehomeBlankStream`. One entry per instance.
+   */
+  private blankVerdict: { head: number; unattributed: number } | null = null;
 
   private withExecution<T>(executionId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.exclusive.get(executionId) ?? Promise.resolve();
@@ -596,6 +632,7 @@ export class LogLifecycle {
       failed: Array<{ executionId: string; error: string }>;
     }
   > {
+    if (opts.apply === true) this.blankVerdict = null; // a repair run changes what the census says
     const plan = await planBlankStreamRepair(this.eventStore, this.snapshotStore, opts.assign);
     const rehomed: BlankStreamSegment[] = [];
     const failed: Array<{ executionId: string; error: string }> = [];
@@ -889,18 +926,12 @@ export class LogLifecycle {
    * gap (O(snapshots above the gap)) only for a gapped log with neither a snapshot at its gap
    * nor a fork seed; one `head` read of `""`. The delete is one statement.
    */
-  pruneSnapshots(
-    executionId: string,
-    options: { keepLatest?: number; keepSequences?: readonly number[] } = {}
-  ): Promise<number> {
+  pruneSnapshots(executionId: string, options: PruneSnapshotsOptions = {}): Promise<number> {
     // ADR 0134 D6 - serialized with `compact` on the same execution (in this process).
     return this.withExecution(executionId, () => this.pruneOnce(executionId, options));
   }
 
-  private async pruneOnce(
-    executionId: string,
-    options: { keepLatest?: number; keepSequences?: readonly number[] }
-  ): Promise<number> {
+  private async pruneOnce(executionId: string, options: PruneSnapshotsOptions): Promise<number> {
     if (executionId === "" || isReservedStream(executionId)) {
       throw new TypeError(
         `refusing to prune the snapshots of "${executionId}": a blank id or a reserved control stream names no execution.`
@@ -930,7 +961,7 @@ export class LogLifecycle {
     ) {
       return 0;
     }
-    await this.assertBlankStreamRepaired();
+    await this.assertBlankStreamRepaired(options.acceptUnattributedBlankStream === true);
     const events = await this.eventStore.read(executionId);
     // Nothing to anchor on, or compacted through the tip (`[0]`): the checkpoint is the latest
     // snapshot and the older ones are the exact fork points below it.
@@ -1005,13 +1036,26 @@ export class LogLifecycle {
    * ADR 0134 D6 - refuse while `loom repair blank-stream` still has work. The repair LEAVES the
    * blank stream in place as evidence, so "repaired" is not "empty": one `head` read says whether
    * a blank stream exists at all (the common case: it does not), and only then the census says
-   * whether any segment is still re-homable or any run unattributed.
+   * whether any segment is still re-homable or any run unattributed. The census enumerates every
+   * execution, so a verdict with no re-homable segment is remembered (see `blankVerdict`) and
+   * trusted while the head of `""` is the one it was taken at.
    */
-  private async assertBlankStreamRepaired(): Promise<void> {
-    if ((await headOf(this.eventStore, "")) === null) return;
+  private async assertBlankStreamRepaired(acceptUnattributed: boolean): Promise<void> {
+    const head = await headOf(this.eventStore, "");
+    if (head === null) return;
+    const v = this.blankVerdict;
+    // A cached verdict that would REFUSE is not trusted: it is re-derived, so a refusal is never stale.
+    if (v !== null && v.head === head && (v.unattributed === 0 || acceptUnattributed)) return;
+    if (
+      this.eventStore.listExecutions === undefined &&
+      this.eventStore.listExecutionsPage === undefined
+    ) {
+      throw new BlankStreamCensusUnavailableError();
+    }
     const census = await this.blankStreamCensus();
     const rehomable = census.segments.filter((x) => x.status === "rehomable").length;
-    if (rehomable > 0 || census.unattributed.length > 0) {
+    if (rehomable === 0) this.blankVerdict = { head, unattributed: census.unattributed.length };
+    if (rehomable > 0 || (census.unattributed.length > 0 && !acceptUnattributed)) {
       throw new BlankStreamUnrepairedError(rehomable, census.unattributed.length);
     }
   }

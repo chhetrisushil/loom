@@ -17,7 +17,12 @@ import { ReplayVM } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { BlankStreamUnrepairedError, LIFECYCLE_STREAM, LogLifecycle } from "./LogLifecycle";
+import {
+  BlankStreamCensusUnavailableError,
+  BlankStreamUnrepairedError,
+  LIFECYCLE_STREAM,
+  LogLifecycle,
+} from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import type { WorkflowRuntimeDeps } from "./WorkflowRuntime";
 import { REHOMED_FROM_KEY } from "./blankStream";
@@ -1016,5 +1021,107 @@ describe("ADR 0134 D6 - snapshot pruning refuses while the blank stream is unrep
       };
     await expect(app.life.pruneSnapshots("ok")).resolves.toBeGreaterThanOrEqual(0);
     expect(listed).toBe(0);
+  });
+
+  /** Count the census's enumerations (it lists every execution, by whichever entry point the store has). */
+  const countListings = (app: App) => {
+    const counter = { n: 0 };
+    const store = app.eventStore as {
+      listExecutions?: (...a: never[]) => unknown;
+      listExecutionsPage?: (...a: never[]) => unknown;
+    };
+    for (const k of ["listExecutions", "listExecutionsPage"] as const) {
+      const f = store[k]?.bind(app.eventStore);
+      if (f !== undefined) {
+        store[k] = (...a: never[]) => {
+          counter.n++;
+          return f(...a);
+        };
+      }
+    }
+    return counter;
+  };
+
+  it('memoizes a CLEAN verdict per instance: a sweep runs the census once, an append to "" re-runs it', async () => {
+    const h = await history(1);
+    const app = boot();
+    await pre0106(app, "e1", h, "resumed");
+    await app.life.rehomeBlankStream({ apply: true });
+    const listed = countListings(app);
+    for (let i = 0; i < 4; i++) await app.life.pruneSnapshots("e1");
+    expect(listed.n).toBe(1);
+
+    // New evidence in "": the old verdict says nothing about it. A stray event no snapshot proves.
+    const head = (await headOf(app.eventStore, ""))!;
+    await app.eventStore.append({
+      id: `-${head + 1}`,
+      workflowId: "",
+      executionId: "",
+      eventType: "EXECUTION_RESUMED",
+      sequence: head + 1,
+      timestamp: 1,
+      payload: { n: 1 },
+    } as never);
+    await expect(app.life.pruneSnapshots("e1")).rejects.toThrow(BlankStreamUnrepairedError);
+    expect(listed.n).toBe(2);
+  });
+
+  it("never caches a refusal: a rehomable blank stream is re-censused, and the repair is seen at once", async () => {
+    const h = await history(1);
+    const app = boot();
+    await pre0106(app, "e1", h, "resumed");
+    const listed = countListings(app);
+    await expect(app.life.pruneSnapshots("e1")).rejects.toThrow(BlankStreamUnrepairedError);
+    await expect(app.life.pruneSnapshots("e1")).rejects.toThrow(BlankStreamUnrepairedError);
+    expect(listed.n).toBe(2);
+    await app.life.rehomeBlankStream({ apply: true });
+    await expect(app.life.pruneSnapshots("e1")).resolves.toBeGreaterThanOrEqual(0);
+  });
+
+  it("acceptUnattributedBlankStream lets prune proceed when ONLY unattributed runs block; the default still refuses", async () => {
+    const h = await history(1);
+    const app = boot();
+    await pre0106(app, "e1", h, "completed");
+    await app.life.rehomeBlankStream({ apply: true });
+    await expect(app.life.pruneSnapshots("e1")).rejects.toThrow(BlankStreamUnrepairedError);
+    await expect(
+      app.life.pruneSnapshots("e1", { acceptUnattributedBlankStream: true })
+    ).resolves.toBeGreaterThanOrEqual(0);
+    // Still refused by default afterwards (the opt-out is per call, never remembered).
+    await expect(app.life.pruneSnapshots("e1")).rejects.toThrow(BlankStreamUnrepairedError);
+  });
+
+  it("acceptUnattributedBlankStream never overrides a re-homable segment: refuses, deletes nothing", async () => {
+    const h = await history(1);
+    const app = boot();
+    await pre0106(app, "e1", h, "resumed");
+    let deletes = 0;
+    const inner = app.snapshotStore.pruneSnapshots!.bind(app.snapshotStore);
+    app.snapshotStore.pruneSnapshots = async (...a) => {
+      deletes++;
+      return inner(...a);
+    };
+    await expect(
+      app.life.pruneSnapshots("e1", { acceptUnattributedBlankStream: true })
+    ).rejects.toThrow(BlankStreamUnrepairedError);
+    expect(deletes).toBe(0);
+  });
+
+  it("an event store that cannot enumerate executions refuses with a typed error naming the capability", async () => {
+    const h = await history(1);
+    const app = boot();
+    await pre0106(app, "e1", h, "resumed");
+    app.eventStore.listExecutions = undefined;
+    app.eventStore.listExecutionsPage = undefined;
+    let deletes = 0;
+    const inner = app.snapshotStore.pruneSnapshots!.bind(app.snapshotStore);
+    app.snapshotStore.pruneSnapshots = async (...a) => {
+      deletes++;
+      return inner(...a);
+    };
+    const err = await app.life.pruneSnapshots("e1").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BlankStreamCensusUnavailableError);
+    expect((err as Error).message).toMatch(/listExecutions/);
+    expect(deletes).toBe(0);
   });
 });
