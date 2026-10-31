@@ -303,6 +303,17 @@ export class ShardedEventStore implements EventStore {
         ? first
         : Object.freeze({ mixed: true });
     }
+    // ADR 0138 H3: the tenant marker survives sharding when every shard is scoped to ONE tenant.
+    // Shards that disagree (or only some scoped) get a scope no archive can match, so the guard
+    // refuses rather than guessing.
+    const scopes = shards.map((s) => (s as { tenantScope?: unknown }).tenantScope);
+    if (scopes.some((t) => typeof t === "string")) {
+      const first = scopes[0];
+      (this as { tenantScope?: unknown }).tenantScope =
+        typeof first === "string" && scopes.every((t) => t === first)
+          ? first
+          : "\u0000mixed-tenant-shards";
+    }
   }
 
   /**

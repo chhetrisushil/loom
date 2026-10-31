@@ -152,7 +152,7 @@ otherwise) forwards `truncatePrefix(Keeping)`, and `verifyChain(id, { archived }
 `archived ∪ log` (`LogLifecycle.readArchived`). A plain `verifyChain(id)` of a compacted log reports the break
 truthfully, rather than a pass.
 
-## Review round (2026-10-31) - decisions D9-D17
+## Review round (2026-10-31) - decisions D9-D16
 
 An adversarial review of the first cut found four ways an owner ruling (AUDITABILITY INTACT, resume never
 reads the archive, nothing pruned, fail closed) could still be broken. Each is a decision here.
@@ -238,6 +238,97 @@ The segment `digest` and the `incarnation` are SHA-256 of PLAINTEXT, stored in t
 segment. After a crypto-shred they remain. They are hashes of high-entropy event JSON (ids, millisecond
 timestamps), so they confirm a guess only for an attacker who already holds the whole event; this is accepted
 (and a keyed digest would make a shredded archive unverifiable, which defeats the point of recording it).
+
+## Second review round (2026-10-31) - decisions D17-D23
+
+A re-review found that the first round's tenant guard failed OPEN, that the Art. 15/20 export dropped gaps
+silently, and that `archiveStores: []` silenced a refusal by bare assertion. Each is a decision here.
+
+### D17 - the tenant guard fails closed (re-review blocker 1)
+
+`tenantScopeOf` read `.tenantScope` / `.inner` only, and `hashChainedEventStore` (a closure-built decorator)
+exposed neither, so `hashChain(TenantScoped(acme))` + an UNSCOPED archive compacted and mixed tenants. Three
+layers now, none depending on the others:
+
+1. **Markers are forwarded uniformly.** `installOptional` already carried the encryption markers up; the one
+   helper it calls, `forwardStoreMarkers(target, inner)` (`@loom/event-runtime`), now also carries
+   `tenantScope` and records `target` as wrapping `inner` (`decoratedInnerOf`, a WeakMap). Every decorator
+   routes through it: `EncryptingEventStore`, `EncryptingSnapshotStore`, `EncryptingArchiveStore`,
+   `ContentResolvingEventStore`, `ContentTouchingSnapshotStore`, `CoalescingEventStore`, `ProfilingEventStore`,
+   `ProfilingSnapshotStore`, `SealGuardedEventStore`, `SealGuardedSnapshotStore`, `hashChainedEventStore`,
+   `faultInjectingStore`, `crashingEventStore`, `TenantScopedSnapshotStore`; `ShardedEventStore` carries the
+   marker when every shard has the SAME scope (shards that disagree get a scope no archive can match, so the
+   guard refuses); `TenantScopedEventStore` / `TenantScopedArchiveStore` ARE the marker.
+2. **The walk no longer trusts a decorator's shape.** `tenantScopeOf` follows `tenantScope`, then the recorded
+   wrapped store, then a visible `inner`, so a layer that hides its inner store AND forgets the marker still
+   resolves as long as it used the helper.
+3. **The tenant can be declared.** `new LogLifecycle(..., { tenant })` / `durability.retention.tenant`: when
+   set, `compact` requires the event store AND the archive to both report exactly that scope and refuses
+   (`ArchiveTenantMismatchError`, naming the declared tenant) when either does not - including a store stack
+   whose scope cannot be seen. This is the one check that does not depend on every layer forwarding a marker,
+   so a custom third-party decorator that bypasses the helper is caught for every multi-tenant deployment that
+   declares its tenant. Undeclared, a bypassing wrapper is indistinguishable from a plain single-tenant store
+   (an unscoped store with no wrappers must keep working); that residual is documented, not hidden.
+
+A fitness test keeps the set closed: the decorator conformance kit (`runEventStoreDecoratorConformance`,
+`runSnapshotStoreDecoratorConformance`, and the new `runArchiveStoreDecoratorConformance`) asserts that every
+decorator keeps the `tenantScope` and `keys` markers of the store it wraps, and
+`packages/spec/src/decoratorConformance.test.ts` discovers EVERY class that implements `EventStore`,
+`SnapshotStore` or `ArchiveStore` over an inner store and fails unless some test runs the kit on it - so a
+future decorator cannot reopen this.
+
+### D18 - the Art. 15/20 export reports every gap (re-review blocker 2)
+
+`exportSubject({ archive })` used `readWithArchive(id, { allowIncomplete: true })` and so dropped a range the
+archive could not return without saying so. Each execution in the export now carries `unarchived:
+UnarchivedRange[]` (`LogLifecycle.archiveCoverage`: `{ from, through, why }`), `[]` for a complete log. A caller
+(or the data subject) sees every gap; the `events` / `state` of an execution with a non-empty list are
+incomplete for those ranges and say so. `archive.archiveCoverage` is a required member of the option type. The
+field is absent only for an execution read through the crypto-shred erasure window (its log is unreadable by
+design).
+
+### D19 - `archiveStores: []` is checked, not trusted (re-review medium 3)
+
+The sweep (D9) took `[]` as "no archive exists" on the operator's word. The word can be wrong: a wiped, wrong
+or forgotten archive over a log that WAS archived. Now an archiving compaction marks its checkpoint (D21) and an
+ERASING pass requires, for every scanned log whose checkpoint carries the mark, that the given archives'
+headers cover the log's removed range (events or `legacy-checkpoint` segments), else `ArchiveStoresRequiredError`
+(`reason: "uncovered"`, naming the executions) before anything is erased. `[]` remains valid over logs whose
+checkpoint is unmarked: the genuinely pre-0138 ones (and fork seeds). The CLI additionally refuses
+`--no-compaction-archive` when an `archive.db` sits beside `--db` (the filesystem contradicts the flag).
+
+### D20 - re-compacting with nothing new is a no-op (re-review low 4)
+
+A hash-chained log keeps its tip (D13), so a compaction through the tip leaves `[0, tip]`. A second `compact`
+re-derived the same range, re-read the archive and saved an identical checkpoint on every call. When the only
+removable event is the tip, a checkpoint at that sequence exists and the archive already covers it, `compact`
+now returns `null` without touching the archive's bodies or the snapshot store.
+
+### D21 - wiped archive vs pre-0138 log (re-review low 5)
+
+An empty archive beside a gap used to be indistinguishable from a log compacted before the archive existed.
+An archiving compaction now writes its checkpoint with an id carrying `COMPACTION_CHECKPOINT_ID_PREFIX`
+(`ckpt-0138-`, `@loom/snapshot-runtime`; no schema change, the id is opaque to every store). `archiveCoverage`
+labels an uncovered range `why: "missing"` (an archive loss to investigate) when the checkpoint at the log's
+extent carries the mark, and `why: "legacy"` when it does not (compacted before the archive existed; only the
+folded checkpoint remains). **Limit, stated:** the mark is read back through the snapshot store, which may
+return a different snapshot of the same sequence on a tie (the runtime's own suspend checkpoint shares the
+compaction's sequence) or none (pruned), and then the range reads `legacy`. It is evidence, not proof; a
+caller that must be certain compares the archive's headers against its own backup.
+
+### D22 - which store reads the archive (re-review low 6)
+
+The `incarnation` (D11) is the digest of the bootstrap envelope AS THE READING STORE PRESENTS IT. Read archives
+(`readArchived`, `readWithArchive`, `archiveCoverage`) through the same decorated event-store stack the
+compaction used (or one that presents the same bootstrap bytes: the sealing store decrypts to the same
+envelope, a transform that rewrites payloads does not). A different view reads as a foreign incarnation and is
+refused (`ArchiveIncarnationError`), never silently mixed.
+
+### D23 - conformance paging order (re-review low 7)
+
+`runArchiveStoreConformance` asserted paging order with the JS default `sort()` (UTF-16 code units), which
+disagrees with the SPI's CODE POINT order for ids above U+D800. It now compares with `compareExecutionIds`,
+and a new case lists astral-character ids so an implementation that sorts by code unit fails.
 
 ## Part B — Decisions (fold)
 

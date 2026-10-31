@@ -72,14 +72,46 @@ export function installOptional<S extends object, M extends keyof S>(
     }
   }
   if (refused !== undefined) refusals.set(target, refused);
+  forwardStoreMarkers(target, inner);
+}
+
+/** `TenantScopedEventStore.tenantScope` (and the archive/snapshot twins), carried up the same way (ADR 0138 H3). */
+const TENANT_MARKER = "tenantScope";
+
+// Who a decorator wraps, keyed by the decorator: lets a guard walk a stack whose layers hide their
+// inner store (a closure-built decorator exposes no `inner`). A WeakMap, so it never keeps a store alive.
+const wrapped = new WeakMap<object, object>();
+
+/** The store `target` was built over (recorded by {@link forwardStoreMarkers}), or `undefined`. */
+export function decoratedInnerOf(target: object): object | undefined {
+  return wrapped.get(target);
+}
+
+/**
+ * Carry the STRUCTURAL markers other layers read by shape from `inner` up to the decorator `target`
+ * (unless `target` defines its own): the encryption marker `keys`, `sealsWholeState` (ADR 0130 D8) and
+ * the tenant marker `tenantScope` (ADR 0138 H3), and record `target` as wrapping `inner`. EVERY store
+ * decorator (event, snapshot, archive) must call this - {@link installOptional} does - or a guard that
+ * reads a marker on the outermost store sees a plain, unscoped one. The decorator conformance kit
+ * asserts it for each decorator in the repo.
+ */
+export function forwardStoreMarkers(target: object, inner: object): void {
+  const writable = target as Record<PropertyKey, unknown>;
+  const source = inner as Record<PropertyKey, unknown>;
+  wrapped.set(target, inner);
   const marker = source[ENCRYPTION_MARKER];
   if (typeof marker === "object" && marker !== null && writable[ENCRYPTION_MARKER] === undefined) {
     writable[ENCRYPTION_MARKER] = marker;
   }
-  // ADR 0130 D8 — a snapshot store that seals its WHOLE state says so structurally; a decorator
+  // ADR 0130 D8 - a snapshot store that seals its WHOLE state says so structurally; a decorator
   // above it must not hide that (the doctor / kernel would read a sealed store as plaintext).
   if (source[WHOLE_STATE_MARKER] === true && writable[WHOLE_STATE_MARKER] === undefined) {
     writable[WHOLE_STATE_MARKER] = true;
+  }
+  // ADR 0138 H3 - a decorator above a tenant-scoped store is still scoped to that tenant.
+  const tenant = source[TENANT_MARKER];
+  if (typeof tenant === "string" && writable[TENANT_MARKER] === undefined) {
+    writable[TENANT_MARKER] = tenant;
   }
 }
 

@@ -1,4 +1,4 @@
-import type { ArchiveStore, EventStore } from "@loom/event-runtime";
+import { type ArchiveStore, type EventStore, decoratedInnerOf } from "@loom/event-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 
 // ── ADR 0130 D8 (kernel half) - a checkpoint of a sealing log must itself be sealed ──────────
@@ -148,14 +148,17 @@ export function plaintextArchiveReason(
 
 /**
  * The tenant a store is scoped to (`TenantScopedEventStore` / `TenantScopedArchiveStore` expose
- * `tenantScope`), looking through decorators that keep their wrapped store in `inner`.
+ * `tenantScope`). Decorators carry the marker up (`installOptional` / `forwardStoreMarkers`), and
+ * the walk also looks through every layer a decorator recorded as wrapping (`decoratedInnerOf`) and
+ * through a visible `inner`, so a layer that hides its inner store - or forgets the marker - cannot
+ * make a scoped log read as unscoped (ADR 0138 H3).
  */
 export function tenantScopeOf(store: unknown): string | undefined {
   let cur: unknown = store;
-  for (let i = 0; i < 8 && typeof cur === "object" && cur !== null; i++) {
+  for (let i = 0; i < 16 && typeof cur === "object" && cur !== null; i++) {
     const t = (cur as { tenantScope?: unknown }).tenantScope;
     if (typeof t === "string") return t;
-    cur = (cur as { inner?: unknown }).inner;
+    cur = decoratedInnerOf(cur) ?? (cur as { inner?: unknown }).inner;
   }
   return undefined;
 }
@@ -169,11 +172,21 @@ export class ArchiveTenantMismatchError extends Error {
   constructor(
     readonly executionId: string,
     readonly eventTenant: string | undefined,
-    readonly archiveTenant: string | undefined
+    readonly archiveTenant: string | undefined,
+    /** The operator's declared tenant (`LogLifecycle` option `tenant`), when one was given. */
+    readonly declaredTenant?: string
   ) {
     super(
-      `refusing to compact "${executionId}": the event store is ${
-        eventTenant === undefined ? "not tenant-scoped" : `scoped to tenant "${eventTenant}"`
+      `refusing to compact "${executionId}": ${
+        declaredTenant === undefined
+          ? ""
+          : `the lifecycle is declared for tenant "${declaredTenant}"; `
+      }the event store is ${
+        eventTenant === undefined
+          ? declaredTenant === undefined
+            ? "not tenant-scoped"
+            : "not visibly tenant-scoped (a store layer that hides its inner store without forwarding the tenantScope marker is refused, not assumed unscoped)"
+          : `scoped to tenant "${eventTenant}"`
       } but the compaction archive is ${
         archiveTenant === undefined ? "not tenant-scoped" : `scoped to tenant "${archiveTenant}"`
       } — a shared archive would mix tenants' history (cross-tenant reads, and a retention delete of another tenant's segments). Wrap the archive in \`new TenantScopedArchiveStore(archive, tenant)\` for the same tenant. Nothing was archived, saved or truncated.`
@@ -187,7 +200,14 @@ export class ArchiveTenantMismatchError extends Error {
 export interface UnarchivedRange {
   readonly from: number;
   readonly through: number;
-  /** `"legacy"`: removed by a compaction before ADR 0138; only a folded checkpoint (`readLegacyCheckpoints`) remains. `"missing"`: nothing holds it. */
+  /**
+   * `"legacy"`: removed by a compaction that predates the archive (ADR 0138); only a folded checkpoint
+   * remains (in the snapshot store, and preserved in the archive by the next compaction:
+   * `readLegacyCheckpoints`). `"missing"`: a compaction that DID archive removed it, and no archive
+   * segment holds it now - the archive was wiped, swapped for an empty one, or truncated. A loss to
+   * investigate. Limit: the distinction rests on the compaction's checkpoint (its id carries the
+   * archiving mark); a log whose last checkpoint was since pruned or replaced reads as `"legacy"`.
+   */
   readonly why: "legacy" | "missing";
 }
 
@@ -206,7 +226,7 @@ export class ArchiveIncompleteError extends Error {
       `archive "${executionId}": the original log is not fully recoverable as events — ${ranges
         .map(
           (r) =>
-            `[${r.from}..${r.through}] ${r.why === "legacy" ? "was compacted before the archive existed (only its folded checkpoint survives: LogLifecycle.readLegacyCheckpoints)" : "is held by neither the log nor the archive"}`
+            `[${r.from}..${r.through}] ${r.why === "legacy" ? "was compacted before the archive existed (only its folded checkpoint survives: in the snapshot store, and LogLifecycle.readLegacyCheckpoints once a compaction preserved it)" : "is held by neither the log nor the archive"}`
         )
         .join("; ")}. Pass { allowIncomplete: true } to read the events that exist.`
     );

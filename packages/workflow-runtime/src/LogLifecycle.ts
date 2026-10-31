@@ -16,7 +16,13 @@ import {
 } from "@loom/event-runtime";
 import { appendBatchOf } from "@loom/event-runtime";
 import { ReplayVM, knownEventTypes, normalizeSnapshotState } from "@loom/replay-vm";
-import { type Snapshot, type SnapshotStore, assertSnapshotIdentity } from "@loom/snapshot-runtime";
+import {
+  COMPACTION_CHECKPOINT_ID_PREFIX,
+  type Snapshot,
+  type SnapshotStore,
+  assertSnapshotIdentity,
+  isArchivingCompactionCheckpointId,
+} from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
 import {
   type BlankStreamCensus,
@@ -381,6 +387,15 @@ export class LogLifecycle {
        * Distinct from `archive` (the retention copy of a WHOLE execution before deletion).
        */
       compactionArchive?: ArchiveStore;
+      /**
+       * ADR 0138 H3 - the tenant this lifecycle serves. When set, {@link compact} requires the event
+       * store AND the compaction archive to both report exactly this `tenantScope`, and REFUSES
+       * (ArchiveTenantMismatchError) when either does not - including a store stack whose scope cannot
+       * be seen (a custom decorator that hides its inner store without forwarding the marker). Unset,
+       * the two stores' markers are only compared with each other, so set it for every multi-tenant
+       * deployment: it is the one check that does not depend on every layer forwarding a marker.
+       */
+      tenant?: string;
       branchRegistry?: BranchRegistry;
       pinned?: PinPredicate;
       /**
@@ -903,8 +918,12 @@ export class LogLifecycle {
     // ADR 0138 H3 - a tenant-scoped log needs an archive scoped to the SAME tenant.
     const eventTenant = tenantScopeOf(store);
     const archiveTenant = tenantScopeOf(archive);
-    if (eventTenant !== archiveTenant) {
-      throw new ArchiveTenantMismatchError(executionId, eventTenant, archiveTenant);
+    const declaredTenant = this.options.tenant;
+    if (
+      eventTenant !== archiveTenant ||
+      (declaredTenant !== undefined && eventTenant !== declaredTenant)
+    ) {
+      throw new ArchiveTenantMismatchError(executionId, eventTenant, archiveTenant, declaredTenant);
     }
     const events = await store.read(executionId);
     if (events.length <= 1) return null; // nothing beyond the bootstrap to reclaim
@@ -966,6 +985,25 @@ export class LogLifecycle {
     const gap = highestMissing(events);
     if (gap >= 0 && through <= gap) return null;
 
+    // The events this compaction removes (truncatePrefixKeeping leaves the kept kinds in the log).
+    const removed = events.filter(
+      (e) => e.sequence >= 1 && e.sequence <= through && !(keptBelow && keep.has(e.eventType))
+    );
+    // A store that cannot remove the tip (a hash chain keeps it as the chain's anchor, ADR 0138 H1)
+    // leaves `[0, tip]` after a compaction through the tip. Called again with nothing new, the only
+    // removable event is that tip, already checkpointed and archived: report nothing to do instead of
+    // re-reading the archive and saving an identical checkpoint on every call.
+    if (
+      gap >= 0 &&
+      removed.length === 1 &&
+      removed[0]!.sequence === through &&
+      through === events[tipIndex]!.sequence &&
+      (await this.snapshotStore.loadAt(executionId, through)) !== null
+    ) {
+      const headers = await archive.headers(executionId);
+      if (headers.length > 0 && headers[headers.length - 1]!.through >= through) return null;
+    }
+
     // The fold at `through`, on the latest snapshot at or below it when there is one — which
     // a gapped (compacted) log MUST have.
     const base = await this.snapshotStore.loadLatestBefore(executionId, through);
@@ -999,15 +1037,15 @@ export class LogLifecycle {
       executionId,
       archive,
       incarnation,
-      events.filter(
-        (e) => e.sequence >= 1 && e.sequence <= through && !(keptBelow && keep.has(e.eventType)) // truncatePrefixKeeping leaves these in the log
-      ),
+      removed,
       through,
       gap >= 0 ? { events, gap, base: base! } : undefined
     );
 
     const snapshot: Snapshot = {
-      id: ulid(),
+      // The archiving-compaction mark (ADR 0138): how a later reader tells "its archive was lost"
+      // from "compacted before the archive existed" (`archiveCoverage`, the content sweep).
+      id: `${COMPACTION_CHECKPOINT_ID_PREFIX}${ulid()}`,
       executionId,
       workflowId: identity.workflowId,
       sequence: through,
@@ -1159,6 +1197,14 @@ export class LogLifecycle {
    * pre-ADR-0138 compaction removed (its folded checkpoint is preserved, see
    * {@link readLegacyCheckpoints}), `"missing"` for anything else. An empty list is a complete
    * original log. Reads the whole surviving log.
+   *
+   * `"legacy"` vs `"missing"` (ADR 0138 D21): an uncovered range reads `"missing"` (an archive LOSS: it
+   * was wiped, swapped for an empty one, or truncated) when the checkpoint at the log's extent was
+   * written by an archiving compaction (its id carries `COMPACTION_CHECKPOINT_ID_PREFIX`), and
+   * `"legacy"` (compacted before the archive existed) when it was not. The mark is read back through
+   * the snapshot store, which may return a different same-sequence snapshot or none (pruned): then the
+   * range reads `"legacy"`. Evidence, not proof. Read through the same decorated event-store stack the
+   * compaction used (see {@link readArchived}).
    */
   async archiveCoverage(
     executionId: string
@@ -1179,6 +1225,23 @@ export class LogLifecycle {
       extent = Math.max(extent, (await this.snapshotStore.loadLatest(executionId))?.sequence ?? -1);
     }
     const covered = segments.filter((h) => h.kind !== "legacy-checkpoint");
+    // The checkpoint sitting at the extent is the last compaction's own. When an ARCHIVING compaction
+    // wrote it (the id mark), the removed range was handed to an archive: a range no segment covers
+    // is then a LOSS (`missing`: the archive was wiped, swapped or truncated), not a pre-0138 remnant.
+    // Best effort: a checkpoint that was pruned, replaced, or shadowed by a same-sequence snapshot the
+    // store prefers cannot testify, and reads as `legacy`.
+    // Two snapshots can share the extent's sequence (the runtime's own suspend checkpoint, then the
+    // compaction's); which one a read returns on a tie is the store's choice, so both probes are tried.
+    let archivedRange = false;
+    if (extent >= 1) {
+      const below = await this.snapshotStore.loadLatestBefore(executionId, extent);
+      const exact = below?.sequence === extent ? below : null;
+      archivedRange =
+        isArchivingCompactionCheckpointId(exact?.id) ||
+        isArchivingCompactionCheckpointId(
+          (await this.snapshotStore.loadAt(executionId, extent))?.id
+        );
+    }
     const legacy = segments.filter((h) => h.kind === "legacy-checkpoint");
     const unarchived: UnarchivedRange[] = [];
     // Runs of sequences in [1..extent] the surviving log does not hold.
@@ -1197,7 +1260,7 @@ export class LogLifecycle {
           unarchived.push({ from: p, through: q, why: "legacy" });
         }
         for (const [p, q] of subtractRanges([x, y], legacy)) {
-          unarchived.push({ from: p, through: q, why: "missing" });
+          unarchived.push({ from: p, through: q, why: archivedRange ? "missing" : "legacy" });
         }
       }
     }
@@ -1232,7 +1295,14 @@ export class LogLifecycle {
    *
    * Throws {@link ArchiveIncarnationError} when the archive holds a different run of a REUSED id, and
    * {@link ArchiveIncompleteError} when `range` includes events nothing can return (a pre-ADR-0138
-   * compaction's range, see {@link archiveCoverage}) unless `allowIncomplete: true`.
+   * compaction's range, or an archive that lost its segments; see {@link archiveCoverage}) unless
+   * `allowIncomplete: true`.
+   *
+   * WHICH STORE READS: the archive's `incarnation` is the digest of the log's bootstrap envelope AS THE
+   * READING EVENT STORE PRESENTS IT, so construct this lifecycle over the same decorated event-store
+   * stack the compaction used (or one presenting the same bootstrap bytes: the sealing store decrypts
+   * to the same envelope). A view that rewrites the bootstrap reads as a foreign incarnation and is
+   * refused ({@link ArchiveIncarnationError}), never silently mixed (ADR 0138 D22).
    */
   async readArchived(
     executionId: string,

@@ -21,6 +21,19 @@ export interface Snapshot {
 }
 
 /**
+ * ADR 0138 - the id prefix of the checkpoint an ADR-0138-aware `LogLifecycle.compact` writes. A
+ * compaction that archives its events leaves this mark on its checkpoint, so a later reader can tell a
+ * log whose removed range SHOULD be in an archive (a wiped or swapped-out archive is then a loss:
+ * `why: "missing"`) from one compacted before the archive existed (`why: "legacy"`).
+ */
+export const COMPACTION_CHECKPOINT_ID_PREFIX = "ckpt-0138-";
+
+/** Whether a snapshot id carries the {@link COMPACTION_CHECKPOINT_ID_PREFIX} mark. */
+export function isArchivingCompactionCheckpointId(id: unknown): boolean {
+  return typeof id === "string" && id.startsWith(COMPACTION_CHECKPOINT_ID_PREFIX);
+}
+
+/**
  * Snapshot storage. Async-first (see {@link EventStore}) — synchronous backends
  * mark methods `async`; async/network backends return real Promises.
  */

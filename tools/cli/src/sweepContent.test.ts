@@ -424,7 +424,7 @@ describe("loom sweep content --orphans over a compacted log (ADR 0138)", () => {
   let dir: string;
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-  async function compactedSeed(opts: { withArchive: boolean }) {
+  async function compactedSeed(opts: { withArchive: boolean; archivingCheckpoint?: boolean }) {
     dir = mkdtempSync(join(tmpdir(), "loom-sweep-arch-"));
     const db = join(dir, "events.db");
     const snap = join(dir, "snap.db");
@@ -453,7 +453,8 @@ describe("loom sweep content --orphans over a compacted log (ADR 0138)", () => {
     await store.close();
     const snaps = new SqliteSnapshotStore(snap);
     await snaps.save({
-      id: "cp",
+      // The archiving-compaction mark (ADR 0138): this log's removed range WAS handed to an archive.
+      id: opts.archivingCheckpoint === true ? "ckpt-0138-cp" : "cp",
       executionId: "c",
       workflowId: "wf",
       sequence: 2,
@@ -518,5 +519,21 @@ describe("loom sweep content --orphans over a compacted log (ADR 0138)", () => {
     const out = await cmdSweepContent({ ...base(s), noCompactionArchive: true });
     expect(out).toContain("reclaimed orphans (1)");
     expect(await alive(s.contentDb, s.note)).toBe(false);
+  });
+
+  it("--no-compaction-archive is REFUSED when an archive.db sits beside --db (the filesystem contradicts the assertion); nothing erased", async () => {
+    const s = await compactedSeed({ withArchive: true });
+    await expect(cmdSweepContent({ ...base(s), noCompactionArchive: true })).rejects.toThrow(
+      /contradicts .*archive\.db/
+    );
+    expect(await alive(s.contentDb, s.note)).toBe(true);
+  });
+
+  it("--no-compaction-archive over a log whose checkpoint shows it WAS archived is refused even with no archive file (a lost archive is not 'none')", async () => {
+    const s = await compactedSeed({ withArchive: false, archivingCheckpoint: true });
+    await expect(cmdSweepContent({ ...base(s), noCompactionArchive: true })).rejects.toThrow(
+      /compacted INTO an archive/
+    );
+    expect(await alive(s.contentDb, s.note)).toBe(true);
   });
 });

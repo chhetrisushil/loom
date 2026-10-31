@@ -5,6 +5,7 @@ import {
   type ArchiveSegmentHeader,
   type ArchiveStore,
   KeyUnavailableError,
+  forwardStoreMarkers,
 } from "@loom/event-runtime";
 import { decryptValue, encryptValue, hasEnvelope } from "./crypto";
 import { PayloadShreddedError, PayloadUndecryptableError } from "./errors";
@@ -65,6 +66,7 @@ export class EncryptingArchiveStore implements ArchiveStore {
     options: EncryptingArchiveStoreOptions = {}
   ) {
     this.subjectOf = options.subjectOf ?? defaultSubjectOf;
+    forwardStoreMarkers(this, inner); // the tenant marker (ADR 0138 H3) must survive sealing
     const innerDelete = inner.deleteExecution;
     // Deleting ciphertext only reduces data: forward it (the retention path's whole-execution delete).
     if (innerDelete !== undefined) this.deleteExecution = (id) => innerDelete.call(inner, id);

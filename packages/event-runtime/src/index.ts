@@ -39,7 +39,12 @@ export type {
   SealingCapability,
   AtRestEventReader,
 } from "./types";
-export { installOptional, refusalsOf } from "./installOptional";
+export {
+  decoratedInnerOf,
+  forwardStoreMarkers,
+  installOptional,
+  refusalsOf,
+} from "./installOptional";
 export type { DecoratorPlan } from "./installOptional";
 export {
   OPTIONAL_EVENT_STORE_METHODS,

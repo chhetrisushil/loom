@@ -1306,6 +1306,48 @@ describe("defineConfig - the compaction archive (ADR 0138 review: M1, M3)", () =
     await app.close();
   });
 
+  it("an Art. 15/20 export REPORTS every gap: a wiped archive lists the missing range, a whole one lists none", async () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      security: {
+        compliance: {
+          subjectOf: (e) =>
+            e.eventType === "EXECUTION_STARTED"
+              ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+              : undefined,
+        },
+      },
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    await (
+      await app.runtime.start(flow, { incidentId: "wipe" }, { executionId: "w1" })
+    ).waitForSuspend();
+    const through = (await app.lifecycle.compact("w1"))!;
+    const whole = await app.exportSubject("wipe");
+    expect(whole.executions[0]!.unarchived).toEqual([]);
+
+    // the archive loses the execution's segments (a wipe, a restore of an old backup, a swap)
+    await app.stores.archiveStore!.deleteExecution!("w1");
+    const gapped = await app.exportSubject("wipe");
+    expect(gapped.executions[0]!.unarchived).toEqual([{ from: 1, through, why: "missing" }]);
+    await app.close();
+  });
+
+  it("retention.tenant is enforced: an unscoped store pair is refused for a declared tenant", async () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      durability: { retention: { tenant: "acme" } },
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    await (
+      await app.runtime.start(flow, { incidentId: "x" }, { executionId: "tn" })
+    ).waitForSuspend();
+    await expect(app.lifecycle.compact("tn")).rejects.toThrow(/declared for tenant "acme"/);
+    await app.close();
+  });
+
   it("M3: an encrypting event store gets its archive sealed automatically, under its KeyStore and subjectOf", async () => {
     const keys = new InMemoryKeyStore();
     const subjectOf = (s: { executionId: string }) => `subject:${s.executionId}`;

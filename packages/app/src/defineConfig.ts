@@ -631,6 +631,12 @@ export interface DurabilityOptions {
      * storage's own (`storage.archiveStore`). Compaction REFUSES without one.
      */
     compactionArchive?: ArchiveStore;
+    /**
+     * ADR 0138 H3 -- the tenant this app serves. `lifecycle.compact` then REFUSES unless the event
+     * store and the compaction archive are both visibly scoped to it (`TenantScopedEventStore` /
+     * `TenantScopedArchiveStore`), so an unscoped archive can never absorb a tenant's history.
+     */
+    tenant?: string;
   };
 }
 
@@ -1927,6 +1933,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       : stores.archiveStore;
   const lifecycle = new LogLifecycle(runtime.events, stores.snapshotStore, {
     ...(compactionArchive !== undefined && { compactionArchive }),
+    ...(config.retention?.tenant !== undefined && { tenant: config.retention.tenant }),
     ...(config.retention?.archive !== undefined && { archive: config.retention.archive }),
     pinned,
     ...(config.retention?.pinnedEventTypes !== undefined && {

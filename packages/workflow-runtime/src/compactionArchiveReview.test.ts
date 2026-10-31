@@ -156,6 +156,40 @@ describe("B2 - a log compacted BEFORE the archive existed keeps its settled inpu
     expect(partial[0]!.sequence).toBe(0);
   });
 
+  it("a log compacted BEFORE the archive existed reads `legacy`; the same log with its archive WIPED reads `missing`", async () => {
+    // pre-0138 shape: an unmarked checkpoint, nothing archived
+    const { eventStore, snapshotStore } = await legacyExecution("pre");
+    const fresh = new LogLifecycle(eventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
+    const pre = await fresh.archiveCoverage("pre");
+    expect(pre.unarchived.map((r) => r.why)).toEqual(["legacy"]);
+
+    // post-0138: an archiving compaction, then the archive loses the execution
+    const plainStores = plain();
+    const runtime = boot(plainStores.eventStore, plainStores.snapshotStore);
+    const life = new LogLifecycle(plainStores.eventStore, plainStores.snapshotStore, {
+      compactionArchive: plainStores.archive,
+    });
+    await (
+      await runtime.start({ definition, runner }, { n: 1 }, { executionId: "wiped" })
+    ).waitForSuspend();
+    const through = (await life.compact("wiped"))!;
+    expect((await life.archiveCoverage("wiped")).unarchived).toEqual([]);
+    await plainStores.archive.deleteExecution!("wiped");
+    expect((await life.archiveCoverage("wiped")).unarchived).toEqual([
+      { from: 1, through, why: "missing" },
+    ]);
+    await expect(life.readWithArchive("wiped")).rejects.toBeInstanceOf(ArchiveIncompleteError);
+    // a swapped-in EMPTY archive is the same loss
+    const swapped = new LogLifecycle(plainStores.eventStore, plainStores.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
+    expect((await swapped.archiveCoverage("wiped")).unarchived.map((r) => r.why)).toEqual([
+      "missing",
+    ]);
+  });
+
   it("with NO legacy history the coverage is complete (nothing reported)", async () => {
     const { eventStore, snapshotStore, archive } = plain();
     const runtime = boot(eventStore, snapshotStore);

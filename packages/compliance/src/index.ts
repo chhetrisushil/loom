@@ -10,6 +10,7 @@ export {
   type ExportSubjectOptions,
   type SubjectExecutionExport,
   type SubjectExport,
+  type UnarchivedRange,
 } from "./exportSubject";
 export {
   EraseCoordinator,

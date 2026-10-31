@@ -257,4 +257,45 @@ export default defineConfig({
       .__keptProbe!;
     expect((await probe.headers("k")).length).toBe(1); // moved to the retention archive, history kept
   });
+
+  it("B3 through the real CLI entry: `loom retention run --config ... --apply` keeps the compaction segments of a kept execution", async () => {
+    const { run } = await import("./cli");
+    const { vi } = await import("vitest");
+    const config = writeConfig(
+      "kept-cli.mjs",
+      `
+import { defineConfig } from "@loom/app";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore, buildSegment } from "@loom/event-runtime";
+import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+
+const old = Date.now() - 3600000;
+const ev = (sequence, eventType, payload) => ({
+  id: "k-" + sequence, workflowId: "wf", executionId: "k", eventType, sequence, timestamp: old, payload,
+});
+const events = [ev(0, "EXECUTION_STARTED", { input: {} }), ev(1, "STEP_STARTED", { stepId: "s" }), ev(2, "EXECUTION_COMPLETED", {})];
+const eventStore = new InMemoryAsyncEventStore();
+for (const e of events) await eventStore.append(e);
+const archiveStore = new InMemoryArchiveStore();
+await archiveStore.append("k", buildSegment([ev(1, "STEP_STARTED", { stepId: "s" })], "inc", 1, 1));
+globalThis.__keptCliProbe = archiveStore;
+export default defineConfig({
+  storage: { kind: "custom", eventStore, snapshotStore: new InMemoryAsyncSnapshotStore(), archiveStore },
+  durability: { retention: { archive: { eventStore: new InMemoryAsyncEventStore(), snapshotStore: new InMemoryAsyncSnapshotStore() } } },
+});
+`
+    );
+    const lines: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
+      lines.push(a.join(" "));
+    });
+    try {
+      expect(await run(["retention", "run", "--config", config, "--ttl", "0", "--apply"])).toBe(0);
+    } finally {
+      log.mockRestore();
+    }
+    expect(lines.join("\n")).toMatch(/reclaimed/);
+    const probe = (globalThis as { __keptCliProbe?: { headers(id: string): Promise<unknown[]> } })
+      .__keptCliProbe!;
+    expect((await probe.headers("k")).length).toBe(1);
+  });
 });

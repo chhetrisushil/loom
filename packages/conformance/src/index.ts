@@ -18,6 +18,7 @@ import {
   DuplicateSequenceError,
   assertSegmentDigest,
   buildSegment,
+  compareExecutionIds,
   headOf,
   readRangeOf,
 } from "@loom/event-runtime";
@@ -48,6 +49,7 @@ export { runFoldedStateConformance } from "./foldedState.js";
 export type { FoldedStateStoreLike } from "./foldedState.js";
 
 export {
+  runArchiveStoreDecoratorConformance,
   runEventStoreDecoratorConformance,
   runSnapshotStoreDecoratorConformance,
   type DecoratorConformanceOptions,
@@ -4349,13 +4351,39 @@ export function runArchiveStoreConformance(
         cursor = page.nextCursor;
       }
       expect(mine(seen)).toEqual(["lst-a", "lst-b", "lst-c", "lst-d"]);
-      expect(seen).toEqual([...seen].sort());
+      expect(seen).toEqual([...seen].sort(compareExecutionIds));
       expect(mine((await store.listExecutions({ limit: 1000 })).executionIds)).toEqual([
         "lst-a",
         "lst-b",
         "lst-c",
         "lst-d",
       ]);
+      await store.close();
+    });
+
+    it("orders ids by CODE POINT, not UTF-16 unit (an astral id sorts AFTER a BMP id above U+D800)", async () => {
+      const store = await factory();
+      // U+FF5E is one UTF-16 unit (0xFF5E); U+1F600 is the pair 0xD83D 0xDE00. By code unit the astral
+      // id sorts FIRST; by code point (the SPI's order, and UTF-8 byte order) it sorts LAST.
+      const ids = ["cpo-\u{1F600}", "cpo-\uFF5E", "cpo-z", "cpo-\u{10000}"];
+      for (const id of ids) await store.append(id, archiveSeg(id, 1, 2));
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (let i = 0; i < 100; i++) {
+        const page = await store.listExecutions({
+          ...(cursor !== undefined && { cursor }),
+          limit: 1,
+        });
+        seen.push(...page.executionIds);
+        if (page.nextCursor === undefined) break;
+        cursor = page.nextCursor;
+      }
+      const mine = seen.filter((x) => x.startsWith("cpo-"));
+      const byCodePoint = [...ids].sort(compareExecutionIds);
+      expect(byCodePoint).toEqual(["cpo-z", "cpo-\uFF5E", "cpo-\u{10000}", "cpo-\u{1F600}"]);
+      expect(mine).toEqual(byCodePoint);
+      // ... and the JS default sort (UTF-16) would NOT agree, so this case can fail an implementation.
+      expect([...ids].sort()).not.toEqual(byCodePoint);
       await store.close();
     });
 

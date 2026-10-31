@@ -27,11 +27,12 @@ import { describe, expect, it } from "vitest";
 
 const REPO_ROOT = resolve(__dirname, "../../..");
 const ROOTS = ["packages", "plugins", "tools", "apps"];
-const STORE_TYPES = ["EventStore", "SnapshotStore"] as const;
+const STORE_TYPES = ["EventStore", "SnapshotStore", "ArchiveStore"] as const;
 type StoreType = (typeof STORE_TYPES)[number];
 const KIT: Record<StoreType, string> = {
   EventStore: "runEventStoreDecoratorConformance",
   SnapshotStore: "runSnapshotStoreDecoratorConformance",
+  ArchiveStore: "runArchiveStoreDecoratorConformance",
 };
 
 interface SourceFile {
@@ -65,7 +66,7 @@ function discoverDecorators(sources: readonly SourceFile[]): Decorator[] {
   const found: Decorator[] = [];
   for (const { path, text } of sources) {
     // Cheap pre-filter: the AST walk only runs on files that could declare one.
-    if (!/\b(EventStore|SnapshotStore)\b/.test(text)) continue;
+    if (!/\b(EventStore|SnapshotStore|ArchiveStore)\b/.test(text)) continue;
     const sf = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node): void => {
       if (ts.isClassDeclaration(node) && node.name !== undefined) {
@@ -101,6 +102,7 @@ function kitCoverage(tests: readonly SourceFile[]): Record<StoreType, Set<string
   const covered: Record<StoreType, Set<string>> = {
     EventStore: new Set(),
     SnapshotStore: new Set(),
+    ArchiveStore: new Set(),
   };
   for (const { path, text } of tests) {
     if (!text.includes("DecoratorConformance")) continue;
@@ -179,6 +181,8 @@ describe("store decorators run the decorator conformance kit (fitness, ADR 0074 
       "ProfilingEventStore",
       "TenantScopedSnapshotStore",
       "ProfilingSnapshotStore",
+      "EncryptingArchiveStore",
+      "TenantScopedArchiveStore",
     ]) {
       expect(names, `discovery lost ${known}`).toContain(known);
     }

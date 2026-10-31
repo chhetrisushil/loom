@@ -1,7 +1,9 @@
 import type { EventEnvelope } from "@loom/core";
 import {
+  type ArchiveStore,
   type AtRestEventReader,
   type EventStore,
+  InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   OPTIONAL_EVENT_STORE_METHODS,
   type OptionalEventStoreMethod,
@@ -16,7 +18,11 @@ import {
   type SnapshotStore,
 } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
-import { runEventStoreConformance, runSnapshotStoreConformance } from "./index.js";
+import {
+  runArchiveStoreConformance,
+  runEventStoreConformance,
+  runSnapshotStoreConformance,
+} from "./index.js";
 
 // ── Store DECORATOR conformance (ADR 0074 Amendment, L1) ─────────────────────
 //
@@ -42,6 +48,11 @@ export interface DecoratorConformanceOptions<M extends string, S = unknown> {
    * only for a decorator that does not use the helper.
    */
   refused?: Partial<Record<M, string>>;
+  /**
+   * `"own"`: the decorator IS the tenant scope (`TenantScopedEventStore`), so it reports its own
+   * `tenantScope` rather than forwarding its inner store's. Default: it must forward the inner's.
+   */
+  tenantScope?: "own";
 }
 
 /**
@@ -193,6 +204,34 @@ function hasEncryptionMarker(store: object): boolean {
   return typeof keys === "object" && keys !== null;
 }
 
+/** The tenant a marked inner store reports, so a forwarded value is told from an invented one. */
+const MARKER_TENANT = "decorator-kit-tenant";
+
+/**
+ * Problems with how a decorator carries the tenant marker (`tenantScope`, ADR 0138 H3) of the store
+ * it wraps. `LogLifecycle.compact` refuses a tenant-scoped log paired with an archive scoped to a
+ * different tenant by reading this marker on the OUTERMOST store; a decorator that drops it makes a
+ * scoped log read as unscoped, and an unscoped archive then mixes tenants (the guard failed OPEN).
+ */
+export function tenantMarkerProblems(
+  label: string,
+  wrap: (inner: never) => object,
+  inner: () => object,
+  own: boolean
+): string[] {
+  const store = wrap(Object.assign(inner(), { tenantScope: MARKER_TENANT }) as never);
+  const got = (store as { tenantScope?: unknown }).tenantScope;
+  if (typeof got !== "string") {
+    return [
+      `${label} hides the tenantScope marker of the store it wraps (forward it: installOptional or forwardStoreMarkers)`,
+    ];
+  }
+  if (!own && got !== MARKER_TENANT) {
+    return [`${label} reports tenantScope "${got}" over an inner scoped to "${MARKER_TENANT}"`];
+  }
+  return [];
+}
+
 /** A full-capability reference store that also carries an encryption marker. */
 function markedInner<T extends object>(inner: T): T {
   return Object.assign(inner, { keys: { durable: true } });
@@ -260,6 +299,12 @@ export function runEventStoreDecoratorConformance(
       expect(hasEncryptionMarker(store)).toBe(true);
       await store.close();
     });
+
+    it("keeps a tenant-scoped inner store visibly scoped (the `tenantScope` marker survives, ADR 0138 H3)", () => {
+      expect(
+        tenantMarkerProblems(label, wrap as never, inner, options.tenantScope === "own")
+      ).toEqual([]);
+    });
   });
   runEventStoreConformance(() => wrap(inner()), `${label} (decorated)`);
 }
@@ -293,6 +338,40 @@ export function runSnapshotStoreDecoratorConformance(
       expect(hasEncryptionMarker(store)).toBe(true);
       await store.close();
     });
+
+    it("keeps a tenant-scoped inner store visibly scoped (the `tenantScope` marker survives, ADR 0138 H3)", () => {
+      expect(
+        tenantMarkerProblems(label, wrap as never, inner, options.tenantScope === "own")
+      ).toEqual([]);
+    });
   });
   runSnapshotStoreConformance(() => wrap(inner()), `${label} (decorated)`);
+}
+
+/**
+ * The {@link ArchiveStore} counterpart (ADR 0138): a compaction-archive decorator (sealing, tenant
+ * scoping) must keep the markers the kernel guard reads on the OUTERMOST archive - the encryption
+ * marker `keys` and the tenant marker `tenantScope` - and pass the whole archive conformance suite
+ * THROUGH the decorator.
+ */
+export function runArchiveStoreDecoratorConformance(
+  label: string,
+  wrap: (inner: ArchiveStore) => ArchiveStore,
+  options: { inner?: () => ArchiveStore; tenantScope?: "own" } = {}
+): void {
+  const inner = options.inner ?? (() => new InMemoryArchiveStore());
+  describe(`${label} decorator conformance (ArchiveStore)`, () => {
+    it("keeps an encrypting inner store visibly encrypting (the `keys` marker survives)", async () => {
+      const store = wrap(markedInner(inner()));
+      expect(hasEncryptionMarker(store)).toBe(true);
+      await store.close();
+    });
+
+    it("keeps a tenant-scoped inner store visibly scoped (the `tenantScope` marker survives, ADR 0138 H3)", () => {
+      expect(
+        tenantMarkerProblems(label, wrap as never, inner, options.tenantScope === "own")
+      ).toEqual([]);
+    });
+  });
+  runArchiveStoreConformance(() => wrap(inner()), `${label} (decorated)`);
 }

@@ -14,6 +14,19 @@ import type { SubjectIndex } from "./SubjectIndex";
 // tolerant mode (`onShredded: "tolerate"`, K10-R4) — the shredded fields come back as
 // `{ $shredded }` and the export honestly shows what remains rather than failing.
 
+/**
+ * A range of an execution's ORIGINAL log that neither the surviving log nor the compaction archive
+ * holds as events (structurally `LogLifecycle.archiveCoverage`'s `UnarchivedRange`). `"legacy"`:
+ * removed by a compaction that predates the archive; only its folded checkpoint remains
+ * (`legacyCheckpoints`, when the archive preserved it). `"missing"`: an archiving compaction removed
+ * it and no archive segment holds it now (a wiped, swapped or truncated archive).
+ */
+export interface UnarchivedRange {
+  readonly from: number;
+  readonly through: number;
+  readonly why: "legacy" | "missing";
+}
+
 /** One execution's contribution to a subject export. */
 export interface SubjectExecutionExport {
   executionId: string;
@@ -28,6 +41,15 @@ export interface SubjectExecutionExport {
    * events survive only as a folded state). Present only when such an execution is exported.
    */
   legacyCheckpoints?: unknown[];
+  /**
+   * ADR 0138 - EVERY range of this execution's original log the export could not return as events
+   * (see {@link UnarchivedRange}); `[]` is a complete log. Present whenever an `archive` was given, so
+   * a data subject (or their processor) can see each gap instead of a silently shorter export. The
+   * `events` and `state` of an execution with a non-empty list are INCOMPLETE for those ranges.
+   * Absent only when the execution was read through the crypto-shred erasure window (its log is
+   * unreadable by design) or no archive was configured.
+   */
+  unarchived?: UnarchivedRange[];
 }
 
 /** A subject's full data export across every execution concerning them. */
@@ -44,9 +66,13 @@ export interface ExportSubjectOptions {
    * log into the archive, and an Art. 15/20 export that read only the surviving log would omit the
    * subject's data and fold a compacted log wrongly. Given this, each execution is read as
    * `archive ∪ log` (and folded from that). A range only a pre-archive checkpoint remembers is
-   * returned in `legacyCheckpoints` rather than silently missing.
+   * returned in `legacyCheckpoints`, and every range the archive and log together cannot show is
+   * listed in each execution's `unarchived` (never silently dropped).
    */
   archive?: {
+    archiveCoverage(
+      executionId: string
+    ): Promise<{ readonly unarchived: readonly UnarchivedRange[] }>;
     readWithArchive(
       executionId: string,
       opts?: { readonly allowIncomplete?: boolean }
@@ -90,11 +116,15 @@ export async function exportSubject(
   const executions: SubjectExecutionExport[] = [];
   for (const executionId of executionIds) {
     let events: EventEnvelope[];
+    let unarchived: UnarchivedRange[] | undefined;
     try {
       events =
         options.archive !== undefined
           ? await options.archive.readWithArchive(executionId, { allowIncomplete: true })
           : await options.eventStore.read(executionId);
+      if (options.archive !== undefined) {
+        unarchived = [...(await options.archive.archiveCoverage(executionId)).unarchived];
+      }
     } catch (err) {
       // The ShredIncomplete window (key destroyed, tombstone not yet written): the redacted view,
       // only with the log's durable erase intent. A node that lacks the key is not an erasure.
@@ -118,6 +148,7 @@ export async function exportSubject(
       state,
       ...(includeEvents && { events }),
       ...(legacy.length > 0 && { legacyCheckpoints: legacy }),
+      ...(unarchived !== undefined && { unarchived }),
     });
   }
   return { subjectId, executions };
