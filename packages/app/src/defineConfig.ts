@@ -508,10 +508,15 @@ export interface ClaimCheckConfig {
     /** Required with `compliance.erase`: erasing a subject deletes the blobs their tool outputs went to. */
     delete?(ref: { __loomContent: string }): Promise<void>;
     /** Read side: lets `app.exportSubject` return the resolved tool outputs, not just their refs. */
-    get?(ref: { __loomContent: string }): Promise<Uint8Array | null>;
+    get?(
+      ref: { __loomContent: string },
+      access?: { executionId: string; workflowId: string }
+    ): Promise<Uint8Array | null>;
     /**
      * `true` for a store that seals each blob under its owning subject's key, so the shred erases it.
-     * REQUIRED with `security.crypto` (none ships yet, ADR 0140 D8); otherwise leave it unset.
+     * REQUIRED with `security.crypto` (ADR 0140 D8): pass `new EncryptingContentStore(inner, keys, ...)` from
+     * `@loom/plugin-crypto` (ADR 0143), built over the SAME KeyStore and `subjectOf` as `security.crypto`
+     * (a different one is refused at boot). Otherwise leave it unset.
      */
     readonly sealsContent?: boolean;
   };
@@ -567,12 +572,12 @@ interface ResolvedClaimCheck {
 /**
  * Validate `execution.claimCheck` (TypeError on bad values) and build its middleware. FAILS CLOSED against
  * the two combinations that would leave an erased subject's data behind (ADR 0140 D8): a configured
- * `security.crypto` needs a store that seals per subject (`sealsContent: true`; none ships yet), and a
+ * `security.crypto` needs a store that seals per subject (`sealsContent: true`: the `EncryptingContentStore`, ADR 0143), and a
  * `compliance.erase` needs a store that can `delete`.
  */
 function claimCheckFrom(
   raw: ClaimCheckConfig | undefined,
-  posture: { crypto: boolean; erase: boolean },
+  posture: { crypto: boolean; erase: boolean; cryptoEvents?: unknown },
   onWarn: (message: string) => void
 ): ResolvedClaimCheck | undefined {
   if (raw === undefined) return undefined;
@@ -612,8 +617,31 @@ function claimCheckFrom(
   const sealsContent = (raw.store as { sealsContent?: unknown }).sealsContent === true;
   if (posture.crypto && !sealsContent) {
     throw new TypeError(
-      "defineConfig: execution.claimCheck with security.crypto is refused: the offloaded tool outputs would sit in the content store in PLAINTEXT, outside the per-subject keys that seal the log, so erasing a subject (a key's destruction) could not reach them. The ContentStore SPI has no subject on put/get, so no per-subject sealing store ships yet. Either drop execution.claimCheck, or pass a store that seals each blob under its owning subject's key and declares `sealsContent: true`. Nothing was composed."
+      "defineConfig: execution.claimCheck with security.crypto is refused: the offloaded tool outputs would sit in the content store in PLAINTEXT, outside the per-subject keys that seal the log, so erasing a subject (a key's destruction) could not reach them. Wrap the store: `new EncryptingContentStore(inner, keys, { subjectOf })` from @loom/plugin-crypto (ADR 0143) seals each blob under its owning subject's key and declares `sealsContent: true`; give it the SAME KeyStore and subjectOf as security.crypto. Or drop execution.claimCheck. Nothing was composed."
     );
+  }
+  if (posture.crypto && sealsContent) {
+    // ADR 0143: a sealing store on a DIFFERENT KeyStore or subject mapping than the log would seal blobs a
+    // shred of the log's key never reaches (erasure theater). Compared by identity, where both are visible.
+    const store = raw.store as { keys?: unknown; subjectOf?: unknown };
+    const events = posture.cryptoEvents as { keys?: unknown; subjectOf?: unknown } | undefined;
+    if (events !== undefined && store.keys !== undefined && events.keys !== undefined) {
+      if (store.keys !== events.keys) {
+        throw new TypeError(
+          "defineConfig: execution.claimCheck.store seals under a different KeyStore than security.crypto.events: destroying a subject's key in the log's store would not make its offloaded blobs unreadable. Build the EncryptingContentStore over the same KeyStore. Nothing was composed."
+        );
+      }
+    }
+    if (
+      events !== undefined &&
+      typeof store.subjectOf === "function" &&
+      typeof events.subjectOf === "function" &&
+      store.subjectOf !== events.subjectOf
+    ) {
+      throw new TypeError(
+        "defineConfig: execution.claimCheck.store maps an execution to its erasure subject with a different subjectOf than security.crypto.events: a blob and its log would be sealed under different keys. Pass the SAME function to both. Nothing was composed."
+      );
+    }
   }
   if (posture.erase && !sealsContent && typeof raw.store.delete !== "function") {
     throw new TypeError(
@@ -1910,7 +1938,11 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   // inside the kill switch (a stopped effect must not run, let alone store). Absent unless configured.
   const claimCheck = claimCheckFrom(
     config.claimCheck,
-    { crypto: config.crypto !== undefined, erase: config.compliance?.erase !== undefined },
+    {
+      crypto: config.crypto !== undefined,
+      erase: config.compliance?.erase !== undefined,
+      cryptoEvents: (config.crypto as { events?: unknown } | undefined)?.events,
+    },
     config.onWarn ?? defaultWarn
   );
   if (claimCheck !== undefined) effectMiddleware.unshift(claimCheck.middleware);
@@ -2605,7 +2637,10 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         ...(claimCheck !== undefined &&
           typeof (claimCheck.store as { get?: unknown }).get === "function" && {
             content: claimCheck.store as unknown as {
-              get(ref: { __loomContent: string }): Promise<Uint8Array | null>;
+              get(
+                ref: { __loomContent: string },
+                access?: { executionId: string; workflowId: string }
+              ): Promise<Uint8Array | null>;
             },
           }),
         // ADR 0138: an Art. 15/20 export includes what compaction MOVED into the archive. Read through a

@@ -3087,14 +3087,28 @@ export function runKeyStoreConformance(factory: () => KeyStoreLike, label = "Key
 // idempotent, loud-free absence) is worth pinning. Structural type so `@loom/conformance`
 // stays free of any plugin dependency. Call from a ContentStore impl's test suite.
 
+/** Structural view of the SPI 1.5.0 owner argument (ADR 0143). */
+export interface ContentAccessLike {
+  readonly executionId: string;
+  readonly workflowId: string;
+}
+
 /** Structural view of the content-store SPI (avoids a plugin dependency). */
 export interface ContentStoreLike {
-  put(bytes: Uint8Array): Promise<{ __loomContent: string }>;
+  /** SPI 1.5.0 (ADR 0143): `true` for a store that seals each blob under its owner's subject key. */
+  readonly sealsContent?: boolean;
+  put(bytes: Uint8Array, access?: ContentAccessLike): Promise<{ __loomContent: string }>;
   /** OPTIONAL (ST-1, SPI streaming): content-addressed streaming ingestion. */
-  putStream?(stream: AsyncIterable<Uint8Array>): Promise<{ __loomContent: string }>;
-  get(ref: { __loomContent: string }): Promise<Uint8Array | null>;
+  putStream?(
+    stream: AsyncIterable<Uint8Array>,
+    access?: ContentAccessLike
+  ): Promise<{ __loomContent: string }>;
+  get(ref: { __loomContent: string }, access?: ContentAccessLike): Promise<Uint8Array | null>;
   /** OPTIONAL (TS-10, ADR 0062): batched get — positional, null-on-absence. */
-  getMany?(refs: readonly { __loomContent: string }[]): Promise<(Uint8Array | null)[]>;
+  getMany?(
+    refs: readonly { __loomContent: string }[],
+    access?: ContentAccessLike
+  ): Promise<(Uint8Array | null)[]>;
   delete(ref: { __loomContent: string }): Promise<void>;
   /**
    * OPTIONAL (SPI 1.3.0, ADR 0055 D5): erase only if the blob's touch time is older than
@@ -3125,6 +3139,13 @@ export interface ContentStoreConformanceOptions {
    * checks that a touch time never moves backwards when the clock steps back (SPI 1.3.0).
    */
   clocked?: (now: () => number) => ContentStoreLike;
+  /**
+   * SPI 1.5.0 (ADR 0143). For a store that SEALS per subject: the owner every `put`/`get` in the kit is made
+   * for (the kit binds it to each call, so the whole suite runs per subject). A sealing store is refused
+   * without it, so a sealing store's suite MUST pass it. Omitted, the kit also asserts the plain-store rule:
+   * the argument is accepted and ignored (same ref with or without it).
+   */
+  access?: ContentAccessLike;
 }
 
 /**
@@ -3133,10 +3154,39 @@ export interface ContentStoreConformanceOptions {
  * returns `null` (never throws) on absence, and `delete` is idempotent physical erasure.
  */
 export function runContentStoreConformance(
-  factory: () => ContentStoreLike,
+  rawFactory: () => ContentStoreLike,
   label = "ContentStore",
-  options: ContentStoreConformanceOptions = {}
+  rawOptions: ContentStoreConformanceOptions = {}
 ): void {
+  const access = rawOptions.access;
+  // Bind the owner to every data call so the whole suite below is the per-subject suite for a sealing store.
+  const bind = (store: ContentStoreLike): ContentStoreLike => {
+    if (access === undefined) return store;
+    const bound: ContentStoreLike = {
+      put: (b) => store.put(b, access),
+      get: (r) => store.get(r, access),
+      delete: (r) => store.delete(r),
+    };
+    if (store.sealsContent !== undefined) {
+      (bound as { sealsContent?: boolean }).sealsContent = store.sealsContent;
+    }
+    if (store.putStream !== undefined) bound.putStream = (st) => store.putStream!(st, access);
+    if (store.getMany !== undefined) bound.getMany = (rs) => store.getMany!(rs, access);
+    if (store.deleteIfUntouchedSince !== undefined) {
+      bound.deleteIfUntouchedSince = (r, c) => store.deleteIfUntouchedSince!(r, c);
+    }
+    if (store.listPage !== undefined) bound.listPage = (o) => store.listPage!(o);
+    if (store.touchClock !== undefined) bound.touchClock = () => store.touchClock!();
+    if (store.touch !== undefined) bound.touch = (a) => store.touch!(a);
+    return bound;
+  };
+  const factory = (): ContentStoreLike => bind(rawFactory());
+  const options: ContentStoreConformanceOptions = {
+    ...rawOptions,
+    ...(rawOptions.clocked !== undefined && {
+      clocked: (now: () => number) => bind(rawOptions.clocked!(now)),
+    }),
+  };
   const bytes = (s: string): Uint8Array => new TextEncoder().encode(s);
   const eq = (a: Uint8Array, b: Uint8Array): boolean =>
     a.length === b.length && a.every((byte, i) => byte === b[i]);
@@ -3148,6 +3198,24 @@ export function runContentStoreConformance(
       const got = await store.get(ref);
       expect(got).not.toBeNull();
       expect(eq(got as Uint8Array, bytes("hello"))).toBe(true);
+    });
+
+    it("accepts the SPI 1.5.0 owner argument (a plain store ignores it; a sealing store requires it)", async () => {
+      const owner = { executionId: "conformance-exec", workflowId: "conformance-wf" };
+      const raw = rawFactory();
+      if (raw.sealsContent === true) {
+        // Fail closed: no owner, no seal and no open.
+        await expect(raw.put(bytes("no-owner"))).rejects.toThrow();
+        return;
+      }
+      const withOwner = await raw.put(bytes("owned"), owner);
+      const without = await raw.put(bytes("owned"));
+      expect(withOwner.__loomContent).toBe(without.__loomContent); // ignored: plain content address
+      expect(eq((await raw.get(withOwner, owner)) as Uint8Array, bytes("owned"))).toBe(true);
+      if (raw.getMany !== undefined) {
+        const [got] = await raw.getMany([withOwner], owner);
+        expect(eq(got as Uint8Array, bytes("owned"))).toBe(true);
+      }
     });
 
     it("is content-addressed: identical bytes yield the same ref (idempotent)", async () => {

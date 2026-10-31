@@ -195,7 +195,40 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
     expect(blobs.has("own")).toBe(true);
   });
 
-  it("a store that seals per subject needs nothing: the shred erases it", async () => {
+  it("a store that seals per subject (ADR 0143): the shred erases it, the erasure RECORDS it and deletes the ciphertext", async () => {
+    const { store, index, content, blobs } = await world();
+    const order: string[] = [];
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => void order.push("shred"),
+      content: { ...content, sealsContent: true },
+    });
+    const r = await coord.eraseSubject("ann");
+    // no owner-set scan and no conditional delete: sealed addresses are subject-scoped
+    expect(r.contentDeleted).toEqual({ deleted: 2, retained: 0, sealed: 2 });
+    expect(content.delete).toHaveBeenCalledTimes(2);
+    expect(blobs.size).toBe(0);
+    const control = (await store.read("__loom_erasure__")).map((e) => e.eventType);
+    expect(control).toContain("ERASURE_CONTENT_DELETE_INTENDED");
+    expect(control.indexOf("ERASURE_CONTENT_DELETE_INTENDED")).toBeLessThan(
+      control.indexOf("ERASURE_CONTENT_DELETED")
+    );
+  });
+
+  it("a sealing store that cannot delete: erasure completes and records the sealed blobs, deleting none", async () => {
+    const { store, index } = await world();
+    const coord = new EraseCoordinator({
+      index,
+      eventStore: store,
+      shred: async () => {},
+      content: { sealsContent: true } as never,
+    });
+    const r = await coord.eraseSubject("ann");
+    expect(r.contentDeleted).toEqual({ deleted: 0, retained: 0, sealed: 2 });
+  });
+
+  it("a subject with no claim-checked blobs records nothing over a sealing store", async () => {
     const { store, index, content } = await world();
     const coord = new EraseCoordinator({
       index,
@@ -203,9 +236,8 @@ describe("EraseCoordinator over a plaintext content store (ADR 0140)", () => {
       shred: async () => {},
       content: { ...content, sealsContent: true },
     });
-    const r = await coord.eraseSubject("ann");
+    const r = await coord.eraseSubject("nobody-here");
     expect(r.contentDeleted).toBeUndefined();
-    expect(content.delete).not.toHaveBeenCalled();
   });
 });
 
@@ -218,6 +250,35 @@ describe("exportSubject resolves claim-checked blobs (ADR 0140)", () => {
       { address: "own", size: 5000, value: "own" },
       { address: "shared", size: 5000, missing: true },
     ]);
+  });
+});
+
+describe("exportSubject over a sealing store (ADR 0143)", () => {
+  it("passes the owning execution, reads a blob whose key is destroyed as missing, and keeps other failures loud", async () => {
+    const { store, index } = await world();
+    const seen: unknown[] = [];
+    const shredded = Object.assign(new Error("key destroyed"), {});
+    brandPayloadShredded(shredded);
+    const content = {
+      get: async (ref: { __loomContent: string }, access?: unknown) => {
+        seen.push(access);
+        if (ref.__loomContent === "own") throw shredded;
+        return new TextEncoder().encode('"shared"');
+      },
+    };
+    const out = await exportSubject("ann", { index, eventStore: store, content });
+    expect(seen).toEqual([
+      { executionId: "a1", workflowId: "wf" },
+      { executionId: "a1", workflowId: "wf" },
+    ]);
+    expect(out.executions[0]?.claimChecked).toEqual([
+      { address: "own", size: 5000, missing: true },
+      { address: "shared", size: 5000, value: "shared" },
+    ]);
+    const broken = { get: async () => Promise.reject(new Error("blob did not open")) };
+    await expect(
+      exportSubject("ann", { index, eventStore: store, content: broken })
+    ).rejects.toThrow(/did not open/);
   });
 });
 

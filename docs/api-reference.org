@@ -1044,10 +1044,13 @@ Large values leave the log by REFERENCE. The log stays the thin, ordered authori
 
 #+begin_src typescript
 interface ContentStore {
-  put(bytes: Uint8Array): Promise<ContentRef>          // address IS sha256(bytes)
-  get(ref: ContentRef): Promise<Uint8Array | null>
-  getMany?(refs: readonly ContentRef[]): Promise<(Uint8Array | null)[]>   // OPTIONAL, coalesced
-  putStream?(stream: AsyncIterable<Uint8Array>): Promise<ContentRef>      // OPTIONAL
+  readonly sealsContent?: boolean   // SPI 1.5.0 (ADR 0143): true = seals each blob under its owner's subject key (EncryptingContentStore)
+  // SPI 1.5.0: every data call takes an OPTIONAL `access?: ContentAccess { executionId, workflowId }` (the owning
+  // execution); a plain store ignores it, a sealing store REFUSES a call without it
+  put(bytes: Uint8Array, access?: ContentAccess): Promise<ContentRef>   // plain store: address IS sha256(bytes)
+  get(ref: ContentRef, access?: ContentAccess): Promise<Uint8Array | null>
+  getMany?(refs: readonly ContentRef[], access?: ContentAccess): Promise<(Uint8Array | null)[]>   // OPTIONAL, coalesced
+  putStream?(stream: AsyncIterable<Uint8Array>, access?: ContentAccess): Promise<ContentRef>      // OPTIONAL
   delete(ref: ContentRef): Promise<void>
   // SPI 1.3.0 (ADR 0055 D5/D6), OPTIONAL, all three or none — then EVERY put bumps the touch
   // time, monotonically; a touch time of 0 is UNKNOWN (never orphan-eligible)
@@ -1106,7 +1109,7 @@ interface ContentSweepReport {
   raceSafe: boolean                     // D5: false = plain delete, a mid-sweep re-cite can be lost
 }
 function pinByEventKinds(store: Pick<EventStore, "read">, kinds: Iterable<string>): (executionId: string) => Promise<boolean>
-const CONTENT_STORE_SPI_VERSION: string   // "1.4.0"
+const CONTENT_STORE_SPI_VERSION: string   // "1.5.0"
 class InMemoryContentStore implements ContentStore { constructor(opts?: { now?: () => number }) }
 #+end_src
 
@@ -1383,6 +1386,12 @@ fails *loudly*, never silently diverges. Optional store capabilities (fencing, ~
 
 #+begin_src typescript
 class EncryptingEventStore    implements EventStore    { constructor(inner: EventStore,    keys: KeyStore, options: EncryptingEventStoreOptions) }
+class EncryptingContentStore implements ContentStore {   // ADR 0143, ContentStore SPI 1.5.0
+  constructor(inner: ContentStore, keys: KeyStore, options?: { subjectOf?: (o: { executionId: string; workflowId: string }) => string })
+  readonly sealsContent: true; readonly keys: KeyStore; readonly subjectOf   // defineConfig compares both with security.crypto.events by identity
+  // put/get/getMany REQUIRE the `ContentAccess` owner (ContentAccessRequiredError); address = inner hash of the ciphertext (subject-scoped);
+  // destroyed key => PayloadShreddedError, tampered/swapped blob => ContentUndecryptableError; no putStream
+}
 class EncryptingSnapshotStore implements SnapshotStore { constructor(inner: SnapshotStore, keys: KeyStore, options: EncryptingSnapshotStoreOptions) }
 interface EncryptingEventStoreOptions {
   sensitive: Record<string, readonly string[]>;   // event type → encrypted payload dot-paths

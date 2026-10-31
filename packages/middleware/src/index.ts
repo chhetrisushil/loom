@@ -13,6 +13,7 @@ export {
   type ClaimCheckEnvelope,
   type ClaimCheckInfo,
   type ClaimCheckOptions,
+  type ClaimCheckAccess,
   type ClaimCheckReader,
   type ClaimCheckStore,
   type PreviewDigest,

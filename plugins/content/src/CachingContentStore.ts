@@ -1,4 +1,4 @@
-import type { ContentStore } from "./ContentStore";
+import type { ContentAccess, ContentStore } from "./ContentStore";
 import { type ContentRef, contentAddress } from "./content";
 
 export interface CachingContentStoreOptions {
@@ -35,9 +35,18 @@ export class CachingContentStore implements ContentStore {
     private readonly inner: ContentStore,
     private readonly options: CachingContentStoreOptions
   ) {
+    // ADR 0143: this cache holds PLAINTEXT keyed by address, so over a sealing store a warm hit would hand a
+    // blob to a caller who never proved the subject (and whose fetch-hash check could not pass anyway: the
+    // sealing store returns plaintext for a ciphertext address). Cache the CIPHERTEXT instead: wrap the plain
+    // store, then seal on top (`new EncryptingContentStore(new CachingContentStore(plain, ..), ..)`).
+    if (inner.sealsContent === true) {
+      throw new TypeError(
+        "CachingContentStore: refusing to cache a store that seals content (sealsContent: true): a warm hit would serve plaintext without the subject check. Put the cache BELOW the sealing store."
+      );
+    }
     // Forwarded uncached: the stream's bytes are consumed by the inner upload.
     if (inner.putStream !== undefined) {
-      this.putStream = (stream) => inner.putStream!(stream);
+      this.putStream = (stream, access) => inner.putStream!(stream, access);
     }
     // SPI 1.3.0 (ADR 0055 D5/D6): forwarded iff the inner store has them — a decorator that
     // dropped them would silently make the sweep racy and `reclaimOrphans` refuse. Touch
@@ -61,7 +70,7 @@ export class CachingContentStore implements ContentStore {
     if (inner.touch !== undefined) {
       this.touch = (addresses) => inner.touch!(addresses);
     }
-    this.getMany = async (refs) => {
+    this.getMany = async (refs, access) => {
       const results = new Array<Uint8Array | null>(refs.length);
       const missIndexes: number[] = [];
       const missRefs: ContentRef[] = [];
@@ -77,8 +86,8 @@ export class CachingContentStore implements ContentStore {
       if (missRefs.length > 0) {
         const fetched =
           inner.getMany !== undefined
-            ? await inner.getMany(missRefs)
-            : await Promise.all(missRefs.map((r) => inner.get(r)));
+            ? await inner.getMany(missRefs, access)
+            : await Promise.all(missRefs.map((r) => inner.get(r, access)));
         fetched.forEach((bytes, j) => {
           const at = missIndexes[j] as number;
           if (bytes != null) {
@@ -92,16 +101,16 @@ export class CachingContentStore implements ContentStore {
     };
   }
 
-  async put(bytes: Uint8Array): Promise<ContentRef> {
-    const ref = await this.inner.put(bytes);
+  async put(bytes: Uint8Array, access?: ContentAccess): Promise<ContentRef> {
+    const ref = await this.inner.put(bytes, access);
     this.admit(ref.__loomContent, bytes);
     return ref;
   }
 
-  async get(ref: ContentRef): Promise<Uint8Array | null> {
+  async get(ref: ContentRef, access?: ContentAccess): Promise<Uint8Array | null> {
     const hit = this.lruTouch(ref.__loomContent);
     if (hit !== undefined) return hit;
-    const bytes = await this.inner.get(ref);
+    const bytes = await this.inner.get(ref, access);
     if (bytes !== null) {
       this.verifyFetched(ref.__loomContent, bytes);
       this.admit(ref.__loomContent, bytes);
