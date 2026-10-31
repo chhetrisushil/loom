@@ -50,7 +50,14 @@ export { isMediaResult, mediaResult, toolResultPart } from "./toolResultContent"
 export type { ToolMediaResult } from "./toolResultContent";
 export { agentStep$ } from "./agentStep$";
 export type { AgentStepConfig } from "./agentStep$";
-export type { AgentHistoryMessage, AgentInput, AgentOutput, AgentStep } from "./types";
+export type {
+  AgentHistoryMessage,
+  AgentInput,
+  AgentOutput,
+  AgentStep,
+  LeanAgentStep,
+} from "./types";
+export { isLeanAgentStep } from "./types";
 export {
   buildToolMenu,
   toolInputJsonSchema,

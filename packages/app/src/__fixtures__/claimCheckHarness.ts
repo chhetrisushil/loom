@@ -118,6 +118,8 @@ export interface BootOptions {
   snapshotEvery?: number;
   /** The app's own `execution.effectMiddleware`. */
   effectMiddleware?: EffectMiddleware[];
+  /** ADR 0142: the loop's `toolCallLog` mode (unset = the default). */
+  toolCallLog?: "full" | "lean";
 }
 
 export function boot(o: BootOptions) {
@@ -148,6 +150,7 @@ export function boot(o: BootOptions) {
         modelToolId: "model",
         maxIterations: o.turns + 5,
         onWarn: () => {},
+        ...(o.toolCallLog !== undefined && { toolCallLog: o.toolCallLog }),
       },
       { prompt: "go" }
     );

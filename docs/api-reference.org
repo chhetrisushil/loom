@@ -2213,6 +2213,7 @@ interface AgentInput  { prompt: string; context?: unknown; memoryScope?: string;
                        promptOrigin?: string; }           // (R17) the prompt is third-party content: tainted with this origin, fenced at the prompt boundary; not with `context`
 interface AgentHistoryMessage { role: "user"|"assistant"; content: string; origin?: string /* taint origin; a tainted assistant message is refused */ }
 interface AgentOutput { content: string; toolCallLog: AgentStep[]; iterations: number; }
+// AgentStep = { iteration, toolName, toolInput, toolOutput? } by default (toolCallLog: "full"). With agentLoop$ `toolCallLog: "lean"` (ADR 0142) toolOutput is ABSENT and the entry is LeanAgentStep { iteration, toolName, toolInput, status: "ok"|"error", bytes, digest /* sha256 hex of canonicalJson(output), or null */, stepId /* "<loop>#turn:<i>:tool:<j>", the tool frame */ }; narrow with isLeanAgentStep(step)
 
 /** @deprecated R10 — use agentLoop$ (ADR 0121). */
 function agentStep$(config: { id: string; name?: string; agent: AgentDefinition; provider: LlmProvider; effectRuntime: EffectRuntime; maxIterations?: number; systemPrompt?: string }): StepDefinition<AgentInput, AgentOutput>
@@ -2226,6 +2227,7 @@ function llmSkillSelector(options: { toolId: string; maxSkills?: number }): Skil
 //   requireApproval?: (toolCall, turn, onMenu?) => boolean — @deprecated alias of needsApproval with the INVERTED polarity (auto-approve: `true` = proceed, `false` = park); same recorded log; one LOOM_AGENT_REQUIRE_APPROVAL_DEPRECATED warning per process; both given = AgentLoopConfigError
 //   toolErrors?: "feedback" | "fail"   — default feedback: a failing tool is an isError tool_result (authority/safety/quota/cancel/park never are)
 //   parallelTools?: boolean | number   — one turn's calls through ctx.parallel; ids `<agent>#turn:<i>:tool:<j>` unchanged; approvals first, in order
+//   toolCallLog?: "full" | "lean"   — (ADR 0142) default full = today's shape; lean = status/bytes/digest/stepId instead of toolOutput (also in the agentInterrupted payload). An explicit value is journaled and a resume with the other value throws AgentLoopConfigError; unset is not checked
 //   loopId?: string                    — (R17) the id prefix of this loop's frames/decisions/gates; default definition.id. Two loops in one execution must not share it
 //   signal?: AbortSignal               — stop THIS run: no further model/tool call; fails on AGENT_INTERRUPTED with InterruptedAgentRun
 //   turnTimeoutMs?, toolTimeoutMs?     — frame `timeoutMs` (model failure fails the run; a tool timeout is an isError result)

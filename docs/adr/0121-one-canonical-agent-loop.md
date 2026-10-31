@@ -137,7 +137,7 @@ release note. Capability parity, so the table can be read as a migration checkli
 Migration: (1) register `createAgentModelEffect(provider)` under an id and pass it as `modelToolId` (registering effects is new work: `AgentRunner` took the provider directly. In a `defineConfig` app the registration goes in `execution: { registerEffects: (effects) => effects.register(id, …) }`, which also registers each tool's runnable effect; an unregistered id fails at the loop's first call) (or pass `reasoning`
 + `reasoningToolId`); (2) call `agentLoop$(ctx, { definition, … }, input)` from the flow's runner body; (3) replace
 `memory: MemoryRuntime` + `definition.memoryId` with `memory: TieredMemory` and `writeBack: { toolId }` (or `{ allowDirect: true }`); (4) a consumer of
-`AGENT_TOOL_CALL` reads `toolCallLog` from the output or the `#turn:<i>:tool:<j>` frames; (5) grant the flow the model and
+`AGENT_TOOL_CALL` reads `toolCallLog` from the output or the `#turn:<i>:tool:<j>` frames (since ADR 0142 the output may carry the opt-in `toolCallLog: "lean"` shape, `{ status, bytes, digest, stepId }` instead of `toolOutput`; resolve `stepId` to the frame for the full result); (5) grant the flow the model and
 tool effect ids in the authorizer (a loop in a runner body is authorized per frame).
 
 *Why not make `AgentRunner` a thin wrapper now.* The honest wrapper is an `ExecutionContext` adapter over an

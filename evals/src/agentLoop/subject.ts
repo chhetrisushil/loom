@@ -121,7 +121,10 @@ export async function runTask(
     failure ??= (failedEvent?.payload as { error?: string } | undefined)?.error ?? "failed";
   }
   const out = (final?.variables._output ?? undefined) as
-    | { content?: string; toolCallLog?: { toolName: string; toolOutput: unknown }[] }
+    | {
+        content?: string;
+        toolCallLog?: { toolName: string; toolOutput?: unknown; status?: "ok" | "error" }[];
+      }
     | undefined;
   const log = status === "completed" ? (out?.toolCallLog ?? []) : [];
   const c = calls();
@@ -132,7 +135,10 @@ export async function runTask(
     executed: [...world.executed],
     steps: c.steps,
     toolCalls: c.toolCalls,
-    feedbackErrors: log.filter((l) => isErrorOutput(l.toolOutput)).length,
+    // A lean entry (ADR 0141) carries `status`; a full one is judged by its output, as ever.
+    feedbackErrors: log.filter((l) =>
+      l.status !== undefined ? l.status === "error" : isErrorOutput(l.toolOutput)
+    ).length,
     parked,
     refunds: world.refunds.length,
     peakConcurrency: world.peakInflight,
