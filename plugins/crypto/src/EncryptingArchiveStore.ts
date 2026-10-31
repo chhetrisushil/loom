@@ -12,11 +12,13 @@ import { decryptValue, encryptValue, hasEnvelope } from "./crypto";
 import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import type { KeyStore } from "./keystore";
 import {
+  SenderHandles,
   type SenderSubjectOf,
   isSealedSender,
   openSender,
   plaintextSenderOf,
   sealSender,
+  senderBindOf,
 } from "./senderSeal";
 import { defaultSubjectOf } from "./subject";
 
@@ -61,8 +63,10 @@ export interface EncryptingArchiveStoreOptions {
    * envelope's `payload.sender` is sealed under the SENDER's key inside the segment (which is itself
    * sealed under the chain owner's), so erasing the sender shreds their identity in the archive too;
    * a read whose sender key is gone yields `{ erased: true }` for it and the segment still opens.
+   * ADR 0139 N6: omitted, the keyed default over the SAME KeyStore (the event store's default maps to the
+   * same handles); `false` is the explicit opt-out.
    */
-  senderSubjectOf?: SenderSubjectOf;
+  senderSubjectOf?: SenderSubjectOf | false;
 }
 
 /**
@@ -76,6 +80,7 @@ export class EncryptingArchiveStore implements ArchiveStore {
   /** Structural marker read by the kernel guard: segments are sealed (not just static paths). */
   readonly sealsSegments = true as const;
   readonly deleteExecution?: NonNullable<ArchiveStore["deleteExecution"]>;
+  readonly replaceSegments?: NonNullable<ArchiveStore["replaceSegments"]>;
   /**
    * PUBLIC so the kernel guard can compare it, by identity, with the event store's `subjectOf`: an
    * archive sealed under a different subject than the log would survive a shred of the log's subject.
@@ -121,14 +126,31 @@ export class EncryptingArchiveStore implements ArchiveStore {
   ) {
     this.subjectOf = options.subjectOf ?? defaultSubjectOf;
     this.ownerWorkflowId = options.ownerWorkflowId;
-    this.senderSubjectOf = options.senderSubjectOf;
+    this.senderSubjectOf =
+      options.senderSubjectOf === false
+        ? undefined
+        : (options.senderSubjectOf ?? new SenderHandles(keys).subjectOf);
     forwardStoreMarkers(this, inner); // the tenant marker (ADR 0138 H3) must survive sealing
     const innerDelete = inner.deleteExecution;
     // Deleting ciphertext only reduces data: forward it (the retention path's whole-execution delete).
     if (innerDelete !== undefined) this.deleteExecution = (id) => innerDelete.call(inner, id);
+    const innerReplace = inner.replaceSegments;
+    // Headers pass through verbatim, so a caller's `expected` is the inner store's; `next` is sealed.
+    if (innerReplace !== undefined) {
+      this.replaceSegments = async (id, expected, next) => {
+        const sealed: ArchiveSegment[] = [];
+        for (const seg of next) sealed.push(await this.seal(id, seg));
+        return innerReplace.call(inner, id, expected, sealed);
+      };
+    }
   }
 
   async append(executionId: string, segment: ArchiveSegment): Promise<void> {
+    await this.inner.append(executionId, await this.seal(executionId, segment));
+  }
+
+  /** The stored (sealed) form of `segment`. */
+  private async seal(executionId: string, segment: ArchiveSegment): Promise<ArchiveSegment> {
     if (segment.sealed !== undefined || segment.envelopes.length === 0) {
       throw new TypeError(
         `EncryptingArchiveStore: segment [${segment.from}..${segment.through}] of "${executionId}" has no envelopes to seal`
@@ -151,7 +173,9 @@ export class EncryptingArchiveStore implements ArchiveStore {
         bind: bindOf(executionId, segment.from, segment.through),
       }),
     };
-    await this.inner.append(executionId, {
+    // The sender digest of a plaintext segment is NOT stored: this segment's sender is authenticated by
+    // AEAD (bound to its stream and sequence), and a digest of a low-entropy identity would leak it.
+    return {
       from: segment.from,
       through: segment.through,
       count: segment.count,
@@ -160,7 +184,7 @@ export class EncryptingArchiveStore implements ArchiveStore {
       ...(segment.kind !== undefined && { kind: segment.kind }),
       envelopes: [],
       sealed: body,
-    });
+    };
   }
 
   /** ADR 0139 D12: seal each archived inbox envelope's sender under the SENDER's subject (reserved streams only). */
@@ -175,14 +199,19 @@ export class EncryptingArchiveStore implements ArchiveStore {
       envelopes.map(async (e) => {
         if (e.eventType !== "INBOX_MESSAGE") return e;
         const sender = plaintextSenderOf(e.payload);
-        const subject = sender === undefined ? undefined : this.senderSubjectOf?.(sender);
+        const subject = sender === undefined ? undefined : await this.senderSubjectOf?.(sender);
         if (sender === undefined || subject === undefined) return e;
         if (subject === "") {
           throw new TypeError(
             'EncryptingArchiveStore: senderSubjectOf resolved to "" and the crypto layer refuses to seal under it.'
           );
         }
-        const sealed = sealSender(await this.keys.getOrCreate(subject), subject, sender);
+        const sealed = sealSender(
+          await this.keys.getOrCreate(subject),
+          subject,
+          sender,
+          senderBindOf(e)
+        );
         return { ...e, payload: { ...(e.payload as object), sender: sealed } };
       })
     );
@@ -201,7 +230,10 @@ export class EncryptingArchiveStore implements ArchiveStore {
         if (!isSealedSender(sender)) return e;
         return {
           ...e,
-          payload: { ...(e.payload as object), sender: await openSender(this.keys, sender) },
+          payload: {
+            ...(e.payload as object),
+            sender: await openSender(this.keys, sender, senderBindOf(e)),
+          },
         };
       })
     );

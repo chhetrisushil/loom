@@ -20,6 +20,7 @@ const SEP = ":"; // the same tenant separator as TenantScopedEventStore / Tenant
  */
 export class TenantScopedArchiveStore implements ArchiveStore {
   readonly deleteExecution?: NonNullable<ArchiveStore["deleteExecution"]>;
+  readonly replaceSegments?: NonNullable<ArchiveStore["replaceSegments"]>;
 
   constructor(
     private readonly inner: ArchiveStore,
@@ -33,6 +34,11 @@ export class TenantScopedArchiveStore implements ArchiveStore {
     const innerDelete = inner.deleteExecution;
     if (innerDelete !== undefined) {
       this.deleteExecution = (id) => innerDelete.call(inner, this.scope(id));
+    }
+    const innerReplace = inner.replaceSegments;
+    if (innerReplace !== undefined) {
+      this.replaceSegments = (id, expected, next) =>
+        innerReplace.call(inner, this.scope(id), expected, next);
     }
   }
 

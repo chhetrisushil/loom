@@ -120,6 +120,7 @@ export {
   ArchiveUnserializableError,
   ARCHIVE_LEGACY_CHECKPOINT_EVENT,
   OPTIONAL_ARCHIVE_STORE_METHODS,
+  assertReplaceable,
   classifyAppend,
   headerOf,
 } from "./archiveSpi";
@@ -143,6 +144,8 @@ export {
   reservedSegmentDigest,
   sameReservedEnvelope,
   segmentDigest,
+  senderDigestOf,
+  senderErasedMarker,
 } from "./archive";
 export { TenantScopedArchiveStore } from "./TenantScopedArchiveStore";
 export { InMemoryArchiveStore } from "./InMemoryArchiveStore";

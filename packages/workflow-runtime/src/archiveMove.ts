@@ -219,12 +219,21 @@ export function reservedIncarnation(streamId: string): string {
  */
 export async function reservedIncarnationOf(
   store: Pick<EventStore, "read" | "readFrom" | "readRange">,
-  streamKey: string
+  streamKey: string,
+  /**
+   * ADR 0139 N2: with the archive given, an owner that is GONE (a retention delete that KEPT the archive)
+   * resolves to the incarnation the archive's own segments for the stream already carry, so a read after a
+   * kept retention still opens them and a straggler is still moved. A REUSED chain id has a bootstrap
+   * again, which differs, so the previous run's segments are still refused.
+   */
+  archive?: Pick<ArchiveStore, "headers">
 ): Promise<string> {
   const origin = reservedLateOrigin(streamKey)?.streamId ?? streamKey;
   const chain = inboxChainOf(origin);
   const bootstrap = chain === undefined ? undefined : (await readRangeOf(store, chain, 0, 0))[0];
-  return bootstrap === undefined ? reservedIncarnation(origin) : segmentDigest([bootstrap]);
+  if (bootstrap !== undefined) return segmentDigest([bootstrap]);
+  const archived = archive === undefined ? undefined : (await archive.headers(origin))[0];
+  return archived?.incarnation ?? reservedIncarnation(origin);
 }
 
 /**
@@ -256,6 +265,34 @@ export class ReservedStreamArchive {
     this.checked = true;
   }
 
+  /** ADR 0139 N2: chain -> the incarnation read from its owner BEFORE the owner was deleted (a kept retention). */
+  private readonly pinned = new Map<string, string>();
+
+  /**
+   * Pin `incarnation` as the chain's: the retention path derives it from the owner's bootstrap before it
+   * deletes the owner, so the chain's live streams still move under the run they belong to.
+   */
+  pin(chainId: string, incarnation: string): void {
+    this.pinned.set(chainId, incarnation);
+  }
+
+  private incarnationFor(streamId: string): Promise<string> {
+    const origin = reservedLateOrigin(streamId)?.streamId ?? streamId;
+    const chain = inboxChainOf(origin);
+    const pinned = chain === undefined ? undefined : this.pinned.get(chain);
+    return pinned !== undefined
+      ? Promise.resolve(pinned)
+      : reservedIncarnationOf(this.store, streamId, this.archive);
+  }
+
+  /**
+   * Forget the remembered last archived sequence of `streamId` (ADR 0139 N1): the key was rewritten or
+   * deleted by an erasure, so the next move re-reads the headers.
+   */
+  invalidate(streamId: string): void {
+    this.known.delete(streamId);
+  }
+
   /**
    * The archive's last archived sequence per stream and the incarnation it was checked against,
    * remembered so a trim costs no header read (bounded).
@@ -284,10 +321,7 @@ export class ReservedStreamArchive {
 
   /** {@link ArchiveFloor}: the first sequence of `streamId` the archive has not used, if it holds any. */
   readonly floorOf = async (streamId: string): Promise<number | undefined> => {
-    const lastThrough = await this.lastThroughOf(
-      streamId,
-      await reservedIncarnationOf(this.store, streamId)
-    );
+    const lastThrough = await this.lastThroughOf(streamId, await this.incarnationFor(streamId));
     return lastThrough < 0 ? undefined : lastThrough + 1;
   };
 
@@ -304,7 +338,7 @@ export class ReservedStreamArchive {
     for (let attempt = 0; ; attempt++) {
       // The owner's bootstrap is read on EVERY move (one point read): a cached incarnation could outlive
       // a retention delete and an id reuse, and the move would extend the previous run's archive.
-      const incarnation = await reservedIncarnationOf(this.store, streamId);
+      const incarnation = await this.incarnationFor(streamId);
       const cached = this.known.get(streamId);
       const lastThrough =
         attempt === 0 && cached !== undefined && cached.incarnation === incarnation
@@ -333,7 +367,7 @@ export class ReservedStreamArchive {
     this.check(streamId);
     const all = await this.store.read(streamId);
     if (all.length === 0) return undefined;
-    const incarnation = await reservedIncarnationOf(this.store, streamId);
+    const incarnation = await this.incarnationFor(streamId);
     const lastThrough = await this.lastThroughOf(streamId, incarnation);
     const through = all[all.length - 1]!.sequence;
     await this.move(streamId, lastThrough, all, "delete", incarnation);

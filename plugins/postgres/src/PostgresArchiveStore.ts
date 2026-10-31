@@ -3,6 +3,7 @@ import {
   type ArchiveSegment,
   type ArchiveSegmentHeader,
   type ArchiveStore,
+  assertReplaceable,
   classifyAppend,
 } from "@loom/event-runtime";
 import { type PgConfig, type PoolLike, toPool } from "./pool";
@@ -19,6 +20,7 @@ interface HeaderRow {
   digest: string;
   incarnation: string;
   kind: string | null;
+  sender_digest: string | null;
 }
 interface Row extends HeaderRow {
   body: string;
@@ -31,6 +33,8 @@ const toHeader = (r: HeaderRow): ArchiveSegmentHeader => ({
   digest: r.digest,
   incarnation: r.incarnation,
   ...(r.kind === "legacy-checkpoint" && { kind: "legacy-checkpoint" as const }),
+  ...(r.sender_digest !== null &&
+    r.sender_digest !== undefined && { senderDigest: r.sender_digest }),
 });
 
 const toSegment = (r: Row): ArchiveSegment => {
@@ -65,27 +69,63 @@ export class PostgresArchiveStore implements ArchiveStore {
       // exclusive per LogLifecycle; this keeps the store correct on its own.)
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 137))", [executionId]);
       const { rows } = await client.query<HeaderRow>(
-        "SELECT from_seq, through_seq, n_events, digest, incarnation, kind FROM archive_segments WHERE execution_id = $1 ORDER BY from_seq",
+        "SELECT from_seq, through_seq, n_events, digest, incarnation, kind, sender_digest FROM archive_segments WHERE execution_id = $1 ORDER BY from_seq",
         [executionId]
       );
       if (classifyAppend(executionId, rows.map(toHeader), segment) === "append") {
-        await client.query(
-          "INSERT INTO archive_segments (execution_id, from_seq, through_seq, n_events, digest, incarnation, kind, body) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-          [
-            executionId,
-            segment.from,
-            segment.through,
-            segment.count,
-            segment.digest,
-            segment.incarnation,
-            segment.kind ?? null,
-            JSON.stringify({
-              envelopes: segment.envelopes,
-              ...(segment.sealed !== undefined && { sealed: segment.sealed }),
-            }),
-          ]
-        );
+        await this.insert(client, executionId, segment);
       }
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async insert(
+    client: { query(sql: string, params?: unknown[]): Promise<unknown> },
+    executionId: string,
+    segment: ArchiveSegment
+  ): Promise<void> {
+    await client.query(
+      "INSERT INTO archive_segments (execution_id, from_seq, through_seq, n_events, digest, incarnation, kind, sender_digest, body) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+      [
+        executionId,
+        segment.from,
+        segment.through,
+        segment.count,
+        segment.digest,
+        segment.incarnation,
+        segment.kind ?? null,
+        segment.senderDigest ?? null,
+        JSON.stringify({
+          envelopes: segment.envelopes,
+          ...(segment.sealed !== undefined && { sealed: segment.sealed }),
+        }),
+      ]
+    );
+  }
+
+  /** ADR 0139 N1: one transaction under the key's advisory lock - compare the headers, replace the segments. */
+  async replaceSegments(
+    executionId: string,
+    expected: readonly ArchiveSegmentHeader[],
+    next: readonly ArchiveSegment[]
+  ): Promise<void> {
+    await this.ready;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 137))", [executionId]);
+      const { rows } = await client.query<HeaderRow>(
+        "SELECT from_seq, through_seq, n_events, digest, incarnation, kind, sender_digest FROM archive_segments WHERE execution_id = $1 ORDER BY from_seq",
+        [executionId]
+      );
+      assertReplaceable(executionId, rows.map(toHeader), expected, next);
+      await client.query("DELETE FROM archive_segments WHERE execution_id = $1", [executionId]);
+      for (const seg of next) await this.insert(client, executionId, seg);
       await client.query("COMMIT");
     } catch (err) {
       await client.query("ROLLBACK").catch(() => undefined);
@@ -98,7 +138,7 @@ export class PostgresArchiveStore implements ArchiveStore {
   async headers(executionId: string): Promise<ArchiveSegmentHeader[]> {
     await this.ready;
     const { rows } = await this.pool.query<HeaderRow>(
-      "SELECT from_seq, through_seq, n_events, digest, incarnation, kind FROM archive_segments WHERE execution_id = $1 ORDER BY from_seq",
+      "SELECT from_seq, through_seq, n_events, digest, incarnation, kind, sender_digest FROM archive_segments WHERE execution_id = $1 ORDER BY from_seq",
       [executionId]
     );
     return rows.map(toHeader);
@@ -128,7 +168,7 @@ export class PostgresArchiveStore implements ArchiveStore {
   ): Promise<ArchiveSegment[]> {
     await this.ready;
     const { rows } = await this.pool.query<Row>(
-      `SELECT from_seq, through_seq, n_events, digest, incarnation, kind, body FROM archive_segments
+      `SELECT from_seq, through_seq, n_events, digest, incarnation, kind, sender_digest, body FROM archive_segments
        WHERE execution_id = $1 AND through_seq >= $2 AND from_seq <= $3 ORDER BY from_seq`,
       [executionId, range.from ?? Number.MIN_SAFE_INTEGER, range.through ?? Number.MAX_SAFE_INTEGER]
     );

@@ -4,6 +4,7 @@ import {
   type ArchiveSegment,
   type ArchiveSegmentHeader,
   type ArchiveStore,
+  assertReplaceable,
   classifyAppend,
   headerOf,
 } from "./archiveSpi";
@@ -46,6 +47,18 @@ export class InMemoryArchiveStore implements ArchiveStore {
           (range.through === undefined || s.from <= range.through)
       )
       .map((s) => JSON.parse(JSON.stringify(s)) as ArchiveSegment);
+  }
+
+  async replaceSegments(
+    executionId: string,
+    expected: readonly ArchiveSegmentHeader[],
+    next: readonly ArchiveSegment[]
+  ): Promise<void> {
+    const stored = this.byExecution.get(executionId) ?? [];
+    assertReplaceable(executionId, stored.map(headerOf), expected, next);
+    const copy = JSON.parse(JSON.stringify(next)) as ArchiveSegment[];
+    if (copy.length === 0) this.byExecution.delete(executionId);
+    else this.byExecution.set(executionId, copy);
   }
 
   async deleteExecution(executionId: string): Promise<void> {

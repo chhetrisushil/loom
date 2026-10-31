@@ -1,5 +1,8 @@
+import { randomBytes } from "node:crypto";
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
+  ArchiveConflictError,
+  type ArchiveSegment,
   type ArchiveStore,
   type DestructionProof,
   type EventStore,
@@ -7,6 +10,7 @@ import {
   archivedReservedStreams,
   chainIdOfFirst,
   erasureWindowView,
+  headerOf,
   inboxStreamsOfChainDeep,
   isAnsweringKind,
   isErasureWindow,
@@ -14,6 +18,8 @@ import {
   isPayloadShredded,
   isQuiescent,
   recordsErasureIntent,
+  senderDigestOf,
+  senderErasedMarker,
 } from "@loom/event-runtime";
 import { foldEvents, normalizeSnapshotState } from "@loom/replay-vm";
 import { assertSnapshotIdentity } from "@loom/snapshot-runtime";
@@ -60,7 +66,9 @@ const TERMINAL_EVENTS = new Set([
  * archive (`EncryptingArchiveStore`, same KeyStore as the log) is erased by the shred itself.
  */
 export type ErasableArchive = Pick<ArchiveStore, "headers" | "listExecutions" | "read" | "append"> &
-  Partial<Pick<ArchiveStore, "deleteExecution">> & { readonly sealsSegments?: unknown };
+  Partial<Pick<ArchiveStore, "deleteExecution" | "replaceSegments">> & {
+    readonly sealsSegments?: unknown;
+  };
 
 /** What an erasure removed from the plaintext archives (recorded durably as `ERASURE_ARCHIVE_DELETED`). */
 export interface ArchivedCopiesDeleted {
@@ -88,8 +96,21 @@ export type SenderMatcher = (
 export const defaultSenderMatches: SenderMatcher = (subjectId, tenant, sender) =>
   sender.actor === subjectId && (tenant === DEFAULT_TENANT || sender.tenant === tenant);
 
-/** The staging prefix of a segment rewrite (crash safety: the redacted copy exists before the original goes). */
+/**
+ * The staging prefix an EARLIER build used to rewrite a segment list (read, stage, delete, re-add). The
+ * rewrite is now one atomic `ArchiveStore.replaceSegments` (SPI 1.1.0) and nothing writes a stage any
+ * more; {@link EraseCoordinator.recoverRedactions} still restores one such a build left behind.
+ */
 const REDACT_STAGE = "__loom_redact__:";
+
+/** The control-stream event types of the erasure's archive work (intent first, then the completion). */
+const ARCHIVE_DELETE_INTENDED = "ERASURE_ARCHIVE_DELETE_INTENDED";
+const ARCHIVE_DELETED = "ERASURE_ARCHIVE_DELETED";
+const SENDER_REDACTION_INTENDED = "ERASURE_SENDER_REDACTION_INTENDED";
+const SENDER_REDACTED = "ERASURE_SENDER_REDACTED";
+
+/** How many times a redaction of one key retries a concurrent writer's conflict before it gives up loudly. */
+const REDACT_RETRIES = 16;
 
 /**
  * Erasure cannot complete while a plaintext archive still holds the subject's segments and offers no
@@ -103,6 +124,22 @@ export class ArchivedCopiesRemainError extends Error {
     );
     this.name = "ArchivedCopiesRemainError";
     Object.setPrototypeOf(this, ArchivedCopiesRemainError.prototype);
+  }
+}
+
+/**
+ * Erasure cannot complete: a plaintext archive holds other chains' archived inbox envelopes naming the
+ * subject as their sender, and it cannot rewrite a segment atomically (`replaceSegments`, ArchiveStore SPI
+ * 1.1.0), so the identity could not be redacted. Thrown BEFORE the key is destroyed (nothing was shredded).
+ */
+export class SenderRedactionUnsupportedError extends Error {
+  readonly retryable = false;
+  constructor(readonly streams: readonly string[]) {
+    super(
+      `refusing to erase: a plaintext archive holds the subject's identity as the sender of archived inbox envelopes (${streams.slice(0, 5).join(", ")}${streams.length > 5 ? ` (+${streams.length - 5} more)` : ""}) and has no replaceSegments (ArchiveStore SPI 1.1.0), so erasure could not redact it. Use an archive that can (the in-memory, SQLite and Postgres archives can), or seal the archive and the senders under the event store's KeyStore (EncryptingArchiveStore). Nothing was shredded.`
+    );
+    this.name = "SenderRedactionUnsupportedError";
+    Object.setPrototypeOf(this, SenderRedactionUnsupportedError.prototype);
   }
 }
 
@@ -149,6 +186,19 @@ export interface EraseCoordinatorOptions {
    * subject (`senderSubjectOf` on the crypto stores) and the shred erases it.
    */
   senderMatches?: SenderMatcher;
+  /**
+   * ADR 0139 N6 - erase the subject as a message SENDER in the crypto layer (destroy the key their identity
+   * is sealed under, and the seed their handle derives from). Called after `shred`, with the subject id as
+   * the actor and the tenant partition; idempotent. `defineConfig` wires it from the crypto event store's
+   * `eraseSender`. Without it a sealed sender is erased by whatever the app's `shred` destroys.
+   */
+  eraseSender?: (subjectId: string, tenant: string) => Promise<unknown>;
+  /**
+   * ADR 0139 N1 - told after erasure deleted or rewrote an archive key, so a runtime that remembers the
+   * key's last archived sequence (`WorkflowRuntime.invalidateInboxArchive`) forgets it. `defineConfig`
+   * wires it.
+   */
+  onArchiveKeyChanged?: (key: string) => void;
   /**
    * ADR 0130 D7 (round 5) - proof that the key store destroyed a subject's key
    * (`(s) => keys.wasDestroyed(s)`). A PROOF function only: returning `true` for a key that was
@@ -269,6 +319,9 @@ export class EraseCoordinator {
 
   /** Best-effort: repopulate the parked set from the durable control stream (restart recovery). */
   async loadParked(): Promise<void> {
+    // ADR 0139 N1: a stage an earlier build left (a crash mid-redaction) is restored at BOOT, not at the
+    // next erasure that happens to scan the archive.
+    await this.recoverRedactions();
     for (const event of await this.options.eventStore.read(ERASURE_STREAM)) {
       if (event.eventType === "ERASURE_PENDING") {
         const p = event.payload as { subjectId: string; tenant?: string };
@@ -318,12 +371,13 @@ export class EraseCoordinator {
       const chains = await this.finishedChains(executions, proof);
       // ADR 0138 / 0139: a plaintext archive that cannot delete would outlive the erasure - refuse BEFORE
       // the key is destroyed.
-      await this.assertArchivesErasable(executions, chains);
+      await this.assertArchivesErasable(subjectId, tenant, executions, chains);
       if (options.force !== undefined) {
         await this.options.shred(subjectId, executions, { force: options.force });
       } else {
         await this.options.shred(subjectId, executions);
       }
+      await this.options.eraseSender?.(subjectId, tenant);
       await this.purgeInboxStreams(chains);
       const archived = await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
       const redactions = await this.redactSenderCopies(subjectId, tenant);
@@ -356,8 +410,9 @@ export class EraseCoordinator {
     const executions = this.options.index.executionsOf(subjectId, tenant);
     if ((await this.liveExecutions(executions, this.options.destroyed)).length > 0) return; // still blocked
     const chains = await this.finishedChains(executions, this.options.destroyed);
-    await this.assertArchivesErasable(executions, chains);
+    await this.assertArchivesErasable(subjectId, tenant, executions, chains);
     await this.options.shred(subjectId, executions);
+    await this.options.eraseSender?.(subjectId, tenant);
     await this.purgeInboxStreams(chains);
     await this.deleteArchivedCopies(subjectId, tenant, executions, chains);
     await this.redactSenderCopies(subjectId, tenant);
@@ -366,123 +421,245 @@ export class EraseCoordinator {
 
   /**
    * ADR 0139 D12 - a PLAINTEXT archive holds other chains' reserved segments naming the erased subject as
-   * the sender. They are rewritten in place with the identity replaced by `{ erased: true }` (the segment
-   * digest masks the sender, so it still verifies), through a staging key so a crash never loses the
-   * segment, and journaled (`ERASURE_SENDER_REDACTED`). Cost: one pass over the archive's reserved keys.
-   * A live, not yet archived envelope keeps its sender until it is trimmed (a plaintext store has no
-   * key to shred; seal the sender with `senderSubjectOf` for that).
+   * the sender. Each is rewritten with the identity replaced by an erased marker (the segment digest masks
+   * the sender, so it still verifies; the segment's sender digest is recomputed in the same swap) through
+   * ONE atomic `ArchiveStore.replaceSegments` per key (ADR 0139 N1: a trim on another node that appends a
+   * segment after this read makes the swap fail, and the key is re-read and retried - never lost, never
+   * restored over). The INTENT (the keys) is journaled first (`ERASURE_SENDER_REDACTION_INTENDED`) and the
+   * completion after (`ERASURE_SENDER_REDACTED`), so a crash between the two is finished by the retry from
+   * the intent and a redaction is never unrecorded. Cost: ONE pass over the archive's reserved keys per
+   * erasure (a `listExecutions` prefix walk and a `read` of each key; not indexed - an erasure is rare).
+   * A live, not yet archived envelope keeps its sender until it is trimmed (a plaintext store has no key to
+   * shred; the sender is sealed by default in a sealing deployment, ADR 0139 N6).
    */
   private async redactSenderCopies(subjectId: string, tenant: string): Promise<SenderRedaction[]> {
-    const matches = this.options.senderMatches ?? defaultSenderMatches;
-    const out: SenderRedaction[] = [];
+    const ref = randomBytes(8).toString("hex"); // one stable non-identifying reference per erased sender
+    await this.recoverRedactions(); // (a stage an earlier build left; a no-op on a clean archive)
+    const open = await this.openIntent(
+      SENDER_REDACTION_INTENDED,
+      SENDER_REDACTED,
+      subjectId,
+      tenant
+    );
+    // 1. PLAN: one pass over the reserved keys, reading each once.
+    const plan: Array<{
+      archive: ErasableArchive & Required<Pick<ErasableArchive, "replaceSegments">>;
+      key: string;
+      segments: ArchiveSegment[];
+      changed: number;
+    }> = [];
     for (const archive of this.plaintextArchives()) {
-      const del = archive.deleteExecution;
-      const readAll = (archive as Partial<ArchiveStore>).read;
-      const append = (archive as Partial<ArchiveStore>).append;
-      if (del === undefined || readAll === undefined || append === undefined) continue;
-      const read = readAll.bind(archive);
-      const add = append.bind(archive);
-      const remove = del.bind(archive);
-      await this.recoverRedactions(archive, read, add, remove);
-      for (const prefix of ["__loom_inbox__:", "__loom_quarantine__:", "__loom_late__:"]) {
-        let cursor: string | undefined = prefix.slice(0, -1);
-        for (;;) {
-          const page = await archive.listExecutions({ cursor, limit: 200 });
-          let past = false;
-          for (const key of page.executionIds) {
-            if (!key.startsWith(prefix)) {
-              if (key < prefix) continue;
-              past = true;
-              break;
-            }
-            const segments = await read(key);
-            let changed = 0;
-            const rewritten = segments.map((seg) => ({
-              ...seg,
-              envelopes: seg.envelopes.map((e) => {
-                const sender = (e.payload as { sender?: unknown } | null)?.sender;
-                if (
-                  e.eventType !== "INBOX_MESSAGE" ||
-                  typeof sender !== "object" ||
-                  sender === null ||
-                  !matches(subjectId, tenant, sender as never)
-                ) {
-                  return e;
-                }
-                changed++;
-                return { ...e, payload: { ...(e.payload as object), sender: { erased: true } } };
-              }),
-            }));
-            if (changed === 0) continue;
-            await this.rewriteSegments(key, rewritten, add, remove);
-            out.push({ streamId: key, envelopes: changed });
-          }
-          if (past || page.nextCursor === undefined || page.nextCursor === cursor) break;
-          cursor = page.nextCursor;
+      if (archive.replaceSegments === undefined) continue; // refused before the shred if it held a copy
+      for (const key of await this.reservedArchiveKeys(archive)) {
+        const segments = await archive.read(key);
+        const changed = this.redactedSegments(segments, subjectId, tenant, ref).changed;
+        if (changed > 0) {
+          plan.push({
+            archive: archive as (typeof plan)[number]["archive"],
+            key,
+            segments,
+            changed,
+          });
         }
       }
     }
-    if (out.length > 0) await this.appendSenderRedacted(subjectId, tenant, out);
-    return out;
-  }
-
-  /** Replace `key`'s segments: the redacted copy is staged FIRST, so a crash leaves one of the two whole. */
-  private async rewriteSegments(
-    key: string,
-    segments: Awaited<ReturnType<ArchiveStore["read"]>>,
-    add: ArchiveStore["append"],
-    remove: NonNullable<ArchiveStore["deleteExecution"]>
-  ): Promise<void> {
-    const stage = `${REDACT_STAGE}${key}`;
-    for (const seg of segments) await add(stage, seg);
-    await remove(key);
-    for (const seg of segments) await add(key, seg);
-    await remove(stage);
-  }
-
-  /** A crash mid-rewrite: restore a staged copy whose original is gone; drop a stage whose original is whole. */
-  private async recoverRedactions(
-    archive: ErasableArchive,
-    read: ArchiveStore["read"],
-    add: ArchiveStore["append"],
-    remove: NonNullable<ArchiveStore["deleteExecution"]>
-  ): Promise<void> {
-    let cursor: string | undefined = REDACT_STAGE.slice(0, -1);
-    for (;;) {
-      const page = await archive.listExecutions({ cursor, limit: 200 });
-      let past = false;
-      for (const stage of page.executionIds) {
-        if (!stage.startsWith(REDACT_STAGE)) {
-          if (stage < REDACT_STAGE) continue;
-          past = true;
+    const intended = (open?.payload as { redactions?: SenderRedaction[] } | undefined)?.redactions;
+    if (plan.length === 0 && open === undefined) return [];
+    // 2. INTENT first (what is about to be rewritten), unless an interrupted attempt already journaled it.
+    const intentId =
+      open?.id ??
+      (await this.appendIntent(SENDER_REDACTION_INTENDED, subjectId, tenant, {
+        redactions: plan.map((p) => ({ streamId: p.key, envelopes: p.changed })),
+      }));
+    // 3. APPLY: one atomic swap per key; a concurrent append makes it conflict, and the key is re-read.
+    const done = new Map<string, number>();
+    for (const item of plan) {
+      let segments = item.segments;
+      for (let attempt = 0; ; attempt++) {
+        const next = this.redactedSegments(segments, subjectId, tenant, ref);
+        if (next.changed === 0) break; // another writer redacted it already
+        try {
+          await item.archive.replaceSegments(item.key, segments.map(headerOf), next.segments);
+          done.set(item.key, next.changed);
+          this.options.onArchiveKeyChanged?.(item.key);
           break;
+        } catch (err) {
+          if (!(err instanceof ArchiveConflictError) || attempt + 1 >= REDACT_RETRIES) throw err;
+          segments = await item.archive.read(item.key);
         }
-        const key = stage.slice(REDACT_STAGE.length);
-        if ((await archive.headers(key)).length === 0) {
-          for (const seg of await read(stage)) await add(key, seg);
-        }
-        await remove(stage);
       }
-      if (past || page.nextCursor === undefined || page.nextCursor === cursor) break;
-      cursor = page.nextCursor;
     }
+    // 4. COMPLETION: the planned redactions, plus any key this pass found beyond the intent.
+    const all = new Map<string, number>();
+    for (const r of intended ?? []) all.set(r.streamId, r.envelopes);
+    for (const p of plan)
+      all.set(p.key, Math.max(all.get(p.key) ?? 0, done.get(p.key) ?? p.changed));
+    const redactions = [...all].map(([streamId, envelopes]) => ({ streamId, envelopes }));
+    await this.appendCompletion(SENDER_REDACTED, subjectId, tenant, intentId, { redactions });
+    return redactions;
   }
 
-  private async appendSenderRedacted(
+  /** `segments` with the matching senders replaced by the erased marker, and the sender digest recomputed. */
+  private redactedSegments(
+    segments: readonly ArchiveSegment[],
     subjectId: string,
     tenant: string,
-    redactions: readonly SenderRedaction[]
+    ref: string
+  ): { segments: ArchiveSegment[]; changed: number } {
+    const matches = this.options.senderMatches ?? defaultSenderMatches;
+    let changed = 0;
+    const out = segments.map((seg) => {
+      let here = 0;
+      const envelopes = seg.envelopes.map((e) => {
+        const sender = (e.payload as { sender?: unknown } | null)?.sender;
+        if (
+          e.eventType !== "INBOX_MESSAGE" ||
+          typeof sender !== "object" ||
+          sender === null ||
+          !matches(subjectId, tenant, sender as never)
+        ) {
+          return e;
+        }
+        here++;
+        return {
+          ...e,
+          payload: { ...(e.payload as object), sender: senderErasedMarker(ref) },
+        };
+      });
+      if (here === 0) return seg;
+      changed += here;
+      return { ...seg, envelopes, senderDigest: senderDigestOf(envelopes) };
+    });
+    return { segments: out, changed };
+  }
+
+  /** Every reserved key (inbox, quarantine, late run) the archive holds, by prefix walk. */
+  private async reservedArchiveKeys(archive: ErasableArchive): Promise<string[]> {
+    const keys: string[] = [];
+    for (const prefix of ["__loom_inbox__:", "__loom_quarantine__:", "__loom_late__:"]) {
+      let cursor: string | undefined = prefix.slice(0, -1);
+      for (;;) {
+        const page = await archive.listExecutions({ cursor, limit: 200 });
+        let past = false;
+        for (const key of page.executionIds) {
+          if (!key.startsWith(prefix)) {
+            if (key < prefix) continue;
+            past = true;
+            break;
+          }
+          keys.push(key);
+        }
+        if (past || page.nextCursor === undefined || page.nextCursor === cursor) break;
+        cursor = page.nextCursor;
+      }
+    }
+    return keys;
+  }
+
+  /**
+   * Restore what an EARLIER build's staged rewrite left behind (a `__loom_redact__:<key>` whose original
+   * is gone is copied back; a stage whose original is whole is dropped). The current rewrite is one atomic
+   * `replaceSegments` and leaves no stage, so this is a no-op on a clean archive. Run at boot (`loadParked`)
+   * and exposed as an operator verb (`app.recoverArchiveRedactions`). Returns the keys restored.
+   */
+  async recoverRedactions(): Promise<string[]> {
+    const restored: string[] = [];
+    for (const archive of this.plaintextArchives()) {
+      const del = archive.deleteExecution?.bind(archive);
+      if (del === undefined) continue;
+      let cursor: string | undefined = REDACT_STAGE.slice(0, -1);
+      for (;;) {
+        const page = await archive.listExecutions({ cursor, limit: 200 });
+        let past = false;
+        for (const stage of page.executionIds) {
+          if (!stage.startsWith(REDACT_STAGE)) {
+            if (stage < REDACT_STAGE) continue;
+            past = true;
+            break;
+          }
+          const key = stage.slice(REDACT_STAGE.length);
+          if ((await archive.headers(key)).length === 0) {
+            for (const seg of await archive.read(stage)) await archive.append(key, seg);
+            restored.push(key);
+            this.options.onArchiveKeyChanged?.(key);
+          }
+          await del(stage);
+        }
+        if (past || page.nextCursor === undefined || page.nextCursor === cursor) break;
+        cursor = page.nextCursor;
+      }
+    }
+    return restored;
+  }
+
+  /**
+   * The open intent of `intentType` for the subject: journaled and not yet completed by a `completionType`
+   * event naming it (`intentId`). The latest one, or `undefined`.
+   */
+  private async openIntent(
+    intentType: string,
+    completionType: string,
+    subjectId: string,
+    tenant: string
+  ): Promise<EventEnvelope | undefined> {
+    const events = await this.options.eventStore.read(ERASURE_STREAM);
+    const done = new Set<string>();
+    for (const e of events) {
+      if (e.eventType === completionType) {
+        const id = (e.payload as { intentId?: unknown } | null)?.intentId;
+        if (typeof id === "string") done.add(id);
+      }
+    }
+    let found: EventEnvelope | undefined;
+    for (const e of events) {
+      if (e.eventType !== intentType || done.has(e.id)) continue;
+      const p = e.payload as { subjectId?: string; tenant?: string };
+      if (p.subjectId === subjectId && (p.tenant ?? DEFAULT_TENANT) === tenant) found = e;
+    }
+    return found;
+  }
+
+  private async appendIntent(
+    type: string,
+    subjectId: string,
+    tenant: string,
+    body: object
+  ): Promise<string> {
+    return this.appendControl(type, {
+      subjectId,
+      ...(tenant !== DEFAULT_TENANT && { tenant }),
+      ...body,
+    });
+  }
+
+  private async appendCompletion(
+    type: string,
+    subjectId: string,
+    tenant: string,
+    intentId: string | undefined,
+    body: object
   ): Promise<void> {
+    await this.appendControl(type, {
+      subjectId,
+      ...(tenant !== DEFAULT_TENANT && { tenant }),
+      ...(intentId !== undefined && { intentId }),
+      ...body,
+    });
+  }
+
+  private async appendControl(type: string, payload: object): Promise<string> {
     const prior = await this.options.eventStore.read(ERASURE_STREAM);
+    const id = `erasure-${prior.length}`;
     await this.options.eventStore.append({
-      id: `erasure-${prior.length}`,
+      id,
       workflowId: ERASURE_STREAM,
       executionId: ERASURE_STREAM,
-      eventType: "ERASURE_SENDER_REDACTED",
+      eventType: type,
       sequence: prior.length,
       timestamp: 0,
-      payload: { subjectId, ...(tenant !== DEFAULT_TENANT && { tenant }), redactions },
+      payload,
     });
+    return id;
   }
 
   /** The plaintext archives (`sealsSegments` is not `true`); a sealing one is erased by the shred. */
@@ -508,23 +685,39 @@ export class EraseCoordinator {
   }
 
   private async assertArchivesErasable(
+    subjectId: string,
+    tenant: string,
     executions: readonly string[],
     chains: readonly FinishedChain[]
   ): Promise<void> {
     for (const archive of this.plaintextArchives()) {
-      if (archive.deleteExecution !== undefined) continue;
-      const keys = await this.archivedKeys(archive, executions, chains);
-      const all = [...keys.executions, ...keys.reservedStreams];
-      if (all.length > 0) throw new ArchivedCopiesRemainError(all);
+      if (archive.deleteExecution === undefined) {
+        const keys = await this.archivedKeys(archive, executions, chains);
+        const all = [...keys.executions, ...keys.reservedStreams];
+        if (all.length > 0) throw new ArchivedCopiesRemainError(all);
+      }
+      // ADR 0139 N5: an archive that cannot swap a segment atomically cannot redact the subject's identity
+      // out of OTHER chains' archived envelopes. Refuse BEFORE the shred when it holds any (the scan is the
+      // price of finding out; an archive that can redact is scanned once, after the shred).
+      if (archive.replaceSegments === undefined) {
+        const held: string[] = [];
+        for (const key of await this.reservedArchiveKeys(archive)) {
+          const segments = await archive.read(key);
+          if (this.redactedSegments(segments, subjectId, tenant, "").changed > 0) held.push(key);
+        }
+        if (held.length > 0) throw new SenderRedactionUnsupportedError(held);
+      }
     }
   }
 
   /**
    * ADR 0138 / 0139 - the physical half of erasure for the ARCHIVES: delete the subject's compaction
-   * segments and its chains' reserved-stream segments from every plaintext archive, then journal what was
-   * deleted (`ERASURE_ARCHIVE_DELETED` on the control stream). Idempotent: a retry after a crash finds
-   * nothing left and records nothing. Over a sealing archive the shred has already made the segments
-   * unreadable, so nothing is deleted.
+   * segments and its chains' reserved-stream segments from every plaintext archive. ADR 0139 N4: the
+   * INTENT (the keys) is journaled BEFORE anything is deleted (`ERASURE_ARCHIVE_DELETE_INTENDED`) and the
+   * completion after (`ERASURE_ARCHIVE_DELETED`, naming the intent), so a crash between the delete and the
+   * record is finished by the retry from the intent: a deletion is never unrecorded. Idempotent: a retry
+   * with nothing left and no open intent records nothing. Over a sealing archive the shred has already made
+   * the segments unreadable, so nothing is deleted.
    */
   private async deleteArchivedCopies(
     subjectId: string,
@@ -533,20 +726,44 @@ export class EraseCoordinator {
     chains: readonly FinishedChain[]
   ): Promise<ArchivedCopiesDeleted | undefined> {
     const deleted: ArchivedCopiesDeleted = { executions: [], reservedStreams: [] };
+    // 1. Finish an interrupted attempt from its journaled intent.
+    const open = await this.openIntent(ARCHIVE_DELETE_INTENDED, ARCHIVE_DELETED, subjectId, tenant);
+    const pending = new Set<string>();
+    if (open !== undefined) {
+      const p = open.payload as Partial<ArchivedCopiesDeleted>;
+      for (const id of p.executions ?? []) deleted.executions.push(id);
+      for (const id of p.reservedStreams ?? []) deleted.reservedStreams.push(id);
+      for (const id of [...deleted.executions, ...deleted.reservedStreams]) pending.add(id);
+    }
+    // 2. What is held now.
+    const fresh: ArchivedCopiesDeleted = { executions: [], reservedStreams: [] };
     for (const archive of this.plaintextArchives()) {
       if (archive.deleteExecution === undefined) continue; // asserted before the shred
       const keys = await this.archivedKeys(archive, executions, chains);
-      for (const id of keys.executions) {
-        await archive.deleteExecution(id);
-        deleted.executions.push(id);
-      }
-      for (const id of keys.reservedStreams) {
-        await archive.deleteExecution(id);
-        deleted.reservedStreams.push(id);
+      for (const id of keys.executions) if (!pending.has(id)) fresh.executions.push(id);
+      for (const id of keys.reservedStreams) if (!pending.has(id)) fresh.reservedStreams.push(id);
+    }
+    if (open === undefined && fresh.executions.length === 0 && fresh.reservedStreams.length === 0) {
+      return undefined;
+    }
+    deleted.executions.push(...fresh.executions);
+    deleted.reservedStreams.push(...fresh.reservedStreams);
+    // 3. INTENT first (only when this pass found something new), then delete, then the completion.
+    const intentId =
+      open?.id ??
+      (await this.appendIntent(ARCHIVE_DELETE_INTENDED, subjectId, tenant, {
+        executions: deleted.executions,
+        reservedStreams: deleted.reservedStreams,
+      }));
+    for (const archive of this.plaintextArchives()) {
+      const del = archive.deleteExecution?.bind(archive);
+      if (del === undefined) continue;
+      for (const id of [...deleted.executions, ...deleted.reservedStreams]) {
+        await del(id); // idempotent: an absent key is a no-op
+        this.options.onArchiveKeyChanged?.(id);
       }
     }
-    if (deleted.executions.length === 0 && deleted.reservedStreams.length === 0) return undefined;
-    await this.appendArchiveDeleted(subjectId, tenant, deleted);
+    await this.appendCompletion(ARCHIVE_DELETED, subjectId, tenant, intentId, { ...deleted });
     return deleted;
   }
 
@@ -775,23 +992,6 @@ export class EraseCoordinator {
           )
         : foldEvents(events, { executionId });
     return { status: state.status, first };
-  }
-
-  private async appendArchiveDeleted(
-    subjectId: string,
-    tenant: string,
-    deleted: ArchivedCopiesDeleted
-  ): Promise<void> {
-    const prior = await this.options.eventStore.read(ERASURE_STREAM);
-    await this.options.eventStore.append({
-      id: `erasure-${prior.length}`,
-      workflowId: ERASURE_STREAM,
-      executionId: ERASURE_STREAM,
-      eventType: "ERASURE_ARCHIVE_DELETED",
-      sequence: prior.length,
-      timestamp: 0,
-      payload: { subjectId, ...(tenant !== DEFAULT_TENANT && { tenant }), ...deleted },
-    });
   }
 
   // `prior.length` is the next sequence only because a reserved stream is never compacted:
