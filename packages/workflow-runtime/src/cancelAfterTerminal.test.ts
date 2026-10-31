@@ -1,5 +1,6 @@
+import { step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
-import { EffectRuntime } from "@loom/effect-runtime";
+import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
@@ -28,14 +29,29 @@ function flow(id: string, runner: FlowRunner<unknown, unknown>): RegisteredFlow<
 
 /** Runs `after` once, right after the first append of `eventType` is durable (before append returns). */
 class HookedStore extends InMemoryAsyncEventStore {
-  after: { eventType: string; run: (e: EventEnvelope) => Promise<void> } | undefined;
+  after:
+    | {
+        eventType: string;
+        when?: (e: EventEnvelope) => boolean;
+        run: (e: EventEnvelope) => Promise<void>;
+      }
+    | undefined;
+  /** Throws instead of storing the first append of this type, after running `before`. */
+  failOn: { eventType: string; before: (e: EventEnvelope) => Promise<void> } | undefined;
   private async fire(e: EventEnvelope): Promise<void> {
     const hook = this.after;
     if (hook === undefined || hook.eventType !== e.eventType) return;
+    if (hook.when !== undefined && !hook.when(e)) return;
     this.after = undefined;
     await hook.run(e);
   }
   override async append(e: EventEnvelope) {
+    const fail = this.failOn;
+    if (fail !== undefined && fail.eventType === e.eventType) {
+      this.failOn = undefined;
+      await fail.before(e);
+      throw new Error("disk full");
+    }
     await super.append(e);
     await this.fire(e);
   }
@@ -215,5 +231,79 @@ describe("#712 - cancel after a committed terminal", () => {
       "EXECUTION_CANCELLED",
     ]);
     expect((await rt.loadState("p-1"))?.status).toBe("cancelled");
+  });
+
+  it("completed whose write FAILS: the cancel is not told 'already terminal' - the durable path cancels", async () => {
+    const onStorageError = () => {};
+    const { rt, eventStore } = rig({ onStorageError } as Partial<WorkflowRuntimeDeps>);
+    const f = flow("diskfull", async () => 1);
+    let verdict: boolean | undefined;
+    eventStore.failOn = {
+      eventType: "EXECUTION_COMPLETED",
+      before: async (e) => {
+        // the live fold already reads `completed`, nothing of it is durable (and never will be)
+        verdict = await rt.cancel(e.executionId, "stop");
+      },
+    };
+    const handle = await rt.start(f, {}, { executionId: "d-1" });
+    await handle.waitForCompletion().catch(() => {});
+    expect(verdict).toBe(true);
+    expect(await kinds(eventStore, "d-1")).toEqual(["EXECUTION_STARTED", "EXECUTION_CANCELLED"]);
+    expect((await rt.loadState("d-1"))?.status).toBe("cancelled");
+  });
+});
+
+describe("#712 - divergence: fail refuses the completion, nothing terminal is written", () => {
+  const A = step$({ id: "A", name: "A", toolId: "count", ...io });
+  it("a cancel in the refusal park is a real cancel (true AND CANCELLED committed), never true with nothing written", async () => {
+    const effects = new EffectRuntime();
+    effects.register("count", new ToolEffect(async (i: unknown) => i));
+    const eventStore = new HookedStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const mk = (runner: FlowRunner<unknown, unknown>) => {
+      const rt = new WorkflowRuntime({
+        eventStore,
+        snapshotStore,
+        effectRuntime: effects,
+        divergence: "fail",
+        onWarn: () => {},
+      });
+      const definition = {
+        _tag: "FlowDefinition",
+        id: "agent",
+        name: "agent",
+        version: "1.0.0",
+        ...io,
+        steps: [A],
+      } as unknown as FlowDefinition<unknown, unknown>;
+      return { rt, reg: { definition, runner } as RegisteredFlow<unknown, unknown> };
+    };
+    const v1 = mk(async (ctx) => {
+      await ctx.run(A, { id: "A" });
+      await ctx.suspend({ on: "go" });
+      return 1;
+    });
+    const h1 = await v1.rt.start(v1.reg, {}, { executionId: "dv-1" });
+    await h1.waitForSuspend();
+    // v2 returns early: its COMPLETED is refused by the append guard (nothing terminal is written)
+    const v2 = mk(async () => ({ early: true }));
+    v2.rt.registerFlow(v2.reg.definition, v2.reg.runner);
+    let verdict: boolean | undefined;
+    eventStore.after = {
+      eventType: "EXECUTION_SUSPENDED",
+      when: (e) =>
+        (e.payload as { condition?: { on?: string } }).condition?.on === "__loom_diverged__",
+      run: async (e) => {
+        verdict = await v2.rt.cancel(e.executionId, "stop");
+      },
+    };
+    const h2 = await v2.rt.resume("dv-1", { eventType: "go", payload: {} });
+    await h2.waitForCompletion().catch(() => {});
+    await until(() => verdict !== undefined);
+    expect(verdict).toBe(true);
+    const log = await kinds(eventStore, "dv-1");
+    expect(log).not.toContain("EXECUTION_COMPLETED");
+    expect(log[log.length - 1]).toBe("EXECUTION_CANCELLED");
+    expect((await v2.rt.loadState("dv-1"))?.status).toBe("cancelled");
   });
 });
