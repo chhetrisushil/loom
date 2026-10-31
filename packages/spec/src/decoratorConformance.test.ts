@@ -178,6 +178,7 @@ describe("store decorators run the decorator conformance kit (fitness, ADR 0074 
       "ShardedEventStore",
       "ProfilingEventStore",
       "TenantScopedSnapshotStore",
+      "ProfilingSnapshotStore",
     ]) {
       expect(names, `discovery lost ${known}`).toContain(known);
     }

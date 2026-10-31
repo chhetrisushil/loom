@@ -1008,6 +1008,16 @@ interface SnapshotStore {
 }
 class InMemoryAsyncSnapshotStore { constructor(options?: { latencyMs?: number }) }
 class SqliteSnapshotStore        { constructor(dbPath: string) }
+// Snapshot-size metric (#708): a decorator, zero cost when unwired, never fails or alters a save.
+// Outside EncryptingSnapshotStore it measures plaintext state; around the raw store, ciphertext.
+class ProfilingSnapshotStore implements SnapshotStore {
+  constructor(inner: SnapshotStore, options?: { topN?: number; largeThresholdBytes?: number;
+    onLargeSnapshot?(executionId: string, bytes: number): void | Promise<void>; dedupeCapacity?: number;
+    sampleRate?: number; sampler?(): number; onMeasurementError?(executionId: string, error: unknown): void })
+  profile(): SnapshotSizeProfile   // saves, measured, totalBytes, maxBytes, power-of-two histogram, largest (top N by latest size)
+  trackedCounts(): { largest: number; reported: number }
+  resetProfile(): void
+}
 #+end_src
 
 Browser-safe subpath: ~@loom/snapshot-runtime/memory~.
