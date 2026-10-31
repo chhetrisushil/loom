@@ -140,6 +140,53 @@ suite("snapshots.state lz4 compression (ADR 0136)", () => {
     expect((await store.loadLatest("e"))?.sequence).toBe(1);
   });
 
+  it("default never reverts a column that already uses lz4", async () => {
+    await migrate(openPool(), { snapshotCompression: "lz4" });
+    expect(await compressionOf(openPool())).toBe("l");
+    await migrate(openPool()); // a later boot with the default, on a fresh (unmemoized) pool
+    expect(await compressionOf(openPool())).toBe("l");
+  });
+
+  it("a REAL lock_not_available from the server falls back softly, and the next boot applies lz4", async () => {
+    await migrate(openPool()); // tables exist, column on the default
+    const holder = await openPool().connect();
+    try {
+      // The holder has the lock once this resolves (awaited, not slept on): any ALTER must wait.
+      await holder.query("BEGIN");
+      await holder.query("LOCK TABLE snapshots IN ACCESS SHARE MODE");
+      const onWarn = vi.fn();
+      // The server itself raises 55P03 after the step's own short wait (min(lockTimeoutMs, 200 ms)).
+      // ONE connection, so the store below reuses the very session the failed ALTER ran on.
+      const single = new Pool({
+        connectionString: PG_URL,
+        options: `-c search_path=${schema}`,
+        max: 1,
+      });
+      opened.push(single);
+      await migrate(single, { onWarn, snapshotCompression: "lz4", lockTimeoutMs: 100 });
+      expect(await compressionOf(openPool())).toBe("");
+      expect(onWarn).toHaveBeenCalledTimes(1);
+      expect(String(onWarn.mock.calls[0]?.[0])).toContain("55P03");
+      // the failed step left no aborted transaction behind: that same session still serves snapshots
+      const store = new PostgresSnapshotStore(single);
+      await store.save({
+        id: "s",
+        executionId: "e",
+        workflowId: "w",
+        sequence: 1,
+        state: bigState("locked"),
+        createdAt: 1,
+      });
+    } finally {
+      await holder.query("ROLLBACK");
+      holder.release();
+    }
+    const onWarn2 = vi.fn();
+    await migrate(openPool(), { onWarn: onWarn2, snapshotCompression: "lz4" });
+    expect(await compressionOf(openPool())).toBe("l");
+    expect(onWarn2).not.toHaveBeenCalled();
+  });
+
   it("an unexpected error is not swallowed", async () => {
     const pool = stubbed(openPool(), async (sql) => {
       if (!sql.includes("SET COMPRESSION")) return undefined;
@@ -150,7 +197,7 @@ suite("snapshots.state lz4 compression (ADR 0136)", () => {
 
   it("values written before and after the switch read back identically", async () => {
     await migrate(openPool());
-    // Raw INSERT: a PostgresSnapshotStore would run the default (lz4) migration in its constructor.
+    // Raw INSERT: a PostgresSnapshotStore would run the default migration in its constructor.
     const stateA = bigState("before");
     await openPool().query(
       "INSERT INTO snapshots (id, execution_id, workflow_id, sequence, state, created_at) VALUES ('a', 'e', 'w', 1, $1::jsonb, 1)",
