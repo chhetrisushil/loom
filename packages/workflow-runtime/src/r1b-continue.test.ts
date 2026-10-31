@@ -72,7 +72,7 @@ describe("ctx.continueAsNew — the rotation", () => {
     expect((await eventsOf(h.eventStore, "chat", "MESSAGE_CONSUMED")).length).toBe(2);
   });
 
-  it("the predecessor's handle resolves with its own `continued` state, never `completed`, and never suspends", async () => {
+  it("the predecessor's handle resolves with its own `continued` state, never `completed`, and rejects waitForSuspend", async () => {
     const h = build({ continueAsNewEnabled: true });
     const f = flow<{ gen?: number }, unknown>("now", async (ctx, input) =>
       input?.gen === undefined ? ctx.continueAsNew({ gen: 1 }) : "head"
@@ -83,11 +83,11 @@ describe("ctx.continueAsNew — the rotation", () => {
     expect(done.status).toBe("continued");
     expect(done.variables._continuedTo).toBe("n~1");
     expect(done.variables._output).toBeUndefined();
-    const raced = await Promise.race([
-      handle.waitForSuspend().then(() => "suspended"),
-      new Promise((r) => setTimeout(() => r("never"), 30)),
-    ]);
-    expect(raced).toBe("never");
+    // #710: a terminal run rejects waitForSuspend with ExecutionTerminatedError instead of hanging.
+    await expect(handle.waitForSuspend()).rejects.toMatchObject({
+      name: "ExecutionTerminatedError",
+      status: "continued",
+    });
     await until(async () => (await h.rt.loadState("n~1"))?.status === "completed");
     expect((await h.rt.followToHead("n"))?.state.variables._output).toBe("head");
   });

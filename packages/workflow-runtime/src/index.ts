@@ -105,6 +105,7 @@ export {
   inboxTopicStreamId,
 } from "./inbox";
 export type { DriverLease, HeartbeatOptions } from "./driverLease";
+export { ExecutionTerminatedError } from "./executionTerminated";
 export { LeaseEvidenceError, collectGhostLeases } from "./leaseEvidence";
 export {
   HEURISTIC_OWNER_SUFFIX,
