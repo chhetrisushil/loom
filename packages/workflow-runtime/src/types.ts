@@ -352,8 +352,8 @@ export interface ExecutionContext extends ExecutionContextExtensions {
    * your own turns (`@loom/agent`'s `continueEvery(n)`). Needs `kernel.features.continueAsNew`.
    *
    * The predecessor's handle resolves `waitForCompletion()` with its own state (status `continued`,
-   * `variables._continuedTo` names the successor) and never resolves `waitForSuspend()`; follow the
-   * chain with `runtime.followToHead(id)`. A tainted value in the carry stays tainted.
+   * `variables._continuedTo` names the successor) and rejects `waitForSuspend()` with
+   * `ExecutionTerminatedError` (status `continued`); follow the chain with `runtime.followToHead(id)`. A tainted value in the carry stays tainted.
    */
   continueAsNew(carry?: unknown): Promise<never>;
 
@@ -1150,7 +1150,21 @@ export class ParallelScopeFailedError extends Error {
 
 export interface ExecutionHandle {
   executionId: string;
+  /**
+   * Resolves with the folded state when the run COMPLETES. Rejects when it fails or is cancelled
+   * (the error) and when a durable write or the lease fails. It stays pending while the run is
+   * parked.
+   */
   waitForCompletion(): Promise<ExecutionState>;
+  /**
+   * Resolves with the folded state when the run PARKS (a gate, a wait, a timer). If the run ends
+   * without parking - it completes, fails, is cancelled or continues as new - this REJECTS with
+   * `ExecutionTerminatedError` (`state` = the terminal state, `cause` = the failure or
+   * cancellation), after `waitForCompletion()` has settled, so a `Promise.race` of the two resolves
+   * as it always did. A storage, lease or seal failure rejects both promises with that error
+   * instead. Before this contract (issue #710) it stayed pending forever on a terminal run.
+   * A caller that never calls it gets no unhandled rejection.
+   */
   waitForSuspend(): Promise<ExecutionState>;
   getState(): ExecutionState;
   /**

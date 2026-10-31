@@ -81,6 +81,7 @@ import {
 } from "./deadlineTimer";
 import { type DriverLease, DriverLeases, type HeartbeatOptions, NO_LEASE } from "./driverLease";
 import { UNKNOWN_OWNER_REASON } from "./executionAccessPolicy";
+import { ExecutionTerminatedError } from "./executionTerminated";
 import { asInDoubtVerdict, inDoubtDecisionId } from "./inDoubt";
 import {
   DEFAULT_INBOX_MAX_BACKLOG,
@@ -8681,6 +8682,13 @@ export class WorkflowRuntime {
     completionPromise.catch(() => {});
     suspendPromise.catch(() => {});
 
+    // Issue #710 - a run that ends WITHOUT parking settles `waitForSuspend()` too. Always called
+    // AFTER the completion promise is settled (same synchronous turn, or the same release in the
+    // leased case), so a race of the two still sees the completion first.
+    const terminated = (cause?: unknown): void => {
+      rejectSuspend(new ExecutionTerminatedError(vm.getState(), cause));
+    };
+
     // Ephemeral cancellation for this live run. The controller's signal is
     // threaded into every effect context; cancel() aborts it and records a
     // durable EXECUTION_CANCELLED event. Durable state is untouched, so resume
@@ -8934,6 +8942,7 @@ export class WorkflowRuntime {
       // A zombie (an effect still running) must not append after the cancel record.
       ctx.seal({ cancel: true }); // keeps only STEP_CANCELLED of the steps the abort interrupts
       rejectCompletionRaw(err);
+      rejectSuspendRaw(new ExecutionTerminatedError(vm.getState(), err));
     };
 
     // K8.3 — execution deadline, anchored to the LOGGED EXECUTION_STARTED
@@ -9074,6 +9083,7 @@ export class WorkflowRuntime {
       // The chain's inbox is NOT retired: it is keyed by `chainId` and the successor reads on.
       await checkpointOnSettle();
       resolveCompletion(vm.getState());
+      terminated();
       return undefined;
     };
 
@@ -9132,6 +9142,7 @@ export class WorkflowRuntime {
         await this.retireInbox(chainIdOf(vm.peekState(), executionId));
         await checkpointOnSettle(); // bound reads of the settled execution
         resolveCompletion(vm.getState());
+        terminated();
       } catch (caught) {
         let err: unknown = caught;
         // ADR 0113 D3 — a refusal (even one the body swallowed, then failed on something else).
@@ -9358,7 +9369,10 @@ export class WorkflowRuntime {
         // Surface the write failure; do NOT fabricate an EXECUTION_FAILED event
         // into a log that the store can't accept anyway.
         if (journal.failed) {
-          await journal.drain().catch((drainErr) => rejectCompletion(drainErr));
+          await journal.drain().catch((drainErr) => {
+            rejectCompletion(drainErr);
+            rejectSuspend(drainErr);
+          });
           return;
         }
 
@@ -9373,10 +9387,12 @@ export class WorkflowRuntime {
           // detect; report the write failure (StorageWriteError, `cause` = the store's error),
           // as the storage-died branch above does.
           rejectCompletion(drainErr);
+          rejectSuspend(drainErr);
           return;
         }
         await this.retireInbox(chainIdOf(vm.peekState(), executionId));
         rejectCompletion(err);
+        terminated(err);
       }
     };
 

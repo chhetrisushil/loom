@@ -108,9 +108,9 @@ export class LocalWorkerRuntime implements WorkerRuntime {
       return toResult(await this.followContinuation(pkg, state!));
     }
 
-    // waitForCompletion stays pending on suspend; waitForSuspend stays pending
-    // when the flow never suspends — so this race resolves on whichever the flow
-    // actually does. getState() is then authoritative for the outcome.
+    // waitForCompletion stays pending on suspend; waitForSuspend rejects (ExecutionTerminatedError,
+    // after the completion has settled) when the flow ends without suspending — so this race
+    // resolves on whichever the flow actually does. getState() is then authoritative for the outcome.
     try {
       await Promise.race([
         handle.waitForSuspend().then(() => undefined),

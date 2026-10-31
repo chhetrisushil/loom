@@ -59,7 +59,10 @@ export function waitForPhase(
   );
 }
 
-/** Await a flow reaching its next durable suspend checkpoint. */
+/**
+ * Await a flow reaching its next durable suspend checkpoint. Rejects with `ExecutionTerminatedError`
+ * if the run ends (completes, fails, is cancelled) without parking.
+ */
 export function driveToSuspend(handle: ExecutionHandle): Promise<unknown> {
   return handle.waitForSuspend();
 }
