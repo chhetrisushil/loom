@@ -170,6 +170,18 @@ error's `redacted` property carries the events with each sealed field replaced b
 rebuilt that way and keeps the error. Re-running the erasure over an already-shredded subject is
 idempotent: liveness is judged on that redacted view.
 
+### Claim-checked tool outputs (ADR 0140)
+
+With the opt-in `execution.claimCheck`, an agent tool's large output lives in a CONTENT STORE, not the log, so a
+key's destruction does not reach it. `security.crypto` with the opt-in is refused at boot unless the store
+declares `sealsContent: true` (a store that seals each blob under its owning subject's key; none ships yet).
+Over a plaintext store `eraseSubject` collects the envelope refs the subject's executions cite (logs, archive
+segments, snapshots) before the shred, keeps any blob another non-erased execution still cites (a deduplicated
+identical output), journals `ERASURE_CONTENT_DELETE_INTENDED` first, deletes the rest and journals
+`ERASURE_CONTENT_DELETED` `{ deleted, retained }` (`result.contentDeleted`); it refuses before the shred
+(`ContentCopiesRemainError`) when blobs are cited and the store cannot delete or the event store cannot be
+enumerated. `app.exportSubject` returns the resolved blobs in each execution's `claimChecked`.
+
 ### A message still in flight in an inbox (ADR 0110)
 
 A durable inbox (`kernel.features.inbox`) holds a message in a reserved stream

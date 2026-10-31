@@ -73,3 +73,6 @@ one warning; set `warnTranscriptBytes: false` to silence it.
 [ADR 0140](0140-agent-claim-check-opt-in.md) adds the opt-in `execution.claimCheck`, and the warning text now
 names it beside `compaction` (tool outputs are about 80% of the state). Still report-only, still one warning
 per run, still fires with claim-check on (compaction is what bounds the transcript).
+
+Review round (2026-10-31): the warning text also says the opt-in WITHHOLDS an offloaded tool's result from the
+model except its digest/preview, so only tools whose output the model does not need in full should be listed.

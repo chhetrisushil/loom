@@ -25,7 +25,7 @@ effects it touches (it runs on every effect, the model call included), and decla
 ## Decisions
 
 **D1 - one grouped option, no new package.** `defineConfig({ execution: { claimCheck: { store, toolIds,
-inlineCapBytes?, digests?, preview?, onOffload? } } })`, declared in the `execution` group like
+inlineCapBytes?, digests?, preview?, onOffload?, reclaimable? } } })`, declared in the `execution` group like
 `effectMiddleware` (the flat spelling throws like every other grouped option). It builds ordinary
 `claimCheckMiddleware`. The app has no content store of its own (the sweep takes one explicitly), so the
 store is supplied here - the same object you hand `sweepUnpinnedContent`. UNSET adds no middleware and
@@ -45,7 +45,7 @@ entry gets a default digest `{ preview }`: the first `preview` characters (defau
 JSON text, via the new `previewDigest(maxChars)` in `@loom/middleware`, wired as the new `defaultDigest`
 option. A declared digest always wins (it replaces the preview, it is not merged); `preview: false` records
 `{ ref, size }` only. The preview is a head, not a summary, and costs about 110 KB at 200 turns (below). It
-is pure and deterministic, as a digest must be (ADR 0054 D2). **A result that carries an ADR 0085 taint
+is pure and deterministic, as a digest must be (ADR 0054 D2). **The model does NOT see an offloaded tool's result: only its digest/preview (ADR 0087).** Opting in changes what the model can read, so list only tools whose output the model does not need in full (a bulk export it only needs the row count of, say); a tool the model reasons over (a search whose hits it must read) stays inline, or declares a `digests` entry that carries what the model needs. The preview says when it is a head: `{ preview, truncated: true }` (absent when the preview is the whole text). **A result that carries an ADR 0085 taint
 marker anywhere is never previewed** (a digest is prompt text; previewing untrusted content would launder the
 taint). A declared digest is the caller's to keep taint-free; the option's documentation says so.
 
@@ -53,34 +53,71 @@ taint). A declared digest is the caller's to keep taint-free; the option's docum
 the goal is state size, and a result at or under 1 KiB is cheaper inline than as an envelope plus a blob. The
 cap is on the UTF-8 length of the JSON text, as ever; exactly 1024 bytes stays inline (tested).
 
-**D5 - order.** The claim-check sits just inside the kill switch and OUTSIDE secret redaction and every
+**D5 - order (tested).** The claim-check sits just inside the kill switch and OUTSIDE secret redaction and every
 `effectMiddleware` entry: what is stored is what redaction already scrubbed, and a user middleware (a retry,
 a safety validator) sees the real result, not an envelope. A stopped effect never reaches it.
 
-**D6 - replay, resume and the sweep (verified, no change).** The envelope IS the recorded value: a fresh app
-resuming a parked run replays every recorded turn with ZERO content-store calls and no tool or model re-run,
-including after the blobs were erased (tested with a counting store). The erasing content sweep treats these
-refs by ADR 0054/0055 rules, which are NOT "pinned forever": an envelope's own `ref` cited only by a live log
-is TTL-reclaimable telemetry (inside `olderThanMs` it is kept; past it, it is reclaimed, and replay does not
-notice). It is retained past the TTL when a `pinnedEventTypes` kind cites it, and **pinned for as long as an
-archive holds the event that cites it** (ADR 0138: compaction moves the tool steps into the archive; the
-erasing pass refuses without `archiveStores`, and a TTL pass that scans only the log and the archive still
-keeps the refs - tested, mutation-checked). **Consequence for audit:** the raw bytes of a tool output the
-model never saw are not part of the permanent record unless you pin them. A deployment that must keep them
-declares `STEP_COMPLETED` (or its own event kind) in `pinnedEventTypes`, or does not opt in.
+**D6 - replay, resume and the sweep: the blob is RETAINED (owner ruling: auditability intact).** The envelope IS
+the recorded value: a fresh app resuming a parked run replays every recorded turn with ZERO content-store calls
+and no tool or model re-run. But the log no longer holds the tool output, so the blob is the ONLY copy of a fact
+the log once held, and nothing may prune it except erasure. The first cut left the envelope on the ADR 0054
+telemetry rule (a ref cited only by a live log is TTL-reclaimable), which turned the opt-in into silent pruning.
+Now the middleware built from `execution.claimCheck` marks each envelope `retain: true`
+(`ClaimCheckEnvelope.retain`), and the content walker (`visitCitedAddresses`) reports a retained envelope's ref
+as LOAD-BEARING: `sweepUnpinnedContent` keeps it while any live log, archive segment (ADR 0138) or snapshot
+cites it, however old; it becomes reclaimable only once that history is deleted (retention discarded the log,
+or erasure removed it). The classic `claimCheckMiddleware` (sentinel telemetry, ADR 0054) is unchanged: no
+`retain`, TTL-reclaimable. **`reclaimable`** (`true`, or a list of tool ids) is the explicit, documented audit
+trade for genuine telemetry: those envelopes carry no `retain`, their blobs are TTL-reclaimed, and
+`resolveClaimCheck` then returns `null`. Replay is unaffected either way.
 
 **D7 - the state-growth warning names it.** The ADR 0137 warning text now also says to opt in to
 `execution.claimCheck` (the `warnTranscriptBytes` JSDoc too). It stays report-only, and still fires when
 claim-check is on (it counts transcript bytes, which the envelope shrinks but compaction bounds).
 
+**D8 - erasure and encryption FAIL CLOSED (blobs are subject data).** A tool output offloaded to the content
+store sits outside the per-subject keys that seal the log, so a key's destruction does not reach it.
+(a) **`security.crypto` + `execution.claimCheck` is REFUSED at boot** (`TypeError`, nothing composed) unless the
+store declares `sealsContent: true`, meaning it seals each blob under its owning subject's key. No such store
+ships: the `ContentStore` SPI has no subject on `put`/`get`, and an address that is the plain content hash leaks
+plaintext equality across subjects (defeating erasure and tenant isolation), so a clean
+`EncryptingContentStore` needs a subject-aware SPI revision, which is its own ADR; the refusal names the gap
+rather than papering over it. (b) **`compliance.erase` over a plaintext store now reaches the blobs.** Boot
+requires the store to have `delete()`. `eraseSubject`, BEFORE the shred, collects every envelope ref the
+subject's executions cite (live logs, archive segments, snapshots), drops each one another, non-erased
+execution still cites (ADR 0120 owner-set semantics: a deduplicated identical blob stays), refuses with
+`ContentCopiesRemainError` when blobs are cited and the store is not wired / cannot delete / the event store
+cannot be enumerated, and journals `ERASURE_CONTENT_DELETE_INTENDED` (addresses, touch cutoff) first. After the
+shred it deletes them (`deleteIfUntouchedSince` when the store has it, so a concurrent identical `put` spares
+the blob) and journals `ERASURE_CONTENT_DELETED` `{ deleted, retained }` naming the intent; a crash between is
+finished by the retry from the intent, and `EraseSubjectResult.contentDeleted` reports it. Cost: one pass over
+the other executions' logs, archive keys and snapshots per erasure that has blobs (rare, bounded by early exit).
+`exportSubject` resolves the subject's blobs (`claimChecked: [{ address, size, digest, value | bytesBase64 |
+missing }]`), so an Art. 15/20 export is the data, not just refs.
+
+**D9 - scope: agent tool frames only, and three guards.** The middleware touches a listed tool only in an
+`agentLoop$` tool frame: `EffectContext.taskKind === "tool"` (new, set by the workflow runtime from the
+`TaskDefinition`) and a step id `<loop>#turn:<i>:tool:<j>`. It never applies to `invokeTransient`, a hand-written
+flow step or a task of another kind that shares an id. Listing a model (`llm`) effect is refused at boot where
+the registry can tell, and `agentLoop$` throws an error naming `execution.claimCheck.toolIds` if the model turn
+or the compaction summary comes back as an envelope. A `returnsMedia` tool's media result passes through
+un-offloaded (the loop renders its parts; an envelope would blind the model). A result that already looks like
+an envelope is DATA (`envelopesAreData`): it is offloaded like any value, so a tool cannot hand the log a
+forged `{ __loomClaimCheck, ref }` the sweep or a resolver would trust.
+
+**D10 - taint is carried by the envelope.** An offloaded result with a taint marker, at the top level (an MCP
+result) or nested (an A2A `content`), is recorded as `tainted(envelope, origin)`, so `agentLoop$` fences it and
+records `sawTaintFrom` (writeBack and compaction stay tainted) even when a declared digest is present; the
+sweep's walker still finds the inner envelope. This applies to the classic middleware too.
+
+**L - hook failures.** `onOffload` runs after the tool; a throw is caught and reported through `onWarn`, never
+turning an already-run tool into a failed call.
+
 ## What it does not do
 
 - It does not bound the O(turns) model-input growth; that is `compaction` (ADR 0137). Measured below: the log
   stays dominated by re-sent transcripts at 200 turns.
-- It does not seal the blob. `security.crypto` seals the event payload (the envelope and, if `STEP_STARTED.input`
-  is sensitive, the preview that rides in the model input); the content store is the app's (loom ships no encrypting
-  content store), so blob encryption and tenant isolation belong to the store you pass. Tested: a sealing event store plus the opt-in seals the envelope and
-  replays.
+- It does not seal the blob (see D8: that combination is refused, not left open).
 - No "claim-check everything" shortcut, no resolve-into-the-transcript hook (ADR 0087 rejected it).
 
 ## Measured
@@ -107,5 +144,5 @@ unrelated second. Both use the unchanged `claimCheckMiddleware`.
 ## Consequences
 
 Additive public API: `@loom/app` `execution.claimCheck`, `ClaimCheckConfig`, `DEFAULT_CLAIM_CHECK_CAP_BYTES`,
-`DEFAULT_CLAIM_CHECK_PREVIEW_CHARS`; `@loom/middleware` `ClaimCheckOptions.defaultDigest`, `previewDigest`,
-`PreviewDigest`. `@loom/app` gains `@loom/plugin-content` as a dev dependency (tests only).
+`DEFAULT_CLAIM_CHECK_PREVIEW_CHARS`; `@loom/middleware` `ClaimCheckOptions.defaultDigest`/`retain`/`passThrough`/`envelopesAreData`, `ClaimCheckEnvelope.retain`, `previewDigest`,
+`PreviewDigest.truncated`; `@loom/effect-runtime` `EffectContext.taskKind`; `@loom/compliance` `ContentCopiesRemainError`, `ErasableContent`, `ClaimCheckedBlob`, `claimCheckRefsOf`, `EraseCoordinatorOptions.content`, `ExportSubjectOptions.content`; control events `ERASURE_CONTENT_DELETE_INTENDED` / `ERASURE_CONTENT_DELETED`. `@loom/app` gains `@loom/plugin-content` as a dev dependency (tests only).

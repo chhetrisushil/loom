@@ -501,16 +501,17 @@ so the second lever is one line:
 ```ts
 defineConfig({
   storage, flows,
-  execution: { claimCheck: { store: contentStore, toolIds: ["search", "fetch_page"] } },
+  execution: { claimCheck: { store: contentStore, toolIds: ["export_report"] } },
 });
 ```
 
 A listed tool's result over `inlineCapBytes` (default 1 KiB of JSON) goes to `store` and the log records
 `{ __loomClaimCheck, ref, size, digest }`; smaller results stay inline; nothing changes unless you set it.
-`toolIds` is required (no "all": the model and summarizer effects must stay inline). The model sees the
-envelope, never the bytes, so a tool without a `digests[toolId]` entry records the default digest
-`{ preview }` (the first 256 characters of its JSON; `preview: n` or `false` to change it; never for tainted
-content). Replay and resume read the envelope from the log: zero content-store reads, even after the blobs were
+`toolIds` is required (no "all": the model and summarizer effects must stay inline). **The model does not see an
+offloaded tool's result, only its digest**: list only tools whose output it does not need in full (a bulk export
+it needs the row count of), never a search whose hits it must read. A tool without a `digests[toolId]` entry
+records the default digest `{ preview, truncated: true }` (the first 256 characters of its JSON; `preview: n` or
+`false` to change it; never for tainted content, which is recorded as a tainted envelope). Replay and resume read the envelope from the log: zero content-store reads, even after the blobs were
 erased. **[measured, offline harness, `claimCheckOptIn.perf.test.ts`, `pnpm test:perf`]** a real `defineConfig`
 app and `agentLoop$`, 1.5-4 kB tool output per turn, JSON-cloning log, no compaction:
 
@@ -524,10 +525,13 @@ app and `agentLoop$`, 1.5-4 kB tool output per turn, JSON-cloning log, no compac
 | 200 | on, `preview: false` | 172.1 KB | 7787 KB |
 
 That is 4.2x less state at 200 turns (7.0x without the preview), still linear; the log is still dominated by
-the re-sent transcript, which only `compaction` bounds, so use both. The audit trade: a ref cited only by a live
-log is TTL-reclaimable telemetry under the content sweep (kept while a `pinnedEventTypes` kind cites it or an
-archive holds the citing event), so declare tool results evidence in `pinnedEventTypes` if the raw outputs must
-outlive the TTL. The ADR 0137 warning names this opt-in too.
+the re-sent transcript, which only `compaction` bounds, so use both. **Auditability stays intact**: the
+envelopes are marked `retain: true`, so the content sweep never TTL-reclaims a blob while any log, archive or
+snapshot cites it; only erasure (or discarding the citing history) frees it. List tool ids in
+`claimCheck.reclaimable` only for genuine telemetry (the explicit audit trade). With `security.crypto` the opt-in
+is refused at boot (the blobs would be plaintext outside the per-subject keys); with `compliance.erase` the
+store must `delete()`, and `eraseSubject` deletes the subject's blobs (keeping an identical blob another subject
+still cites) and records it. The ADR 0137 warning names this opt-in too.
 
 ## Re-measuring
 

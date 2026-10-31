@@ -52,7 +52,7 @@ describe("defaultDigest / previewDigest (ADR 0140)", () => {
 
   it("previewDigest is the head of the JSON text, deterministic, and never splits a surrogate pair", () => {
     const d = previewDigest(10);
-    expect(d({ abcdefghijkl: 1 })).toEqual({ preview: '{"abcdefgh' });
+    expect(d({ abcdefghijkl: 1 })).toEqual({ preview: '{"abcdefgh', truncated: true });
     expect(d({ abcdefghijkl: 1 })).toEqual(d({ abcdefghijkl: 1 }));
     expect(previewDigest()({ a: 1 })).toEqual({ preview: '{"a":1}' });
     // `{"k":"1234567` is 13 chars; the emoji is chars 13-14, so a cut of 14 would split the pair

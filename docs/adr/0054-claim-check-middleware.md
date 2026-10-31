@@ -82,3 +82,9 @@ gains an optional `defaultDigest(result, toolId)`, used for an offloaded result 
 entry (a declared digest always wins), and `@loom/middleware` exports `previewDigest(maxChars)`, a ready-made
 one that records the head of the result's JSON text and nothing at all for a result carrying an ADR 0085 taint
 marker. Unset, `defaultDigest` changes nothing (D2's "`{ ref, size }` only" still holds).
+
+Review round (2026-10-31): the middleware also gains `retain` (stamps `retain: true` on the envelope, which the
+content walker reports as load-bearing, so the sweep never TTL-reclaims the blob while a log, archive or snapshot
+cites it; the ADR 0140 opt-in sets it, the classic telemetry offload does not), `passThrough`, `envelopesAreData`,
+and a tainted result (top level or nested) is now recorded as `tainted(envelope, origin)` instead of a clean
+envelope. A `retain`ed ref is erased only by subject erasure (`ERASURE_CONTENT_DELETED`), never by TTL.

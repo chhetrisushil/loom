@@ -235,3 +235,8 @@ stands, and is now easier to follow: [ADR 0140](0140-agent-claim-check-opt-in.md
 default `{ preview }` digest (the first 256 characters of its result's JSON, never for tainted content;
 `preview: false` for a bare ref), so the model sees something legible by default. The contract toward the model
 is unchanged: the recorded envelope, never the resolved bytes. Off unless set.
+
+Review round (2026-10-31): opting in changes what the model can read. An offloaded tool's result is WITHHELD from
+the model except its digest/preview (`{ preview, truncated: true }`), so list only tools whose output the model
+does not need in full; a tainted result is fenced as a tainted envelope; and a model or compaction result that
+comes back as an envelope is an error naming `execution.claimCheck.toolIds`.
