@@ -78,6 +78,13 @@ export function installOptional<S extends object, M extends keyof S>(
 /** `TenantScopedEventStore.tenantScope` (and the archive/snapshot twins), carried up the same way (ADR 0138 H3). */
 const TENANT_MARKER = "tenantScope";
 
+/**
+ * ADR 0140 - the snapshot codec a store WRITES (`"none" | "zstd"`), carried up through every snapshot
+ * decorator so the composition root (`defineConfig`) reads what the outermost store really does and can
+ * refuse a mismatch, instead of the opt-in being silently dropped by a wrapper.
+ */
+const CODEC_MARKER = "snapshotCodec";
+
 // Who a decorator wraps, keyed by the decorator: lets a guard walk a stack whose layers hide their
 // inner store (a closure-built decorator exposes no `inner`). A WeakMap, so it never keeps a store alive.
 const wrapped = new WeakMap<object, object>();
@@ -90,7 +97,7 @@ export function decoratedInnerOf(target: object): object | undefined {
 /**
  * Carry the STRUCTURAL markers other layers read by shape from `inner` up to the decorator `target`
  * (unless `target` defines its own): the encryption marker `keys`, `sealsWholeState` (ADR 0130 D8) and
- * the tenant marker `tenantScope` (ADR 0138 H3), and record `target` as wrapping `inner`. EVERY store
+ * the tenant marker `tenantScope` (ADR 0138 H3), the snapshot codec marker `snapshotCodec` (ADR 0140), and record `target` as wrapping `inner`. EVERY store
  * decorator (event, snapshot, archive) must call this - {@link installOptional} does - or a guard that
  * reads a marker on the outermost store sees a plain, unscoped one. The decorator conformance kit
  * asserts it for each decorator in the repo.
@@ -112,6 +119,11 @@ export function forwardStoreMarkers(target: object, inner: object): void {
   const tenant = source[TENANT_MARKER];
   if (typeof tenant === "string" && writable[TENANT_MARKER] === undefined) {
     writable[TENANT_MARKER] = tenant;
+  }
+  // ADR 0140 - a decorator above a codec-writing snapshot store still writes that codec.
+  const codec = source[CODEC_MARKER];
+  if ((codec === "none" || codec === "zstd") && writable[CODEC_MARKER] === undefined) {
+    writable[CODEC_MARKER] = codec;
   }
 }
 

@@ -58,6 +58,12 @@ describe("durability.snapshots (ADR 0140)", () => {
       })
     ).toThrow(/durability\.snapshots\.level is not an option/);
     expect(() =>
+      defineConfig({
+        storage: { kind: "memory" },
+        durability: { snapshots: { codec: "none", lengthLeak: "no" as never } },
+      })
+    ).toThrow(/lengthLeak must be "accept"/);
+    expect(() =>
       defineConfig({ storage: { kind: "memory" }, durability: { snapshots: 3 as never } })
     ).toThrow(/must be an object/);
   });
@@ -89,7 +95,7 @@ describe("durability.snapshots (ADR 0140)", () => {
       });
       const app = defineConfig({
         storage: { kind: "custom", eventStore: events },
-        durability: { snapshots: { codec: "zstd" } },
+        durability: { snapshots: { codec: "zstd", lengthLeak: "accept" } },
       });
       const store = app.stores.snapshotStore as SnapshotStore & {
         snapshotCodec?: string;
@@ -102,7 +108,33 @@ describe("durability.snapshots (ADR 0140)", () => {
       await app.close();
     });
 
-    it("warns when an explicit snapshot store reports a different codec; says nothing when it agrees or is silent", async () => {
+    it('the sealed default store REQUIRES lengthLeak: "accept" (else boot throws, fail closed; D3)', () => {
+      const events = Object.assign(new InMemoryAsyncEventStore(), {
+        keys: {
+          async getOrCreate() {
+            return Buffer.alloc(32, 1);
+          },
+          async get() {
+            return Buffer.alloc(32, 1);
+          },
+          async destroy() {},
+        },
+      });
+      expect(() =>
+        defineConfig({
+          storage: { kind: "custom", eventStore: events },
+          durability: { snapshots: { codec: "zstd" } },
+        })
+      ).toThrow(/lengthLeak: "accept"/);
+      expect(() =>
+        defineConfig({
+          storage: { kind: "custom", eventStore: events },
+          durability: { snapshots: { codec: "zstd", lengthLeak: "yes" as never } },
+        })
+      ).toThrow(/lengthLeak must be "accept"/);
+    });
+
+    it("THROWS when an explicit snapshot store reports a different codec; warns when it reports none; silent when it agrees", async () => {
       const warnings: string[] = [];
       const build = (store: SnapshotStore) =>
         defineConfig({
@@ -114,10 +146,13 @@ describe("durability.snapshots (ADR 0140)", () => {
           durability: { snapshots: { codec: "zstd" } },
           observability: { onWarn: (m: string) => void warnings.push(m) },
         });
-      await build(new ReportingStore("none")).close();
-      expect(warnings.join("\n")).toMatch(
+      expect(() => build(new ReportingStore("none"))).toThrow(
         /durability\.snapshots\.codec is "zstd" but the snapshotStore/
       );
+      // a store that says nothing cannot be judged: warn, do not refuse
+      const { snapshotCodec: _reported, ...silent } = new ReportingStore("none");
+      await build(Object.assign(Object.create(ReportingStore.prototype), silent)).close();
+      expect(warnings.join("\n")).toMatch(/does not report a snapshot codec/);
       warnings.length = 0;
       await build(new ReportingStore("zstd")).close();
       expect(warnings.join("\n")).not.toMatch(/durability\.snapshots\.codec/);

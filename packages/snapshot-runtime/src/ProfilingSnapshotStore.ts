@@ -72,6 +72,10 @@ export interface ProfilingSnapshotStoreOptions {
    * `snapshotCodec`, else it is the same as `"json"` plus the one format byte. Default `"stored"` when
    * the wrapped store reports `snapshotCodec: "zstd"`, so a zstd deployment's histogram shows real bytes.
    * `"stored"` compresses once per measured save (synchronously, like the stringify): use `sampleRate`.
+   * NEVER stored size over a store that seals the whole state (`sealsWholeState`): compress-before-seal
+   * makes that size a length oracle (ADR 0140 D3), so such a store is always measured as `"json"` and an
+   * explicit `"stored"` throws. (Wrapped around the raw backend BELOW such a store, the profiler is handed
+   * only the envelope and cannot tell: do not expose that placement's sizes to untrusted metrics readers.)
    */
   measure?: "json" | "stored";
   /** Told about a measurement or hook that threw. Itself guarded: a throw here is swallowed too. */
@@ -178,7 +182,17 @@ export class ProfilingSnapshotStore implements SnapshotStore {
     }
     const innerCodec = (inner as { snapshotCodec?: unknown }).snapshotCodec;
     this.codec = innerCodec === "zstd" ? "zstd" : "none";
-    this.stored = (options.measure ?? (this.codec === "zstd" ? "stored" : "json")) === "stored";
+    // ADR 0140 D3: a store that seals the WHOLE state compresses before it seals, so its stored length is
+    // a function of the compressed plaintext (a length oracle). Metrics must never carry it: such a store
+    // is measured by the JSON text size only, and `measure: "stored"` is refused outright.
+    const sealing = (inner as { sealsWholeState?: unknown }).sealsWholeState === true;
+    if (sealing && options.measure === "stored") {
+      throw new TypeError(
+        'ProfilingSnapshotStore: `measure: "stored"` is refused over a store that seals the whole state (ADR 0140 D3): its stored size reveals the compressed length of the plaintext. Use the default (JSON text size).'
+      );
+    }
+    this.stored =
+      !sealing && (options.measure ?? (this.codec === "zstd" ? "stored" : "json")) === "stored";
     this.dedupeCapacity = dedupe;
     this.sampleRate = rate;
     this.sampler = options.sampler ?? Math.random;

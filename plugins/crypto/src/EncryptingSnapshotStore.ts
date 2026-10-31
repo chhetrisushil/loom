@@ -90,6 +90,15 @@ export interface EncryptingSnapshotStoreOptions {
    */
   codec?: SnapshotCodecName;
   /**
+   * REQUIRED, as `"accept"`, whenever `codec` is not `"none"` (else construction throws, fail closed).
+   * Compress-before-seal makes the ciphertext length a function of the COMPRESSED plaintext, which is a
+   * CRIME/BREACH-style length oracle wherever a party can influence part of a state (tool output, inbox
+   * text) that is stored beside a secret, and can observe stored sizes (a database reader, a storage
+   * metric, a backup listing) across repeated re-saves. It is an explicit acknowledgment, never implied
+   * by choosing a codec (ADR 0140 D3).
+   */
+  lengthLeak?: "accept";
+  /**
    * `sealState` only. The dot-paths a previous static-path configuration sealed. When given,
    * legacy snapshots open ONLY those paths (any other envelope-shaped value is left as stored);
    * when absent, every envelope-shaped value is tried and left as stored if it does not open.
@@ -140,7 +149,10 @@ export class EncryptingSnapshotStore implements SnapshotStore {
    * Absent (not `false`) in static-path mode.
    */
   readonly sealsWholeState?: true;
-  /** ADR 0140 - the codec the sealed plaintext is compressed with (`ProfilingSnapshotStore` reads it). */
+  /**
+   * ADR 0140 - the codec this store writes: with `sealState`, the one the sealed plaintext is compressed
+   * with; in static-path mode, the backend's own (read structurally by `defineConfig`).
+   */
   readonly snapshotCodec: SnapshotCodecName;
   private sensitive: readonly string[];
   private readonly legacyPlaintext: "load" | "refuse";
@@ -184,6 +196,16 @@ export class EncryptingSnapshotStore implements SnapshotStore {
         );
       }
       assertSnapshotCodecAvailable(this.snapshotCodec);
+      if (options.lengthLeak !== "accept") {
+        throw new TypeError(
+          `EncryptingSnapshotStore: codec "${this.snapshotCodec}" with \`sealState\` compresses the state BEFORE sealing it, so the ciphertext length reveals the compressed length of the state (a CRIME/BREACH-style length oracle where part of a state is attacker-influenced and another part is secret, and stored sizes are observable). Pass \`lengthLeak: "accept"\` to acknowledge that, or leave \`codec\` off (the default).`
+        );
+      }
+    } else if (options.sealState !== true) {
+      // A static-path store seals small fields and leaves the rest of the state to the backend, whose
+      // codec (if any) still applies: report it, so a layer above sees what is really written.
+      const below = (inner as { snapshotCodec?: unknown }).snapshotCodec;
+      this.snapshotCodec = below === "zstd" ? "zstd" : "none";
     }
     this.sensitive = [...(options.sensitive ?? [])];
     this.legacyPlaintext = options.legacyPlaintext ?? "load";

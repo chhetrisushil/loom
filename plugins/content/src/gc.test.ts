@@ -1,7 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import { InMemoryAsyncEventStore, brandPayloadShredded } from "@loom/event-runtime";
 import { ReplayVM } from "@loom/replay-vm";
-import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
+import { InMemoryAsyncSnapshotStore, SNAPSHOT_FRAME_SENTINEL } from "@loom/snapshot-runtime";
 import { describe, expect, it } from "vitest";
 import {
   ArchiveStoresRequiredError,
@@ -2067,6 +2067,57 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         workflowId: "wf",
         sequence: 1,
         state: { __loomEnc: "loom/aes-256-gcm", iv: "x", tag: "y", data: "z" } as never,
+        createdAt: 0,
+      });
+      await live.truncatePrefix("sealed", 1);
+      clock.now = NOW;
+      const base = {
+        eventStores: [live],
+        snapshotStores: [raw],
+        archiveStores: [], // ADR 0138: a log compacted before the archive existed
+        acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: TTL,
+        now: NOW,
+      };
+      const attempt = sweepUnpinnedContent({
+        ...base,
+        reclaimOrphans: { completeScan: true as const, snapshotsTouchContent: true as const },
+      });
+      await expect(attempt).rejects.toBeInstanceOf(SealedSnapshotScanError);
+      await expect(attempt).rejects.toThrow(/pass the decrypting snapshot store/);
+      // The plain TTL pass erases too, so it refuses as well.
+      await expect(sweepUnpinnedContent(base)).rejects.toBeInstanceOf(SealedSnapshotScanError);
+      expect(await content.get(cited)).not.toBeNull(); // nothing deleted
+      const dry = await sweepUnpinnedContent({ ...base, dryRun: true, reclaimOrphans: true });
+      expect(dry.sealedSnapshots).toEqual(["sealed"]);
+      expect(await content.get(cited)).not.toBeNull();
+    });
+
+    it("an ERASING pass over a zstd FRAME row as an older node reads it (the fixed sentinel in `state`) refuses, never reads it as cites-nothing (ADR 0140 D5)", async () => {
+      const { clock, content } = clockedStore(OLD);
+      const cited = await content.put(bytes("a ref only the sealed checkpoint cites"));
+      const live = new InMemoryAsyncEventStore();
+      const raw = new InMemoryAsyncSnapshotStore();
+      const prefix = [
+        evt("sealed", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt(
+          "sealed",
+          1,
+          "STEP_COMPLETED",
+          { stepId: "s", output: envelopeFor(cited.__loomContent) },
+          OLD
+        ),
+      ];
+      for (const e of prefix) await live.append(e);
+      // What a node that predates the codec reads of a Postgres frame row: the sentinel in `state`.
+      await raw.save({
+        id: "cp",
+        executionId: "sealed",
+        workflowId: "wf",
+        sequence: 1,
+        state: { ...SNAPSHOT_FRAME_SENTINEL } as never,
         createdAt: 0,
       });
       await live.truncatePrefix("sealed", 1);

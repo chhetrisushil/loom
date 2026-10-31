@@ -53,6 +53,11 @@ export interface DecoratorConformanceOptions<M extends string, S = unknown> {
    * `tenantScope` rather than forwarding its inner store's. Default: it must forward the inner's.
    */
   tenantScope?: "own";
+  /**
+   * `"own"`: the decorator reports a snapshot codec of its own (a sealing store that compresses before it
+   * seals) rather than forwarding its inner store's (ADR 0140). Default: it must forward the inner's.
+   */
+  snapshotCodec?: "own";
 }
 
 /**
@@ -232,6 +237,32 @@ export function tenantMarkerProblems(
   return [];
 }
 
+/**
+ * Problems with how a SNAPSHOT decorator carries the codec marker (`snapshotCodec`, ADR 0140) of the
+ * store it wraps. `defineConfig` reads it on the OUTERMOST store to refuse an opt-in a wrapper would
+ * silently drop; a decorator that hides it makes a zstd store read as "reports nothing", and one that
+ * invents its own would lie about what is written. `own`: the decorator reports a codec of its own
+ * (a sealing store that compresses before it seals), so only its presence is checked.
+ */
+export function snapshotCodecMarkerProblems(
+  label: string,
+  wrap: (inner: never) => object,
+  inner: () => object,
+  own: boolean
+): string[] {
+  const store = wrap(Object.assign(inner(), { snapshotCodec: "zstd" }) as never);
+  const got = (store as { snapshotCodec?: unknown }).snapshotCodec;
+  if (got !== "zstd" && got !== "none") {
+    return [
+      `${label} hides the snapshotCodec marker of the store it wraps (forward it: installOptional or forwardStoreMarkers)`,
+    ];
+  }
+  if (!own && got !== "zstd") {
+    return [`${label} reports snapshotCodec "${got}" over an inner store that writes "zstd"`];
+  }
+  return [];
+}
+
 /** A full-capability reference store that also carries an encryption marker. */
 function markedInner<T extends object>(inner: T): T {
   return Object.assign(inner, { keys: { durable: true } });
@@ -342,6 +373,12 @@ export function runSnapshotStoreDecoratorConformance(
     it("keeps a tenant-scoped inner store visibly scoped (the `tenantScope` marker survives, ADR 0138 H3)", () => {
       expect(
         tenantMarkerProblems(label, wrap as never, inner, options.tenantScope === "own")
+      ).toEqual([]);
+    });
+
+    it("carries the inner store's snapshot codec (the `snapshotCodec` marker survives, ADR 0140)", () => {
+      expect(
+        snapshotCodecMarkerProblems(label, wrap as never, inner, options.snapshotCodec === "own")
       ).toEqual([]);
     });
   });
