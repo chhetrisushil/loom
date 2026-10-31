@@ -186,6 +186,16 @@ export interface AgentLoopConfig {
   requireReasoningContinuation?: boolean;
   /** Where the direct-path reasoning warning goes. Default: the app's `observability.onWarn`, else a process warning. */
   onWarn?: (message: string) => void;
+  /**
+   * Issue #721 / ADR 0137 - with NO `compaction`, warn ONCE per run (through {@link onWarn}, else the
+   * app's `observability.onWarn`, else a process warning `LOOM_AGENT_STATE_GROWTH`) when the running
+   * transcript byte count (the one `compaction.afterBytes` reads) exceeds this many UTF-8 bytes. Every turn
+   * journals its whole model input, so uncompacted state grows O(turns^2) (see docs/scaling.md,
+   * "Agent state growth"). Default {@link DEFAULT_STATE_GROWTH_WARN_BYTES} (256 KiB); `false` turns it
+   * off. Report-only: it changes no behaviour, writes nothing to the log, and is a pure function of
+   * journaled content (a replay in a fresh process warns again at the same turn).
+   */
+  warnTranscriptBytes?: number | false;
   systemPrompt?: string;
   /**
    * R17 (ADR 0122) — the id prefix of this loop's frames, decisions and gates. Default: the
@@ -431,6 +441,16 @@ export interface AgentLoopConfig {
    * every check), so it fires identically on replay.
    *
    * The effect receives `{ messages }` and returns `{ summary: string }`.
+   *
+   * OPT-IN, and uncompacted state grows O(turns^2) (50 turns ~ 7 MB snapshot, 200 turns ~ 110 MB; see
+   * docs/scaling.md "Agent state growth"): without this option the loop warns once when the transcript
+   * passes {@link AgentLoopConfig.warnTranscriptBytes}. `createSummarizerEffect(provider)` is a
+   * ready-made effect for `toolId`:
+   *
+   * ```ts
+   * effects.register("summarize", createSummarizerEffect(provider));
+   * // ... compaction: { toolId: "summarize", afterBytes: 256 * 1024 }
+   * ```
    */
   compaction?: {
     toolId: string;
@@ -454,6 +474,29 @@ export interface AgentLoopConfig {
 }
 
 const DEFAULT_GATE = "AgentToolApproval";
+/**
+ * Default for {@link AgentLoopConfig.warnTranscriptBytes}: 256 KiB (~64k tokens). In the #721 offline
+ * harness a 50-turn uncompacted run held a ~140 kB transcript and a 7 MB snapshot, 200 turns 110 MB, so
+ * a 1 MB transcript is long past the point the fix is cheap; 256 KiB (~turn 100, tens of MB of state) is
+ * early enough to act on and still above every short-lived agent.
+ */
+export const DEFAULT_STATE_GROWTH_WARN_BYTES = 256 * 1024;
+
+/** Send a loop warning to the loop's own sink, else the app's, else a process warning. A broken sink never fails the run. */
+function emitLoopWarning(config: AgentLoopConfig, message: string, code: string): void {
+  const sink = config.onWarn ?? loopDefaultsSlot().onWarn;
+  if (sink !== undefined) {
+    try {
+      sink(message);
+      return;
+    } catch {
+      // fall through to the process warning
+    }
+  }
+  const proc = (globalThis as { process?: { emitWarning?: (m: string, o?: object) => void } })
+    .process;
+  proc?.emitWarning?.(message, { code });
+}
 
 let warnedReasoningOutsideRing = false;
 /** One advisory per process: `reasoning` without `reasoningToolId` calls providers unguarded (R9). */
@@ -1501,6 +1544,8 @@ export async function agentLoop$(
     return changed ? { ...request, messages: next } : request;
   };
 
+  let warnedStateGrowth = false;
+  const warnBytes = config.warnTranscriptBytes ?? DEFAULT_STATE_GROWTH_WARN_BYTES;
   try {
     while (iterations < maxIterations) {
       await checkAbort(ctx, `t${iterations}:turn`);
@@ -1618,6 +1663,20 @@ export async function agentLoop$(
           // message alone is over `afterBytes` — so compaction is skipped for
           // this turn rather than paying a summary call that folds nothing.
         }
+      }
+
+      if (
+        compaction === undefined &&
+        !warnedStateGrowth &&
+        warnBytes !== false &&
+        transcriptBytes > warnBytes
+      ) {
+        warnedStateGrowth = true;
+        emitLoopWarning(
+          config,
+          `agentLoop$: the transcript re-sent every turn is ${transcriptBytes} bytes (> ${warnBytes}) and this loop has no \`compaction\`, so its journaled state grows O(turns^2) and resume reads it all. Set \`compaction: { toolId, afterBytes }\` (\`createSummarizerEffect(provider)\` is a ready-made toolId); see docs/scaling.md "Agent state growth". Silence with \`warnTranscriptBytes: false\`.`,
+          "LOOM_AGENT_STATE_GROWTH"
+        );
       }
 
       const turnRequest = {
