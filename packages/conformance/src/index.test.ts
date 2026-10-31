@@ -29,6 +29,7 @@ import {
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import {
   InMemoryAsyncSnapshotStore,
+  ProfilingSnapshotStore,
   SNAPSHOT_STORE_SPI_VERSION,
   TenantScopedSnapshotStore,
 } from "@loom/snapshot-runtime";
@@ -246,6 +247,10 @@ runEventStoreDecoratorConformance("ShardedEventStore", (inner) => new ShardedEve
 runSnapshotStoreDecoratorConformance(
   "TenantScopedSnapshotStore",
   (inner) => new TenantScopedSnapshotStore(inner, "acme")
+);
+runSnapshotStoreDecoratorConformance(
+  "ProfilingSnapshotStore",
+  (inner) => new ProfilingSnapshotStore(inner)
 );
 
 // The kit's guard must FIRE: a decorator that forgets `appendBatch` is exactly the drift it
