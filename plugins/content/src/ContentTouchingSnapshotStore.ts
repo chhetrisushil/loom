@@ -52,6 +52,7 @@ export interface ContentTouchingSnapshotStoreOptions {
 export class ContentTouchingSnapshotStore implements SnapshotStore {
   readonly deleteExecution?: NonNullable<SnapshotStore["deleteExecution"]>;
   readonly loadLatestSealed?: NonNullable<SnapshotStore["loadLatestSealed"]>;
+  readonly pruneSnapshots?: NonNullable<SnapshotStore["pruneSnapshots"]>;
   /** Brand: see {@link isContentTouchingSnapshotStore}. */
   readonly [CONTENT_TOUCHING_SNAPSHOT_STORE] = true;
   private readonly onTouchError: TouchErrorHook | undefined;
@@ -65,6 +66,10 @@ export class ContentTouchingSnapshotStore implements SnapshotStore {
     const plan = {
       deleteExecution: "forward",
       loadLatestSealed: "forward",
+      // ADR 0134 D6 — a delete cites nothing, so there is nothing to touch. A blob only a pruned
+      // snapshot cited was never pinned by the sweep (it pins the latest and the checkpoint,
+      // both of which pruning keeps), so no sweep decision changes.
+      pruneSnapshots: "forward",
     } satisfies DecoratorPlan<SnapshotStore, OptionalSnapshotStoreMethod>;
     installOptional<SnapshotStore, OptionalSnapshotStoreMethod>(this, inner, plan);
   }

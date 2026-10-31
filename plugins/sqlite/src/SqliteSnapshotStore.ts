@@ -85,6 +85,21 @@ export class SqliteSnapshotStore implements SnapshotStore {
     this.db.prepare<[string]>("DELETE FROM snapshots WHERE execution_id = ?").run(executionId);
   }
 
+  async pruneSnapshots(
+    executionId: string,
+    range: { readonly after: number; readonly before: number },
+    keep: readonly number[] = []
+  ): Promise<number> {
+    // One statement. The keep-set is a bound JSON array, not an interpolated list.
+    const info = this.db
+      .prepare<[string, number, number, string]>(
+        `DELETE FROM snapshots WHERE execution_id = ? AND sequence > ? AND sequence < ?
+         AND sequence NOT IN (SELECT value FROM json_each(?))`
+      )
+      .run(executionId, range.after, range.before, JSON.stringify(keep));
+    return info.changes;
+  }
+
   async close(): Promise<void> {
     this.db.close();
   }

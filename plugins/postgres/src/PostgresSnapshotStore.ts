@@ -91,6 +91,21 @@ export class PostgresSnapshotStore implements SnapshotStore {
     await this.pool.query("DELETE FROM snapshots WHERE execution_id = $1", [executionId]);
   }
 
+  async pruneSnapshots(
+    executionId: string,
+    range: { readonly after: number; readonly before: number },
+    keep: readonly number[] = []
+  ): Promise<number> {
+    await this.ready;
+    // One statement over idx_snapshots_exec (execution_id, sequence DESC).
+    const res = await this.pool.query(
+      `DELETE FROM snapshots WHERE execution_id = $1 AND sequence > $2 AND sequence < $3
+       AND sequence <> ALL($4::bigint[])`,
+      [executionId, range.after, range.before, keep]
+    );
+    return res.rowCount ?? 0;
+  }
+
   async close(): Promise<void> {
     if (this.ownsPool) await this.pool.end();
   }
