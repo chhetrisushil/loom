@@ -171,6 +171,8 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
       PlacementDispatcher: "a concrete 1P implementation of ExecutionDispatcher",
       ProjectionRuntime: "documented in its own right",
       ArchiveStores: "a HOLDER of two documented seams ({ eventStore, snapshotStore }), not one",
+      ClaimCheckConfig:
+        "a config bag ({ store, toolIds, ... }) for the existing claim-check middleware; its store is the ContentStore seam",
       ManifestView: "compiler-manifest DATA — there is no behaviour to supply",
       CatalogLike: "an adapter shape for an existing catalog object, not a pluggable backend",
       ResolvedEnvelope: "an OUTPUT on LoomApp (the resolved bounds), not something an app supplies",

@@ -226,3 +226,12 @@ changed is discoverability and cost of opting in ([ADR 0137](0137-agent-state-gr
 `agentLoop$` warns once per run when an uncompacted transcript crosses `warnTranscriptBytes` (default 256 KiB;
 `false` disables), and `createSummarizerEffect(provider)` is a ready-made `compaction.toolId`. See
 `docs/scaling.md`, "Agent state growth".
+
+## Amendment (2026-10-31) — claim-check for agent tools is now a one-line opt-in, with a default digest
+
+The 2026-09-27 amendment's "declare a `digests[toolId]` projection for every tool a claim-checking agent calls"
+stands, and is now easier to follow: [ADR 0140](0140-agent-claim-check-opt-in.md) adds
+`defineConfig({ execution: { claimCheck: { store, toolIds } } })`. A tool WITHOUT a declared digest gets a
+default `{ preview }` digest (the first 256 characters of its result's JSON, never for tainted content;
+`preview: false` for a bare ref), so the model sees something legible by default. The contract toward the model
+is unchanged: the recorded envelope, never the resolved bytes. Off unless set.

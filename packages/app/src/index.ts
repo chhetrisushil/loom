@@ -1,8 +1,11 @@
 export {
+  DEFAULT_CLAIM_CHECK_CAP_BYTES,
+  DEFAULT_CLAIM_CHECK_PREVIEW_CHARS,
   GROUPED_OPTIONS,
   defineConfig,
   normalizeConfig,
   type CatalogLike,
+  type ClaimCheckConfig,
   type ChecksOptions,
   type DurabilityOptions,
   type ExecutionOptions,

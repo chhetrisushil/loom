@@ -5,6 +5,7 @@ export {
   claimCheckMiddleware,
   isClaimCheck,
   isStreamResult,
+  previewDigest,
   resolveClaimCheck,
   resolveClaimCheckBytes,
   resolveClaimChecks,
@@ -14,6 +15,7 @@ export {
   type ClaimCheckOptions,
   type ClaimCheckReader,
   type ClaimCheckStore,
+  type PreviewDigest,
   type StreamedResult,
 } from "./claimCheck";
 export {

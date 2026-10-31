@@ -492,7 +492,42 @@ agentLoop$(ctx, { definition, modelToolId: "model",
   served from the log on replay. Pick `afterBytes` well below the point where resume hurts; the kept suffix is
   at most half of it.
 - Folding completed turns' inputs out of the folded state altogether would make state linear for everyone,
-  but it is a kernel change that needs its own root-cause read and ADR (not done).
+  but it is a kernel change that needs its own root-cause read and ADR (not done; since landed as ADR 0138
+  part B, which is why the "no levers" folded state above is the pre-fix figure).
+
+**Claim-check the tool outputs (opt-in, ADR 0140).** Tool outputs are ~80% of what is left of a mid-run state,
+so the second lever is one line:
+
+```ts
+defineConfig({
+  storage, flows,
+  execution: { claimCheck: { store: contentStore, toolIds: ["search", "fetch_page"] } },
+});
+```
+
+A listed tool's result over `inlineCapBytes` (default 1 KiB of JSON) goes to `store` and the log records
+`{ __loomClaimCheck, ref, size, digest }`; smaller results stay inline; nothing changes unless you set it.
+`toolIds` is required (no "all": the model and summarizer effects must stay inline). The model sees the
+envelope, never the bytes, so a tool without a `digests[toolId]` entry records the default digest
+`{ preview }` (the first 256 characters of its JSON; `preview: n` or `false` to change it; never for tainted
+content). Replay and resume read the envelope from the log: zero content-store reads, even after the blobs were
+erased. **[measured, offline harness, `claimCheckOptIn.perf.test.ts`, `pnpm test:perf`]** a real `defineConfig`
+app and `agentLoop$`, 1.5-4 kB tool output per turn, JSON-cloning log, no compaction:
+
+| Turns | claim-check | Folded state (what resume reads) | Log |
+|---|---|---|---|
+| 50 | off | 297.8 KB | 4043 KB |
+| 50 | on (default preview) | 70.8 KB | 953 KB |
+| 50 | on, `preview: false` | 43.0 KB | 551 KB |
+| 200 | off | 1201.4 KB | 60421 KB |
+| 200 | on (default preview) | 283.4 KB | 13807 KB |
+| 200 | on, `preview: false` | 172.1 KB | 7787 KB |
+
+That is 4.2x less state at 200 turns (7.0x without the preview), still linear; the log is still dominated by
+the re-sent transcript, which only `compaction` bounds, so use both. The audit trade: a ref cited only by a live
+log is TTL-reclaimable telemetry under the content sweep (kept while a `pinnedEventTypes` kind cites it or an
+archive holds the citing event), so declare tool results evidence in `pinnedEventTypes` if the raw outputs must
+outlive the TTL. The ADR 0137 warning names this opt-in too.
 
 ## Re-measuring
 
