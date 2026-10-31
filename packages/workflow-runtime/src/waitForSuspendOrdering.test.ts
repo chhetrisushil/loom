@@ -118,7 +118,7 @@ describe("waitForSuspend on a lease-wired runtime (#710)", () => {
   function leased() {
     const effects = new EffectRuntime();
     effects.register("echo", new ToolEffect(async (i: unknown) => i));
-    let t = 1_700_000_000_000;
+    const t = 1_700_000_000_000;
     const rt = new WorkflowRuntime({
       eventStore: new InMemoryAsyncEventStore(),
       snapshotStore: new InMemoryAsyncSnapshotStore(),
