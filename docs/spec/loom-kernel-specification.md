@@ -331,6 +331,7 @@ implementation runs to prove alignment. Full map: [12-extension-seams.md](../loo
 | Event log | `EventStore` (`@loom/event-runtime`) | `EVENT_STORE_SPI_VERSION` | `runEventStoreConformance` |
 | Snapshots | `SnapshotStore` (`@loom/snapshot-runtime`) | `SNAPSHOT_STORE_SPI_VERSION` | `runSnapshotStoreConformance` |
 | Branches | `BranchRegistry` (`@loom/event-runtime`) | `BRANCH_REGISTRY_SPI_VERSION` | `runBranchRegistryConformance` |
+| Compaction archive | `ArchiveStore` (`@loom/event-runtime`) | `ARCHIVE_STORE_SPI_VERSION` | `runArchiveStoreConformance` |
 | Dispatch | `ExecutionDispatcher` (`@loom/dispatcher`) | `DISPATCHER_SPI_VERSION` | `runExecutionDispatcherConformance` |
 | Worker | `WorkerRuntime` (`@loom/worker-runtime`) | — | (staged) |
 | Effect / middleware / authority | `Effect` / `EffectMiddleware` / `CapabilityAuthorizer` (`@loom/effect-runtime`) | — | (staged) |

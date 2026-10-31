@@ -3,7 +3,7 @@
 // typed against the preset contract without pulling in the composition layer (and
 // without the app→plugin cycle that would create). See ADR 0043 / docs/plugins.md.
 
-import type { BranchRegistry, EventStore } from "@loom/event-runtime";
+import type { ArchiveStore, BranchRegistry, EventStore } from "@loom/event-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 
 /**
@@ -16,6 +16,11 @@ export interface CustomStorage {
   eventStore: EventStore;
   snapshotStore: SnapshotStore;
   branchRegistry?: BranchRegistry;
+  /**
+   * ADR 0138 — where `LogLifecycle.compact` archives the events it removes. A durable preset
+   * supplies one beside its event store; without one, compaction REFUSES (fail closed).
+   */
+  archiveStore?: ArchiveStore;
 }
 
 /**

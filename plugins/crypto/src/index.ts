@@ -26,3 +26,7 @@ export {
   type EnvelopeAad,
 } from "./crypto";
 export { sensitivePathsFromSteps } from "./derive";
+export {
+  EncryptingArchiveStore,
+  type EncryptingArchiveStoreOptions,
+} from "./EncryptingArchiveStore";

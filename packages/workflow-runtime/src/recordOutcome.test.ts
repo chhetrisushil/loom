@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EventEnvelope } from "@loom/core";
 import type { PrincipalChain } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+} from "@loom/event-runtime";
 import type { EventStore, TimerStore } from "@loom/event-runtime";
 import {
   PostgresEventStore,
@@ -346,7 +350,9 @@ for (const backend of [memory, sqlite, postgres]) {
       await finish(h, deciding, e);
       const terminal = (await h.eventStore.read(e)).at(-1) as EventEnvelope;
       const ttl = 1_000;
-      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       // The reward arrives long after the end (a runtime whose clock is `ttl * 10` later).
       const late = h.sibling({ now: () => terminal.timestamp + ttl * 10 });
       await late.recordOutcome(e, { decisionId: "route", key: "k", score: 1 });
@@ -391,7 +397,9 @@ for (const backend of [memory, sqlite, postgres]) {
       await finish(h, noisy, e);
       const terminal = (await h.eventStore.read(e)).at(-1) as EventEnvelope;
       clock = terminal.timestamp + 10;
-      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       expect(await life.compact(e)).not.toBeNull();
       const snap = await h.snapshotStore.loadLatest(e);
       const checkpoint = snap?.sequence ?? -1;
@@ -420,7 +428,9 @@ for (const backend of [memory, sqlite, postgres]) {
       await finish(h, noisy, e);
       const terminal = (await h.eventStore.read(e)).at(-1) as EventEnvelope;
       const ttl = 1_000;
-      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       await life.compact(e);
       expect((await h.eventStore.read(e)).some((x) => x.eventType === "EXECUTION_COMPLETED")).toBe(
         true
@@ -450,7 +460,9 @@ for (const backend of [memory, sqlite, postgres]) {
       await finish(h, rewarding, e);
       await h.rt.recordOutcome(e, { decisionId: "route", key: "late", score: 1 });
       const before = (await h.rt.loadState(e))?.variables._outcomes;
-      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       expect(await life.compact(e)).not.toBeNull();
       await h.rt.recordOutcome(e, { decisionId: "route", key: "late2", score: 1 });
       await life.compact(e); // nothing new below the terminal event: a no-op, not an error
@@ -771,7 +783,9 @@ for (const backend of [memory, sqlite, postgres]) {
       const h = mk();
       const e = id();
       await finish(h, deciding, e);
-      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       // the OLD compaction shape: checkpoint at the tip, the log truncated through it to [0]
       const state = (await h.rt.loadState(e))!;
       await h.snapshotStore.save({
@@ -871,7 +885,9 @@ for (const backend of [memory, sqlite, postgres]) {
           return bind(Reflect.get(t, k), t);
         },
       }) as EventStore;
-      const life = new LogLifecycle(wrapped, h.snapshotStore);
+      const life = new LogLifecycle(wrapped, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       const r = await life.restoreTerminalEvent(e, { apply: true });
       expect(r.status).toBe("busy");
       expect((await store.read(e)).length).toBe(1); // nothing written
@@ -896,7 +912,9 @@ for (const backend of [memory, sqlite, postgres]) {
       const e = id();
       const state = await compactedOld(h, e);
       await store.acquireFence!(e);
-      const life = new LogLifecycle(store, h.snapshotStore);
+      const life = new LogLifecycle(store, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       expect(await life.restoreTerminalEvent(e, { apply: true })).toMatchObject({
         status: "restored",
         sequence: state.sequence + 1,
@@ -912,7 +930,9 @@ for (const backend of [memory, sqlite, postgres]) {
       const e = id();
       await compactedOld(h, e);
       await store.acquireFence!(e);
-      const life = new LogLifecycle(store, h.snapshotStore);
+      const life = new LogLifecycle(store, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       const rs = await Promise.all([
         life.restoreTerminalEvent(e, { apply: true }),
         life.restoreTerminalEvent(e, { apply: true }),
@@ -936,7 +956,9 @@ for (const backend of [memory, sqlite, postgres]) {
             ? undefined
             : bind(Reflect.get(t, k), t),
       }) as EventStore;
-      const life = new LogLifecycle(bare, h.snapshotStore);
+      const life = new LogLifecycle(bare, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       expect((await life.restoreTerminalEvent(e, { apply: true })).status).toBe("busy");
       expect((await store.read(e)).length).toBe(1);
       expect((await life.restoreTerminalEvent(e, { apply: true, force: true })).status).toBe(
@@ -1036,7 +1058,9 @@ for (const backend of [memory, sqlite, postgres]) {
       const e = id();
       await finish(h, deciding, e);
       const terminal = (await h.eventStore.read(e)).at(-1) as EventEnvelope;
-      const life = new LogLifecycle(base.eventStore, base.snapshotStore);
+      const life = new LogLifecycle(base.eventStore, base.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       hook = async () => {
         expect(await life.applyRetention(e, { terminalTtlMs: 0 }, terminal.timestamp + 10)).toBe(
           "reclaimed"
@@ -1058,7 +1082,9 @@ for (const backend of [memory, sqlite, postgres]) {
       const token = await h.eventStore.acquireFence?.(e);
       expect(token).toBeGreaterThan(0);
       const terminal = (await h.eventStore.read(e)).at(-1) as EventEnvelope;
-      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       expect(await life.applyRetention(e, { terminalTtlMs: 0 }, terminal.timestamp + 10)).toBe(
         "reclaimed"
       );

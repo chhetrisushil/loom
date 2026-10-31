@@ -2,7 +2,7 @@ import { step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { PrincipalChain } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import { pinByEventKinds } from "@loom/plugin-content";
 import { InMemoryKeyStore, shredSubject } from "@loom/plugin-crypto";
 import { ReplayVM } from "@loom/replay-vm";
@@ -115,7 +115,9 @@ describe("L11 (a) — resume after compaction", () => {
     const want = await control();
     const app = boot();
     await toFirstGate(app, "e");
-    const through = await new LogLifecycle(app.eventStore, app.snapshotStore).compact("e");
+    const through = await new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }).compact("e");
     expect(through).not.toBeNull();
 
     await resume(app, "e", "go1");
@@ -132,7 +134,9 @@ describe("L11 (a) — resume after compaction", () => {
   it("two compactions, a resume across each — same final log suffix, state and effect count", async () => {
     const want = await control();
     const app = boot();
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     await toFirstGate(app, "e");
     await life.compact("e");
     await resume(app, "e", "go1");
@@ -152,7 +156,9 @@ describe("L11 (a) — resume after compaction", () => {
 
   it("refuses to compact a gapped log whose checkpoint is missing (the fold would be wrong)", async () => {
     const app = boot();
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     await toFirstGate(app, "e");
     await life.compact("e");
     await resume(app, "e", "go1");
@@ -168,7 +174,9 @@ describe("L11 (b) — the checkpoint names its execution", () => {
     const app = boot();
     const h = await app.runtime.start({ definition, runner }, { n: 1 }, { executionId: "b1" });
     await h.waitForSuspend();
-    await new LogLifecycle(app.eventStore, app.snapshotStore).compact("b1");
+    await new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    }).compact("b1");
     const snap = await app.snapshotStore.loadLatest("b1");
     expect(snap!.state.executionId).toBe("b1");
     expect(snap!.state.workflowId).toBe(FLOW);
@@ -202,6 +210,7 @@ describe("L11 (c) — pinned event kinds survive compaction (ADR 0055 D1)", () =
     const want = await control();
     const app = boot();
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     });
     await toFirstGate(app, "e");
@@ -224,7 +233,10 @@ describe("L11 (c) — pinned event kinds survive compaction (ADR 0055 D1)", () =
     const app = boot();
     await toFirstGate(app, "e");
     const before = await app.eventStore.read("e");
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { pinned: () => true });
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+      pinned: () => true,
+    });
     expect(await life.compact("e")).toBeNull();
     expect(await app.eventStore.read("e")).toEqual(before);
   });
@@ -249,6 +261,7 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     const finding = before.find((e) => e.eventType === FINDING)!;
     const warned: string[] = [];
     const life = new LogLifecycle(legacy, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
       onWarn: (m) => warned.push(m),
     });
@@ -271,6 +284,7 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     const app = boot();
     const lifeWith = (pinnedEventTypes: unknown[]) => () =>
       new LogLifecycle(app.eventStore, app.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
         pinnedEventTypes: pinnedEventTypes as string[],
       });
     expect(lifeWith([FINDING, "STEP_COMPLETED"])).toThrow(/STEP_COMPLETED/);
@@ -298,6 +312,7 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     await app.eventStore.append(at(3, "STEP_COMPLETED", { stepId: "s1", output: { n: 2 } }));
     await app.eventStore.append(at(4, "EXECUTION_COMPLETED", { output: { n: 2 } }));
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     });
     // The tip rule: kept events survive, so the tip does too and the checkpoint is below it.
@@ -310,6 +325,7 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
   it("the tip rule — with kept events, compaction never removes the tip", async () => {
     const app = boot();
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     });
     await toFirstGate(app, "e");
@@ -331,6 +347,7 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     await resume(app, "e", "go1");
     const finding = (await app.eventStore.read("e")).find((e) => e.eventType === FINDING)!;
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinned: pinByEventKinds(app.eventStore, [FINDING]),
       pinnedEventTypes: [FINDING],
     });
@@ -347,7 +364,10 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     const app = boot();
     await toFirstGate(app, "e");
     const before = await app.eventStore.read("e");
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { pinned: () => true });
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+      pinned: () => true,
+    });
     expect(await life.compact("e")).toBeNull();
     expect(await app.eventStore.read("e")).toEqual(before);
   });
@@ -358,6 +378,7 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
     await toFirstGate(app, "free");
     const heldBefore = await app.eventStore.read("held");
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
       compactionExempt: (id) => id === "held",
     });
@@ -368,7 +389,9 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
 
   it("refuses to compact a reserved control stream", async () => {
     const app = boot();
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     for (const id of ["__loom_lifecycle__", "__loom_erasure__"]) {
       await expect(life.compact(id)).rejects.toThrow(/reserved control stream/);
     }
@@ -389,15 +412,18 @@ describe("L11 (c) — the edges of keeping pinned kinds", () => {
       createdAt: 0,
     });
     const before = await app.eventStore.read("e");
-    await expect(new LogLifecycle(app.eventStore, app.snapshotStore).compact("e")).rejects.toThrow(
-      SnapshotIdentityMismatchError
-    );
+    await expect(
+      new LogLifecycle(app.eventStore, app.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      }).compact("e")
+    ).rejects.toThrow(SnapshotIdentityMismatchError);
     expect(await app.eventStore.read("e")).toEqual(before);
   });
 
   it("compaction runs print no stray-passthrough warning (ADR 0104)", async () => {
     const app = boot();
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     });
     await toFirstGate(app, "e");
@@ -418,6 +444,7 @@ describe("L11 P1 — a denied resume never writes into the checkpoint's slot", (
   it("finding then suspend: compact, unauthorized resume, compact again — still suspended", async () => {
     const app = boot({ authorizer: acmeOnly });
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
       pinnedEventTypes: [FINDING],
     });
     const h = await app.runtime.start(
@@ -463,7 +490,9 @@ describe("L11 P1 — a denied resume never writes into the checkpoint's slot", (
       }
     );
     await h.waitForSuspend();
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     const through = await life.compact("i");
     expect((await app.eventStore.read("i")).map((e) => e.sequence)).toEqual([0]);
     await expect(
@@ -639,7 +668,10 @@ describe("L11 P3 — identity at every snapshot-seeded path", () => {
     await legacyCheckpoint(app, "e");
     await resume(app, "e", "go1"); // the runtime's suspend checkpoint at the tip carries 2.3.0
     // Keep the gate event so the tip rule compacts BELOW the tip, onto the legacy base.
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { pinnedEventTypes: ["go1"] });
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+      pinnedEventTypes: ["go1"],
+    });
     const through = await life.compact("e");
     const checkpoint = await app.snapshotStore.loadLatestBefore("e", through!);
     expect(checkpoint?.sequence).toBe(through);
@@ -652,7 +684,10 @@ describe("L11 — the shred tombstone lands after the FOLDED tip (ADR 0106, A3)"
     const app = boot();
     const keys = new InMemoryKeyStore();
     await keys.getOrCreate("e");
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore, { pinnedEventTypes });
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+      pinnedEventTypes,
+    });
     await toFirstGate(app, "e");
     await life.compact("e");
     const checkpoint = (await app.snapshotStore.loadLatest("e"))!.sequence;
@@ -689,7 +724,9 @@ describe("L11 — the shred tombstone lands after the FOLDED tip (ADR 0106, A3)"
     const app = boot();
     const keys = new InMemoryKeyStore();
     await keys.getOrCreate("e");
-    const life = new LogLifecycle(app.eventStore, app.snapshotStore);
+    const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     await toFirstGate(app, "e");
     await shredSubject(keys, app.eventStore, "e", { snapshotStore: app.snapshotStore });
     await life.compact("e"); // the tombstone is folded into the checkpoint and removed

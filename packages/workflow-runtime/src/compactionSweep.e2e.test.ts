@@ -1,7 +1,7 @@
 import { step$ } from "@loom/core";
 import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore } from "@loom/event-runtime";
+import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import {
   ContentResolvingEventStore,
   ContentTouchingSnapshotStore,
@@ -80,7 +80,10 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       now: () => 1_000,
     });
     runtime.registerFlow(definition, runner);
-    const life = new LogLifecycle(eventStore, snapshotStore, { pinnedEventTypes: [FINDING, NOTE] });
+    const life = new LogLifecycle(eventStore, snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+      pinnedEventTypes: [FINDING, NOTE],
+    });
 
     await (await runtime.start({ definition, runner }, {}, { executionId: "x" })).waitForSuspend();
     expect(await life.compact("x")).not.toBeNull();
@@ -166,7 +169,9 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
         await runtime.start({ definition, runner }, {}, { executionId: "p-parent" })
       ).waitForSuspend();
       const tip = (await eventStore.head!("p-parent"))!;
-      await new LogLifecycle(eventStore, snapshotStore).compact("p-parent");
+      await new LogLifecycle(eventStore, snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      }).compact("p-parent");
       // The prefix no longer cites the blob: only the parent's checkpoint does.
       expect(JSON.stringify(await rawEvents.read("p-parent"))).not.toContain(blob.__loomContent);
       // "a-child" sorts before the parent, so the scan has passed it when the fork lands. Two

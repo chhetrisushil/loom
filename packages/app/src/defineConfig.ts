@@ -30,6 +30,7 @@ import type {
   EffectReasoningDefaults,
 } from "@loom/effect-runtime";
 import type {
+  ArchiveStore,
   BranchRegistry,
   DestructionProof,
   EventStore,
@@ -43,7 +44,11 @@ import type {
 // keeps better-sqlite3 / node:fs out of browser bundles. The SQLite stores +
 // node:fs/path are loaded lazily on the `kind:"sqlite"` path only (see
 // `loadNodeModule`), so a browser app using in-memory storage stays clean.
-import { InMemoryAsyncEventStore, InMemoryLeaseStore } from "@loom/event-runtime/memory";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryLeaseStore,
+} from "@loom/event-runtime/memory";
 import { type KnowledgeBase, openKnowledgeBase } from "@loom/knowledge";
 import type { KnowledgeBaseConfig } from "@loom/knowledge";
 import { InMemoryMemoryStore, MemoryRuntime } from "@loom/memory";
@@ -60,7 +65,11 @@ import {
 } from "@loom/middleware";
 import { toAgentCard } from "@loom/plugin-a2a";
 import type { AgentCard } from "@loom/plugin-a2a";
-import { EncryptingSnapshotStore, type KeyStore } from "@loom/plugin-crypto";
+import {
+  EncryptingArchiveStore,
+  EncryptingSnapshotStore,
+  type KeyStore,
+} from "@loom/plugin-crypto";
 import { InMemoryProjectionRuntime } from "@loom/projection-runtime";
 import type { ProjectionRuntime } from "@loom/projection-runtime";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
@@ -162,6 +171,14 @@ export type StorageConfig =
        */
       snapshotStore?: SnapshotStore;
       branchRegistry?: BranchRegistry;
+      /**
+       * ADR 0138 -- where `lifecycle.compact` archives the events it removes. A durable preset
+       * (`sqliteStorage()`, `postgresStorage()`) supplies it. Omit and compaction REFUSES for a
+       * durable log (fail closed: nothing is removed without being archived); an in-memory event
+       * store gets an in-memory archive. When the event store encrypts, the archive must be an
+       * `EncryptingArchiveStore` over the SAME KeyStore or compaction refuses.
+       */
+      archiveStore?: ArchiveStore;
       /**
        * ADR 0130 D11 -- the heartbeat-lease store CO-LOCATED with `eventStore` (same database /
        * pool). A durable preset (`sqliteStorage()`, `postgresStorage()`) supplies it; `defineConfig`
@@ -609,6 +626,11 @@ export interface DurabilityOptions {
      * legal hold by tag). Consulted always, unlike `pinned`.
      */
     compactionExempt?: PinPredicate;
+    /**
+     * ADR 0138 -- the archive `lifecycle.compact` moves removed events into, overriding the
+     * storage's own (`storage.archiveStore`). Compaction REFUSES without one.
+     */
+    compactionArchive?: ArchiveStore;
   };
 }
 
@@ -1049,6 +1071,8 @@ export interface LoomStores {
   eventStore: EventStore;
   snapshotStore: SnapshotStore;
   branchRegistry?: BranchRegistry;
+  /** ADR 0138 -- the compaction archive, when one is configured (or defaulted for an in-memory log). */
+  archiveStore?: ArchiveStore;
   /**
    * The backing store for `app.memory` and `app.knowledge(...)` — present only when one
    * was CONFIGURED. Absent means the app fell back to the in-memory default, which is the
@@ -1278,13 +1302,30 @@ function buildStores(storage: StorageConfig, warn: (m: string) => void): LoomSto
       eventStore: storage.eventStore,
       snapshotStore: storage.snapshotStore ?? defaultSnapshotStore(storage.eventStore, warn),
       ...(storage.branchRegistry !== undefined && { branchRegistry: storage.branchRegistry }),
+      ...defaultArchive(storage),
     };
   }
   // storage.kind === "memory" — the only backend the composition root itself knows.
   return {
     eventStore: new InMemoryAsyncEventStore(),
     snapshotStore: new InMemoryAsyncSnapshotStore(),
+    archiveStore: new InMemoryArchiveStore(),
   };
+}
+
+/**
+ * ADR 0138: the compaction archive for a custom storage. An explicit `archiveStore` is used verbatim.
+ * With none, an IN-MEMORY event store gets an in-memory archive (nothing durable to lose); a durable one
+ * gets NONE, so `compact` refuses with the fix rather than archiving to a volatile store.
+ */
+function defaultArchive(storage: { eventStore: EventStore; archiveStore?: ArchiveStore }): {
+  archiveStore?: ArchiveStore;
+} {
+  if (storage.archiveStore !== undefined) return { archiveStore: storage.archiveStore };
+  if (!isInMemoryEventStore(storage.eventStore)) return {};
+  const keys = (storage.eventStore as { keys?: unknown }).keys;
+  const inner = new InMemoryArchiveStore();
+  return { archiveStore: isKeyStore(keys) ? new EncryptingArchiveStore(inner, keys) : inner };
 }
 
 /**
@@ -1856,7 +1897,9 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   };
   // ADR 0130 residuals D7: compaction folds a log into a checkpoint, so it reads through the runtime's
   // GUARDED store (a stream this node cannot open is refused, never checkpointed as ciphertext).
+  const compactionArchive = config.retention?.compactionArchive ?? stores.archiveStore;
   const lifecycle = new LogLifecycle(runtime.events, stores.snapshotStore, {
+    ...(compactionArchive !== undefined && { compactionArchive }),
     ...(config.retention?.archive !== undefined && { archive: config.retention.archive }),
     pinned,
     ...(config.retention?.pinnedEventTypes !== undefined && {
@@ -2138,6 +2181,7 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
       await stores.eventStore.close();
       await stores.snapshotStore.close();
       await stores.branchRegistry?.close();
+      await stores.archiveStore?.close();
     },
   };
 }

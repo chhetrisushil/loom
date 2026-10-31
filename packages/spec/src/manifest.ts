@@ -1,6 +1,7 @@
 import { COMPILER_MANIFEST_VERSION } from "@loom/compiler";
 import { DISPATCHER_SPI_VERSION } from "@loom/dispatcher";
 import {
+  ARCHIVE_STORE_SPI_VERSION,
   BRANCH_REGISTRY_SPI_VERSION,
   EVENT_STORE_SPI_VERSION,
   LEASE_STORE_SPI_VERSION,
@@ -36,6 +37,8 @@ export interface KernelManifest {
     memoryStore: string;
     /** `@loom/plugin-content` — the blob seam 3P backends implement (ADR 0046/0062/0055). */
     contentStore: string;
+    /** `@loom/event-runtime` — where `LogLifecycle.compact` MOVES the events it removes (ADR 0138). */
+    archiveStore: string;
   };
   /** The compiler manifest schema version. */
   compilerManifest: { version: string };
@@ -61,6 +64,7 @@ export function kernelManifest(): KernelManifest {
       dispatcher: DISPATCHER_SPI_VERSION,
       memoryStore: MEMORY_STORE_SPI_VERSION,
       contentStore: CONTENT_STORE_SPI_VERSION,
+      archiveStore: ARCHIVE_STORE_SPI_VERSION,
     },
     compilerManifest: { version: COMPILER_MANIFEST_VERSION },
   };
@@ -82,6 +86,7 @@ export interface DeploymentVersions {
   dispatcherSpi?: string;
   memoryStoreSpi?: string;
   contentStoreSpi?: string;
+  archiveStoreSpi?: string;
   leaseStoreSpi?: string;
   compilerManifest?: string;
 }
@@ -117,6 +122,7 @@ export function checkCompatibility(actual: DeploymentVersions): CompatReport {
     ["dispatcherSpi", actual.dispatcherSpi, m.spis.dispatcher],
     ["memoryStoreSpi", actual.memoryStoreSpi, m.spis.memoryStore],
     ["contentStoreSpi", actual.contentStoreSpi, m.spis.contentStore],
+    ["archiveStoreSpi", actual.archiveStoreSpi, m.spis.archiveStore],
     ["leaseStoreSpi", actual.leaseStoreSpi, m.spis.leaseStore],
     ["compilerManifest", actual.compilerManifest, m.compilerManifest.version],
   ];

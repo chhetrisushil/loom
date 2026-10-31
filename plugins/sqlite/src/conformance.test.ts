@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  runArchiveStoreConformance,
   runBranchRegistryConformance,
   runContentStoreConformance,
   runDurableStateStoreConformance,
@@ -15,6 +16,7 @@ import {
 } from "@loom/conformance";
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
+import { SqliteArchiveStore } from "./SqliteArchiveStore";
 import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
 import { SqliteContentStore } from "./SqliteContentStore";
 import { SqliteDurableStateStore } from "./SqliteDurableStateStore";
@@ -29,6 +31,7 @@ import { SqliteTimerStore } from "./SqliteTimerStore";
 // suite a third-party store runs to prove it conforms (ADR 0033). Fresh :memory: DB per case.
 runEventStoreConformance(() => new SqliteEventStore(":memory:"), "SqliteEventStore");
 runSnapshotStoreConformance(() => new SqliteSnapshotStore(":memory:"), "SqliteSnapshotStore");
+runArchiveStoreConformance(() => new SqliteArchiveStore(":memory:"), "SqliteArchiveStore");
 runLeaseStoreConformance(() => new SqliteLeaseStore(":memory:"), "SqliteLeaseStore");
 runBranchRegistryConformance(() => new SqliteBranchRegistry(":memory:"), "SqliteBranchRegistry");
 runTimerStoreConformance(() => new SqliteTimerStore(":memory:"), "SqliteTimerStore");

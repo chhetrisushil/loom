@@ -2,7 +2,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unwrapTainted } from "@loom/classify";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+} from "@loom/event-runtime";
 import type { EventStore, TimerStore } from "@loom/event-runtime";
 import {
   PostgresEventStore,
@@ -222,7 +226,9 @@ for (const backend of [memory, sqlite, postgres]) {
           (await h.rt.loadState(id))?.status === "continued",
         8000
       );
-      const life = new LogLifecycle(h.eventStore, h.snapshotStore);
+      const life = new LogLifecycle(h.eventStore, h.snapshotStore, {
+        compactionArchive: new InMemoryArchiveStore(),
+      });
       expect(await life.applyRetention(id, { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(
         "reclaimed"
       );

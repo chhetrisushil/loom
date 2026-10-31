@@ -41,8 +41,13 @@ export {
 export { PrincipalUnrestorableError } from "./principal";
 export { SealedStreamUnreadableError, isSealedUnreadable } from "./sealGuard";
 export {
+  ArchiveGapError,
+  CompactionArchiveRequiredError,
+  PlaintextArchiveError,
   PlaintextCheckpointError,
+  plaintextArchiveReason,
   plaintextCheckpointReason,
+  type PlaintextArchiveReason,
   type PlaintextCheckpointReason,
 } from "./checkpointGuard";
 export {

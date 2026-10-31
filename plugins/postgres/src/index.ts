@@ -4,6 +4,7 @@ export {
   PostgresEventStore,
 } from "./PostgresEventStore";
 export { PostgresSnapshotStore } from "./PostgresSnapshotStore";
+export { PostgresArchiveStore } from "./PostgresArchiveStore";
 export { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 export { migrate as migratePostgresStores, backfillParkFences, NOTIFY_CHANNEL } from "./schema";
 export type { MigrateOptions, BackfillParkFencesOptions } from "./schema";

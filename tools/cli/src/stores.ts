@@ -3,7 +3,13 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { LoomApp } from "@loom/app";
-import type { BranchRegistry, EventStore, LeaseStore, TimerStore } from "@loom/event-runtime";
+import type {
+  ArchiveStore,
+  BranchRegistry,
+  EventStore,
+  LeaseStore,
+  TimerStore,
+} from "@loom/event-runtime";
 import {
   SqliteBranchRegistry,
   SqliteEventStore,
@@ -56,6 +62,12 @@ export interface ResolvedStores {
    * `--config` path (the `--db` shorthand names archives with its own flags).
    */
   archive?: ArchiveStores;
+  /**
+   * ADR 0138 - the compaction archive (`storage.archiveStore` / `retention.compactionArchive`), present only
+   * on the `--config` path. `loom retention run` hands it to the lifecycle so deleting an execution also
+   * deletes the compaction segments it owns (the existing explicit whole-execution delete, nothing else).
+   */
+  compactionArchive?: ArchiveStore;
   /** How these were resolved — messages about what is MISSING must say which half to fix. */
   origin: "config" | "db";
   close(): Promise<void>;
@@ -272,6 +284,9 @@ async function fromConfig(modulePath: string): Promise<ResolvedStores> {
     ...(leaseStore !== undefined && { leaseStore }),
     ...(timerStore !== undefined && { timerStore }),
     ...(app.lifecycle?.archive !== undefined && { archive: app.lifecycle.archive }),
+    ...(app.lifecycle?.compactionArchive !== undefined && {
+      compactionArchive: app.lifecycle.compactionArchive,
+    }),
     origin: "config",
     close: async () => {
       await app.close?.();

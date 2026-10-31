@@ -1,4 +1,5 @@
 import {
+  runArchiveStoreConformance,
   runBranchRegistryConformance,
   runEventStoreConformance,
   runEventStoreDecoratorConformance,
@@ -11,6 +12,7 @@ import {
 import { CoalescingEventStore, TenantScopedEventStore } from "@loom/event-runtime";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe } from "vitest";
+import { PostgresArchiveStore } from "./PostgresArchiveStore";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresLeaseStore } from "./PostgresLeaseStore";
@@ -137,6 +139,13 @@ if (PG_URL === undefined) {
     const pool = pools[nextTimer++ % pools.length] as Pool;
     return new PostgresTimerStore(pool);
   }, "PostgresTimerStore");
+
+  // ADR 0138 - the compaction archive kit; its own cursor, the cases reuse fixed ids ("x", "a", "b").
+  let nextArchive = 0;
+  runArchiveStoreConformance(() => {
+    const pool = pools[nextArchive++ % pools.length] as Pool;
+    return new PostgresArchiveStore(pool);
+  }, "PostgresArchiveStore");
 
   runLeaseStoreConformance(() => {
     const pool = pools[nextLease++ % pools.length] as Pool;

@@ -12,6 +12,7 @@ by a conformance test; `L4` requires a committed bench; `L2`/`L3` require a pass
 | Capability | Level | Package | Evidence |
 |---|---|---|---|
 | Branch Registry SPI | `L5` | @loom/event-runtime | `BRANCH_REGISTRY_SPI_VERSION` · test |
+| Compaction Archive SPI | `L5` | @loom/event-runtime | `ARCHIVE_STORE_SPI_VERSION` · test · used: packages/workflow-runtime/src/compactionArchive.test.ts — byte-exact union across successive compactions, refusal without an archive, the crash order, crypto-shred of the archived copy |
 | Event Store SPI | `L5` | @loom/event-runtime | `EVENT_STORE_SPI_VERSION` · test · bench |
 | Execution Dispatcher SPI | `L5` | @loom/dispatcher | `DISPATCHER_SPI_VERSION` · test |
 | Replay VM | `L5` | @loom/replay-vm | `EVENT_SCHEMA_VERSION` · test |

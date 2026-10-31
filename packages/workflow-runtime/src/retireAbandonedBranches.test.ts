@@ -1,7 +1,11 @@
 import { step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryBranchRegistry } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryBranchRegistry,
+} from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -62,7 +66,10 @@ function boot() {
     onWarn: () => {},
   });
   runtime.registerFlow(gatedFlow.definition, gatedFlow.runner);
-  const lifecycle = new LogLifecycle(eventStore, snapshotStore, { branchRegistry });
+  const lifecycle = new LogLifecycle(eventStore, snapshotStore, {
+    compactionArchive: new InMemoryArchiveStore(),
+    branchRegistry,
+  });
   return { runtime, eventStore, snapshotStore, branchRegistry, lifecycle };
 }
 

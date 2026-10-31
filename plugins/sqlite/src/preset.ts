@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { LeaseStore } from "@loom/event-runtime";
 import type { CustomStorage } from "@loom/plugin-kit";
+import { SqliteArchiveStore } from "./SqliteArchiveStore";
 import { SqliteBranchRegistry } from "./SqliteBranchRegistry";
 import { SqliteEventStore } from "./SqliteEventStore";
 import { SqliteLeaseStore } from "./SqliteLeaseStore";
@@ -44,6 +45,7 @@ export function sqliteStorage(
     kind: "custom",
     eventStore,
     snapshotStore: new SqliteSnapshotStore(join(dir, "snapshots.db")),
+    archiveStore: new SqliteArchiveStore(join(dir, "archive.db")),
     get leaseStore(): LeaseStore {
       lease ??= new SqliteLeaseStore(join(dir, "events.db"));
       return lease;

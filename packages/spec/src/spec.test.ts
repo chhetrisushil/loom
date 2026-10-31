@@ -22,6 +22,7 @@ describe("kernelManifest", () => {
       m.spis.dispatcher,
       m.spis.memoryStore,
       m.spis.contentStore,
+      m.spis.archiveStore,
     ]) {
       expect(v).toMatch(/^\d+\.\d+\.\d+$/);
     }
@@ -94,6 +95,7 @@ describe("capability maturity — evidence is real (badges can't rot)", () => {
       "DISPATCHER_SPI_VERSION",
       "MEMORY_STORE_SPI_VERSION",
       "CONTENT_STORE_SPI_VERSION",
+      "ARCHIVE_STORE_SPI_VERSION",
       "COMPILER_MANIFEST_VERSION",
     ]);
     for (const c of CAPABILITIES) {

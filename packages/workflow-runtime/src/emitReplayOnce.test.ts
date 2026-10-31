@@ -1,7 +1,11 @@
 import { TypedFailure, step$ } from "@loom/core";
 import type { EventEnvelope, FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryBranchRegistry } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryBranchRegistry,
+} from "@loom/event-runtime";
 import { flowEmitCount, foldEvents } from "@loom/replay-vm";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import { describe, expect, it, vi } from "vitest";
@@ -960,7 +964,9 @@ describe("flow-level emits append once per execution (ADR 0102)", () => {
     const before = foldEvents(await h.eventStore.read("e-compact"));
     expect(flowEmitCount(before.variables, flowEmitDigest("one", {})!)).toBe(2);
 
-    const life = new LogLifecycle(h.eventStore, h.stores.snapshotStore);
+    const life = new LogLifecycle(h.eventStore, h.stores.snapshotStore, {
+      compactionArchive: new InMemoryArchiveStore(),
+    });
     expect(await life.compact("e-compact")).not.toBeNull();
     const snap = await h.stores.snapshotStore.loadLatest("e-compact");
     const suffix = await h.eventStore.readFrom("e-compact", snap!.sequence + 1);

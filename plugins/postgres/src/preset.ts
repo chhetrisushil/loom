@@ -1,6 +1,7 @@
 import type { LeaseStore } from "@loom/event-runtime";
 import type { CustomStorage } from "@loom/plugin-kit";
 import type { Pool, PoolConfig } from "pg";
+import { PostgresArchiveStore } from "./PostgresArchiveStore";
 import { PostgresBranchRegistry } from "./PostgresBranchRegistry";
 import { PostgresEventStore } from "./PostgresEventStore";
 import { PostgresLeaseStore } from "./PostgresLeaseStore";
@@ -67,6 +68,7 @@ export function postgresStorage(
     }),
   });
   const snapshotStore = new PostgresSnapshotStore(pool);
+  const archiveStore = new PostgresArchiveStore(pool);
   const leaseStore = new PostgresLeaseStore(pool);
   const branchRegistry = options.branching === true ? new PostgresBranchRegistry(pool) : undefined;
 
@@ -78,6 +80,7 @@ export function postgresStorage(
     eventStore.close = async () => {
       await closeStores();
       await snapshotStore.close();
+      await archiveStore.close();
       await leaseStore.close();
       await branchRegistry?.close?.();
       await pool.end();
@@ -88,6 +91,7 @@ export function postgresStorage(
     kind: "custom",
     eventStore,
     snapshotStore,
+    archiveStore,
     leaseStore,
     ...(branchRegistry !== undefined && { branchRegistry }),
   };
