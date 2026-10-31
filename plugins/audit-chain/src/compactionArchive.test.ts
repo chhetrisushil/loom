@@ -105,3 +105,74 @@ describe("hash chain across a compaction (ADR 0138)", () => {
     expect(chained.truncatePrefix).toBeUndefined();
   });
 });
+
+describe("H1 - the chain head survives a compaction, so a restarted writer keeps chaining", () => {
+  it("compacting through the tip then appending from a FRESH chained store (cold cache) verifies across", async () => {
+    const { inner, snapshots, rt, life } = await boot("s");
+    await (await rt.start(flow, { n: 1 }, { executionId: "r" })).waitForSuspend();
+    const tip = (await inner.read("r")).at(-1)!.sequence;
+    const through = await life.compact("r");
+    expect(through).not.toBeNull();
+    // the chain head (the log's tip event) was NOT removed, whatever `through` asked for
+    expect((await inner.read("r")).map((e) => e.sequence)).toContain(tip);
+
+    // "restart": a new chained store over the same durable inner has an empty hash cache
+    const fresh = hashChainedEventStore(inner, { allowCompaction: true, hmacSecret: "s" });
+    const effects = new EffectRuntime();
+    effects.register("t1", new ToolEffect(async (x: { n: number }) => ({ n: x.n + 1 })));
+    effects.register("t2", new ToolEffect(async (x: { n: number }) => ({ n: x.n + 1 })));
+    const rt2 = new WorkflowRuntime({
+      eventStore: fresh,
+      snapshotStore: snapshots,
+      effectRuntime: effects,
+    });
+    rt2.registerFlow(flow.definition, flow.runner);
+    await (await rt2.resume("r", { eventType: "go", payload: { answer: 1 } })).waitForCompletion();
+
+    const life2 = new LogLifecycle(fresh, snapshots, {
+      compactionArchive: life.compactionArchive!,
+    });
+    const result = await fresh.verifyChain("r", { archived: await life2.readArchived("r") });
+    expect(result).toMatchObject({ ok: true });
+  });
+
+  it("truncatePrefixKeeping clamps the same way", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    const chained = hashChainedEventStore(inner, { allowCompaction: true });
+    for (let i = 0; i < 4; i++) {
+      await chained.append({
+        id: `k-${i}`,
+        workflowId: "w",
+        executionId: "k",
+        eventType: i === 0 ? "EXECUTION_STARTED" : "E",
+        sequence: i,
+        timestamp: 1,
+        payload: {},
+      });
+    }
+    await chained.truncatePrefixKeeping!("k", 3, []); // through the tip
+    expect((await inner.read("k")).map((e) => e.sequence)).toEqual([0, 3]);
+    await chained.truncatePrefix!("k", 3);
+    expect((await inner.read("k")).map((e) => e.sequence)).toEqual([0, 3]); // nothing left to remove below the head
+  });
+});
+
+describe("M2 - verifyChain compares a duplicate sequence byte-exact", () => {
+  it("an archived copy that differs from the surviving log's copy is reported, not silently overridden", async () => {
+    const { store, rt, life, inner } = await boot();
+    await (await rt.start(flow, { n: 1 }, { executionId: "d" })).waitForSuspend();
+    await life.compact("d");
+    const archived = await life.readArchived("d");
+    const tip = (await inner.read("d")).at(-1)!;
+    expect(archived.some((e) => e.sequence === tip.sequence)).toBe(true); // the clamp leaves a duplicate
+    // identical duplicate: verifies
+    expect(await store.verifyChain("d", { archived })).toMatchObject({ ok: true });
+    // a forged archived copy of the duplicated sequence: reported at that sequence
+    const forged = archived.map((e) =>
+      e.sequence === tip.sequence ? { ...e, payload: { ...(e.payload as object), forged: 1 } } : e
+    );
+    const result = await store.verifyChain("d", { archived: forged });
+    expect(result).toMatchObject({ ok: false, brokenAt: tip.sequence });
+    expect(result.reason).toMatch(/differ/);
+  });
+});

@@ -122,6 +122,7 @@ const PATH_FLAGS = new Set([
   "content",
   "archive-db",
   "archive-snap",
+  "compaction-archive",
   "module",
   "policy",
   "logs",

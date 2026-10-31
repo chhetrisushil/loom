@@ -1,5 +1,7 @@
 import type { EventEnvelope, ExecutionState } from "@loom/core";
 import {
+  ARCHIVE_LEGACY_CHECKPOINT_EVENT,
+  ArchiveIncarnationError,
   type ArchiveSegmentHeader,
   type ArchiveStore,
   type BranchRegistry,
@@ -25,11 +27,16 @@ import {
 } from "./blankStream";
 import {
   ArchiveGapError,
+  ArchiveIncompleteError,
+  ArchiveLogMismatchError,
+  ArchiveTenantMismatchError,
   CompactionArchiveRequiredError,
   PlaintextArchiveError,
   PlaintextCheckpointError,
+  type UnarchivedRange,
   plaintextArchiveReason,
   plaintextCheckpointReason,
+  tenantScopeOf,
 } from "./checkpointGuard";
 import { chainIdOf, deleteInbox } from "./inbox";
 import { EFFECT_INDOUBT_RESOLVED, EXECUTION_RECOVERED } from "./types";
@@ -259,6 +266,65 @@ export function highestMissing(events: readonly EventEnvelope[]): number {
     if (at - events[i - 1]!.sequence > 1) return at - 1;
   }
   return events.length > 0 && events[0]!.sequence !== 0 ? events[0]!.sequence - 1 : -1;
+}
+
+/** The lowest sequence in `[1..]` the log does not hold below its highest present one, or -1 when it has no gap. */
+export function lowestMissing(events: readonly EventEnvelope[]): number {
+  for (let i = 1; i < events.length; i++) {
+    if (events[i]!.sequence - events[i - 1]!.sequence > 1) return events[i - 1]!.sequence + 1;
+  }
+  return events.length > 0 && events[0]!.sequence !== 0 ? 1 : -1;
+}
+
+type Range = readonly [number, number];
+
+/** `r` minus the ranges of `segs` (inclusive bounds), ascending. */
+function subtractRanges(
+  r: Range,
+  segs: readonly { from: number; through: number }[]
+): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  let lo = r[0];
+  for (const s of segs) {
+    if (s.through < lo || s.from > r[1]) continue;
+    if (s.from > lo) out.push([lo, s.from - 1]);
+    lo = Math.max(lo, s.through + 1);
+    if (lo > r[1]) break;
+  }
+  if (lo <= r[1]) out.push([lo, r[1]]);
+  return out;
+}
+
+/** The parts of `r` that lie inside the ranges of `segs`, ascending. */
+function intersectRanges(
+  r: Range,
+  segs: readonly { from: number; through: number }[]
+): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (const s of segs) {
+    const a = Math.max(r[0], s.from);
+    const b = Math.min(r[1], s.through);
+    if (a <= b) out.push([a, b]);
+  }
+  return out;
+}
+
+/** Archived ∪ surviving log, one entry per sequence, duplicates compared byte-exact (ADR 0138 M2). */
+export function stitchArchived(
+  executionId: string,
+  archived: readonly EventEnvelope[],
+  live: readonly EventEnvelope[]
+): EventEnvelope[] {
+  const bySeq = new Map<number, EventEnvelope>();
+  for (const e of archived) bySeq.set(e.sequence, e);
+  const differing: number[] = [];
+  for (const e of live) {
+    const a = bySeq.get(e.sequence);
+    if (a !== undefined && segmentDigest([a]) !== segmentDigest([e])) differing.push(e.sequence);
+    bySeq.set(e.sequence, e);
+  }
+  if (differing.length > 0) throw new ArchiveLogMismatchError(executionId, differing);
+  return [...bySeq.values()].sort((a, b) => a.sequence - b.sequence);
 }
 
 /** Appends of one lifecycle fact before a write conflict is reported rather than retried. */
@@ -593,6 +659,15 @@ export class LogLifecycle {
 
     // Journal the deletion fact BEFORE deleting — the values go, the fact survives (P9).
     await this.emitLifecycleFact("EXECUTION_DELETED", executionId, now);
+    // ADR 0138 - the compaction segments go with the execution only on the plain-delete path. With a
+    // retention archive configured the execution is being KEPT (copied there), and its compacted
+    // history is part of it: leave the segments, so `readArchived` still answers. They go FIRST: the
+    // log is what makes the execution findable by a retry, so a crash after this line is finished by
+    // the next sweep, whereas deleting the log first could leave segments no sweep ever revisits for
+    // a reused id to meet (a segment also carries its log's incarnation, so a reused id refuses them).
+    if (this.options.archive === undefined) {
+      await this.options.compactionArchive?.deleteExecution?.(executionId);
+    }
     await deleteExecution.call(this.eventStore, executionId);
     // ADR 0110 D1 — the inbox stream is deleted WITH its chain: this execution is the chain's
     // head (a continued predecessor is never retained past its successor), so nothing can read
@@ -601,12 +676,6 @@ export class LogLifecycle {
       await deleteInbox(this.eventStore, chainIdOf(headState, executionId));
     }
     await this.snapshotStore.deleteExecution?.(executionId);
-    // ADR 0138 — the compaction segments go with the execution only on the plain-delete path. With a
-    // retention archive configured the execution is being KEPT (copied there), and its compacted
-    // history is part of it: leave the segments, so `readArchived` still answers.
-    if (this.options.archive === undefined) {
-      await this.options.compactionArchive?.deleteExecution?.(executionId);
-    }
     // The fork edge described data that no longer exists. Dropping it here is the only
     // point where the id is known AND the data is provably gone — and leaving it would
     // make every future sweep walk a dead child (see `hasLiveDescendant`), so the cost of
@@ -831,8 +900,16 @@ export class LogLifecycle {
     if (archive === undefined) throw new CompactionArchiveRequiredError(executionId);
     const archiveReason = plaintextArchiveReason(store, archive);
     if (archiveReason !== undefined) throw new PlaintextArchiveError(archiveReason, executionId);
+    // ADR 0138 H3 - a tenant-scoped log needs an archive scoped to the SAME tenant.
+    const eventTenant = tenantScopeOf(store);
+    const archiveTenant = tenantScopeOf(archive);
+    if (eventTenant !== archiveTenant) {
+      throw new ArchiveTenantMismatchError(executionId, eventTenant, archiveTenant);
+    }
     const events = await store.read(executionId);
     if (events.length <= 1) return null; // nothing beyond the bootstrap to reclaim
+    // The incarnation of THIS log: a digest of the bootstrap event, which every compaction keeps.
+    const incarnation = segmentDigest([events[0]!]);
     if (
       this.options.compactionExempt !== undefined &&
       (await this.options.compactionExempt(executionId)) === true
@@ -921,10 +998,12 @@ export class LogLifecycle {
     await this.archiveRemoved(
       executionId,
       archive,
+      incarnation,
       events.filter(
         (e) => e.sequence >= 1 && e.sequence <= through && !(keptBelow && keep.has(e.eventType)) // truncatePrefixKeeping leaves these in the log
       ),
-      through
+      through,
+      gap >= 0 ? { events, gap, base: base! } : undefined
     );
 
     const snapshot: Snapshot = {
@@ -955,11 +1034,41 @@ export class LogLifecycle {
   private async archiveRemoved(
     executionId: string,
     archive: ArchiveStore,
+    incarnation: string,
     removed: readonly EventEnvelope[],
-    through: number
+    through: number,
+    compacted?: { events: readonly EventEnvelope[]; gap: number; base: Snapshot }
   ): Promise<void> {
     if (removed.length === 0) return;
-    const headers = await archive.headers(executionId);
+    let headers = await archive.headers(executionId);
+    // A run of another incarnation of this id (reused after a delete) is never extended or relied on.
+    const foreign = headers.find((h) => h.incarnation !== incarnation);
+    if (foreign !== undefined) {
+      throw new ArchiveIncarnationError(executionId, foreign.incarnation, incarnation);
+    }
+    // B2 - a log compacted BEFORE the archive existed: its checkpoint's folded state is the only
+    // copy of the settled steps' inputs the earlier compactions removed, and this compaction's next
+    // checkpoint is normalized (inputs stripped). Preserve that checkpoint byte-exact as a typed
+    // legacy segment FIRST, so the fact stays recoverable without depending on GC or snapshot pruning.
+    if (compacted !== undefined) {
+      const firstMissing = lowestMissing(compacted.events);
+      const first = headers[0];
+      if (firstMissing !== -1 && first === undefined) {
+        await this.archiveLegacyCheckpoint(
+          executionId,
+          archive,
+          incarnation,
+          compacted,
+          firstMissing
+        );
+        headers = await archive.headers(executionId);
+      } else if (firstMissing !== -1 && first !== undefined && first.from > firstMissing) {
+        // Segments exist but start above the oldest gap: nothing can be appended before them.
+        const lost: number[] = [];
+        for (let q = firstMissing; q < first.from && lost.length < 50; q++) lost.push(q);
+        throw new ArchiveGapError(executionId, lost);
+      }
+    }
     const lastThrough = headers.length > 0 ? headers[headers.length - 1]!.through : -1;
     const already = removed.filter((e) => e.sequence <= lastThrough);
     if (already.length > 0) {
@@ -976,7 +1085,47 @@ export class LogLifecycle {
     // The first segment starts at its first removed event; later ones abut the previous segment.
     await archive.append(
       executionId,
-      buildSegment(fresh, lastThrough >= 0 ? lastThrough + 1 : fresh[0]!.sequence, through)
+      buildSegment(
+        fresh,
+        incarnation,
+        lastThrough >= 0 ? lastThrough + 1 : fresh[0]!.sequence,
+        through
+      )
+    );
+  }
+
+  /** B2 - archive the anchor checkpoint of a pre-archive compacted log as a `legacy-checkpoint` segment. */
+  private async archiveLegacyCheckpoint(
+    executionId: string,
+    archive: ArchiveStore,
+    incarnation: string,
+    c: { events: readonly EventEnvelope[]; gap: number; base: Snapshot },
+    firstMissing: number
+  ): Promise<void> {
+    // The anchor: the lowest snapshot at or above the gap (the checkpoint a pre-archive compaction
+    // wrote), found the way `pruneSnapshots` finds it. It folds every event at or below the gap.
+    let anchor: Snapshot | null = null;
+    let s: Snapshot | null = c.base;
+    while (s !== null && s.sequence >= c.gap) {
+      anchor = s;
+      s =
+        s.sequence > c.gap
+          ? await this.snapshotStore.loadLatestBefore(executionId, s.sequence - 1)
+          : null;
+    }
+    if (anchor === null) throw new CompactionCheckpointMissingError(executionId, c.gap);
+    const envelope: EventEnvelope = {
+      id: `${executionId}-legacy-checkpoint-${anchor.sequence}`,
+      workflowId: c.events[0]!.workflowId,
+      executionId,
+      eventType: ARCHIVE_LEGACY_CHECKPOINT_EVENT,
+      sequence: anchor.sequence,
+      timestamp: 0,
+      payload: { snapshot: anchor },
+    };
+    await archive.append(
+      executionId,
+      buildSegment([envelope], incarnation, firstMissing, c.gap, "legacy-checkpoint")
     );
   }
 
@@ -993,6 +1142,7 @@ export class LogLifecycle {
     const held = new Map<number, string>();
     for (const seg of segments) {
       assertSegmentDigest(executionId, seg);
+      if (seg.kind === "legacy-checkpoint") continue; // a checkpoint, not the events it summarizes
       for (const e of seg.envelopes) held.set(e.sequence, segmentDigest([e]));
     }
     return held;
@@ -1004,22 +1154,130 @@ export class LogLifecycle {
   }
 
   /**
+   * ADR 0138 B2 - what the archive and the surviving log together can and cannot show. `unarchived`
+   * lists every range of the ORIGINAL log that neither holds as events: `why: "legacy"` for a range a
+   * pre-ADR-0138 compaction removed (its folded checkpoint is preserved, see
+   * {@link readLegacyCheckpoints}), `"missing"` for anything else. An empty list is a complete
+   * original log. Reads the whole surviving log.
+   */
+  async archiveCoverage(
+    executionId: string
+  ): Promise<{ segments: ArchiveSegmentHeader[]; unarchived: UnarchivedRange[] }> {
+    const live = await this.eventStore.read(executionId);
+    return this.coverageOf(executionId, live);
+  }
+
+  private async coverageOf(
+    executionId: string,
+    live: readonly EventEnvelope[]
+  ): Promise<{ segments: ArchiveSegmentHeader[]; unarchived: UnarchivedRange[] }> {
+    const segments = await this.archiveHeaders(executionId);
+    if (live.length === 0) return { segments, unarchived: [] };
+    let extent = highestMissing(live);
+    if (live.length === 1) {
+      // Compacted through the tip leaves `[0]`: the checkpoint above it names the extent.
+      extent = Math.max(extent, (await this.snapshotStore.loadLatest(executionId))?.sequence ?? -1);
+    }
+    const covered = segments.filter((h) => h.kind !== "legacy-checkpoint");
+    const legacy = segments.filter((h) => h.kind === "legacy-checkpoint");
+    const unarchived: UnarchivedRange[] = [];
+    // Runs of sequences in [1..extent] the surviving log does not hold.
+    const runs: Array<[number, number]> = [];
+    let prev = 0;
+    for (const e of live) {
+      if (e.sequence === 0) continue;
+      if (e.sequence > extent + 1) break;
+      if (e.sequence - prev > 1) runs.push([prev + 1, e.sequence - 1]);
+      prev = e.sequence;
+    }
+    if (prev < extent) runs.push([prev + 1, extent]);
+    for (const [a, b] of runs) {
+      for (const [x, y] of subtractRanges([a, b], covered)) {
+        for (const [p, q] of intersectRanges([x, y], legacy)) {
+          unarchived.push({ from: p, through: q, why: "legacy" });
+        }
+        for (const [p, q] of subtractRanges([x, y], legacy)) {
+          unarchived.push({ from: p, through: q, why: "missing" });
+        }
+      }
+    }
+    unarchived.sort((l, r) => l.from - r.from);
+    return { segments, unarchived };
+  }
+
+  /**
+   * ADR 0138 B2 - the checkpoints of a log compacted BEFORE the archive existed, preserved byte-exact
+   * (the settled steps' inputs of the removed events live only in their folded state). Empty for an
+   * execution that was never compacted that way.
+   */
+  async readLegacyCheckpoints(executionId: string): Promise<Snapshot[]> {
+    const archive = this.options.compactionArchive;
+    if (archive === undefined) return [];
+    const out: Snapshot[] = [];
+    for (const seg of await archive.read(executionId)) {
+      if (seg.kind !== "legacy-checkpoint") continue;
+      assertSegmentDigest(executionId, seg);
+      for (const e of seg.envelopes) out.push((e.payload as { snapshot: Snapshot }).snapshot);
+    }
+    return out;
+  }
+
+  /**
    * ADR 0138 — the events compaction MOVED out of the log, byte-exact and in sequence order, each
    * segment verified against its recorded digest ({@link ArchiveDigestError} when one was altered).
    * `range` is inclusive and filters by event sequence. Together with the surviving log
    * (`eventStore.read`) this is the original log; {@link readWithArchive} stitches them. This is the
    * ONLY path that reads the archive: `readRange`, replay, resume and every sweep never touch it.
    * Resolves `[]` when no archive is configured or nothing was archived.
+   *
+   * Throws {@link ArchiveIncarnationError} when the archive holds a different run of a REUSED id, and
+   * {@link ArchiveIncompleteError} when `range` includes events nothing can return (a pre-ADR-0138
+   * compaction's range, see {@link archiveCoverage}) unless `allowIncomplete: true`.
    */
   async readArchived(
     executionId: string,
-    range: { readonly from?: number; readonly through?: number } = {}
+    range: { readonly from?: number; readonly through?: number } = {},
+    opts: { readonly allowIncomplete?: boolean } = {}
   ): Promise<EventEnvelope[]> {
     const archive = this.options.compactionArchive;
     if (archive === undefined) return [];
+    const live = opts.allowIncomplete === true ? [] : await this.eventStore.read(executionId);
+    return this.readArchivedWith(executionId, archive, range, live, opts.allowIncomplete === true);
+  }
+
+  private async readArchivedWith(
+    executionId: string,
+    archive: ArchiveStore,
+    range: { readonly from?: number; readonly through?: number },
+    live: readonly EventEnvelope[],
+    allowIncomplete: boolean
+  ): Promise<EventEnvelope[]> {
+    const headers = await archive.headers(executionId);
+    const head =
+      live.length > 0 ? live[0]! : (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    const incarnation = head === undefined ? undefined : segmentDigest([head]);
+    // Verified AFTER the segments open (below): a shredded subject's archive reports the shred, not a
+    // misleading "reused id" (the redacted bootstrap digests differently).
+    if (!allowIncomplete) {
+      const { unarchived } = await this.coverageOf(executionId, live);
+      const hit = unarchived.filter(
+        (r) =>
+          (range.from === undefined || r.through >= range.from) &&
+          (range.through === undefined || r.from <= range.through)
+      );
+      if (hit.length > 0) throw new ArchiveIncompleteError(executionId, hit);
+    }
     const out: EventEnvelope[] = [];
-    for (const seg of await archive.read(executionId, range)) {
+    const segments = await archive.read(executionId, range);
+    if (incarnation !== undefined) {
+      const foreign = headers.find((h) => h.incarnation !== incarnation);
+      if (foreign !== undefined) {
+        throw new ArchiveIncarnationError(executionId, foreign.incarnation, incarnation);
+      }
+    }
+    for (const seg of segments) {
       assertSegmentDigest(executionId, seg);
+      if (seg.kind === "legacy-checkpoint") continue; // a checkpoint, not events: readLegacyCheckpoints
       for (const e of seg.envelopes) {
         if (
           (range.from === undefined || e.sequence >= range.from) &&
@@ -1034,16 +1292,28 @@ export class LogLifecycle {
 
   /**
    * ADR 0138 — the original log: {@link readArchived} merged with the surviving log, ascending, one
-   * entry per sequence (a crash between "archive" and "truncate" leaves a duplicate; the log's copy
-   * wins, and the two are identical). The audit read: a hash chain verifies across a compaction on
-   * this, not on `eventStore.read`.
+   * entry per sequence. A crash between "archive" and "truncate" leaves a duplicate, and the two
+   * copies must be byte-identical: a sequence the archive and the log hold DIFFERENTLY throws
+   * {@link ArchiveLogMismatchError} (neither is taken as the original). The audit read: a hash chain
+   * verifies across a compaction on this, not on `eventStore.read`. Throws
+   * {@link ArchiveIncompleteError} like {@link readArchived} unless `allowIncomplete: true`.
    */
-  async readWithArchive(executionId: string): Promise<EventEnvelope[]> {
+  async readWithArchive(
+    executionId: string,
+    opts: { readonly allowIncomplete?: boolean } = {}
+  ): Promise<EventEnvelope[]> {
     const live = await this.eventStore.read(executionId);
-    const bySeq = new Map<number, EventEnvelope>();
-    for (const e of await this.readArchived(executionId)) bySeq.set(e.sequence, e);
-    for (const e of live) bySeq.set(e.sequence, e);
-    return [...bySeq.values()].sort((a, b) => a.sequence - b.sequence);
+    const archived =
+      this.options.compactionArchive === undefined
+        ? []
+        : await this.readArchivedWith(
+            executionId,
+            this.options.compactionArchive,
+            {},
+            live,
+            opts.allowIncomplete === true
+          );
+    return stitchArchived(executionId, archived, live);
   }
 
   /**

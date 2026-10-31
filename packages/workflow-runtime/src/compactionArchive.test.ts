@@ -218,6 +218,7 @@ describe.each(BACKENDS)("ADR 0138 compaction archive on $name", (backend) => {
     const tampered: ArchiveStore = {
       append: (id, s) => stores.archive.append(id, s),
       headers: (id) => stores.archive.headers(id),
+      listExecutions: (o) => stores.archive.listExecutions(o),
       read: async (id, r) =>
         (await stores.archive.read(id, r)).map(
           (s): ArchiveSegment => ({
@@ -355,6 +356,7 @@ describe("ADR 0138 refusal and the crash order", () => {
     const counting: ArchiveStore = {
       append: (id, s) => inner.append(id, s),
       headers: (id) => inner.headers(id),
+      listExecutions: (o) => inner.listExecutions(o),
       read: (id, r) => {
         bodyReads++;
         return inner.read(id, r);

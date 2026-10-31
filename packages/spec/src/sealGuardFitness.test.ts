@@ -138,7 +138,15 @@ describe("every read funnel passes the seal guard (ADR 0130 residuals D7)", () =
       }
       return best[1];
     });
-    expect(kinds).toEqual(["EraseCoordinator", "WorkflowRuntime", "exportSubject", "close"]);
+    // exportSubject twice: the export itself and the LogLifecycle it reads archived events through
+    // (ADR 0138; the same raw store, for the same reason: the export must open data with the app's keys).
+    expect(kinds).toEqual([
+      "EraseCoordinator",
+      "WorkflowRuntime",
+      "exportSubject",
+      "exportSubject",
+      "close",
+    ]);
     const withComment = read("packages/app/src/defineConfig.ts");
     expect(withComment.match(/DELIBERATELY the raw store/g)).toHaveLength(2);
   });

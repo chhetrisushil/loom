@@ -30,3 +30,4 @@ export {
   EncryptingArchiveStore,
   type EncryptingArchiveStoreOptions,
 } from "./EncryptingArchiveStore";
+export { defaultSubjectOf } from "./subject";

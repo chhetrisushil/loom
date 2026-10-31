@@ -658,6 +658,8 @@ const DDL_REST = `
       through_seq BIGINT NOT NULL,
       n_events BIGINT NOT NULL,
       digest TEXT NOT NULL,
+      incarnation TEXT NOT NULL,
+      kind TEXT,
       body TEXT NOT NULL,
       PRIMARY KEY (execution_id, from_seq)
     );

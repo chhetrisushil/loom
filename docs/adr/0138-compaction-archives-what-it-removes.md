@@ -12,7 +12,7 @@
   nothing may slow resume; **nothing in loom is pruned or deleted** (compaction MOVES events); compaction
   REFUSES without an archive; the archive is a DEDICATED SPI (not content-store refs); the audit read is an
   explicit `readArchived` and `readRange` never touches the archive.
-- Version impact: **new SPI** `ARCHIVE_STORE_SPI_VERSION` **1.0.0** (`@loom/event-runtime`). Part A changes no
+- Version impact: **new SPI** `ARCHIVE_STORE_SPI_VERSION` **1.0.0** (`@loom/event-runtime`; unreleased, so the review round's shape changes - `incarnation` / `kind` on every header and `listExecutions` - are part of 1.0.0). Part A changes no
   `EVENT_SCHEMA`, `KERNEL_ABI`, `WIRE_ABI`, `EVENT_STORE_SPI` or `SNAPSHOT_STORE_SPI`. Part B (the fold) bumps
   `EVENT_SCHEMA` MINOR (folded bytes change, payloads do not; see D8).
 - Placement: kernel half (`LogLifecycle`, the fold) + a new storage SPI with three 1P backends and a sealing
@@ -152,6 +152,93 @@ otherwise) forwards `truncatePrefix(Keeping)`, and `verifyChain(id, { archived }
 `archived ∪ log` (`LogLifecycle.readArchived`). A plain `verifyChain(id)` of a compacted log reports the break
 truthfully, rather than a pass.
 
+## Review round (2026-10-31) - decisions D9-D17
+
+An adversarial review of the first cut found four ways an owner ruling (AUDITABILITY INTACT, resume never
+reads the archive, nothing pruned, fail closed) could still be broken. Each is a decision here.
+
+### D9 - the erasing orphan sweep fails closed without the archive (B1)
+
+An erasing `reclaimOrphans` pass that scans a compacted log (a gap below its tip, or only its bootstrap left
+beside a checkpoint) and was not given `archiveStores` throws `ArchiveStoresRequiredError` before it erases
+anything (mirror of the `truncatePrefix` -> `snapshotStores` refusal). `archiveStores: []` is the operator's
+explicit "no archive exists" (logs compacted before this ADR); a dry run is exempt. The archive is
+ENUMERATED (`ArchiveStore.listExecutions`, D15), not walked per log, so segments whose log is gone still pin
+their blobs. A segment still sealed when read (`count > 0`, no envelopes: the RAW inner store of an
+`EncryptingArchiveStore`) throws `SealedArchiveScanError` on an erasing pass. `loom sweep content`: under
+`--config` the app's compaction archive is scanned; on `--db` the default is `archive.db` beside the events
+db, `--compaction-archive <path>` names one (a missing file is refused, not created), and
+`--no-compaction-archive` is the explicit statement that none exists. `loom retention run` now hands the
+app's retention archive to the lifecycle (B3: it used to take the plain-delete branch and delete the
+compaction segments of an execution it was KEEPING).
+
+### D10 - a log compacted BEFORE the archive existed keeps its settled inputs: the legacy segment (B2)
+
+Such an execution's only copy of the settled steps' inputs is the old checkpoint row, and the next checkpoint
+is normalized (inputs stripped). So the first post-0138 compaction of a gapped log with no archived history
+FIRST appends one typed segment (`kind: "legacy-checkpoint"`, range `[first missing .. gap]`) holding the
+anchor checkpoint (the lowest snapshot at or above the gap) byte-exact, as a synthetic
+`ARCHIVE_LEGACY_CHECKPOINT` envelope so every backend and the sealing decorator carry it unchanged. The fact
+is therefore recoverable (`LogLifecycle.readLegacyCheckpoints`) without depending on GC configuration or on
+`pruneSnapshots`. The events themselves were removed before the archive existed and are NOT recoverable as
+events, and the audit reads say so: `archiveCoverage(id)` lists every range neither the archive nor the log
+holds (`why: "legacy" | "missing"`), and `readArchived` / `readWithArchive` throw `ArchiveIncompleteError`
+for a range that includes one unless `{ allowIncomplete: true }` (never a silent hole). The legacy segment is
+the Art. 15/20 export's `legacyCheckpoints`.
+
+### D11 - segments are bound to the incarnation of their log (H2)
+
+A segment header carries `incarnation`: the `segmentDigest` of the log's bootstrap envelope (sequence 0,
+kept by every compaction; the envelope id is `<executionId>-0` and says nothing). `ArchiveStore.append`
+(`classifyAppend`) refuses a segment of another incarnation with `ArchiveIncarnationError`, and `compact` and
+the audit reads compare the log's bootstrap with the headers, so a REUSED execution id never inherits the
+previous run's archive and its `readArchived` never mixes the two runs; the error names the reuse. Two runs
+with byte-identical bootstrap envelopes (same input, same millisecond) are not told apart here; their later
+events then disagree, which the compaction (`ArchiveGapError`) and the byte-compared stitch (D13) catch. On the
+plain-delete retention path the segments are now deleted BEFORE the log (a crash leaves the execution
+findable for the retry, never segments a reused id could meet).
+
+### D12 - tenant scoping (H3)
+
+`TenantScopedArchiveStore` follows the other `TenantScoped*` decorators (key prefix, `listExecutions`
+confined to the tenant, sealing markers forwarded). Both tenant-scoped stores expose `tenantScope`;
+`compact` refuses (`ArchiveTenantMismatchError`) any pairing whose scopes differ, including a scoped log with
+a shared archive, so tenants cannot read each other's history nor delete it on the plain-delete path.
+
+### D13 - duplicates are compared byte-exact (M2)
+
+The crash window leaves a sequence in both the archive and the log. `readWithArchive` and
+`verifyChain(id, { archived })` compare the two copies and report a difference (`ArchiveLogMismatchError`; a
+chain break at that sequence) instead of silently preferring the log's. The chained store with
+`allowCompaction` never removes the chain head (the log's tip) in `truncatePrefix(Keeping)`: a restarted
+writer derives its `prevHash` from the last surviving event, and compacting through the tip used to leave
+`[0]` (H1); the tip is a duplicate of the archive's last event, which D13 compares.
+
+### D14 - configuration, erasure subject, scaffold (M3, M4, M5)
+
+`defineConfig` warns at boot when a durable custom storage has no archive, and wraps the archive in
+`EncryptingArchiveStore` (same KeyStore, same `subjectOf`) when the event store encrypts (as it does for
+snapshots), for both `storage.archiveStore` and `durability.retention.compactionArchive`. The guard also
+compares the erasure SUBJECT mapping by identity (`EncryptingEventStore.subjectOf` /
+`EncryptingArchiveStore.subjectOf`, both default to the shared `defaultSubjectOf`):
+`PlaintextArchiveError('subject-mismatch')`. The `store` scaffold emits an `ArchiveStore` and wires
+`runArchiveStoreConformance`; a fitness test asserts that every SPI the scaffold claims it covers is emitted.
+`exportSubject` takes the lifecycle (`archive`) so Art. 15/20 exports include archived events (M1).
+
+### D15 - `ArchiveStore.listExecutions` (M6) and JSON-normalized digests (L1)
+
+`listExecutions({cursor, limit})` is keyset-paged in code point order like `EventStore.listExecutionsPage`.
+`segmentDigest` digests the JSON round trip of the envelopes (a `Date` or `toJSON` value digests as what any
+JSON store returns, so a durable backend never raises a false `ArchiveDigestError`); a value that cannot be
+JSON (circular, BigInt, unbounded nesting) is `ArchiveUnserializableError`, not a bare `TypeError`.
+
+### D16 - accepted residual: plaintext digests (L2)
+
+The segment `digest` and the `incarnation` are SHA-256 of PLAINTEXT, stored in the clear beside a sealed
+segment. After a crypto-shred they remain. They are hashes of high-entropy event JSON (ids, millisecond
+timestamps), so they confirm a guess only for an attacker who already holds the whole event; this is accepted
+(and a keyed digest would make a shredded archive unverifiable, which defeats the point of recording it).
+
 ## Part B — Decisions (fold)
 
 ### D8 — The fold drops `input` from settled frames
@@ -195,8 +282,9 @@ already does. Documented in the kernel spec and the inspector docs.
 ## Open questions
 
 1. Record `{archive:{...}}` on the snapshot itself (SnapshotStore SPI 1.3.0), or keep the link by `through`?
-2. Tenant scoping: `TenantScopedEventStore` prefixes execution ids; the archive is keyed by the id the
-   lifecycle is given. A multi-tenant host that compacts through a tenant-scoped store should scope the archive
-   the same way. A `TenantScopedArchiveStore` is not shipped here.
+   **Answered (kept):** the link stays by `(executionId, through == snapshot.sequence)`; the legacy segment
+   (D10) proves the archive can carry checkpoint facts without a Snapshot field.
+2. Tenant scoping. **Answered:** D12 ships `TenantScopedArchiveStore` and refuses a mismatched pair.
 3. `loom doctor` does not yet check that an encrypting deployment's archive is sealed (the refusal at compact
-   time is the guard).
+   time, now also the boot-time auto-wrap in `defineConfig`, is the guard).
+4. Out of scope, filed separately: `trimInbox` / quarantine trimming deleting reserved-stream envelopes.

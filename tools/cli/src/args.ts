@@ -218,7 +218,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   sweep: {
     summary: "pinned blob sweep over content stores (dry run unless --apply)",
     usage: [
-      "loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]",
+      "loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--compaction-archive <archive.db> | --no-compaction-archive] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]",
     ],
     subcommands: ["content"],
     flags: {
@@ -226,6 +226,8 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       content: "string",
       "archive-db": "string",
       "archive-snap": "string",
+      "compaction-archive": "string",
+      "no-compaction-archive": "boolean",
       pin: "string",
       ttl: "duration",
       apply: "boolean",

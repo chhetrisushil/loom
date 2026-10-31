@@ -13,9 +13,20 @@ import type { EventEnvelope } from "@loom/core";
 /**
  * SPI version of {@link ArchiveStore} (ADR 0138). Pinned by `runArchiveStoreConformance`.
  *
- * 1.0.0: `append` / `headers` / `read` / optional `deleteExecution` / `close`.
+ * 1.0.0: `append` / `headers` / `read` / `listExecutions` (paged) / optional `deleteExecution` /
+ * `close`; every segment header carries the log `incarnation` it belongs to and an optional `kind`.
  */
 export const ARCHIVE_STORE_SPI_VERSION = "1.0.0";
+
+/**
+ * What a segment holds. Absent / `"events"`: the exact envelopes a compaction removed. `"legacy-checkpoint"`:
+ * ONE synthetic envelope carrying a checkpoint (snapshot) written before the archive existed, byte-exact:
+ * its folded state is the only copy of the settled steps' inputs the pre-0138 compactions removed.
+ */
+export type ArchiveSegmentKind = "events" | "legacy-checkpoint";
+
+/** The `eventType` of the synthetic envelope inside a `"legacy-checkpoint"` segment. */
+export const ARCHIVE_LEGACY_CHECKPOINT_EVENT = "ARCHIVE_LEGACY_CHECKPOINT";
 
 /** What a segment says about itself without its envelopes. */
 export interface ArchiveSegmentHeader {
@@ -27,6 +38,17 @@ export interface ArchiveSegmentHeader {
   readonly count: number;
   /** {@link segmentDigest} of the envelopes, in order. Stored and returned verbatim. */
   readonly digest: string;
+  /**
+   * The incarnation of the log this segment came from: the {@link segmentDigest} of its bootstrap
+   * event (sequence 0, which survives every compaction; the id alone is `<executionId>-0` and says
+   * nothing). A segment of another incarnation under the same execution id (an id REUSED after a
+   * delete) is refused with {@link ArchiveIncarnationError}, never inherited. Two runs whose
+   * bootstrap envelopes are byte-identical (same input, same millisecond) are not told apart here;
+   * their later events then disagree, which the compaction and the audit read catch byte-for-byte.
+   */
+  readonly incarnation: string;
+  /** Absent means `"events"`. Stored and returned verbatim. */
+  readonly kind?: ArchiveSegmentKind;
 }
 
 /** One contiguous range of removed envelopes. */
@@ -57,6 +79,12 @@ export interface ArchiveStore {
   append(executionId: string, segment: ArchiveSegment): Promise<void>;
   /** The segment headers, ascending. Cheap: no envelopes are read. */
   headers(executionId: string): Promise<ArchiveSegmentHeader[]>;
+  /**
+   * One page of the execution ids that hold at least one segment, ascending in code point order,
+   * keyset-paged like `EventStore.listExecutionsPage`: pass the previous page's `nextCursor`
+   * (exclusive); no `nextCursor` means the end. Lets a sweep enumerate what the archive cites.
+   */
+  listExecutions(opts?: { cursor?: string; limit?: number }): Promise<ArchiveExecutionPage>;
   read(
     executionId: string,
     range?: { readonly from?: number; readonly through?: number }
@@ -64,6 +92,12 @@ export interface ArchiveStore {
   /** OPTIONAL. The whole-execution delete of the retention path (`LogLifecycle.applyRetention`). */
   deleteExecution?(executionId: string): Promise<void>;
   close(): Promise<void>;
+}
+
+/** One page of {@link ArchiveStore.listExecutions}. */
+export interface ArchiveExecutionPage {
+  readonly executionIds: string[];
+  readonly nextCursor?: string;
 }
 
 /** The names of the OPTIONAL {@link ArchiveStore} methods, for the decorator plan. */
@@ -82,6 +116,39 @@ export class ArchiveConflictError extends Error {
     );
     this.name = "ArchiveConflictError";
     Object.setPrototypeOf(this, ArchiveConflictError.prototype);
+  }
+}
+
+/**
+ * The archive holds segments of another incarnation of this execution id (the id was deleted and
+ * REUSED): appending to or reading them as this run's history would mix two runs. Nothing was
+ * written. Never retryable.
+ */
+export class ArchiveIncarnationError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly executionId: string,
+    readonly archived: string,
+    readonly current: string
+  ) {
+    super(
+      `archive "${executionId}": the archive holds segments of a DIFFERENT run (incarnation ${archived}) than the log's (${current}) — the execution id was reused after its earlier run was deleted. The old run's archive was not removed with it, so it is not this run's history and is neither read as such nor extended. Remove the previous run's segments with the retention path (ArchiveStore.deleteExecution), or use a fresh execution id.`
+    );
+    this.name = "ArchiveIncarnationError";
+    Object.setPrototypeOf(this, ArchiveIncarnationError.prototype);
+  }
+}
+
+/** A segment's envelopes cannot be serialized to JSON (circular, BigInt, too deep): it cannot be archived or verified. */
+export class ArchiveUnserializableError extends Error {
+  readonly retryable = false;
+  constructor(cause: unknown) {
+    super(
+      `archive: the envelopes cannot be serialized to JSON (${cause instanceof Error ? cause.message : String(cause)}) — an archived event must be plain JSON data, byte-exact.`,
+      { cause }
+    );
+    this.name = "ArchiveUnserializableError";
+    Object.setPrototypeOf(this, ArchiveUnserializableError.prototype);
   }
 }
 
@@ -108,6 +175,8 @@ export const headerOf = (s: ArchiveSegmentHeader): ArchiveSegmentHeader => ({
   through: s.through,
   count: s.count,
   digest: s.digest,
+  incarnation: s.incarnation,
+  ...(s.kind !== undefined && { kind: s.kind }),
 });
 
 /**
@@ -125,6 +194,11 @@ export function classifyAppend(
   }
   if (segment.from > segment.through) {
     throw new RangeError(`archive segment [${segment.from}..${segment.through}] is inverted`);
+  }
+  for (const h of stored) {
+    if (h.incarnation !== segment.incarnation) {
+      throw new ArchiveIncarnationError(executionId, h.incarnation, segment.incarnation);
+    }
   }
   for (const h of stored) {
     if (h.from === segment.from && h.through === segment.through && h.digest === segment.digest) {

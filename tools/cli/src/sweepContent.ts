@@ -1,6 +1,17 @@
-import type { EventStore, ExecutionEnumerable } from "@loom/event-runtime";
-import { type ContentSweepReport, sweepUnpinnedContent } from "@loom/plugin-content";
-import { SqliteContentStore, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import type { ArchiveStore, EventStore, ExecutionEnumerable } from "@loom/event-runtime";
+import {
+  ArchiveStoresRequiredError,
+  type ContentSweepReport,
+  sweepUnpinnedContent,
+} from "@loom/plugin-content";
+import {
+  SqliteArchiveStore,
+  SqliteContentStore,
+  SqliteEventStore,
+  SqliteSnapshotStore,
+} from "@loom/plugin-sqlite";
 import type { SnapshotStore } from "@loom/snapshot-runtime";
 import { type StoreFlags, requireExistingFile, resolveStores } from "./stores";
 
@@ -100,6 +111,10 @@ export async function cmdSweepContent(
     /** `--no-archive`: the operator asserts retention archives nowhere (ADR 0055 D6). */
     noArchive?: boolean;
     archiveSnap?: string;
+    /** `--compaction-archive <archive.db>` (ADR 0138): the compaction archive; default `archive.db` beside `--db`. */
+    compactionArchive?: string;
+    /** `--no-compaction-archive`: the operator asserts no log was compacted into an archive. */
+    noCompactionArchive?: boolean;
     /**
      * `--snapshots-touch-content`: the operator asserts that the runtime which WROTE these
      * snapshot stores wrapped them in `ContentTouchingSnapshotStore` (ADR 0055 D6 amendment 2).
@@ -128,7 +143,29 @@ export async function cmdSweepContent(
     (s): s is SnapshotStore => s !== undefined
   );
   const hasArchive = archive !== undefined;
+  // ADR 0138 - the compaction archive: the config's, an explicit path (must exist: a SQLite open
+  // would create an empty file that stands in for a real archive), or `archive.db` beside `--db`.
+  let compactionArchive: ArchiveStore | undefined = stores.compactionArchive;
+  let ownsCompactionArchive = false;
+  if (compactionArchive === undefined && opts.noCompactionArchive !== true) {
+    if (opts.compactionArchive !== undefined) {
+      requireExistingFile("compaction-archive", opts.compactionArchive);
+    }
+    const candidate =
+      opts.compactionArchive ??
+      (opts.db !== undefined && opts.config === undefined
+        ? path.join(path.dirname(path.resolve(opts.db)), "archive.db")
+        : undefined);
+    if (
+      candidate !== undefined &&
+      (opts.compactionArchive !== undefined || existsSync(candidate))
+    ) {
+      compactionArchive = new SqliteArchiveStore(candidate);
+      ownsCompactionArchive = true;
+    }
+  }
   const closeOwned = async (): Promise<void> => {
+    if (ownsCompactionArchive) await compactionArchive?.close();
     await stores.close();
     if (opts.archiveDb !== undefined) await archive?.close();
     if (opts.archiveSnap !== undefined) await archiveSnap?.close();
@@ -174,6 +211,14 @@ export async function cmdSweepContent(
       // Live first, then archive (see above).
       eventStores: archive === undefined ? [live] : [live, archive],
       ...(orphans && { snapshotStores }),
+      // ADR 0138: the compaction archive pins what compaction moved out of the logs. `[]` is the
+      // operator's explicit statement (`--no-compaction-archive`) that none exists; with neither, an
+      // erasing orphan pass over a compacted log refuses (ArchiveStoresRequiredError).
+      ...(compactionArchive !== undefined
+        ? { archiveStores: [compactionArchive] }
+        : opts.noCompactionArchive === true
+          ? { archiveStores: [] }
+          : {}),
       contentStore: content,
       pinnedEventTypes: pins,
       olderThanMs: opts.ttlMs,
@@ -193,6 +238,13 @@ export async function cmdSweepContent(
       pins,
       orphans ? { archive: hasArchive } : undefined
     );
+  } catch (err) {
+    if (err instanceof ArchiveStoresRequiredError) {
+      throw new Error(
+        `${err.message} On the CLI: pass --compaction-archive <archive.db> (default: archive.db beside --db; --config wires the app's), or --no-compaction-archive if no log was compacted into an archive.`
+      );
+    }
+    throw err;
   } finally {
     await closeOwned();
     await content.close();

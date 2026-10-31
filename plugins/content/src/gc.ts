@@ -1,3 +1,4 @@
+import type { EventEnvelope } from "@loom/core";
 import type { ArchiveStore, EventStore, ExecutionEnumerable } from "@loom/event-runtime";
 import { isPayloadShredded, iterateExecutionIds } from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
@@ -106,8 +107,15 @@ export interface ContentSweepBase {
    * the archive of a compacted log erases blobs its audit trail still cites. Read through the same
    * sealing store the lifecycle uses (an `EncryptingArchiveStore` yields plaintext; a crypto-shredded
    * subject's archive is unreadable and cites nothing). The archive itself is never swept or pruned.
+   *
+   * REQUIRED (fail closed) by an ERASING `reclaimOrphans` pass whenever any scanned log is compacted
+   * (a gap below its tip, or only its bootstrap left): {@link ArchiveStoresRequiredError} otherwise,
+   * before anything is erased. Pass `[]` to state that no archive exists (a log compacted before ADR
+   * 0138). The archive is ENUMERATED (`listExecutions`), so segments whose log is gone are scanned
+   * too. A segment that is still sealed (count > 0 with no envelopes: the RAW inner store of an
+   * `EncryptingArchiveStore`) throws {@link SealedArchiveScanError} on an erasing pass.
    */
-  archiveStores?: readonly Pick<ArchiveStore, "read">[];
+  archiveStores?: readonly Pick<ArchiveStore, "read" | "listExecutions">[];
   /**
    * The blob store. With `deleteIfUntouchedSince` (SPI 1.3.0) every erase is conditional on
    * the blob's touch time, which closes the re-cite race for a re-cite THROUGH `put` (ADR 0055
@@ -435,6 +443,40 @@ export interface ContentSweepReport {
 }
 
 /**
+ * An ERASING `reclaimOrphans` pass found compacted logs but was given no `archiveStores`: the events
+ * a compaction moved are cited only by the archive, so their blobs would look like orphans and be
+ * erased (ADR 0138). Nothing was erased.
+ */
+export class ArchiveStoresRequiredError extends TypeError {
+  constructor(readonly executionIds: readonly string[]) {
+    const shown = executionIds.slice(0, 5).join(", ");
+    const more = executionIds.length > 5 ? ` (+${executionIds.length - 5} more)` : "";
+    super(
+      `sweepUnpinnedContent: ${executionIds.length} scanned log(s) are compacted (${shown}${more}) and no archiveStores were given. Compaction MOVES the removed events into the compaction archive, which is then the only place that cites their blobs; an erasing orphan pass without it deletes blobs the recoverable history still names. Pass archiveStores: [the compaction archive] (the sealing store when encrypted), or [] to state that no archive exists (logs compacted before ADR 0138), or run with dryRun: true. Nothing was erased.`
+    );
+    this.name = "ArchiveStoresRequiredError";
+    Object.setPrototypeOf(this, ArchiveStoresRequiredError.prototype);
+  }
+}
+
+/**
+ * An erasing sweep read an archive segment that is still sealed (count > 0, no envelopes): the RAW
+ * inner store of an `EncryptingArchiveStore`. The refs inside are invisible, so live blobs would
+ * look unreferenced. Pass the sealing store itself. Nothing was erased.
+ */
+export class SealedArchiveScanError extends TypeError {
+  constructor(readonly executionIds: readonly string[]) {
+    const shown = executionIds.slice(0, 5).join(", ");
+    const more = executionIds.length > 5 ? ` (+${executionIds.length - 5} more)` : "";
+    super(
+      `sweepUnpinnedContent: ${executionIds.length} archived execution(s) hold sealed segments (${shown}${more}), so the refs they cite are invisible and an erasing pass would delete live blobs: pass the opening archive store (the EncryptingArchiveStore itself, not its inner store) in archiveStores, or run with dryRun: true. Nothing was erased.`
+    );
+    this.name = "SealedArchiveScanError";
+    Object.setPrototypeOf(this, SealedArchiveScanError.prototype);
+  }
+}
+
+/**
  * An erasing sweep read a snapshot whose `state` is one sealed envelope (a `sealState`
  * `EncryptingSnapshotStore` given as its RAW inner store). The scan cannot see the refs inside, so
  * it would treat live blobs as unreferenced and erase them. Nothing was erased.
@@ -583,6 +625,8 @@ export async function sweepUnpinnedContent(
   const uncovered: string[] = [];
   const sealedSnapshots: string[] = [];
   const shreddedSnapshots: string[] = [];
+  const compactedLogs = new Set<string>();
+  const sealedArchives: string[] = [];
 
   for (const eventStore of options.eventStores) {
     if (eventStore.listExecutions === undefined && eventStore.listExecutionsPage === undefined) {
@@ -603,32 +647,6 @@ export async function sweepUnpinnedContent(
           if (!inEnvelope) loadBearing.add(address);
         });
       }
-      // ADR 0138 - what compaction MOVED out of this log still cites content: pin it permanently.
-      for (const archive of options.archiveStores ?? []) {
-        let segments: Awaited<ReturnType<ArchiveStore["read"]>>;
-        try {
-          segments = await archive.read(executionId);
-        } catch (err) {
-          // Only a CONFIRMED shred (the realm-safe brand AND the execution's own tombstone) means the
-          // archived copy is erased; anything else (a missing key on this node, I/O) propagates.
-          if (isPayloadShredded(err) && events.some((e) => e.eventType === "PAYLOAD_SHREDDED")) {
-            continue;
-          }
-          throw err;
-        }
-        for (const seg of segments) {
-          for (const event of seg.envelopes) {
-            visitCitedAddresses(event.payload, (address) => {
-              const prior = lastCited.get(address);
-              if (prior === undefined || event.timestamp > prior) {
-                lastCited.set(address, event.timestamp);
-              }
-              pinned.add(address);
-              loadBearing.add(address);
-            });
-          }
-        }
-      }
       // Did compaction touch this log, and where is its checkpoint (ADR 0106)? Compaction
       // removes its checkpoint's own slot and, whenever it keeps pinned-kind events, never
       // the tip (the tip rule). So a gap-free log with more than the bootstrap was never
@@ -640,6 +658,9 @@ export async function sweepUnpinnedContent(
       const gap = highestMissingSequence(events);
       const bootstrapOnly = events.length === 1;
       if (gap < 0 && !bootstrapOnly) continue;
+      // ADR 0138 - a gapped log is compacted: an erasing orphan pass needs its archive, else the
+      // moved events' blobs look unreferenced. (A bootstrap-only log counts once a checkpoint shows.)
+      if (gap >= 0) compactedLogs.add(executionId);
       if (options.snapshotStores === undefined) {
         if (gap >= 0) uncovered.push(executionId); // a gap is log evidence
         continue;
@@ -661,7 +682,10 @@ export async function sweepUnpinnedContent(
           if (latest !== null && latest.sequence >= 1) pin(latest);
           if (bootstrapOnly) {
             // Compacted at the tip: the checkpoint IS the latest snapshot.
-            if (latest !== null && latest.sequence >= 1) covered = true;
+            if (latest !== null && latest.sequence >= 1) {
+              covered = true;
+              compactedLogs.add(executionId);
+            }
             continue;
           }
           // The checkpoint: the LOWEST snapshot in [gap, tip] — any snapshot at or above the gap
@@ -722,6 +746,56 @@ export async function sweepUnpinnedContent(
       if (!covered) uncovered.push(executionId);
     }
   }
+  // ADR 0138 - what compaction MOVED out of the logs still cites content: pin it permanently. The
+  // archive is enumerated (not walked per log), so segments of an execution whose log is gone count.
+  const anyLog = async (executionId: string): Promise<EventEnvelope[]> => {
+    const all: EventEnvelope[] = [];
+    for (const es of options.eventStores) all.push(...(await es.read(executionId)));
+    return all;
+  };
+  for (const archive of options.archiveStores ?? []) {
+    let cursor: string | undefined;
+    do {
+      const page = await archive.listExecutions({ ...(cursor !== undefined && { cursor }) });
+      for (const executionId of page.executionIds) {
+        let segments: Awaited<ReturnType<ArchiveStore["read"]>>;
+        try {
+          segments = await archive.read(executionId);
+        } catch (err) {
+          // Only a CONFIRMED shred (the realm-safe brand AND the execution's own tombstone) means the
+          // archived copy is erased; anything else (a missing key on this node, I/O) propagates.
+          if (
+            isPayloadShredded(err) &&
+            (await anyLog(executionId)).some((e) => e.eventType === "PAYLOAD_SHREDDED")
+          ) {
+            continue;
+          }
+          throw err;
+        }
+        for (const seg of segments) {
+          if (seg.count > 0 && seg.envelopes.length === 0) {
+            if (!sealedArchives.includes(executionId)) sealedArchives.push(executionId);
+            continue;
+          }
+          for (const event of seg.envelopes) {
+            visitCitedAddresses(event.payload, (address) => {
+              const prior = lastCited.get(address);
+              if (prior === undefined || event.timestamp > prior) {
+                lastCited.set(address, event.timestamp);
+              }
+              pinned.add(address);
+              loadBearing.add(address);
+            });
+          }
+        }
+      }
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+  }
+  if (orphans && !dryRun && options.archiveStores === undefined && compactedLogs.size > 0) {
+    throw new ArchiveStoresRequiredError([...compactedLogs]);
+  }
+  if (!dryRun && sealedArchives.length > 0) throw new SealedArchiveScanError(sealedArchives);
   if (!dryRun && sealedSnapshots.length > 0) throw new SealedSnapshotScanError(sealedSnapshots);
   if (orphans && uncovered.length > 0) {
     const shown = uncovered.slice(0, 5).join(", ");

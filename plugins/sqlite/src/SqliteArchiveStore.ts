@@ -1,4 +1,5 @@
 import {
+  type ArchiveExecutionPage,
   type ArchiveSegment,
   type ArchiveSegmentHeader,
   type ArchiveStore,
@@ -15,8 +16,13 @@ interface Row {
   through_seq: number;
   count: number;
   digest: string;
+  incarnation: string;
+  kind: string | null;
   body: string;
 }
+
+const kindOf = (k: string | null): Pick<ArchiveSegmentHeader, "kind"> =>
+  k === "legacy-checkpoint" ? { kind: "legacy-checkpoint" } : {};
 
 const toSegment = (r: Row): ArchiveSegment => {
   const body = JSON.parse(r.body) as { envelopes: ArchiveSegment["envelopes"]; sealed?: unknown };
@@ -25,6 +31,8 @@ const toSegment = (r: Row): ArchiveSegment => {
     through: r.through_seq,
     count: r.count,
     digest: r.digest,
+    incarnation: r.incarnation,
+    ...kindOf(r.kind),
     envelopes: body.envelopes,
     ...(body.sealed !== undefined && { sealed: body.sealed }),
   };
@@ -45,6 +53,8 @@ export class SqliteArchiveStore implements ArchiveStore {
           through_seq INTEGER NOT NULL,
           count INTEGER NOT NULL,
           digest TEXT NOT NULL,
+          incarnation TEXT NOT NULL,
+          kind TEXT,
           body TEXT NOT NULL,
           PRIMARY KEY (execution_id, from_seq)
         );
@@ -62,7 +72,7 @@ export class SqliteArchiveStore implements ArchiveStore {
       if (classifyAppend(executionId, stored, segment) === "noop") return;
       this.db
         .prepare(
-          "INSERT INTO archive_segments (execution_id, from_seq, through_seq, count, digest, body) VALUES (?, ?, ?, ?, ?, ?)"
+          "INSERT INTO archive_segments (execution_id, from_seq, through_seq, count, digest, incarnation, kind, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .run(
           executionId,
@@ -70,6 +80,8 @@ export class SqliteArchiveStore implements ArchiveStore {
           segment.through,
           segment.count,
           segment.digest,
+          segment.incarnation,
+          segment.kind ?? null,
           JSON.stringify({
             envelopes: segment.envelopes,
             ...(segment.sealed !== undefined && { sealed: segment.sealed }),
@@ -82,7 +94,7 @@ export class SqliteArchiveStore implements ArchiveStore {
   private headersSync(executionId: string): ArchiveSegmentHeader[] {
     return this.db
       .prepare<[string], Omit<Row, "body">>(
-        "SELECT from_seq, through_seq, count, digest FROM archive_segments WHERE execution_id = ? ORDER BY from_seq"
+        "SELECT from_seq, through_seq, count, digest, incarnation, kind FROM archive_segments WHERE execution_id = ? ORDER BY from_seq"
       )
       .all(executionId)
       .map((r) => ({
@@ -90,11 +102,31 @@ export class SqliteArchiveStore implements ArchiveStore {
         through: r.through_seq,
         count: r.count,
         digest: r.digest,
+        incarnation: r.incarnation,
+        ...kindOf(r.kind),
       }));
   }
 
   async headers(executionId: string): Promise<ArchiveSegmentHeader[]> {
     return this.headersSync(executionId);
+  }
+
+  async listExecutions(
+    opts: { cursor?: string; limit?: number } = {}
+  ): Promise<ArchiveExecutionPage> {
+    const limit = opts.limit ?? 500;
+    // BINARY collation = code point order for well-formed ids (the SPI's order).
+    const ids = this.db
+      .prepare<[string, number], { execution_id: string }>(
+        "SELECT DISTINCT execution_id FROM archive_segments WHERE execution_id > ? ORDER BY execution_id LIMIT ?"
+      )
+      .all(opts.cursor ?? "", limit + 1)
+      .map((r) => r.execution_id);
+    // An empty-string id sorts first and `> ''` would skip it; it names no execution, so that is moot.
+    const page = ids.slice(0, limit);
+    return ids.length > limit
+      ? { executionIds: page, nextCursor: page[page.length - 1]! }
+      : { executionIds: page };
   }
 
   async read(

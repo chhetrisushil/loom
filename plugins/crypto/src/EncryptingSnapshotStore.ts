@@ -23,6 +23,7 @@ import {
 import type { KeyStore } from "./keystore";
 import { recordsShred } from "./shred";
 import { SNAP_AAD_V, isWholeStateEnvelope, slotOf } from "./snapshotSeal";
+import { defaultSubjectOf } from "./subject";
 
 /**
  * Legacy opening (a snapshot written by a static-path store). In sealState mode the previous
@@ -156,7 +157,7 @@ export class EncryptingSnapshotStore implements SnapshotStore {
     this.sensitive = [...(options.sensitive ?? [])];
     this.legacyPlaintext = options.legacyPlaintext ?? "load";
     this.legacySensitive = options.legacySensitive;
-    this.subjectOf = options.subjectOf ?? ((s) => s.executionId);
+    this.subjectOf = options.subjectOf ?? defaultSubjectOf;
     assertIvSourceAllowed(options.ivSource, "EncryptingSnapshotStore");
     this.ivSource = options.ivSource;
     this.events = options.events;

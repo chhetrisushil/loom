@@ -23,6 +23,7 @@ import {
 } from "./crypto";
 import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import type { KeyStore } from "./keystore";
+import { defaultSubjectOf } from "./subject";
 
 export interface EncryptingEventStoreOptions {
   /**
@@ -142,7 +143,8 @@ const OWNER_WORKFLOW_CACHE = 1024;
 
 export class EncryptingEventStore implements EventStore {
   private readonly sensitive: Record<string, readonly string[]>;
-  private readonly subjectOf: (e: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
+  /** PUBLIC so the compaction-archive guard can compare it, by identity, with the archive's (ADR 0138). */
+  readonly subjectOf: (e: Pick<EventEnvelope, "executionId" | "workflowId">) => string;
   private readonly onShredded: "throw" | "tolerate";
   private readonly ivSource: IvSource | undefined;
   /** Streams (and subjects) whose `PAYLOAD_SHREDDED` tombstone has been seen: a tombstone is permanent. */
@@ -178,7 +180,7 @@ export class EncryptingEventStore implements EventStore {
   ) {
     // Copied, never aliased: `registerSensitive` adds paths and must not mutate the caller's map.
     this.sensitive = { ...options.sensitive };
-    this.subjectOf = options.subjectOf ?? ((e) => e.executionId);
+    this.subjectOf = options.subjectOf ?? defaultSubjectOf;
     this.onShredded = options.onShredded ?? "throw";
     assertIvSourceAllowed(options.ivSource, "EncryptingEventStore");
     this.ivSource = options.ivSource;

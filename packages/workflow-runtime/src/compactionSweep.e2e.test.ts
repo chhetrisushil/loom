@@ -80,8 +80,9 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       now: () => 1_000,
     });
     runtime.registerFlow(definition, runner);
+    const archive = new InMemoryArchiveStore();
     const life = new LogLifecycle(eventStore, snapshotStore, {
-      compactionArchive: new InMemoryArchiveStore(),
+      compactionArchive: archive,
       pinnedEventTypes: [FINDING, NOTE],
     });
 
@@ -106,6 +107,7 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
     const result = await sweepUnpinnedContent({
       eventStores: [eventStore],
       snapshotStores: [snapshotStore],
+      archiveStores: [archive], // ADR 0138: what compaction moved is cited only there
       contentStore: content,
       pinnedEventTypes: [FINDING], // NOTE is kept by compaction only
       olderThanMs: DAY,
@@ -151,6 +153,7 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
         await ctx.suspend({ on: "go" });
         return {};
       };
+      const archive = new InMemoryArchiveStore();
       const rawEvents = new InMemoryAsyncEventStore();
       const rawSnaps = new InMemoryAsyncSnapshotStore();
       const eventStore = new ContentResolvingEventStore(rawEvents, content, { externalize: {} });
@@ -170,7 +173,7 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       ).waitForSuspend();
       const tip = (await eventStore.head!("p-parent"))!;
       await new LogLifecycle(eventStore, snapshotStore, {
-        compactionArchive: new InMemoryArchiveStore(),
+        compactionArchive: archive,
       }).compact("p-parent");
       // The prefix no longer cites the blob: only the parent's checkpoint does.
       expect(JSON.stringify(await rawEvents.read("p-parent"))).not.toContain(blob.__loomContent);
@@ -209,6 +212,9 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       const result = await sweepUnpinnedContent({
         eventStores: [scanned],
         snapshotStores: [rawSnaps],
+        // ADR 0138: `[]` ISOLATES the seed-snapshot citation path under test. Were the parent's
+        // archive scanned, its archived prefix event would pin the blob and no citation race exists.
+        archiveStores: [],
         contentStore: content,
         pinnedEventTypes: [],
         olderThanMs: DAY,

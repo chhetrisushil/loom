@@ -57,6 +57,9 @@ export async function cmdRetentionRun(
       ...(branchRegistry !== undefined && { branchRegistry }),
       // ADR 0138: with the app's retention archive configured the execution is KEPT elsewhere, so its
       // compaction segments stay; only the plain-delete path removes them (LogLifecycle decides).
+      // The retention archive (an app that KEEPS executions): without it LogLifecycle takes the
+      // plain-delete branch and would delete the compaction segments of an execution being kept.
+      ...(stores.archive !== undefined && { archive: stores.archive }),
       ...(stores.compactionArchive !== undefined && {
         compactionArchive: stores.compactionArchive,
       }),
