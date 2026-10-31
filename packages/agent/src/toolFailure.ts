@@ -64,6 +64,7 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   // ADR 0138: compaction archive refusals / integrity failures - configuration or evidence errors, no retry helps
   "ArchiveGapError",
   "CompactionArchiveRequiredError",
+  "ReservedStreamArchiveRequiredError",
   "PlaintextArchiveError",
   "ArchiveConflictError",
   "ArchiveDigestError",

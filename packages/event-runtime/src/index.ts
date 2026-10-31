@@ -60,6 +60,8 @@ export {
   chainIdOfFirst,
   hasInboxStreamShape,
   inboxChainOf,
+  RESERVED_LATE_SUFFIX,
+  reservedLateKey,
   inboxRegistryStreamId,
   inboxStreamsOfChain,
   inboxStreamsOfChainDeep,

@@ -6,10 +6,15 @@ import {
   type ArchiveStore,
   type BranchRegistry,
   type EventStore,
+  INBOX_STREAM_PREFIX,
+  INBOX_TOPIC_SEQ_BASE,
+  QUARANTINE_STREAM_PREFIX,
   StaleFenceError,
   assertSegmentDigest,
   buildSegment,
+  chainIdOfFirst,
   headOf,
+  inboxChainOf,
   isReservedStream,
   readRangeOf,
   segmentDigest,
@@ -24,6 +29,12 @@ import {
   isArchivingCompactionCheckpointId,
 } from "@loom/snapshot-runtime";
 import { ulid } from "ulid";
+import {
+  ReservedStreamArchive,
+  appendMoved,
+  archivedReservedStreams,
+  reservedIncarnation,
+} from "./archiveMove";
 import {
   type BlankStreamCensus,
   type BlankStreamSegment,
@@ -53,6 +64,11 @@ const RESTORABLE_TERMINAL: Record<string, string> = {
   failed: "EXECUTION_FAILED",
   cancelled: "EXECUTION_CANCELLED",
 };
+
+/** A per-topic inbox stream (`__loom_inbox__:<chain>#<16 hex>`): its sequences start at INBOX_TOPIC_SEQ_BASE. */
+function isInboxTopicStreamId(streamId: string): boolean {
+  return streamId.startsWith(INBOX_STREAM_PREFIX) && /#[0-9a-f]{16}$/.test(streamId);
+}
 
 /** What {@link LogLifecycle.restoreTerminalEvent} did (or, dry, would do) for one execution. */
 export type RestoreTerminalResult =
@@ -680,15 +696,41 @@ export class LogLifecycle {
     // log is what makes the execution findable by a retry, so a crash after this line is finished by
     // the next sweep, whereas deleting the log first could leave segments no sweep ever revisits for
     // a reused id to meet (a segment also carries its log's incarnation, so a reused id refuses them).
+    // ADR 0139 - the same for the chain's reserved streams (inbox envelopes a trim moved there).
+    const chainId = chainIdOf(headState, executionId);
     if (this.options.archive === undefined) {
       await this.options.compactionArchive?.deleteExecution?.(executionId);
+      if (headState.status !== "continued" && this.options.compactionArchive !== undefined) {
+        const archive = this.options.compactionArchive;
+        const streams = await archivedReservedStreams(
+          archive,
+          [`${INBOX_STREAM_PREFIX}${chainId}`, `${QUARANTINE_STREAM_PREFIX}${chainId}`],
+          chainId,
+          inboxChainOf
+        );
+        for (const stream of streams) await archive.deleteExecution?.(stream);
+      }
     }
     await deleteExecution.call(this.eventStore, executionId);
     // ADR 0110 D1 — the inbox stream is deleted WITH its chain: this execution is the chain's
     // head (a continued predecessor is never retained past its successor), so nothing can read
     // `__loom_inbox__:<chainId>` any more. Idempotent; a store without the stream is a no-op.
     if (headState.status !== "continued") {
-      await deleteInbox(this.eventStore, chainIdOf(headState, executionId));
+      // A retention archive means the execution is KEPT: the chain's reserved streams MOVE to the
+      // compaction archive when there is one. A plain delete is the explicit whole-execution delete
+      // (the user asked for it): nothing is archived, and the archived segments went above.
+      await deleteInbox(
+        this.eventStore,
+        chainId,
+        false,
+        this.options.archive !== undefined && this.options.compactionArchive !== undefined
+          ? new ReservedStreamArchive(
+              this.options.compactionArchive,
+              this.eventStore,
+              this.options.tenant
+            )
+          : "discard"
+      );
     }
     await this.snapshotStore.deleteExecution?.(executionId);
     // The fork edge described data that no longer exists. Dropping it here is the only
@@ -1112,29 +1154,7 @@ export class LogLifecycle {
         throw new ArchiveGapError(executionId, lost);
       }
     }
-    const lastThrough = headers.length > 0 ? headers[headers.length - 1]!.through : -1;
-    const already = removed.filter((e) => e.sequence <= lastThrough);
-    if (already.length > 0) {
-      const held = await this.archivedBySequence(executionId, archive, already);
-      const missing = already.filter((e) => held.get(e.sequence) !== segmentDigest([e]));
-      if (missing.length > 0)
-        throw new ArchiveGapError(
-          executionId,
-          missing.map((e) => e.sequence)
-        );
-    }
-    const fresh = removed.filter((e) => e.sequence > lastThrough);
-    if (fresh.length === 0) return;
-    // The first segment starts at its first removed event; later ones abut the previous segment.
-    await archive.append(
-      executionId,
-      buildSegment(
-        fresh,
-        incarnation,
-        lastThrough >= 0 ? lastThrough + 1 : fresh[0]!.sequence,
-        through
-      )
-    );
+    await appendMoved(archive, executionId, incarnation, headers, removed, through);
   }
 
   /** B2 - archive the anchor checkpoint of a pre-archive compacted log as a `legacy-checkpoint` segment. */
@@ -1170,25 +1190,6 @@ export class LogLifecycle {
       executionId,
       buildSegment([envelope], incarnation, firstMissing, c.gap, "legacy-checkpoint")
     );
-  }
-
-  /** The digest of each archived envelope in `[first, last]` of `events`, by sequence (digest-verified segments). */
-  private async archivedBySequence(
-    executionId: string,
-    archive: ArchiveStore,
-    events: readonly EventEnvelope[]
-  ): Promise<Map<number, string>> {
-    const segments = await archive.read(executionId, {
-      from: events[0]!.sequence,
-      through: events[events.length - 1]!.sequence,
-    });
-    const held = new Map<number, string>();
-    for (const seg of segments) {
-      assertSegmentDigest(executionId, seg);
-      if (seg.kind === "legacy-checkpoint") continue; // a checkpoint, not the events it summarizes
-      for (const e of seg.envelopes) held.set(e.sequence, segmentDigest([e]));
-    }
-    return held;
   }
 
   /** ADR 0138 — the compaction archive's segment headers for an execution, ascending (cheap: no bodies). */
@@ -1389,6 +1390,116 @@ export class LogLifecycle {
             opts.allowIncomplete === true
           );
     return stitchArchived(executionId, archived, live);
+  }
+
+  /**
+   * ADR 0139 - what a RESERVED stream's archive and surviving log together can and cannot show. A
+   * reserved stream (an inbox, a topic stream, the quarantine copies) is never checkpointed; a trim
+   * MOVES its consumed prefix to the archive, so the removed range is what the surviving stream's
+   * sequences skip from its first possible one (`INBOX_TOPIC_SEQ_BASE` for a topic stream, else 1).
+   * `why` is `"legacy"` when the archive holds nothing for the stream (trimmed before it archived) and
+   * `"missing"` when it holds some but not this range (a wiped or truncated archive).
+   */
+  async reservedArchiveCoverage(
+    streamId: string
+  ): Promise<{ segments: ArchiveSegmentHeader[]; unarchived: UnarchivedRange[] }> {
+    const live = await this.eventStore.read(streamId);
+    return this.reservedCoverageOf(streamId, live);
+  }
+
+  private async reservedCoverageOf(
+    streamId: string,
+    live: readonly EventEnvelope[]
+  ): Promise<{ segments: ArchiveSegmentHeader[]; unarchived: UnarchivedRange[] }> {
+    const segments = await this.archiveHeaders(streamId);
+    if (live.length === 0) return { segments, unarchived: [] };
+    const first = isInboxTopicStreamId(streamId) ? INBOX_TOPIC_SEQ_BASE : 1;
+    const extent = live[live.length - 1]!.sequence;
+    const runs: Array<[number, number]> = [];
+    let prev = first - 1;
+    for (const e of live) {
+      if (e.sequence < first) continue;
+      if (e.sequence - prev > 1) runs.push([prev + 1, e.sequence - 1]);
+      prev = e.sequence;
+    }
+    if (prev < extent) runs.push([prev + 1, extent]);
+    const unarchived: UnarchivedRange[] = [];
+    for (const [a, b] of runs) {
+      for (const [x, y] of subtractRanges([a, b], segments)) {
+        unarchived.push({ from: x, through: y, why: segments.length === 0 ? "legacy" : "missing" });
+      }
+    }
+    return { segments, unarchived };
+  }
+
+  /**
+   * ADR 0139 - the original RESERVED stream: the envelopes a trim or delete MOVED to the archive
+   * (digest-verified; an archive of another stream run refuses) merged with the surviving stream,
+   * ascending, one entry per sequence, duplicates compared byte-exact. A removed range nothing holds
+   * throws {@link ArchiveIncompleteError} unless `allowIncomplete: true`.
+   */
+  async readReservedWithArchive(
+    streamId: string,
+    opts: { readonly allowIncomplete?: boolean } = {}
+  ): Promise<EventEnvelope[]> {
+    const archive = this.options.compactionArchive;
+    const live = await this.eventStore.read(streamId);
+    if (archive === undefined) return live;
+    if (opts.allowIncomplete !== true) {
+      const { unarchived } = await this.reservedCoverageOf(streamId, live);
+      if (unarchived.length > 0) throw new ArchiveIncompleteError(streamId, unarchived);
+    }
+    const incarnation = reservedIncarnation(streamId);
+    const headers = await archive.headers(streamId);
+    const foreign = headers.find((h) => h.incarnation !== incarnation);
+    if (foreign !== undefined) {
+      throw new ArchiveIncarnationError(streamId, foreign.incarnation, incarnation);
+    }
+    const archived: EventEnvelope[] = [];
+    for (const seg of await archive.read(streamId)) {
+      assertSegmentDigest(streamId, seg);
+      archived.push(...seg.envelopes);
+    }
+    return stitchArchived(streamId, archived, live);
+  }
+
+  /**
+   * ADR 0139 - the reserved streams (inbox, topic streams, registry, quarantine) of the chain the
+   * execution is the generation-0 head of, with what the archive recovers of each: the moved envelopes
+   * and every range nothing can return. `[]` for an execution that is not a chain's first (its chain's
+   * streams belong to that one) or when no archive is configured. Used by `exportSubject`.
+   */
+  async readReservedArchive(
+    executionId: string
+  ): Promise<Array<{ streamId: string; events: EventEnvelope[]; unarchived: UnarchivedRange[] }>> {
+    const archive = this.options.compactionArchive;
+    if (archive === undefined) return [];
+    const bootstrap = (await readRangeOf(this.eventStore, executionId, 0, 0))[0];
+    if (bootstrap === undefined || chainIdOfFirst(bootstrap, executionId) !== executionId)
+      return [];
+    const streams = await archivedReservedStreams(
+      archive,
+      [`${INBOX_STREAM_PREFIX}${executionId}`, `${QUARANTINE_STREAM_PREFIX}${executionId}`],
+      executionId,
+      inboxChainOf
+    );
+    const out: Array<{ streamId: string; events: EventEnvelope[]; unarchived: UnarchivedRange[] }> =
+      [];
+    for (const streamId of streams) {
+      const live = await this.eventStore.read(streamId);
+      const { unarchived } = await this.reservedCoverageOf(streamId, live);
+      const incarnation = reservedIncarnation(streamId);
+      const events: EventEnvelope[] = [];
+      for (const seg of await archive.read(streamId)) {
+        assertSegmentDigest(streamId, seg);
+        if (seg.incarnation !== incarnation) {
+          throw new ArchiveIncarnationError(streamId, seg.incarnation, incarnation);
+        }
+        events.push(...seg.envelopes);
+      }
+      out.push({ streamId, events, unarchived });
+    }
+    return out;
   }
 
   /**

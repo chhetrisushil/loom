@@ -425,4 +425,4 @@ already does. Documented in the kernel spec and the inspector docs.
 2. Tenant scoping. **Answered:** D12 ships `TenantScopedArchiveStore` and refuses a mismatched pair.
 3. `loom doctor` does not yet check that an encrypting deployment's archive is sealed (the refusal at compact
    time, now also the boot-time auto-wrap in `defineConfig`, is the guard).
-4. Out of scope, filed separately: `trimInbox` / quarantine trimming deleting reserved-stream envelopes.
+4. Reserved-stream trims and deletes (`trimInbox`, the quarantine trim, the terminal delete): see [ADR 0139](0139-reserved-streams-archive-before-removal.md) (#728).

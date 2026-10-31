@@ -10,6 +10,8 @@ import {
 } from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { QUARANTINE_FOLD_CAP } from "@loom/replay-vm";
+import type { ReservedStreamArchive } from "./archiveMove";
+import { ReservedStreamArchiveRequiredError } from "./checkpointGuard";
 import {
   INBOX_MESSAGE_KIND,
   INBOX_WORKFLOW_ID,
@@ -21,6 +23,7 @@ import {
   inboxStreamId,
   sealedEnvelopeIn,
 } from "./inbox";
+import type { ArchiveFloor } from "./inbox";
 import type { InboxMessage } from "./types";
 
 // ── ADR 0130 residuals D9 - the quarantine stream and its facts ───────────────────────────────
@@ -214,7 +217,8 @@ export async function appendQuarantineCopy(
   original: EventEnvelope,
   key: string,
   topic: string,
-  inboxSeq: number
+  inboxSeq: number,
+  archiveFloor?: ArchiveFloor
 ): Promise<number> {
   const stream = quarantineStreamId(chainId);
   const id = quarantineCopyId(chainId, key, inboxSeq);
@@ -227,7 +231,12 @@ export async function appendQuarantineCopy(
       await ensureAnchor(store, chainId);
       head = await headOf(store, stream);
     }
-    const sequence = head === null ? 1 : head + 1;
+    // ADR 0139: a quarantine stream trimmed to its anchor (sequence 0) restarts at 1; the archive holds
+    // those sequences already, so the next copy goes above the last one it holds.
+    const sequence = Math.max(
+      head === null ? 1 : head + 1,
+      head === null || head === 0 ? ((await archiveFloor?.(stream)) ?? 1) : 1
+    );
     try {
       await store.append({
         ...original,
@@ -287,7 +296,8 @@ export async function trimQuarantine(
   store: EventStore,
   chainId: string,
   live: readonly QuarantineEntry[],
-  cursors: Record<string, number>
+  cursors: Record<string, number>,
+  archive?: ReservedStreamArchive
 ): Promise<TrimResult> {
   const stream = quarantineStreamId(chainId);
   const copies = await store.read(stream);
@@ -315,7 +325,12 @@ export async function trimQuarantine(
   // Nothing pinned: free everything observed, the head included (a copy that lands after the read has
   // a higher sequence and survives). Only the payload-free anchor at sequence 0 stays.
   const through = oldestPinned === null ? head : oldestPinned - 1;
-  if (truncate !== undefined && through >= 1) await truncate(through);
+  if (truncate !== undefined && through >= 1) {
+    // ADR 0139: the copies MOVE to the archive first; no archive, no trim.
+    if (archive === undefined) throw new ReservedStreamArchiveRequiredError(stream);
+    await archive.moveThrough(stream, through);
+    await truncate(through);
+  }
   return { head, oldestPinned: oldestPinned === null ? null : oldestPinned };
 }
 

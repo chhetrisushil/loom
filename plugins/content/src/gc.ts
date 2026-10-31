@@ -1,6 +1,12 @@
 import type { EventEnvelope } from "@loom/core";
 import type { ArchiveStore, EventStore, ExecutionEnumerable } from "@loom/event-runtime";
-import { isPayloadShredded, iterateExecutionIds } from "@loom/event-runtime";
+import {
+  INBOX_STREAM_PREFIX,
+  INBOX_TOPIC_SEQ_BASE,
+  isPayloadShredded,
+  isReservedStream,
+  iterateExecutionIds,
+} from "@loom/event-runtime";
 import type { ContentStore } from "./ContentStore";
 import { isContentTouchingSnapshotStore } from "./ContentTouchingSnapshotStore";
 import { visitCitedAddresses } from "./citations";
@@ -686,6 +692,23 @@ export async function sweepUnpinnedContent(
       // never got past its bootstrap), its checkpoint above the tip.
       if (events.length === 0) continue;
       const tipSequence = events[events.length - 1]!.sequence;
+      // ADR 0139 - a RESERVED stream (the inbox, its topic streams, the quarantine copies) is never
+      // checkpointed: a trim MOVES its consumed prefix to the archive instead. Its removed range is
+      // what its sequences skip from its first possible one (a topic stream starts at
+      // INBOX_TOPIC_SEQ_BASE, not 0, so a bare "gap" test would call every topic stream compacted), and
+      // an erasing pass needs the archive to cover it, exactly as for a compacted log (D24).
+      if (isReservedStream(executionId)) {
+        const runs = missingRunsFrom(
+          events,
+          isInboxTopicStream(executionId) ? INBOX_TOPIC_SEQ_BASE : 1,
+          tipSequence
+        );
+        if (runs.length > 0) {
+          compactedLogs.add(executionId);
+          archivedRanges.set(executionId, runs);
+        }
+        continue;
+      }
       const gap = highestMissingSequence(events);
       const bootstrapOnly = events.length === 1;
       if (gap < 0 && !bootstrapOnly) continue;
@@ -928,6 +951,29 @@ function missingRunsWithin(
   }
   if (prev < extent) runs.push([prev + 1, extent]);
   return runs;
+}
+
+/** The runs of sequences in `[first..extent]` that `events` does not hold. */
+function missingRunsFrom(
+  events: readonly { sequence: number }[],
+  first: number,
+  extent: number
+): Array<[number, number]> {
+  const runs: Array<[number, number]> = [];
+  let prev = first - 1;
+  for (const e of events) {
+    if (e.sequence < first) continue;
+    if (e.sequence > extent) break;
+    if (e.sequence - prev > 1) runs.push([prev + 1, e.sequence - 1]);
+    prev = e.sequence;
+  }
+  if (prev < extent) runs.push([prev + 1, extent]);
+  return runs;
+}
+
+/** A per-topic inbox stream (`__loom_inbox__:<chain>#<16 hex>`): its sequences start at INBOX_TOPIC_SEQ_BASE. */
+function isInboxTopicStream(executionId: string): boolean {
+  return executionId.startsWith(INBOX_STREAM_PREFIX) && /#[0-9a-f]{16}$/.test(executionId);
 }
 
 /** Whether the union of `held` ranges (inclusive) covers every sequence of `[a..b]`. */

@@ -805,7 +805,7 @@ Being honest about the edges:
 - **[User Guide](user-guide.md)** — every feature area with examples.
 - **[Data classification](data-classification.md)** — field-sensitivity markers (`secret()`/`sensitive()`/`internal()`/`externalized()`) that drive encryption, redaction, and egress scrubbing (K10-R1/R6).
 - **[Compliance](compliance.md)** — data-subject rights: subject index, export (Art. 15/20), and erasure (Art. 17), tenant-scoped (T3).
-- **[ADRs](adr/)** — the full decision history (0001–0138), one line per range:
+- **[ADRs](adr/)** — the full decision history (0001–0139), one line per range:
   - **0016–0026** cover the Loom 2.0 execution-kernel evolution and the K7–K12/T1–T2 hardening series
   - **0036–0041** the three-direction arc
   - **0042** the AI-native brownfield `appgen`
@@ -924,4 +924,5 @@ Being honest about the edges:
   - **0136** Postgres snapshot lz4 (Proposed): opt-in `snapshotCompression: "lz4"` for `snapshots.state`, fail-soft with an `onWarn` fallback; measured ~1.5x MORE bytes but ~20% faster reads than pglz, so it is not the default; events column measured only (kernel unchanged)
   - **0137** agent state growth (Proposed): `agentLoop$` warns once per run when an uncompacted transcript crosses `warnTranscriptBytes` (256 KiB default, `false` disables), and `createSummarizerEffect(provider)` is a ready-made `compaction.toolId` shared with the conversation layer's `summarizerToolId`; compaction stays opt-in (kernel unchanged)
   - **0138** compaction archives what it removes (Proposed): `LogLifecycle.compact` MOVES the removed events into a dedicated `ArchiveStore` SPI (1.0.0; in-memory, SQLite, Postgres; sealed under the log's KeyStore for an encrypting store) and REFUSES without one; `readArchived` is the explicit audit read and `readRange` never touches it; the fold stops copying `input` into settled frames (EVENT_SCHEMA minor)
+  - **0139** reserved streams archive what a trim or a delete removes (Proposed): `trimInbox`, the topic-stream trim, the quarantine trim and the terminal `deleteInbox` MOVE the envelopes they remove into the same `ArchiveStore` (keyed by the reserved stream id) and REFUSE without one; a re-created stream starts above the archive, a straggler goes to a `#late-<n>` run, the sealing subject is the chain owner's, and the sweep, `readReservedWithArchive` and `exportSubject` see it (no new SPI, kernel ABI or schema change)
 - **[Presentation](presentation/loom-deck.md)** — the deck.

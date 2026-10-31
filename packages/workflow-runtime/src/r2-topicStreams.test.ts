@@ -482,7 +482,7 @@ for (const backend of inboxBackends("topics")) {
       await parkOn(a, gated("y", 1), e);
       await a.rt.send(e, { topic: "y", payload: "SECRET-1", messageId: "m1" }); // A now caches y
       // Another node retires the chain's inbox (the chain is later re-opened): registry and streams go.
-      await deleteInbox(be.eventStore, e);
+      await deleteInbox(be.eventStore, e, false, "discard");
       expect(await raw(be.eventStore, inboxRegistryStreamId(e))).toEqual([]);
       await a.rt.send(e, { topic: "y", payload: "SECRET-2", messageId: "m2" }); // cache hit
       expect(await readRegisteredTopics(be.eventStore, e)).toEqual(["y"]); // re-registered
@@ -519,7 +519,7 @@ for (const backend of inboxBackends("topics")) {
       await enable(a);
       await parkOn(a, gated("y", 1), e);
       await a.rt.send(e, { topic: "y", payload: "SECRET-1", messageId: "m1" });
-      await deleteInbox(be.eventStore, e);
+      await deleteInbox(be.eventStore, e, false, "discard");
       await a.rt.send(e, { topic: "y", payload: "SECRET-2", messageId: "m2" });
       armed = true;
       await a.rt.resume(e, { eventType: "Go", payload: null });

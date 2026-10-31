@@ -48,6 +48,7 @@ export {
   CompactionArchiveRequiredError,
   PlaintextArchiveError,
   PlaintextCheckpointError,
+  ReservedStreamArchiveRequiredError,
   plaintextArchiveReason,
   plaintextCheckpointReason,
   type PlaintextArchiveReason,

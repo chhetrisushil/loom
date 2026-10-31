@@ -1,6 +1,7 @@
 import { unwrapTainted } from "@loom/classify";
 import {
   type EventStore,
+  InMemoryArchiveStore,
   InMemoryAsyncEventStore,
   InMemoryTimerStore,
   quarantineStreamId,
@@ -25,7 +26,7 @@ import {
   sealingStore,
   wrongKeyNode,
 } from "./__tests__/quarantineHarness";
-import { build, flow, until } from "./__tests__/r2Harness";
+import { build, flow, inboxArchiveFor, until } from "./__tests__/r2Harness";
 import { executionAccessPolicy } from "./executionAccessPolicy";
 import { createInboxSource, deleteInbox, readRegisteredTopics } from "./inbox";
 import { recoverAbandoned } from "./recoverAbandoned";
@@ -131,18 +132,24 @@ async function heldScene(
 ) {
   const raw = opts.raw ?? memRaw();
   const keys = new InMemoryKeyStore();
-  const mkA = (deps: Record<string, unknown> = opts.a ?? {}, store?: EventStore) =>
-    build(opts.plainSnaps === true ? { ...deps, allowPlaintextCheckpoints: true } : deps, {
+  // ADR 0139: ONE archive for the fleet (every node of a deployment shares it); a sealing node writes
+  // into it through a sealing wrapper over the SAME KeyStore.
+  const sharedArchive = new InMemoryArchiveStore();
+  const mkA = (deps: Record<string, unknown> = opts.a ?? {}, store?: EventStore) => {
+    const eventStore = sealingStore(
+      store ?? opts.sealedStore?.(raw) ?? raw.eventStore,
+      keys,
+      opts.subjectOf
+    );
+    return build(opts.plainSnaps === true ? { ...deps, allowPlaintextCheckpoints: true } : deps, {
       ...raw,
       ...(opts.plainSnaps === true && { snapshotStore: new InMemoryAsyncSnapshotStore() }),
-      eventStore: sealingStore(
-        store ?? opts.sealedStore?.(raw) ?? raw.eventStore,
-        keys,
-        opts.subjectOf
-      ),
+      eventStore,
+      archive: inboxArchiveFor(eventStore, sharedArchive),
     });
+  };
   const a = mkA();
-  const b = build({}, { ...raw });
+  const b = build({}, { ...raw, archive: sharedArchive });
   const f = collector(opts.total ?? 2, opts.topics ?? ["a"]);
   for (const h of [a, b]) h.rt.registerFlow(f.definition, f.runner);
   const e = id();
@@ -615,7 +622,7 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
       { principal: OP }
     );
     // reclaim / delete-with-chain covers the quarantine stream
-    await deleteInbox(s.raw.eventStore, s.e);
+    await deleteInbox(s.raw.eventStore, s.e, false, "discard");
     expect(await quarantineHead(s.raw.eventStore, s.e)).toBeNull();
   });
 
@@ -633,7 +640,7 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
     expect(await s.a.rt.notifyInbox(s.e).catch((x) => x)).toBeInstanceOf(Error);
     expect(await kindsOf(s.raw.eventStore, s.e)).toEqual(before);
     expect(consumedOf(await s.raw.eventStore.read(s.e))).toHaveLength(0);
-    await deleteInbox(s.raw.eventStore, s.e);
+    await deleteInbox(s.raw.eventStore, s.e, false, "discard");
     expect(await quarantineHead(s.raw.eventStore, s.e)).toBeNull();
   });
 
@@ -665,7 +672,8 @@ describe("continue-as-new, TTL, erasure, wrong key, fork, per-topic streams", ()
     await s.a.rt.notifyInbox(s.e);
     await completed(s.a, s.e);
     // a quarantiner that lost the race with the terminal left its copy behind
-    expect(await quarantineHead(s.raw.eventStore, s.e)).toBeNull(); // the terminal deleted the chain's streams
+    // the terminal deletes the chain's streams AFTER moving them into the archive (ADR 0139): wait for it
+    await until(async () => (await quarantineHead(s.raw.eventStore, s.e)) === null, 15_000);
     await s.raw.eventStore.append({
       id: "orphan-1",
       executionId: quarantineStreamId(s.e),

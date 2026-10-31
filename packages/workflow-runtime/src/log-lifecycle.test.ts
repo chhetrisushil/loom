@@ -479,7 +479,8 @@ describe("ADR 0022 Amendment — encrypted logs: retention + compaction under th
       }),
     };
     const life = new LogLifecycle(app.eventStore, app.snapshotStore, {
-      compactionArchive: new InMemoryArchiveStore(),
+      // ADR 0139: the retained chain's reserved streams MOVE here, so it seals under the same KeyStore.
+      compactionArchive: new EncryptingArchiveStore(new InMemoryArchiveStore(), app.keys),
       archive,
     });
     expect(await life.applyRetention("er-1", { terminalTtlMs: 0 }, Date.now() + 1e9)).toBe(

@@ -6,9 +6,10 @@ import {
   type ArchiveStore,
   KeyUnavailableError,
   forwardStoreMarkers,
+  inboxChainOf,
 } from "@loom/event-runtime";
 import { decryptValue, encryptValue, hasEnvelope } from "./crypto";
-import { PayloadShreddedError, PayloadUndecryptableError } from "./errors";
+import { OwnerUnresolvedError, PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import type { KeyStore } from "./keystore";
 import { defaultSubjectOf } from "./subject";
 
@@ -40,6 +41,14 @@ const bindOf = (executionId: string, from: number, through: number): string =>
 export interface EncryptingArchiveStoreOptions {
   /** The erasure subject; default the executionId (matches `EncryptingEventStore`). */
   subjectOf?: (s: { executionId: string; workflowId: string }) => string;
+  /**
+   * ADR 0139: a chain's RESERVED streams (`__loom_inbox__:<chain>...`, `__loom_quarantine__:<chain>`) are
+   * sealed under the CHAIN OWNER's subject, exactly as `EncryptingEventStore` does, so a shred of the
+   * owner takes the archived envelopes with it. The default `subjectOf` ignores the workflow id and needs
+   * nothing here; a custom `subjectOf` that reads `workflowId` needs the owner's (its first event's) to
+   * resolve the chain's subject, and a reserved-stream segment fails to seal or open without it.
+   */
+  ownerWorkflowId?: (chainId: string) => Promise<string | undefined>;
 }
 
 /**
@@ -59,6 +68,36 @@ export class EncryptingArchiveStore implements ArchiveStore {
    */
   readonly subjectOf: (s: { executionId: string; workflowId: string }) => string;
 
+  private readonly ownerWorkflowId: ((chainId: string) => Promise<string | undefined>) | undefined;
+
+  /**
+   * The erasure subject of a stream: the stream's own for an execution, the CHAIN OWNER's for a
+   * reserved inbox or quarantine stream (ADR 0139). `workflowId` is the segment's first envelope's.
+   */
+  private async subjectFor(executionId: string, workflowId: string): Promise<string> {
+    const chain = inboxChainOf(executionId);
+    if (chain === undefined) return this.subjectOf({ executionId, workflowId });
+    let owner: string | Error | undefined;
+    if (this.ownerWorkflowId !== undefined) {
+      try {
+        owner = await this.ownerWorkflowId(chain);
+      } catch (cause) {
+        owner = new OwnerUnresolvedError(chain, "reading the owner's first event failed", cause);
+      }
+    }
+    return this.subjectOf({
+      executionId: chain,
+      get workflowId(): string {
+        if (typeof owner === "string" && owner.length > 0) return owner;
+        if (owner instanceof Error) throw owner;
+        throw new OwnerUnresolvedError(
+          chain,
+          "the archive has no ownerWorkflowId to resolve the chain owner's workflow"
+        );
+      },
+    });
+  }
+
   constructor(
     private readonly inner: ArchiveStore,
     /** PUBLIC so the kernel guard can compare it with the event store's KeyStore by identity. */
@@ -66,6 +105,7 @@ export class EncryptingArchiveStore implements ArchiveStore {
     options: EncryptingArchiveStoreOptions = {}
   ) {
     this.subjectOf = options.subjectOf ?? defaultSubjectOf;
+    this.ownerWorkflowId = options.ownerWorkflowId;
     forwardStoreMarkers(this, inner); // the tenant marker (ADR 0138 H3) must survive sealing
     const innerDelete = inner.deleteExecution;
     // Deleting ciphertext only reduces data: forward it (the retention path's whole-execution delete).
@@ -79,7 +119,7 @@ export class EncryptingArchiveStore implements ArchiveStore {
       );
     }
     const workflowId = segment.envelopes[0]!.workflowId;
-    const subject = this.subjectOf({ executionId, workflowId });
+    const subject = await this.subjectFor(executionId, workflowId);
     if (subject === "") {
       throw new TypeError(
         `EncryptingArchiveStore: the subject for "${executionId}" resolved to "" and the crypto layer refuses to seal under it. Fix \`subjectOf\`.`
@@ -129,12 +169,12 @@ export class EncryptingArchiveStore implements ArchiveStore {
     if (body === undefined || body.v !== ARCHIVE_AAD_V || !hasEnvelope(body.box)) {
       // A plaintext segment beside a sealing store: never returned as if sealed (a swapped-in row).
       throw new PayloadUndecryptableError(
-        this.subjectOf({ executionId, workflowId: "" }),
+        await this.subjectFor(executionId, "").catch(() => executionId),
         executionId,
         new Error("archive segment is not sealed")
       );
     }
-    const subject = this.subjectOf({ executionId, workflowId: body.workflowId });
+    const subject = await this.subjectFor(executionId, body.workflowId);
     const key = await this.keys.get(subject);
     if (key === null) {
       // Proof of destruction when the key store can give it; otherwise this node merely lacks the key.

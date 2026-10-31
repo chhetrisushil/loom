@@ -12,7 +12,7 @@ import type {
   PrincipalChain,
   TransientInvokeOptions,
 } from "@loom/effect-runtime";
-import type { BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
+import type { ArchiveStore, BranchRegistry, EventStore, TimerStore } from "@loom/event-runtime";
 import {
   RESERVED_STREAM_PREFIX,
   brandPayloadShredded,
@@ -53,7 +53,12 @@ import { ExecutionJournal } from "./ExecutionJournal";
 import { highestMissing } from "./LogLifecycle";
 import { WorkflowContextImpl } from "./WorkflowContext";
 import type { SurfaceFactory } from "./WorkflowContext";
-import { PlaintextCheckpointError, assertCheckpointSealed } from "./checkpointGuard";
+import { ReservedStreamArchive } from "./archiveMove";
+import {
+  PlaintextCheckpointError,
+  ReservedStreamArchiveRequiredError,
+  assertCheckpointSealed,
+} from "./checkpointGuard";
 import {
   ChainHopLimitError,
   type ChainIdentity,
@@ -419,6 +424,18 @@ export interface WorkflowRuntimeDeps {
   meterCeilings?: Readonly<Record<string, number>>;
   /** ADR 0110 D1 — the largest JSON payload `send` accepts, in bytes. Default 65 536. */
   inboxMaxPayloadBytes?: number;
+  /**
+   * ADR 0139 - where the inbox's reserved streams MOVE the envelopes a trim or delete removes (the
+   * consumed prefix of the inbox and its topic streams, the freed quarantine copies, and a retired
+   * chain's streams): ids, timestamps and sender metadata survive only here, because the owner's
+   * `MESSAGE_CONSUMED` keeps the payload alone. The SAME `ArchiveStore` as the compaction archive
+   * (`defineConfig` hands it over). WITHOUT one the runtime trims and deletes NOTHING (it reports a
+   * `ReservedStreamArchiveRequiredError` through `onStorageError` once per chain), so the streams grow
+   * until `inboxMaxRetained` refuses sends: a bounded, loud failure instead of a silent loss.
+   */
+  inboxArchive?: ArchiveStore;
+  /** ADR 0139 - the tenant the inbox archive and event store must both be scoped to (as `LogLifecycle`'s `tenant`). */
+  inboxArchiveTenant?: string;
   /**
    * ADR 0130 residuals D9 - held (quarantined) messages per chain; bounds the RETAINED span of the
    * chain's quarantine stream and refuses `quarantineInbox` past it. Default 256, ceiling 1024 (the
@@ -1028,6 +1045,10 @@ export class WorkflowRuntime {
   private readonly inboxSource: InboxSource;
   private readonly inboxMaxBacklog: number;
   private readonly inboxMaxPayloadBytes: number;
+  /** ADR 0139 - moves reserved-stream envelopes into the archive before a trim or delete; undefined = refuse both. */
+  private readonly reservedArchive: ReservedStreamArchive | undefined;
+  /** Chains whose "no inbox archive" refusal was already reported (bounded). */
+  private readonly inboxNoArchive = new Map<string, true>();
   private readonly inboxMaxRetained: number;
   private readonly inboxQuarantineMax: number;
   /** Chains whose quarantine stream this node knows may hold copies (see `trimQuarantineOf`); bounded. */
@@ -1184,6 +1205,10 @@ export class WorkflowRuntime {
       );
     }
     this.inboxSource = deps.inbox ?? createInboxSource(deps.eventStore);
+    this.reservedArchive =
+      deps.inboxArchive !== undefined
+        ? new ReservedStreamArchive(deps.inboxArchive, this.eventStore, deps.inboxArchiveTenant)
+        : undefined;
     assertPositiveInt("inboxMaxBacklog", deps.inboxMaxBacklog);
     assertPositiveInt("inboxMaxRetained", deps.inboxMaxRetained);
     assertPositiveInt("inboxMaxPayloadBytes", deps.inboxMaxPayloadBytes);
@@ -4576,10 +4601,24 @@ export class WorkflowRuntime {
     let legacySeq: number | undefined;
     let topicSeq: number | undefined;
     if (perTopic) {
-      topicSeq = await appendInboxMessage(this.eventStore, chainId, stored, stampClock, true);
+      topicSeq = await appendInboxMessage(
+        this.eventStore,
+        chainId,
+        stored,
+        stampClock,
+        true,
+        this.reservedArchive?.floorOf
+      );
       await this.verifyTopicRegistered(chainId, message.topic);
     } else {
-      legacySeq = await appendInboxMessage(this.eventStore, chainId, stored, stampClock, false);
+      legacySeq = await appendInboxMessage(
+        this.eventStore,
+        chainId,
+        stored,
+        stampClock,
+        false,
+        this.reservedArchive?.floorOf
+      );
       if (await this.fleetSwitched()) {
         // The fleet switched while this send was in flight: the legacy copy may sit BELOW a cursor
         // that already moved into the topic's own stream, and be skipped.
@@ -4589,7 +4628,14 @@ export class WorkflowRuntime {
         // (the cap) has no topic-stream message, so no cursor of it can be in the topic range yet: the
         // legacy copy is read first and suffices, and the delivered message is not refused.
         if (await this.ensureTopicRegistered(head.id, chainId, message.topic, true)) {
-          topicSeq = await appendInboxMessage(this.eventStore, chainId, stored, stampClock, true);
+          topicSeq = await appendInboxMessage(
+            this.eventStore,
+            chainId,
+            stored,
+            stampClock,
+            true,
+            this.reservedArchive?.floorOf
+          );
           await this.verifyTopicRegistered(chainId, message.topic);
         }
       }
@@ -4616,7 +4662,7 @@ export class WorkflowRuntime {
       // The stream THIS send wrote, deleted by name: the registry may not (or no longer) name it.
       if (topicSeq !== undefined) {
         try {
-          await this.eventStore.deleteExecution?.(inboxTopicStreamId(chainId, message.topic));
+          await this.deleteReservedStream(inboxTopicStreamId(chainId, message.topic));
         } catch (err) {
           this.onStorageError?.(chainId, err);
         }
@@ -5064,7 +5110,8 @@ export class WorkflowRuntime {
       this.eventStore,
       chainId,
       live,
-      cursorsOf(state.variables)
+      cursorsOf(state.variables),
+      this.reservedArchive
     ).catch((e: unknown) => {
       this.onStorageError?.(head.id, e);
       return undefined;
@@ -5100,7 +5147,8 @@ export class WorkflowRuntime {
       original as EventEnvelope,
       key,
       topic,
-      msg.inboxSeq
+      msg.inboxSeq,
+      this.reservedArchive?.floorOf
     );
     const operator = ownerOfChain(options?.principal) ?? {};
     const facts = [
@@ -5270,7 +5318,13 @@ export class WorkflowRuntime {
     const live = Object.values(quarantineQueues(state.variables)).flat();
     if (live.length === 0 && !this.quarantineChains.has(chainId)) return;
     try {
-      const r = await trimQuarantine(this.eventStore, chainId, live, cursorsOf(state.variables));
+      const r = await trimQuarantine(
+        this.eventStore,
+        chainId,
+        live,
+        cursorsOf(state.variables),
+        this.reservedArchive
+      );
       if (live.length > 0 || r.oldestPinned !== null)
         rememberBounded(this.quarantineChains, chainId, true);
       else this.quarantineChains.delete(chainId);
@@ -6271,15 +6325,45 @@ export class WorkflowRuntime {
    * uses the cursors of the execution in hand, which can only be lower than a successor's carried
    * ones.
    */
+  /**
+   * ADR 0139 - delete one reserved stream, MOVING its envelopes into the inbox archive first. Without an
+   * archive a stream that holds anything is left alone ({@link ReservedStreamArchiveRequiredError}).
+   */
+  private async deleteReservedStream(stream: string): Promise<void> {
+    const remove = this.eventStore.deleteExecution;
+    if (remove === undefined) return;
+    if (this.reservedArchive !== undefined) await this.reservedArchive.moveAll(stream);
+    else if ((await headOf(this.eventStore, stream)) !== null) {
+      throw new ReservedStreamArchiveRequiredError(stream, "delete");
+    }
+    await remove.call(this.eventStore, stream);
+  }
+
   private async maybeTrimInbox(chainId: string, state: ExecutionState): Promise<void> {
     if (!this.inboxEnabled || state.variables._inbox === undefined) return;
-    await this.trimQuarantineOf(chainId, state);
+    // ADR 0139: nowhere to MOVE the envelopes means nothing is trimmed (the registry bookkeeping below
+    // still runs: it deletes nothing). Said once per chain, loudly.
+    const canTrim = this.reservedArchive !== undefined;
+    if (!canTrim && !this.inboxNoArchive.has(chainId)) {
+      rememberBounded(this.inboxNoArchive, chainId, true);
+      this.onStorageError?.(
+        chainId,
+        new ReservedStreamArchiveRequiredError(inboxStreamId(chainId))
+      );
+    }
+    if (canTrim) await this.trimQuarantineOf(chainId, state);
     const cursors = cursorsOf(state.variables);
     const max = maxCursor(cursors);
-    if (max > (this.inboxTrimmed.get(chainId) ?? -1) + 1) {
+    if (canTrim && max > (this.inboxTrimmed.get(chainId) ?? -1) + 1) {
       try {
         const floor = this.inboxFloors.get(chainId) ?? -1;
-        const through = await trimInbox(this.eventStore, chainId, cursors, floor);
+        const through = await trimInbox(
+          this.eventStore,
+          chainId,
+          cursors,
+          floor,
+          this.reservedArchive
+        );
         rememberBounded(this.inboxTrimmed, chainId, through ?? max);
         if (through !== undefined) {
           const next = Math.max(floor, through);
@@ -6310,10 +6394,18 @@ export class WorkflowRuntime {
           this.onStorageError?.(chainId, err);
         }
       }
-      if (cursor <= (this.inboxTrimmed.get(stream) ?? INBOX_TOPIC_SEQ_BASE - 1) + 1) continue;
+      if (!canTrim || cursor <= (this.inboxTrimmed.get(stream) ?? INBOX_TOPIC_SEQ_BASE - 1) + 1) {
+        continue;
+      }
       try {
         const floor = this.inboxFloors.get(stream) ?? INBOX_TOPIC_SEQ_BASE - 1;
-        const through = await trimTopicStream(this.eventStore, stream, cursor, floor);
+        const through = await trimTopicStream(
+          this.eventStore,
+          stream,
+          cursor,
+          floor,
+          this.reservedArchive
+        );
         rememberBounded(this.inboxTrimmed, stream, through ?? cursor);
         if (through !== undefined) {
           const next = Math.max(floor, through);
@@ -6341,7 +6433,7 @@ export class WorkflowRuntime {
       // The registry names the topic streams (live or drained): read it before it is deleted, to
       // forget their hints.
       topics = (await inboxStreamsOfChain(this.eventStore, chainId)).topics.map((stream) => stream);
-      await deleteInbox(this.eventStore, chainId);
+      await deleteInbox(this.eventStore, chainId, false, this.reservedArchive);
     } catch (err) {
       this.onStorageError?.(chainId, err);
     }
@@ -6370,7 +6462,13 @@ export class WorkflowRuntime {
     const cursors = cursorsOf(state.variables);
     if (Object.keys(cursors).length === 0) return;
     try {
-      await seedInboxFloors(this.eventStore, chainIdOf(state, executionId), cursors, this.now);
+      await seedInboxFloors(
+        this.eventStore,
+        chainIdOf(state, executionId),
+        cursors,
+        this.now,
+        this.reservedArchive?.floorOf
+      );
     } catch (err) {
       this.onStorageError?.(executionId, err);
     }
@@ -6410,9 +6508,9 @@ export class WorkflowRuntime {
       // was reported again on every pass.
       if (this.eventStore.deleteExecution === undefined) return false;
       const existed = (await headOf(this.eventStore, streamId)) !== null;
-      if (existed) await this.eventStore.deleteExecution(streamId);
+      if (existed) await this.deleteReservedStream(streamId);
       // Then the rest of the chain, including any unregistered topic stream (a prefix scan).
-      await deleteInbox(this.eventStore, chainId, true);
+      await deleteInbox(this.eventStore, chainId, true, this.reservedArchive);
       return existed;
     } catch (err) {
       this.onStorageError?.(chainId, err);

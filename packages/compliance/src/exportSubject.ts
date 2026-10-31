@@ -42,6 +42,16 @@ export interface SubjectExecutionExport {
    */
   legacyCheckpoints?: unknown[];
   /**
+   * ADR 0139 - the reserved streams (inbox, topic streams, quarantine copies) of the chain this execution
+   * heads, with the envelopes (ids, timestamps, sender metadata) a trim or delete MOVED to the archive,
+   * and every range nothing can return. Present only when the archive holds such a stream.
+   */
+  reservedStreams?: Array<{
+    streamId: string;
+    events: EventEnvelope[];
+    unarchived: UnarchivedRange[];
+  }>;
+  /**
    * ADR 0138 - EVERY range of this execution's original log the export could not return as events
    * (see {@link UnarchivedRange}); `[]` is a complete log. Present whenever an `archive` was given, so
    * a data subject (or their processor) can see each gap instead of a silently shorter export. The
@@ -84,6 +94,18 @@ export interface ExportSubjectOptions {
       opts?: { readonly allowIncomplete?: boolean }
     ): Promise<EventEnvelope[]>;
     readLegacyCheckpoints?(executionId: string): Promise<unknown[]>;
+    /**
+     * ADR 0139 - the reserved streams of the chain this execution heads (inbox, topic streams,
+     * quarantine copies) with the envelopes a trim or delete MOVED to the archive, and every range
+     * nothing can return. `LogLifecycle.readReservedArchive`.
+     */
+    readReservedArchive?(executionId: string): Promise<
+      Array<{
+        streamId: string;
+        events: EventEnvelope[];
+        unarchived: readonly UnarchivedRange[];
+      }>
+    >;
   };
   /** Include the raw event log per execution (Art. 20 portability). Default `true`. */
   includeEvents?: boolean;
@@ -150,6 +172,10 @@ export async function exportSubject(
     const workflowId = events[0]?.workflowId ?? "";
     const state = foldEvents(events, { executionId, workflowId });
     const legacy = (await options.archive?.readLegacyCheckpoints?.(executionId)) ?? [];
+    // (not through the erasure window: the log is unreadable by design there)
+    const reserved = erasureWindow
+      ? []
+      : ((await options.archive?.readReservedArchive?.(executionId)) ?? []);
     executions.push({
       executionId,
       workflowId,
@@ -157,6 +183,9 @@ export async function exportSubject(
       state,
       ...(includeEvents && { events }),
       ...(legacy.length > 0 && { legacyCheckpoints: legacy }),
+      ...(reserved.length > 0 && {
+        reservedStreams: reserved.map((r) => ({ ...r, unarchived: [...r.unarchived] })),
+      }),
       ...(unarchived !== undefined && { unarchived }),
       ...(erasureWindow && { erasureWindow: true as const }),
     });

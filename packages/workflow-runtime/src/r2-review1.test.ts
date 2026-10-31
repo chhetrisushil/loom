@@ -1,10 +1,15 @@
 import { unwrapTainted } from "@loom/classify";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+} from "@loom/event-runtime";
 import type { EventStore } from "@loom/event-runtime";
 import { describe, expect, it } from "vitest";
 import { TimerService } from "./TimerService";
 import { WorkflowRuntime } from "./WorkflowRuntime";
 import { Latch, build, eventsOf, flow, kinds, slow, tick, until } from "./__tests__/r2Harness";
+import { ReservedStreamArchive } from "./archiveMove";
 import { appendInboxMessage, dedupeKeyOf, inboxStreamId, scanInbox, trimInbox } from "./inbox";
 import { recoverAbandoned } from "./recoverAbandoned";
 import { InboxClosedError, InboxFullError, InboxMessageRefusedError } from "./types";
@@ -263,8 +268,17 @@ describe("P3-3 — backpressure and trim are bounded", () => {
     expect(r.oldest).toBe(290);
     expect(Math.min(...seen)).toBe(280);
     seen.length = 0;
-    await trimInbox(view, "c", cursors, 280);
-    expect(Math.min(...seen)).toBeGreaterThanOrEqual(281);
+    // ADR 0139: the trim MOVES the removed prefix to the archive first - ONE ranged read of what it
+    // removes (it starts at the stream's start: the archive is empty) - and its scan still starts above the floor.
+    await trimInbox(
+      view,
+      "c",
+      cursors,
+      280,
+      new ReservedStreamArchive(new InMemoryArchiveStore(), view)
+    );
+    expect(seen.filter((lo) => lo < 281)).toHaveLength(1);
+    expect(Math.min(...seen.filter((lo) => lo > 1))).toBeGreaterThanOrEqual(281);
   });
 });
 

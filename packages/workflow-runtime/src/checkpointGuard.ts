@@ -263,6 +263,26 @@ export class CompactionArchiveRequiredError extends Error {
 }
 
 /**
+ * ADR 0139 - a reserved-stream trim or delete (`trimInbox`, the topic-stream trim, the quarantine
+ * trim, `deleteInbox`) was asked to remove envelopes and no archive is configured. Such a removal
+ * MOVES the envelopes (ids, timestamps, sender metadata) into the archive first; it never discards
+ * them. Fail closed: nothing was archived or removed.
+ */
+export class ReservedStreamArchiveRequiredError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly streamId: string,
+    readonly op: "trim" | "delete" = "trim"
+  ) {
+    super(
+      `refusing to ${op} reserved stream "${streamId}": no archive is configured, and removing its envelopes MOVES them into one (ADR 0139) - the message payload survives in MESSAGE_CONSUMED, but the envelope's id, timestamp and sender metadata would be lost. Configure one: \`sqliteStorage()\`/\`postgresStorage()\` and \`storage: { kind: "memory" }\` provide it; otherwise pass \`storage.archiveStore\` (or \`durability.retention.compactionArchive\`) to defineConfig, or \`inboxArchive\` to \`new WorkflowRuntime(...)\`. Nothing was archived or removed.`
+    );
+    this.name = "ReservedStreamArchiveRequiredError";
+    Object.setPrototypeOf(this, ReservedStreamArchiveRequiredError.prototype);
+  }
+}
+
+/**
  * Compaction would remove an event that is neither in the archive nor after the archive's last
  * segment (for example a kind a previous compaction kept, released later by changing
  * `pinnedEventTypes`): the archive is append-only and contiguous, so it cannot take the event.
@@ -272,10 +292,11 @@ export class ArchiveGapError extends Error {
   readonly retryable = false;
   constructor(
     readonly executionId: string,
-    readonly sequences: readonly number[]
+    readonly sequences: readonly number[],
+    op: "compact" | "trim" | "delete" = "compact"
   ) {
     super(
-      `refusing to compact "${executionId}": event(s) at sequence ${sequences.slice(0, 5).join(", ")}${sequences.length > 5 ? ` (+${sequences.length - 5} more)` : ""} are below the compaction archive's last segment but not in it (a kind an earlier compaction kept in place, released since), and the archive is append-only, so truncating them would lose them. Keep \`pinnedEventTypes\` as it was for this execution. Nothing was archived, saved or truncated.`
+      `refusing to ${op} "${executionId}": event(s) at sequence ${sequences.slice(0, 5).join(", ")}${sequences.length > 5 ? ` (+${sequences.length - 5} more)` : ""} are below the compaction archive's last segment but not in it (a kind an earlier compaction kept in place, released since), and the archive is append-only, so truncating them would lose them. Keep \`pinnedEventTypes\` as it was for this execution. Nothing was archived, saved or truncated.`
     );
     this.name = "ArchiveGapError";
     Object.setPrototypeOf(this, ArchiveGapError.prototype);

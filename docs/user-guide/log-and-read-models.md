@@ -213,6 +213,14 @@ range only that checkpoint remembers (`ArchiveIncompleteError`, `archiveCoverage
 A segment is bound to its log's incarnation, so an execution id reused after a delete never inherits the old
 archive; over a tenant-scoped event store the archive must be a `TenantScopedArchiveStore` for the same tenant.
 
+**The durable inbox's streams are archived the same way (ADR 0139).** `trimInbox`, the per-topic trim, the quarantine
+trim and a retired chain's delete MOVE the envelopes (ids, timestamps, sender metadata - the payload survives in
+`MESSAGE_CONSUMED`) into the SAME archive, keyed by the reserved stream id, and refuse without one: through `defineConfig`
+the compaction archive is handed to the runtime (`inboxArchive`); a hand-built runtime without it trims and deletes
+nothing and reports a `ReservedStreamArchiveRequiredError` per chain through `onStorageError`. Read it back with
+`life.readReservedWithArchive(streamId)` / `life.reservedArchiveCoverage(streamId)`; `exportSubject` returns it as
+`reservedStreams`; a re-created stream starts above the archive, and a straggler lands in `<stream>#late-<n>`.
+
 Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-memory, SQLite,
 and Postgres); a store that omits them can't be swept. A compacted execution resumes, and
 compacts again, exactly as if it had never been compacted (ADR 0106), and the event kinds in

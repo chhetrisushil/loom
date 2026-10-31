@@ -111,6 +111,7 @@ const TERMINAL = new Set([
   "PlaintextCheckpointError",
   "ArchiveGapError",
   "CompactionArchiveRequiredError",
+  "ReservedStreamArchiveRequiredError",
   "PlaintextArchiveError",
   "ArchiveConflictError",
   "ArchiveDigestError",
