@@ -194,6 +194,17 @@ export interface EraseCoordinatorOptions {
    */
   eraseSender?: (subjectId: string, tenant: string) => Promise<unknown>;
   /**
+   * ADR 0139 D22 - reinstate an erased sender in the crypto layer (a fresh seed, so a new handle). Backs
+   * {@link EraseCoordinator.reinstateSender}; `defineConfig` wires it from the crypto event store's
+   * `reinstateSender`.
+   */
+  reinstateSender?: (
+    actor: string,
+    tenant: string
+  ) => Promise<{ reinstated: boolean; ref?: string; epoch?: number }>;
+  /** Where a recoverable, non-fatal failure is reported (default: `console.warn`). `defineConfig` wires `onWarn`. */
+  onWarn?: (message: string) => void;
+  /**
    * ADR 0139 N1 - told after erasure deleted or rewrote an archive key, so a runtime that remembers the
    * key's last archived sequence (`WorkflowRuntime.invalidateInboxArchive`) forgets it. `defineConfig`
    * wires it.
@@ -305,6 +316,10 @@ export interface EraseSubjectOptions {
   force?: "key-destroyed-elsewhere";
 }
 
+const defaultWarn = (message: string): void => {
+  console.warn(`[loom] ${message}`);
+};
+
 /**
  * Coordinates liveness-gated subject erasure and the auto-completion of parked requests.
  * Feed `handleEvent` the event stream (e.g. from `defineConfig`'s `onEvent`) so a parked
@@ -319,15 +334,64 @@ export class EraseCoordinator {
 
   /** Best-effort: repopulate the parked set from the durable control stream (restart recovery). */
   async loadParked(): Promise<void> {
-    // ADR 0139 N1: a stage an earlier build left (a crash mid-redaction) is restored at BOOT, not at the
-    // next erasure that happens to scan the archive.
-    await this.recoverRedactions();
+    // The parked set FIRST: it is what the key-window guard reads, so a failure of the archive recovery
+    // below must never leave it empty (that would fail open).
     for (const event of await this.options.eventStore.read(ERASURE_STREAM)) {
       if (event.eventType === "ERASURE_PENDING") {
         const p = event.payload as { subjectId: string; tenant?: string };
         this.parked.add(parkKey(p.tenant ?? DEFAULT_TENANT, p.subjectId));
       }
     }
+    // ADR 0139 N1: a stage an earlier build left (a crash mid-redaction) is restored at BOOT, not at the
+    // next erasure that happens to scan the archive. A failing archive (down, unreadable) is LOUD but not
+    // fatal here: recovery stays pending, to be retried by `recoverRedactions` (the operator verb
+    // `app.recoverArchiveRedactions`) and by the next redaction.
+    try {
+      await this.recoverRedactions();
+    } catch (err) {
+      (this.options.onWarn ?? defaultWarn)(
+        `erasure coordinator: restoring interrupted archive redactions failed (${err instanceof Error ? err.message : String(err)}); the parked erasures were loaded, and the recovery stays pending - retry it with recoverArchiveRedactions() once the archive is reachable`
+      );
+    }
+  }
+
+  /**
+   * ADR 0139 D22 (owner ruling 2026-10-31) - REINSTATE an erased message sender: the explicit, RECORDED
+   * operator verb that lets a sender erased by {@link eraseSubject} send again, under a NEW handle (their
+   * old messages stay erased and unlinkable to it). Without it a send from an erased sender keeps throwing
+   * `SenderErasedError`. Journaled on the control stream: `SENDER_REINSTATE_INTENDED` first, then
+   * `SENDER_REINSTATED` with the keyed non-identifying `ref`, the epoch, who (`options.by`) and when;
+   * NEVER the plaintext identity. Resolves with whether anything was reinstated (`false`: the sender is
+   * not erased, or never sent). Throws unless the coordinator was given `reinstateSender`.
+   */
+  async reinstateSender(
+    actor: string,
+    tenant: string = DEFAULT_TENANT,
+    options: { by?: string } = {}
+  ): Promise<{ reinstated: boolean; ref?: string; epoch?: number }> {
+    const reinstate = this.options.reinstateSender;
+    if (reinstate === undefined) {
+      throw new TypeError(
+        "reinstateSender needs the crypto layer's default sender handles: pass `reinstateSender` to the EraseCoordinator (defineConfig wires it from the crypto event store)"
+      );
+    }
+    const by = options.by ?? "operator";
+    const intentId = await this.appendControl("SENDER_REINSTATE_INTENDED", {
+      ...(tenant !== DEFAULT_TENANT && { tenant }),
+      by,
+      at: Date.now(),
+    });
+    const result = await reinstate(actor, tenant);
+    await this.appendControl("SENDER_REINSTATED", {
+      ...(tenant !== DEFAULT_TENANT && { tenant }),
+      intentId,
+      by,
+      at: Date.now(),
+      reinstated: result.reinstated,
+      ...(result.ref !== undefined && { ref: result.ref }),
+      ...(result.epoch !== undefined && { epoch: result.epoch }),
+    });
+    return result;
   }
 
   /** Request erasure of a subject within a tenant. Shreds now if all executions are terminal, else parks. */

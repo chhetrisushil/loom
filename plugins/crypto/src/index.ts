@@ -34,8 +34,11 @@ export {
   type SenderIdentity,
   type SenderSubjectOf,
   type SealedSender,
+  SenderEraseIncompleteError,
   SenderErasedError,
   SenderHandles,
+  SenderMasterLostError,
+  type SenderReinstatement,
   isSealedSender,
 } from "./senderSeal";
 export { defaultSubjectOf } from "./subject";

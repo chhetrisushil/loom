@@ -1240,6 +1240,19 @@ export interface LoomApp {
    */
   recoverArchiveRedactions(): Promise<string[]>;
   /**
+   * ADR 0139 D22 (owner ruling) - operator verb: REINSTATE an erased message sender. An erased sender stays
+   * blocked (`SenderErasedError` on send) until this runs; it mints a fresh seed, so their next message
+   * gets a NEW handle, and the old messages stay erased and unlinkable to it. Journaled on the control
+   * stream (`SENDER_REINSTATE_INTENDED`, `SENDER_REINSTATED`: who, when, a keyed reference, never the
+   * identity). Resolves with whether anything was reinstated. Rejects without `compliance.erase` and the
+   * crypto layer's default sender handles.
+   */
+  reinstateSender(
+    actor: string,
+    tenant?: string,
+    options?: { by?: string }
+  ): Promise<{ reinstated: boolean; ref?: string; epoch?: number }>;
+  /**
    * Re-run pre-flight verification on demand (read-only, off-log). Returns the report;
    * the caller decides what to do with it (the CLI exits non-zero on `!ok`). Available
    * regardless of the `verify` config key. `options.lint` merges EXTRA compiler-lint
@@ -1749,12 +1762,20 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
     (config.storage.kind === "custom" ? config.storage.eventStore : undefined)) as
     | {
         eraseSender?: (s: { actor?: string; tenant?: string }) => Promise<unknown>;
+        reinstateSender?: (s: {
+          actor?: string;
+          tenant?: string;
+        }) => Promise<{ reinstated: boolean; ref?: string; epoch?: number }>;
         senderSealing?: string;
       }
     | undefined;
   const senderEraser =
     typeof cryptoEvents?.eraseSender === "function"
       ? cryptoEvents.eraseSender.bind(cryptoEvents)
+      : undefined;
+  const senderReinstater =
+    typeof cryptoEvents?.reinstateSender === "function"
+      ? cryptoEvents.reinstateSender.bind(cryptoEvents)
       : undefined;
   if (cryptoEvents?.senderSealing === "disabled") {
     (config.onWarn ?? defaultWarn)(
@@ -1783,6 +1804,15 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
                 ...(tenant !== DEFAULT_ERASE_TENANT && { tenant }),
               }),
           }),
+          // ADR 0139 D22: the operator verb that lets an erased sender send again, under a new handle.
+          ...(senderReinstater !== undefined && {
+            reinstateSender: (actor: string, tenant: string) =>
+              senderReinstater({
+                actor,
+                ...(tenant !== DEFAULT_ERASE_TENANT && { tenant }),
+              }),
+          }),
+          onWarn: config.onWarn ?? defaultWarn,
           // ADR 0139 N1: an erasure that rewrote or deleted an archive key tells the runtime to forget its
           // remembered last archived sequence for it (assigned below; nothing erases before defineConfig returns).
           onArchiveKeyChanged: (key: string) => runtime.invalidateInboxArchive(key),
@@ -2283,6 +2313,14 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         );
       }
       return eraseCoordinator.recoverRedactions();
+    },
+    reinstateSender(actor, tenant, options) {
+      if (eraseCoordinator === undefined) {
+        return Promise.reject(
+          new Error("[loom] reinstateSender requires `compliance: { subjectOf, erase: { shred } }`")
+        );
+      }
+      return eraseCoordinator.reinstateSender(actor, tenant, options);
     },
     verify(options) {
       return runVerify(resolveInput(options?.lint), verifyOptions);

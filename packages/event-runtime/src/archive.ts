@@ -141,6 +141,10 @@ export function buildReservedSegment(
 
 /** {@link assertSegmentDigest} for a reserved-stream segment. */
 export function assertReservedSegmentDigest(executionId: string, segment: ArchiveSegment): void {
+  // The sender digest is verified ONLY WHEN PRESENT: a segment written before ARCHIVE_STORE_SPI 1.1.0 (or by
+  // an archive that does not persist the field) has none, and still reads - its sender field simply has no
+  // bit-rot detection of its own (ADR 0139 D19; pre-1.1.0 compatibility path, not a downgrade to exploit:
+  // a writer of the archive could equally rewrite the segment).
   const actual = reservedSegmentDigest(segment.envelopes);
   if (
     segment.senderDigest !== undefined &&

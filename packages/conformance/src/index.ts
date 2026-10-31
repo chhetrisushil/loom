@@ -3012,6 +3012,18 @@ export function runKeyStoreConformance(factory: () => KeyStoreLike, label = "Key
       expect(eq(await store.getOrCreate("s1"), await store.getOrCreate("s1"))).toBe(true);
     });
 
+    // ADR 0139 D22: getOrCreate MUST be an atomic create-if-absent. Callers racing on a first use (two
+    // senders' first message, two nodes) must all get the SAME key, or erasure destroys one copy and the
+    // data sealed under the other stays readable while the erase reports success.
+    it("concurrent getOrCreate for one subject resolves to ONE key (atomic create-if-absent)", async () => {
+      const store = factory();
+      const keys = await Promise.all(Array.from({ length: 16 }, () => store.getOrCreate("race")));
+      for (const k of keys) expect(eq(k, keys[0] as Uint8Array)).toBe(true);
+      const got = await store.get("race");
+      expect(got).not.toBeNull();
+      expect(eq(got as Uint8Array, keys[0] as Uint8Array)).toBe(true);
+    });
+
     it("distinct subjects get distinct keys", async () => {
       const store = factory();
       expect(eq(await store.getOrCreate("s1"), await store.getOrCreate("s2"))).toBe(false);
