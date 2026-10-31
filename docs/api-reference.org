@@ -807,7 +807,7 @@ const KERNEL_ABI: { version: string; syscalls: typeof KERNEL_SYSCALLS };
 interface ExecutionHandle {
   executionId: string;
   waitForCompletion(): Promise<ExecutionState>;
-  waitForSuspend(): Promise<ExecutionState>;
+  waitForSuspend(): Promise<ExecutionState>;  // resolves on a park; rejects ExecutionTerminatedError if the run completes/fails/is cancelled/continues as new
   getState(): ExecutionState;
   cancel(reason?: unknown): void;   // live-only — aborts in-flight effects, records EXECUTION_CANCELLED
 }

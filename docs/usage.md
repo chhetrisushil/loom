@@ -197,6 +197,8 @@ const resumed = await app.runtime.resume(executionId, {
 await resumed.waitForCompletion();
 ```
 
+`waitForSuspend()` settles only when the run **parks**. If the run ends without parking (it completes, fails, is cancelled, or continues as new) it **rejects** with `ExecutionTerminatedError` (`state` is the terminal state, `status` its status, `cause` the failure or cancellation), after `waitForCompletion()` has settled, so `Promise.race([waitForCompletion(), waitForSuspend()])` resolves exactly as before. A storage, lease or seal failure rejects both promises with that error. Await `waitForSuspend()` alone only on a run that is known to park; on one that may finish, race the two or catch the rejection. A caller that never calls it gets no unhandled rejection.
+
 Because state is `fold(events)`, you can also inspect without running: `await app.runtime.loadState(executionId)` returns the folded `ExecutionState` (or `null`).
 
 ---
