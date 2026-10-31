@@ -17,6 +17,8 @@ export {
   TAINT_SCAN_MAX_NODES,
   isTainted,
   nestedTaintOrigin,
+  taintOriginLabel,
+  TAINT_ORIGIN_LABEL_MAX,
   scanTaint,
   tainted,
   taintOf,

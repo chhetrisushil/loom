@@ -264,7 +264,16 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
     // ADR 0085 / 0140 - an offloaded result that carried untrusted content (a tainted top level OR a
     // nested marker) must not launder it into a clean-looking envelope + digest: the envelope itself is
     // tainted, so the loop fences it and records the taint (the sweep still finds the inner envelope).
-    const origin = json.includes('"__loomTainted"') ? nestedTaintOrigin(result) : undefined;
+    let origin: string | undefined;
+    if (json.includes("__loomTainted")) {
+      // Scan the SERIALIZED form (what the log and the prompt hold). A marker that is only text still
+      // taints (fail closed).
+      try {
+        origin = nestedTaintOrigin(JSON.parse(json)) ?? "unknown:taint-marker-in-text";
+      } catch {
+        origin = "unknown:taint-marker-in-text";
+      }
+    }
     return origin === undefined ? envelope : tainted(envelope, origin);
   };
 }

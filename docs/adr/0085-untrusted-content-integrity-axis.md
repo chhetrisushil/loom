@@ -182,6 +182,25 @@ moment a tainted string quotes a closing brace. Fencing the whole result is the 
 the clean `raw` stays legible INSIDE the fence and the inner wrappers still show which parts are
 untrusted. Cost: a result with one tainted field is shown as untrusted in full.
 
+**Scan what is SERIALIZED (review round).** The model sees `JSON.stringify` output, not the live value:
+`toJSON`, a Date subclass, a getter that changes between reads, or a tool that stringified a wrapper into
+a string all make a live-value walk disagree with the prompt (an unfenced injection with an untainted
+write-back), and on replay the log holds the JSON form, so live and replay would diverge. So
+`toolResultContent` stringifies FIRST; if the text has no `__loomTainted` marker it is returned
+unchanged (clean results are byte-identical and are never walked); otherwise the parsed text is
+scanned and the whole string is fenced. A marker that is only TEXT (a stringified wrapper, a forged
+string) is fenced with origin `unknown:taint-marker-in-text`: over-fencing is the fail-closed
+direction. The claim-check middleware does the same on its serialized `json`. The joined origin label
+is capped (8 distinct origins, then `+N more`, each at most 200 characters) so forged wrappers cannot
+inflate the journaled label. A result that carries a marker AND exceeds the scan bound is fenced with
+`unknown:taint-scan-bound-exceeded` and the loop warns once per tool (`LOOM_AGENT_TAINT_SCAN_BOUND`).
+
+**Taint propagates through every derived artifact.** `sawTaintFrom` is now derived from the
+`tool_result` part the model is actually shown (tainted text, or a media part marked
+`untrusted: { origin }`), and a RECALLED tainted memory entry marks the run too, so an answer built on
+recalled untrusted text is written back tainted (it used to be lost after one hop). A compaction
+summary is tainted when the folded slice holds a wrapper or an untrusted media part.
+
 **Unchanged.** The stored value is never altered (a flow still reads A2A's untainted `raw`); a clean
 result is byte-identical; a top-level wrapper keeps its origin and unwrapped body; tainted text still
 cannot reach a system prompt (`guardRequest`, D2/D3).
