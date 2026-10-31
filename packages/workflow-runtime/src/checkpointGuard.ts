@@ -96,7 +96,7 @@ export function assertCheckpointSealed(
 // subject would no longer erase the archived copy. Same rule as the checkpoint above, one store over.
 
 /** Why a compaction archive is refused: it does not seal its segments, or not under the log's KeyStore. */
-export type PlaintextArchiveReason = "not-sealed" | "keys-not-shared";
+export type PlaintextArchiveReason = "not-sealed" | "keys-not-shared" | "subject-mismatch";
 
 /** The event store seals payloads but the compaction archive would not (ADR 0138). Never retryable. */
 export class PlaintextArchiveError extends Error {
@@ -109,8 +109,10 @@ export class PlaintextArchiveError extends Error {
       `${executionId !== undefined ? `refusing to compact "${executionId}": ` : ""}the event store seals payloads, but the compaction archive ${
         reason === "not-sealed"
           ? "does not seal its segments (it would hold the decrypted log outside the erasure boundary)"
-          : "does not share the event store's KeyStore (a shred of the subject would not erase the archived copy)"
-      }. Wrap the archive store in \`new EncryptingArchiveStore(inner, keys)\` over the SAME KeyStore as the event store. Nothing was archived, saved or truncated.`
+          : reason === "keys-not-shared"
+            ? "does not share the event store's KeyStore (a shred of the subject would not erase the archived copy)"
+            : "seals under a different erasure subject than the event store (a custom `subjectOf` on one side only: a shred of the log's subject would leave the archived copy readable)"
+      }. Wrap the archive store in \`new EncryptingArchiveStore(inner, keys, { subjectOf })\` over the SAME KeyStore and the SAME \`subjectOf\` as the event store. Nothing was archived, saved or truncated.`
     );
     this.name = "PlaintextArchiveError";
     Object.setPrototypeOf(this, PlaintextArchiveError.prototype);
@@ -129,7 +131,103 @@ export function plaintextArchiveReason(
   if (!eventStoreSeals(eventStore) && eventKeys === undefined) return undefined;
   if ((archive as { sealsSegments?: unknown }).sealsSegments !== true) return "not-sealed";
   if (eventKeys !== undefined && keysOf(archive) !== eventKeys) return "keys-not-shared";
+  // M4: the SUBJECT mapping must agree too, or a shred of the log's subject misses the archive.
+  // Compared by identity (both default to the shared `defaultSubjectOf`); a store that does not
+  // expose its mapping (wrapped) cannot be compared and is not refused here.
+  const eventSubject = (eventStore as { subjectOf?: unknown }).subjectOf;
+  const archiveSubject = (archive as { subjectOf?: unknown }).subjectOf;
+  if (
+    typeof eventSubject === "function" &&
+    typeof archiveSubject === "function" &&
+    eventSubject !== archiveSubject
+  ) {
+    return "subject-mismatch";
+  }
   return undefined;
+}
+
+/**
+ * The tenant a store is scoped to (`TenantScopedEventStore` / `TenantScopedArchiveStore` expose
+ * `tenantScope`), looking through decorators that keep their wrapped store in `inner`.
+ */
+export function tenantScopeOf(store: unknown): string | undefined {
+  let cur: unknown = store;
+  for (let i = 0; i < 8 && typeof cur === "object" && cur !== null; i++) {
+    const t = (cur as { tenantScope?: unknown }).tenantScope;
+    if (typeof t === "string") return t;
+    cur = (cur as { inner?: unknown }).inner;
+  }
+  return undefined;
+}
+
+/**
+ * Compaction through a tenant-scoped event store with a shared (or differently scoped) archive would
+ * mix tenants' segments: refused, nothing moved (ADR 0138 H3).
+ */
+export class ArchiveTenantMismatchError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly executionId: string,
+    readonly eventTenant: string | undefined,
+    readonly archiveTenant: string | undefined
+  ) {
+    super(
+      `refusing to compact "${executionId}": the event store is ${
+        eventTenant === undefined ? "not tenant-scoped" : `scoped to tenant "${eventTenant}"`
+      } but the compaction archive is ${
+        archiveTenant === undefined ? "not tenant-scoped" : `scoped to tenant "${archiveTenant}"`
+      } — a shared archive would mix tenants' history (cross-tenant reads, and a retention delete of another tenant's segments). Wrap the archive in \`new TenantScopedArchiveStore(archive, tenant)\` for the same tenant. Nothing was archived, saved or truncated.`
+    );
+    this.name = "ArchiveTenantMismatchError";
+    Object.setPrototypeOf(this, ArchiveTenantMismatchError.prototype);
+  }
+}
+
+/** A range of sequences the archive and the log together cannot show (see `LogLifecycle.archiveCoverage`). */
+export interface UnarchivedRange {
+  readonly from: number;
+  readonly through: number;
+  /** `"legacy"`: removed by a compaction before ADR 0138; only a folded checkpoint (`readLegacyCheckpoints`) remains. `"missing"`: nothing holds it. */
+  readonly why: "legacy" | "missing";
+}
+
+/**
+ * An audit read of the original log was asked for a range the archive cannot fully return: events
+ * a pre-ADR-0138 compaction removed, whose only trace is a legacy checkpoint, or events nothing
+ * holds. Reported, never a silent hole; pass \`{ allowIncomplete: true }\` to read what exists.
+ */
+export class ArchiveIncompleteError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly executionId: string,
+    readonly ranges: readonly UnarchivedRange[]
+  ) {
+    super(
+      `archive "${executionId}": the original log is not fully recoverable as events — ${ranges
+        .map(
+          (r) =>
+            `[${r.from}..${r.through}] ${r.why === "legacy" ? "was compacted before the archive existed (only its folded checkpoint survives: LogLifecycle.readLegacyCheckpoints)" : "is held by neither the log nor the archive"}`
+        )
+        .join("; ")}. Pass { allowIncomplete: true } to read the events that exist.`
+    );
+    this.name = "ArchiveIncompleteError";
+    Object.setPrototypeOf(this, ArchiveIncompleteError.prototype);
+  }
+}
+
+/** The log and the archive hold DIFFERENT bytes for the same sequence (a duplicate that should be identical). */
+export class ArchiveLogMismatchError extends Error {
+  readonly retryable = false;
+  constructor(
+    readonly executionId: string,
+    readonly sequences: readonly number[]
+  ) {
+    super(
+      `archive "${executionId}": the surviving log and the archive disagree on sequence ${sequences.slice(0, 5).join(", ")}${sequences.length > 5 ? ` (+${sequences.length - 5} more)` : ""} — the same sequence holds different bytes in each, so neither is taken as the original. One was altered after the compaction.`
+    );
+    this.name = "ArchiveLogMismatchError";
+    Object.setPrototypeOf(this, ArchiveLogMismatchError.prototype);
+  }
 }
 
 /** `LogLifecycle.compact` was called with no compaction archive configured. Fail closed (ADR 0138). */
@@ -137,7 +235,7 @@ export class CompactionArchiveRequiredError extends Error {
   readonly retryable = false;
   constructor(readonly executionId: string) {
     super(
-      `refusing to compact "${executionId}": no compaction archive is configured, and compaction MOVES the removed events into one (ADR 0138) — it never deletes them. Configure one: \`sqliteStorage()\`/\`postgresStorage()\` provide it; otherwise pass \`storage.archiveStore\` (or \`retention.compactionArchive\`) to defineConfig, or \`compactionArchive\` to \`new LogLifecycle(...)\` (for example \`new InMemoryArchiveStore()\` for a volatile log). Nothing was archived, saved or truncated.`
+      `refusing to compact "${executionId}": no compaction archive is configured, and compaction MOVES the removed events into one (ADR 0138) — it never deletes them. Configure one: \`sqliteStorage()\`/\`postgresStorage()\` provide it; otherwise pass \`storage.archiveStore\` (or \`durability.retention.compactionArchive\`) to defineConfig, or \`compactionArchive\` to \`new LogLifecycle(...)\` (for example \`new InMemoryArchiveStore()\` for a volatile log). Nothing was archived, saved or truncated.`
     );
     this.name = "CompactionArchiveRequiredError";
     Object.setPrototypeOf(this, CompactionArchiveRequiredError.prototype);

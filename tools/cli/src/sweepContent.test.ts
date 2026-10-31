@@ -2,7 +2,14 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SqliteContentStore, SqliteEventStore, SqliteSnapshotStore } from "@loom/plugin-sqlite";
+import { buildSegment } from "@loom/event-runtime";
+import {
+  SqliteArchiveStore,
+  SqliteContentStore,
+  SqliteEventStore,
+  SqliteSnapshotStore,
+} from "@loom/plugin-sqlite";
+import { ReplayVM } from "@loom/replay-vm";
 import { afterEach, describe, expect, it } from "vitest";
 import { requireExistingFile } from "./stores";
 import { cmdSweepContent } from "./sweepContent";
@@ -408,5 +415,108 @@ describe("loom sweep content (DX-2, K10.6)", () => {
     }
     expect(statSync(empty).size).toBe(0);
     expect(readFileSync(junk, "utf8")).toBe("this is not a database at all");
+  });
+});
+
+// ADR 0138 B1 - an erasing --orphans pass over a COMPACTED log needs the compaction archive: the events
+// compaction moved are cited only there, so without it their blobs are orphans to the sweep.
+describe("loom sweep content --orphans over a compacted log (ADR 0138)", () => {
+  let dir: string;
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  async function compactedSeed(opts: { withArchive: boolean }) {
+    dir = mkdtempSync(join(tmpdir(), "loom-sweep-arch-"));
+    const db = join(dir, "events.db");
+    const snap = join(dir, "snap.db");
+    const contentDb = join(dir, "content.db");
+    const old = Date.now() - 60 * DAY;
+    const content = new SqliteContentStore(contentDb, { now: () => old });
+    const note = await content.put(new TextEncoder().encode("only the removed event cited this"));
+    await content.close();
+    const ev = (sequence: number, eventType: string, payload: unknown) => ({
+      id: `c-${sequence}`,
+      workflowId: "wf",
+      executionId: "c",
+      eventType,
+      sequence,
+      timestamp: old,
+      payload,
+    });
+    const events = [
+      ev(0, "EXECUTION_STARTED", { input: {} }),
+      ev(1, "NOTE_RECORDED", { sample: { __loomClaimCheck: true, ref: note, size: 1 } }),
+      ev(2, "STEP_STARTED", { stepId: "s" }),
+    ];
+    const store = new SqliteEventStore(db);
+    for (const e of events) await store.append(e);
+    await store.truncatePrefix("c", 2);
+    await store.close();
+    const snaps = new SqliteSnapshotStore(snap);
+    await snaps.save({
+      id: "cp",
+      executionId: "c",
+      workflowId: "wf",
+      sequence: 2,
+      state: new ReplayVM(events).getState(),
+      createdAt: 0,
+    });
+    await snaps.close();
+    if (opts.withArchive) {
+      const archive = new SqliteArchiveStore(join(dir, "archive.db"));
+      await archive.append("c", buildSegment(events.slice(1), "inc", 1, 2));
+      await archive.close();
+    }
+    return { db, snap, contentDb, note };
+  }
+
+  const base = (s: { db: string; snap: string; contentDb: string }) => ({
+    db: s.db,
+    snap: s.snap,
+    content: s.contentDb,
+    ttlMs: 30 * DAY,
+    apply: true,
+    orphans: true,
+    noArchive: true,
+    snapshotsTouchContent: true,
+  });
+  const alive = async (contentDb: string, ref: { __loomContent: string }) => {
+    const c = new SqliteContentStore(contentDb);
+    const got = await c.get(ref);
+    await c.close();
+    return got !== null;
+  };
+
+  it("REFUSES --orphans --apply on a compacted log with no compaction archive, naming the flags; nothing erased", async () => {
+    const s = await compactedSeed({ withArchive: false });
+    await expect(cmdSweepContent(base(s))).rejects.toThrow(/--compaction-archive/);
+    expect(await alive(s.contentDb, s.note)).toBe(true);
+  });
+
+  it("picks up archive.db beside --db by default, so the archived event's blob survives", async () => {
+    const s = await compactedSeed({ withArchive: true });
+    const out = await cmdSweepContent(base(s));
+    expect(out).toContain("reclaimed orphans (0)");
+    expect(await alive(s.contentDb, s.note)).toBe(true);
+  });
+
+  it("--compaction-archive <path> names it explicitly (a missing file is refused, not created)", async () => {
+    const s = await compactedSeed({ withArchive: true });
+    const moved = join(dir, "elsewhere.db");
+    const { renameSync } = await import("node:fs");
+    renameSync(join(dir, "archive.db"), moved);
+    await expect(cmdSweepContent(base(s))).rejects.toThrow(/--compaction-archive/); // default is gone
+    const out = await cmdSweepContent({ ...base(s), compactionArchive: moved });
+    expect(out).toContain("reclaimed orphans (0)");
+    await expect(
+      cmdSweepContent({ ...base(s), compactionArchive: join(dir, "typo.db") })
+    ).rejects.toThrow(/no such file/);
+    expect(await alive(s.contentDb, s.note)).toBe(true);
+  });
+
+  it("--no-compaction-archive is the operator's explicit statement that none exists: the blob is then an orphan", async () => {
+    const s = await compactedSeed({ withArchive: false });
+    const out = await cmdSweepContent({ ...base(s), noCompactionArchive: true });
+    expect(out).toContain("reclaimed orphans (1)");
+    expect(await alive(s.contentDb, s.note)).toBe(false);
   });
 });

@@ -11,6 +11,7 @@ import type {
 import type { AcquireOptions, LeaseStore } from "@loom/event-runtime";
 import {
   ArchiveConflictError,
+  ArchiveIncarnationError,
   type ArchiveSegment,
   type ArchiveStore,
   DuplicateEnvelopeIdError,
@@ -4206,6 +4207,7 @@ const archiveSeg = (executionId: string, from: number, through: number, skip: nu
     Array.from({ length: through - from + 1 }, (_, i) => from + i)
       .filter((s) => !skip.includes(s))
       .map((s) => archiveEnv(executionId, s)),
+    "inc-1",
     from,
     through
   );
@@ -4236,7 +4238,7 @@ export function runArchiveStoreConformance(
       expect(back).toEqual(s);
       assertSegmentDigest("x", back as ArchiveSegment);
       expect(await store.headers("x")).toEqual([
-        { from: 1, through: 5, count: 4, digest: s.digest },
+        { from: 1, through: 5, count: 4, digest: s.digest, incarnation: "inc-1" },
       ]);
       await store.close();
     });
@@ -4283,7 +4285,12 @@ export function runArchiveStoreConformance(
         await expect(store.append("x", bad)).rejects.toBeInstanceOf(ArchiveConflictError);
       }
       // same range, different content: not a repeat
-      const changed = buildSegment([{ ...archiveEnv("x", 6), payload: { other: true } }], 6, 9);
+      const changed = buildSegment(
+        [{ ...archiveEnv("x", 6), payload: { other: true } }],
+        "inc-1",
+        6,
+        9
+      );
       await expect(store.append("x", changed)).rejects.toBeInstanceOf(ArchiveConflictError);
       expect((await store.headers("x")).map((h) => [h.from, h.through])).toEqual([
         [1, 5],
@@ -4297,6 +4304,58 @@ export function runArchiveStoreConformance(
       await store.append("x", archiveSeg("x", 4, 6));
       await store.append("x", archiveSeg("x", 20, 22));
       expect((await store.headers("x")).length).toBe(2);
+      await store.close();
+    });
+
+    it("refuses a segment of another incarnation of the id (an id reused after a delete) and writes nothing", async () => {
+      const store = await factory();
+      await store.append("x", archiveSeg("x", 1, 5));
+      const other = buildSegment([archiveEnv("x", 6)], "inc-2", 6, 9);
+      await expect(store.append("x", other)).rejects.toBeInstanceOf(ArchiveIncarnationError);
+      expect((await store.headers("x")).map((h) => h.incarnation)).toEqual(["inc-1"]);
+      await store.close();
+    });
+
+    it("round-trips a legacy-checkpoint segment's kind in the header and the read", async () => {
+      const store = await factory();
+      const legacy = buildSegment([archiveEnv("x", 4)], "inc-1", 1, 4, "legacy-checkpoint");
+      await store.append("x", legacy);
+      await store.append("x", archiveSeg("x", 5, 9));
+      expect((await store.headers("x")).map((h) => h.kind)).toEqual([
+        "legacy-checkpoint",
+        undefined,
+      ]);
+      expect((await store.read("x"))[0]).toEqual(legacy);
+      await store.close();
+    });
+
+    it("lists the executions that hold segments, paged ascending by an exclusive cursor", async () => {
+      const store = await factory();
+      // A shared backend may hold other cases' executions: assert on this case's own prefix.
+      const ids = ["lst-c", "lst-a", "lst-b", "lst-d"];
+      for (const id of ids) await store.append(id, archiveSeg(id, 1, 2));
+      await store.append("lst-a", archiveSeg("lst-a", 3, 4)); // two segments, listed once
+      const mine = (xs: string[]) => xs.filter((x) => x.startsWith("lst-"));
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (let i = 0; i < 100; i++) {
+        const page = await store.listExecutions({
+          ...(cursor !== undefined && { cursor }),
+          limit: 2,
+        });
+        expect(page.executionIds.length).toBeLessThanOrEqual(2);
+        seen.push(...page.executionIds);
+        if (page.nextCursor === undefined) break;
+        cursor = page.nextCursor;
+      }
+      expect(mine(seen)).toEqual(["lst-a", "lst-b", "lst-c", "lst-d"]);
+      expect(seen).toEqual([...seen].sort());
+      expect(mine((await store.listExecutions({ limit: 1000 })).executionIds)).toEqual([
+        "lst-a",
+        "lst-b",
+        "lst-c",
+        "lst-d",
+      ]);
       await store.close();
     });
 

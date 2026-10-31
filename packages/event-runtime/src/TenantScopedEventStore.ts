@@ -171,6 +171,11 @@ export class TenantScopedEventStore implements EventStore {
     installOptional<EventStore, OptionalEventStoreMethod>(this, inner, plan);
   }
 
+  /** Structural marker: the tenant this view is scoped to (`LogLifecycle.compact` pairs it with the archive's). */
+  get tenantScope(): string {
+    return this.tenant;
+  }
+
   private scope(id: string): string {
     return `${this.tenant}${SEP}${id}`;
   }

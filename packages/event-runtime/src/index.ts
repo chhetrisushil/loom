@@ -107,10 +107,20 @@ export {
   ARCHIVE_STORE_SPI_VERSION,
   ArchiveConflictError,
   ArchiveDigestError,
+  ArchiveIncarnationError,
+  ArchiveUnserializableError,
+  ARCHIVE_LEGACY_CHECKPOINT_EVENT,
   OPTIONAL_ARCHIVE_STORE_METHODS,
   classifyAppend,
   headerOf,
 } from "./archiveSpi";
-export type { ArchiveSegment, ArchiveSegmentHeader, ArchiveStore } from "./archiveSpi";
-export { assertSegmentDigest, buildSegment, segmentDigest } from "./archive";
+export type {
+  ArchiveExecutionPage,
+  ArchiveSegment,
+  ArchiveSegmentHeader,
+  ArchiveSegmentKind,
+  ArchiveStore,
+} from "./archiveSpi";
+export { assertSegmentDigest, buildSegment, pageIds, segmentDigest } from "./archive";
+export { TenantScopedArchiveStore } from "./TenantScopedArchiveStore";
 export { InMemoryArchiveStore } from "./InMemoryArchiveStore";

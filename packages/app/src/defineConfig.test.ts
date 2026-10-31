@@ -14,9 +14,14 @@ import {
 } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import type { EffectMiddleware } from "@loom/effect-runtime";
-import { InMemoryAsyncEventStore, InMemoryTimerStore } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  InMemoryTimerStore,
+} from "@loom/event-runtime";
 import type { BranchRegistry, EventStore } from "@loom/event-runtime";
 import { InMemorySecretResolver, isSecretRef, retryMiddleware, secretRef } from "@loom/middleware";
+import { EncryptingEventStore, InMemoryKeyStore } from "@loom/plugin-crypto";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import type { Snapshot, SnapshotStore } from "@loom/snapshot-runtime";
 import { WorkflowRuntime } from "@loom/workflow-runtime";
@@ -1267,5 +1272,104 @@ describe("defineConfig — a failing erase coordinator", () => {
     // …and the app is still usable: a failed parked-list read is not fatal.
     expect(app.runtime).toBeDefined();
     await app.close();
+  });
+});
+
+describe("defineConfig - the compaction archive (ADR 0138 review: M1, M3)", () => {
+  const flow = gatedFlow();
+
+  it("M1: exportSubject includes what compaction MOVED into the archive (Art. 15/20), and folds the whole history", async () => {
+    const app = defineConfig({
+      storage: { kind: "memory" },
+      flows: [flow],
+      security: {
+        compliance: {
+          subjectOf: (e) =>
+            e.eventType === "EXECUTION_STARTED"
+              ? (e.payload as { input?: { incidentId?: string } }).input?.incidentId
+              : undefined,
+        },
+      },
+    });
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    await (
+      await app.runtime.start(flow, { incidentId: "acme" }, { executionId: "m1" })
+    ).waitForSuspend();
+    const before = await app.stores.eventStore.read("m1");
+    expect(await app.lifecycle.compact("m1")).not.toBeNull();
+    expect((await app.stores.eventStore.read("m1")).length).toBeLessThan(before.length);
+
+    const out = await app.exportSubject("acme");
+    const events = out.executions[0]!.events!;
+    expect(events.map((e) => e.sequence)).toEqual(before.map((e) => e.sequence));
+    expect(events.map((e) => e.eventType)).toEqual(before.map((e) => e.eventType));
+    await app.close();
+  });
+
+  it("M3: an encrypting event store gets its archive sealed automatically, under its KeyStore and subjectOf", async () => {
+    const keys = new InMemoryKeyStore();
+    const subjectOf = (s: { executionId: string }) => `subject:${s.executionId}`;
+    const eventStore = new EncryptingEventStore(new InMemoryAsyncEventStore(), keys, {
+      sensitive: { EXECUTION_STARTED: ["input"] },
+      subjectOf,
+    });
+    // a PLAIN archive on purpose: before this round compact() refused it (PlaintextArchiveError)
+    const app = defineConfig({
+      storage: { kind: "custom", eventStore, archiveStore: new InMemoryArchiveStore() },
+      flows: [flow],
+    });
+    expect((app.stores.archiveStore as { sealsSegments?: unknown }).sealsSegments).toBe(true);
+    registerToolEffects(app.effectRuntime, async () => ({ cpu: 87 }));
+    await (
+      await app.runtime.start(flow, { incidentId: "i1" }, { executionId: "enc" })
+    ).waitForSuspend();
+    expect(await app.lifecycle.compact("enc")).not.toBeNull();
+    expect((await app.lifecycle.readArchived("enc")).length).toBeGreaterThan(0);
+    await app.close();
+  });
+
+  it("M3: a durable custom storage with no archive warns at boot, and compact then refuses with the config path", async () => {
+    const inner = new InMemoryAsyncEventStore();
+    // not an InMemoryAsyncEventStore as far as the composition root can tell
+    const durable = {
+      append: (e: EventEnvelope) => inner.append(e),
+      read: (id: string) => inner.read(id),
+      readFrom: (id: string, from: number) => inner.readFrom(id, from),
+      subscribe: (id: string, h: (e: EventEnvelope) => void) => inner.subscribe(id, h),
+      truncatePrefix: (id: string, through: number) => inner.truncatePrefix(id, through),
+      close: () => inner.close(),
+    } as unknown as EventStore;
+    const warnings: string[] = [];
+    const app = defineConfig({
+      storage: {
+        kind: "custom",
+        eventStore: durable,
+        snapshotStore: new InMemoryAsyncSnapshotStore(),
+      },
+      observability: { onWarn: (m) => warnings.push(m) },
+    });
+    expect(warnings.some((w) => /archiveStore was omitted/.test(w))).toBe(true);
+    expect(app.stores.archiveStore).toBeUndefined();
+    await inner.append({
+      id: "d-0",
+      workflowId: "wf",
+      executionId: "d",
+      eventType: "EXECUTION_STARTED",
+      sequence: 0,
+      timestamp: 1,
+      payload: { input: {} },
+    });
+    await inner.append({
+      id: "d-1",
+      workflowId: "wf",
+      executionId: "d",
+      eventType: "STEP_STARTED",
+      sequence: 1,
+      timestamp: 1,
+      payload: { stepId: "s" },
+    });
+    await expect(app.lifecycle.compact("d")).rejects.toThrow(
+      /durability\.retention\.compactionArchive/
+    );
   });
 });

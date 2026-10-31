@@ -67,6 +67,11 @@ export const TERMINAL_ERROR_NAMES: ReadonlySet<string> = new Set([
   "PlaintextArchiveError",
   "ArchiveConflictError",
   "ArchiveDigestError",
+  "ArchiveIncompleteError",
+  "ArchiveLogMismatchError",
+  "ArchiveTenantMismatchError",
+  "ArchiveIncarnationError",
+  "ArchiveUnserializableError",
   // heartbeat lease lost (taken over / past its self-fencing deadline / keeper closed): this driver
   // must stop; and the node's lease store is in its quiet period: no tool-level retry helps (ADR 0130 D11)
   "LeaseLostError",

@@ -1,10 +1,13 @@
+import { pageIds } from "./archive";
 import {
+  type ArchiveExecutionPage,
   type ArchiveSegment,
   type ArchiveSegmentHeader,
   type ArchiveStore,
   classifyAppend,
   headerOf,
 } from "./archiveSpi";
+import { compareExecutionIds } from "./executionIdOrder";
 
 /** In-memory {@link ArchiveStore}: for tests, the memory storage kind and in-memory event stores. */
 export class InMemoryArchiveStore implements ArchiveStore {
@@ -20,6 +23,16 @@ export class InMemoryArchiveStore implements ArchiveStore {
 
   async headers(executionId: string): Promise<ArchiveSegmentHeader[]> {
     return (this.byExecution.get(executionId) ?? []).map(headerOf);
+  }
+
+  async listExecutions(
+    opts: { cursor?: string; limit?: number } = {}
+  ): Promise<ArchiveExecutionPage> {
+    const ids = [...this.byExecution.entries()]
+      .filter(([, segs]) => segs.length > 0)
+      .map(([id]) => id)
+      .sort(compareExecutionIds);
+    return pageIds(ids, opts);
   }
 
   async read(

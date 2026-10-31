@@ -23,6 +23,11 @@ export interface SubjectExecutionExport {
   state: ExecutionState;
   /** Raw event log — the Art. 20 "portability" view (machine-readable). Omitted if not requested. */
   events?: EventEnvelope[];
+  /**
+   * ADR 0138 - checkpoints of a log compacted BEFORE the compaction archive existed (their removed
+   * events survive only as a folded state). Present only when such an execution is exported.
+   */
+  legacyCheckpoints?: unknown[];
 }
 
 /** A subject's full data export across every execution concerning them. */
@@ -34,6 +39,20 @@ export interface SubjectExport {
 export interface ExportSubjectOptions {
   index: SubjectIndex;
   eventStore: Pick<EventStore, "read">;
+  /**
+   * ADR 0138 - the compaction archive's audit read (`LogLifecycle`). Compaction MOVES events out of the
+   * log into the archive, and an Art. 15/20 export that read only the surviving log would omit the
+   * subject's data and fold a compacted log wrongly. Given this, each execution is read as
+   * `archive ∪ log` (and folded from that). A range only a pre-archive checkpoint remembers is
+   * returned in `legacyCheckpoints` rather than silently missing.
+   */
+  archive?: {
+    readWithArchive(
+      executionId: string,
+      opts?: { readonly allowIncomplete?: boolean }
+    ): Promise<EventEnvelope[]>;
+    readLegacyCheckpoints?(executionId: string): Promise<unknown[]>;
+  };
   /** Include the raw event log per execution (Art. 20 portability). Default `true`. */
   includeEvents?: boolean;
   /** T3-R2.4 — scope the export to a tenant (default: the single partition). */
@@ -72,7 +91,10 @@ export async function exportSubject(
   for (const executionId of executionIds) {
     let events: EventEnvelope[];
     try {
-      events = await options.eventStore.read(executionId);
+      events =
+        options.archive !== undefined
+          ? await options.archive.readWithArchive(executionId, { allowIncomplete: true })
+          : await options.eventStore.read(executionId);
     } catch (err) {
       // The ShredIncomplete window (key destroyed, tombstone not yet written): the redacted view,
       // only with the log's durable erase intent. A node that lacks the key is not an erasure.
@@ -88,12 +110,14 @@ export async function exportSubject(
     // not the events, so an unseeded fold would carry empty identity fields.
     const workflowId = events[0]?.workflowId ?? "";
     const state = foldEvents(events, { executionId, workflowId });
+    const legacy = (await options.archive?.readLegacyCheckpoints?.(executionId)) ?? [];
     executions.push({
       executionId,
       workflowId,
       status: state.status,
       state,
       ...(includeEvents && { events }),
+      ...(legacy.length > 0 && { legacyCheckpoints: legacy }),
     });
   }
   return { subjectId, executions };

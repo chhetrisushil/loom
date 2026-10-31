@@ -6,6 +6,7 @@ import {
   type EventStore,
   type OptionalEventStoreMethod,
   type TipObservation,
+  headOf,
   installOptional,
 } from "@loom/event-runtime";
 
@@ -141,15 +142,35 @@ export function canonicalize(value: unknown): string {
   return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalize(v)}`).join(",")}}`;
 }
 
-/** ADR 0138: archived ∪ live, ascending, one entry per sequence (the log's copy wins a duplicate). */
+/**
+ * ADR 0138: archived ∪ live, ascending, one entry per sequence. A sequence both hold must hold the
+ * SAME bytes (a compaction's crash window leaves identical duplicates); a difference is reported,
+ * never resolved by silently preferring the log's copy (M2).
+ */
 function stitch(
   archived: readonly EventEnvelope[],
   live: readonly EventEnvelope[]
-): EventEnvelope[] {
+): { events: EventEnvelope[]; differing?: number } {
   const bySequence = new Map<number, EventEnvelope>();
   for (const e of archived) bySequence.set(e.sequence, e);
-  for (const e of live) bySequence.set(e.sequence, e);
-  return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
+  for (const e of live) {
+    const a = bySequence.get(e.sequence);
+    if (a !== undefined && canonicalize(a) !== canonicalize(e)) {
+      return { events: [], differing: e.sequence };
+    }
+    bySequence.set(e.sequence, e);
+  }
+  return { events: [...bySequence.values()].sort((a, b) => a.sequence - b.sequence) };
+}
+
+/** `through`, lowered so the log's tip (the chain head) survives the truncation. */
+async function clampBelowTip(
+  inner: EventStore,
+  executionId: string,
+  through: number
+): Promise<number> {
+  const tip = (await headOf(inner, executionId)) ?? through + 1;
+  return Math.min(through, tip - 1);
 }
 
 /** The bytes covered by the chain hash: the event minus its own chain metadata. */
@@ -281,10 +302,20 @@ export function hashChainedEventStore(
       // Reported on every outcome so a hash-only pass can never read as an authorship check.
       const signaturesChecked = verifier !== undefined || secret !== undefined;
       const live = await inner.read(executionId);
-      const events =
-        options?.archived === undefined || options.archived.length === 0
-          ? live
-          : stitch(options.archived, live);
+      let events = live;
+      if (options?.archived !== undefined && options.archived.length > 0) {
+        const stitched = stitch(options.archived, live);
+        if (stitched.differing !== undefined) {
+          return {
+            ok: false,
+            length: live.length,
+            signaturesChecked,
+            brokenAt: stitched.differing,
+            reason: "archived and surviving-log copies of this sequence differ (one was altered)",
+          };
+        }
+        events = stitched.events;
+      }
       let prev = GENESIS;
       for (const e of events) {
         const chain = chainOf(e);
@@ -427,13 +458,23 @@ export function hashChainedEventStore(
     // every later audit fail; refusing it makes the chained log visibly non-compactable.
     // ADR 0138: opt-in. The archive makes the prefix recoverable, so `verifyChain(id, { archived })`
     // verifies across the gap; without the opt-in the refusal stands (a plain verifyChain would break).
+    // The chain HEAD (the log's tip) is never removed: a restarted writer derives its `prevHash` from the
+    // last surviving event, and a log compacted through its tip would leave `[0]`, so the next append
+    // would chain onto the bootstrap and break the chain (H1). The archive holds the tip too (a
+    // duplicate `readWithArchive` compares byte-exact), so nothing is lost by leaving it.
     truncatePrefix:
       options.allowCompaction === true
-        ? "forward"
+        ? async (executionId: string, through: number) => {
+            const clamped = await clampBelowTip(inner, executionId, through);
+            if (clamped >= 1) await inner.truncatePrefix!(executionId, clamped);
+          }
         : { refuse: "a truncated prefix breaks chain verification (ADR 0037)" },
     truncatePrefixKeeping:
       options.allowCompaction === true
-        ? "forward"
+        ? async (executionId: string, through: number, keep: readonly string[]) => {
+            const clamped = await clampBelowTip(inner, executionId, through);
+            if (clamped >= 1) await inner.truncatePrefixKeeping!(executionId, clamped, keep);
+          }
         : { refuse: "a truncated prefix breaks chain verification (ADR 0037)" },
     listExecutions: "forward",
     listExecutionsPage: "forward",

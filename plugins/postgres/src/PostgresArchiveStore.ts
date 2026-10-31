@@ -1,4 +1,5 @@
 import {
+  type ArchiveExecutionPage,
   type ArchiveSegment,
   type ArchiveSegmentHeader,
   type ArchiveStore,
@@ -16,6 +17,8 @@ interface HeaderRow {
   through_seq: string;
   n_events: string;
   digest: string;
+  incarnation: string;
+  kind: string | null;
 }
 interface Row extends HeaderRow {
   body: string;
@@ -26,6 +29,8 @@ const toHeader = (r: HeaderRow): ArchiveSegmentHeader => ({
   through: Number(r.through_seq),
   count: Number(r.n_events),
   digest: r.digest,
+  incarnation: r.incarnation,
+  ...(r.kind === "legacy-checkpoint" && { kind: "legacy-checkpoint" as const }),
 });
 
 const toSegment = (r: Row): ArchiveSegment => {
@@ -60,18 +65,20 @@ export class PostgresArchiveStore implements ArchiveStore {
       // exclusive per LogLifecycle; this keeps the store correct on its own.)
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 137))", [executionId]);
       const { rows } = await client.query<HeaderRow>(
-        "SELECT from_seq, through_seq, n_events, digest FROM archive_segments WHERE execution_id = $1 ORDER BY from_seq",
+        "SELECT from_seq, through_seq, n_events, digest, incarnation, kind FROM archive_segments WHERE execution_id = $1 ORDER BY from_seq",
         [executionId]
       );
       if (classifyAppend(executionId, rows.map(toHeader), segment) === "append") {
         await client.query(
-          "INSERT INTO archive_segments (execution_id, from_seq, through_seq, n_events, digest, body) VALUES ($1, $2, $3, $4, $5, $6)",
+          "INSERT INTO archive_segments (execution_id, from_seq, through_seq, n_events, digest, incarnation, kind, body) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
           [
             executionId,
             segment.from,
             segment.through,
             segment.count,
             segment.digest,
+            segment.incarnation,
+            segment.kind ?? null,
             JSON.stringify({
               envelopes: segment.envelopes,
               ...(segment.sealed !== undefined && { sealed: segment.sealed }),
@@ -91,10 +98,28 @@ export class PostgresArchiveStore implements ArchiveStore {
   async headers(executionId: string): Promise<ArchiveSegmentHeader[]> {
     await this.ready;
     const { rows } = await this.pool.query<HeaderRow>(
-      "SELECT from_seq, through_seq, n_events, digest FROM archive_segments WHERE execution_id = $1 ORDER BY from_seq",
+      "SELECT from_seq, through_seq, n_events, digest, incarnation, kind FROM archive_segments WHERE execution_id = $1 ORDER BY from_seq",
       [executionId]
     );
     return rows.map(toHeader);
+  }
+
+  async listExecutions(
+    opts: { cursor?: string; limit?: number } = {}
+  ): Promise<ArchiveExecutionPage> {
+    await this.ready;
+    const limit = opts.limit ?? 500;
+    const { rows } = await this.pool.query<{ execution_id: string }>(
+      `SELECT execution_id FROM archive_segments
+       WHERE ($1::text IS NULL OR execution_id COLLATE "C" > $1::text COLLATE "C")
+       GROUP BY execution_id ORDER BY execution_id COLLATE "C" LIMIT $2`,
+      [opts.cursor ?? null, limit + 1]
+    );
+    const ids = rows.map((r) => r.execution_id);
+    const page = ids.slice(0, limit);
+    return ids.length > limit
+      ? { executionIds: page, nextCursor: page[page.length - 1]! }
+      : { executionIds: page };
   }
 
   async read(
@@ -103,7 +128,7 @@ export class PostgresArchiveStore implements ArchiveStore {
   ): Promise<ArchiveSegment[]> {
     await this.ready;
     const { rows } = await this.pool.query<Row>(
-      `SELECT from_seq, through_seq, n_events, digest, body FROM archive_segments
+      `SELECT from_seq, through_seq, n_events, digest, incarnation, kind, body FROM archive_segments
        WHERE execution_id = $1 AND through_seq >= $2 AND from_seq <= $3 ORDER BY from_seq`,
       [executionId, range.from ?? Number.MIN_SAFE_INTEGER, range.through ?? Number.MAX_SAFE_INTEGER]
     );

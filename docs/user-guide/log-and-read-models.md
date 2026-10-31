@@ -199,6 +199,13 @@ store the archive must be an `EncryptingArchiveStore` on the SAME `KeyStore` (`P
 otherwise), so a shred erases the archived copy too. Pass the archive to `sweepUnpinnedContent({ archiveStores })`
 so a blob only an archived event cites is not reclaimed, and verify an audit hash chain across the
 compaction with `verifyChain(id, { archived })` (`hashChainedEventStore(..., { allowCompaction: true })`).
+An erasing `sweepUnpinnedContent` over a compacted log **refuses** without `archiveStores` (`[]` states that none
+exists), and `loom sweep content` needs `--compaction-archive <archive.db>` (default: `archive.db` beside `--db`;
+`--config` wires the app's) or `--no-compaction-archive`. A log compacted before the archive existed keeps its old
+checkpoint as a `legacy-checkpoint` segment (`readLegacyCheckpoints`); `readArchived` / `readWithArchive` report a
+range only that checkpoint remembers (`ArchiveIncompleteError`, `archiveCoverage`) instead of leaving a silent hole.
+A segment is bound to its log's incarnation, so an execution id reused after a delete never inherits the old
+archive; over a tenant-scoped event store the archive must be a `TenantScopedArchiveStore` for the same tenant.
 
 Both run over optional store SPI (`deleteExecution` / `truncatePrefix`, on in-memory, SQLite,
 and Postgres); a store that omits them can't be swept. A compacted execution resumes, and

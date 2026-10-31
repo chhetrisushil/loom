@@ -1,5 +1,6 @@
 import type { EventEnvelope } from "@loom/core";
 import {
+  type ArchiveExecutionPage,
   type ArchiveSegment,
   type ArchiveSegmentHeader,
   type ArchiveStore,
@@ -8,6 +9,7 @@ import {
 import { decryptValue, encryptValue, hasEnvelope } from "./crypto";
 import { PayloadShreddedError, PayloadUndecryptableError } from "./errors";
 import type { KeyStore } from "./keystore";
+import { defaultSubjectOf } from "./subject";
 
 // ── ADR 0138 — sealing the compaction archive ───────────────────────────────────────────────────
 //
@@ -50,7 +52,11 @@ export class EncryptingArchiveStore implements ArchiveStore {
   /** Structural marker read by the kernel guard: segments are sealed (not just static paths). */
   readonly sealsSegments = true as const;
   readonly deleteExecution?: NonNullable<ArchiveStore["deleteExecution"]>;
-  private readonly subjectOf: (s: { executionId: string; workflowId: string }) => string;
+  /**
+   * PUBLIC so the kernel guard can compare it, by identity, with the event store's `subjectOf`: an
+   * archive sealed under a different subject than the log would survive a shred of the log's subject.
+   */
+  readonly subjectOf: (s: { executionId: string; workflowId: string }) => string;
 
   constructor(
     private readonly inner: ArchiveStore,
@@ -58,7 +64,7 @@ export class EncryptingArchiveStore implements ArchiveStore {
     readonly keys: KeyStore,
     options: EncryptingArchiveStoreOptions = {}
   ) {
-    this.subjectOf = options.subjectOf ?? ((s) => s.executionId);
+    this.subjectOf = options.subjectOf ?? defaultSubjectOf;
     const innerDelete = inner.deleteExecution;
     // Deleting ciphertext only reduces data: forward it (the retention path's whole-execution delete).
     if (innerDelete !== undefined) this.deleteExecution = (id) => innerDelete.call(inner, id);
@@ -91,6 +97,8 @@ export class EncryptingArchiveStore implements ArchiveStore {
       through: segment.through,
       count: segment.count,
       digest: segment.digest,
+      incarnation: segment.incarnation,
+      ...(segment.kind !== undefined && { kind: segment.kind }),
       envelopes: [],
       sealed: body,
     });
@@ -98,6 +106,10 @@ export class EncryptingArchiveStore implements ArchiveStore {
 
   headers(executionId: string): Promise<ArchiveSegmentHeader[]> {
     return this.inner.headers(executionId);
+  }
+
+  listExecutions(opts?: { cursor?: string; limit?: number }): Promise<ArchiveExecutionPage> {
+    return this.inner.listExecutions(opts);
   }
 
   async read(
@@ -140,6 +152,8 @@ export class EncryptingArchiveStore implements ArchiveStore {
         through: seg.through,
         count: seg.count,
         digest: seg.digest,
+        incarnation: seg.incarnation,
+        ...(seg.kind !== undefined && { kind: seg.kind }),
         envelopes,
       };
     } catch (err) {

@@ -2,7 +2,7 @@ import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SEAM_KEYS, SEAM_SPI, SEAM_WIRING } from "./plugin";
+import { SEAM_KEYS, SEAM_SPI, SEAM_WIRING, pluginFiles } from "./plugin";
 
 // ── Fitness function: a seam cannot ship undocumented ─────────────────────────
 //
@@ -86,8 +86,7 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
     // Covered by an existing seam rather than needing their own:
     SnapshotStore: "scaffolded by the `store` seam, alongside EventStore",
     BranchRegistry: "scaffolded by the `store` seam, behind its `branching` option",
-    ArchiveStore:
-      "not emitted by the `store` template yet (ADR 0138): a store plugin that wants `compact` implements it and runs `runArchiveStoreConformance`",
+    ArchiveStore: "scaffolded by the `store` seam, alongside EventStore (ADR 0138)",
   };
 
   /** SPI interface names the map publishes, read from its rows. */
@@ -206,7 +205,7 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
     // The strongest form of this rule, and the one that generalises past today's list:
     // publishing a conformance kit IS loom saying "third parties implement this". An SPI it
     // says that about, and then gives no way to start from, is advertising with no door.
-    const COVERED_ELSEWHERE = new Set(["SnapshotStore", "BranchRegistry", "ArchiveStore"]); // the `store` seam (ArchiveStore: its optional compaction companion, ADR 0138; the template does not emit it yet)
+    const COVERED_ELSEWHERE = new Set(["SnapshotStore", "BranchRegistry", "ArchiveStore"]); // the `store` seam
     const scaffoldable = new Set(Object.values(SEAM_SPI));
     const kitted = exportedKits().map((k) => k.replace(/^run/, "").replace(/Conformance$/, ""));
     const doorless = kitted.filter((spi) => !scaffoldable.has(spi) && !COVERED_ELSEWHERE.has(spi));
@@ -214,6 +213,20 @@ describe("scaffold coverage for published SPIs (fitness)", () => {
       doorless,
       `these SPIs publish a conformance kit and cannot be scaffolded:\n${doorless.join("\n")}`
     ).toEqual([]);
+  });
+
+  it("every SPI marked covered by the `store` seam is actually EMITTED by its template, with its kit wired (ADR 0138)", () => {
+    // COVERED_ELSEWHERE is a claim; this is the evidence. An SPI that is only claimed is the
+    // advertising-with-no-door the rule above exists to prevent (ArchiveStore was claimed while the
+    // template emitted nothing).
+    const files = pluginFiles("store", "acme", { firstParty: false });
+    const index = files["loom-plugin-acme/src/index.ts"]!;
+    const test = files["loom-plugin-acme/src/index.test.ts"]!;
+    for (const spi of ["SnapshotStore", "ArchiveStore"]) {
+      expect(index, `${spi} class`).toContain(`class Acme${spi}`);
+      expect(test, `${spi} conformance`).toContain(`run${spi}Conformance`);
+    }
+    expect(index).toContain("archiveStore: new AcmeArchiveStore(");
   });
 
   it("`lease` is scaffoldable, kitted and documented — the case that prompted this", () => {

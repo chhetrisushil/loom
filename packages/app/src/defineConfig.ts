@@ -1302,7 +1302,7 @@ function buildStores(storage: StorageConfig, warn: (m: string) => void): LoomSto
       eventStore: storage.eventStore,
       snapshotStore: storage.snapshotStore ?? defaultSnapshotStore(storage.eventStore, warn),
       ...(storage.branchRegistry !== undefined && { branchRegistry: storage.branchRegistry }),
-      ...defaultArchive(storage),
+      ...defaultArchive(storage, warn),
     };
   }
   // storage.kind === "memory" — the only backend the composition root itself knows.
@@ -1314,18 +1314,39 @@ function buildStores(storage: StorageConfig, warn: (m: string) => void): LoomSto
 }
 
 /**
- * ADR 0138: the compaction archive for a custom storage. An explicit `archiveStore` is used verbatim.
- * With none, an IN-MEMORY event store gets an in-memory archive (nothing durable to lose); a durable one
- * gets NONE, so `compact` refuses with the fix rather than archiving to a volatile store.
+ * ADR 0138: the compaction archive for a custom storage. An explicit `archiveStore` is used; with none,
+ * an IN-MEMORY event store gets an in-memory archive (nothing durable to lose) and a durable one gets
+ * NONE (a boot warning, and `compact` refuses with the fix rather than archiving to a volatile store).
+ * When the event store encrypts (structural `keys`), the archive is sealed under the SAME KeyStore and
+ * the event store's `subjectOf` unless it already seals itself, as `defaultSnapshotStore` does.
  */
-function defaultArchive(storage: { eventStore: EventStore; archiveStore?: ArchiveStore }): {
-  archiveStore?: ArchiveStore;
-} {
-  if (storage.archiveStore !== undefined) return { archiveStore: storage.archiveStore };
-  if (!isInMemoryEventStore(storage.eventStore)) return {};
-  const keys = (storage.eventStore as { keys?: unknown }).keys;
-  const inner = new InMemoryArchiveStore();
-  return { archiveStore: isKeyStore(keys) ? new EncryptingArchiveStore(inner, keys) : inner };
+function defaultArchive(
+  storage: { eventStore: EventStore; archiveStore?: ArchiveStore },
+  warn: (m: string) => void
+): { archiveStore?: ArchiveStore } {
+  let archive = storage.archiveStore;
+  if (archive === undefined) {
+    if (!isInMemoryEventStore(storage.eventStore)) {
+      warn(
+        "storage.archiveStore was omitted for a custom event store that is not in-memory: `lifecycle.compact` will REFUSE (CompactionArchiveRequiredError), because compaction moves the events it removes into an archive and a volatile default would forget them on restart. Pass `archiveStore` (sqliteStorage()/postgresStorage() supply one; for an encrypting event store it is sealed under the event store's KeyStore automatically), or `durability.retention.compactionArchive`."
+      );
+      return {};
+    }
+    archive = new InMemoryArchiveStore();
+  }
+  return { archiveStore: sealArchiveLike(archive, storage.eventStore) };
+}
+
+/** Seal `archive` under the event store's KeyStore + subject mapping when the log encrypts and it does not already. */
+function sealArchiveLike(archive: ArchiveStore, eventStore: EventStore | undefined): ArchiveStore {
+  const keys = (eventStore as { keys?: unknown } | undefined)?.keys;
+  if (!isKeyStore(keys) || (archive as { sealsSegments?: unknown }).sealsSegments === true) {
+    return archive;
+  }
+  const subjectOf = (eventStore as { subjectOf?: unknown } | undefined)?.subjectOf;
+  return new EncryptingArchiveStore(archive, keys, {
+    ...(typeof subjectOf === "function" && { subjectOf: subjectOf as never }),
+  });
 }
 
 /**
@@ -1897,7 +1918,13 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
   };
   // ADR 0130 residuals D7: compaction folds a log into a checkpoint, so it reads through the runtime's
   // GUARDED store (a stream this node cannot open is refused, never checkpointed as ciphertext).
-  const compactionArchive = config.retention?.compactionArchive ?? stores.archiveStore;
+  const compactionArchive =
+    config.retention?.compactionArchive !== undefined
+      ? sealArchiveLike(
+          config.retention.compactionArchive,
+          config.storage.kind === "custom" ? config.storage.eventStore : undefined
+        )
+      : stores.archiveStore;
   const lifecycle = new LogLifecycle(runtime.events, stores.snapshotStore, {
     ...(compactionArchive !== undefined && { compactionArchive }),
     ...(config.retention?.archive !== undefined && { archive: config.retention.archive }),
@@ -2159,6 +2186,11 @@ export function defineConfig(rawConfig: LoomConfig): LoomApp {
         ...(options?.tenant !== undefined && { tenant: options.tenant }),
         ...(destroyedProof !== undefined && { destroyed: destroyedProof }),
         ...(options?.force !== undefined && { force: options.force }),
+        // ADR 0138: an Art. 15/20 export includes what compaction MOVED into the archive. Read through a
+        // lifecycle over the same RAW store (see above), so the archive read opens with this app's keys.
+        ...(compactionArchive !== undefined && {
+          archive: new LogLifecycle(stores.eventStore, stores.snapshotStore, { compactionArchive }),
+        }),
       });
     },
     eraseSubject(subjectId, tenant, options) {

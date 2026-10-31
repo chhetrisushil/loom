@@ -16,6 +16,7 @@ import {
   type SealingCapability,
   ShardPlan,
   ShardedEventStore,
+  TenantScopedArchiveStore,
   TenantScopedEventStore,
   creationMarker,
 } from "@loom/event-runtime";
@@ -351,6 +352,10 @@ describe("the decorator kit rejects a decorator that swallows or alters sealingC
 
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
 runArchiveStoreConformance(() => new InMemoryArchiveStore(), "InMemoryArchiveStore");
+runArchiveStoreConformance(
+  () => new TenantScopedArchiveStore(new InMemoryArchiveStore(), "acme"),
+  "TenantScopedArchiveStore"
+);
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
 runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore", {
   clocked: (now) => new InMemoryLeaseStore({ now }),

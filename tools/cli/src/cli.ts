@@ -144,12 +144,16 @@ maintain
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
+  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--compaction-archive <archive.db> | --no-compaction-archive] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
                                                   (--orphans also erases blobs NOTHING scanned
                                                    cites, so it needs the snapshot store and
                                                    every archive; with --apply and no archive
                                                    it refuses unless --no-archive;
-                                                   it also needs --snapshots-touch-content)
+                                                   it also needs --snapshots-touch-content;
+                                                   compacted logs also need the compaction
+                                                   archive: --compaction-archive <archive.db>
+                                                   (default archive.db beside --db; --config
+                                                   wires it), else --no-compaction-archive)
 
 plugin
   loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
@@ -599,6 +603,10 @@ async function dispatch(
           noArchive: flags["no-archive"] === "true",
           snapshotsTouchContent: flags["snapshots-touch-content"] === "true",
           ...(flags["archive-snap"] !== undefined && { archiveSnap: flags["archive-snap"] }),
+          ...(flags["compaction-archive"] !== undefined && {
+            compactionArchive: flags["compaction-archive"],
+          }),
+          noCompactionArchive: flags["no-compaction-archive"] === "true",
         })
       );
       return 0;
