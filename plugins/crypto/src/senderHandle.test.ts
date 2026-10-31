@@ -53,8 +53,8 @@ describe("N6: a sealing deployment seals the sender by DEFAULT under an opaque k
     const stored = senderOf(raw);
     expect(isSealedSender(stored)).toBe(true);
     const at = JSON.stringify(raw);
-    expect(at).not.toContain("alice");
-    expect(at).not.toContain("t1");
+    expect(at).not.toContain('"alice"'); // quote-anchored: a bare substring of base64 ciphertext flakes
+    expect(at).not.toContain('"t1"');
     const handle = (stored as { subject: string }).subject;
     expect(handle).toMatch(/^sbj-[0-9a-f]{32}$/);
     expect(handle).not.toContain("alice");
@@ -96,7 +96,7 @@ describe("N6: a sealing deployment seals the sender by DEFAULT under an opaque k
     expect(await store.eraseSender({ actor: "alice", tenant: "t1" })).toBe(true);
     const [a, b] = await store.read(STREAM);
     expect(senderOf(a)).toEqual({ erased: true, ref: aliceHandle });
-    expect(JSON.stringify(a)).not.toContain("alice");
+    expect(JSON.stringify(a)).not.toContain('"alice"');
     expect(senderOf(b)).toEqual({ actor: "bob", tenant: "t1" }); // others untouched
     // the sealing key and the seed are both destroyed: the handle cannot be re-derived from the identity
     expect(await keys.get(aliceHandle)).toBeNull();
@@ -130,7 +130,7 @@ describe("N6: a sealing deployment seals the sender by DEFAULT under an opaque k
     const archive = new EncryptingArchiveStore(raw, keys);
     const e = message(1, "alice");
     await archive.append(STREAM, buildReservedSegment([e], "inc"));
-    expect(JSON.stringify(await raw.read(STREAM))).not.toContain("alice");
+    expect(JSON.stringify(await raw.read(STREAM))).not.toContain('"alice"');
     const [back] = await archive.read(STREAM);
     expect(senderOf(back?.envelopes[0])).toEqual({ actor: "alice", tenant: "t1" });
     // the event store's handle for alice is the archive's (one KeyStore, one mapping): erasing once erases both
@@ -322,7 +322,7 @@ describe("D22 owner ruling: an erased sender stays blocked until an operator rei
 
     const result = await store.reinstateSender({ actor: "alice", tenant: "t1" });
     expect(result).toMatchObject({ reinstated: true, epoch: 1 });
-    expect(JSON.stringify(result)).not.toContain("alice");
+    expect(JSON.stringify(result)).not.toContain('"alice"');
 
     await store.append(message(2, "alice"));
     const raw = await inner.read(STREAM);

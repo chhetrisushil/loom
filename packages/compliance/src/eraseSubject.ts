@@ -113,6 +113,13 @@ export interface ContentCopiesDeleted {
    * counted in `retained`, never deleted, and never reported as the subject's data.
    */
   foreign?: number;
+  /**
+   * ADR 0143 D5: over a sealing store, how many cited blobs ownership could not be PROVED for because the
+   * proving key is already destroyed (a re-erasure after a direct shred, or a citation added after the
+   * intent). Counted in `retained`, never deleted: the ciphertext is unreadable but this erasure cannot say
+   * it is the subject's, so it does not claim it.
+   */
+  unprovable?: number;
 }
 
 /** What an erasure removed from the plaintext archives (recorded durably as `ERASURE_ARCHIVE_DELETED`). */
@@ -155,6 +162,9 @@ const CONTENT_DELETE_INTENDED = "ERASURE_CONTENT_DELETE_INTENDED";
 const CONTENT_DELETED = "ERASURE_CONTENT_DELETED";
 const SENDER_REDACTION_INTENDED = "ERASURE_SENDER_REDACTION_INTENDED";
 const SENDER_REDACTED = "ERASURE_SENDER_REDACTED";
+
+/** ADR 0143 D5: how many distinct citing executions per address the ownership proof is tried under. */
+const MAX_CITERS_PER_ADDRESS = 16;
 
 /** How many times a redaction of one key retries a concurrent writer's conflict before it gives up loudly. */
 const REDACT_RETRIES = 16;
@@ -922,7 +932,7 @@ export class EraseCoordinator {
   private async refsOfExecution(
     executionId: string,
     proof: DestructionProof | undefined,
-    into: Set<string>,
+    out: Set<string>,
     /**
      * `true` (OTHER executions' citations): count only TRUSTED positions (see
      * {@link trustedClaimCheckRefsOf}); a snapshot's refs count only when the execution has no recorded
@@ -933,10 +943,12 @@ export class EraseCoordinator {
      * ADR 0143: where each address was first cited (the citing execution + its workflow), so a sealing
      * store can be asked whether the address is OWNED by that citer's subject.
      */
-    citedBy?: Map<string, { executionId: string; workflowId: string }>
+    citedBy?: Map<string, { executionId: string; workflowId: string }[]>
   ): Promise<void> {
     const events = await this.readErasedOk(executionId, proof);
-    const before = citedBy === undefined ? undefined : new Set(into);
+    // With `citedBy`, collect THIS execution's refs separately so EVERY distinct citer of an address is
+    // recorded (not only the first): the ownership proof may hold under any of the subject's executions.
+    const into = citedBy === undefined ? out : new Set<string>();
     let workflowId = events[0]?.workflowId;
     let sawStep = false;
     const visit = (list: readonly { eventType: string; payload: unknown }[]): void => {
@@ -964,10 +976,17 @@ export class EraseCoordinator {
       workflowId ??= read.snapshot.state.workflowId;
       claimCheckRefsOf(read.snapshot.state, into);
     }
-    if (citedBy !== undefined && before !== undefined) {
+    if (citedBy !== undefined) {
       for (const a of into) {
-        if (!before.has(a) && !citedBy.has(a)) {
-          citedBy.set(a, { executionId, workflowId: workflowId ?? "" });
+        out.add(a);
+        const citers = citedBy.get(a) ?? [];
+        citedBy.set(a, citers);
+        // Bounded: a proof is tried per citer, so a pathological fan-in cannot make erasure quadratic.
+        if (
+          citers.length < MAX_CITERS_PER_ADDRESS &&
+          !citers.some((c) => c.executionId === executionId)
+        ) {
+          citers.push({ executionId, workflowId: workflowId ?? "" });
         }
       }
     }
@@ -992,12 +1011,13 @@ export class EraseCoordinator {
         cutoff?: number;
         sealed?: true;
         foreign?: number;
+        unprovable?: number;
       }
     | undefined
   > {
     const open = await this.openIntent(CONTENT_DELETE_INTENDED, CONTENT_DELETED, subjectId, tenant);
     const mine = new Set<string>();
-    const citedBy = new Map<string, { executionId: string; workflowId: string }>();
+    const citedBy = new Map<string, { executionId: string; workflowId: string }[]>();
     for (const id of executions) await this.refsOfExecution(id, proof, mine, false, citedBy);
     if (mine.size === 0 && open === undefined) return undefined;
     if (this.sealsContent()) {
@@ -1008,10 +1028,26 @@ export class EraseCoordinator {
       // plaintext) before it is planned for deletion; a blob that does not prove is never deleted and is
       // journaled as foreign/retained. Erasure still RECORDS what it covered (the intent, BEFORE the shred;
       // the completion after) and deletes the now-unreadable ciphertext where the store can.
-      const prior = (open?.payload as { addresses?: string[]; foreign?: number } | undefined) ?? {};
-      const known = new Set(prior.addresses ?? []);
-      const owned = new Set(known);
-      const foreign = new Set<string>();
+      const prior =
+        (open?.payload as
+          | {
+              addresses?: string[];
+              foreign?: number;
+              unprovable?: number;
+              foreignAddresses?: string[];
+              unprovableAddresses?: string[];
+            }
+          | undefined) ?? {};
+      // The journaled intent names the foreign/unprovable addresses too, so a retry after the shred (when
+      // every proof now throws PayloadShreddedError) neither reclassifies nor double counts them.
+      const known = new Set([
+        ...(prior.addresses ?? []),
+        ...(prior.foreignAddresses ?? []),
+        ...(prior.unprovableAddresses ?? []),
+      ]);
+      const owned = new Set(prior.addresses ?? []);
+      const foreign = new Set(prior.foreignAddresses ?? []);
+      const unprovable = new Set(prior.unprovableAddresses ?? []);
       const fresh = [...mine].filter((a) => !known.has(a));
       const content = this.options.content;
       if (fresh.length > 0 && typeof content?.ownedBy !== "function") {
@@ -1021,34 +1057,51 @@ export class EraseCoordinator {
         );
       }
       for (const address of fresh) {
-        const access = citedBy.get(address) as { executionId: string; workflowId: string };
-        let isOwned: boolean;
-        try {
-          isOwned = await (content as Required<Pick<ErasableContent, "ownedBy">>).ownedBy(
-            { __loomContent: address },
-            access
-          );
-        } catch (err) {
-          // The key is already destroyed (a re-erasure): ownership is unprovable and the bytes are
-          // unreadable either way - retained, never deleted. Any other failure (a key merely absent from
-          // this node) is loud: nothing is shredded.
-          if (!isPayloadShredded(err)) throw err;
-          isOwned = false;
+        // The putter may be ANY execution of the subject that cites the address (the compliance subject
+        // can span executions with distinct crypto subjects): owned if the proof holds under any of them.
+        let isOwned = false;
+        let sawShredded = false;
+        for (const access of citedBy.get(address) ?? []) {
+          try {
+            isOwned = await (content as Required<Pick<ErasableContent, "ownedBy">>).ownedBy(
+              { __loomContent: address },
+              access
+            );
+          } catch (err) {
+            // The key is already destroyed (a re-erasure): ownership under that key is unprovable. Any other
+            // failure (a key merely absent from this node) is loud: nothing is shredded.
+            if (!isPayloadShredded(err)) throw err;
+            sawShredded = true;
+          }
+          if (isOwned) break;
         }
         if (isOwned) owned.add(address);
+        else if (sawShredded) unprovable.add(address);
         else foreign.add(address);
       }
-      const retained = Math.max(prior.foreign ?? 0, foreign.size);
+      const foreignCount = Math.max(prior.foreign ?? 0, foreign.size);
+      const unprovableCount = Math.max(prior.unprovable ?? 0, unprovable.size);
+      const retained = foreignCount + unprovableCount;
       const addresses = [...owned];
       const intentId =
         open?.id ??
         (await this.appendIntent(CONTENT_DELETE_INTENDED, subjectId, tenant, {
           addresses,
           retained,
-          foreign: retained,
+          foreign: foreignCount,
+          unprovable: unprovableCount,
+          foreignAddresses: [...foreign],
+          unprovableAddresses: [...unprovable],
           sealed: true,
         }));
-      return { intentId, addresses, retained, foreign: retained, sealed: true };
+      return {
+        intentId,
+        addresses,
+        retained,
+        foreign: foreignCount,
+        unprovable: unprovableCount,
+        sealed: true,
+      };
     }
     const content = this.options.content;
     const store = this.options.eventStore;
@@ -1154,6 +1207,7 @@ export class EraseCoordinator {
           cutoff?: number;
           sealed?: true;
           foreign?: number;
+          unprovable?: number;
         }
       | undefined
   ): Promise<ContentCopiesDeleted | undefined> {
@@ -1168,13 +1222,16 @@ export class EraseCoordinator {
         deleted++;
       }
       const foreign = plan.foreign ?? 0;
+      const unprovable = plan.unprovable ?? 0;
+      const retained = foreign + unprovable;
       await this.appendCompletion(CONTENT_DELETED, subjectId, tenant, plan.intentId, {
         deleted,
-        retained: foreign,
+        retained,
         sealed: plan.addresses.length,
         foreign,
+        unprovable,
       });
-      return { deleted, retained: foreign, sealed: plan.addresses.length, foreign };
+      return { deleted, retained, sealed: plan.addresses.length, foreign, unprovable };
     }
     for (const address of plan.addresses) {
       const ref = { __loomContent: address };

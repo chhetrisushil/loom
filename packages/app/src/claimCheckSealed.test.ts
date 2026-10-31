@@ -139,7 +139,13 @@ describe("claim-check under security.crypto with the EncryptingContentStore (ADR
     await finish(b, "x");
     const r = await b.app.eraseSubject("ann");
     expect(r.outcome).toBe("erased");
-    expect(r.contentDeleted).toEqual({ deleted: 2, retained: 0, sealed: 2, foreign: 0 });
+    expect(r.contentDeleted).toEqual({
+      deleted: 2,
+      retained: 0,
+      sealed: 2,
+      foreign: 0,
+      unprovable: 0,
+    });
     const control = await w.raw.read("__loom_erasure__");
     const types = control.map((e) => e.eventType);
     expect(types.indexOf("ERASURE_CONTENT_DELETE_INTENDED")).toBeGreaterThanOrEqual(0);
@@ -176,7 +182,13 @@ describe("claim-check under security.crypto with the EncryptingContentStore (ADR
     const envs = await envelopes(w.events, "x");
     await finish(b, "x");
     const r = await b.app.eraseSubject("ann");
-    expect(r.contentDeleted).toEqual({ deleted: 0, retained: 0, sealed: 2, foreign: 0 });
+    expect(r.contentDeleted).toEqual({
+      deleted: 0,
+      retained: 0,
+      sealed: 2,
+      foreign: 0,
+      unprovable: 0,
+    });
     expect((await innerBytes(w.inner)).length).toBe(2); // ciphertext remains, unreadable
     await expect(
       content.get(envs[0]!.ref, { executionId: "x", workflowId: "agent" })

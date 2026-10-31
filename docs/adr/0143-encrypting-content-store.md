@@ -107,9 +107,19 @@ the store to PROVE ownership of each (D5), and journals `ERASURE_CONTENT_DELETE_
 OWNED ones), retained, foreign, sealed: true }`; after the shred it deletes the now-unreadable ciphertext of
 the owned blobs where the store has `delete()` and journals `ERASURE_CONTENT_DELETED { deleted, retained,
 sealed, foreign }`; `EraseSubjectResult.contentDeleted` reports `{ deleted, retained, sealed, foreign }`.
-A cited blob that does not prove (another subject's blob the log merely cites, an absent one, one whose key
-was already destroyed) is NEVER deleted: it is counted in `retained` and `foreign`, so erasing bob cannot
-delete ann's blob, and the record says so honestly. A sealing store without `ownedBy`, or a proof that cannot
+A cited blob that does not prove (another subject's blob the log merely cites, or an absent one) is NEVER
+deleted: it is counted in `retained` and `foreign`, so erasing bob cannot delete ann's blob, and the record says
+so honestly. One whose proving key is ALREADY destroyed (a re-erasure after a direct `shredSubject`, or a
+citation added after the intent) cannot be proved either way, so it is counted in `retained` and a distinct
+`unprovable` (never `foreign`, never deleted): `{ deleted, retained, sealed, foreign, unprovable }` on the result
+and on `ERASURE_CONTENT_DELETED`. The intent also names the foreign and unprovable addresses, so a retry after the
+shred (when every proof now throws) neither reclassifies nor double counts them.
+
+The ownership proof is tried under EVERY distinct citing execution of the subject (a bounded set, 16 per address),
+not only the first: the compliance `subjectOf` (the SubjectIndex) and the crypto `subjectOf` may differ (crypto by
+execution, compliance by user), so one data subject spans executions under distinct keys and a blob put by one may
+be first cited by another. The address is owned if the proof holds under ANY of them, and then it is deleted and
+counted `deleted`, not `foreign`. Aligning the two `subjectOf` functions is still recommended (`docs/compliance.md`). A sealing store without `ownedBy`, or a proof that cannot
 be decided (the key is not on this node), REFUSES the erasure before anything is shredded. There is
 no owner-set scan and no conditional delete: addresses are subject-scoped (D2), so no other subject's blob can
 share one (ADR 0120 owner sets collapse to a single subject). A store without `delete()` still completes (the
