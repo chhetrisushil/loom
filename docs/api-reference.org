@@ -717,6 +717,12 @@ would survive a key shred. ~applyRetention~ / ~evaluate~ return ~"unsafe-archive
 anything is read, copied or truncated. A compacted execution is judged on its snapshot plus the
 surviving suffix, so it is reclaimable.
 
+*Snapshot pruning (ADR 0134, off by default).* ~LogLifecycle.pruneSnapshots(executionId, { keepLatest?, keepSequences? })~
+deletes superseded snapshots in one statement (~SnapshotStore.pruneSnapshots~, SPI 1.2.0) and resolves with the
+count. It never prunes the latest ~keepLatest~ (default 1), a compacted log's checkpoint and everything at or
+below it, a log compacted through its tip (~[0]~), a ~compactionExempt~ execution, or ~keepSequences~; so every
+fork point and every fold is unchanged (a fork may fold more events). The runtime never calls it on its own.
+
 *Compaction integrity (ADR 0106).* The checkpoint is named for its execution (a blank one used to
 send every event a later resume appended to execution ~""~), a log compacted before is folded ON its
 checkpoint (~CompactionCheckpointMissingError~ when that checkpoint is gone, nothing touched), and
@@ -972,7 +978,7 @@ const OPTIONAL_EVENT_STORE_METHODS: readonly OptionalEventStoreMethod[]         
 type DecoratorPlan<S, M extends keyof S> = { readonly [K in M]-?: "forward" | NonNullable<S[K]> | { readonly refuse: string } };
 function installOptional<S extends object, M extends keyof S>(target: S, inner: S, plan: DecoratorPlan<S, M>, bindTo?: object): void
 function refusalsOf(store: object): ReadonlyMap<string, string>                    // what installOptional recorded as refused
-// @loom/snapshot-runtime: OptionalSnapshotStoreMethod ("deleteExecution" | "loadLatestSealed"), OPTIONAL_SNAPSHOT_STORE_METHODS
+// @loom/snapshot-runtime: OptionalSnapshotStoreMethod ("deleteExecution" | "loadLatestSealed" | "pruneSnapshots"), OPTIONAL_SNAPSHOT_STORE_METHODS
 
 class Tenant implements EventStore {
   readonly appendBatch?: NonNullable<EventStore["appendBatch"]>;   // …one field per optional method
@@ -996,6 +1002,8 @@ interface SnapshotStore {
   loadLatestBefore(executionId: string, sequence: number): Promise<Snapshot | null>;   // used by fork()
   deleteExecution?(executionId: string): Promise<void>;           // optional (K10.1 retention)
   loadLatestSealed?(executionId: string): Promise<Snapshot | null>;  // optional (SPI 1.1.0, ADR 0106): at rest, never decrypted
+  pruneSnapshots?(executionId: string, range: { after: number; before: number }, keep?: readonly number[]): Promise<number>;
+      // optional (SPI 1.2.0, ADR 0134): delete after < sequence < before minus `keep`, one statement; the CALLER (LogLifecycle.pruneSnapshots) decides what is safe
   close(): Promise<void>;
 }
 class InMemoryAsyncSnapshotStore { constructor(options?: { latencyMs?: number }) }
