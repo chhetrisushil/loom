@@ -158,6 +158,34 @@ both shapes, since one schema backs both settings.
 Verified against a temporary tsconfig that does **not** exclude tests, because loom test files are
 not tsc-checked and a type-level assertion in one is otherwise decoration.
 
+## Amendment (2026-10-31) - taint NESTED in a tool result (#735)
+
+D1 puts the wrapper on a value, and a producer may taint only PART of what it returns: A2A taints
+`content` and leaves `raw` untainted because `raw` feeds control flow. The agent loop checked
+`isTainted` at the TOP of a tool result only, so `{ raw, content: tainted(...) }` was flattened by
+`JSON.stringify` into plain tool_result text: not fenced, and `sawTaintFrom` never set, so a
+`writeBack` memory entry (and, before the fix, a compaction input) was stored untainted. That is a
+durable memory-poisoning path.
+
+**Rule.** One shared walk, `scanTaint` / `nestedTaintOrigin` in `@loom/classify`, finds a wrapper at ANY
+depth (iterative, cycle-safe, bounded: depth 64, 100,000 nodes; binary views skipped). It FAILS CLOSED:
+a value too deep or too large to scan is reported tainted with origin
+`unknown:taint-scan-bound-exceeded`, because "could not look" is not "clean". `toolResultContent`
+fences the WHOLE `tool_result` when any nested wrapper is present (the body is the same
+`{ tool, result }` JSON, re-tainted as one string with the origin(s), `a, b` when several), and
+`agentLoop$` records the origin in `sawTaintFrom`, so write-back is tainted and the compaction summary
+is fenced. The claim-check middleware uses the same helper for its envelope's origin.
+
+**Why the whole result and not only the subtrees.** The fence is positional (D3): the model reads one
+string, and a fence around a fragment of a JSON document leaves the rest to be read as instructions the
+moment a tainted string quotes a closing brace. Fencing the whole result is the minimal safe choice;
+the clean `raw` stays legible INSIDE the fence and the inner wrappers still show which parts are
+untrusted. Cost: a result with one tainted field is shown as untrusted in full.
+
+**Unchanged.** The stored value is never altered (a flow still reads A2A's untainted `raw`); a clean
+result is byte-identical; a top-level wrapper keeps its origin and unwrapped body; tainted text still
+cannot reach a system prompt (`guardRequest`, D2/D3).
+
 ## Evidence
 
 `packages/llm/src/untrusted.test.ts` (13) covers each refusal position, the fence-breakout cases,

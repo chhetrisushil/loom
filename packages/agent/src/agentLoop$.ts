@@ -1,4 +1,4 @@
-import { isTainted, taintOf, tainted } from "@loom/classify";
+import { isTainted, nestedTaintOrigin, taintOf, tainted } from "@loom/classify";
 import type { AgentDefinition, ExecutableTask, ToolDefinition } from "@loom/core";
 import {
   TypedFailure,
@@ -1494,8 +1494,10 @@ export async function agentLoop$(
       j: number,
       { output, isError, virtualBytes }: Outcome
     ): void => {
-      if (sawTaintFrom === undefined && isTainted(output)) {
-        sawTaintFrom = taintOf(output)?.origin ?? "unknown";
+      if (sawTaintFrom === undefined) {
+        sawTaintFrom = isTainted(output)
+          ? (taintOf(output)?.origin ?? "unknown")
+          : nestedTaintOrigin(output); // a wrapper nested in the result (A2A `content`), #735
       }
       toolCallLog.push(
         lean
