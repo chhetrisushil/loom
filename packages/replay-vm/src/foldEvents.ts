@@ -1,4 +1,4 @@
-import type { EventEnvelope, ExecutionState } from "@loom/core";
+import type { EventEnvelope, ExecutionFrame, ExecutionState } from "@loom/core";
 import {
   FAILED_WHILE_PARKED,
   FLOW_EMIT_DIGEST,
@@ -78,6 +78,33 @@ export function foldEvents(
  * (same object).
  */
 export function normalizeSnapshotState<T extends Partial<ExecutionState>>(state: T): T {
+  return normalizeFailed(stripSettledInputs(state));
+}
+
+const SETTLED_FRAME = new Set(["completed", "failed", "cancelled"]);
+
+/**
+ * ADR 0138 D8 (EVENT_SCHEMA 1.26.0) - the fold no longer keeps a SETTLED frame's `input` (the log, or the
+ * compaction archive, holds it). A snapshot written by an older fold still carries them; strip them in
+ * one O(frames) pass so `fold(snapshot, tail) == fold(events)` holds. Frames still in flight keep theirs.
+ * Returns the same object when there is nothing to strip.
+ */
+function stripSettledInputs<T extends Partial<ExecutionState>>(state: T): T {
+  const frames = state.frames;
+  if (frames === undefined) return state;
+  let stripped: Record<string, ExecutionFrame> | undefined;
+  for (const stepId of Object.keys(frames)) {
+    const frame = frames[stepId];
+    if (frame !== undefined && frame.input !== undefined && SETTLED_FRAME.has(frame.status)) {
+      stripped ??= { ...frames };
+      const { input: _input, ...rest } = frame;
+      stripped[stepId] = rest as ExecutionFrame;
+    }
+  }
+  return stripped === undefined ? state : { ...state, frames: stripped };
+}
+
+function normalizeFailed<T extends Partial<ExecutionState>>(state: T): T {
   if (state.status !== "failed" || state.variables?._error !== undefined) return state;
   const frames = state.frames ?? {};
   let stepFailed = false;

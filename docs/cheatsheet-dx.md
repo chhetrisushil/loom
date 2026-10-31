@@ -4,7 +4,7 @@
 > the handful of things that reliably bite. Every writing command is a dry run until
 > `--apply`. Card I is [what the kernel gives you](cheatsheet-features.md).
 >
-> **19** plugin seams · **19** conformance kits (`loom plugin seams` shows which seams have one) ·
+> **19** plugin seams · **20** conformance kits (`loom plugin seams` shows which seams have one) ·
 > every log command takes `--config` or `--db` (`knowledge`, `verify`, `deploy check` are `--config` only)
 
 ## Day one

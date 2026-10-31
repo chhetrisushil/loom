@@ -33,7 +33,7 @@ describe("kernelManifest", () => {
 
   it("ADR 0130 residuals S1 reserves EVENT_SCHEMA 1.25.0 / EventStore SPI 2.5.0 and changes NOTHING in the kernel ABI", () => {
     const m = kernelManifest();
-    expect(m.eventSchema.version).toBe("1.25.0");
+    expect(m.eventSchema.version).toBe("1.26.0");
     expect(m.spis.eventStore).toBe("2.5.0");
     // KERNEL_ABI is the syscall surface: the new facts are folded kinds, not syscalls, and the new
     // ops are type-only. Both the version and the table must be exactly what they were.
