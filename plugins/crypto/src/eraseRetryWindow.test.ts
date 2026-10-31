@@ -93,6 +93,21 @@ describe("eraseSubject / exportSubject in the ShredIncomplete window", () => {
       });
       expect(out.executions).toHaveLength(1);
       expect(JSON.stringify(out)).not.toContain("123-45-6789");
+      // Explicit signal: no `unarchived` here because the log was read through the erasure window.
+      expect(out.executions[0]!.erasureWindow).toBe(true);
+      expect(out.executions[0]!.unarchived).toBeUndefined();
+      // With an archive configured the same holds: the missing coverage is explained, not silent.
+      const withArchive = await exportSubject(w.subject, {
+        index: w.index,
+        eventStore: w.store,
+        destroyed: (s) => w.keys.wasDestroyed(s),
+        archive: {
+          archiveCoverage: async () => ({ unarchived: [] }),
+          readWithArchive: async (id) => w.store.read(id),
+        },
+      });
+      expect(withArchive.executions[0]!.erasureWindow).toBe(true);
+      expect(withArchive.executions[0]!.unarchived).toBeUndefined();
     });
   }
 });

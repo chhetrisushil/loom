@@ -242,6 +242,31 @@ describe("H2 - an archive is bound to the incarnation of its log (a reused execu
     expect((await archive.headers("x")).length).toBe(1);
   });
 
+  it("the re-compact no-op does not hide a reused-id leftover: a tip-retaining store with a foreign-incarnation archive refuses instead of returning null", async () => {
+    const { buildSegment } = await import("@loom/event-runtime");
+    const { eventStore: inner, snapshotStore, archive } = plain();
+    // a store that keeps the tip as an anchor (a hash chain): truncates through - 1
+    const keepsTip = Object.assign(Object.create(inner) as InMemoryAsyncEventStore, {
+      truncatePrefix: async (id: string, through: number) => inner.truncatePrefix!(id, through - 1),
+    }) as EventStore;
+    const runtime = boot(inner, snapshotStore);
+    await (
+      await runtime.start({ definition, runner }, { n: 1 }, { executionId: "t" })
+    ).waitForSuspend();
+    const original = await inner.read("t");
+    const life = new LogLifecycle(keepsTip, snapshotStore, { compactionArchive: archive });
+    expect(await life.compact("t")).not.toBeNull();
+    expect(await life.compact("t")).toBeNull(); // the true no-op
+    // the same id now meets an archive holding ANOTHER run's segments
+    const foreign = new InMemoryArchiveStore();
+    await foreign.append(
+      "t",
+      buildSegment(original.slice(1), "some-other-run", 1, original[original.length - 1]!.sequence)
+    );
+    const meets = new LogLifecycle(keepsTip, snapshotStore, { compactionArchive: foreign });
+    await expect(meets.compact("t")).rejects.toBeInstanceOf(ArchiveIncarnationError);
+  });
+
   it("on the plain-delete path the segments go BEFORE the log, so a crash leaves nothing a reused id can meet", async () => {
     const { snapshotStore, archive } = plain();
     const inner = new InMemoryAsyncEventStore();

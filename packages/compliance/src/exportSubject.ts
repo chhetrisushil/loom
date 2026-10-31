@@ -50,6 +50,12 @@ export interface SubjectExecutionExport {
    * unreadable by design) or no archive was configured.
    */
   unarchived?: UnarchivedRange[];
+  /**
+   * `true` when this execution was read through the crypto-shred erasure window (the key is
+   * destroyed, the tombstone not yet written): the export is the redacted view and `unarchived` is
+   * absent BECAUSE of that, not because the archive is complete.
+   */
+  erasureWindow?: true;
 }
 
 /** A subject's full data export across every execution concerning them. */
@@ -117,6 +123,7 @@ export async function exportSubject(
   for (const executionId of executionIds) {
     let events: EventEnvelope[];
     let unarchived: UnarchivedRange[] | undefined;
+    let erasureWindow = false;
     try {
       events =
         options.archive !== undefined
@@ -134,6 +141,8 @@ export async function exportSubject(
       );
       if (window === undefined) throw err;
       events = [...window];
+      erasureWindow = true;
+      unarchived = undefined;
     }
     if (events.length === 0) continue; // deleted (retention) — nothing left to export
     // Seed the fold with identity — foldEvents takes executionId/workflowId from `initial`,
@@ -149,6 +158,7 @@ export async function exportSubject(
       ...(includeEvents && { events }),
       ...(legacy.length > 0 && { legacyCheckpoints: legacy }),
       ...(unarchived !== undefined && { unarchived }),
+      ...(erasureWindow && { erasureWindow: true as const }),
     });
   }
   return { subjectId, executions };

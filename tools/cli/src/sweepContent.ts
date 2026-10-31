@@ -63,6 +63,11 @@ function formatReport(
     }
     lines.push(`  ${verb} orphans (${report.orphansReclaimed.length}):`);
     listAddresses(lines, report.orphansReclaimed);
+    if (report.unarchivedAcknowledged.length > 0) {
+      lines.push(
+        `  ACKNOWLEDGED (--acknowledge-unarchived): ${report.unarchivedAcknowledged.length} compacted log(s) not covered by an archive, their orphan blobs erased anyway: ${report.unarchivedAcknowledged.join(", ")}`
+      );
+    }
   }
   return lines.join("\n");
 }
@@ -115,6 +120,11 @@ export async function cmdSweepContent(
     compactionArchive?: string;
     /** `--no-compaction-archive`: the operator asserts no log was compacted into an archive. */
     noCompactionArchive?: boolean;
+    /**
+     * `--acknowledge-unarchived`: these logs' compacted history is already gone (compacted before
+     * ADR 0138, never re-compacted; or fork children); erasing their orphan blobs is accepted.
+     */
+    acknowledgeUnarchived?: boolean;
     /**
      * `--snapshots-touch-content`: the operator asserts that the runtime which WROTE these
      * snapshot stores wrapped them in `ContentTouchingSnapshotStore` (ADR 0055 D6 amendment 2).
@@ -222,13 +232,15 @@ export async function cmdSweepContent(
       eventStores: archive === undefined ? [live] : [live, archive],
       ...(orphans && { snapshotStores }),
       // ADR 0138: the compaction archive pins what compaction moved out of the logs. `[]` is the
-      // operator's explicit statement (`--no-compaction-archive`) that none exists; with neither, an
+      // operator's statement (`--no-compaction-archive`) that none exists - which alone no longer passes a
+      // gapped log (needs `--acknowledge-unarchived`); with neither, an
       // erasing orphan pass over a compacted log refuses (ArchiveStoresRequiredError).
       ...(compactionArchive !== undefined
         ? { archiveStores: [compactionArchive] }
         : opts.noCompactionArchive === true
           ? { archiveStores: [] }
           : {}),
+      ...(opts.acknowledgeUnarchived === true && { acknowledgeUnarchivedLogs: true }),
       contentStore: content,
       pinnedEventTypes: pins,
       olderThanMs: opts.ttlMs,
@@ -251,7 +263,7 @@ export async function cmdSweepContent(
   } catch (err) {
     if (err instanceof ArchiveStoresRequiredError) {
       throw new Error(
-        `${err.message} On the CLI: pass --compaction-archive <archive.db> (default: archive.db beside --db; --config wires the app's), or --no-compaction-archive if no log was compacted into an archive.`
+        `${err.message} On the CLI: pass --compaction-archive <archive.db> (default: archive.db beside --db; --config wires the app's), or, if those logs were compacted before ADR 0138 (their history is already gone), --acknowledge-unarchived.`
       );
     }
     throw err;

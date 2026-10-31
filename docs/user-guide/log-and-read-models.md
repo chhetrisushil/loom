@@ -199,9 +199,15 @@ store the archive must be an `EncryptingArchiveStore` on the SAME `KeyStore` (`P
 otherwise), so a shred erases the archived copy too. Pass the archive to `sweepUnpinnedContent({ archiveStores })`
 so a blob only an archived event cites is not reclaimed, and verify an audit hash chain across the
 compaction with `verifyChain(id, { archived })` (`hashChainedEventStore(..., { allowCompaction: true })`).
-An erasing `sweepUnpinnedContent` over a compacted log **refuses** without `archiveStores` (`[]` states that none
-exists), and `loom sweep content` needs `--compaction-archive <archive.db>` (default: `archive.db` beside `--db`;
-`--config` wires the app's) or `--no-compaction-archive`. A log compacted before the archive existed keeps its old
+An erasing `sweepUnpinnedContent` **checks every compacted log's removed range against the given `archiveStores`'
+headers** and refuses (`ArchiveStoresRequiredError`) when it is not covered - `[]` no longer suffices. For logs
+compacted before the archive existed (their history is already gone) pass `acknowledgeUnarchivedLogs: true`
+("erasing their orphan blobs is accepted"; the executions are reported in `unarchivedAcknowledged`); a fork child
+of a compacted parent needs it too. `loom sweep content` needs `--compaction-archive <archive.db>` (default:
+`archive.db` beside `--db`; `--config` wires the app's) and, for such logs, `--acknowledge-unarchived`.
+**The tenant guard is opt-in:** a multi-tenant deployment must set `durability.retention.tenant` (or use
+tenant-scoped stores) to get the `ArchiveTenantMismatchError` refusals; an undeclared, unscoped stack reads as
+single-tenant. A log compacted before the archive existed keeps its old
 checkpoint as a `legacy-checkpoint` segment (`readLegacyCheckpoints`); `readArchived` / `readWithArchive` report a
 range only that checkpoint remembers (`ArchiveIncompleteError`, `archiveCoverage`) instead of leaving a silent hole.
 A segment is bound to its log's incarnation, so an execution id reused after a delete never inherits the old

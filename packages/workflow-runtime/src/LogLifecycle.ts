@@ -1001,6 +1001,11 @@ export class LogLifecycle {
       (await this.snapshotStore.loadAt(executionId, through)) !== null
     ) {
       const headers = await archive.headers(executionId);
+      // A reused-id leftover is a signal, not a no-op: refuse it here as `archiveRemoved` would.
+      const foreign = headers.find((h) => h.incarnation !== incarnation);
+      if (foreign !== undefined) {
+        throw new ArchiveIncarnationError(executionId, foreign.incarnation, incarnation);
+      }
       if (headers.length > 0 && headers[headers.length - 1]!.through >= through) return null;
     }
 

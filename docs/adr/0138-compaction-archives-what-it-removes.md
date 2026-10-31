@@ -289,6 +289,8 @@ design).
 
 ### D19 - `archiveStores: []` is checked, not trusted (re-review medium 3)
 
+> **Superseded in part by D24 (third round):** the mark no longer decides which logs are checked.
+
 The sweep (D9) took `[]` as "no archive exists" on the operator's word. The word can be wrong: a wiped, wrong
 or forgotten archive over a log that WAS archived. Now an archiving compaction marks its checkpoint (D21) and an
 ERASING pass requires, for every scanned log whose checkpoint carries the mark, that the given archives'
@@ -329,6 +331,51 @@ refused (`ArchiveIncarnationError`), never silently mixed.
 `runArchiveStoreConformance` asserted paging order with the JS default `sort()` (UTF-16 code units), which
 disagrees with the SPI's CODE POINT order for ids above U+D800. It now compares with `compareExecutionIds`,
 and a new case lists astral-character ids so an implementation that sorts by code unit fails.
+
+## Third review round (2026-10-31) - decisions D24-D27
+
+### D24 - an erase is never gated by a heuristic: coverage is checked for EVERY compacted log (supersedes D19's mark gate)
+
+D19 ran the erasing sweep's coverage check only when the checkpoint it picked carried the `ckpt-0138-` id
+mark. The mark can be lost: the checkpoint at the gap pruned or replaced and a later ulid snapshot picked, or a
+fork child whose lowest snapshot is an unmarked fork seed. Then `archiveStores: []`, or an archive missing a
+segment, let the pass erase blobs only archived history cites. A heuristic must not gate an ERASE. Now, in an
+erasing pass (`reclaimOrphans` and not `dryRun`), for every scanned log with a gap (and every log compacted
+to its tip) the removed range - the log's missing sequences, whatever its checkpoint is called - must be
+covered by the given archives' headers (events or `legacy-checkpoint` segments; the headers carry
+`from`/`through`, so the "archived through" fact lives in the archive and pruning cannot lose it), else
+`ArchiveStoresRequiredError` (`reason: "uncovered"`, naming the executions) before anything is erased.
+`archiveStores: []` alone therefore no longer suffices for a gapped log.
+
+The one way past it, for logs whose compacted history is ALREADY GONE (compacted before ADR 0138 and never
+re-compacted, so no archive exists), is the explicit, separately named opt-in
+`acknowledgeUnarchivedLogs: true` (CLI `--acknowledge-unarchived`): "these logs' compacted history is already
+gone; erasing their orphan blobs is accepted." The sweep result lists the executions it applied to in
+`unarchivedAcknowledged` (the CLI prints them). The mark is kept for REPORTING only (`archiveCoverage`'s
+`why: "missing" | "legacy"` labels, D21); no erase decision reads it. A dry run is exempt.
+
+**Fork children (decision).** A child forked from a compacted parent copies the parent's gap, but an archive is
+keyed per execution and the child's envelopes do not name the parent, so the child's removed range is covered
+by NO archive header. Consulting the parent's coverage would need a parent id the log does not carry, i.e. a
+guess. Fail closed: a sweep over a fork child of a compacted parent needs the acknowledgment (the parent's
+archive, passed in `archiveStores`, still pins every blob its history cites, so the acknowledgment loses
+nothing the parent's archive holds). The e2e fork-race test passes it for that reason.
+
+### D25 - the export says WHY coverage is missing (low)
+
+An `exportSubject` execution read through the crypto-shred erasure window now carries `erasureWindow: true`
+alongside the absent `unarchived`, so a caller can tell "unreadable by design" from "no archive configured".
+
+### D26 - the tenant guard is opt-in (docs)
+
+`durability.retention.tenant` (or tenant-scoped stores) is what makes the guard refuse (D17): an undeclared,
+unscoped store stack is indistinguishable from a single-tenant one. A multi-tenant deployment must declare it;
+the operator docs now say so.
+
+### D27 - the re-compact no-op checks the incarnation (low)
+
+D20's no-op returned `null` before the incarnation check, so a reused-id leftover header was hidden. The
+no-op now refuses with `ArchiveIncarnationError` on a foreign incarnation first, exactly as `archiveRemoved`.
 
 ## Part B — Decisions (fold)
 

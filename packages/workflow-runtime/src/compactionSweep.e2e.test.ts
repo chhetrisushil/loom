@@ -215,9 +215,11 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
         snapshotStores: [rawSnaps],
         // ADR 0138: `[]` ISOLATES the seed-snapshot citation path under test. Were the parent's
         // archive scanned, its archived prefix event would pin the blob and no citation race exists.
-        // `[]` is accepted here because the only log scanned is the CHILD, whose checkpoint is a fork
-        // seed (no archiving mark): over an archived log `[]` is refused (see the describe below).
+        // The only log scanned is the CHILD, whose copied gap is keyed to NO archive (the parent's
+        // archive is per parent execution, and the envelopes do not name the parent): coverage cannot
+        // be shown, so FAIL CLOSED - the child needs the explicit acknowledgment, not a mark heuristic.
         archiveStores: [],
+        acknowledgeUnarchivedLogs: true,
         contentStore: content,
         pinnedEventTypes: [],
         olderThanMs: DAY,
@@ -303,7 +305,7 @@ describe("ADR 0138 - archiveStores: [] over an archived log is refused", () => {
         dryRun,
         reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
       });
-    return { archive, content, stepBlob, sweep };
+    return { archive, content, stepBlob, sweep, snapshotStore };
   }
 
   it("[] is refused (nothing erased); so is an empty or foreign archive; the real one is accepted", async () => {
@@ -318,6 +320,23 @@ describe("ADR 0138 - archiveStores: [] over an archived log is refused", () => {
     await expect(sweep([], true)).resolves.toBeDefined();
     const ok = await sweep([archive]);
     expect(ok.orphansReclaimed).toEqual([]);
+    expect(await content.get(stepBlob)).not.toBeNull();
+  });
+
+  it("the archiving mark is NOT trusted: with the marked checkpoint pruned and replaced by an unmarked snapshot, `[]` and a partial archive are still refused; the acknowledgment is explicit and reported", async () => {
+    const { archive, content, stepBlob, sweep, snapshotStore } = await archivedLog();
+    const cp = (await snapshotStore.loadLatest("e"))!;
+    expect(cp.id.startsWith("ckpt-0138-")).toBe(true);
+    await snapshotStore.pruneSnapshots("e", { after: cp.sequence - 1, before: cp.sequence + 1 });
+    await snapshotStore.save({ ...cp, id: "plain-ulid-snapshot" });
+    expect((await snapshotStore.loadLatest("e"))!.id).toBe("plain-ulid-snapshot");
+    await expect(sweep([])).rejects.toMatchObject({ reason: "uncovered", executionIds: ["e"] });
+    await expect(sweep([new InMemoryArchiveStore()])).rejects.toMatchObject({
+      reason: "uncovered",
+    });
+    expect(await content.get(stepBlob)).not.toBeNull();
+    // the real archive still passes (headers, not the mark, decide)
+    expect((await sweep([archive])).orphansReclaimed).toEqual([]);
     expect(await content.get(stepBlob)).not.toBeNull();
   });
 });

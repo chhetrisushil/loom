@@ -1527,6 +1527,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         eventStores: [live],
         snapshotStores: [snapshotStore],
         archiveStores: [], // ADR 0138: a log compacted before the archive existed
+        acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
         contentStore: content,
         pinnedEventTypes: ["FINDING_RECORDED"],
         olderThanMs: TTL,
@@ -1593,7 +1594,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       expect([...dry.orphansReclaimed, ...dry.reclaimed]).toContain(note.__loomContent);
     });
 
-    it("ADR 0138 - scanning the archive pins what only an archived event cites; `[]` states there is none", async () => {
+    it("ADR 0138 - scanning the archive pins what only an archived event cites; `[]` over it is refused", async () => {
       const { clock, content } = clockedStore(OLD);
       const { note, live, archive, snapshotStore } = await archivedNote(content, clock);
       const sweep = (archiveStores: unknown[]) =>
@@ -1610,9 +1611,91 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
       const kept = await sweep([archive]);
       expect(kept.orphansReclaimed).toEqual([]);
       expect(await content.get(note)).not.toBeNull();
-      // the operator's explicit "no archive exists": the blob IS an orphan then
-      const none = await sweep([]);
-      expect(none.orphansReclaimed).toEqual([note.__loomContent]);
+      // `[]` over an archived log is REFUSED even though the checkpoint carries no archiving mark (a
+      // heuristic must not gate an erase): the removed range [1..2] is covered by no header.
+      await expect(sweep([])).rejects.toMatchObject({
+        name: "ArchiveStoresRequiredError",
+        reason: "uncovered",
+        executionIds: ["arch"],
+      });
+      expect(await content.get(note)).not.toBeNull();
+    });
+
+    it("ADR 0138 - coverage is checked regardless of the mark: a missing segment is refused; the full archive passes; the explicit acknowledgment passes AND is reported; a dry run is exempt", async () => {
+      const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
+      const { clock, content } = clockedStore(OLD);
+      const { note, live, archive, snapshotStore } = await archivedNote(content, clock);
+      // an archive holding only [1..1] of the removed [1..2]
+      const partial = new InMemoryArchiveStore();
+      await partial.append(
+        "arch",
+        buildSegment([evt("arch", 1, "NOTE_RECORDED", {}, OLD)], "inc", 1, 1)
+      );
+      const sweep = (archiveStores: unknown[], extra: object = {}) =>
+        sweepUnpinnedContent({
+          eventStores: [live],
+          snapshotStores: [snapshotStore],
+          archiveStores: archiveStores as never,
+          contentStore: content,
+          pinnedEventTypes: [],
+          olderThanMs: TTL,
+          now: NOW,
+          reclaimOrphans: erasing,
+          ...extra,
+        });
+      await expect(sweep([partial])).rejects.toMatchObject({ reason: "uncovered" });
+      expect(await content.get(note)).not.toBeNull();
+      // dry run: exempt
+      const dry = await sweep([], { dryRun: true });
+      expect(dry.unarchivedAcknowledged).toEqual([]);
+      expect(await content.get(note)).not.toBeNull();
+      // the full archive passes and keeps the archived citation
+      const full = await sweep([archive]);
+      expect(full.orphansReclaimed).toEqual([]);
+      expect(full.unarchivedAcknowledged).toEqual([]);
+      // the explicit acknowledgment passes, erases, and names the execution
+      const acked = await sweep([], { acknowledgeUnarchivedLogs: true });
+      expect(acked.unarchivedAcknowledged).toEqual(["arch"]);
+      expect(acked.orphansReclaimed).toEqual([note.__loomContent]);
+    });
+
+    it("ADR 0138 - a GAPPED log (events kept above the removed range) is coverage-checked too, mark or no mark", async () => {
+      const { buildSegment, InMemoryArchiveStore } = await import("@loom/event-runtime");
+      const { clock, content } = clockedStore(OLD);
+      const note = await content.put(bytes("only the removed event cited this"));
+      const live = new InMemoryAsyncEventStore();
+      const events = [
+        evt("gap", 0, "EXECUTION_STARTED", { input: {} }, OLD),
+        evt("gap", 1, "NOTE_RECORDED", { sample: envelopeFor(note.__loomContent) }, OLD),
+        evt("gap", 2, "STEP_STARTED", { stepId: "s" }, OLD),
+        evt("gap", 3, "STEP_STARTED", { stepId: "t" }, OLD),
+      ];
+      for (const e of events) await live.append(e);
+      const archive = new InMemoryArchiveStore();
+      await archive.append("gap", buildSegment(events.slice(1, 3), "inc", 1, 2));
+      const snapshot = { sequence: 2, state: new ReplayVM(events.slice(0, 3)).getState() };
+      await live.truncatePrefix("gap", 2);
+      expect((await live.read("gap")).map((e) => e.sequence)).toEqual([0, 3]);
+      const snapshotStore = {
+        loadLatest: async () => snapshot,
+        loadLatestBefore: async (_id: string, at: number) =>
+          snapshot.sequence <= at ? snapshot : null,
+      };
+      clock.now = NOW;
+      const sweep = (archiveStores: unknown[]) =>
+        sweepUnpinnedContent({
+          eventStores: [live],
+          snapshotStores: [snapshotStore],
+          archiveStores: archiveStores as never,
+          contentStore: content,
+          pinnedEventTypes: [],
+          olderThanMs: TTL,
+          now: NOW,
+          reclaimOrphans: erasing,
+        });
+      await expect(sweep([])).rejects.toMatchObject({ reason: "uncovered", executionIds: ["gap"] });
+      expect(await content.get(note)).not.toBeNull();
+      expect((await sweep([archive])).orphansReclaimed).toEqual([]);
     });
 
     it("ADR 0138 M6 - the archive is ENUMERATED: a segment whose log is gone still pins its blobs", async () => {
@@ -1696,6 +1779,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
           eventStores: [gapped],
           snapshotStores: [NO_SNAPSHOTS],
           archiveStores: [], // ADR 0138: a log compacted before the archive existed
+          acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
           contentStore: content,
           pinnedEventTypes: [],
           olderThanMs: TTL,
@@ -1767,6 +1851,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         eventStores: [live],
         snapshotStores: [snapshots],
         archiveStores: [], // ADR 0138: a log compacted before the archive existed
+        acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
         contentStore: content,
         pinnedEventTypes: [],
         olderThanMs: TTL,
@@ -1813,6 +1898,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         eventStores: [live],
         snapshotStores: [raw],
         archiveStores: [], // ADR 0138: a log compacted before the archive existed
+        acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
         contentStore: content,
         pinnedEventTypes: [],
         olderThanMs: TTL,
@@ -1897,6 +1983,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
           eventStores: [t.live],
           snapshotStores: [guarded(t.raw, failing)],
           archiveStores: [], // ADR 0138: a log compacted before the archive existed
+          acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
           contentStore: t.content,
           pinnedEventTypes: [],
           olderThanMs: TTL,
@@ -2025,6 +2112,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
           eventStores: [live],
           snapshotStores: [new InMemoryAsyncSnapshotStore()],
           archiveStores: [], // ADR 0138: a log compacted before the archive existed
+          acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
           contentStore: content,
           pinnedEventTypes: [],
           olderThanMs: TTL,
@@ -2097,6 +2185,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         eventStores: [live],
         snapshotStores: [snapshots],
         archiveStores: [], // ADR 0138: a log compacted before the archive existed
+        acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
         contentStore: content,
         pinnedEventTypes: ["FINDING_RECORDED"],
         olderThanMs: TTL,
@@ -2142,6 +2231,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         eventStores: [live],
         snapshotStores: [snapshots],
         archiveStores: [], // ADR 0138: a log compacted before the archive existed
+        acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
         contentStore: content,
         pinnedEventTypes: ["FINDING_RECORDED"], // NOTE_RECORDED is kept by compaction only
         olderThanMs: TTL,
@@ -2189,6 +2279,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         eventStores: [live],
         snapshotStores: [snapshots],
         archiveStores: [], // ADR 0138: a log compacted before the archive existed
+        acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
         contentStore: content,
         pinnedEventTypes: [],
         olderThanMs: TTL,
@@ -2247,6 +2338,7 @@ describe("race-safe sweep, orphan reclamation, external root sets (ADR 0055 D5â€
         eventStores: [live],
         snapshotStores: [counting],
         archiveStores: [], // ADR 0138: a log compacted before the archive existed
+        acknowledgeUnarchivedLogs: true, // hand-built gapped log: no archive exists
         contentStore: content,
         pinnedEventTypes: [],
         olderThanMs: TTL,
