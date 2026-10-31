@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { LogLifecycle, highestMissing } from "./LogLifecycle";
 import { WorkflowRuntime } from "./WorkflowRuntime";
-import { until } from "./__tests__/r2Harness";
 import type { FlowRunner } from "./types";
 
 // ADR 0134 — `LogLifecycle.pruneSnapshots`. The contract: a snapshot is a cache over the log, so
@@ -81,17 +80,6 @@ async function resumeGate(app: App, id: string, gate: number): Promise<void> {
     payload: { answer: `go${gate}` },
   });
   await r.waitForSuspend();
-}
-
-/** Resume a gate and wait for the log to move past it and park again (or finish) - by condition. */
-async function resumeAndWait(app: App, id: string, gate: number): Promise<void> {
-  const head = headOf(app.eventStore, id);
-  const from = (await head) ?? -1;
-  await app.runtime.resume(id, { eventType: `go${gate}`, payload: { answer: `go${gate}` } });
-  await until(async () => {
-    const st = await app.runtime.loadState(id);
-    return (st?.status === "suspended" || st?.status === "completed") && st.sequence > from + 1;
-  });
 }
 
 async function finish(app: App, id: string, gate: number): Promise<void> {
@@ -373,8 +361,8 @@ describe("ADR 0134 — LogLifecycle.pruneSnapshots", () => {
     const parentTip = (await app.eventStore.read("p")).at(-1)!.sequence;
     expect(parentTip).toBeGreaterThan(parentCheckpoint + 1); // the seed sits ABOVE the gap
     await app.runtime.fork("p", parentTip, { executionId: "c" });
-    await resumeAndWait(app, "c", 3);
-    await resumeAndWait(app, "c", 4);
+    await resumeGate(app, "c", 3);
+    await finish(app, "c", 4);
     const child = await app.eventStore.read("c");
     expect(highestGap(child)).toBe(parentCheckpoint);
     const before = await snapshotSequences(app, "c");
@@ -395,8 +383,8 @@ describe("ADR 0134 — LogLifecycle.pruneSnapshots", () => {
     const app = boot();
     await toGate(app, "e1", 3);
     const checkpoint = (await app.lifecycle.compact("e1"))!;
-    await resumeAndWait(app, "e1", 3);
-    await resumeAndWait(app, "e1", 4);
+    await resumeGate(app, "e1", 3);
+    await finish(app, "e1", 4);
     // Lose the snapshot at the gap itself (only the walk-down can find an anchor now).
     await app.snapshotStore.pruneSnapshots("e1", { after: checkpoint - 1, before: checkpoint + 1 });
     expect(await app.snapshotStore.loadAt("e1", checkpoint)).toBeNull();
