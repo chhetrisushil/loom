@@ -94,6 +94,17 @@ export interface MigrateOptions {
    * default re-attempts the backfill until the marker exists.
    */
   backfillParkFences?: boolean;
+  /**
+   * ADR 0136 — the TOAST compression of `snapshots.state`. OPT-IN: `"lz4"` runs
+   * `ALTER TABLE snapshots ALTER COLUMN state SET COMPRESSION lz4` (PostgreSQL 14+ built with lz4),
+   * which only affects values written AFTER it (existing rows stay pglz until rewritten; nothing here
+   * rewrites them). On a server that cannot do it (older than 14, built without lz4, a non-owner role,
+   * the table locked past `lockTimeoutMs`) the migration does NOT fail: it keeps the default
+   * compression and reports one message through `onWarn`. `"default"` (the default) leaves the column
+   * alone and never reverts a column that already uses lz4. Measured (ADR 0136): lz4 stores ~1.5x MORE
+   * bytes than pglz but reads ~20% and writes ~2.4x faster, so it is a speed choice, not a size one.
+   */
+  snapshotCompression?: "lz4" | "default";
 }
 
 export async function migrate(pool: PoolLike, options: MigrateOptions = {}): Promise<void> {
@@ -106,7 +117,13 @@ export async function migrate(pool: PoolLike, options: MigrateOptions = {}): Pro
       `migrate: lockTimeoutMs must be a positive integer (got ${lockTimeoutMs})`
     );
   }
-  const run = runMigration(pool, lockTimeoutMs, options.backfillParkFences ?? true, options.onWarn);
+  const run = runMigration(
+    pool,
+    lockTimeoutMs,
+    options.backfillParkFences ?? true,
+    options.onWarn,
+    options.snapshotCompression ?? "default"
+  );
   migrations.set(pool, run);
   // Never cache a rejection: a migration that failed (transient connection loss, a
   // database not yet accepting connections) must be retryable by the next caller.
@@ -121,7 +138,8 @@ async function runMigration(
   pool: PoolLike,
   lockTimeoutMs: number,
   backfill: boolean,
-  onWarn?: (message: string) => void
+  onWarn?: (message: string) => void,
+  snapshotCompression: "lz4" | "default" = "default"
 ): Promise<void> {
   // A dedicated client, not `pool.query`: the advisory lock and the DDL must run in
   // ONE session and one transaction, which a pooled per-query checkout cannot promise.
@@ -205,7 +223,17 @@ async function runMigration(
       "SELECT NULLIF(current_setting('loom.incarnation_skip', true), '') AS why"
     );
     const why = skipped.rows[0]?.why;
+    // ADR 0136 — inside the same transaction and lock; fails soft, so it can never fail the migration.
+    const lz4Skipped =
+      snapshotCompression === "lz4"
+        ? await setSnapshotLz4(client, lockTimeoutMs, callerLockTimeout)
+        : undefined;
     await client.query("COMMIT");
+    if (lz4Skipped !== undefined) {
+      (onWarn ?? ((m: string) => console.warn(m)))(
+        `loom: @loom/plugin-postgres kept the default (pglz) compression for snapshots.state (${lz4Skipped}). Snapshots stay correct; drop the snapshotCompression: "lz4" option to silence this.`
+      );
+    }
     if (why !== null && why !== undefined) {
       (onWarn ?? ((m: string) => console.warn(m)))(
         `loom: @loom/plugin-postgres did NOT install the ADR 0129 store-assigned incarnation (${why}). This store keeps the legacy creation-marker anchor, i.e. EventStore SPI 2.2.0 behaviour (a delete + byte-identical re-creation of an execution id is NOT detected by appendIfUnchanged), until a later boot installs it. PostgresEventStore.incarnationAnchors() reports the effective state.`
@@ -217,6 +245,53 @@ async function runMigration(
     throw err;
   } finally {
     client.release();
+  }
+}
+
+/** SQLSTATEs a failed `SET COMPRESSION lz4` may raise that must not fail the migration. */
+const LZ4_SOFT_FAILURES = new Set([
+  "0A000", // feature_not_supported: "this build does not support compression with LZ4"
+  "22023", // invalid_parameter_value: unknown compression method
+  "42601", // syntax_error: a server older than 14 has no SET COMPRESSION
+  "42501", // insufficient_privilege: not the table owner
+  "55P03", // lock_not_available: lock_timeout expired
+  "57014", // query_canceled
+  "40P01", // deadlock_detected
+]);
+
+/**
+ * ADR 0136 — switch `snapshots.state` to lz4 TOAST compression, soft. Returns why it was skipped, or
+ * `undefined` when the column is (now) lz4. The catalog probe makes every later boot a no-op that takes
+ * no lock (`SET COMPRESSION` asks for ACCESS EXCLUSIVE), the same discipline as the index probes.
+ */
+async function setSnapshotLz4(
+  client: {
+    query: (sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>;
+  },
+  lockTimeoutMs: number,
+  callerLockTimeout: string
+): Promise<string | undefined> {
+  const v = await client.query("SHOW server_version_num");
+  const version = Number(v.rows[0]?.server_version_num);
+  if (!(version >= 140000))
+    return `PostgreSQL ${Number.isFinite(version) ? version : "?"} is older than 14`;
+  const cur = await client.query(
+    "SELECT attcompression::text AS c FROM pg_attribute WHERE attrelid = 'snapshots'::regclass AND attname = 'state' AND NOT attisdropped"
+  );
+  if (cur.rows[0]?.c === "l") return undefined;
+  await client.query("SAVEPOINT loom_snapshot_lz4");
+  try {
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [`${lockTimeoutMs}ms`]);
+    await client.query("ALTER TABLE snapshots ALTER COLUMN state SET COMPRESSION lz4");
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [callerLockTimeout]);
+    await client.query("RELEASE SAVEPOINT loom_snapshot_lz4");
+    return undefined;
+  } catch (err) {
+    const code = (err as { code?: unknown }).code;
+    if (typeof code !== "string" || !LZ4_SOFT_FAILURES.has(code)) throw err;
+    await client.query("ROLLBACK TO SAVEPOINT loom_snapshot_lz4");
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [callerLockTimeout]);
+    return `${code}: ${(err as Error).message}`;
   }
 }
 

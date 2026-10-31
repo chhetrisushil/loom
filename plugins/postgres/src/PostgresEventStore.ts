@@ -85,6 +85,8 @@ export interface PostgresEventStoreOptions {
    * Like `migrationLockTimeoutMs`, only the first migrator of a pool decides.
    */
   backfillParkFences?: boolean;
+  /** ADR 0136 — opt in to lz4 for `snapshots.state` (see `MigrateOptions.snapshotCompression`). First migrator of a pool decides. */
+  snapshotCompression?: "lz4" | "default";
   /** ADR 0129 — receives the one-per-boot WARNING when the incarnation install did not happen. Default `console.warn`. */
   onWarn?: (message: string) => void;
   /**
@@ -264,6 +266,9 @@ export class PostgresEventStore implements EventStore {
       }),
       ...(options.backfillParkFences !== undefined && {
         backfillParkFences: options.backfillParkFences,
+      }),
+      ...(options.snapshotCompression !== undefined && {
+        snapshotCompression: options.snapshotCompression,
       }),
     });
   }
