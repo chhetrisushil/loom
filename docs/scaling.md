@@ -552,6 +552,25 @@ is refused at boot (the blobs would be plaintext outside the per-subject keys); 
 store must `delete()`, and `eraseSubject` deletes the subject's blobs (keeping an identical blob another subject
 still cites) and records it. The ADR 0137 warning names this opt-in too.
 
+**Keep the finished step value lean (opt-in, ADR 0142).** A completed run's state also carries
+`_output.toolCallLog`, a second copy of every tool result (`toolOutput`) that the tool frames already hold.
+`agentLoop$({ ..., toolCallLog: "lean" })` replaces `toolOutput` with `{ status, bytes, digest, stepId }`
+(`stepId` is the frame `<loop>#turn:<i>:tool:<j>`, so the full result stays resolvable from the frame, the log or
+the ADR 0138 archive; `digest` is sha256 of the canonical JSON of the output). The default is unchanged, and the
+mode is pinned per run when you set it explicitly. **[measured, `leanToolCallLog.perf.test.ts`, completed
+200-turn run]**
+
+| `toolCallLog` | claim-check | Folded state | `_output` |
+|---|---|---|---|
+| full | off | 1201.5 KB | 554.7 KB |
+| lean | off | 683.4 KB | 36.6 KB |
+| full | on | 295.6 KB | 101.8 KB |
+| lean | on | 230.3 KB | 36.4 KB |
+
+Lean alone saves 43% of a finished run's state; on top of the claim-check it takes the last 65 KB (22%) off. It
+shrinks what a resume reads and the final value, not the journal. A reader that needs a tool's full output must
+resolve `stepId` (or stay on `"full"`).
+
 ## Re-measuring
 
 ```bash

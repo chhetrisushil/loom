@@ -377,6 +377,10 @@ const NOT_A_CAPABILITY = new Set([
   // 0141 - the opt-in zstd snapshot codec (issue #733): a store-level storage format behind a format byte,
   // `durability.snapshots.codec`. SNAPSHOT_STORE_SPI, KERNEL_ABI and EVENT_SCHEMA unchanged; nothing to grade.
   "0141",
+  // 0142 - the opt-in `toolCallLog: "lean"` for `agentLoop$` (issue #732): an option on one `@loom/agent`
+  // function that swaps the returned log's `toolOutput` for a status/digest/stepId. No event, SPI, ABI or
+  // subsystem change; nothing to grade.
+  "0142",
 ]);
 
 describe("capability coverage — shipped work can't skip a badge", () => {

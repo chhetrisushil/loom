@@ -384,7 +384,7 @@ Start at [[file:docs/README.md][docs/README.md]] (the index), then:
 - [[file:docs/scaling.md][Scaling]] — measured capacity, which regime a workload is in, and what each further change is waiting on
 - [[file:docs/spec/loom-kernel-specification.md][Kernel specification]] — the normative spec (syscall ABI, event model incl. typed failure channels, SPI contracts) + the [[file:docs/spec/compatibility-matrix.md][compatibility matrix]]
 - [[file:docs/api-reference.org][API Reference]] — exhaustive per-package API, including [[file:docs/api-reference.org][Kernel hardening & security]]
-- [[file:docs/adr/][ADRs]] — the decision history (0001–0141;
+- [[file:docs/adr/][ADRs]] — the decision history (0001–0142;
   [[file:docs/adr/0016-loom-2.0-execution-runtime-and-decision-seam.md][0016]] Loom 2.0 ·
   [[file:docs/adr/0043-plugin-packaging-and-1p-3p-separation.md][0043]] plugin packaging ·
   [[file:docs/adr/0051-perpetual-agents-placement-schedule-remodel.md][0051–0057]] perpetual agents

@@ -72,6 +72,23 @@ describe("agentLoop$ task eval (ADR 0121, hand-authored cassettes)", () => {
     expect(gate(real)).toEqual({ floors: [], ceilings: [] });
   });
 
+  it("toolCallLog 'lean' (ADR 0142): the subject reads error-ness from `status`; only a DECLINED approval reads differently", async () => {
+    const lean = await runAgentLoopSuite({ degrade: { toolCallLog: "lean" } });
+    // `status` is the tool_result's isError flag, so a declined approval (a refusal fed back as an error)
+    // is "error" in lean mode; in full mode the subject's output heuristic does not count it.
+    expect(failed(lean)).toEqual(["refund-declined"]);
+    expect(lean.outputs.get("refund-declined")?.feedbackErrors).toBe(1);
+    expect(real.outputs.get("refund-declined")?.feedbackErrors).toBe(0);
+    for (const [id, o] of real.outputs) {
+      if (id === "refund-declined") continue;
+      const l = lean.outputs.get(id);
+      expect(l?.feedbackErrors, id).toBe(o.feedbackErrors);
+      expect(l?.dispatched, id).toEqual(o.dispatched);
+      expect(l?.answer, id).toBe(o.answer);
+    }
+    expect([...real.outputs.values()].some((o) => o.feedbackErrors > 0)).toBe(true);
+  });
+
   it("a terminal error FAILS the run and is never fed back (quota stop, capability denial)", () => {
     for (const id of ["quota-stop", "denied-tool"]) {
       const o = real.outputs.get(id);

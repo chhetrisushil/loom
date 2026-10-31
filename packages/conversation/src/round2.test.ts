@@ -579,3 +579,27 @@ describe("P3 smaller findings", () => {
     void ToolEffect;
   });
 });
+
+describe("ADR 0142 the turn layer reads tool NAMES only, so it works in both toolCallLog modes", () => {
+  it.each(["full", "lean"] as const)(
+    "toolCallLog %s: an answer drawn from a restricted tool is still classified restricted",
+    async (mode) => {
+      const { b, id } = await room({
+        config: {
+          agent: {
+            definition: agent$({ id: "chat", name: "Chat", tools: [kb, secretDb] }),
+            modelToolId: "model",
+            toolCallLog: mode,
+          } as never,
+        },
+      });
+      await b.conv.sendTurn(id, "use the secret db", { principal: alice });
+      await messages(b, id, 2, alice);
+      const raw = (await b.conv.reader.read(id)).entries;
+      expect(raw[1]?.classes).toEqual(["restricted"]);
+      expect((await b.conv.history(id, { principal: carol })).entries[1]).toMatchObject({
+        status: "restricted",
+      });
+    }
+  );
+});

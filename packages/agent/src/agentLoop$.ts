@@ -1,6 +1,13 @@
 import { isTainted, taintOf, tainted } from "@loom/classify";
 import type { AgentDefinition, ExecutableTask, ToolDefinition } from "@loom/core";
-import { TypedFailure, fail, fnv1a64, loadInstructions } from "@loom/core";
+import {
+  TypedFailure,
+  canonicalJson,
+  fail,
+  fnv1a64,
+  loadInstructions,
+  sha256Hex,
+} from "@loom/core";
 import type { Effect } from "@loom/effect-runtime";
 import { ToolEffect } from "@loom/effect-runtime";
 import type {
@@ -197,6 +204,20 @@ export interface AgentLoopConfig {
    * opt-in claim-check of large tool outputs, `defineConfig({ execution: { claimCheck } })` (ADR 0140).
    */
   warnTranscriptBytes?: number | false;
+  /**
+   * ADR 0141 / issue #732 - the shape of `toolCallLog` in the returned `AgentOutput` (and in the
+   * `agentInterrupted` payload). `"full"` (default, byte-identical to before) keeps every
+   * `{iteration, toolName, toolInput, toolOutput}`. `"lean"` replaces `toolOutput` with
+   * `{status: "ok"|"error", bytes, digest, stepId}`: `stepId` is the tool frame id
+   * `<loop>#turn:<i>:tool:<j>`, so the full output stays resolvable from the frame / the log / the
+   * ADR 0138 archive, and `digest` is sha256 of `canonicalJson(output)` (null when the output has
+   * none: `undefined`, a non-JSON value, or deeper than the canonicalizer's cap). The duplicate of every
+   * tool output in the step's `_output` is the single largest part of a finished run's state.
+   * The mode is FIXED per loop: an explicit value is journaled (`<loop>#toolCallLog`, a decision) and a resume
+   * configured with the other value fails with {@link AgentLoopConfigError}. Unset journals nothing. A non-`"full"`/`"lean"`
+   * value throws {@link AgentLoopConfigError}. Readers of `toolOutput` must opt in knowingly.
+   */
+  toolCallLog?: "full" | "lean";
   systemPrompt?: string;
   /**
    * R17 (ADR 0122) — the id prefix of this loop's frames, decisions and gates. Default: the
@@ -947,6 +968,32 @@ export async function agentLoop$(
   const maxIterations = config.maxIterations ?? 10;
   const gate = config.approvalGate ?? DEFAULT_GATE;
   const idPrefix = config.loopId ?? config.definition.id;
+  if (
+    config.toolCallLog !== undefined &&
+    config.toolCallLog !== "full" &&
+    config.toolCallLog !== "lean"
+  ) {
+    throw new AgentLoopConfigError(
+      `agentLoop$: toolCallLog must be "full" or "lean" (got ${String(config.toolCallLog)})`
+    );
+  }
+  const lean = config.toolCallLog === "lean";
+  if (config.toolCallLog !== undefined) {
+    // Pin an EXPLICIT mode for the life of the loop: it is journaled once and served on replay, and a
+    // resume configured with the other mode is refused rather than silently producing the other
+    // shape. (An unset option journals nothing, so the default's log is byte-identical to before;
+    // it is therefore not checked, and cannot detect a recorded "lean".)
+    const recorded = await ctx.decide<"full" | "lean">(
+      `${idPrefix}#toolCallLog`,
+      () => config.toolCallLog as "full" | "lean",
+      { source: "agent-tool-call-log" }
+    );
+    if (recorded !== config.toolCallLog) {
+      throw new AgentLoopConfigError(
+        `agentLoop$: this loop recorded toolCallLog "${recorded}" but is configured "${String(config.toolCallLog)}"; the mode is fixed for the life of a run (ADR 0141 D3)`
+      );
+    }
+  }
 
   // ── The choices, recorded (P9) ─────────────────────────────────────────────
   // Both of these change what the model is asked and neither is derivable from
@@ -1438,16 +1485,29 @@ export async function agentLoop$(
   ): Promise<void> => {
     const results: LlmToolResultPartInput[] = [];
     const sizes: number[] = [];
-    const record = (toolCall: LlmToolCall, { output, isError, virtualBytes }: Outcome): void => {
+    const record = (
+      toolCall: LlmToolCall,
+      j: number,
+      { output, isError, virtualBytes }: Outcome
+    ): void => {
       if (sawTaintFrom === undefined && isTainted(output)) {
         sawTaintFrom = taintOf(output)?.origin ?? "unknown";
       }
-      toolCallLog.push({
-        iteration: iterations,
-        toolName: toolCall.name,
-        toolInput: toolCall.input,
-        toolOutput: output,
-      });
+      toolCallLog.push(
+        lean
+          ? {
+              iteration: iterations,
+              toolName: toolCall.name,
+              toolInput: toolCall.input,
+              ...leanOutputFields(output, isError, `${idPrefix}#turn:${turn}:tool:${j}`),
+            }
+          : {
+              iteration: iterations,
+              toolName: toolCall.name,
+              toolInput: toolCall.input,
+              toolOutput: output,
+            }
+      );
       const part = toolResultPart(toolCall.id, toolCall.name, output, {
         isError,
         allowMedia: mediaTools.has(toolCall.name),
@@ -1464,7 +1524,7 @@ export async function agentLoop$(
         const settled =
           (await settleBeforeRun(toolCall, turn, j, oversized.has(j))) ??
           (await runTool(ctx, toolCall, turn, j, false));
-        record(toolCall, settled);
+        record(toolCall, j, settled);
       }
     } else {
       // Approvals first, sequentially and in call order: a turn parked on an approval has run
@@ -1501,13 +1561,13 @@ export async function agentLoop$(
           // never started are simply absent), then raise the interruption outside the scope.
           for (const [j, toolCall] of calls.entries()) {
             const o = outcomes[j];
-            if (o !== undefined && o.notRun !== true) record(toolCall, o);
+            if (o !== undefined && o.notRun !== true) record(toolCall, j, o);
           }
           interrupted();
         }
       }
       // Fed back in the model's order, whichever call finished first.
-      for (const [j, toolCall] of calls.entries()) record(toolCall, outcomes[j] as Outcome);
+      for (const [j, toolCall] of calls.entries()) record(toolCall, j, outcomes[j] as Outcome);
     }
     // R5 — ONE user message answers all of the turn's calls, after the assistant message that
     // made them (providers require that adjacency). Pushed only once every call has run, so a
@@ -1884,6 +1944,29 @@ export async function agentLoop$(
   }
 
   return { content: lastContent, toolCallLog, iterations };
+}
+
+/**
+ * ADR 0141 D2 - the lean log entry's description of a tool output. `digest` is sha256 (hex) of
+ * `canonicalJson(output)` (@loom/core: sorted keys, no whitespace, `undefined` members dropped), `bytes`
+ * its UTF-8 length. An output with no canonical form (`undefined`, a function/bigint/non-finite number,
+ * or deeper than the canonicalizer's cap) has `digest: null, bytes: 0`: the entry never throws.
+ */
+function leanOutputFields(
+  output: unknown,
+  isError: boolean,
+  stepId: string
+): { status: "ok" | "error"; bytes: number; digest: string | null; stepId: string } {
+  let bytes = 0;
+  let digest: string | null = null;
+  try {
+    const text = canonicalJson(output);
+    bytes = new TextEncoder().encode(text).length;
+    digest = sha256Hex(text);
+  } catch {
+    // no canonical form
+  }
+  return { status: isError ? "error" : "ok", bytes, digest, stepId };
 }
 
 const SOURCE_RESPONSE = "agent-response";
