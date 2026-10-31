@@ -3,6 +3,7 @@ import type { FlowDefinition } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
 import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
 import {
+  ArchiveStoresRequiredError,
   ContentResolvingEventStore,
   ContentTouchingSnapshotStore,
   InMemoryContentStore,
@@ -214,6 +215,8 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
         snapshotStores: [rawSnaps],
         // ADR 0138: `[]` ISOLATES the seed-snapshot citation path under test. Were the parent's
         // archive scanned, its archived prefix event would pin the blob and no citation race exists.
+        // `[]` is accepted here because the only log scanned is the CHILD, whose checkpoint is a fork
+        // seed (no archiving mark): over an archived log `[]` is refused (see the describe below).
         archiveStores: [],
         contentStore: content,
         pinnedEventTypes: [],
@@ -239,5 +242,82 @@ describe("ADR 0106 — compact() then sweepUnpinnedContent, end to end", () => {
       expect(result.orphansReclaimed).toEqual([blob.__loomContent]);
       expect(await content.get(blob)).toBeNull();
     });
+  });
+});
+
+// ADR 0138 - `archiveStores: []` is CHECKED, not trusted: it is only believable over logs compacted
+// before the archive existed. Over a log an archiving compaction DID move events out of, `[]` (or an
+// archive that does not hold them) would let an erasing pass delete blobs the recoverable history names.
+describe("ADR 0138 - archiveStores: [] over an archived log is refused", () => {
+  async function archivedLog() {
+    const clock = { now: 1 };
+    const content = new InMemoryContentStore({ now: () => clock.now });
+    const stepBlob = await content.put(new TextEncoder().encode("cited by the archived step"));
+    const effects = new EffectRuntime();
+    effects.register(
+      "fetch",
+      new ToolEffect(async () => ({ rows: { __loomClaimCheck: true, ref: stepBlob, size: 1 } }))
+    );
+    effects.register("later", new ToolEffect(async () => ({ rows: 0 })));
+    const definition: FlowDefinition<unknown, unknown> = {
+      _tag: "FlowDefinition",
+      id: "sweep-empty",
+      name: "sweep-empty",
+      version: "1.0.0",
+      inputSchema: anyIo,
+      outputSchema: anyIo,
+      steps: [fetch, later],
+    };
+    const runner: FlowRunner<unknown, unknown> = async (ctx) => {
+      await ctx.run(fetch, {});
+      await ctx.suspend({ on: "go1" });
+      await ctx.run(later, {});
+      await ctx.suspend({ on: "go2" });
+      return {};
+    };
+    const eventStore = new InMemoryAsyncEventStore();
+    const snapshotStore = new InMemoryAsyncSnapshotStore();
+    const runtime = new WorkflowRuntime({
+      eventStore,
+      snapshotStore,
+      effectRuntime: effects,
+      now: () => 1_000,
+    });
+    runtime.registerFlow(definition, runner);
+    const archive = new InMemoryArchiveStore();
+    const life = new LogLifecycle(eventStore, snapshotStore, { compactionArchive: archive });
+    await (await runtime.start({ definition, runner }, {}, { executionId: "e" })).waitForSuspend();
+    await life.compact("e");
+    await (await runtime.resume("e", { eventType: "go1", payload: {} })).waitForSuspend();
+    await life.compact("e");
+    clock.now = 100 * DAY;
+    const sweep = (archiveStores: InMemoryArchiveStore[], dryRun = false) =>
+      sweepUnpinnedContent({
+        eventStores: [eventStore],
+        snapshotStores: [snapshotStore],
+        archiveStores,
+        contentStore: content,
+        pinnedEventTypes: [],
+        olderThanMs: DAY,
+        now: 100 * DAY,
+        dryRun,
+        reclaimOrphans: { completeScan: true, snapshotsTouchContent: true },
+      });
+    return { archive, content, stepBlob, sweep };
+  }
+
+  it("[] is refused (nothing erased); so is an empty or foreign archive; the real one is accepted", async () => {
+    const { archive, content, stepBlob, sweep } = await archivedLog();
+    await expect(sweep([])).rejects.toBeInstanceOf(ArchiveStoresRequiredError);
+    await expect(sweep([])).rejects.toMatchObject({ reason: "uncovered", executionIds: ["e"] });
+    await expect(sweep([new InMemoryArchiveStore()])).rejects.toBeInstanceOf(
+      ArchiveStoresRequiredError
+    );
+    expect(await content.get(stepBlob)).not.toBeNull(); // nothing was erased by the refusals
+    // a dry run reports without erasing, so `[]` is harmless there
+    await expect(sweep([], true)).resolves.toBeDefined();
+    const ok = await sweep([archive]);
+    expect(ok.orphansReclaimed).toEqual([]);
+    expect(await content.get(stepBlob)).not.toBeNull();
   });
 });

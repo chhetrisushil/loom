@@ -1,6 +1,7 @@
 import type { EventEnvelope } from "@loom/core";
 import type { ArchiveStore, EventStore, ExecutionEnumerable } from "@loom/event-runtime";
 import { isPayloadShredded, iterateExecutionIds } from "@loom/event-runtime";
+import { isArchivingCompactionCheckpointId } from "@loom/snapshot-runtime";
 import type { ContentStore } from "./ContentStore";
 import { isContentTouchingSnapshotStore } from "./ContentTouchingSnapshotStore";
 import { visitCitedAddresses } from "./citations";
@@ -111,11 +112,15 @@ export interface ContentSweepBase {
    * REQUIRED (fail closed) by an ERASING `reclaimOrphans` pass whenever any scanned log is compacted
    * (a gap below its tip, or only its bootstrap left): {@link ArchiveStoresRequiredError} otherwise,
    * before anything is erased. Pass `[]` to state that no archive exists (a log compacted before ADR
-   * 0138). The archive is ENUMERATED (`listExecutions`), so segments whose log is gone are scanned
+   * 0138). `[]` is checked, not trusted: a compacted log whose checkpoint carries the archiving mark
+   * (it WAS archived) must have its removed range covered by the given archives' headers, else
+   * {@link ArchiveStoresRequiredError} (`reason: "uncovered"`) - so `[]` or the wrong archive over a log
+   * that was archived is refused, and `[]` only passes over logs compacted before the archive existed.
+   * The archive is ENUMERATED (`listExecutions`), so segments whose log is gone are scanned
    * too. A segment that is still sealed (count > 0 with no envelopes: the RAW inner store of an
    * `EncryptingArchiveStore`) throws {@link SealedArchiveScanError} on an erasing pass.
    */
-  archiveStores?: readonly Pick<ArchiveStore, "read" | "listExecutions">[];
+  archiveStores?: readonly Pick<ArchiveStore, "read" | "listExecutions" | "headers">[];
   /**
    * The blob store. With `deleteIfUntouchedSince` (SPI 1.3.0) every erase is conditional on
    * the blob's touch time, which closes the re-cite race for a re-cite THROUGH `put` (ADR 0055
@@ -360,16 +365,18 @@ export class ReclaimOrphansClockError extends TypeError {
 
 /** Structural view of a snapshot store: just `loadLatest` (no snapshot-runtime dependency). */
 export interface SnapshotLookup {
-  loadLatest(executionId: string): Promise<{ sequence: number; state: unknown } | null>;
+  loadLatest(
+    executionId: string
+  ): Promise<{ id?: string; sequence: number; state: unknown } | null>;
   /** Exact-sequence load; used for a forked child's seed (optional — falls back to a walk). */
   loadAt?(
     executionId: string,
     sequence: number
-  ): Promise<{ sequence: number; state: unknown } | null>;
+  ): Promise<{ id?: string; sequence: number; state: unknown } | null>;
   loadLatestBefore(
     executionId: string,
     sequence: number
-  ): Promise<{ sequence: number; state: unknown } | null>;
+  ): Promise<{ id?: string; sequence: number; state: unknown } | null>;
 }
 
 let warnedUnwrapped = false;
@@ -448,11 +455,17 @@ export interface ContentSweepReport {
  * erased (ADR 0138). Nothing was erased.
  */
 export class ArchiveStoresRequiredError extends TypeError {
-  constructor(readonly executionIds: readonly string[]) {
+  constructor(
+    readonly executionIds: readonly string[],
+    /** `"none"`: no archiveStores given. `"uncovered"`: given, but they do not hold what was archived. */
+    readonly reason: "none" | "uncovered" = "none"
+  ) {
     const shown = executionIds.slice(0, 5).join(", ");
     const more = executionIds.length > 5 ? ` (+${executionIds.length - 5} more)` : "";
     super(
-      `sweepUnpinnedContent: ${executionIds.length} scanned log(s) are compacted (${shown}${more}) and no archiveStores were given. Compaction MOVES the removed events into the compaction archive, which is then the only place that cites their blobs; an erasing orphan pass without it deletes blobs the recoverable history still names. Pass archiveStores: [the compaction archive] (the sealing store when encrypted), or [] to state that no archive exists (logs compacted before ADR 0138), or run with dryRun: true. Nothing was erased.`
+      reason === "none"
+        ? `sweepUnpinnedContent: ${executionIds.length} scanned log(s) are compacted (${shown}${more}) and no archiveStores were given. Compaction MOVES the removed events into the compaction archive, which is then the only place that cites their blobs; an erasing orphan pass without it deletes blobs the recoverable history still names. Pass archiveStores: [the compaction archive] (the sealing store when encrypted), or [] to state that no archive exists (logs compacted before ADR 0138), or run with dryRun: true. Nothing was erased.`
+        : `sweepUnpinnedContent: ${executionIds.length} scanned log(s) were compacted INTO an archive (their checkpoint carries the archiving mark) but the given archiveStores do not hold the removed range (${shown}${more}): the archive passed is empty, the wrong one, or was wiped. An erasing orphan pass would delete blobs the lost history still names. Pass the real compaction archive (the sealing store when encrypted), restore it, or run with dryRun: true. Nothing was erased.`
     );
     this.name = "ArchiveStoresRequiredError";
     Object.setPrototypeOf(this, ArchiveStoresRequiredError.prototype);
@@ -626,6 +639,8 @@ export async function sweepUnpinnedContent(
   const sealedSnapshots: string[] = [];
   const shreddedSnapshots: string[] = [];
   const compactedLogs = new Set<string>();
+  // Logs whose checkpoint carries the archiving mark: their removed ranges MUST be in an archive.
+  const archivedRanges = new Map<string, Array<[number, number]>>();
   const sealedArchives: string[] = [];
 
   for (const eventStore of options.eventStores) {
@@ -685,6 +700,9 @@ export async function sweepUnpinnedContent(
             if (latest !== null && latest.sequence >= 1) {
               covered = true;
               compactedLogs.add(executionId);
+              if (isArchivingCompactionCheckpointId(latest.id)) {
+                archivedRanges.set(executionId, [[1, latest.sequence]]);
+              }
             }
             continue;
           }
@@ -722,6 +740,9 @@ export async function sweepUnpinnedContent(
           if (checkpoint !== null) {
             pin(checkpoint);
             covered = true;
+            if (isArchivingCompactionCheckpointId(checkpoint.id)) {
+              archivedRanges.set(executionId, missingRunsWithin(events, gap));
+            }
           }
         } catch (err) {
           // Only a CONFIRMED crypto-shred means the snapshot is erased: the store's error (recognised by the realm-safe
@@ -795,6 +816,18 @@ export async function sweepUnpinnedContent(
   if (orphans && !dryRun && options.archiveStores === undefined && compactedLogs.size > 0) {
     throw new ArchiveStoresRequiredError([...compactedLogs]);
   }
+  // `[]` (or a wrong archive) is only believable over logs compacted before the archive existed.
+  if (orphans && !dryRun && options.archiveStores !== undefined && archivedRanges.size > 0) {
+    const lost: string[] = [];
+    for (const [executionId, runs] of archivedRanges) {
+      const held: Array<[number, number]> = [];
+      for (const archive of options.archiveStores) {
+        for (const h of await archive.headers(executionId)) held.push([h.from, h.through]);
+      }
+      if (!runs.every(([a, b]) => rangeCovered(a, b, held))) lost.push(executionId);
+    }
+    if (lost.length > 0) throw new ArchiveStoresRequiredError(lost, "uncovered");
+  }
   if (!dryRun && sealedArchives.length > 0) throw new SealedArchiveScanError(sealedArchives);
   if (!dryRun && sealedSnapshots.length > 0) throw new SealedSnapshotScanError(sealedSnapshots);
   if (orphans && uncovered.length > 0) {
@@ -853,4 +886,32 @@ export async function sweepUnpinnedContent(
     sealedSnapshots,
     shreddedSnapshots,
   };
+}
+
+/** The runs of sequences in `[1..extent]` that `events` does not hold. */
+function missingRunsWithin(
+  events: readonly { sequence: number }[],
+  extent: number
+): Array<[number, number]> {
+  const runs: Array<[number, number]> = [];
+  let prev = 0;
+  for (const e of events) {
+    if (e.sequence === 0) continue;
+    if (e.sequence > extent + 1) break;
+    if (e.sequence - prev > 1) runs.push([prev + 1, e.sequence - 1]);
+    prev = e.sequence;
+  }
+  if (prev < extent) runs.push([prev + 1, extent]);
+  return runs;
+}
+
+/** Whether the union of `held` ranges (inclusive) covers every sequence of `[a..b]`. */
+function rangeCovered(a: number, b: number, held: readonly (readonly [number, number])[]): boolean {
+  let next = a;
+  for (const [from, through] of [...held].sort((x, y) => x[0] - y[0])) {
+    if (from > next) break;
+    if (through >= next) next = through + 1;
+    if (next > b) return true;
+  }
+  return next > b;
 }

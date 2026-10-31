@@ -55,6 +55,7 @@ import {
   runSnapshotStoreDecoratorConformance,
   sealingForwardingProblems,
 } from "./decorators";
+import { tenantMarkerProblems } from "./decorators";
 import {
   type ContentStoreLike,
   eventStoreAtRestProblem,
@@ -67,6 +68,7 @@ import {
   leaseScopeProblem,
   leaseStoreNowProblem,
   runArchiveStoreConformance,
+  runArchiveStoreDecoratorConformance,
   runBranchRegistryConformance,
   runCapabilityAuthorizerConformance,
   runEventStoreConformance,
@@ -237,7 +239,8 @@ runEventStoreConformance(
 // packages; `packages/spec/src/decoratorConformance.test.ts` fails if any decorator does not.
 runEventStoreDecoratorConformance(
   "TenantScopedEventStore",
-  (inner) => new TenantScopedEventStore(inner, "acme")
+  (inner) => new TenantScopedEventStore(inner, "acme"),
+  { tenantScope: "own" }
 );
 runEventStoreDecoratorConformance(
   "CoalescingEventStore",
@@ -249,7 +252,8 @@ runEventStoreDecoratorConformance("ProfilingEventStore", (inner) => new Profilin
 runEventStoreDecoratorConformance("ShardedEventStore", (inner) => new ShardedEventStore([inner]));
 runSnapshotStoreDecoratorConformance(
   "TenantScopedSnapshotStore",
-  (inner) => new TenantScopedSnapshotStore(inner, "acme")
+  (inner) => new TenantScopedSnapshotStore(inner, "acme"),
+  { tenantScope: "own" }
 );
 runSnapshotStoreDecoratorConformance(
   "ProfilingSnapshotStore",
@@ -352,9 +356,10 @@ describe("the decorator kit rejects a decorator that swallows or alters sealingC
 
 runSnapshotStoreConformance(() => new InMemoryAsyncSnapshotStore(), "InMemoryAsyncSnapshotStore");
 runArchiveStoreConformance(() => new InMemoryArchiveStore(), "InMemoryArchiveStore");
-runArchiveStoreConformance(
-  () => new TenantScopedArchiveStore(new InMemoryArchiveStore(), "acme"),
-  "TenantScopedArchiveStore"
+runArchiveStoreDecoratorConformance(
+  "TenantScopedArchiveStore",
+  (inner) => new TenantScopedArchiveStore(inner, "acme"),
+  { tenantScope: "own" }
 );
 runBranchRegistryConformance(() => new InMemoryBranchRegistry(), "InMemoryBranchRegistry");
 runLeaseStoreConformance(() => new InMemoryLeaseStore(), "InMemoryLeaseStore", {
@@ -1205,5 +1210,26 @@ describe("checkReasoningParity (ADR 0133 D2)", () => {
       },
     };
     await expect(checkReasoningParity(liar, request)).rejects.toThrow();
+  });
+});
+
+// The tenant-marker case must FIRE (ADR 0138 H3): a decorator that hides the wrapped store's
+// `tenantScope` made `LogLifecycle.compact` read a scoped log as unscoped.
+describe("tenantMarkerProblems (decorator kit negative)", () => {
+  const inner = () => new ReferenceEventStore();
+  it("passes a decorator that forwards the marker", () => {
+    expect(
+      tenantMarkerProblems("Fwd", (s) => new CoalescingEventStore(s as never), inner, false)
+    ).toEqual([]);
+  });
+  it("fails a decorator that hides the marker, and one that invents its own", () => {
+    const hider = (s: never) => ({ inner: s });
+    expect(tenantMarkerProblems("Hider", hider, inner, false)).toEqual([
+      expect.stringContaining("hides the tenantScope marker"),
+    ]);
+    const liar = () => ({ tenantScope: "other" });
+    expect(tenantMarkerProblems("Liar", liar, inner, false)).toEqual([
+      expect.stringContaining('reports tenantScope "other"'),
+    ]);
   });
 });

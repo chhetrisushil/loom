@@ -1,8 +1,14 @@
 import { step$ } from "@loom/core";
 import { EffectRuntime, ToolEffect } from "@loom/effect-runtime";
-import { InMemoryArchiveStore, InMemoryAsyncEventStore } from "@loom/event-runtime";
+import {
+  InMemoryArchiveStore,
+  InMemoryAsyncEventStore,
+  TenantScopedArchiveStore,
+  TenantScopedEventStore,
+} from "@loom/event-runtime";
 import { InMemoryAsyncSnapshotStore } from "@loom/snapshot-runtime";
 import {
+  ArchiveTenantMismatchError,
   type FlowRunner,
   LogLifecycle,
   type RegisteredFlow,
@@ -174,5 +180,104 @@ describe("M2 - verifyChain compares a duplicate sequence byte-exact", () => {
     const result = await store.verifyChain("d", { archived: forged });
     expect(result).toMatchObject({ ok: false, brokenAt: tip.sequence });
     expect(result.reason).toMatch(/differ/);
+  });
+});
+
+describe("H3 - the tenant guard sees through the audit chain (it failed OPEN before)", () => {
+  async function tenantBoot(archiveFor: (a: InMemoryArchiveStore) => InMemoryArchiveStore) {
+    const raw = new InMemoryAsyncEventStore();
+    const scoped = new TenantScopedEventStore(raw, "acme");
+    const store = hashChainedEventStore(scoped, { allowCompaction: true });
+    const snapshots = new InMemoryAsyncSnapshotStore();
+    const effects = new EffectRuntime();
+    effects.register("t1", new ToolEffect(async (x: { n: number }) => ({ n: x.n + 1 })));
+    effects.register("t2", new ToolEffect(async (x: { n: number }) => ({ n: x.n + 1 })));
+    const rt = new WorkflowRuntime({
+      eventStore: store,
+      snapshotStore: snapshots,
+      effectRuntime: effects,
+    });
+    rt.registerFlow(flow.definition, flow.runner);
+    const shared = new InMemoryArchiveStore();
+    return { rt, store, snapshots, shared, archive: archiveFor(shared) };
+  }
+
+  it("exposes the tenant marker of the store it wraps", async () => {
+    const { store } = await tenantBoot((a) => a);
+    expect((store as { tenantScope?: string }).tenantScope).toBe("acme");
+  });
+
+  it("hashChain(TenantScoped(acme)) + an UNSCOPED archive is refused, and nothing is archived or truncated", async () => {
+    const { rt, store, snapshots, shared } = await tenantBoot((a) => a);
+    await (await rt.start(flow, { n: 1 }, { executionId: "t1" })).waitForSuspend();
+    const life = new LogLifecycle(store, snapshots, { compactionArchive: shared });
+    const before = (await store.read("t1")).length;
+    await expect(life.compact("t1")).rejects.toBeInstanceOf(ArchiveTenantMismatchError);
+    expect((await store.read("t1")).length).toBe(before);
+    expect(await shared.listExecutions()).toMatchObject({ executionIds: [] });
+  });
+
+  it("the same stack with the archive scoped to the SAME tenant compacts", async () => {
+    const { rt, store, snapshots, shared } = await tenantBoot((a) => a);
+    await (await rt.start(flow, { n: 1 }, { executionId: "t2" })).waitForSuspend();
+    const life = new LogLifecycle(store, snapshots, {
+      compactionArchive: new TenantScopedArchiveStore(shared, "acme"),
+    });
+    expect(await life.compact("t2")).not.toBeNull();
+  });
+
+  it("a layer that hides its inner store AND forgets the marker is refused once the tenant is declared (fail closed)", async () => {
+    const { rt, store, snapshots, shared } = await tenantBoot((a) => a);
+    await (await rt.start(flow, { n: 1 }, { executionId: "t3" })).waitForSuspend();
+    // A foreign decorator: closure-built, no `inner`, no marker, no installOptional.
+    const opaque = Object.create(null) as Record<string, unknown>;
+    for (const k of Object.keys(store)) opaque[k] = (store as never)[k];
+    for (const k of ["tenantScope", "inner"]) delete opaque[k];
+    const hidden = opaque as never;
+    const undeclared = new LogLifecycle(hidden, snapshots, { compactionArchive: shared });
+    // Undeclared, an opaque store is indistinguishable from a plain single-tenant one (documented limit)...
+    expect(await undeclared.compact("t3")).not.toBeNull();
+    // ... which is why the tenant can be DECLARED: then an invisible scope is a refusal, not an assumption.
+    await (await rt.resume("t3", { eventType: "go", payload: { answer: 1 } })).waitForCompletion();
+    // (an unscoped archive too, so the two stores' markers agree with each other: only the
+    // declaration can tell that this deployment is multi-tenant)
+    const declared = new LogLifecycle(hidden, snapshots, {
+      compactionArchive: new InMemoryArchiveStore(),
+      tenant: "acme",
+    });
+    await expect(declared.compact("t3")).rejects.toThrow(/not visibly tenant-scoped/);
+  });
+});
+
+describe("H1/L - re-compacting with nothing new is a no-op (no archive re-read, no checkpoint re-save)", () => {
+  it("a second compact of a hash-chained log reads no archive body and saves no snapshot", async () => {
+    const { store, snapshots, rt } = await boot("s");
+    await (await rt.start(flow, { n: 1 }, { executionId: "noop" })).waitForSuspend();
+    const archive = new InMemoryArchiveStore();
+    let reads = 0;
+    let saves = 0;
+    const countingArchive = Object.assign(Object.create(archive), {
+      read: (...a: Parameters<InMemoryArchiveStore["read"]>) => {
+        reads++;
+        return archive.read(...a);
+      },
+      headers: (id: string) => archive.headers(id),
+      append: (id: string, seg: never) => archive.append(id, seg),
+      listExecutions: (o?: never) => archive.listExecutions(o),
+      close: () => archive.close(),
+    }) as InMemoryArchiveStore;
+    const realSave = snapshots.save.bind(snapshots);
+    snapshots.save = async (snap) => {
+      saves++;
+      return realSave(snap);
+    };
+    const life = new LogLifecycle(store, snapshots, { compactionArchive: countingArchive });
+    expect(await life.compact("noop")).not.toBeNull(); // the first compaction does the work
+    const savesAfterFirst = saves;
+    const readsAfterFirst = reads;
+    expect(await life.compact("noop")).toBeNull();
+    expect(await life.compact("noop")).toBeNull();
+    expect(saves).toBe(savesAfterFirst);
+    expect(reads).toBe(readsAfterFirst);
   });
 });

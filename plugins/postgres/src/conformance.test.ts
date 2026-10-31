@@ -111,13 +111,19 @@ if (PG_URL === undefined) {
   runEventStoreDecoratorConformance(
     "TenantScopedEventStore over Postgres",
     (inner) => new TenantScopedEventStore(inner, "dk-tenant"),
-    { inner: () => new PostgresEventStore(pools[nextTenant++ % pools.length] as Pool) }
+    {
+      inner: () => new PostgresEventStore(pools[nextTenant++ % pools.length] as Pool),
+      tenantScope: "own",
+    }
   );
 
   runEventStoreDecoratorConformance(
     "Coalescing(TenantScopedEventStore) over Postgres",
     (inner) => new CoalescingEventStore(new TenantScopedEventStore(inner, "dk-coalesced")),
-    { inner: () => new PostgresEventStore(pools[nextCoalescedTenant++ % pools.length] as Pool) }
+    {
+      inner: () => new PostgresEventStore(pools[nextCoalescedTenant++ % pools.length] as Pool),
+      tenantScope: "own",
+    }
   );
 
   runMemoryStoreConformance(() => {

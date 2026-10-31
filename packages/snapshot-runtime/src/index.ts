@@ -2,7 +2,12 @@ export { TenantScopedSnapshotStore } from "./TenantScopedSnapshotStore";
 export { InMemoryAsyncSnapshotStore } from "./InMemoryAsyncSnapshotStore";
 export type { InMemoryAsyncSnapshotStoreOptions } from "./InMemoryAsyncSnapshotStore";
 export type { OptionalSnapshotStoreMethod, Snapshot, SnapshotStore } from "./types";
-export { OPTIONAL_SNAPSHOT_STORE_METHODS, SNAPSHOT_STORE_SPI_VERSION } from "./types";
+export {
+  COMPACTION_CHECKPOINT_ID_PREFIX,
+  OPTIONAL_SNAPSHOT_STORE_METHODS,
+  SNAPSHOT_STORE_SPI_VERSION,
+  isArchivingCompactionCheckpointId,
+} from "./types";
 export { SnapshotIdentityMismatchError, assertSnapshotIdentity } from "./identity";
 export {
   ProfilingSnapshotStore,

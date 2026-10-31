@@ -175,6 +175,16 @@ export async function cmdSweepContent(
     await closeOwned();
     throw new Error(message);
   };
+  if (opts.noCompactionArchive === true && opts.db !== undefined && opts.config === undefined) {
+    // The flag is an assertion, and the filesystem can contradict it: an archive.db beside the log
+    // means compaction archived there, so "none exists" is false and the sweep would erase its blobs.
+    const beside = path.join(path.dirname(path.resolve(opts.db)), "archive.db");
+    if (existsSync(beside)) {
+      return refuse(
+        `loom sweep content --no-compaction-archive contradicts ${beside}: a compaction archive exists beside --db, so logs compacted since ADR 0138 cite their blobs only there. Drop --no-compaction-archive (the default finds it) or pass --compaction-archive <path> explicitly.`
+      );
+    }
+  }
   if (orphans && stores.snapshotStore === undefined) {
     return refuse(
       "loom sweep content --orphans needs the snapshot store: a compacted execution's prefix refs live only in its snapshot, and would look like orphans. Pass --snap <snap.db> (and --archive-snap for an archive), or use --config."
