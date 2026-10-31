@@ -1,4 +1,4 @@
-import { isTainted, taintOf, tainted } from "@loom/classify";
+import { nestedTaintOrigin, tainted } from "@loom/classify";
 import type { EffectMiddleware } from "@loom/effect-runtime";
 
 // ── ADR 0051 D3 / ADR 0054 — claim-check: the reference IS the recorded value ─
@@ -156,20 +156,6 @@ export interface ClaimCheckOptions {
   envelopesAreData?: boolean;
 }
 
-/** The first taint origin found anywhere in `value` (iterative, cycle-safe), or undefined. */
-function firstTaintOrigin(value: unknown): string | undefined {
-  const stack: unknown[] = [value];
-  const seen = new WeakSet<object>();
-  while (stack.length > 0) {
-    const current = stack.pop();
-    if (typeof current !== "object" || current === null || seen.has(current)) continue;
-    seen.add(current);
-    if (isTainted(current)) return taintOf(current)?.origin ?? "unknown";
-    for (const item of Array.isArray(current) ? current : Object.values(current)) stack.push(item);
-  }
-  return undefined;
-}
-
 /**
  * CC-1 — claim-check middleware on the ADR 0006 seam. Runs only when the effect
  * actually executes (replayed/completed steps short-circuit upstream), so replay
@@ -278,7 +264,7 @@ export function claimCheckMiddleware(options: ClaimCheckOptions): EffectMiddlewa
     // ADR 0085 / 0140 - an offloaded result that carried untrusted content (a tainted top level OR a
     // nested marker) must not launder it into a clean-looking envelope + digest: the envelope itself is
     // tainted, so the loop fences it and records the taint (the sweep still finds the inner envelope).
-    const origin = json.includes('"__loomTainted"') ? firstTaintOrigin(result) : undefined;
+    const origin = json.includes('"__loomTainted"') ? nestedTaintOrigin(result) : undefined;
     return origin === undefined ? envelope : tainted(envelope, origin);
   };
 }

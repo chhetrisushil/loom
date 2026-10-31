@@ -86,3 +86,83 @@ export function taintOf(value: unknown): Taint | undefined {
 export function unwrapTainted<T>(value: TaintedValue<T> | T): T {
   return isTainted(value) ? (value.value as T) : (value as T);
 }
+
+// ── Nested taint - a marker anywhere inside a value ──────────────────────────
+//
+// `isTainted` looks at the TOP of a value only. A producer that taints part of what it returns (an A2A
+// reply taints `content` and leaves `raw` for control flow, ADR 0085) hands back a plain object with a
+// wrapper buried inside, and every top-level check reads it as clean. `scanTaint` is the one walk the
+// agent loop and the claim-check middleware share to answer "is ANY of this untrusted".
+
+/** Bounds of a {@link scanTaint} walk. */
+export interface TaintScanOptions {
+  /** Deepest nesting visited (the root is depth 0). Default {@link TAINT_SCAN_MAX_DEPTH}. */
+  maxDepth?: number;
+  /** Most object/array nodes visited. Default {@link TAINT_SCAN_MAX_NODES}. */
+  maxNodes?: number;
+}
+
+/** Default nesting bound of {@link scanTaint}. */
+export const TAINT_SCAN_MAX_DEPTH = 64;
+/** Default node bound of {@link scanTaint}. */
+export const TAINT_SCAN_MAX_NODES = 100_000;
+/** The origin reported when a scan hit its bound and could not prove the value clean. */
+export const TAINT_SCAN_EXCEEDED_ORIGIN = "unknown:taint-scan-bound-exceeded";
+
+/** What {@link scanTaint} found. */
+export interface TaintScan {
+  /** Distinct origins of every wrapper found, in discovery order. */
+  readonly origins: readonly string[];
+  /** The walk hit a bound before it finished: the value is NOT proven clean. */
+  readonly exceeded: boolean;
+  /** `origins` is non-empty or `exceeded` - the value must be treated as untrusted. */
+  readonly tainted: boolean;
+}
+
+/**
+ * Walk `value` for taint wrappers at ANY depth. Iterative (no recursion, so a 100k-deep JSON cannot
+ * blow the stack), cycle-safe, and bounded by depth and node count. FAILS CLOSED: when a bound is hit
+ * the result is `exceeded: true` and `tainted: true`, because "too big to look at" is not "clean".
+ * Binary views are skipped (they cannot hold a wrapper). Pure: the value is never modified.
+ */
+export function scanTaint(value: unknown, options: TaintScanOptions = {}): TaintScan {
+  const maxDepth = options.maxDepth ?? TAINT_SCAN_MAX_DEPTH;
+  const maxNodes = options.maxNodes ?? TAINT_SCAN_MAX_NODES;
+  const origins: string[] = [];
+  const found = new Set<string>();
+  let exceeded = false;
+  let nodes = 0;
+  const seen = new WeakSet<object>();
+  const stack: Array<{ v: unknown; d: number }> = [{ v: value, d: 0 }];
+  while (stack.length > 0) {
+    const { v, d } = stack.pop() as { v: unknown; d: number };
+    if (typeof v !== "object" || v === null || seen.has(v) || ArrayBuffer.isView(v)) continue;
+    seen.add(v);
+    if (++nodes > maxNodes || d > maxDepth) {
+      exceeded = true;
+      break;
+    }
+    if (isTainted(v)) {
+      const origin = v.__loomTainted.origin;
+      if (!found.has(origin)) {
+        found.add(origin);
+        origins.push(origin);
+      }
+    }
+    for (const child of Array.isArray(v) ? v : Object.values(v)) {
+      if (typeof child === "object" && child !== null) stack.push({ v: child, d: d + 1 });
+    }
+  }
+  return { origins, exceeded, tainted: exceeded || origins.length > 0 };
+}
+
+/**
+ * The origin label for a value that may hold nested taint, or `undefined` when it is provably clean.
+ * Several origins are joined (`a, b`); a bound hit adds {@link TAINT_SCAN_EXCEEDED_ORIGIN}.
+ */
+export function nestedTaintOrigin(value: unknown, options?: TaintScanOptions): string | undefined {
+  const scan = scanTaint(value, options);
+  if (!scan.tainted) return undefined;
+  const all = scan.exceeded ? [...scan.origins, TAINT_SCAN_EXCEEDED_ORIGIN] : scan.origins;
+  return all.join(", ");
+}

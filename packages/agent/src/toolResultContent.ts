@@ -1,4 +1,4 @@
-import { isTainted, taintOf, tainted, unwrapTainted } from "@loom/classify";
+import { isTainted, nestedTaintOrigin, taintOf, tainted, unwrapTainted } from "@loom/classify";
 import type {
   LlmContent,
   LlmResultPart,
@@ -55,7 +55,13 @@ export function isMediaResult(value: unknown): value is ToolMediaResult {
  */
 export function toolResultContent(toolName: string, toolOutput: unknown): LlmContent {
   if (!isTainted(toolOutput)) {
-    return JSON.stringify({ tool: toolName, result: toolOutput });
+    // A wrapper buried INSIDE the result (an A2A reply taints `content` and leaves `raw` for control
+    // flow) would flatten into plain text here. Fence the WHOLE tool_result and leave the structure
+    // (and the inner markers, which show which parts are untrusted) visible inside the fence. The
+    // stored value is untouched. A result too big/deep to scan is fenced too: fail closed (#735).
+    const nested = nestedTaintOrigin(toolOutput);
+    const text = JSON.stringify({ tool: toolName, result: toolOutput });
+    return nested === undefined ? text : tainted(text, nested);
   }
   const origin = taintOf(toolOutput)?.origin ?? "unknown";
   const body = JSON.stringify({ tool: toolName, result: unwrapTainted(toolOutput) });
