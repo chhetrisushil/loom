@@ -144,7 +144,7 @@ maintain
                                                   (a branchRegistry enables the live-descendant
                                                    guard; without one a parent with live
                                                    branches is NOT protected)
-  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--compaction-archive <archive.db> | --no-compaction-archive] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
+  loom sweep content <store-flags> --content <path> [--archive-db <path> [--archive-snap <path>]] [--pin KIND,KIND] [--ttl ms] [--compaction-archive <archive.db> | --no-compaction-archive] [--acknowledge-unarchived] [--orphans [--no-archive] [--snapshots-touch-content]] [--apply]  K10.6 pinned blob sweep
                                                   (--orphans also erases blobs NOTHING scanned
                                                    cites, so it needs the snapshot store and
                                                    every archive; with --apply and no archive
@@ -153,7 +153,9 @@ maintain
                                                    compacted logs also need the compaction
                                                    archive: --compaction-archive <archive.db>
                                                    (default archive.db beside --db; --config
-                                                   wires it), else --no-compaction-archive)
+                                                   wires it); logs compacted BEFORE ADR 0138
+                                                   (history already gone) also need
+                                                   --acknowledge-unarchived)
 
 plugin
   loom plugin new <seam> <name> [--first-party] [--dir .]  scaffold a plugin package
@@ -607,6 +609,7 @@ async function dispatch(
             compactionArchive: flags["compaction-archive"],
           }),
           noCompactionArchive: flags["no-compaction-archive"] === "true",
+          acknowledgeUnarchived: flags["acknowledge-unarchived"] === "true",
         })
       );
       return 0;

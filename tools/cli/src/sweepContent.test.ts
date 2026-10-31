@@ -516,8 +516,18 @@ describe("loom sweep content --orphans over a compacted log (ADR 0138)", () => {
 
   it("--no-compaction-archive is the operator's explicit statement that none exists: the blob is then an orphan", async () => {
     const s = await compactedSeed({ withArchive: false });
-    const out = await cmdSweepContent({ ...base(s), noCompactionArchive: true });
+    // alone it no longer passes a gapped log (ADR 0138 D24): nothing is erased
+    await expect(cmdSweepContent({ ...base(s), noCompactionArchive: true })).rejects.toThrow(
+      /--acknowledge-unarchived/
+    );
+    expect(await alive(s.contentDb, s.note)).toBe(true);
+    const out = await cmdSweepContent({
+      ...base(s),
+      noCompactionArchive: true,
+      acknowledgeUnarchived: true,
+    });
     expect(out).toContain("reclaimed orphans (1)");
+    expect(out).toMatch(/ACKNOWLEDGED .*1 compacted log/);
     expect(await alive(s.contentDb, s.note)).toBe(false);
   });
 
@@ -532,7 +542,7 @@ describe("loom sweep content --orphans over a compacted log (ADR 0138)", () => {
   it("--no-compaction-archive over a log whose checkpoint shows it WAS archived is refused even with no archive file (a lost archive is not 'none')", async () => {
     const s = await compactedSeed({ withArchive: false, archivingCheckpoint: true });
     await expect(cmdSweepContent({ ...base(s), noCompactionArchive: true })).rejects.toThrow(
-      /compacted INTO an archive/
+      /do not cover the removed range/
     );
     expect(await alive(s.contentDb, s.note)).toBe(true);
   });
